@@ -1,0 +1,72 @@
+/* ============================================================
+   COLORS — The Browser Company (Arc / Dia)
+   Warm, optimistic, gradient-forward. Cream paper, soft ink,
+   the signature multi-color "Arc gradient" as a hero motif.
+   ============================================================ */
+
+:root {
+  /* ---- Base neutrals: warm paper & ink ---- */
+  --paper-0:   #ffffff;   /* pure white surfaces */
+  --paper-1:   #fbfaf6;   /* app canvas — warm cream */
+  --paper-2:   #f4f1ea;   /* sunk panels / wells */
+  --paper-3:   #ebe7dd;   /* hover wells, dividers on cream */
+
+  --ink-0:     #1b1a17;   /* near-black, warm */
+  --ink-1:     #2e2c28;   /* primary text */
+  --ink-2:     #57534b;   /* secondary text */
+  --ink-3:     #8a857a;   /* tertiary / placeholder */
+  --ink-4:     #b6b0a3;   /* disabled / faint */
+
+  --line-1:    rgba(27,26,23,0.10);  /* hairline borders */
+  --line-2:    rgba(27,26,23,0.16);  /* stronger borders */
+
+  /* ---- Dark surface (browser chrome / Dia night) ---- */
+  --night-0:   #17161a;   /* deepest chrome */
+  --night-1:   #1f1e23;   /* chrome panel */
+  --night-2:   #2a2930;   /* raised on chrome */
+  --night-3:   #38363f;   /* hover on chrome */
+  --night-fg:  #f3f1ee;   /* text on night */
+  --night-fg2: #a7a3ac;   /* secondary text on night */
+
+  /* ---- Brand hues — the Arc spectrum ---- */
+  --hue-blue:    #2f6bff;  /* signal / link / focus */
+  --hue-violet:  #7b5bff;
+  --hue-magenta: #e0539b;
+  --hue-coral:   #ff6b54;
+  --hue-amber:   #ffb23e;
+  --hue-mint:    #2bbf8a;
+
+  /* tints for soft fills */
+  --blue-soft:   #e7eeff;
+  --violet-soft: #efeaff;
+  --coral-soft:  #ffeae5;
+  --amber-soft:  #fff2dc;
+  --mint-soft:   #e0f6ee;
+
+  /* ---- Semantic ---- */
+  --accent:        var(--hue-blue);
+  --accent-press:  #2455d6;
+  --success:       var(--hue-mint);
+  --warning:       var(--hue-amber);
+  --danger:        #e23b54;
+  --danger-soft:   #ffe6e9;
+
+  /* ---- Signature gradients (the Arc gradient is the brand's beating heart) ---- */
+  --grad-arc: linear-gradient(
+      105deg,
+      #ff8a5b 0%,
+      #e0539b 28%,
+      #7b5bff 58%,
+      #2f6bff 100%); /* @kind color */
+  --grad-arc-soft: linear-gradient(
+      105deg,
+      #ffd9c2 0%,
+      #f4c1da 32%,
+      #cdc1ff 64%,
+      #bcd0ff 100%); /* @kind color */
+  --grad-sunrise: linear-gradient(160deg, #ffb23e 0%, #ff6b54 55%, #e0539b 100%); /* @kind color */
+  --grad-dusk:    linear-gradient(160deg, #7b5bff 0%, #2f6bff 100%); /* @kind color */
+  --grad-mesh:    radial-gradient(120% 120% at 0% 0%, #ffd9c2 0%, transparent 45%),
+                  radial-gradient(120% 120% at 100% 0%, #cdc1ff 0%, transparent 50%),
+                  radial-gradient(120% 120% at 50% 100%, #bcd0ff 0%, transparent 55%); /* @kind color */
+}

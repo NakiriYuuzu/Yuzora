@@ -1,0 +1,58 @@
+/* ============================================================
+   TYPOGRAPHY — The Browser Company
+   Editorial serif for display + warm humanist sans for UI,
+   mono for technical surfaces (URLs, code, shortcuts).
+   ============================================================ */
+
+:root {
+  /* ---- Families ---- */
+  --font-serif: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-sans:  "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:  "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ---- Font sizes ---- */
+  --fs-display: 64px;
+  --fs-h1:      44px;
+  --fs-h2:      32px;
+  --fs-h3:      24px;
+  --fs-title:   18px;
+  --fs-body:    16px;
+  --fs-sm:      14px;
+  --fs-xs:      12.5px;
+  --fs-micro:   11px;
+
+  /* ---- Line heights & tracking (unitless / em) ---- */
+  --lh-display: 1.02;  /* @kind other */
+  --ls-display: -0.025em; /* @kind other */
+  --lh-h1:      1.06;  /* @kind other */
+  --ls-h1:      -0.02em; /* @kind other */
+  --lh-h2:      1.12;  /* @kind other */
+  --ls-h2:      -0.018em; /* @kind other */
+  --lh-h3:      1.2;   /* @kind other */
+  --ls-h3:      -0.012em; /* @kind other */
+  --lh-title:   1.3;   /* @kind other */
+  --ls-title:   -0.006em; /* @kind other */
+  --lh-body:    1.55;  /* @kind other */
+  --ls-body:     0; /* @kind other */
+  --lh-sm:      1.5;   /* @kind other */
+  --ls-sm:       0; /* @kind other */
+  --lh-xs:      1.4;   /* @kind other */
+  --ls-xs:       0.004em; /* @kind other */
+  --lh-micro:   1.3;   /* @kind other */
+  --ls-micro:    0.06em; /* @kind other */
+
+  /* ---- Weights ---- */
+  --fw-light:   300; /* @kind other */
+  --fw-regular: 400; /* @kind other */
+  --fw-medium:  500; /* @kind other */
+  --fw-semibold:600; /* @kind other */
+  --fw-bold:    700; /* @kind other */
+
+  /* ---- Semantic roles (font shorthand) ---- */
+  --text-display: var(--fw-regular) var(--fs-display)/var(--lh-display) var(--font-serif); /* @kind font */
+  --text-h1:      var(--fw-regular) var(--fs-h1)/var(--lh-h1) var(--font-serif); /* @kind font */
+  --text-h2:      var(--fw-medium)  var(--fs-h2)/var(--lh-h2) var(--font-sans); /* @kind font */
+  --text-body:    var(--fw-regular) var(--fs-body)/var(--lh-body) var(--font-sans); /* @kind font */
+  --text-label:   var(--fw-semibold) var(--fs-micro)/var(--lh-micro) var(--font-sans); /* @kind font */
+  --text-mono:    var(--fw-regular) var(--fs-sm)/var(--lh-sm) var(--font-mono); /* @kind font */
+}

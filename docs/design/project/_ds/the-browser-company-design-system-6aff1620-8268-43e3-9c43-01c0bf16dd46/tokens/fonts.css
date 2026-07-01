@@ -1,0 +1,10 @@
+/* ============================================================
+   FONTS — webfont declarations
+   NOTE: These are Google Fonts substitutes standing in for The
+   Browser Company's proprietary type. Newsreader ≈ editorial
+   display serif; Hanken Grotesk ≈ warm humanist UI sans;
+   JetBrains Mono ≈ technical mono. Swap in real licensed files
+   when available. (Flagged to the user.)
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,300..600&family=Hanken+Grotesk:wght@300..800&family=JetBrains+Mono:wght@400;500;600&display=swap");

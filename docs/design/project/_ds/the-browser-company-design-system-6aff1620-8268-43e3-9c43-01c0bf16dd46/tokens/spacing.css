@@ -1,0 +1,41 @@
+/* ============================================================
+   SPACING & RADII — The Browser Company
+   8px base rhythm with a soft 4px half-step. Generous,
+   pill-friendly radii for the rounded, friendly UI.
+   ============================================================ */
+
+:root {
+  /* ---- Spacing scale ---- */
+  --sp-0:   0; /* @kind spacing */
+  --sp-1:   4px;
+  --sp-2:   8px;
+  --sp-3:   12px;
+  --sp-4:   16px;
+  --sp-5:   20px;
+  --sp-6:   24px;
+  --sp-8:   32px;
+  --sp-10:  40px;
+  --sp-12:  48px;
+  --sp-16:  64px;
+  --sp-20:  80px;
+  --sp-24:  96px;
+
+  /* ---- Radii — rounded & friendly ---- */
+  --r-xs:   6px;
+  --r-sm:   10px;
+  --r-md:   14px;   /* default control radius */
+  --r-lg:   20px;   /* cards */
+  --r-xl:   28px;   /* hero panels */
+  --r-2xl:  36px;
+  --r-pill: 999px;
+
+  /* ---- Control sizing ---- */
+  --control-h-sm: 32px;
+  --control-h-md: 40px;
+  --control-h-lg: 48px;
+
+  /* ---- Layout ---- */
+  --sidebar-w:   248px;
+  --maxw-prose:  68ch;
+  --maxw-page:   1200px;
+}

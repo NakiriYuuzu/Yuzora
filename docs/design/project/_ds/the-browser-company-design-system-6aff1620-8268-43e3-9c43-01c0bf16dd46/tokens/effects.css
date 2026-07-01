@@ -1,0 +1,35 @@
+/* ============================================================
+   EFFECTS — shadows, blur, motion
+   Soft, diffuse, warm-tinted shadows (never harsh black).
+   Frosted translucency for floating chrome. Springy motion.
+   ============================================================ */
+
+:root {
+  /* ---- Elevation: warm, layered, soft ---- */
+  --shadow-xs:  0 1px 2px rgba(27,26,23,0.06);
+  --shadow-sm:  0 2px 6px rgba(27,26,23,0.07), 0 1px 2px rgba(27,26,23,0.05);
+  --shadow-md:  0 6px 18px rgba(27,26,23,0.09), 0 2px 6px rgba(27,26,23,0.06);
+  --shadow-lg:  0 16px 40px rgba(27,26,23,0.12), 0 4px 12px rgba(27,26,23,0.07);
+  --shadow-xl:  0 32px 70px rgba(27,26,23,0.18), 0 8px 22px rgba(27,26,23,0.10);
+
+  /* tinted glow for gradient/accent elements */
+  --glow-accent: 0 8px 24px rgba(47,107,255,0.30);
+  --glow-coral:  0 8px 24px rgba(255,107,84,0.28);
+
+  /* ring for focus */
+  --ring: 0 0 0 3px rgba(47,107,255,0.32);
+  --ring-inset: inset 0 0 0 1px var(--line-2);
+
+  /* ---- Frost / translucency ---- */
+  --frost-light: rgba(251,250,246,0.72);
+  --frost-night: rgba(23,22,26,0.62);
+  --blur-frost: saturate(150%) blur(20px); /* @kind other */
+
+  /* ---- Motion ---- */
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1); /* @kind other */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* @kind other */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1); /* @kind other */
+  --dur-fast: 120ms; /* @kind other */
+  --dur-mid:  220ms; /* @kind other */
+  --dur-slow: 380ms; /* @kind other */
+}
