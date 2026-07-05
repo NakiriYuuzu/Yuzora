@@ -77,17 +77,49 @@ D  .gitignore
 - （無檔案內容變更）
 
 **計畫修正**
-- （待填）
+- 註記：本 run file 於 staging 前建立，故 commit 內快照為 RUNNING 期中版；E3/E4 與 P6 收尾寫入 working tree、留待下次 commit（誠實反映時序，非遺漏）。
+- **計畫修正 1（使用者 commit 後追加指令）**：「co change to yuuzu@yuuzu.net」。查證：author/committer 已是 yuuzu@yuuzu.net；唯一非該 email 者＝Co-Authored-By trailer（noreply@anthropic.com）。最小變更解讀＝只換 trailer email、保留名字。無 remote（`git remote -v` 空）⇒ amend 本地 commit 安全。執行 `git commit --amend`：d83d7a9 → ca95617。此為使用者明令之第二項 git 寫入（鐵律 3 覆寫，僅此一項）。
+
+**執行紀錄（controller 親執）**
+- 新 .gitignore 讀畢：仍排除 `.superpowers/`、`docs/superpowers/`（另 node_modules/target/dist/logs/sqlite 等）→ A1 成立，回覆中告知使用者。
+- junk 掃描：325 檔中 node_modules|target|dist|.DS_Store|*.log 零命中。
+- 大檔掃描：top＝icon.icns 1.6MB／app-icon.png 1.0MB／iOS icon 1.0MB（Tauri icons，預期內）；無異常二進位。
+- `git add -A`：325 staged、0 untracked 殘留；`git diff --cached --stat`＝325 files changed, 47790 insertions(+), 3 deletions(-)（−3＝舊 .gitignore 三行）。
 
 ## P4 對抗 review
 
 - 等效閘門＝使用者親自確認 commit message（見 P1 註記）。
-- （待填：使用者裁決紀錄）
+- 裁決紀錄：AskUserQuestion 呈 A（詳細）／B（中等）／C（精簡）三檔，**使用者選 B**（含 Co-Authored-By footer 全文預覽）→ 即為送出授權。
+- 追加裁決：使用者 commit 後下令 trailer email 改 yuuzu@yuuzu.net → amend（見 P3 計畫修正 1）。
 
 ## P5 驗收
 
-- （待填 E1–E4）
+- E1: junk 掃描零命中 ✅（見 P3 執行紀錄，實際輸出：`=== junk scan ===` 後零行）
+- E2: `git status --short` staged 325／untracked 0 ✅
+- E3: 使用者於 AskUserQuestion 選定 B 版 ✅（對話紀錄 2026-07-05）
+- E4: `git log -1` ✅
+
+  ```
+  commit ca95617 / author: yuuzu <yuuzu@yuuzu.net>
+  feat(app): 🚀 Import yuzora workbench (M1–M3)
+  …
+  Co-Authored-By: Claude Fable 5 <yuuzu@yuuzu.net>
+  325 files changed, 47790 insertions(+), 3 deletions(-)
+  git status --short 唯一殘留＝本 run file（M，時序性、見計畫修正）
+  git log --oneline：ca95617＋171b326 共 2 commits
+  ```
+
+  PASS
+- 與 baseline 比對：無檔案內容變更，無新紅燈 ✅
 
 ## P6 收尾
 
-- （待填）
+- 結果：**DONE**（2026-07-05）
+- 最終變更檔案：無產品檔案內容變更；git index/refs（add 325 檔＋commit ca95617＋amend）；記帳文件（本 run file＋LEDGER）。
+- 需使用者確認的假設：A1（`.superpowers/`、`docs/superpowers/` 依 .gitignore 排除、未入 commit——已在回覆告知，若要納管需使用者裁決調整 .gitignore）；「co」解讀為 Co-Authored-By email 最小變更（名字保留 Claude Fable 5）——已在回覆告知可再調。
+- 殘留事項：本 run file 的 DONE 版本尚未 commit（working tree 一檔 M）；push 未授權未執行。
+- 自我改進三問：
+  - 閘門漏洞：無（使用者確認閘正常運作；amend 前先查證 author/trailer 現況避免誤改）。
+  - 浪費規則：無。
+  - 新陷阱／慣例：`[convention]` 本專案 commit trailer Co-Authored-By email 用 yuuzu@yuuzu.net（使用者 2026-07-05 指令）→ 已存全域記憶（memory: yuzora-commit-trailer-email）。
+- LEDGER 已追加：✅（RUNNING → DONE）
