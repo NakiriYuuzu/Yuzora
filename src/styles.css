@@ -1,0 +1,447 @@
+/* Yuuzu Workbench design tokens. Source of truth: docs/design/project/Yuuzu Workbench.dc.html
+   (`.yz-root` / `.yz-root.yzdark` inline styles) + docs/design/project/_ds/.../tokens/*.css.
+   Verify against those files before changing values here. */
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/hanken-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource-variable/newsreader";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Hanken Grotesk Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+    --font-serif: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    /* ---- shadcn semantic — light ---- */
+    --background: var(--paper-1);
+    --foreground: var(--ink-1);
+    --card: var(--paper-0);
+    --card-foreground: var(--ink-1);
+    --popover: var(--frost-light);
+    --popover-foreground: var(--ink-1);
+    --primary: var(--ink-1);
+    --primary-foreground: var(--paper-0);
+    --secondary: var(--yz-solid);
+    --secondary-foreground: var(--ink-1);
+    --muted: var(--yz-sunk);
+    --muted-foreground: var(--ink-3);
+    --accent: var(--yz-hover);
+    --accent-foreground: var(--yz-accent-ink);
+    --destructive: #e23b54;
+    --destructive-foreground: #ffffff;
+    --border: var(--line-1);
+    --input: var(--line-2);
+    --ring: var(--yz-accent);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.875rem;
+    --sidebar: var(--yz-glass);
+    --sidebar-foreground: var(--ink-1);
+    --sidebar-primary: var(--yz-accent);
+    --sidebar-primary-foreground: #2e2c28;
+    --sidebar-accent: var(--yz-hover);
+    --sidebar-accent-foreground: var(--ink-1);
+    --sidebar-border: var(--line-1);
+    --sidebar-ring: var(--yz-accent);
+
+    /* ---- raw tokens: paper / ink / line ---- */
+    --paper-0: #ffffff;
+    --paper-1: #fbfaf6;
+    --paper-2: #f4f1ea;
+    --paper-3: #ebe7dd;
+    --ink-0: #1b1a17;
+    --ink-1: #2e2c28;
+    --ink-2: #57534b;
+    --ink-3: #8a857a;
+    --ink-4: #b6b0a3;
+    --line-1: rgba(27, 26, 23, 0.10);
+    --line-2: rgba(27, 26, 23, 0.16);
+
+    /* ---- accent (lime, theme-invariant) ---- */
+    --yz-accent-rgb: 134, 184, 31;
+    --yz-accent: #86b81f;
+    --yz-accent-ink: #5f8c1e;
+
+    /* ---- surface / glass tokens ---- */
+    --yz-bg: radial-gradient(125% 120% at 0% 0%, #e9f4c8 0%, transparent 46%), radial-gradient(120% 115% at 100% 2%, #cdeed3 0%, transparent 50%), radial-gradient(125% 130% at 96% 100%, #c4dbf6 0%, transparent 54%), radial-gradient(120% 120% at 8% 100%, #f6e6c8 0%, transparent 48%), #f6f5ef;
+    --yz-glass: rgba(251, 250, 246, 0.55);
+    --yz-glass-strong: rgba(251, 250, 246, 0.7);
+    --yz-field: rgba(255, 255, 255, 0.62);
+    --yz-panel: rgba(255, 255, 255, 0.55);
+    --yz-active: rgba(255, 255, 255, 0.78);
+    --yz-hover: rgba(255, 255, 255, 0.45);
+    --yz-sunk: rgba(244, 241, 234, 0.5);
+    --yz-solid: #ffffff;
+    --yz-node-ring: #fffdf8;
+
+    /* ---- terminal palette ---- */
+    --term-bg: #f1ede4;
+    --term-bar: #e8e2d7;
+    --term-fg: #46433c;
+    --term-fg2: #8a8691;
+    --term-line: rgba(27, 26, 23, 0.08);
+    --term-chip: rgba(27, 26, 23, 0.06);
+    --term-hover: rgba(27, 26, 23, 0.05);
+    --term-green: #2f8f5f;
+    --term-blue: #2456cc;
+    --term-lime: var(--yz-accent-ink);
+    --term-coral: #c0562f;
+    --term-ok: #1f8a5b;
+    --term-amber: #a8690f;
+
+    /* ---- soft tint fills (brand hues) ---- */
+    --blue-soft: #e7eeff;
+    --violet-soft: #efeaff;
+    --coral-soft: #ffeae5;
+    --amber-soft: #fff2dc;
+    --mint-soft: #e0f6ee;
+    --danger-soft: #ffe6e9;
+
+    /* ---- git status colors (M/A/D/U/R) ---- */
+    --status-m: #2456cc;
+    --status-m-bg: var(--blue-soft);
+    --status-a: #178a63;
+    --status-a-bg: var(--mint-soft);
+    --status-d: #c2293f;
+    --status-d-bg: var(--danger-soft);
+    --status-u: #6b6760;
+    --status-u-bg: var(--paper-3);
+    --status-r: #9a6512;
+    --status-r-bg: var(--amber-soft);
+
+    /* ---- brand gradients ---- */
+    --grad-arc: linear-gradient(105deg, #ff8a5b 0%, #e0539b 28%, #7b5bff 58%, #2f6bff 100%);
+    --grad-arc-soft: linear-gradient(105deg, #ffd9c2 0%, #f4c1da 32%, #cdc1ff 64%, #bcd0ff 100%);
+    --grad-sunrise: linear-gradient(160deg, #ffb23e 0%, #ff6b54 55%, #e0539b 100%);
+    --grad-dusk: linear-gradient(160deg, #7b5bff 0%, #2f6bff 100%);
+    --grad-mesh: radial-gradient(120% 120% at 0% 0%, #ffd9c2 0%, transparent 45%), radial-gradient(120% 120% at 100% 0%, #cdc1ff 0%, transparent 50%), radial-gradient(120% 120% at 50% 100%, #bcd0ff 0%, transparent 55%);
+
+    /* ---- shadows ---- */
+    --shadow-xs: 0 1px 2px rgba(27, 26, 23, 0.06);
+    --shadow-sm: 0 2px 6px rgba(27, 26, 23, 0.07), 0 1px 2px rgba(27, 26, 23, 0.05);
+    --shadow-md: 0 6px 18px rgba(27, 26, 23, 0.09), 0 2px 6px rgba(27, 26, 23, 0.06);
+    --shadow-lg: 0 16px 40px rgba(27, 26, 23, 0.12), 0 4px 12px rgba(27, 26, 23, 0.07);
+    --shadow-xl: 0 32px 70px rgba(27, 26, 23, 0.18), 0 8px 22px rgba(27, 26, 23, 0.10);
+    --glow-accent: 0 8px 24px rgba(47, 107, 255, 0.30);
+    --glow-coral: 0 8px 24px rgba(255, 107, 84, 0.28);
+
+    /* ---- frost / blur ---- */
+    --frost-light: rgba(251, 250, 246, 0.72);
+    --frost-night: rgba(23, 22, 26, 0.62);
+    --blur-frost: saturate(150%) blur(20px);
+
+    /* ---- motion ---- */
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    --dur-fast: 120ms;
+    --dur-mid: 220ms;
+    --dur-slow: 380ms;
+
+    /* ---- radius scale ---- */
+    --r-xs: 6px;
+    --r-sm: 10px;
+    --r-md: 14px;
+    --r-lg: 20px;
+    --r-xl: 28px;
+    --r-2xl: 36px;
+    --r-pill: 999px;
+
+    /* ---- IDE density font scale (9–20px; not tokens.css --fs-h* display tier) ---- */
+    --text-8: 8px;
+    --text-9: 9px;
+    --text-9-5: 9.5px;
+    --text-10: 10px;
+    --text-10-5: 10.5px;
+    --text-11: 11px;
+    --text-11-5: 11.5px;
+    --text-12: 12px;
+    --text-12-5: 12.5px;
+    --text-13: 13px;
+    --text-14: 14px;
+    --text-15: 15px;
+    --text-15-5: 15.5px;
+    --text-16: 16px;
+    --text-19: 19px;
+    --text-20: 20px;
+    --text-label: 11px;
+}
+
+.dark {
+    /* ---- shadcn semantic — dark ---- */
+    --background: var(--paper-1);
+    --foreground: var(--ink-1);
+    --card: var(--paper-0);
+    --card-foreground: var(--ink-1);
+    --popover: var(--frost-light);
+    --popover-foreground: var(--ink-1);
+    --primary: var(--ink-1);
+    --primary-foreground: var(--paper-0);
+    --secondary: var(--yz-solid);
+    --secondary-foreground: var(--ink-1);
+    --muted: var(--paper-2);
+    --muted-foreground: var(--ink-3);
+    --accent: var(--yz-hover);
+    --accent-foreground: var(--yz-accent-ink);
+    --destructive: #e23b54;
+    --destructive-foreground: #ffffff;
+    --border: var(--line-1);
+    --input: var(--line-2);
+    --ring: var(--yz-accent);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: var(--yz-glass);
+    --sidebar-foreground: var(--ink-1);
+    --sidebar-primary: var(--yz-accent);
+    --sidebar-primary-foreground: #2e2c28;
+    --sidebar-accent: var(--yz-hover);
+    --sidebar-accent-foreground: var(--ink-1);
+    --sidebar-border: var(--line-1);
+    --sidebar-ring: var(--yz-accent);
+
+    /* ---- raw tokens: paper / ink / line ---- */
+    --paper-0: #201f26;
+    --paper-1: #1a191f;
+    --paper-2: #141318;
+    --paper-3: #2d2c34;
+    --ink-0: #f5f3ef;
+    --ink-1: #e7e4df;
+    --ink-2: #b6b2bb;
+    --ink-3: #8a8691;
+    --ink-4: #5c5963;
+    --line-1: rgba(255, 255, 255, 0.09);
+    --line-2: rgba(255, 255, 255, 0.16);
+
+    /* ---- surface / glass tokens ---- */
+    --yz-bg: radial-gradient(125% 120% at 0% 0%, #232c18 0%, transparent 46%), radial-gradient(120% 115% at 100% 2%, #15261d 0%, transparent 50%), radial-gradient(125% 130% at 96% 100%, #182236 0%, transparent 54%), radial-gradient(120% 120% at 8% 100%, #2a2017 0%, transparent 48%), #100f14;
+    --yz-glass: rgba(34, 33, 40, 0.62);
+    --yz-glass-strong: rgba(24, 23, 29, 0.72);
+    --yz-field: rgba(255, 255, 255, 0.06);
+    --yz-panel: rgba(255, 255, 255, 0.04);
+    --yz-active: rgba(255, 255, 255, 0.10);
+    --yz-hover: rgba(255, 255, 255, 0.05);
+    --yz-sunk: rgba(255, 255, 255, 0.03);
+    --yz-solid: rgba(255, 255, 255, 0.09);
+    --yz-node-ring: #201f26;
+
+    /* ---- terminal palette ---- */
+    --term-bg: #18171c;
+    --term-bar: #201f25;
+    --term-fg: #d6d3db;
+    --term-fg2: #847f8b;
+    --term-line: rgba(255, 255, 255, 0.07);
+    --term-chip: rgba(255, 255, 255, 0.1);
+    --term-hover: rgba(255, 255, 255, 0.06);
+    --term-green: #74d6a0;
+    --term-blue: #82b4ff;
+    --term-lime: #b6e36a;
+    --term-coral: #ff9d6b;
+    --term-ok: #74d6a0;
+    --term-amber: #e0b06a;
+
+    /* ---- soft tint fills (brand hues) ---- */
+    --blue-soft: rgba(47, 107, 255, 0.22);
+    --violet-soft: rgba(123, 91, 255, 0.24);
+    --coral-soft: rgba(255, 107, 84, 0.2);
+    --amber-soft: rgba(255, 178, 62, 0.2);
+    --mint-soft: rgba(43, 191, 138, 0.22);
+    --danger-soft: rgba(226, 59, 84, 0.24);
+
+    /* ---- shadows ---- */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.45);
+    --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-xl: 0 32px 70px rgba(0, 0, 0, 0.62), 0 8px 22px rgba(0, 0, 0, 0.45);
+
+    /* ---- frost / blur ---- */
+    --frost-light: rgba(32, 31, 38, 0.88);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    font-size: 13px;
+    }
+}
+
+/* ---- Yuuzu global chrome: selection, scrollbars, motion ---- */
+
+::selection {
+    background: rgba(var(--yz-accent-rgb), 0.22);
+}
+.dark ::selection {
+    background: rgba(var(--yz-accent-rgb), 0.3);
+}
+
+.yzs::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+}
+.yzs::-webkit-scrollbar-thumb {
+    background: rgba(27, 26, 23, 0.14);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.yzs::-webkit-scrollbar-thumb:hover {
+    background: rgba(27, 26, 23, 0.24);
+    background-clip: padding-box;
+}
+.yzs::-webkit-scrollbar-track {
+    background: transparent;
+}
+.dark .yzs::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.13);
+}
+.dark .yzs::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.22);
+}
+
+@keyframes yzspin {
+    to { transform: rotate(360deg); }
+}
+@keyframes yzblink {
+    0%, 48% { opacity: 1; }
+    52%, 100% { opacity: 0; }
+}
+@keyframes yzpulse {
+    0%, 100% { opacity: 0.5; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.3); }
+}
+@keyframes yzpop {
+    from { opacity: 0; transform: translateY(-12px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes yzover {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes yzmodein {
+    from { transform: translateY(6px); }
+    to { transform: none; }
+}
+@keyframes yzslideup {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes yzdiffin {
+    from { transform: translateY(9px); }
+    to { transform: none; }
+}
+@keyframes yzrowin {
+    from { opacity: 0; transform: translateX(-5px); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes yzload {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(360%); }
+}
+@keyframes yzflash {
+    0% { box-shadow: inset 0 0 0 2px rgba(var(--yz-accent-rgb), 0); }
+    30% { box-shadow: inset 0 0 0 2px rgba(var(--yz-accent-rgb), 0.6); }
+    100% { box-shadow: inset 0 0 0 2px rgba(var(--yz-accent-rgb), 0); }
+}
+
+.yz-spin { animation: yzspin 0.7s linear infinite; }
+.yz-blink { animation: yzblink 1.1s step-end infinite; }
+.yz-pulse { animation: yzpulse 1.4s var(--ease-in-out) infinite; }
+.yz-pop { animation: yzpop 130ms var(--ease-spring); }
+.yz-over { animation: yzover var(--dur-fast) var(--ease-out); }
+.yz-modein { animation: yzmodein 300ms var(--ease-spring); }
+.yz-slideup { animation: yzslideup var(--dur-mid) var(--ease-out); }
+.yz-diffin { animation: yzdiffin 220ms var(--ease-out); }
+.yz-rowin { animation: yzrowin var(--dur-fast) var(--ease-out); }
+.yz-load { animation: yzload 0.62s var(--ease-out) infinite; }
+.yz-flash { animation: yzflash var(--dur-slow) var(--ease-out); }
+
+/* Switch per dc.html toggleRow spec; px values because html { font-size: 13px }
+   shrinks rem-based utility sizing (shadcn thumb size-4 renders 13px, not 16px). */
+.yz-switch {
+    width: 36px;
+    height: 21px;
+    border-radius: 999px;
+    transition: background 180ms var(--ease-out);
+}
+.yz-switch[data-state="unchecked"] { background: rgba(27, 26, 23, 0.18); }
+.yz-switch[data-state="checked"] { background: var(--yz-accent); }
+.dark .yz-switch[data-state="unchecked"] { background: rgba(255, 255, 255, 0.22); }
+.yz-switch [data-slot="switch-thumb"] {
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    /* fixed white: dark 的 --yz-solid 是 9% alpha，knob 會隱形 */
+    background: #ffffff;
+    box-shadow: var(--shadow-xs);
+    transition: translate 200ms var(--ease-spring);
+}
+/* 覆寫 translate 屬性本身——switch.tsx 的 translate-x-* utility 走 CSS translate，
+   若這裡用 transform 會與其疊加造成位移過頭 */
+.yz-switch[data-state="unchecked"] [data-slot="switch-thumb"] { translate: 1px 0; }
+.yz-switch[data-state="checked"] [data-slot="switch-thumb"] { translate: 16px 0; }
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}

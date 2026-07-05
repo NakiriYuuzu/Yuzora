@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yuzora 任務閉環（yuzora-loop）設計文件</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, "Songti TC", serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.7; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.25rem; }
+.metric-card .value { font-size: 2rem; font-weight: 700; }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.75rem 1.25rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1rem 0 0.5rem; }
+p + p { margin-top: 0.6rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; overflow-x: auto; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); }
+.chart-container .takeaway { font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 0.75rem; }
+
+details { margin-bottom: 1rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-bg); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-bottom: 1rem; }
+th { text-align: left; padding: 0.75rem; border-bottom: 2px solid var(--color-border); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.75rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.05em 0.35em; }
+pre { background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-md); padding: 1rem 1.25rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.55; margin: 0.5rem 0 1rem; }
+pre code { background: none; border: none; padding: 0; color: inherit; }
+
+.badge { display: inline-block; font-size: 0.72rem; font-weight: 700; border-radius: 999px; padding: 0.1rem 0.6rem; vertical-align: middle; }
+.badge.pass { background: rgba(93,184,114,0.15); color: #3c7a4e; }
+.badge.gate { background: rgba(204,120,92,0.15); color: var(--color-accent-active); }
+.badge.warn { background: rgba(212,160,23,0.15); color: #8a6a0e; }
+
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.rule-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.25rem; }
+.rule-card strong { display: block; margin-bottom: 0.25rem; }
+.rule-card .why { font-size: 0.85rem; color: var(--color-text-secondary); }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.25rem; }
+.scorecard .name { font-weight: 700; font-size: 0.9rem; }
+.scorecard .basis { font-size: 0.82rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+
+@media print { .tabs, .actions { display: none; } .tab-content { display: block !important; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Design Doc</div>
+        <h1>Yuzora 任務閉環（yuzora-loop）</h1>
+        <p class="meta">建立於 2026-07-03 · Fable-5 bootstrap session · 供 Opus / Sonnet / Haiku 後續維護使用 · v1.1（同日依使用者指示修訂）</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p>本專案自今日起，<strong>所有任務</strong>必須依 <code>yuzora-loop</code> 閉環執行：TRIAGE → 提問 → 規劃 → 執行 → 對抗 review → 驗收 → response。閉環把原本依賴大模型判斷力的部分外置成固定閘門、run file 模板與證據要求，讓較小模型也能維持同等嚴謹度。強制機制共三層（CLAUDE.md 常駐宣告、skill 自動觸發、UserPromptSubmit hook 每訊息提醒），並以 LEARNINGS 棘輪（可自主加嚴、放寬需人批准）實現安全的自我改進。<strong>v1.1 修訂</strong>：撰寫與對抗 review 交由 opus subagent 執行（controller／worker 分離）、git 開放唯讀、worktree 可詢問啟用（預設不用）。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">6+1</div><div class="label">閉環階段（TRIAGE＋P1–P6）</div></div>
+        <div class="metric-card"><div class="value">5</div><div class="label">鐵律（v1.1）</div></div>
+        <div class="metric-card"><div class="value">3</div><div class="label">層強制機制</div></div>
+        <div class="metric-card"><div class="value">4</div><div class="label">閘門（G1/G2/G4/G5）</div></div>
+        <div class="metric-card"><div class="value">9</div><div class="label">交付檔案（v1.1 修 7 增 1）</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('overview')">總覽</button>
+        <button class="tab" onclick="showTab('protocol')">閉環協定</button>
+        <button class="tab" onclick="showTab('enforce')">強制與自我改進</button>
+        <button class="tab" onclick="showTab('evidence')">驗收證據</button>
+        <button class="tab" onclick="showTab('maintain')">檔案與維護</button>
+    </div>
+
+    <div id="overview" class="tab-content active">
+        <section>
+            <h2>為什麼需要閉環</h2>
+            <p>今天之後，本專案的維護只能使用 Opus / Sonnet / Haiku。過去 M1、M2 的品質來自「大模型＋subagent 對抗 review」的流程。v1.0 初版在完全無 subagent、無 git 的限制下設計；v1.1（同日使用者批准）恢復受控派工：subagent 僅限 opus、git 僅限唯讀、worktree 預設不用。不變的設計哲學是：<strong>把判斷力外置成結構</strong>——controller 照模板派工、照閘門過關、照指令貼證據，可靠度就不再依賴單一模型的大小。</p>
+        </section>
+        <div class="chart-container">
+            <h3>閉環流程與回饋路徑</h3>
+            <svg viewBox="0 0 920 310" xmlns="http://www.w3.org/2000/svg" style="min-width:760px; max-width:100%;">
+                <defs>
+                    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c6a64"/>
+                    </marker>
+                    <marker id="arrRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#c64545"/>
+                    </marker>
+                    <marker id="arrAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#cc785c"/>
+                    </marker>
+                </defs>
+                <!-- LEARNINGS ratchet at top -->
+                <rect x="360" y="18" width="200" height="40" rx="20" fill="#f5f0e8" stroke="#cc785c" stroke-width="1.5"/>
+                <text x="460" y="43" font-size="13" fill="#a9583e" text-anchor="middle" font-weight="600">LEARNINGS 棘輪</text>
+                <path d="M 855 118 C 800 60, 640 38, 565 38" fill="none" stroke="#cc785c" stroke-width="1.5" marker-end="url(#arrAccent)"/>
+                <text x="740" y="52" font-size="11" fill="#a9583e">P6 三問：加嚴／陷阱</text>
+                <path d="M 355 38 C 260 38, 210 70, 200 114" fill="none" stroke="#cc785c" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrAccent)"/>
+                <text x="200" y="70" font-size="11" fill="#a9583e">P1 必讀</text>
+                <!-- main boxes -->
+                <g font-size="13" text-anchor="middle" font-weight="600">
+                    <rect x="20"  y="120" width="100" height="52" rx="8" fill="#efe9de" stroke="#e6dfd8"/><text x="70"  y="142" fill="#141413">TRIAGE</text><text x="70" y="160" font-size="10" fill="#6c6a64" font-weight="400">要不要進閉環</text>
+                    <rect x="150" y="120" width="100" height="52" rx="8" fill="#efe9de" stroke="#e6dfd8"/><text x="200" y="142" fill="#141413">P1 提問</text><text x="200" y="160" font-size="10" fill="#6c6a64" font-weight="400">先查再問 G1</text>
+                    <rect x="280" y="120" width="100" height="52" rx="8" fill="#efe9de" stroke="#e6dfd8"/><text x="330" y="142" fill="#141413">P2 規劃</text><text x="330" y="160" font-size="10" fill="#6c6a64" font-weight="400">baseline＋E 清單 G2</text>
+                    <rect x="410" y="120" width="100" height="52" rx="8" fill="#efe9de" stroke="#cc785c" stroke-width="1.5"/><text x="460" y="142" fill="#141413">P3 執行</text><text x="460" y="160" font-size="10" fill="#6c6a64" font-weight="400">opus 撰寫＋復驗</text>
+                    <rect x="540" y="120" width="100" height="52" rx="8" fill="#efe9de" stroke="#e6dfd8"/><text x="590" y="142" fill="#141413">P4 對抗 review</text><text x="590" y="160" font-size="10" fill="#6c6a64" font-weight="400">獨立 opus reviewer G4</text>
+                    <rect x="670" y="120" width="100" height="52" rx="8" fill="#efe9de" stroke="#e6dfd8"/><text x="720" y="142" fill="#141413">P5 驗收</text><text x="720" y="160" font-size="10" fill="#6c6a64" font-weight="400">battery＋證據 G5</text>
+                    <rect x="800" y="120" width="100" height="52" rx="8" fill="#181715" stroke="#181715"/><text x="850" y="142" fill="#faf9f5">P6 收尾</text><text x="850" y="160" font-size="10" fill="#a09d96" font-weight="400">response＋ledger</text>
+                </g>
+                <!-- forward arrows -->
+                <g stroke="#6c6a64" stroke-width="1.5" fill="none">
+                    <line x1="120" y1="146" x2="146" y2="146" marker-end="url(#arr)"/>
+                    <line x1="250" y1="146" x2="276" y2="146" marker-end="url(#arr)"/>
+                    <line x1="380" y1="146" x2="406" y2="146" marker-end="url(#arr)"/>
+                    <line x1="510" y1="146" x2="536" y2="146" marker-end="url(#arr)"/>
+                    <line x1="640" y1="146" x2="666" y2="146" marker-end="url(#arr)"/>
+                    <line x1="770" y1="146" x2="796" y2="146" marker-end="url(#arr)"/>
+                </g>
+                <!-- feedback arrows -->
+                <path d="M 585 176 C 560 225, 500 225, 468 178" fill="none" stroke="#c64545" stroke-width="1.5" marker-end="url(#arrRed)"/>
+                <text x="527" y="230" font-size="11" fill="#c64545" text-anchor="middle">finding 回修＋整輪重跑</text>
+                <path d="M 718 176 C 680 268, 510 268, 462 180" fill="none" stroke="#c64545" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrRed)"/>
+                <text x="592" y="285" font-size="11" fill="#c64545" text-anchor="middle">battery 紅燈回修（含「看似無關」的新紅燈）</text>
+                <!-- exempt path -->
+                <path d="M 70 120 C 70 90, 70 90, 70 90" fill="none"/>
+                <text x="70" y="105" font-size="10" fill="#6c6a64" text-anchor="middle">LOOP-EXEMPT ↑ 純問答</text>
+            </svg>
+            <p class="takeaway">一句話：前進要過閘門，出錯必回 P3，經驗只進不出（棘輪）——這三個約束構成閉環。</p>
+        </div>
+        <section>
+            <h2>設計原則</h2>
+            <div class="rules">
+                <div class="rule-card"><strong>判斷力外置</strong><span class="why">弱模型的弱點在裁量，不在執行。所有裁量點都改寫成二元檢查：有沒有貼輸出、有沒有 ≥3 條反證、E 清單有沒有在寫碼前固定。</span></div>
+                <div class="rule-card"><strong>證據先於宣稱</strong><span class="why">沒貼實際指令輸出就不得寫 PASS。這是從 superpowers verification-before-completion 沿用的原則，也是 blog 所說「verification 要可量化」的落地。</span></div>
+                <div class="rule-card"><strong>run file 即記憶</strong><span class="why">git 僅唯讀：變更檔案清單＋P2 baseline＋git diff 併用構成對照組；漏記一個檔案＝review 出現盲區，所以「動一個記一個」仍是硬規則。</span></div>
+                <div class="rule-card"><strong>棘輪式自我改進</strong><span class="why">參考 recursive self-improvement 一文：自我改進需要人類監督。故 LEARNINGS 只允許模型自主「加嚴」，任何「放寬」都必須由使用者在對話中批准。</span></div>
+            </div>
+        </section>
+        <section>
+            <h2>五條鐵律（v1.1）</h2>
+            <table>
+                <thead><tr><th>#</th><th>鐵律</th><th>執行方式</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td>撰寫與對抗 review 交給 subagent</td><td>主對話為 controller（規劃、派工、驗證、裁決）；親手只寫記帳文件（run file／LEDGER／LEARNINGS／brief），其餘撰寫一律派 opus subagent</td></tr>
+                    <tr><td>2</td><td>Subagent 僅限 opus</td><td>派工必帶 <code>model: opus</code>（禁 sonnet／haiku）；撰寫者與 reviewer 必須是不同 subagent</td></tr>
+                    <tr><td>3</td><td>Git 僅限唯讀</td><td>status／diff／log／show／blame 可用（baseline 與 review 善用 git diff）；寫入類一律禁止——唯使用者於對話中明確下令才執行（使用者覆寫，非閉環授權）</td></tr>
+                    <tr><td>4</td><td>Worktree 預設不使用</td><td>任何任務可在 P1 詢問是否啟用（大範圍／高風險應問，列 BLOCKING）；未詢問或未獲同意＝不使用</td></tr>
+                    <tr><td>5</td><td>證據先於宣稱</td><td>沒貼實際輸出不得寫 PASS；subagent 的證據 controller 仍須親自重跑驗證</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <div id="protocol" class="tab-content">
+        <section>
+            <h2>階段與閘門</h2>
+            <table>
+                <thead><tr><th>階段</th><th>核心動作</th><th>閘門條件</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>TRIAGE</strong></td><td>判斷要不要進閉環；純問答標 <code>LOOP-EXEMPT</code> 直接回答</td><td>拿不準一律進閉環</td></tr>
+                    <tr><td><strong>P1 提問</strong></td><td>需求改寫成可驗證 R1..Rn；先查 LEDGER／LEARNINGS／specs／sdd 再問；不確定點分 BLOCKING（問使用者並等待）與假設（選預設值續行）</td><td><span class="badge gate">G1</span> BLOCKING 清空</td></tr>
+                    <tr><td><strong>P2 規劃</strong></td><td>先跑 baseline battery；步驟表每步自帶 verify；驗收證據清單 E1..En 於寫碼前固定；&gt;7 步就拆 run</td><td><span class="badge gate">G2</span> 每步有 verify＋E 清單固定＋baseline 已貼</td></tr>
+                    <tr><td><strong>P3 執行</strong></td><td>Controller 寫 brief 派 opus subagent 撰寫（一次一派、紅燈不疊加）；回報後 controller 親自復驗每步 verify；動一檔記一檔；計畫外改動回 P2 補計畫修正；行為變更先寫失敗測試</td><td>（連續閘門內嵌於每步 verify）</td></tr>
+                    <tr><td><strong>P4 對抗 review</strong></td><td>未參與撰寫的獨立 opus reviewer subagent（不給作者自辯）；用 git diff＋磁碟重讀；對每條 R 做具體反證；固定 rubric（邊界／時序／state／主題 i18n／scope／孤兒）；controller 逐條裁決 findings</td><td><span class="badge gate">G4</span> dry pass＋反證 ≥3＋裁決紀錄</td></tr>
+                    <tr><td><strong>P5 驗收</strong></td><td>按變更面跑 battery 並貼輸出尾段；與 baseline 比對，任何新紅燈都回 P3；E1..En 逐項銷帳</td><td><span class="badge gate">G5</span> 全部 E 有證據且 PASS</td></tr>
+                    <tr><td><strong>P6 收尾</strong></td><td>run file 收尾＋LEDGER 一行＋自我改進三問＋繁中回覆（結論先行）</td><td>LEARNINGS 檢視完成</td></tr>
+                </tbody>
+            </table>
+        </section>
+        <section>
+            <h2>驗收 battery（按變更面）</h2>
+            <table>
+                <thead><tr><th>變更面</th><th>指令</th><th>通過標準</th></tr></thead>
+                <tbody>
+                    <tr><td>TS／前端</td><td><code>bun run build</code>、<code>bun run test</code></td><td>tsc 0 error；vitest 全綠且測試數 ≥ baseline</td></tr>
+                    <tr><td>Rust</td><td><code>cd src-tauri && cargo check</code></td><td>0 error</td></tr>
+                    <tr><td>WebView 行為／視覺</td><td><code>gui-acceptance</code> skill 實機驗收</td><td>checklist 逐項 PASS＋截圖證據</td></tr>
+                    <tr><td>純文件／設定</td><td>JSON 等 parse＋引用路徑存在性檢查</td><td>零錯誤、零斷鏈</td></tr>
+                </tbody>
+            </table>
+        </section>
+        <section>
+            <h2>run file 的角色</h2>
+            <p>每個任務複製 <code>.claude/skills/yuzora-loop/template.md</code> 到 <code>.claude/loop/runs/&lt;日期&gt;-&lt;slug&gt;.md</code>。模板的段落順序＝閘門順序，前段沒完成不得動後段。它同時是：計畫書（P2）、變更追蹤（P3，與唯讀 git diff 互補）、派工與裁決紀錄（P3／P4）、驗收證據（P5）、交接文件（P6）。首個示範樣本：<code>runs/2026-07-03-yuzora-loop-bootstrap.md</code>（即閉環自身的建立，dogfood）。</p>
+        </section>
+    </div>
+
+    <div id="enforce" class="tab-content">
+        <section>
+            <h2>三層強制機制</h2>
+            <table>
+                <thead><tr><th>層</th><th>機制</th><th>作用時機</th><th>特性</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td><code>CLAUDE.md</code>（專案根目錄）</td><td>每個 session 常駐 context</td><td>宣告「最高優先」；即使 skill 沒觸發也看得到鐵律與路徑表</td></tr>
+                    <tr><td>2</td><td><code>yuzora-loop</code> skill description</td><td>模型判斷任務相關時自動觸發</td><td>description 刻意寫得「pushy」，涵蓋修 bug／加功能／改樣式等所有說法</td></tr>
+                    <tr><td>3</td><td><code>UserPromptSubmit</code> hook</td><td>每一則使用者訊息</td><td>deterministic：不依賴模型判斷，由 harness 注入提醒文字</td></tr>
+                </tbody>
+            </table>
+            <p>三層互為備援：haiku 級模型可能漏看其中一層，但三層同時失效的機率低。<span class="badge warn">注意</span> hook 需要重啟 session（或開 <code>/hooks</code> 重載）後才生效——settings watcher 只監看啟動時已有設定檔的目錄。</p>
+        </section>
+        <section>
+            <h2>與參考文章的對應</h2>
+            <details open><summary>Getting started with loops（claude.com blog）</summary><div class="details-body">
+                <ul style="padding-left:1.25rem;">
+                    <li><strong>Turn-based loop＋明確 success criteria</strong> → P2 的「E 清單寫碼前固定」與每步 verify，對應「specificity helps Claude reach solutions faster」。</li>
+                    <li><strong>Verification 編成 skill、可量化</strong> → P5 battery 表＋gui-acceptance 實機驗收（起 app、互動、留截圖），不允許「宣稱完成」。</li>
+                    <li><strong>Secondary reviewer 較不偏頗</strong> → v1.1 起直接實現：P4 由未參與撰寫的獨立 opus reviewer subagent 執行（fresh context、不給作者自辯），controller 逐條裁決並留紀錄。</li>
+                    <li><strong>Match primitives to tasks、別過度工程</strong> → TRIAGE 豁免純問答；&gt;7 步強制拆 run。</li>
+                </ul>
+            </div></details>
+            <details open><summary>Recursive self-improvement（Anthropic Institute）</summary><div class="details-body">
+                <ul style="padding-left:1.25rem;">
+                    <li><strong>瓶頸在 review 而非產碼</strong> → 閉環把最重的結構（反證、dry pass、rubric）都壓在 P4/P5，而不是 P3。</li>
+                    <li><strong>自我改進需要人類監督</strong> → P6 三問＋LEARNINGS 棘輪：模型可自主「加嚴」與記錄陷阱；「放寬」只能提案，由使用者批准。這是把文中的 oversight 原則縮小到專案尺度。</li>
+                    <li><strong>Executing well-specified experiments 是強項</strong> → 所以閉環的工作就是把每個任務變成 well-specified：R 清單、E 清單、baseline、battery。</li>
+                </ul>
+            </div></details>
+        </section>
+        <section>
+            <h2>LEARNINGS 棘輪</h2>
+            <p>格式：<code>- YYYY-MM-DD [tighten|trap|convention] 一句話（來源）</code>。只增不刪；P1 必讀、P6 檢視追加。已含 4 條種子（jsdom 測不到的行為要實機驗收、fixtures/out 外部修改陷阱、rem 基準 13px 陷阱、tauri dev 裸 binary 授權陷阱）。</p>
+        </section>
+    </div>
+
+    <div id="evidence" class="tab-content">
+        <section>
+            <h2>v1.0 bootstrap 的驗收證據（E1–E5，歷史紀錄）</h2>
+            <table>
+                <thead><tr><th>#</th><th>證據</th><th>結果</th></tr></thead>
+                <tbody>
+                    <tr><td>E1</td><td>hook 指令 pipe-test：輸出提醒文字完整正確</td><td><span class="badge pass">PASS</span></td></tr>
+                    <tr><td>E2</td><td><code>jq -e '.hooks.UserPromptSubmit[]...' .claude/settings.json</code> exit 0 並印出指令</td><td><span class="badge pass">PASS</span></td></tr>
+                    <tr><td>E3</td><td>SKILL.md／CLAUDE.md 引用的 14 條路徑存在性檢查全 OK</td><td><span class="badge pass">PASS</span></td></tr>
+                    <tr><td>E4</td><td><code>yuzora-loop</code> 出現在系統 available skills 清單（寫入後即註冊）</td><td><span class="badge pass">PASS</span></td></tr>
+                    <tr><td>E5</td><td>本設計文件存在於 <code>docs/html/</code> 且符合命名慣例</td><td><span class="badge pass">PASS</span></td></tr>
+                </tbody>
+            </table>
+        </section>
+        <section>
+            <h2>對抗 review 紀錄（v1.0 bootstrap，歷史紀錄）</h2>
+            <details><summary>F1 — gui-acceptance skill 的 subagent 段落與鐵律 1 衝突（已修復）</summary><div class="details-body"><p>反證嘗試：未來模型照 P5 指引去讀 gui-acceptance，看到「§2 若派 subagent 執行」可能誤入 subagent 路徑。修復：yuzora-loop「與其他 skill 的關係」明文標註該段不適用、一律主對話自行操作。<em>（v1.0 當時的修法；v1.1 已反轉——該段落現已適用，subagent 限 opus。）</em></p></div></details>
+            <details><summary>F2 — sdd 歷史檔的「所有 subagent 一律使用 sonnet」可能被當現行指示（已修復）</summary><div class="details-body"><p>反證嘗試：P1 要求閱讀 <code>.superpowers/sdd/progress.md</code>，其開頭的舊流程宣告可能誤導。修復：P1 閱讀清單加註「流程指示已全部失效，只取 architecture decisions 與陷阱」。</p></div></details>
+            <details><summary>通過的反證（節選）</summary><div class="details-body"><ul style="padding-left:1.25rem;"><li>強制性：三層機制互為備援，單層失效不致漏套閉環。</li><li>無 git（v1.0 當時）：協定全文與 battery 掃描無任何 git 依賴；v1.1 起改為唯讀允許。</li><li>敷衍風險：G4 要求 ≥3 條具體反證＋rubric 勾選＋dry pass，「looks good」無法過閘。</li></ul></div></details>
+        </section>
+    </div>
+
+    <div id="maintain" class="tab-content">
+        <section>
+            <h2>交付檔案（9 檔；v1.0 新增 8，v1.1 修訂其中 7＋新增 1 個 run）</h2>
+            <table>
+                <thead><tr><th>檔案</th><th>角色</th></tr></thead>
+                <tbody>
+                    <tr><td><code>.claude/skills/yuzora-loop/SKILL.md</code></td><td>閉環協定本體（階段、閘門、battery、rubric）</td></tr>
+                    <tr><td><code>.claude/skills/yuzora-loop/template.md</code></td><td>run file 模板，每任務複製一份</td></tr>
+                    <tr><td><code>.claude/skills/yuzora-loop/LEARNINGS.md</code></td><td>自我改進日誌（棘輪；含 4 條種子）</td></tr>
+                    <tr><td><code>.claude/loop/LEDGER.md</code></td><td>run 索引（最新在前）</td></tr>
+                    <tr><td><code>.claude/loop/runs/2026-07-03-yuzora-loop-bootstrap.md</code></td><td>首個 run（dogfood 示範樣本）</td></tr>
+                    <tr><td><code>.claude/loop/runs/2026-07-03-loop-rules-v1-1.md</code></td><td>v1.1 鐵律修訂 run（含首次 opus reviewer 派工紀錄）</td></tr>
+                    <tr><td><code>CLAUDE.md</code></td><td>專案級強制宣告＋鐵律＋路徑表</td></tr>
+                    <tr><td><code>.claude/settings.json</code></td><td>UserPromptSubmit hook</td></tr>
+                    <tr><td><code>docs/html/yuzora-loop-closed-loop-design-2026-07-03.html</code></td><td>本文件</td></tr>
+                </tbody>
+            </table>
+        </section>
+        <section>
+            <h2>修訂紀錄</h2>
+            <table>
+                <thead><tr><th>版本</th><th>日期</th><th>內容</th></tr></thead>
+                <tbody>
+                    <tr><td>v1.0</td><td>2026-07-03</td><td>初版 bootstrap：完全無 subagent、無 git、無 worktree 的自審式閉環</td></tr>
+                    <tr><td>v1.1</td><td>2026-07-03</td><td>使用者批准修訂：撰寫與對抗 review 交由 opus subagent（controller／worker 分離、撰寫與 review 分離）；git 開放唯讀（status／diff／log／show／blame）；worktree 可於 P1 詢問（預設不用）</td></tr>
+                </tbody>
+            </table>
+        </section>
+        <section>
+            <h2>維護指南</h2>
+            <ul style="padding-left:1.25rem;">
+                <li><strong>調整規則</strong>：加嚴——直接在 LEARNINGS 加 <code>[tighten]</code> 條目即可；放寬——只有使用者在對話中明確批准後，才能修改 SKILL.md 或在 LEARNINGS 條目標註放寬。</li>
+                <li><strong>嫌 hook 吵</strong>：刪除 <code>.claude/settings.json</code> 的 UserPromptSubmit 段即可，仍保有 CLAUDE.md＋skill 兩層強制。</li>
+                <li><strong>run 檔累積</strong>：LEDGER 是索引，舊 run 檔可歸檔搬移，但 LEDGER 行保留。</li>
+                <li><strong>首次實測</strong>：建議下次以 Opus 或 Sonnet 跑一個小任務，觀察閘門遵循度，結果回寫 LEARNINGS。</li>
+            </ul>
+        </section>
+        <section>
+            <h2>自我評估 scorecard</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="name">完整性 <span class="badge pass">達標</span></div><div class="basis">六階段全數落地為閘門＋模板段落；四條使用者限制逐一有替代方案（見總覽鐵律表）。</div></div>
+                <div class="scorecard"><div class="name">可執行性 <span class="badge pass">達標</span></div><div class="basis">所有裁量點改寫為二元檢查與固定指令；run file 為複製填空式。</div></div>
+                <div class="scorecard"><div class="name">證據可追溯 <span class="badge pass">達標</span></div><div class="basis">E1–E5 均有實際指令輸出，記錄於 bootstrap run file P5 段。</div></div>
+                <div class="scorecard"><div class="name">風險覆蓋 <span class="badge warn">部分</span></div><div class="basis">hook 已於 v1.1 修訂 session 實測生效；閘門遵循度未經較小 controller 模型實測（已列入維護指南首項）。</div></div>
+            </div>
+        </section>
+    </div>
+
+    <div class="actions">
+        <button class="btn" onclick="window.print()">Print / PDF</button>
+        <button class="btn" onclick="copyPrompt(this)">Copy as Prompt（回饋修訂用）</button>
+    </div>
+</div>
+
+<script>
+function showTab(id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    event.target.classList.add('active');
+}
+function copyPrompt(btn) {
+    const payload = {
+        artifact: "yuzora-loop-closed-loop-design-2026-07-03.html",
+        next_prompt: "請依我以下的修訂意見更新 yuzora-loop 閉環（記得走閉環本身的流程）：\n- （在此填寫意見）"
+    };
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy as Prompt（回饋修訂用）', 1500);
+}
+</script>
+</body>
+</html>

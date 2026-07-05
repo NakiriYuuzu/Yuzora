@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>CM6 LSP Spike — @marimo-team/codemirror-languageserver — vtsls</title>
+    <style>
+        body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 16px; background: #1e1e1e; color: #ddd; }
+        h1 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+        #status { font-size: 12px; margin-bottom: 12px; color: #9cdcfe; }
+        .editors { display: flex; gap: 16px; }
+        .editor-col { flex: 1; min-width: 0; }
+        .editor-col h3 { font-size: 12px; margin: 0 0 4px; color: #9cdcfe; font-family: monospace; }
+        .cm-editor { border: 1px solid #444; height: 360px; font-size: 13px; }
+        .cm-editor.cm-focused { outline: 1px solid #569cd6; }
+    </style>
+</head>
+<body>
+    <h1>CM6 LSP Spike — @marimo-team/codemirror-languageserver + vtsls (port 5198)</h1>
+    <div id="status">connecting…</div>
+    <div class="editors">
+        <div class="editor-col"><h3>fixtures/ts-app/src/a.ts</h3><div id="editor-a"></div></div>
+        <div class="editor-col"><h3>fixtures/ts-app/src/b.ts</h3><div id="editor-b"></div></div>
+    </div>
+    <script type="module" src="/src/marimo-ts.ts"></script>
+</body>
+</html>

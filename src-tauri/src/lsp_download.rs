@@ -1,0 +1,1468 @@
+// M3 Task 14: one-click managed install for the seven curated LSP servers.
+//
+// Three install routes (A9/A9' decision), keyed by the *active adapter* for a
+// language, not the language itself (python's active adapter can be pyright=npm
+// or pylsp=pip):
+//   - binary x3 : rust-analyzer (.gz -> flate2), marksman / markdown-oxide (bare
+//     binary) — official GitHub release asset -> ~/.yuzora/servers/ ; SHA256
+//     recorded; unix chmod +x ; macOS quarantine removal.
+//   - npm x3    : vtsls / pyright / typescript-language-server — `npm install
+//     --prefix ~/.yuzora/servers/npm <pkg>` into a private prefix.
+//   - pip x1    : pylsp — a private venv at ~/.yuzora/servers/pyenv + pip install.
+//
+// The download / subprocess execution never runs under `cargo test` (T15 does the
+// live acceptance). Everything decidable without IO — route classification, asset
+// URL assembly, SHA256 comparison, unpack routing, command + bin-path assembly,
+// the missing-tool error branches, the in-flight guard, and the emitted-event
+// terminal-state contract — is factored into pure functions and unit-tested here.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use crate::lsp_service::{LspProcessStatus, LspServerInfo};
+use crate::{lsp_adapters, lsp_config, lsp_service};
+
+// ---- wire contract (camelCase; T5 `LspInstallProgress` depends on these keys) ----
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallPhase {
+    Download,
+    Verify,
+    Unpack,
+    Npm,
+    Pip,
+    Done,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspInstallProgress {
+    pub language: String,
+    pub phase: InstallPhase,
+    pub percent: Option<u8>,
+    pub message: Option<String>,
+}
+
+impl LspInstallProgress {
+    fn new(
+        language: &str,
+        phase: InstallPhase,
+        percent: Option<u8>,
+        message: Option<&str>,
+    ) -> Self {
+        Self {
+            language: language.to_string(),
+            phase,
+            percent,
+            message: message.map(|m| m.to_string()),
+        }
+    }
+}
+
+// ---- install-route classification (pure) ----
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryServer {
+    RustAnalyzer,
+    Marksman,
+    MarkdownOxide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnpackKind {
+    Gz,
+    Bare,
+    Zip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallRoute {
+    Binary(BinaryServer),
+    Npm {
+        packages: &'static [&'static str],
+        bin: &'static str,
+    },
+    Pip {
+        package: &'static str,
+        bin: &'static str,
+    },
+}
+
+/// Map a curated (language, server_id) to its managed-install route. Err for any
+/// pair not in the curated registry.
+fn route_for(language: &str, server_id: &str) -> Result<InstallRoute, String> {
+    let route = match (language, server_id) {
+        ("typescript", "vtsls") => InstallRoute::Npm {
+            packages: &["@vtsls/language-server"],
+            bin: "vtsls",
+        },
+        ("typescript", "typescript-language-server") => InstallRoute::Npm {
+            packages: &["typescript-language-server", "typescript"],
+            bin: "typescript-language-server",
+        },
+        ("python", "pyright") => InstallRoute::Npm {
+            packages: &["pyright"],
+            bin: "pyright-langserver",
+        },
+        ("python", "pylsp") => InstallRoute::Pip {
+            package: "python-lsp-server",
+            bin: "pylsp",
+        },
+        ("rust", "rust-analyzer") => InstallRoute::Binary(BinaryServer::RustAnalyzer),
+        ("markdown", "marksman") => InstallRoute::Binary(BinaryServer::Marksman),
+        ("markdown", "markdown-oxide") => InstallRoute::Binary(BinaryServer::MarkdownOxide),
+        _ => return Err(format!("no managed install for {server_id} ({language})")),
+    };
+    Ok(route)
+}
+
+/// Resolve the active server for a language: a workspace override (by canonical
+/// key, matching the set_server write side) wins, then the global default, then
+/// the adapter's curated default. `workspace` is the already-canonicalized key.
+fn resolve_active(
+    cfg: &lsp_config::LspConfig,
+    workspace: Option<&str>,
+    language: &str,
+) -> Option<String> {
+    let configured = match workspace {
+        // resolve_server already falls back to the global default for the language.
+        Some(ws) => lsp_config::resolve_server(cfg, ws, language),
+        None => cfg.defaults.get(language).cloned(),
+    };
+    configured.or_else(|| lsp_adapters::adapters_for(language).map(|a| a.default_id.to_string()))
+}
+
+/// Canonicalize a raw workspace path to the key overrides are stored under,
+/// mirroring lsp_config set_server's write side (canonicalize, raw fallback).
+fn canonical_key(workspace: Option<&str>) -> Option<String> {
+    workspace.map(|p| lsp_config::canonicalize(p).unwrap_or_else(|| p.to_string()))
+}
+
+// ---- binary route: asset URL / unpack / dest (pure) ----
+
+/// Official GitHub release download URL for a binary server on (os, arch), where
+/// os is `std::env::consts::OS` and arch is `std::env::consts::ARCH`. Err for an
+/// unsupported platform.
+fn asset_url(server: BinaryServer, os: &str, arch: &str) -> Result<String, String> {
+    let unsupported = || format!("unsupported platform {os}/{arch} for {server:?}");
+    let url = match server {
+        BinaryServer::RustAnalyzer => {
+            let base = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29";
+            let asset = match (os, arch) {
+                ("macos", "aarch64") => "rust-analyzer-aarch64-apple-darwin.gz",
+                ("macos", "x86_64") => "rust-analyzer-x86_64-apple-darwin.gz",
+                ("linux", "aarch64") => "rust-analyzer-aarch64-unknown-linux-gnu.gz",
+                ("linux", "x86_64") => "rust-analyzer-x86_64-unknown-linux-gnu.gz",
+                ("windows", "aarch64") => "rust-analyzer-aarch64-pc-windows-msvc.zip",
+                ("windows", "x86_64") => "rust-analyzer-x86_64-pc-windows-msvc.zip",
+                _ => return Err(unsupported()),
+            };
+            format!("{base}/{asset}")
+        }
+        BinaryServer::Marksman => {
+            let base = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08";
+            // macOS ships a single universal binary (no arch split).
+            let asset = match (os, arch) {
+                ("macos", _) => "marksman-macos",
+                ("linux", "aarch64") => "marksman-linux-arm64",
+                ("linux", "x86_64") => "marksman-linux-x64",
+                ("windows", _) => "marksman.exe",
+                _ => return Err(unsupported()),
+            };
+            format!("{base}/{asset}")
+        }
+        BinaryServer::MarkdownOxide => {
+            let ver = "v0.25.12";
+            let base = "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12";
+            let asset = match (os, arch) {
+                ("macos", "aarch64") => format!("markdown-oxide-{ver}-aarch64-apple-darwin"),
+                ("macos", "x86_64") => format!("markdown-oxide-{ver}-x86_64-apple-darwin"),
+                ("linux", "aarch64") => format!("markdown-oxide-{ver}-aarch64-unknown-linux-gnu"),
+                ("linux", "x86_64") => format!("markdown-oxide-{ver}-x86_64-unknown-linux-gnu"),
+                ("windows", "x86_64") => format!("markdown-oxide-{ver}-x86_64-pc-windows-gnu.exe"),
+                _ => return Err(unsupported()),
+            };
+            format!("{base}/{asset}")
+        }
+    };
+    Ok(url)
+}
+
+/// Post-download unpack step for a server on an os. rust-analyzer ships `.gz`
+/// (macOS/Linux) or `.zip` (Windows); marksman / markdown-oxide are bare binaries.
+fn unpack_kind(server: BinaryServer, os: &str) -> UnpackKind {
+    match server {
+        BinaryServer::RustAnalyzer => {
+            if os == "windows" {
+                UnpackKind::Zip
+            } else {
+                UnpackKind::Gz
+            }
+        }
+        BinaryServer::Marksman | BinaryServer::MarkdownOxide => UnpackKind::Bare,
+    }
+}
+
+/// The `which`-resolvable command name a downloaded binary must be saved as.
+fn binary_command(server: BinaryServer) -> &'static str {
+    match server {
+        BinaryServer::RustAnalyzer => "rust-analyzer",
+        BinaryServer::Marksman => "marksman",
+        BinaryServer::MarkdownOxide => "markdown-oxide",
+    }
+}
+
+/// Where a downloaded binary is written under the servers root (`.exe` on Windows).
+fn binary_dest(base: &Path, server: BinaryServer, windows: bool) -> PathBuf {
+    let name = binary_command(server);
+    if windows {
+        base.join(format!("{name}.exe"))
+    } else {
+        base.join(name)
+    }
+}
+
+/// Sibling temp path for an atomic install: same directory as `dest` so the final
+/// `rename` is atomic and never truncates a running binary's inode (F3).
+fn binary_temp(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_os_string();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+// ---- integrity (pure) ----
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn sha256_matches(bytes: &[u8], expected_hex: &str) -> bool {
+    sha256_hex(bytes).eq_ignore_ascii_case(expected_hex)
+}
+
+// ---- command / path assembly (pure) ----
+
+/// macOS Gatekeeper quarantine removal, as (program, args).
+fn quarantine_command(path: &str) -> (&'static str, Vec<String>) {
+    (
+        "xattr",
+        vec![
+            "-d".to_string(),
+            "com.apple.quarantine".to_string(),
+            path.to_string(),
+        ],
+    )
+}
+
+fn npm_prefix(base: &Path) -> PathBuf {
+    base.join("npm")
+}
+
+fn npm_install_args(prefix: &Path, packages: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "install".to_string(),
+        "--prefix".to_string(),
+        prefix.to_string_lossy().into_owned(),
+    ];
+    args.extend(packages.iter().map(|p| p.to_string()));
+    args
+}
+
+fn npm_bin_path(base: &Path, bin: &str, windows: bool) -> PathBuf {
+    let dir = npm_prefix(base).join("node_modules").join(".bin");
+    if windows {
+        // npm shims land as `.cmd` on Windows (matches lsp_service which()).
+        dir.join(format!("{bin}.cmd"))
+    } else {
+        dir.join(bin)
+    }
+}
+
+fn venv_dir(base: &Path) -> PathBuf {
+    base.join("pyenv")
+}
+
+fn venv_args(venv_dir: &Path) -> Vec<String> {
+    vec![
+        "-m".to_string(),
+        "venv".to_string(),
+        venv_dir.to_string_lossy().into_owned(),
+    ]
+}
+
+fn venv_bin_path(base: &Path, name: &str, windows: bool) -> PathBuf {
+    let venv = venv_dir(base);
+    if windows {
+        venv.join("Scripts").join(format!("{name}.exe"))
+    } else {
+        venv.join("bin").join(name)
+    }
+}
+
+fn pip_install_args(package: &str) -> Vec<String> {
+    vec!["install".to_string(), package.to_string()]
+}
+
+// ---- resolved plan + missing-tool branches (pure) ----
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Plan {
+    Binary(BinaryServer),
+    Npm {
+        npm: String,
+        packages: &'static [&'static str],
+        bin: &'static str,
+    },
+    Pip {
+        python: String,
+        package: &'static str,
+        bin: &'static str,
+    },
+}
+
+/// Bind a route to the resolved toolchain, or return the guided missing-tool
+/// error (T12 surfaces it). `npm` / `python` are the resolved absolute paths, or
+/// None when the tool is absent.
+fn build_plan(
+    language: &str,
+    route: InstallRoute,
+    npm: Option<String>,
+    python: Option<String>,
+) -> Result<Plan, String> {
+    match route {
+        InstallRoute::Binary(server) => Ok(Plan::Binary(server)),
+        InstallRoute::Npm { packages, bin } => match npm {
+            Some(npm) => Ok(Plan::Npm { npm, packages, bin }),
+            None => Err(format!(
+                "安裝 {language} 的 {bin} 需先安裝 Node.js（npm）。請安裝 Node.js 後重試，或依安裝提示手動安裝。"
+            )),
+        },
+        InstallRoute::Pip { package, bin } => match python {
+            Some(python) => Ok(Plan::Pip {
+                python,
+                package,
+                bin,
+            }),
+            None => Err(format!(
+                "安裝 {language} 的 {bin} 需先安裝 Python（python3）。請安裝 Python 後重試，或依安裝提示手動安裝。"
+            )),
+        },
+    }
+}
+
+// ---- per-language in-flight guard (pure over an injectable set) ----
+
+fn try_reserve(set: &Mutex<HashSet<String>>, language: &str) -> bool {
+    set.lock().unwrap().insert(language.to_string())
+}
+
+fn release(set: &Mutex<HashSet<String>>, language: &str) {
+    set.lock().unwrap().remove(language);
+}
+
+struct InflightGuard<'a> {
+    set: &'a Mutex<HashSet<String>>,
+    language: String,
+}
+
+impl<'a> InflightGuard<'a> {
+    fn acquire(set: &'a Mutex<HashSet<String>>, language: &str) -> Option<Self> {
+        if try_reserve(set, language) {
+            Some(Self {
+                set,
+                language: language.to_string(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        release(self.set, &self.language);
+    }
+}
+
+// ---- terminal-state contract wrapper ----
+
+/// Run `install`, then emit exactly one terminal phase last: `done` on Ok, `error`
+/// on Err — and the return value mirrors it (Ok<->done, Err<->error). `install`
+/// itself only emits non-terminal progress, so this structurally guarantees every
+/// path ends with exactly one terminal event and an error phase implies an Err.
+fn finalize(
+    language: &str,
+    emit: &dyn Fn(LspInstallProgress),
+    install: impl FnOnce() -> Result<LspServerInfo, String>,
+) -> Result<LspServerInfo, String> {
+    match install() {
+        Ok(info) => {
+            emit(LspInstallProgress::new(
+                language,
+                InstallPhase::Done,
+                Some(100),
+                None,
+            ));
+            Ok(info)
+        }
+        Err(e) => {
+            emit(LspInstallProgress::new(
+                language,
+                InstallPhase::Error,
+                None,
+                Some(&e),
+            ));
+            Err(e)
+        }
+    }
+}
+
+// ---- execution (impure; not exercised by cargo test — T15 live acceptance) ----
+
+fn servers_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".yuzora")
+        .join("servers")
+}
+
+/// python3 (all platforms) then `python` (Windows only), resolved to an absolute
+/// path via the shared `which` (mirrors lsp_service resolution order).
+fn detect_python() -> Option<String> {
+    lsp_service::which("python3").or_else(|| {
+        if cfg!(windows) {
+            lsp_service::which("python")
+        } else {
+            None
+        }
+    })
+}
+
+/// Pinned expected SHA256 for a release asset, when known. Empty today: no
+/// upstream ships a stable machine-readable checksum manifest to pin against
+/// without TOFU, so the verify phase records the computed digest and this table
+/// is the hardening hook — fill a row and equality is enforced (see sha256_matches).
+fn expected_sha256(_server: BinaryServer, _os: &str, _arch: &str) -> Option<&'static str> {
+    None
+}
+
+// Subprocess timeout ceilings (M3F-2): a hung npm/pip/venv must not wedge the
+// install thread forever — that would never drop the in-flight guard nor settle
+// the frontend promise. Generous — these are hang guards, not perf targets.
+const NPM_PIP_TIMEOUT_SECS: u64 = 600;
+const VENV_TIMEOUT_SECS: u64 = 120;
+
+/// Run a subprocess to completion, killing and reaping it if it outlives
+/// `timeout` (M3F-2). Mirrors git_service::run_git's deadline poll+kill loop so a
+/// stalled child can't block the install thread indefinitely.
+fn run_command(program: &str, args: &[String], timeout: Duration) -> Result<(), String> {
+    // Inherited stdio (spawn default) matches the previous `.status()` behavior, so
+    // npm/pip output still reaches the app's stdout/stderr — and an inherited fd
+    // never fills an unread pipe, so the poll loop can't deadlock.
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("執行 {program} 失敗：{e}"))?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("等待 {program} 失敗：{e}"))?
+        {
+            Some(status) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("{program} 以非零狀態結束（{:?}）", status.code()))
+                };
+            }
+            None if std::time::Instant::now() > deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{program} 逾時（{timeout:?}）"));
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// Hard caps for a managed download (F4): connect/read timeouts and a total-size
+/// ceiling so a hung or runaway response can't stall a worker or exhaust memory.
+const CONNECT_TIMEOUT_SECS: u64 = 30;
+const READ_TIMEOUT_SECS: u64 = 60;
+const MAX_DOWNLOAD_BYTES: u64 = 300 * 1024 * 1024;
+
+/// Whether an accumulated / declared download size has exceeded the hard cap (F4).
+fn download_too_large(len: u64, max: u64) -> bool {
+    len > max
+}
+
+fn download(
+    url: &str,
+    language: &str,
+    emit: &dyn Fn(LspInstallProgress),
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let cap_err = || {
+        format!(
+            "下載超過大小上限（{} MB）",
+            MAX_DOWNLOAD_BYTES / 1024 / 1024
+        )
+    };
+    emit(LspInstallProgress::new(
+        language,
+        InstallPhase::Download,
+        Some(0),
+        Some("下載中"),
+    ));
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .timeout_read(Duration::from_secs(READ_TIMEOUT_SECS))
+        .build();
+    let resp = agent
+        .get(url)
+        .call()
+        .map_err(|e| format!("下載失敗（{url}）：{e}"))?;
+    let total: Option<u64> = resp
+        .header("Content-Length")
+        .and_then(|s| s.parse().ok())
+        .filter(|t| *t > 0);
+    // Reject an over-cap download upfront when the length is declared.
+    if let Some(t) = total {
+        if download_too_large(t, MAX_DOWNLOAD_BYTES) {
+            return Err(cap_err());
+        }
+    }
+    let mut reader = resp.into_reader();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    let mut last_pct = 0u8;
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| format!("下載讀取失敗：{e}"))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        // Streaming cap: a chunked / unknown-length response can't be pre-checked.
+        if download_too_large(buf.len() as u64, MAX_DOWNLOAD_BYTES) {
+            return Err(cap_err());
+        }
+        if let Some(t) = total {
+            let pct = ((buf.len() as u64) * 100 / t).min(100) as u8;
+            if pct != last_pct {
+                last_pct = pct;
+                emit(LspInstallProgress::new(
+                    language,
+                    InstallPhase::Download,
+                    Some(pct),
+                    None,
+                ));
+            }
+        }
+    }
+    Ok(buf)
+}
+
+fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut d = flate2::read::GzDecoder::new(bytes);
+    let mut out = Vec::new();
+    d.read_to_end(&mut out)
+        .map_err(|e| format!("解壓 .gz 失敗：{e}"))?;
+    Ok(out)
+}
+
+/// Download + verify + unpack + install a binary server; returns its (command,
+/// resolved absolute path) landing spot under the servers root.
+fn install_binary(
+    server: BinaryServer,
+    base: &Path,
+    language: &str,
+    emit: &dyn Fn(LspInstallProgress),
+) -> Result<(String, PathBuf), String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let url = asset_url(server, os, arch)?;
+    let unpack = unpack_kind(server, os);
+    // F5: short-circuit an unsupported unpack (Windows rust-analyzer .zip) BEFORE
+    // downloading the whole asset.
+    if unpack == UnpackKind::Zip {
+        return Err(
+            "Windows rust-analyzer 以 .zip 發佈，程式內 zip 解壓尚未支援；請改用手動安裝。"
+                .to_string(),
+        );
+    }
+    let bytes = download(&url, language, emit)?;
+
+    let digest = sha256_hex(&bytes);
+    if let Some(expected) = expected_sha256(server, os, arch) {
+        if !sha256_matches(&bytes, expected) {
+            return Err(format!(
+                "{} SHA256 校驗失敗（預期 {expected}，實得 {digest}）",
+                binary_command(server)
+            ));
+        }
+    }
+    emit(LspInstallProgress::new(
+        language,
+        InstallPhase::Verify,
+        Some(100),
+        Some(&format!("SHA256 {}…", &digest[..16])),
+    ));
+
+    let binary = match unpack {
+        UnpackKind::Gz => {
+            emit(LspInstallProgress::new(
+                language,
+                InstallPhase::Unpack,
+                None,
+                Some("解壓 .gz"),
+            ));
+            gunzip(&bytes)?
+        }
+        UnpackKind::Bare => bytes,
+        UnpackKind::Zip => unreachable!("zip is short-circuited before download"),
+    };
+
+    // F3: write to a sibling temp, set perms / clear quarantine on it, then rename
+    // into place atomically — a running server keeps the old inode (no SIGBUS).
+    std::fs::create_dir_all(base).map_err(|e| format!("建立 servers 目錄失敗：{e}"))?;
+    let dest = binary_dest(base, server, cfg!(windows));
+    let tmp = binary_temp(&dest);
+    std::fs::write(&tmp, &binary).map_err(|e| format!("寫入 {} 失敗：{e}", tmp.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod +x 失敗：{e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let (prog, args) = quarantine_command(tmp.to_string_lossy().as_ref());
+        // Best-effort: the attribute is often absent (non-zero exit) — not fatal.
+        let _ = std::process::Command::new(prog).args(&args).status();
+    }
+    std::fs::rename(&tmp, &dest).map_err(|e| format!("換位 {} 失敗：{e}", dest.display()))?;
+
+    Ok((binary_command(server).to_string(), dest))
+}
+
+/// Execute a resolved plan; returns the installed server's (command, absolute
+/// path) — the path lands where lsp_service::which resolves it (T4 order).
+fn execute_plan(
+    plan: Plan,
+    base: &Path,
+    language: &str,
+    emit: &dyn Fn(LspInstallProgress),
+) -> Result<(String, PathBuf), String> {
+    match plan {
+        Plan::Binary(server) => install_binary(server, base, language, emit),
+        Plan::Npm { npm, packages, bin } => {
+            emit(LspInstallProgress::new(
+                language,
+                InstallPhase::Npm,
+                None,
+                Some("npm install"),
+            ));
+            let prefix = npm_prefix(base);
+            std::fs::create_dir_all(&prefix).map_err(|e| format!("建立 npm prefix 失敗：{e}"))?;
+            run_command(
+                &npm,
+                &npm_install_args(&prefix, packages),
+                Duration::from_secs(NPM_PIP_TIMEOUT_SECS),
+            )?;
+            Ok((bin.to_string(), npm_bin_path(base, bin, cfg!(windows))))
+        }
+        Plan::Pip {
+            python,
+            package,
+            bin,
+        } => {
+            std::fs::create_dir_all(base).map_err(|e| format!("建立 servers 目錄失敗：{e}"))?;
+            emit(LspInstallProgress::new(
+                language,
+                InstallPhase::Pip,
+                None,
+                Some("建立 venv"),
+            ));
+            run_command(
+                &python,
+                &venv_args(&venv_dir(base)),
+                Duration::from_secs(VENV_TIMEOUT_SECS),
+            )?;
+            emit(LspInstallProgress::new(
+                language,
+                InstallPhase::Pip,
+                None,
+                Some("pip install"),
+            ));
+            let pip = venv_bin_path(base, "pip", cfg!(windows));
+            run_command(
+                pip.to_string_lossy().as_ref(),
+                &pip_install_args(package),
+                Duration::from_secs(NPM_PIP_TIMEOUT_SECS),
+            )?;
+            Ok((bin.to_string(), venv_bin_path(base, bin, cfg!(windows))))
+        }
+    }
+}
+
+/// Resolve the active adapter for a language, then run its install plan. Emits
+/// only non-terminal progress; `finalize` owns the terminal done/error event.
+fn do_install(
+    workspace: Option<&str>,
+    language: &str,
+    base: &Path,
+    emit: &dyn Fn(LspInstallProgress),
+) -> Result<LspServerInfo, String> {
+    let cfg = lsp_config::load_from(&lsp_config::config_path());
+    let ws_canonical = canonical_key(workspace);
+    let server_id = resolve_active(&cfg, ws_canonical.as_deref(), language)
+        .ok_or_else(|| format!("找不到 {language} 的 LSP adapter"))?;
+    let route = route_for(language, &server_id)?;
+    let npm = lsp_service::which("npm");
+    let python = detect_python();
+    let plan = build_plan(language, route, npm, python)?;
+    let (command, path) = execute_plan(plan, base, language, emit)?;
+    Ok(LspServerInfo {
+        // F6: echo the raw workspace so LspBridge (which compares to the frontend's
+        // raw workspacePath) receives the server-status emit; None -> empty, where
+        // the returned value stays the primary channel via setServerInfo.
+        workspace: workspace.map(str::to_string).unwrap_or_default(),
+        language: language.to_string(),
+        server_id,
+        command,
+        path: Some(path.to_string_lossy().into_owned()),
+        status: LspProcessStatus::Stopped,
+        last_startup_log: None,
+        last_error: None,
+        restart_count: 0,
+    })
+}
+
+// ---- tauri command ----
+
+static INFLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn inflight() -> &'static Mutex<HashSet<String>> {
+    INFLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// T14 tenth handler: install the active managed server for `language`, honoring a
+/// workspace override. The whole blocking chain (ureq download, npm/pip subprocesses)
+/// runs on a blocking worker via `spawn_blocking` so it never stalls the async
+/// runtime / other IPC (A2 — a sync `#[command]` would block Tauri's main thread).
+/// Streams `lsp:install-progress`; on success emits `lsp:server-status`.
+#[tauri::command]
+pub async fn lsp_install_server(
+    app: tauri::AppHandle,
+    workspace: Option<String>,
+    language: String,
+) -> Result<LspServerInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_blocking(&app, workspace.as_deref(), &language)
+    })
+    .await
+    .map_err(|e| format!("安裝背景執行緒異常：{e}"))?
+}
+
+/// The blocking install body (runs on the `spawn_blocking` worker). The in-flight
+/// guard is acquired and dropped entirely here — never held across an await point.
+fn install_blocking(
+    app: &tauri::AppHandle,
+    workspace: Option<&str>,
+    language: &str,
+) -> Result<LspServerInfo, String> {
+    use tauri::Emitter;
+    // A concurrent same-language install returns Err without emitting (an emit would
+    // pollute the running install's progress stream, which the UI keys by language).
+    let _guard = InflightGuard::acquire(inflight(), language)
+        .ok_or_else(|| format!("{language} 的安裝正在進行中"))?;
+
+    let app_emit = app.clone();
+    let emit = move |p: LspInstallProgress| {
+        let _ = app_emit.emit("lsp:install-progress", p);
+    };
+    let base = servers_dir();
+    let info = finalize(language, &emit, || {
+        do_install(workspace, language, &base, &emit)
+    })?;
+    // Best-effort refresh for Settings/StatusBar (the returned value is the primary
+    // channel; LspBridge only receives this when the echoed workspace matches).
+    let _ = app.emit("lsp:server-status", info.clone());
+    Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    // ---- route classification: the seven curated adapters ----
+
+    #[test]
+    fn route_for_covers_all_seven_curated_adapters() {
+        assert_eq!(
+            route_for("typescript", "vtsls").unwrap(),
+            InstallRoute::Npm {
+                packages: &["@vtsls/language-server"],
+                bin: "vtsls"
+            }
+        );
+        assert_eq!(
+            route_for("typescript", "typescript-language-server").unwrap(),
+            InstallRoute::Npm {
+                packages: &["typescript-language-server", "typescript"],
+                bin: "typescript-language-server"
+            }
+        );
+        assert_eq!(
+            route_for("python", "pyright").unwrap(),
+            InstallRoute::Npm {
+                packages: &["pyright"],
+                bin: "pyright-langserver"
+            }
+        );
+        assert_eq!(
+            route_for("python", "pylsp").unwrap(),
+            InstallRoute::Pip {
+                package: "python-lsp-server",
+                bin: "pylsp"
+            }
+        );
+        assert_eq!(
+            route_for("rust", "rust-analyzer").unwrap(),
+            InstallRoute::Binary(BinaryServer::RustAnalyzer)
+        );
+        assert_eq!(
+            route_for("markdown", "marksman").unwrap(),
+            InstallRoute::Binary(BinaryServer::Marksman)
+        );
+        assert_eq!(
+            route_for("markdown", "markdown-oxide").unwrap(),
+            InstallRoute::Binary(BinaryServer::MarkdownOxide)
+        );
+    }
+
+    #[test]
+    fn route_for_binary_npm_pip_split_is_three_three_one() {
+        let all = [
+            ("typescript", "vtsls"),
+            ("typescript", "typescript-language-server"),
+            ("python", "pyright"),
+            ("python", "pylsp"),
+            ("rust", "rust-analyzer"),
+            ("markdown", "marksman"),
+            ("markdown", "markdown-oxide"),
+        ];
+        let (mut b, mut n, mut p) = (0, 0, 0);
+        for (l, s) in all {
+            match route_for(l, s).unwrap() {
+                InstallRoute::Binary(_) => b += 1,
+                InstallRoute::Npm { .. } => n += 1,
+                InstallRoute::Pip { .. } => p += 1,
+            }
+        }
+        assert_eq!((b, n, p), (3, 3, 1));
+    }
+
+    #[test]
+    fn every_curated_adapter_has_a_route() {
+        // Ties the route table to the adapter registry (source of truth): a new
+        // curated adapter without a route fails here.
+        for lang in lsp_adapters::all() {
+            for opt in lang.options {
+                assert!(
+                    route_for(lang.language, opt.id).is_ok(),
+                    "no managed-install route for {}/{}",
+                    lang.language,
+                    opt.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn route_for_unknown_pair_is_err() {
+        assert!(route_for("go", "gopls").is_err());
+        assert!(route_for("rust", "pyright").is_err());
+        assert!(route_for("typescript", "nope").is_err());
+    }
+
+    // ---- asset URL assembly (macOS arm64/x64 + Windows) ----
+
+    #[test]
+    fn asset_url_rust_analyzer_per_platform() {
+        let base = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29";
+        assert_eq!(
+            asset_url(BinaryServer::RustAnalyzer, "macos", "aarch64").unwrap(),
+            format!("{base}/rust-analyzer-aarch64-apple-darwin.gz")
+        );
+        assert_eq!(
+            asset_url(BinaryServer::RustAnalyzer, "macos", "x86_64").unwrap(),
+            format!("{base}/rust-analyzer-x86_64-apple-darwin.gz")
+        );
+        // Windows ships a .zip (recorded discrepancy vs the brief's ".gz only").
+        assert_eq!(
+            asset_url(BinaryServer::RustAnalyzer, "windows", "x86_64").unwrap(),
+            format!("{base}/rust-analyzer-x86_64-pc-windows-msvc.zip")
+        );
+    }
+
+    #[test]
+    fn asset_url_marksman_per_platform() {
+        let base = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08";
+        // macOS ships a single universal binary (no arch split).
+        assert_eq!(
+            asset_url(BinaryServer::Marksman, "macos", "aarch64").unwrap(),
+            format!("{base}/marksman-macos")
+        );
+        assert_eq!(
+            asset_url(BinaryServer::Marksman, "macos", "x86_64").unwrap(),
+            format!("{base}/marksman-macos")
+        );
+        assert_eq!(
+            asset_url(BinaryServer::Marksman, "windows", "x86_64").unwrap(),
+            format!("{base}/marksman.exe")
+        );
+    }
+
+    #[test]
+    fn asset_url_markdown_oxide_per_platform() {
+        let base = "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12";
+        assert_eq!(
+            asset_url(BinaryServer::MarkdownOxide, "macos", "aarch64").unwrap(),
+            format!("{base}/markdown-oxide-v0.25.12-aarch64-apple-darwin")
+        );
+        assert_eq!(
+            asset_url(BinaryServer::MarkdownOxide, "macos", "x86_64").unwrap(),
+            format!("{base}/markdown-oxide-v0.25.12-x86_64-apple-darwin")
+        );
+        assert_eq!(
+            asset_url(BinaryServer::MarkdownOxide, "windows", "x86_64").unwrap(),
+            format!("{base}/markdown-oxide-v0.25.12-x86_64-pc-windows-gnu.exe")
+        );
+    }
+
+    #[test]
+    fn asset_url_unsupported_platform_is_err() {
+        assert!(asset_url(BinaryServer::RustAnalyzer, "macos", "riscv64").is_err());
+        assert!(asset_url(BinaryServer::Marksman, "freebsd", "x86_64").is_err());
+    }
+
+    // ---- unpack routing (gz vs bare vs zip) ----
+
+    #[test]
+    fn unpack_kind_routes_gz_bare_zip() {
+        assert_eq!(
+            unpack_kind(BinaryServer::RustAnalyzer, "macos"),
+            UnpackKind::Gz
+        );
+        assert_eq!(
+            unpack_kind(BinaryServer::RustAnalyzer, "linux"),
+            UnpackKind::Gz
+        );
+        assert_eq!(
+            unpack_kind(BinaryServer::RustAnalyzer, "windows"),
+            UnpackKind::Zip
+        );
+        assert_eq!(
+            unpack_kind(BinaryServer::Marksman, "macos"),
+            UnpackKind::Bare
+        );
+        assert_eq!(
+            unpack_kind(BinaryServer::Marksman, "windows"),
+            UnpackKind::Bare
+        );
+        assert_eq!(
+            unpack_kind(BinaryServer::MarkdownOxide, "macos"),
+            UnpackKind::Bare
+        );
+        assert_eq!(
+            unpack_kind(BinaryServer::MarkdownOxide, "windows"),
+            UnpackKind::Bare
+        );
+    }
+
+    #[test]
+    fn binary_command_and_dest_layout() {
+        assert_eq!(binary_command(BinaryServer::RustAnalyzer), "rust-analyzer");
+        assert_eq!(binary_command(BinaryServer::Marksman), "marksman");
+        assert_eq!(
+            binary_command(BinaryServer::MarkdownOxide),
+            "markdown-oxide"
+        );
+        let base = PathBuf::from("/home/u/.yuzora/servers");
+        assert_eq!(
+            binary_dest(&base, BinaryServer::RustAnalyzer, false),
+            base.join("rust-analyzer")
+        );
+        assert_eq!(
+            binary_dest(&base, BinaryServer::RustAnalyzer, true),
+            base.join("rust-analyzer.exe")
+        );
+    }
+
+    #[test]
+    fn binary_temp_appends_tmp_in_same_dir() {
+        // W6A-F3: temp sits beside dest so the rename is atomic (same filesystem).
+        assert_eq!(
+            binary_temp(Path::new("/home/u/.yuzora/servers/rust-analyzer")),
+            PathBuf::from("/home/u/.yuzora/servers/rust-analyzer.tmp")
+        );
+        // A `.exe` dest (Windows) keeps its parent dir too.
+        assert_eq!(
+            binary_temp(Path::new("/x/servers/marksman.exe")),
+            PathBuf::from("/x/servers/marksman.exe.tmp")
+        );
+    }
+
+    #[test]
+    fn download_too_large_rejects_over_cap_only() {
+        // W6A-F4: at-or-under the cap is allowed; strictly over is rejected.
+        assert!(!download_too_large(0, 10));
+        assert!(!download_too_large(10, 10));
+        assert!(download_too_large(11, 10));
+    }
+
+    // ---- run_command exit / timeout (M3F-2; unix shell utilities) ----
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_ok_on_success() {
+        assert!(run_command("true", &[], Duration::from_secs(5)).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_err_on_nonzero_exit() {
+        assert!(run_command("false", &[], Duration::from_secs(5)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_times_out_and_kills() {
+        // M3F-2: a hung child must be killed and surfaced as Err quickly, never
+        // block the install thread for the child's full lifetime (mirrors
+        // git_service::run_git_times_out_and_kills).
+        let started = std::time::Instant::now();
+        let r = run_command("sleep", &["30".to_string()], Duration::from_millis(300));
+        assert!(r.is_err(), "a timed-out subprocess must return Err");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "must kill on timeout, not wait for the child to finish"
+        );
+    }
+
+    // ---- SHA256 (given bytes + hex) ----
+
+    #[test]
+    fn sha256_hex_known_vectors() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sha256_matches_case_insensitive_and_rejects_mismatch() {
+        let d = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(sha256_matches(b"abc", d));
+        assert!(sha256_matches(b"abc", &d.to_uppercase()));
+        assert!(!sha256_matches(b"abc", "00"));
+        assert!(!sha256_matches(b"abcd", d));
+    }
+
+    // ---- quarantine command ----
+
+    #[test]
+    fn quarantine_command_shape() {
+        let (prog, args) = quarantine_command("/x/rust-analyzer");
+        assert_eq!(prog, "xattr");
+        assert_eq!(args, vec!["-d", "com.apple.quarantine", "/x/rust-analyzer"]);
+    }
+
+    // ---- npm command + private-prefix bin path ----
+
+    #[test]
+    fn npm_prefix_and_bin_path_match_service_layout() {
+        let base = PathBuf::from("/home/u/.yuzora/servers");
+        assert_eq!(npm_prefix(&base), base.join("npm"));
+        // Matches lsp_service::server_bin_dirs_from's npm landing spot.
+        assert_eq!(
+            npm_bin_path(&base, "vtsls", false),
+            base.join("npm")
+                .join("node_modules")
+                .join(".bin")
+                .join("vtsls")
+        );
+        // Windows npm shims land as `.cmd`.
+        assert_eq!(
+            npm_bin_path(&base, "vtsls", true),
+            base.join("npm")
+                .join("node_modules")
+                .join(".bin")
+                .join("vtsls.cmd")
+        );
+    }
+
+    #[test]
+    fn npm_install_args_shape() {
+        let prefix = PathBuf::from("/home/u/.yuzora/servers/npm");
+        assert_eq!(
+            npm_install_args(&prefix, &["typescript-language-server", "typescript"]),
+            vec![
+                "install".to_string(),
+                "--prefix".to_string(),
+                prefix.to_string_lossy().into_owned(),
+                "typescript-language-server".to_string(),
+                "typescript".to_string(),
+            ]
+        );
+    }
+
+    // ---- venv + pip command + bin path (macOS bin vs Windows Scripts) ----
+
+    #[test]
+    fn venv_dir_args_and_bin_paths_two_shapes() {
+        let base = PathBuf::from("/home/u/.yuzora/servers");
+        assert_eq!(venv_dir(&base), base.join("pyenv"));
+        assert_eq!(
+            venv_args(&venv_dir(&base)),
+            vec![
+                "-m".to_string(),
+                "venv".to_string(),
+                base.join("pyenv").to_string_lossy().into_owned(),
+            ]
+        );
+        // unix: pyenv/bin/*, windows: pyenv/Scripts/*.exe
+        assert_eq!(
+            venv_bin_path(&base, "pip", false),
+            base.join("pyenv").join("bin").join("pip")
+        );
+        assert_eq!(
+            venv_bin_path(&base, "pylsp", false),
+            base.join("pyenv").join("bin").join("pylsp")
+        );
+        assert_eq!(
+            venv_bin_path(&base, "pip", true),
+            base.join("pyenv").join("Scripts").join("pip.exe")
+        );
+        assert_eq!(
+            venv_bin_path(&base, "pylsp", true),
+            base.join("pyenv").join("Scripts").join("pylsp.exe")
+        );
+    }
+
+    #[test]
+    fn pip_install_args_shape() {
+        assert_eq!(
+            pip_install_args("python-lsp-server"),
+            vec!["install".to_string(), "python-lsp-server".to_string()]
+        );
+    }
+
+    // ---- resolve active adapter ----
+
+    #[test]
+    fn resolve_active_no_workspace_prefers_global_then_adapter_default() {
+        let mut cfg = lsp_config::LspConfig::default();
+        // No config -> the language's curated default_id.
+        assert_eq!(
+            resolve_active(&cfg, None, "python").as_deref(),
+            Some("pyright")
+        );
+        assert_eq!(
+            resolve_active(&cfg, None, "markdown").as_deref(),
+            Some("marksman")
+        );
+        // Global default wins over the adapter default.
+        cfg.defaults.insert("python".into(), "pylsp".into());
+        assert_eq!(
+            resolve_active(&cfg, None, "python").as_deref(),
+            Some("pylsp")
+        );
+        // Unknown language -> None.
+        assert_eq!(resolve_active(&cfg, None, "go"), None);
+    }
+
+    #[test]
+    fn resolve_active_workspace_override_wins_over_global_default() {
+        // W6A-F1: a workspace override (e.g. python=pylsp) must beat the global /
+        // adapter default (pyright), else the one-click install targets the wrong
+        // server and the chosen profile stays Missing forever.
+        let mut cfg = lsp_config::LspConfig::default();
+        cfg.defaults.insert("python".into(), "pyright".into());
+        cfg.workspaces.insert(
+            "/ws/canon".into(),
+            std::collections::BTreeMap::from([("python".to_string(), "pylsp".to_string())]),
+        );
+        assert_eq!(
+            resolve_active(&cfg, Some("/ws/canon"), "python").as_deref(),
+            Some("pylsp"),
+            "workspace override must win"
+        );
+        // A workspace without an override falls back to the global default.
+        assert_eq!(
+            resolve_active(&cfg, Some("/ws/other"), "python").as_deref(),
+            Some("pyright")
+        );
+    }
+
+    #[test]
+    fn canonical_key_agrees_with_write_side_and_hits_override() {
+        // W6A-F1: the set_server write side keys overrides by the *canonical* path;
+        // the install read side must canonicalize the raw path the same way (raw and
+        // canonical differ on macOS's symlinked tmpdir) or the override is missed.
+        let tmp = tempfile::tempdir().unwrap();
+        let raw = tmp.path().to_str().unwrap();
+        let write_key = lsp_config::canonicalize(raw).unwrap_or_else(|| raw.to_string());
+        let mut cfg = lsp_config::LspConfig::default();
+        cfg.workspaces.insert(
+            write_key.clone(),
+            std::collections::BTreeMap::from([("python".to_string(), "pylsp".to_string())]),
+        );
+        let read_key = canonical_key(Some(raw)).expect("some workspace");
+        assert_eq!(
+            read_key, write_key,
+            "read/write canonicalization must agree"
+        );
+        assert_eq!(
+            resolve_active(&cfg, Some(&read_key), "python").as_deref(),
+            Some("pylsp")
+        );
+        // None workspace canonicalizes to None (global-only resolution).
+        assert_eq!(canonical_key(None), None);
+    }
+
+    // ---- missing-tool branches ----
+
+    #[test]
+    fn build_plan_npm_missing_errs_nodejs() {
+        let route = route_for("typescript", "vtsls").unwrap();
+        let e = build_plan("typescript", route, None, None).unwrap_err();
+        assert!(e.contains("Node.js"), "expected a Node.js hint, got: {e}");
+    }
+
+    #[test]
+    fn build_plan_pip_missing_errs_python() {
+        let route = route_for("python", "pylsp").unwrap();
+        let e = build_plan("python", route, None, None).unwrap_err();
+        assert!(e.contains("Python"), "expected a Python hint, got: {e}");
+    }
+
+    #[test]
+    fn build_plan_npm_present_binds_resolved_npm() {
+        let route = route_for("python", "pyright").unwrap();
+        let plan = build_plan("python", route, Some("/usr/bin/npm".into()), None).unwrap();
+        assert_eq!(
+            plan,
+            Plan::Npm {
+                npm: "/usr/bin/npm".into(),
+                packages: &["pyright"],
+                bin: "pyright-langserver"
+            }
+        );
+    }
+
+    #[test]
+    fn build_plan_pip_present_binds_resolved_python() {
+        let route = route_for("python", "pylsp").unwrap();
+        let plan = build_plan("python", route, None, Some("/usr/bin/python3".into())).unwrap();
+        assert_eq!(
+            plan,
+            Plan::Pip {
+                python: "/usr/bin/python3".into(),
+                package: "python-lsp-server",
+                bin: "pylsp"
+            }
+        );
+    }
+
+    #[test]
+    fn build_plan_binary_ignores_toolchain() {
+        let route = route_for("rust", "rust-analyzer").unwrap();
+        assert_eq!(
+            build_plan("rust", route, None, None).unwrap(),
+            Plan::Binary(BinaryServer::RustAnalyzer)
+        );
+    }
+
+    // ---- in-flight guard ----
+
+    #[test]
+    fn try_reserve_blocks_duplicate_until_released() {
+        let set = Mutex::new(HashSet::new());
+        assert!(try_reserve(&set, "python"));
+        assert!(
+            !try_reserve(&set, "python"),
+            "same language must be blocked"
+        );
+        assert!(
+            try_reserve(&set, "rust"),
+            "a different language is unaffected"
+        );
+        release(&set, "python");
+        assert!(
+            try_reserve(&set, "python"),
+            "released language can re-reserve"
+        );
+    }
+
+    #[test]
+    fn inflight_guard_releases_on_drop() {
+        let set = Mutex::new(HashSet::new());
+        {
+            let g = InflightGuard::acquire(&set, "python");
+            assert!(g.is_some());
+            assert!(
+                InflightGuard::acquire(&set, "python").is_none(),
+                "second acquire while held must fail"
+            );
+        }
+        assert!(
+            InflightGuard::acquire(&set, "python").is_some(),
+            "guard drop must release the language"
+        );
+    }
+
+    // ---- LspInstallProgress serde (camelCase + lowercase phase) ----
+
+    #[test]
+    fn install_progress_serializes_camel_case_round_trip() {
+        let p = LspInstallProgress {
+            language: "python".into(),
+            phase: InstallPhase::Npm,
+            percent: Some(42),
+            message: Some("installing".into()),
+        };
+        let v: serde_json::Value = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["language"], "python");
+        assert_eq!(v["phase"], "npm");
+        assert_eq!(v["percent"], 42);
+        assert_eq!(v["message"], "installing");
+        let back: LspInstallProgress = serde_json::from_value(v).unwrap();
+        assert_eq!(back, p);
+
+        let q = LspInstallProgress {
+            language: "rust".into(),
+            phase: InstallPhase::Done,
+            percent: None,
+            message: None,
+        };
+        let vq: serde_json::Value = serde_json::to_value(&q).unwrap();
+        assert!(vq["percent"].is_null());
+        assert!(vq["message"].is_null());
+        assert_eq!(vq["phase"], "done");
+    }
+
+    #[test]
+    fn install_phase_serializes_all_lowercase() {
+        for (phase, s) in [
+            (InstallPhase::Download, "download"),
+            (InstallPhase::Verify, "verify"),
+            (InstallPhase::Unpack, "unpack"),
+            (InstallPhase::Npm, "npm"),
+            (InstallPhase::Pip, "pip"),
+            (InstallPhase::Done, "done"),
+            (InstallPhase::Error, "error"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(phase).unwrap(),
+                serde_json::Value::from(s)
+            );
+        }
+    }
+
+    // ---- terminal-state contract (injectable emit harness) ----
+
+    fn capturing() -> (
+        Arc<Mutex<Vec<LspInstallProgress>>>,
+        impl Fn(LspInstallProgress),
+    ) {
+        let events: Arc<Mutex<Vec<LspInstallProgress>>> = Default::default();
+        let sink = events.clone();
+        (events, move |p| sink.lock().unwrap().push(p))
+    }
+
+    fn stub_info(language: &str) -> LspServerInfo {
+        LspServerInfo {
+            workspace: String::new(),
+            language: language.into(),
+            server_id: "x".into(),
+            command: "x".into(),
+            path: None,
+            status: LspProcessStatus::Stopped,
+            last_startup_log: None,
+            last_error: None,
+            restart_count: 0,
+        }
+    }
+
+    fn terminal_count(events: &[LspInstallProgress]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e.phase, InstallPhase::Done | InstallPhase::Error))
+            .count()
+    }
+
+    #[test]
+    fn finalize_success_ends_with_exactly_one_done() {
+        let (events, emit) = capturing();
+        let out = finalize("python", &emit, || {
+            emit(LspInstallProgress::new(
+                "python",
+                InstallPhase::Npm,
+                Some(50),
+                Some("installing"),
+            ));
+            Ok(stub_info("python"))
+        });
+        assert!(out.is_ok());
+        let ev = events.lock().unwrap();
+        assert_eq!(ev.last().unwrap().phase, InstallPhase::Done);
+        assert_eq!(terminal_count(&ev), 1, "exactly one terminal phase");
+        assert!(
+            ev.iter().all(|e| e.phase != InstallPhase::Error),
+            "success path must not emit error"
+        );
+    }
+
+    #[test]
+    fn finalize_failure_emits_one_error_and_returns_err() {
+        let (events, emit) = capturing();
+        let out = finalize("python", &emit, || {
+            emit(LspInstallProgress::new(
+                "python",
+                InstallPhase::Download,
+                None,
+                None,
+            ));
+            Err::<LspServerInfo, String>("boom".into())
+        });
+        assert!(out.is_err(), "an emitted error must imply an Err return");
+        let ev = events.lock().unwrap();
+        assert_eq!(ev.last().unwrap().phase, InstallPhase::Error);
+        assert_eq!(terminal_count(&ev), 1, "exactly one terminal phase");
+        assert!(
+            ev.iter().all(|e| e.phase != InstallPhase::Done),
+            "failure path must not emit done"
+        );
+        assert_eq!(ev.last().unwrap().message.as_deref(), Some("boom"));
+    }
+}

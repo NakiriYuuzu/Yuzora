@@ -1,0 +1,420 @@
+[
+  {
+    "label": "f-1mb.ts (syntax on)",
+    "fixture": "f-1mb.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "f-1mb.ts",
+      "syntaxOff": false,
+      "chars": 1048645,
+      "lines": 14366,
+      "fetchMs": 3.199999988079071,
+      "stateCreateMs": 7.099999964237213,
+      "viewCreateMs": 10.900000035762787,
+      "firstPaintMs": 10.300000011920929
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 8.299999952316284,
+      "p95": 24.80000001192093,
+      "max": 30.600000023841858
+    },
+    "scroll": {
+      "ms": 362.5999999642372,
+      "longTaskCountDuring": 0,
+      "longTaskDurationDuring": 0
+    },
+    "longTasksTotal": {
+      "count": 0,
+      "totalDurationMs": 0
+    },
+    "memory": {
+      "afterInitMB": 7.133640289306641,
+      "afterTypeMB": 22.620494842529297,
+      "afterScrollMB": 26.13494873046875,
+      "afterGcMB": 13.116451263427734
+    },
+    "wallMs": 3266.025541
+  },
+  {
+    "label": "f-10mb.ts (syntax on)",
+    "fixture": "f-10mb.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "f-10mb.ts",
+      "syntaxOff": false,
+      "chars": 10485793,
+      "lines": 143642,
+      "fetchMs": 25.400000035762787,
+      "stateCreateMs": 16.100000023841858,
+      "viewCreateMs": 10.5,
+      "firstPaintMs": 5.199999988079071
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 22.099999964237213,
+      "p95": 22.900000035762787,
+      "max": 26.19999998807907
+    },
+    "scroll": {
+      "ms": 578.1000000238419,
+      "longTaskCountDuring": 3,
+      "longTaskDurationDuring": 300
+    },
+    "longTasksTotal": {
+      "count": 5,
+      "totalDurationMs": 454
+    },
+    "memory": {
+      "afterInitMB": 13.43136215209961,
+      "afterTypeMB": 43.85176467895508,
+      "afterScrollMB": 41.44690704345703,
+      "afterGcMB": 48.37301254272461
+    },
+    "wallMs": 3478.2627919999995
+  },
+  {
+    "label": "f-30mb.ts (syntax on)",
+    "fixture": "f-30mb.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "f-30mb.ts",
+      "syntaxOff": false,
+      "chars": 31457306,
+      "lines": 430923,
+      "fetchMs": 58.89999997615814,
+      "stateCreateMs": 34.80000001192093,
+      "viewCreateMs": 10.399999976158142,
+      "firstPaintMs": 5.800000011920929
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 22.5,
+      "p95": 24.100000023841858,
+      "max": 26.600000023841858
+    },
+    "scroll": {
+      "ms": 574.8000000119209,
+      "longTaskCountDuring": 3,
+      "longTaskDurationDuring": 300
+    },
+    "longTasksTotal": {
+      "count": 6,
+      "totalDurationMs": 554
+    },
+    "memory": {
+      "afterInitMB": 23.259963989257812,
+      "afterTypeMB": 41.588348388671875,
+      "afterScrollMB": 52.734310150146484,
+      "afterGcMB": 58.5051155090332
+    },
+    "wallMs": 3546.912708
+  },
+  {
+    "label": "f-50mb.ts (syntax on)",
+    "fixture": "f-50mb.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "f-50mb.ts",
+      "syntaxOff": false,
+      "chars": 52428819,
+      "lines": 718204,
+      "fetchMs": 89.19999998807907,
+      "stateCreateMs": 55.09999996423721,
+      "viewCreateMs": 11,
+      "firstPaintMs": 5.800000011920929
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 22.5,
+      "p95": 23.19999998807907,
+      "max": 25.5
+    },
+    "scroll": {
+      "ms": 493,
+      "longTaskCountDuring": 2,
+      "longTaskDurationDuring": 200
+    },
+    "longTasksTotal": {
+      "count": 6,
+      "totalDurationMs": 529
+    },
+    "memory": {
+      "afterInitMB": 38.91156768798828,
+      "afterTypeMB": 54.60945129394531,
+      "afterScrollMB": 83.33755111694336,
+      "afterGcMB": 58.756980895996094
+    },
+    "wallMs": 3597.1497919999983
+  },
+  {
+    "label": "f-80mb.ts (syntax on)",
+    "fixture": "f-80mb.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "f-80mb.ts",
+      "syntaxOff": false,
+      "chars": 83886125,
+      "lines": 1149126,
+      "fetchMs": 154.69999998807907,
+      "stateCreateMs": 95.89999997615814,
+      "viewCreateMs": 13,
+      "firstPaintMs": 6.399999976158142
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 22.100000023841858,
+      "p95": 22.69999998807907,
+      "max": 25.5
+    },
+    "scroll": {
+      "ms": 530.5999999642372,
+      "longTaskCountDuring": 2,
+      "longTaskDurationDuring": 200
+    },
+    "longTasksTotal": {
+      "count": 5,
+      "totalDurationMs": 518
+    },
+    "memory": {
+      "afterInitMB": 48.63362503051758,
+      "afterTypeMB": 87.41595840454102,
+      "afterScrollMB": 92.09896469116211,
+      "afterGcMB": 68.3419418334961
+    },
+    "wallMs": 3889.1465419999986
+  },
+  {
+    "label": "l-10k.ts (syntax on)",
+    "fixture": "l-10k.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "l-10k.ts",
+      "syntaxOff": false,
+      "chars": 10013,
+      "lines": 2,
+      "fetchMs": 3,
+      "stateCreateMs": 2.400000035762787,
+      "viewCreateMs": 8,
+      "firstPaintMs": 7.699999988079071
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 1.399999976158142,
+      "p95": 7.200000047683716,
+      "max": 8.199999988079071
+    },
+    "scroll": {
+      "ms": 322.9000000357628,
+      "longTaskCountDuring": 0,
+      "longTaskDurationDuring": 0
+    },
+    "longTasksTotal": {
+      "count": 0,
+      "totalDurationMs": 0
+    },
+    "memory": {
+      "afterInitMB": 6.119972229003906,
+      "afterTypeMB": 7.5893096923828125,
+      "afterScrollMB": 7.832805633544922,
+      "afterGcMB": 6.15386962890625
+    },
+    "wallMs": 3192.544167
+  },
+  {
+    "label": "l-10k.ts (syntax off)",
+    "fixture": "l-10k.ts",
+    "syntaxOff": true,
+    "status": "ok",
+    "metrics": {
+      "fixture": "l-10k.ts",
+      "syntaxOff": true,
+      "chars": 10013,
+      "lines": 2,
+      "fetchMs": 1.300000011920929,
+      "stateCreateMs": 0.3999999761581421,
+      "viewCreateMs": 7.800000011920929,
+      "firstPaintMs": 8
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 1.199999988079071,
+      "p95": 8.200000047683716,
+      "max": 8.399999976158142
+    },
+    "scroll": {
+      "ms": 323.39999997615814,
+      "longTaskCountDuring": 0,
+      "longTaskDurationDuring": 0
+    },
+    "longTasksTotal": {
+      "count": 0,
+      "totalDurationMs": 0
+    },
+    "memory": {
+      "afterInitMB": 5.876960754394531,
+      "afterTypeMB": 7.6429443359375,
+      "afterScrollMB": 7.865489959716797,
+      "afterGcMB": 5.806224822998047
+    },
+    "wallMs": 3196.6926249999997
+  },
+  {
+    "label": "l-100k.ts (syntax on)",
+    "fixture": "l-100k.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "l-100k.ts",
+      "syntaxOff": false,
+      "chars": 100013,
+      "lines": 2,
+      "fetchMs": 8,
+      "stateCreateMs": 5.100000023841858,
+      "viewCreateMs": 12.5,
+      "firstPaintMs": 12.5
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 3.399999976158142,
+      "p95": 7.5,
+      "max": 8.5
+    },
+    "scroll": {
+      "ms": 322.0999999642372,
+      "longTaskCountDuring": 0,
+      "longTaskDurationDuring": 0
+    },
+    "longTasksTotal": {
+      "count": 0,
+      "totalDurationMs": 0
+    },
+    "memory": {
+      "afterInitMB": 6.110073089599609,
+      "afterTypeMB": 7.538028717041016,
+      "afterScrollMB": 7.9972686767578125,
+      "afterGcMB": 6.262657165527344
+    },
+    "wallMs": 3257.409541000001
+  },
+  {
+    "label": "l-100k.ts (syntax off)",
+    "fixture": "l-100k.ts",
+    "syntaxOff": true,
+    "status": "ok",
+    "metrics": {
+      "fixture": "l-100k.ts",
+      "syntaxOff": true,
+      "chars": 100013,
+      "lines": 2,
+      "fetchMs": 1.5999999642372131,
+      "stateCreateMs": 0.19999998807907104,
+      "viewCreateMs": 7.300000011920929,
+      "firstPaintMs": 7.399999976158142
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 1.300000011920929,
+      "p95": 7.800000011920929,
+      "max": 8.300000011920929
+    },
+    "scroll": {
+      "ms": 325.69999998807907,
+      "longTaskCountDuring": 0,
+      "longTaskDurationDuring": 0
+    },
+    "longTasksTotal": {
+      "count": 0,
+      "totalDurationMs": 0
+    },
+    "memory": {
+      "afterInitMB": 5.8990478515625,
+      "afterTypeMB": 6.648578643798828,
+      "afterScrollMB": 7.032001495361328,
+      "afterGcMB": 5.9115753173828125
+    },
+    "wallMs": 3248.962083000002
+  },
+  {
+    "label": "l-1m.ts (syntax on)",
+    "fixture": "l-1m.ts",
+    "syntaxOff": false,
+    "status": "ok",
+    "metrics": {
+      "fixture": "l-1m.ts",
+      "syntaxOff": false,
+      "chars": 1000013,
+      "lines": 2,
+      "fetchMs": 4.600000023841858,
+      "stateCreateMs": 19.100000023841858,
+      "viewCreateMs": 7.5,
+      "firstPaintMs": 7.199999988079071
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 15.599999964237213,
+      "p95": 17.400000035762787,
+      "max": 42.39999997615814
+    },
+    "scroll": {
+      "ms": 325.10000002384186,
+      "longTaskCountDuring": 0,
+      "longTaskDurationDuring": 0
+    },
+    "longTasksTotal": {
+      "count": 0,
+      "totalDurationMs": 0
+    },
+    "memory": {
+      "afterInitMB": 6.098907470703125,
+      "afterTypeMB": 16.372554779052734,
+      "afterScrollMB": 16.792438507080078,
+      "afterGcMB": 7.115802764892578
+    },
+    "wallMs": 3220.363375000001
+  },
+  {
+    "label": "l-1m.ts (syntax off)",
+    "fixture": "l-1m.ts",
+    "syntaxOff": true,
+    "status": "ok",
+    "metrics": {
+      "fixture": "l-1m.ts",
+      "syntaxOff": true,
+      "chars": 1000013,
+      "lines": 2,
+      "fetchMs": 3.299999952316284,
+      "stateCreateMs": 0.40000003576278687,
+      "viewCreateMs": 7,
+      "firstPaintMs": 7.099999964237213
+    },
+    "typing": {
+      "samples": 51,
+      "p50": 2.600000023841858,
+      "p95": 11.800000011920929,
+      "max": 15.100000023841858
+    },
+    "scroll": {
+      "ms": 330.5,
+      "longTaskCountDuring": 0,
+      "longTaskDurationDuring": 0
+    },
+    "longTasksTotal": {
+      "count": 0,
+      "totalDurationMs": 0
+    },
+    "memory": {
+      "afterInitMB": 5.879997253417969,
+      "afterTypeMB": 15.756092071533203,
+      "afterScrollMB": 16.108943939208984,
+      "afterGcMB": 6.762363433837891
+    },
+    "wallMs": 3226.720207999999
+  }
+]

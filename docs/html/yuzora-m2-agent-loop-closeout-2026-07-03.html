@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yuzora M2 完成報告 — Agent Loop Close-out</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.25rem; }
+.metric-card .value { font-size: 1.8rem; font-weight: 700; font-family: var(--font-mono); }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+.metric-card .trend { font-size: 0.8rem; font-weight: 600; margin-top: 0.25rem; }
+.trend.up { color: var(--color-success); }
+.trend.warn { color: var(--color-warning); }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.75rem 1.25rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1rem 0 0.5rem; }
+p + p { margin-top: 0.5rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; overflow-x: auto; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); }
+.chart-caption { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.5rem; }
+
+.timeline { position: relative; padding-left: 2rem; }
+.timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--color-border); }
+.timeline-item { position: relative; margin-bottom: 1.25rem; }
+.timeline-item::before { content: ''; position: absolute; left: -2rem; top: 0.5rem; width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); }
+.timeline-item .date { font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 600; font-family: var(--font-mono); }
+.timeline-item .content { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; margin-top: 0.4rem; }
+.timeline-item .content p { font-size: 0.9rem; color: var(--color-text-secondary); }
+
+details { margin-bottom: 1rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.92rem; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-surface-soft); font-size: 0.9rem; }
+details .details-body ul { padding-left: 1.25rem; }
+details .details-body li { margin-bottom: 0.35rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--color-border); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+.table-wrap { overflow-x: auto; }
+
+.badge { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
+.badge.clean { background: rgba(93,184,114,0.15); color: #2e7d46; }
+.badge.fixed { background: rgba(212,160,23,0.15); color: #96700f; }
+.badge.critical { background: rgba(198,69,69,0.15); color: var(--color-error); }
+.badge.important { background: rgba(212,160,23,0.18); color: #96700f; }
+.badge.minor { background: rgba(93,184,166,0.15); color: #2d7d6e; }
+.badge.done { background: rgba(93,184,114,0.15); color: #2e7d46; }
+.badge.manual { background: rgba(204,120,92,0.15); color: var(--color-accent-active); }
+
+code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-surface); padding: 0.1em 0.35em; border-radius: 4px; }
+.mono { font-family: var(--font-mono); }
+
+.callout { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.25rem; margin-bottom: 1rem; background: var(--color-surface-soft); font-size: 0.92rem; }
+.callout.warn { border-left: 4px solid var(--color-warning); }
+.callout.ok { border-left: 4px solid var(--color-success); }
+.callout.info { border-left: 4px solid var(--color-info); }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; }
+.scorecard .name { font-weight: 700; font-size: 0.85rem; }
+.scorecard .score { font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--color-accent-active); }
+.scorecard .basis { font-size: 0.78rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+
+@media print { .tabs, .actions { display: none; } .tab-content { display: block !important; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">M2 Close-out Report</div>
+        <h1>Yuzora M2 — Git Core 與 Project-wide Search</h1>
+        <p class="meta">Agent loop（subagent-driven development）&middot; 2026-07-03 01:41–04:45 &middot; 20 tasks / 7 waves / 1 fable final review</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p><strong>M2 判定：Ready（自動化範圍）。</strong>全部 20 個 tasks 完成並各自通過 opus task review（其中 8 個 task 經 fix round 修復共 13 條 findings）；唯一的 fable final review 找出 1 條 Critical＋6 條 Important 跨 task 整合問題，已全數修復並由 lead 聚焦驗證。最終全量：vitest 172/172、cargo 51/51（+1 ignored）、tsc 0 錯誤、build 成功、fmt 乾淨。全程未對本專案 repo 執行任何 git 指令——所有變更留在工作樹待你檢視與 staging。剩餘工作：<code>m2-manual-checklist</code> 的 9 項 GUI／實機手動驗收（askpass 四 case 需真 remote）。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">20/20</div><div class="label">Tasks 完成（7 waves）</div><div class="trend up">全數通過 task review</div></div>
+        <div class="metric-card"><div class="value">172</div><div class="label">vitest 通過（29 檔）</div><div class="trend up">基線 56 → +116</div></div>
+        <div class="metric-card"><div class="value">51</div><div class="label">cargo 通過（+1 ignored）</div><div class="trend up">基線 16 → +35</div></div>
+        <div class="metric-card"><div class="value">20</div><div class="label">修復的 findings</div><div class="trend warn">task 層 13＋final 7</div></div>
+        <div class="metric-card"><div class="value">9</div><div class="label">待手動驗收項</div><div class="trend warn">GUI／實機</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('overview')">總覽</button>
+        <button class="tab" onclick="showTab('tasks')">Task 審查明細</button>
+        <button class="tab" onclick="showTab('final')">Final Review</button>
+        <button class="tab" onclick="showTab('pending')">待辦與裁決</button>
+        <button class="tab" onclick="showTab('timeline')">Timeline</button>
+    </div>
+
+    <div id="overview" class="tab-content active">
+        <div class="chart-container">
+            <h3>測試數成長（vitest ／ cargo，各 wave 收尾實測）</h3>
+            <svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+                <line x1="50" y1="180" x2="680" y2="180" stroke="#e6dfd8" stroke-width="1"/>
+                <line x1="50" y1="135" x2="680" y2="135" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                <line x1="50" y1="90" x2="680" y2="90" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                <line x1="50" y1="45" x2="680" y2="45" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                <text x="20" y="184" font-size="10" fill="#6c6a64">0</text>
+                <text x="20" y="139" font-size="10" fill="#6c6a64">60</text>
+                <text x="20" y="94" font-size="10" fill="#6c6a64">120</text>
+                <text x="20" y="49" font-size="10" fill="#6c6a64">180</text>
+                <!-- vitest: 56, 78(w0), 97(w1), 102(w2), 114(w3), 142(w4), 166(w5), 166(w6), 172(final) -->
+                <polyline points="80,138 150,122 220,107 290,104 360,95 430,74 500,56 570,56 640,51" fill="none" stroke="#cc785c" stroke-width="2.5"/>
+                <!-- cargo: 16, 31, 37, 42, 49, 49, 49, 49, 51 -->
+                <polyline points="80,168 150,157 220,152 290,149 360,143 430,143 500,143 570,143 640,142" fill="none" stroke="#5db8a6" stroke-width="2.5"/>
+                <circle cx="640" cy="51" r="4" fill="#cc785c"/><text x="648" y="48" font-size="11" fill="#a9583e" font-weight="700">172</text>
+                <circle cx="640" cy="142" r="4" fill="#5db8a6"/><text x="648" y="139" font-size="11" fill="#2d7d6e" font-weight="700">51</text>
+                <text x="80" y="200" font-size="10" fill="#6c6a64">基線</text>
+                <text x="150" y="200" font-size="10" fill="#6c6a64">W0</text>
+                <text x="220" y="200" font-size="10" fill="#6c6a64">W1</text>
+                <text x="290" y="200" font-size="10" fill="#6c6a64">W2</text>
+                <text x="360" y="200" font-size="10" fill="#6c6a64">W3</text>
+                <text x="430" y="200" font-size="10" fill="#6c6a64">W4</text>
+                <text x="500" y="200" font-size="10" fill="#6c6a64">W5</text>
+                <text x="570" y="200" font-size="10" fill="#6c6a64">W6</text>
+                <text x="640" y="200" font-size="10" fill="#6c6a64">Final</text>
+                <rect x="470" y="14" width="10" height="10" fill="#cc785c"/><text x="486" y="23" font-size="11" fill="#141413">vitest</text>
+                <rect x="540" y="14" width="10" height="10" fill="#5db8a6"/><text x="556" y="23" font-size="11" fill="#141413">cargo</text>
+            </svg>
+            <p class="chart-caption">每個 wave 收尾都以三件套（vitest／tsc／cargo）全綠為 gate；W0 的 vitest 跳升含另一 session 並行完成的 context-menu 測試（D4）。</p>
+        </div>
+
+        <section>
+            <h2>交付內容</h2>
+            <div class="table-wrap"><table>
+                <thead><tr><th>面向</th><th>內容</th></tr></thead>
+                <tbody>
+                    <tr><td>Rust git core</td><td>porcelain v2 解析器、git_service（偵測／run_git timeout／status）、14 個操作 commands（stage／commit／branch／fetch／pull／push／probe／diff／conflict）、askpass 橋接（主 binary env-偵測、unix socket＋token＋60s 快取、background 鐵律）、.git watch、fs watcher 過濾</td></tr>
+                    <tr><td>Search</td><td>ripgrep 核心 crates streaming 搜尋（5000 檔上限、generation 取消）＋nav 搜尋 UI（分組結果、命中高亮、跳行）</td></tr>
+                    <tr><td>前端 Git UI</td><td>gitStore（去抖／單飛／busy 互斥／remote check 兩層機制）、StatusBar 真實化＋BranchPopover、GitPanel Local changes（清單／commit／DiffView）、conflict UX（CM6 markers 三鈕＋banner）、AskpassHost 四 case modal、Settings Git 區＋guided setup</td></tr>
+                    <tr><td>External-change resolver</td><td>存檔攔截＋unifiedMergeView 逐 chunk 採納＋tab ⟳ 入口；時序推演確認與 M1 write-through／generation／saveSuppress 疊加無資料遺失路徑</td></tr>
+                    <tr><td>驗收資產</td><td><code>fixtures/gen-git-fixtures.ts</code>（demo repo 產生器）＋<code>docs/superpowers/checklists/m2-manual-checklist.md</code>（9 項手動驗收）</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section>
+            <h2>品質評分（lead 自評，證據見各分頁）</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="name">完整性</div><div class="score">5/5</div><div class="basis">20/20 tasks；spec 入口 (b) 由 final review 補齊</div></div>
+                <div class="scorecard"><div class="name">證據性</div><div class="score">5/5</div><div class="basis">每 task RED/GREEN＋review 報告；ledger 全程可追溯</div></div>
+                <div class="scorecard"><div class="name">契約一致性</div><div class="score">5/5</div><div class="basis">24 command 名＋serde 鏈 fable 全查通過</div></div>
+                <div class="scorecard"><div class="name">設計對稿</div><div class="score">4/5</div><div class="basis">抽查值全符（修後）；1 處節標 count 樣式小偏差 defer</div></div>
+                <div class="scorecard"><div class="name">風險覆蓋</div><div class="score">4/5</div><div class="basis">askpass 鐵律／資料安全推演通過；GUI 實機未驗（手動項）</div></div>
+            </div>
+        </section>
+    </div>
+
+    <div id="tasks" class="tab-content">
+        <section>
+            <h2>20 Tasks 審查結果（每 task：opus implementer → opus reviewer → 必要時 opus fixer → 原 reviewer 複審）</h2>
+            <div class="table-wrap"><table>
+                <thead><tr><th>Wave</th><th>Task</th><th>Review</th><th>修復內容（fix round）</th></tr></thead>
+                <tbody>
+                    <tr><td rowspan="5">0</td><td>T1 設計對稿 m2-design-reference</td><td><span class="badge clean">clean</span></td><td>—（抽查 15/15 零偏差）</td></tr>
+                    <tr><td>T2 watcher 過濾 .git/node_modules</td><td><span class="badge clean">clean</span></td><td>—</td></tr>
+                    <tr><td>T3 porcelain v2 解析器</td><td><span class="badge fixed">fixed×2</span></td><td>裸 <code>?</code> 記錄 panic → Err；空 path 防護</td></tr>
+                    <tr><td>T8 search_service streaming</td><td><span class="badge fixed">fixed×1</span></td><td>wire 契約 <code>file_count</code> → <code>fileCount</code>（D3 仲裁）</td></tr>
+                    <tr><td>T10 uiStore mode 提升</td><td><span class="badge clean">clean</span></td><td>—</td></tr>
+                    <tr><td rowspan="2">1</td><td>T4 git_service 核心</td><td><span class="badge clean">clean</span></td><td>—（空 repo 語意驗證回填 T3 遺留）</td></tr>
+                    <tr><td>T9 types + ipc wrappers</td><td><span class="badge fixed">fixed×2</span></td><td><code>git_pull_cmd</code>／<code>git_push_cmd</code> 漏 _cmd 後綴</td></tr>
+                    <tr><td rowspan="3">2</td><td>T5 askpass 橋接（Rust）</td><td><span class="badge clean">clean</span></td><td>—（background 鐵律結構性成立）</td></tr>
+                    <tr><td>T7 git watch</td><td><span class="badge clean">clean</span></td><td>—</td></tr>
+                    <tr><td>T11 gitStore + GitBridge</td><td><span class="badge fixed">fixed×1</span></td><td>autofetch 背景寫 lastError 破口 → refreshQuiet</td></tr>
+                    <tr><td rowspan="3">3</td><td>T6 git 操作 commands ×14</td><td><span class="badge fixed">fixed×1</span></td><td>conflict op 白名單校驗</td></tr>
+                    <tr><td>T12 AskpassHost 四 case</td><td><span class="badge clean">clean</span></td><td>—</td></tr>
+                    <tr><td>T13 DiffView（@codemirror/merge）</td><td><span class="badge clean">clean</span></td><td>—（API 核對供 T17 盲信，reviewer 對 d.ts 驗證屬實）</td></tr>
+                    <tr><td rowspan="3">4</td><td>T14 StatusBar + BranchPopover</td><td><span class="badge clean">clean</span></td><td>—（設計對稿抽查 10/10）</td></tr>
+                    <tr><td>T15 GitPanel Local changes</td><td><span class="badge fixed">fixed×2</span></td><td>diff header 缺狀態 badge；Staged 節標 pt7</td></tr>
+                    <tr><td>T18 Search UI + 跳行</td><td><span class="badge clean">clean</span></td><td>—（M1 機制證實未受影響）</td></tr>
+                    <tr><td rowspan="3">5</td><td>T16 conflict UX（markers＋banner）</td><td><span class="badge fixed">fixed×1</span></td><td>ConflictBanner 風格重排（4 空格無分號）</td></tr>
+                    <tr><td>T17 External-change resolver</td><td><span class="badge fixed">fixed×3</span></td><td>takeDisk 防 keepAll 污染（diskRef）；saveFile .catch；補 keepAll／rebuild 測試</td></tr>
+                    <tr><td>T19 Settings Git 區＋guided setup</td><td><span class="badge clean">clean</span></td><td>—</td></tr>
+                    <tr><td>6</td><td>T20 checklist＋fixtures＋收尾</td><td><span class="badge clean">clean</span></td><td>—（git 界線結構性乾淨）</td></tr>
+                </tbody>
+            </table></div>
+            <p class="chart-caption">全部 review 皆為 opus；有 fix 的 task 一律由原 reviewer 複審通過後才標 complete。完整審查紀錄：<code>.superpowers/sdd/m2-progress.md</code>＋各 <code>m2-task-N-report.md</code>。</p>
+        </section>
+    </div>
+
+    <div id="final" class="tab-content">
+        <section>
+            <h2>Fable Final Review（唯一 fable，跨 task 整合審查）</h2>
+            <div class="callout warn"><strong>初判：Not ready</strong>——找出 1 條 Critical＋6 條 Important 跨 task 整合問題（各 task 對自身 brief 皆「正確」、縫隙落在整合面）。單一 opus fixer 批修 7 項後由 lead 聚焦驗證，<strong>終判：Ready</strong>。</div>
+            <div class="table-wrap"><table>
+                <thead><tr><th>等級</th><th>Finding</th><th>修復</th></tr></thead>
+                <tbody>
+                    <tr><td><span class="badge critical">Critical</span></td><td>C1 <code>conflict_continue</code> 在 GUI 無 TTY 環境必然失敗（editor 未抑制，已實測「Terminal is dumb」）——MVP-7 Continue 路徑阻斷</td><td><span class="badge done">已修</span> GIT_EDITOR=true＋<code>merge_conflict_continue_completes</code> 測試＋checklist 補 Continue 斷言</td></tr>
+                    <tr><td><span class="badge important">Important</span></td><td>I1 checkRemote 缺 busy 互斥與 remotePaused 停檢（spec 契約）</td><td><span class="badge done">已修</span> guard＋2 測試（gitStore.ts:162）</td></tr>
+                    <tr><td><span class="badge important">Important</span></td><td>I2 askpass server 啟動失敗時四個 remote command panic（降級契約未實作）</td><td><span class="badge done">已修</span> AskpassState 改持 Option、None 走空 env</td></tr>
+                    <tr><td><span class="badge important">Important</span></td><td>I3 workspace 開在 repo 子目錄時 FileTree changed 標記／Open diff 失效</td><td><span class="badge done">已修</span> rel 基準改 environment.root＋測試</td></tr>
+                    <tr><td><span class="badge important">Important</span></td><td>I4 workspace 切換後 gitStore 殘留舊 repo 狀態</td><td><span class="badge done">已修</span> detect 統一清殘留＋測試</td></tr>
+                    <tr><td><span class="badge important">Important</span></td><td>I5 外部 branch 操作後 popover 清單陳舊（state-changed 只 refresh）</td><td><span class="badge done">已修</span> handler 補 loadBranches＋新建 GitBridge.test</td></tr>
+                    <tr><td><span class="badge important">Important</span></td><td>I6 spec 入口 (b)「點 tab ⟳ 開解決器」plan 轉寫時漏掉</td><td><span class="badge done">已修</span> ⟳ 可點 → openResolver（D7，lead 裁決實作而非 descope）</td></tr>
+                </tbody>
+            </table></div>
+            <h3>Fable 通過面（無需修改）</h3>
+            <ul style="padding-left:1.25rem; font-size:0.92rem;">
+                <li>介面一致性：24 個 command 名 ↔ generate_handler 註冊 ↔ 前端 invoke 全對；serde 契約鏈（GitStatusDto flatten／GradedText／SearchEvent fileCount／GitEnvironment／AskpassRequest）逐型別全符。</li>
+                <li>事件流四訊號閉環（op→refresh、.git watch、fs watch 已過濾、focus），重複觸發被去抖收斂。</li>
+                <li>askpass 鐵律：找不到任何背景彈 modal 的路徑（probe 固定 background、server 端 emit 前短路）。</li>
+                <li>存檔攔截 × M1 機制時序推演：<strong>無資料遺失路徑</strong>（詳細推演記錄於 final review 報告，7 點依據）。</li>
+                <li>資源釋放與 EditorPane 三 task 疊改最終形自洽。</li>
+            </ul>
+        </section>
+    </div>
+
+    <div id="pending" class="tab-content">
+        <section>
+            <h2>待你手動驗收（9 項，見 <code>docs/superpowers/checklists/m2-manual-checklist.md</code>）</h2>
+            <div class="callout info">環境準備：<code>bun run fixtures/gen-git-fixtures.ts</code> → <code>bun run tauri:dev</code> → 開啟 <code>fixtures/out/git-demo</code>。建議搭配 <code>gui-acceptance</code> skill 截圖存證（checklist 第 9 項）。</div>
+            <div class="table-wrap"><table>
+                <thead><tr><th>#</th><th>項目</th><th>備註</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td><span class="badge manual">MVP-4</span> Git panel stage→commit→discard（含確認）</td><td>fixture 已備三態</td></tr>
+                    <tr><td>2</td><td><span class="badge manual">MVP-5</span> staged/unstaged diff 分開；file tree Open diff 跳 Git mode</td><td></td></tr>
+                    <tr><td>3</td><td><span class="badge manual">MVP-6</span> askpass 四 case（username／password-token／SSH passphrase／fingerprint）</td><td>需真 remote，macOS 實機；取消明確失敗可重試</td></tr>
+                    <tr><td>4</td><td><span class="badge manual">MVP-7</span> merge feature/conflict → banner＋三鈕；Abort 回復乾淨；<strong>Continue 完成 merge</strong></td><td>Continue 斷言為 final review 補上</td></tr>
+                    <tr><td>5</td><td><span class="badge manual">MVP-11</span> dirty tab 外部改檔 → ⟳ →存檔攔截／點 ⟳ → 解決器逐 chunk</td><td>⟳ 點擊入口為 D7 新增</td></tr>
+                    <tr><td>6</td><td><span class="badge manual">M2-S</span> 搜尋跳行＋截斷提示＋清空回 file tree</td><td></td></tr>
+                    <tr><td>7</td><td><span class="badge manual">M2-R</span> StatusBar ↑n／probe ↓•／autofetch ↓n</td><td>需 remote</td></tr>
+                    <tr><td>8</td><td><span class="badge manual">M2-B</span> branch popup 全操作（checkout dirty 擋、new branch、fetch/pull/push）</td><td></td></tr>
+                    <tr><td>9</td><td><span class="badge manual">GUI</span> gui-acceptance skill 實機截圖存證（1/2/4/5/6）</td><td></td></tr>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section>
+            <h2>Lead 裁決紀錄（使用者離線期間，待追認）</h2>
+            <details><summary>D1–D7 共 7 條（點開逐條）</summary><div class="details-body"><ul>
+                <li><strong>D1</strong>：基線 terminalDrawer clamp 測試偶發 flaky（單獨/重跑皆過）→ 判定基線綠。</li>
+                <li><strong>D2</strong>：lib.rs mod 行改為 wave 0 派發前預先註冊＋空 stub（否則 T3/T8 TDD 出不了 RED）。</li>
+                <li><strong>D3</strong>：SearchEvent wire 契約仲裁——Rust 加 <code>rename_all_fields</code> 對齊 <code>fileCount</code>（brief 屬性與 plan TS 契約矛盾）。</li>
+                <li><strong>D4</strong>：偵測到另一 session 同工作樹並行 context-menu 計畫 → 檔案零交集 waves 照常推進、UI waves 前確認其停止；vitest 基線數含其測試。</li>
+                <li><strong>D5</strong>：vitest exclude <code>.superpowers/**</code>（快照測試副本會污染全量數字並在 wave 4 起誤失敗）。</li>
+                <li><strong>D6</strong>：wave 5 排程精化——plan Files 中 T16 與 T19 都動 GitPanel.tsx（wave 表稱 T19 獨立不精確）→ T16 單獨先行。</li>
+                <li><strong>D7</strong>：final review I6（spec ⟳ 入口）採 fable 建議實作（~5 行）而非 descope。</li>
+            </ul></div></details>
+        </section>
+
+        <section>
+            <h2>Minor defer 清單（M3 backlog，fable 逐條裁決：0 條 must-fix）</h2>
+            <details><summary>Fable 新發現 m1–m7（全數 defer）</summary><div class="details-body"><ul>
+                <li>m1 <code>find_col</code> Unicode 變長大小寫（İ 等）可 panic 搜尋執行緒（該次搜尋靜默中斷）→ col 計算同串處理。</li>
+                <li>m2 非 ready 時 fs/focus refresh 寫 lastError 噪音 → refresh 開頭 gate。</li>
+                <li>m3 單飛窗內變更不補跑（自癒於下一訊號）→ 可選 rerun 旗標。</li>
+                <li>m4 同檔雙 split group 時 viewRegistry 覆蓋 → unregister 帶 view 比對。</li>
+                <li>m5 退化「採用磁碟版」不清 dirty → 補 markDirty(false)。</li>
+                <li>m6 離開搜尋不取消 Rust 端 → cleanup 遞增 generation。</li>
+                <li>m7 discardAll 把 conflicted 檔列入 restore（merge 中報錯浮出，無資料風險）→ 排除或提示。</li>
+            </ul></div></details>
+            <details><summary>各 task review 的 Minor（~30 條，全數 defer，摘選代表）</summary><div class="details-body"><ul>
+                <li>T5 socket 殘檔不清理（temp_dir、pid+random 不撞名）。</li>
+                <li>T14 BranchPopover notice 不重置；New branch placeholder 未走 i18n。</li>
+                <li>T15 stage/unstage 後選中列陳舊（自癒於重新點選）；rail 徽章縮值（窄軌合理）。</li>
+                <li>T18 非空→非空 query 的 250ms 舊結果殘留；revealLine 無下界 clamp。</li>
+                <li>T19 間隔輸入 onChange 即 clamp（打不出 45）→ 建議 onBlur clamp；radiogroup 語意混用。</li>
+                <li>T4/T7 linked worktree（.git 為檔案）場景漏判 in-progress／refs watch——brief 範圍外，worktree 支援時處理。</li>
+                <li>完整清單見 <code>.superpowers/sdd/m2-progress.md</code> 各「Minor findings」分節。</li>
+            </ul></div></details>
+        </section>
+
+        <section>
+            <h2>Git 狀態提醒</h2>
+            <div class="callout ok">依 no-git 約束，本 loop 未執行任何 <code>git add/commit</code>——M2 全部變更（新增約 30 檔、修改約 20 檔）都留在工作樹。plan 內各 task 的建議 commit 訊息保留在 <code>docs/superpowers/plans/2026-07-03-yuzora-m2-git-search.md</code> 各 task 的 Step「Commit」區塊，可作 staging 分組參考。你先前 staged 的 <code>D .gitignore</code> 未被觸碰。</div>
+        </section>
+    </div>
+
+    <div id="timeline" class="tab-content">
+        <section>
+            <h2>執行時間軸（2026-07-03）</h2>
+            <div class="timeline">
+                <div class="timeline-item"><div class="date">01:41</div><div class="content"><strong>基線驗證</strong><p>vitest 56/56（flaky 排查後判綠）、cargo 16/16、tsc 0。建 ledger。</p></div></div>
+                <div class="timeline-item"><div class="date">01:45–02:10</div><div class="content"><strong>Wave 0</strong>（T1/T2/T3/T8/T10 併行）<p>T3 修裸 ? panic、T8 修 fileCount 契約。lead 統一補 lib.rs 註冊。偵測到並行 context-menu session（D4）。</p></div></div>
+                <div class="timeline-item"><div class="date">02:10–02:21</div><div class="content"><strong>Wave 1</strong>（T4 ∥ T9）<p>T9 修 pull/push 的 _cmd 後綴；發現快照污染 vitest → D5 exclude。</p></div></div>
+                <div class="timeline-item"><div class="date">02:21–02:38</div><div class="content"><strong>Wave 2</strong>（T5→T7 序列 ∥ T11）<p>T11 修 autofetch 背景靜默鐵律破口（refreshQuiet）。</p></div></div>
+                <div class="timeline-item"><div class="date">02:38–02:51</div><div class="content"><strong>Wave 3</strong>（T6 ∥ T12 ∥ T13）<p>T6 補 conflict op 白名單；T13 完成 @codemirror/merge API 核對（T17 關鍵輸入）。</p></div></div>
+                <div class="timeline-item"><div class="date">02:51–03:13</div><div class="content"><strong>Wave 4</strong>（T14 ∥ T15 ∥ T18，設計對稿 wave）<p>T15 修 diff header badge＋節標 padding；T14 對稿抽查 10/10。</p></div></div>
+                <div class="timeline-item"><div class="date">03:13–03:41</div><div class="content"><strong>Wave 5</strong>（T16 先行 → T17 ∥ T19，D6 排程精化）<p>T17 修 takeDisk 污染＋saveFile catch＋測試缺口（資料安全核心）。</p></div></div>
+                <div class="timeline-item"><div class="date">03:41–04:00</div><div class="content"><strong>Wave 6</strong>（T20 收尾）<p>fixture 產生器＋manual checklist＋五件套全綠＋tauri:dev smoke 乾淨。</p></div></div>
+                <div class="timeline-item"><div class="date">04:00–04:45</div><div class="content"><strong>Fable final review → 批修 → Ready</strong><p>唯一 fable 找出 C1＋I1-I6；單一 opus fixer 批修 7 項；lead 聚焦驗證五件套全綠＋逐項代碼抽查。</p></div></div>
+            </div>
+        </section>
+    </div>
+
+    <div class="actions">
+        <button class="btn" onclick="window.print()">Print / PDF</button>
+        <button class="btn" onclick="copyFollowup()">Copy 驗收回饋 Prompt</button>
+    </div>
+</div>
+
+<script>
+function showTab(id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    event.target.classList.add('active');
+}
+function copyFollowup() {
+    const text = `M2 手動驗收回饋（對照 docs/superpowers/checklists/m2-manual-checklist.md）：
+- 通過項：[填入編號]
+- 失敗項與現象：[編號＋重現步驟＋預期/實際]
+- Minor defer 清單中要提前處理的：[m 編號或 task Minor]
+- Lead 裁決 D1–D7 追認結果：[全部追認 / 有異議項]
+請依回饋修復並更新 checklist。`;
+    navigator.clipboard.writeText(text);
+    event.target.textContent = 'Copied!';
+    setTimeout(() => event.target.textContent = 'Copy 驗收回饋 Prompt', 1500);
+}
+</script>
+</body>
+</html>

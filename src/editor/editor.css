@@ -1,0 +1,106 @@
+.editor-pane { flex: 1; min-width: 0; overflow: auto }
+.editor-pane .cm-editor { height: 100%; font-family: var(--font-mono, monospace); font-size: 13px }
+.editor-pane .cm-editor.cm-focused { outline: none }
+.special-file { padding: 24px; font-size: 13px; color: var(--ink-2) }
+.special-actions { display: flex; gap: 8px; margin-top: 12px }
+.special-actions button {
+    padding: 6px 10px;
+    font-size: 13px;
+    color: var(--ink-1);
+    background: transparent;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-xs);
+    cursor: pointer;
+}
+.special-actions button:hover { background: var(--yz-hover) }
+
+/* Merge-conflict chunk styling — no design reference, tokens extended: ours in
+   accent at low alpha, theirs in blue at low alpha, marker lines a neutral gray.
+   The action widget floats a small three-button toolbar above each block. */
+.cm-conflict-ours { background: rgba(var(--yz-accent-rgb), 0.1) }
+.cm-conflict-theirs { background: rgba(47, 107, 255, 0.1) }
+.cm-conflict-marker { background: var(--paper-3); color: var(--ink-3) }
+.cm-conflict-actions { display: flex; gap: 6px; padding: 4px 0 2px }
+.cm-conflict-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--ink-1);
+    background: var(--paper-0);
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-xs);
+    cursor: pointer;
+}
+.cm-conflict-btn:hover { background: var(--yz-hover) }
+
+/* ---- LSP semantic tokens (T8) ----------------------------------------------
+   Layered *over* the Lezer baseline highlight (semantic marks add colour, they
+   don't replace syntax). No design reference for code colour, so the palette is
+   a systematic extension of the existing theme tokens: nine roles across a
+   purple/green/orange/blue/amber/teal spread, tuned per theme for contrast on
+   the paper (light) vs ink (dark) editor background. Each of the 22 standard LSP
+   token types + `decorator` gets a `cm-st-<type>` class; the 10 standard
+   modifiers stack as additive `cm-st-mod-<modifier>` classes (typographic only,
+   theme-invariant). The `.cm-editor` scoping raises specificity so semantic
+   colour wins over the single-class Lezer highlight tokens. */
+.cm-editor {
+    --st-keyword: #9333a8;   /* keyword / modifier / operator */
+    --st-string: #2f8f5f;    /* string */
+    --st-number: #b5651d;    /* number / regexp / enumMember (constant-like) */
+    --st-comment: #8a857a;   /* comment */
+    --st-func: #2456cc;      /* function / method / event */
+    --st-type: #b5830a;      /* namespace / type / class / enum / interface / struct / typeParameter */
+    --st-macro: #0e7c86;     /* macro / decorator */
+    --st-param: #0f766e;     /* parameter */
+    --st-var: #3f3d38;       /* variable / property */
+}
+.dark .cm-editor {
+    --st-keyword: #d59be6;
+    --st-string: #74d6a0;
+    --st-number: #e0a56a;
+    --st-comment: #7c7889;
+    --st-func: #82b4ff;
+    --st-type: #e0b341;
+    --st-macro: #5fc9d8;
+    --st-param: #5fd6c0;
+    --st-var: #cfcbc3;
+}
+
+.cm-editor .cm-st-keyword { color: var(--st-keyword) }
+.cm-editor .cm-st-modifier { color: var(--st-keyword) }
+.cm-editor .cm-st-operator { color: var(--st-keyword) }
+.cm-editor .cm-st-string { color: var(--st-string) }
+.cm-editor .cm-st-number { color: var(--st-number) }
+.cm-editor .cm-st-regexp { color: var(--st-number) }
+.cm-editor .cm-st-enumMember { color: var(--st-number) }
+.cm-editor .cm-st-comment { color: var(--st-comment); font-style: italic }
+.cm-editor .cm-st-function { color: var(--st-func) }
+.cm-editor .cm-st-method { color: var(--st-func) }
+.cm-editor .cm-st-event { color: var(--st-func) }
+.cm-editor .cm-st-namespace { color: var(--st-type) }
+.cm-editor .cm-st-type { color: var(--st-type) }
+.cm-editor .cm-st-class { color: var(--st-type) }
+.cm-editor .cm-st-enum { color: var(--st-type) }
+.cm-editor .cm-st-interface { color: var(--st-type) }
+.cm-editor .cm-st-struct { color: var(--st-type) }
+.cm-editor .cm-st-typeParameter { color: var(--st-type); font-style: italic }
+.cm-editor .cm-st-macro { color: var(--st-macro) }
+.cm-editor .cm-st-decorator { color: var(--st-macro) }
+.cm-editor .cm-st-parameter { color: var(--st-param) }
+.cm-editor .cm-st-variable { color: var(--st-var) }
+.cm-editor .cm-st-property { color: var(--st-var) }
+
+/* Modifiers — additive, typographic, theme-invariant. */
+.cm-editor .cm-st-mod-declaration { font-weight: 600 }
+.cm-editor .cm-st-mod-definition { font-weight: 600 }
+.cm-editor .cm-st-mod-readonly { font-style: italic }
+.cm-editor .cm-st-mod-static { font-style: italic }
+.cm-editor .cm-st-mod-deprecated { text-decoration: line-through }
+.cm-editor .cm-st-mod-abstract { font-style: italic }
+.cm-editor .cm-st-mod-async { font-style: italic }
+.cm-editor .cm-st-mod-modification { text-decoration: underline }
+.cm-editor .cm-st-mod-documentation { opacity: 0.85 }
+.cm-editor .cm-st-mod-defaultLibrary { filter: saturate(0.6) }
+/* deprecated + modification both drive text-decoration and would otherwise clobber
+   each other at equal specificity — combine so a deprecated *and* modified token
+   keeps both cues. */
+.cm-editor .cm-st-mod-deprecated.cm-st-mod-modification { text-decoration: underline line-through }

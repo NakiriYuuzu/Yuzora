@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yuzora M3 完成報告 — LSP Milestone Close-out</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 980px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.25rem; }
+.metric-card .value { font-size: 1.7rem; font-weight: 700; font-family: var(--font-mono); }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+.metric-card .trend { font-size: 0.78rem; font-weight: 600; margin-top: 0.25rem; }
+.trend.up { color: var(--color-success); }
+.trend.warn { color: var(--color-warning); }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.75rem 1.1rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; }
+p + p { margin-top: 0.5rem; }
+.lead { color: var(--color-text-secondary); font-size: 0.95rem; margin-bottom: 1rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; overflow-x: auto; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); }
+.chart-caption { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.5rem; }
+
+.timeline { position: relative; padding-left: 2rem; }
+.timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--color-border); }
+.timeline-item { position: relative; margin-bottom: 1.25rem; }
+.timeline-item::before { content: ''; position: absolute; left: -2rem; top: 0.5rem; width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); }
+.timeline-item .date { font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 600; font-family: var(--font-mono); }
+.timeline-item .content { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; margin-top: 0.4rem; }
+.timeline-item .content p { font-size: 0.9rem; color: var(--color-text-secondary); }
+
+details { margin-bottom: 1rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.92rem; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-surface-soft); font-size: 0.9rem; }
+details .details-body ul { padding-left: 1.25rem; }
+details .details-body li { margin-bottom: 0.35rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--color-border); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+.table-wrap { overflow-x: auto; margin-bottom: 1rem; }
+tbody tr:hover { background: var(--color-surface-soft); }
+
+.badge { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
+.badge.clean { background: rgba(93,184,114,0.15); color: #2e7d46; }
+.badge.fixed { background: rgba(212,160,23,0.15); color: #96700f; }
+.badge.critical { background: rgba(198,69,69,0.15); color: var(--color-error); }
+.badge.major { background: rgba(198,69,69,0.13); color: var(--color-error); }
+.badge.minor { background: rgba(93,184,166,0.15); color: #2d7d6e; }
+.badge.done { background: rgba(93,184,114,0.15); color: #2e7d46; }
+.badge.manual { background: rgba(204,120,92,0.15); color: var(--color-accent-active); }
+.badge.defer { background: rgba(108,106,100,0.15); color: var(--color-text-secondary); }
+
+code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-surface); padding: 0.1em 0.35em; border-radius: 4px; }
+.mono { font-family: var(--font-mono); }
+
+.callout { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.25rem; margin-bottom: 1rem; background: var(--color-surface-soft); font-size: 0.92rem; }
+.callout.warn { border-left: 4px solid var(--color-warning); }
+.callout.ok { border-left: 4px solid var(--color-success); }
+.callout.info { border-left: 4px solid var(--color-info); }
+
+.finding { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.1rem 1.25rem; margin-bottom: 1.1rem; }
+.finding .fhead { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.finding .fhead .fid { font-family: var(--font-mono); font-weight: 700; font-size: 0.9rem; color: var(--color-accent-active); }
+.finding .fhead .ftitle { font-weight: 700; font-size: 0.95rem; }
+.finding .frow { font-size: 0.9rem; margin-top: 0.35rem; }
+.finding .frow b { color: var(--color-text); }
+.finding .frow .tag { display: inline-block; min-width: 3.4em; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-secondary); font-weight: 700; }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; }
+.scorecard .name { font-weight: 700; font-size: 0.85rem; }
+.scorecard .score { font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--color-accent-active); }
+.scorecard .basis { font-size: 0.78rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+
+@media print { .tabs, .actions { display: none; } .tab-content { display: block !important; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">M3 Close-out Report</div>
+        <h1>Yuzora M3 — LSP Adapter Manager 與完整 LSP Surface</h1>
+        <p class="meta">yuzora-loop 閉環（controller ＋ opus-only subagents，撰寫／review 分離）&middot; 2026-07-03 ~ 2026-07-05 &middot; 15 tasks / 7 waves / 1 fable 最終 review</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p><strong>M3 判定：自動側完結（Ready），實機 checklist 待使用者配合。</strong>全部 15 個 tasks 跨 wave 0–6 落地，四語言（TypeScript／JavaScript、Python、Rust、Markdown）取得依 server 宣告降級的完整 LSP surface：diagnostics、hover、go to definition、references、rename、completion、code actions、document／workspace symbols、semantic tokens、format on save，另含 Markdown preview 與七個 curated server 一鍵安裝。五件套（vitest／tsc／build／cargo／fmt）自基線 <strong>305/78</strong> 單調成長至 <strong>534/168＋1 ignored</strong>，全程無退化、無 Errors 行；P4 對抗 review 累計 <strong>36 輪修 125 條 findings</strong> 後各 wave dry pass，fable 最終 review 找出 3 條（零 major）＋驗證輪 1 條（M3C-F1）全數修復；<code>tauri:dev</code> smoke PASS。全程 git 僅唯讀，所有變更留在工作樹待你檢視。剩餘工作：<code>m3-manual-checklist.md</code> 的 12 主項＋歷史累積 A–H 章的 GUI／實機驗收（需真 server 與 <code>gui-acceptance</code> skill）。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">15/15</div><div class="label">Tasks 完成（7 waves）</div><div class="trend up">各 wave dry pass</div></div>
+        <div class="metric-card"><div class="value">534</div><div class="label">vitest 通過（59 檔）</div><div class="trend up">基線 305 → +229</div></div>
+        <div class="metric-card"><div class="value">168</div><div class="label">cargo 通過（+1 ignored）</div><div class="trend up">基線 78 → +90</div></div>
+        <div class="metric-card"><div class="value">125</div><div class="label">修復的 findings</div><div class="trend warn">36 輪對抗 review</div></div>
+        <div class="metric-card"><div class="value">12+</div><div class="label">待實機驗收項</div><div class="trend warn">GUI／真 server</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab(event,'overview')">總覽 · 成果</button>
+        <button class="tab" onclick="showTab(event,'quality')">品質數據</button>
+        <button class="tab" onclick="showTab(event,'findings')">重大 Findings</button>
+        <button class="tab" onclick="showTab(event,'arch')">架構決策</button>
+        <button class="tab" onclick="showTab(event,'residual')">殘留 · 實機驗收</button>
+        <button class="tab" onclick="showTab(event,'learnings')">LEARNINGS</button>
+    </div>
+
+    <!-- ============ 總覽 · 成果 ============ -->
+    <div id="overview" class="tab-content active">
+        <section>
+            <h2>M3 目標與架構</h2>
+            <p class="lead">讓使用者在 Yuzora 內對四種語言取得接近完整的 LSP 輔助，能力依 server 宣告逐項降級；由 adapter manager 管理 server 生命週期、安裝狀態與 per-workspace 覆寫，並提供 Markdown preview。接續 M2 的「集中式 Rust service ＋事件驅動前端」骨架，成三段式架構。</p>
+            <div class="table-wrap"><table>
+                <thead><tr><th>層</th><th>模組</th><th>職責</th></tr></thead>
+                <tbody>
+                    <tr><td>Rust process 層</td><td><code>lsp_service.rs</code>＋<code>lsp_adapters.rs</code>＋<code>lsp_config.rs</code>＋<code>lsp_download.rs</code></td><td>curated adapter registry、<code>~/.yuzora/lsp.json</code> 設定（canonical path 比對／stale 偵測）、lazy spawn／Content-Length JSON-RPC framing／stdio 橋接 Tauri Channel／crash 退避重啟（連 3 次→Crashed）／JSON-RPC trace 落盤／七 server 一鍵安裝。<strong>只管 process 生命週期與 bytes 搬運，不解析 LSP 語意。</strong></td></tr>
+                    <tr><td>前端 client glue</td><td><code>transport.ts</code>／<code>lspManager.ts</code>／<code>lspExtensions.ts</code>／<code>workspace.ts</code>／<code>lspStore.ts</code>／<code>LspBridge.tsx</code></td><td><code>@codemirror/lsp-client</code>（官方，M1 spike 選定）＋自寫 <code>TauriTransport</code> 橋接 Rust process；per (workspace, language) lazy client、大檔守衛、五態反應式狀態；initialize 握手與各 feature 請求全在此層。</td></tr>
+                    <tr><td>自寫 editor extensions</td><td><code>codeActions.ts</code>／<code>semanticTokens.ts</code>／<code>diagnosticsPull.ts</code>／<code>renameCompat.ts</code>／<code>workspace.ts</code>／EditorPane 聚焦</td><td>M1 spike「需自寫清單」6 項：code actions UI、semantic tokens highlighting、diagnostics pull-loop、rename <code>documentChanges</code> 相容層、<code>Workspace</code> 跨檔行為、跳轉後聚焦。掛在 <code>EditorPane</code> 的 CM6 extension 組裝點。</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section>
+            <h2>成果一覽（per wave）</h2>
+            <div class="table-wrap"><table>
+                <thead><tr><th>Wave</th><th>Tasks</th><th>一句話成果</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>0</strong></td><td>T1／T2／T3</td><td>lib.rs 預註冊 4 mod＋空 stub；T1 M2 清債（m1–m7＋代表 Minor＋fmt 債）；T2 <code>lsp_adapters</code> curated registry（四語言七 adapter，9 測）；T3 <code>lsp_config</code>（<code>lsp.json</code> load/save/resolve/stale，14 測）。</td></tr>
+                    <tr><td><strong>1</strong></td><td>T4／T5</td><td>T4 <code>lsp_service</code> process manager（framing／which／lifecycle／crash 退避／trace tee，27 測）＋lib.rs 9 handler；T5 前端 LSP types＋10 個 ipc wrapper（Channel 模式）；i18n 最小字串表。</td></tr>
+                    <tr><td><strong>2</strong></td><td>T6／T13</td><td>T6 前端 client glue（<code>TauriTransport</code>／<code>lspManager</code>／完整 <code>YuzoraWorkspace</code>／<code>lspStore</code>／<code>LspBridge</code>，大檔守衛＋五態推導）；T13 Markdown preview（<code>markdown-it</code>＋DOMPurify sanitize）。</td></tr>
+                    <tr><td><strong>3</strong></td><td>T7／T8／T9</td><td>T7 code actions（掛 <code>@codemirror/lint</code> <code>Diagnostic.actions</code>）；T8 semantic tokens（delta 解碼＋<code>Decoration.mark</code> 疊 Lezer baseline，22 type＋10 modifier 雙主題）；T9 diagnostics pull-loop＋rename <code>documentChanges</code> 相容層。</td></tr>
+                    <tr><td><strong>4</strong></td><td>T10</td><td>EditorPane LSP 整合（async mount／wire T7·T8·serverDiagnostics／format-save flush＋drift guard／跳轉聚焦）＋document／workspace symbols（兩形狀攤平＋<code>SymbolPicker</code> cmdk 雙模式＋palette 入口）。</td></tr>
+                    <tr><td><strong>5</strong></td><td>T12／T11</td><td>T12 Settings LSP section（四語言卡／profile 切換／scope toggle／stale 清除重綁／install UI／trace／format-on-save／<code>openSettings</code> 全域 API）；T11 StatusBar <code>displayFor</code> 五態＋Missing／Failed 點擊鏈。</td></tr>
+                    <tr><td><strong>6</strong></td><td>T14／T15</td><td>T14 七 curated server 一鍵安裝（binary×3 下載＋SHA＋quarantine／npm×3 私有 prefix／pylsp venv，async＋spawn_blocking）；T15 fixture 產生器（四語言冪等）＋<code>m3-manual-checklist</code>（12 主項＋歷史 A–H）。</td></tr>
+                    <tr><td><strong>closeout</strong></td><td>—</td><td>fable 最終 review（使用者指令，唯一非 opus 例外）→ 3 findings＋驗證輪 M3C-F1 修復；本結案報告；實機 checklist 移交使用者。</td></tr>
+                </tbody>
+            </table></div>
+            <p class="chart-caption">全部 subagent 一律 opus（撰寫／review 分離、每輪全新 reviewer）；唯 M3 完結後最終 review 依使用者明示指令派 fable subagent。詳見各 <code>.claude/loop/runs/2026-07-0X-m3-waveN.md</code>。</p>
+        </section>
+
+        <section>
+            <h2>執行時間軸</h2>
+            <div class="timeline">
+                <div class="timeline-item"><div class="date">07-03 16:18</div><div class="content"><strong>基線 · Wave 0</strong><p>實測基線 vitest 305/305（40 檔）、cargo 78＋1 ignored、fmt 紅（git_log.rs M2 遺留）。lib.rs 預註冊＋T1/T2/T3 並行；3 輪 opus review（F2/F-1 修、F1/F3 defer）dry pass → 325/103、fmt 轉綠。</p></div></div>
+                <div class="timeline-item"><div class="date">07-03 17:38</div><div class="content"><strong>Wave 1</strong>（T4 ∥ T5 ∥ i18n）<p>process manager 六輪對抗 review 修 13 findings（check-then-insert 併發 reserve／孤兒 process 兜底 Drop+Weak／framing 三層防禦）dry pass → 340/132。</p></div></div>
+                <div class="timeline-item"><div class="date">07-03 21:13</div><div class="content"><strong>Wave 2</strong>（T6 ∥ T13，lead 統一 bun add）<p>12 輪 ultracode 對抗 review 修 47 項 dry pass——sanitizer 反覆冒新 CSS 注入通道（style tag→style attr→class attr），最終以 <code>contain:paint</code> 根因斷 position:fixed 逃逸收斂 → 421/132。</p></div></div>
+                <div class="timeline-item"><div class="date">07-04 10:00</div><div class="content"><strong>Wave 3</strong>（T7 ∥ T8 ∥ T9，2 並行 implementer）<p>R1 撈 25 raw→11 cluster→9 修 2 killed（stale-wins generation guard／unchanged 誤清→保留／only:quickfix）；R2 4 全新 lens 真 dry pass（61 反證）→ 447/132。</p></div></div>
+                <div class="timeline-item"><div class="date">07-04 23:2x</div><div class="content"><strong>Wave 4</strong>（T10＋symbols）<p>四輪對抗 review 26 修 dry pass——2 個跨 reviewer 收斂的 major（unchanged stale 座標／format 靜默存檔遺失）、NUL byte 檔案腐壞、diagnostics wiring 通道殘缺糾正 → 492/132。</p></div></div>
+                <div class="timeline-item"><div class="date">07-05 01:3x</div><div class="content"><strong>Wave 5</strong>（T12 → T11 序列）<p>四輪 15 修——R3-F1 根因修（reloadDocument bump-after-success 保全未存 buffer）為結構性不變式修復 → 530/132。</p></div></div>
+                <div class="timeline-item"><div class="date">07-05 12:3x</div><div class="content"><strong>Wave 6</strong>（T14 ∥ T15）<p>兩輪 9 修 dry pass——W6A-F1 install 無視 workspace override 死路→resolve 同源化、W6A-F2 sync command 佔 main thread 違 A2→async。cargo 132→165；<code>tauri:dev</code> smoke PASS。<strong>M3 自動側完結。</strong></p></div></div>
+                <div class="timeline-item"><div class="date">07-05 14:0x</div><div class="content"><strong>Close-out</strong>（fable 最終 review）<p>3 findings（零 major）＋驗證輪 M3C-F1（文件宣稱與 client cache 現實的兩輪校正）全修，最終輪 CLEAN → 534/168＋1。結案報告產出，實機 checklist 移交。</p></div></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- ============ 品質數據 ============ -->
+    <div id="quality" class="tab-content">
+        <section>
+            <div class="chart-container">
+                <h3>五件套測試數成長（vitest ／ cargo，各 wave 收尾實測）</h3>
+                <svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; min-width:640px;">
+                    <line x1="60" y1="190" x2="700" y2="190" stroke="#e6dfd8" stroke-width="1"/>
+                    <line x1="60" y1="150" x2="700" y2="150" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                    <line x1="60" y1="110" x2="700" y2="110" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                    <line x1="60" y1="70" x2="700" y2="70" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                    <line x1="60" y1="30" x2="700" y2="30" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                    <text x="26" y="194" font-size="10" fill="#6c6a64">0</text>
+                    <text x="20" y="154" font-size="10" fill="#6c6a64">140</text>
+                    <text x="20" y="114" font-size="10" fill="#6c6a64">280</text>
+                    <text x="20" y="74" font-size="10" fill="#6c6a64">420</text>
+                    <text x="20" y="34" font-size="10" fill="#6c6a64">560</text>
+                    <!-- vitest: 305,325,340,421,447,492,530,532,534 -->
+                    <polyline points="70,103 148,97 226,93 304,70 382,62 460,49 538,39 616,38 685,37" fill="none" stroke="#cc785c" stroke-width="2.5"/>
+                    <!-- cargo: 78,103,132,132,132,132,132,165,168 -->
+                    <polyline points="70,168 148,161 226,152 304,152 382,152 460,152 538,152 616,143 685,142" fill="none" stroke="#5db8a6" stroke-width="2.5"/>
+                    <circle cx="685" cy="37" r="4" fill="#cc785c"/><text x="640" y="28" font-size="11" fill="#a9583e" font-weight="700">534</text>
+                    <circle cx="685" cy="142" r="4" fill="#5db8a6"/><text x="655" y="136" font-size="11" fill="#2d7d6e" font-weight="700">168</text>
+                    <circle cx="70" cy="103" r="3" fill="#cc785c"/><text x="52" y="97" font-size="10" fill="#a9583e" font-weight="700">305</text>
+                    <circle cx="70" cy="168" r="3" fill="#5db8a6"/><text x="58" y="182" font-size="10" fill="#2d7d6e" font-weight="700">78</text>
+                    <text x="62" y="208" font-size="10" fill="#6c6a64">基線</text>
+                    <text x="140" y="208" font-size="10" fill="#6c6a64">W0</text>
+                    <text x="218" y="208" font-size="10" fill="#6c6a64">W1</text>
+                    <text x="296" y="208" font-size="10" fill="#6c6a64">W2</text>
+                    <text x="374" y="208" font-size="10" fill="#6c6a64">W3</text>
+                    <text x="452" y="208" font-size="10" fill="#6c6a64">W4</text>
+                    <text x="530" y="208" font-size="10" fill="#6c6a64">W5</text>
+                    <text x="608" y="208" font-size="10" fill="#6c6a64">W6</text>
+                    <text x="660" y="208" font-size="10" fill="#6c6a64">close</text>
+                    <rect x="470" y="222" width="10" height="10" fill="#cc785c"/><text x="486" y="231" font-size="11" fill="#141413">vitest</text>
+                    <rect x="545" y="222" width="10" height="10" fill="#5db8a6"/><text x="561" y="231" font-size="11" fill="#141413">cargo</text>
+                </svg>
+                <p class="chart-caption">每個 wave 收尾以五件套全綠為 gate；vitest 每 wave 只增（含 P4 修復新增測試），cargo 於 wave 6 T14 一鍵安裝落地時跳升（+29 純函式測，closeout M3F-2 再 +3）。基線以 controller <strong>實測</strong>為準（plan 記載 172/51 已過時）。</p>
+            </div>
+        </section>
+
+        <section>
+            <h2>P4 對抗 review 統計</h2>
+            <p class="lead">每輪派全新 opus reviewer（撰寫者與 reviewer 嚴格分離），findings 經裁決後回派原 implementer 修復，整輪重跑至 dry pass；controller 對 subagent 的每項證據親自重跑驗證。</p>
+            <div class="table-wrap"><table>
+                <thead><tr><th>Wave</th><th>輪數</th><th>修復數</th><th>代表 findings（根因類）</th></tr></thead>
+                <tbody>
+                    <tr><td>0</td><td>3</td><td>2</td><td>gitStore ready-gate 完整鏈（F2／F-1）；F1 find_col cosmetic＋F3 benign 均 defer</td></tr>
+                    <tr><td>1</td><td>6</td><td>13</td><td>check-then-insert 併發雙 spawn；孤兒 process Drop+Weak 兜底；parse_frames 三層防禦（MAX_FRAME／MAX_HEADER／resync）</td></tr>
+                    <tr><td>2</td><td>12</td><td>47</td><td>sanitizer CSS 注入通道逐層（style tag→attr→class）；<code>contain:paint</code> 根因防禦；併發 A→B→A client 快取／in-flight 身分守衛</td></tr>
+                    <tr><td>3</td><td>2</td><td>9</td><td>25 raw → 11 cluster → 9 修 2 killed：generation guard（stale-wins）／unchanged→保留／only:quickfix／CSS additive combinator</td></tr>
+                    <tr><td>4</td><td>4</td><td>26</td><td>unchanged 用 stale 座標；format 靜默存檔遺失；NUL byte 檔案腐壞；<code>languageServerSupport</code> 不含 serverDiagnostics 的 wiring 通道糾正</td></tr>
+                    <tr><td>5</td><td>4</td><td>15</td><td>R3-F1 <code>reloadDocument</code> eager bump time bomb → bump-after-success 根因修；install 終態事件 race；stopped→syntaxOnly 五態</td></tr>
+                    <tr><td>6</td><td>2</td><td>9</td><td>W6A-F1 install 無視 workspace override 死路；W6A-F2 sync command 佔 main thread；binary 就地 truncate → temp+rename</td></tr>
+                    <tr><td>closeout</td><td>3</td><td>4</td><td>fable：M3F-1 checklist 矛盾／M3F-2 子程序 hang 無 timeout／M3F-3 workspace guard；驗證輪 M3C-F1 假宣稱校正</td></tr>
+                    <tr style="font-weight:700; background:var(--color-surface-soft);"><td>總計</td><td>36</td><td>125</td><td>每 finding 皆有裁決紀錄（修／killed／defer）；反證累計數百條</td></tr>
+                </tbody>
+            </table></div>
+            <div class="callout ok"><strong>最終五件套（controller 親跑，07-05 15:2x，dry pass 後零程式變更）：</strong>vitest <span class="mono">534 passed（59 檔，無 Errors 行）</span>／tsc <span class="mono">EXIT=0</span>／build <span class="mono">✓ 1.08s</span>／cargo <span class="mono">168 passed；1 ignored</span>／fmt <span class="mono">CLEAN</span>；全 src＋src-tauri NUL 掃描乾淨。</div>
+            <div class="callout info"><strong><code>tauri:dev</code> smoke（plan T15 Step 4，controller 親跑 wave 6 13:4x）：</strong>cargo dev build Finished <span class="mono">14.71s</span>（含新依賴 ureq／sha2／flate2 全編譯）→ <code>Running target/debug/yuzora</code>、VITE ready 163ms、Local :1420、進程存活（pid 28079）、無 panic／error → <strong>PASS</strong>。</div>
+        </section>
+
+        <section>
+            <h2>品質評分（controller 自評，證據見各 wave run file）</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="name">完整性</div><div class="score">5/5</div><div class="basis">15/15 tasks；內容範圍＋自寫清單 6 項＋spike 坑 6 條逐條 coverage 對照無漏</div></div>
+                <div class="scorecard"><div class="name">證據性</div><div class="score">5/5</div><div class="basis">每 task TDD red→green；每 wave 五件套親跑；ledger／run file 全程可追溯</div></div>
+                <div class="scorecard"><div class="name">對抗深度</div><div class="score">5/5</div><div class="basis">36 輪全新 reviewer；併發／資源洩漏／XSS／資料遺失類 major 逐一挖出並根因修</div></div>
+                <div class="scorecard"><div class="name">契約一致性</div><div class="score">5/5</div><div class="basis">Rust serde ↔ TS camelCase 逐鍵；install／startup 雙端同源 resolve（W6A-F1 後）</div></div>
+                <div class="scorecard"><div class="name">風險覆蓋</div><div class="score">4/5</div><div class="basis">自動側完結；真 server features／狀態列實況／安裝實機未驗（12 主項手動）</div></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- ============ 重大 Findings ============ -->
+    <div id="findings" class="tab-content">
+        <section>
+            <h2>重大 findings 精選</h2>
+            <p class="lead">五則最能代表 M3 對抗 review 深度的 finding——問題 → 發現方式 → 根因修。每則的共同特徵：表面症狀之下有結構性根因，controller 拒絕半吊子修法、要求修根因不修引信。</p>
+
+            <div class="finding">
+                <div class="fhead"><span class="fid">R3-F1</span><span class="ftitle">reload 失敗鏈的 keyed remount 抹掉未存 buffer（wave 5）</span><span class="badge major">major</span></div>
+                <div class="frow"><span class="tag">問題</span>wave 5 R2B-F1 修好了「reload-missing 讓 promise settle」後，一位全新 reviewer（w5r3-final）發現 settle 反而觸發 <code>EditorArea</code> 的 keyed remount（<code>key=path:documentGeneration</code>）：舊 pane cleanup 的 buffer 寫回被 generation guard no-op、新 pane <code>getDocument</code> reject 成空白 pane，dirty=true 卻無 view 可存——「re-save 重建」承諾落空。</div>
+                <div class="frow"><span class="tag">發現</span>fresh-context reviewer 對前一輪修復做專項攻擊，controller 親驗五宣稱（workspaceStore 無條件重建 groups → remount → gen-guard no-op → 空白 pane）全數成立。</div>
+                <div class="frow"><span class="tag">根因</span>controller 判定比 reviewer 深一層：<code>documentRegistry</code> 的 <strong>eager bump</strong>（先 <code>delete</code>＋bump generation 才 fetch）本身即 time bomb——bump 後 fetch 失敗，任何 re-render（git poll／LSP 事件）都會引爆同一鏈；reviewer 的近端方案只拆引信、time bomb 仍在。改為 <strong>bump-after-success</strong>（fetch 成功後才遞增 generation）。w5r4-dry 確認此為結構性正確而非時序僥倖：key 與 gen 同源，「該 remount 時 buffer 必 no-op／不該 remount 時 buffer 必存活」成為不變式。</div>
+            </div>
+
+            <div class="finding">
+                <div class="fhead"><span class="fid">W6A-F1</span><span class="ftitle">一鍵安裝無視 workspace override → 裝錯 server 死路（wave 6）</span><span class="badge major">major · breaks-requirement</span></div>
+                <div class="frow"><span class="tag">問題</span>T14 的 <code>lsp_install_server</code> 用自寫 <code>resolve_active</code>，只讀 <code>cfg.defaults</code> → adapter default，從不讀 <code>workspaces</code> override。情境：scope 預設 workspace、override <code>python=pylsp</code>、卡片顯示 pylsp、點安裝卻裝了 pyright → pylsp 永遠 Missing＝死路，違反 A9'「切任一 profile 體驗一致」。</div>
+                <div class="frow"><span class="tag">發現</span>w6r1-rust reviewer 把 implementer 自報的偏差④判為不可接受；controller 親驗 <code>resolve_active</code>（:124-129）與 handler／<code>ipc.ts</code> 皆無 workspace 參數，而現成的 <code>lsp_config::resolve_server</code>（override→defaults，含測試）根本沒被 install 路徑呼叫。</div>
+                <div class="frow"><span class="tag">根因</span>「動作端」（install）與「生效端」（startup）解析邏輯分岔＝「裝的 ≠ 啟動會用的」。修法兩半、簽名契約由 controller 定死：前端 <code>lspInstallServer(workspace, language)</code> 傳 workspacePath；Rust handler ＋<code>workspace: Option&lt;String&gt;</code>，經與 <code>set_server</code> 寫入側同一 <code>canonical_key()</code> helper 正規化後走 <code>resolve_server</code>。<strong>install 的 resolve 鏈與 lsp_service 啟動 resolve 鏈至此完全同源</strong>（沉澱為 LEARNINGS 慣例）。</div>
+            </div>
+
+            <div class="finding">
+                <div class="fhead"><span class="fid">W6A-F2</span><span class="ftitle">sync command 佔 main thread，安裝期餓死全部 IPC（wave 6）</span><span class="badge major">major</span></div>
+                <div class="frow"><span class="tag">問題</span><code>lsp_install_server</code> 寫成非 async 的 <code>#[tauri::command] pub fn</code>，註解卻宣稱「off the UI thread」——與 Tauri v2 事實相反：non-async command 跑在 main thread，而 body 含 blocking <code>ureq</code> 下載＋npm／pip 子行程（分鐘級），安裝期間全部 IPC 餓死。</div>
+                <div class="frow"><span class="tag">發現</span>w6r1-rust reviewer 對照 Tauri v2 執行模型；違反 A2 明列裁決（「同步 blocking＋背景執行緒」）。</div>
+                <div class="frow"><span class="tag">根因</span>改 <code>async fn</code>＋<code>tauri::async_runtime::spawn_blocking</code>（以官方文件為準，InflightGuard 不跨 await、JoinError→Err 收斂）。同時揭露一條暗雷並沉澱為 LEARNINGS：本 codebase 其他 sync command（<code>git_push</code>／<code>git_fetch</code> 等）同屬此類，M3 範圍外未修、記 backlog。</div>
+            </div>
+
+            <div class="finding">
+                <div class="fhead"><span class="fid">M3F-2</span><span class="ftitle">npm/pip 子程序無 timeout，hang 時永鎖安裝（close-out fable review）</span><span class="badge major">minor · latent</span></div>
+                <div class="frow"><span class="tag">問題</span>fable 最終 reviewer 發現 <code>run_command</code>（:456-465）以 <code>.status()</code> 無限等待子行程——npm／pip／venv 若 hang，<code>InflightGuard</code> 永鎖、前端進度永卡。fable 已核 W6A-F4（download 側 timeout）不涵蓋此處，判為真 gap 非重複。</div>
+                <div class="frow"><span class="tag">發現</span>fable fresh-context 審計時對照 <code>git_service.rs</code>（:87／:118 已有現成 deadline poll+kill 模式），指出 install 側漏用。</div>
+                <div class="frow"><span class="tag">根因</span><code>run_command</code> 改 spawn＋deadline <code>try_wait</code> 輪詢＋逾時 <code>kill+wait</code>（逐字仿 git_service）；常數 NPM_PIP 600s／VENV 120s。測試 <code>run_command_times_out_and_kills</code>：sleep 30＋300ms timeout 於 0.34s 回 Err 證明真 kill。殘留：process-group kill（npm 孫程序孤兒）與 git_service 同批工程，記 backlog。</div>
+            </div>
+
+            <div class="finding">
+                <div class="fhead"><span class="fid">M3C-F1</span><span class="ftitle">文件宣稱與 client cache 現實的兩輪校正（close-out）</span><span class="badge minor">minor</span></div>
+                <div class="frow"><span class="tag">問題</span>fable 的 M3F-1 修復把 checklist 第 5 項改為「profile 切換後<strong>重開該語言檔案</strong>即生效」；但驗證輪（m3c-r2-verify）帶著關鍵疑點命中——這是假宣稱。</div>
+                <div class="frow"><span class="tag">發現</span>reviewer 追 <code>lspManager</code> client cache：鍵為 <code>(workspace, language)</code>（:50）、<code>ensureClient</code> cache-hit 直回舊 client（:66-67）、<code>EditorPane</code> unmount 不清 cache，僅 <code>stopWorkspace</code>（workspace 切換）／重啟清除。四路反證（unmount／transport 吞錯／setConfig 不動 workspacePath／redetect 不清 cache）皆不倒。</div>
+                <div class="frow"><span class="tag">根因</span>checklist 兩處措辭改為：新 profile 於 <strong>app 重啟、或切至別 workspace 再切回</strong>（觸發 <code>stopWorkspace</code> 清 cache）後生效；<strong>同 session 同 workspace 重開檔不生效</strong>（cache 以 (workspace, language) 為鍵）。最終驗證輪（m3c-r3-final）對五宣稱逐一對碼核驗 CLEAN。此為 review 對「文件正確性」同等對抗的示範——連修復引入的文件宣稱都要對碼複驗兩輪。</div>
+            </div>
+        </section>
+    </div>
+
+    <!-- ============ 架構決策 ============ -->
+    <div id="arch" class="tab-content">
+        <section>
+            <h2>假設裁決記錄（A1–A9'，2026-07-03 使用者逐項裁決）</h2>
+            <p class="lead">plan 定稿前，9＋1 個架構假設經使用者逐項裁決並回填 plan；以下為落地形態（原建議略述供沿革）。</p>
+            <div class="table-wrap"><table>
+                <thead><tr><th>編號</th><th>主題</th><th>裁決與落地</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>A1</strong></td><td>Workspace 跨檔行為</td><td><strong>完整自訂 YuzoraWorkspace</strong>（原建議＝明確降級）：背景載入未開啟檔＋LRU 20＋rename 背景寫回＋<code>recentlySaved</code> 抑制 watcher＋「dirty 分頁以 buffer 為唯一真相」鐵則。落 T6 <code>workspace.ts</code>、T10 跨檔導航。</td></tr>
+                    <tr><td><strong>A2</strong></td><td>download 依賴／執行模型</td><td><code>ureq</code>＋<code>sha2</code>＋<code>flate2</code>＋<strong>背景執行緒</strong>；全程 emit <code>lsp:install-progress</code>（phase＋percent）。wave 6 W6A-F2 落實為 <code>async fn</code>＋<code>spawn_blocking</code>。</td></tr>
+                    <tr><td><strong>A3</strong></td><td>symbols UI</td><td><strong>cmdk 雙模式選單</strong>（<code>SymbolPicker</code>：document 大綱＋workspace 查詢）。落 T10。</td></tr>
+                    <tr><td><strong>A4</strong></td><td>Markdown 渲染器</td><td><code>markdown-it</code>＋<strong>DOMPurify 白名單 sanitize</strong>。落 T13；FORBID 清單經 wave 2 十一輪硬化（form/input/button/select/textarea/dialog/map/area/style ＋ target/usemap/style/class attr）。</td></tr>
+                    <tr><td><strong>A5</strong></td><td>semantic tokens 配色</td><td><strong>完整 LSP token 對照</strong>（22 type＋10 modifier 全配 <code>cm-st-*</code> class，色彩自主題色票延伸，深淺雙主題；原建議＝最小集）。落 T8 <code>editor.css</code>。</td></tr>
+                    <tr><td><strong>A6</strong></td><td>server 指令名</td><td>照 T2 清單、<strong>官方為準</strong>不鎖定，差異記 report。</td></tr>
+                    <tr><td><strong>A7</strong></td><td>format on save</td><td><strong>預設 OFF（opt-in）</strong>、開關放 Settings LSP 區、localStorage 持久化。落 T6 gating＋T12 UI。</td></tr>
+                    <tr><td><strong>A8</strong></td><td>JSON-RPC trace 落盤</td><td><strong>獨立 trace 檔＋主 log 指標事件</strong>（原建議「併入既有 log」經量級分析修正——trace 一小時可達數十 MB，會沖掉 audit 史）。落 T4 <code>lsp_set_trace</code>（tee 至 <code>~/.yuzora/logs/lsp-trace-*.jsonl</code>，保留 5 份＋50MB 上限，重啟恢復 off）。</td></tr>
+                    <tr><td><strong>A9 / A9'</strong></td><td>發佈策略／一鍵安裝覆蓋</td><td>不 bundle＋<strong>全部 7 個 curated adapter 皆一鍵安裝</strong>，三路徑：binary×3（rust-analyzer .gz／marksman／markdown-oxide 裸 binary，官方 release＋SHA＋quarantine）、npm×3（vtsls／pyright／typescript-language-server，私有 prefix）、pip×1（pylsp，<code>~/.yuzora/servers/pyenv</code> venv）；失敗一律 fallback guided manual。落 T14（第 10 個 handler）。</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section>
+            <h2>兩個 M3 期間定型的關鍵設計</h2>
+            <h3>雙診斷架構：push=serverDiagnostics ／ pull=gated linter</h3>
+            <p>wave 4 對抗 review 糾正了一個事實錯誤：<code>@codemirror/lsp-client</code> 的 <code>languageServerSupport</code> <strong>不含</strong> <code>serverDiagnostics</code>——原「與 baseline serverDiagnostics 互補」的自報不成立，push-only server（如 typescript-language-server）現況會零診斷渲染。定型為：<strong>push 通道</strong>掛 <code>serverDiagnostics()</code>（LSPClient config，含 <code>unsyncedChanges</code> 補償）；<strong>pull 通道</strong>的 <code>linter(lspLintSource)</code> 僅於 <code>diagnosticProvider</code> 存在時掛（gate），並包 try/catch。both-capable server 的雙寫風險記 known limitation，實機驗證。</p>
+            <h3>五態語意：stopped → syntaxOnly</h3>
+            <p><code>LspDisplayState</code> 由前端組合 process status＋client initialized＋檔案分級推導出五態：<code>ready</code>／<code>starting</code>／<code>failed</code>／<code>missing</code>／<code>syntaxOnly</code>。wave 5 B-F2 發現 <code>deriveDisplayState</code> 缺 stopped 分支——「profile 切換＋重新偵測」會讓 Stopped info＋<code>initialized=true</code> 落到 <code>ready</code>，讓死 server 顯示綠 Ready。修法在維持五態 vocabulary 前提下加明確分支 <code>stopped → syntaxOnly</code>（誠實呈現「無活 LSP」），不新增第六態。其餘 lifecycle 缺口（set_server stop 不 emit／initialized 無 per-language reset／profile 切換不重掛 client）記 backlog。</p>
+        </section>
+    </div>
+
+    <!-- ============ 殘留 · 實機驗收 ============ -->
+    <div id="residual" class="tab-content">
+        <section>
+            <h2>殘留與 backlog（誠實列全）</h2>
+            <p class="lead">以下皆經對抗 review 明確裁決 defer／backlog、非阻塞自動側完結；多數屬既有限制或 lifecycle 工程，無現行正確性風險。</p>
+            <div class="table-wrap"><table>
+                <thead><tr><th>項目</th><th>性質</th><th>說明與出處</th></tr></thead>
+                <tbody>
+                    <tr><td>LSP lifecycle 三缺口</td><td><span class="badge defer">backlog</span></td><td>profile 切換不重掛 client（cache 鍵 (ws,lang)）／<code>set_server</code> stop 不 emit（Rust 註解「frontend restarts」未兌現）／<code>initialized</code> 無 per-language reset。install 成功 emit server-status 已部分紓解，stop 側仍在（wave 5／6）。</td></tr>
+                    <tr><td><code>EditorPane.tsx:152</code> F1</td><td><span class="badge defer">backlog</span></td><td><code>getDocument(path).then</code> 無 <code>.catch</code>（M1 既存 mount path，wave 4 經 selectWorkspace 把 server 控制 URI 餵入而擴大可達面）；stale／惡意 URI／檔案被刪 → unhandled rejection＋空 pane＋孤兒 tab，無資料遺失。正解需 error-pane UX 設計，不做半吊子滅音（wave 4／5）。</td></tr>
+                    <tr><td>process-group kill</td><td><span class="badge defer">backlog</span></td><td><code>run_command</code> timeout kill 不殺 process group（npm 孫程序孤兒）；latent、600s 病態逾時才發生，與 git_service 既有 <code>run_git</code> pattern 一致，同批工程（closeout）。</td></tr>
+                    <tr><td>Tauri sync command main-thread</td><td><span class="badge defer">backlog</span></td><td><code>git_push</code>／<code>git_fetch</code> 等既有 sync command 同屬 main-thread 阻塞暗雷（W6A-F2 揭露，M3 範圍外未修）。</td></tr>
+                    <tr><td>Windows RA zip</td><td><span class="badge defer">defer</span></td><td>rust-analyzer Windows 官方為 .zip 非 .gz；Windows RA 誠實 Err 導引手動安裝，zip 解壓支援延後（macOS 驗收平台不受影響，wave 6）。</td></tr>
+                    <tr><td>trace 路徑 getter</td><td><span class="badge defer">backlog</span></td><td>trace 檔路徑無前端 getter，Settings 以說明文字 fallback（wave 5）。</td></tr>
+                    <tr><td>serverId 顯示名</td><td><span class="badge defer">backlog</span></td><td>StatusBar／Settings 直接顯示 serverId 原字串，目錄名→顯示名映射另案（wave 5）。</td></tr>
+                    <tr><td>localStorage polyfill</td><td><span class="badge defer">nit</span></td><td>測試 localStorage mock 散落三處，正確歸宿為 <code>src/test/setup.ts</code>，consolidation 待收斂（wave 4／5）。</td></tr>
+                    <tr><td>palette i18n</td><td><span class="badge defer">nit</span></td><td>CommandPalette 入口 labels 維持全英文（palette 內部一致性優先），全面 i18n 留待 consolidation（wave 4 B6）。</td></tr>
+                    <tr><td>markdown-oxide asset 命名</td><td><span class="badge manual">待實機</span></td><td>markdown-oxide 官方 release asset 命名精確性 T15 實機首驗（wave 6）。</td></tr>
+                    <tr><td>既有限制（非缺陷）</td><td><span class="badge defer">known</span></td><td>split-pane 同檔（既有 m4 單-view 限制，H2）／background-file 升格 stale version（H4）／silent respawn 前端重握手／both-capable server 雙診斷通道／find_col İ 類字元 cosmetic 偏一格／linked worktree（續 defer 至 worktree 里程碑）。</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section>
+            <h2>實機驗收待辦（需使用者配合）</h2>
+            <div class="callout warn">M3 自動側完結，但真 server features、狀態列實況計時、Decoration 像素著色、Radix 彈窗互動、大檔互動、實機安裝下載皆屬 jsdom 測不到——須人在視窗中肉眼確認、實際操作才能勾選。清單見 <code>docs/superpowers/checklists/m3-manual-checklist.md</code>（12 主項＋歷史累積 A–H 章）。</div>
+            <h3>前置環境（兩步）</h3>
+            <div class="chart-container" style="padding:1rem 1.25rem;">
+<pre class="mono" style="font-size:0.82rem; white-space:pre; overflow-x:auto; margin:0;">bun run fixtures/gen-lsp-fixtures.ts        # 產出 fixtures/out/lsp-demo（四語言最小專案，gitignored）
+bun run tauri build --debug --bundles app   # 產 debug .app bundle（Rust 已編譯時 ~30 秒）
+ditto src-tauri/target/debug/bundle/macos/yuzora.app /Applications/yuzora.app && open /Applications/yuzora.app
+# 於 app 內開啟 workspace：fixtures/out/lsp-demo；授權若回 not_installed 請 /mcp reconnect computer-use</pre>
+            </div>
+            <p class="chart-caption">必走 debug bundle → /Applications（<code>tauri dev</code> 的裸 binary 對 <code>request_access</code> 永遠回 not_installed）；驗收須搭配 <code>gui-acceptance</code> skill 截圖存證。</p>
+            <h3>12 主項摘要</h3>
+            <div class="table-wrap"><table>
+                <thead><tr><th>#</th><th>項目</th><th>對應</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td>LSP 啟動 30s 內 Ready；移除 binary → Missing 點擊進 Settings 對應卡高亮</td><td><span class="badge manual">MVP-2</span></td></tr>
+                    <tr><td>2</td><td>kill process → 60s 內 Failed＋stderr 摘要＋log exit code</td><td><span class="badge manual">MVP-3</span></td></tr>
+                    <tr><td>3</td><td>features 十項（hover／completion／def 跨檔／references／rename／code action／document·workspace symbols／semantic 分色／format on save）</td><td><span class="badge manual">features</span></td></tr>
+                    <tr><td>4</td><td>四語言各一輪基礎（diagnostics＋hover）：vtsls／pyright／rust-analyzer／marksman</td><td><span class="badge manual">四語言</span></td></tr>
+                    <tr><td>5</td><td>Settings：profile 切換（含 backlog caveat：非即時重掛）、workspace override、stale 清除／重綁、lsp.json 手改</td><td><span class="badge manual">Settings</span></td></tr>
+                    <tr><td>6</td><td>大檔保護（10–50MB → Syntax only (large file)；單行保護 → Syntax only、不啟 LSP）</td><td><span class="badge manual">大檔</span></td></tr>
+                    <tr><td>7</td><td>crash 退避（連 kill 3 次 → 停止顯示 Failed）</td><td><span class="badge manual">退避</span></td></tr>
+                    <tr><td>8</td><td>Markdown preview（視覺＋即時更新＋contain:paint 不逃逸）</td><td><span class="badge manual">preview</span></td></tr>
+                    <tr><td>9</td><td>一鍵安裝三路徑＋替代 profile＋無 npm/python 錯誤＋in-flight guard＋終態必 done/error</td><td><span class="badge manual">T14 · A9'</span></td></tr>
+                    <tr><td>10</td><td>semantic tokens 深淺雙主題各一輪（含 modifier additive 疊加）</td><td><span class="badge manual">A5</span></td></tr>
+                    <tr><td>11</td><td>跨檔 rename 含未開啟檔背景寫回＋dirty 分頁不覆寫</td><td><span class="badge manual">A1</span></td></tr>
+                    <tr><td>12</td><td>gui-acceptance skill 對關鍵場景截圖存證</td><td><span class="badge manual">GUI</span></td></tr>
+                </tbody>
+            </table></div>
+            <p class="chart-caption">歷史累積 A–H 章另收錄 wave 2–5 各 P5/P6 標注的 gui-acceptance 殘留（冷啟動計時、五態色票、真 server semantic 著色、Radix 雙 dialog 交接、contain:paint 實機、resolver reload-missing 流、trace toggle 實效等），與主清單重疊者補實機觀察角度。</p>
+        </section>
+    </div>
+
+    <!-- ============ LEARNINGS ============ -->
+    <div id="learnings" class="tab-content">
+        <section>
+            <h2>LEARNINGS 沉澱（M3 期間新增）</h2>
+            <p class="lead">M3 對抗 review 過程中被獨立 reviewer 或 controller 撞出的陷阱與慣例，已寫入 <code>.claude/skills/yuzora-loop/LEARNINGS.md</code>（只增不刪、與 SKILL 衝突時取較嚴者）。以下為 2026-07-04／07-05 新增條目。</p>
+            <div class="table-wrap"><table>
+                <thead><tr><th>日期 · 類型</th><th>沉澱</th><th>來源</th></tr></thead>
+                <tbody>
+                    <tr><td>07-04 <span class="badge fixed">tighten</span></td><td>不可信 HTML 注入有全域 CSS 框架（Tailwind）的 body portal 時，sanitizer 注入面窮舉<strong>必含應用層屬性 class/id</strong>（攻擊者可用已編譯的 utility class 重建 overlay）；且逐屬性黑名單是在跟 CSS 賽跑，應優先做 CSS 定位模型<strong>根因防禦</strong>（<code>contain:paint</code> 建 containing block，一次斷 position:fixed 逃逸）。</td><td>wave 2 R9→R11</td></tr>
+                    <tr><td>07-05 <span class="badge critical">trap</span></td><td>subagent Write 可能夾入 <strong>NUL byte</strong>（0x00）——檔案被 grep/rg/file 判 binary 而對程式碼搜尋隱形，tsc/vitest 照綠、git 仍當 text diff；每輪修復後掃全 src。</td><td>wave 4 R2-1</td></tr>
+                    <tr><td>07-05 <span class="badge fixed">tighten</span></td><td>修復批次的<strong>單檔</strong> vitest 驗證不夠——controller 整合驗證必跑<strong>全量</strong> vitest 並檢查「Errors／Unhandled Rejection」行；N passed 但 Errors 1 不算綠（跨測試檔交互如「新 production 依賴未在別檔 mock」只在全量跑才現形）。</td><td>wave 4 批次 C</td></tr>
+                    <tr><td>07-05 <span class="badge fixed">tighten</span></td><td><code>async IIFE</code> 的 unhandled-rejection 修復必須<strong>窮舉該 IIFE 全部 reject 源</strong>（await 鏈逐個列：getDocument／request／initializing…），只補單一 <code>.catch</code> 會留下「保證不完整」。</td><td>wave 4 R3-1</td></tr>
+                    <tr><td>07-05 <span class="badge critical">trap</span></td><td>keyed-remount 生態（<code>key=path:generation</code>）中「先 bump 再 fetch」的 <strong>eager bump 是資料遺失 time bomb</strong>——世代號只可在新內容真正到位後遞增，否則 fetch 失敗後任何 re-render 都會 remount 掉活 pane、cleanup 的 write-back 被 gen guard no-op 而永久丟失未存 buffer。</td><td>wave 5 R3-F1</td></tr>
+                    <tr><td>07-05 <span class="badge fixed">tighten</span></td><td>裁決修法時<strong>修根因不修引信</strong>——reviewer 首選方案「不清 flag 避開 re-render」只拆近端引信（危險狀態仍在，任何他源 re-render 照樣引爆）；controller 必問「此修之後，原危險狀態本身還存在嗎」，答存在即改修根因。</td><td>wave 5 R3-F1</td></tr>
+                    <tr><td>07-05 <span class="badge minor">convention</span></td><td>測試要斷言某模組的<strong>內部行為</strong>（如 generation bump 時序）時不得 mock 該模組本身，改 mock 其 IO/IPC 邊界（真 <code>reloadDocument</code>＋mock <code>ipc.openFile</code>）——否則斷言測的是 mock 而非實作，綠燈無證據力。</td><td>wave 5 R3-F1</td></tr>
+                    <tr><td>07-05 <span class="badge critical">trap</span></td><td>Tauri v2 非 async 的 <code>#[tauri::command]</code> 跑在 <strong>main thread</strong>——含阻塞 IO（下載／子行程／網路 git）的 command 會餓死全部 IPC；長阻塞 command 必 <code>async fn</code>＋<code>spawn_blocking</code>。</td><td>wave 6 W6A-F2</td></tr>
+                    <tr><td>07-05 <span class="badge fixed">tighten</span></td><td>「動作端」與「生效端」的解析邏輯必須<strong>同源</strong>——install 用自寫 resolve（只讀 global default）而啟動用含 workspace override 的 resolve，兩鏈分岔即「裝的 ≠ 啟動會用的」死路；review rubric 對雙端功能必問「兩端是否呼叫同一 resolve 函數＋同一 canonical 化」。</td><td>wave 6 W6A-F1</td></tr>
+                </tbody>
+            </table></div>
+            <div class="callout info">另有 wave 2–3 期間關於 ultracode workflow 的操作型沉澱（內層 <code>parallel()</code> 必傳 thunk 非 promise；dry-pass 判定須核所有 lens 完成；opus 額度退化期單 agent 比 workflow 易過），以及「派修 brief 應授權 implementer『指示若型別／執行期不安全須停下回報並改採安全等價』」——後者在 wave 3 C2 攔下一次 controller 拍腦袋指令釀 runtime crash（<code>@codemirror/lint@6</code> 的 LintSource 型別不含 null）。</div>
+        </section>
+    </div>
+
+    <div class="actions">
+        <button class="btn" onclick="window.print()">Print / PDF</button>
+        <button class="btn" onclick="copyFollowup(event)">Copy 實機驗收回饋 Prompt</button>
+    </div>
+</div>
+
+<script>
+function showTab(evt, id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    evt.currentTarget.classList.add('active');
+}
+function copyFollowup(evt) {
+    const text = `M3 實機驗收回饋（對照 docs/superpowers/checklists/m3-manual-checklist.md）：
+環境：bun run fixtures/gen-lsp-fixtures.ts → tauri build --debug --bundles app → /Applications → 開 fixtures/out/lsp-demo
+- 通過項：[填入編號 1–12 與 A–H]
+- 失敗項與現象：[編號＋重現步驟＋預期/實際＋截圖路徑]
+- 一鍵安裝三路徑結果：[binary(rust-analyzer)／npm(vtsls)／pip(pylsp)／替代 profile(markdown-oxide)；無 npm/python 錯誤路徑]
+- backlog 中要提前處理的：[lifecycle 三缺口／EditorPane:152 F1／process-group kill 等]
+請依回饋修復並更新 checklist。`;
+    navigator.clipboard.writeText(text);
+    evt.currentTarget.textContent = 'Copied!';
+    setTimeout(() => evt.currentTarget.textContent = 'Copy 實機驗收回饋 Prompt', 1500);
+}
+</script>
+</body>
+</html>

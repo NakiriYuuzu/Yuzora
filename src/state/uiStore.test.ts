@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest"
+
+import { useUiStore } from "./uiStore"
+
+describe("uiStore", () => {
+    it("openDiffInGitMode selects file and switches mode", () => {
+        useUiStore.getState().openDiffInGitMode("/w/a.ts")
+        const s = useUiStore.getState()
+        expect(s.mode).toBe("git")
+        expect(s.gitSelectedPath).toBe("/w/a.ts")
+        expect(s.gitSelectedStaged).toBe(false)
+    })
+    it("resolver open/close roundtrip", () => {
+        useUiStore.getState().openResolver("/w/b.ts")
+        expect(useUiStore.getState().resolverPath).toBe("/w/b.ts")
+        useUiStore.getState().closeResolver()
+        expect(useUiStore.getState().resolverPath).toBe(null)
+    })
+    it("openSettings targets a section and language", () => {
+        useUiStore.getState().openSettings("lsp", "python")
+        const s = useUiStore.getState()
+        expect(s.settingsOpen).toBe(true)
+        expect(s.settingsSection).toBe("lsp")
+        expect(s.settingsLanguage).toBe("python")
+    })
+    it("openSettings without arguments opens with no target", () => {
+        useUiStore.getState().openSettings()
+        const s = useUiStore.getState()
+        expect(s.settingsOpen).toBe(true)
+        expect(s.settingsSection).toBe(null)
+        expect(s.settingsLanguage).toBe(null)
+    })
+    it("setSettingsOpen(false) closes the dialog", () => {
+        useUiStore.getState().openSettings("lsp", "python")
+        useUiStore.getState().setSettingsOpen(false)
+        expect(useUiStore.getState().settingsOpen).toBe(false)
+    })
+    it("openSettings bumps settingsNonce on every call (re-target while open)", () => {
+        useUiStore.getState().openSettings("lsp", "python")
+        const n1 = useUiStore.getState().settingsNonce
+        useUiStore.getState().openSettings("lsp", "python")
+        expect(useUiStore.getState().settingsNonce).toBe(n1 + 1)
+    })
+    it("setTraceEnabled toggles in-memory trace state (default off)", () => {
+        expect(useUiStore.getState().traceEnabled).toBe(false)
+        useUiStore.getState().setTraceEnabled(true)
+        expect(useUiStore.getState().traceEnabled).toBe(true)
+    })
+})

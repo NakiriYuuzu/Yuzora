@@ -1,0 +1,14 @@
+{
+    "hooks": {
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "echo '[yuzora-loop] 任務型訊息（會改檔案或需多步驟）：先讀 .claude/skills/yuzora-loop/SKILL.md，複製 template 建 run file（.claude/loop/runs/）再動手；純問答回覆開頭標 LOOP-EXEMPT。鐵律 v1.1：撰寫與對抗 review 派 opus subagent（僅 opus、撰寫與 review 分離）、git 唯讀、worktree 預設不用、證據先於宣稱。'"
+                    }
+                ]
+            }
+        ]
+    }
+}

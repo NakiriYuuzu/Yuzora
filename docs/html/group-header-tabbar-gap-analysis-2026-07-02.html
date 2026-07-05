@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>差異比對：group-header / TabBar vs Yuuzu Workbench 設計文件</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.6; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+
+.layout { display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
+@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .sidebar { display: none; } }
+
+.sidebar { background: var(--color-surface); border-right: 1px solid var(--color-border); padding: 1.5rem; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+.sidebar h3 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-text-secondary); margin-bottom: 0.75rem; }
+.file-list { list-style: none; margin-bottom: 1.75rem; }
+.file-list li { margin-bottom: 0.25rem; }
+.file-list a { color: var(--color-text); text-decoration: none; font-size: 0.82rem; font-family: var(--font-mono); padding: 0.35rem 0.5rem; display: flex; align-items: center; gap: 0.5rem; border-radius: 6px; transition: background 0.15s; }
+.file-list a:hover { background: var(--color-bg); }
+.file-list .indicator { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.indicator.critical { background: var(--color-error); }
+.indicator.warning { background: var(--color-warning); }
+.indicator.suggestion { background: var(--color-info); }
+.indicator.praise { background: var(--color-success); }
+
+.main { padding: 2rem; max-width: 980px; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 1.65rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.88rem; font-family: var(--font-mono); }
+
+.stats { display: flex; gap: 1rem; margin: 1.5rem 0; flex-wrap: wrap; }
+.stat { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1.1rem; min-width: 108px; }
+.stat .value { font-size: 1.4rem; font-weight: 700; }
+.stat .label { font-size: 0.76rem; color: var(--color-text-secondary); }
+
+.summary { background: var(--color-surface); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 2rem; border: 1px solid var(--color-border); }
+.summary h2 { font-size: 1.05rem; margin-bottom: 0.75rem; }
+.summary ul { padding-left: 1.25rem; }
+.summary li { margin-bottom: 0.4rem; font-size: 0.92rem; }
+.summary code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+
+.section-block { margin-bottom: 2.5rem; }
+.section-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.section-header .title { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; }
+.section-body { border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); padding: 1.1rem 1.1rem 1.3rem; background: #fff; }
+
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 0.75rem 0 1rem; }
+@media (max-width: 700px) { .compare-grid { grid-template-columns: 1fr; } }
+.compare-col .col-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-text-secondary); margin-bottom: 0.4rem; font-weight: 600; }
+.code-block { font-family: var(--font-mono); font-size: 0.76rem; line-height: 1.6; background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-md); padding: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+.missing-block { font-family: var(--font-sans); font-size: 0.82rem; background: var(--color-surface-soft); border: 1.5px dashed var(--color-border); border-radius: var(--radius-md); padding: 0.85rem; color: var(--color-text-secondary); display: flex; align-items: center; gap: 0.5rem; }
+.ref { font-size: 0.72rem; color: var(--color-text-secondary); font-family: var(--font-mono); margin-top: 0.4rem; }
+
+.annotation { margin-top: 0.75rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.75rem 1rem; font-size: 0.85rem; display: flex; gap: 0.75rem; align-items: flex-start; }
+.severity { font-size: 0.68rem; font-weight: 700; padding: 0.15rem 0.55rem; border-radius: 999px; text-transform: uppercase; flex-shrink: 0; white-space: nowrap; }
+.severity.critical { background: #f8e6e3; color: #8f312c; }
+.severity.warning { background: #f8ead5; color: #7a4b12; }
+.severity.suggestion { background: #e0e7ff; color: #3730a3; }
+.severity.praise { background: #edf8ef; color: #2f7140; }
+
+.findings { margin-top: 2rem; }
+.findings h2 { margin-bottom: 1rem; font-size: 1.2rem; }
+.finding-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; margin-bottom: 0.75rem; display: flex; gap: 0.75rem; }
+.finding-card strong { font-family: var(--font-mono); font-size: 0.85em; }
+
+.scorecard { margin-top: 2.5rem; }
+.scorecard h2 { font-size: 1.2rem; margin-bottom: 1rem; }
+.rubric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.9rem; }
+.rubric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; }
+.rubric-card .rubric-label { font-size: 0.76rem; color: var(--color-text-secondary); margin-bottom: 0.35rem; }
+.rubric-card .rubric-score { font-size: 1.3rem; font-weight: 700; color: var(--color-accent); }
+.rubric-card .rubric-score span { font-size: 0.75rem; color: var(--color-text-secondary); font-weight: 400; }
+
+.export-row { margin-top: 1.5rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.export-btn { font-family: var(--font-sans); font-size: 0.82rem; font-weight: 500; background: var(--color-accent); color: var(--color-on-accent); border: none; border-radius: var(--radius-md); padding: 0.6rem 1.1rem; cursor: pointer; transition: background 0.15s; }
+.export-btn:hover { background: var(--color-accent-active); }
+.export-btn.secondary { background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); }
+.export-note { font-size: 0.78rem; color: var(--color-text-secondary); }
+
+@media print { .sidebar { display: none; } .layout { grid-template-columns: 1fr; } .export-row { display: none; } }
+</style>
+</head>
+<body>
+<div class="layout">
+    <nav class="sidebar">
+        <h3>比對目標</h3>
+        <ul class="file-list">
+            <li><a href="#f1"><span class="indicator critical"></span>src/workbench/EditorArea.tsx</a></li>
+            <li><a href="#f2"><span class="indicator warning"></span>src/workbench/TabBar.tsx</a></li>
+            <li><a href="#f3"><span class="indicator suggestion"></span>src/state/workspaceStore.ts</a></li>
+        </ul>
+        <h3>設計文件來源</h3>
+        <ul class="file-list">
+            <li><a href="#spec" style="font-family:var(--font-sans);">docs/design/project/Yuuzu Workbench.dc.html<br>（第 357–391 行 tab bar 區塊）</a></li>
+        </ul>
+    </nav>
+
+    <main class="main">
+        <header>
+            <div class="label">Gap Analysis · 純分析，未修改任何檔案</div>
+            <h1>group-header（Tab Bar）vs 設計文件差異比對</h1>
+            <p class="meta">docs/design/project/Yuuzu Workbench.dc.html #357-391 &rarr; src/workbench/EditorArea.tsx + TabBar.tsx &middot; 2026-07-02</p>
+        </header>
+
+        <div class="stats">
+            <div class="stat"><div class="value" style="color:var(--color-error)">2</div><div class="label">畫面上直接可見的落差</div></div>
+            <div class="stat"><div class="value" style="color:var(--color-warning)">4</div><div class="label">Tab 有內容時才會顯現的缺口</div></div>
+            <div class="stat"><div class="value" style="color:var(--color-info)">3</div><div class="label">結構 / 潤飾類建議</div></div>
+            <div class="stat"><div class="value" style="color:var(--color-success)">2</div><div class="label">已相符項目</div></div>
+        </div>
+
+        <div class="summary">
+            <h2>總覽</h2>
+            <p>你貼的 <code>group-header</code> 片段，是 <code>group.tabs.length === 0</code>（沒有任何開啟中的分頁）時 <code>EditorArea.tsx</code> 的實際 render 結果，內部巢狀著 <code>TabBar.tsx</code>。跟設計文件第 357–391 行的 tab bar 規格對照後，最直接能在畫面上看到的落差有兩處：空狀態文字、以及右側工具列少了一顆按鈕。除此之外，<code>TabBar</code> 元件本身在「有分頁時」該具備的能力（preview tab、terminal tab、git modified 標記、右鍵選單、拖曳排序）目前完全沒有實作，資料模型（<code>TabInfo</code>）也還沒預留這些欄位。</p>
+            <h3 style="font-size:0.88rem;margin-top:1rem;">這次畫面片段直接暴露的落差</h3>
+            <ul>
+                <li><strong>空狀態文案</strong>：目前寫死英文 <code>"No open tabs"</code>，設計文件是雙語 <code>noOpenTabs</code>（英文含提示句、中文另有版本）。</li>
+                <li><strong>group-actions 只有 2 顆按鈕</strong>：設計文件在「Toggle preview」跟「Split editor」中間，還有一顆「終端機位置」按鈕（含下拉選單），目前完全沒做。</li>
+            </ul>
+            <h3 style="font-size:0.88rem;margin-top:1rem;">建議優先處理</h3>
+            <ul>
+                <li>先補空狀態文案雙語化（影響範圍小、使用者立即可見）。</li>
+                <li>終端機停靠按鈕是否要做，取決於「終端機能否停進編輯器分頁列」這個產品決策是否還要沿用設計文件的方向 — 這點建議跟你確認，而不是直接視為缺陷。</li>
+            </ul>
+        </div>
+
+        <!-- Finding 1: empty state text -->
+        <div class="section-block" id="f1">
+            <div class="section-header"><span class="indicator warning"></span><span class="title">空狀態文字 — TabBar.tsx:34</span></div>
+            <div class="section-body">
+                <div class="compare-grid">
+                    <div class="compare-col">
+                        <div class="col-label">設計文件（雙語，locale key: noOpenTabs）</div>
+                        <div class="code-block">en: 'No open tabs — pick a file from the tree'
+zh: '沒有開啟的分頁 — 從檔案樹選一個'</div>
+                        <div class="ref">Yuuzu Workbench.dc.html:378, 2868</div>
+                    </div>
+                    <div class="compare-col">
+                        <div class="col-label">目前實作</div>
+                        <div class="code-block">&lt;span className="px-[10px] text-[12px] text-(--ink-4)"&gt;
+  No open tabs
+&lt;/span&gt;</div>
+                        <div class="ref">src/workbench/TabBar.tsx:33-35</div>
+                    </div>
+                </div>
+                <div class="annotation">
+                    <span class="severity warning">缺少 · 次要</span>
+                    <div>文案只有硬編碼英文，少了「— pick a file from the tree / 從檔案樹選一個」的操作提示，也沒有走現有的中英雙語機制（專案其餘地方，例如 <code>onClose</code> 的確認訊息，已經用繁中）。這正是你貼的 HTML 片段裡實際顯示的文字。</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Finding 2: terminal dock button + menu missing -->
+        <div class="section-block" id="f1b">
+            <div class="section-header"><span class="indicator critical"></span><span class="title">終端機停靠按鈕 + 選單 — EditorArea.tsx group-actions</span></div>
+            <div class="section-body">
+                <div class="compare-grid">
+                    <div class="compare-col">
+                        <div class="col-label">設計文件：3 顆按鈕，中間是終端機位置切換</div>
+                        <div class="code-block">[Toggle browser preview]
+[Terminal placement ▾]  ← 缺少
+  └ 下拉選單:
+     - Open in editor (like files)
+     - Dock to bottom panel
+[Split editor]</div>
+                        <div class="ref">Yuuzu Workbench.dc.html:380-390（含 termMenuOpen 下拉、3682-3687 標籤定義）</div>
+                    </div>
+                    <div class="compare-col">
+                        <div class="col-label">目前實作：只有 2 顆按鈕</div>
+                        <div class="missing-block">⚠ 只有 Toggle preview + Split editor，中間的終端機按鈕與其下拉選單完全不存在</div>
+                        <div class="ref">src/workbench/EditorArea.tsx:42-93</div>
+                    </div>
+                </div>
+                <div class="annotation">
+                    <span class="severity critical">缺少 · 主要</span>
+                    <div>設計文件把「終端機要開在編輯器分頁列裡（像檔案一樣），還是停到底部面板」做成一個可切換的按鈕 + 下拉選單，直接放在 group-actions 這排工具列裡。目前 <code>EditorArea.tsx</code> 的 group-actions 只有 preview 切換跟分割編輯器兩顆按鈕，這個按鈕與整套「終端機可停進 tab strip」的互動完全沒有對應實作 — 現有的 <code>TerminalDrawer.tsx</code> 是獨立的底部抽屜元件，並未跟 tab bar 整合。</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Finding 3: tab bar item capabilities -->
+        <div class="section-block" id="f2">
+            <div class="section-header"><span class="indicator warning"></span><span class="title">單一分頁的能力落差 — TabBar.tsx（有分頁時才會顯現）</span></div>
+            <div class="section-body">
+                <p style="font-size:0.88rem;color:var(--color-text-secondary);margin-bottom:1rem;">以下項目在「沒有分頁」的畫面上看不到，但只要 <code>group.tabs</code> 有內容，設計規格跟現況的差異就會出現。</p>
+
+                <div class="compare-grid">
+                    <div class="compare-col">
+                        <div class="col-label">設計文件：每個 tab 的圖示邏輯（三選一）</div>
+                        <div class="code-block">tab.isPreview   → 圓圈地球 icon（單擊預覽模式）
+tab.isTerminal  → 終端機 icon（分頁列裡的 terminal）
+tab.notPreview  → 副檔名色塊（目前唯一有做的）</div>
+                        <div class="ref">Yuuzu Workbench.dc.html:362-364</div>
+                    </div>
+                    <div class="compare-col">
+                        <div class="col-label">目前實作</div>
+                        <div class="code-block">function extChip(name) { ... }
+// 只有副檔名色塊一種樣式
+// 沒有 isPreview / isTerminal 分支</div>
+                        <div class="ref">src/workbench/TabBar.tsx:6-13, 49-55</div>
+                    </div>
+                </div>
+                <div class="annotation">
+                    <span class="severity warning">缺少 · 次要</span>
+                    <div><strong>Preview tab（單擊預覽）與 terminal-as-tab 都沒做。</strong> <code>TabInfo</code>（src/state/workspaceStore.ts:3-8）目前只有 <code>path / name / dirty / externallyModified</code> 四個欄位，資料模型層級就沒有 <code>isPreview</code>、<code>isTerminal</code>、<code>modified</code> 的位置，不只是 UI 沒畫而已。</div>
+                </div>
+
+                <div class="compare-grid">
+                    <div class="compare-col">
+                        <div class="col-label">設計文件：git modified「M」徽章</div>
+                        <div class="code-block">&lt;sc-if value="{{ tab.modified }}"&gt;
+  &lt;span style="font-family:mono;
+    font-size:10px;color:#2456cc;
+    font-weight:600;"&gt;M&lt;/span&gt;
+&lt;/sc-if&gt;</div>
+                        <div class="ref">Yuuzu Workbench.dc.html:372-374</div>
+                    </div>
+                    <div class="compare-col">
+                        <div class="col-label">目前實作</div>
+                        <div class="missing-block">⚠ 只有 dirty-dot（未儲存）跟 externallyModified（↻ 外部變更）兩種標記，沒有 git 已修改的「M」徽章</div>
+                        <div class="ref">src/workbench/TabBar.tsx:69-83</div>
+                    </div>
+                </div>
+                <div class="annotation">
+                    <span class="severity warning">缺少 · 次要</span>
+                    <div>設計文件的「M」徽章是 git 層級的「此檔案相對於 HEAD 已修改」，跟現有的 <code>dirty</code>（編輯器內未儲存）、<code>externallyModified</code>（磁碟被外部程序改動）是三個不同語意，目前只做了後兩者。</div>
+                </div>
+
+                <div class="compare-grid">
+                    <div class="compare-col">
+                        <div class="col-label">設計文件：互動 handler</div>
+                        <div class="code-block">onClick        {{ tab.onSelect }}
+onPointerDown  {{ tab.onDown }}    ← 拖曳排序
+onContextMenu  {{ onCtxTab }}      ← 右鍵選單
+  cmCloseTab / cmCloseOthers /
+  cmCloseAll / cmCopyRel / cmSplit</div>
+                        <div class="ref">Yuuzu Workbench.dc.html:361, 3533</div>
+                    </div>
+                    <div class="compare-col">
+                        <div class="col-label">目前實作</div>
+                        <div class="code-block">&lt;button onClick={...}&gt;  // 只有點擊切換
+// 無 onPointerDown（拖曳排序）
+// 無 onContextMenu（右鍵選單）</div>
+                        <div class="ref">src/workbench/TabBar.tsx:56-68</div>
+                    </div>
+                </div>
+                <div class="annotation">
+                    <span class="severity suggestion">缺少 · 潤飾</span>
+                    <div>拖曳排序分頁、右鍵選單（關閉其他 / 關閉全部 / 複製相對路徑 / 分割編輯器）都還沒做。這類屬於效率型互動，優先度可以低於前面兩個直接可見的落差。</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Finding 4: structural / stacking -->
+        <div class="section-block" id="f3">
+            <div class="section-header"><span class="indicator suggestion"></span><span class="title">結構性差異 — 定位與 ref</span></div>
+            <div class="section-body">
+                <div class="compare-grid">
+                    <div class="compare-col">
+                        <div class="col-label">設計文件</div>
+                        <div class="code-block">.group-header {
+  position: relative;
+  z-index: 30;
+}
+.group-actions {
+  position: relative;
+  z-index: 60;
+}
+&lt;div ref="setTabBarEl"&gt; ...</div>
+                        <div class="ref">Yuuzu Workbench.dc.html:358, 380, 359</div>
+                    </div>
+                    <div class="compare-col">
+                        <div class="col-label">目前實作</div>
+                        <div class="missing-block">⚠ 沒有 position/z-index，TabBar 根節點也沒有對外暴露 ref</div>
+                        <div class="ref">src/workbench/EditorArea.tsx:39, 42 · src/workbench/TabBar.tsx:32</div>
+                    </div>
+                </div>
+                <div class="annotation">
+                    <span class="severity suggestion">缺少 · 潤飾</span>
+                    <div>這兩個 z-index 是設計文件用來讓終端機下拉選單（<code>termMenuOpen</code>）浮在其他內容之上，目前既然沒有這顆按鈕，暫時不影響畫面。但如果之後要補終端機停靠選單，會需要一併補上這層 stacking context，建議跟 Finding「終端機停靠按鈕」一起處理，不要分開改。<code>setTabBarEl</code> ref 目前看不出被拿來做什麼（可能是捲動定位用），純粹是規格存在、現況沒有，列出來供你判斷是否需要。</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Matches -->
+        <div class="section-block">
+            <div class="section-header"><span class="indicator praise"></span><span class="title">已相符項目</span></div>
+            <div class="section-body">
+                <div class="annotation">
+                    <span class="severity praise">相符</span>
+                    <div><strong>Toggle preview 按鈕</strong>：icon path（<code>M3 9.5h18M6.4 6.9h.01M9 6.9h.01</code>）、28×28px、rounded-9px、title「Toggle browser preview」都跟設計文件一致（EditorArea.tsx:43-68 vs dc.html:381）。</div>
+                </div>
+                <div class="annotation">
+                    <span class="severity praise">相符</span>
+                    <div><strong>Split editor 按鈕</strong>：icon 與尺寸跟設計文件一致，且目前實作多做了「已分割時顯示『關閉分割』」的動態狀態切換 — 設計文件的 static mock 只呈現單一狀態，這個擴充是合理的功能延伸，不是落差（EditorArea.tsx:69-92）。</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="findings">
+            <h2>全部落差彙整</h2>
+            <div class="finding-card"><span class="severity critical">主要</span><div><strong>EditorArea.tsx:42-93</strong> — group-actions 少了「終端機位置」按鈕與其下拉選單（Open in editor / Dock to bottom），畫面上目前只有 2 顆按鈕，設計文件是 3 顆。</div></div>
+            <div class="finding-card"><span class="severity warning">次要</span><div><strong>TabBar.tsx:33-35</strong> — 空狀態文字硬編碼英文且缺少操作提示與雙語支援，跟你貼的 HTML 片段內容不同。</div></div>
+            <div class="finding-card"><span class="severity warning">次要</span><div><strong>TabBar.tsx / workspaceStore.ts</strong> — 缺少 preview tab、terminal-as-tab 兩種分頁型態，<code>TabInfo</code> 資料模型未預留 <code>isPreview</code> / <code>isTerminal</code> 欄位。</div></div>
+            <div class="finding-card"><span class="severity warning">次要</span><div><strong>TabBar.tsx:69-83</strong> — 缺少 git「已修改（M）」徽章，資料模型未預留 <code>modified</code> 欄位。</div></div>
+            <div class="finding-card"><span class="severity suggestion">潤飾</span><div><strong>TabBar.tsx:56-68</strong> — 分頁缺少右鍵選單（關閉其他 / 全部 / 複製相對路徑 / 分割）與拖曳排序。</div></div>
+            <div class="finding-card"><span class="severity suggestion">潤飾</span><div><strong>EditorArea.tsx:39,42 · TabBar.tsx:32</strong> — group-header / group-actions 缺少 position/z-index stacking，TabBar 根節點缺少對外 ref，兩者都跟終端機停靠選單功能綁在一起，建議合併處理。</div></div>
+            <div class="finding-card"><span class="severity praise">相符</span><div><strong>EditorArea.tsx:43-92</strong> — Toggle preview、Split editor 兩顆按鈕的樣式、icon、文案都與設計文件一致。</div></div>
+        </div>
+
+        <div class="scorecard">
+            <h2>本次比對的自我評估</h2>
+            <div class="rubric-grid">
+                <div class="rubric-card"><div class="rubric-label">Completeness</div><div class="rubric-score">4<span>/5</span></div></div>
+                <div class="rubric-card"><div class="rubric-label">Evidence（可追溯到行號）</div><div class="rubric-score">5<span>/5</span></div></div>
+                <div class="rubric-card"><div class="rubric-label">Actionability</div><div class="rubric-score">4<span>/5</span></div></div>
+                <div class="rubric-card"><div class="rubric-label">Visual Clarity</div><div class="rubric-score">4<span>/5</span></div></div>
+            </div>
+            <p style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:0.75rem;">Completeness 給 4/5：只比對了 group-header 這個區塊（依你的要求聚焦在你貼的片段），設計文件同一個 EDITOR REGION 底下還有 breadcrumb、外部變更 banner、程式碼區塊等其他小節未涵蓋，因為不在你貼的 HTML 範圍內。</p>
+        </div>
+
+        <div class="export-row">
+            <button class="export-btn" onclick="copyFindingsJSON()">Copy as JSON</button>
+            <span class="export-note" id="copy-note">複製後可直接貼回對話，讓我依此清單逐項實作或排優先序。</span>
+        </div>
+    </main>
+</div>
+
+<script>
+function copyFindingsJSON() {
+    const payload = {
+        artifact: "group-header-tabbar-gap-analysis",
+        reviewed_at: "2026-07-02",
+        scope: "src/workbench/EditorArea.tsx group-header + TabBar.tsx vs docs/design/project/Yuuzu Workbench.dc.html:357-391",
+        findings: [
+            { id: 1, severity: "critical", file: "src/workbench/EditorArea.tsx", lines: "42-93", summary: "group-actions 缺少終端機位置按鈕與下拉選單" },
+            { id: 2, severity: "warning", file: "src/workbench/TabBar.tsx", lines: "33-35", summary: "空狀態文字硬編碼、缺少雙語與操作提示" },
+            { id: 3, severity: "warning", file: "src/workbench/TabBar.tsx; src/state/workspaceStore.ts", lines: "n/a", summary: "缺少 preview tab 與 terminal-as-tab，TabInfo 未預留欄位" },
+            { id: 4, severity: "warning", file: "src/workbench/TabBar.tsx", lines: "69-83", summary: "缺少 git modified「M」徽章" },
+            { id: 5, severity: "suggestion", file: "src/workbench/TabBar.tsx", lines: "56-68", summary: "缺少分頁右鍵選單與拖曳排序" },
+            { id: 6, severity: "suggestion", file: "src/workbench/EditorArea.tsx; src/workbench/TabBar.tsx", lines: "39,42,32", summary: "缺少 stacking context 與 tab bar ref，建議與終端機停靠按鈕一併處理" }
+        ],
+        matches: [
+            "Toggle preview 按鈕樣式與文案一致",
+            "Split editor 按鈕樣式一致，且動態關閉分割狀態是合理擴充"
+        ],
+        approved: false,
+        next_prompt: "依上述 findings 清單，先實作 #2（空狀態文案雙語化），並確認 #1（終端機停靠按鈕）是否仍是產品方向再排入排程。"
+    };
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    const note = document.getElementById('copy-note');
+    const original = note.textContent;
+    note.textContent = '已複製到剪貼簿！';
+    setTimeout(() => { note.textContent = original; }, 1800);
+}
+</script>
+</body>
+</html>
