@@ -33,6 +33,8 @@ const cf = (path: string, over: Partial<CommitFileChange> = {}): CommitFileChang
     ...over
 })
 
+const full = (content: string) => ({ kind: "full" as const, content })
+
 function reset() {
     useDiffModalStore.setState({ open: false, source: null, activeIndex: 0, mode: "unified" })
 }
@@ -53,6 +55,23 @@ describe("DiffModal — closed", () => {
     it("renders nothing when closed", () => {
         render(<DiffModal />)
         expect(screen.queryByText(/Diff ·/)).toBeNull()
+    })
+})
+
+describe("DiffModal — text source", () => {
+    it("renders the provided blobs in split mode without git IPC", async () => {
+        const { container } = render(<DiffModal />)
+
+        act(() => {
+            useDiffModalStore.getState().setMode("split")
+            useDiffModalStore.getState().openText("src/a.ts", full("old\n"), full("new\n"))
+        })
+
+        expect(screen.getAllByText("Diff · src/a.ts").length).toBeGreaterThan(0)
+        expect(screen.getByRole("button", { name: /a\.ts/ })).toBeInTheDocument()
+        await waitFor(() => expect(container.querySelectorAll(".cm-editor").length).toBe(2))
+        expect(gitDiffContent).not.toHaveBeenCalled()
+        expect(gitFileAtRev).not.toHaveBeenCalled()
     })
 })
 

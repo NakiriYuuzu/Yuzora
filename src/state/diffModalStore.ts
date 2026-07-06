@@ -1,6 +1,6 @@
 import { create } from "zustand"
 
-import type { CommitDetail, CommitFileChange } from "@/lib/types"
+import type { CommitDetail, CommitFileChange, GradedText } from "@/lib/types"
 
 export type DiffMode = "unified" | "split"
 
@@ -12,8 +12,9 @@ export interface WorktreeDiffFile {
     staged: boolean
 }
 
-// The two modal sources. Worktree carries a flat file list; commit carries the
+// Modal sources. Worktree carries a flat file list; commit carries the
 // hash/parents needed to load each file's old/new sides plus the file changes.
+// Text carries preloaded blobs, so the modal can render non-git diffs directly.
 export type DiffModalSource =
     | { type: "worktree"; files: WorktreeDiffFile[] }
     | {
@@ -24,6 +25,7 @@ export type DiffModalSource =
           parents: string[]
           files: CommitFileChange[]
       }
+    | { type: "text"; title: string; original: GradedText; modified: GradedText }
 
 // The commit detail shape openCommit accepts — a subset of CommitDetail plus the
 // identity fields the header/loading need (from the selected LogCommit).
@@ -50,6 +52,7 @@ interface DiffModalState {
         active?: { path: string; staged: boolean } | string
     ) => void
     openCommit: (commit: CommitLike, activeIndex?: number) => void
+    openText: (title: string, original: GradedText, modified: GradedText) => void
     setActive: (index: number) => void
     setMode: (mode: DiffMode) => void
     close: () => void
@@ -88,6 +91,12 @@ export const useDiffModalStore = create<DiffModalState>((set) => ({
                 files: commit.files
             },
             activeIndex
+        }),
+    openText: (title, original, modified) =>
+        set({
+            open: true,
+            source: { type: "text", title, original, modified },
+            activeIndex: 0
         }),
     setActive: (index) => set({ activeIndex: index }),
     setMode: (mode) => set({ mode }),

@@ -47,11 +47,14 @@ function FileBadge({ badge }: { badge: string }) {
 }
 
 // The header title/sub differ by source: worktree → "Working tree" + file count;
-// commit → shortHash + subject.
+// commit → shortHash + subject; text → caller-provided title.
 function sourceHeader(source: DiffModalSource): { title: string; sub: string } {
     if (source.type === "worktree") {
         const n = source.files.length
         return { title: "Working tree", sub: `${n} changed ${n === 1 ? "file" : "files"}` }
+    }
+    if (source.type === "text") {
+        return { title: source.title, sub: "Agent diff" }
     }
     return { title: source.shortHash, sub: source.subject }
 }
@@ -74,6 +77,9 @@ function sourceRows(source: DiffModalSource): Row[] {
             cacheKey: `${f.staged ? "s" : "c"}:${f.path}`
         }))
     }
+    if (source.type === "text") {
+        return [{ path: source.title, badge: "M", cacheKey: `text:${source.title}` }]
+    }
     // Commit files have a single side per path — key by path (unchanged).
     return source.files.map((f) => ({ path: f.path, badge: badgeChar(f.status), cacheKey: f.path }))
 }
@@ -85,6 +91,9 @@ function loadDiffFor(source: DiffModalSource, index: number): Promise<DiffConten
     if (source.type === "worktree") {
         const f = source.files[index]
         return loadWorktreeDiff(f.path, f.staged)
+    }
+    if (source.type === "text") {
+        return Promise.resolve({ original: source.original, modified: source.modified })
     }
     const f = source.files[index]
     return loadCommitDiff(source.hash, source.parents, f)

@@ -95,6 +95,23 @@ describe("diffModalStore", () => {
         expect(useDiffModalStore.getState().activeIndex).toBe(0)
     })
 
+    it("openText opens a single text diff source", () => {
+        const original = { kind: "full" as const, content: "old\n" }
+        const modified = { kind: "full" as const, content: "new\n" }
+
+        useDiffModalStore.getState().openText("src/a.ts", original, modified)
+
+        const s = useDiffModalStore.getState()
+        expect(s.open).toBe(true)
+        expect(s.activeIndex).toBe(0)
+        expect(s.source).toEqual({
+            type: "text",
+            title: "src/a.ts",
+            original,
+            modified
+        })
+    })
+
     it("setActive updates the active index", () => {
         useDiffModalStore.getState().openWorktree([wtFile("a.ts"), wtFile("b.ts")])
         useDiffModalStore.getState().setActive(1)
