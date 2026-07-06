@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react"
 import { Command as CommandPrimitive } from "cmdk"
-import { ListTreeIcon, SearchIcon, SettingsIcon, WaypointsIcon } from "lucide-react"
+import {
+  ListTreeIcon,
+  MonitorPlayIcon,
+  SearchIcon,
+  SettingsIcon,
+  SquareTerminalIcon,
+  WaypointsIcon,
+} from "lucide-react"
 
 import {
   Command,
@@ -17,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { MODES, type Mode } from "@/app/modes"
+import { useUiStore } from "@/state/uiStore"
 import { SymbolPicker } from "@/workbench/SymbolPicker"
 
 interface CommandPaletteProps {
@@ -36,6 +44,8 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   // runs when it isn't unmounted on every close.
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerMode, setPickerMode] = useState<"document" | "workspace">("document")
+  const toggleTerminal = useUiStore((s) => s.toggleTerminal)
+  const togglePreview = useUiStore((s) => s.togglePreview)
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -132,6 +142,32 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
                   <WaypointsIcon className="size-[16px]" aria-hidden="true" />
                 </span>
                 <span className="text-[14px] font-medium">Workspace symbols</span>
+              </CommandItem>
+              <CommandItem
+                value="Toggle terminal"
+                onSelect={() => {
+                  toggleTerminal()
+                  onOpenChange(false)
+                }}
+                className="h-[42px] gap-[13px] rounded-[12px]! px-[13px] transition-colors duration-100 data-selected:bg-(--yz-active)"
+              >
+                <span className="flex size-[28px] shrink-0 items-center justify-center rounded-[9px] bg-(--yz-hover)">
+                  <SquareTerminalIcon className="size-[16px]" aria-hidden="true" />
+                </span>
+                <span className="text-[14px] font-medium">Toggle terminal</span>
+              </CommandItem>
+              <CommandItem
+                value="Toggle preview"
+                onSelect={() => {
+                  togglePreview()
+                  onOpenChange(false)
+                }}
+                className="h-[42px] gap-[13px] rounded-[12px]! px-[13px] transition-colors duration-100 data-selected:bg-(--yz-active)"
+              >
+                <span className="flex size-[28px] shrink-0 items-center justify-center rounded-[9px] bg-(--yz-hover)">
+                  <MonitorPlayIcon className="size-[16px]" aria-hidden="true" />
+                </span>
+                <span className="text-[14px] font-medium">Toggle preview</span>
               </CommandItem>
               <CommandItem
                 value="Settings"

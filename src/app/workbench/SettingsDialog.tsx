@@ -1,15 +1,25 @@
 import { useEffect, useRef, useState } from "react"
 import { listen } from "@tauri-apps/api/event"
+import { homeDir, join } from "@tauri-apps/api/path"
+import { writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { save } from "@tauri-apps/plugin-dialog"
+import { openPath } from "@tauri-apps/plugin-opener"
 import {
+  Bot,
   Check,
   Code,
+  Copy,
   Download,
   Droplet,
+  FileText,
+  FolderOpen,
   GitBranch,
   Lock,
+  MonitorPlay,
   RefreshCw,
   Server,
   Shield,
+  TerminalSquare,
   Trash2,
   X,
 } from "lucide-react"
@@ -23,8 +33,16 @@ import {
   lspInstallServer,
   lspSetTrace,
   lspStatus,
+  agentSetTrace,
 } from "@/lib/ipc"
-import type { LspConfig, LspInstallProgress, LspLanguage, LspServerInfo } from "@/lib/types"
+import { logExport, logQuery, logSources, type LogQueryFilters } from "@/features/logs/logQuery"
+import type {
+  LogRecord,
+  LspConfig,
+  LspInstallProgress,
+  LspLanguage,
+  LspServerInfo,
+} from "@/lib/types"
 import { cn } from "@/lib/utils"
 import {
   Dialog,
@@ -35,6 +53,7 @@ import {
 } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
 import { FORMAT_ON_SAVE_STORAGE_KEY } from "@/editor/EditorPane"
+import { strings } from "@/lib/i18n"
 import { useGitStore, type RemoteCheckMode } from "@/state/gitStore"
 import { useLspStore } from "@/state/lspStore"
 import { useUiStore } from "@/state/uiStore"
@@ -58,16 +77,109 @@ interface SettingsDialogProps {
   openNonce?: number
 }
 
-type SectionId = "appearance" | "editor" | "safety" | "git" | "lsp"
+type SectionId =
+  | "appearance"
+  | "editor"
+  | "safety"
+  | "git"
+  | "lsp"
+  | "agent"
+  | "logs"
+  | "terminal"
+  | "preview"
 
 // Design reference settings nav (§ settingsNav): three panes with icon rows.
 const SECTIONS: { id: SectionId; label: string; sub: string; icon: LucideIcon }[] = [
   { id: "appearance", label: "Appearance", sub: "Theme and display language", icon: Droplet },
   { id: "editor", label: "Editor", sub: "Formatting and editor surface", icon: Code },
   { id: "lsp", label: "LSP", sub: "Language servers", icon: Server },
+  { id: "agent", label: "Agent", sub: "Agent 啟動與 ACP trace", icon: Bot },
+  { id: "logs", label: "Logs", sub: "Debug, user_action, audit events", icon: FileText },
+  { id: "terminal", label: "Terminal", sub: "Shell and sessions", icon: TerminalSquare },
+  { id: "preview", label: "Preview", sub: "Dev server and browser", icon: MonitorPlay },
   { id: "safety", label: "Safety", sub: "Guardrails for files and git", icon: Shield },
   { id: "git", label: "Git", sub: "Repository integration", icon: GitBranch },
 ]
+
+export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
+export const PREVIEW_SETTINGS_STORAGE_KEY = "yuzora:preview-settings"
+export const AGENT_SETTINGS_STORAGE_KEY = "yuzora:agent-settings"
+export const DEFAULT_AGENT_COMMAND = "bunx pi-acp"
+
+type AgentPreset = "pi" | "custom"
+
+export interface TerminalSettings {
+  shellPath: string
+  shellArgs: string
+}
+
+export interface PreviewSettings {
+  command: string
+  port: string
+}
+
+export interface AgentSettings {
+  preset: AgentPreset
+  command: string
+  traceEnabled: boolean
+}
+
+const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  shellPath: "",
+  shellArgs: "",
+}
+
+const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
+  command: "",
+  port: "",
+}
+
+const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  preset: "pi",
+  command: DEFAULT_AGENT_COMMAND,
+  traceEnabled: false,
+}
+
+function readJsonSetting<T extends object>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as Partial<T>
+    return { ...fallback, ...parsed }
+  } catch {
+    return fallback
+  }
+}
+
+function writeJsonSetting<T extends object>(key: string, value: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    /* private mode / quota — keep the in-memory field value only */
+  }
+}
+
+export function loadTerminalSettings(): TerminalSettings {
+  return readJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, DEFAULT_TERMINAL_SETTINGS)
+}
+
+export function loadPreviewSettings(): PreviewSettings {
+  return readJsonSetting(PREVIEW_SETTINGS_STORAGE_KEY, DEFAULT_PREVIEW_SETTINGS)
+}
+
+export function loadAgentSettings(): AgentSettings {
+  const settings = readJsonSetting(AGENT_SETTINGS_STORAGE_KEY, DEFAULT_AGENT_SETTINGS)
+  return {
+    preset: settings.preset === "custom" ? "custom" : "pi",
+    command: settings.command.trim() || DEFAULT_AGENT_COMMAND,
+    traceEnabled: settings.traceEnabled === true,
+  }
+}
+
+export function resolveAgentCommand(settings = loadAgentSettings()): string {
+  if (settings.preset === "pi") return DEFAULT_AGENT_COMMAND
+  return settings.command.trim() || DEFAULT_AGENT_COMMAND
+}
 
 // The four languages Yuzora ships LSP servers for (LspLanguage), with display
 // labels for the settings cards.
@@ -327,6 +439,510 @@ function GitSection() {
   )
 }
 
+function SettingsTextInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  disabled = false,
+  type = "text",
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+  disabled?: boolean
+  type?: "text" | "number"
+}) {
+  return (
+    <label className="flex flex-col gap-[6px]">
+      <span className="text-[11.5px] font-medium text-(--ink-2)">{label}</span>
+      <input
+        aria-label={label}
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] font-mono text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent) disabled:cursor-not-allowed disabled:opacity-60"
+      />
+    </label>
+  )
+}
+
+function TerminalSection() {
+  const [settings, setSettings] = useState(loadTerminalSettings)
+
+  const update = (patch: Partial<TerminalSettings>) => {
+    const next = { ...settings, ...patch }
+    setSettings(next)
+    writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, next)
+  }
+
+  return (
+    <div className="flex flex-col gap-[14px]">
+      <SettingCard
+        label={strings.terminal.shellLabel}
+        sub={strings.terminal.shellDescription}
+      >
+        <div className="flex flex-col gap-[12px]">
+          <SettingsTextInput
+            label="Shell path override"
+            value={settings.shellPath}
+            placeholder="/opt/homebrew/bin/fish"
+            onChange={(shellPath) => update({ shellPath })}
+          />
+          <SettingsTextInput
+            label="Default shell args"
+            value={settings.shellArgs}
+            placeholder="-l"
+            onChange={(shellArgs) => update({ shellArgs })}
+          />
+        </div>
+      </SettingCard>
+    </div>
+  )
+}
+
+function PreviewSection() {
+  const [settings, setSettings] = useState(loadPreviewSettings)
+
+  const update = (patch: Partial<PreviewSettings>) => {
+    const next = { ...settings, ...patch }
+    setSettings(next)
+    writeJsonSetting(PREVIEW_SETTINGS_STORAGE_KEY, next)
+  }
+
+  return (
+    <div className="flex flex-col gap-[14px]">
+      <SettingCard
+        label={strings.preview.devServerLabel}
+        sub={strings.preview.devServerDescription}
+      >
+        <div className="flex flex-col gap-[12px]">
+          <SettingsTextInput
+            label="Dev server command override"
+            value={settings.command}
+            placeholder="bun run dev"
+            onChange={(command) => update({ command })}
+          />
+          <SettingsTextInput
+            label="Port override"
+            type="number"
+            value={settings.port}
+            placeholder="5173"
+            onChange={(port) => update({ port })}
+          />
+        </div>
+      </SettingCard>
+    </div>
+  )
+}
+
+function AgentSection() {
+  const [settings, setSettings] = useState(loadAgentSettings)
+  const traceGenRef = useRef(0)
+
+  const persist = (next: AgentSettings) => {
+    setSettings(next)
+    writeJsonSetting(AGENT_SETTINGS_STORAGE_KEY, next)
+  }
+
+  const update = (patch: Partial<AgentSettings>) => {
+    persist({ ...settings, ...patch })
+  }
+
+  async function toggleTrace(next: boolean) {
+    const prev = settings
+    const gen = ++traceGenRef.current
+    persist({ ...settings, traceEnabled: next })
+    try {
+      await agentSetTrace(next)
+    } catch {
+      if (gen === traceGenRef.current) persist(prev)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-[14px]">
+      <SettingCard label="Agent 啟動" sub="ACP agent process command">
+        <div className="flex flex-col gap-[12px]">
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[11.5px] font-medium text-(--ink-2)">Agent preset</span>
+            <select
+              aria-label="Agent preset"
+              value={settings.preset}
+              onChange={(event) => update({ preset: event.currentTarget.value as AgentPreset })}
+              className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent)"
+            >
+              <option value="pi">pi · bunx pi-acp</option>
+              <option value="custom">自訂</option>
+            </select>
+          </label>
+          <SettingsTextInput
+            label="自訂 command"
+            value={settings.preset === "pi" ? DEFAULT_AGENT_COMMAND : settings.command}
+            placeholder={DEFAULT_AGENT_COMMAND}
+            disabled={settings.preset !== "custom"}
+            onChange={(command) => update({ command })}
+          />
+        </div>
+      </SettingCard>
+
+      <div className="flex flex-col">
+        <ToggleRow
+          label="ACP trace"
+          sub="將 ACP JSON-RPC 原始行寫入 debug log（最多 500 字）"
+          checked={settings.traceEnabled}
+          onCheckedChange={toggleTrace}
+        />
+      </div>
+    </div>
+  )
+}
+
+const LOG_KIND_OPTIONS = ["debug", "user_action", "audit"]
+const LOG_LEVEL_OPTIONS = ["debug", "info", "warn", "error"]
+const LOG_QUERY_LIMIT = 500
+
+function toggleFilterValue(values: string[], value: string): string[] {
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
+}
+
+function metadataJson(metadata: unknown): string {
+  try {
+    return JSON.stringify(metadata, null, 2) ?? "null"
+  } catch {
+    return String(metadata)
+  }
+}
+
+function buildLogFilters({
+  selectedKinds,
+  selectedLevels,
+  source,
+  text,
+  since,
+  until,
+}: {
+  selectedKinds: string[]
+  selectedLevels: string[]
+  source: string
+  text: string
+  since: string
+  until: string
+}): LogQueryFilters {
+  const filters: LogQueryFilters = { limit: LOG_QUERY_LIMIT }
+  const query = text.trim()
+  const from = since.trim()
+  const to = until.trim()
+  if (from) filters.since = from
+  if (to) filters.until = to
+  if (selectedLevels.length > 0) filters.levels = selectedLevels
+  if (selectedKinds.length > 0) filters.kinds = selectedKinds
+  if (source) filters.sources = [source]
+  if (query) filters.text = query
+  return filters
+}
+
+function LogsSection({
+  initialSource,
+  openNonce,
+}: {
+  initialSource?: string
+  openNonce?: number
+}) {
+  const [rows, setRows] = useState<LogRecord[]>([])
+  const [sources, setSources] = useState<string[]>([])
+  const [selectedKinds, setSelectedKinds] = useState<string[]>([])
+  const [selectedLevels, setSelectedLevels] = useState<string[]>([])
+  const [source, setSource] = useState(initialSource ?? "")
+  const [text, setText] = useState("")
+  const [since, setSince] = useState("")
+  const [until, setUntil] = useState("")
+  const [sanitize, setSanitize] = useState(true)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void logSources()
+      .then((items) => {
+        if (alive) setSources(items)
+      })
+      .catch((e) => {
+        if (alive) setError(`log_sources 失敗：${String(e)}`)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  useEffect(() => {
+    setSource(initialSource ?? "")
+  }, [initialSource, openNonce])
+
+  useEffect(() => {
+    let alive = true
+    const filters = buildLogFilters({ selectedKinds, selectedLevels, source, text, since, until })
+    setLoading(true)
+    setError(null)
+    void logQuery(filters)
+      .then((records) => {
+        if (alive) setRows(records)
+      })
+      .catch((e) => {
+        if (alive) setError(`log_query 失敗：${String(e)}`)
+      })
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [selectedKinds, selectedLevels, source, text, since, until])
+
+  async function copyRows() {
+    setError(null)
+    setNotice(null)
+    try {
+      await writeText(JSON.stringify(rows, null, 2))
+      setNotice(`已複製 ${rows.length} rows`)
+    } catch (e) {
+      setError(`Copy 失敗：${String(e)}`)
+    }
+  }
+
+  async function exportBundle() {
+    setError(null)
+    setNotice(null)
+    try {
+      const dest = await save({
+        title: "Export logs bundle",
+        defaultPath: "yuzora-logs.zip",
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+        canCreateDirectories: true,
+      })
+      if (!dest) return
+      const exported = await logExport(dest, sanitize)
+      setNotice(`已匯出：${exported}`)
+    } catch (e) {
+      setError(`Export bundle 失敗：${String(e)}`)
+    }
+  }
+
+  async function openLogsFolder() {
+    setError(null)
+    setNotice(null)
+    try {
+      const dir = await join(await homeDir(), ".yuzora", "logs")
+      await openPath(dir)
+      setNotice(`已開啟 logs folder：${dir}`)
+    } catch (e) {
+      setError(`Open logs folder 失敗：${String(e)}`)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-[14px]">
+      <SettingCard label="篩選" sub="log_query filters">
+        <div className="flex flex-col gap-[12px]">
+          <div className="grid grid-cols-2 gap-[12px]">
+            <div role="group" aria-label="kind 篩選" className="flex flex-col gap-[6px]">
+              <span className="text-[11.5px] font-medium text-(--ink-2)">kind</span>
+              <div className="flex flex-wrap gap-[6px]">
+                {LOG_KIND_OPTIONS.map((kind) => {
+                  const active = selectedKinds.includes(kind)
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setSelectedKinds((prev) => toggleFilterValue(prev, kind))}
+                      className={cn(
+                        "h-[26px] rounded-[8px] border px-[9px] font-mono text-[11px] transition-colors",
+                        active
+                          ? "border-(--yz-accent) bg-(--yz-sunk) font-semibold text-(--ink-1)"
+                          : "border-(--line-1) text-(--ink-2) hover:bg-(--yz-hover)"
+                      )}
+                    >
+                      {kind}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div role="group" aria-label="level 篩選" className="flex flex-col gap-[6px]">
+              <span className="text-[11.5px] font-medium text-(--ink-2)">level</span>
+              <div className="flex flex-wrap gap-[6px]">
+                {LOG_LEVEL_OPTIONS.map((level) => {
+                  const active = selectedLevels.includes(level)
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setSelectedLevels((prev) => toggleFilterValue(prev, level))}
+                      className={cn(
+                        "h-[26px] rounded-[8px] border px-[9px] font-mono text-[11px] transition-colors",
+                        active
+                          ? "border-(--yz-accent) bg-(--yz-sunk) font-semibold text-(--ink-1)"
+                          : "border-(--line-1) text-(--ink-2) hover:bg-(--yz-hover)"
+                      )}
+                    >
+                      {level}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-[12px]">
+            <label className="flex flex-col gap-[6px]">
+              <span className="text-[11.5px] font-medium text-(--ink-2)">source</span>
+              <select
+                aria-label="source 篩選"
+                value={source}
+                onChange={(event) => setSource(event.currentTarget.value)}
+                className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent)"
+              >
+                <option value="">全部 sources</option>
+                {sources.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-[6px]">
+              <span className="text-[11.5px] font-medium text-(--ink-2)">文字搜尋</span>
+              <input
+                aria-label="文字搜尋"
+                type="search"
+                value={text}
+                placeholder="event 或 message"
+                onChange={(event) => setText(event.currentTarget.value)}
+                className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent)"
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-[12px]">
+            <SettingsTextInput
+              label="since"
+              value={since}
+              placeholder="2026-01-02T00:00:00+08:00"
+              onChange={setSince}
+            />
+            <SettingsTextInput
+              label="until"
+              value={until}
+              placeholder="2026-01-03T00:00:00+08:00"
+              onChange={setUntil}
+            />
+          </div>
+        </div>
+      </SettingCard>
+
+      <SettingCard label="動作" sub="Copy / Export bundle / Open logs folder">
+        <div className="flex flex-wrap items-center gap-[8px]">
+          <button
+            type="button"
+            onClick={() => void copyRows()}
+            disabled={rows.length === 0}
+            className="flex h-[28px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[11px] text-[11.5px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover) disabled:opacity-50"
+          >
+            <Copy className="size-[12px]" aria-hidden="true" />
+            Copy
+          </button>
+          <button
+            type="button"
+            onClick={() => void exportBundle()}
+            className="flex h-[28px] items-center gap-[6px] rounded-[8px] bg-(--yz-solid) px-[11px] text-[11.5px] font-semibold text-(--ink-0) shadow-(--shadow-xs) transition-colors hover:bg-(--yz-hover)"
+          >
+            <Download className="size-[12px]" aria-hidden="true" />
+            Export bundle
+          </button>
+          <button
+            type="button"
+            onClick={() => void openLogsFolder()}
+            className="flex h-[28px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[11px] text-[11.5px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
+          >
+            <FolderOpen className="size-[12px]" aria-hidden="true" />
+            Open logs folder
+          </button>
+          <label className="ml-auto flex h-[28px] items-center gap-[7px] text-[11.5px] text-(--ink-2)">
+            <input
+              type="checkbox"
+              checked={sanitize}
+              onChange={(event) => setSanitize(event.currentTarget.checked)}
+              className="size-[13px] accent-(--yz-accent)"
+            />
+            sanitize
+          </label>
+        </div>
+        {notice && (
+          <div role="status" className="mt-[10px] text-[11px] text-(--ink-3)">
+            {notice}
+          </div>
+        )}
+        {error && (
+          <div
+            role="alert"
+            className="mt-[10px] rounded-[8px] bg-[#c2293f]/10 px-[9px] py-[7px] text-[11px] leading-[1.5] text-[#c2293f]"
+          >
+            {error}
+          </div>
+        )}
+      </SettingCard>
+
+      <SettingCard label="結果" sub={loading ? "載入中..." : `${rows.length} rows`}>
+        <div className="flex flex-col gap-[7px]">
+          {rows.length === 0 && !loading && (
+            <div className="rounded-[8px] bg-(--yz-sunk) px-[10px] py-[12px] text-[11.5px] text-(--ink-3)">
+              沒有符合 filters 的 logs。
+            </div>
+          )}
+          {rows.map((row, index) => {
+            const key = `${row.timestamp}:${row.source}:${row.event}:${index}`
+            const isExpanded = expanded[key] === true
+            return (
+              <div key={key} className="rounded-[10px] border border-(--line-1) bg-(--paper-0)">
+                <button
+                  type="button"
+                  data-testid={`log-row-${row.event}`}
+                  aria-label={`${isExpanded ? "收合" : "展開"} metadata ${row.event}`}
+                  onClick={() => setExpanded((prev) => ({ ...prev, [key]: !isExpanded }))}
+                  className="grid w-full grid-cols-[minmax(116px,1.3fr)_52px_82px_70px_minmax(92px,1fr)_minmax(130px,1.4fr)] items-center gap-[8px] px-[10px] py-[8px] text-left text-[11px] text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
+                >
+                  <span className="truncate font-mono text-(--ink-3)">{row.timestamp}</span>
+                  <span className="truncate font-mono font-semibold text-(--ink-1)">
+                    {row.level}
+                  </span>
+                  <span className="truncate font-mono">{row.kind}</span>
+                  <span className="truncate font-mono">{row.source}</span>
+                  <span className="truncate font-mono text-(--ink-1)">{row.event}</span>
+                  <span className="truncate">{row.message}</span>
+                </button>
+                {isExpanded && (
+                  <pre className="border-t border-(--line-1) px-[10px] py-[9px] font-mono text-[10.5px] leading-[1.5] whitespace-pre-wrap text-(--ink-2)">
+                    {metadataJson(row.metadata)}
+                  </pre>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </SettingCard>
+    </div>
+  )
+}
+
 // localStorage read for the format-on-save switch. Mirrors EditorPane's own reader
 // (same imported key) so the Settings toggle and the save path stay in lockstep;
 // default OFF when unset (A7).
@@ -397,9 +1013,11 @@ function LspLanguageCard({
   onRedetect: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const openSettings = useUiStore((s) => s.openSettings)
   const badge = statusBadge(info, initialized)
   const installing = progress != null
   const ready = badge.tone === "ok"
+  const failed = info?.status.status === "crashed"
 
   // Scroll the targeted card into view when the pane opens on it (openSettings
   // language target). scrollIntoView is a no-op stub under jsdom.
@@ -528,6 +1146,16 @@ function LspLanguageCard({
           <RefreshCw className="size-[12px]" aria-hidden="true" />
           重新偵測
         </button>
+        {failed && (
+          <button
+            type="button"
+            onClick={() => openSettings("logs", { source: "lsp" })}
+            className="flex h-[28px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[11px] text-[11.5px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
+          >
+            <FileText className="size-[12px]" aria-hidden="true" />
+            檢視 logs
+          </button>
+        )}
       </div>
     </div>
   )
@@ -844,6 +1472,7 @@ export function SettingsDialog({
   const [minimap, setMinimap] = useState(false)
   const [reconcile, setReconcile] = useState(true)
   const [confirmGit, setConfirmGit] = useState(true)
+  const settingsLogSource = useUiStore((s) => s.settingsLogSource)
 
   // Apply an external target on open, and again if the target changes while the
   // dialog stays mounted. `openNonce` (bumped per openSettings) is a dep so
@@ -1046,6 +1675,16 @@ export function SettingsDialog({
             )}
 
             {section === "lsp" && <LspSection targetLanguage={targetLanguage} />}
+
+            {section === "agent" && <AgentSection />}
+
+            {section === "logs" && (
+              <LogsSection initialSource={settingsLogSource ?? undefined} openNonce={openNonce} />
+            )}
+
+            {section === "terminal" && <TerminalSection />}
+
+            {section === "preview" && <PreviewSection />}
 
             {section === "git" && <GitSection />}
           </div>

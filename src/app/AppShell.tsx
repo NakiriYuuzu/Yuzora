@@ -17,11 +17,13 @@ import { SettingsDialog, type ThemePreference } from "@/app/workbench/SettingsDi
 import { StatusBar } from "@/app/workbench/StatusBar"
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import { WorkspaceRail } from "@/app/workbench/WorkspaceRail"
-import { useUserActionLog } from "@/features/logs/useUserActionLog"
+import { logUserAction } from "@/features/logs/userAction"
+import { devServerStopWorkspace, ptyCloseWorkspace } from "@/lib/ipc"
 import { showsNativeTrafficLights } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const DEFAULT_NAV_WIDTH = 266
 const MIN_NAV_WIDTH = 220
@@ -52,11 +54,14 @@ export function AppShell() {
   const settingsNonce = useUiStore((s) => s.settingsNonce)
   const openSettings = useUiStore((s) => s.openSettings)
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen)
+  const terminalOpen = useUiStore((s) => s.terminalOpen)
+  const previewOpen = useUiStore((s) => s.previewOpen)
+  const toggleTerminal = useUiStore((s) => s.toggleTerminal)
+  const togglePreview = useUiStore((s) => s.togglePreview)
+  const currentWorkspace = useWorkspaceStore((s) => s.workspacePath)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [theme, setTheme] = useState<ThemePreference>("light")
-  const [terminalOpen, setTerminalOpen] = useState(false)
-  const [previewOpen, setPreviewOpen] = useState(false)
   const [navWidth, setNavWidth] = useState(DEFAULT_NAV_WIDTH)
   const [navResizing, setNavResizing] = useState(false)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -65,7 +70,6 @@ export function AppShell() {
   // on threshold crossings and only auto-expand undoes an auto-collapse.
   const navAutoCollapsedRef = useRef(false)
   const prevNarrowRef = useRef<boolean | null>(null)
-  const logAction = useUserActionLog()
 
   const onNavResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -133,30 +137,55 @@ export function AppShell() {
     root.classList.toggle("dark", theme === "dark")
   }, [theme])
 
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "`" && event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault()
+        toggleTerminal()
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [toggleTerminal])
+
+  useEffect(() => {
+    if (!isTauri() || !currentWorkspace) return
+    let disposed = false
+    let unlisten: (() => void) | null = null
+
+    void getCurrentWindow()
+      .onCloseRequested(() => {
+        void ptyCloseWorkspace(currentWorkspace)
+        void devServerStopWorkspace(currentWorkspace)
+      })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten()
+          return
+        }
+        unlisten = nextUnlisten
+      })
+      .catch(() => {})
+
+    return () => {
+      disposed = true
+      if (unlisten) unlisten()
+    }
+  }, [currentWorkspace])
+
   const handleModeChange = (next: Mode) => {
     setMode(next)
-    void logAction({
-      event: "mode_change",
-      message: `Switched to ${next} mode`,
-      metadata: { mode: next },
-    })
+    void logUserAction("mode_change", `Switched to ${next} mode`, { mode: next })
   }
 
   const handleOpenSettings = () => {
     openSettings()
-    void logAction({
-      event: "settings_open",
-      message: "Opened settings dialog",
-    })
+    void logUserAction("settings_open", "Opened settings dialog")
   }
 
   const handleThemeChange = (next: ThemePreference) => {
     setTheme(next)
-    void logAction({
-      event: "theme_change",
-      message: `Switched to ${next} theme`,
-      metadata: { theme: next },
-    })
+    void logUserAction("theme_change", `Switched to ${next} theme`, { theme: next })
   }
 
   return (
@@ -184,9 +213,9 @@ export function AppShell() {
           }}
           onOpenSettings={handleOpenSettings}
           previewOpen={previewOpen}
-          onTogglePreview={() => setPreviewOpen((open) => !open)}
+          onTogglePreview={togglePreview}
           terminalOpen={terminalOpen}
-          onToggleTerminalDrawer={() => setTerminalOpen((open) => !open)}
+          onToggleTerminalDrawer={toggleTerminal}
         />
 
         {/* Design reference navStyle: the panel stays mounted and collapses

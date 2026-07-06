@@ -11,7 +11,10 @@ import { ExternalChangeResolver, maybeInterceptSave } from "./ExternalChangeReso
 
 vi.mock("../lib/ipc", () => ({
     openFile: vi.fn(),
-    saveFile: vi.fn(async () => 0),
+    saveFile: vi.fn(async () => 0)
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
     logUserAction: vi.fn(async () => undefined)
 }))
 

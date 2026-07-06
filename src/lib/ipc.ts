@@ -13,7 +13,11 @@ import type {
     AuthorEntry,
     FileAtRevResult,
     LspServerInfo,
-    LspConfig
+    LspConfig,
+    PtyEvent,
+    PtySessionInfo,
+    DevServerDetect,
+    DevServerInfo
 } from "./types"
 
 export function openWorkspace(path: string): Promise<string> {
@@ -34,24 +38,6 @@ export function saveFile(path: string, content: string): Promise<number> {
 
 export function startWatch(path: string): Promise<void> {
     return invoke("start_watch", { path })
-}
-
-export function logUserAction(
-    event: string,
-    message: string,
-    metadata: Record<string, unknown> = {}
-): Promise<void> {
-    return invoke("log_event", {
-        event: {
-            level: "info",
-            kind: "user_action",
-            source: "ui",
-            workspace_path: null,
-            event,
-            message,
-            metadata
-        }
-    }).then(() => undefined)
 }
 
 export function gitDetect(path: string): Promise<GitEnvironment> {
@@ -88,6 +74,10 @@ export function gitCreateBranch(name: string): Promise<void> {
 
 export function gitCheckout(name: string): Promise<void> {
     return invoke("git_checkout", { name })
+}
+
+export function gitCherryPick(hash: string): Promise<void> {
+    return invoke("git_cherry_pick", { hash })
 }
 
 export function gitFetch(background: boolean): Promise<void> {
@@ -163,6 +153,59 @@ export function searchWorkspace(
     return invoke("search_workspace", { root, query, caseSensitive, onEvent: ch })
 }
 
+export function ptyOpen(
+    workspace: string,
+    sessionId: string,
+    shell: string | null,
+    shellArgs: string[] | undefined,
+    cols: number,
+    rows: number,
+    onEvent: (e: PtyEvent) => void
+): Promise<PtySessionInfo> {
+    const ch = new Channel<PtyEvent>()
+    ch.onmessage = onEvent
+    return invoke("pty_open", { workspace, sessionId, shell, shellArgs, cols, rows, onEvent: ch })
+}
+
+export function ptyWrite(sessionId: string, data: string): Promise<void> {
+    return invoke("pty_write", { sessionId, data })
+}
+
+export function ptyResize(sessionId: string, cols: number, rows: number): Promise<void> {
+    return invoke("pty_resize", { sessionId, cols, rows })
+}
+
+export function ptyClose(sessionId: string): Promise<void> {
+    return invoke("pty_close", { sessionId })
+}
+
+export function ptyCloseWorkspace(workspace: string): Promise<void> {
+    return invoke("pty_close_workspace", { workspace })
+}
+
+export function devServerDetect(workspace: string, extraPorts?: number[]): Promise<DevServerDetect> {
+    return invoke("dev_server_detect", { workspace, extraPorts })
+}
+
+export function devServerStart(
+    workspace: string,
+    command: string,
+    port: number | null,
+    onOutput: (line: string) => void
+): Promise<DevServerInfo> {
+    const ch = new Channel<string>()
+    ch.onmessage = onOutput
+    return invoke("dev_server_start", { workspace, command, port, onOutput: ch })
+}
+
+export function devServerStop(workspace: string): Promise<void> {
+    return invoke("dev_server_stop", { workspace })
+}
+
+export function devServerStopWorkspace(workspace: string): Promise<void> {
+    return invoke("dev_server_stop_workspace", { workspace })
+}
+
 export function lspStart(
     workspace: string,
     language: string,
@@ -209,9 +252,21 @@ export function lspSetTrace(enabled: boolean): Promise<void> {
     return invoke("lsp_set_trace", { enabled })
 }
 
+export function agentSetTrace(enabled: boolean): Promise<void> {
+    return invoke("agent_set_trace", { enabled })
+}
+
 export function lspInstallServer(
     workspace: string | null,
     language: string
 ): Promise<LspServerInfo> {
     return invoke("lsp_install_server", { workspace, language })
+}
+
+export function agentList(cwd: string): Promise<string[]> {
+    return invoke("agent_list", { cwd })
+}
+
+export function agentKill(id: string): Promise<void> {
+    return invoke("agent_kill", { id })
 }

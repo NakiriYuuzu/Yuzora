@@ -1,15 +1,41 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 
 import { AppShell } from "@/app/AppShell"
 import { useContextMenuStore } from "@/state/contextMenuStore"
+import { uiInitialState, useUiStore } from "@/state/uiStore"
+import { useWorkspaceStore } from "@/state/workspaceStore"
+
+const windowMocks = vi.hoisted(() => ({
+  closeHandlers: [] as Array<(event: { preventDefault: () => void }) => void | Promise<void>>,
+  setTheme: vi.fn(() => Promise.resolve()),
+  onCloseRequested: vi.fn(
+    (handler: (event: { preventDefault: () => void }) => void | Promise<void>) => {
+      windowMocks.closeHandlers.push(handler)
+      return Promise.resolve(() => {})
+    }
+  ),
+}))
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    setTheme: windowMocks.setTheme,
+    onCloseRequested: windowMocks.onCloseRequested,
+  }),
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
+  logUserAction: vi.fn(async () => undefined),
+}))
 
 const MAC_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
 
 afterEach(() => {
   clearMocks()
+  vi.clearAllMocks()
+  windowMocks.closeHandlers.length = 0
   delete (globalThis as { isTauri?: boolean }).isTauri
   // 移除測試蓋上的 own property，讓 jsdom 原本的 prototype getter 復原
   delete (window.navigator as { userAgent?: string }).userAgent
@@ -17,6 +43,16 @@ afterEach(() => {
 })
 
 describe("AppShell", () => {
+  beforeEach(() => {
+    useUiStore.setState(uiInitialState)
+    useWorkspaceStore.setState({
+      workspacePath: null,
+      groups: [{ tabs: [], activePath: null }],
+      activeGroupIndex: 0,
+      pendingReveal: null,
+    })
+  })
+
   it("macOS 的 Tauri 內：渲染單一全寬頂部拖曳帶，內容列讓出頂部空間", () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     Object.defineProperty(window.navigator, "userAgent", { value: MAC_UA, configurable: true })
@@ -86,14 +122,11 @@ describe("AppShell", () => {
   it("在 Tauri 內將原生視窗 theme 同步為 app 主題（避免深色系統畫出黑邊框）", async () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     mockWindows("main")
-    const themes: unknown[] = []
-    mockIPC((cmd, args) => {
-      if (cmd === "plugin:window|set_theme") themes.push((args as { value: unknown }).value)
-    })
+    mockIPC(() => {})
 
     render(<AppShell />)
 
-    await waitFor(() => expect(themes).toContain("light"))
+    await waitFor(() => expect(windowMocks.setTheme).toHaveBeenCalledWith("light"))
   })
 
   it("renders the rail, nav panel and status bar", () => {
@@ -180,6 +213,43 @@ describe("AppShell", () => {
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     expect(screen.getByRole("tab", { name: "Git" })).toHaveAttribute("aria-selected", "true")
+  })
+
+  it("toggles the terminal drawer with Ctrl+`", () => {
+    render(<AppShell />)
+
+    const terminalDrawer = screen.getByText("Terminal").closest('[aria-hidden="true"]')
+    expect(terminalDrawer).not.toBeNull()
+
+    fireEvent.keyDown(window, { key: "`", ctrlKey: true })
+    expect(screen.getByText("Terminal").closest('[aria-hidden="true"]')).toBeNull()
+
+    fireEvent.keyDown(window, { key: "`", ctrlKey: true })
+    expect(screen.getByText("Terminal").closest('[aria-hidden="true"]')).not.toBeNull()
+  })
+
+  it("best-effort closes pty and dev-server workspace on Tauri close request", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    mockWindows("main")
+    const calls: string[] = []
+    mockIPC((cmd) => {
+      calls.push(cmd)
+      if (cmd === "list_dir") return []
+      return null
+    })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+
+    render(<AppShell />)
+
+    await waitFor(() => expect(windowMocks.onCloseRequested).toHaveBeenCalled())
+    const preventDefault = vi.fn()
+    await windowMocks.closeHandlers[0]({ preventDefault })
+
+    expect(preventDefault).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(calls).toContain("pty_close_workspace")
+      expect(calls).toContain("dev_server_stop_workspace")
+    })
   })
 
   it("keeps the EditorPanel container mounted (CSS-hidden) when switching away from Files mode and back", () => {

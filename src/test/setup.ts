@@ -1,6 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach } from "vitest";
 
+import { previewInitialState, usePreviewStore } from "@/state/previewStore";
+import { terminalInitialState, useTerminalStore } from "@/state/terminalStore";
 import { uiInitialState, useUiStore } from "@/state/uiStore";
 
 // jsdom doesn't implement these; cmdk (command palette) and Radix primitives
@@ -40,3 +42,5 @@ afterEach(() => document.documentElement.classList.remove("dark"));
 // zustand stores persist across the module graph, so mode / Git selection /
 // resolver state set in one test leaks into the next. Reset to initial state.
 afterEach(() => useUiStore.setState(uiInitialState));
+afterEach(() => useTerminalStore.setState(terminalInitialState));
+afterEach(() => usePreviewStore.setState(previewInitialState));

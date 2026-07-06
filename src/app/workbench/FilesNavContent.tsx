@@ -11,7 +11,8 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group"
 import { clearAll } from "@/editor/documentRegistry"
-import { logUserAction, openWorkspace, searchWorkspace, startWatch } from "@/lib/ipc"
+import { logUserAction } from "@/features/logs/userAction"
+import { openWorkspace, searchWorkspace, startWatch } from "@/lib/ipc"
 import type { SearchEvent } from "@/lib/types"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"

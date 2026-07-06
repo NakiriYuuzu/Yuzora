@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react"
 import { create } from "zustand"
 
-import { logUserAction } from "../lib/ipc"
+import { logUserAction } from "@/features/logs/userAction"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
 import { useDiffModalStore, type WorktreeDiffFile } from "./diffModalStore"
 import { useGitStore } from "./gitStore"

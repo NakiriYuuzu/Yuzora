@@ -32,7 +32,10 @@ vi.mock("@/lib/ipc", () => ({
     gitCreateBranch: vi.fn(async () => undefined),
     gitFetch: vi.fn(async () => undefined),
     gitPull: vi.fn(async () => undefined),
-    gitPush: vi.fn(async () => undefined),
+    gitPush: vi.fn(async () => undefined)
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
     logUserAction: vi.fn(async () => undefined)
 }))
 

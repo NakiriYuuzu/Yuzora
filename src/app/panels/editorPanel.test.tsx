@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen, within } from "@testing-library/react"
 
 import { AppShell } from "@/app/AppShell"
 import { EditorPanel } from "@/app/panels/EditorPanel"
 import { useContextMenuStore } from "@/state/contextMenuStore"
+
+vi.mock("@/features/logs/userAction", () => ({
+  logUserAction: vi.fn(async () => undefined),
+}))
 
 afterEach(() => {
   useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
@@ -32,15 +36,15 @@ describe("Files mode entry states", () => {
     render(<AppShell />)
 
     const toggle = screen.getByRole("button", { name: "Toggle preview" })
-    expect(screen.queryByText("Start or connect to a dev server")).not.toBeInTheDocument()
+    expect(screen.queryByText("啟動或連接 dev server")).not.toBeInTheDocument()
     expect(toggle).toHaveAttribute("aria-pressed", "false")
 
     fireEvent.click(toggle)
-    expect(screen.getByText("Start or connect to a dev server")).toBeInTheDocument()
+    expect(screen.getByText("啟動或連接 dev server")).toBeInTheDocument()
     expect(toggle).toHaveAttribute("aria-pressed", "true")
 
     fireEvent.click(toggle)
-    expect(screen.queryByText("Start or connect to a dev server")).not.toBeInTheDocument()
+    expect(screen.queryByText("啟動或連接 dev server")).not.toBeInTheDocument()
     expect(toggle).toHaveAttribute("aria-pressed", "false")
   })
 
@@ -58,11 +62,11 @@ describe("Files mode entry states", () => {
     // Shown, and starts expanded — content is immediately visible.
     const collapseToggle = screen.getByRole("button", { name: "Collapse terminal" })
     expect(collapseToggle).toHaveAttribute("aria-expanded", "true")
-    expect(screen.getByText("No terminal sessions")).toBeVisible()
+    expect(screen.getByText("尚無終端機工作階段")).toBeVisible()
 
     // Collapsing content only hides the content — the header stays put.
     fireEvent.click(collapseToggle)
-    expect(screen.getByText("No terminal sessions")).not.toBeVisible()
+    expect(screen.getByText("尚無終端機工作階段")).not.toBeVisible()
     expect(railSwitch).toHaveAttribute("aria-pressed", "true")
     const expandToggle = screen.getByRole("button", { name: "Expand terminal" })
     expect(expandToggle).toHaveAttribute("aria-expanded", "false")

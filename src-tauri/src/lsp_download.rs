@@ -467,8 +467,10 @@ fn run_command(program: &str, args: &[String], timeout: Duration) -> Result<(), 
     // Inherited stdio (spawn default) matches the previous `.status()` behavior, so
     // npm/pip output still reaches the app's stdout/stderr — and an inherited fd
     // never fills an unread pipe, so the poll loop can't deadlock.
-    let mut child = std::process::Command::new(program)
-        .args(args)
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    crate::process_kill::configure_new_group(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("執行 {program} 失敗：{e}"))?;
     let deadline = std::time::Instant::now() + timeout;
@@ -485,8 +487,7 @@ fn run_command(program: &str, args: &[String], timeout: Duration) -> Result<(), 
                 };
             }
             None if std::time::Instant::now() > deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = crate::process_kill::kill_tree(&mut child);
                 return Err(format!("{program} 逾時（{timeout:?}）"));
             }
             None => std::thread::sleep(Duration::from_millis(50)),
@@ -1063,6 +1064,39 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "must kill on timeout, not wait for the child to finish"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_timeout_kills_grandchild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_file = tmp.path().join("grandchild.pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let started = std::time::Instant::now();
+        let r = run_command(
+            "sh",
+            &["-c".to_string(), script],
+            Duration::from_millis(300),
+        );
+        assert!(r.is_err(), "a timed-out subprocess must return Err");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "must kill on timeout, not wait for the grandchild to finish"
+        );
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("pid file exists")
+            .trim()
+            .parse()
+            .expect("pid is numeric");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+            if !alive {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("grandchild {pid} still exists after timeout");
     }
 
     // ---- SHA256 (given bytes + hex) ----

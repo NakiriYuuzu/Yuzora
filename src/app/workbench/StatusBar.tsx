@@ -6,6 +6,7 @@ import { contextMenuHandler } from "@/state/contextMenuStore";
 import { changedPathSet, useGitStore } from "@/state/gitStore";
 import { useWorkspaceStore } from "@/state/workspaceStore";
 import { useLspStore } from "@/state/lspStore";
+import { usePreviewStore } from "@/state/previewStore";
 import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
 import { fileGradeOf, languageFromPath, lspLanguageOf } from "@/lib/types";
@@ -46,9 +47,13 @@ function lspErrorSummary(message: string | null): string | undefined {
  * Missing/Failed open the LSP settings for that language.
  */
 export function StatusBar() {
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath);
   const groups = useWorkspaceStore((s) => s.groups);
   const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex);
   const activePath = groups[activeGroupIndex]?.activePath ?? null;
+  const devServer = usePreviewStore((s) =>
+    workspacePath ? s.devServerForWorkspace(workspacePath) : null
+  );
 
   const environment = useGitStore((s) => s.environment);
   const status = useGitStore((s) => s.status);
@@ -122,6 +127,10 @@ export function StatusBar() {
   // probe mode only knows "incoming yes/no" so it shows a dot.
   const showBehindCount = remoteMode === "autofetch" && behind > 0;
   const showIncomingDot = remoteMode === "probe" && remoteIncoming === "yes";
+  const devServerPort =
+    devServer?.status.status === "running"
+      ? (devServer.status.port ?? devServer.port)
+      : null;
 
   const branchButton = (
     <button
@@ -216,6 +225,15 @@ export function StatusBar() {
             !
           </span>
           {conflictCount}
+        </span>
+      )}
+
+      {devServerPort != null && (
+        <span
+          className="ml-[13px] rounded-[6px] px-[6px] py-[2px]"
+          style={{ color: "var(--status-a)", background: "rgba(var(--yz-accent-rgb),0.10)" }}
+        >
+          Dev {devServerPort}
         </span>
       )}
 

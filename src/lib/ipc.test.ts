@@ -16,6 +16,7 @@ import {
     gitFetch,
     gitPull,
     gitPush,
+    gitCherryPick,
     gitRemoteProbe,
     gitDiffContent,
     gitConflictAbort,
@@ -26,6 +27,15 @@ import {
     gitCommitDetail,
     gitLogAuthors,
     gitFileAtRev,
+    ptyOpen,
+    ptyWrite,
+    ptyResize,
+    ptyClose,
+    ptyCloseWorkspace,
+    devServerDetect,
+    devServerStart,
+    devServerStop,
+    devServerStopWorkspace,
     lspStart,
     lspSend,
     lspStopWorkspace,
@@ -38,7 +48,14 @@ import {
     lspInstallServer
 } from "./ipc"
 import { languageFromPath, fileGradeOf, MAX_LINE_LEN_SYNTAX_OFF } from "./types"
-import type { SearchEvent, LspServerInfo, LspConfig, OpenFileResult } from "./types"
+import type {
+    SearchEvent,
+    LspServerInfo,
+    LspConfig,
+    OpenFileResult,
+    PtyEvent,
+    DevServerStatus
+} from "./types"
 
 const sampleServerInfo: LspServerInfo = {
     workspace: "/w",
@@ -191,6 +208,13 @@ it("gitPush invokes git_push_cmd", async () => {
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
     await gitPush()
     expect(seen[0]).toEqual(["git_push_cmd", {}])
+})
+
+it("gitCherryPick forwards hash", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await gitCherryPick("deadbeef")
+    expect(seen[0]).toEqual(["git_cherry_pick", { hash: "deadbeef" }])
 })
 
 it("gitRemoteProbe returns probe result", async () => {
@@ -346,6 +370,137 @@ it("lspStart forwards args, wires channel, and returns server info", async () =>
     const info = await lspStart("/w", "typescript", (m) => msgs.push(m))
     expect(msgs).toEqual(["{}"])
     expect(info.serverId).toBe("typescript-language-server")
+})
+
+it("ptyOpen forwards args, wires channel, and returns session info", async () => {
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("pty_open")
+        const p = payload as {
+            workspace: string
+            sessionId: string
+            shell: string | null
+            shellArgs: string[] | undefined
+            cols: number
+            rows: number
+            onEvent: { onmessage: (event: PtyEvent) => void }
+        }
+        expect(p.workspace).toBe("/w")
+        expect(p.sessionId).toBe("pty-1")
+        expect(p.shell).toBeNull()
+        expect(p.shellArgs).toEqual(["-c", "echo ok"])
+        expect(p.cols).toBe(120)
+        expect(p.rows).toBe(32)
+        p.onEvent.onmessage({ type: "output", data: "ready\n" })
+        return { sessionId: "pty-1", workspace: "/w", shell: "/bin/zsh", cols: 120, rows: 32 }
+    })
+    const events: PtyEvent[] = []
+    const info = await ptyOpen("/w", "pty-1", null, ["-c", "echo ok"], 120, 32, (event) =>
+        events.push(event)
+    )
+    expect(events).toEqual([{ type: "output", data: "ready\n" }])
+    expect(info.sessionId).toBe("pty-1")
+})
+
+it("ptyWrite forwards session id and data", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await ptyWrite("pty-1", "pwd\n")
+    expect(seen[0]).toEqual(["pty_write", { sessionId: "pty-1", data: "pwd\n" }])
+})
+
+it("ptyResize forwards dimensions", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await ptyResize("pty-1", 100, 28)
+    expect(seen[0]).toEqual(["pty_resize", { sessionId: "pty-1", cols: 100, rows: 28 }])
+})
+
+it("ptyClose forwards session id", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await ptyClose("pty-1")
+    expect(seen[0]).toEqual(["pty_close", { sessionId: "pty-1" }])
+})
+
+it("ptyCloseWorkspace forwards workspace", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await ptyCloseWorkspace("/w")
+    expect(seen[0]).toEqual(["pty_close_workspace", { workspace: "/w" }])
+})
+
+it("devServerDetect forwards workspace and extra ports then returns candidates", async () => {
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("dev_server_detect")
+        expect(payload).toEqual({ workspace: "/w", extraPorts: [6000] })
+        return {
+            candidates: [{ scriptName: "dev", command: "vite", likelyPort: 5173 }],
+            runningPorts: [5173]
+        }
+    })
+    const detect = await devServerDetect("/w", [6000])
+    expect(detect.candidates[0].scriptName).toBe("dev")
+    expect(detect.runningPorts).toEqual([5173])
+})
+
+it("devServerStart forwards args, wires channel, and returns server info", async () => {
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("dev_server_start")
+        const p = payload as {
+            workspace: string
+            command: string
+            port: number | null
+            onOutput: { onmessage: (line: string) => void }
+        }
+        expect(p.workspace).toBe("/w")
+        expect(p.command).toBe("bun run dev")
+        expect(p.port).toBeNull()
+        p.onOutput.onmessage("Local: http://localhost:5173")
+        return {
+            workspace: "/w",
+            command: "bun run dev",
+            port: null,
+            status: { status: "starting" }
+        }
+    })
+    const lines: string[] = []
+    const info = await devServerStart("/w", "bun run dev", null, (line) => lines.push(line))
+    expect(lines).toEqual(["Local: http://localhost:5173"])
+    expect(info.status.status).toBe("starting")
+})
+
+it("devServerStop forwards workspace", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await devServerStop("/w")
+    expect(seen[0]).toEqual(["dev_server_stop", { workspace: "/w" }])
+})
+
+it("devServerStopWorkspace forwards workspace", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await devServerStopWorkspace("/w")
+    expect(seen[0]).toEqual(["dev_server_stop_workspace", { workspace: "/w" }])
+})
+
+it("narrows pty and dev-server discriminated unions", () => {
+    function ptyText(event: PtyEvent): string {
+        if (event.type === "output") return event.data
+        return String(event.code ?? "none")
+    }
+    function serverText(status: DevServerStatus): string {
+        if (status.status === "running") return String(status.port ?? "auto")
+        if (status.status === "failed") return status.reason
+        if (status.status === "exited") return String(status.code ?? "none")
+        return status.status
+    }
+
+    expect(ptyText({ type: "output", data: "ok" })).toBe("ok")
+    expect(ptyText({ type: "exit", code: null })).toBe("none")
+    expect(serverText({ status: "running", port: 5173 })).toBe("5173")
+    expect(serverText({ status: "failed", reason: "missing script" })).toBe("missing script")
+    expect(serverText({ status: "exited", code: null })).toBe("none")
+    expect(serverText({ status: "starting" })).toBe("starting")
 })
 
 it("lspSend forwards workspace, language and message", async () => {

@@ -52,7 +52,10 @@ vi.mock("@/lib/ipc", () => ({
         files: [],
         totalAdditions: 0,
         totalDeletions: 0
-    })),
+    }))
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
     logUserAction: vi.fn(async () => undefined)
 }))
 

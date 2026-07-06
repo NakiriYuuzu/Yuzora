@@ -2,7 +2,7 @@ import { confirm } from "@tauri-apps/plugin-dialog"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useUiStore } from "../state/uiStore"
 import { dropDocument } from "../editor/documentRegistry"
-import { logUserAction } from "../lib/ipc"
+import { logUserAction } from "@/features/logs/userAction"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { MarkdownPreview, isMarkdownPath, useMarkdownPreviewStore } from "./MarkdownPreview"
 

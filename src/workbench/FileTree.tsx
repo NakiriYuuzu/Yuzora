@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, GitCompareArrows } from "lucide-react"
 import { useEffect, useState } from "react"
-import { listDir, logUserAction } from "../lib/ipc"
+import { listDir } from "../lib/ipc"
+import { logUserAction } from "@/features/logs/userAction"
 import type { FileNode } from "../lib/types"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { changedPathSet, useGitStore } from "../state/gitStore"

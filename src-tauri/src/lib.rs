@@ -1,4 +1,7 @@
+pub mod agent_process;
+pub mod agent_terminal;
 pub mod askpass;
+pub mod dev_server_detect;
 pub mod file_content;
 pub mod fs_service;
 pub mod git_log;
@@ -10,6 +13,9 @@ pub mod lsp_adapters;
 pub mod lsp_config;
 pub mod lsp_download;
 pub mod lsp_service;
+pub mod process_kill;
+pub mod process_service;
+pub mod pty_service;
 pub mod search_service;
 pub mod watcher;
 
@@ -48,6 +54,18 @@ pub fn run() {
             app.manage(lsp_service::LspState(std::sync::Arc::new(
                 lsp_service::LspManager::new(app.handle().clone()),
             )));
+            app.manage(pty_service::PtyState(std::sync::Arc::new(
+                pty_service::PtyManager::new(app.handle().clone()),
+            )));
+            app.manage(process_service::ProcessState(std::sync::Arc::new(
+                process_service::ProcessManager::new(app.handle().clone()),
+            )));
+            app.manage(agent_process::AgentProcessState(std::sync::Arc::new(
+                agent_process::AgentManager::new(),
+            )));
+            app.manage(agent_terminal::AgentTerminalState(std::sync::Arc::new(
+                agent_terminal::AgentTerminalManager::new(),
+            )));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -56,6 +74,9 @@ pub fn run() {
             fs_service::open_file,
             fs_service::save_file,
             logging::log_event,
+            logging::log_query,
+            logging::log_sources,
+            logging::log_export,
             watcher::start_watch,
             search_service::search_workspace,
             git_service::git_detect,
@@ -67,6 +88,7 @@ pub fn run() {
             git_service::git_branches,
             git_service::git_create_branch,
             git_service::git_checkout,
+            git_service::git_cherry_pick,
             git_service::git_fetch_cmd,
             git_service::git_pull_cmd,
             git_service::git_push_cmd,
@@ -88,8 +110,41 @@ pub fn run() {
             lsp_service::lsp_config_stale,
             lsp_service::lsp_config_clear_stale,
             lsp_service::lsp_set_trace,
-            lsp_download::lsp_install_server
+            lsp_download::lsp_install_server,
+            pty_service::pty_open,
+            pty_service::pty_write,
+            pty_service::pty_resize,
+            pty_service::pty_close,
+            pty_service::pty_close_workspace,
+            dev_server_detect::dev_server_detect,
+            process_service::dev_server_start,
+            process_service::dev_server_stop,
+            process_service::dev_server_stop_workspace,
+            agent_process::agent_spawn,
+            agent_process::agent_write,
+            agent_process::agent_kill,
+            agent_process::agent_list,
+            agent_process::agent_set_trace,
+            agent_terminal::agent_terminal_create,
+            agent_terminal::agent_terminal_output,
+            agent_terminal::agent_terminal_wait_for_exit,
+            agent_terminal::agent_terminal_kill,
+            agent_terminal::agent_terminal_release
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running yuzora")
+        .build(tauri::generate_context!())
+        .expect("error while running yuzora application")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                use tauri::Manager;
+                app.state::<pty_service::PtyState>().0.kill_all();
+                app.state::<process_service::ProcessState>().0.kill_all();
+                app.state::<agent_process::AgentProcessState>().0.kill_all();
+                app.state::<agent_terminal::AgentTerminalState>()
+                    .0
+                    .kill_all();
+            }
+        })
 }

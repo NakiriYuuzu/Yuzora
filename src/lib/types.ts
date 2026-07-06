@@ -137,8 +137,50 @@ export interface SearchMatch { line: number; col: number; preview: string }
 export type SearchEvent =
     | { type: "match"; path: string; matches: SearchMatch[] }
     | { type: "done"; truncated: boolean; fileCount: number }
+export interface PtySessionInfo {
+    sessionId: string
+    workspace: string
+    shell: string
+    cols: number
+    rows: number
+}
+export type PtyEvent =
+    | { type: "output"; data: string }
+    | { type: "exit"; code: number | null }
+export interface DevServerCandidate {
+    scriptName: string
+    command: string
+    likelyPort: number | null
+}
+export interface DevServerDetect {
+    candidates: DevServerCandidate[]
+    runningPorts: number[]
+}
+export type DevServerStatus =
+    | { status: "starting" }
+    | { status: "running"; port: number | null }
+    | { status: "exited"; code: number | null }
+    | { status: "failed"; reason: string }
+export interface DevServerInfo {
+    workspace: string
+    command: string
+    port: number | null
+    status: DevServerStatus
+}
 export type AskpassKind = "username" | "password" | "passphrase" | "fingerprint" | "other"
 export interface AskpassRequest { id: number; prompt: string; kind: AskpassKind }
+
+// --- Runtime logs (M5 Task 15; Rust serde field names are snake_case) ---
+export interface LogRecord {
+    timestamp: string
+    level: string
+    kind: string
+    source: string
+    workspace_path: string | null
+    event: string
+    message: string
+    metadata: unknown
+}
 
 // --- Git log (T2 IPC contract; all outputs camelCase) ---
 export type LogRefKind = "head" | "local" | "remote" | "tag"

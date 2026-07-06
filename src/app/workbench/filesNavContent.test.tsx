@@ -13,6 +13,9 @@ vi.mock("@/lib/ipc", () => ({
   searchWorkspace: (...args: Parameters<typeof searchWorkspace>) => searchWorkspace(...args),
   openWorkspace: vi.fn(async (p: string) => p),
   startWatch: vi.fn(async () => undefined),
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
   logUserAction: vi.fn(async () => undefined),
 }))
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }))

@@ -24,7 +24,10 @@ vi.mock("./documentRegistry", () => ({
 
 const saveFile = vi.fn(async (_path: string, _content: string) => 0)
 vi.mock("../lib/ipc", () => ({
-    saveFile: (path: string, content: string) => saveFile(path, content),
+    saveFile: (path: string, content: string) => saveFile(path, content)
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
     logUserAction: vi.fn(async () => undefined)
 }))
 

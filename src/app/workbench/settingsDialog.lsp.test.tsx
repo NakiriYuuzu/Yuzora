@@ -3,7 +3,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import { AppShell } from "@/app/AppShell"
-import { SettingsDialog } from "@/app/workbench/SettingsDialog"
+import {
+  PREVIEW_SETTINGS_STORAGE_KEY,
+  SettingsDialog,
+  TERMINAL_SETTINGS_STORAGE_KEY,
+} from "@/app/workbench/SettingsDialog"
 import { FORMAT_ON_SAVE_STORAGE_KEY } from "@/editor/EditorPane"
 import type { LspConfig, LspServerInfo } from "@/lib/types"
 import { useLspStore } from "@/state/lspStore"
@@ -439,6 +443,52 @@ describe("SettingsDialog LSP section", () => {
 
     expect(await screen.findByRole("heading", { name: "LSP" })).toBeInTheDocument()
     expect(screen.getByTestId("lsp-card-python")).toBeInTheDocument()
+  })
+})
+
+describe("SettingsDialog terminal and preview sections", () => {
+  it("renders terminal and preview nav entries", () => {
+    renderDialog()
+
+    expect(screen.getByRole("button", { name: "Terminal" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument()
+  })
+
+  it("persists terminal shell override and default args", () => {
+    renderDialog({ initialSection: "terminal" })
+
+    fireEvent.change(screen.getByLabelText("Shell path override"), {
+      target: { value: "/opt/homebrew/bin/fish" },
+    })
+    fireEvent.change(screen.getByLabelText("Default shell args"), {
+      target: { value: "-l --private" },
+    })
+
+    expect(localStorage.getItem(TERMINAL_SETTINGS_STORAGE_KEY)).toBe(
+      JSON.stringify({ shellPath: "/opt/homebrew/bin/fish", shellArgs: "-l --private" })
+    )
+  })
+
+  it("persists preview command and port overrides", () => {
+    renderDialog({ initialSection: "preview" })
+
+    fireEvent.change(screen.getByLabelText("Dev server command override"), {
+      target: { value: "bun run dev -- --host 127.0.0.1" },
+    })
+    fireEvent.change(screen.getByLabelText("Port override"), {
+      target: { value: "6000" },
+    })
+
+    expect(localStorage.getItem(PREVIEW_SETTINGS_STORAGE_KEY)).toBe(
+      JSON.stringify({ command: "bun run dev -- --host 127.0.0.1", port: "6000" })
+    )
+  })
+
+  it("openSettings preview target shows the Preview section", () => {
+    renderDialog({ initialSection: "preview", openNonce: 1 })
+
+    expect(screen.getByRole("heading", { name: "Preview" })).toBeInTheDocument()
+    expect(screen.getByLabelText("Dev server command override")).toBeInTheDocument()
   })
 })
 

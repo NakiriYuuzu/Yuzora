@@ -6,6 +6,7 @@ import { useContextMenuStore } from "@/state/contextMenuStore";
 import { initialGitState, useGitStore } from "@/state/gitStore";
 import { useWorkspaceStore } from "@/state/workspaceStore";
 import { useLspStore } from "@/state/lspStore";
+import { usePreviewStore } from "@/state/previewStore";
 import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
 import type { GitStatus, LspServerInfo } from "@/lib/types";
@@ -73,6 +74,7 @@ describe("StatusBar", () => {
     // resets every data field the branch segment reads.
     useGitStore.setState(initialGitState);
     useLspStore.getState().reset();
+    usePreviewStore.getState().reset();
     // Replace with the captured snapshot so a spied openSettings never leaks.
     useUiStore.setState(initialUiState, true);
     vi.mocked(getDocument).mockResolvedValue({
@@ -231,6 +233,34 @@ describe("StatusBar", () => {
     render(<StatusBar />);
 
     expect(screen.getByText(/未開啟檔案/)).toBeInTheDocument();
+  });
+
+  it("dev server running 時在中段顯示 port chip", () => {
+    useWorkspaceStore.setState({ workspacePath: "/w" });
+    usePreviewStore.getState().setDevServer({
+      workspace: "/w",
+      command: "bun run dev",
+      port: 5173,
+      status: { status: "running", port: 5173 },
+    });
+
+    render(<StatusBar />);
+
+    expect(screen.getByText("Dev 5173")).toBeInTheDocument();
+  });
+
+  it("dev server 非 running 時隱藏 port chip", () => {
+    useWorkspaceStore.setState({ workspacePath: "/w" });
+    usePreviewStore.getState().setDevServer({
+      workspace: "/w",
+      command: "bun run dev",
+      port: 5173,
+      status: { status: "exited", code: 0 },
+    });
+
+    render(<StatusBar />);
+
+    expect(screen.queryByText(/Dev 5173/)).not.toBeInTheDocument();
   });
 
   it("右鍵狀態列開啟 status 選單", () => {

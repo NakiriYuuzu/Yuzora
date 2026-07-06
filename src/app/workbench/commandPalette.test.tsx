@@ -13,6 +13,7 @@ import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { ensureClient } from "@/lsp/lspManager"
 import { requestDocumentSymbols, requestWorkspaceSymbols } from "@/lsp/symbols"
 import { getDocument } from "@/editor/documentRegistry"
+import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const managed = {
@@ -22,6 +23,7 @@ const managed = {
 }
 
 beforeEach(() => {
+    useUiStore.setState(uiInitialState)
     vi.mocked(ensureClient).mockResolvedValue(managed as never)
     vi.mocked(requestDocumentSymbols).mockResolvedValue([])
     vi.mocked(requestWorkspaceSymbols).mockResolvedValue([])
@@ -73,4 +75,24 @@ it("⌘K while the symbol picker is open closes the picker without stacking the 
     })
     await flush()
     expect(screen.queryAllByRole("dialog")).toHaveLength(0)
+})
+
+it("renders terminal and preview toggles and closes after selection", async () => {
+    render(<Harness />)
+
+    expect(await screen.findByRole("option", { name: /toggle terminal/i })).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: /toggle preview/i })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("option", { name: /toggle terminal/i }))
+    expect(useUiStore.getState().terminalOpen).toBe(true)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
+it("toggle preview command flips preview visibility", async () => {
+    render(<Harness />)
+
+    fireEvent.click(await screen.findByRole("option", { name: /toggle preview/i }))
+
+    expect(useUiStore.getState().previewOpen).toBe(true)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 })
