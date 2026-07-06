@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 
-import { gitStage, gitUnstage, logUserAction } from "../../lib/ipc"
+import { gitStage, gitUnstage } from "../../lib/ipc"
+import { logUserAction } from "@/features/logs/userAction"
 import type { DiffContent } from "../../lib/types"
 import { useGitStore } from "../../state/gitStore"
 import { useUiStore } from "../../state/uiStore"

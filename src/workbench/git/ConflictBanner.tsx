@@ -1,6 +1,7 @@
 import { confirm } from "@tauri-apps/plugin-dialog"
 
-import { gitConflictAbort, gitConflictContinue, logUserAction } from "../../lib/ipc"
+import { gitConflictAbort, gitConflictContinue } from "../../lib/ipc"
+import { logUserAction } from "@/features/logs/userAction"
 import { useGitStore } from "../../state/gitStore"
 import { useUiStore } from "../../state/uiStore"
 
@@ -29,14 +30,14 @@ export function ConflictBanner() {
     const abort = async () => {
         const ok = await confirm(`Abort the in-progress ${op}? All ${op} changes will be discarded.`)
         if (!ok) return
-        const done = await runOp("conflict-abort", () => gitConflictAbort(op))
+        const done = await runOp("conflict-abort", () => gitConflictAbort(op), { conflictOp: op })
         if (done) void logUserAction("git_conflict_abort", `abort ${op}`)
     }
 
     const conflictContinue = async () => {
         const ok = await confirm(`Continue the ${op}? Resolve all conflicts first.`)
         if (!ok) return
-        const done = await runOp("conflict-continue", () => gitConflictContinue(op))
+        const done = await runOp("conflict-continue", () => gitConflictContinue(op), { conflictOp: op })
         if (done) void logUserAction("git_conflict_continue", `continue ${op}`)
     }
 

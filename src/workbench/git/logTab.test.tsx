@@ -61,7 +61,10 @@ const gitLogPage = vi.fn<(...a: unknown[]) => Promise<LogPage>>(async () => ({
 const gitLogAuthors = vi.fn<() => Promise<AuthorEntry[]>>(async () => [])
 const gitCommitDetail = vi.fn<(hash: string) => Promise<CommitDetail>>(async () => makeDetail())
 const gitCheckout = vi.fn(async () => undefined)
-const logUserAction = vi.fn(async () => undefined)
+const gitCherryPick = vi.fn<(hash: string) => Promise<void>>(async () => undefined)
+const logUserAction = vi.fn<
+    (event: string, message: string, metadata?: Record<string, unknown>) => Promise<void>
+>(async () => undefined)
 const writeText = vi.fn(async () => undefined)
 
 vi.mock("@/lib/ipc", () => ({
@@ -69,7 +72,7 @@ vi.mock("@/lib/ipc", () => ({
     gitLogAuthors: () => gitLogAuthors(),
     gitCommitDetail: (h: string) => gitCommitDetail(h),
     gitCheckout: () => gitCheckout(),
-    logUserAction: () => logUserAction(),
+    gitCherryPick: (h: string) => gitCherryPick(h),
     // gitStore also imports these; harmless stubs for its module graph.
     gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50" })),
     gitStatus: vi.fn(async () => makeStatus()),
@@ -79,6 +82,11 @@ vi.mock("@/lib/ipc", () => ({
     gitPull: vi.fn(async () => undefined),
     gitPush: vi.fn(async () => undefined),
     gitCreateBranch: vi.fn(async () => undefined)
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
+    logUserAction: (event: string, message: string, metadata?: Record<string, unknown>) =>
+        logUserAction(event, message, metadata)
 }))
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
@@ -106,6 +114,7 @@ beforeEach(() => {
     gitLogAuthors.mockReset().mockResolvedValue([])
     gitCommitDetail.mockReset().mockResolvedValue(makeDetail())
     gitCheckout.mockClear()
+    gitCherryPick.mockClear()
     logUserAction.mockClear()
     writeText.mockClear()
 })
@@ -321,6 +330,12 @@ describe("LogTab details actions", () => {
         await waitFor(() => expect(gitCheckout).toHaveBeenCalled())
     })
 
+    it("Cherry-pick routes through gitStore.runOp / gitCherryPick", async () => {
+        await renderWithSelection()
+        fireEvent.click(screen.getByRole("button", { name: "Cherry-pick" }))
+        await waitFor(() => expect(gitCherryPick).toHaveBeenCalledWith(makeCommit(0).hash))
+    })
+
     it("blocks Checkout while an editor tab is dirty", async () => {
         useWorkspaceStore.setState({
             groups: [
@@ -338,10 +353,29 @@ describe("LogTab details actions", () => {
         expect(await screen.findByText(/未儲存的變更/)).toBeInTheDocument()
     })
 
-    it("Compare / Cherry-pick / Reset are present and disabled", async () => {
+    it("disables Cherry-pick while an operation is in progress", async () => {
+        useGitStore.setState({ status: makeStatus({ inProgress: "merge" }) })
+        await renderWithSelection()
+        expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
+    })
+
+    it("disables Cherry-pick when conflicts are present", async () => {
+        useGitStore.setState({
+            status: makeStatus({ conflicted: [{ path: "a.ts", origPath: null, status: "UU" }] })
+        })
+        await renderWithSelection()
+        expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
+    })
+
+    it("disables Cherry-pick while the git store is busy", async () => {
+        useGitStore.setState({ busy: "pull" })
+        await renderWithSelection()
+        expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
+    })
+
+    it("Compare / Reset are present and disabled", async () => {
         await renderWithSelection()
         expect(screen.getByRole("button", { name: "Compare" })).toBeDisabled()
-        expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
         expect(screen.getByRole("button", { name: "Reset main to here…" })).toBeDisabled()
     })
 

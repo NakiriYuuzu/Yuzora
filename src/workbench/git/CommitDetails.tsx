@@ -115,9 +115,9 @@ function FooterButton({
 /**
  * §2 L817-866 commit details right column (240px). Header (hash chip + copy,
  * subject, author avatar, committed/parents), changed-files list, and the
- * footer action row. Checkout goes through the injected `onCheckout`; Compare /
- * Cherry-pick / Reset are disabled per §brief (T6 / M3 territory). File-row
- * clicks are surfaced via `onOpenFile` for T6 to wire the Diff modal.
+ * footer action row. Checkout / Cherry-pick go through injected callbacks;
+ * Compare stays guarded by loaded details. File-row clicks are surfaced via
+ * `onOpenFile` for T6 to wire the Diff modal.
  */
 export function CommitDetails({
     selectedCommit,
@@ -125,7 +125,9 @@ export function CommitDetails({
     detailLoading,
     onCheckout,
     onOpenFile,
-    onCompare
+    onCompare,
+    onCherryPick,
+    cherryPickDisabled
 }: {
     selectedCommit: LogCommit | null
     detail: CommitDetail | null
@@ -133,6 +135,8 @@ export function CommitDetails({
     onCheckout: (hash: string) => void
     onOpenFile?: (file: CommitFileChange) => void
     onCompare?: (hash: string) => void
+    onCherryPick?: (hash: string) => void
+    cherryPickDisabled?: boolean
 }) {
     if (!selectedCommit) {
         return (
@@ -265,7 +269,12 @@ export function CommitDetails({
                             : undefined
                     }
                 />
-                <FooterButton label="Cherry-pick" disabled title="Cherry-pick (coming soon)" />
+                <FooterButton
+                    label="Cherry-pick"
+                    disabled={!onCherryPick || cherryPickDisabled}
+                    title="Cherry-pick this commit"
+                    onClick={onCherryPick ? () => onCherryPick(selectedCommit.hash) : undefined}
+                />
                 <FooterButton label="Reset main to here…" danger title="Hold to reset — rewrites branch history">
                     <svg
                         width="12"

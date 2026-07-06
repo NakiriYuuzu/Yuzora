@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 
 import type { CommitFileChange } from "@/lib/types"
-import { gitCheckout, logUserAction } from "@/lib/ipc"
+import { logUserAction } from "@/features/logs/userAction"
+import { gitCheckout, gitCherryPick } from "@/lib/ipc"
 import { useGitLogStore } from "@/state/gitLogStore"
 import { useGitStore } from "@/state/gitStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -145,14 +146,16 @@ export function LogTab({
     const select = useGitLogStore((s) => s.select)
 
     const runOp = useGitStore((s) => s.runOp)
+    const status = useGitStore((s) => s.status)
+    const busy = useGitStore((s) => s.busy)
 
     // HEAD-change signal. branch + headOid change together on commit / checkout /
     // reset / merge but NOT on plain working-tree edits (those touch the file
     // buckets, not headOid) — so the log reloads exactly when history moves,
     // avoiding a reload on every fs event. ahead/behind deliberately excluded:
     // they shift on fetch without HEAD moving.
-    const branch = useGitStore((s) => s.status?.branch ?? null)
-    const headOid = useGitStore((s) => s.status?.headOid ?? null)
+    const branch = status?.branch ?? null
+    const headOid = status?.headOid ?? null
 
     // repo switch → reset the log store, then reload under the new root.
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
@@ -222,6 +225,8 @@ export function LogTab({
     }
 
     const selectedCommit = commits.find((c) => c.hash === selectedHash) ?? null
+    const cherryPickDisabled =
+        !!status?.inProgress || (status?.conflicted?.length ?? 0) > 0 || !!busy
 
     // User dropdown options: "All" + author names (§brief filters.author = name).
     const userOptions = [
@@ -334,6 +339,8 @@ export function LogTab({
                             : undefined
                     }
                     onCompare={onCompare}
+                    onCherryPick={(hash) => void runOp("cherry-pick", () => gitCherryPick(hash))}
+                    cherryPickDisabled={cherryPickDisabled}
                 />
             </div>
         </div>

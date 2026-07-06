@@ -88,8 +88,8 @@ pub fn run_git(
     extra_env: &[(String, String)],
 ) -> Result<GitOutput, String> {
     use std::process::{Command, Stdio};
-    let mut child = Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -98,9 +98,9 @@ pub fn run_git(
         .envs(extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("git spawn failed: {e}"))?;
+        .stderr(Stdio::piped());
+    crate::process_kill::configure_new_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("git spawn failed: {e}"))?;
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
     let out_thread = std::thread::spawn(move || {
@@ -120,8 +120,7 @@ pub fn run_git(
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(st) => break st.code().unwrap_or(-1),
             None if std::time::Instant::now() > deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = crate::process_kill::kill_tree(&mut child);
                 return Err(format!(
                     "git {} timed out after {:?}",
                     args.first().unwrap_or(&""),
@@ -401,6 +400,18 @@ pub fn checkout(root: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// cherry-pick <hash>。GUI 無 TTY：GIT_EDITOR=true 防 sequencer editor 卡死（乾淨 pick
+/// 會沿用原訊息、通常不開 editor，但保險）。衝突留 CHERRY_PICK_HEAD → 前端接 ConflictBanner。
+pub fn cherry_pick(root: &Path, hash: &str) -> Result<(), String> {
+    run_ok(
+        root,
+        &["cherry-pick", hash],
+        DEFAULT_TIMEOUT,
+        &editor_true(),
+    )?;
+    Ok(())
+}
+
 /// 契約：op ∈ merge|rebase|cherry-pick|revert（brief 明列）。校驗攔截任意 subcommand。
 fn check_conflict_op(op: &str) -> Result<(), String> {
     if !matches!(op, "merge" | "rebase" | "cherry-pick" | "revert") {
@@ -596,6 +607,14 @@ pub fn git_checkout(state: tauri::State<'_, GitServiceState>, name: String) -> R
 }
 
 #[tauri::command]
+pub fn git_cherry_pick(
+    state: tauri::State<'_, GitServiceState>,
+    hash: String,
+) -> Result<(), String> {
+    cherry_pick(&repo_root(&state)?, &hash)
+}
+
+#[tauri::command]
 pub fn git_fetch_cmd(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
@@ -749,6 +768,41 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_git_timeout_kills_grandchild() {
+        let tmp = tempfile::tempdir().unwrap();
+        test_repo::init(tmp.path());
+        let pid_file = tmp.path().join("grandchild.pid");
+        let alias = format!(
+            "alias.hang=!sh -c 'sleep 30 & echo $! > \"{}\"; wait'",
+            pid_file.display()
+        );
+        let started = std::time::Instant::now();
+        let r = run_git(
+            tmp.path(),
+            &["-c", alias.as_str(), "hang"],
+            Duration::from_millis(300),
+            &[],
+        );
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("pid file exists")
+            .trim()
+            .parse()
+            .expect("pid is numeric");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+            if !alive {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("grandchild {pid} still exists after timeout");
+    }
+
     #[test]
     fn status_detects_merge_in_progress() {
         let tmp = tempfile::tempdir().unwrap();
@@ -837,6 +891,98 @@ mod tests {
             .local
             .iter()
             .any(|x| x.name == "main" && x.is_current));
+    }
+
+    #[test]
+    fn cherry_pick_clean_and_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "base\n", "c1");
+        create_branch(r, "side").unwrap();
+        test_repo::write_and_commit(r, "b.txt", "sidefile\n", "add b");
+        let pick = run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[]).unwrap();
+        let sha = String::from_utf8_lossy(&pick.stdout).trim().to_string();
+        checkout(r, "main").unwrap();
+        cherry_pick(r, &sha).unwrap();
+        let head = run_git(r, &["log", "--format=%s", "-1"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "add b");
+
+        test_repo::write_and_commit(r, "a.txt", "main-x\n", "cm");
+        checkout(r, "side").unwrap();
+        test_repo::write_and_commit(r, "a.txt", "side-x\n", "cs");
+        let cs = String::from_utf8_lossy(
+            &run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[])
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        checkout(r, "main").unwrap();
+        let err = cherry_pick(r, &cs).unwrap_err();
+        assert!(!err.trim().is_empty());
+        assert_eq!(
+            status_of(r, None).unwrap().in_progress.as_deref(),
+            Some("cherry-pick")
+        );
+        conflict_abort(r, "cherry-pick").unwrap();
+        assert!(status_of(r, None).unwrap().in_progress.is_none());
+    }
+
+    #[test]
+    fn cherry_pick_redundant_empty_stays_abortable_without_conflicts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "base\n", "c1");
+
+        create_branch(r, "side").unwrap();
+        test_repo::write_and_commit(r, "a.txt", "same\n", "side same");
+        let redundant = String::from_utf8_lossy(
+            &run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[])
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+
+        checkout(r, "main").unwrap();
+        test_repo::write_and_commit(r, "a.txt", "same\n", "main same");
+        let err = cherry_pick(r, &redundant).unwrap_err();
+        assert!(!err.trim().is_empty());
+
+        let dto = status_of(r, None).unwrap();
+        assert_eq!(dto.in_progress.as_deref(), Some("cherry-pick"));
+        assert!(dto.parsed.conflicted.is_empty());
+
+        conflict_abort(r, "cherry-pick").unwrap();
+        assert!(status_of(r, None).unwrap().in_progress.is_none());
+    }
+
+    #[test]
+    fn cherry_pick_merge_commit_without_mainline_returns_readable_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+
+        create_branch(r, "side").unwrap();
+        test_repo::write_and_commit(r, "side.txt", "side\n", "side");
+        checkout(r, "main").unwrap();
+        test_repo::write_and_commit(r, "main.txt", "main\n", "main");
+        run_ok(r, &["merge", "--no-ff", "side", "-m", "merge side"], DEFAULT_TIMEOUT, &[])
+            .unwrap();
+        let merge_sha = String::from_utf8_lossy(
+            &run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[])
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        run_ok(r, &["switch", "-c", "target", "HEAD~1"], DEFAULT_TIMEOUT, &[]).unwrap();
+
+        let err = cherry_pick(r, &merge_sha).unwrap_err();
+        assert!(!err.trim().is_empty());
     }
 
     #[test]

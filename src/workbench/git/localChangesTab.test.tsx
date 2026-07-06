@@ -30,7 +30,10 @@ vi.mock("../../lib/ipc", () => ({
     gitDiffContent: vi.fn(async () => ({
         original: { kind: "full", content: "one\n" },
         modified: { kind: "full", content: "two\n" }
-    })),
+    }))
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
     logUserAction: vi.fn(async () => undefined)
 }))
 

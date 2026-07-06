@@ -25,6 +25,10 @@ export interface GitConsoleEntry {
     time: string
 }
 
+interface RunOpOptions {
+    conflictOp?: string
+}
+
 // Ring-buffer cap — matches the prototype's "keep recent history" intent
 // without unbounded growth.
 export const CONSOLE_LOG_LIMIT = 200
@@ -42,12 +46,19 @@ const CONSOLE_CMD_LABELS: Record<string, string> = {
     discard: "git restore",
     commit: 'git commit -m "…"',
     checkout: "git checkout",
+    "cherry-pick": "git cherry-pick",
     "create-branch": "git branch",
     "conflict-abort": "git merge --abort",
     "conflict-continue": "git merge --continue"
 }
 
-function consoleCmdLabel(name: string): string {
+function consoleCmdLabel(name: string, options?: RunOpOptions): string {
+    if (options?.conflictOp && name === "conflict-abort") {
+        return `git ${options.conflictOp} --abort`
+    }
+    if (options?.conflictOp && name === "conflict-continue") {
+        return `git ${options.conflictOp} --continue`
+    }
     return CONSOLE_CMD_LABELS[name] ?? `git ${name}`
 }
 
@@ -99,7 +110,7 @@ interface GitState {
     refresh: (paths?: string[]) => Promise<void>
     refreshQuiet: (paths?: string[]) => Promise<void>
     loadBranches: () => Promise<void>
-    runOp: (name: string, fn: () => Promise<unknown>) => Promise<boolean>
+    runOp: (name: string, fn: () => Promise<unknown>, options?: RunOpOptions) => Promise<boolean>
     checkRemote: () => Promise<void>
     setRemoteCheck: (cfg: RemoteCheckConfig) => void
 }
@@ -241,14 +252,14 @@ export const useGitStore = create<GitState>()((set, get) => ({
         }
     },
 
-    runOp: async (name, fn) => {
+    runOp: async (name, fn, options) => {
         if (get().busy) return false
         set({ busy: name })
         // Single-point Console wiring: every runOp completion (success and
         // failure) records one entry here. The IPC layer returns no stdout, so
         // success shows "Done" and failure shows the error message (brief B1 —
         // do not touch the Rust side just to surface stdout).
-        const cmd = consoleCmdLabel(name)
+        const cmd = consoleCmdLabel(name, options)
         try {
             await fn()
             set({ lastError: null })

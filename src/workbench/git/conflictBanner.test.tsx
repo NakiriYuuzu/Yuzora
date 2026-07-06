@@ -26,7 +26,10 @@ vi.mock("../../lib/ipc", () => ({
     gitBranches: vi.fn(async () => ({ local: [], remote: [] })),
     gitFetch: vi.fn(async () => undefined),
     gitRemoteProbe: vi.fn(async () => "no"),
-    gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50.1" })),
+    gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50.1" }))
+}))
+
+vi.mock("@/features/logs/userAction", () => ({
     logUserAction: vi.fn(async () => undefined)
 }))
 
@@ -93,6 +96,16 @@ describe("ConflictBanner", () => {
         fireEvent.click(screen.getByRole("button", { name: "Abort" }))
         await waitFor(() => expect(dialog.confirm).toHaveBeenCalled())
         await waitFor(() => expect(ipc.gitConflictAbort).toHaveBeenCalledWith("merge"))
+    })
+
+    it("Abort records a cherry-pick-specific console label", async () => {
+        useGitStore.setState({ status: { ...makeStatus(), inProgress: "cherry-pick" } })
+        render(<ConflictBanner />)
+        fireEvent.click(screen.getByRole("button", { name: "Abort" }))
+        await waitFor(() => expect(ipc.gitConflictAbort).toHaveBeenCalledWith("cherry-pick"))
+        await waitFor(() =>
+            expect(useGitStore.getState().consoleLog[0]?.cmd).toBe("git cherry-pick --abort")
+        )
     })
 
     it("Abort does nothing when confirm is declined", async () => {

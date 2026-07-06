@@ -301,6 +301,14 @@ describe("gitStore", () => {
         expect(log[0].out).toEqual(["Done"])
     })
 
+    it("runOp records cherry-pick with the mapped console label", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const opDone = useGitStore.getState().runOp("cherry-pick", async () => {})
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(useGitStore.getState().consoleLog[0]?.cmd).toBe("git cherry-pick")
+    })
+
     it("setCommitMessage stores the draft; initial state is empty", async () => {
         const { useGitStore, initialGitState } = await import("./gitStore")
         expect(initialGitState.commitMessage).toBe("")
