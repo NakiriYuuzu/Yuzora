@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yuzora M4 結案報告 — Terminal、Live Preview 與 Process Manager</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 1.9rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.1rem 1.25rem; }
+.metric-card .value { font-size: 1.9rem; font-weight: 700; }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+.metric-card .trend { font-size: 0.8rem; font-weight: 600; margin-top: 0.25rem; }
+.trend.up { color: var(--color-success); }
+.trend.flat { color: var(--color-text-secondary); }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; }
+.tab { padding: 0.7rem 1.1rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.6rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); }
+.chart-container .takeaway { font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 0.75rem; }
+
+details { margin-bottom: 0.8rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.7rem 0.9rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.92rem; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-surface-soft); font-size: 0.92rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--color-border); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+.table-wrap { overflow-x: auto; }
+
+.badge { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em; white-space: nowrap; }
+.badge.ok { background: rgba(93,184,114,0.15); color: #33753f; }
+.badge.warn { background: rgba(212,160,23,0.15); color: #8a6a0d; }
+.badge.crit { background: rgba(198,69,69,0.13); color: #a03535; }
+.badge.info { background: rgba(93,184,166,0.15); color: #2d7a6c; }
+.badge.dark { background: var(--color-surface-dark); color: var(--color-on-dark); }
+
+code, pre { font-family: var(--font-mono); font-size: 0.85em; }
+code { background: var(--color-surface); padding: 0.1em 0.4em; border-radius: 4px; }
+pre.term { background: var(--color-surface-dark); color: var(--color-on-dark); padding: 1rem 1.2rem; border-radius: var(--radius-md); overflow-x: auto; line-height: 1.5; }
+pre.term code { background: none; padding: 0; color: inherit; }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.9rem; margin-bottom: 1.5rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.95rem 1.1rem; }
+.scorecard .name { font-size: 0.8rem; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+.scorecard .score { font-size: 1.4rem; font-weight: 700; margin: 0.15rem 0; }
+.scorecard .why { font-size: 0.82rem; color: var(--color-text-secondary); }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
+.btn.primary:hover { background: var(--color-accent-active); }
+
+@media print { .tabs, .actions { display: none; } .tab-content { display: block !important; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Closeout Report</div>
+        <h1>Yuzora M4 — Terminal、Live Preview 與 Process Manager</h1>
+        <p class="meta">Claude（controller／總驗證）＋ Codex gpt-5.5（實作 high／review xhigh）&middot; 2026-07-06 &middot; 涵蓋 M4 全 12 tasks（自動側）</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p><strong>M4 自動側完結。</strong>12 個 task 全數交付；6 輪 adversarial review 共 <strong>18 條 findings 全部裁決為真並修復</strong>（含 1 critical、6 high）；五件套終驗全綠——前端 <strong>610</strong> tests（基線 534）、Rust <strong>197＋1 ignored</strong>（基線 168＋1）、tsc／build／fmt 乾淨；壓測 cargo 12 輪＋vitest 3 輪零失敗；<code>tauri:dev</code> 實機 boot smoke 通過。T1 spike 判定 <strong>NO-GO → iframe</strong>（Tauri 2.11.5 multi-webview 需 <code>unstable</code> feature，親驗源碼實證）。唯一交付待辦＝<code>m4-manual-checklist</code> 實機驗收（18 手動項，需使用者配合 gui-acceptance）。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">12/12</div><div class="label">Tasks 完成（T1–T12）</div><div class="trend up">7 waves 全數走完</div></div>
+        <div class="metric-card"><div class="value">610</div><div class="label">前端 vitest（66 檔）</div><div class="trend up">+76 vs 基線 534</div></div>
+        <div class="metric-card"><div class="value">197+1</div><div class="label">Rust cargo test</div><div class="trend up">+29 vs 基線 168+1</div></div>
+        <div class="metric-card"><div class="value">18</div><div class="label">Review findings 修復</div><div class="trend flat">6 輪 xhigh 全裁真</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('overview')">總覽</button>
+        <button class="tab" onclick="showTab('tasks')">Tasks</button>
+        <button class="tab" onclick="showTab('reviews')">Review 明細</button>
+        <button class="tab" onclick="showTab('verify')">總驗證證據</button>
+        <button class="tab" onclick="showTab('deviations')">偏差與風險</button>
+        <button class="tab" onclick="showTab('eval')">評分與下一步</button>
+    </div>
+
+    <div id="overview" class="tab-content active">
+        <div class="chart-container">
+            <h3>各 review 輪 findings 數（全部裁真並修復）</h3>
+            <svg viewBox="0 0 700 210" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+                <line x1="60" y1="170" x2="680" y2="170" stroke="#e6dfd8" stroke-width="1"/>
+                <line x1="60" y1="130" x2="680" y2="130" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                <line x1="60" y1="90" x2="680" y2="90" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                <line x1="60" y1="50" x2="680" y2="50" stroke="#e6dfd8" stroke-width="1" stroke-dasharray="4"/>
+                <text x="40" y="174" font-size="11" fill="#6c6a64">0</text>
+                <text x="40" y="134" font-size="11" fill="#6c6a64">2</text>
+                <text x="40" y="94" font-size="11" fill="#6c6a64">4</text>
+                <text x="40" y="54" font-size="11" fill="#6c6a64">6</text>
+                <rect x="80"  y="130" width="60" height="40"  fill="#cc785c"/>
+                <rect x="180" y="90"  width="60" height="80"  fill="#c64545"/>
+                <rect x="280" y="90"  width="60" height="80"  fill="#cc785c"/>
+                <rect x="380" y="110" width="60" height="60"  fill="#cc785c"/>
+                <rect x="480" y="110" width="60" height="60"  fill="#cc785c"/>
+                <rect x="580" y="130" width="60" height="40"  fill="#cc785c"/>
+                <text x="95"  y="120" font-size="12" fill="#141413" font-weight="700">2</text>
+                <text x="195" y="80"  font-size="12" fill="#141413" font-weight="700">4</text>
+                <text x="295" y="80"  font-size="12" fill="#141413" font-weight="700">4</text>
+                <text x="395" y="100" font-size="12" fill="#141413" font-weight="700">3</text>
+                <text x="495" y="100" font-size="12" fill="#141413" font-weight="700">3</text>
+                <text x="595" y="120" font-size="12" fill="#141413" font-weight="700">2</text>
+                <text x="88"  y="190" font-size="11" fill="#6c6a64">T2</text>
+                <text x="182" y="190" font-size="11" fill="#6c6a64">T3（含1 crit）</text>
+                <text x="292" y="190" font-size="11" fill="#6c6a64">T4</text>
+                <text x="376" y="190" font-size="11" fill="#6c6a64">T5–T7</text>
+                <text x="476" y="190" font-size="11" fill="#6c6a64">T8–T9</text>
+                <text x="572" y="190" font-size="11" fill="#6c6a64">T10–T11</text>
+            </svg>
+            <p class="takeaway">一句話：每一輪 review 都抓到真缺陷（生命週期競態為最大宗），無一輪空手，也無一條被裁決推翻——「撰寫與對抗 review 分離」在 Codex 雙角色下依然有效。</p>
+        </div>
+
+        <section>
+            <h2>交付內容</h2>
+            <div class="table-wrap"><table>
+                <thead><tr><th>層</th><th>交付</th></tr></thead>
+                <tbody>
+                    <tr><td><span class="badge dark">Rust</span></td><td><code>process_kill.rs</code>（跨平台 process-tree kill，M3 殘留 #1 一併 retrofit <code>lsp_download</code>／<code>git_service</code>）、<code>pty_service.rs</code>（portable-pty 0.9.0、單源 reader、UTF-8 邊界、workspace 隔離、shellArgs）、<code>process_service.rs</code>＋<code>dev_server_detect.rs</code>（managed dev server、port 決定序、readiness parse、extraPorts 探測）、<code>lib.rs</code> RunEvent 雙 match app-exit kill_all</td></tr>
+                    <tr><td><span class="badge info">前端</span></td><td>types／ipc 9 wrappers、terminalStore＋previewStore（workspace-scoped）、xtermTheme（--term-* 13 tokens＋ANSI16 雙主題）＋TerminalSession（StrictMode-safe）、TerminalDrawer 填實（多 session＋單層 split）、PreviewPanel 填實（iframe embed、port-occupied 三選項、Stop、localhost 政策）、TerminalBridge／ProcessBridge、Settings Terminal/Preview sections、uiStore visibility（A12）＋Ctrl+`＋CommandPalette Toggle、StatusBar port chip</td></tr>
+                    <tr><td><span class="badge warn">文件</span></td><td>spike 報告（NO-GO→iframe，255 行）、<code>m4-manual-checklist.md</code>（18 手動項＋G1＋Windows 待驗）、<code>fixtures/gen-preview-fixtures.ts</code>（preview-demo 可重複產生）</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section>
+            <h2>關鍵決策落地</h2>
+            <details><summary>T1 spike：NO-GO → iframe（預裁決判準對號入座）</summary><div class="details-body"><p>Tauri 2.11.5 的 <code>Window::add_child</code> 被 <code>#[cfg(any(test, all(desktop, feature = "unstable")))]</code> gate（<code>tauri-2.11.5/src/window/mod.rs:1126-1134</code>，controller 親驗）。依 2026-07-05 預先寫死的判準「需 unstable flag → NO-GO」直接定案 iframe，T9 據 spike 指引實作 PreviewFrame（localhost 驗證、timeout＋probe 偵測 X-Frame-Options 阻擋、open externally）。副作用：M4 自動側不需 child webview 實機 overlay 驗證，全程無人工中斷跑完。</p></div></details>
+            <details><summary>G1（launchd 精簡環境）：三件套落地</summary><div class="details-body"><p>pty spawn 帶 <code>-l</code> login shell；dev server 包 <code>$SHELL -lc</code>；shell 解析鏈「Settings 覆寫 &gt; $SHELL &gt; getpwuid().pw_shell &gt; /bin/zsh」（<code>resolve_shell</code>，T3/T4 同源）。checklist 含 Finder/Dock 啟動實機驗證項。</p></div></details>
+            <details><summary>A12 翻案：visibility 遷 uiStore</summary><div class="details-body"><p><code>terminalOpen</code>／<code>previewOpen</code> 從 AppShell useState 遷 uiStore（仿 settingsOpen，props 下傳不變），加 Ctrl+` 快捷鍵與 CommandPalette「Toggle terminal／Toggle preview」入口（英文 inline label 比照既有命令項，不碰 i18n.ts 保 wave5 零交集）。</p></div></details>
+            <details><summary>App-exit 清理主路徑（F1 三層）</summary><div class="details-body"><p><code>lib.rs</code>：<code>.build().expect().run(callback)</code>，callback 雙 match <code>ExitRequested | Exit</code> 只呼 <code>PtyState.kill_all()</code>＋<code>ProcessState.kill_all()</code>（冪等）；T3/T4 Drop 兜底；前端 onCloseRequested best-effort。實機「關 app 後 ps 無殘留」列 checklist 端到端驗證。</p></div></details>
+        </section>
+    </div>
+
+    <div id="tasks" class="tab-content">
+        <section>
+            <h2>12 Tasks 執行紀錄</h2>
+            <div class="table-wrap"><table>
+                <thead><tr><th>Task</th><th>內容</th><th>Review</th><th>狀態</th></tr></thead>
+                <tbody>
+                    <tr><td>T1</td><td>preview 嵌入 spike（桌面查證版）</td><td>controller 親驗決定性證據</td><td><span class="badge ok">NO-GO→iframe</span></td></tr>
+                    <tr><td>T2</td><td>process_kill＋殘留#1 retrofit</td><td>單獨輪：2 findings（PGID reuse／Windows taskkill）</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T3</td><td>pty_service</td><td>單獨輪：4 findings（<strong>1 critical</strong> workspace 隔離／wait 互斥／reservation／chunker）</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T4</td><td>process_service＋dev_server_detect</td><td>單獨輪：4 findings（並發 start 孤兒／stop-watcher 終態／stale port／kill 失敗誠實化）＋flake 因果排除</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T5</td><td>types＋ipc wrappers</td><td rowspan="3">打包輪：3 findings（unmount-during-open 洩漏／panes 未分域／nav 未分域）</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T6</td><td>terminalStore＋previewStore</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T7</td><td>xtermTheme＋TerminalSession</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T8</td><td>TerminalDrawer＋TerminalBridge</td><td rowspan="2">打包輪：3 findings（stale async 寫回／occupied 誤判／useMemo 漏依賴）</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T9</td><td>PreviewPanel＋PreviewFrame＋ProcessBridge</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T10</td><td>Settings sections＋i18n</td><td rowspan="2">打包輪：2 findings（port override 探測與真相／shellArgs 未消費）</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T11</td><td>RunEvent＋A12 uiStore＋palette＋chip</td><td><span class="badge ok">DONE</span></td></tr>
+                    <tr><td>T12</td><td>checklist＋fixture＋收尾驗證</td><td>controller 親驗（該 job cargo 紅燈為其 sandbox 限制）</td><td><span class="badge ok">DONE</span></td></tr>
+                </tbody>
+            </table></div>
+            <p style="font-size:0.85rem;color:var(--color-text-secondary);margin-top:0.75rem">執行序：wave0（T1∥T2）→ T3 → T4 → T5 → wave3（T6∥T7）→ T8 → T9 → wave5（T10∥T11）→ T12。並行僅限 plan 明定零交集組合；其餘嚴格序列化。</p>
+        </section>
+    </div>
+
+    <div id="reviews" class="tab-content">
+        <section>
+            <h2>6 輪 adversarial review・18 findings 全紀錄</h2>
+            <details><summary>T2 輪（2 findings）</summary><div class="details-body"><ul>
+                <li><span class="badge crit">high</span> <strong>PGID reuse</strong>：grace loop 內 try_wait 先 reap leader → 修為「信號全先於 reap」（<code>waitid(WNOWAIT)</code> peek），並發現 macOS 對 zombie-leader group SIGKILL 回 EPERM 的平台差異（窄容忍）。</li>
+                <li><span class="badge warn">high(部分)</span> <strong>Windows 無樹殺</strong>：plan 已預收（[SPIKE 驗證]），採廉價升級 <code>taskkill /T /F</code>。</li></ul></div></details>
+            <details><summary>T3 輪（1 critical＋2 high＋1 medium）</summary><div class="details-body"><ul>
+                <li><span class="badge crit">critical</span> sessions map 只鍵 session_id、跨 workspace 可路由 → open 對既有 id 一律 Err。</li>
+                <li><span class="badge crit">high</span> close 的 kill_tree_pid 與 reader wait 無互斥 → <code>wait_started</code> 於 map lock 下仲裁。</li>
+                <li><span class="badge crit">high</span> duplicate open 競態洩漏 shell → tokenized reservation（Reserved(u64)）。</li>
+                <li><span class="badge warn">medium</span> chunker 遇非法位元組整段 lossy 殃及合法殘尾 → 增量消化。</li></ul></div></details>
+            <details><summary>T4 輪（2 high＋2 medium＋flake 因果評估）</summary><div class="details-body"><ul>
+                <li><span class="badge crit">high</span> 並發 start 孤兒化 dev server → per-workspace reservation。</li>
+                <li><span class="badge crit">high</span> stop-vs-watcher 終態競態（status 卡 Running）→ 終態單一仲裁＋真 exit code 保留。</li>
+                <li><span class="badge warn">medium</span> reader 對任意 localhost URL 升級 Running → readiness 樣式收斂＋stopped/Arc 同一性檢查。</li>
+                <li><span class="badge warn">medium</span> kill 失敗謊報 Exited → <code>Failed{reason}</code>＋error log。</li>
+                <li><span class="badge info">評估</span> 全套 flake 判定非 process-group 誤傷（killpg 有 setsid 作用域）。</li></ul></div></details>
+            <details><summary>T5–T7 打包輪（1 high＋2 medium）</summary><div class="details-body"><ul>
+                <li><span class="badge crit">high</span> TerminalSession unmount-during-open 洩漏 pty → disposed flag＋settle 後補 close。</li>
+                <li><span class="badge warn">medium</span> terminalStore panes/cap/active 全域 → workspace-scoped layouts。</li>
+                <li><span class="badge warn">medium</span> previewStore 導航歷史全域 → workspace-scoped nav。</li></ul></div></details>
+            <details><summary>T8–T9 打包輪（1 high＋2 medium）</summary><div class="details-body"><ul>
+                <li><span class="badge crit">high</span> detect/start stale promise 跨 workspace 復活狀態 → liveness token＋stale 已 spawn 則補 stop。</li>
+                <li><span class="badge warn">medium</span> 任一 runningPort 就進 occupied flow（無關服務擋自由 candidate）→ 以「有效 intended port 衝突」判定。</li>
+                <li><span class="badge warn">medium</span> useMemo 漏 portOverride 依賴 → 移除 memo＋6000 測試。</li></ul></div></details>
+            <details><summary>T10–T11 打包輪（1 high＋1 medium）</summary><div class="details-body"><ul>
+                <li><span class="badge crit">high</span> port override 未探測且導航不以真綁定為準 → detect 增 <code>extra_ports</code>＋URL/狀態一律跟 <code>DevServerInfo</code> 事件 port。</li>
+                <li><span class="badge warn">medium</span> shellArgs 有存無用 → 穿透 ipc→pty_open→CommandBuilder（<code>-l</code> 保留＋附加）。</li></ul></div></details>
+        </section>
+    </div>
+
+    <div id="verify" class="tab-content">
+        <section>
+            <h2>總驗證證據（controller 親跑，2026-07-06）</h2>
+            <pre class="term"><code>bun run test          → Test Files 66 passed (66) / Tests 610 passed (610)
+bunx tsc --noEmit     → exit 0
+bun run build         → ✓ built（既有 chunk-size warning）
+cargo test (--offline)→ 197 passed; 0 failed; 1 ignored
+cargo fmt --check     → 無 diff
+
+壓測輪：cargo ×12 全綠、vitest ×3 全綠
+boot smoke：bun run tauri:dev → 編譯乾淨、binary 運行無 panic、乾淨停止
+（驗證 lib.rs manage×3＋RunEvent callback 在真 runtime 成立）</code></pre>
+            <h3>Plan「Verification（全 plan 完成定義）」逐項</h3>
+            <div class="table-wrap"><table>
+                <thead><tr><th>#</th><th>項目</th><th>狀態</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td>五件套全綠（基線只增不減）</td><td><span class="badge ok">PASS</span> 610／197+1，基線 534／168+1</td></tr>
+                    <tr><td>2</td><td>m4-manual-checklist 手動項全過</td><td><span class="badge warn">待使用者</span> 18 項，需 gui-acceptance 實機</td></tr>
+                    <tr><td>3</td><td>T1 spike 先於 T9 定案</td><td><span class="badge ok">PASS</span> NO-GO→iframe，T9 依 spike 指引實作</td></tr>
+                    <tr><td>4</td><td>GUI 關鍵場景截圖存證</td><td><span class="badge warn">待使用者</span> 隨手動驗收（MVP-8/9）</td></tr>
+                    <tr><td>5</td><td>Windows 專屬項處置</td><td><span class="badge ok">PASS</span> cfg 編譯＋checklist 明列未驗風險</td></tr>
+                    <tr><td>6</td><td>A1–A14 裁決回填</td><td><span class="badge ok">PASS</span> 2026-07-05 定案（A12 翻案＋G1 新增）</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+    </div>
+
+    <div id="deviations" class="tab-content">
+        <section>
+            <h2>偏差帳（對 plan 原文）</h2>
+            <div class="table-wrap"><table>
+                <thead><tr><th>偏差</th><th>理由／處置</th></tr></thead>
+                <tbody>
+                    <tr><td>執行模式改 Codex（gpt-5.5 high 實作／xhigh review），不用 subagents／git 寫入／worktree</td><td>使用者 2026-07-06 明令；plan 的 yuzora-loop 引用先前已標記廢止</td></tr>
+                    <tr><td>lead 預建 stub／i18n 骨架機制未使用</td><td>該機制為多 agent 並行防碰撞設計；嚴格序列化下無必要，T8/T9 各自完整交付</td></tr>
+                    <tr><td>T1 spike 為桌面查證版（items 2–6 moot、item 7 留實機）</td><td>item 8（unstable flag）為決定性且可桌面實證；預裁決判準使 NO-GO 免實機</td></tr>
+                    <tr><td>review 節奏：T2/T3/T4 逐 task、T5–7／T8–9／T10–11 打包</td><td>訊號密度考量；每條 finding 均個別裁決</td></tr>
+                    <tr><td><code>portable-pty</code>／<code>libc</code> 手動加依賴（非 cargo add）</td><td>環境 crates.io DNS 受阻；本地 cache 依賴閉包經 scratch 專案驗證可離線編譯</td></tr>
+                    <tr><td><code>dev_server_detect</code> 增 extraPorts、<code>pty_open</code> 增 shell_args（plan 未明列）</td><td>review 修訂產物（port override 真相化／A11 args 落地），已含測試</td></tr>
+                    <tr><td>previewStore 用 backStack/forwardStack 取代 plan 草圖的 history/historyIndex</td><td>等價語意；已記於 T6 回報</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+        <section>
+            <h2>殘留風險與觀察</h2>
+            <div class="table-wrap"><table>
+                <thead><tr><th>項目</th><th>說明</th><th>處置</th></tr></thead>
+                <tbody>
+                    <tr><td><span class="badge warn">低頻 flake</span></td><td>整場 ~55 輪全套跑出現 2 次孤立失敗（一次 <code>merge_conflict_flow_abort_restores_clean</code> fixture git 非零退出、一次未捕獲）；專用壓測 22 輪零失敗；reviewer 佐證非 killpg 誤傷（setsid 作用域）</td><td>判定為並行負載雜訊；若再現，以 <code>--nocapture</code> 抓完整輸出</td></tr>
+                    <tr><td><span class="badge warn">Windows 未驗</span></td><td>ConPTY／Job Objects／Windows shell 僅 cfg 編譯層保真（無實機）</td><td>checklist 明列；出貨前需 Windows 環境補驗</td></tr>
+                    <tr><td><span class="badge info">iframe 限制</span></td><td>設 X-Frame-Options/frame-ancestors 的頁面不可嵌（本機 Vite/CRA 預設不設）；child webview 記後續增強（等 Tauri multi-webview 脫離 unstable）</td><td>PreviewFrame 有偵測＋open externally；spike 文件留證</td></tr>
+                    <tr><td><span class="badge info">M3 殘留 #2–#5</span></td><td>LSP stop backlog／EditorPane error-pane／tabSize 寫死／Windows rust-analyzer 解壓</td><td>維持 defer（去處見 plan 殘留對照表），#1 已隨 T2 清償</td></tr>
+                </tbody>
+            </table></div>
+        </section>
+    </div>
+
+    <div id="eval" class="tab-content">
+        <section>
+            <h2>品質記分卡（自評，證據見「總驗證證據」分頁）</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="name">Completeness</div><div class="score">5/5</div><div class="why">12/12 tasks；plan Coverage 全對應；A1–A14＋G1 全落地</div></div>
+                <div class="scorecard"><div class="name">Evidence</div><div class="score">5/5</div><div class="why">五件套親跑＋壓測＋boot smoke；spike 證據 file:line 親驗</div></div>
+                <div class="scorecard"><div class="name">Risk Coverage</div><div class="score">4/5</div><div class="why">生命週期競態經 6 輪 review 掃蕩；Windows 與實機視覺仍待驗</div></div>
+                <div class="scorecard"><div class="name">Actionability</div><div class="score">5/5</div><div class="why">下一步唯一：checklist 實機驗收，環境準備步驟已載明</div></div>
+            </div>
+        </section>
+        <section>
+            <h2>下一步</h2>
+            <ol style="padding-left:1.4rem;font-size:0.95rem">
+                <li><strong>m4-manual-checklist 實機驗收</strong>（18 項）：debug bundle → /Applications → 授權 computer-use → 逐項驗＋截圖。建議與 <strong>m3-manual-checklist</strong>（M3 交付待辦）排同一次 sitting，環境只備一次。</li>
+                <li>驗收中特別留意：<strong>G1 項</strong>（Finder/Dock 雙擊啟動下 dev server 可啟動、terminal 內 PATH 完整）與<strong>關 app 無孤兒</strong>（RunEvent 主路徑端到端）。</li>
+                <li>git commit（需你明令）：M4 變更目前全在 working tree。</li>
+            </ol>
+        </section>
+        <div class="actions">
+            <button class="btn primary" onclick="copyFeedback()">Copy 驗收回饋 JSON</button>
+            <button class="btn" onclick="window.print()">Print / PDF</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function showTab(id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    event.target.classList.add('active');
+}
+function copyFeedback() {
+    const payload = {
+        artifact: "yuzora-m4-terminal-preview-closeout-2026-07-06",
+        reviewed_at: new Date().toISOString(),
+        scores: {},
+        comments: [{ section: "", note: "", severity: "" }],
+        manual_checklist_result: "pending",
+        approved: false,
+        next_prompt: "依上述回饋修訂 M4 交付內容"
+    };
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    event.target.textContent = 'Copied!';
+    setTimeout(() => event.target.textContent = 'Copy 驗收回饋 JSON', 1500);
+}
+</script>
+</body>
+</html>
