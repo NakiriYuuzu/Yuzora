@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 
-import { useUiStore } from "./uiStore"
+import { uiInitialState, useUiStore } from "./uiStore"
 
 describe("uiStore", () => {
+    beforeEach(() => {
+        useUiStore.setState(uiInitialState)
+    })
+
     it("openDiffInGitMode selects file and switches mode", () => {
         useUiStore.getState().openDiffInGitMode("/w/a.ts")
         const s = useUiStore.getState()
@@ -23,12 +27,21 @@ describe("uiStore", () => {
         expect(s.settingsSection).toBe("lsp")
         expect(s.settingsLanguage).toBe("python")
     })
+    it("openSettings targets a logs source", () => {
+        useUiStore.getState().openSettings("logs", { source: "dev_server" })
+        const s = useUiStore.getState()
+        expect(s.settingsOpen).toBe(true)
+        expect(s.settingsSection).toBe("logs")
+        expect(s.settingsLanguage).toBe(null)
+        expect(s.settingsLogSource).toBe("dev_server")
+    })
     it("openSettings without arguments opens with no target", () => {
         useUiStore.getState().openSettings()
         const s = useUiStore.getState()
         expect(s.settingsOpen).toBe(true)
         expect(s.settingsSection).toBe(null)
         expect(s.settingsLanguage).toBe(null)
+        expect(s.settingsLogSource).toBe(null)
     })
     it("setSettingsOpen(false) closes the dialog", () => {
         useUiStore.getState().openSettings("lsp", "python")
@@ -45,5 +58,19 @@ describe("uiStore", () => {
         expect(useUiStore.getState().traceEnabled).toBe(false)
         useUiStore.getState().setTraceEnabled(true)
         expect(useUiStore.getState().traceEnabled).toBe(true)
+    })
+    it("toggleTerminal flips terminal drawer visibility from the initial closed state", () => {
+        expect(useUiStore.getState().terminalOpen).toBe(false)
+        useUiStore.getState().toggleTerminal()
+        expect(useUiStore.getState().terminalOpen).toBe(true)
+        useUiStore.getState().toggleTerminal()
+        expect(useUiStore.getState().terminalOpen).toBe(false)
+    })
+    it("togglePreview flips preview dock visibility from the initial closed state", () => {
+        expect(useUiStore.getState().previewOpen).toBe(false)
+        useUiStore.getState().togglePreview()
+        expect(useUiStore.getState().previewOpen).toBe(true)
+        useUiStore.getState().togglePreview()
+        expect(useUiStore.getState().previewOpen).toBe(false)
     })
 })
