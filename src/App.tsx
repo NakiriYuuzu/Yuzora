@@ -6,7 +6,11 @@ import { LspBridge } from "@/workbench/LspBridge";
 import { AgentBridge } from "@/workbench/AgentBridge";
 import { ProcessBridge } from "@/workbench/ProcessBridge";
 import { TerminalBridge } from "@/workbench/TerminalBridge";
+import { SshBridge } from "@/workbench/SshBridge";
+import { PerfBridge } from "@/workbench/PerfBridge";
+import { SessionRestoreBridge } from "@/workbench/SessionRestoreBridge";
 import { AskpassHost } from "@/workbench/AskpassHost";
+import { ConfirmDialogHost } from "@/workbench/ConfirmDialogHost";
 
 function App() {
   return (
@@ -19,7 +23,11 @@ function App() {
       <TerminalBridge />
       <AgentBridge />
       <ProcessBridge />
+      <SshBridge />
+      <PerfBridge />
+      <SessionRestoreBridge />
       <AskpassHost />
+      <ConfirmDialogHost />
     </>
   );
 }

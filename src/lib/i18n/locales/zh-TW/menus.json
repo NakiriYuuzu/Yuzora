@@ -1,0 +1,183 @@
+{
+  "contextMenu": {
+    "cmCmdPalette": "命令面板…",
+    "cmRefresh": "重新整理",
+    "cmSettings": "設定…",
+    "cmHideSidebar": "切換側邊欄",
+    "cmNewProject": "新增專案",
+    "cmNewFile": "新增檔案",
+    "cmNewFolder": "新增資料夾",
+    "cmCopyPath": "複製路徑",
+    "cmOpen": "開啟",
+    "cmOpenSplit": "在側邊開啟",
+    "cmRename": "重新命名…",
+    "cmOpenInBrowser": "在預覽中開啟",
+    "cmCopyRel": "複製相對路徑",
+    "cmReveal": "在 Finder 中顯示",
+    "cmDelete": "刪除",
+    "cmCloseTab": "關閉分頁",
+    "cmCloseOthers": "關閉其他",
+    "cmCloseAll": "全部關閉",
+    "cmSplit": "分割編輯器",
+    "cmCut": "剪下",
+    "cmCopy": "複製",
+    "cmCopySel": "複製",
+    "cmPaste": "貼上",
+    "cmCompareHead": "與 HEAD 比較",
+    "cmFormatDoc": "格式化文件",
+    "cmDockTerm": "與程式碼並排",
+    "cmSplitTermRight": "向右分割",
+    "cmSplitTermDown": "向下分割",
+    "cmClear": "清除終端機",
+    "cmKill": "終止程序",
+    "cmStop": "停止工作階段",
+    "cmDuplicate": "複製一份",
+    "cmRenameSession": "重新命名工作階段…",
+    "cmStage": "加入暫存",
+    "cmCopyHash": "複製提交雜湊",
+    "cmCopyBranch": "複製分支名稱",
+    "cmFetch": "抓取",
+    "cmPull": "拉取",
+    "cmPush": "推送",
+    "cmRollback": "回復",
+    "cmOpenSsh": "開啟 SSH 終端機",
+    "cmOpenSftp": "開啟 SFTP 瀏覽器",
+    "cmCopyAddr": "複製主機位址",
+    "cmDisconnect": "中斷連線"
+  },
+  "tabBar": {
+    "noOpenTabs": "沒有開啟的分頁",
+    "resolveExternalChanges": "解決外部變更 {{name}}",
+    "externallyModifiedTitle": "外部已變更（點擊開啟解決器）",
+    "unsavedChangesTitle": "未儲存的變更",
+    "togglePreview": "切換預覽 {{name}}",
+    "toggleMarkdownPreviewTitle": "切換 Markdown 預覽",
+    "close": "關閉 {{name}}"
+  },
+  "unsavedDialog": {
+    "closeTabTitle": "未儲存的變更",
+    "closeTabDescription": "「{{name}}」有未儲存的變更。關閉前要儲存嗎？",
+    "switchWorkspaceTitle": "未儲存的變更",
+    "switchWorkspaceDescription": "有開啟的檔案尚未儲存。切換工作區前要儲存嗎？",
+    "save": "儲存",
+    "saveAll": "全部儲存",
+    "discard": "不儲存",
+    "cancel": "取消"
+  },
+  "fileTree": {
+    "openDiffFile": "開啟差異 {{name}}",
+    "openDiffTitle": "開啟差異"
+  },
+  "editorArea": {
+    "splitRightAriaLabel": "向右分割",
+    "closeSplitAriaLabel": "關閉分割",
+    "splitTitle": "分割編輯器",
+    "closeSplitTitle": "關閉分割",
+    "emptyTitle": "開啟專案以開始編輯",
+    "emptyDescription": "開啟專案後，檔案與分頁會顯示在這裡。"
+  },
+  "terminalDrawer": {
+    "dragToResize": "拖曳調整大小",
+    "label": "終端機",
+    "splitRightTitle": "向右分割",
+    "splitDownTitle": "向下分割",
+    "newTerminalTitle": "新增終端機",
+    "closeTerminalTitle": "關閉終端機",
+    "dockTitle": "將終端機停靠進編輯器",
+    "collapseAriaLabel": "收合終端機",
+    "expandAriaLabel": "展開終端機"
+  },
+  "branchPopover": {
+    "title": "Git 分支",
+    "fetchRemoteAriaLabel": "抓取遠端",
+    "fetch": "抓取",
+    "fetchingEllipsis": "抓取中…",
+    "pull": "拉取",
+    "push": "推送",
+    "localSection": "本地",
+    "remoteSection": "遠端",
+    "current": "目前",
+    "checkout": "簽出",
+    "dirtyTabsBlockCheckout": "有未儲存的變更，請先存檔或放棄",
+    "remoteCheckPaused": "遠端檢查已暫停：需要認證",
+    "newBranch": "新增分支…"
+  },
+  "conflictBanner": {
+    "opInProgress": "{{op}} 進行中",
+    "abortConfirm": "確定中止進行中的 {{op}}？所有 {{op}} 的變更都會被捨棄。",
+    "continueConfirm": "確定繼續 {{op}}？請先解決所有衝突。",
+    "abort": "中止",
+    "continue": "繼續"
+  },
+  "consoleTab": {
+    "empty": "尚未執行任何 git 指令"
+  },
+  "commitDetails": {
+    "selectPrompt": "選擇一個提交以檢視詳細資訊",
+    "copyHashAriaLabel": "複製雜湊值",
+    "loadingEllipsis": "載入中…",
+    "changedFilesLabel": "已變更的檔案",
+    "fileCount_other": "{{count}} 個檔案",
+    "committedLabel": "提交於",
+    "parentsLabel": "父提交",
+    "checkout": "簽出",
+    "compare": "比較",
+    "openInDiffViewerTitle": "在差異檢視器中開啟",
+    "cherryPick": "揀選提交",
+    "cherryPickThisCommitTitle": "揀選此提交",
+    "resetMainToHere": "將 main 重設到這裡…",
+    "resetHoldTitle": "按住以重設 — 將改寫分支歷史"
+  },
+  "diffModal": {
+    "workingTree": "工作目錄",
+    "changedFileCount_other": "{{count}} 個變更的檔案",
+    "agentDiffSub": "代理程式差異",
+    "title": "差異 · {{title}}",
+    "unified": "整合",
+    "split": "分割",
+    "close": "關閉",
+    "loadingEllipsis": "正在載入差異…"
+  },
+  "diffView": {
+    "fileTooLarge": "檔案過大（>50MB）",
+    "binaryFile": "二進位檔案",
+    "unavailableTitle": "無法顯示 diff"
+  },
+  "localChangesTab": {
+    "label": "本地變更",
+    "stageAll": "全部加入暫存",
+    "stageFileAriaLabel": "加入暫存 {{path}}",
+    "unstageFileAriaLabel": "取消暫存 {{path}}",
+    "stageFileTitle": "加入暫存檔案",
+    "unstageFileTitle": "取消暫存檔案",
+    "unified": "整合",
+    "split": "分割",
+    "selectFilePrompt": "選擇一個檔案以檢視其差異"
+  },
+  "logGraph": {
+    "commitColumn": "提交",
+    "authorColumn": "作者",
+    "dateColumn": "日期"
+  },
+  "logTab": {
+    "allLabel": "全部",
+    "todayLabel": "今天",
+    "last7DaysLabel": "最近 7 天",
+    "last30DaysLabel": "最近 30 天",
+    "userFilterLabel": "使用者",
+    "dateFilterLabel": "日期",
+    "fieldFilterAriaLabel": "{{field}}篩選",
+    "filterCommitsPlaceholder": "依訊息、作者或雜湊搜尋…",
+    "filterCommitsAriaLabel": "篩選提交",
+    "loadingCommits": "正在載入提交…",
+    "retry": "重試",
+    "noCommitsMatch": "沒有符合目前篩選條件的提交。",
+    "dirtyTabsBlockCheckout": "有未儲存的變更，請先存檔或放棄"
+  },
+  "workspaceSearch": {
+    "heading": "工作區搜尋",
+    "matchCaseAriaLabel": "區分大小寫",
+    "truncatedNotice": "已達 5,000 檔上限，請縮小範圍",
+    "noResults": "沒有符合的結果"
+  }
+}

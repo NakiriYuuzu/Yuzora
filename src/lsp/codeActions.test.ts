@@ -7,7 +7,7 @@ import { setDiagnostics } from "@codemirror/lint"
 import { codeActionsFor, applyWorkspaceEdit, lspLintSource } from "./codeActions"
 import type { WorkspaceEdit } from "./renameCompat"
 import type { LspDiagnostic } from "./diagnosticsPull"
-import { strings } from "../lib/i18n"
+import i18n from "../lib/i18n"
 
 const flush = async () => {
     for (let i = 0; i < 5; i++) await Promise.resolve()
@@ -176,7 +176,7 @@ it("lspLintSource yields diagnostics whose quick-fix action runs the full apply 
     expect(diags).toHaveLength(1)
     expect(diags[0]).toMatchObject({ from: 4, to: 7, severity: "warning", message: "unused" })
     expect(diags[0].actions).toHaveLength(1)
-    expect(diags[0].actions![0].name).toBe(strings.lsp.quickFix) // localized label (C11)
+    expect(diags[0].actions![0].name).toBe(i18n.t("quickFix", { ns: "lsp" })) // localized label (C11)
 
     // Activating the action drives codeActionsFor -> pick edit -> applyWorkspaceEdit.
     diags[0].actions![0].apply(view, 4, 7)

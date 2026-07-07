@@ -174,7 +174,7 @@ describe("cherry-pick conflict flow", () => {
         })
         await waitFor(() => expect(invokeCalls("git_status_cmd").length).toBeGreaterThan(0))
 
-        expect(await screen.findByText("cherry-pick 進行中")).toBeInTheDocument()
+        expect(await screen.findByText("cherry-pick in progress")).toBeInTheDocument()
         expect(screen.getByText("src/conflicted.ts")).toBeInTheDocument()
 
         fireEvent.click(screen.getByRole("button", { name: "Abort" }))

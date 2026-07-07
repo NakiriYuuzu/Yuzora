@@ -66,11 +66,4 @@ describe("uiStore", () => {
         useUiStore.getState().toggleTerminal()
         expect(useUiStore.getState().terminalOpen).toBe(false)
     })
-    it("togglePreview flips preview dock visibility from the initial closed state", () => {
-        expect(useUiStore.getState().previewOpen).toBe(false)
-        useUiStore.getState().togglePreview()
-        expect(useUiStore.getState().previewOpen).toBe(true)
-        useUiStore.getState().togglePreview()
-        expect(useUiStore.getState().previewOpen).toBe(false)
-    })
 })

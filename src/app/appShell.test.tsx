@@ -53,7 +53,7 @@ describe("AppShell", () => {
     })
   })
 
-  it("macOS 的 Tauri 內：渲染單一全寬頂部拖曳帶，內容列讓出頂部空間", () => {
+  it("macOS 的 Tauri 內：渲染單一頂部拖曳帶但避開左上紅綠燈區，內容列讓出頂部空間", () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     Object.defineProperty(window.navigator, "userAgent", { value: MAC_UA, configurable: true })
     mockWindows("main")
@@ -64,6 +64,8 @@ describe("AppShell", () => {
     const dragRegions = container.querySelectorAll("[data-tauri-drag-region]")
     expect(dragRegions).toHaveLength(1)
     expect(dragRegions[0]).toHaveClass("h-[20px]")
+    expect(dragRegions[0]).toHaveClass("left-20")
+    expect(dragRegions[0]).not.toHaveClass("inset-x-0")
     expect(container.querySelector(".pt-\\[20px\\]")).toBeInTheDocument()
   })
 

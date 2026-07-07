@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>yuzora Logger 現況問題分析 — 2026-07-07</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.25rem; }
+.metric-card .value { font-size: 1.8rem; font-weight: 700; }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+.metric-card .note { font-size: 0.78rem; font-weight: 600; margin-top: 0.25rem; color: var(--color-error); }
+.metric-card .note.ok { color: var(--color-success); }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.75rem 1.25rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; }
+.chart-container h3 { font-size: 0.9rem; margin-bottom: 0.25rem; color: var(--color-text-secondary); }
+.chart-container .takeaway { font-size: 0.85rem; color: var(--color-text-secondary); margin-bottom: 1rem; }
+.chart-container svg { max-width: 100%; height: auto; }
+
+details { margin-bottom: 0.9rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.95rem; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-surface-soft); font-size: 0.92rem; }
+.details-body p { margin-bottom: 0.6rem; }
+.details-body ul { margin: 0.4rem 0 0.6rem 1.4rem; }
+.details-body li { margin-bottom: 0.3rem; }
+
+.badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 0.1rem 0.55rem; border-radius: 999px; margin-right: 0.5rem; vertical-align: 1px; letter-spacing: 0.04em; }
+.badge.p0 { background: var(--color-error); color: #fff; }
+.badge.p1 { background: var(--color-warning); color: #3d2f00; }
+.badge.p2 { background: var(--color-surface-dark); color: var(--color-on-dark); }
+
+code, pre { font-family: var(--font-mono); font-size: 0.85em; }
+code { background: var(--color-surface); padding: 0.1em 0.35em; border-radius: 4px; }
+pre { background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-md); padding: 0.9rem 1rem; overflow-x: auto; margin: 0.5rem 0 0.8rem; line-height: 1.5; }
+pre code { background: none; padding: 0; }
+.fileref { font-family: var(--font-mono); font-size: 0.8rem; color: var(--color-accent-active); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--color-border); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+.table-wrap { overflow-x: auto; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
+.btn.primary:hover { background: var(--color-accent-active); }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.9rem; margin-bottom: 1.2rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; font-size: 0.85rem; }
+.scorecard .name { font-weight: 700; margin-bottom: 0.2rem; }
+.scorecard .crit { color: var(--color-text-secondary); font-size: 0.78rem; }
+
+.review-row { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.55rem 0; border-bottom: 1px solid var(--color-border); font-size: 0.9rem; }
+.review-row label { flex: 1; cursor: pointer; }
+.review-row input[type="checkbox"] { margin-top: 0.3rem; accent-color: var(--color-accent); }
+
+@media print { .tabs, .actions, .review-panel { display: none; } .tab-content { display: block !important; } body { padding: 0.5rem; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Analysis Report</div>
+        <h1>yuzora Logger 現況問題分析</h1>
+        <p class="meta">Claude Code · 2026-07-07 · 分析對象：<code>src-tauri/src/logging.rs</code>、<code>git/ssh/process_service</code> 寫入端、<code>SettingsDialog LogsSection</code>、<code>~/.yuzora/logs</code> 實際資料</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p>Logger 骨架（JSONL 日切檔、query/export/sources 三命令、sanitize 匯出）運作正常，但有 <strong>3 個高優先問題</strong>：① <code>cargo test</code> 會把測試用 git 指令灌進正式 log（07-06 當日 29,919 筆中 29,674 筆是 <code>run_git</code>）；② <code>log_query</code>／<code>log_sources</code>／<code>log_export</code> 是同步 command，在 main thread 整檔讀入最多 100MB，且 Logs pane 的文字篩選<strong>每個 keystroke 都觸發查詢、無 debounce</strong>；③ <code>log_sources</code> 用 <code>limit: usize::MAX</code> 全量解析只為取 distinct sources。</p>
+        <p style="margin-top:0.6rem;"><strong>ACP 診斷（2026-07-07 追加）</strong>：log 中 19 次 agent spawn <strong>沒有一次成功建立可用連線</strong>，呈三階段故障——① 8 次 <code>exit 127</code>（<code>zsh:1: command not found: bunx</code>，打包 app PATH 斷）；② pi-acp 版本問題（舊版不回應 initialize；19:16 新下載版回應了但 18 秒後 unhandled EPIPE 整個 crash）；③ 其後全部「<strong>零輸出 60 秒 → initialize timeout kill</strong>」。CLI 以完全相同指令實測 <strong>1 秒內回應</strong>，app 內卻全靜默——而 acp trace 預設關閉、spawn 不記 command、kill 不記原因，<strong>現有 log 不足以定位第三種失敗</strong>，這本身就是 logger 對 ACP 的最大缺口。修復計劃見「修復計劃」tab。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">29,674</div><div class="label">07-06 當日 run_git 筆數</div><div class="note">占當日 99.2%，多為測試汙染</div></div>
+        <div class="metric-card"><div class="value">6.7 MB</div><div class="label">單日最大 log 檔（07-06）</div><div class="note">query 一次 read_to_string 全載</div></div>
+        <div class="metric-card"><div class="value">12</div><div class="label">確認的問題項</div><div class="note">P0×3 · P1×4 · P2×5</div></div>
+        <div class="metric-card"><div class="value">4</div><div class="label">殘留 legacy 檔</div><div class="note">sqlite×3 + 舊格式 jsonl×1</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('overview')">總覽與發現</button>
+        <button class="tab" onclick="showTab('acp')">ACP 診斷</button>
+        <button class="tab" onclick="showTab('plan')">修復計劃</button>
+        <button class="tab" onclick="showTab('arch')">架構現況</button>
+        <button class="tab" onclick="showTab('data')">證據資料</button>
+        <button class="tab" onclick="showTab('review')">Review 面板</button>
+    </div>
+
+    <!-- ============ Tab: 總覽與發現 ============ -->
+    <div id="overview" class="tab-content active">
+        <div class="chart-container">
+            <h3>07-06 當日 log 組成（29,919 筆）</h3>
+            <p class="takeaway">結論：正式 log 幾乎被 git_service 的 debug 事件淹沒，其中絕大多數來自 cargo test 而非真實使用。</p>
+            <svg viewBox="0 0 700 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="log 組成長條圖">
+                <text x="0" y="28" font-size="12" fill="#141413">git_service/run_git</text>
+                <rect x="160" y="16" width="500" height="18" rx="4" fill="#c64545"/>
+                <text x="665" y="30" font-size="11" fill="#6c6a64" text-anchor="end" dx="-6" fill-opacity="0">.</text>
+                <text x="655" y="29" font-size="11" fill="#ffffff" text-anchor="end">29,674（99.2%）</text>
+                <text x="0" y="58" font-size="12" fill="#141413">acp（stderr/spawn/exit）</text>
+                <rect x="160" y="46" width="14" height="18" rx="4" fill="#d4a017"/>
+                <text x="182" y="59" font-size="11" fill="#6c6a64">80</text>
+                <text x="0" y="88" font-size="12" fill="#141413">ui/user_action</text>
+                <rect x="160" y="76" width="20" height="18" rx="4" fill="#5db8a6"/>
+                <text x="188" y="89" font-size="11" fill="#6c6a64">~120</text>
+                <text x="0" y="118" font-size="12" fill="#141413">lsp / pty 其他</text>
+                <rect x="160" y="106" width="10" height="18" rx="4" fill="#cc785c"/>
+                <text x="178" y="119" font-size="11" fill="#6c6a64">~45</text>
+                <text x="0" y="145" font-size="10.5" fill="#8e8b82">資料來源：jq 統計 ~/.yuzora/logs/yuzora-2026-07-06.jsonl（軸為筆數，紅色列截斷顯示）</text>
+            </svg>
+        </div>
+
+        <section>
+            <h2>P0 — 高優先</h2>
+            <details open>
+                <summary><span class="badge p0">P0-1</span>cargo test 直接汙染正式 log 目錄（單日近 3 萬筆）</summary>
+                <div class="details-body">
+                    <p><span class="fileref">src-tauri/src/git_service.rs:144</span> 的 <code>log_git_call</code> 無條件寫入 <code>logging::default_log_dir()</code>（即 <code>~/.yuzora/logs</code>），log 目錄沒有任何注入點。git_service 的單元測試每跑一次 <code>run_git</code> 就寫一筆——07-06 當日 <code>git init -b main</code>×2,900、<code>git config user.name t</code>×2,900、<code>git commit -m c1</code>×2,096⋯⋯全部進了正式 log。</p>
+                    <ul>
+                        <li>後果一：正式 log 被灌爆，Logs pane 的 debug kind 幾乎不可用；retention 100MB 上限會被測試加速吃掉，反而把「真的」舊 log 提早刪除。</li>
+                        <li>後果二：export bundle 給人 debug 時，附帶大量無意義測試雜訊。</li>
+                        <li><code>ssh_service.rs:103</code>、<code>process_service.rs:69</code> 同樣在 production 建構子裡直接 <code>LogSink::new(default_log_dir())</code>，測試若走到該路徑也會外洩（process_service 測試有注入 <code>Vec&lt;LogEvent&gt;</code>，git_service 沒有）。</li>
+                    </ul>
+                    <p><strong>建議：</strong>把 log dir（或 <code>LogFn</code>）注入 <code>run_git</code> 所屬結構，比照 process_service 的 <code>LogFn</code> 模式；至少在 <code>#[cfg(test)]</code> 下改寫到 tempdir。</p>
+                </div>
+            </details>
+            <details open>
+                <summary><span class="badge p0">P0-2</span>log_query／log_sources／log_export 為同步 command，main thread 做重 I/O；前端無 debounce</summary>
+                <div class="details-body">
+                    <p><span class="fileref">logging.rs:192,209,298</span> 三個 command 都是同步 <code>fn</code>。Tauri v2 同步 command 在 main thread 執行，而 <code>query_dir</code>（<span class="fileref">logging.rs:173</span>）用 <code>read_to_string</code> 一次把整個檔案載入（實測單檔已達 6.7MB，14 天保留 + 100MB 上限下最壞可近 100MB）。文字篩選沒命中時會把全部檔案掃完。</p>
+                    <p>前端放大了這個問題：<span class="fileref">SettingsDialog.tsx:697-715</span> 的 effect 依賴 <code>text</code>，<strong>每個 keystroke 立即 invoke 一次 log_query</strong>，沒有 debounce 也沒有取消機制（<code>alive</code> flag 只丟棄結果，查詢本身照跑）。連打幾個字 = 連續多次全檔掃描。</p>
+                    <p><strong>建議：</strong>三個 command 改 <code>async fn</code> +（必要時）<code>spawn_blocking</code>；<code>query_dir</code> 改 <code>BufReader</code> 逐行；前端 text/since/until 加 250–300ms debounce。</p>
+                </div>
+            </details>
+            <details open>
+                <summary><span class="badge p0">P0-3</span>log_sources 以 limit=usize::MAX 全量解析，只為取 distinct sources</summary>
+                <div class="details-body">
+                    <p><span class="fileref">logging.rs:196-206</span>：<code>sources_dir</code> 呼叫 <code>query_dir</code> 且 <code>limit: usize::MAX</code>，把 14 天內<strong>所有</strong> record（含 metadata JSON）解析成 <code>Vec&lt;LogRecord&gt;</code> 塞進記憶體，再取 source 欄位。以目前 7 萬筆資料就是一次 7 萬個 LogRecord 的配置；Settings Logs pane 每次打開都執行（<span class="fileref">SettingsDialog.tsx:679-691</span>）。</p>
+                    <p><strong>建議：</strong>逐行 streaming、只 parse 出 <code>source</code> 欄位（或用 <code>serde_json::from_str::&lt;Value&gt;</code> 取單鍵）直接塞 <code>BTreeSet</code>，不要累積 record。</p>
+                </div>
+            </details>
+        </section>
+
+        <section>
+            <h2>P1 — 中優先</h2>
+            <details>
+                <summary><span class="badge p1">P1-1</span>多寫者各自建 LogSink 繞過 managed state；torn line 風險由 query 端靜默吞掉</summary>
+                <div class="details-body">
+                    <p><code>lib.rs:36</code> manage 的 <code>Mutex&lt;LogSink&gt;</code> 只服務前端 <code>log_event</code>；git_service（每次呼叫新建一個 sink，含 <code>create_dir_all</code>）、ssh_service、process_service 各自持有獨立 sink，同時 append 同一個檔案。<code>writeln!</code> 走 <code>write_fmt</code>，不保證單一 write syscall，多執行緒併發下有交錯（torn line）可能。而 <code>query_dir</code> 對 parse 失敗的行<strong>靜默跳過</strong>（<span class="fileref">logging.rs:177</span>），壞行永遠不會被發現。</p>
+                    <p><strong>建議：</strong>集中成單一共享 sink（<code>Arc&lt;Mutex&lt;LogSink&gt;&gt;</code> 或 mpsc channel + 單一 writer thread）；write 先組完整含 <code>\n</code> 的 String 再單次 <code>write_all</code>。</p>
+                </div>
+            </details>
+            <details>
+                <summary><span class="badge p1">P1-2</span>timestamp 用本地時區 RFC3339 + 字典序比較，時區改變即失效</summary>
+                <div class="details-body">
+                    <p>寫入端用 <code>chrono::Local::now().to_rfc3339()</code>（實際值如 <code>2026-07-07T00:36:21.853757+08:00</code>），查詢端 <span class="fileref">logging.rs:148-157</span> 直接做字串 <code>&gt;=</code>／<code>&lt;=</code>。同一 offset 下字典序恰好正確，但只要 offset 改變（出國、DST、或與帶 <code>Z</code> 的外部紀錄混雜）比較就錯；since/until 也沒有 parse 驗證，亂輸入等於靜默全過或全擋。</p>
+                    <p><strong>建議：</strong>寫入改 <code>Utc::now().to_rfc3339()</code>（UTC 字典序 = 時間序），查詢端 parse 成 <code>DateTime</code> 比較；顯示層再轉本地時區。</p>
+                </div>
+            </details>
+            <details>
+                <summary><span class="badge p1">P1-3</span>cleanup 只在啟動跑一次；size 超限清理會誤刪目錄內任何檔案</summary>
+                <div class="details-body">
+                    <p><span class="fileref">lib.rs:30-31</span> 只在 app 啟動時呼叫一次 <code>cleanup()</code>；長時間不重啟則 14 天 retention 與 100MB 上限都不會執行。且 <span class="fileref">logging.rs:76-108</span> 的 size 清理把 <code>read_dir</code> 掃到的<strong>所有</strong>檔案（含 legacy 的 <code>yuzora-logs.sqlite*</code>、甚至今天正在寫的檔）都納入刪除候選。</p>
+                    <p><strong>建議：</strong>size 清理只針對符合 <code>yuzora-YYYY-MM-DD.jsonl</code> 模式的檔案，並排除今日檔；另在日切換或定時（例如每次 rotate 時）補跑 cleanup。</p>
+                </div>
+            </details>
+            <details>
+                <summary><span class="badge p1">P1-4</span>sanitize 只遮 home path 與 username，credentials 會原樣進 log 與 export</summary>
+                <div class="details-body">
+                    <p><code>log_git_call</code> 把完整 git args 寫進 message（已避開 extra_env，good），但像 <code>git remote add origin https://user:token@host/repo</code> 這種帶 credentials 的 URL 會原樣入庫；export 的 <code>sanitize_line</code>（<span class="fileref">logging.rs:230-242</span>）只處理 home 與 <code>/Users/&lt;user&gt;/</code>，不遮 token。另外 Logs pane 的 text 搜尋只比對 <code>event</code>／<code>message</code>（<span class="fileref">logging.rs:158-162</span>），git 錯誤內容存在 <code>metadata.stderr</code>，<strong>搜不到</strong>。</p>
+                    <p><strong>建議：</strong>寫入端對 args 做 URL userinfo 遮罩；text filter 加上 metadata 序列化字串比對（或至少 stderr 欄位）。</p>
+                </div>
+            </details>
+        </section>
+
+        <section>
+            <h2>P2 — 低優先</h2>
+            <details>
+                <summary><span class="badge p2">P2-1</span>舊制殘檔無人管理</summary>
+                <div class="details-body"><p><code>~/.yuzora/logs</code> 內殘留 <code>yuzora-logs.sqlite</code>／<code>-shm</code>／<code>-wal</code>（約 380KB）與 <code>yuzora-logs-20260701-180447.848-0.jsonl</code>。query／export／age-cleanup 都不認得它們，只有 size 超限時可能被「誤刪」。建議一次性遷移或刪除，並在 cleanup 明確處理。</p></div>
+            </details>
+            <details>
+                <summary><span class="badge p2">P2-2</span>logUserAction 無 .catch，失敗成 unhandled rejection</summary>
+                <div class="details-body"><p><span class="fileref">src/features/logs/userAction.ts:8-18</span> 回傳 promise 但呼叫端一律 <code>void logUserAction(...)</code>；backend 失敗（如 Mutex poisoned）會變 console unhandled rejection。建議在 userAction.ts 內部 <code>.catch(() =&gt; {})</code> 吞掉——log 失敗不該打擾使用者。</p></div>
+            </details>
+            <details>
+                <summary><span class="badge p2">P2-3</span>寫入錯誤全靜默</summary>
+                <div class="details-body"><p><code>LogSink::write</code> 的序列化 <code>unwrap_or_default</code>、開檔與 <code>writeln!</code> 全部 <code>let _</code>／<code>if let Ok</code> 忽略。磁碟滿或權限問題時 log 無聲消失。可接受的設計取捨，但至少序列化失敗（寫出空字串行）應該跳過而非寫入空行。</p></div>
+            </details>
+            <details>
+                <summary><span class="badge p2">P2-4</span>retention 邊界實為 15 天</summary>
+                <div class="details-body"><p><span class="fileref">logging.rs:88</span> 用 <code>&gt; RETENTION_DAYS</code>，含今日實際保留 15 個檔。與「14 天」語意差一天，nit。</p></div>
+            </details>
+            <details>
+                <summary><span class="badge p2">P2-5</span>log_event 接受任意 level/kind/source；UI 篩選是固定清單</summary>
+                <div class="details-body"><p>前端 <code>LOG_KIND_OPTIONS = ["debug","user_action","audit"]</code>、levels 四值固定（<span class="fileref">SettingsDialog.tsx:614-615</span>），但 <code>log_event</code> 不驗證欄位值。未來若有人寫入清單外的 kind/level，該紀錄永遠篩不出來（只能靠「全不選 = 不過濾」看到）。建議後端以 enum 收斂或前端動態聚合。</p></div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ Tab: ACP 診斷 ============ -->
+    <div id="acp" class="tab-content">
+        <section>
+            <h2>結論：19 次 spawn、0 次可用連線，三階段故障</h2>
+            <div class="chart-container">
+                <h3>07-06 11:13 ～ 07-07 00:37 全部 19 次 acp_exit 的時間軸</h3>
+                <p class="takeaway">結論：故障型態隨時間演變——PATH 斷 → pi-acp 版本問題 → 全靜默 timeout；最後一種佔據所有近期嘗試。</p>
+                <div style="overflow-x:auto;">
+                <svg viewBox="0 0 760 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ACP 故障時間軸">
+                    <line x1="30" y1="105" x2="740" y2="105" stroke="#e6dfd8" stroke-width="2"/>
+                    <!-- phase 1 -->
+                    <rect x="60" y="70" width="120" height="70" rx="8" fill="#fdf1ee" stroke="#c64545"/>
+                    <text x="120" y="92" font-size="11.5" text-anchor="middle" fill="#c64545" font-weight="700">階段① 19:09–19:10</text>
+                    <text x="120" y="110" font-size="11" text-anchor="middle" fill="#141413">exit 127 ×8</text>
+                    <text x="120" y="126" font-size="10" text-anchor="middle" fill="#6c6a64">bunx: command not found</text>
+                    <!-- phase 2 -->
+                    <rect x="230" y="70" width="150" height="70" rx="8" fill="#fdf7ea" stroke="#d4a017"/>
+                    <text x="305" y="92" font-size="11.5" text-anchor="middle" fill="#b8860b" font-weight="700">階段② 19:10–19:16</text>
+                    <text x="305" y="110" font-size="11" text-anchor="middle" fill="#141413">舊版不回應 ×2 ＋ EPIPE crash ×1</text>
+                    <text x="305" y="126" font-size="10" text-anchor="middle" fill="#6c6a64">pi-acp 版本問題（exit 1）</text>
+                    <!-- phase 3 -->
+                    <rect x="430" y="70" width="240" height="70" rx="8" fill="#fdf1ee" stroke="#c64545" stroke-width="2"/>
+                    <text x="550" y="92" font-size="11.5" text-anchor="middle" fill="#c64545" font-weight="700">階段③ 19:17 之後（現行狀態）</text>
+                    <text x="550" y="110" font-size="11" text-anchor="middle" fill="#141413">零 stdout、零 stderr、60s timeout kill ×6+</text>
+                    <text x="550" y="126" font-size="10" text-anchor="middle" fill="#6c6a64">stdoutSeen:false · stderrSummary:[] · code:null</text>
+                    <text x="30" y="180" font-size="10.5" fill="#8e8b82">另有 11:13 兩次 cwd "." 的 dev 測試（其中一次 stdoutSeen:true，證明管線曾通過一次）。</text>
+                </svg>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>三階段故障的證據與判定</h2>
+            <details open>
+                <summary><span class="badge p0">階段①</span>exit 127 ×8 — 打包 app 的 PATH 沒有 bunx</summary>
+                <div class="details-body">
+                    <p>8 次 exit 都留下唯一一行 stderr：<code>zsh:1: command not found: bunx</code>，cwd 為 <code>fixtures/out</code>（gui-acceptance 實機驗收環境）。代表當時執行的打包 app 中 <code>env_path::fix_gui_path()</code> 沒生效或該 build 尚未包含修正。</p>
+                    <p><strong>關鍵缺口：</strong><span class="fileref">env_path.rs</span> 的成敗只走 <code>eprintln!</code>（stderr），完全不進 log 系統——從 log 無法回答「那時 PATH 修正到底跑了沒、抓到什麼」。</p>
+                </div>
+            </details>
+            <details open>
+                <summary><span class="badge p1">階段②</span>pi-acp 版本問題 — 舊版不回應、新版 unhandled EPIPE crash</summary>
+                <div class="details-body">
+                    <p>19:10／19:15 兩次（agent-9/10）：inner <code>pi</code> 有啟動（stderr 出現 <code>GEOSENSE_API_KEY／YUUZU_API_KEY is missing</code>、<code>No models match "yuuzu-router/gpt-5.5"</code> 等 provider 警告），但 <code>stdoutSeen:false</code>——當時快取的 pi-acp 版本從未回應 initialize，7–9 秒後被 kill。</p>
+                    <p>19:16（agent-1）：bunx 現場下載新版 pi-acp（<code>Resolved, downloaded and extracted [6]</code>），這次 <code>stdoutSeen:true</code>（有回應！），但 18 秒後 pi-acp 在 <code>_PiRpcProcess.writeLine</code> 對 inner pi 寫入時撞 <code>Error: write EPIPE</code>（inner pi 已死），Node unhandled error 讓整個 adapter crash，exit 1。</p>
+                    <p><strong>判定：</strong>pi-acp 0.0.x 有兩個上游品質問題——(a) 舊版 handshake 壞掉、(b) inner pi 死亡時不做錯誤處理直接崩潰。用 <code>bunx pi-acp</code> 不 pin 版本，等於每次連線都在賭當下 latest 的品質（19:16 的 crash 就是升版當下引入）。</p>
+                </div>
+            </details>
+            <details open>
+                <summary><span class="badge p0">階段③</span>全靜默 60 秒 → initialize timeout kill（現行狀態，log 不足以定位）</summary>
+                <div class="details-body">
+                    <p>19:17 之後所有嘗試（含 07-07 00:36 最後一次）：process 存活、<strong>零 stdout、零 stderr</strong>，60 秒整被 kill（= <span class="fileref">acpConnection.ts:490</span> 的 <code>initializeTimeoutMs ?? 60_000</code>），exit code null。</p>
+                    <p><strong>反證實驗（2026-07-07 實測）：</strong>以 app 完全相同的方式（<code>/bin/zsh -lc 'bunx pi-acp'</code>、非 TTY piped stdio、程序存活中讀取）送 initialize，<strong>1 秒內</strong>收到正確回應（pi-acp 0.0.31，含 authMethods <code>pi_terminal_login</code>）。CLI 路徑完全健康。</p>
+                    <p>剩餘候選原因（log 無法區分，這正是觀測缺口）：</p>
+                    <ul>
+                        <li><strong>H1</strong>：initialize 根本沒寫進 child stdin——前端 <code>ndJsonStream</code>→<code>agent_write</code> 鏈路某處靜默失敗（WritableStream 錯誤被 ACP lib 吞掉，request 永遠 pending）。</li>
+                        <li><strong>H2</strong>：GUI app 環境中 <code>bunx</code> 對 registry 重新解析 latest 時卡住（bunx 不 pin 版本會定期重查 manifest；卡網路 = 無輸出地掛著，與觀測完全吻合）。</li>
+                        <li><strong>H3</strong>：GUI 環境變數差異讓 pi-acp 啟動後掛住（無法從 log 驗證，因為 handshake trace 預設關）。</li>
+                    </ul>
+                    <p><strong>為什麼 log 幫不上忙（logger 對 ACP 的觀測缺口）：</strong></p>
+                    <ul>
+                        <li><code>acp_spawn</code> 不記錄實際 command、resolved shell、PATH 摘要（<span class="fileref">agent_process.rs:273-286</span>）——連「那次到底跑了什麼指令」都答不出來。</li>
+                        <li><code>acp_trace_in/out</code> 被 <code>trace_enabled</code> gate（預設 false，<span class="fileref">agent_process.rs:53</span>）——出事當下永遠沒開，handshake 有沒有寫出去、寫了什麼，零紀錄。</li>
+                        <li><code>acp_kill</code> 不記 reason——60s init timeout、使用者手動停止、app 退出，在 log 裡長一樣（10s 與 60s 的 kill 只能靠對時間差猜）。</li>
+                        <li><code>env_path</code> 結果只 eprintln 不進 log（階段①的直接盲點）。</li>
+                        <li><code>acp_stderr</code> 一律 level "debug"——即使內容是 Node crash stack，在 Logs pane 篩 error/warn 完全看不到。</li>
+                    </ul>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ Tab: 修復計劃 ============ -->
+    <div id="plan" class="tab-content">
+        <div class="tldr">
+            <h3>執行結果（2026-07-07 完成）</h3>
+            <p>下列計劃<strong>已全數實作並驗證</strong>：Rust <code>cargo test</code> 268/268、前端 <code>vitest</code> 802/802、<code>bun run build</code>＋<code>cargo check</code> 全綠。歷史汙染資料已清理（74,330 行 → 3,015 行，備份於 <code>~/.yuzora/logs-backup-20260707/</code>，legacy sqlite/舊 jsonl 一併移入）。對抗式 review（5 維度 reviewer＋逐 finding 反方驗證，共 16 agents）提出 11 個 findings，6 個被反方駁回、5 個確認（含 1 個 HIGH：acpConnection listener 洩漏導致重連後 JSON-RPC 重複處理——兩個維度獨立抓到同一根因），全部已修復並補 regression 測試。額外整合修正：spawn 指令的權威來源在 <code>SettingsDialog.tsx</code> 的 <code>DEFAULT_AGENT_COMMAND</code>（非 agentStore），已一併 pin 至 <code>bunx pi-acp@0.0.31</code>；preflight 對 <code>~</code>／相對路徑／帶引號指令改為 fail-open。pi-acp EPIPE 上游 issue 草稿在 <code>docs/upstream-issues/pi-acp-epipe-2026-07-07.md</code>。「user_stop」reason 無處可接（使用者停止走 ACP cancel 而非 kill），wrapper 已支援供未來使用。</p>
+        </div>
+        <section>
+            <h2>修復計劃（三階段，可各自獨立驗收）</h2>
+            <p style="font-size:0.9rem; color:var(--color-text-secondary); margin-bottom:1rem;">順序邏輯：先補觀測（Phase 1，讓下一次 ACP 失敗變成可診斷），再修 ACP 本體（Phase 2），logger 自身的效能／正確性問題（Phase 3）不擋 ACP、可並行或排後。每項附驗證方式。</p>
+
+            <h3 style="font-size:1.05rem; margin-bottom:0.6rem;">Phase 1 — ACP 可觀測性（半天內，先做）</h3>
+            <div class="table-wrap">
+            <table>
+                <thead><tr><th style="width:3rem">#</th><th>變更</th><th>位置</th><th>驗證</th></tr></thead>
+                <tbody>
+                    <tr><td>1.1</td><td><code>acp_spawn</code> metadata 加 <code>command</code>（實際指令字串）、<code>shell</code>（resolve_shell 結果）、<code>path_has_bun</code>（PATH 是否含 bunx 可執行檔）</td><td><span class="fileref">agent_process.rs log_spawn</span></td><td>unit test 斷言 metadata 欄位；Logs pane 目視</td></tr>
+                    <tr><td>1.2</td><td><strong>handshake 無條件記錄</strong>：initialize 的 request／response（每次連線僅數行）不受 trace gate；<code>trace_enabled</code> 只 gate session 建立後的大流量</td><td><span class="fileref">agent_process.rs log_trace_*</span>（加 handshake_logged 旗標或依 method 判斷）</td><td>trace 關閉時連線一次，log 應有 <code>acp_trace_out(initialize)</code> 與對應 in（或逾時只有 out——就是 H1/H2 的判別證據）</td></tr>
+                    <tr><td>1.3</td><td><code>agent_kill</code> 增 <code>reason</code> 參數（<code>init_timeout</code>／<code>user_stop</code>／<code>app_exit</code>），前端各呼叫點帶入，寫進 <code>acp_kill</code> metadata</td><td><span class="fileref">agent_process.rs:198,229</span>＋<span class="fileref">acpConnection.ts:500</span> 等呼叫點</td><td>unit test；觸發一次 timeout 與一次手動停止，比對 reason</td></tr>
+                    <tr><td>1.4</td><td><code>env_path::fix_gui_path</code> 的結果（成功 entry 數／逾時／失敗原因）改寫入 log（source <code>env</code>、event <code>path_fix</code>）——注意它在 LogSink manage 之前執行，直接用 <code>LogSink::new(default_log_dir())</code> 寫一筆即可</td><td><span class="fileref">env_path.rs</span>／<span class="fileref">lib.rs:29</span></td><td>啟動 app 後 Logs pane 篩 source=env 應有一筆</td></tr>
+                    <tr><td>1.5</td><td><code>acp_stderr</code> 依內容分級：含 <code>Error</code>／crash stack 的行記 <code>error</code>，其餘維持 <code>debug</code>（簡單啟發式即可）</td><td><span class="fileref">agent_process.rs log_stderr</span></td><td>unit test 兩級各一例</td></tr>
+                </tbody>
+            </table>
+            </div>
+
+            <h3 style="font-size:1.05rem; margin:1.2rem 0 0.6rem;">Phase 2 — ACP 本體修復（依 Phase 1 的新證據收斂，約一天）</h3>
+            <div class="table-wrap">
+            <table>
+                <thead><tr><th style="width:3rem">#</th><th>變更</th><th>位置</th><th>驗證</th></tr></thead>
+                <tbody>
+                    <tr><td>2.1</td><td><strong>Pin 版本</strong>：預設 command 改 <code>bunx pi-acp@0.0.31</code>（實測可回應 initialize 的版本）。消除 bunx 每次 re-resolve latest 的網路依賴（H2）與版本漂移（階段②的直接肇因）</td><td><span class="fileref">agentStore.ts:104</span></td><td>CLI 重放實測（本報告的 fifo probe 腳本）＋實機連線</td></tr>
+                    <tr><td>2.2</td><td><strong>Spawn preflight</strong>：spawn 前用 app 行程的 PATH 檢查指令第一個 token 是否可解析（which bunx）；找不到就立即回明確錯誤「bunx 不在 PATH，請檢查安裝或 Settings 自訂指令」，不要讓使用者等 60 秒</td><td><span class="fileref">agent_process.rs spawn_with_id</span> 或前端 spawn 前 invoke</td><td>暫時改壞 PATH 實測錯誤訊息（gui-acceptance）</td></tr>
+                    <tr><td>2.3</td><td>initialize timeout 60s → 15s，timeout 錯誤訊息附 stderr tail 與「查看 Settings → Logs（source: acp）」指引</td><td><span class="fileref">acpConnection.ts:490,704</span></td><td>單元測試改斷言；實機模擬 hang（自訂 command <code>sleep 999</code>）看 UI 錯誤</td></tr>
+                    <tr><td>2.4</td><td>H1 防護：<code>agent_write</code> 失敗（invoke reject）時直接 <code>markDisconnected</code>，讓 initialize 立刻 reject 而不是默默 pending 到 timeout</td><td><span class="fileref">acpConnection.ts:512-517</span> WritableStream write</td><td>mock invoke reject 的單元測試</td></tr>
+                    <tr><td>2.5</td><td>cwd 防呆：AgentZone 在沒有 workspace 時擋下連線（或把 <code>"."</code> resolve 成絕對路徑再傳）——log 中兩批 cwd "." 即此路徑</td><td>AgentZonePanel／agentStore newSession 呼叫端</td><td>無 workspace 開 AgentZone 應顯示引導而非 spawn</td></tr>
+                    <tr><td>2.6</td><td>上游回報：pi-acp inner-pi 死亡時的 unhandled EPIPE（附 19:16 stack）；同時在 yuzora 端把 exit code 1 + stderr 含 EPIPE 的情況顯示為「agent adapter crashed」而非一般 disconnect</td><td>pi-acp repo issue＋<span class="fileref">acpConnection.ts agentExitedEarlyError</span></td><td>issue 連結；錯誤文案單元測試</td></tr>
+                </tbody>
+            </table>
+            </div>
+
+            <h3 style="font-size:1.05rem; margin:1.2rem 0 0.6rem;">Phase 3 — Logger 本體（前述 P0–P2，約一到兩天，可並行）</h3>
+            <div class="table-wrap">
+            <table>
+                <thead><tr><th style="width:3rem">#</th><th>變更</th><th>驗證</th></tr></thead>
+                <tbody>
+                    <tr><td>3.1</td><td><strong>P0-1</strong> git_service 比照 process_service 注入 <code>LogFn</code>／log dir，測試寫 tempdir；順手清掉既有測試汙染（可寫一次性 retention 覆蓋或手動刪 07-03～07-06 的 run_git 測試行）</td><td><code>cargo test</code> 後檢查 <code>~/.yuzora/logs</code> 無新增 run_git 測試行</td></tr>
+                    <tr><td>3.2</td><td><strong>P0-2</strong> 三命令改 <code>async fn</code>＋<code>spawn_blocking</code>；<code>query_dir</code> 改 <code>BufReader</code> 逐行（倒序需求可先讀檔尾塊或維持整檔但移出 main thread）；LogsSection 篩選加 300ms debounce</td><td>既有單元測試全綠；6.7MB 檔上實測 UI 不凍結</td></tr>
+                    <tr><td>3.3</td><td><strong>P0-3</strong> <code>sources_dir</code> 改逐行 streaming 只取 source 欄位進 <code>BTreeSet</code></td><td>既有 <code>sources_returns_distinct_sources</code> 測試不變仍綠</td></tr>
+                    <tr><td>3.4</td><td><strong>P1 批次</strong>：單一共享 sink（或每行單次 <code>write_all</code>）；timestamp 改 UTC＋parse 比較；cleanup 定期化＋候選限定 <code>yuzora-*.jsonl</code> 且排除今日；git args URL userinfo 遮罩＋text filter 納入 metadata.stderr</td><td>各附 unit test；boundary 測試沿用</td></tr>
+                    <tr><td>3.5</td><td><strong>P2 批次</strong>：legacy sqlite/jsonl 清理、logUserAction 內部 catch、序列化失敗跳過、retention 邊界、kind/level 值收斂（enum 或動態聚合）</td><td><code>bun run build</code>＋<code>bun run test</code>＋<code>cargo check</code> 全綠</td></tr>
+                </tbody>
+            </table>
+            </div>
+
+            <h3 style="font-size:1.05rem; margin:1.2rem 0 0.6rem;">驗收閉環</h3>
+            <ul style="margin-left:1.4rem; font-size:0.92rem;">
+                <li>Phase 1+2 完成後跑一次 <code>gui-acceptance</code>：AgentZone 實機連線成功 handshake（或失敗時 Logs pane 能完整回答「卡在哪一步」）。</li>
+                <li>Phase 3 完成後：<code>bun run build</code>、<code>bun run test</code>、<code>cd src-tauri && cargo check</code>＋<code>cargo test</code> 全綠；Logs pane 在 6.7MB 檔案上操作流暢。</li>
+                <li>全部完成後產出結案報告至 <code>docs/html/</code>。</li>
+            </ul>
+        </section>
+    </div>
+
+    <!-- ============ Tab: 架構現況 ============ -->
+    <div id="arch" class="tab-content">
+        <section>
+            <h2>寫入/讀取路徑一覽</h2>
+            <div class="chart-container">
+                <h3>目前的資料流（紅色 = 問題點）</h3>
+                <p class="takeaway">重點：四路寫入者中只有一路走 managed sink；讀取三命令全部同步整檔載入。</p>
+                <div style="overflow-x:auto;">
+                <svg viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="logger 架構圖">
+                    <defs>
+                        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                            <path d="M0,0 L10,5 L0,10 z" fill="#6c6a64"/>
+                        </marker>
+                    </defs>
+                    <!-- writers -->
+                    <rect x="10" y="14" width="200" height="44" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+                    <text x="110" y="32" font-size="12" text-anchor="middle" fill="#141413">前端 logUserAction</text>
+                    <text x="110" y="48" font-size="10.5" text-anchor="middle" fill="#6c6a64">→ log_event（managed Mutex&lt;LogSink&gt;）</text>
+
+                    <rect x="10" y="72" width="200" height="44" rx="8" fill="#fdf1ee" stroke="#c64545"/>
+                    <text x="110" y="90" font-size="12" text-anchor="middle" fill="#141413">git_service::log_git_call</text>
+                    <text x="110" y="106" font-size="10.5" text-anchor="middle" fill="#c64545">每次呼叫 new LogSink（含測試！）</text>
+
+                    <rect x="10" y="130" width="200" height="44" rx="8" fill="#fdf7ea" stroke="#d4a017"/>
+                    <text x="110" y="148" font-size="12" text-anchor="middle" fill="#141413">ssh_service（自建 sink）</text>
+                    <text x="110" y="164" font-size="10.5" text-anchor="middle" fill="#6c6a64">LogFn 可注入，prod 用 default dir</text>
+
+                    <rect x="10" y="188" width="200" height="44" rx="8" fill="#fdf7ea" stroke="#d4a017"/>
+                    <text x="110" y="206" font-size="12" text-anchor="middle" fill="#141413">process_service（自建 sink）</text>
+                    <text x="110" y="222" font-size="10.5" text-anchor="middle" fill="#6c6a64">LogFn 可注入，prod 用 default dir</text>
+
+                    <!-- store -->
+                    <rect x="300" y="100" width="180" height="80" rx="10" fill="#181715"/>
+                    <text x="390" y="130" font-size="12.5" text-anchor="middle" fill="#faf9f5">~/.yuzora/logs/</text>
+                    <text x="390" y="148" font-size="11" text-anchor="middle" fill="#faf9f5">yuzora-YYYY-MM-DD.jsonl</text>
+                    <text x="390" y="166" font-size="10" text-anchor="middle" fill="#8e8b82">O_APPEND，多寫者同檔</text>
+
+                    <!-- legacy -->
+                    <rect x="300" y="200" width="180" height="46" rx="10" fill="#efe9de" stroke="#c64545" stroke-dasharray="5 3"/>
+                    <text x="390" y="219" font-size="11" text-anchor="middle" fill="#c64545">legacy: *.sqlite / 舊 jsonl</text>
+                    <text x="390" y="236" font-size="10" text-anchor="middle" fill="#6c6a64">無人管理，size 清理可能誤刪</text>
+
+                    <!-- readers -->
+                    <rect x="560" y="42" width="190" height="52" rx="8" fill="#fdf1ee" stroke="#c64545"/>
+                    <text x="655" y="62" font-size="12" text-anchor="middle" fill="#141413">log_query（sync）</text>
+                    <text x="655" y="80" font-size="10.5" text-anchor="middle" fill="#c64545">read_to_string 全檔；每 keystroke 觸發</text>
+
+                    <rect x="560" y="112" width="190" height="52" rx="8" fill="#fdf1ee" stroke="#c64545"/>
+                    <text x="655" y="132" font-size="12" text-anchor="middle" fill="#141413">log_sources（sync）</text>
+                    <text x="655" y="150" font-size="10.5" text-anchor="middle" fill="#c64545">limit=usize::MAX 全量進記憶體</text>
+
+                    <rect x="560" y="182" width="190" height="52" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+                    <text x="655" y="202" font-size="12" text-anchor="middle" fill="#141413">log_export（sync）</text>
+                    <text x="655" y="220" font-size="10.5" text-anchor="middle" fill="#6c6a64">逐行 sanitize → zip，堪用</text>
+
+                    <!-- cleanup -->
+                    <rect x="300" y="286" width="180" height="52" rx="8" fill="#fdf7ea" stroke="#d4a017"/>
+                    <text x="390" y="306" font-size="12" text-anchor="middle" fill="#141413">cleanup()</text>
+                    <text x="390" y="324" font-size="10.5" text-anchor="middle" fill="#6c6a64">僅啟動時一次；候選含非 log 檔</text>
+
+                    <!-- arrows -->
+                    <line x1="210" y1="36" x2="300" y2="115" stroke="#6c6a64" stroke-width="1.4" marker-end="url(#arr)"/>
+                    <line x1="210" y1="94" x2="300" y2="130" stroke="#c64545" stroke-width="1.6" marker-end="url(#arr)"/>
+                    <line x1="210" y1="152" x2="300" y2="145" stroke="#6c6a64" stroke-width="1.4" marker-end="url(#arr)"/>
+                    <line x1="210" y1="210" x2="300" y2="160" stroke="#6c6a64" stroke-width="1.4" marker-end="url(#arr)"/>
+                    <line x1="480" y1="120" x2="560" y2="72" stroke="#6c6a64" stroke-width="1.4" marker-end="url(#arr)"/>
+                    <line x1="480" y1="140" x2="560" y2="138" stroke="#6c6a64" stroke-width="1.4" marker-end="url(#arr)"/>
+                    <line x1="480" y1="160" x2="560" y2="204" stroke="#6c6a64" stroke-width="1.4" marker-end="url(#arr)"/>
+                    <line x1="390" y1="286" x2="390" y2="250" stroke="#d4a017" stroke-width="1.4" marker-end="url(#arr)"/>
+                </svg>
+                </div>
+            </div>
+        </section>
+        <section>
+            <h2>運作正常的部分（不需要動）</h2>
+            <ul style="margin-left:1.4rem; font-size:0.92rem;">
+                <li>日切檔命名與 <code>retained_log_files</code> 的 newest-first 排序，配合 limit 早退，一般查詢（500 筆上限）路徑正確。</li>
+                <li>export 的逐行 sanitize（home → <code>~</code>、三種 <code>/Users/&lt;user&gt;/</code> 變體）有測試覆蓋，含 Windows 路徑與 JSON 跳脫案例。</li>
+                <li><code>log_export</code> 對不可寫目的地正確回傳 Err；前端 save dialog + 錯誤 surfacing 完整。</li>
+                <li>process_service／ssh_service 的 <code>LogFn</code> 注入設計是對的方向——問題只在 git_service 沒有跟進。</li>
+                <li>單元測試 8 個，覆蓋 write／cleanup／filter／boundary／sanitize，品質不錯。</li>
+            </ul>
+        </section>
+    </div>
+
+    <!-- ============ Tab: 證據資料 ============ -->
+    <div id="data" class="tab-content">
+        <section>
+            <h2>實測資料（2026-07-07 採集）</h2>
+            <div class="table-wrap">
+            <table>
+                <thead><tr><th>檔案</th><th>行數</th><th>大小</th><th>備註</th></tr></thead>
+                <tbody>
+                    <tr><td><code>yuzora-2026-07-02.jsonl</code></td><td>61</td><td>14 KB</td><td>正常使用量級</td></tr>
+                    <tr><td><code>yuzora-2026-07-03.jsonl</code></td><td>19,549</td><td>4.4 MB</td><td>測試汙染</td></tr>
+                    <tr><td><code>yuzora-2026-07-04.jsonl</code></td><td>8,260</td><td>1.9 MB</td><td>測試汙染</td></tr>
+                    <tr><td><code>yuzora-2026-07-05.jsonl</code></td><td>12,580</td><td>2.8 MB</td><td>測試汙染</td></tr>
+                    <tr><td><code>yuzora-2026-07-06.jsonl</code></td><td>29,919</td><td>6.7 MB</td><td>run_git 29,674 筆（99.2%）</td></tr>
+                    <tr><td><code>yuzora-2026-07-07.jsonl</code></td><td>29</td><td>6.7 KB</td><td>正常使用量級</td></tr>
+                    <tr><td><code>yuzora-logs.sqlite</code>（+shm/wal）</td><td>—</td><td>379 KB</td><td>legacy，無人管理</td></tr>
+                    <tr><td><code>yuzora-logs-20260701-*.jsonl</code></td><td>5</td><td>1 KB</td><td>legacy 舊命名格式</td></tr>
+                </tbody>
+            </table>
+            </div>
+        </section>
+        <section>
+            <h2>07-06 run_git 訊息 Top 8（jq 統計）</h2>
+            <pre><code>2900  git init -b main
+2900  git config user.name t
+2900  git config user.email t@t
+2900  git config commit.gpgsign false
+2096  git commit -m c1
+2018  git add f.txt
+1228  git status --porcelain=v2 --branch -z
+1112  git add a.txt</code></pre>
+            <p style="font-size:0.88rem; color:var(--color-text-secondary);"><code>user.name t</code>／<code>t@t</code>／<code>c1</code>／<code>f.txt</code> 是 git_service 測試 fixture 的固定值——證實灌入來源是 <code>cargo test</code>，不是真實使用。<code>git status</code> 的 1,228 筆則混合了測試與 git watch 的真實輪詢。</p>
+        </section>
+        <section>
+            <h2>ACP 診斷證據（2026-07-07 實測）</h2>
+            <div class="table-wrap">
+            <table>
+                <thead><tr><th>時間（07-06/07）</th><th>cwd</th><th>exit</th><th>stdoutSeen</th><th>stderr</th><th>判定</th></tr></thead>
+                <tbody>
+                    <tr><td>19:09–19:10 ×8</td><td>fixtures/out</td><td>127</td><td>false</td><td><code>zsh:1: command not found: bunx</code></td><td>階段① PATH 斷</td></tr>
+                    <tr><td>19:11、19:15 ×2</td><td>fixtures/out</td><td>null（killed 7–9s）</td><td>false</td><td>provider key 警告 ×4</td><td>階段② 舊版不回應</td></tr>
+                    <tr><td>19:16 ×1</td><td>repo</td><td>1</td><td><strong>true</strong></td><td>bunx 下載新版 → <code>Error: write EPIPE</code> @ <code>_PiRpcProcess.writeLine</code>，Node v25.8.1 crash stack ×28 行</td><td>階段② 新版 EPIPE crash</td></tr>
+                    <tr><td>19:17–00:37 ×6</td><td>repo／git-demo／"."</td><td>null（killed 6–60s，兩次整整 60s）</td><td>false</td><td><strong>空</strong></td><td>階段③ 全靜默 → init timeout</td></tr>
+                </tbody>
+            </table>
+            </div>
+            <p style="font-size:0.88rem; color:var(--color-text-secondary); margin-top:0.6rem;">反證實驗：<code>/bin/zsh -lc 'bunx pi-acp'</code>（與 app 的 <code>shell_command</code> 完全相同的包裝、非 TTY piped stdio、以 fifo 保持 stdin 開啟）送 initialize——<strong>程序存活中 1 秒收到回應</strong>（pi-acp 0.0.31）。證明 CLI 路徑健康，故障在 GUI app 環境或前後端管線，且現有 log 資訊不足以再往下切分（trace 預設關、spawn 不記 command、kill 不記 reason）。</p>
+            <pre><code>{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,
+  "agentInfo":{"name":"pi-acp","title":"pi ACP adapter","version":"0.0.31"},
+  "authMethods":[{"id":"pi_terminal_login","name":"Launch pi in the terminal",…}],
+  "agentCapabilities":{"loadSession":true,…}}}   ← CLI 實測 1 秒回應</code></pre>
+        </section>
+        <section>
+            <h2>關鍵程式碼位置</h2>
+            <div class="table-wrap">
+            <table>
+                <thead><tr><th>位置</th><th>內容</th></tr></thead>
+                <tbody>
+                    <tr><td><span class="fileref">src-tauri/src/logging.rs:47-74</span></td><td>LogSink::write — 每筆 open/append、錯誤靜默</td></tr>
+                    <tr><td><span class="fileref">src-tauri/src/logging.rs:76-108</span></td><td>cleanup — age + size 兩段，size 候選含全目錄檔案</td></tr>
+                    <tr><td><span class="fileref">src-tauri/src/logging.rs:165-206</span></td><td>query_dir（read_to_string 全載）／sources_dir（usize::MAX）</td></tr>
+                    <tr><td><span class="fileref">src-tauri/src/git_service.rs:143-155</span></td><td>log_git_call — 每次 new LogSink 寫 default dir</td></tr>
+                    <tr><td><span class="fileref">src-tauri/src/lib.rs:30-31,36</span></td><td>啟動時 cleanup 一次 + manage Mutex&lt;LogSink&gt;</td></tr>
+                    <tr><td><span class="fileref">src/app/workbench/SettingsDialog.tsx:697-715</span></td><td>LogsSection — text 每 keystroke 觸發 logQuery，無 debounce</td></tr>
+                    <tr><td><span class="fileref">src/features/logs/userAction.ts</span></td><td>logUserAction — 無 .catch</td></tr>
+                </tbody>
+            </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- ============ Tab: Review 面板 ============ -->
+    <div id="review" class="tab-content review-panel">
+        <section>
+            <h2>品質自評</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="name">證據力 ★★★★★</div><div class="crit">每項發現附 file:line 與實測資料（jq／wc 統計、實際 log 內容）。</div></div>
+                <div class="scorecard"><div class="name">完整度 ★★★★☆</div><div class="crit">涵蓋寫入／查詢／清理／匯出／前端五面向；未做 100MB 級壓測實測 UI 凍結秒數。</div></div>
+                <div class="scorecard"><div class="name">可行動性 ★★★★★</div><div class="crit">12 項各附具體修法，P0/P1/P2 分級可直接排 backlog。</div></div>
+                <div class="scorecard"><div class="name">風險判讀 ★★★★☆</div><div class="crit">torn-line 為理論風險未實際觀測；Tauri sync-command-on-main-thread 依官方文件行為判定。</div></div>
+            </div>
+        </section>
+        <section>
+            <h2>勾選要修的項目，複製成後續 prompt</h2>
+            <div id="fix-list">
+                <div class="review-row"><input type="checkbox" id="f1" data-item="P0-1 git_service log dir 注入，杜絕 cargo test 汙染正式 log；並清理既有測試汙染資料"><label for="f1"><strong>P0-1</strong> git_service log dir 注入（杜絕測試汙染）</label></div>
+                <div class="review-row"><input type="checkbox" id="f2" data-item="P0-2 log_query/log_sources/log_export 改 async + BufReader 逐行；LogsSection text 篩選加 debounce"><label for="f2"><strong>P0-2</strong> 三命令改 async ＋ 前端 debounce</label></div>
+                <div class="review-row"><input type="checkbox" id="f3" data-item="P0-3 log_sources 改 streaming 取 distinct source，不累積全量 record"><label for="f3"><strong>P0-3</strong> log_sources streaming 化</label></div>
+                <div class="review-row"><input type="checkbox" id="f4" data-item="P1-1 收斂為單一共享 sink；write 改單次 write_all 防 torn line"><label for="f4"><strong>P1-1</strong> 單一共享 sink ＋ 原子寫行</label></div>
+                <div class="review-row"><input type="checkbox" id="f5" data-item="P1-2 timestamp 改 UTC 寫入、查詢 parse 成 DateTime 比較"><label for="f5"><strong>P1-2</strong> timestamp 改 UTC ＋ parse 比較</label></div>
+                <div class="review-row"><input type="checkbox" id="f6" data-item="P1-3 cleanup 定期執行；size 清理只限 yuzora-*.jsonl 且排除今日檔"><label for="f6"><strong>P1-3</strong> cleanup 定期化 ＋ 候選收斂</label></div>
+                <div class="review-row"><input type="checkbox" id="f7" data-item="P1-4 git args URL userinfo 遮罩；text filter 納入 metadata.stderr"><label for="f7"><strong>P1-4</strong> credentials 遮罩 ＋ stderr 可搜</label></div>
+                <div class="review-row"><input type="checkbox" id="f8" data-item="P2 全項：legacy 檔清理、logUserAction catch、序列化失敗跳過、retention 邊界、kind/level 值收斂"><label for="f8"><strong>P2</strong> 五項小修一次打包</label></div>
+                <div class="review-row"><input type="checkbox" id="f9" data-item="ACP Phase 1（可觀測性）：acp_spawn 記 command/shell/path、handshake 無條件 trace、kill reason、env_path 進 log、stderr 分級"><label for="f9"><strong>ACP-P1</strong> 可觀測性五項（1.1–1.5）</label></div>
+                <div class="review-row"><input type="checkbox" id="f10" data-item="ACP Phase 2（本體修復）：pin pi-acp@0.0.31、spawn preflight、timeout 60s→15s、agent_write 失敗即 markDisconnected、cwd 防呆、EPIPE 上游回報"><label for="f10"><strong>ACP-P2</strong> 本體修復六項（2.1–2.6）</label></div>
+            </div>
+            <div class="actions">
+                <button class="btn primary" onclick="copyPrompt()">Copy as Prompt</button>
+                <button class="btn" onclick="window.print()">Print / PDF</button>
+            </div>
+            <p id="copy-note" style="font-size:0.85rem; color:var(--color-success); margin-top:0.5rem;"></p>
+        </section>
+    </div>
+</div>
+
+<script>
+function showTab(id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    event.target.classList.add('active');
+}
+function copyPrompt() {
+    const picked = [...document.querySelectorAll('#fix-list input:checked')].map(i => '- ' + i.dataset.item);
+    const text = picked.length
+        ? '依 docs/html/yuzora-logger-analysis-2026-07-07.html 的分析，修復以下項目：\n' + picked.join('\n')
+        : '（尚未勾選任何項目）';
+    navigator.clipboard.writeText(text).then(() => {
+        document.getElementById('copy-note').textContent = '已複製 ' + picked.length + ' 項到剪貼簿';
+        setTimeout(() => document.getElementById('copy-note').textContent = '', 2500);
+    });
+}
+</script>
+</body>
+</html>

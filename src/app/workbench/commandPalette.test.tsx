@@ -9,12 +9,21 @@ vi.mock("@/lsp/symbols", () => ({
 }))
 vi.mock("@/editor/documentRegistry", () => ({ getDocument: vi.fn() }))
 
+const searchWorkspace = vi.fn(
+    (_root: string, _query: string, _cs: boolean, _cb: (e: SearchEvent) => void) => Promise.resolve()
+)
+vi.mock("@/lib/ipc", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/lib/ipc")>()),
+    searchWorkspace: (...args: Parameters<typeof searchWorkspace>) => searchWorkspace(...args),
+}))
+
+import type { SearchEvent } from "@/lib/types"
 import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { ensureClient } from "@/lsp/lspManager"
 import { requestDocumentSymbols, requestWorkspaceSymbols } from "@/lsp/symbols"
 import { getDocument } from "@/editor/documentRegistry"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
-import { useWorkspaceStore } from "@/state/workspaceStore"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
 const managed = {
     client: { id: "fake", initializing: Promise.resolve() },
@@ -88,11 +97,63 @@ it("renders terminal and preview toggles and closes after selection", async () =
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 })
 
-it("toggle preview command flips preview visibility", async () => {
+it("toggle preview command opens the singleton preview tab", async () => {
     render(<Harness />)
 
     fireEvent.click(await screen.findByRole("option", { name: /toggle preview/i }))
 
-    expect(useUiStore.getState().previewOpen).toBe(true)
+    const groups = useWorkspaceStore.getState().groups
+    expect(groups.some((g) => g.tabs.some((t) => t.path === PREVIEW_TAB_PATH))).toBe(true)
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
+it("'>' prefix restricts to commands and skips the workspace search", async () => {
+    render(<Harness />)
+    const input = await screen.findByPlaceholderText("Search files, run a command…")
+
+    // ">" alone keeps every command and runs no workspace search.
+    fireEvent.change(input, { target: { value: ">" } })
+    expect(screen.getByRole("option", { name: /toggle terminal/i })).toBeInTheDocument()
+    expect(screen.queryByText("Workspace search")).not.toBeInTheDocument()
+    expect(searchWorkspace).not.toHaveBeenCalled()
+
+    // The text after ">" filters the command list.
+    fireEvent.change(input, { target: { value: ">settings" } })
+    expect(screen.getByRole("option", { name: /settings/i })).toBeInTheDocument()
+    expect(screen.queryByRole("option", { name: /toggle terminal/i })).not.toBeInTheDocument()
+})
+
+it("a single-character query stays below the search floor and runs no workspace search", async () => {
+    render(<Harness />)
+    const input = await screen.findByPlaceholderText("Search files, run a command…")
+
+    fireEvent.change(input, { target: { value: "a" } })
+    expect(searchWorkspace).not.toHaveBeenCalled()
+    expect(screen.queryByText("Workspace search")).not.toBeInTheDocument()
+})
+
+it("a plain query renders the workspace search group and reveals a hit on select", async () => {
+    vi.useFakeTimers()
+    searchWorkspace.mockImplementation((_r, _q, _cs, cb) => {
+        cb({ type: "match", path: "/ws/src/a.ts", matches: [{ line: 3, col: 2, preview: "a needle b" }] })
+        cb({ type: "done", truncated: false, fileCount: 1 })
+        return Promise.resolve()
+    })
+
+    render(<Harness />)
+    const input = screen.getByPlaceholderText("Search files, run a command…")
+    fireEvent.change(input, { target: { value: "needle" } })
+    await act(async () => {
+        await vi.advanceTimersByTimeAsync(250)
+    })
+
+    expect(searchWorkspace).toHaveBeenCalledWith("/ws", "needle", false, expect.any(Function))
+    expect(screen.getByText("Workspace search")).toBeInTheDocument()
+    expect(screen.getByText("a.ts")).toBeInTheDocument()
+    expect(screen.getByText("needle").tagName).toBe("MARK")
+
+    fireEvent.click(screen.getByText("needle"))
+    expect(useWorkspaceStore.getState().pendingReveal).toEqual({ path: "/ws/src/a.ts", line: 3 })
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    vi.useRealTimers()
 })

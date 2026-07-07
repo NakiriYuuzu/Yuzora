@@ -75,7 +75,11 @@ export function ContextMenu() {
 
   if (!kind) return null
 
-  const entries = CONTEXT_MENU_DEFS[kind]
+  // Items may carry a `when` predicate (e.g. cmOpenInBrowser only for .html);
+  // filter against the current payload before measuring/rendering.
+  const entries = CONTEXT_MENU_DEFS[kind].filter(
+    (entry) => entry === "separator" || !entry.when || entry.when(payload)
+  )
   const { left, top } = placeMenu(x, y, entries.length, bodyZoom(), window.innerWidth, window.innerHeight)
 
   return (

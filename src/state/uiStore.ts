@@ -30,11 +30,17 @@ interface UiState {
     openSettings: (section?: string, target?: string | SettingsTargetOptions) => void
     setSettingsOpen: (open: boolean) => void
     terminalOpen: boolean
-    previewOpen: boolean
     toggleTerminal: () => void
-    togglePreview: () => void
     traceEnabled: boolean                      // LSP JSON-RPC trace（in-memory，不持久化；重啟＝off）
     setTraceEnabled: (enabled: boolean) => void
+    // navCollapsed／command palette open 是 AppShell 的 local state（非 store），
+    // context menu 的 dispatch 活在 React 樹外，構不到它們。這兩個 nonce 只是信號：
+    // 每次呼叫 ++1，AppShell 用 ref 比對前值、變了就代它們的 local setter 動作
+    // （同 settingsNonce 的作法）。
+    sidebarToggleRequest: number
+    requestSidebarToggle: () => void
+    paletteOpenRequest: number
+    requestOpenPalette: () => void
 }
 
 // Exported so the test setup can reset the store between tests (zustand stores
@@ -50,8 +56,9 @@ export const uiInitialState = {
     settingsLogSource: null,
     settingsNonce: 0,
     terminalOpen: false,
-    previewOpen: false,
-    traceEnabled: false
+    traceEnabled: false,
+    sidebarToggleRequest: 0,
+    paletteOpenRequest: 0
 }
 
 export const useUiStore = create<UiState>()((set) => ({
@@ -77,6 +84,7 @@ export const useUiStore = create<UiState>()((set) => ({
         }),
     setSettingsOpen: (open) => set({ settingsOpen: open }),
     toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
-    togglePreview: () => set((s) => ({ previewOpen: !s.previewOpen })),
-    setTraceEnabled: (enabled) => set({ traceEnabled: enabled })
+    setTraceEnabled: (enabled) => set({ traceEnabled: enabled }),
+    requestSidebarToggle: () => set((s) => ({ sidebarToggleRequest: s.sidebarToggleRequest + 1 })),
+    requestOpenPalette: () => set((s) => ({ paletteOpenRequest: s.paletteOpenRequest + 1 }))
 }))

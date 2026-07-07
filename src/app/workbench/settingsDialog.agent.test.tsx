@@ -68,7 +68,7 @@ describe("SettingsDialog agent section", () => {
     const command = screen.getByLabelText("自訂 command")
 
     expect(preset).toHaveValue("pi")
-    expect(command).toHaveValue("bunx pi-acp")
+    expect(command).toHaveValue("bunx pi-acp@0.0.31")
     expect(command).toBeDisabled()
 
     fireEvent.change(preset, { target: { value: "custom" } })

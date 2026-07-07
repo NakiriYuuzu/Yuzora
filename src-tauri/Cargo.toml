@@ -18,7 +18,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `unstable` unlocks the multiwebview API (Window::add_child) the preview panel
+# uses to overlay an external-URL browser webview over the panel region (P3).
+tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -40,6 +42,34 @@ flate2 = "1"
 zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 libc = "0.2"
 portable-pty = "0.9.0"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+russh = "0.62.2"
+# ssh_service opens an SFTP subsystem over the existing russh channel (F5); the
+# crate is stream-based (feeds off channel.into_stream()) so it stays version-
+# independent of russh itself.
+russh-sftp = "2.3.0"
+# tauri bundles tokio; ssh_service needs select!/timeout which async_runtime
+# doesn't re-export, so name tokio directly (already resolved in the lock).
+tokio = { version = "1", features = ["macros", "time", "sync", "net"] }
+# perf_service samples only this process's cpu/memory; the `system` feature is
+# all it needs — drop disk/network/component/user to keep the build lean.
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
+# db_service network backends (F2). tokio-postgres is the pure-tokio PG driver;
+# tiberius the MSSQL driver over a tokio TcpStream (compat shim from tokio-util).
+# TLS reuses the existing rustls+ring provider (russh already pulls rustls 0.23);
+# tokio-postgres-rustls/rustls are pinned to `ring` so a second (aws-lc) provider
+# can't get installed and panic builder(). rust_decimal decodes PG NUMERIC to a
+# lossless string; webpki-roots supplies the PG TLS root store.
+tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
+tiberius = { version = "0.12.3", default-features = false, features = ["tds73", "rustls", "chrono"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
+rust_decimal = { version = "1.42.1", default-features = false, features = ["db-tokio-postgres", "std"] }
+tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
+webpki-roots = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+uuid = { version = "1", default-features = false }
+tiny_http = "0.12.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -3,6 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react"
 
 import { AppShell } from "@/app/AppShell"
 import { EditorPanel } from "@/app/panels/EditorPanel"
+import i18n from "@/lib/i18n"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 
 vi.mock("@/features/logs/userAction", () => ({
@@ -36,15 +37,15 @@ describe("Files mode entry states", () => {
     render(<AppShell />)
 
     const toggle = screen.getByRole("button", { name: "Toggle preview" })
-    expect(screen.queryByText("啟動或連接 dev server")).not.toBeInTheDocument()
+    expect(screen.queryByText(i18n.t("emptyTitle", { ns: "preview" }))).not.toBeInTheDocument()
     expect(toggle).toHaveAttribute("aria-pressed", "false")
 
     fireEvent.click(toggle)
-    expect(screen.getByText("啟動或連接 dev server")).toBeInTheDocument()
+    expect(screen.getByText(i18n.t("emptyTitle", { ns: "preview" }))).toBeInTheDocument()
     expect(toggle).toHaveAttribute("aria-pressed", "true")
 
     fireEvent.click(toggle)
-    expect(screen.queryByText("啟動或連接 dev server")).not.toBeInTheDocument()
+    expect(screen.queryByText(i18n.t("emptyTitle", { ns: "preview" }))).not.toBeInTheDocument()
     expect(toggle).toHaveAttribute("aria-pressed", "false")
   })
 
@@ -62,11 +63,11 @@ describe("Files mode entry states", () => {
     // Shown, and starts expanded — content is immediately visible.
     const collapseToggle = screen.getByRole("button", { name: "Collapse terminal" })
     expect(collapseToggle).toHaveAttribute("aria-expanded", "true")
-    expect(screen.getByText("尚無終端機工作階段")).toBeVisible()
+    expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).toBeVisible()
 
     // Collapsing content only hides the content — the header stays put.
     fireEvent.click(collapseToggle)
-    expect(screen.getByText("尚無終端機工作階段")).not.toBeVisible()
+    expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).not.toBeVisible()
     expect(railSwitch).toHaveAttribute("aria-pressed", "true")
     const expandToggle = screen.getByRole("button", { name: "Expand terminal" })
     expect(expandToggle).toHaveAttribute("aria-expanded", "false")
@@ -78,7 +79,7 @@ describe("Files mode entry states", () => {
   })
 
   it("右鍵編輯區開啟 editor 選單", () => {
-    render(<EditorPanel previewOpen={false} />)
+    render(<EditorPanel />)
     fireEvent.contextMenu(screen.getByText("Open a project to start editing"))
     expect(useContextMenuStore.getState().kind).toBe("editor")
   })

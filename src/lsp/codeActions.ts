@@ -8,7 +8,7 @@ import { workspaceEditToChanges } from "./renameCompat"
 import type { WorkspaceEdit } from "./renameCompat"
 import { offsetOf, pullDiagnostics, toLintDiagnostic } from "./diagnosticsPull"
 import type { LspDiagnostic } from "./diagnosticsPull"
-import { strings } from "../lib/i18n"
+import i18n from "../lib/i18n"
 
 // A resolved LSP CodeAction, trimmed to the fields we act on. A quick fix
 // carries an `edit`; command-only actions leave it undefined.
@@ -138,7 +138,7 @@ export function lspLintSource(
             ...toLintDiagnostic(doc, item),
             actions: [
                 {
-                    name: strings.lsp.quickFix,
+                    name: i18n.t("quickFix", { ns: "lsp" }),
                     apply: (v: EditorView) => {
                         void codeActionsFor(client, uri, item)
                             .then((actions) => {

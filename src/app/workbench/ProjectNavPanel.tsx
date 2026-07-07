@@ -1,4 +1,5 @@
 import { SearchIcon } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import { MODES, type Mode } from "@/app/modes"
@@ -7,6 +8,7 @@ import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 import { FilesNavContent } from "@/app/workbench/FilesNavContent"
 import { GitNavContent } from "@/app/workbench/GitNavContent"
 import { SshNavContent } from "@/app/workbench/SshNavContent"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 
 interface ProjectNavPanelProps {
   mode: Mode
@@ -21,9 +23,19 @@ interface ProjectNavPanelProps {
  * now has a real empty state (Task E1 + E2).
  */
 export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNavPanelProps) {
+  const { t } = useTranslation("workbench")
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+
+  const folderName = workspacePath?.split("/").filter(Boolean).pop() ?? null
+  const displayName = folderName ?? "yuzora"
+  const displayPath = workspacePath
+    ? workspacePath.replace(/^\/Users\/[^/]+/, "~")
+    : "~/App/Tauri/yuzora"
+  const iconLetter = folderName ? folderName.charAt(0).toUpperCase() : "Y"
+
   return (
     <aside
-      aria-label="Project navigation"
+      aria-label={t("projectNav.ariaLabel")}
       className="my-[8px] flex w-full shrink-0 flex-col rounded-(--r-lg) border border-(--line-1) bg-(--yz-glass) shadow-(--shadow-sm) backdrop-blur-[20px] backdrop-saturate-[1.5]"
     >
       <div className="flex items-center gap-[10px] px-[15px] pt-[15px] pb-[12px]">
@@ -31,11 +43,11 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
           aria-hidden="true"
           className="flex size-[30px] shrink-0 items-center justify-center rounded-[10px] bg-[image:var(--grad-sunrise)] text-[12px] font-semibold text-white"
         >
-          Y
+          {iconLetter}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate font-serif text-[20px] font-medium text-(--ink-1)">yuzora</p>
-          <p className="truncate text-[11px] text-(--ink-3)">~/App/Tauri/yuzora</p>
+          <p className="truncate font-serif text-[20px] font-medium text-(--ink-1)">{displayName}</p>
+          <p className="truncate text-[11px] text-(--ink-3)">{displayPath}</p>
         </div>
       </div>
 
@@ -46,14 +58,14 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
           className="flex h-[38px] w-full items-center gap-[9px] rounded-[12px] border border-(--line-2) bg-(--yz-field) px-[11px] text-left text-(--ink-3) shadow-(--shadow-xs) transition-colors duration-[160ms] ease-(--ease-out) hover:bg-(--yz-solid)"
         >
           <SearchIcon className="size-[15px] shrink-0" aria-hidden="true" />
-          <span className="flex-1 truncate text-[13px] font-medium">Search or run a command</span>
+          <span className="flex-1 truncate text-[13px] font-medium">{t("projectNav.searchPlaceholder")}</span>
           <kbd className="shrink-0 rounded-[6px] bg-(--yz-active) px-[6px] py-[2px] font-mono text-[10.5px] text-(--ink-3)">
             ⌘K
           </kbd>
         </button>
       </div>
 
-      <div role="tablist" aria-label="Workbench mode" className="flex gap-[3px] px-[13px] pb-[11px]">
+      <div role="tablist" aria-label={t("projectNav.modeTablist")} className="flex gap-[3px] px-[13px] pb-[11px]">
         {MODES.map((m) => {
           const isActive = m.id === mode
           const Icon = m.icon

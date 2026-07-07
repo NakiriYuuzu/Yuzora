@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { BranchPopover } from "./BranchPopover"
-import { strings } from "@/lib/i18n"
+import i18n from "@/lib/i18n"
 import { initialGitState, useGitStore } from "@/state/gitStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import type { BranchList } from "@/lib/types"
@@ -123,14 +123,14 @@ describe("BranchPopover", () => {
         })
         render(<BranchPopover open onOpenChange={() => {}} />)
         fireEvent.click(screen.getByRole("button", { name: /checkout/i }))
-        expect(await screen.findByText(/未儲存的變更/)).toBeInTheDocument()
+        expect(await screen.findByText(/unsaved changes/)).toBeInTheDocument()
         expect(ipc.gitCheckout).not.toHaveBeenCalled()
     })
 
     it("creates a new branch on Enter", async () => {
         render(<BranchPopover open onOpenChange={() => {}} />)
         fireEvent.click(screen.getByText(/New branch/i))
-        const input = screen.getByPlaceholderText(strings.git.branchNamePlaceholder)
+        const input = screen.getByPlaceholderText(i18n.t("branchNamePlaceholder", { ns: "git" }))
         fireEvent.change(input, { target: { value: "feature/y" } })
         fireEvent.keyDown(input, { key: "Enter" })
         await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith("feature/y"))
@@ -169,7 +169,7 @@ describe("BranchPopover", () => {
     it("shows a paused-auth notice when remotePaused", () => {
         useGitStore.setState({ remotePaused: true })
         render(<BranchPopover open onOpenChange={() => {}} />)
-        expect(screen.getByText(/遠端檢查已暫停/)).toBeInTheDocument()
+        expect(screen.getByText(/Remote check paused/)).toBeInTheDocument()
     })
 
     it("resets the checkout-blocked notice when the popover closes (T14)", async () => {
@@ -200,10 +200,10 @@ describe("BranchPopover", () => {
         }
         render(<Harness />)
         fireEvent.click(screen.getByRole("button", { name: /checkout/i }))
-        expect(await screen.findByText(/未儲存的變更/)).toBeInTheDocument()
+        expect(await screen.findByText(/unsaved changes/)).toBeInTheDocument()
         // Close then reopen: the stale notice must not linger.
         fireEvent.click(screen.getByText("close-pop"))
         fireEvent.click(screen.getByText("open-pop"))
-        expect(screen.queryByText(/未儲存的變更/)).not.toBeInTheDocument()
+        expect(screen.queryByText(/unsaved changes/)).not.toBeInTheDocument()
     })
 })

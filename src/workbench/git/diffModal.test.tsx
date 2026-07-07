@@ -212,14 +212,14 @@ describe("DiffModal — commit source", () => {
         // missing→"" old side; new side has content → CodeMirror mounts (not the
         // undisplayable EmptyState).
         await waitFor(() => expect(container.querySelector(".cm-editor")).not.toBeNull())
-        expect(screen.queryByText("無法顯示 diff")).toBeNull()
+        expect(screen.queryByText("Diff unavailable")).toBeNull()
     })
 
     it("binary side shows the undisplayable EmptyState", async () => {
         gitFileAtRev.mockResolvedValue({ kind: "binary" })
         render(<DiffModal />)
         openCommit([cf("img.png", { binary: true })], ["parent".padEnd(40, "0")])
-        await waitFor(() => expect(screen.getByText("無法顯示 diff")).toBeInTheDocument())
+        await waitFor(() => expect(screen.getByText("Diff unavailable")).toBeInTheDocument())
     })
 
     it("switching active file via the store loads the newly-active file", async () => {

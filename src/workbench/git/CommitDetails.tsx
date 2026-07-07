@@ -1,4 +1,5 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { useTranslation } from "react-i18next"
 
 import type { CommitDetail, CommitFileChange, LogCommit } from "@/lib/types"
 import { fullDateTime } from "@/lib/relativeTime"
@@ -138,11 +139,12 @@ export function CommitDetails({
     onCherryPick?: (hash: string) => void
     cherryPickDisabled?: boolean
 }) {
+    const { t } = useTranslation("menus")
     if (!selectedCommit) {
         return (
             <div className="flex w-[240px] shrink-0 flex-col border-l border-(--line-1) bg-(--paper-1)">
                 <div className="flex flex-1 items-center justify-center px-[16px] text-center text-[12.5px] text-(--ink-3)">
-                    Select a commit to view details
+                    {t("commitDetails.selectPrompt")}
                 </div>
             </div>
         )
@@ -162,8 +164,8 @@ export function CommitDetails({
                     <div className="flex-1" />
                     <button
                         type="button"
-                        aria-label="Copy hash"
-                        title="Copy hash"
+                        aria-label={t("commitDetails.copyHashAriaLabel")}
+                        title={t("commitDetails.copyHashAriaLabel")}
                         onClick={() => void writeText(selectedCommit.hash)}
                         className="flex size-[26px] items-center justify-center rounded-[7px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-1)"
                     >
@@ -207,11 +209,11 @@ export function CommitDetails({
                 </div>
 
                 <div className="mt-[12px] flex items-center gap-[8px] font-mono text-[10px] text-(--ink-3)">
-                    <span className="text-(--ink-4)">committed</span>
+                    <span className="text-(--ink-4)">{t("commitDetails.committedLabel")}</span>
                     {fullDateTime(selectedCommit.timestamp)}
                 </div>
                 <div className="mt-[4px] flex items-center gap-[8px] font-mono text-[10px] text-(--ink-3)">
-                    <span className="text-(--ink-4)">parents</span>
+                    <span className="text-(--ink-4)">{t("commitDetails.parentsLabel")}</span>
                     {selectedCommit.parents.length > 0
                         ? selectedCommit.parents.map((p) => p.slice(0, 7)).join(" · ")
                         : "—"}
@@ -220,19 +222,17 @@ export function CommitDetails({
 
             {detailLoading && !detail ? (
                 <div className="flex flex-1 items-center justify-center text-[11.5px] text-(--ink-3)">
-                    Loading…
+                    {t("commitDetails.loadingEllipsis")}
                 </div>
             ) : (
                 <>
                     {/* changed files header */}
                     <div className="flex items-center gap-[8px] px-[16px] pb-[6px] pt-[11px]">
                         <span className="font-sans text-[9.5px] font-bold uppercase tracking-[0.07em] text-(--ink-3)">
-                            Changed files
+                            {t("commitDetails.changedFilesLabel")}
                         </span>
                         <span className="font-mono text-[10px] text-(--ink-4)">
-                            {detail
-                                ? `${detail.files.length} ${detail.files.length === 1 ? "file" : "files"}`
-                                : ""}
+                            {detail ? t("commitDetails.fileCount", { count: detail.files.length }) : ""}
                         </span>
                         <div className="flex-1" />
                         {detail && (
@@ -258,11 +258,14 @@ export function CommitDetails({
 
             {/* footer actions */}
             <div className="flex flex-wrap gap-[7px] border-t border-(--line-1) px-[14px] py-[11px]">
-                <FooterButton label="Checkout" onClick={() => onCheckout(selectedCommit.hash)} />
                 <FooterButton
-                    label="Compare"
+                    label={t("commitDetails.checkout")}
+                    onClick={() => onCheckout(selectedCommit.hash)}
+                />
+                <FooterButton
+                    label={t("commitDetails.compare")}
                     disabled={!onCompare || !detail}
-                    title="Open in Diff viewer"
+                    title={t("commitDetails.openInDiffViewerTitle")}
                     onClick={
                         onCompare && detail
                             ? () => onCompare(selectedCommit.hash)
@@ -270,12 +273,16 @@ export function CommitDetails({
                     }
                 />
                 <FooterButton
-                    label="Cherry-pick"
+                    label={t("commitDetails.cherryPick")}
                     disabled={!onCherryPick || cherryPickDisabled}
-                    title="Cherry-pick this commit"
+                    title={t("commitDetails.cherryPickThisCommitTitle")}
                     onClick={onCherryPick ? () => onCherryPick(selectedCommit.hash) : undefined}
                 />
-                <FooterButton label="Reset main to here…" danger title="Hold to reset — rewrites branch history">
+                <FooterButton
+                    label={t("commitDetails.resetMainToHere")}
+                    danger
+                    title={t("commitDetails.resetHoldTitle")}
+                >
                     <svg
                         width="12"
                         height="12"

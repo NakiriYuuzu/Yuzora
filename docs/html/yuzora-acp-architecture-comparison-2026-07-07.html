@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 整合架構評估：Zed ACP vs cmux vs tempo-term（Yuzora 適配分析）</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, "Songti TC", serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, Menlo, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+    --shadow-md: 0 4px 12px rgba(20,20,19,0.10);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.7; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 1200px; margin: 0 auto; }
+code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.05rem 0.35rem; }
+pre { background: var(--color-surface-dark); color: var(--color-on-dark); padding: 1rem; border-radius: var(--radius-md); overflow-x: auto; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.55; margin-top: 0.5rem; }
+pre code { background: none; border: none; padding: 0; color: inherit; }
+
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2rem; margin: 0.25rem 0; }
+header .subtitle { color: var(--color-text-secondary); font-size: 1.02rem; }
+
+.tldr { background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-lg); padding: 1.5rem 1.75rem; margin-bottom: 2rem; }
+.tldr h2 { color: var(--color-on-dark); font-size: 1.3rem; margin-bottom: 0.6rem; }
+.tldr .verdict { color: #e8a55a; font-weight: 600; }
+.tldr p { color: #d9d6cf; font-size: 0.95rem; margin-bottom: 0.5rem; }
+.tldr p strong { color: var(--color-on-dark); }
+
+.context-box { background: var(--color-accent-light); border-radius: var(--radius-md); padding: 1.25rem 1.5rem; margin-bottom: 2rem; }
+.context-box h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-accent); margin-bottom: 0.5rem; }
+.context-box p { font-size: 0.95rem; margin-bottom: 0.5rem; }
+.context-box ul { font-size: 0.92rem; padding-left: 1.4rem; }
+
+section { margin-bottom: 2.5rem; }
+section > h2 { font-size: 1.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--color-border); padding-bottom: 0.4rem; }
+.section-note { color: var(--color-text-secondary); font-size: 0.92rem; margin-bottom: 1rem; }
+
+.options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; margin-bottom: 1rem; }
+.option-card { background: var(--color-surface); border: 2px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; transition: border-color 0.2s, box-shadow 0.2s; }
+.option-card:hover { border-color: var(--color-accent); box-shadow: var(--shadow-md); }
+.option-card .option-number { font-size: 0.75rem; font-weight: 700; color: var(--color-accent); text-transform: uppercase; letter-spacing: 0.1em; }
+.option-card h3 { font-size: 1.3rem; margin: 0.4rem 0; }
+.option-card .description { color: var(--color-text-secondary); font-size: 0.92rem; margin-bottom: 1rem; }
+
+.badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.badge { font-size: 0.72rem; padding: 0.2rem 0.6rem; border-radius: 999px; font-weight: 600; }
+.badge.protocol { background: #edf8ef; color: #2f7140; }
+.badge.observe { background: #f8ead5; color: #7a4b12; }
+.badge.stack { background: #e0e7ff; color: #3730a3; }
+.badge.license { background: #f0ece4; color: #6c6a64; }
+
+.pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 1rem; }
+.pros-cons ul { list-style: none; padding: 0; font-size: 0.88rem; }
+.pros-cons li { padding: 0.22rem 0; padding-left: 1.15rem; position: relative; }
+.pros li::before { content: '+'; position: absolute; left: 0; color: var(--color-success); font-weight: 700; }
+.cons li::before { content: '−'; position: absolute; left: 0; color: var(--color-error); font-weight: 700; }
+.pros-cons h4 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); margin-bottom: 0.25rem; }
+
+.mech { font-size: 0.9rem; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.85rem 1rem; margin-top: 0.75rem; }
+.mech h4 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); margin-bottom: 0.35rem; }
+.mech ol, .mech ul { padding-left: 1.3rem; }
+.mech li { margin-bottom: 0.2rem; }
+
+details { margin-top: 1rem; }
+details summary { cursor: pointer; font-weight: 600; color: var(--color-accent); font-size: 0.9rem; }
+details .details-content { padding: 0.75rem 0; font-size: 0.9rem; }
+.evidence { font-size: 0.82rem; color: var(--color-text-secondary); }
+.evidence li { margin-bottom: 0.25rem; }
+
+.diagram-container { overflow-x: auto; background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.25rem; margin: 1rem 0; }
+.diagram-container svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+.diagram-caption { font-size: 0.85rem; color: var(--color-text-secondary); text-align: center; margin-top: 0.5rem; }
+
+.table-wrap { overflow-x: auto; }
+.comparison-table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.88rem; min-width: 780px; }
+.comparison-table th { text-align: left; padding: 0.7rem 0.75rem; border-bottom: 2px solid var(--color-border); color: var(--color-text-secondary); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; background: var(--color-surface-soft); }
+.comparison-table td { padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+.comparison-table td:first-child { font-weight: 600; white-space: nowrap; }
+.comparison-table .yz { background: #f7f1e6; }
+.ok { color: #2f7140; font-weight: 700; }
+.no { color: #8f312c; font-weight: 700; }
+.mid { color: #7a4b12; font-weight: 700; }
+
+.recommendation { background: var(--color-surface); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.5rem; margin: 1.5rem 0; }
+.recommendation h3 { color: var(--color-accent); margin-bottom: 0.5rem; font-size: 1.15rem; }
+.recommendation p { font-size: 0.95rem; margin-bottom: 0.6rem; }
+
+.risk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
+.risk-card { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.25rem; background: var(--color-surface-soft); font-size: 0.9rem; }
+.risk-card h4 { font-size: 0.95rem; margin-bottom: 0.4rem; }
+.risk-card .sev { font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px; margin-left: 0.4rem; vertical-align: middle; }
+.sev.high { background: #f8e6e3; color: #8f312c; }
+.sev.med { background: #f8ead5; color: #7a4b12; }
+.sev.low { background: #edf8ef; color: #2f7140; }
+
+.eval-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0.9rem; margin: 1rem 0; }
+.eval-card { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; background: var(--color-surface); font-size: 0.85rem; }
+.eval-card label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+.eval-card .criteria { color: var(--color-text-secondary); font-size: 0.78rem; margin-bottom: 0.5rem; }
+.eval-card input[type=range] { width: 100%; accent-color: var(--color-accent); }
+.eval-card output { font-weight: 700; color: var(--color-accent); }
+textarea.eval-comment { width: 100%; min-height: 70px; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.6rem; font-family: var(--font-sans); font-size: 0.88rem; background: #fff; resize: vertical; }
+
+.actions { display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: all 0.2s; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+.btn-primary { background: var(--color-accent); color: var(--color-on-accent); border-color: var(--color-accent); }
+.btn-primary:hover { opacity: 0.9; }
+
+footer { color: var(--color-text-secondary); font-size: 0.8rem; margin-top: 3rem; border-top: 1px solid var(--color-border); padding-top: 1rem; }
+
+@media print { .actions, .btn, .eval-grid, textarea.eval-comment { display: none; } body { padding: 0.5rem; } .option-card { break-inside: avoid; } }
+@media (max-width: 768px) { body { padding: 1rem; } .options-grid { grid-template-columns: 1fr; } .pros-cons { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Exploration · 2026-07-07</div>
+        <h1>Agent 整合架構評估：Zed ACP vs cmux vs tempo-term</h1>
+        <p class="subtitle">三個開源專案的 coding-agent 整合方式實地比對（各自 source 逐檔查證），評估哪種路線最適合 Yuzora 的 AgentZone。</p>
+    </header>
+
+    <div class="tldr">
+        <h2>結論（TL;DR）</h2>
+        <p><span class="verdict">維持現行方案 A′（Zed 式 ACP，前端 host）。</span>三者中只有 Zed 與 Yuzora 同屬「協定型」整合，而 Yuzora 的 M5 設計本來就是以 Zed 為藍本裁剪到 Tauri 雙層架構的——這次逐檔比對確認該裁剪與 Zed 實際實作方向一致（含 UI-thread 回呼、stderr tail、exit 競速、trace log 等細節）。</p>
+        <p>cmux 與 tempo-term 走的是<strong>觀測型</strong>路線：agent 以原生 TUI 跑在 terminal 裡，宿主靠 per-agent hooks／transcript 檔案 tail 取得狀態。這條路換不到 AgentZone 需要的結構化 transcript、in-app 核可與 diff preview——cmux 自己的設計文件就承認，要把 streaming 弄進 GUI 只剩「螢幕擷取＋逐 agent 去雜訊」這種先天啟發式的做法。</p>
+        <p>可帶走的東西：<strong>Zed 的 configOptions／model picker</strong>（pi-acp 已回傳該欄位，Yuzora 目前丟棄）、<strong>non-interactive shell spawn</strong>（Zed 從構造上避免 login-shell 噪音）、<strong>cmux 式桌面通知</strong>（agent 等核可且視窗未聚焦時）；tempo-term 的 hook→OSC 招式則是未來 terminal drawer 想「觀測手動跑的 CLI agent」時的現成低成本配方（同 Tauri stack）。</p>
+    </div>
+
+    <div class="context-box">
+        <h3>Yuzora 現況（比較基準）</h3>
+        <p>M5 已交付 AgentZone ACP client（方案 A′，commit <code>4d0e2f0</code>）：</p>
+        <ul>
+            <li>前端以官方 TS SDK <code>@zed-industries/agent-client-protocol</code> 的 <code>ClientSideConnection</code> host 協定（<code>src/agent/acpConnection.ts</code>）；Rust 端 <code>agent_process.rs</code> 只做啞管線（spawn／stdin 寫入／stdout 逐行 event／stderr 環形緩衝／JSON gate／PATH preflight）。</li>
+            <li>fs 回呼走 editor buffer 層（dirty buffer 讀取、save 路徑寫入）；permission 依 ACP option kinds，<code>allow_always</code> 記 session 記憶體；ACP terminal 能力橋接 <code>agent_terminal_*</code>；auth 走 terminal login；<code>loadSession</code> resume；trace toggle → JSONL Logs。</li>
+            <li>First-class agent 為 pi（經 <code>bunx pi-acp</code> adapter），Settings 可自訂任何 ACP agent command。</li>
+        </ul>
+        <p style="margin-top:0.5rem">設計時的業界調查（design doc §2.3）只看過 Zed／Superconductor／Orca；cmux 與 tempo-term 是本次新增的比對對象。</p>
+    </div>
+
+    <section>
+        <h2>三種做法</h2>
+        <p class="section-note">先講最重要的分野：<strong>協定型</strong>（宿主與 agent 之間有結構化雙向協定，agent 沒有自己的畫面）vs <strong>觀測型</strong>（agent 的 TUI 就是畫面，宿主從旁觀測狀態）。Zed 屬前者；cmux、tempo-term 屬後者。這個分野決定了你能在自家 UI 裡做到什麼。</p>
+
+        <div class="options-grid">
+            <div class="option-card">
+                <div class="option-number">A · zed-industries/zed</div>
+                <h3>協定型：ACP 原生 client</h3>
+                <div class="badges">
+                    <span class="badge protocol">協定型（ACP 作者）</span>
+                    <span class="badge stack">native Rust / GPUI</span>
+                    <span class="badge license">GPL-3.0（SDK 為 Apache-2.0）</span>
+                </div>
+                <p class="description">Zed 是 ACP 的制定者與參考實作。agent 以子行程跑 stdio JSON-RPC，完全沒有 TUI；transcript、tool call、diff、permission 全部是結構化資料，由 Zed 原生渲染成 agent panel。</p>
+                <div class="mech">
+                    <h4>機制</h4>
+                    <ol>
+                        <li><code>AgentServer</code> trait：內建 gemini／claude-acp／codex-acp／cursor 四個 preset＋settings 定義的 <code>CustomAgentServer</code>。</li>
+                        <li><code>AcpConnection::stdio</code>：以 <strong>non-interactive shell</strong> spawn（<code>ShellBuilder::non_interactive()</code>），env 顯式傳入——從構造上杜絕 login-shell profile 噪音。</li>
+                        <li>逐行 transport 前後掛 debug tap：進／出／stderr 全記到 2000 筆環形緩衝（<code>AcpDebugLog</code>），供 <code>acp_tools</code> 的即時協定檢視器。</li>
+                        <li>連線期間把 <strong>child exit status 與 handshake／initialize 競速</strong>——agent 死掉時回 <code>LoadError::Exited</code> 附 stderr tail，而不是等 timeout。</li>
+                        <li>client 回呼經 foreground dispatch channel 全部送回 UI thread（GPUI entity 是 <code>!Send</code>）——「ACP client 回呼本質是 UI 事務」在 Zed 是實作出來的事實。</li>
+                        <li><code>acp_thread</code> crate：connection-agnostic 的 <code>AgentConnection</code> trait＋<code>AcpThread</code> session 模型＋<code>ActionLog</code>（buffer 層編輯追蹤，可整批 review／reject）。</li>
+                    </ol>
+                </div>
+                <div class="pros-cons">
+                    <div class="pros"><h4>Pros</h4><ul>
+                        <li>結構化 streaming／tool call／diff／perm，UI 想怎麼畫就怎麼畫</li>
+                        <li>agent 廣度靠生態系 adapter，宿主不用逐家維護</li>
+                        <li>錯誤面處理最成熟（exit 競速、版本門控、auth 分流）</li>
+                        <li>與 editor buffer 深度整合（dirty buffer、edit review）</li>
+                    </ul></div>
+                    <div class="cons"><h4>Cons</h4><ul>
+                        <li>依賴 adapter 保真度（協定外行為看不到）</li>
+                        <li>放棄各 agent 自家 TUI 的完整體驗</li>
+                        <li>單進程 native 架構，不能整包照抄到 Tauri</li>
+                    </ul></div>
+                </div>
+                <details><summary>證據（本次讀過的檔案）</summary>
+                    <div class="details-content"><ul class="evidence">
+                        <li><code>crates/agent_servers/src/acp.rs:804</code> — <code>AcpConnection::stdio</code>（spawn／transport／initialize 全流程）</li>
+                        <li><code>acp.rs:846</code> — <code>ShellBuilder::new(&Shell::System, …).non_interactive()</code></li>
+                        <li><code>acp.rs:883</code> — foreground dispatch channel（回呼橋回 UI thread）</li>
+                        <li><code>acp.rs:946-963</code> — child exit 與 connection 競速、<code>exited_load_error_with_stderr</code></li>
+                        <li><code>acp.rs:48</code> — <code>MAX_DEBUG_BACKLOG_MESSAGES: 2000</code>（AcpDebugLog）</li>
+                        <li><code>crates/acp_thread/src/connection.rs:90</code> — <code>AgentConnection</code> trait；<code>acp_thread.rs:2082</code> — <code>AcpThread</code>＋<code>ActionLog</code></li>
+                        <li><code>crates/agent_servers/src/custom.rs:17-20</code> — 內建 agent id 清單</li>
+                    </ul></div>
+                </details>
+            </div>
+
+            <div class="option-card">
+                <div class="option-number">B · manaflow-ai/cmux</div>
+                <h3>觀測型：terminal 宿主＋hook 生態</h3>
+                <div class="badges">
+                    <span class="badge observe">觀測型</span>
+                    <span class="badge stack">native Swift / AppKit＋libghostty</span>
+                    <span class="badge license">GPL（dual-license）</span>
+                </div>
+                <p class="description">cmux 是「給 agent 用的終端機」：agent 以原生 CLI TUI 跑在 ghostty pane 裡，cmux 完全不碰協定，改以 per-agent hooks＋環境變數 token 從旁建立可靠的狀態通道。</p>
+                <div class="mech">
+                    <h4>機制</h4>
+                    <ol>
+                        <li>每個 terminal spawn 時注入 <code>CMUX_SURFACE_ID</code> 等 env token；hook 觸發時以「flag → env → tty 對照 → process tree」四層解析回綁 surface（明文禁止 title／mtime 啟發式）。</li>
+                        <li><code>cmux hooks setup</code> 對 <strong>16 種 agent</strong> 各寫一份 hook／extension 到該 agent 自己的設定檔（Claude 走 wrapper 注入 <code>--settings</code>、pi 走 extension…），hook 經 socket 回報 app。</li>
+                        <li>換得：lifecycle badge（running／idle／needsInput）、通知、Feed 核可卡（橋 PermissionRequest）、以各家原生 resume 指令復原 session、閒置 agent hibernation。</li>
+                        <li>iOS GUI 模式讀 agent 自己的 transcript JSONL 重建對話；<strong>GUI streaming 只能靠讀 ghostty 螢幕格網＋逐 agent 剝 TUI chrome</strong>，其設計文件自評為「large, inherently heuristic subsystem」。</li>
+                    </ol>
+                </div>
+                <div class="pros-cons">
+                    <div class="pros"><h4>Pros</h4><ul>
+                        <li>agent TUI 體驗零損耗，任何 CLI 首日可用</li>
+                        <li>多 agent 併行管理的工程（通知、hibernation、resume）非常完整</li>
+                        <li>token 綁定設計嚴謹，值得任何「觀測」需求借鏡</li>
+                    </ul></div>
+                    <div class="cons"><h4>Cons</h4><ul>
+                        <li>16 份 hook adapter 全數自維護，隨各家 CLI 改版漂移</li>
+                        <li>桌面端沒有結構化 transcript——terminal 就是 UI</li>
+                        <li>in-app 核可／diff preview 做不到協定級的精確</li>
+                        <li>GUI streaming 需螢幕擷取，作者自認先天啟發式</li>
+                    </ul></div>
+                </div>
+                <details><summary>證據（本次讀過的檔案）</summary>
+                    <div class="details-content"><ul class="evidence">
+                        <li><code>docs/agent-hooks.md</code> — 16 agent 整合表、<code>~/.cmuxterm/&lt;agent&gt;-hook-sessions.json</code>、hibernation、PushNotification 橋</li>
+                        <li><code>docs/agent-session-tracking-spec.md</code> — env token 綁定原則、四層 surface 解析、「no heuristics」宣言</li>
+                        <li><code>docs/streaming-agent-updates.md</code> — JSONL 無 token 級增量的實證；ghostty 螢幕擷取是唯一可行來源的結論</li>
+                        <li><code>docs/notifications.md</code>、<code>Sources/Agent*.swift</code>（結構掃描）</li>
+                    </ul></div>
+                </details>
+            </div>
+
+            <div class="option-card">
+                <div class="option-number">C · mukiwu/tempo-term</div>
+                <h3>觀測型輕量：hook→OSC＋transcript tail</h3>
+                <div class="badges">
+                    <span class="badge observe">觀測型</span>
+                    <span class="badge stack">Tauri 2＋React 19（與 Yuzora 同 stack）</span>
+                    <span class="badge license">Apache-2.0</span>
+                </div>
+                <p class="description">AI-native terminal workspace（terminal＋editor＋git＋SSH＋BYOK 助理）。agent 一樣跑原生 TUI；獨到之處是狀態通道不走 socket，而是讓 hook 直接把自訂 OSC 序列寫回 agent 的 tty，由前端 xterm.js 解析。</p>
+                <div class="mech">
+                    <h4>機制</h4>
+                    <ol>
+                        <li>把 hook script 合併進 <code>~/.claude/settings.json</code>（idempotent 純函式，Codex 另有一套）；事件對映：<code>UserPromptSubmit→thinking</code>、<code>PreToolUse→active</code>、<code>PermissionRequest→waiting-approval</code>、<code>Stop→idle</code>…</li>
+                        <li>hook 無控制終端，於是<strong>沿 process ancestry 找到 agent 的 tty，把 <code>OSC 6973</code> 直接寫進 <code>/dev/&lt;tty&gt;</code></strong>；前端 xterm 解析後變成 tab 卡片上的狀態 badge＋未聚焦時桌面通知。以 <code>TEMPOTERM=1</code> env 做宿主 gate。</li>
+                        <li>Rust <code>claude_progress</code>／<code>codex_progress</code> 以 notify watcher tail agent 自己的 transcript JSONL → session 卡片與自動標題。</li>
+                        <li>「AI assistant」是完全獨立的 BYOK chat 模組（直連 OpenAI 相容／Anthropic／Ollama endpoint），與 terminal 裡的 agent 無關。</li>
+                    </ol>
+                </div>
+                <div class="pros-cons">
+                    <div class="pros"><h4>Pros</h4><ul>
+                        <li>與 Yuzora 同 stack，任何招式可直接平移</li>
+                        <li>OSC 通道極輕：無 socket、無 daemon，順著 PTY 就回來了</li>
+                        <li>hook merge 寫成純函式可測，工程品質好</li>
+                    </ul></div>
+                    <div class="cons"><h4>Cons</h4><ul>
+                        <li>只支援 Claude Code＋Codex 兩家，逐家硬編</li>
+                        <li>純觀測、唯讀：badge＋通知而已，無 in-app 核可</li>
+                        <li>無結構化 transcript／tool call／diff 流</li>
+                        <li>寫 <code>/dev/tty</code> 在沙箱／權限收緊環境有脆性</li>
+                    </ul></div>
+                </div>
+                <details><summary>證據（本次讀過的檔案）</summary>
+                    <div class="details-content"><ul class="evidence">
+                        <li><code>src-tauri/src/modules/claude_status_hook/status-hook.sh</code> — process-ancestry 找 tty、<code>printf '\033]6973;…\007' &gt; /dev/$tty</code></li>
+                        <li><code>claude_status_hook/mod.rs</code> — EVENTS 事件表、settings.json 合併純函式</li>
+                        <li><code>claude_progress/mod.rs</code> — transcript JSONL tail＋標題萃取</li>
+                        <li><code>modules/ai/provider.rs</code> — BYOK chat（含 loopback-only http 白名單）</li>
+                    </ul></div>
+                </details>
+            </div>
+        </div>
+
+        <div class="diagram-container">
+            <svg viewBox="0 0 960 400" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, sans-serif">
+                <!-- Left lane: protocol -->
+                <rect x="10" y="10" width="460" height="380" rx="12" fill="#edf8ef" stroke="#5db872" stroke-width="1.5"/>
+                <text x="240" y="38" text-anchor="middle" font-size="16" fill="#2f7140" font-weight="600">協定型（Zed、Yuzora A′）</text>
+                <rect x="60" y="60" width="360" height="46" rx="8" fill="#181715"/>
+                <text x="240" y="88" text-anchor="middle" font-size="13" fill="#faf9f5">agent adapter 子行程（無 TUI）</text>
+                <line x1="240" y1="106" x2="240" y2="150" stroke="#2f7140" stroke-width="2" marker-end="url(#a1)"/>
+                <text x="252" y="132" font-size="11.5" fill="#2f7140">stdio JSON-RPC（ACP）雙向</text>
+                <rect x="60" y="150" width="360" height="46" rx="8" fill="#ffffff" stroke="#5db872"/>
+                <text x="240" y="178" text-anchor="middle" font-size="13" fill="#141413">ACP client（session／perm／fs／terminal 回呼）</text>
+                <line x1="240" y1="196" x2="240" y2="240" stroke="#2f7140" stroke-width="2" marker-end="url(#a1)"/>
+                <rect x="60" y="240" width="360" height="66" rx="8" fill="#ffffff" stroke="#5db872"/>
+                <text x="240" y="266" text-anchor="middle" font-size="13" fill="#141413">結構化 UI：streaming 氣泡、tool block、</text>
+                <text x="240" y="286" text-anchor="middle" font-size="13" fill="#141413">diff preview/apply、permission 按鈕</text>
+                <text x="240" y="340" text-anchor="middle" font-size="12" fill="#2f7140">資料是雙向協定 → UI 能力上限＝協定表面</text>
+                <text x="240" y="360" text-anchor="middle" font-size="12" fill="#2f7140">成本＝依賴 adapter 保真度</text>
+                <!-- Right lane: observational -->
+                <rect x="490" y="10" width="460" height="380" rx="12" fill="#f8ead5" stroke="#d4a017" stroke-width="1.5"/>
+                <text x="720" y="38" text-anchor="middle" font-size="16" fill="#7a4b12" font-weight="600">觀測型（cmux、tempo-term）</text>
+                <rect x="540" y="60" width="360" height="46" rx="8" fill="#181715"/>
+                <text x="720" y="88" text-anchor="middle" font-size="13" fill="#faf9f5">agent 原生 TUI（跑在 PTY 裡）</text>
+                <line x1="600" y1="106" x2="600" y2="150" stroke="#7a4b12" stroke-width="2" marker-end="url(#a2)"/>
+                <text x="608" y="132" font-size="11.5" fill="#7a4b12">PTY bytes</text>
+                <rect x="540" y="150" width="150" height="46" rx="8" fill="#ffffff" stroke="#d4a017"/>
+                <text x="615" y="172" text-anchor="middle" font-size="12" fill="#141413">terminal 渲染</text>
+                <text x="615" y="188" text-anchor="middle" font-size="11" fill="#6c6a64">（＝主要 UI）</text>
+                <line x1="840" y1="106" x2="840" y2="150" stroke="#7a4b12" stroke-width="2" marker-end="url(#a2)"/>
+                <text x="712" y="132" font-size="11.5" fill="#7a4b12">hooks／JSONL（單向、事件級）</text>
+                <rect x="710" y="150" width="190" height="46" rx="8" fill="#ffffff" stroke="#d4a017"/>
+                <text x="805" y="172" text-anchor="middle" font-size="12" fill="#141413">side channel</text>
+                <text x="805" y="188" text-anchor="middle" font-size="11" fill="#6c6a64">socket（cmux）／OSC（tempo）</text>
+                <line x1="805" y1="196" x2="805" y2="240" stroke="#7a4b12" stroke-width="2" marker-end="url(#a2)"/>
+                <rect x="540" y="240" width="360" height="66" rx="8" fill="#ffffff" stroke="#d4a017"/>
+                <text x="720" y="266" text-anchor="middle" font-size="13" fill="#141413">狀態 badge、通知、核可卡（hook 橋）、</text>
+                <text x="720" y="286" text-anchor="middle" font-size="13" fill="#141413">session 卡片（tail agent 的 JSONL）</text>
+                <text x="720" y="340" text-anchor="middle" font-size="12" fill="#7a4b12">資料是旁路觀測 → GUI 要 streaming 得擷取螢幕</text>
+                <text x="720" y="360" text-anchor="middle" font-size="12" fill="#7a4b12">成本＝逐 agent adapter、隨 CLI 改版漂移</text>
+                <defs>
+                    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#2f7140"/></marker>
+                    <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#7a4b12"/></marker>
+                </defs>
+            </svg>
+            <p class="diagram-caption">兩條路線的資料流。關鍵差異：協定型的資料通道是「雙向、結構化、逐 token」；觀測型是「單向、事件級」，內容資料要另外從 agent 的 transcript 檔或螢幕反推。</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>能力對照</h2>
+        <div class="table-wrap">
+        <table class="comparison-table">
+            <thead><tr><th>軸線</th><th>Zed</th><th>cmux</th><th>tempo-term</th><th class="yz">Yuzora（A′ 現況）</th></tr></thead>
+            <tbody>
+                <tr><td>整合模式</td><td>ACP 協定</td><td>hooks＋env token＋JSONL tail</td><td>hooks→OSC＋JSONL tail</td><td class="yz">ACP 協定</td></tr>
+                <tr><td>宿主技術</td><td>native Rust（GPUI）</td><td>native Swift（AppKit＋libghostty）</td><td>Tauri 2＋React</td><td class="yz">Tauri 2＋React</td></tr>
+                <tr><td>agent 廣度</td><td>4 內建＋任意自訂（有 ACP adapter 即可）</td><td>16 家 CLI（各一份 hook adapter）</td><td>2 家（Claude Code、Codex）</td><td class="yz">pi first-class＋自訂 ACP command</td></tr>
+                <tr><td>結構化 transcript</td><td><span class="ok">✓</span> 原生</td><td><span class="mid">△</span> 僅 iOS 模式，靠 JSONL 重建</td><td><span class="no">✗</span> 只有狀態＋標題</td><td class="yz"><span class="ok">✓</span></td></tr>
+                <tr><td>token streaming 進自家 UI</td><td><span class="ok">✓</span></td><td><span class="no">✗</span> 需 ghostty 螢幕擷取（自評 heuristic）</td><td><span class="no">✗</span></td><td class="yz"><span class="ok">✓</span></td></tr>
+                <tr><td>in-app 核可（permission）</td><td><span class="ok">✓</span> 協定級</td><td><span class="mid">△</span> Feed 卡（hook 橋，事件級）</td><td><span class="no">✗</span> badge＋通知</td><td class="yz"><span class="ok">✓</span> 協定級</td></tr>
+                <tr><td>diff preview／apply</td><td><span class="ok">✓</span> editor buffer 整合</td><td><span class="no">✗</span></td><td><span class="no">✗</span></td><td class="yz"><span class="ok">✓</span> DiffModal＋buffer 寫入</td></tr>
+                <tr><td>agent 自家 TUI 保真</td><td><span class="no">✗</span>（不跑 TUI）</td><td><span class="ok">✓</span> 完整</td><td><span class="ok">✓</span> 完整</td><td class="yz"><span class="no">✗</span>（AgentZone 不跑 TUI）</td></tr>
+                <tr><td>session resume</td><td><span class="ok">✓</span> <code>session/load</code></td><td><span class="ok">✓</span> 各家原生 resume 指令</td><td><span class="mid">△</span> scrollback 回放＋session 索引</td><td class="yz"><span class="ok">✓</span> <code>loadSession</code>（kill→respawn→load）</td></tr>
+                <tr><td>維護面歸屬</td><td>協定＋adapter 由生態系維護</td><td>16 份 adapter 自維護、隨 CLI 漂移</td><td>2 份 hook＋2 份 parser 自維護</td><td class="yz">SDK＋adapter 由生態系維護</td></tr>
+                <tr><td>model／設定選擇器</td><td><span class="ok">✓</span> configOptions／modes UI</td><td><span class="no">✗</span>（交給 agent TUI）</td><td><span class="no">✗</span>（交給 agent TUI）</td><td class="yz"><span class="mid">△</span> pi 已回傳 configOptions，目前丟棄</td></tr>
+                <tr><td>協定／狀態除錯</td><td><span class="ok">✓</span> acp_tools 即時檢視器（2000 筆環形）</td><td><span class="mid">△</span> hook log</td><td><span class="mid">△</span> session log</td><td class="yz"><span class="ok">✓</span> trace toggle→JSONL Logs pane</td></tr>
+            </tbody>
+        </table>
+        </div>
+    </section>
+
+    <section>
+        <h2>哪個適合 Yuzora？</h2>
+        <div class="recommendation">
+            <h3>建議：維持 Zed 式 ACP（方案 A′），觀測型僅作未來 terminal drawer 的補充層</h3>
+            <p><strong>1. 產品形態決定路線。</strong>cmux 與 tempo-term 的產品是「terminal 優先，agent 是房客」——TUI 本身就是 UI，觀測型只需要補 badge 和通知，成本效益極高。Yuzora 的 AgentZone 是「workbench 優先，agent 是一等面板」：transcript 氣泡、tool block、diff preview/apply、permission 按鈕都是 MVP spec 明定的結構化 UI，這些資料只有協定能供給。</p>
+            <p><strong>2. 觀測型換不到 Yuzora 已經做到的事。</strong>最有力的證據來自 cmux 自己：其 streaming 設計文件實測 Claude Code／Codex 的 JSONL「整塊落地、無 token 增量」，結論是把 streaming 弄進 GUI 唯一可行的來源是 ghostty 螢幕格網擷取＋逐 agent 剝 TUI chrome，並自評這是「大型、先天啟發式、難以確定性測試」的子系統。Yuzora 走 ACP 之後這些是免費的。</p>
+            <p><strong>3. 本次比對驗證了 A′ 的裁剪方向。</strong>Zed 的 client 回呼實際上全部經 dispatch channel 送回 UI thread（<code>acp.rs:883</code>）——這正是 A′「回呼本質是 UI 事務、應住 webview」的立論；Yuzora 的 exit 事件＋stderr tail＋initialize timeout 組合，等價於 Zed 的 exit-status 競速；trace→Logs 對應 Zed 的 AcpDebugLog。差距只剩下面「可借鑑」清單裡的增量項。</p>
+            <p><strong>4. 觀測型的正確位置。</strong>Yuzora 已有 terminal drawer；使用者遲早會在裡面手動跑 <code>claude</code>／<code>codex</code>。屆時 tempo-term 的 hook→OSC 配方（同 Tauri stack、無 socket）是給這些「drawer 房客」補狀態 badge 的最低成本做法——這是 AgentZone 的互補功能，不是替代。列 v2 選項即可，現在不動。</p>
+        </div>
+
+        <h3 style="font-size:1.15rem; margin:1.5rem 0 0.5rem">可借鑑 backlog（依價值排序）</h3>
+        <div class="table-wrap">
+        <table class="comparison-table">
+            <thead><tr><th>#</th><th>來源</th><th>項目</th><th>Yuzora 現況</th><th>建議</th></tr></thead>
+            <tbody>
+                <tr><td>1</td><td>Zed</td><td><strong>configOptions／model picker</strong>：把 <code>session/new</code> 回傳的 <code>configOptions</code>（select 型）渲染成 session header 的下拉</td><td>pi-acp 已回傳 model（16 個選項）＋thought_level（6 個選項），M5 spike 有實錄，目前整包丟棄</td><td><span class="ok">高價值</span>——資料已在手上，純前端工作</td></tr>
+                <tr><td>2</td><td>Zed</td><td><strong>non-interactive shell spawn</strong>：先一次性收集 login-shell env，再以該 env 直接 spawn，杜絕 profile 噪音</td><td>設計 §3.1 原本就這樣寫，實作依 spike 0C 簡化成 <code>$SHELL -lc</code>＋JSON gate（<code>agent_process.rs:443</code>）</td><td><span class="mid">中</span>——現行雙保險夠用；若再遇 stdout 污染再升級</td></tr>
+                <tr><td>3</td><td>cmux</td><td><strong>桌面通知</strong>：agent 進入 waiting-approval／turn 結束且視窗未聚焦時發系統通知</td><td>tone 已有 <code>wait</code>／<code>done</code> 狀態，無系統通知</td><td><span class="ok">高價值低成本</span>——多 session 併行時的注意力管理</td></tr>
+                <tr><td>4</td><td>Zed</td><td><strong>ActionLog 式編輯審閱</strong>：追蹤 agent 改過的 buffers，支援整批 review／reject</td><td>diff block 逐筆 View/Apply</td><td><span class="mid">v2</span>——等多檔編輯場景成熟再做</td></tr>
+                <tr><td>5</td><td>tempo-term</td><td><strong>hook→OSC 觀測層</strong>：terminal drawer 內手動跑的 CLI agent 補狀態 badge</td><td>drawer 對 agent 無感知</td><td><span class="mid">v2 選項</span>——同 stack 可直接平移其配方</td></tr>
+                <tr><td>6</td><td>Zed</td><td><strong>acp_tools 式即時協定檢視器</strong></td><td>trace toggle→JSONL＋Logs pane 查詢（事後檢視）</td><td><span class="no">暫緩</span>——現況已滿足除錯需求</td></tr>
+                <tr><td>7</td><td>cmux</td><td>agent hibernation、原生 resume 指令、env-token 綁定</td><td>單連線多 session，資源壓力低；resume 走 <code>loadSession</code></td><td><span class="no">不適用</span>——問題形狀不同（cmux 是幾十個併行 TUI 行程）</td></tr>
+            </tbody>
+        </table>
+        </div>
+        <p class="section-note" style="margin-top:0.5rem">授權備註：借「做法」皆無虞；借「程式碼」時 Zed 主體與 cmux 為 GPL（不可直接抄進非 GPL 專案），tempo-term 為 Apache-2.0，Zed 的 ACP SDK（Rust crate 與 TS 套件）為 Apache-2.0——Yuzora 已在用的正是後者。</p>
+    </section>
+
+    <section>
+        <h2>風險對照（兩條路線各自的坑）</h2>
+        <div class="risk-grid">
+            <div class="risk-card">
+                <h4>ACP 路線：adapter 保真度<span class="sev high">已發生</span></h4>
+                <p>協定型的能力上限＝adapter 的品質。Yuzora 一手證據：pi-acp 0.0.x 在內層 pi 行程死亡時 unhandled EPIPE 整個 adapter crash，client 端只看得到行程消失（<code>docs/upstream-issues/pi-acp-epipe-2026-07-07.md</code>）。緩解已到位：exit event＋stderr tail＋EPIPE 判別訊息＋Logs 指引；長期靠上游修復與多 agent 分散。</p>
+            </div>
+            <div class="risk-card">
+                <h4>ACP 路線：協定外行為看不到<span class="sev med">中</span></h4>
+                <p>M5 spike 實測 pi 自己落盤寫檔、不走 <code>fs/write_text_file</code> 也不發 permission——「核可後才寫入」的保證取決於 agent 端配合。觀測型同樣有此問題（hook 也攔不住 agent 自己動手），並非換路線可解；靠 watcher 把繞過的寫入視為外部變更已是正確兜底。</p>
+            </div>
+            <div class="risk-card">
+                <h4>觀測型路線：heuristic 漂移<span class="sev high">高（若採用）</span></h4>
+                <p>cmux 文件自證：TUI chrome 隨 CLI 版本與 locale 漂移、需要 recorded byte fixtures 才能測、16 份 adapter 逐家維護。tempo-term 較輕但同構（2 家硬編、<code>/dev/tty</code> 寫入在權限收緊環境脆弱）。這是 Yuzora 設計文件當初把 Orca 列為反面教材的同一類成本。</p>
+            </div>
+            <div class="risk-card">
+                <h4>共同：生態尚年輕<span class="sev low">低</span></h4>
+                <p>ACP adapter 多為 0.x（pi-acp 0.0.31）；hook API 也各家自訂、無標準。兩條路都押在快速演化的生態上——差別在 ACP 有 Zed／Google 背書的標準化協定與 schema 版本門控，漂移成本由協定吸收，觀測型由宿主吸收。</p>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <h2>評分與回饋</h2>
+        <p class="section-note">給這份評估打分；「Copy Feedback as JSON」會把分數與意見打包，貼回對話即可驅動修訂。</p>
+        <div class="eval-grid">
+            <div class="eval-card"><label>完整性 <output id="o1">4</output>/5</label><div class="criteria">三個 repo 是否都查到了實作層證據，而非僅 README</div><input type="range" min="1" max="5" value="4" id="s1" oninput="o1.value=this.value"></div>
+            <div class="eval-card"><label>證據力 <output id="o2">4</output>/5</label><div class="criteria">關鍵論斷是否都有 file:line 或一手文件支撐</div><input type="range" min="1" max="5" value="4" id="s2" oninput="o2.value=this.value"></div>
+            <div class="eval-card"><label>可行動性 <output id="o3">4</output>/5</label><div class="criteria">backlog 是否明確到可以直接開工項</div><input type="range" min="1" max="5" value="4" id="s3" oninput="o3.value=this.value"></div>
+            <div class="eval-card"><label>風險覆蓋 <output id="o4">4</output>/5</label><div class="criteria">兩條路線的失敗模式是否誠實列出</div><input type="range" min="1" max="5" value="4" id="s4" oninput="o4.value=this.value"></div>
+            <div class="eval-card"><label>結論說服力 <output id="o5">4</output>/5</label><div class="criteria">「維持 A′」的推薦是否被論證而非預設</div><input type="range" min="1" max="5" value="4" id="s5" oninput="o5.value=this.value"></div>
+        </div>
+        <textarea class="eval-comment" id="evalComment" placeholder="修訂意見（哪一節要補、哪個結論不同意…）"></textarea>
+        <div class="actions">
+            <button class="btn btn-primary" onclick="copyFeedback(event)">Copy Feedback as JSON</button>
+            <button class="btn" onclick="window.print()">Print</button>
+        </div>
+    </section>
+
+    <footer>
+        <p>來源：zed-industries/zed（sparse clone @ main，crates/agent_servers、acp_thread、acp_tools）、manaflow-ai/cmux（@ main，docs/＋Sources 結構）、mukiwu/tempo-term（@ main，src-tauri/src/modules）；Yuzora 本地 <code>src/agent/acpConnection.ts</code>、<code>src-tauri/src/agent_process.rs</code>、<code>src/state/agentStore.ts</code>、M5 design／spike notes。均為 2026-07-07 shallow clone 當日快照。</p>
+        <p>Yuzora agent 架構評估 · 2026-07-07 · 依 html-first 慣例產出（Claude design reference：.design/claude-DESIGN.md）</p>
+    </footer>
+</div>
+
+<script>
+function copyFeedback(ev) {
+    const payload = {
+        artifact: "yuzora-acp-architecture-comparison-2026-07-07.html",
+        reviewed_at: new Date().toISOString(),
+        scores: {
+            completeness: +document.getElementById('s1').value,
+            evidence: +document.getElementById('s2').value,
+            actionability: +document.getElementById('s3').value,
+            risk_coverage: +document.getElementById('s4').value,
+            recommendation_persuasiveness: +document.getElementById('s5').value
+        },
+        comments: document.getElementById('evalComment').value || null,
+        next_prompt: "請依上述分數與意見修訂 docs/html/yuzora-acp-architecture-comparison-2026-07-07.html"
+    };
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    ev.target.textContent = 'Copied!';
+    setTimeout(() => ev.target.textContent = 'Copy Feedback as JSON', 1500);
+}
+</script>
+</body>
+</html>

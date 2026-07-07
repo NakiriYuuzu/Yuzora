@@ -1,0 +1,6 @@
+{
+  "shellLabel": "Shell 設定",
+  "shellDescription": "Shell path 留空時，後端會依 $SHELL → getpwuid → 系統預設 shell 解析；填值時優先使用這個路徑。Default args 會隨終端機設定保存。",
+  "noSessions": "尚無終端機工作階段",
+  "emptyDescription": "開啟新的終端機，在這裡執行指令。"
+}

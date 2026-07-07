@@ -3,12 +3,18 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
 import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod } from "@/agent/acpConnection"
+import i18n from "@/lib/i18n"
 import { agentInitialState, type SessionState } from "@/state/agentStore"
 import { useAgentStore } from "@/state/agentStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { useTerminalStore } from "@/state/terminalStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+
+// Shorthand for the "panels" namespace this file's strings live in — keeps the
+// many assertions below readable while still asserting against the en value.
+const pt = (key: string, options?: Record<string, unknown>) =>
+  i18n.t(key, { ns: "panels", ...options })
 
 const originalAgentActions = {
   sendPrompt: useAgentStore.getState().sendPrompt,
@@ -117,26 +123,71 @@ describe("AgentZonePanel", () => {
     const addSession = vi.spyOn(useTerminalStore.getState(), "addSession")
     render(<AgentZonePanel />)
 
-    expect(screen.getByText("pi 需要登入")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "開啟終端登入" }))
+    expect(screen.getByText(pt("agentZonePanel.authRequiredTitle"))).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.openTerminalLogin") }))
 
     expect(addSession).toHaveBeenCalledWith(
       "/workspace",
       expect.objectContaining({
         title: "Launch pi in the terminal",
         workspace: "/workspace",
-        shellArgs: ["-c", "bunx pi-acp --terminal-login"],
+        shellArgs: ["-c", "bunx pi-acp@0.0.31 --terminal-login"],
       })
     )
     expect(useUiStore.getState().terminalOpen).toBe(true)
 
-    fireEvent.click(screen.getByRole("button", { name: "重試" }))
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.retry") }))
 
     await waitFor(() => {
       expect(connection.newSession).toHaveBeenCalledTimes(2)
-      expect(screen.queryByText("pi 需要登入")).not.toBeInTheDocument()
+      expect(screen.queryByText(pt("agentZonePanel.authRequiredTitle"))).not.toBeInTheDocument()
     })
     expect(useAgentStore.getState().activeSessionId).toBe("s-after-login")
+  })
+
+  it("renders a connection-error banner with connectionError text and retries via newSession", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const connection: AgentConnection = {
+      newSession: vi.fn(async () => "s-retry"),
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
+    useAgentStore.getState().setConnection(connection)
+    useAgentStore.setState({
+      connectionState: "error",
+      connectionError: "ACP initialize timed out after 60000ms",
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText(pt("agentZonePanel.connectionErrorTitle"))).toBeInTheDocument()
+    expect(screen.getByText("ACP initialize timed out after 60000ms")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.retry") }))
+
+    await waitFor(() => {
+      expect(connection.newSession).toHaveBeenCalledWith("/workspace")
+    })
+  })
+
+  it("does not show the connection-error banner when auth is required instead", () => {
+    useAgentStore.setState({
+      connectionState: "error",
+      connectionError: "Authentication required",
+      authRequired: {
+        cwd: "/workspace",
+        sessionId: null,
+        authMethods: [terminalAuthMethod],
+        message: "Authentication required",
+      },
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText(pt("agentZonePanel.authRequiredTitle"))).toBeInTheDocument()
+    expect(screen.queryByText(pt("agentZonePanel.connectionErrorTitle"))).not.toBeInTheDocument()
   })
 
   it("renders the active session transcript, block actions, streaming cursor, and minimal markdown", () => {
@@ -205,9 +256,9 @@ describe("AgentZonePanel", () => {
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0)
     expect(screen.getByText("ACP")).toBeInTheDocument()
     expect(screen.getByText("codex-1")).toBeInTheDocument()
-    expect(screen.getByText("等待")).toBeInTheDocument()
+    expect(screen.getByText(pt("agentZonePanel.tone.wait"))).toBeInTheDocument()
 
-    expect(screen.getByText("你")).toBeInTheDocument()
+    expect(screen.getByText(pt("agentZonePanel.you"))).toBeInTheDocument()
     expect(screen.getByText(/run\s+bun test/)).toBeInTheDocument()
     expect(screen.getAllByText("src/git.rs").length).toBeGreaterThan(0)
     expect(screen.getByText("Permission requested · write src/git.rs")).toBeInTheDocument()
@@ -286,7 +337,7 @@ describe("AgentZonePanel", () => {
 
     render(<AgentZonePanel />)
 
-    const composer = screen.getByRole("textbox", { name: "輸入給 Agent 的訊息" })
+    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "/f" } })
 
     expect(screen.getByRole("listbox", { name: "Slash commands" })).toBeInTheDocument()
@@ -307,7 +358,7 @@ describe("AgentZonePanel", () => {
     render(<AgentZonePanel />)
 
     expect(screen.getByText("main.ts")).toBeInTheDocument()
-    const composer = screen.getByRole("textbox", { name: "輸入給 Agent 的訊息" })
+    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "Explain this file" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
@@ -337,7 +388,7 @@ describe("AgentZonePanel", () => {
     render(<AgentZonePanel />)
 
     expect(screen.getByText(name)).toBeInTheDocument()
-    const composer = screen.getByRole("textbox", { name: "輸入給 Agent 的訊息" })
+    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "Explain this file" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
@@ -355,10 +406,14 @@ describe("AgentZonePanel", () => {
 
     render(<AgentZonePanel />)
 
-    fireEvent.click(screen.getByRole("button", { name: "移除 main.ts 檔案脈絡" }))
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: pt("agentZonePanel.removeFileContext", { fileName: "main.ts" }),
+      })
+    )
     expect(screen.queryByText("main.ts")).not.toBeInTheDocument()
 
-    const composer = screen.getByRole("textbox", { name: "輸入給 Agent 的訊息" })
+    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "Explain without file" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
@@ -367,5 +422,43 @@ describe("AgentZonePanel", () => {
         { type: "text", text: "Explain without file" },
       ])
     })
+  })
+
+  it("shows workspace guidance and no session when no absolute cwd is available", () => {
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText(pt("agentZonePanel.noWorkspaceTitle"))).toBeInTheDocument()
+    expect(screen.getByText(pt("agentZonePanel.emptyTitle"))).toBeInTheDocument()
+  })
+
+  it("refuses to spawn with a relative cwd and keeps the workspace guidance visible", async () => {
+    const prompt = vi.fn(async () => "end_turn" as const)
+    const newSession = vi.fn(async () => "s-1")
+    const connection: AgentConnection = {
+      newSession,
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt,
+      cancel: vi.fn(),
+    }
+    useAgentStore.getState().setConnection(connection)
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ tone: "done", cwd: null })]]),
+    })
+    useWorkspaceStore.setState({ workspacePath: "." })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText(pt("agentZonePanel.noWorkspaceTitle"))).toBeInTheDocument()
+
+    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "Hi" } })
+    fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
+
+    await Promise.resolve()
+    expect(newSession).not.toHaveBeenCalled()
+    expect(prompt).not.toHaveBeenCalled()
+    expect(composer).toHaveValue("Hi")
   })
 })

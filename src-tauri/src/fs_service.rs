@@ -3,7 +3,7 @@ use crate::file_content::{
 };
 use serde::Serialize;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +160,127 @@ pub fn save_file(path: String, content: String) -> Result<u64, String> {
     write_file(&path, &content)
 }
 
+// 純字面（不碰檔案系統）正規化：吃掉 "." 、對 ".." 做 pop。因為新建/改名的目標
+// 可能尚未存在（無法 canonicalize），字面解析先擋掉 ".." 逃逸。此函式本身不解析
+// symlink——symlink component 逃逸另由 resolve_in_workspace canonicalize「已存在
+// 的最深祖先」把關（見下方）。
+fn normalize_lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+// 從 target 逐層往上，回傳最深的、實際存在的祖先（含 target 本身）。用
+// symlink_metadata（lstat）偵測存在，dangling symlink 也算存在——這樣穿越
+// 外部 symlink 的路徑會停在該 symlink component 上，交給呼叫端 canonicalize
+// 檢查。root 必然存在且是 target 的祖先，迴圈至少停在 root。
+fn deepest_existing_ancestor(target: &Path) -> PathBuf {
+    let mut cur = target;
+    loop {
+        if cur.symlink_metadata().is_ok() {
+            return cur.to_path_buf();
+        }
+        match cur.parent() {
+            Some(parent) => cur = parent,
+            None => return cur.to_path_buf(),
+        }
+    }
+}
+
+// 把前端傳來的目標 path 綁進 workspace 邊界：
+//   1. canonicalize workspace root（實際存在、解析 symlink）。
+//   2. 字面正規化目標，要求它在 root 底下、且不是 root 本身（不允許對 workspace
+//      根目錄本身建立/改名/刪除）——擋掉 path 參數帶 "../.." 的字面逃逸。
+//   3. symlink 逃逸：字面 containment 檢查不到「path 中某個 component 是指向
+//      workspace 外的 symlink」，實際 fs 操作會沿著它逃出邊界。canonicalize
+//      目標「已存在的最深祖先」（要新建的尾段本身尚不存在，無法 canonicalize），
+//      確認其真實位置仍在 root 底下；剩餘尚不存在的尾段已由 lexical 正規化保證
+//      不含 ".."，只會在 root 內往下建立。
+// 回傳正規化後的絕對路徑供後續 fs 操作使用。
+fn resolve_in_workspace(workspace: &str, path: &str) -> Result<PathBuf, String> {
+    let root = std::fs::canonicalize(workspace).map_err(|e| format!("invalid workspace: {e}"))?;
+    let target = normalize_lexical(Path::new(path));
+    if target == root {
+        return Err("refusing to operate on the workspace root".into());
+    }
+    if !target.starts_with(&root) {
+        return Err("path escapes the workspace".into());
+    }
+    let existing = deepest_existing_ancestor(&target);
+    let canonical = std::fs::canonicalize(&existing).map_err(|e| format!("invalid path: {e}"))?;
+    if !canonical.starts_with(&root) {
+        return Err("path escapes the workspace via symlink".into());
+    }
+    Ok(target)
+}
+
+#[tauri::command]
+pub fn fs_create_file(workspace: String, path: String) -> Result<(), String> {
+    let target = resolve_in_workspace(&workspace, &path)?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create parent dir failed: {e}"))?;
+    }
+    // create_new 讓「檢查不存在＋建立」成為單一原子操作，避免 TOCTOU 覆蓋。
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("file already exists: {}", target.display())
+            } else {
+                format!("create file failed: {e}")
+            }
+        })?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fs_create_dir(workspace: String, path: String) -> Result<(), String> {
+    let target = resolve_in_workspace(&workspace, &path)?;
+    if target.exists() {
+        return Err(format!("directory already exists: {}", target.display()));
+    }
+    std::fs::create_dir_all(&target).map_err(|e| format!("create dir failed: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fs_rename(workspace: String, from: String, to: String) -> Result<(), String> {
+    let src = resolve_in_workspace(&workspace, &from)?;
+    let dst = resolve_in_workspace(&workspace, &to)?;
+    if !src.exists() {
+        return Err(format!("source does not exist: {}", src.display()));
+    }
+    if dst.exists() {
+        return Err(format!("target already exists: {}", dst.display()));
+    }
+    std::fs::rename(&src, &dst).map_err(|e| format!("rename failed: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fs_delete(workspace: String, path: String) -> Result<(), String> {
+    let target = resolve_in_workspace(&workspace, &path)?;
+    // symlink_metadata：symlink 一律當檔案處理（remove_file 只砍連結、不遞迴刪
+    // 連結目標）。
+    let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("stat failed: {e}"))?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| format!("remove dir failed: {e}"))?;
+    } else {
+        std::fs::remove_file(&target).map_err(|e| format!("remove file failed: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +376,145 @@ mod tests {
             }
             other => panic!("expected NonUtf8Readonly, got {other:?}"),
         }
+    }
+
+    // 生產環境 workspace 一律先過 open_workspace → canonicalize（macOS 上 tempdir
+    // 的 /var 是 /private/var 的 symlink），測試也照此把 root canonicalize 後當
+    // workspace 傳，才與實際邊界檢查一致。
+    fn ws(tmp: &tempfile::TempDir) -> String {
+        fs::canonicalize(tmp.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn under(workspace: &str, rel: &str) -> String {
+        format!("{workspace}/{rel}")
+    }
+
+    #[test]
+    fn fs_create_file_creates_with_parent_dirs_and_rejects_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = ws(&tmp);
+        let target = under(&w, "nested/deep/a.txt");
+        fs_create_file(w.clone(), target.clone()).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "");
+        // 已存在 → 錯誤，且內容不被覆蓋。
+        fs::write(&target, "keep").unwrap();
+        assert!(fs_create_file(w.clone(), target.clone()).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+    }
+
+    #[test]
+    fn fs_create_dir_creates_and_rejects_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = ws(&tmp);
+        let target = under(&w, "newdir");
+        fs_create_dir(w.clone(), target.clone()).unwrap();
+        assert!(Path::new(&target).is_dir());
+        assert!(fs_create_dir(w.clone(), target.clone()).is_err());
+    }
+
+    #[test]
+    fn fs_rename_moves_and_rejects_existing_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = ws(&tmp);
+        let from = under(&w, "old.txt");
+        let to = under(&w, "new.txt");
+        fs::write(&from, "body").unwrap();
+        fs_rename(w.clone(), from.clone(), to.clone()).unwrap();
+        assert!(!Path::new(&from).exists());
+        assert_eq!(fs::read_to_string(&to).unwrap(), "body");
+        // to 已存在 → 錯誤。
+        let from2 = under(&w, "other.txt");
+        fs::write(&from2, "x").unwrap();
+        assert!(fs_rename(w.clone(), from2.clone(), to.clone()).is_err());
+        assert!(Path::new(&from2).exists());
+    }
+
+    #[test]
+    fn fs_delete_removes_file_and_dir_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = ws(&tmp);
+        let file = under(&w, "f.txt");
+        fs::write(&file, "x").unwrap();
+        fs_delete(w.clone(), file.clone()).unwrap();
+        assert!(!Path::new(&file).exists());
+
+        let dir = under(&w, "d");
+        fs::create_dir_all(format!("{dir}/sub")).unwrap();
+        fs::write(format!("{dir}/sub/inner.txt"), "y").unwrap();
+        fs_delete(w.clone(), dir.clone()).unwrap();
+        assert!(!Path::new(&dir).exists());
+    }
+
+    #[test]
+    fn fs_commands_reject_paths_escaping_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = ws(&tmp);
+        let escape = under(&w, "../escaped.txt");
+        assert!(fs_create_file(w.clone(), escape.clone()).is_err());
+        assert!(fs_create_dir(w.clone(), escape.clone()).is_err());
+        assert!(fs_delete(w.clone(), escape.clone()).is_err());
+        assert!(fs_rename(w.clone(), under(&w, "a.txt"), escape.clone()).is_err());
+        // 目標檔案未被建立在 workspace 之外。
+        assert!(!Path::new(&fs::canonicalize(&tmp).unwrap())
+            .parent()
+            .unwrap()
+            .join("escaped.txt")
+            .exists());
+    }
+
+    #[test]
+    fn fs_commands_reject_workspace_root_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = ws(&tmp);
+        assert!(fs_delete(w.clone(), w.clone()).is_err());
+        assert!(Path::new(&w).is_dir());
+    }
+
+    // workspace 內放一個指向外部目錄的 symlink，斷言透過它（穿越 symlink component）
+    // 的 create/rename/delete 全部 fail-closed，且外部目錄不被寫入/破壞。
+    #[cfg(unix)]
+    #[test]
+    fn fs_commands_reject_paths_through_external_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_root = fs::canonicalize(outside.path()).unwrap();
+        let w = ws(&tmp);
+
+        // <workspace>/link -> <外部目錄>
+        let link = under(&w, "link");
+        symlink(&outside_root, &link).unwrap();
+
+        // 透過 symlink 建立檔案 / 目錄：擋，且外部不出現該項目。
+        let through_file = under(&w, "link/evil.txt");
+        assert!(fs_create_file(w.clone(), through_file.clone()).is_err());
+        assert!(fs_create_dir(w.clone(), under(&w, "link/evildir")).is_err());
+        assert!(!outside_root.join("evil.txt").exists());
+        assert!(!outside_root.join("evildir").exists());
+
+        // 外部先放一個真實檔案，確認 delete / rename-from 穿越 symlink 都擋，
+        // 且不是因為來源不存在才失敗——檔案仍在外部原地。
+        let outside_file = outside_root.join("real.txt");
+        fs::write(&outside_file, "keep").unwrap();
+        assert!(fs_delete(w.clone(), under(&w, "link/real.txt")).is_err());
+        assert!(fs_rename(
+            w.clone(),
+            under(&w, "link/real.txt"),
+            under(&w, "moved.txt")
+        )
+        .is_err());
+        assert!(outside_file.exists());
+        assert_eq!(fs::read_to_string(&outside_file).unwrap(), "keep");
+
+        // rename-to 穿越 symlink 也擋，來源留在 workspace 內。
+        let src = under(&w, "src.txt");
+        fs::write(&src, "body").unwrap();
+        assert!(fs_rename(w.clone(), src.clone(), through_file.clone()).is_err());
+        assert!(Path::new(&src).exists());
+        assert!(!outside_root.join("evil.txt").exists());
     }
 
     #[test]

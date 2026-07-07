@@ -7,6 +7,7 @@ import { initialGitState, useGitStore } from "@/state/gitStore";
 import { useWorkspaceStore } from "@/state/workspaceStore";
 import { useLspStore } from "@/state/lspStore";
 import { usePreviewStore } from "@/state/previewStore";
+import { usePerfStore } from "@/state/perfStore";
 import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
 import type { GitStatus, LspServerInfo } from "@/lib/types";
@@ -75,6 +76,7 @@ describe("StatusBar", () => {
     useGitStore.setState(initialGitState);
     useLspStore.getState().reset();
     usePreviewStore.getState().reset();
+    usePerfStore.getState().reset();
     // Replace with the captured snapshot so a spied openSettings never leaks.
     useUiStore.setState(initialUiState, true);
     vi.mocked(getDocument).mockResolvedValue({
@@ -232,7 +234,7 @@ describe("StatusBar", () => {
   it("無開啟檔案時顯示提示", () => {
     render(<StatusBar />);
 
-    expect(screen.getByText(/未開啟檔案/)).toBeInTheDocument();
+    expect(screen.getByText(/No file open/)).toBeInTheDocument();
   });
 
   it("dev server running 時在中段顯示 port chip", () => {
@@ -267,6 +269,22 @@ describe("StatusBar", () => {
     render(<StatusBar />);
     fireEvent.contextMenu(screen.getByLabelText("Status bar"));
     expect(useContextMenuStore.getState().kind).toBe("status");
+  });
+
+  it("有 perf snapshot 時顯示 mono chip（cpu% · MB）並註明主程序", () => {
+    usePerfStore.getState().setSnapshot({ cpuPercent: 12, memoryBytes: 184_000_000 });
+
+    render(<StatusBar />);
+
+    const chip = screen.getByText("12% · 184MB");
+    expect(chip).toBeInTheDocument();
+    expect(chip.getAttribute("title")).toContain("Main process");
+  });
+
+  it("perf snapshot 為 null 時不顯示 chip", () => {
+    render(<StatusBar />);
+
+    expect(screen.queryByText(/MB/)).not.toBeInTheDocument();
   });
 
   it("無 repo 時分支段維持 placeholder 且不可點", () => {

@@ -1,12 +1,39 @@
-import type { ContextMenuKind } from "@/state/contextMenuStore"
+import i18n from "@/lib/i18n"
+import type { ContextMenuKind, ContextMenuPayload } from "@/state/contextMenuStore"
 
 export interface ContextMenuItem {
   id: string
   label: string
   danger?: boolean
+  // Optional visibility predicate — the item is only rendered when it returns
+  // true for the current payload (e.g. cmOpenInBrowser only for .html/.htm files).
+  when?: (payload: ContextMenuPayload) => boolean
 }
 
 export type ContextMenuEntry = ContextMenuItem | "separator"
+
+const isHtmlPath = (payload: ContextMenuPayload): boolean =>
+  !!payload.path && /\.html?$/i.test(payload.path)
+
+// label is a getter (not a plain string) so it's resolved from the current
+// i18n language on every read, not baked in once at module load — this object
+// is a module-level singleton, and ContextMenu reads `.label` fresh each time
+// the menu opens. Keys live at locales/{en,zh-TW}/menus.json under
+// contextMenu.<id> (item ids double as translation keys).
+function item(
+  id: string,
+  danger?: true,
+  when?: (payload: ContextMenuPayload) => boolean
+): ContextMenuItem {
+  return {
+    id,
+    get label() {
+      return i18n.t(`contextMenu.${id}`, { ns: "menus" })
+    },
+    ...(danger ? { danger } : {}),
+    ...(when ? { when } : {})
+  }
+}
 
 // 各區域選單內容 — 對照設計文件 ctxDefs（Yuuzu Workbench.dc.html L3528）。
 // item id 沿用設計的 cm* key，能力賦予階段可與設計的 ctxRun 1:1 對映。
@@ -14,96 +41,97 @@ export type ContextMenuEntry = ContextMenuItem | "separator"
 // 只需要在 host 列補一行 handler。
 export const CONTEXT_MENU_DEFS: Record<ContextMenuKind, ContextMenuEntry[]> = {
   general: [
-    { id: "cmCmdPalette", label: "Command palette…" },
-    { id: "cmRefresh", label: "Refresh" },
+    item("cmCmdPalette"),
+    item("cmRefresh"),
     "separator",
-    { id: "cmSettings", label: "Settings…" },
-    { id: "cmHideSidebar", label: "Toggle sidebar" },
+    item("cmSettings"),
+    item("cmHideSidebar"),
   ],
   rail: [
-    { id: "cmNewProject", label: "New project" },
-    { id: "cmSettings", label: "Settings…" },
+    item("cmNewProject"),
+    item("cmSettings"),
     "separator",
-    { id: "cmHideSidebar", label: "Toggle sidebar" },
+    item("cmHideSidebar"),
   ],
   explorer: [
-    { id: "cmNewFile", label: "New file" },
-    { id: "cmNewFolder", label: "New folder" },
+    item("cmNewFile"),
+    item("cmNewFolder"),
     "separator",
-    { id: "cmRefresh", label: "Refresh" },
-    { id: "cmCopyPath", label: "Copy path" },
+    item("cmRefresh"),
+    item("cmCopyPath"),
   ],
   file: [
-    { id: "cmOpen", label: "Open" },
-    { id: "cmOpenSplit", label: "Open to the side" },
+    item("cmOpen"),
+    item("cmOpenSplit"),
+    item("cmOpenInBrowser", undefined, isHtmlPath),
     "separator",
-    { id: "cmRename", label: "Rename…" },
-    { id: "cmCopyRel", label: "Copy relative path" },
-    { id: "cmReveal", label: "Reveal in Finder" },
+    item("cmRename"),
+    item("cmCopyRel"),
+    item("cmReveal"),
     "separator",
-    { id: "cmDelete", label: "Delete", danger: true },
+    item("cmDelete", true),
   ],
   tab: [
-    { id: "cmCloseTab", label: "Close tab" },
-    { id: "cmCloseOthers", label: "Close others" },
-    { id: "cmCloseAll", label: "Close all" },
+    item("cmCloseTab"),
+    item("cmCloseOthers"),
+    item("cmCloseAll"),
     "separator",
-    { id: "cmCopyRel", label: "Copy relative path" },
-    { id: "cmSplit", label: "Split editor" },
+    item("cmCopyRel"),
+    item("cmSplit"),
   ],
   editor: [
-    { id: "cmCut", label: "Cut" },
-    { id: "cmCopy", label: "Copy" },
-    { id: "cmPaste", label: "Paste" },
+    item("cmCut"),
+    item("cmCopy"),
+    item("cmPaste"),
     "separator",
     // Diff viewer entry (design openDiffCurrent). Opens the active editor file's
     // working-tree diff in the Diff modal; the dispatch no-ops when the file has
     // no git changes (contextMenuStore.runContextMenuAction).
-    { id: "cmCompareHead", label: "Compare with HEAD" },
-    { id: "cmFormatDoc", label: "Format document" },
-    { id: "cmCmdPalette", label: "Command palette…" },
+    item("cmCompareHead"),
+    item("cmFormatDoc"),
+    item("cmCmdPalette"),
   ],
   terminal: [
-    { id: "cmCopySel", label: "Copy" },
-    { id: "cmPaste", label: "Paste" },
+    item("cmCopySel"),
+    item("cmPaste"),
     "separator",
     // 設計在 terminal 停靠進編輯器時把這項換成 "Dock to bottom"；dock 功能
     // 尚未存在，唯一可達狀態是 drawer 側文案。
-    { id: "cmDockTerm", label: "Split with code" },
-    { id: "cmSplitTermRight", label: "Split right" },
-    { id: "cmSplitTermDown", label: "Split down" },
-    { id: "cmClear", label: "Clear terminal" },
-    { id: "cmKill", label: "Kill process", danger: true },
+    item("cmDockTerm"),
+    item("cmSplitTermRight"),
+    item("cmSplitTermDown"),
+    item("cmClear"),
+    item("cmKill", true),
   ],
   agent: [
-    { id: "cmStop", label: "Stop session" },
-    { id: "cmDuplicate", label: "Duplicate" },
-    { id: "cmRenameSession", label: "Rename session…" },
+    item("cmStop"),
+    item("cmDuplicate"),
+    item("cmRenameSession"),
     "separator",
-    { id: "cmCopyPath", label: "Copy path" },
+    item("cmCopyPath"),
   ],
   git: [
-    { id: "cmStage", label: "Stage" },
-    { id: "cmCopyHash", label: "Copy commit hash" },
-    { id: "cmCopyBranch", label: "Copy branch name" },
+    item("cmStage"),
+    item("cmCopyHash"),
+    item("cmCopyBranch"),
     "separator",
-    { id: "cmFetch", label: "Fetch" },
-    { id: "cmPull", label: "Pull" },
-    { id: "cmPush", label: "Push" },
+    item("cmFetch"),
+    item("cmPull"),
+    item("cmPush"),
     "separator",
-    { id: "cmRollback", label: "Rollback", danger: true },
+    item("cmRollback", true),
   ],
   status: [
-    { id: "cmCopyBranch", label: "Copy branch name" },
-    { id: "cmFetch", label: "Fetch" },
-    { id: "cmPull", label: "Pull" },
-    { id: "cmPush", label: "Push" },
+    item("cmCopyBranch"),
+    item("cmFetch"),
+    item("cmPull"),
+    item("cmPush"),
   ],
   sshhost: [
-    { id: "cmOpenSsh", label: "Open SSH terminal" },
-    { id: "cmOpenSftp", label: "Open SFTP browser" },
+    item("cmOpenSsh"),
+    item("cmOpenSftp"),
     "separator",
-    { id: "cmCopyAddr", label: "Copy host address" },
-    { id: "cmDisconnect", label: "Disconnect", danger: true },
+    item("cmCopyAddr"),
+    item("cmDisconnect", true),
   ],
 }

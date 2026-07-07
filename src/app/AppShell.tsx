@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
-import { isTauri } from "@tauri-apps/api/core"
+import { isTauri } from "@/lib/platform"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
 import { type Mode } from "@/app/modes"
@@ -23,7 +23,7 @@ import { showsNativeTrafficLights } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
-import { useWorkspaceStore } from "@/state/workspaceStore"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
 const DEFAULT_NAV_WIDTH = 266
 const MIN_NAV_WIDTH = 220
@@ -55,9 +55,19 @@ export function AppShell() {
   const openSettings = useUiStore((s) => s.openSettings)
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen)
   const terminalOpen = useUiStore((s) => s.terminalOpen)
-  const previewOpen = useUiStore((s) => s.previewOpen)
   const toggleTerminal = useUiStore((s) => s.toggleTerminal)
-  const togglePreview = useUiStore((s) => s.togglePreview)
+  // Context menu dispatch (contextMenuStore) lives outside the React tree and
+  // can't reach navCollapsed/paletteOpen (local state below) directly — it
+  // bumps these nonces instead; the effects further down translate a change
+  // into the same local-state update the rail button / ⌘K listener already do.
+  const sidebarToggleRequest = useUiStore((s) => s.sidebarToggleRequest)
+  const paletteOpenRequest = useUiStore((s) => s.paletteOpenRequest)
+  // Preview is a singleton tab now: the rail's active state = "a preview tab
+  // exists somewhere", and its toggle opens/focuses/closes that tab.
+  const previewTabExists = useWorkspaceStore((s) =>
+    s.groups.some((g) => g.tabs.some((t) => t.path === PREVIEW_TAB_PATH))
+  )
+  const togglePreviewTab = useWorkspaceStore((s) => s.togglePreviewTab)
   const currentWorkspace = useWorkspaceStore((s) => s.workspacePath)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -70,6 +80,11 @@ export function AppShell() {
   // on threshold crossings and only auto-expand undoes an auto-collapse.
   const navAutoCollapsedRef = useRef(false)
   const prevNarrowRef = useRef<boolean | null>(null)
+  // Last nonce value this effect has already reacted to — starts at the
+  // current value so mount doesn't fire a spurious toggle/open (settingsNonce
+  // pattern above uses the same idea via SettingsDialog's own sync effect).
+  const sidebarToggleHandledRef = useRef(sidebarToggleRequest)
+  const paletteOpenHandledRef = useRef(paletteOpenRequest)
 
   const onNavResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -148,6 +163,21 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", handler)
   }, [toggleTerminal])
 
+  // cmHideSidebar (context menu) → same effect as the rail's manual toggle.
+  useEffect(() => {
+    if (sidebarToggleRequest === sidebarToggleHandledRef.current) return
+    sidebarToggleHandledRef.current = sidebarToggleRequest
+    navAutoCollapsedRef.current = false
+    setNavCollapsed((collapsed) => !collapsed)
+  }, [sidebarToggleRequest])
+
+  // cmCmdPalette (context menu) → open the command palette, same as ⌘K.
+  useEffect(() => {
+    if (paletteOpenRequest === paletteOpenHandledRef.current) return
+    paletteOpenHandledRef.current = paletteOpenRequest
+    setPaletteOpen(true)
+  }, [paletteOpenRequest])
+
   useEffect(() => {
     if (!isTauri() || !currentWorkspace) return
     let disposed = false
@@ -194,13 +224,15 @@ export function AppShell() {
       className="relative flex h-screen w-screen flex-col overflow-hidden font-sans text-[13px] text-(--ink-1)"
       style={{ background: "var(--yz-bg)" }}
     >
-      {/* Full-width title band along the window top: the native traffic
-          lights float here and the whole strip drags the window (the overlay
-          title bar's own mouse handling is swallowed by the webview). The
-          content row below shifts down by the same 20px so panels clear the
-          buttons. */}
+      {/* Title band along the window top: the whole strip drags the window
+          (the overlay title bar's own mouse handling is swallowed by the
+          webview). Starts at left-20 (80px) to leave the native traffic
+          lights' hit-region (tauri.conf.json trafficLightPosition x:7,y:15,
+          buttons span roughly x=7..59) clickable instead of drag-swallowed.
+          The content row below shifts down by the same 20px so panels clear
+          the buttons. */}
       {showsNativeTrafficLights() && (
-        <div aria-hidden="true" data-tauri-drag-region className="absolute inset-x-0 top-0 z-50 h-[20px]" />
+        <div aria-hidden="true" data-tauri-drag-region className="absolute left-20 right-0 top-0 z-50 h-[20px]" />
       )}
 
       <div className={cn("flex min-h-0 flex-1", showsNativeTrafficLights() && "pt-[20px]")}>
@@ -212,8 +244,8 @@ export function AppShell() {
             setNavCollapsed((collapsed) => !collapsed)
           }}
           onOpenSettings={handleOpenSettings}
-          previewOpen={previewOpen}
-          onTogglePreview={togglePreview}
+          previewOpen={previewTabExists}
+          onTogglePreview={togglePreviewTab}
           terminalOpen={terminalOpen}
           onToggleTerminalDrawer={toggleTerminal}
         />
@@ -268,11 +300,15 @@ export function AppShell() {
               {/* EditorPanel stays mounted (CSS-hidden, not unmounted) across mode
                   switches so unsaved edits and undo history survive leaving Files mode. */}
               <div className={mode === "files" ? "contents" : "hidden"}>
-                <EditorPanel previewOpen={previewOpen} />
+                <EditorPanel />
               </div>
               {mode === "git" && <GitPanel />}
               {mode === "database" && <DatabasePanel />}
-              {mode === "ssh" && <SshPanel />}
+              {/* SshPanel stays mounted (CSS-hidden) so a live SSH terminal —
+                  and its xterm scrollback — survive leaving SSH mode. */}
+              <div className={mode === "ssh" ? "contents" : "hidden"}>
+                <SshPanel />
+              </div>
               {mode === "agent" && <AgentZonePanel />}
             </div>
 

@@ -1,24 +1,21 @@
-import { confirm } from "@tauri-apps/plugin-dialog"
-import { useWorkspaceStore } from "../state/workspaceStore"
+import { Globe } from "lucide-react"
+import { useTranslation } from "react-i18next"
+import { type TabInfo, useWorkspaceStore } from "../state/workspaceStore"
 import { useUiStore } from "../state/uiStore"
+import { useConfirmDialogStore } from "../state/confirmDialogStore"
 import { dropDocument } from "../editor/documentRegistry"
+import { saveDirtyTab } from "../editor/saveDocument"
 import { logUserAction } from "@/features/logs/userAction"
+import { FileIcon } from "../lib/fileIcons"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { MarkdownPreview, isMarkdownPath, useMarkdownPreviewStore } from "./MarkdownPreview"
 
-// Design reference tab strip: extension chip colors (md blue, code orange).
-function extChip(name: string) {
-    const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : ""
-    return {
-        label: ext.slice(0, 2) || "··",
-        color: ext === "md" ? "#2456cc" : "#c8521f"
-    }
-}
-
 export function TabBar({ groupIndex }: { groupIndex: number }) {
+    const { t } = useTranslation("menus")
     const group = useWorkspaceStore((s) => s.groups[groupIndex])
     const setActiveTab = useWorkspaceStore((s) => s.setActiveTab)
     const closeTab = useWorkspaceStore((s) => s.closeTab)
+    const closePreviewTab = useWorkspaceStore((s) => s.closePreviewTab)
     const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
     const mode = useUiStore((s) => s.mode)
     const previewOpen = useMarkdownPreviewStore((s) => s.openPaths)
@@ -26,25 +23,37 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const closePreview = useMarkdownPreviewStore((s) => s.close)
     if (!group) return null
 
-    async function onClose(path: string, dirty: boolean) {
-        if (dirty) {
-            const ok = await confirm("檔案有未儲存的變更，確定關閉？")
-            if (!ok) return
+    async function onClose(tab: TabInfo) {
+        // The preview tab holds no document — close it without a dirty prompt and
+        // without touching document/markdown-preview registries (its path is a
+        // sentinel, not a real file).
+        if (tab.kind === "preview") {
+            closePreviewTab()
+            void logUserAction("close_tab", `close ${tab.name}`)
+            return
         }
-        closeTab(groupIndex, path)
-        dropDocument(path)
-        closePreview(path)
-        void logUserAction("close_tab", `close ${path}`)
+        if (tab.dirty) {
+            const decision = await useConfirmDialogStore.getState().requestUnsavedDecision({
+                title: t("unsavedDialog.closeTabTitle"),
+                description: t("unsavedDialog.closeTabDescription", { name: tab.name }),
+                saveLabel: t("unsavedDialog.save")
+            })
+            if (decision === "cancel") return
+            if (decision === "save") await saveDirtyTab(tab.path)
+        }
+        closeTab(groupIndex, tab.path)
+        dropDocument(tab.path)
+        closePreview(tab.path)
+        void logUserAction("close_tab", `close ${tab.path}`)
     }
 
     return (
         <div className="yzs flex h-[44px] min-w-0 flex-1 items-center gap-[3px] overflow-x-auto overflow-y-hidden">
             {group.tabs.length === 0 && (
-                <span className="px-[10px] text-[12px] text-(--ink-4)">No open tabs</span>
+                <span className="px-[10px] text-[12px] text-(--ink-4)">{t("tabBar.noOpenTabs")}</span>
             )}
             {group.tabs.map((tab) => {
                 const active = tab.path === group.activePath
-                const chip = extChip(tab.name)
                 return (
                     <span
                         key={tab.path}
@@ -56,13 +65,11 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 : "text-(--ink-3) hover:bg-(--yz-hover)")
                         }
                     >
-                        <span
-                            aria-hidden="true"
-                            className="flex size-[15px] shrink-0 items-center justify-center rounded-[4px] font-mono text-[8px] font-bold text-white"
-                            style={{ background: chip.color }}
-                        >
-                            {chip.label}
-                        </span>
+                        {tab.kind === "preview" ? (
+                            <Globe className="size-[15px] shrink-0" aria-hidden="true" />
+                        ) : (
+                            <FileIcon fileName={tab.name} className="size-[15px] shrink-0" />
+                        )}
                         <button
                             type="button"
                             className={
@@ -80,9 +87,9 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             <span
                                 role="button"
                                 tabIndex={0}
-                                aria-label={`Resolve external changes ${tab.name}`}
+                                aria-label={t("tabBar.resolveExternalChanges", { name: tab.name })}
                                 className="ext-dot shrink-0 cursor-pointer text-[12px] font-semibold text-[#c8521f]"
-                                title="外部已變更（點擊開啟解決器）"
+                                title={t("tabBar.externallyModifiedTitle")}
                                 onClick={(e) => {
                                     e.stopPropagation()
                                     useUiStore.getState().openResolver(tab.path)
@@ -94,7 +101,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                         {tab.dirty && (
                             <span
                                 className="dirty-dot size-[7px] shrink-0 rounded-full bg-[#d68a0c]"
-                                title="未儲存的變更"
+                                title={t("tabBar.unsavedChangesTitle")}
                                 aria-hidden="true"
                             />
                         )}
@@ -107,9 +114,9 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                         ? "bg-(--yz-accent)/16 text-(--yz-accent-ink)"
                                         : "text-(--ink-3) hover:bg-(--paper-3) hover:text-(--ink-0)")
                                 }
-                                aria-label={`Toggle preview ${tab.name}`}
+                                aria-label={t("tabBar.togglePreview", { name: tab.name })}
                                 aria-pressed={!!previewOpen[tab.path]}
-                                title="切換 Markdown 預覽"
+                                title={t("tabBar.toggleMarkdownPreviewTitle")}
                                 onClick={(e) => {
                                     e.stopPropagation()
                                     // panel gate 綁 active tab；先 activate 被點的 tab 再 toggle，
@@ -138,8 +145,8 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                         <button
                             type="button"
                             className="tab-close flex size-[18px] shrink-0 items-center justify-center rounded-[6px] text-(--ink-3) transition-colors hover:bg-(--paper-3) hover:text-(--ink-0)"
-                            aria-label={`Close ${tab.name}`}
-                            onClick={() => void onClose(tab.path, tab.dirty)}
+                            aria-label={t("tabBar.close", { name: tab.name })}
+                            onClick={() => void onClose(tab)}
                         >
                             <svg
                                 width="11"

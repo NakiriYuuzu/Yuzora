@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react"
 import { Check, GitBranch, Globe, Plus, RefreshCw } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import {
     Popover,
@@ -7,10 +8,10 @@ import {
     PopoverTrigger
 } from "@/components/ui/popover"
 import { useGitStore } from "@/state/gitStore"
+import { useOverlayPresence } from "@/state/overlayStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import type { BranchInfo } from "@/lib/types"
 import { gitCheckout, gitCreateBranch, gitFetch, gitPull, gitPush } from "@/lib/ipc"
-import { strings } from "@/lib/i18n"
 
 interface BranchPopoverProps {
     open: boolean
@@ -37,6 +38,7 @@ function LocalRow({
     onBlocked: () => void
     onDone: () => void
 }) {
+    const { t } = useTranslation("git")
     const runOp = useGitStore((s) => s.runOp)
 
     async function checkout() {
@@ -76,14 +78,16 @@ function LocalRow({
             )}
             <div className="flex-1" />
             {branch.isCurrent ? (
-                <span className="font-mono text-[10px] text-(--ink-3)">current</span>
+                <span className="font-mono text-[10px] text-(--ink-3)">
+                    {t("branchPopover.current", { ns: "menus" })}
+                </span>
             ) : (
                 <button
                     type="button"
                     onClick={checkout}
                     className="rounded-[6px] px-[8px] py-[2px] text-[10.5px] font-semibold text-(--yz-accent-ink) opacity-0 transition-opacity duration-[130ms] hover:bg-(--yz-hover) group-hover:opacity-100"
                 >
-                    Checkout
+                    {t("branchPopover.checkout", { ns: "menus" })}
                 </button>
             )}
         </div>
@@ -91,10 +95,14 @@ function LocalRow({
 }
 
 export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProps) {
+    const { t } = useTranslation("git")
     const branches = useGitStore((s) => s.branches)
     const busy = useGitStore((s) => s.busy)
     const remotePaused = useGitStore((s) => s.remotePaused)
     const runOp = useGitStore((s) => s.runOp)
+
+    // Hide the preview child webview while this popover is open (z-order gate).
+    useOverlayPresence(open)
 
     const [notice, setNotice] = useState<string | null>(null)
     const [creating, setCreating] = useState(false)
@@ -137,17 +145,19 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                         aria-hidden="true"
                     />
                     <span className="flex-1 font-serif text-[14px] font-semibold text-(--ink-0)">
-                        Git Branches
+                        {t("branchPopover.title", { ns: "menus" })}
                     </span>
                     <button
                         type="button"
-                        aria-label="Fetch remote"
+                        aria-label={t("branchPopover.fetchRemoteAriaLabel", { ns: "menus" })}
                         disabled={busy != null}
                         onClick={() => runOp("fetch", () => gitFetch(false))}
                         className="flex h-[25px] items-center gap-[5px] rounded-[8px] border border-(--line-1) bg-(--yz-solid) px-[10px] text-[11px] font-semibold text-(--ink-1) shadow-[var(--shadow-xs)] transition-colors hover:bg-(--paper-1) disabled:opacity-50"
                     >
                         <RefreshCw className="size-[12px]" aria-hidden="true" />
-                        {busy === "fetch" ? "Fetching…" : "Fetch"}
+                        {busy === "fetch"
+                            ? t("branchPopover.fetchingEllipsis", { ns: "menus" })
+                            : t("branchPopover.fetch", { ns: "menus" })}
                     </button>
                 </div>
 
@@ -158,7 +168,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                             className="mb-[4px] rounded-[9px] border border-(--line-1) px-[11px] py-[7px] text-[11px]"
                             style={{ background: "var(--danger-soft)", color: "var(--status-d)" }}
                         >
-                            遠端檢查已暫停：需要認證
+                            {t("branchPopover.remoteCheckPaused", { ns: "menus" })}
                         </div>
                     )}
                     {notice && (
@@ -172,20 +182,22 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
 
                     {/* Local section — label 9px uppercase 0.1em, pad 5 8 4 */}
                     <div className="px-[8px] pb-[4px] pt-[5px] text-[9px] font-medium uppercase tracking-[0.1em] text-(--ink-3)">
-                        Local
+                        {t("branchPopover.localSection", { ns: "menus" })}
                     </div>
                     {local.map((b) => (
                         <LocalRow
                             key={b.name}
                             branch={b}
-                            onBlocked={() => setNotice("有未儲存的變更，請先存檔或放棄")}
+                            onBlocked={() =>
+                                setNotice(t("branchPopover.dirtyTabsBlockCheckout", { ns: "menus" }))
+                            }
                             onDone={() => onOpenChange(false)}
                         />
                     ))}
 
                     {/* Remote section — label pad 9 8 4 (top 9) */}
                     <div className="px-[8px] pb-[4px] pt-[9px] text-[9px] font-medium uppercase tracking-[0.1em] text-(--ink-3)">
-                        Remote
+                        {t("branchPopover.remoteSection", { ns: "menus" })}
                     </div>
                     {remote.map((name) => (
                         <div
@@ -208,7 +220,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                         <input
                             autoFocus
                             value={newName}
-                            placeholder={strings.git.branchNamePlaceholder}
+                            placeholder={t("branchNamePlaceholder")}
                             onChange={(e) => setNewName(e.target.value)}
                             onKeyDown={(e) => {
                                 if (e.key === "Enter") createBranch()
@@ -229,16 +241,31 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                             className="flex h-[30px] w-full items-center gap-[9px] rounded-[9px] px-[11px] text-[12px] font-medium text-(--ink-2) transition-colors duration-100 hover:bg-(--yz-hover)"
                         >
                             <Plus className="size-[13px] shrink-0" aria-hidden="true" />
-                            New branch…
+                            {t("branchPopover.newBranch", { ns: "menus" })}
                         </button>
                     )}
                 </div>
 
                 {/* Bottom action row — Fetch / Pull / Push through runOp, disabled while busy */}
                 <div className="flex items-center gap-[6px] border-t border-(--line-1) px-[7px] py-[7px]">
-                    <ActionButton label="Fetch" busy={busy} onClick={() => runOp("fetch", () => gitFetch(false))} />
-                    <ActionButton label="Pull" busy={busy} onClick={() => runOp("pull", () => gitPull())} />
-                    <ActionButton label="Push" busy={busy} onClick={() => runOp("push", () => gitPush())} />
+                    <ActionButton
+                        opKey="fetch"
+                        label={t("branchPopover.fetch", { ns: "menus" })}
+                        busy={busy}
+                        onClick={() => runOp("fetch", () => gitFetch(false))}
+                    />
+                    <ActionButton
+                        opKey="pull"
+                        label={t("branchPopover.pull", { ns: "menus" })}
+                        busy={busy}
+                        onClick={() => runOp("pull", () => gitPull())}
+                    />
+                    <ActionButton
+                        opKey="push"
+                        label={t("branchPopover.push", { ns: "menus" })}
+                        busy={busy}
+                        onClick={() => runOp("push", () => gitPush())}
+                    />
                 </div>
             </PopoverContent>
         </Popover>
@@ -246,15 +273,20 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
 }
 
 function ActionButton({
+    opKey,
     label,
     busy,
     onClick
 }: {
+    opKey: string
     label: string
     busy: string | null
     onClick: () => void
 }) {
-    const active = busy === label.toLowerCase()
+    // Compared against the untranslated op id (not the display label) so a
+    // localized label doesn't break the busy/spinner match (label is now
+    // translated; busy stays the internal "fetch"/"pull"/"push" identifier).
+    const active = busy === opKey
     return (
         <button
             type="button"

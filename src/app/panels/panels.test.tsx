@@ -7,6 +7,7 @@ import { GitPanel } from "@/app/panels/GitPanel"
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import { GitNavContent } from "@/app/workbench/GitNavContent"
 import { SettingsDialog } from "@/app/workbench/SettingsDialog"
+import i18n from "@/lib/i18n"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { initialGitState, useGitStore } from "@/state/gitStore"
 import { usePreviewStore } from "@/state/previewStore"
@@ -161,7 +162,7 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
 
     const nav = screen.getByTestId("nav-mode-content-database")
     expect(within(nav).getByText("No database connections")).toBeInTheDocument()
-    expect(within(nav).getByRole("button", { name: "New connection" })).toBeInTheDocument()
+    expect(within(nav).getByRole("button", { name: "New connection…" })).toBeInTheDocument()
     expect(screen.getByText("Database connections are not configured")).toBeInTheDocument()
   })
 
@@ -173,18 +174,20 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
     expect(within(nav).getByText("No hosts yet")).toBeInTheDocument()
     expect(within(nav).getByRole("button", { name: "New host" })).toBeInTheDocument()
 
-    expect(screen.getAllByText("Remote sessions are not configured").length).toBeGreaterThan(0)
-    expect(screen.getByText("Connect a host to transfer files here.")).toBeInTheDocument()
+    // SSH is the default tab (FEAT-2): with no active session the main region
+    // shows the no-session empty state.
+    expect(screen.getByText("No active session")).toBeInTheDocument()
 
     // Radix's Tabs.Trigger switches on mousedown (not click) — see
     // @radix-ui/react-tabs's Trigger, which wires activation to onMouseDown
     // (plus onKeyDown/onFocus). fireEvent.click alone never fires that
-    // handler, so tab-switching assertions use mouseDown here and below.
+    // handler, so tab-switching assertions use mouseDown here.
     const viewSwitcher = screen.getByRole("tablist", { name: "SFTP or SSH" })
-    fireEvent.mouseDown(within(viewSwitcher).getByRole("tab", { name: "SSH" }))
+    fireEvent.mouseDown(within(viewSwitcher).getByRole("tab", { name: "SFTP" }))
 
-    expect(screen.getByText("Connect a host to open a terminal session here.")).toBeInTheDocument()
-    expect(screen.queryByText("Connect a host to transfer files here.")).not.toBeInTheDocument()
+    // SFTP tab with no active host shows the "not connected" browser prompt (F5).
+    expect(screen.getByText("Not connected")).toBeInTheDocument()
+    expect(screen.queryByText("No active session")).not.toBeInTheDocument()
   })
 
   it("shows the agent nav and main entry states", () => {
@@ -332,7 +335,7 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
     await waitFor(() =>
       expect(ipcMocks.devServerStart).toHaveBeenCalledWith(
@@ -368,7 +371,7 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
     await waitFor(() => expect(ipcMocks.devServerDetect).toHaveBeenCalledWith("/workspace", [6000]))
     await waitFor(() =>
@@ -396,9 +399,13 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
-    expect(await screen.findByRole("button", { name: /連接現有 server.*6000/ })).toBeInTheDocument()
+    expect(
+      await screen.findByRole("button", {
+        name: new RegExp(`${i18n.t("connectExisting", { ns: "preview" })}.*6000`),
+      })
+    ).toBeInTheDocument()
     expect(ipcMocks.devServerDetect).toHaveBeenCalledWith("/workspace", [6000])
     expect(ipcMocks.devServerStart).not.toHaveBeenCalled()
   })
@@ -421,7 +428,7 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
     await waitFor(() =>
       expect((screen.getByLabelText("Preview URL") as HTMLInputElement).value).toBe(
@@ -483,7 +490,7 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
     expect(await screen.findByRole("status")).toHaveTextContent("6000abc")
     expect(ipcMocks.devServerDetect).toHaveBeenCalledWith("/workspace")
@@ -506,7 +513,7 @@ describe("PreviewPanel dev server flow", () => {
     ipcMocks.devServerDetect.mockReturnValueOnce(detect.promise)
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
     expect(ipcMocks.devServerDetect).toHaveBeenCalledWith("/workspace-a")
 
     act(() => {
@@ -543,7 +550,7 @@ describe("PreviewPanel dev server flow", () => {
     ipcMocks.devServerStop.mockResolvedValueOnce(undefined)
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
     await waitFor(() => expect(ipcMocks.devServerStart).toHaveBeenCalled())
     act(() => {
@@ -579,7 +586,7 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
     await waitFor(() =>
       expect(ipcMocks.devServerStart).toHaveBeenCalledWith(
@@ -589,7 +596,9 @@ describe("PreviewPanel dev server flow", () => {
         expect.any(Function)
       )
     )
-    expect(screen.queryByRole("button", { name: /連接現有 server/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: new RegExp(i18n.t("connectExisting", { ns: "preview" })) })
+    ).not.toBeInTheDocument()
   })
 
   it("shows port-occupied choices and connects to an existing server without spawning", async () => {
@@ -600,13 +609,21 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
 
-    expect(await screen.findByRole("button", { name: /連接現有 server.*5173/ })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "切換 port 後啟動" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "重新偵測" })).toBeInTheDocument()
+    expect(
+      await screen.findByRole("button", {
+        name: new RegExp(`${i18n.t("connectExisting", { ns: "preview" })}.*5173`),
+      })
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: i18n.t("startChangedPort", { ns: "preview" }) })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: i18n.t("retryDetect", { ns: "preview" }) })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: /連接現有 server.*5173/ }))
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: new RegExp(`${i18n.t("connectExisting", { ns: "preview" })}.*5173`),
+      })
+    )
 
     expect(ipcMocks.devServerStart).not.toHaveBeenCalled()
     expect((screen.getByLabelText("Preview URL") as HTMLInputElement).value).toBe(
@@ -628,10 +645,10 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewPanel />)
-    fireEvent.click(screen.getByRole("button", { name: "啟動 dev server" }))
-    const port = await screen.findByRole("spinbutton", { name: "替代 port" })
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) }))
+    const port = await screen.findByRole("spinbutton", { name: i18n.t("alternatePort", { ns: "preview" }) })
     fireEvent.change(port, { target: { value: "6000" } })
-    fireEvent.click(screen.getByRole("button", { name: "切換 port 後啟動" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("startChangedPort", { ns: "preview" }) }))
 
     await waitFor(() =>
       expect(ipcMocks.devServerStart).toHaveBeenCalledWith(
@@ -665,7 +682,7 @@ describe("PreviewPanel dev server flow", () => {
     render(<PreviewPanel />)
 
     expect(screen.getByText("command not found")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "重試啟動" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("retryStart", { ns: "preview" }) }))
 
     await waitFor(() => expect(ipcMocks.devServerStart).toHaveBeenCalled())
   })
@@ -681,7 +698,7 @@ describe("PreviewPanel dev server flow", () => {
     })
 
     render(<PreviewWithSettings />)
-    fireEvent.click(screen.getByRole("button", { name: "檢視 logs" }))
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.viewLogs", { ns: "panels" }) }))
     const dialog = await screen.findByRole("dialog")
 
     expect(await within(dialog).findByRole("heading", { name: "Logs" })).toBeInTheDocument()
@@ -711,7 +728,7 @@ describe("PreviewPanel dev server flow", () => {
 
     await waitFor(() => expect(ipcMocks.devServerStop).toHaveBeenCalledWith("/workspace"))
     expect(screen.getByText("Exited")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "啟動 dev server" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) })).toBeInTheDocument()
   })
 
   it("wires back, forward, reload, and responsive frame controls to previewStore", () => {

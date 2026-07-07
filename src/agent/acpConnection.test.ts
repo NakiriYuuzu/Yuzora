@@ -503,6 +503,61 @@ describe("createAcpConnection", () => {
         })
     })
 
+    it("maps a -32602 invalid-cwd session/new error to a friendly message", async () => {
+        const agentId = "agent-cwd"
+        let buffer = ""
+        const emitLine = (line: string) => emit("agent://stdout", { id: agentId, line })
+        async function write(chunk: string) {
+            buffer += chunk
+            const lines = buffer.split("\n")
+            buffer = lines.pop() ?? ""
+            for (const line of lines) {
+                const trimmed = line.trim()
+                if (!trimmed) continue
+                const message = JSON.parse(trimmed) as { id?: string | number | null; method?: string }
+                if (message.method === "initialize") {
+                    await emitLine(JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] }
+                    }))
+                }
+                if (message.method === "session/new") {
+                    await emitLine(JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        error: { code: -32602, message: "cwd must be an absolute path" }
+                    }))
+                }
+            }
+        }
+
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-cwd-agent",
+            initializeTimeoutMs: 1_000
+        })
+
+        let error: unknown
+        try {
+            await connection.newSession(".")
+        } catch (caught) {
+            error = caught
+        }
+
+        expect(error).toBeInstanceOf(Error)
+        expect((error as Error).message).toMatch(/absolute path/i)
+        expect((error as Error).message).toContain(".")
+        expect(isAgentAuthRequiredError(error)).toBe(false)
+    })
+
     it("drives initialize, newSession, prompt, permission, session_info_update, and edit diff through the SDK bridge", async () => {
         const agentId = "agent-1"
         const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
@@ -568,6 +623,35 @@ describe("createAcpConnection", () => {
         await expect(connection.prompt("missing-session", [{ type: "text", text: "hello" }]))
             .rejects.toThrow("ACP connection is not initialized")
         expect(ipcCalls).toEqual([])
+    })
+
+    it("rejects newSession promptly (not after the timeout) when the agent exits before initialize responds", async () => {
+        const agentId = "agent-exit-before-init"
+        const ipcCalls: Array<[string, unknown]> = []
+        mockIPC((cmd, payload) => {
+            ipcCalls.push([cmd, payload])
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return undefined
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "nonexistent-cmd",
+            initializeTimeoutMs: 5_000
+        })
+
+        const newSession = withTestTimeout(connection.newSession("/w"), 200)
+        await vi.waitFor(() => {
+            expect(ipcCalls.some(([cmd, payload]) =>
+                cmd === "agent_write"
+                && (payload as { chunk: string }).chunk.includes("\"method\":\"initialize\"")
+            )).toBe(true)
+        })
+
+        const rejection = expect(newSession).rejects.toThrow(/agent 行程已結束（exit code 127）/)
+        await emit("agent://exit", { id: agentId, code: 127 })
+        await rejection
     })
 
     it("rejects an in-flight prompt when the agent exits", async () => {
@@ -684,5 +768,166 @@ describe("createAcpConnection", () => {
         expect(spawnCount).toBe(2)
         await expect(connection.prompt("fake-session", [{ type: "text", text: "after respawn" }]))
             .resolves.toBe("end_turn")
+    })
+
+    it("defaults the initialize timeout to 15s", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-default-timeout"
+            mockIPC((cmd) => {
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return []
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({ command: "hang-agent" })
+            const newSession = connection.newSession("/w")
+            const assertion = expect(newSession).rejects.toThrow(/timed out after 15000ms/)
+            await vi.advanceTimersByTimeAsync(15_000)
+            await assertion
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("kills with init_timeout after fetching the stderr tail when initialize times out", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-init-timeout"
+            const calls: Array<[string, unknown]> = []
+            mockIPC((cmd, payload) => {
+                calls.push([cmd, payload])
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return ["pi: fatal: could not connect"]
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({
+                command: "hang-agent",
+                initializeTimeoutMs: 15_000
+            })
+            const newSession = connection.newSession("/w")
+            const assertion = expect(newSession).rejects.toThrow(/see Settings → Logs \(source: acp\)/)
+            await vi.advanceTimersByTimeAsync(15_000)
+            await assertion
+
+            const killIndex = calls.findIndex(([cmd]) => cmd === "agent_kill")
+            const tailIndex = calls.findIndex(([cmd]) => cmd === "agent_stderr_tail")
+            expect(tailIndex).toBeGreaterThanOrEqual(0)
+            expect(killIndex).toBeGreaterThan(tailIndex)
+            expect(calls[killIndex]?.[1]).toEqual({ id: agentId, reason: "init_timeout" })
+            expect(calls[tailIndex]?.[1]).toEqual({ id: agentId })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("rejects initialize immediately when agent_write fails, without waiting for the timeout", async () => {
+        const agentId = "agent-write-fail"
+        mockIPC((cmd) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") throw new Error("write to closed pipe")
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "broken-agent",
+            initializeTimeoutMs: 60_000
+        })
+
+        await withTestTimeout(
+            expect(connection.newSession("/w")).rejects.toThrow(/write to closed pipe/),
+            200
+        )
+    })
+
+    it("surfaces an EPIPE agent crash from the exit stderr tail", async () => {
+        const agentId = "agent-epipe"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        const permissionBlocks: BlockEntry[] = []
+
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            if (cmd === "agent_stderr_tail") return []
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-acp-agent",
+            initializeTimeoutMs: 1_000,
+            onPermissionRequest: (_sessionId, block) => {
+                permissionBlocks.push(block)
+            }
+        })
+
+        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        const prompt = withTestTimeout(
+            connection.prompt("fake-session", [{ type: "text", text: "wait for crash" }]),
+            100
+        )
+        await waitForFakeMethod(fake, "session/prompt")
+        expect(permissionBlocks).toHaveLength(1)
+
+        const rejection = expect(prompt).rejects.toThrow(/agent adapter crashed \(EPIPE\)/)
+        await emit("agent://exit", { id: agentId, code: 1, stderrTail: ["node: write EPIPE"] })
+        await rejection
+    })
+
+    it("does not double-process agent output on reconnect after an initialize timeout", async () => {
+        // regression：timeout 路徑先清 agentProcessId 再 kill，若 listener guard 讀共享
+        // 可變 id，舊 listener 永不 unlisten，且會把下一條連線的 stdout 重複 enqueue
+        //（同一行 JSON-RPC 處理兩次 → transcript 變 "ReadyReady"）。
+        let spawnCount = 0
+        const fakes = new Map<string, ReturnType<typeof createFakeAcpAgentBridge>>()
+        const transcriptSnapshots: TranscriptEntry[][] = []
+
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") {
+                spawnCount += 1
+                const id = `agent-${spawnCount}`
+                fakes.set(id, createFakeAcpAgentBridge((line) => emit("agent://stdout", { id, line })))
+                return id
+            }
+            if (cmd === "agent_write") {
+                const { id, chunk } = payload as { id: string; chunk: string }
+                if (id === "agent-1") return undefined // 第一個 agent 永不回應 → initialize timeout
+                return fakes.get(id)?.write(chunk)
+            }
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-acp-agent",
+            initializeTimeoutMs: 50,
+            onPermissionRequest: (_sessionId, _block, choose) => choose("allow"),
+            onTranscript: (_sessionId, transcript) => transcriptSnapshots.push(transcript)
+        })
+
+        await expect(connection.newSession("/w")).rejects.toThrow(/timed out/)
+        // kill 後 Rust 會 emit 舊 agent 的 exit——不得波及下一條連線的全域狀態
+        await emit("agent://exit", { id: "agent-1", code: null, stderrTail: [] })
+
+        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        expect(spawnCount).toBe(2)
+        await expect(connection.prompt("fake-session", [{ type: "text", text: "hi" }]))
+            .resolves.toBe("end_turn")
+
+        const finalTranscript = transcriptSnapshots.at(-1) ?? []
+        const agentTexts = finalTranscript
+            .filter((entry): entry is TranscriptEntry & { who: string; text: string } =>
+                "who" in entry && entry.who === "agent")
+            .map((entry) => entry.text)
+        expect(agentTexts.some((text) => text.includes("Ready"))).toBe(true)
+        expect(agentTexts.some((text) => text.includes("ReadyReady"))).toBe(false)
     })
 })

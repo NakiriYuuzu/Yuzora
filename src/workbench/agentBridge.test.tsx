@@ -102,7 +102,10 @@ it("wires agent stdout through the ACP connection and updates the agent store", 
             "kind" in entry && entry.kind === "diff" && entry.text === "hello.txt"
         ))).toBe(true)
     })
-    expect(ipcCalls).toContainEqual(["agent_spawn", { command: "bunx pi-acp", cwd: "/ws-a" }])
+    expect(ipcCalls).toContainEqual([
+        "agent_spawn",
+        { command: "bunx pi-acp@0.0.31", cwd: "/ws-a" },
+    ])
 })
 
 it("kills stale reload processes and clears volatile session state when no session id is persisted", async () => {
@@ -121,7 +124,7 @@ it("kills stale reload processes and clears volatile session state when no sessi
 
     await vi.waitFor(() => {
         expect(ipcCalls).toContainEqual(["agent_list", { cwd: "/ws-a" }])
-        expect(ipcCalls).toContainEqual(["agent_kill", { id: "stale-agent" }])
+        expect(ipcCalls).toContainEqual(["agent_kill", { id: "stale-agent", reason: "app_exit" }])
     })
     await vi.waitFor(() => {
         const state = useAgentStore.getState()

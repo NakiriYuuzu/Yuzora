@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next"
+
 import { useGitStore } from "../../state/gitStore"
 
 /**
@@ -8,6 +10,7 @@ import { useGitStore } from "../../state/gitStore"
  * Empty state renders when no op has run yet.
  */
 export function ConsoleTab() {
+    const { t } = useTranslation("menus")
     const consoleLog = useGitStore((s) => s.consoleLog)
 
     return (
@@ -21,7 +24,7 @@ export function ConsoleTab() {
         >
             {consoleLog.length === 0 ? (
                 <div className="text-(--term-fg2)" style={{ padding: "20px 0" }}>
-                    No git commands run yet
+                    {t("consoleTab.empty")}
                 </div>
             ) : (
                 consoleLog.map((entry) => (

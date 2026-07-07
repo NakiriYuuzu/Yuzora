@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct SearchState(pub std::sync::Arc<AtomicU64>);
 
-const FILE_CAP: u32 = 5000;
+const FILE_CAP: u32 = 200;
+const TOTAL_MATCH_CAP: u32 = 2000;
+const PER_FILE_MATCH_CAP: usize = 500;
 const PREVIEW_LEN: usize = 200;
 
 #[derive(Clone, serde::Serialize)]
@@ -56,11 +58,15 @@ fn make_preview(line: &str) -> String {
 
 /// Collects matches for a single file. Stops the search and discards nothing
 /// extra when binary data is detected — returning `false` from `binary_data`
-/// makes the searcher quit before matching the truncated binary line.
+/// makes the searcher quit before matching the truncated binary line. `budget`
+/// is the per-file collection ceiling (the smaller of the per-file cap and the
+/// remaining global match budget); enforcing it inside `matched` keeps a single
+/// pathological file from buffering tens of thousands of matches before emit.
 struct MatchCollector<'a> {
     query: &'a str,
     case_sensitive: bool,
     matches: Vec<SearchMatch>,
+    budget: usize,
 }
 
 impl Sink for MatchCollector<'_> {
@@ -74,6 +80,9 @@ impl Sink for MatchCollector<'_> {
                 col,
                 preview: make_preview(&line),
             });
+            if self.matches.len() >= self.budget {
+                return Ok(false);
+            }
         }
         Ok(true)
     }
@@ -119,6 +128,7 @@ pub fn run_search(
     };
 
     let mut file_count: u32 = 0;
+    let mut total_matches: u32 = 0;
 
     for entry in WalkBuilder::new(root).require_git(false).build() {
         if gen_source.load(Ordering::Relaxed) != generation {
@@ -135,10 +145,14 @@ pub fn run_search(
         let mut searcher = SearcherBuilder::new()
             .binary_detection(BinaryDetection::quit(0))
             .build();
+        // Cap this file at the per-file ceiling but never past the remaining
+        // global budget, so the total never overshoots TOTAL_MATCH_CAP.
+        let budget = ((TOTAL_MATCH_CAP - total_matches) as usize).min(PER_FILE_MATCH_CAP);
         let mut collector = MatchCollector {
             query,
             case_sensitive,
             matches: Vec::new(),
+            budget,
         };
         let _ = searcher.search_path(&matcher, entry.path(), &mut collector);
 
@@ -146,13 +160,14 @@ pub fn run_search(
             continue;
         }
 
+        total_matches += collector.matches.len() as u32;
         emit(SearchEvent::Match {
             path: entry.path().to_string_lossy().into_owned(),
             matches: collector.matches,
         });
         file_count += 1;
 
-        if file_count >= FILE_CAP {
+        if total_matches >= TOTAL_MATCH_CAP || file_count >= FILE_CAP {
             emit(SearchEvent::Done {
                 truncated: true,
                 file_count,
@@ -251,10 +266,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "creates 5010 files; run with --ignored"]
     fn truncates_at_file_cap() {
         let tmp = tempfile::tempdir().unwrap();
-        for i in 0..5010 {
+        for i in 0..(FILE_CAP + 10) {
             std::fs::write(tmp.path().join(format!("f{i}.txt")), "needle\n").unwrap();
         }
         let events = collect(tmp.path(), "needle", true);
@@ -265,7 +279,57 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(events.len() - 1, 5000);
+        assert_eq!(events.len() - 1, FILE_CAP as usize);
+    }
+
+    #[test]
+    fn truncates_at_total_match_cap() {
+        // Each file holds fewer matches than the per-file cap, so the total cap
+        // (not the per-file or file cap) is what stops the walk.
+        let tmp = tempfile::tempdir().unwrap();
+        let per_file = 100usize;
+        let files = (TOTAL_MATCH_CAP as usize / per_file) + 5;
+        let body = "needle\n".repeat(per_file);
+        for i in 0..files {
+            std::fs::write(tmp.path().join(format!("f{i}.txt")), &body).unwrap();
+        }
+        let events = collect(tmp.path(), "needle", true);
+        assert!(matches!(
+            events.last(),
+            Some(SearchEvent::Done {
+                truncated: true,
+                ..
+            })
+        ));
+        let total: usize = events
+            .iter()
+            .filter_map(|e| match e {
+                SearchEvent::Match { matches, .. } => Some(matches.len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(total, TOTAL_MATCH_CAP as usize);
+    }
+
+    #[test]
+    fn caps_matches_per_file() {
+        // A single file with more matches than the per-file cap emits exactly the
+        // cap and, since the total stays under the global cap, is not truncated.
+        let tmp = tempfile::tempdir().unwrap();
+        let body = "needle\n".repeat(PER_FILE_MATCH_CAP + 50);
+        std::fs::write(tmp.path().join("a.txt"), &body).unwrap();
+        let events = collect(tmp.path(), "needle", true);
+        let SearchEvent::Match { matches, .. } = &events[0] else {
+            panic!()
+        };
+        assert_eq!(matches.len(), PER_FILE_MATCH_CAP);
+        assert!(matches!(
+            events.last(),
+            Some(SearchEvent::Done {
+                truncated: false,
+                file_count: 1
+            })
+        ));
     }
 
     #[test]

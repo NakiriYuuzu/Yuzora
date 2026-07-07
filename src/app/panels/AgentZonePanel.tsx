@@ -14,16 +14,18 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react"
+import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import type { PromptBlock, SlashCommand } from "@/agent/acpConnection"
 import type { BlockEntry, TranscriptAction, TranscriptEntry } from "@/agent/acpTypes"
+import { firstAbsolutePath } from "@/lib/paths"
 import { pathToUri } from "@/lsp/workspace"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import type { AgentTone, SessionState } from "@/state/agentStore"
 import { useAgentStore } from "@/state/agentStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
-import { useWorkspaceStore } from "@/state/workspaceStore"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
 type AgentVisual = {
   label: string
@@ -54,18 +56,19 @@ const AGENT_TYPES: Record<string, AgentVisual> = {
   pi: { label: "Pi", short: "π", color: "#6d4dd6", bg: "rgba(109,77,214,0.12)" },
 }
 
-const TONE_MAP: Record<AgentTone, ToneVisual> = {
-  idle: { label: "就緒", dot: "var(--ink-4)", bg: "var(--paper-2)", fg: "var(--ink-3)" },
+// Tone label text is localized at the call site (ActiveAgentSession) via the
+// component's `t`; this map only carries the tone's non-text styling.
+const TONE_STYLE: Record<AgentTone, Omit<ToneVisual, "label">> = {
+  idle: { dot: "var(--ink-4)", bg: "var(--paper-2)", fg: "var(--ink-3)" },
   run: {
-    label: "執行中",
     dot: "var(--yz-accent)",
     bg: "#eef6d6",
     fg: "var(--yz-accent-ink)",
     pulse: true,
   },
-  done: { label: "完成", dot: "#2bbf8a", bg: "var(--mint-soft)", fg: "#0f7a55" },
-  wait: { label: "等待", dot: "#ffb23e", bg: "var(--amber-soft)", fg: "#9a6512" },
-  fail: { label: "失敗", dot: "#e23b54", bg: "var(--danger-soft)", fg: "#b51f38" },
+  done: { dot: "#2bbf8a", bg: "var(--mint-soft)", fg: "#0f7a55" },
+  wait: { dot: "#ffb23e", bg: "var(--amber-soft)", fg: "#9a6512" },
+  fail: { dot: "#e23b54", bg: "var(--danger-soft)", fg: "#b51f38" },
 }
 
 const THREAD_KIND_STYLE: Record<ThreadKind, {
@@ -121,6 +124,15 @@ export function AgentZonePanel() {
     activeSessionId ? (s.sessions.get(activeSessionId) ?? null) : null
   )
   const authRequired = useAgentStore((s) => s.authRequired)
+  const connectionState = useAgentStore((s) => s.connectionState)
+  const connectionError = useAgentStore((s) => s.connectionError)
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const showConnectionError = !authRequired
+    && (connectionState === "error" || connectionError !== null)
+  // cwd 防呆：沒有絕對路徑的 workspace／session cwd 時顯示引導，避免以相對路徑 spawn。
+  const showWorkspaceGuide = !authRequired
+    && !showConnectionError
+    && firstAbsolutePath(workspacePath, session?.cwd) === null
 
   return (
     <div
@@ -128,6 +140,8 @@ export function AgentZonePanel() {
       className="yz-modein flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-1) bg-(--paper-0) shadow-(--shadow-lg)"
     >
       {authRequired && <AuthRequiredBanner />}
+      {showConnectionError && <ConnectionErrorBanner />}
+      {showWorkspaceGuide && <WorkspaceGuideBanner />}
       {activeSessionId && session ? (
         <ActiveAgentSession sessionId={activeSessionId} session={session} />
       ) : (
@@ -138,6 +152,7 @@ export function AgentZonePanel() {
 }
 
 function AuthRequiredBanner() {
+  const { t } = useTranslation("panels")
   const beginTerminalLogin = useAgentStore((s) => s.beginTerminalLogin)
   const retryAfterLogin = useAgentStore((s) => s.retryAfterLogin)
 
@@ -145,9 +160,9 @@ function AuthRequiredBanner() {
     <div className="flex shrink-0 items-center gap-[10px] border-b border-[rgba(214,138,12,0.3)] bg-(--amber-soft) px-[14px] py-[10px] text-[#9a6512]">
       <Bot className="size-[15px] shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <div className="text-[12.5px] font-semibold">pi 需要登入</div>
+        <div className="text-[12.5px] font-semibold">{t("agentZonePanel.authRequiredTitle")}</div>
         <div className="truncate text-[11px] text-[#9a6512]/80">
-          請先用終端完成登入，再重試建立 session。
+          {t("agentZonePanel.authRequiredDescription")}
         </div>
       </div>
       <button
@@ -155,27 +170,79 @@ function AuthRequiredBanner() {
         onClick={beginTerminalLogin}
         className="flex h-[28px] shrink-0 items-center rounded-[8px] bg-[#9a6512] px-[11px] text-[11.5px] font-semibold text-white shadow-(--shadow-xs)"
       >
-        開啟終端登入
+        {t("agentZonePanel.openTerminalLogin")}
       </button>
       <button
         type="button"
         onClick={() => void retryAfterLogin().catch(() => undefined)}
         className="flex h-[28px] shrink-0 items-center rounded-[8px] border border-[rgba(154,101,18,0.26)] bg-(--paper-0) px-[11px] text-[11.5px] font-semibold text-[#9a6512]"
       >
-        重試
+        {t("agentZonePanel.retry")}
       </button>
     </div>
   )
 }
 
+function ConnectionErrorBanner() {
+  const { t } = useTranslation("panels")
+  const connectionError = useAgentStore((s) => s.connectionError)
+  const activeSessionId = useAgentStore((s) => s.activeSessionId)
+  const session = useAgentStore((s) =>
+    activeSessionId ? (s.sessions.get(activeSessionId) ?? null) : null
+  )
+  const newSession = useAgentStore((s) => s.newSession)
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+
+  function retry() {
+    const cwd = firstAbsolutePath(workspacePath, session?.cwd)
+    if (!cwd) return
+    void newSession(cwd).catch(() => undefined)
+  }
+
+  return (
+    <div className="flex shrink-0 items-center gap-[10px] border-b border-[rgba(226,59,84,0.3)] bg-(--danger-soft) px-[14px] py-[10px] text-[#b51f38]">
+      <Bot className="size-[15px] shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[12.5px] font-semibold">{t("agentZonePanel.connectionErrorTitle")}</div>
+        <div className="truncate text-[11px] text-[#b51f38]/80">
+          {connectionError ?? t("agentZonePanel.unknownError")}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={retry}
+        className="flex h-[28px] shrink-0 items-center rounded-[8px] bg-[#b51f38] px-[11px] text-[11.5px] font-semibold text-white shadow-(--shadow-xs)"
+      >
+        {t("agentZonePanel.retry")}
+      </button>
+    </div>
+  )
+}
+
+function WorkspaceGuideBanner() {
+  const { t } = useTranslation("panels")
+  return (
+    <div className="flex shrink-0 items-center gap-[10px] border-b border-(--line-1) bg-(--paper-1) px-[14px] py-[10px] text-(--ink-2)">
+      <Bot className="size-[15px] shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[12.5px] font-semibold">{t("agentZonePanel.noWorkspaceTitle")}</div>
+        <div className="truncate text-[11px] text-(--ink-3)">
+          {t("agentZonePanel.noWorkspaceDescription")}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AgentEmptyState() {
+  const { t } = useTranslation("panels")
   return (
     <>
       <div className="flex min-h-0 flex-1 items-center justify-center">
         <EmptyState
           icon={Bot}
-          title="ACP sessions will be managed here"
-          description="Connect an agent to start a session."
+          title={t("agentZonePanel.emptyTitle")}
+          description={t("agentZonePanel.emptyDescription")}
         />
       </div>
 
@@ -183,14 +250,14 @@ function AgentEmptyState() {
         <textarea
           disabled
           rows={1}
-          aria-label="Message the agent"
-          placeholder="Message an agent…"
+          aria-label={t("agentZonePanel.messageAriaLabel")}
+          placeholder={t("agentZonePanel.messagePlaceholder")}
           className="h-[38px] min-w-0 flex-1 resize-none rounded-[10px] border border-[#7b5bff]/30 bg-(--yz-field) px-[12px] py-[9px] text-[13px] text-(--ink-3) placeholder:text-(--ink-4) disabled:cursor-not-allowed"
         />
         <button
           type="button"
           disabled
-          aria-label="Send message"
+          aria-label={t("agentZonePanel.sendAriaLabel")}
           className="flex size-[38px] shrink-0 items-center justify-center rounded-[10px] bg-(--ink-1) text-(--paper-0) disabled:cursor-not-allowed disabled:opacity-50"
         >
           <SendHorizontal className="size-[16px]" aria-hidden="true" />
@@ -207,6 +274,7 @@ function ActiveAgentSession({
   sessionId: string
   session: SessionState
 }) {
+  const { t } = useTranslation("panels")
   const [composer, setComposer] = useState("")
   const [slashOpen, setSlashOpen] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
@@ -214,11 +282,14 @@ function ActiveAgentSession({
   const sendPrompt = useAgentStore((s) => s.sendPrompt)
   const cancel = useAgentStore((s) => s.cancel)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-  const activeFilePath = useWorkspaceStore((s) => s.groups[s.activeGroupIndex]?.activePath ?? null)
+  const activeFilePath = useWorkspaceStore((s) => {
+    const path = s.groups[s.activeGroupIndex]?.activePath ?? null
+    return path === PREVIEW_TAB_PATH ? null : path
+  })
   const [removedFilePath, setRemovedFilePath] = useState<string | null>(null)
 
-  const agent = agentVisual(session.agentLabel)
-  const tone = TONE_MAP[session.tone]
+  const agent = agentVisual(session.agentLabel, t("agentZonePanel.agentFallback"))
+  const tone: ToneVisual = { ...TONE_STYLE[session.tone], label: t(`agentZonePanel.tone.${session.tone}`) }
   const commands = useMemo(
     () => (slashOpen ? filterCommands(composer, sessionId) : []),
     [composer, filterCommands, sessionId, slashOpen]
@@ -256,6 +327,9 @@ function ActiveAgentSession({
     if (turnInProgress) return
     const prompt = composer.trim()
     if (!prompt) return
+    // cwd 防呆：沒有絕對路徑就不 spawn（引導訊息由 WorkspaceGuideBanner 顯示）。
+    const cwd = firstAbsolutePath(workspacePath, session.cwd)
+    if (!cwd) return
     const promptPayload: string | PromptBlock[] = attachedFilePath && attachedFileName
       ? [
           { type: "text", text: prompt },
@@ -265,7 +339,7 @@ function ActiveAgentSession({
     setComposer("")
     setSlashOpen(false)
     setSlashIndex(0)
-    void sendPrompt(workspacePath ?? session.cwd ?? ".", promptPayload).catch(() => undefined)
+    void sendPrompt(cwd, promptPayload).catch(() => undefined)
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -349,7 +423,7 @@ function ActiveAgentSession({
               </span>
               <button
                 type="button"
-                aria-label={`移除 ${attachedFileName} 檔案脈絡`}
+                aria-label={t("agentZonePanel.removeFileContext", { fileName: attachedFileName })}
                 onClick={() => setRemovedFilePath(attachedFilePath)}
                 style={{
                   display: "inline-flex",
@@ -373,8 +447,8 @@ function ActiveAgentSession({
         )}
         <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "11px 14px" }}>
           <IconButton
-            label="Slash commands"
-            title="Slash commands & skills"
+            label={t("agentZonePanel.slashCommands")}
+            title={t("agentZonePanel.slashCommandsTitle")}
             icon={Slash}
             onClick={openSlash}
             style={{
@@ -407,10 +481,10 @@ function ActiveAgentSession({
             <textarea
               rows={1}
               value={composer}
-              aria-label="輸入給 Agent 的訊息"
+              aria-label={t("agentZonePanel.composerAriaLabel")}
               onChange={(event) => updateComposer(event.target.value)}
               onKeyDown={onComposerKeyDown}
-              placeholder={`回覆 ${agent.label} — type / for commands`}
+              placeholder={t("agentZonePanel.replyPlaceholder", { agent: agent.label })}
               className="h-[36px] min-w-0 flex-1 resize-none bg-transparent pt-[9px] text-[13px] text-(--ink-1) outline-none placeholder:text-(--ink-4)"
             />
             <span
@@ -423,8 +497,8 @@ function ActiveAgentSession({
 
           {turnInProgress ? (
             <IconButton
-              label="取消 Agent turn"
-              title="Cancel"
+              label={t("agentZonePanel.cancelAriaLabel")}
+              title={t("agentZonePanel.cancel")}
               icon={Square}
               onClick={() => cancel(sessionId)}
               style={{
@@ -438,8 +512,8 @@ function ActiveAgentSession({
             />
           ) : (
             <IconButton
-              label="送出訊息"
-              title="Send"
+              label={t("agentZonePanel.sendAriaLabel")}
+              title={t("agentZonePanel.send")}
               icon={SendHorizontal}
               onClick={submitPrompt}
               disabled={!composer.trim()}
@@ -468,6 +542,7 @@ function SessionHeader({
   agent: AgentVisual
   tone: ToneVisual
 }) {
+  const { t } = useTranslation("panels")
   return (
     <div
       style={{
@@ -567,7 +642,7 @@ function SessionHeader({
             ACP
           </span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>
-            {session.model ?? "model pending"}
+            {session.model ?? t("agentZonePanel.modelPending")}
           </span>
         </div>
       </div>
@@ -612,6 +687,7 @@ function TranscriptList({
   session: SessionState
   agent: AgentVisual
 }) {
+  const { t } = useTranslation("panels")
   return (
     <div
       className="yzs"
@@ -628,7 +704,7 @@ function TranscriptList({
     >
       {session.transcript.length === 0 ? (
         <div className="flex min-h-full items-center justify-center text-[12.5px] text-(--ink-3)">
-          尚無 transcript
+          {t("agentZonePanel.noTranscript")}
         </div>
       ) : (
         session.transcript.map((entry, index) => (
@@ -653,6 +729,7 @@ function TranscriptEntryRow({
   sessionId: string
   agent: AgentVisual
 }) {
+  const { t } = useTranslation("panels")
   if ("who" in entry) {
     const you = entry.who === "you"
     return (
@@ -674,7 +751,7 @@ function TranscriptEntryRow({
             padding: "0 4px",
           }}
         >
-          {you ? "你" : agent.label}
+          {you ? t("agentZonePanel.you") : agent.label}
         </span>
         <div
           style={{
@@ -812,11 +889,12 @@ function SlashPopup({
   selectedIndex: number
   onPick: (command: SlashCommand) => void
 }) {
+  const { t } = useTranslation("panels")
   return (
     <div
       className="yzs"
       role="listbox"
-      aria-label="Slash commands"
+      aria-label={t("agentZonePanel.slashCommands")}
       style={{
         position: "absolute",
         left: 14,
@@ -845,10 +923,10 @@ function SlashPopup({
           padding: "8px 10px 5px",
         }}
       >
-        Commands
+        {t("agentZonePanel.commandsHeader")}
       </div>
       {commands.length === 0 ? (
-        <div className="px-[11px] py-[10px] text-[12px] text-(--ink-3)">沒有可用 commands</div>
+        <div className="px-[11px] py-[10px] text-[12px] text-(--ink-3)">{t("agentZonePanel.noCommands")}</div>
       ) : (
         commands.map((command, index) => {
           const selected = index === selectedIndex
@@ -1154,11 +1232,11 @@ function entryKey(entry: TranscriptEntry): string {
   return "who" in entry ? `${entry.who}:${entry.text}` : `${entry.kind}:${entry.text}`
 }
 
-function agentVisual(label: string): AgentVisual {
+function agentVisual(label: string, fallback: string): AgentVisual {
   const normalized = label.trim().toLowerCase()
   const known = Object.entries(AGENT_TYPES).find(([key]) => normalized.includes(key))?.[1]
   if (known) return known
-  const display = label.trim() || "Agent"
+  const display = label.trim() || fallback
   return {
     label: display,
     short: display.slice(0, 1).toUpperCase(),

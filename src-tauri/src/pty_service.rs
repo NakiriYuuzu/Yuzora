@@ -72,6 +72,9 @@ impl PtyManager {
         }
     }
 
+    // Args mirror the `pty_open` IPC command shape; grouping into a struct would
+    // diverge from the other pty commands and the JS call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         self: &Arc<Self>,
         workspace: &str,
@@ -592,6 +595,7 @@ fn default_shell() -> PathBuf {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn pty_open(
     state: tauri::State<'_, PtyState>,
     workspace: String,

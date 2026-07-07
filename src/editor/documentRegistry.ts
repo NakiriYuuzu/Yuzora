@@ -21,6 +21,25 @@ export function dropDocument(path: string) {
     registry.delete(path)
 }
 
+// Move a cached document from oldPath to newPath after a rename so a re-opened
+// tab hits the cache under the new key instead of the (now-gone) old one.
+// `liveContent`, when given, snapshots the live editor buffer — which holds
+// newer text than the registry until the pane unmounts — so unsaved edits
+// survive the remount. Generations are deliberately left untouched: the
+// EditorArea remount is already forced by the path portion of its key changing.
+export function renameDocument(oldPath: string, newPath: string, liveContent?: string) {
+    const entry = registry.get(oldPath)
+    if (!entry) return
+    registry.delete(oldPath)
+    if (liveContent !== undefined) {
+        const r = entry.result
+        if (r.kind === "full" || r.kind === "limited") {
+            entry.result = { ...r, content: liveContent }
+        }
+    }
+    registry.set(newPath, entry)
+}
+
 export function updateBuffer(path: string, content: string, generation: number) {
     if (generation !== documentGeneration(path)) return
     const entry = registry.get(path)

@@ -1,8 +1,61 @@
 import { expect, test, afterEach } from "vitest"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
-import { getDocument, updateBuffer, dropDocument, reloadDocument, documentGeneration } from "./documentRegistry"
+import {
+    getDocument,
+    updateBuffer,
+    dropDocument,
+    renameDocument,
+    reloadDocument,
+    documentGeneration
+} from "./documentRegistry"
 
 afterEach(() => clearMocks())
+
+test("renameDocument 把快取移到新 key，新 path getDocument 命中快取（不再走 IPC），舊 path miss", async () => {
+    let calls = 0
+    mockIPC((cmd) => {
+        if (cmd === "open_file") {
+            calls++
+            return { kind: "full", content: "disk", size: 4 }
+        }
+        return undefined
+    })
+    await getDocument("/w/old.ts")
+    renameDocument("/w/old.ts", "/w/new.ts")
+    const moved = await getDocument("/w/new.ts")
+    expect(moved.result.kind).toBe("full")
+    // new path served from the moved cache entry — no second open_file.
+    expect(calls).toBe(1)
+    // old path is now a miss → re-reads from disk.
+    await getDocument("/w/old.ts")
+    expect(calls).toBe(2)
+})
+
+test("renameDocument 帶 liveContent 時把未存檔內容一起帶到新 key（rename 保留未存編輯）", async () => {
+    mockIPC((cmd) =>
+        cmd === "open_file" ? { kind: "full", content: "saved", size: 5 } : undefined
+    )
+    await getDocument("/w/old.ts")
+    renameDocument("/w/old.ts", "/w/new.ts", "unsaved-edit")
+    const moved = await getDocument("/w/new.ts")
+    expect(moved.result.kind).toBe("full")
+    if (moved.result.kind === "full") expect(moved.result.content).toBe("unsaved-edit")
+})
+
+test("renameDocument 對未開啟的 path 為 no-op（不會憑空建立新 key）", async () => {
+    let calls = 0
+    mockIPC((cmd) => {
+        if (cmd === "open_file") {
+            calls++
+            return { kind: "full", content: "disk", size: 4 }
+        }
+        return undefined
+    })
+    renameDocument("/w/never.ts", "/w/target.ts")
+    // target was never populated → getDocument must go to IPC.
+    await getDocument("/w/target.ts")
+    expect(calls).toBe(1)
+})
 
 test("updateBuffer 寫回 buffer，再次 getDocument 回未存檔內容", async () => {
     mockIPC((cmd) =>

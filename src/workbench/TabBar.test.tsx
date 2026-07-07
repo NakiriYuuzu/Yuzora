@@ -1,11 +1,35 @@
-import { expect, test, afterEach } from "vitest"
+import { expect, test, afterEach, beforeEach, vi } from "vitest"
 import { render, screen, fireEvent, waitFor } from "@testing-library/react"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
+
+// The dirty-close flow now routes through confirmDialogStore's imperative gate
+// (replacing the Tauri native confirm()). Mock the store so tests drive the
+// decision, mock saveDirtyTab so the "save" branch doesn't touch the editor/ipc,
+// and mock @tauri-apps/plugin-dialog so we can assert native confirm is gone.
+// vi.hoisted because these are referenced inside the hoisted vi.mock factories
+// (plugin-dialog loads very early via contextMenuStore, before plain consts init).
+const { requestUnsavedDecision, nativeConfirm } = vi.hoisted(() => ({
+    requestUnsavedDecision: vi.fn(),
+    nativeConfirm: vi.fn()
+}))
+vi.mock("../state/confirmDialogStore", () => ({
+    useConfirmDialogStore: { getState: () => ({ requestUnsavedDecision }) }
+}))
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: nativeConfirm, message: vi.fn() }))
+vi.mock("../editor/saveDocument", () => ({ saveDirtyTab: vi.fn() }))
+
 import { TabBar } from "./TabBar"
-import { useWorkspaceStore } from "../state/workspaceStore"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { useContextMenuStore } from "../state/contextMenuStore"
 import { useUiStore, uiInitialState } from "../state/uiStore"
 import { useMarkdownPreviewStore } from "./MarkdownPreview"
+import { saveDirtyTab } from "../editor/saveDocument"
+
+beforeEach(() => {
+    requestUnsavedDecision.mockReset()
+    nativeConfirm.mockReset()
+    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue(undefined)
+})
 
 afterEach(() => {
     clearMocks()
@@ -44,41 +68,46 @@ test("dirty tab 顯示標記", () => {
     expect(screen.getByText("b.ts").closest(".tab")?.querySelector(".dirty-dot")).toBeTruthy()
 })
 
-test("dirty tab 關閉時 confirm 回 false → tab 仍在", async () => {
-    mockIPC((cmd) => {
-        if (cmd === "log_event") return null
-        if (cmd === "plugin:dialog|message") return "Cancel"
-        return undefined
-    })
+test("dirty tab 關閉走新 modal：cancel → tab 仍在、不呼叫 native confirm", async () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    requestUnsavedDecision.mockResolvedValue("cancel")
     seedTabs()
     render(<TabBar groupIndex={0} />)
     fireEvent.click(screen.getByLabelText("Close b.ts"))
-    await waitFor(() => {
-        expect(
-            useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")
-        ).toBe(true)
-    })
+    await waitFor(() => expect(requestUnsavedDecision).toHaveBeenCalled())
+    expect(
+        useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")
+    ).toBe(true)
+    expect(saveDirtyTab).not.toHaveBeenCalled()
+    expect(nativeConfirm).not.toHaveBeenCalled()
 })
 
-test("dirty tab 關閉時 confirm 回 true → tab 被關、confirm 有被呼叫", async () => {
-    let confirmCalled = false
-    mockIPC((cmd) => {
-        if (cmd === "log_event") return null
-        if (cmd === "plugin:dialog|message") {
-            confirmCalled = true
-            return "Ok"
-        }
-        return undefined
-    })
+test("dirty tab 關閉走新 modal：discard → tab 被關、不存檔", async () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    requestUnsavedDecision.mockResolvedValue("discard")
     seedTabs()
     render(<TabBar groupIndex={0} />)
     fireEvent.click(screen.getByLabelText("Close b.ts"))
-    await waitFor(() => {
+    await waitFor(() =>
         expect(
             useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")
         ).toBe(false)
-    })
-    expect(confirmCalled).toBe(true)
+    )
+    expect(saveDirtyTab).not.toHaveBeenCalled()
+    expect(nativeConfirm).not.toHaveBeenCalled()
+})
+
+test("dirty tab 關閉走新 modal：save → 先 saveDirtyTab 再關", async () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    requestUnsavedDecision.mockResolvedValue("save")
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+    fireEvent.click(screen.getByLabelText("Close b.ts"))
+    await waitFor(() => expect(saveDirtyTab).toHaveBeenCalledWith("/w/b.ts"))
+    expect(
+        useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")
+    ).toBe(false)
+    expect(nativeConfirm).not.toHaveBeenCalled()
 })
 
 test("externallyModified tab 點 ⟳ 主動開啟解決器（spec 入口 b）", () => {
@@ -216,6 +245,52 @@ test("關閉 .md 分頁時清除其 preview 開關狀態（W5）", async () => {
     await waitFor(() =>
         expect(useMarkdownPreviewStore.getState().isOpen("/w/r.md")).toBe(false)
     )
+})
+
+function seedPreviewTab() {
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        activeGroupIndex: 0,
+        groups: [
+            {
+                activePath: PREVIEW_TAB_PATH,
+                tabs: [
+                    { path: "/w/a.ts", name: "a.ts", dirty: false, externallyModified: false },
+                    {
+                        path: PREVIEW_TAB_PATH,
+                        name: "Preview",
+                        dirty: false,
+                        externallyModified: false,
+                        kind: "preview"
+                    }
+                ]
+            }
+        ]
+    })
+}
+
+test("preview 分頁渲染標籤、無 dirty 點、無 markdown preview toggle", () => {
+    seedPreviewTab()
+    render(<TabBar groupIndex={0} />)
+    const previewTab = screen.getByText("Preview").closest(".tab")
+    expect(previewTab).toBeTruthy()
+    expect(previewTab?.querySelector(".dirty-dot")).toBeNull()
+    expect(screen.queryByLabelText("Toggle preview Preview")).toBeNull()
+})
+
+test("關閉 preview 分頁走 closePreviewTab（無 confirm、singleton 移除）", async () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedPreviewTab()
+    render(<TabBar groupIndex={0} />)
+    fireEvent.click(screen.getByLabelText("Close Preview"))
+    await waitFor(() =>
+        expect(
+            useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === PREVIEW_TAB_PATH)
+        ).toBe(false)
+    )
+    // 檔案分頁保留並回補為 active。
+    expect(useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/a.ts")).toBe(true)
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/a.ts")
 })
 
 test("右鍵 tab 開啟 tab 選單並帶 path 與 groupIndex", () => {

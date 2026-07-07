@@ -1,5 +1,6 @@
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener"
 import { writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { useTranslation } from "react-i18next"
 import type { OpenFileResult } from "../lib/types"
 
 function formatSize(bytes: number): string {
@@ -13,17 +14,18 @@ export function SpecialFileView({
     path: string
     result: Extract<OpenFileResult, { kind: "tooLarge" | "binary" }>
 }) {
+    const { t } = useTranslation("panels")
     return (
         <div className="special-file">
             <p>
                 {result.kind === "tooLarge"
-                    ? `檔案過大（${formatSize(result.size)}），不載入編輯器`
-                    : "二進位檔案，無法以文字編輯器開啟"}
+                    ? t("specialFileView.tooLarge", { size: formatSize(result.size) })
+                    : t("specialFileView.binary")}
             </p>
             <div className="special-actions">
-                <button onClick={() => void revealItemInDir(path)}>在系統中顯示</button>
-                <button onClick={() => void openPath(path)}>以外部程式開啟</button>
-                <button onClick={() => void writeText(path)}>複製路徑</button>
+                <button onClick={() => void revealItemInDir(path)}>{t("specialFileView.revealInSystem")}</button>
+                <button onClick={() => void openPath(path)}>{t("specialFileView.openExternally")}</button>
+                <button onClick={() => void writeText(path)}>{t("specialFileView.copyPath")}</button>
             </div>
         </div>
     )

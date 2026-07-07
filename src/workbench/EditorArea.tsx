@@ -1,8 +1,10 @@
 import { FileCode2 } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import { EmptyState } from "@/app/workbench/EmptyState"
-import { useWorkspaceStore } from "../state/workspaceStore"
+import { PreviewPanel } from "@/app/panels/PreviewPanel"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { EditorPane } from "../editor/EditorPane"
 import { documentGeneration } from "../editor/documentRegistry"
 import { contextMenuHandler } from "../state/contextMenuStore"
@@ -14,6 +16,7 @@ const ACTION_IDLE_CLASS = "text-(--ink-3) hover:bg-(--paper-3) hover:text-(--ink
 const ACTION_ACTIVE_CLASS = "bg-(--yz-accent)/16 text-(--yz-accent-ink)"
 
 export function EditorArea() {
+    const { t } = useTranslation("menus")
     const groups = useWorkspaceStore((s) => s.groups)
     const splitRight = useWorkspaceStore((s) => s.splitRight)
     const closeSplit = useWorkspaceStore((s) => s.closeSplit)
@@ -38,8 +41,16 @@ export function EditorArea() {
                                 <div className="group-actions flex shrink-0 items-center gap-[2px] pb-[7px]">
                                     <button
                                         type="button"
-                                        aria-label={groups.length < 2 ? "向右分割" : "關閉分割"}
-                                        title={groups.length < 2 ? "Split editor" : "Close split"}
+                                        aria-label={
+                                            groups.length < 2
+                                                ? t("editorArea.splitRightAriaLabel")
+                                                : t("editorArea.closeSplitAriaLabel")
+                                        }
+                                        title={
+                                            groups.length < 2
+                                                ? t("editorArea.splitTitle")
+                                                : t("editorArea.closeSplitTitle")
+                                        }
                                         onClick={groups.length < 2 ? splitRight : closeSplit}
                                         className={cn(
                                             ACTION_BUTTON_CLASS,
@@ -63,7 +74,9 @@ export function EditorArea() {
                                 </div>
                             )}
                         </div>
-                        {group.activePath ? (
+                        {group.activePath === PREVIEW_TAB_PATH ? (
+                            <PreviewPanel />
+                        ) : group.activePath ? (
                             <EditorPane
                                 key={`${group.activePath}:${documentGeneration(group.activePath)}`}
                                 path={group.activePath}
@@ -72,8 +85,8 @@ export function EditorArea() {
                             <div className="empty-editor flex min-h-0 min-w-0 flex-1 items-center justify-center">
                                 <EmptyState
                                     icon={FileCode2}
-                                    title="Open a project to start editing"
-                                    description="Files and tabs will appear here once a project is open."
+                                    title={t("editorArea.emptyTitle")}
+                                    description={t("editorArea.emptyDescription")}
                                 />
                             </div>
                         )}

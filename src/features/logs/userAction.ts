@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
+import { invoke } from "@/lib/ipc"
 
 export function logUserAction(
     event: string,
@@ -15,5 +15,7 @@ export function logUserAction(
             message,
             metadata
         }
-    }).then(() => undefined)
+    })
+        .then(() => undefined)
+        .catch(() => undefined)
 }

@@ -3,6 +3,7 @@ import { act, cleanup, render, waitFor } from "@testing-library/react"
 import type { EditorView } from "@codemirror/view"
 
 import { useWorkspaceStore } from "../state/workspaceStore"
+import { useEditorSettingsStore } from "../state/editorSettingsStore"
 
 // Spy on the view registry so we can assert the exact (path, view) call args.
 const registerView = vi.fn()
@@ -41,6 +42,7 @@ afterEach(() => {
     cleanup()
     vi.clearAllMocks()
     useWorkspaceStore.setState({ pendingReveal: null })
+    useEditorSettingsStore.setState({ fontSize: 13, minimap: false })
 })
 
 describe("EditorPane", () => {
@@ -63,5 +65,35 @@ describe("EditorPane", () => {
                 useWorkspaceStore.getState().requestReveal(PATH, 0)
             })
         ).not.toThrow()
+    })
+
+    it("applies the editorSettings font size as a CSS variable on the view root at creation (F6)", async () => {
+        useEditorSettingsStore.setState({ fontSize: 15, minimap: false })
+        render(<EditorPane path={PATH} />)
+        await waitFor(() => expect(registerView).toHaveBeenCalled())
+        const view = registerView.mock.calls[0][1] as EditorView
+        expect(view.dom.style.getPropertyValue("--yz-editor-font-size")).toBe("15px")
+    })
+
+    it("changing the font size live updates the open view's CSS variable (F6)", async () => {
+        render(<EditorPane path={PATH} />)
+        await waitFor(() => expect(registerView).toHaveBeenCalled())
+        const view = registerView.mock.calls[0][1] as EditorView
+        expect(view.dom.style.getPropertyValue("--yz-editor-font-size")).toBe("13px")
+        act(() => useEditorSettingsStore.getState().setFontSize(14))
+        expect(view.dom.style.getPropertyValue("--yz-editor-font-size")).toBe("14px")
+    })
+
+    it("mounts the minimap strip when the setting is on and toggles it live via the compartment (F6)", async () => {
+        useEditorSettingsStore.setState({ fontSize: 13, minimap: true })
+        render(<EditorPane path={PATH} />)
+        await waitFor(() => expect(registerView).toHaveBeenCalled())
+        const view = registerView.mock.calls[0][1] as EditorView
+        // Built with minimap on: one bar per line of the mocked "one\ntwo\nthree".
+        expect(view.dom.querySelectorAll(".yz-minimap-bar").length).toBe(3)
+        act(() => useEditorSettingsStore.getState().setMinimap(false))
+        expect(view.dom.querySelector(".yz-minimap")).toBeNull()
+        act(() => useEditorSettingsStore.getState().setMinimap(true))
+        expect(view.dom.querySelector(".yz-minimap")).not.toBeNull()
     })
 })

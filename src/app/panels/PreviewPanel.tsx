@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react"
+import { openUrl } from "@tauri-apps/plugin-opener"
+import { isTauri } from "@/lib/platform"
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  ExternalLink,
   FileText,
   Monitor,
   MonitorPlay,
@@ -11,16 +14,29 @@ import {
   Smartphone,
   Square,
 } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { loadPreviewSettings } from "@/app/workbench/SettingsDialog"
-import { devServerDetect, devServerStart, devServerStop } from "@/lib/ipc"
-import { strings } from "@/lib/i18n"
+import i18n from "@/lib/i18n"
+import {
+  devServerDetect,
+  devServerStart,
+  devServerStop,
+  previewBack,
+  previewClose,
+  previewForward,
+  previewOpenUrl,
+  previewReload,
+  previewSetBounds,
+  previewSetVisible,
+} from "@/lib/ipc"
 import type { DevServerCandidate, DevServerInfo, DevServerStatus } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { PreviewFrame } from "@/preview/PreviewFrame"
 import { suppressContextMenu } from "@/state/contextMenuStore"
-import { type PreviewNavState, usePreviewStore } from "@/state/previewStore"
+import { useAnyOverlayOpen } from "@/state/overlayStore"
+import { isLocalPreviewUrl, type PreviewNavState, usePreviewStore } from "@/state/previewStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -34,12 +50,13 @@ const EMPTY_NAV: PreviewNavState = {
 
 type FlowState = "idle" | "detecting" | "occupied" | "no-candidates"
 
-function statusLabel(status: DevServerStatus | null): string {
-  if (!status) return strings.preview.noDevServer
-  if (status.status === "starting") return "Starting"
-  if (status.status === "running") return "Running"
-  if (status.status === "exited") return "Exited"
-  return "Failed"
+// Non-null statuses map to fixed short labels; the null (no-server) label is
+// localized at the call site with the component's `t` (see the status badge).
+function statusLabel(status: DevServerStatus): string {
+  if (status.status === "starting") return i18n.t("previewPanel.status.starting", { ns: "panels" })
+  if (status.status === "running") return i18n.t("previewPanel.status.running", { ns: "panels" })
+  if (status.status === "exited") return i18n.t("previewPanel.status.exited", { ns: "panels" })
+  return i18n.t("previewPanel.status.failed", { ns: "panels" })
 }
 
 function statusTone(status: DevServerStatus | null): string {
@@ -71,18 +88,21 @@ function firstCandidatePort(candidate: DevServerCandidate | null): number | null
 function parsePortOverride(value: string): { port: number | null; hint: string | null } {
   const trimmed = value.trim()
   if (!trimmed) return { port: null, hint: null }
+  const invalidHint = i18n.t("previewPanel.portOverrideInvalid", { ns: "panels", value: trimmed })
   if (!/^\d+$/.test(trimmed)) {
-    return { port: null, hint: `Preview port override "${trimmed}" 無效，已改用偵測到的 port。` }
+    return { port: null, hint: invalidHint }
   }
 
   const port = Number(trimmed)
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return { port: null, hint: `Preview port override "${trimmed}" 無效，已改用偵測到的 port。` }
+    return { port: null, hint: invalidHint }
   }
   return { port, hint: null }
 }
 
 export function PreviewPanel() {
+  const { t } = useTranslation("preview")
+  const { t: tp } = useTranslation("panels")
   const workspace = useWorkspaceStore((s) => s.workspacePath)
   const devServer = usePreviewStore((s) =>
     workspace ? s.devServerForWorkspace(workspace) : null
@@ -91,6 +111,10 @@ export function PreviewPanel() {
   const nav = workspace ? navMap[workspace] ?? EMPTY_NAV : EMPTY_NAV
   const navigate = usePreviewStore((s) => s.navigate)
   const openSettings = useUiStore((s) => s.openSettings)
+  // EditorPanel (and this panel) stays mounted but CSS-hidden when the mode is not
+  // "files"; a native webview isn't affected by `display:none`, so gate its
+  // visibility on the mode too — otherwise it floats over the Git/DB/SSH panels.
+  const mode = useUiStore((s) => s.mode)
   const [flowState, setFlowState] = useState<FlowState>("idle")
   const [candidates, setCandidates] = useState<DevServerCandidate[]>([])
   const [runningPorts, setRunningPorts] = useState<number[]>([])
@@ -98,10 +122,18 @@ export function PreviewPanel() {
   const [portOverrideHint, setPortOverrideHint] = useState<string | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
 
+  const overlayOpen = useAnyOverlayOpen()
+  const [urlDraft, setUrlDraft] = useState<string | null>(null)
+  const webviewHostRef = useRef<HTMLDivElement | null>(null)
+
   const status = devServer?.status ?? null
   const primaryCandidate = candidates[0] ?? null
-  const canGoBack = !!workspace && nav.backStack.length > 0
-  const canGoForward = !!workspace && nav.forwardStack.length > 0
+  // External https renders in a native child webview; localhost/127.0.0.1 stays
+  // in the iframe. The webview owns its own history, so back/forward drive the
+  // Rust commands there and the previewStore history stack only for the iframe.
+  const external = !!nav.url && !isLocalPreviewUrl(nav.url)
+  const canGoBack = !!workspace && (external || nav.backStack.length > 0)
+  const canGoForward = !!workspace && (external || nav.forwardStack.length > 0)
   const canReload = !!workspace && !!nav.url
   const frameWidth = nav.frame === "mobile" ? 390 : "100%"
   const attemptRef = useRef(0)
@@ -121,6 +153,99 @@ export function PreviewPanel() {
     if (localhostPort(nav.url) === port) return
     navigate(workspace, portUrl(port))
   }, [devServer, navigate, nav.url, workspace])
+
+  // --- external-URL child webview (P3) ---
+  // Open/navigate the native webview to the external URL, positioned over the
+  // placeholder <div>. previewOpenUrl reuses an existing webview (just navigates),
+  // so re-running on url change doesn't recreate it.
+  useEffect(() => {
+    if (!isTauri() || !external || !nav.url) return
+    const host = webviewHostRef.current
+    if (!host) return
+    const rect = host.getBoundingClientRect()
+    void previewOpenUrl(nav.url, rect.left, rect.top, rect.width, rect.height)
+  }, [external, nav.url])
+
+  // Close the webview when the preview is no longer showing an external URL, and
+  // on unmount (the panel unmounts when another tab becomes active — a stray
+  // native layer would otherwise float over the editor).
+  useEffect(() => {
+    if (!isTauri()) return
+    if (!external) void previewClose()
+  }, [external])
+  useEffect(() => {
+    return () => {
+      if (isTauri()) void previewClose()
+    }
+  }, [])
+
+  // Track the placeholder's bounds so the native layer stays glued to it as the
+  // panel resizes (nav width, terminal drawer, responsive-frame toggle, window).
+  useEffect(() => {
+    if (!isTauri() || !external) return
+    const host = webviewHostRef.current
+    if (!host) return
+    const update = () => {
+      const rect = host.getBoundingClientRect()
+      void previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+    }
+    const observer = new ResizeObserver(update)
+    observer.observe(host)
+    window.addEventListener("resize", update)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", update)
+    }
+  }, [external])
+
+  // Visibility gate: show the webview only when the preview is the visible
+  // foreground — Files mode, no overlay open (the webview paints above every DOM
+  // overlay). Recompute bounds on show so it doesn't flash at a stale position.
+  const previewVisible = mode === "files" && !overlayOpen
+  useEffect(() => {
+    if (!isTauri() || !external) return
+    if (previewVisible) {
+      const host = webviewHostRef.current
+      if (host) {
+        const rect = host.getBoundingClientRect()
+        void previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+      }
+      void previewSetVisible(true)
+    } else {
+      void previewSetVisible(false)
+    }
+  }, [external, previewVisible])
+
+  const submitUrl = () => {
+    if (!workspace || urlDraft === null) return
+    const raw = urlDraft.trim()
+    if (!raw) {
+      setUrlDraft(null)
+      return
+    }
+    const scheme = /^(localhost|127\.0\.0\.1)(:|\/|$)/.test(raw) ? "http" : "https"
+    const normalized = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `${scheme}://${raw}`
+    if (usePreviewStore.getState().navigate(workspace, normalized)) setUrlDraft(null)
+  }
+
+  const goBackPreview = () => {
+    if (!workspace) return
+    if (external) void previewBack()
+    else usePreviewStore.getState().goBack(workspace)
+  }
+  const goForwardPreview = () => {
+    if (!workspace) return
+    if (external) void previewForward()
+    else usePreviewStore.getState().goForward(workspace)
+  }
+  const reloadPreview = () => {
+    if (!workspace) return
+    if (external) void previewReload()
+    else usePreviewStore.getState().reload(workspace)
+  }
+  const openExternally = () => {
+    if (nav.url) void openUrl(nav.url).catch(() => {})
+  }
 
   const startCandidate = async (
     candidate: DevServerCandidate,
@@ -253,7 +378,17 @@ export function PreviewPanel() {
             className="flex min-h-0 max-w-full flex-1 overflow-hidden rounded-[8px] border border-(--line-1) bg-(--paper-0)"
             style={{ width: frameWidth, flex: nav.frame === "mobile" ? "0 1 auto" : "1 1 auto" }}
           >
-            <PreviewFrame url={nav.url} reloadNonce={nav.reloadNonce} />
+            {external ? (
+              // Placeholder the native child webview is positioned over; its
+              // bounds are tracked by the ResizeObserver effect above.
+              <div
+                ref={webviewHostRef}
+                data-testid="preview-webview-host"
+                className="min-h-0 flex-1 bg-white"
+              />
+            ) : (
+              <PreviewFrame url={nav.url} reloadNonce={nav.reloadNonce} />
+            )}
           </div>
         </div>
       )
@@ -264,7 +399,7 @@ export function PreviewPanel() {
         <div className="flex min-h-0 flex-1 items-center justify-center p-[18px]">
           <div className="flex max-w-[360px] flex-col items-center gap-[10px] text-center">
             <AlertTriangle className="size-[28px] text-[#b4232a]" aria-hidden="true" />
-            <p className="text-[13px] font-medium text-(--ink-1)">{strings.preview.failedTitle}</p>
+            <p className="text-[13px] font-medium text-(--ink-1)">{t("failedTitle")}</p>
             <p className="text-[12.5px] text-(--ink-3)">{status.reason}</p>
             <div className="flex flex-wrap items-center justify-center gap-[8px]">
               <button
@@ -272,7 +407,7 @@ export function PreviewPanel() {
                 onClick={() => void detectAndStart()}
                 className="h-[26px] rounded-[7px] bg-(--ink-1) px-[10px] text-[12px] text-(--paper-0)"
               >
-                {strings.preview.retryStart}
+                {t("retryStart")}
               </button>
               <button
                 type="button"
@@ -280,7 +415,7 @@ export function PreviewPanel() {
                 className="flex h-[26px] items-center gap-[5px] rounded-[7px] border border-(--line-1) px-[10px] text-[12px] text-(--ink-2) hover:bg-(--paper-2)"
               >
                 <FileText className="size-[12px]" aria-hidden="true" />
-                檢視 logs
+                {tp("previewPanel.viewLogs")}
               </button>
             </div>
           </div>
@@ -293,9 +428,9 @@ export function PreviewPanel() {
         <div className="flex min-h-0 flex-1 items-center justify-center p-[18px]">
           <div className="flex max-w-[420px] flex-col items-center gap-[10px] text-center">
             <Monitor className="size-[28px] text-(--ink-3)" aria-hidden="true" />
-            <p className="text-[13px] font-medium text-(--ink-1)">{strings.preview.portOccupied}</p>
+            <p className="text-[13px] font-medium text-(--ink-1)">{t("portOccupied")}</p>
             <p className="text-[12.5px] text-(--ink-3)">
-              port {runningPorts.join(", ")} 已有服務在執行，可以直接連接、改 port 後啟動，或重新偵測。
+              {tp("previewPanel.portOccupiedDescription", { ports: runningPorts.join(", ") })}
             </p>
             <div className="flex flex-wrap items-center justify-center gap-[8px]">
               {runningPorts.map((port) => (
@@ -305,14 +440,14 @@ export function PreviewPanel() {
                   onClick={() => connectExisting(port)}
                   className="h-[26px] rounded-[7px] bg-(--ink-1) px-[10px] text-[12px] text-(--paper-0)"
                 >
-                  {strings.preview.connectExisting} {port}
+                  {t("connectExisting")} {port}
                 </button>
               ))}
               <label className="flex items-center gap-[5px] text-[12px] text-(--ink-3)">
-                {strings.preview.alternatePort}
+                {t("alternatePort")}
                 <input
                   type="number"
-                  aria-label={strings.preview.alternatePort}
+                  aria-label={t("alternatePort")}
                   value={portOverride}
                   onChange={(event) => setPortOverride(event.currentTarget.value)}
                   className="h-[26px] w-[78px] rounded-[7px] border border-(--line-1) bg-(--yz-sunk) px-[7px] font-mono text-[12px] text-(--ink-2)"
@@ -323,14 +458,14 @@ export function PreviewPanel() {
                 onClick={startOnOverridePort}
                 className="h-[26px] rounded-[7px] border border-(--line-1) px-[10px] text-[12px] text-(--ink-2)"
               >
-                {strings.preview.startChangedPort}
+                {t("startChangedPort")}
               </button>
               <button
                 type="button"
                 onClick={() => void detectAndStart()}
                 className="h-[26px] rounded-[7px] border border-(--line-1) px-[10px] text-[12px] text-(--ink-2)"
               >
-                {strings.preview.retryDetect}
+                {t("retryDetect")}
               </button>
             </div>
           </div>
@@ -343,14 +478,14 @@ export function PreviewPanel() {
         <div className="flex min-h-0 flex-1 items-center justify-center p-[18px]">
           <div className="flex max-w-[360px] flex-col items-center gap-[10px] text-center">
             <MonitorPlay className="size-[28px] text-(--ink-3)" aria-hidden="true" />
-            <p className="text-[13px] font-medium text-(--ink-1)">{strings.preview.noCandidates}</p>
-            <p className="text-[12.5px] text-(--ink-3)">{strings.preview.settingsHint}</p>
+            <p className="text-[13px] font-medium text-(--ink-1)">{t("noCandidates")}</p>
+            <p className="text-[12.5px] text-(--ink-3)">{t("settingsHint")}</p>
             <button
               type="button"
               onClick={() => void detectAndStart()}
               className="h-[26px] rounded-[7px] border border-(--line-1) px-[10px] text-[12px] text-(--ink-2)"
             >
-              {strings.preview.retryDetect}
+              {t("retryDetect")}
             </button>
           </div>
         </div>
@@ -363,8 +498,8 @@ export function PreviewPanel() {
           <div className="flex flex-col items-center gap-[12px]">
             <EmptyState
               icon={MonitorPlay}
-              title={strings.preview.exitedTitle}
-              description={strings.preview.emptyDescription}
+              title={t("exitedTitle")}
+              description={t("emptyDescription")}
             />
             <button
               type="button"
@@ -373,7 +508,7 @@ export function PreviewPanel() {
               className="flex h-[28px] items-center gap-[6px] rounded-[7px] bg-(--ink-1) px-[10px] text-[12px] text-(--paper-0)"
             >
               <Play className="size-[13px]" aria-hidden="true" />
-              {strings.preview.start}
+              {t("start")}
             </button>
           </div>
         </div>
@@ -385,8 +520,8 @@ export function PreviewPanel() {
         <div className="flex flex-col items-center gap-[12px]">
           <EmptyState
             icon={MonitorPlay}
-            title={strings.preview.emptyTitle}
-            description={localError ?? strings.preview.emptyDescription}
+            title={t("emptyTitle")}
+            description={localError ?? t("emptyDescription")}
           />
           <button
             type="button"
@@ -400,7 +535,7 @@ export function PreviewPanel() {
             )}
           >
             <Play className="size-[13px]" aria-hidden="true" />
-            {flowState === "detecting" ? strings.preview.detecting : strings.preview.start}
+            {flowState === "detecting" ? t("detecting") : t("start")}
           </button>
         </div>
       </div>
@@ -417,8 +552,8 @@ export function PreviewPanel() {
         <button
           type="button"
           disabled={!canGoBack}
-          aria-label="Back"
-          onClick={() => workspace && usePreviewStore.getState().goBack(workspace)}
+          aria-label={tp("previewPanel.back")}
+          onClick={goBackPreview}
           className={cn(
             "flex size-[24px] shrink-0 items-center justify-center rounded-[7px]",
             canGoBack ? "text-(--ink-2) hover:bg-(--paper-2)" : "cursor-not-allowed text-(--ink-4)"
@@ -429,8 +564,8 @@ export function PreviewPanel() {
         <button
           type="button"
           disabled={!canGoForward}
-          aria-label="Forward"
-          onClick={() => workspace && usePreviewStore.getState().goForward(workspace)}
+          aria-label={tp("previewPanel.forward")}
+          onClick={goForwardPreview}
           className={cn(
             "flex size-[24px] shrink-0 items-center justify-center rounded-[7px]",
             canGoForward ? "text-(--ink-2) hover:bg-(--paper-2)" : "cursor-not-allowed text-(--ink-4)"
@@ -441,8 +576,8 @@ export function PreviewPanel() {
         <button
           type="button"
           disabled={!canReload}
-          aria-label="Reload"
-          onClick={() => workspace && usePreviewStore.getState().reload(workspace)}
+          aria-label={tp("previewPanel.reload")}
+          onClick={reloadPreview}
           className={cn(
             "flex size-[24px] shrink-0 items-center justify-center rounded-[7px]",
             canReload ? "text-(--ink-2) hover:bg-(--paper-2)" : "cursor-not-allowed text-(--ink-4)"
@@ -452,16 +587,31 @@ export function PreviewPanel() {
         </button>
 
         <input
-          readOnly
-          aria-label="Preview URL"
-          value={nav.url ?? "http://localhost:—"}
-          className="h-[24px] min-w-0 flex-1 rounded-[7px] border border-(--line-1) bg-(--yz-sunk) px-[8px] font-mono text-[11px] text-(--ink-3)"
+          aria-label={tp("previewPanel.urlLabel")}
+          value={urlDraft ?? nav.url ?? ""}
+          placeholder={tp("previewPanel.urlPlaceholder")}
+          disabled={!workspace}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(event) => setUrlDraft(event.currentTarget.value)}
+          onFocus={(event) => event.currentTarget.select()}
+          onBlur={() => setUrlDraft(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault()
+              submitUrl()
+            } else if (event.key === "Escape") {
+              setUrlDraft(null)
+              event.currentTarget.blur()
+            }
+          }}
+          className="h-[24px] min-w-0 flex-1 rounded-[7px] border border-(--line-1) bg-(--yz-sunk) px-[8px] font-mono text-[11px] text-(--ink-2)"
         />
 
         <button
           type="button"
           disabled={!workspace}
-          aria-label="Toggle responsive frame"
+          aria-label={tp("previewPanel.toggleResponsiveFrame")}
           onClick={() =>
             workspace &&
             usePreviewStore.getState().setFrame(workspace, nav.frame === "full" ? "mobile" : "full")
@@ -478,6 +628,18 @@ export function PreviewPanel() {
           )}
         </button>
 
+        {nav.url && (
+          <button
+            type="button"
+            aria-label={tp("previewPanel.openExternally")}
+            title={tp("previewPanel.openExternally")}
+            onClick={openExternally}
+            className="flex size-[24px] shrink-0 items-center justify-center rounded-[7px] text-(--ink-2) hover:bg-(--paper-2)"
+          >
+            <ExternalLink className="size-[13px]" aria-hidden="true" />
+          </button>
+        )}
+
         {status?.status === "running" && (
           <button
             type="button"
@@ -485,7 +647,7 @@ export function PreviewPanel() {
             className="flex h-[24px] shrink-0 items-center gap-[5px] rounded-[7px] border border-(--line-1) px-[8px] text-[11px] text-(--ink-2) hover:bg-(--paper-2)"
           >
             <Square className="size-[11px]" aria-hidden="true" />
-            Stop
+            {tp("previewPanel.stop")}
           </button>
         )}
 
@@ -495,7 +657,7 @@ export function PreviewPanel() {
             statusTone(status)
           )}
         >
-          {statusLabel(status)}
+          {status ? statusLabel(status) : t("noDevServer")}
         </span>
       </div>
 

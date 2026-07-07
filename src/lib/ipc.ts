@@ -1,4 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core"
+
+// Re-exported so feature modules that carry their own domain logic around a
+// command (agent/ACP protocol handlers, the log-event envelope builder) can
+// reach the IPC boundary through this module instead of importing the Tauri
+// core directly. `@tauri-apps/api/core` should be imported only here and in
+// `platform.ts` (which owns `isTauri`).
+export { invoke }
+
 import type {
     FileNode,
     OpenFileResult,
@@ -17,7 +25,15 @@ import type {
     PtyEvent,
     PtySessionInfo,
     DevServerDetect,
-    DevServerInfo
+    DevServerInfo,
+    DbTable,
+    DbColumn,
+    DbQueryResult,
+    DbOpenConfig,
+    SshAuthInput,
+    SshConnectResult,
+    SftpListing,
+    PerfSnapshot
 } from "./types"
 
 export function openWorkspace(path: string): Promise<string> {
@@ -34,6 +50,22 @@ export function openFile(path: string): Promise<OpenFileResult> {
 
 export function saveFile(path: string, content: string): Promise<number> {
     return invoke("save_file", { path, content })
+}
+
+export function fsCreateFile(workspace: string, path: string): Promise<void> {
+    return invoke("fs_create_file", { workspace, path })
+}
+
+export function fsCreateDir(workspace: string, path: string): Promise<void> {
+    return invoke("fs_create_dir", { workspace, path })
+}
+
+export function fsRename(workspace: string, from: string, to: string): Promise<void> {
+    return invoke("fs_rename", { workspace, from, to })
+}
+
+export function fsDelete(workspace: string, path: string): Promise<void> {
+    return invoke("fs_delete", { workspace, path })
 }
 
 export function startWatch(path: string): Promise<void> {
@@ -267,6 +299,142 @@ export function agentList(cwd: string): Promise<string[]> {
     return invoke("agent_list", { cwd })
 }
 
-export function agentKill(id: string): Promise<void> {
-    return invoke("agent_kill", { id })
+export function dbOpen(config: DbOpenConfig): Promise<{ connId: string }> {
+    return invoke("db_open", { config })
+}
+
+export function dbClose(connId: string): Promise<void> {
+    return invoke("db_close", { connId })
+}
+
+export function dbListTables(connId: string): Promise<DbTable[]> {
+    return invoke("db_list_tables", { connId })
+}
+
+export function dbTableColumns(connId: string, table: string): Promise<DbColumn[]> {
+    return invoke("db_table_columns", { connId, table })
+}
+
+export function dbQuery(connId: string, sql: string, maxRows?: number): Promise<DbQueryResult> {
+    return invoke("db_query", { connId, sql, maxRows: maxRows ?? null })
+}
+
+export function agentKill(id: string, reason?: string): Promise<void> {
+    return invoke("agent_kill", { id, reason: reason ?? null })
+}
+
+export function agentStderrTail(id: string): Promise<string[]> {
+    return invoke("agent_stderr_tail", { id })
+}
+
+export function sshConnect(
+    host: string,
+    port: number,
+    user: string,
+    auth: SshAuthInput
+): Promise<SshConnectResult> {
+    return invoke("ssh_connect", { host, port, user, auth })
+}
+
+export function sshOpenShell(sessionId: string, cols: number, rows: number): Promise<void> {
+    return invoke("ssh_open_shell", { sessionId, cols, rows })
+}
+
+export function sshWrite(sessionId: string, data: string): Promise<void> {
+    return invoke("ssh_write", { sessionId, data })
+}
+
+export function sshResize(sessionId: string, cols: number, rows: number): Promise<void> {
+    return invoke("ssh_resize", { sessionId, cols, rows })
+}
+
+export function sshDisconnect(sessionId: string): Promise<void> {
+    return invoke("ssh_disconnect", { sessionId })
+}
+
+// --- SFTP (F5): browse + chunked transfers over the live SSH session ---
+export function sftpListDir(sessionId: string, path: string): Promise<SftpListing> {
+    return invoke("sftp_list_dir", { sessionId, path })
+}
+
+export function sftpMkdir(sessionId: string, path: string): Promise<void> {
+    return invoke("sftp_mkdir", { sessionId, path })
+}
+
+export function sftpRename(sessionId: string, from: string, to: string): Promise<void> {
+    return invoke("sftp_rename", { sessionId, from, to })
+}
+
+export function sftpRemove(sessionId: string, path: string, isDir: boolean): Promise<void> {
+    return invoke("sftp_remove", { sessionId, path, isDir })
+}
+
+export function sftpUpload(
+    sessionId: string,
+    transferId: string,
+    localPath: string,
+    remoteDir: string
+): Promise<void> {
+    return invoke("sftp_upload", { sessionId, transferId, localPath, remoteDir })
+}
+
+export function sftpDownload(
+    sessionId: string,
+    transferId: string,
+    remotePath: string,
+    localPath: string
+): Promise<void> {
+    return invoke("sftp_download", { sessionId, transferId, remotePath, localPath })
+}
+
+export function perfSnapshot(): Promise<PerfSnapshot | null> {
+    return invoke("perf_snapshot")
+}
+
+// --- Preview (P3): local static server + external-URL child webview ---
+export function previewServe(dir: string): Promise<number> {
+    return invoke("preview_serve", { dir })
+}
+
+export function previewStopAll(): Promise<void> {
+    return invoke("preview_stop_all")
+}
+
+export function previewOpenUrl(
+    url: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+): Promise<void> {
+    return invoke("preview_open_url", { url, x, y, width, height })
+}
+
+export function previewSetBounds(
+    x: number,
+    y: number,
+    width: number,
+    height: number
+): Promise<void> {
+    return invoke("preview_set_bounds", { x, y, width, height })
+}
+
+export function previewSetVisible(visible: boolean): Promise<void> {
+    return invoke("preview_set_visible", { visible })
+}
+
+export function previewClose(): Promise<void> {
+    return invoke("preview_close")
+}
+
+export function previewBack(): Promise<void> {
+    return invoke("preview_back")
+}
+
+export function previewForward(): Promise<void> {
+    return invoke("preview_forward")
+}
+
+export function previewReload(): Promise<void> {
+    return invoke("preview_reload")
 }

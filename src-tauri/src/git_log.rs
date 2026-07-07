@@ -899,7 +899,7 @@ mod tests {
     fn merge_file_changes_aligns_status_and_numstat() {
         // modify a.txt (2/1), rename old.txt -> new.txt (0/0), binary img.png (-)
         let name_status = "M\0a.txt\0R100\0old.txt\0new.txt\0A\0img.png\0";
-        let numstat = "2\t1\ta.txt\00\t0\t\0old.txt\0new.txt\0-\t-\timg.png\0";
+        let numstat = "2\t1\ta.txt\x000\t0\t\0old.txt\0new.txt\0-\t-\timg.png\0";
         let files = merge_file_changes(name_status, numstat);
         assert_eq!(files.len(), 3);
         assert_eq!(files[0].path, "a.txt");

@@ -139,17 +139,17 @@ pub fn run_git(
     Ok(out)
 }
 
-/// debug log：args join、code、stderr 前 200 字；不記 extra_env。
+/// debug log：args join（URL userinfo 遮蔽）、code、stderr 前 200 字；不記 extra_env。
+/// 走共享全域 sink——cargo test 下自動重導 tempdir，不汙染 ~/.yuzora/logs。
 fn log_git_call(args: &[&str], code: i32, stderr: &str) {
-    let mut sink = crate::logging::LogSink::new(crate::logging::default_log_dir());
     let stderr_head: String = stderr.chars().take(200).collect();
-    sink.write(crate::logging::LogEvent {
+    crate::logging::write_global(crate::logging::LogEvent {
         level: "debug".to_string(),
         kind: "debug".to_string(),
         source: "git_service".to_string(),
         workspace_path: None,
         event: "run_git".to_string(),
-        message: format!("git {}", args.join(" ")),
+        message: crate::logging::mask_url_userinfo(&format!("git {}", args.join(" "))),
         metadata: serde_json::json!({ "code": code, "stderr": stderr_head }),
     });
 }
@@ -970,8 +970,13 @@ mod tests {
         test_repo::write_and_commit(r, "side.txt", "side\n", "side");
         checkout(r, "main").unwrap();
         test_repo::write_and_commit(r, "main.txt", "main\n", "main");
-        run_ok(r, &["merge", "--no-ff", "side", "-m", "merge side"], DEFAULT_TIMEOUT, &[])
-            .unwrap();
+        run_ok(
+            r,
+            &["merge", "--no-ff", "side", "-m", "merge side"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
         let merge_sha = String::from_utf8_lossy(
             &run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[])
                 .unwrap()
@@ -979,7 +984,13 @@ mod tests {
         )
         .trim()
         .to_string();
-        run_ok(r, &["switch", "-c", "target", "HEAD~1"], DEFAULT_TIMEOUT, &[]).unwrap();
+        run_ok(
+            r,
+            &["switch", "-c", "target", "HEAD~1"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
 
         let err = cherry_pick(r, &merge_sha).unwrap_err();
         assert!(!err.trim().is_empty());

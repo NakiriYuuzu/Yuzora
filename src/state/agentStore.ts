@@ -11,6 +11,8 @@ import type {
 } from "@/agent/acpConnection"
 import { isAgentAuthRequiredError, reduceSessionUpdate } from "@/agent/acpConnection"
 import type { BlockEntry, TranscriptAction, TranscriptEntry } from "@/agent/acpTypes"
+import i18n from "@/lib/i18n"
+import { isAbsolutePath } from "@/lib/paths"
 import { useTerminalStore, type TerminalSessionMeta } from "@/state/terminalStore"
 import { useUiStore } from "@/state/uiStore"
 
@@ -71,6 +73,7 @@ export interface AgentStoreState {
     pendingPermissions: Map<string, PendingPermission>
     activeSessionId: string | null
     connectionState: AgentConnectionState
+    connectionError: string | null
     connection: AgentConnection | null
     authRequired: AuthRequiredState | null
     setConnection: (connection: AgentConnection | null) => void
@@ -100,7 +103,7 @@ interface CreateAgentStoreOptions {
 const DEFAULT_SESSION_TITLE = "New session"
 const DEFAULT_AGENT_LABEL = "Agent"
 const TITLE_LIMIT = 48
-const DEFAULT_AGENT_COMMAND = "bunx pi-acp"
+const DEFAULT_AGENT_COMMAND = "bunx pi-acp@0.0.31"
 const AGENT_SETTINGS_STORAGE_KEY = "yuzora:agent-settings"
 const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 const DEFAULT_TERMINAL_COLS = 80
@@ -111,6 +114,7 @@ export const agentInitialState = {
     pendingPermissions: new Map<string, PendingPermission>(),
     activeSessionId: null as string | null,
     connectionState: "idle" as AgentConnectionState,
+    connectionError: null as string | null,
     connection: null as AgentConnection | null,
     authRequired: null as AuthRequiredState | null
 }
@@ -124,24 +128,34 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
         setConnection: (connection) => set({
             connection,
             connectionState: connection ? "ready" : "idle",
+            connectionError: null,
             authRequired: null
         }),
 
         newSession: async (cwd) => {
             const connection = requireConnection(get())
-            set({ connectionState: "connecting" })
+            requireAbsoluteCwd(cwd)
+            set({ connectionState: "connecting", connectionError: null })
             try {
                 const sessionId = await connection.newSession(cwd)
                 set((state) => {
                     const sessions = new Map(state.sessions)
                     sessions.set(sessionId, ensureSession(sessions, sessionId, { cwd }))
-                    return { sessions, activeSessionId: sessionId, connectionState: "ready", authRequired: null }
+                    return {
+                        sessions,
+                        activeSessionId: sessionId,
+                        connectionState: "ready",
+                        connectionError: null,
+                        authRequired: null
+                    }
                 })
                 return sessionId
             } catch (error) {
+                const err = error instanceof Error ? error : new Error(String(error))
                 const authRequired = authRequiredFromError(error, cwd, null)
                 set({
                     connectionState: "error",
+                    connectionError: err.message,
                     ...(authRequired ? { authRequired } : {})
                 })
                 throw error
@@ -168,7 +182,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
 
         loadSessions: async (cwd) => {
             const connection = requireConnection(get())
-            set({ connectionState: "connecting" })
+            set({ connectionState: "connecting", connectionError: null })
             try {
                 const metas = await connection.listSessions(cwd)
                 set((state) => {
@@ -176,20 +190,22 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     for (const meta of metas) {
                         sessions.set(meta.id, ensureSession(sessions, meta.id, sessionPatchFromMeta(meta)))
                     }
-                    return { sessions, connectionState: "ready" }
+                    return { sessions, connectionState: "ready", connectionError: null }
                 })
             } catch (error) {
-                set({ connectionState: "error" })
+                const err = error instanceof Error ? error : new Error(String(error))
+                set({ connectionState: "error", connectionError: err.message })
                 throw error
             }
         },
 
         sendPrompt: async (cwd, prompt) => {
             const connection = requireConnection(get())
+            requireAbsoluteCwd(cwd)
             const blocks = promptBlocks(prompt)
             const promptTitle = titleFromPrompt(blocks)
             let sessionId = get().activeSessionId
-            set({ connectionState: "connecting" })
+            set({ connectionState: "connecting", connectionError: null })
             try {
                 if (!sessionId) {
                     sessionId = await connection.newSession(cwd)
@@ -218,6 +234,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     if (!sessionId) {
                         return {
                             connectionState: "error",
+                            connectionError: err.message,
                             ...(authRequired ? { authRequired } : {})
                         }
                     }
@@ -229,6 +246,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         sessions,
                         pendingPermissions,
                         connectionState: "error",
+                        connectionError: err.message,
                         ...(authRequired ? { authRequired } : {})
                     }
                 })
@@ -368,7 +386,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
             set((state) => {
                 const sessions = new Map(state.sessions)
                 sessions.set(sessionId, failSession(ensureSession(sessions, sessionId), error))
-                return { sessions, connectionState: "error" }
+                return { sessions, connectionState: "error", connectionError: error.message }
             })
         },
 
@@ -396,6 +414,11 @@ export const useAgentStore = createAgentStore()
 function requireConnection(state: Pick<AgentStoreState, "connection">): AgentConnection {
     if (!state.connection) throw new Error("Agent connection is not configured")
     return state.connection
+}
+
+function requireAbsoluteCwd(cwd: string): void {
+    if (isAbsolutePath(cwd)) return
+    throw new Error(i18n.t("agentZonePanel.relativeCwdError", { ns: "panels" }))
 }
 
 function authRequiredFromError(

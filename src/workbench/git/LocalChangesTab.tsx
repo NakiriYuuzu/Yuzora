@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { useTranslation } from "react-i18next"
 
 import { gitStage, gitUnstage } from "../../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
@@ -35,6 +36,7 @@ function FileRow({
     onSelect: () => void
     onStageToggle: () => void
 }) {
+    const { t } = useTranslation("menus")
     const { name, dir } = splitPath(row.path)
     return (
         <div
@@ -64,8 +66,16 @@ function FileRow({
             </span>
             <button
                 type="button"
-                aria-label={`${row.staged ? "Unstage" : "Stage"} ${row.path}`}
-                title={row.staged ? "Unstage file" : "Stage file"}
+                aria-label={
+                    row.staged
+                        ? t("localChangesTab.unstageFileAriaLabel", { path: row.path })
+                        : t("localChangesTab.stageFileAriaLabel", { path: row.path })
+                }
+                title={
+                    row.staged
+                        ? t("localChangesTab.unstageFileTitle")
+                        : t("localChangesTab.stageFileTitle")
+                }
                 onClick={(e) => {
                     e.stopPropagation()
                     onStageToggle()
@@ -97,6 +107,7 @@ function FileRow({
  * DiffView. Mutations go through useGitStore.runOp + logUserAction on success.
  */
 export function LocalChangesTab() {
+    const { t } = useTranslation("menus")
     const status = useGitStore((s) => s.status)
     const runOp = useGitStore((s) => s.runOp)
     const selectedPath = useUiStore((s) => s.gitSelectedPath)
@@ -181,7 +192,7 @@ export function LocalChangesTab() {
                 {/* §2.5 L874-878 header: Local changes label + Stage all */}
                 <div className="flex h-[36px] shrink-0 items-center gap-[8px] border-b border-(--line-1) px-[13px]">
                     <span className="text-[9.5px] font-semibold tracking-[0.07em] text-(--ink-3) uppercase">
-                        Local changes
+                        {t("localChangesTab.label")}
                     </span>
                     <span className="flex-1" />
                     {changesCount > 0 && (
@@ -190,7 +201,7 @@ export function LocalChangesTab() {
                             onClick={stageAll}
                             className="text-[10.5px] font-semibold text-(--yz-accent-ink)"
                         >
-                            Stage all
+                            {t("localChangesTab.stageAll")}
                         </button>
                     )}
                 </div>
@@ -258,17 +269,17 @@ export function LocalChangesTab() {
                                         : "text-(--ink-3)")
                                 }
                             >
-                                {m === "unified" ? "Unified" : "Split"}
+                                {m === "unified" ? t("localChangesTab.unified") : t("localChangesTab.split")}
                             </button>
                         ))}
                     </div>
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden">
                     {diff ? (
-                        <DiffView content={diff} mode={diffMode} />
+                        <DiffView content={diff} mode={diffMode} path={selectedPath ?? ""} />
                     ) : (
                         <div className="flex h-full items-center justify-center text-[12.5px] text-(--ink-3)">
-                            Select a file to view its diff
+                            {t("localChangesTab.selectFilePrompt")}
                         </div>
                     )}
                 </div>

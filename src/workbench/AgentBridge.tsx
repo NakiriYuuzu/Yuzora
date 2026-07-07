@@ -74,7 +74,7 @@ async function recoverStaleAgents(
     try {
         for (const id of staleIds) {
             if (isCancelled()) return
-            await agentKill(id)
+            await agentKill(id, "app_exit")
         }
     } catch {
         return

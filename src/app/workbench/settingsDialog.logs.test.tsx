@@ -192,6 +192,33 @@ describe("SettingsDialog logs section", () => {
     )
   })
 
+  it("debounces rapid text input into a single log_query", async () => {
+    renderDialog()
+
+    expect(await screen.findByRole("heading", { name: "Logs" })).toBeInTheDocument()
+    await waitFor(() => expect(logQueryCalls.length).toBeGreaterThan(0))
+    const baseline = logQueryCalls.length
+
+    const searchbox = screen.getByRole("searchbox", { name: "文字搜尋" })
+    fireEvent.change(searchbox, { target: { value: "s" } })
+    fireEvent.change(searchbox, { target: { value: "se" } })
+    fireEvent.change(searchbox, { target: { value: "ser" } })
+    fireEvent.change(searchbox, { target: { value: "serv" } })
+
+    await waitFor(() => expect(logQueryCalls.length).toBe(baseline + 1))
+    expect(logQueryCalls.at(-1)).toMatchObject({ filters: { text: "serv", limit: 500 } })
+  })
+
+  it("delays the query by the debounce window before rendering rows", async () => {
+    queryResult = logRows
+    renderDialog()
+
+    // debounced：mount 後同步當下尚未觸發 log_query
+    expect(logQueryCalls.length).toBe(0)
+    expect(await screen.findByTestId("log-row-lsp_restart")).toBeInTheDocument()
+    expect(logQueryCalls.length).toBeGreaterThan(0)
+  })
+
   it("applies an initial source target to log_query and renders matching rows", async () => {
     queryResult = devServerLogRows
     useUiStore.setState({ settingsLogSource: "dev_server", settingsNonce: 1 })

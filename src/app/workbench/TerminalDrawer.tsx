@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react"
 import { ChevronDown, ChevronUp, Plus, TerminalSquare, X } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { loadTerminalSettings } from "@/app/workbench/SettingsDialog"
 import { logUserAction } from "@/features/logs/userAction"
-import { strings } from "@/lib/i18n"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useTerminalStore, type TerminalSessionMeta, type TerminalSplitDirection } from "@/state/terminalStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -48,6 +48,7 @@ function parseShellArgs(value: string): string[] | undefined {
  * visibility changes never open a pty by themselves.
  */
 export function TerminalDrawer({ visible }: TerminalDrawerProps) {
+  const { t } = useTranslation("terminal")
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const sessions = useTerminalStore((s) => s.sessions)
   const layout = useTerminalStore((s) => (workspacePath ? s.layouts[workspacePath] : undefined))
@@ -176,7 +177,7 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             onPointerDown={onResizePointerDown}
             onPointerMove={onResizePointerMove}
             onPointerUp={onResizePointerUp}
-            title="Drag to resize"
+            title={t("terminalDrawer.dragToResize", { ns: "menus" })}
             className="flex h-[6px] shrink-0 cursor-row-resize items-center justify-center bg-(--term-bar)"
           >
             <span className="h-[3px] w-[34px] rounded-full bg-(--term-fg2) opacity-50" />
@@ -204,7 +205,9 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             >
               <path d="m5 8 4 4-4 4M13 16h6" />
             </svg>
-            <span className="shrink-0 text-[12px] font-semibold text-(--term-fg)">Terminal</span>
+            <span className="shrink-0 text-[12px] font-semibold text-(--term-fg)">
+              {t("terminalDrawer.label", { ns: "menus" })}
+            </span>
             {workspacePath && (
               <span className="min-w-0 flex-1 truncate text-right font-mono text-[10px] text-(--term-fg2)">
                 {workspacePath}
@@ -215,7 +218,7 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
           <div className="flex shrink-0 items-center gap-[6px]">
             <button
               type="button"
-              title="Split right"
+              title={t("terminalDrawer.splitRightTitle", { ns: "menus" })}
               disabled={!canSplit}
               onClick={(event) => {
                 event.stopPropagation()
@@ -240,7 +243,7 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             </button>
             <button
               type="button"
-              title="Split down"
+              title={t("terminalDrawer.splitDownTitle", { ns: "menus" })}
               disabled={!canSplit}
               onClick={(event) => {
                 event.stopPropagation()
@@ -265,7 +268,7 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             </button>
             <button
               type="button"
-              title="New terminal"
+              title={t("terminalDrawer.newTerminalTitle", { ns: "menus" })}
               disabled={!canCreateSession}
               onClick={(event) => {
                 event.stopPropagation()
@@ -277,7 +280,7 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             </button>
             <button
               type="button"
-              title="Close terminal"
+              title={t("terminalDrawer.closeTerminalTitle", { ns: "menus" })}
               disabled={!canClose}
               onClick={(event) => {
                 event.stopPropagation()
@@ -290,7 +293,7 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             <div className="mx-[1px] h-[16px] w-px shrink-0 bg-(--term-line)" />
             <button
               type="button"
-              title="Dock terminal into editor"
+              title={t("terminalDrawer.dockTitle", { ns: "menus" })}
               onClick={(event) => {
                 event.stopPropagation()
                 logDockIntent()
@@ -315,7 +318,11 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             <button
               type="button"
               aria-expanded={expanded}
-              aria-label={expanded ? "Collapse terminal" : "Expand terminal"}
+              aria-label={
+                expanded
+                  ? t("terminalDrawer.collapseAriaLabel", { ns: "menus" })
+                  : t("terminalDrawer.expandAriaLabel", { ns: "menus" })
+              }
               onClick={(event) => {
                 event.stopPropagation()
                 toggle()
@@ -350,8 +357,8 @@ export function TerminalDrawer({ visible }: TerminalDrawerProps) {
             <div className="flex h-full items-center justify-center">
               <EmptyState
                 icon={TerminalSquare}
-                title={strings.terminal.noSessions}
-                description={strings.terminal.emptyDescription}
+                title={t("noSessions")}
+                description={t("emptyDescription")}
                 tone="terminal"
               />
             </div>

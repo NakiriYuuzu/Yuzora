@@ -33,7 +33,24 @@ export const previewInitialState = {
     nav: {} as Record<string, PreviewNavState>
 }
 
+// P3: the navigate choke point now admits any http/https URL — external https is
+// rendered in a child webview (an <iframe> can't host it), local dev servers keep
+// the iframe path. Non-web schemes (file:, javascript:, …) are still rejected.
 function isAllowedPreviewUrl(rawUrl: string): boolean {
+    try {
+        const url = new URL(rawUrl)
+        return url.protocol === "http:" || url.protocol === "https:"
+    } catch {
+        return false
+    }
+}
+
+// A local dev-server / static-server URL renders in the sandboxed <iframe>;
+// everything else (external https) goes to the child webview. 127.0.0.1 is what
+// the P3 static file server binds, so right-clicked HTML previews stay on the
+// iframe path too.
+export function isLocalPreviewUrl(rawUrl: string | null): boolean {
+    if (!rawUrl) return false
     try {
         const url = new URL(rawUrl)
         return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1")

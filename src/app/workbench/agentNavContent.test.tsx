@@ -115,4 +115,32 @@ describe("AgentNavContent", () => {
 
     await waitFor(() => expect(newSession).toHaveBeenCalledWith("/workspace"))
   })
+
+  it("disables 新增 session and never spawns when no folder is open", () => {
+    const newSession = vi.fn(async () => "s-new")
+    useWorkspaceStore.setState({ workspacePath: null })
+    useAgentStore.setState({ newSession })
+
+    render(<AgentNavContent />)
+
+    const button = screen.getByRole("button", { name: "新增 session" })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it("never falls back to a relative cwd when workspacePath is not absolute", () => {
+    const newSession = vi.fn(async () => "s-new")
+    useWorkspaceStore.setState({ workspacePath: "." })
+    useAgentStore.setState({ newSession })
+
+    render(<AgentNavContent />)
+
+    const button = screen.getByRole("button", { name: "新增 session" })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+
+    expect(newSession).not.toHaveBeenCalled()
+  })
 })

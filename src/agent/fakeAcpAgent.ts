@@ -17,7 +17,7 @@ export function createFakeAcpAgentBridge(
     emitLine: (line: string) => Promise<void>
 ): FakeAcpAgentBridge {
     let buffer = ""
-    let permissionRequestId = 100
+    const permissionRequestId = 100
     let pendingPromptId: JsonRpcId | undefined
     const messages: FakeAcpMessage[] = []
 

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 
 import type { LogCommit, LogRef } from "@/lib/types"
 import { computeGraphLayout } from "@/workbench/git/graphLayout"
@@ -241,6 +242,7 @@ export function LogGraph({
     loadingMore: boolean
     onLoadMore: () => void
 }) {
+    const { t } = useTranslation("menus")
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const [scrollTop, setScrollTop] = useState(0)
     const [viewportHeight, setViewportHeight] = useState(0)
@@ -293,9 +295,9 @@ export function LogGraph({
             <div className="flex h-[28px] shrink-0 items-center border-b border-(--line-1) bg-(--paper-1) font-sans text-[9.5px] font-bold uppercase tracking-[0.07em] text-(--ink-3)">
                 <span className="w-[72px] shrink-0" aria-hidden="true" />
                 <span className="flex min-w-0 flex-1 items-center gap-[8px] px-[12px]">
-                    <span className="flex-1">Commit</span>
-                    <span className="w-[64px] shrink-0">Author</span>
-                    <span className="w-[34px] shrink-0 text-right">Date</span>
+                    <span className="flex-1">{t("logGraph.commitColumn")}</span>
+                    <span className="w-[64px] shrink-0">{t("logGraph.authorColumn")}</span>
+                    <span className="w-[34px] shrink-0 text-right">{t("logGraph.dateColumn")}</span>
                 </span>
             </div>
 

@@ -102,6 +102,27 @@ describe("createAgentStore tone transitions", () => {
         expect(store.getState().sessions.get("s-1")?.error).toBe("Authentication required")
     })
 
+    it("refuses newSession with a relative cwd and never spawns", async () => {
+        const fake = fakeConnection()
+        const store = createAgentStore({ connection: fake.connection })
+
+        await expect(store.getState().newSession(".")).rejects.toThrow()
+
+        expect(fake.connection.newSession).not.toHaveBeenCalled()
+        expect(store.getState().connectionState).toBe("ready")
+        expect(store.getState().connectionError).toBeNull()
+    })
+
+    it("refuses sendPrompt with a relative cwd and never spawns or prompts", async () => {
+        const fake = fakeConnection()
+        const store = createAgentStore({ connection: fake.connection })
+
+        await expect(store.getState().sendPrompt("./rel", "Hello")).rejects.toThrow()
+
+        expect(fake.connection.newSession).not.toHaveBeenCalled()
+        expect(fake.connection.prompt).not.toHaveBeenCalled()
+    })
+
     it("runs while a turn is active, waits on permission, and marks end_turn done", async () => {
         const fake = fakeConnection()
         fake.holdPrompt()
@@ -136,6 +157,41 @@ describe("createAgentStore tone transitions", () => {
         expect(session?.tone).toBe("fail")
         expect(session?.error).toBe("ACP agent exited")
         expect(session?.transcript).toEqual([{ who: "you", text: "Continue", streaming: false }])
+        expect(store.getState().connectionState).toBe("error")
+        expect(store.getState().connectionError).toBe("ACP agent exited")
+    })
+
+    it("writes a human-readable connectionError when sendPrompt fails before a session exists", async () => {
+        const fake = fakeConnection()
+        vi.mocked(fake.connection.newSession).mockRejectedValueOnce(
+            new Error("ACP initialize timed out after 60000ms")
+        )
+        const store = createAgentStore({ connection: fake.connection })
+
+        await expect(store.getState().sendPrompt("/w", "Hello")).rejects.toThrow(
+            "ACP initialize timed out after 60000ms"
+        )
+
+        expect(store.getState().connectionState).toBe("error")
+        expect(store.getState().connectionError).toBe("ACP initialize timed out after 60000ms")
+        expect(store.getState().activeSessionId).toBeNull()
+    })
+
+    it("clears connectionError as soon as the next attempt starts, before it resolves", async () => {
+        const fake = fakeConnection()
+        fake.rejectPrompt(new Error("ACP agent exited"))
+        const store = createAgentStore({ connection: fake.connection })
+
+        await expect(store.getState().sendPrompt("/w", "Continue")).rejects.toThrow("ACP agent exited")
+        expect(store.getState().connectionError).toBe("ACP agent exited")
+
+        fake.holdPrompt()
+        const retry = store.getState().sendPrompt("/w", "Continue again")
+        expect(store.getState().connectionError).toBeNull()
+
+        fake.promptGate.resolve("end_turn")
+        await retry
+        expect(store.getState().connectionError).toBeNull()
     })
 
     it("keeps cancelled turns idle-looking with no error badge", async () => {

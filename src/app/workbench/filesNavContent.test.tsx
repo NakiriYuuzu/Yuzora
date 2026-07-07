@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import type { SearchEvent } from "@/lib/types"
 import { useContextMenuStore } from "@/state/contextMenuStore"
@@ -39,41 +39,15 @@ describe("FilesNavContent context menu", () => {
   })
 })
 
-describe("FilesNavContent search", () => {
-  it("clearing the query cancels the running search via an empty search (m6)", async () => {
-    vi.useFakeTimers()
+describe("FilesNavContent search entry removed", () => {
+  it("不再渲染重複的工作區搜尋 UI（搜尋改由 ⌘K palette 提供）", () => {
     useWorkspaceStore.setState({ workspacePath: "/w" })
     render(<FilesNavContent />)
-    const input = screen.getByPlaceholderText("Search in workspace")
-    fireEvent.change(input, { target: { value: "foo" } })
-    await vi.advanceTimersByTimeAsync(250)
-    expect(searchWorkspace).toHaveBeenCalledWith("/w", "foo", false, expect.any(Function))
-    searchWorkspace.mockClear()
-    // Clearing the box fires an empty search to bump the Rust generation, which
-    // stops the still-running query (front-end cancellation, no new command).
-    fireEvent.change(input, { target: { value: "" } })
-    expect(searchWorkspace).toHaveBeenCalledWith("/w", "", false, expect.any(Function))
-    vi.useRealTimers()
-  })
 
-  it("switching to a new non-empty query clears old results immediately (T18)", async () => {
-    vi.useFakeTimers()
-    useWorkspaceStore.setState({ workspacePath: "/w" })
-    searchWorkspace.mockImplementation((_r, _q, _cs, cb) => {
-      cb({ type: "match", path: "/w/src/a.ts", matches: [{ line: 1, col: 0, preview: "foo" }] })
-      cb({ type: "done", truncated: false, fileCount: 1 })
-      return Promise.resolve()
-    })
-    render(<FilesNavContent />)
-    const input = screen.getByPlaceholderText("Search in workspace")
-    fireEvent.change(input, { target: { value: "foo" } })
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(250)
-    })
-    expect(screen.getByText("a.ts")).toBeInTheDocument()
-    // Typing a new query must clear old results at once, before the 250ms debounce.
-    fireEvent.change(input, { target: { value: "bar" } })
-    expect(screen.queryByText("a.ts")).not.toBeInTheDocument()
-    vi.useRealTimers()
+    // The standalone search box/button are gone — search now lives in the palette.
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText("Search in workspace")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /search in workspace/i })).not.toBeInTheDocument()
+    expect(searchWorkspace).not.toHaveBeenCalled()
   })
 })

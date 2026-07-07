@@ -45,7 +45,9 @@ import {
     lspConfigStale,
     lspConfigClearStale,
     lspSetTrace,
-    lspInstallServer
+    lspInstallServer,
+    agentKill,
+    agentStderrTail
 } from "./ipc"
 import { languageFromPath, fileGradeOf, MAX_LINE_LEN_SYNTAX_OFF } from "./types"
 import type {
@@ -613,6 +615,24 @@ it("lspInstallServer forwards null workspace for a global install", async () => 
     })
     await lspInstallServer(null, "python")
     expect(seen[0]).toEqual(["lsp_install_server", { workspace: null, language: "python" }])
+})
+
+it("agentKill forwards id and reason, defaulting reason to null", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await agentKill("agent-1", "user_stop")
+    await agentKill("agent-2")
+    expect(seen[0]).toEqual(["agent_kill", { id: "agent-1", reason: "user_stop" }])
+    expect(seen[1]).toEqual(["agent_kill", { id: "agent-2", reason: null }])
+})
+
+it("agentStderrTail forwards id and returns the stderr tail", async () => {
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("agent_stderr_tail")
+        expect((payload as { id: string }).id).toBe("agent-1")
+        return ["boom", "EPIPE"]
+    })
+    expect(await agentStderrTail("agent-1")).toEqual(["boom", "EPIPE"])
 })
 
 it("fileGradeOf returns veryLongLine for full content with an over-long line", () => {

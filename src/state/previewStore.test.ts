@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
 import type { DevServerInfo } from "../lib/types"
-import { previewInitialState, usePreviewStore } from "./previewStore"
+import { isLocalPreviewUrl, previewInitialState, usePreviewStore } from "./previewStore"
 
 const runningServer: DevServerInfo = {
     workspace: "/ws/a",
@@ -91,16 +91,30 @@ describe("usePreviewStore", () => {
         expect(nav.frame).toBe("mobile")
     })
 
-    it("rejects non-localhost navigation at the single navigate choke point", () => {
+    it("admits any http/https URL and rejects non-web schemes at the navigate choke point", () => {
         const s = usePreviewStore.getState()
 
-        expect(s.navigate("/ws/a", "https://evil.example")).toBe(false)
+        // P3: external https is now allowed (rendered in a child webview).
+        expect(s.navigate("/ws/a", "https://example.com")).toBe(true)
         expect(s.navigate("/ws/a", "http://localhost:5173")).toBe(true)
-        expect(s.navigate("/ws/a", "http://127.0.0.1:3000")).toBe(true)
+        // Non-web schemes and garbage are still rejected.
+        expect(s.navigate("/ws/a", "file:///etc/passwd")).toBe(false)
+        expect(s.navigate("/ws/a", "javascript:alert(1)")).toBe(false)
+        expect(s.navigate("/ws/a", "not a url")).toBe(false)
 
         const nav = usePreviewStore.getState().navForWorkspace("/ws/a")
-        expect(nav.backStack).toEqual(["http://localhost:5173"])
-        expect(nav.url).toBe("http://127.0.0.1:3000")
+        expect(nav.backStack).toEqual(["https://example.com"])
+        expect(nav.url).toBe("http://localhost:5173")
+    })
+
+    it("isLocalPreviewUrl separates local dev/static servers from external URLs", () => {
+        expect(isLocalPreviewUrl("http://localhost:5173")).toBe(true)
+        expect(isLocalPreviewUrl("http://127.0.0.1:4599/index.html")).toBe(true)
+        // External https (and even https on localhost) goes to the child webview.
+        expect(isLocalPreviewUrl("https://example.com")).toBe(false)
+        expect(isLocalPreviewUrl("https://localhost:5173")).toBe(false)
+        expect(isLocalPreviewUrl(null)).toBe(false)
+        expect(isLocalPreviewUrl("garbage")).toBe(false)
     })
 
     it("reset restores the exported initial state", () => {

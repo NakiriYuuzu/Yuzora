@@ -350,7 +350,7 @@ describe("LogTab details actions", () => {
         await renderWithSelection()
         fireEvent.click(screen.getByRole("button", { name: "Checkout" }))
         expect(gitCheckout).not.toHaveBeenCalled()
-        expect(await screen.findByText(/未儲存的變更/)).toBeInTheDocument()
+        expect(await screen.findByText(/unsaved changes/)).toBeInTheDocument()
     })
 
     it("disables Cherry-pick while an operation is in progress", async () => {

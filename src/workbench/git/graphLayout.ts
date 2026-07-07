@@ -56,7 +56,7 @@ export function computeGraphLayout(
 ): GraphLayout {
     const rows: GraphRow[] = []
     // Active lanes carried between rows. Index = lane number.
-    let lanes: Lane[] = []
+    const lanes: Lane[] = []
     let nextColorIdx = 0
     let widest = 0
 

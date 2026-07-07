@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { EditorState, StateEffect } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
+import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
 import { getDocument, updateBuffer, documentGeneration } from "./documentRegistry"
 import { registerView, unregisterView } from "./viewRegistry"
@@ -10,6 +11,7 @@ import { saveFile } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
+import { useEditorSettingsStore } from "../state/editorSettingsStore"
 import { SpecialFileView } from "./SpecialFileView"
 import type { OpenFileResult } from "../lib/types"
 import { fileGradeOf } from "../lib/types"
@@ -111,6 +113,8 @@ export function EditorPane({ path }: { path: string }) {
     const markExternallyModified = useWorkspaceStore((s) => s.markExternallyModified)
     const pendingReveal = useWorkspaceStore((s) => s.pendingReveal)
     const consumeReveal = useWorkspaceStore((s) => s.consumeReveal)
+    const fontSize = useEditorSettingsStore((s) => s.fontSize)
+    const minimapEnabled = useEditorSettingsStore((s) => s.minimap)
 
     // Select and center a 1-based line, clamped to the document. scrollIntoView
     // is guarded because jsdom has no layout (M1 convention).
@@ -189,11 +193,19 @@ export function EditorPane({ path }: { path: string }) {
                     })
                     .catch(() => {})
             }
+            // Read the editor-surface prefs fresh (not the mount-time closure) so a
+            // change landing while the doc load awaited is honoured; the reactive
+            // effects below then carry any later change into this live view.
+            const editorSettings = useEditorSettingsStore.getState()
             const state = EditorState.create({
                 doc: content,
-                extensions: [...buildExtensions(path, flags, () => markDirty(path, true), save), conflictMarkers()]
+                extensions: [
+                    ...buildExtensions(path, flags, () => markDirty(path, true), save, editorSettings.minimap),
+                    conflictMarkers()
+                ]
             })
             const view = new EditorView({ state, parent: containerRef.current! })
+            view.dom.style.setProperty("--yz-editor-font-size", `${editorSettings.fontSize}px`)
             viewRef.current = view
             registerView(path, view)
             const reveal = useWorkspaceStore.getState().pendingReveal
@@ -241,6 +253,21 @@ export function EditorPane({ path }: { path: string }) {
         revealLine(view, pendingReveal.line, pendingReveal.focus ?? true)
         consumeReveal()
     }, [pendingReveal, path, consumeReveal])
+
+    // Live font-size: a CSS variable on the view root wins on specificity over the
+    // stylesheet default, so no reconfigure is needed. The view is built async, so
+    // this no-ops until it exists (creation applies the current value itself).
+    useEffect(() => {
+        viewRef.current?.dom.style.setProperty("--yz-editor-font-size", `${fontSize}px`)
+    }, [fontSize])
+
+    // Live minimap toggle via the compartment. Same async-guard: creation bakes in
+    // the current value, this carries later changes into an already-open view.
+    useEffect(() => {
+        viewRef.current?.dispatch({
+            effects: minimapCompartment.reconfigure(minimap(minimapEnabled))
+        })
+    }, [minimapEnabled])
 
     if (result && (result.kind === "tooLarge" || result.kind === "binary")) {
         return <SpecialFileView path={path} result={result} />

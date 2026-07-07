@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 
 import type { CommitFileChange } from "@/lib/types"
 import { logUserAction } from "@/features/logs/userAction"
@@ -12,16 +13,6 @@ import { CommitDetails } from "@/workbench/git/CommitDetails"
 // Debounce for the search box (§brief C3: 250ms in the UI layer; the store
 // reloads immediately when setFilters fires).
 const QUERY_DEBOUNCE_MS = 250
-
-// §brief C3 Date dropdown — minimal usable semantics over the design's static
-// decoration. Maps a label to filters.since (git-recognised relative dates);
-// until stays null. Reported as an explicit interpretation.
-const DATE_OPTIONS: { label: string; since: string | null }[] = [
-    { label: "All", since: null },
-    { label: "Today", since: "1 day ago" },
-    { label: "Last 7 days", since: "7 days ago" },
-    { label: "Last 30 days", since: "30 days ago" }
-]
 
 function ChevronDown() {
     return (
@@ -55,6 +46,7 @@ function FilterDropdown({
     options: { key: string; label: string }[]
     onSelect: (key: string) => void
 }) {
+    const { t } = useTranslation("menus")
     const [open, setOpen] = useState(false)
     const ref = useRef<HTMLDivElement | null>(null)
 
@@ -71,7 +63,7 @@ function FilterDropdown({
         <div className="relative" ref={ref}>
             <button
                 type="button"
-                aria-label={`${field} filter`}
+                aria-label={t("logTab.fieldFilterAriaLabel", { field })}
                 aria-haspopup="menu"
                 aria-expanded={open}
                 onClick={() => setOpen((v) => !v)}
@@ -129,6 +121,19 @@ export function LogTab({
     onOpenFile?: (hash: string, file: CommitFileChange) => void
     onCompare?: (hash: string) => void
 }) {
+    const { t } = useTranslation("menus")
+
+    // §brief C3 Date dropdown — minimal usable semantics over the design's static
+    // decoration. Maps a label to filters.since (git-recognised relative dates);
+    // until stays null. Reported as an explicit interpretation. Recomputed per
+    // render (not module-level) so translated labels follow language switches.
+    const DATE_OPTIONS: { label: string; since: string | null }[] = [
+        { label: t("logTab.allLabel"), since: null },
+        { label: t("logTab.todayLabel"), since: "1 day ago" },
+        { label: t("logTab.last7DaysLabel"), since: "7 days ago" },
+        { label: t("logTab.last30DaysLabel"), since: "30 days ago" }
+    ]
+
     const commits = useGitLogStore((s) => s.commits)
     const hasMore = useGitLogStore((s) => s.hasMore)
     const loading = useGitLogStore((s) => s.loading)
@@ -216,7 +221,7 @@ export function LogTab({
             .getState()
             .groups.some((g) => g.tabs.some((t) => t.dirty))
         if (dirty) {
-            setCheckoutNotice("有未儲存的變更，請先存檔或放棄")
+            setCheckoutNotice(t("logTab.dirtyTabsBlockCheckout"))
             return
         }
         setCheckoutNotice(null)
@@ -230,12 +235,12 @@ export function LogTab({
 
     // User dropdown options: "All" + author names (§brief filters.author = name).
     const userOptions = [
-        { key: "__all__", label: "All" },
+        { key: "__all__", label: t("logTab.allLabel") },
         ...authors.map((a) => ({ key: a.name, label: a.name }))
     ]
-    const userValue = filters.author ?? "All"
+    const userValue = filters.author ?? t("logTab.allLabel")
     const dateValue =
-        DATE_OPTIONS.find((o) => o.since === filters.since)?.label ?? "All"
+        DATE_OPTIONS.find((o) => o.since === filters.since)?.label ?? t("logTab.allLabel")
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
@@ -260,14 +265,14 @@ export function LogTab({
                     <input
                         value={query}
                         onChange={(e) => onQueryChange(e.target.value)}
-                        placeholder="Filter by message, author or hash…"
-                        aria-label="Filter commits"
+                        placeholder={t("logTab.filterCommitsPlaceholder")}
+                        aria-label={t("logTab.filterCommitsAriaLabel")}
                         className="min-w-0 flex-1 border-none bg-transparent font-sans text-[12px] text-(--ink-1) outline-none"
                     />
                 </div>
 
                 <FilterDropdown
-                    field="User"
+                    field={t("logTab.userFilterLabel")}
                     value={userValue}
                     options={userOptions}
                     onSelect={(key) =>
@@ -275,7 +280,7 @@ export function LogTab({
                     }
                 />
                 <FilterDropdown
-                    field="Date"
+                    field={t("logTab.dateFilterLabel")}
                     value={dateValue}
                     options={DATE_OPTIONS.map((o) => ({ key: o.label, label: o.label }))}
                     onSelect={(key) => {
@@ -299,7 +304,7 @@ export function LogTab({
                 <div className="flex min-w-0 flex-1 flex-col">
                     {loading ? (
                         <div className="flex flex-1 items-center justify-center text-[12.5px] text-(--ink-3)">
-                            Loading commits…
+                            {t("logTab.loadingCommits")}
                         </div>
                     ) : error ? (
                         <div className="flex flex-1 flex-col items-center justify-center gap-[10px] px-[16px] text-center">
@@ -309,12 +314,12 @@ export function LogTab({
                                 onClick={() => void loadFirstPage()}
                                 className="h-[28px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[12px] text-[11.5px] font-semibold text-(--ink-1) shadow-(--shadow-xs) transition-colors hover:bg-(--paper-1)"
                             >
-                                Retry
+                                {t("logTab.retry")}
                             </button>
                         </div>
                     ) : commits.length === 0 ? (
                         <div className="flex flex-1 items-center justify-center text-[12.5px] text-(--ink-3)">
-                            No commits match the current filters.
+                            {t("logTab.noCommitsMatch")}
                         </div>
                     ) : (
                         <LogGraph

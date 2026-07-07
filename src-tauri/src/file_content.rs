@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn nul_bytes_without_bom_are_binary() {
         let mut v = b"ELF".to_vec();
-        v.extend(std::iter::repeat(0u8).take(64));
+        v.extend(std::iter::repeat_n(0u8, 64));
         v.extend(b"data section");
         assert_eq!(analyze_byte_content(&v), ByteContent::Binary);
     }

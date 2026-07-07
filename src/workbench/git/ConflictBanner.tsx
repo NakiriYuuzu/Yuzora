@@ -1,4 +1,5 @@
 import { confirm } from "@tauri-apps/plugin-dialog"
+import { useTranslation } from "react-i18next"
 
 import { gitConflictAbort, gitConflictContinue } from "../../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
@@ -15,6 +16,7 @@ import { useUiStore } from "../../state/uiStore"
  * tokens extended (danger-soft track), px sizing.
  */
 export function ConflictBanner() {
+    const { t } = useTranslation("menus")
     const status = useGitStore((s) => s.status)
     const runOp = useGitStore((s) => s.runOp)
     const lastError = useGitStore((s) => s.lastError)
@@ -28,14 +30,14 @@ export function ConflictBanner() {
     // Arrow bindings (not hoisted function declarations) so TypeScript keeps the
     // `op` non-null narrowing from the guard above inside these handlers.
     const abort = async () => {
-        const ok = await confirm(`Abort the in-progress ${op}? All ${op} changes will be discarded.`)
+        const ok = await confirm(t("conflictBanner.abortConfirm", { op }))
         if (!ok) return
         const done = await runOp("conflict-abort", () => gitConflictAbort(op), { conflictOp: op })
         if (done) void logUserAction("git_conflict_abort", `abort ${op}`)
     }
 
     const conflictContinue = async () => {
-        const ok = await confirm(`Continue the ${op}? Resolve all conflicts first.`)
+        const ok = await confirm(t("conflictBanner.continueConfirm", { op }))
         if (!ok) return
         const done = await runOp("conflict-continue", () => gitConflictContinue(op), { conflictOp: op })
         if (done) void logUserAction("git_conflict_continue", `continue ${op}`)
@@ -44,7 +46,9 @@ export function ConflictBanner() {
     return (
         <div className="shrink-0 border-b border-(--line-1)">
             <div className="flex items-center gap-[10px] bg-(--danger-soft) px-[12px] py-[8px]">
-                <span className="text-[11.5px] font-semibold text-[#c2293f]">{op} 進行中</span>
+                <span className="text-[11.5px] font-semibold text-[#c2293f]">
+                    {t("conflictBanner.opInProgress", { op })}
+                </span>
                 <div className="flex min-w-0 flex-1 flex-wrap gap-[6px]">
                     {conflicted.map((entry) => (
                         <button
@@ -60,19 +64,19 @@ export function ConflictBanner() {
                 </div>
                 <button
                     type="button"
-                    aria-label="Abort"
+                    aria-label={t("conflictBanner.abort")}
                     onClick={abort}
                     className="shrink-0 rounded-[6px] border border-[#c2293f] px-[10px] py-[3px] text-[11px] font-semibold text-[#c2293f] transition-colors duration-[130ms] hover:bg-[#c2293f] hover:text-(--paper-0)"
                 >
-                    Abort
+                    {t("conflictBanner.abort")}
                 </button>
                 <button
                     type="button"
-                    aria-label="Continue"
+                    aria-label={t("conflictBanner.continue")}
                     onClick={conflictContinue}
                     className="shrink-0 rounded-[6px] bg-(--ink-1) px-[10px] py-[3px] text-[11px] font-semibold text-(--paper-0) transition-opacity duration-[130ms] hover:opacity-90"
                 >
-                    Continue
+                    {t("conflictBanner.continue")}
                 </button>
             </div>
             {lastError && (

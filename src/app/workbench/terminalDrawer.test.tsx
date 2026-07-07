@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
 
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
+import i18n from "@/lib/i18n"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useTerminalStore } from "@/state/terminalStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -140,7 +141,7 @@ describe("TerminalDrawer sessions", () => {
     render(<TerminalDrawer visible={true} />)
 
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")).toHaveLength(0)
-    expect(screen.getByText("尚無終端機工作階段")).toBeInTheDocument()
+    expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).toBeInTheDocument()
     expect(screen.queryAllByTestId(/terminal-session-/)).toHaveLength(0)
   })
 
@@ -153,7 +154,7 @@ describe("TerminalDrawer sessions", () => {
     const sessions = screen.getAllByTestId(/terminal-session-/)
     expect(sessions).toHaveLength(1)
     expect(sessions[0]).toHaveAttribute("data-active", "true")
-    expect(screen.queryByText("尚無終端機工作階段")).not.toBeInTheDocument()
+    expect(screen.queryByText(i18n.t("noSessions", { ns: "terminal" }))).not.toBeInTheDocument()
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")).toHaveLength(1)
   })
 
@@ -200,7 +201,7 @@ describe("TerminalDrawer sessions", () => {
     fireEvent.click(screen.getByTitle("Close terminal"))
 
     expect(screen.queryAllByTestId(/terminal-session-/)).toHaveLength(0)
-    expect(screen.getByText("尚無終端機工作階段")).toBeInTheDocument()
+    expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).toBeInTheDocument()
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")).toHaveLength(0)
   })
 

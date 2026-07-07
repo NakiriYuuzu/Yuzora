@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
-
+import { invoke } from "@/lib/ipc"
 import type { LogRecord } from "@/lib/types"
 
 export interface LogQueryFilters {

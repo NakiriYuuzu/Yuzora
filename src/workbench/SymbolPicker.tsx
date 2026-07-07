@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { Command as CommandPrimitive } from "cmdk"
 import { SearchIcon } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "../components/ui/command"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
@@ -10,7 +11,7 @@ import type { FlatSymbol, WorkspaceSymbolItem } from "../lsp/symbols"
 import { pathToUri, uriToPath } from "../lsp/workspace"
 import { getDocument } from "../editor/documentRegistry"
 import { fileGradeOf, lspLanguageOf } from "../lib/types"
-import { strings } from "../lib/i18n"
+import { useOverlayPresence } from "../state/overlayStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
 interface SymbolPickerProps {
@@ -70,10 +71,15 @@ async function resolveActive(gradeGate: boolean) {
  * downgrade shows an empty "no symbols" list rather than erroring.
  */
 export function SymbolPicker({ open, onOpenChange, mode }: SymbolPickerProps) {
+    const { t } = useTranslation("lsp")
     const [query, setQuery] = useState("")
     const [debouncedQuery, setDebouncedQuery] = useState("")
     const [docSymbols, setDocSymbols] = useState<FlatSymbol[]>([])
     const [wsSymbols, setWsSymbols] = useState<WorkspaceSymbolItem[]>([])
+
+    // Register with the central z-order gate so the preview child webview hides
+    // while this picker is open (same as CommandPalette / BranchPopover).
+    useOverlayPresence(open)
 
     // Reset transient state whenever the picker closes so a reopen starts clean.
     useEffect(() => {
@@ -179,12 +185,12 @@ export function SymbolPicker({ open, onOpenChange, mode }: SymbolPickerProps) {
         : docSymbols
 
     const placeholder =
-        mode === "document" ? strings.lsp.goToSymbolPlaceholder : strings.lsp.workspaceSymbolsPlaceholder
+        mode === "document" ? t("goToSymbolPlaceholder") : t("workspaceSymbolsPlaceholder")
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogHeader className="sr-only">
-                <DialogTitle>{strings.lsp.symbolPickerTitle}</DialogTitle>
+                <DialogTitle>{t("symbolPickerTitle")}</DialogTitle>
                 <DialogDescription>{placeholder}</DialogDescription>
             </DialogHeader>
             <DialogContent
@@ -208,7 +214,7 @@ export function SymbolPicker({ open, onOpenChange, mode }: SymbolPickerProps) {
 
                     <CommandList className="yzs max-h-[398px] p-[8px]">
                         <CommandEmpty className="py-6 text-center text-[13px] text-(--ink-3)">
-                            {strings.lsp.noSymbols}
+                            {t("noSymbols")}
                         </CommandEmpty>
                         {mode === "document" ? (
                             <CommandGroup>

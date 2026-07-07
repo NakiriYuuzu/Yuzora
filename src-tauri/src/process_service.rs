@@ -66,12 +66,7 @@ pub struct ProcessState(pub Arc<ProcessManager>);
 
 impl ProcessManager {
     pub fn new(app: tauri::AppHandle) -> Self {
-        let sink = Mutex::new(logging::LogSink::new(logging::default_log_dir()));
-        let log: LogFn = Box::new(move |event| {
-            if let Ok(mut sink) = sink.lock() {
-                sink.write(event);
-            }
-        });
+        let log: LogFn = Box::new(logging::write_global);
         let emit: EmitFn = Arc::new(move |info| {
             use tauri::Emitter;
             let _ = app.emit("dev-server:status", info);
@@ -845,7 +840,7 @@ mod tests {
     fn stop_kill_failure_publishes_failed_and_logs_error() {
         fn kill_then_fail(child: &mut Child) -> std::io::Result<()> {
             let _ = process_kill::kill_tree(child);
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "boom"))
+            Err(std::io::Error::other("boom"))
         }
 
         let events: Arc<Mutex<Vec<DevServerInfo>>> = Default::default();

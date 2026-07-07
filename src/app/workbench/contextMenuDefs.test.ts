@@ -32,6 +32,7 @@ describe("CONTEXT_MENU_DEFS（設計文件 ctxDefs 對照）", () => {
     expect(ids("file")).toEqual([
       "cmOpen",
       "cmOpenSplit",
+      "cmOpenInBrowser",
       "|",
       "cmRename",
       "cmCopyRel",
@@ -80,6 +81,17 @@ describe("CONTEXT_MENU_DEFS（設計文件 ctxDefs 對照）", () => {
     ])
     expect(ids("status")).toEqual(["cmCopyBranch", "cmFetch", "cmPull", "cmPush"])
     expect(ids("sshhost")).toEqual(["cmOpenSsh", "cmOpenSftp", "|", "cmCopyAddr", "cmDisconnect"])
+  })
+
+  it("cmOpenInBrowser 只在 .html/.htm 檔顯示（when predicate）", () => {
+    const openInBrowser = CONTEXT_MENU_DEFS.file.find(
+      (entry): entry is ContextMenuItem => entry !== "separator" && entry.id === "cmOpenInBrowser"
+    )
+    expect(openInBrowser?.when).toBeTypeOf("function")
+    expect(openInBrowser?.when?.({ path: "/w/index.html" })).toBe(true)
+    expect(openInBrowser?.when?.({ path: "/w/page.HTM" })).toBe(true)
+    expect(openInBrowser?.when?.({ path: "/w/main.ts" })).toBe(false)
+    expect(openInBrowser?.when?.({})).toBe(false)
   })
 
   it("danger 項目與設計一致（且只有這四個）", () => {

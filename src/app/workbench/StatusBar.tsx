@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronUp, GitBranch } from "lucide-react";
 
 import { BranchPopover } from "@/workbench/git/BranchPopover";
 import { contextMenuHandler } from "@/state/contextMenuStore";
 import { changedPathSet, useGitStore } from "@/state/gitStore";
-import { useWorkspaceStore } from "@/state/workspaceStore";
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore";
 import { useLspStore } from "@/state/lspStore";
 import { usePreviewStore } from "@/state/previewStore";
+import { usePerfStore } from "@/state/perfStore";
 import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
 import { fileGradeOf, languageFromPath, lspLanguageOf } from "@/lib/types";
@@ -47,10 +49,12 @@ function lspErrorSummary(message: string | null): string | undefined {
  * Missing/Failed open the LSP settings for that language.
  */
 export function StatusBar() {
+  const { t } = useTranslation("workbench");
   const workspacePath = useWorkspaceStore((s) => s.workspacePath);
   const groups = useWorkspaceStore((s) => s.groups);
   const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex);
-  const activePath = groups[activeGroupIndex]?.activePath ?? null;
+  const rawActivePath = groups[activeGroupIndex]?.activePath ?? null;
+  const activePath = rawActivePath === PREVIEW_TAB_PATH ? null : rawActivePath;
   const devServer = usePreviewStore((s) =>
     workspacePath ? s.devServerForWorkspace(workspacePath) : null
   );
@@ -132,6 +136,14 @@ export function StatusBar() {
       ? (devServer.status.port ?? devServer.port)
       : null;
 
+  // F1 perf chip: main process cpu/memory. cpuPercent is sysinfo's raw value;
+  // memory shows decimal MB to line up with Activity Monitor. Hidden until the
+  // first poll produces a snapshot.
+  const perf = usePerfStore((s) => s.snapshot);
+  const perfText = perf
+    ? `${Math.round(perf.cpuPercent)}% · ${Math.round(perf.memoryBytes / 1_000_000)}MB`
+    : null;
+
   const branchButton = (
     <button
       type="button"
@@ -188,7 +200,7 @@ export function StatusBar() {
 
   return (
     <footer
-      aria-label="Status bar"
+      aria-label={t("statusBar.ariaLabel")}
       onContextMenu={contextMenuHandler("status")}
       className="flex h-[30px] shrink-0 items-center gap-1 border-t border-(--line-1) bg-(--yz-glass-strong) px-2 font-mono text-[11.5px] text-(--ink-2) backdrop-blur-[20px] backdrop-saturate-[1.5]"
     >
@@ -233,14 +245,23 @@ export function StatusBar() {
           className="ml-[13px] rounded-[6px] px-[6px] py-[2px]"
           style={{ color: "var(--status-a)", background: "rgba(var(--yz-accent-rgb),0.10)" }}
         >
-          Dev {devServerPort}
+          {t("statusBar.devPort", { port: devServerPort })}
         </span>
       )}
 
       <div className="flex-1" />
 
+      {perfText && (
+        <span
+          title={t("statusBar.perfTitle")}
+          className="rounded-[6px] px-[6px] text-(--ink-3)"
+        >
+          {perfText}
+        </span>
+      )}
+
       {!activePath ? (
-        <span className="rounded-[6px] px-[6px] text-(--ink-3)">未開啟檔案</span>
+        <span className="rounded-[6px] px-[6px] text-(--ink-3)">{t("statusBar.noFileOpen")}</span>
       ) : lspClickable ? (
         <button
           type="button"

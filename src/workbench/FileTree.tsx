@@ -1,7 +1,9 @@
 import { ChevronDown, ChevronRight, GitCompareArrows } from "lucide-react"
 import { useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { listDir } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
+import { FileIcon } from "../lib/fileIcons"
 import type { FileNode } from "../lib/types"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { changedPathSet, useGitStore } from "../state/gitStore"
@@ -15,15 +17,8 @@ function relativePath(path: string, root: string | null) {
     return path
 }
 
-// Design reference tree rows: file dot color keyed by extension.
-function fileDotColor(name: string) {
-    if (name.endsWith(".rs")) return "#c8521f"
-    if (name.endsWith(".toml")) return "#178a63"
-    if (name.endsWith(".md")) return "#2456cc"
-    return "var(--ink-3)"
-}
-
 function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
+    const { t } = useTranslation("menus")
     const [expanded, setExpanded] = useState(false)
     const [children, setChildren] = useState<FileNode[] | null>(null)
     const openTab = useWorkspaceStore((s) => s.openTab)
@@ -57,7 +52,7 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
                 <button
                     type="button"
                     onClick={onClick}
-                    onContextMenu={contextMenuHandler("file", { path: node.path })}
+                    onContextMenu={contextMenuHandler("file", { path: node.path, isDir: node.isDir })}
                     style={{ paddingLeft: `${14 + depth * 15}px` }}
                     className={
                         "flex h-[27px] w-full items-center gap-[7px] rounded-[8px] pr-[8px] text-left text-[12.5px] transition-colors duration-100 " +
@@ -67,16 +62,23 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
                     }
                 >
                     {node.isDir ? (
-                        expanded ? (
-                            <ChevronDown className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
-                        ) : (
-                            <ChevronRight className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
-                        )
+                        <>
+                            {expanded ? (
+                                <ChevronDown className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
+                            ) : (
+                                <ChevronRight className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
+                            )}
+                            <FileIcon
+                                fileName={node.name}
+                                isDirectory
+                                isOpen={expanded}
+                                className="size-[16px] shrink-0"
+                            />
+                        </>
                     ) : (
-                        <span
-                            aria-hidden="true"
-                            className={"size-[7px] shrink-0 rounded-[2px]" + (active ? "" : " opacity-55")}
-                            style={{ background: fileDotColor(node.name) }}
+                        <FileIcon
+                            fileName={node.name}
+                            className={"size-[16px] shrink-0" + (active ? "" : " opacity-85")}
                         />
                     )}
                     <span
@@ -95,8 +97,8 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
                 {isChanged && (
                     <button
                         type="button"
-                        aria-label={`Open diff ${node.name}`}
-                        title="Open diff"
+                        aria-label={t("fileTree.openDiffFile", { name: node.name })}
+                        title={t("fileTree.openDiffTitle")}
                         onClick={() => openDiffInGitMode(rel)}
                         className="absolute top-1/2 right-[6px] flex size-[20px] -translate-y-1/2 items-center justify-center rounded-[6px] text-(--ink-3) opacity-0 transition-all duration-[130ms] group-hover:opacity-100 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
                     >
@@ -117,16 +119,20 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
 
 export function FileTree() {
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+    // A context-menu file op (new/rename/delete) bumps treeRevision: re-list the
+    // roots and remount the subtree (keyed below) so cached children of expanded
+    // folders are dropped and re-fetched, reflecting the change at any depth.
+    const treeRevision = useWorkspaceStore((s) => s.treeRevision)
     const [roots, setRoots] = useState<FileNode[]>([])
 
     useEffect(() => {
         if (workspacePath) void listDir(workspacePath).then(setRoots)
-    }, [workspacePath])
+    }, [workspacePath, treeRevision])
 
     if (!workspacePath) return null
 
     return (
-        <ul className="flex flex-col gap-[1px]">
+        <ul key={treeRevision} className="flex flex-col gap-[1px]">
             {roots.map((node) => (
                 <TreeNode key={node.path} node={node} depth={0} />
             ))}

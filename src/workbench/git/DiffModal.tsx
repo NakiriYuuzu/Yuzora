@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
+import { useTranslation } from "react-i18next"
 
+import i18n from "@/lib/i18n"
 import type { DiffContent } from "@/lib/types"
 import {
     diffStats,
@@ -47,14 +49,20 @@ function FileBadge({ badge }: { badge: string }) {
 }
 
 // The header title/sub differ by source: worktree → "Working tree" + file count;
-// commit → shortHash + subject; text → caller-provided title.
+// commit → shortHash + subject; text → caller-provided title. Called from
+// DiffModal's render body (not a hook itself), so it reads the current
+// language straight off the shared i18n singleton — DiffModal's own
+// useTranslation("menus") call already re-renders it on language change.
 function sourceHeader(source: DiffModalSource): { title: string; sub: string } {
     if (source.type === "worktree") {
         const n = source.files.length
-        return { title: "Working tree", sub: `${n} changed ${n === 1 ? "file" : "files"}` }
+        return {
+            title: i18n.t("diffModal.workingTree", { ns: "menus" }),
+            sub: i18n.t("diffModal.changedFileCount", { ns: "menus", count: n })
+        }
     }
     if (source.type === "text") {
-        return { title: source.title, sub: "Agent diff" }
+        return { title: source.title, sub: i18n.t("diffModal.agentDiffSub", { ns: "menus" }) }
     }
     return { title: source.shortHash, sub: source.subject }
 }
@@ -107,6 +115,7 @@ function loadDiffFor(source: DiffModalSource, index: number): Promise<DiffConten
  * with the design's own overlay + panel styling.
  */
 export function DiffModal() {
+    const { t } = useTranslation("menus")
     const open = useDiffModalStore((s) => s.open)
     const source = useDiffModalStore((s) => s.source)
     const activeIndex = useDiffModalStore((s) => s.activeIndex)
@@ -180,12 +189,12 @@ export function DiffModal() {
                 />
                 {/* Panel: design L1396 — 1040px / 88vh paper card. */}
                 <DialogPrimitive.Content
-                    aria-label={`Diff · ${title}`}
+                    aria-label={t("diffModal.title", { title })}
                     onOpenAutoFocus={(e) => e.preventDefault()}
                     className="yz-diffin absolute top-1/2 left-1/2 z-[62] flex h-[88vh] w-[1040px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--paper-0) shadow-(--shadow-xl) outline-none"
                 >
                     <DialogPrimitive.Title className="sr-only">
-                        Diff · {title}
+                        {t("diffModal.title", { title })}
                     </DialogPrimitive.Title>
                     <DialogPrimitive.Description className="sr-only">{sub}</DialogPrimitive.Description>
 
@@ -207,7 +216,7 @@ export function DiffModal() {
                         </svg>
                         <div className="flex min-w-0 flex-col gap-[1px]">
                             <div className="whitespace-nowrap font-serif text-[15px] font-semibold leading-[1.1] text-(--ink-0)">
-                                Diff · {title}
+                                {t("diffModal.title", { title })}
                             </div>
                             <div className="truncate font-mono text-[10.5px] text-(--ink-3)">{sub}</div>
                         </div>
@@ -227,14 +236,14 @@ export function DiffModal() {
                                             : "text-(--ink-3)")
                                     }
                                 >
-                                    {m === "unified" ? "Unified" : "Split"}
+                                    {m === "unified" ? t("diffModal.unified") : t("diffModal.split")}
                                 </button>
                             ))}
                         </div>
                         <button
                             type="button"
-                            aria-label="Close"
-                            title="Close"
+                            aria-label={t("diffModal.close")}
+                            title={t("diffModal.close")}
                             onClick={() => close()}
                             className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-0)"
                         >
@@ -324,10 +333,10 @@ export function DiffModal() {
                             </div>
                             <div className="min-h-0 flex-1 overflow-hidden bg-(--paper-0)">
                                 {diff ? (
-                                    <DiffView content={diff} mode={mode} />
+                                    <DiffView content={diff} mode={mode} path={activePath} />
                                 ) : (
                                     <div className="flex h-full items-center justify-center text-[12.5px] text-(--ink-3)">
-                                        Loading diff…
+                                        {t("diffModal.loadingEllipsis")}
                                     </div>
                                 )}
                             </div>

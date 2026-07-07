@@ -1,0 +1,6 @@
+{
+  "shellLabel": "Shell settings",
+  "shellDescription": "When the shell path is empty, the backend resolves it via $SHELL → getpwuid → the system default shell; a set value takes priority. Default args are persisted with the terminal settings.",
+  "noSessions": "No terminal sessions yet",
+  "emptyDescription": "Open a new terminal to run commands here."
+}

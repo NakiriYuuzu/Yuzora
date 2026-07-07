@@ -12,7 +12,7 @@ import { SymbolPicker } from "./SymbolPicker"
 import { ensureClient } from "../lsp/lspManager"
 import { requestDocumentSymbols, requestWorkspaceSymbols } from "../lsp/symbols"
 import { getDocument } from "../editor/documentRegistry"
-import { strings } from "../lib/i18n"
+import i18n from "../lib/i18n"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
 const managed = {
@@ -126,7 +126,7 @@ it("workspace mode debounces the query, requests workspace symbols, and opens on
 
     render(<SymbolPicker open onOpenChange={() => {}} mode="workspace" />)
 
-    const input = screen.getByPlaceholderText(strings.lsp.workspaceSymbolsPlaceholder)
+    const input = screen.getByPlaceholderText(i18n.t("workspaceSymbolsPlaceholder", { ns: "lsp" }))
     await act(async () => {
         fireEvent.change(input, { target: { value: "Wid" } })
     })
@@ -163,7 +163,7 @@ it("workspace mode with no workspaceSymbolProvider capability stays empty and se
     } as never)
 
     render(<SymbolPicker open onOpenChange={() => {}} mode="workspace" />)
-    const input = screen.getByPlaceholderText(strings.lsp.workspaceSymbolsPlaceholder)
+    const input = screen.getByPlaceholderText(i18n.t("workspaceSymbolsPlaceholder", { ns: "lsp" }))
     await act(async () => {
         fireEvent.change(input, { target: { value: "Wid" } })
     })
@@ -177,7 +177,7 @@ it("clears the query when reopened without remounting (reset-on-close effect is 
     const { rerender } = render(<SymbolPicker open onOpenChange={() => {}} mode="document" />)
     await flush()
 
-    const input = () => screen.getByPlaceholderText(strings.lsp.goToSymbolPlaceholder)
+    const input = () => screen.getByPlaceholderText(i18n.t("goToSymbolPlaceholder", { ns: "lsp" }))
     await act(async () => {
         fireEvent.change(input(), { target: { value: "xyz" } })
     })
@@ -237,7 +237,7 @@ it("workspace mode waits for the initialize handshake before deciding there is n
     ])
 
     render(<SymbolPicker open onOpenChange={() => {}} mode="workspace" />)
-    const input = screen.getByPlaceholderText(strings.lsp.workspaceSymbolsPlaceholder)
+    const input = screen.getByPlaceholderText(i18n.t("workspaceSymbolsPlaceholder", { ns: "lsp" }))
     await act(async () => {
         fireEvent.change(input, { target: { value: "cold" } })
     })
@@ -290,7 +290,7 @@ it("workspace mode degrades to the empty state when requestWorkspaceSymbols reje
     vi.mocked(requestWorkspaceSymbols).mockRejectedValue({ code: -32801, message: "content modified" })
 
     render(<SymbolPicker open onOpenChange={() => {}} mode="workspace" />)
-    const input = screen.getByPlaceholderText(strings.lsp.workspaceSymbolsPlaceholder)
+    const input = screen.getByPlaceholderText(i18n.t("workspaceSymbolsPlaceholder", { ns: "lsp" }))
     await act(async () => {
         fireEvent.change(input, { target: { value: "Wid" } })
     })
@@ -315,7 +315,7 @@ it("workspace mode is not disabled by a non-full active file (grade gate is docu
     ])
 
     render(<SymbolPicker open onOpenChange={() => {}} mode="workspace" />)
-    const input = screen.getByPlaceholderText(strings.lsp.workspaceSymbolsPlaceholder)
+    const input = screen.getByPlaceholderText(i18n.t("workspaceSymbolsPlaceholder", { ns: "lsp" }))
     await act(async () => {
         fireEvent.change(input, { target: { value: "Wid" } })
     })

@@ -1,0 +1,19 @@
+{
+  "devServerLabel": "Dev server override",
+  "devServerDescription": "When you need to set it manually, the command and port here take priority when preview starts the dev server.",
+  "noDevServer": "No dev server",
+  "emptyTitle": "Start or connect a dev server",
+  "emptyDescription": "Once the dev server is running, the preview shows here.",
+  "start": "Start dev server",
+  "detecting": "Detecting…",
+  "noCandidates": "No dev server found to start",
+  "settingsHint": "Set the dev server command and port in the Preview section of Settings.",
+  "portOccupied": "Port already in use",
+  "connectExisting": "Connect to existing server",
+  "alternatePort": "Alternate port",
+  "startChangedPort": "Start on changed port",
+  "retryDetect": "Detect again",
+  "failedTitle": "Dev server failed to start",
+  "retryStart": "Retry start",
+  "exitedTitle": "Dev server stopped"
+}

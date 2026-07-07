@@ -44,6 +44,12 @@ struct OutputBuffer {
     truncated: bool,
 }
 
+impl Default for AgentTerminalManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentTerminalManager {
     pub fn new() -> Self {
         Self {

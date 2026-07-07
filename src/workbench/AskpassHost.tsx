@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event"
 
 import { askpassRespond } from "../lib/ipc"
 import type { AskpassKind, AskpassRequest } from "../lib/types"
+import { useOverlayPresence } from "../state/overlayStore"
 import {
     Dialog,
     DialogContent,
@@ -50,6 +51,11 @@ export function AskpassHost() {
     }, [])
 
     const current = queue[0] ?? null
+
+    // A background git op can pop this dialog at any time; the preview child
+    // webview (a native layer) must hide so it can't paint over it and freeze
+    // the app (z-order gate). Runs before the early return to keep hook order stable.
+    useOverlayPresence(current !== null)
 
     // Clear the input whenever the displayed request changes so a value typed
     // for one prompt can never leak into the next.

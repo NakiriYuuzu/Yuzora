@@ -1,0 +1,104 @@
+import { afterEach, beforeEach, expect, test, vi } from "vitest"
+
+vi.mock("@/lib/ipc", () => ({
+    openWorkspace: vi.fn(),
+    startWatch: vi.fn().mockResolvedValue(undefined),
+    saveFile: vi.fn().mockResolvedValue(0)
+}))
+vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn() }))
+vi.mock("@/editor/saveDocument", () => ({ saveDirtyTab: vi.fn() }))
+
+import { openWorkspaceAtPath } from "@/lib/workspaceActions"
+import { openWorkspace } from "@/lib/ipc"
+import { saveDirtyTab } from "@/editor/saveDocument"
+import { useConfirmDialogStore } from "@/state/confirmDialogStore"
+import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
+import { useWorkspaceStore } from "@/state/workspaceStore"
+
+// The Bun-hosted test runtime injects an empty localStorage global; install a
+// minimal in-memory Storage so recentWorkspaces.record can run (mirrors
+// workspaceRail.test.tsx).
+function installLocalStorage(): void {
+    const store = new Map<string, string>()
+    Object.defineProperty(globalThis, "localStorage", {
+        value: {
+            getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+            setItem: (k: string, v: string) => void store.set(k, String(v)),
+            removeItem: (k: string) => void store.delete(k),
+            clear: () => store.clear(),
+            key: (i: number) => [...store.keys()][i] ?? null,
+            get length() {
+                return store.size
+            }
+        },
+        configurable: true,
+        writable: true
+    })
+}
+
+const dirtyWorkspace = () =>
+    useWorkspaceStore.setState({
+        workspacePath: "/old",
+        activeGroupIndex: 0,
+        groups: [
+            {
+                activePath: "/old/a.ts",
+                tabs: [{ path: "/old/a.ts", name: "a.ts", dirty: true, externallyModified: false }]
+            }
+        ]
+    })
+
+beforeEach(() => {
+    installLocalStorage()
+    localStorage.clear()
+    vi.mocked(openWorkspace).mockReset().mockResolvedValue("/canonical")
+    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue(undefined)
+    useConfirmDialogStore.setState({ pending: null })
+    useRecentWorkspacesStore.setState({ list: [] })
+})
+
+afterEach(() => {
+    useConfirmDialogStore.setState({ pending: null })
+})
+
+test("有 dirty 分頁：cancel → 不開新工作區、workspace 不變", async () => {
+    dirtyWorkspace()
+    const p = openWorkspaceAtPath("/new")
+    // requestUnsavedDecision 於 promise executor 同步設定 pending
+    expect(useConfirmDialogStore.getState().pending).not.toBeNull()
+    useConfirmDialogStore.getState().respond("cancel")
+    await p
+    expect(openWorkspace).not.toHaveBeenCalled()
+    expect(saveDirtyTab).not.toHaveBeenCalled()
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+})
+
+test("有 dirty 分頁：discard → 不存檔、直接開新工作區", async () => {
+    dirtyWorkspace()
+    const p = openWorkspaceAtPath("/new")
+    useConfirmDialogStore.getState().respond("discard")
+    await p
+    expect(saveDirtyTab).not.toHaveBeenCalled()
+    expect(openWorkspace).toHaveBeenCalledWith("/new")
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/canonical")
+})
+
+test("有 dirty 分頁：save → 先存檔再開新工作區", async () => {
+    dirtyWorkspace()
+    const p = openWorkspaceAtPath("/new")
+    useConfirmDialogStore.getState().respond("save")
+    await p
+    expect(saveDirtyTab).toHaveBeenCalledWith("/old/a.ts")
+    expect(openWorkspace).toHaveBeenCalledWith("/new")
+})
+
+test("無 dirty 分頁：不彈 modal、直接開新工作區", async () => {
+    useWorkspaceStore.setState({
+        workspacePath: "/old",
+        activeGroupIndex: 0,
+        groups: [{ activePath: null, tabs: [] }]
+    })
+    await openWorkspaceAtPath("/new")
+    expect(useConfirmDialogStore.getState().pending).toBeNull()
+    expect(openWorkspace).toHaveBeenCalledWith("/new")
+})

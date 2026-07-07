@@ -222,3 +222,70 @@ export type FileAtRevResult =
     | { kind: "tooLarge" }
     | { kind: "binary" }
     | { kind: "missing" }
+
+// --- Database (FEAT-1 SQLite + F2 network backends; Rust serde is camelCase) ---
+export type DbKind = "sqlite" | "postgres" | "mssql"
+// The tagged descriptor db_open takes (Rust `DbOpenConfig`). Passwords are sent
+// in-flight only and are NEVER persisted anywhere.
+export type DbOpenConfig =
+    | { kind: "sqlite"; path: string }
+    | {
+          kind: "postgres"
+          host: string
+          port: number
+          database: string
+          user: string
+          password: string
+          ssl: boolean
+      }
+    | {
+          kind: "mssql"
+          host: string
+          port: number
+          database: string
+          user: string
+          password: string
+          trustCert: boolean
+      }
+export interface DbTable { name: string; kind: "table" | "view" }
+export interface DbColumn { name: string; type: string; notnull: boolean; pk: boolean }
+// A serialised value: numbers/bool/null map to native JSON; BLOB/numeric/date and
+// other engine-specific types arrive as strings (see db_service value mappers).
+export type DbValue = string | number | boolean | null
+export type DbQueryResult =
+    | { kind: "select"; columns: string[]; rows: DbValue[][]; truncated: boolean }
+    | { kind: "execute"; affectedRows: number }
+
+// --- SSH terminal (FEAT-2 MVP; Rust serde outputs camelCase) ---
+export type SshAuthKind = "password" | "key"
+// The auth secret sent to ssh_connect. NEVER persisted — password is prompted
+// per connection, passphrase (optional) is entered at connect time.
+export type SshAuthInput =
+    | { kind: "password"; password: string }
+    | { kind: "key"; keyPath: string; passphrase?: string }
+export interface SshConnectResult { sessionId: string; fingerprint: string; knownHost?: boolean }
+export interface SshDataEvent { sessionId: string; chunk: string }
+export interface SshExitEvent { sessionId: string }
+
+// --- SFTP browsing + transfers (F5; Rust serde outputs camelCase) ---
+export interface SftpEntry {
+    name: string
+    path: string
+    isDir: boolean
+    isSymlink: boolean
+    size: number
+}
+export interface SftpListing { cwd: string; entries: SftpEntry[] }
+// Progress tick on `sftp://progress`, correlated by the front-end's transferId.
+export interface SftpProgressEvent {
+    sessionId: string
+    transferId: string
+    transferred: number
+    total: number
+    done: boolean
+}
+
+// --- Performance monitor (F1; Rust serde outputs camelCase) ---
+// The app's own main process. cpuPercent is sysinfo's raw value (can exceed 100
+// on multi-core machines); memoryBytes is resident bytes.
+export interface PerfSnapshot { cpuPercent: number; memoryBytes: number }

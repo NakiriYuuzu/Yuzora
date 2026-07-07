@@ -1,6 +1,35 @@
 .editor-pane { flex: 1; min-width: 0; overflow: auto }
-.editor-pane .cm-editor { height: 100%; font-family: var(--font-mono, monospace); font-size: 13px }
+/* font-size is a per-view CSS variable (F6) EditorPane sets from editorSettings;
+   the fallback keeps the pre-setting default. font-size inherits down to the lines
+   (CodeMirror never re-declares it). line-height must go on .cm-scroller — the base
+   theme sets line-height:1.4 there, which would trump inheritance — and tracks the
+   font size (fz + 8px, from the design reference) so larger sizes stay legible. */
+.editor-pane .cm-editor { height: 100%; font-family: var(--font-mono, monospace); font-size: var(--yz-editor-font-size, 13px) }
+.editor-pane .cm-editor .cm-scroller { line-height: calc(var(--yz-editor-font-size, 13px) + 8px) }
 .editor-pane .cm-editor.cm-focused { outline: none }
+
+/* ---- Editor minimap (F6) --------------------------------------------------
+   A ViewPlugin appends .yz-minimap into .cm-editor as an absolutely-positioned
+   right strip; each line is one bar whose left inset tracks indentation and width
+   tracks length — the "line-density" language from the design reference
+   (dc.html:3899-3903), not a rendered thumbnail. The scroller reserves the strip
+   width so code never hides beneath it; pointer-events:none keeps it decorative
+   (no click-to-jump, Q8). */
+.editor-pane .cm-editor:has(.yz-minimap) .cm-scroller { padding-right: 64px }
+.yz-minimap {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 64px;
+    overflow: hidden;
+    padding: 13px 8px;
+    background: var(--paper-1);
+    border-left: 1px solid var(--line-1);
+    pointer-events: none;
+    z-index: 2;
+}
+.yz-minimap-bar { height: 2px; margin-bottom: 1px; border-radius: 1px; background: var(--line-2) }
 .special-file { padding: 24px; font-size: 13px; color: var(--ink-2) }
 .special-actions { display: flex; gap: 8px; margin-top: 12px }
 .special-actions button {
@@ -63,6 +92,62 @@
     --st-macro: #5fc9d8;
     --st-param: #5fd6c0;
     --st-var: #cfcbc3;
+}
+
+/* ---- CodeMirror app theme (BUG-3 / BUG-5) ----------------------------------
+   cmTheme.ts 的 EditorView.theme() 與 HighlightStyle 全走 CSS 變數，色值一律引用
+   app token，主題切換 = toggle <html>.dark，不需 reconfigure。--cm-* 是編輯器 chrome
+   的中介色（選取／當前行／括號／搜尋命中／自動完成選中項需自訂 alpha，非既有 token
+   能直接對應）；--syn-* 是語法高亮色票，與上方 --st-* 語意色協調（同語意同色）。 */
+.cm-editor {
+    --cm-active-line: rgba(27, 26, 23, 0.04);
+    --cm-active-line-gutter: rgba(27, 26, 23, 0.06);
+    --cm-selection: rgba(var(--yz-accent-rgb), 0.22);
+    --cm-bracket-bg: rgba(var(--yz-accent-rgb), 0.22);
+    --cm-bracket-border: rgba(var(--yz-accent-rgb), 0.55);
+    --cm-search-match: rgba(168, 105, 15, 0.20);
+    --cm-search-match-selected: rgba(var(--yz-accent-rgb), 0.45);
+    --cm-completion-selected: rgba(var(--yz-accent-rgb), 0.22);
+
+    --syn-keyword: #9333a8;
+    --syn-string: #2f8f5f;
+    --syn-comment: #8a857a;
+    --syn-number: #b5651d;
+    --syn-type: #b5830a;
+    --syn-func: #2456cc;
+    --syn-var: #3f3d38;
+    --syn-property: #0f766e;
+    --syn-tag: #c0562f;
+    --syn-operator: #9333a8;
+    --syn-punct: #57534b;
+    --syn-meta: #8a857a;
+    --syn-heading: #b5830a;
+    --syn-link: #2456cc;
+}
+.dark .cm-editor {
+    --cm-active-line: rgba(255, 255, 255, 0.05);
+    --cm-active-line-gutter: rgba(255, 255, 255, 0.07);
+    --cm-selection: rgba(var(--yz-accent-rgb), 0.30);
+    --cm-bracket-bg: rgba(var(--yz-accent-rgb), 0.28);
+    --cm-bracket-border: rgba(var(--yz-accent-rgb), 0.60);
+    --cm-search-match: rgba(224, 176, 106, 0.26);
+    --cm-search-match-selected: rgba(var(--yz-accent-rgb), 0.50);
+    --cm-completion-selected: rgba(var(--yz-accent-rgb), 0.28);
+
+    --syn-keyword: #d59be6;
+    --syn-string: #74d6a0;
+    --syn-comment: #7c7889;
+    --syn-number: #e0a56a;
+    --syn-type: #e0b341;
+    --syn-func: #82b4ff;
+    --syn-var: #cfcbc3;
+    --syn-property: #5fd6c0;
+    --syn-tag: #ff9d6b;
+    --syn-operator: #d59be6;
+    --syn-punct: #b6b2bb;
+    --syn-meta: #7c7889;
+    --syn-heading: #e0b341;
+    --syn-link: #82b4ff;
 }
 
 .cm-editor .cm-st-keyword { color: var(--st-keyword) }

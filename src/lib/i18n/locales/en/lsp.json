@@ -1,0 +1,7 @@
+{
+  "quickFix": "Quick Fix",
+  "goToSymbolPlaceholder": "Go to symbol…",
+  "workspaceSymbolsPlaceholder": "Search workspace symbols…",
+  "symbolPickerTitle": "Symbol Picker",
+  "noSymbols": "No symbols"
+}

@@ -2,6 +2,7 @@ import { MessagesSquare, Plus } from "lucide-react"
 import type { CSSProperties } from "react"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
+import { firstAbsolutePath } from "@/lib/paths"
 import type { AgentTone, SessionState } from "@/state/agentStore"
 import { useAgentStore } from "@/state/agentStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -25,9 +26,11 @@ export function AgentNavContent() {
   const newSession = useAgentStore((state) => state.newSession)
   const workspacePath = useWorkspaceStore((state) => state.workspacePath)
   const sessionEntries = Array.from(sessions.entries())
+  const cwd = firstAbsolutePath(workspacePath)
 
   function createSession() {
-    void newSession(workspacePath ?? ".").catch(() => undefined)
+    if (!cwd) return
+    void newSession(cwd).catch(() => undefined)
   }
 
   return (
@@ -54,18 +57,19 @@ export function AgentNavContent() {
           <span className="sr-only">尚無 session</span>
         </div>
       )}
-      <NewSessionButton onClick={createSession} />
+      <NewSessionButton onClick={createSession} disabled={!cwd} />
     </div>
   )
 }
 
-function NewSessionButton({ onClick }: { onClick: () => void }) {
+function NewSessionButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
   return (
     <button
       type="button"
       aria-label="新增 session"
       onClick={onClick}
-      className="flex h-[34px] w-full shrink-0 items-center justify-center gap-[6px] rounded-[10px] border border-dashed border-(--line-2) text-[12.5px] font-medium text-(--ink-3) transition-colors hover:border-(--yz-accent)/60 hover:bg-[rgba(var(--yz-accent-rgb),0.14)] hover:text-(--yz-accent-ink)"
+      disabled={disabled}
+      className="flex h-[34px] w-full shrink-0 items-center justify-center gap-[6px] rounded-[10px] border border-dashed border-(--line-2) text-[12.5px] font-medium text-(--ink-3) transition-colors hover:border-(--yz-accent)/60 hover:bg-[rgba(var(--yz-accent-rgb),0.14)] hover:text-(--yz-accent-ink) disabled:pointer-events-none disabled:opacity-50"
     >
       <Plus className="size-[14px]" aria-hidden="true" />
       新增 session

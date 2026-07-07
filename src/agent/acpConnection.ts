@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
+import { invoke } from "@/lib/ipc"
 import {
     ClientSideConnection,
     ndJsonStream,
@@ -148,6 +148,7 @@ export interface SessionMeta {
 }
 
 export const ACP_AUTH_REQUIRED_ERROR_CODE = -32000
+export const ACP_INVALID_PARAMS_ERROR_CODE = -32602
 
 export interface AgentAuthMethod {
     id: string
@@ -458,12 +459,19 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         }
     }
 
+    // 作用中連線的 listener 拆除函式。斷線路徑不一定會收到自己的 agent://exit
+    // （例如 interceptor 錯誤時 process 還活著），所以 markDisconnected 必須能主動拆。
+    let teardownActiveListeners: (() => void) | undefined
+
     const markDisconnected = (error: Error) => {
         disconnectedError = error
         rejectInFlightRequests(error)
         agent = undefined
         agentProcessId = undefined
         initialization = undefined
+        const teardown = teardownActiveListeners
+        teardownActiveListeners = undefined
+        teardown?.()
         const controller = stdoutController
         stdoutController = undefined
         try {
@@ -473,46 +481,60 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         }
     }
 
-    const closeStdout = () => {
-        const controller = stdoutController
-        stdoutController = undefined
-        try {
-            controller?.close()
-        } catch {
-            // already closed
-        }
-    }
-
     const ensureConnection = (cwd: string) => {
         if (agent) return Promise.resolve(agent)
         if (initialization) return initialization
         disconnectedError = undefined
-        initialization = withTimeout(startConnection(cwd), deps.initializeTimeoutMs ?? 10_000)
+        initialization = withTimeout(startConnection(cwd), deps.initializeTimeoutMs ?? 15_000)
             .then((connection) => {
                 agent = connection
                 disconnectedError = undefined
                 return connection
             })
-            .catch((error) => {
+            .catch(async (error) => {
                 initialization = undefined
                 const processId = agentProcessId
                 agentProcessId = undefined
-                if (processId) void invoke("agent_kill", { id: processId }).catch(() => {})
-                throw error
+                // best-effort：kill 前先撈 stderr 尾段，供 timeout 診斷用
+                const tail = processId
+                    ? await invoke<string[]>("agent_stderr_tail", { id: processId }).catch(() => [] as string[])
+                    : []
+                const timedOut = isInitializeTimeoutError(error)
+                if (processId) {
+                    void invoke("agent_kill", {
+                        id: processId,
+                        reason: timedOut ? "init_timeout" : "init_failed"
+                    }).catch(() => {})
+                }
+                throw timedOut ? initializeTimeoutError(error, tail) : error
             })
         return initialization
     }
 
+    // 每次連線的狀態（process id、stdout controller、listener）都是連線自持的
+    // local——listener guard 若讀共享可變的 agentProcessId，在「timeout 先清 id 再
+    // kill」的路徑上會永遠不匹配而洩漏，殘留 listener 還會把下一條連線的輸出
+    // 重複 enqueue（JSON-RPC 全部處理兩次）。
     const startConnection = async (cwd: string) => {
+        let processId: string | undefined
+        let ownController: ReadableStreamDefaultController<Uint8Array> | undefined
         const input = new ReadableStream<Uint8Array>({
             start(controller) {
+                ownController = controller
                 stdoutController = controller
             }
         })
         const output = new WritableStream<Uint8Array>({
             async write(chunk) {
-                if (!agentProcessId) throw new Error("ACP agent process is not spawned")
-                await invoke("agent_write", { id: agentProcessId, chunk: decoder.decode(chunk) })
+                if (!processId) throw new Error("ACP agent process is not spawned")
+                try {
+                    await invoke("agent_write", { id: processId, chunk: decoder.decode(chunk) })
+                } catch (error) {
+                    // 寫入失敗代表 agent 已斷線：立刻 reject pending 的 initialize/請求，不等 timeout
+                    const failure = error instanceof Error ? error : new Error(String(error))
+                    if (agentProcessId === processId) markDisconnected(failure)
+                    throw failure
+                }
             }
         })
         const rawStream = ndJsonStream(output, input)
@@ -521,37 +543,66 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         })
         const connection = new ClientSideConnection(() => runtime.client as unknown as Client, stream)
 
+        // 收掉自己的 stream：仍是全域作用中 controller 時一併解除引用
+        const releaseOwnStream = (error?: Error) => {
+            if (stdoutController === ownController) stdoutController = undefined
+            try {
+                if (error) ownController?.error(error)
+                else ownController?.close()
+            } catch {
+                // already closed
+            }
+        }
+
         const unlistenStdout = await listen<{ id: string; line: string }>("agent://stdout", (event) => {
-            if (event.payload.id !== agentProcessId) return
-            stdoutController?.enqueue(encoder.encode(`${event.payload.line}\n`))
+            if (!processId || event.payload.id !== processId) return
+            try {
+                ownController?.enqueue(encoder.encode(`${event.payload.line}\n`))
+            } catch {
+                // stream 已關閉（連線已被淘汰）
+            }
         })
-        const unlistenExit = await listen<{ id: string; code: number | null }>("agent://exit", (event) => {
-            if (event.payload.id !== agentProcessId) return
-            markDisconnected(new Error("ACP agent exited"))
+        const unlistenExit = await listen<{ id: string; code: number | null; stderrTail?: string[] }>("agent://exit", (event) => {
+            if (!processId || event.payload.id !== processId) return
+            const exitError = agentExitedEarlyError(event.payload.code, event.payload.stderrTail ?? [])
+            teardownListeners()
+            if (agentProcessId === processId) {
+                markDisconnected(exitError)
+            } else {
+                // 已被淘汰的連線（如 init timeout 後被 kill）：只收尾自己的資源，
+                // 不能動到可能已建立的新連線的全域狀態
+                releaseOwnStream(exitError)
+            }
+        })
+        let torndown = false
+        const teardownListeners = () => {
+            if (torndown) return
+            torndown = true
             unlistenStdout()
             unlistenExit()
-        })
+        }
 
         try {
             const command = typeof deps.command === "function" ? deps.command() : deps.command
-            agentProcessId = await invoke<string>("agent_spawn", {
-                command: command ?? "bunx pi-acp",
+            processId = await invoke<string>("agent_spawn", {
+                command: command ?? "bunx pi-acp@0.0.31",
                 cwd
             })
+            agentProcessId = processId
+            teardownActiveListeners = teardownListeners
             authMethods = []
-            const initializeResult = await connection.initialize({
+            const initializeResult = await trackAgentRequest(() => connection.initialize({
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: true, writeTextFile: true },
                     terminal: true
                 }
-            })
+            }))
             authMethods = normalizeAuthMethods(asRecord(initializeResult).authMethods)
             return connection
         } catch (error) {
-            unlistenStdout()
-            unlistenExit()
-            closeStdout()
+            teardownListeners()
+            releaseOwnStream()
             throw error
         }
     }
@@ -735,6 +786,9 @@ async function trackAuthRequired<T>(
                 cause: error
             })
         }
+        if (isInvalidCwdRpcError(error)) {
+            throw invalidCwdError(context.cwd)
+        }
         throw error
     }
 }
@@ -748,6 +802,23 @@ function isAuthRequiredRpcError(error: unknown): boolean {
             || record.message === "auth_required"
             || data.code === "auth_required"
         )
+}
+
+function isInvalidCwdRpcError(error: unknown): boolean {
+    const record = asRecord(error)
+    if (record.code !== ACP_INVALID_PARAMS_ERROR_CODE) return false
+    const data = asRecord(record.data)
+    const messages = [record.message, data.message]
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.toLowerCase())
+    return messages.some((text) => text.includes("cwd") || text.includes("absolute path"))
+}
+
+function invalidCwdError(cwd: string | null): Error {
+    const shown = cwd ? `（${cwd}）` : ""
+    return new Error(
+        `ACP agent 拒絕工作目錄${shown}：cwd must be an absolute path —— 請先開啟資料夾`
+    )
 }
 
 function normalizeAuthMethods(value: unknown): AgentAuthMethod[] {
@@ -809,6 +880,36 @@ function agentExitedError(value: unknown): Error {
     return error.message.includes("agent exited")
         ? error
         : new Error(`ACP agent exited: ${error.message}`)
+}
+
+function agentExitedEarlyError(code: number | null, stderrTail: string[] = []): Error {
+    const codeText = code === null ? "未知" : String(code)
+    const tail = Array.isArray(stderrTail) ? stderrTail : []
+    if (tail.some((line) => line.includes("EPIPE"))) {
+        return new Error(
+            `ACP agent exited: agent adapter crashed (EPIPE)（exit code ${codeText}）—— 請查 Settings → Logs (source: acp)`
+        )
+    }
+    const base = `ACP agent exited: agent 行程已結束（exit code ${codeText}）`
+    const summary = summarizeStderrTail(tail)
+    return new Error(summary ? `${base} —— ${summary}` : base)
+}
+
+function isInitializeTimeoutError(error: unknown): boolean {
+    return error instanceof Error && error.message.includes("ACP initialize timed out")
+}
+
+function initializeTimeoutError(error: unknown, stderrTail: string[]): Error {
+    const base = error instanceof Error ? error.message : String(error)
+    const summary = summarizeStderrTail(stderrTail)
+    const hint = "see Settings → Logs (source: acp)"
+    return new Error([base, summary, hint].filter(Boolean).join(" — "))
+}
+
+function summarizeStderrTail(stderrTail: string[]): string {
+    if (!Array.isArray(stderrTail)) return ""
+    const lines = stderrTail.slice(-2).map((line) => line.trim()).filter(Boolean)
+    return lines.join(" / ")
 }
 
 function resourceToText(value: unknown): string {
