@@ -174,7 +174,12 @@ fn leader_exited_without_reaping(pid: GroupId) -> io::Result<bool> {
     }
 
     let info = unsafe { info.assume_init() };
-    Ok(info.si_pid == pid)
+    // libc 在 Linux 將 siginfo_t 的 si_pid 暴露為 accessor method，macOS/BSD 則是欄位
+    #[cfg(target_os = "linux")]
+    let exited_pid = unsafe { info.si_pid() };
+    #[cfg(not(target_os = "linux"))]
+    let exited_pid = info.si_pid;
+    Ok(exited_pid == pid)
 }
 
 #[cfg(unix)]
