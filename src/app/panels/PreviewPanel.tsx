@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react"
-import { openUrl } from "@tauri-apps/plugin-opener"
 import { isTauri } from "@/lib/platform"
 import {
   AlertTriangle,
@@ -18,23 +17,33 @@ import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { loadPreviewSettings } from "@/app/workbench/SettingsDialog"
+import { contextMenuHandler } from "@/state/contextMenuStore"
+import { showActionError } from "@/lib/actionFeedback"
 import i18n from "@/lib/i18n"
 import {
   devServerDetect,
   devServerStart,
   devServerStop,
-  previewBack,
   previewClose,
-  previewForward,
   previewOpenUrl,
-  previewReload,
   previewSetBounds,
   previewSetVisible,
 } from "@/lib/ipc"
 import type { DevServerCandidate, DevServerInfo, DevServerStatus } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { PreviewFrame } from "@/preview/PreviewFrame"
-import { suppressContextMenu } from "@/state/contextMenuStore"
+import {
+  enqueueNativePreviewOperation,
+  goBackPreview,
+  goForwardPreview,
+  openPreviewExternally,
+  previewTargetCanGoBack,
+  previewTargetCanGoForward,
+  previewTargetHasUrl,
+  reloadPreview,
+  stopPreviewDevServer,
+  type PreviewCommandTarget,
+} from "@/preview/previewCommands"
 import { useAnyOverlayOpen } from "@/state/overlayStore"
 import { isLocalPreviewUrl, type PreviewNavState, usePreviewStore } from "@/state/previewStore"
 import { useUiStore } from "@/state/uiStore"
@@ -46,6 +55,26 @@ const EMPTY_NAV: PreviewNavState = {
   forwardStack: [],
   reloadNonce: 0,
   frame: "full",
+}
+
+function requestNativePreviewClose(
+  workspacePath: string | null,
+  onError?: (error: unknown) => Promise<void>
+): void {
+  const token = usePreviewStore.getState().beginNativeCloseRequest(workspacePath)
+  void enqueueNativePreviewOperation(async () => {
+    if (!usePreviewStore.getState().nativeRequestIsCurrent(token)) return
+    try {
+      await previewClose()
+    } catch (error) {
+      await onError?.(error)
+    } finally {
+      if (usePreviewStore.getState().nativeRequestIsCurrent(token)) {
+        usePreviewStore.getState().closeNativeSession()
+        usePreviewStore.getState().settleNativeRequest(token)
+      }
+    }
+  })
 }
 
 type FlowState = "idle" | "detecting" | "occupied" | "no-candidates"
@@ -108,6 +137,8 @@ export function PreviewPanel() {
     workspace ? s.devServerForWorkspace(workspace) : null
   )
   const navMap = usePreviewStore((s) => s.nav)
+  const attempts = usePreviewStore((s) => s.attempts)
+  const nativeNavigationSyncs = usePreviewStore((s) => s.nativeNavigationSyncs)
   const nav = workspace ? navMap[workspace] ?? EMPTY_NAV : EMPTY_NAV
   const navigate = usePreviewStore((s) => s.navigate)
   const openSettings = useUiStore((s) => s.openSettings)
@@ -125,26 +156,30 @@ export function PreviewPanel() {
   const overlayOpen = useAnyOverlayOpen()
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const webviewHostRef = useRef<HTMLDivElement | null>(null)
+  const consumedNativeNavigationRef = useRef<{ url: string; token: number } | null>(null)
 
   const status = devServer?.status ?? null
   const primaryCandidate = candidates[0] ?? null
   // External https renders in a native child webview; localhost/127.0.0.1 stays
-  // in the iframe. The webview owns its own history, so back/forward drive the
-  // Rust commands there and the previewStore history stack only for the iframe.
+  // in the iframe. Native Back/Forward is used only while previewStore can prove
+  // that the current child-webview session owns the adjacent external URL.
   const external = !!nav.url && !isLocalPreviewUrl(nav.url)
-  const canGoBack = !!workspace && (external || nav.backStack.length > 0)
-  const canGoForward = !!workspace && (external || nav.forwardStack.length > 0)
-  const canReload = !!workspace && !!nav.url
+  const nativeNavigationSync = workspace ? nativeNavigationSyncs[workspace] ?? null : null
+  const previewTarget: PreviewCommandTarget | null = workspace ? {
+    workspacePath: workspace,
+    url: nav.url,
+    serverAttempt: attempts[workspace] ?? 0,
+  } : null
+  const previewRequest = previewTarget ? { kind: "preview" as const, ...previewTarget } : null
+  const previewChromeContextMenu = previewRequest ? contextMenuHandler(previewRequest) : undefined
+  const canGoBack = previewTarget ? previewTargetCanGoBack(previewTarget) : false
+  const canGoForward = previewTarget ? previewTargetCanGoForward(previewTarget) : false
+  const canReload = previewTarget ? previewTargetHasUrl(previewTarget) : false
   const frameWidth = nav.frame === "mobile" ? 390 : "100%"
-  const attemptRef = useRef(0)
-
-  const nextAttempt = () => {
-    attemptRef.current += 1
-    return attemptRef.current
-  }
 
   const isAttemptLive = (attemptWorkspace: string, attempt: number) =>
-    attemptWorkspace === useWorkspaceStore.getState().workspacePath && attempt === attemptRef.current
+    attemptWorkspace === useWorkspaceStore.getState().workspacePath
+    && attempt === usePreviewStore.getState().attemptForWorkspace(attemptWorkspace)
 
   useEffect(() => {
     if (!workspace || !devServer || devServer.status.status !== "running") return
@@ -159,23 +194,84 @@ export function PreviewPanel() {
   // placeholder <div>. previewOpenUrl reuses an existing webview (just navigates),
   // so re-running on url change doesn't recreate it.
   useEffect(() => {
-    if (!isTauri() || !external || !nav.url) return
+    if (!isTauri() || !external || !nav.url || !workspace) return
+    if (nativeNavigationSync?.url === nav.url) {
+      consumedNativeNavigationRef.current = nativeNavigationSync
+      usePreviewStore.getState().consumeNativeNavigationSync(
+        workspace,
+        nativeNavigationSync.token
+      )
+      return
+    }
+    const consumed = consumedNativeNavigationRef.current
+    if (consumed) {
+      consumedNativeNavigationRef.current = null
+      if (consumed.url === nav.url) return
+    }
     const host = webviewHostRef.current
     if (!host) return
     const rect = host.getBoundingClientRect()
-    void previewOpenUrl(nav.url, rect.left, rect.top, rect.width, rect.height)
-  }, [external, nav.url])
+    const targetUrl = nav.url
+    const requestToken = usePreviewStore.getState().beginNativeOpenRequest(workspace, targetUrl)
+    let cancelled = false
+    void enqueueNativePreviewOperation(async () => {
+      if (!usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) return
+      try {
+        await previewOpenUrl(targetUrl, rect.left, rect.top, rect.width, rect.height)
+      } catch (error) {
+        if (usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) {
+          usePreviewStore.getState().closeNativeSession()
+          let reportedError = error
+          try {
+            await previewClose()
+          } catch (cleanupError) {
+            reportedError = new Error(`${String(error)}; preview cleanup failed: ${String(cleanupError)}`)
+          }
+          usePreviewStore.getState().settleNativeRequest(requestToken)
+          if (!cancelled) await showActionError(tp("previewPanel.reload"), reportedError)
+        }
+        return
+      }
+      if (!usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) return
+      if (
+        cancelled
+        || useWorkspaceStore.getState().workspacePath !== workspace
+        || usePreviewStore.getState().navForWorkspace(workspace).url !== targetUrl
+      ) {
+        usePreviewStore.getState().closeNativeSession()
+        try {
+          await previewClose()
+        } finally {
+          usePreviewStore.getState().settleNativeRequest(requestToken)
+        }
+        return
+      }
+      usePreviewStore.getState().recordNativeOpen(workspace, targetUrl)
+      usePreviewStore.getState().settleNativeRequest(requestToken)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [external, nativeNavigationSync, nav.url, workspace])
 
   // Close the webview when the preview is no longer showing an external URL, and
   // on unmount (the panel unmounts when another tab becomes active — a stray
   // native layer would otherwise float over the editor).
   useEffect(() => {
     if (!isTauri()) return
-    if (!external) void previewClose()
-  }, [external])
+    if (!external) {
+      // The Rust child webview is a singleton. Closing it invalidates whichever
+      // workspace owned the proof ledger, including an external -> other-workspace
+      // local transition where `workspace` is no longer the previous owner.
+      requestNativePreviewClose(
+        workspace,
+        (error) => showActionError(tp("previewPanel.reload"), error)
+      )
+    }
+  }, [external, workspace])
   useEffect(() => {
     return () => {
-      if (isTauri()) void previewClose()
+      if (isTauri()) requestNativePreviewClose(null)
     }
   }, [])
 
@@ -228,32 +324,25 @@ export function PreviewPanel() {
     if (usePreviewStore.getState().navigate(workspace, normalized)) setUrlDraft(null)
   }
 
-  const goBackPreview = () => {
-    if (!workspace) return
-    if (external) void previewBack()
-    else usePreviewStore.getState().goBack(workspace)
-  }
-  const goForwardPreview = () => {
-    if (!workspace) return
-    if (external) void previewForward()
-    else usePreviewStore.getState().goForward(workspace)
-  }
-  const reloadPreview = () => {
-    if (!workspace) return
-    if (external) void previewReload()
-    else usePreviewStore.getState().reload(workspace)
-  }
-  const openExternally = () => {
-    if (nav.url) void openUrl(nav.url).catch(() => {})
+  const runToolbarCommand = async (
+    actionLabel: string,
+    command: () => Promise<unknown>
+  ) => {
+    try {
+      await command()
+    } catch (error) {
+      await showActionError(actionLabel, error)
+    }
   }
 
   const startCandidate = async (
     candidate: DevServerCandidate,
     port: number | null,
-    attempt = nextAttempt()
+    attempt?: number
   ) => {
     const attemptWorkspace = workspace
     if (!attemptWorkspace) return
+    const attemptToken = attempt ?? usePreviewStore.getState().beginAttempt(attemptWorkspace)
     setLocalError(null)
     const startingInfo: DevServerInfo = {
       workspace: attemptWorkspace,
@@ -264,12 +353,12 @@ export function PreviewPanel() {
     usePreviewStore.getState().setDevServer(startingInfo)
     try {
       const info = await devServerStart(attemptWorkspace, candidate.command, port, () => {})
-      if (!isAttemptLive(attemptWorkspace, attempt)) {
+      if (!isAttemptLive(attemptWorkspace, attemptToken)) {
         if (useWorkspaceStore.getState().workspacePath !== attemptWorkspace) {
           try {
             await devServerStop(attemptWorkspace)
-          } catch {
-            // Best effort cleanup for a process that started after its workspace was left.
+          } catch (error) {
+            await showActionError(tp("previewPanel.stop"), error)
           }
         }
         return
@@ -281,7 +370,7 @@ export function PreviewPanel() {
       if (runningPort !== null)
         usePreviewStore.getState().navigate(attemptWorkspace, portUrl(runningPort))
     } catch (error) {
-      if (!isAttemptLive(attemptWorkspace, attempt)) return
+      if (!isAttemptLive(attemptWorkspace, attemptToken)) return
       const reason = error instanceof Error ? error.message : String(error)
       usePreviewStore.getState().setDevServer({
         workspace: attemptWorkspace,
@@ -295,7 +384,7 @@ export function PreviewPanel() {
   const detectAndStart = async () => {
     const attemptWorkspace = workspace
     if (!attemptWorkspace || flowState === "detecting") return
-    const attempt = nextAttempt()
+    const attempt = usePreviewStore.getState().beginAttempt(attemptWorkspace)
     const settings = loadPreviewSettings()
     const commandOverride = settings.command.trim()
     const configuredPort = parsePortOverride(settings.port)
@@ -354,21 +443,6 @@ export function PreviewPanel() {
     void startCandidate(primaryCandidate, nextPort)
   }
 
-  const stopServer = async () => {
-    const attemptWorkspace = workspace
-    const server = devServer
-    if (!attemptWorkspace || !server) return
-    const attempt = nextAttempt()
-    await devServerStop(attemptWorkspace)
-    if (!isAttemptLive(attemptWorkspace, attempt)) return
-    usePreviewStore.getState().setDevServer({
-      workspace: attemptWorkspace,
-      command: server.command,
-      port: server.port,
-      status: { status: "exited", code: null },
-    })
-  }
-
   const body = (() => {
     if (nav.url && status?.status !== "exited" && status?.status !== "failed") {
       return (
@@ -396,7 +470,11 @@ export function PreviewPanel() {
 
     if (status?.status === "failed") {
       return (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-[18px]">
+        <div
+          data-testid="preview-error-chrome"
+          onContextMenu={previewChromeContextMenu}
+          className="flex min-h-0 flex-1 items-center justify-center p-[18px]"
+        >
           <div className="flex max-w-[360px] flex-col items-center gap-[10px] text-center">
             <AlertTriangle className="size-[28px] text-[#b4232a]" aria-hidden="true" />
             <p className="text-[13px] font-medium text-(--ink-1)">{t("failedTitle")}</p>
@@ -425,7 +503,11 @@ export function PreviewPanel() {
 
     if (flowState === "occupied") {
       return (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-[18px]">
+        <div
+          data-testid="preview-empty-chrome"
+          onContextMenu={previewChromeContextMenu}
+          className="flex min-h-0 flex-1 items-center justify-center p-[18px]"
+        >
           <div className="flex max-w-[420px] flex-col items-center gap-[10px] text-center">
             <Monitor className="size-[28px] text-(--ink-3)" aria-hidden="true" />
             <p className="text-[13px] font-medium text-(--ink-1)">{t("portOccupied")}</p>
@@ -475,7 +557,11 @@ export function PreviewPanel() {
 
     if (flowState === "no-candidates") {
       return (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-[18px]">
+        <div
+          data-testid="preview-empty-chrome"
+          onContextMenu={previewChromeContextMenu}
+          className="flex min-h-0 flex-1 items-center justify-center p-[18px]"
+        >
           <div className="flex max-w-[360px] flex-col items-center gap-[10px] text-center">
             <MonitorPlay className="size-[28px] text-(--ink-3)" aria-hidden="true" />
             <p className="text-[13px] font-medium text-(--ink-1)">{t("noCandidates")}</p>
@@ -494,7 +580,11 @@ export function PreviewPanel() {
 
     if (status?.status === "exited") {
       return (
-        <div className="flex min-h-0 flex-1 items-center justify-center">
+        <div
+          data-testid="preview-empty-chrome"
+          onContextMenu={previewChromeContextMenu}
+          className="flex min-h-0 flex-1 items-center justify-center"
+        >
           <div className="flex flex-col items-center gap-[12px]">
             <EmptyState
               icon={MonitorPlay}
@@ -516,7 +606,11 @@ export function PreviewPanel() {
     }
 
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center">
+      <div
+        data-testid="preview-empty-chrome"
+        onContextMenu={previewChromeContextMenu}
+        className="flex min-h-0 flex-1 items-center justify-center"
+      >
         <div className="flex flex-col items-center gap-[12px]">
           <EmptyState
             icon={MonitorPlay}
@@ -543,17 +637,20 @@ export function PreviewPanel() {
   })()
 
   return (
-    <div
-      data-testid="preview-panel"
-      onContextMenu={suppressContextMenu}
-      className="flex min-h-0 flex-1 flex-col"
-    >
-      <div className="flex h-[38px] shrink-0 items-center gap-[6px] border-b border-(--line-1) px-[8px]">
+    <div data-testid="preview-panel" className="flex min-h-0 flex-1 flex-col">
+      <div
+        data-testid="preview-toolbar"
+        onContextMenu={previewChromeContextMenu}
+        className="flex h-[38px] shrink-0 items-center gap-[6px] border-b border-(--line-1) px-[8px]"
+      >
         <button
           type="button"
           disabled={!canGoBack}
           aria-label={tp("previewPanel.back")}
-          onClick={goBackPreview}
+          onClick={() => previewTarget && void runToolbarCommand(
+            tp("previewPanel.back"),
+            () => goBackPreview(previewTarget)
+          )}
           className={cn(
             "flex size-[24px] shrink-0 items-center justify-center rounded-[7px]",
             canGoBack ? "text-(--ink-2) hover:bg-(--paper-2)" : "cursor-not-allowed text-(--ink-4)"
@@ -565,7 +662,10 @@ export function PreviewPanel() {
           type="button"
           disabled={!canGoForward}
           aria-label={tp("previewPanel.forward")}
-          onClick={goForwardPreview}
+          onClick={() => previewTarget && void runToolbarCommand(
+            tp("previewPanel.forward"),
+            () => goForwardPreview(previewTarget)
+          )}
           className={cn(
             "flex size-[24px] shrink-0 items-center justify-center rounded-[7px]",
             canGoForward ? "text-(--ink-2) hover:bg-(--paper-2)" : "cursor-not-allowed text-(--ink-4)"
@@ -577,7 +677,10 @@ export function PreviewPanel() {
           type="button"
           disabled={!canReload}
           aria-label={tp("previewPanel.reload")}
-          onClick={reloadPreview}
+          onClick={() => previewTarget && void runToolbarCommand(
+            tp("previewPanel.reload"),
+            () => reloadPreview(previewTarget)
+          )}
           className={cn(
             "flex size-[24px] shrink-0 items-center justify-center rounded-[7px]",
             canReload ? "text-(--ink-2) hover:bg-(--paper-2)" : "cursor-not-allowed text-(--ink-4)"
@@ -633,7 +736,10 @@ export function PreviewPanel() {
             type="button"
             aria-label={tp("previewPanel.openExternally")}
             title={tp("previewPanel.openExternally")}
-            onClick={openExternally}
+            onClick={() => previewTarget && void runToolbarCommand(
+              tp("previewPanel.openExternally"),
+              () => openPreviewExternally(previewTarget)
+            )}
             className="flex size-[24px] shrink-0 items-center justify-center rounded-[7px] text-(--ink-2) hover:bg-(--paper-2)"
           >
             <ExternalLink className="size-[13px]" aria-hidden="true" />
@@ -643,7 +749,10 @@ export function PreviewPanel() {
         {status?.status === "running" && (
           <button
             type="button"
-            onClick={() => void stopServer()}
+            onClick={() => previewTarget && void runToolbarCommand(
+              tp("previewPanel.stop"),
+              () => stopPreviewDevServer(previewTarget)
+            )}
             className="flex h-[24px] shrink-0 items-center gap-[5px] rounded-[7px] border border-(--line-1) px-[8px] text-[11px] text-(--ink-2) hover:bg-(--paper-2)"
           >
             <Square className="size-[11px]" aria-hidden="true" />

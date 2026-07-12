@@ -79,6 +79,84 @@ describe("usePreviewStore", () => {
         expect(usePreviewStore.getState().navForWorkspace("/ws/a").url).toBe("http://localhost:5173/about")
     })
 
+    it("tracks async attempt identity per workspace and only restores the expected claim", () => {
+        const s = usePreviewStore.getState()
+
+        expect(s.attemptForWorkspace("/ws/a")).toBe(0)
+        expect(s.beginAttempt("/ws/a")).toBe(1)
+        expect(s.beginAttempt("/ws/a")).toBe(2)
+        expect(s.beginAttempt("/ws/b")).toBe(1)
+        expect(s.restoreAttempt("/ws/a", 1, 0)).toBe(false)
+        expect(s.restoreAttempt("/ws/a", 2, 1)).toBe(true)
+        expect(s.attemptForWorkspace("/ws/a")).toBe(1)
+        expect(s.attemptForWorkspace("/ws/b")).toBe(1)
+    })
+
+    it("syncs native history into nav state with a consumable one-shot marker", () => {
+        const s = usePreviewStore.getState()
+        s.navigate("/ws/a", "https://example.com/a")
+        s.recordNativeOpen("/ws/a", "https://example.com/a")
+        s.navigate("/ws/a", "https://example.com/b")
+        s.recordNativeOpen("/ws/a", "https://example.com/b")
+
+        expect(s.syncNativeBack("/ws/a")).toBe(true)
+        let state = usePreviewStore.getState()
+        expect(state.navForWorkspace("/ws/a")).toMatchObject({
+            url: "https://example.com/a",
+            backStack: [],
+            forwardStack: ["https://example.com/b"]
+        })
+        const backMarker = state.nativeNavigationSyncs["/ws/a"]
+        expect(backMarker).toEqual({ url: "https://example.com/a", token: 1 })
+        state.consumeNativeNavigationSync("/ws/a", 999)
+        expect(usePreviewStore.getState().nativeNavigationSyncs["/ws/a"]).toEqual(backMarker)
+        state.consumeNativeNavigationSync("/ws/a", backMarker.token)
+        expect(usePreviewStore.getState().nativeNavigationSyncs["/ws/a"]).toBeUndefined()
+
+        expect(usePreviewStore.getState().syncNativeForward("/ws/a")).toBe(true)
+        state = usePreviewStore.getState()
+        expect(state.navForWorkspace("/ws/a")).toMatchObject({
+            url: "https://example.com/b",
+            backStack: ["https://example.com/a"],
+            forwardStack: []
+        })
+        expect(state.nativeNavigationSyncs["/ws/a"]).toEqual({
+            url: "https://example.com/b",
+            token: 2
+        })
+        expect(state.nativeSession).toMatchObject({
+            workspacePath: "/ws/a",
+            currentUrl: "https://example.com/b",
+            backStack: ["https://example.com/a"],
+            forwardStack: []
+        })
+        state.navigate("/ws/a", "https://example.com/c")
+        expect(usePreviewStore.getState().nativeNavigationSyncs["/ws/a"]).toBeUndefined()
+        state.closeNativeSession("/ws/b")
+        expect(usePreviewStore.getState().nativeSession).not.toBeNull()
+        state.closeNativeSession("/ws/a")
+        expect(usePreviewStore.getState().nativeSession).toBeNull()
+    })
+
+    it("assigns monotonic native open/close request tokens", () => {
+        const s = usePreviewStore.getState()
+        const first = s.beginNativeOpenRequest("/ws/a", "https://example.com/a")
+        const second = s.beginNativeOpenRequest("/ws/a", "https://example.com/b")
+        const close = s.beginNativeCloseRequest("/ws/a")
+
+        expect([first, second, close]).toEqual([1, 2, 3])
+        expect(s.nativeRequestIsCurrent(first)).toBe(false)
+        expect(s.nativeRequestIsCurrent(close)).toBe(true)
+        expect(usePreviewStore.getState().nativeRequest).toEqual({
+            token: 3,
+            kind: "close",
+            workspacePath: "/ws/a"
+        })
+        expect(s.settleNativeRequest(second)).toBe(false)
+        expect(s.settleNativeRequest(close)).toBe(true)
+        expect(usePreviewStore.getState().nativeRequest).toBeNull()
+    })
+
     it("reload bumps the nonce and responsive frame switches between full and mobile", () => {
         const s = usePreviewStore.getState()
 
@@ -105,6 +183,19 @@ describe("usePreviewStore", () => {
         const nav = usePreviewStore.getState().navForWorkspace("/ws/a")
         expect(nav.backStack).toEqual(["https://example.com"])
         expect(nav.url).toBe("http://localhost:5173")
+    })
+
+    it("does not create a no-op history entry for the current URL", () => {
+        const s = usePreviewStore.getState()
+
+        expect(s.navigate("/ws/a", "https://example.com")).toBe(true)
+        expect(s.navigate("/ws/a", "https://example.com")).toBe(true)
+
+        expect(usePreviewStore.getState().navForWorkspace("/ws/a")).toMatchObject({
+            url: "https://example.com",
+            backStack: [],
+            forwardStack: []
+        })
     })
 
     it("isLocalPreviewUrl separates local dev/static servers from external URLs", () => {

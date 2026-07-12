@@ -40,6 +40,8 @@ vi.mock("@/features/logs/logQuery", () => ({
     return logMocks.queryResult
   },
   logExport: vi.fn(async () => "/tmp/yuzora-logs.zip"),
+  getLogLevel: async () => "info",
+  setLogLevel: vi.fn(async () => undefined),
 }))
 
 vi.mock("@/features/logs/userAction", () => ({
@@ -86,7 +88,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
+  useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
   // gitStore persists across the module graph; environment set in one test
   // leaks into the next (e.g. the "No repository status" nav assertion relies
   // on a null environment). Reset to the initial snapshot after each test.
@@ -195,8 +197,8 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
     switchMode("AgentZone")
 
     const nav = screen.getByTestId("nav-mode-content-agent")
-    expect(within(nav).getByText("尚無 session", { selector: "p" })).toBeInTheDocument()
-    expect(within(nav).getByRole("button", { name: "新增 session" })).toBeInTheDocument()
+    expect(within(nav).getByText("No sessions yet", { selector: "p" })).toBeInTheDocument()
+    expect(within(nav).getByRole("button", { name: "New session" })).toBeInTheDocument()
     expect(screen.getByText("ACP sessions will be managed here")).toBeInTheDocument()
   })
 })
@@ -304,11 +306,20 @@ describe("Git guided setup", () => {
   })
 })
 
-it("右鍵 preview 面板被完全吃掉：不彈選單、default 被擋", () => {
+it("Preview root 保留原生右鍵；只有 Preview Chrome 開 Yuzora menu", () => {
+  useWorkspaceStore.setState({ workspacePath: "/workspace" })
   render(<PreviewPanel />)
-  const nativeMenuShown = fireEvent.contextMenu(screen.getByTestId("preview-panel"))
-  expect(nativeMenuShown).toBe(false)
-  expect(useContextMenuStore.getState().kind).toBeNull()
+
+  expect(fireEvent.contextMenu(screen.getByTestId("preview-panel"))).toBe(true)
+  expect(useContextMenuStore.getState().request).toBeNull()
+
+  expect(fireEvent.contextMenu(screen.getByTestId("preview-toolbar"))).toBe(false)
+  expect(useContextMenuStore.getState().request).toEqual({
+    kind: "preview",
+    workspacePath: "/workspace",
+    url: null,
+    serverAttempt: 0,
+  })
 })
 
 describe("PreviewPanel dev server flow", () => {
@@ -762,11 +773,11 @@ it("右鍵 Git 面板開啟 git 選單", () => {
   render(<GitPanel />)
   // Default tab is Log; its details panel always shows this prompt.
   fireEvent.contextMenu(screen.getByText("Select a commit to view details"))
-  expect(useContextMenuStore.getState().kind).toBe("git")
+  expect(useContextMenuStore.getState().request?.kind).toBe("git")
 })
 
-it("右鍵 Agent 面板開啟 agent 選單", () => {
+it("右鍵 Agent 面板不開啟 agent 選單", () => {
   render(<AgentZonePanel />)
   fireEvent.contextMenu(screen.getByText("ACP sessions will be managed here"))
-  expect(useContextMenuStore.getState().kind).toBe("agent")
+  expect(useContextMenuStore.getState().request).toBeNull()
 })
