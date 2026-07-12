@@ -84,11 +84,22 @@ mod tests {
         std::fs::write(tmp.path().join(".git/index"), "x").unwrap();
         std::fs::write(tmp.path().join("node_modules/pkg/a.js"), "x").unwrap();
         std::fs::write(tmp.path().join("real.txt"), "x").unwrap();
-        let paths = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(
-            paths.iter().all(|p| p.ends_with("real.txt")),
-            "got: {paths:?}"
-        );
+        // macOS FSEvents 會把 .git／node_modules 的寫入合併成 watch root 的目錄
+        // 事件，且 real.txt 不保證落在第一個 debounce batch——契約是「被過濾的
+        // 路徑永不出現」與「real.txt 終會送達」，逐 batch 驗證直到看到為止。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut saw_real = false;
+        while !saw_real {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let paths = rx
+                .recv_timeout(remaining)
+                .expect("real.txt change was never delivered");
+            assert!(
+                paths.iter().all(|p| !is_ignored_path(Path::new(p))),
+                "got: {paths:?}"
+            );
+            saw_real = paths.iter().any(|p| p.ends_with("real.txt"));
+        }
     }
 
     #[test]
