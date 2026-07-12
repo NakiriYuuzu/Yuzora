@@ -12,7 +12,7 @@ const MAX_RECENT_WORKSPACES = 10
 // Strip trailing slashes so "/a/b" and "/a/b/" dedupe to the same entry;
 // keep a bare "/" as-is instead of collapsing it to "".
 export function normalizeWorkspacePath(path: string): string {
-    const stripped = path.replace(/\/+$/, "")
+    const stripped = path.replace(/[/\\]+$/, "")
     return stripped === "" ? "/" : stripped
 }
 

@@ -10,7 +10,7 @@ vi.mock("../lib/ipc", () => ({
     saveFile: (...a: unknown[]) => saveFile(...a)
 }))
 
-import { YuzoraWorkspace, pathToUri } from "./workspace"
+import { YuzoraWorkspace, pathToUri, uriToPath } from "./workspace"
 import { registerView, unregisterView } from "../editor/viewRegistry"
 import { recentlySaved } from "../lib/saveSuppress"
 
@@ -25,6 +25,26 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks()
+})
+
+it.each([
+    ["/workspace/hello world.ts", "file:///workspace/hello%20world.ts"],
+    ["/workspace/中文檔名.ts", "file:///workspace/%E4%B8%AD%E6%96%87%E6%AA%94%E5%90%8D.ts"],
+    ["C:\\Users\\Yuuzu\\hello world.ts", "file:///C:/Users/Yuuzu/hello%20world.ts"],
+    ["\\\\?\\C:\\Users\\Yuuzu\\hello world.ts", "file:///C:/Users/Yuuzu/hello%20world.ts"],
+    ["c:/Users/Yuuzu/中文.ts", "file:///C:/Users/Yuuzu/%E4%B8%AD%E6%96%87.ts"],
+    ["\\\\server\\share\\a b.ts", "file://server/share/a%20b.ts"],
+    ["\\\\?\\UNC\\server\\share\\a b.ts", "file://server/share/a%20b.ts"],
+])("encodes a cross-platform file path as a valid file URI: %s", (path, uri) => {
+    expect(pathToUri(path)).toBe(uri)
+})
+
+it.each([
+    ["file:///workspace/hello%20world.ts", "/workspace/hello world.ts"],
+    ["file:///C:/Users/Yuuzu/hello%20world.ts", "C:/Users/Yuuzu/hello world.ts"],
+    ["file://server/share/a%20b.ts", "//server/share/a b.ts"],
+])("decodes valid file URIs without losing drive or UNC authority: %s", (uri, path) => {
+    expect(uriToPath(uri)).toBe(path)
 })
 
 it("background-loads an unopened file via openFile ipc and sends didOpen", async () => {

@@ -14,17 +14,38 @@ import { useWorkspaceStore } from "../state/workspaceStore"
 // --- path <-> file URI ---------------------------------------------------
 // Yuzora tracks files by absolute filesystem path; LSP tracks them by URI.
 export function pathToUri(path: string): string {
-    return "file://" + path.split("/").map(encodeURIComponent).join("/")
+    let normalized = path.replace(/\\/g, "/")
+    if (normalized.toLowerCase().startsWith("//?/unc/")) {
+        normalized = `//${normalized.slice("//?/UNC/".length)}`
+    } else if (normalized.startsWith("//?/")) {
+        normalized = normalized.slice("//?/".length)
+    }
+    if (normalized.startsWith("//")) {
+        const [host = "", ...segments] = normalized.slice(2).split("/")
+        return `file://${encodeURIComponent(host)}/${segments.map(encodeURIComponent).join("/")}`
+    }
+    const windowsDrive = normalized.match(/^([A-Za-z]):(?:\/(.*))?$/)
+    if (windowsDrive) {
+        const drive = windowsDrive[1].toUpperCase()
+        const rest = (windowsDrive[2] ?? "").split("/").map(encodeURIComponent).join("/")
+        return `file:///${drive}:/${rest}`
+    }
+    return "file://" + normalized.split("/").map(encodeURIComponent).join("/")
 }
 
 export function uriToPath(uri: string): string {
-    const body = uri.startsWith("file://") ? uri.slice("file://".length) : uri
+    const hasFileScheme = uri.startsWith("file://")
+    const schemeBody = hasFileScheme ? uri.slice("file://".length) : uri
+    const body = hasFileScheme && schemeBody && !schemeBody.startsWith("/")
+        ? `//${schemeBody}`
+        : schemeBody
     // Keep this total: a server may hand back an unencoded URI with a bare '%'
     // (e.g. file:///ws/100%done.md), on which decodeURIComponent throws. Falling
     // back to the raw body means callers (requestFile / displayFile) can never be
     // made to reject by a malformed URI (R7-1).
     try {
-        return decodeURIComponent(body)
+        const decoded = decodeURIComponent(body)
+        return /^\/[A-Za-z]:\//.test(decoded) ? decoded.slice(1) : decoded
     } catch {
         return body
     }

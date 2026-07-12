@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import {
     RECENT_WORKSPACES_STORAGE_KEY,
     loadRecentWorkspaces,
+    normalizeWorkspacePath,
     useRecentWorkspacesStore
 } from "./recentWorkspaces"
 
@@ -91,5 +92,19 @@ describe("useRecentWorkspacesStore", () => {
     it("falls back to an empty list when the stored JSON isn't an array", () => {
         localStorage.setItem(RECENT_WORKSPACES_STORAGE_KEY, JSON.stringify({ oops: true }))
         expect(loadRecentWorkspaces()).toEqual([])
+    })
+})
+
+describe("normalizeWorkspacePath", () => {
+    it("dedupes POSIX paths that differ only by a trailing slash", () => {
+        expect(normalizeWorkspacePath("/a/b/")).toBe(normalizeWorkspacePath("/a/b"))
+    })
+
+    it("keeps a bare POSIX root as-is", () => {
+        expect(normalizeWorkspacePath("/")).toBe("/")
+    })
+
+    it("dedupes Windows paths that differ only by a trailing backslash", () => {
+        expect(normalizeWorkspacePath("C:\\repo\\")).toBe(normalizeWorkspacePath("C:\\repo"))
     })
 })
