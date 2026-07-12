@@ -2578,7 +2578,19 @@ fn get_exact_actor(
     state: &DbState,
     identity: &ConnectionIdentity,
 ) -> Result<Arc<ProductionConnectionActor>, DatabaseOperationalError> {
-    let actor = get_actor(state, &identity.connection_id.0)?;
+    // 呼叫端帶著完整世代 identity：registry 查無此 connection_id 表示該世代
+    // 已被 disconnect／cancel 收走，對呼叫端而言是 stale identity，而非
+    // transport 層的 ServerDisconnected（raw get_actor 的語義保留給無世代的查詢）。
+    let actor = get_actor(state, &identity.connection_id.0).map_err(|error| {
+        if error.code == DatabaseOperationalErrorCode::ServerDisconnected {
+            DatabaseOperationalError::new(
+                DatabaseOperationalErrorCode::StaleConnection,
+                "database connection identity is stale",
+            )
+        } else {
+            error
+        }
+    })?;
     if actor.identity() != identity {
         return Err(DatabaseOperationalError::new(
             DatabaseOperationalErrorCode::StaleConnection,
