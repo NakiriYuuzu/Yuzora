@@ -1,5 +1,4 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react"
-import { createPortal } from "react-dom"
 import MarkdownIt from "markdown-it"
 import DOMPurify from "dompurify"
 import { create } from "zustand"
@@ -10,10 +9,175 @@ import { getView } from "../editor/viewRegistry"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { fileGradeOf } from "../lib/types"
 import type { OpenFileResult } from "../lib/types"
+import {
+    collectPreviewAnchors,
+    createScrollSyncCoordinator,
+    readEditorViewportTopLine,
+    writeEditorViewportTopLine
+} from "./markdownScrollSync"
+import type { ScrollSyncCoordinator, SourceAnchor } from "./markdownScrollSync"
 
 // A4 裁決：渲染器＝markdown-it，sanitizer＝DOMPurify。html:true 讓原始 HTML
 // 通過 markdown-it，交由 DOMPurify 白名單過濾（XSS 防護的唯一守門）。
 const md = new MarkdownIt({ html: true, linkify: true, breaks: false })
+const SOURCE_LINE_ATTR = "data-yz-source-line"
+const SOURCE_ANCHOR_ATTR = "data-yz-source-anchor"
+
+function isHtmlWhitespace(character: string): boolean {
+    return character === " " || character === "\t" || character === "\n"
+        || character === "\f" || character === "\r"
+}
+
+function stripReservedSourceAttributesFromStartTag(
+    html: string,
+    tagStart: number
+): { content: string; end: number } | null {
+    if (!/[a-z]/i.test(html[tagStart + 1] ?? "")) return null
+
+    let cursor = tagStart + 2
+    while (
+        cursor < html.length
+        && !isHtmlWhitespace(html[cursor])
+        && html[cursor] !== "/"
+        && html[cursor] !== ">"
+    ) cursor++
+
+    const removals: Array<[number, number]> = []
+    while (cursor < html.length && html[cursor] !== ">") {
+        while (isHtmlWhitespace(html[cursor] ?? "")) cursor++
+        if (html[cursor] === "/") {
+            cursor++
+            continue
+        }
+        if (html[cursor] === ">" || cursor >= html.length) break
+
+        const attributeStart = cursor
+        cursor++
+        while (
+            cursor < html.length
+            && !isHtmlWhitespace(html[cursor])
+            && html[cursor] !== "/"
+            && html[cursor] !== "="
+            && html[cursor] !== ">"
+        ) cursor++
+        const attributeName = html.slice(attributeStart, cursor).toLowerCase()
+        const attributeNameEnd = cursor
+
+        while (isHtmlWhitespace(html[cursor] ?? "")) cursor++
+        let attributeEnd = attributeNameEnd
+        if (html[cursor] === "=") {
+            cursor++
+            while (isHtmlWhitespace(html[cursor] ?? "")) cursor++
+            const quote = html[cursor]
+            if (quote === '"' || quote === "'") {
+                cursor++
+                while (cursor < html.length && html[cursor] !== quote) cursor++
+                if (html[cursor] === quote) cursor++
+            } else {
+                // In HTML's unquoted-value state, slash is content rather than
+                // a separator. Only whitespace or the closing bracket ends it.
+                while (
+                    cursor < html.length
+                    && !isHtmlWhitespace(html[cursor])
+                    && html[cursor] !== ">"
+                ) cursor++
+            }
+            attributeEnd = cursor
+        }
+
+        if (attributeName === SOURCE_LINE_ATTR || attributeName === SOURCE_ANCHOR_ATTR) {
+            let removalStart = attributeStart
+            while (
+                removalStart > tagStart + 1
+                && (isHtmlWhitespace(html[removalStart - 1]) || html[removalStart - 1] === "/")
+            ) removalStart--
+            const previous = removals.at(-1)
+            if (previous && removalStart <= previous[1]) previous[1] = attributeEnd
+            else removals.push([removalStart, attributeEnd])
+        }
+    }
+
+    if (html[cursor] === ">") cursor++
+    if (removals.length === 0) return { content: html.slice(tagStart, cursor), end: cursor }
+
+    let content = ""
+    let keptFrom = tagStart
+    for (const [start, end] of removals) {
+        content += html.slice(keptFrom, start)
+        keptFrom = end
+    }
+    content += html.slice(keptFrom, cursor)
+    return { content, end: cursor }
+}
+
+function stripReservedSourceAttributes(html: string): string {
+    let output = ""
+    let cursor = 0
+    while (cursor < html.length) {
+        const tagStart = html.indexOf("<", cursor)
+        if (tagStart < 0) return output + html.slice(cursor)
+        output += html.slice(cursor, tagStart)
+
+        if (html.startsWith("<!--", tagStart)) {
+            const commentEnd = html.indexOf("-->", tagStart + 4)
+            if (commentEnd < 0) return output + html.slice(tagStart)
+            output += html.slice(tagStart, commentEnd + 3)
+            cursor = commentEnd + 3
+            continue
+        }
+
+        const startTag = stripReservedSourceAttributesFromStartTag(html, tagStart)
+        if (startTag) {
+            output += startTag.content
+            cursor = startTag.end
+            continue
+        }
+
+        let tagEnd = tagStart + 1
+        let quote = ""
+        for (; tagEnd < html.length; tagEnd++) {
+            const character = html[tagEnd]
+            if (quote) {
+                if (character === quote) quote = ""
+            } else if (character === '"' || character === "'") {
+                quote = character
+            } else if (character === ">") {
+                break
+            }
+        }
+        if (tagEnd >= html.length) return output + html.slice(tagStart)
+
+        const tag = html.slice(tagStart, tagEnd + 1)
+        output += tag
+        cursor = tagEnd + 1
+    }
+    return output
+}
+
+// html_block's stock renderer returns raw content and ignores token attrs. A
+// zero-height in-flow sentinel gives that block the same trusted marker contract
+// as normal opening/self-closing tokens without wrapping or changing its HTML.
+md.renderer.rules.html_block = (tokens, index, _options, _env, renderer) => {
+    const token = tokens[index]
+    return `<span${renderer.renderAttrs(token)} aria-hidden="true"></span>${token.content}`
+}
+
+type MarkdownToken = ReturnType<typeof md.parse>[number]
+
+function annotateSourceTokens(tokens: MarkdownToken[]): void {
+    for (const token of tokens) {
+        // Raw Markdown HTML is allowed, but the marker namespace is reserved for
+        // renderer-generated attrs. Strip spoofed attrs before rendering/sanitize.
+        if (token.type === "html_block" || token.type === "html_inline") {
+            token.content = stripReservedSourceAttributes(token.content)
+        }
+        if (token.children) annotateSourceTokens(token.children)
+        if (!token.block || !token.map) continue
+        const line = token.map[0] + 1
+        token.attrSet(SOURCE_LINE_ATTR, String(line))
+        token.attrSet(SOURCE_ANCHOR_ATTR, "block")
+    }
+}
 
 // 渲染呼叫計數：供測試斷言 memo 生效（父 re-render／內容未變時不重解）（R4-1）。
 let renderMarkdownCalls = 0
@@ -23,6 +187,8 @@ export function __renderMarkdownCallCount(): number {
 
 export function renderMarkdown(src: string): string {
     renderMarkdownCalls++
+    const tokens = md.parse(src, {})
+    annotateSourceTokens(tokens)
     // FORBID_ATTR target／usemap：連結一律不得帶 target（防 window.open 突破
     // webview）；usemap 讓 image map 導航（R3-1）；style 屬性＝inline CSS，可
     // position:fixed;inset:0 全域 overlay（clickjacking／偽裝）或 background:url()
@@ -32,9 +198,9 @@ export function renderMarkdown(src: string): string {
     // javascript:/data: 協定由 DOMPurify 預設清除。
     // FORBID_TAGS：form／表單控件可提交導航離開 webview（R2-7）；map／area 為
     // image map 導航元素，其 closest("a") 為 null 會逃逸 anchor 攔截（R3-1）；
-    // style 跟在內容後可存活 sanitize，經 portal 到 body 後全域 CSS 生效、可藏匿
-    // 整個 app（R9-1）。清單與 lspManager.ts 逐字同步。
-    return DOMPurify.sanitize(md.render(src), {
+    // style 跟在內容後可存活 sanitize；即使 preview 是 in-flow pane，全域 CSS 仍
+    // 可藏匿整個 app（R9-1）。清單與 lspManager.ts 逐字同步。
+    return DOMPurify.sanitize(md.renderer.render(tokens, md.options, {}), {
         FORBID_ATTR: ["target", "usemap", "style", "class"],
         FORBID_TAGS: ["form", "input", "button", "select", "textarea", "dialog", "map", "area", "style"]
     })
@@ -45,8 +211,7 @@ export function isMarkdownPath(name: string): boolean {
     return ext === "md" || ext === "markdown"
 }
 
-// Preview 開關狀態（per path）。TabBar 的 toggle 與 overlay 皆讀此 store，
-// 避免動 EditorArea／EditorPane（本 task scope 外）。
+// Preview 開關狀態（per path）。TabBar 與 editor group 內的 split view 共用。
 interface MarkdownPreviewState {
     openPaths: Record<string, boolean>
     toggle: (path: string) => void
@@ -79,7 +244,13 @@ function bufferContent(path: string, result: OpenFileResult): string {
     return ""
 }
 
-export const MarkdownPreview = memo(function MarkdownPreview({ path }: { path: string }) {
+export const MarkdownPreview = memo(function MarkdownPreview({
+    path,
+    style
+}: {
+    path: string
+    style?: React.CSSProperties
+}) {
     const [result, setResult] = useState<OpenFileResult | null>(null)
     const [content, setContent] = useState("")
     const [loadError, setLoadError] = useState(false)
@@ -87,6 +258,11 @@ export const MarkdownPreview = memo(function MarkdownPreview({ path }: { path: s
     // 上次讀取的 CM6 doc 參考（immutable，每 transaction 換新物件）：identity
     // 比對省去未變時對至多 10MB doc 的全量 toString（R4-3）。
     const lastDocRef = useRef<unknown>(null)
+    const previewBodyRef = useRef<HTMLDivElement>(null)
+    const coordinatorRef = useRef<ScrollSyncCoordinator | null>(null)
+    const rebuildAnchorsRef = useRef<((preservedSourceLine?: number) => void) | null>(null)
+    const pendingSourceLineRef = useRef<number | null>(null)
+    const documentLineCountRef = useRef(1)
 
     useEffect(() => {
         let disposed = false
@@ -132,7 +308,8 @@ export const MarkdownPreview = memo(function MarkdownPreview({ path }: { path: s
                     if (doc === undefined || doc === lastDocRef.current) return
                     lastDocRef.current = doc
                     const live = doc.toString()
-                    setContent((c) => (c === live ? c : live))
+                    pendingSourceLineRef.current = coordinatorRef.current?.snapshotSourceLine() ?? null
+                    setContent((current) => current === live ? current : live)
                 })
                 // 外部刪檔清快取後，tick 的 getDocument 走 openFile reject——tick 級
                 // 靜默即可（loadError 語意留給 init 路徑；下一 tick 自然重試）（R5-1）。
@@ -160,6 +337,129 @@ export const MarkdownPreview = memo(function MarkdownPreview({ path }: { path: s
         () => (grade === "full" ? renderMarkdown(content) : null),
         [grade, content]
     )
+    const documentLineCount = useMemo(() => content.split(/\r\n?|\n/).length, [content])
+    const syncEnabled = grade === "full" && content.trim() !== ""
+
+    useEffect(() => {
+        documentLineCountRef.current = documentLineCount
+    }, [documentLineCount])
+
+    useEffect(() => {
+        if (!syncEnabled) return
+        const preview = previewBodyRef.current
+        if (!preview) return
+
+        let disposed = false
+        let attachedView: ReturnType<typeof getView>
+        let detach = () => {}
+
+        function attachCurrentView() {
+            if (disposed) return
+            const view = getView(path)
+            if (view === attachedView && coordinatorRef.current) return
+
+            detach()
+            detach = () => {}
+            attachedView = view
+            coordinatorRef.current = null
+            rebuildAnchorsRef.current = null
+            // Tests and async mount windows may expose a doc-only registry stand-in
+            // before the actual EditorView scroll surface is ready.
+            if (
+                !view
+                || !(view.scrollDOM instanceof HTMLElement)
+                || typeof view.lineBlockAtHeight !== "function"
+                || typeof view.lineBlockAt !== "function"
+            ) return
+
+            let anchors: SourceAnchor[] = collectPreviewAnchors(
+                preview!,
+                documentLineCountRef.current
+            )
+            const coordinator = createScrollSyncCoordinator({
+                editor: {
+                    subscribeScroll: (listener) => {
+                        view.scrollDOM.addEventListener("scroll", listener, { passive: true })
+                        return () => view.scrollDOM.removeEventListener("scroll", listener)
+                    },
+                    readOffset: () => Number.isFinite(view.scrollDOM.scrollTop)
+                        ? view.scrollDOM.scrollTop
+                        : null,
+                    readSourceLine: () => readEditorViewportTopLine(view),
+                    writeSourceLine: (line) => writeEditorViewportTopLine(view, line)
+                },
+                preview: {
+                    subscribeScroll: (listener) => {
+                        preview!.addEventListener("scroll", listener, { passive: true })
+                        return () => preview!.removeEventListener("scroll", listener)
+                    },
+                    readOffset: () => Number.isFinite(preview!.scrollTop)
+                        ? preview!.scrollTop
+                        : null,
+                    writeOffset: (offset) => {
+                        const maximum = Math.max(0, preview!.scrollHeight - preview!.clientHeight)
+                        preview!.scrollTop = Math.min(maximum, Math.max(0, offset))
+                        return Number.isFinite(preview!.scrollTop) ? preview!.scrollTop : null
+                    }
+                },
+                getAnchors: () => anchors
+            })
+
+            function rebuildAnchors(preservedSourceLine = coordinator.snapshotSourceLine() ?? undefined) {
+                anchors = collectPreviewAnchors(preview!, documentLineCountRef.current)
+                coordinator.resync(preservedSourceLine)
+            }
+
+            const observer = new ResizeObserver(() => rebuildAnchors())
+            observer.observe(preview!)
+            const onImageLoad = (event: Event) => {
+                if (event.target instanceof HTMLImageElement) rebuildAnchors()
+            }
+            preview!.addEventListener("load", onImageLoad, true)
+            const fontSet = document.fonts as FontFaceSet | undefined
+            let fontSubscriptionActive = true
+            const onFontLayoutChange = () => {
+                if (fontSubscriptionActive) rebuildAnchors()
+            }
+            fontSet?.addEventListener("loadingdone", onFontLayoutChange)
+            void fontSet?.ready.then(onFontLayoutChange)
+            coordinatorRef.current = coordinator
+            rebuildAnchorsRef.current = rebuildAnchors
+            coordinator.resync()
+
+            detach = () => {
+                fontSubscriptionActive = false
+                fontSet?.removeEventListener("loadingdone", onFontLayoutChange)
+                observer.disconnect()
+                preview!.removeEventListener("load", onImageLoad, true)
+                coordinator.destroy()
+                if (coordinatorRef.current === coordinator) coordinatorRef.current = null
+                if (rebuildAnchorsRef.current === rebuildAnchors) rebuildAnchorsRef.current = null
+            }
+        }
+
+        // EditorPane registers asynchronously. Re-check on the same 400ms cadence
+        // as live content polling; preview remains independently usable meanwhile.
+        attachCurrentView()
+        const attachInterval = setInterval(attachCurrentView, 400)
+        return () => {
+            disposed = true
+            clearInterval(attachInterval)
+            detach()
+            coordinatorRef.current = null
+            rebuildAnchorsRef.current = null
+            pendingSourceLineRef.current = null
+        }
+    }, [path, syncEnabled])
+
+    useEffect(() => {
+        if (!syncEnabled) return
+        const preservedSourceLine = pendingSourceLineRef.current
+            ?? coordinatorRef.current?.snapshotSourceLine()
+            ?? undefined
+        pendingSourceLineRef.current = null
+        rebuildAnchorsRef.current?.(preservedSourceLine)
+    }, [documentLineCount, html, syncEnabled])
 
     const statusClass = "flex flex-1 items-center justify-center p-[24px] text-[12.5px] text-(--ink-4)"
     let body: React.ReactNode
@@ -186,18 +486,21 @@ export const MarkdownPreview = memo(function MarkdownPreview({ path }: { path: s
     } else {
         body = (
             <div
+                ref={previewBodyRef}
+                data-testid="markdown-preview-body"
                 className="markdown-preview-body min-h-0 flex-1 overflow-y-auto px-[28px] py-[20px] text-[14px] leading-[1.7] text-(--ink-1)"
                 dangerouslySetInnerHTML={{ __html: html ?? "" }}
             />
         )
     }
 
-    return createPortal(
-        <div
+    return (
+        <aside
             role="complementary"
             aria-label="Markdown preview"
             onClick={onPreviewClick}
-            className="markdown-preview yzs fixed top-[44px] right-0 bottom-[30px] z-40 flex w-[46vw] min-w-[320px] flex-col border-l border-(--line-1) bg-(--paper-0) shadow-(--shadow-md)"
+            style={style}
+            className="markdown-preview yzs flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--paper-0)"
         >
             <MarkdownPreviewProse />
             <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-(--line-1) px-[14px]">
@@ -226,8 +529,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({ path }: { path: s
                 </button>
             </div>
             {body}
-        </div>,
-        document.body
+        </aside>
     )
 })
 
@@ -242,6 +544,7 @@ function MarkdownPreviewProse() {
     return (
         <style>{`
 .markdown-preview-body{contain:paint}
+.markdown-preview-body span[data-yz-source-anchor="block"]{display:block;height:0;overflow:hidden}
 .markdown-preview-body h1{font-size:1.7em;font-weight:700;margin:.6em 0 .4em;line-height:1.25}
 .markdown-preview-body h2{font-size:1.4em;font-weight:700;margin:.6em 0 .35em;line-height:1.3}
 .markdown-preview-body h3{font-size:1.15em;font-weight:600;margin:.5em 0 .3em}
