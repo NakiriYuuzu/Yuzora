@@ -5,15 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   frontend:
     name: Frontend (lint · typecheck · test · build)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -30,23 +34,130 @@ jobs:
       - name: Build
         run: bun run build
 
-  rust:
-    name: Rust (fmt · clippy · test)
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: src-tauri
+  # Compile assurance only: interactive Keychain, Credential Manager, and
+  # Secret Service smoke tests still require user-session runners on each OS.
+  rust-compile:
+    name: Rust compile (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            cache-key: macos
+          - os: windows-latest
+            label: Windows x86-64
+            cache-key: windows-x86-64
+          - os: ubuntu-22.04
+            label: Linux x86-64
+            cache-key: linux-x86-64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          toolchain: stable
+          rustflags: ""
+          cache: false
+
+      - name: Install macOS quality components
+        if: runner.os == 'macOS'
+        run: rustup component add rustfmt clippy
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ci-${{ matrix.cache-key }}
+
+      - name: Compile all targets with locked dependencies
+        working-directory: src-tauri
+        run: cargo check --locked --all-targets
+
+      # Run the platform-independent quality gates once instead of repeating
+      # the same fmt, clippy, and unit-test work on every compile runner.
       - name: Format check
-        run: cargo fmt --check
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Test
-        run: cargo test
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        run: cargo fmt --package yuzora -- --check
+
+      - name: Clippy (exact warning baseline)
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        # Exact file/line/message/count fingerprints quarantine only the
+        # recorded debt. Any added, removed, moved, or changed warning fails.
+        run: ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json
+
+      - name: Rust tests
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  database-integration:
+    name: Real database integration (Linux x86-64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify x86-64 runner
+        shell: bash
+        run: test "$(uname -m)" = "x86_64"
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: database-integration-linux-x86-64
+
+      - name: Start PostgreSQL and MSSQL fixtures
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait
+
+      - name: Test real SQLite, PostgreSQL, and MSSQL success paths
+        working-directory: src-tauri
+        env:
+          # Fixture-only credential shared with tests/database/docker-compose.yml.
+          # It is not a production secret and must never be printed by the test.
+          YUZORA_P8_DATABASE_PASSWORD: "Yuzora-P8-Only-2026!"
+        run: YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql cargo test --locked --test database_integration -- --ignored --nocapture
+
+      - name: Stop database fixtures and remove volumes
+        if: always()
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql down -v
