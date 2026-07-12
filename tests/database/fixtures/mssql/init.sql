@@ -154,22 +154,29 @@ DECLARE @counts TABLE (row_count INT NOT NULL);
 INSERT INTO @counts VALUES (0), (499), (500), (501), (1000), (1001), (1201);
 
 DECLARE @row_count INT;
+-- EXEC(<string>) 只接受字面值與變數的串接，函式呼叫（CONVERT）不合法：
+-- 先組進變數再 EXEC。
+DECLARE @row_count_text NVARCHAR(8);
+DECLARE @dynamic_sql NVARCHAR(MAX);
 DECLARE boundary_cursor CURSOR LOCAL FAST_FORWARD FOR SELECT row_count FROM @counts;
 OPEN boundary_cursor;
 FETCH NEXT FROM boundary_cursor INTO @row_count;
 WHILE @@FETCH_STATUS = 0
 BEGIN
-  EXEC(N'CREATE TABLE alpha.rows_' + CONVERT(NVARCHAR(8), @row_count) +
-       N' (id INT NOT NULL PRIMARY KEY)');
+  SET @row_count_text = CONVERT(NVARCHAR(8), @row_count);
+  SET @dynamic_sql = N'CREATE TABLE alpha.rows_' + @row_count_text +
+       N' (id INT NOT NULL PRIMARY KEY)';
+  EXEC(@dynamic_sql);
   IF @row_count > 0
   BEGIN
-    EXEC(N';WITH rows(value) AS (
+    SET @dynamic_sql = N';WITH rows(value) AS (
              SELECT 1
              UNION ALL
-             SELECT value + 1 FROM rows WHERE value < ' + CONVERT(NVARCHAR(8), @row_count) + N'
+             SELECT value + 1 FROM rows WHERE value < ' + @row_count_text + N'
            )
-           INSERT INTO alpha.rows_' + CONVERT(NVARCHAR(8), @row_count) +
-           N'(id) SELECT value FROM rows OPTION (MAXRECURSION 0)');
+           INSERT INTO alpha.rows_' + @row_count_text +
+           N'(id) SELECT value FROM rows OPTION (MAXRECURSION 0)';
+    EXEC(@dynamic_sql);
   END;
   FETCH NEXT FROM boundary_cursor INTO @row_count;
 END;

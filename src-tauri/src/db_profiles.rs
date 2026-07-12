@@ -4628,7 +4628,7 @@ mod tests {
                 ..
             }] => {
                 assert_eq!(descriptor_id, &created.descriptor_id);
-                assert_eq!(generations, &[generation.clone()]);
+                assert_eq!(generations, std::slice::from_ref(&generation));
             }
             operations => panic!("expected one pendingForget operation, got {operations:?}"),
         }

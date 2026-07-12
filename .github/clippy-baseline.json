@@ -14,13 +14,6 @@
     "count": 1
   },
   {
-    "code": "clippy::cloned_ref_to_slice_refs",
-    "file": "src/db_profiles.rs",
-    "line": 4631,
-    "message": "this call to `clone` can be replaced with `std::slice::from_ref`",
-    "count": 1
-  },
-  {
     "code": "clippy::drop_non_drop",
     "file": "src/db_service.rs",
     "line": 4933,
