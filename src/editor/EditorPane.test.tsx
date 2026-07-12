@@ -1,17 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, render, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react"
 import type { EditorView } from "@codemirror/view"
 
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useEditorSettingsStore } from "../state/editorSettingsStore"
+import { useContextMenuStore } from "../state/contextMenuStore"
 
 // Spy on the view registry so we can assert the exact (path, view) call args.
 const registerView = vi.fn()
 const unregisterView = vi.fn()
+const updateViewMetadata = vi.fn()
 vi.mock("./viewRegistry", () => ({
-    registerView: (path: string, view: EditorView) => registerView(path, view),
+    registerView: (path: string, view: EditorView, metadata: unknown) => registerView(path, view, metadata),
     unregisterView: (path: string, view?: EditorView) => unregisterView(path, view),
-    getView: vi.fn()
+    updateViewMetadata: (path: string, view: EditorView, metadata: unknown) =>
+        updateViewMetadata(path, view, metadata),
+    getView: vi.fn(),
+    getViewEntry: vi.fn()
 }))
 
 vi.mock("./documentRegistry", () => ({
@@ -42,13 +47,40 @@ afterEach(() => {
     cleanup()
     vi.clearAllMocks()
     useWorkspaceStore.setState({ pendingReveal: null })
+    useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useEditorSettingsStore.setState({ fontSize: 13, minimap: false })
 })
 
 describe("EditorPane", () => {
+    it("right-click focuses and targets the clicked pane group", async () => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [
+                { tabs: [], activePath: null },
+                {
+                    tabs: [{ path: PATH, name: "a.ts", dirty: false, externallyModified: false }],
+                    activePath: PATH
+                }
+            ]
+        })
+        const { container } = render(<EditorPane path={PATH} groupIndex={1} />)
+        await waitFor(() => expect(registerView).toHaveBeenCalled())
+
+        fireEvent.contextMenu(container.querySelector(".editor-pane")!)
+
+        expect(useWorkspaceStore.getState().activeGroupIndex).toBe(1)
+        expect(useContextMenuStore.getState().request).toEqual({
+            kind: "editor",
+            workspacePath: "/w",
+            path: PATH,
+            groupIndex: 1
+        })
+    })
+
     it("unregisters its own view (path, view) on unmount (m4)", async () => {
         useWorkspaceStore.setState({ pendingReveal: null })
-        const { unmount } = render(<EditorPane path={PATH} />)
+        const { unmount } = render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
         const view = registerView.mock.calls[0][1]
         unmount()
@@ -57,7 +89,7 @@ describe("EditorPane", () => {
 
     it("revealLine clamps below 1 without throwing (T18)", async () => {
         useWorkspaceStore.setState({ pendingReveal: null })
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
         // Requesting a reveal at line 0 must not throw — it is clamped to line 1.
         expect(() =>
@@ -69,14 +101,14 @@ describe("EditorPane", () => {
 
     it("applies the editorSettings font size as a CSS variable on the view root at creation (F6)", async () => {
         useEditorSettingsStore.setState({ fontSize: 15, minimap: false })
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
         const view = registerView.mock.calls[0][1] as EditorView
         expect(view.dom.style.getPropertyValue("--yz-editor-font-size")).toBe("15px")
     })
 
     it("changing the font size live updates the open view's CSS variable (F6)", async () => {
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
         const view = registerView.mock.calls[0][1] as EditorView
         expect(view.dom.style.getPropertyValue("--yz-editor-font-size")).toBe("13px")
@@ -86,7 +118,7 @@ describe("EditorPane", () => {
 
     it("mounts the minimap strip when the setting is on and toggles it live via the compartment (F6)", async () => {
         useEditorSettingsStore.setState({ fontSize: 13, minimap: true })
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
         const view = registerView.mock.calls[0][1] as EditorView
         // Built with minimap on: one bar per line of the mocked "one\ntwo\nthree".

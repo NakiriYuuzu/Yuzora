@@ -1,4 +1,6 @@
 import { it, expect, vi, beforeEach, afterEach } from "vitest"
+import { EditorState } from "@codemirror/state"
+import { EditorView } from "@codemirror/view"
 
 const lspStart = vi.fn()
 const lspSend = vi.fn()
@@ -20,6 +22,7 @@ import {
     lspExtensionsForFile,
     shouldFormatOnSave,
     flushPendingChanges,
+    formatEditorDocument,
     sanitizeHtml
 } from "./lspManager"
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -344,6 +347,59 @@ it("flushPendingChanges delegates to the client's sync()", () => {
     const sync = vi.fn()
     flushPendingChanges({ client: { sync } as never, language: "typescript", capabilities: null })
     expect(sync).toHaveBeenCalledTimes(1)
+})
+
+it("formatEditorDocument flushes, awaits the existing client, and applies edits to the clicked view", async () => {
+    const view = new EditorView({ state: EditorState.create({ doc: "const x=1\n" }) })
+    const sync = vi.fn()
+    const request = vi.fn(async () => [
+        {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } },
+            newText: "const x = 1;"
+        }
+    ])
+    const managed = {
+        client: { sync, request } as never,
+        language: "typescript" as const,
+        capabilities: { documentFormattingProvider: true }
+    }
+
+    expect(await formatEditorDocument(view, managed, "/ws/a.ts", () => true)).toBe(true)
+    expect(sync).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledWith("textDocument/formatting", expect.anything())
+    expect(view.state.doc.toString()).toBe("const x = 1;\n")
+    view.destroy()
+})
+
+it("formatEditorDocument refuses stale edits and propagates LSP request failures", async () => {
+    const view = new EditorView({ state: EditorState.create({ doc: "const x=1\n" }) })
+    const deferredRequest = deferred<unknown>()
+    const managed = {
+        client: { sync: vi.fn(), request: vi.fn(() => deferredRequest.promise) } as never,
+        language: "typescript" as const,
+        capabilities: { documentFormattingProvider: true }
+    }
+    const formatting = formatEditorDocument(view, managed, "/ws/a.ts", () => true)
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "// changed\n" } })
+    const afterEdit = view.state.doc.toString()
+    deferredRequest.resolve([
+        {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } },
+            newText: "formatted"
+        }
+    ])
+    expect(await formatting).toBe(false)
+    expect(view.state.doc.toString()).toBe(afterEdit)
+
+    const failed = {
+        ...managed,
+        client: {
+            sync: vi.fn(),
+            request: vi.fn(async () => { throw new Error("formatter failed") })
+        } as never
+    }
+    await expect(formatEditorDocument(view, failed, "/ws/a.ts", () => true)).rejects.toThrow("formatter failed")
+    view.destroy()
 })
 
 it("sanitizeHtml strips scripts from server-provided markdown HTML (W9 XSS guard)", () => {

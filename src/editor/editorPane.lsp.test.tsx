@@ -7,10 +7,14 @@ import { useWorkspaceStore } from "../state/workspaceStore"
 // Spy on the view registry so we can grab the live view and assert timing.
 const registerView = vi.fn()
 const unregisterView = vi.fn()
+const updateViewMetadata = vi.fn()
 vi.mock("./viewRegistry", () => ({
-    registerView: (path: string, view: EditorView) => registerView(path, view),
+    registerView: (path: string, view: EditorView, metadata: unknown) => registerView(path, view, metadata),
     unregisterView: (path: string, view?: EditorView) => unregisterView(path, view),
-    getView: vi.fn()
+    updateViewMetadata: (path: string, view: EditorView, metadata: unknown) =>
+        updateViewMetadata(path, view, metadata),
+    getView: vi.fn(),
+    getViewEntry: vi.fn()
 }))
 
 const getDocument = vi.fn(async (_path: string) => ({
@@ -42,7 +46,7 @@ vi.mock("../workbench/ExternalChangeResolver", () => ({
 // save path is exercised for real.
 const lspExtensionsForFile = vi.fn()
 const clientSync = vi.fn()
-const clientRequest = vi.fn(async () => [] as unknown)
+const clientRequest = vi.fn(async (_method?: string, _params?: unknown) => [] as unknown)
 const managed = {
     client: { sync: clientSync, request: clientRequest },
     language: "typescript" as const,
@@ -51,6 +55,31 @@ const managed = {
 vi.mock("../lsp/lspManager", () => ({
     lspExtensionsForFile: (path: string, grade: string) => lspExtensionsForFile(path, grade),
     flushPendingChanges: (m: typeof managed) => m.client.sync(),
+    formatEditorDocument: async (
+        view: EditorView,
+        m: typeof managed,
+        _path: string,
+        isLive: () => boolean
+    ) => {
+        const doc = view.state.doc
+        const edits = await m.client.request("textDocument/formatting", {}) as Array<{
+            range: { start: { line: number; character: number }; end: { line: number; character: number } }
+            newText: string
+        }> | null
+        if (!edits || !isLive() || view.state.doc !== doc) return false
+        const offset = (position: { line: number; character: number }) => {
+            const line = doc.line(Math.max(1, Math.min(position.line + 1, doc.lines)))
+            return Math.min(line.to, line.from + position.character)
+        }
+        const changes = edits.map((edit) => ({
+            from: offset(edit.range.start),
+            to: offset(edit.range.end),
+            insert: edit.newText
+        }))
+        if (changes.some((change) => change.from > change.to)) throw new Error("invalid range")
+        view.dispatch({ changes })
+        return true
+    },
     shouldFormatOnSave: (caps: { documentFormattingProvider?: unknown } | null, enabled: boolean) =>
         enabled && !!caps?.documentFormattingProvider
 }))
@@ -115,8 +144,39 @@ afterEach(() => {
 })
 
 describe("EditorPane LSP integration", () => {
+    it("registers clicked-view metadata as checking, then updates from the existing LSP capability", async () => {
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() =>
+            expect(registerView).toHaveBeenCalledWith(
+                PATH,
+                expect.anything(),
+                expect.objectContaining({ groupIndex: 0, readonly: false, formatter: "checking" })
+            )
+        )
+        await waitFor(() =>
+            expect(updateViewMetadata).toHaveBeenCalledWith(
+                PATH,
+                expect.anything(),
+                expect.objectContaining({ formatter: "available", formatDocument: expect.any(Function) })
+            )
+        )
+    })
+
+    it("marks formatter unsupported without starting a second client when the existing LSP gate returns null", async () => {
+        lspExtensionsForFile.mockResolvedValueOnce(null)
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() =>
+            expect(updateViewMetadata).toHaveBeenCalledWith(
+                PATH,
+                expect.anything(),
+                expect.objectContaining({ formatter: "unsupported" })
+            )
+        )
+        expect(lspExtensionsForFile).toHaveBeenCalledTimes(1)
+    })
+
     it("delegates the LSP mount to lspExtensionsForFile with the full grade for a .ts file", async () => {
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalledWith(PATH, "full"))
     })
 
@@ -124,25 +184,27 @@ describe("EditorPane LSP integration", () => {
         getDocument.mockResolvedValue({
             result: { kind: "full", content: "x".repeat(10_001) + "\n", size: 10_002 }
         })
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalledWith(PATH, "veryLongLine"))
     })
 
     it("passes the limited grade so lspExtensionsForFile refuses the server", async () => {
         getDocument.mockResolvedValue({ result: { kind: "limited", content: "const x = 1\n", size: 12 } })
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalledWith(PATH, "limited"))
     })
 
     it("keeps registering the view (existing timing not broken by the async mount)", async () => {
-        render(<EditorPane path={PATH} />)
-        await waitFor(() => expect(registerView).toHaveBeenCalledWith(PATH, expect.anything()))
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() =>
+            expect(registerView).toHaveBeenCalledWith(PATH, expect.anything(), expect.anything())
+        )
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
         expect(registerView).toHaveBeenCalledTimes(1)
     })
 
     it("focuses the view when a reveal navigation lands on the live pane", async () => {
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
         const view = registerView.mock.calls[0][1] as EditorView
         const focusSpy = vi.spyOn(view, "focus")
@@ -153,7 +215,7 @@ describe("EditorPane LSP integration", () => {
     })
 
     it("does not focus the view for a reveal that opts out of focus (search click, A4)", async () => {
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
         const view = registerView.mock.calls[0][1] as EditorView
         const focusSpy = vi.spyOn(view, "focus")
@@ -164,7 +226,7 @@ describe("EditorPane LSP integration", () => {
     })
 
     it("intercepts clicks on links inside hover tooltips to block SPA navigation escape (H3)", async () => {
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(registerView).toHaveBeenCalled())
 
         const tooltip = document.createElement("div")
@@ -192,7 +254,7 @@ describe("EditorPane LSP integration", () => {
 
     it("flushes pending changes and requests formatting on save when enabled", async () => {
         localStorage.setItem(FORMAT_ON_SAVE_STORAGE_KEY, "true")
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
         await flushMount()
         const view = registerView.mock.calls[0][1] as EditorView
@@ -205,7 +267,7 @@ describe("EditorPane LSP integration", () => {
     })
 
     it("does not request formatting on save when the setting is off", async () => {
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
         await flushMount()
         const view = registerView.mock.calls[0][1] as EditorView
@@ -220,7 +282,7 @@ describe("EditorPane LSP integration", () => {
         clientRequest.mockResolvedValue([
             { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 11 } }, newText: "const x = 1;" }
         ])
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
         await flushMount()
         const view = registerView.mock.calls[0][1] as EditorView
@@ -239,7 +301,7 @@ describe("EditorPane LSP integration", () => {
         clientRequest.mockResolvedValue([
             { range: { start: { line: 2, character: 0 }, end: { line: 0, character: 0 } }, newText: "REFORMATTED" }
         ])
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
         await flushMount()
         const view = registerView.mock.calls[0][1] as EditorView
@@ -253,7 +315,7 @@ describe("EditorPane LSP integration", () => {
         localStorage.setItem(FORMAT_ON_SAVE_STORAGE_KEY, "true")
         const deferred = makeDeferred<unknown>()
         clientRequest.mockReturnValue(deferred.promise)
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
         await flushMount()
         const view = registerView.mock.calls[0][1] as EditorView
@@ -289,7 +351,7 @@ describe("EditorPane LSP integration", () => {
             order.push("save")
             return 0
         })
-        render(<EditorPane path={PATH} />)
+        render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
         await flushMount()
         const view = registerView.mock.calls[0][1] as EditorView

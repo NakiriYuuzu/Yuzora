@@ -5,7 +5,7 @@ import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
 import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
 import { getDocument, updateBuffer, documentGeneration } from "./documentRegistry"
-import { registerView, unregisterView } from "./viewRegistry"
+import { registerView, unregisterView, updateViewMetadata } from "./viewRegistry"
 import { maybeInterceptSave } from "../workbench/ExternalChangeResolver"
 import { saveFile } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
@@ -15,10 +15,14 @@ import { useEditorSettingsStore } from "../state/editorSettingsStore"
 import { SpecialFileView } from "./SpecialFileView"
 import type { OpenFileResult } from "../lib/types"
 import { fileGradeOf } from "../lib/types"
-import { flushPendingChanges, shouldFormatOnSave, lspExtensionsForFile } from "../lsp/lspManager"
+import {
+    formatEditorDocument,
+    flushPendingChanges,
+    shouldFormatOnSave,
+    lspExtensionsForFile
+} from "../lsp/lspManager"
 import type { ManagedClient } from "../lsp/lspManager"
-import { pathToUri } from "../lsp/workspace"
-import { offsetOf } from "../lsp/diagnosticsPull"
+import { contextMenuHandler } from "../state/contextMenuStore"
 import "./editor.css"
 
 // Format-on-save is opt-in and default OFF (A7). The switch is persisted under
@@ -35,22 +39,6 @@ function loadFormatOnSave(): boolean {
     }
 }
 
-// Minimal structural mirror of the LSP formatting request/response we consume —
-// same convention lspManager.ts / semanticTokens.ts use to avoid depending on the
-// undeclared vscode-languageserver-protocol types.
-interface LspPosition {
-    line: number
-    character: number
-}
-interface LspTextEdit {
-    range: { start: LspPosition; end: LspPosition }
-    newText: string
-}
-interface FormattingParams {
-    textDocument: { uri: string }
-    options: { tabSize: number; insertSpaces: boolean }
-}
-
 // textDocument/formatting on save, gated by capability + the user setting. Returns
 // early (a resolved promise) whenever formatting is off or unavailable so the save
 // path is untouched. Applied as a single transaction into the view before saveFile
@@ -62,47 +50,14 @@ async function applyFormatOnSave(
     isLive: () => boolean
 ): Promise<void> {
     if (!shouldFormatOnSave(managed.capabilities, loadFormatOnSave())) return
-    // Snapshot the doc the server formats against, BEFORE the request: the returned
-    // edits are offsets into THIS doc. If the user types during the await, applying
-    // them against the drifted doc would silently corrupt content (offsetOf just
-    // clamps), so we detect drift after the await and skip (F4).
-    const docAtRequest = view.state.doc
-    let edits: LspTextEdit[] | null
     try {
-        edits = await managed.client.request<FormattingParams, LspTextEdit[] | null>("textDocument/formatting", {
-            textDocument: { uri: pathToUri(path) },
-            options: { tabSize: 4, insertSpaces: true }
-        })
+        await formatEditorDocument(view, managed, path, isLive, false)
     } catch {
         // Server rejected / timed out — save the un-formatted text rather than block.
-        return
-    }
-    if (!edits || edits.length === 0) return
-    // View replaced/destroyed, or the doc moved on while awaiting: skip formatting
-    // and save what's there — same generation-guard semantics as semanticTokens /
-    // diagnosticsPull. Map against docAtRequest (identical to the current doc here).
-    if (!isLive() || view.state.doc !== docAtRequest) return
-    const changes = edits.map((e) => ({
-        from: offsetOf(docAtRequest, e.range.start),
-        to: offsetOf(docAtRequest, e.range.end),
-        insert: e.newText
-    }))
-    // A malformed server can return an inverted range (from > to after offsetOf
-    // clamps each end independently). Dispatching it throws "Invalid change range",
-    // which would reject the save chain and silently drop the write. Half-applied
-    // format edits also wreck indentation, so abandon the whole group and save the
-    // un-formatted text — matching this function's "save rather than block" intent.
-    if (changes.some((c) => c.from > c.to)) return
-    try {
-        view.dispatch({ changes })
-    } catch (e) {
-        // Defend against any other malformed-edit throw form (e.g. overlap): still
-        // fall through to save the un-formatted text rather than block the save.
-        console.warn("format-on-save apply failed", e)
     }
 }
 
-export function EditorPane({ path }: { path: string }) {
+export function EditorPane({ path, groupIndex }: { path: string; groupIndex: number }) {
     const containerRef = useRef<HTMLDivElement>(null)
     const viewRef = useRef<EditorView | null>(null)
     // The ManagedClient (with capabilities) for this pane's file, set once the
@@ -207,7 +162,11 @@ export function EditorPane({ path }: { path: string }) {
             const view = new EditorView({ state, parent: containerRef.current! })
             view.dom.style.setProperty("--yz-editor-font-size", `${editorSettings.fontSize}px`)
             viewRef.current = view
-            registerView(path, view)
+            registerView(path, view, {
+                groupIndex,
+                readonly: flags.readonly,
+                formatter: "checking"
+            })
             const reveal = useWorkspaceStore.getState().pendingReveal
             if (reveal && reveal.path === path) {
                 revealLine(view, reveal.line, reveal.focus ?? true)
@@ -222,11 +181,41 @@ export function EditorPane({ path }: { path: string }) {
             // untouched, safer than reconfigure), re-checking the view wasn't
             // disposed/replaced while awaiting.
             void (async () => {
-                const result = await lspExtensionsForFile(path, fileGradeOf(r, content))
-                if (disposed || viewRef.current !== view || !result) return
-                managedRef.current = result.managed
-                view.dispatch({ effects: StateEffect.appendConfig.of(result.extensions) })
-            })().catch(() => {})
+                try {
+                    const result = await lspExtensionsForFile(path, fileGradeOf(r, content))
+                    if (disposed || viewRef.current !== view) return
+                    if (!result) {
+                        updateViewMetadata(path, view, {
+                            formatter: "unsupported",
+                            formatDocument: undefined
+                        })
+                        return
+                    }
+                    managedRef.current = result.managed
+                    view.dispatch({ effects: StateEffect.appendConfig.of(result.extensions) })
+                    const formatter = result.managed.capabilities?.documentFormattingProvider
+                        ? "available"
+                        : "unsupported"
+                    updateViewMetadata(path, view, {
+                        formatter,
+                        formatDocument: formatter === "available"
+                            ? () => formatEditorDocument(
+                                view,
+                                result.managed,
+                                path,
+                                () => !disposed && viewRef.current === view
+                            )
+                            : undefined
+                    })
+                } catch {
+                    if (!disposed && viewRef.current === view) {
+                        updateViewMetadata(path, view, {
+                            formatter: "unsupported",
+                            formatDocument: undefined
+                        })
+                    }
+                }
+            })()
         })
         return () => {
             disposed = true
@@ -242,7 +231,7 @@ export function EditorPane({ path }: { path: string }) {
             viewRef.current = null
             managedRef.current = null
         }
-    }, [path, markDirty, markExternallyModified])
+    }, [path, groupIndex, markDirty, markExternallyModified])
 
     // Jump to a requested line once the pane for its file is mounted. The view
     // is created asynchronously above, so a request that lands before creation
@@ -272,5 +261,20 @@ export function EditorPane({ path }: { path: string }) {
     if (result && (result.kind === "tooLarge" || result.kind === "binary")) {
         return <SpecialFileView path={path} result={result} />
     }
-    return <div className="editor-pane" ref={containerRef} />
+    return (
+        <div
+            className="editor-pane"
+            ref={containerRef}
+            onContextMenu={(event) => {
+                if (!viewRef.current) return
+                useWorkspaceStore.getState().setActiveGroup(groupIndex)
+                contextMenuHandler({
+                    kind: "editor",
+                    workspacePath: useWorkspaceStore.getState().workspacePath,
+                    path,
+                    groupIndex
+                })(event)
+            }}
+        />
+    )
 }

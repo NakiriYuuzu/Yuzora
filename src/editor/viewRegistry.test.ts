@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest"
 import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 
-import { getView, registerView, unregisterView } from "./viewRegistry"
+import {
+    getView,
+    getViewEntry,
+    registerView,
+    unregisterView,
+    updateViewMetadata
+} from "./viewRegistry"
 
 function makeView(): EditorView {
     return new EditorView({ state: EditorState.create({ doc: "" }) })
@@ -36,5 +42,34 @@ describe("viewRegistry", () => {
         registerView("/w/c.ts", v)
         unregisterView("/w/c.ts")
         expect(getView("/w/c.ts")).toBeUndefined()
+    })
+
+    it("tracks clicked-view metadata and only lets the owning view update it", () => {
+        const owner = makeView()
+        const stale = makeView()
+        const formatDocument = async () => true
+        registerView("/w/meta.ts", owner, {
+            groupIndex: 1,
+            readonly: true,
+            formatter: "checking"
+        })
+
+        updateViewMetadata("/w/meta.ts", stale, { formatter: "available", formatDocument })
+        expect(getViewEntry("/w/meta.ts")).toMatchObject({
+            view: owner,
+            groupIndex: 1,
+            readonly: true,
+            formatter: "checking"
+        })
+
+        updateViewMetadata("/w/meta.ts", owner, { formatter: "available", formatDocument })
+        expect(getViewEntry("/w/meta.ts")).toMatchObject({
+            view: owner,
+            groupIndex: 1,
+            readonly: true,
+            formatter: "available",
+            formatDocument
+        })
+        unregisterView("/w/meta.ts", owner)
     })
 })

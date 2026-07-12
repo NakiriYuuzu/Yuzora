@@ -12,6 +12,11 @@ import { FORMAT_ON_SAVE_STORAGE_KEY } from "@/editor/EditorPane"
 import type { LspConfig, LspServerInfo } from "@/lib/types"
 import { useLspStore } from "@/state/lspStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
+import {
+  WORKBENCH_LAYOUT_STORAGE_KEY,
+  useWorkbenchLayoutStore,
+  workbenchLayoutInitialState,
+} from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 // Capture event listeners so tests can emit lsp:install-progress (same shape as
@@ -161,6 +166,10 @@ beforeEach(() => {
   useWorkspaceStore.setState({ workspacePath: "/ws" })
   useUiStore.setState(uiInitialState)
   localStorage.clear()
+  useWorkbenchLayoutStore.setState({
+    ...workbenchLayoutInitialState,
+    terminalWorkspaceRatios: {},
+  })
   setupIpc()
 })
 
@@ -467,6 +476,38 @@ describe("SettingsDialog terminal and preview sections", () => {
     expect(localStorage.getItem(TERMINAL_SETTINGS_STORAGE_KEY)).toBe(
       JSON.stringify({ shellPath: "/opt/homebrew/bin/fish", shellArgs: "-l --private" })
     )
+  })
+
+  it("persists Terminal size scope separately and seeds the active workspace ratio", () => {
+    useWorkbenchLayoutStore.getState().setTerminalRatio(null, 0.64)
+    renderDialog({ initialSection: "terminal" })
+
+    expect(screen.getByRole("radio", { name: "Global" })).toBeChecked()
+    fireEvent.click(screen.getByRole("radio", { name: "Per workspace" }))
+
+    expect(screen.getByRole("radio", { name: "Per workspace" })).toBeChecked()
+    expect(useWorkbenchLayoutStore.getState().terminalWorkspaceRatios).toEqual({ "/ws": 0.64 })
+    expect(localStorage.getItem(TERMINAL_SETTINGS_STORAGE_KEY)).toBeNull()
+    expect(JSON.parse(localStorage.getItem(WORKBENCH_LAYOUT_STORAGE_KEY)!)).toEqual({
+      version: 1,
+      markdownEditorRatio: 0.5,
+      terminalRatioScope: "workspace",
+      terminalGlobalRatio: 0.64,
+      terminalWorkspaceRatios: { "/ws": 0.64 },
+    })
+  })
+
+  it("changes only Terminal size scope when no workspace is open", () => {
+    useWorkspaceStore.setState({ workspacePath: null })
+    useWorkbenchLayoutStore.getState().setTerminalRatio(null, 0.48)
+    renderDialog({ initialSection: "terminal" })
+
+    fireEvent.click(screen.getByRole("radio", { name: "Per workspace" }))
+
+    const layout = useWorkbenchLayoutStore.getState()
+    expect(layout.terminalRatioScope).toBe("workspace")
+    expect(layout.terminalWorkspaceRatios).toEqual({})
+    expect(layout.effectiveTerminalRatio("/later")).toBe(0.48)
   })
 
   it("persists preview command and port overrides", () => {

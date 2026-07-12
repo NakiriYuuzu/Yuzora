@@ -1,13 +1,16 @@
 import { LSPClient, serverDiagnostics } from "@codemirror/lsp-client"
 import type { Extension } from "@codemirror/state"
+import type { EditorView } from "@codemirror/view"
 import DOMPurify from "dompurify"
 
+import i18n from "@/lib/i18n"
 import { lspStopWorkspace } from "../lib/ipc"
 import type { FileGrade, LspLanguage, LspServerInfo } from "../lib/types"
 import { lspLanguageOf } from "../lib/types"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useLspStore } from "../state/lspStore"
 import { assembleLspExtensions } from "./lspExtensions"
+import { offsetOf } from "./diagnosticsPull"
 import { createTauriTransport } from "./transport"
 import type { TransportHandle } from "./transport"
 import { YuzoraWorkspace, pathToUri } from "./workspace"
@@ -24,6 +27,21 @@ export interface ManagedClient {
     client: LSPClient
     language: LspLanguage
     capabilities: ServerCapabilities | null
+}
+
+interface FormattingPosition {
+    line: number
+    character: number
+}
+
+interface FormattingTextEdit {
+    range: { start: FormattingPosition; end: FormattingPosition }
+    newText: string
+}
+
+interface FormattingParams {
+    textDocument: { uri: string }
+    options: { tabSize: number; insertSpaces: boolean }
 }
 
 // LSP servers may return Markdown containing arbitrary HTML, which the client
@@ -195,6 +213,42 @@ export function shouldFormatOnSave(capabilities: ServerCapabilities | null, enab
 // on save in T10.
 export function flushPendingChanges(managed: ManagedClient): void {
     managed.client.sync()
+}
+
+// Manual formatting command used by the clicked-view context menu. Unlike the
+// package's fire-and-forget command, this awaits the LSP request so a rejection
+// reaches the shared action-error dialog. The document/view identity guards
+// prevent applying server offsets to a replaced or concurrently edited buffer.
+export async function formatEditorDocument(
+    view: EditorView,
+    managed: ManagedClient,
+    path: string,
+    isLive: () => boolean,
+    syncPending = true
+): Promise<boolean> {
+    if (!managed.capabilities?.documentFormattingProvider) return false
+    if (syncPending) flushPendingChanges(managed)
+    const docAtRequest = view.state.doc
+    const edits = await managed.client.request<FormattingParams, FormattingTextEdit[] | null>(
+        "textDocument/formatting",
+        {
+            textDocument: { uri: pathToUri(path) },
+            options: { tabSize: 4, insertSpaces: true }
+        }
+    )
+    if (!edits || edits.length === 0) return true
+    if (!isLive() || view.state.doc !== docAtRequest) return false
+
+    const changes = edits.map((edit) => ({
+        from: offsetOf(docAtRequest, edit.range.start),
+        to: offsetOf(docAtRequest, edit.range.end),
+        insert: edit.newText
+    }))
+    if (changes.some((change) => change.from > change.to)) {
+        throw new Error(i18n.t("contextMenu.error.invalidFormattingRange", { ns: "menus" }))
+    }
+    view.dispatch({ changes })
+    return true
 }
 
 // The single source of LSP mount gating, consumed by EditorPane. Returns the

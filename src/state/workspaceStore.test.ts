@@ -36,6 +36,142 @@ describe("workspaceStore", () => {
         })
     })
 
+    describe("right split atomic operations", () => {
+        it("openInRightSplit uses the request snapshot, creates destination, and focuses it", () => {
+            useWorkspaceStore.getState().openTab("/w/a.ts")
+            useWorkspaceStore.setState({ activeGroupIndex: 99 })
+
+            useWorkspaceStore.getState().openInRightSplit("/w/a.ts", 0)
+
+            const state = useWorkspaceStore.getState()
+            expect(state.groups).toHaveLength(2)
+            expect(state.groups[0].tabs).toEqual([])
+            expect(state.groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/a.ts"])
+            expect(state.groups[1].activePath).toBe("/w/a.ts")
+            expect(state.activeGroupIndex).toBe(1)
+        })
+
+        it("openInRightSplit reuses the right group and de-duplicates conservatively", () => {
+            useWorkspaceStore.setState({
+                activeGroupIndex: 0,
+                groups: [
+                    {
+                        activePath: "/w/a.ts",
+                        tabs: [{ path: "/w/a.ts", name: "a.ts", dirty: true, externallyModified: false }]
+                    },
+                    {
+                        activePath: "/w/b.ts",
+                        tabs: [
+                            { path: "/w/b.ts", name: "b.ts", dirty: false, externallyModified: false },
+                            { path: "/w/a.ts", name: "a.ts", dirty: false, externallyModified: true }
+                        ]
+                    }
+                ]
+            })
+
+            useWorkspaceStore.getState().openInRightSplit("/w/a.ts", 0)
+
+            const state = useWorkspaceStore.getState()
+            expect(state.groups[0].tabs).toEqual([])
+            expect(state.groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/b.ts", "/w/a.ts"])
+            expect(state.groups[1].tabs[1]).toMatchObject({ dirty: true, externallyModified: true })
+            expect(state.groups[1].activePath).toBe("/w/a.ts")
+        })
+
+        it("splitAndMoveRight moves the clicked tab object and preserves its state", () => {
+            const clicked = {
+                path: "/w/a.ts",
+                name: "a.ts",
+                dirty: true,
+                externallyModified: true,
+                kind: "file" as const
+            }
+            useWorkspaceStore.setState({
+                activeGroupIndex: 0,
+                groups: [{ activePath: clicked.path, tabs: [clicked] }]
+            })
+
+            useWorkspaceStore.getState().splitAndMoveRight(0, clicked.path)
+
+            const state = useWorkspaceStore.getState()
+            expect(state.groups[0].tabs).toEqual([])
+            expect(state.groups[1].tabs[0]).toBe(clicked)
+            expect(state.groups[1].activePath).toBe(clicked.path)
+            expect(state.activeGroupIndex).toBe(1)
+        })
+
+        it("splitAndMoveRight de-duplicates an existing destination tab conservatively", () => {
+            useWorkspaceStore.setState({
+                activeGroupIndex: 0,
+                groups: [
+                    {
+                        activePath: "/w/a.ts",
+                        tabs: [{ path: "/w/a.ts", name: "a.ts", dirty: true, externallyModified: false }]
+                    },
+                    {
+                        activePath: "/w/b.ts",
+                        tabs: [
+                            { path: "/w/a.ts", name: "a.ts", dirty: false, externallyModified: true },
+                            { path: "/w/b.ts", name: "b.ts", dirty: false, externallyModified: false }
+                        ]
+                    }
+                ]
+            })
+
+            useWorkspaceStore.getState().splitAndMoveRight(0, "/w/a.ts")
+
+            const state = useWorkspaceStore.getState()
+            expect(state.groups[0].tabs).toEqual([])
+            expect(state.groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/a.ts", "/w/b.ts"])
+            expect(state.groups[1].tabs[0]).toMatchObject({ dirty: true, externallyModified: true })
+            expect(state.groups[1].activePath).toBe("/w/a.ts")
+        })
+
+        it("does not split the Preview sentinel or create a third/right-of-right group", () => {
+            const preview = {
+                path: PREVIEW_TAB_PATH,
+                name: "Preview",
+                dirty: false,
+                externallyModified: false,
+                kind: "preview" as const
+            }
+            useWorkspaceStore.setState({
+                activeGroupIndex: 1,
+                groups: [
+                    { activePath: null, tabs: [] },
+                    { activePath: preview.path, tabs: [preview] }
+                ]
+            })
+
+            useWorkspaceStore.getState().splitAndMoveRight(1, preview.path)
+            useWorkspaceStore.getState().openInRightSplit("/w/a.ts", 1)
+
+            const state = useWorkspaceStore.getState()
+            expect(state.groups).toHaveLength(2)
+            expect(state.groups[1].tabs).toEqual([preview])
+        })
+
+        it("openTab focuses an existing path in another group instead of creating a second view", () => {
+            useWorkspaceStore.setState({
+                activeGroupIndex: 0,
+                groups: [
+                    { activePath: null, tabs: [] },
+                    {
+                        activePath: "/w/a.ts",
+                        tabs: [{ path: "/w/a.ts", name: "a.ts", dirty: false, externallyModified: false }]
+                    }
+                ]
+            })
+
+            useWorkspaceStore.getState().openTab("/w/a.ts", 0)
+
+            const state = useWorkspaceStore.getState()
+            expect(state.groups[0].tabs).toEqual([])
+            expect(state.groups[1].tabs).toHaveLength(1)
+            expect(state.activeGroupIndex).toBe(1)
+        })
+    })
+
     describe("preview tab (singleton)", () => {
         it("openPreviewTab opens the preview tab in the active group and focuses it", () => {
             useWorkspaceStore.getState().openTab("/w/a.ts")

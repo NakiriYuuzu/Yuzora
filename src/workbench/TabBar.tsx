@@ -8,7 +8,7 @@ import { saveDirtyTab } from "../editor/saveDocument"
 import { logUserAction } from "@/features/logs/userAction"
 import { FileIcon } from "../lib/fileIcons"
 import { contextMenuHandler } from "../state/contextMenuStore"
-import { MarkdownPreview, isMarkdownPath, useMarkdownPreviewStore } from "./MarkdownPreview"
+import { isMarkdownPath, useMarkdownPreviewStore } from "./MarkdownPreview"
 
 export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
@@ -16,8 +16,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const setActiveTab = useWorkspaceStore((s) => s.setActiveTab)
     const closeTab = useWorkspaceStore((s) => s.closeTab)
     const closePreviewTab = useWorkspaceStore((s) => s.closePreviewTab)
-    const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
-    const mode = useUiStore((s) => s.mode)
+    const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const previewOpen = useMarkdownPreviewStore((s) => s.openPaths)
     const togglePreview = useMarkdownPreviewStore((s) => s.toggle)
     const closePreview = useMarkdownPreviewStore((s) => s.close)
@@ -57,7 +56,12 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                 return (
                     <span
                         key={tab.path}
-                        onContextMenu={contextMenuHandler("tab", { path: tab.path, groupIndex })}
+                        onContextMenu={contextMenuHandler({
+                            kind: "tab",
+                            workspacePath,
+                            path: tab.path,
+                            groupIndex
+                        })}
                         className={
                             "tab flex h-[30px] shrink-0 items-center gap-[8px] rounded-[9px] pr-[8px] pl-[12px] transition-all duration-150 ease-(--ease-out) " +
                             (active
@@ -164,13 +168,6 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                     </span>
                 )
             })}
-            {mode === "files" &&
-                groupIndex === activeGroupIndex &&
-                group.activePath &&
-                isMarkdownPath(group.activePath.split("/").pop() ?? "") &&
-                previewOpen[group.activePath] && (
-                    <MarkdownPreview key={group.activePath} path={group.activePath} />
-                )}
         </div>
     )
 }

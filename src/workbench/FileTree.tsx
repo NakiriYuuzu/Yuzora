@@ -23,6 +23,7 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
     const [children, setChildren] = useState<FileNode[] | null>(null)
     const openTab = useWorkspaceStore((s) => s.openTab)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+    const sourceGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
     const openDiffInGitMode = useUiStore((s) => s.openDiffInGitMode)
     const active = useWorkspaceStore(
         (s) => !node.isDir && s.groups[s.activeGroupIndex]?.activePath === node.path
@@ -52,7 +53,13 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
                 <button
                     type="button"
                     onClick={onClick}
-                    onContextMenu={contextMenuHandler("file", { path: node.path, isDir: node.isDir })}
+                    onContextMenu={workspacePath ? contextMenuHandler({
+                        kind: "file",
+                        workspacePath,
+                        path: node.path,
+                        isDirectory: node.isDir,
+                        sourceGroupIndex
+                    }) : undefined}
                     style={{ paddingLeft: `${14 + depth * 15}px` }}
                     className={
                         "flex h-[27px] w-full items-center gap-[7px] rounded-[8px] pr-[8px] text-left text-[12.5px] transition-colors duration-100 " +

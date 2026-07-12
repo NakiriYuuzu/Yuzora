@@ -41,7 +41,9 @@ interface WorkspaceState {
     // watcher, so these in-app operations need an explicit refresh signal.
     treeRevision: number
     setWorkspace: (path: string) => void
-    openTab: (path: string) => void
+    openTab: (path: string, groupIndex?: number) => void
+    openInRightSplit: (path: string, sourceGroupIndex: number) => void
+    splitAndMoveRight: (groupIndex: number, path: string) => void
     refreshTree: () => void
     closeTab: (groupIndex: number, path: string) => void
     closeOtherTabs: (groupIndex: number, keepPath: string) => void
@@ -63,6 +65,26 @@ interface WorkspaceState {
 
 const emptyGroup = (): EditorGroup => ({ tabs: [], activePath: null })
 
+function mergeConservativeTab(primary: TabInfo, other: TabInfo): TabInfo {
+    return {
+        ...primary,
+        dirty: primary.dirty || other.dirty,
+        externallyModified: primary.externallyModified || other.externallyModified,
+        kind: primary.kind ?? other.kind
+    }
+}
+
+function withoutTab(group: EditorGroup, path: string): EditorGroup {
+    const tabs = group.tabs.filter((tab) => tab.path !== path)
+    return {
+        tabs,
+        activePath:
+            group.activePath === path
+                ? tabs.at(-1)?.path ?? null
+                : group.activePath
+    }
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     workspacePath: null,
     groups: [emptyGroup()],
@@ -77,10 +99,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             pendingReveal: null
         }),
     refreshTree: () => set((s) => ({ treeRevision: s.treeRevision + 1 })),
-    openTab: (path) =>
+    openTab: (path, groupIndex) =>
         set((s) => {
+            const existingGroupIndex = s.groups.findIndex((group) =>
+                group.tabs.some((tab) => tab.path === path)
+            )
+            if (existingGroupIndex !== -1) {
+                return {
+                    groups: s.groups.map((group, index) =>
+                        index === existingGroupIndex ? { ...group, activePath: path } : group
+                    ),
+                    activeGroupIndex: existingGroupIndex
+                }
+            }
+            const targetGroupIndex = groupIndex ?? s.activeGroupIndex
+            if (!s.groups[targetGroupIndex]) return s
             const groups = s.groups.map((g) => ({ ...g, tabs: [...g.tabs] }))
-            const g = groups[s.activeGroupIndex]
+            const g = groups[targetGroupIndex]
             if (!g.tabs.some((t) => t.path === path)) {
                 g.tabs.push({
                     path,
@@ -90,7 +125,73 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 })
             }
             g.activePath = path
-            return { groups }
+            return { groups, activeGroupIndex: targetGroupIndex }
+        }),
+    openInRightSplit: (path, sourceGroupIndex) =>
+        set((s) => {
+            if (!s.groups[sourceGroupIndex]) return s
+            if (s.groups.length >= 2 && sourceGroupIndex >= s.groups.length - 1) return s
+
+            const groups = s.groups.map((group) => ({ ...group, tabs: [...group.tabs] }))
+            const destinationIndex = sourceGroupIndex + 1
+            if (groups.length <= destinationIndex) groups.push(emptyGroup())
+            if (destinationIndex >= 2) return s
+
+            const destinationPosition = groups[destinationIndex].tabs.findIndex(
+                (tab) => tab.path === path
+            )
+            let tab: TabInfo | undefined
+            for (const group of groups) {
+                for (const candidate of group.tabs) {
+                    if (candidate.path !== path) continue
+                    tab = tab ? mergeConservativeTab(tab, candidate) : candidate
+                }
+            }
+            tab ??= {
+                path,
+                name: path.split("/").pop() ?? path,
+                dirty: false,
+                externallyModified: false
+            }
+
+            const withoutTarget = groups.map((group) => withoutTab(group, path))
+            const destination = withoutTarget[destinationIndex]
+            const insertAt = destinationPosition === -1
+                ? destination.tabs.length
+                : Math.min(destinationPosition, destination.tabs.length)
+            destination.tabs.splice(insertAt, 0, tab)
+            destination.activePath = path
+            return { groups: withoutTarget, activeGroupIndex: destinationIndex }
+        }),
+    splitAndMoveRight: (groupIndex, path) =>
+        set((s) => {
+            const source = s.groups[groupIndex]
+            const clicked = source?.tabs.find((tab) => tab.path === path)
+            if (!clicked || clicked.kind === "preview") return s
+            if (s.groups.length >= 2 && groupIndex >= s.groups.length - 1) return s
+
+            const groups = s.groups.map((group) => ({ ...group, tabs: [...group.tabs] }))
+            const destinationIndex = groupIndex + 1
+            if (groups.length <= destinationIndex) groups.push(emptyGroup())
+            if (destinationIndex >= 2) return s
+
+            const destinationDuplicate = groups[destinationIndex].tabs.find(
+                (tab) => tab.path === path
+            )
+            const destinationPosition = groups[destinationIndex].tabs.findIndex(
+                (tab) => tab.path === path
+            )
+            const moved = destinationDuplicate
+                ? mergeConservativeTab(clicked, destinationDuplicate)
+                : clicked
+            const withoutTarget = groups.map((group) => withoutTab(group, path))
+            const destination = withoutTarget[destinationIndex]
+            const insertAt = destinationPosition === -1
+                ? destination.tabs.length
+                : Math.min(destinationPosition, destination.tabs.length)
+            destination.tabs.splice(insertAt, 0, moved)
+            destination.activePath = path
+            return { groups: withoutTarget, activeGroupIndex: destinationIndex }
         }),
     closeTab: (groupIndex, path) =>
         set((s) => {

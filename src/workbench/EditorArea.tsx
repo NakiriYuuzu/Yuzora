@@ -7,8 +7,9 @@ import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { EditorPane } from "../editor/EditorPane"
 import { documentGeneration } from "../editor/documentRegistry"
-import { contextMenuHandler } from "../state/contextMenuStore"
 import { TabBar } from "./TabBar"
+import { isMarkdownPath } from "./MarkdownPreview"
+import { MarkdownSplitView } from "./MarkdownSplitView"
 
 const ACTION_BUTTON_CLASS =
     "flex size-[28px] items-center justify-center rounded-[9px] transition-all duration-150"
@@ -23,7 +24,7 @@ export function EditorArea() {
     const setActiveGroup = useWorkspaceStore((s) => s.setActiveGroup)
 
     return (
-        <div onContextMenu={contextMenuHandler("editor")} className="editor-groups flex min-h-0 min-w-0 flex-1">
+        <div className="editor-groups flex min-h-0 min-w-0 flex-1">
             {groups.map((group, i) => {
                 const last = i === groups.length - 1
                 return (
@@ -77,10 +78,19 @@ export function EditorArea() {
                         {group.activePath === PREVIEW_TAB_PATH ? (
                             <PreviewPanel />
                         ) : group.activePath ? (
-                            <EditorPane
-                                key={`${group.activePath}:${documentGeneration(group.activePath)}`}
-                                path={group.activePath}
-                            />
+                            isMarkdownPath(group.activePath) ? (
+                                <MarkdownSplitView
+                                    key={`${group.activePath}:${documentGeneration(group.activePath)}`}
+                                    path={group.activePath}
+                                    groupIndex={i}
+                                />
+                            ) : (
+                                <EditorPane
+                                    key={`${group.activePath}:${documentGeneration(group.activePath)}`}
+                                    path={group.activePath}
+                                    groupIndex={i}
+                                />
+                            )
                         ) : (
                             <div className="empty-editor flex min-h-0 min-w-0 flex-1 items-center justify-center">
                                 <EmptyState

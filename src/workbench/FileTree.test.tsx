@@ -26,7 +26,7 @@ function makeStatus(): GitStatus {
 
 afterEach(() => {
     clearMocks()
-    useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
+    useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useGitStore.setState(initialGitState)
     useUiStore.setState(uiInitialState)
 })
@@ -75,8 +75,13 @@ test("右鍵檔案列開啟 file 選單並帶 path payload", async () => {
     render(<FileTree />)
     await waitFor(() => expect(screen.getByText("readme.md")).toBeTruthy())
     fireEvent.contextMenu(screen.getByText("readme.md"))
-    expect(useContextMenuStore.getState().kind).toBe("file")
-    expect(useContextMenuStore.getState().payload.path).toBe("/w/readme.md")
+    expect(useContextMenuStore.getState().request).toMatchObject({
+        kind: "file",
+        workspacePath: "/w",
+        path: "/w/readme.md",
+        isDirectory: false,
+        sourceGroupIndex: 0
+    })
 })
 
 test("workspace 為 repo 子目錄時 rel 以 repo root 為基準（changed 標記/Open diff 生效）", async () => {

@@ -33,7 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
     clearMocks()
-    useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
+    useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useUiStore.setState(uiInitialState)
     useMarkdownPreviewStore.setState({ openPaths: {} })
 })
@@ -165,19 +165,16 @@ test("點 preview toggle 切換開啟狀態", () => {
     expect(useMarkdownPreviewStore.getState().isOpen("/w/r.md")).toBe(false)
 })
 
-test("非 files 模式不渲染 preview overlay（R3-5）", () => {
-    mockIPC((cmd) => (cmd === "open_file" ? { kind: "full", content: "", size: 0 } : undefined))
+test("TabBar 只管理 toggle，不再 mount Markdown preview", () => {
     seedMdTab()
     useMarkdownPreviewStore.setState({ openPaths: { "/w/r.md": true } })
-    useUiStore.setState({ mode: "git" })
     render(<TabBar groupIndex={0} />)
     expect(screen.queryByRole("complementary", { name: "Markdown preview" })).toBeNull()
 })
 
-test("非 active md tab 按 preview toggle 後 aria-pressed 與 panel 一致（R11-2）", async () => {
+test("非 active md tab 按 preview toggle 會先設為 active", () => {
     mockIPC((cmd) => {
         if (cmd === "log_event") return null
-        if (cmd === "open_file") return { kind: "full", content: "", size: 0 }
         return undefined
     })
     useWorkspaceStore.setState({
@@ -196,40 +193,9 @@ test("非 active md tab 按 preview toggle 後 aria-pressed 與 panel 一致（R
     render(<TabBar groupIndex={0} />)
     const bEye = screen.getByLabelText("Toggle preview b.md")
     fireEvent.click(bEye)
-    // 控件顯示 pressed 就必須有對應 panel（消除 aria-pressed 說謊）。
     expect(bEye.getAttribute("aria-pressed")).toBe("true")
-    await waitFor(() =>
-        expect(screen.getByRole("complementary", { name: "Markdown preview" })).toBeTruthy()
-    )
     expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.md")
-})
-
-test("split 下兩 group 同開 preview 只渲染 focused group 的 overlay（R2-3）", async () => {
-    mockIPC((cmd) => (cmd === "open_file" ? { kind: "full", content: "", size: 0 } : undefined))
-    useWorkspaceStore.setState({
-        workspacePath: "/w",
-        activeGroupIndex: 0,
-        groups: [
-            {
-                activePath: "/w/a.md",
-                tabs: [{ path: "/w/a.md", name: "a.md", dirty: false, externallyModified: false }]
-            },
-            {
-                activePath: "/w/b.md",
-                tabs: [{ path: "/w/b.md", name: "b.md", dirty: false, externallyModified: false }]
-            }
-        ]
-    })
-    useMarkdownPreviewStore.setState({ openPaths: { "/w/a.md": true, "/w/b.md": true } })
-    render(
-        <>
-            <TabBar groupIndex={0} />
-            <TabBar groupIndex={1} />
-        </>
-    )
-    await waitFor(() =>
-        expect(screen.getAllByRole("complementary", { name: "Markdown preview" })).toHaveLength(1)
-    )
+    expect(screen.queryByRole("complementary", { name: "Markdown preview" })).toBeNull()
 })
 
 test("關閉 .md 分頁時清除其 preview 開關狀態（W5）", async () => {
@@ -297,6 +263,10 @@ test("右鍵 tab 開啟 tab 選單並帶 path 與 groupIndex", () => {
     seedTabs()
     render(<TabBar groupIndex={0} />)
     fireEvent.contextMenu(screen.getByText("b.ts"))
-    expect(useContextMenuStore.getState().kind).toBe("tab")
-    expect(useContextMenuStore.getState().payload).toMatchObject({ path: "/w/b.ts", groupIndex: 0 })
+    expect(useContextMenuStore.getState().request).toMatchObject({
+        kind: "tab",
+        workspacePath: "/w",
+        path: "/w/b.ts",
+        groupIndex: 0
+    })
 })
