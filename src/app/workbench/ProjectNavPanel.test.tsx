@@ -13,9 +13,9 @@ const renderPanel = () =>
   render(<ProjectNavPanel mode="database" onModeChange={() => {}} onOpenPalette={() => {}} />)
 
 describe("ProjectNavPanel header", () => {
-  it("falls back to the yuzora default when no workspace is open", () => {
+  it("falls back to the Yuzora default when no workspace is open", () => {
     renderPanel()
-    expect(screen.getByText("yuzora")).toBeInTheDocument()
+    expect(screen.getByText("Yuzora")).toBeInTheDocument()
     expect(screen.getByText("~/App/Tauri/yuzora")).toBeInTheDocument()
     expect(screen.getByText("Y")).toBeInTheDocument()
   })

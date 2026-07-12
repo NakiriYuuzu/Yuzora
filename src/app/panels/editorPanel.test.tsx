@@ -38,7 +38,7 @@ describe("Files mode entry states", () => {
     render(<AppShell />)
 
     const nav = screen.getByLabelText("Project navigation")
-    expect(within(nav).getByText("yuzora")).toBeInTheDocument()
+    expect(within(nav).getByText("Yuzora")).toBeInTheDocument()
     expect(within(nav).getByText("No files yet")).toBeInTheDocument()
   })
 

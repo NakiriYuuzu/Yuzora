@@ -27,7 +27,7 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   const folderName = workspacePath?.split("/").filter(Boolean).pop() ?? null
-  const displayName = folderName ?? "yuzora"
+  const displayName = folderName ?? "Yuzora"
   const displayPath = workspacePath
     ? workspacePath.replace(/^\/Users\/[^/]+/, "~")
     : "~/App/Tauri/yuzora"

@@ -207,7 +207,7 @@ export function StatusBar() {
       })}
       className="flex h-[30px] shrink-0 items-center gap-1 border-t border-(--line-1) bg-(--yz-glass-strong) px-2 font-mono text-[11.5px] text-(--ink-2) backdrop-blur-[20px] backdrop-saturate-[1.5]"
     >
-      <span className="rounded-[6px] px-[6px] font-medium text-(--ink-1)">yuzora</span>
+      <span className="rounded-[6px] px-[6px] font-medium text-(--ink-1)">Yuzora</span>
 
       {ready ? (
         <BranchPopover open={branchOpen} onOpenChange={setBranchOpen} trigger={branchButton} />

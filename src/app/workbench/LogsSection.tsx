@@ -148,7 +148,7 @@ export function LogsSection({
     try {
       const dest = await save({
         title: "Export logs bundle",
-        defaultPath: "yuzora-logs.zip",
+        defaultPath: "Yuzora-logs.zip",
         filters: [{ name: "ZIP", extensions: ["zip"] }],
         canCreateDirectories: true,
       })
