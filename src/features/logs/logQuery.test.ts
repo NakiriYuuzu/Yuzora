@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
-import { logQuery, logSources, logExport } from "./logQuery"
+import { logQuery, logSources, logExport, getLogLevel, setLogLevel } from "./logQuery"
 import type { LogQueryFilters } from "./logQuery"
 import type { LogRecord } from "@/lib/types"
 
@@ -119,4 +119,20 @@ it("logExport rejects when invoke rejects", async () => {
         throw new Error("log_export boom")
     })
     await expect(logExport("/tmp/log.jsonl", true)).rejects.toThrow("log_export boom")
+})
+
+it("getLogLevel calls get_log_level", async () => {
+    mockIPC((cmd) => {
+        expect(cmd).toBe("get_log_level")
+        return "info"
+    })
+    expect(await getLogLevel()).toBe("info")
+})
+
+it("setLogLevel passes the level arg", async () => {
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("set_log_level")
+        expect(payload).toEqual({ level: "debug" })
+    })
+    await setLogLevel("debug")
 })

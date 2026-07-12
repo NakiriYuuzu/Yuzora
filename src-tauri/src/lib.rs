@@ -106,6 +106,8 @@ fn shutdown_database_runtime_on_dedicated_thread(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 先套用持久化的 log level 門檻，確保啟動最早期的寫入（含 env_path）也受門檻約束
+    logging::apply_persisted_log_level();
     // GUI（Finder/Dock）啟動的 .app 只拿到 launchd 預設 PATH，撈不到 homebrew/nvm/
     // bun。必須在任何 tauri::Builder／執行緒 spawn 之前跑，set_var("PATH") 才安全。
     env_path::fix_gui_path();
@@ -195,6 +197,8 @@ pub fn run() {
             logging::log_query,
             logging::log_sources,
             logging::log_export,
+            logging::get_log_level,
+            logging::set_log_level,
             watcher::start_watch,
             workspace_path_index::workspace_path_index,
             search_service::search_workspace,

@@ -10,6 +10,23 @@ const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 const VALID_LEVELS: [&str; 4] = ["debug", "info", "warn", "error"];
 const VALID_KINDS: [&str; 3] = ["debug", "user_action", "audit"];
 
+const LEVEL_DEBUG: u8 = 0;
+const LEVEL_INFO: u8 = 1;
+const LEVEL_WARN: u8 = 2;
+const LEVEL_ERROR: u8 = 3;
+
+/// 事件 level 的排序權重。未知 level 視為 info——預設門檻（info）下仍會落盤，
+/// 不會因為打錯 level 字串而被靜默丟棄。
+fn level_rank(level: &str) -> u8 {
+    match level {
+        "debug" => LEVEL_DEBUG,
+        "info" => LEVEL_INFO,
+        "warn" => LEVEL_WARN,
+        "error" => LEVEL_ERROR,
+        _ => LEVEL_INFO,
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LogEvent {
     pub level: String,
@@ -24,6 +41,7 @@ pub struct LogEvent {
 pub struct LogSink {
     dir: PathBuf,
     last_cleanup: Option<NaiveDate>,
+    min_level: u8,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -55,6 +73,7 @@ impl LogSink {
         Self {
             dir,
             last_cleanup: None,
+            min_level: LEVEL_DEBUG,
         }
     }
 
@@ -64,11 +83,16 @@ impl LogSink {
     }
 
     pub fn write(&mut self, ev: LogEvent) {
-        // 每日首筆寫入時補跑 cleanup：retention／size 上限在長時間不重啟下也會生效
+        // 每日首筆寫入時補跑 cleanup（放在門檻判斷之前：嚴格門檻下仍會清理，
+        // retention／size 上限在長時間不重啟下也會生效）
         let today = Local::now().date_naive();
         if self.last_cleanup != Some(today) {
             self.cleanup();
             self.last_cleanup = Some(today);
+        }
+        // 寫入端門檻：低於 min_level 的事件不落盤（例：預設 info 時的 git debug 探測）
+        if level_rank(&ev.level) < self.min_level {
+            return;
         }
         let Ok(mut value) = serde_json::to_value(&ev) else {
             return; // 序列化失敗：整筆跳過，不寫壞行
@@ -91,6 +115,10 @@ impl LogSink {
             // 單次 write_all（含換行）：多寫者併發 append 時避免 torn line
             let _ = f.write_all(format!("{line}\n").as_bytes());
         }
+    }
+
+    pub fn set_min_level(&mut self, level: &str) {
+        self.min_level = level_rank(level);
     }
 
     pub fn cleanup(&self) {
@@ -197,11 +225,82 @@ pub fn mask_url_userinfo(input: &str) -> String {
     out
 }
 
+/// 連線失敗（SSH/SFTP/DB）的統一落盤事件。level=warn（在預設門檻 info 下會落盤）。
+/// 只記 host/port/user + 原因；host 與 reason 先過 mask_url_userinfo，避免呼叫端
+/// 誤把含憑證的連線字串（如 postgres://user:pass@host）帶進來造成外洩。
+pub fn connect_failure_event(
+    source: &str,
+    host: &str,
+    port: u16,
+    user: &str,
+    reason: &str,
+) -> LogEvent {
+    let host = mask_url_userinfo(host);
+    let reason = mask_url_userinfo(reason);
+    LogEvent {
+        level: "warn".to_string(),
+        kind: "debug".to_string(),
+        source: source.to_string(),
+        workspace_path: None,
+        event: "connect_failed".to_string(),
+        message: format!("{source} connection to {user}@{host}:{port} failed: {reason}"),
+        metadata: serde_json::json!({ "host": host, "port": port, "user": user }),
+    }
+}
+
 pub fn default_log_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".yuzora")
         .join("logs")
+}
+
+fn log_config_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join(format!("yuzora-test-logging-{}.json", std::process::id()))
+    }
+    #[cfg(not(test))]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".yuzora")
+            .join("logging.json")
+    }
+}
+
+/// 讀持久化的 min level；缺檔、壞 JSON、或非 VALID_LEVELS 值一律回 "info"。
+pub fn read_log_level_from(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("minLevel")
+                .and_then(|l| l.as_str())
+                .map(|s| s.to_string())
+        })
+        .filter(|l| VALID_LEVELS.contains(&l.as_str()))
+        .unwrap_or_else(|| "info".to_string())
+}
+
+pub fn write_log_level_to(path: &Path, level: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let body = serde_json::json!({ "minLevel": level }).to_string();
+    std::fs::write(path, body).map_err(|e| e.to_string())
+}
+
+/// 套用 level 到全域共享 sink（write_global 走的那個）。
+pub fn set_min_level_global(level: &str) {
+    if let Ok(mut sink) = global_sink().lock() {
+        sink.set_min_level(level);
+    }
+}
+
+/// 啟動期讀持久化設定並套用（lib.rs 呼叫一次）。無設定檔時 = info。
+pub fn apply_persisted_log_level() {
+    set_min_level_global(&read_log_level_from(&log_config_path()));
 }
 
 fn retained_log_files(dir: &Path) -> Vec<PathBuf> {
@@ -482,6 +581,26 @@ pub fn log_event(event: LogEvent) -> Result<(), String> {
         return Err(format!("invalid log kind: {}", event.kind));
     }
     write_global(event);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_log_level() -> String {
+    read_log_level_from(&log_config_path())
+}
+
+#[tauri::command]
+pub fn set_log_level(level: String) -> Result<(), String> {
+    if !VALID_LEVELS.contains(&level.as_str()) {
+        return Err(format!("invalid log level: {level}"));
+    }
+    // 持鎖序列化：寫檔 + 套用記憶體門檻在同一把鎖下完成，避免並發呼叫
+    // 造成「持久化值」與「生效門檻」分歧。
+    let mut sink = global_sink()
+        .lock()
+        .map_err(|_| "log sink unavailable".to_string())?;
+    write_log_level_to(&log_config_path(), &level)?;
+    sink.set_min_level(&level);
     Ok(())
 }
 
@@ -818,6 +937,33 @@ mod tests {
     }
 
     #[test]
+    fn connect_failure_event_masks_credentials_in_reason() {
+        let ev = connect_failure_event(
+            "db",
+            "dbhost",
+            5432,
+            "app",
+            "cannot connect to postgres: postgres://app:s3cr3t@dbhost:5432/db",
+        );
+        let blob = format!("{} {}", ev.message, ev.metadata);
+        assert!(!blob.contains("s3cr3t"), "密碼不可出現在事件中");
+        assert!(blob.contains("<redacted>"), "userinfo 應被遮蔽");
+    }
+
+    #[test]
+    fn connect_failure_event_shape() {
+        let ev = connect_failure_event("ssh", "example.com", 22, "alice", "認證失敗");
+        assert_eq!(ev.level, "warn");
+        assert_eq!(ev.source, "ssh");
+        assert_eq!(ev.event, "connect_failed");
+        assert_eq!(ev.metadata["host"], "example.com");
+        assert_eq!(ev.metadata["port"], 22);
+        assert_eq!(ev.metadata["user"], "alice");
+        // 不得含任何密碼欄位
+        assert!(ev.metadata.get("password").is_none());
+    }
+
+    #[test]
     fn query_time_filters_include_exact_boundary_timestamp() {
         let tmp = tempfile::tempdir().unwrap();
         let timestamp = "2026-01-02T03:04:05+00:00";
@@ -849,5 +995,60 @@ mod tests {
 
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].timestamp, timestamp);
+    }
+
+    #[test]
+    fn write_drops_events_below_min_level() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut sink = LogSink::new(tmp.path().to_path_buf());
+        sink.set_min_level("info");
+
+        let mut debug_ev = ev("dropped");
+        debug_ev.level = "debug".into();
+        sink.write(debug_ev); // 低於 info → 丟棄
+        sink.write(ev("kept")); // ev() 是 info → 寫入
+
+        let files: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().collect();
+        let content = std::fs::read_to_string(files[0].as_ref().unwrap().path()).unwrap();
+        assert!(content.contains("kept"));
+        assert!(!content.contains("dropped"));
+    }
+
+    #[test]
+    fn write_below_threshold_still_triggers_daily_cleanup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("yuzora-2020-01-01.jsonl");
+        std::fs::write(&old, "{}\n").unwrap();
+        let mut sink = LogSink::new(tmp.path().to_path_buf());
+        sink.set_min_level("error");
+        // 一筆被門檻丟棄的 debug 事件仍應觸發當日 cleanup
+        let mut debug_ev = ev("dropped");
+        debug_ev.level = "debug".into();
+        sink.write(debug_ev);
+        assert!(!old.exists(), "被丟棄的寫入仍應觸發 retention cleanup");
+    }
+
+    #[test]
+    fn level_rank_orders_levels() {
+        assert!(level_rank("debug") < level_rank("info"));
+        assert!(level_rank("info") < level_rank("warn"));
+        assert!(level_rank("warn") < level_rank("error"));
+        assert_eq!(level_rank("unknown"), level_rank("info"));
+    }
+
+    #[test]
+    fn log_level_config_round_trips_and_defaults_to_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logging.json");
+
+        // 缺檔 → 預設 info
+        assert_eq!(read_log_level_from(&path), "info");
+
+        write_log_level_to(&path, "debug").unwrap();
+        assert_eq!(read_log_level_from(&path), "debug");
+
+        // 非法值 → 退回 info
+        std::fs::write(&path, r#"{"minLevel":"loud"}"#).unwrap();
+        assert_eq!(read_log_level_from(&path), "info");
     }
 }

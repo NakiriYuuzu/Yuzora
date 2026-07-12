@@ -5,7 +5,7 @@ import { save } from "@tauri-apps/plugin-dialog"
 import { openPath } from "@tauri-apps/plugin-opener"
 import { Copy, Download, FolderOpen } from "lucide-react"
 
-import { logExport, logQuery, logSources, type LogQueryFilters } from "@/features/logs/logQuery"
+import { getLogLevel, logExport, logQuery, logSources, setLogLevel, type LogQueryFilters } from "@/features/logs/logQuery"
 import type { LogRecord } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { SettingCard, SettingsTextInput } from "./settingsPrimitives"
@@ -74,6 +74,7 @@ export function LogsSection({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [verbose, setVerbose] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -83,6 +84,20 @@ export function LogsSection({
       })
       .catch((e) => {
         if (alive) setError(`log_sources 失敗：${String(e)}`)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let alive = true
+    void getLogLevel()
+      .then((level) => {
+        if (alive) setVerbose(level === "debug")
+      })
+      .catch(() => {
+        /* 讀不到就維持預設關閉 */
       })
     return () => {
       alive = false
@@ -154,6 +169,18 @@ export function LogsSection({
       setNotice(`已開啟 logs folder：${dir}`)
     } catch (e) {
       setError(`Open logs folder 失敗：${String(e)}`)
+    }
+  }
+
+  async function toggleVerbose(next: boolean) {
+    setVerbose(next)
+    setError(null)
+    try {
+      await setLogLevel(next ? "debug" : "info")
+      setNotice(next ? "已開啟 verbose logging（debug 會落盤）" : "已關閉 verbose logging")
+    } catch (e) {
+      setVerbose(!next) // 失敗回滾 UI
+      setError(`設定 log level 失敗：${String(e)}`)
     }
   }
 
@@ -288,6 +315,15 @@ export function LogsSection({
             <FolderOpen className="size-[12px]" aria-hidden="true" />
             Open logs folder
           </button>
+          <label className="flex h-[28px] items-center gap-[7px] text-[11.5px] text-(--ink-2)">
+            <input
+              type="checkbox"
+              checked={verbose}
+              onChange={(event) => void toggleVerbose(event.currentTarget.checked)}
+              className="size-[13px] accent-(--yz-accent)"
+            />
+            Verbose logging (debug)
+          </label>
           <label className="ml-auto flex h-[28px] items-center gap-[7px] text-[11.5px] text-(--ink-2)">
             <input
               type="checkbox"

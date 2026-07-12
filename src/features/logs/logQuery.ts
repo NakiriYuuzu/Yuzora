@@ -22,3 +22,11 @@ export function logSources(): Promise<string[]> {
 export function logExport(dest: string, sanitize: boolean): Promise<string> {
   return invoke("log_export", { dest, sanitize })
 }
+
+export function getLogLevel(): Promise<string> {
+  return invoke("get_log_level")
+}
+
+export function setLogLevel(level: string): Promise<void> {
+  return invoke("set_log_level", { level })
+}
