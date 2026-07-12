@@ -198,8 +198,8 @@ CREATE VIEW alpha.shared_name_view AS SELECT id, source FROM alpha.shared_name;
 GO
 
 GRANT CONNECT TO [yuzora_full];
-GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON SCHEMA::alpha TO [yuzora_full];
-GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::audit TO [yuzora_full];
+-- alpha／audit 兩 schema 的 AUTHORIZATION 都是 yuzora_full：owner 已有全部權限，
+-- 對 owner GRANT 會觸發 Msg 4617（Cannot grant ... to entity owner），故不再顯式授權。
 
 GRANT CONNECT TO [yuzora_readonly];
 GRANT SELECT ON SCHEMA::alpha TO [yuzora_readonly];

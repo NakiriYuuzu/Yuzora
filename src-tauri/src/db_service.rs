@@ -3466,7 +3466,10 @@ async fn mssql_run_materialized_unit(
     run_owner: &QueryRunOwner,
     cancel_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>,
 ) -> Result<P6UnitOutcome, DatabaseError> {
-    let query = client.query(sql, &[]);
+    // ad-hoc batch（ExecuteSqlBatch）而非 client.query 的 sp_executesql RPC：
+    // P6 unit 不帶參數，且 BEGIN/COMMIT 若在 sp_executesql 內執行，離開 sp 時
+    // trancount 改變會觸發 Msg 266，交易 script 無法跨語句成立。
+    let query = client.simple_query(sql);
     tokio::pin!(query);
     let mut stream = loop {
         tokio::select! {
