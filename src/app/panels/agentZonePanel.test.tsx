@@ -1,8 +1,11 @@
+import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
 import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
+import { ComposerSuggestionPopup } from "@/app/panels/ComposerSuggestionPopup"
 import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod } from "@/agent/acpConnection"
+import { workspaceMentionIndex } from "@/agent/workspaceMentionIndex"
 import i18n from "@/lib/i18n"
 import { agentInitialState, type SessionState } from "@/state/agentStore"
 import { useAgentStore } from "@/state/agentStore"
@@ -16,13 +19,18 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 const pt = (key: string, options?: Record<string, unknown>) =>
   i18n.t(key, { ns: "panels", ...options })
 
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+
 const originalAgentActions = {
   sendPrompt: useAgentStore.getState().sendPrompt,
   cancel: useAgentStore.getState().cancel,
   respondPermission: useAgentStore.getState().respondPermission,
+  newSession: useAgentStore.getState().newSession,
+  setSessionConfigOption: useAgentStore.getState().setSessionConfigOption,
 }
 
 afterEach(() => {
+  workspaceMentionIndex.clear()
   useAgentStore.setState({
     ...agentInitialState,
     sessions: new Map(),
@@ -41,6 +49,15 @@ afterEach(() => {
   if (typeof localStorage.clear === "function") localStorage.clear()
   vi.restoreAllMocks()
   vi.clearAllMocks()
+  if (originalScrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: originalScrollIntoView,
+    })
+  } else {
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView")
+  }
 })
 
 function session(overrides: Partial<SessionState> = {}): SessionState {
@@ -63,6 +80,14 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
   }
 }
 
+function activateSessionWithCommands(commands: SessionState["availableCommands"]) {
+  useWorkspaceStore.setState({ workspacePath: "/workspace" })
+  useAgentStore.setState({
+    activeSessionId: "s-1",
+    sessions: new Map([["s-1", session({ tone: "done", availableCommands: commands })]]),
+  })
+}
+
 const terminalAuthMethod: AgentAuthMethod = {
   id: "pi_terminal_login",
   name: "Launch pi in the terminal",
@@ -73,7 +98,7 @@ const terminalAuthMethod: AgentAuthMethod = {
 
 function connectedAgent() {
   const connection: AgentConnection = {
-    newSession: vi.fn(async () => "s-1"),
+    newSession: vi.fn(async () => ({ sessionId: "s-1", startupInfo: null })),
     loadSession: vi.fn(),
     listSessions: vi.fn(async () => []),
     prompt: vi.fn(async () => "end_turn" as const),
@@ -100,7 +125,205 @@ function focusWorkspaceFile(path: string) {
   })
 }
 
+function workspaceIndexSnapshot(
+  entries: Array<{ relativePath: string; canonicalPath: string }>,
+  truncated = false
+) {
+  return {
+    workspace: "/workspace",
+    entries,
+    truncated,
+    revision: useWorkspaceStore.getState().treeRevision,
+  }
+}
+
 describe("AgentZonePanel", () => {
+  it("keeps loading, empty, and error rendering as data-source-independent popup slots", () => {
+    const { rerender } = render(
+      <ComposerSuggestionPopup
+        id="generic-suggestions"
+        ariaLabel="Suggestions"
+        items={[]}
+        selectedIndex={0}
+        onSelect={() => undefined}
+        status="loading"
+        loadingSlot="Loading choices"
+        emptySlot="No choices"
+        errorSlot="Choices failed"
+      />
+    )
+    expect(screen.getByRole("listbox", { name: "Suggestions" })).toHaveAttribute(
+      "aria-busy",
+      "true"
+    )
+    expect(screen.getByText("Loading choices")).toBeInTheDocument()
+
+    rerender(
+      <ComposerSuggestionPopup
+        id="generic-suggestions"
+        ariaLabel="Suggestions"
+        items={[]}
+        selectedIndex={0}
+        onSelect={() => undefined}
+        status="error"
+        loadingSlot="Loading choices"
+        emptySlot="No choices"
+        errorSlot="Choices failed"
+      />
+    )
+    expect(screen.getByText("Choices failed")).toBeInTheDocument()
+
+    rerender(
+      <ComposerSuggestionPopup
+        id="generic-suggestions"
+        ariaLabel="Suggestions"
+        items={[]}
+        selectedIndex={0}
+        onSelect={() => undefined}
+        emptySlot="No choices"
+      />
+    )
+    expect(screen.getByText("No choices")).toBeInTheDocument()
+  })
+
+  it("creates exactly one visible draft under StrictMode after workspace hydration", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const connection: AgentConnection = {
+      newSession: vi.fn(async () => ({
+        sessionId: "draft-1",
+        startupInfo: null,
+        agentIdentity: {
+          selectedPreset: "pi" as const,
+          commandMode: "verified" as const,
+          trustedAgentId: "pi" as const,
+        },
+      })),
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(async () => "end_turn" as const),
+      cancel: vi.fn(),
+      dropSession: vi.fn(),
+    }
+    useAgentStore.getState().setConnection(connection)
+    useAgentStore.getState().markWorkspaceHydrated("/workspace")
+
+    render(
+      <StrictMode>
+        <AgentZonePanel />
+      </StrictMode>
+    )
+
+    await waitFor(() => expect(useAgentStore.getState().activeSessionId).toBe("draft-1"))
+    expect(connection.newSession).toHaveBeenCalledTimes(1)
+    expect(useAgentStore.getState().sessions.get("draft-1")).toMatchObject({
+      cwd: "/workspace",
+      ephemeral: true,
+      transcript: [],
+    })
+    expect(screen.queryByText(pt("agentZonePanel.emptyTitle"))).not.toBeInTheDocument()
+  })
+
+  it("preserves an owned draft when Agent mode unmounts and reuses it on remount", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const connection: AgentConnection = {
+      newSession: vi.fn(async () => ({ sessionId: "draft-owned", startupInfo: null })),
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(async () => "end_turn" as const),
+      cancel: vi.fn(),
+      dropSession: vi.fn(),
+    }
+    useAgentStore.getState().setConnection(connection)
+    useAgentStore.getState().markWorkspaceHydrated("/workspace")
+
+    const first = render(<AgentZonePanel />)
+    await waitFor(() => expect(useAgentStore.getState().activeSessionId).toBe("draft-owned"))
+    first.unmount()
+
+    expect(useAgentStore.getState().sessions.has("draft-owned")).toBe(true)
+    expect(connection.dropSession).not.toHaveBeenCalled()
+
+    render(<AgentZonePanel />)
+    await waitFor(() => expect(useAgentStore.getState().activeSessionId).toBe("draft-owned"))
+    expect(connection.newSession).toHaveBeenCalledTimes(1)
+  })
+
+  it("selects an existing restored workspace session instead of creating a draft", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const connection: AgentConnection = {
+      newSession: vi.fn(),
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(async () => "end_turn" as const),
+      cancel: vi.fn(),
+    }
+    useAgentStore.getState().setConnection(connection)
+    useAgentStore.getState().hydrateRestoredSessions([{
+      sessionId: "restored",
+      cwd: "/workspace",
+      agentId: "pi",
+      createdAt: 1,
+      lastActiveAt: 1,
+    }])
+    useAgentStore.getState().markWorkspaceHydrated("/workspace")
+
+    render(<AgentZonePanel />)
+
+    await waitFor(() => expect(useAgentStore.getState().activeSessionId).toBe("restored"))
+    expect(connection.newSession).not.toHaveBeenCalled()
+  })
+
+  it("does not let an old workspace draft completion replace the current workspace draft", async () => {
+    let resolveA!: (value: { sessionId: string; startupInfo: null }) => void
+    let resolveB!: (value: { sessionId: string; startupInfo: null }) => void
+    const connection: AgentConnection = {
+      newSession: vi.fn((cwd: string) => new Promise<{ sessionId: string; startupInfo: null }>((resolve) => {
+        if (cwd === "/ws-a") resolveA = resolve
+        else resolveB = resolve
+      })),
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(async () => "end_turn" as const),
+      cancel: vi.fn(),
+      dropSession: vi.fn(),
+      disposePrepared: vi.fn(async () => true),
+    }
+    useAgentStore.getState().setConnection(connection)
+    useAgentStore.getState().markWorkspaceHydrated("/ws-a")
+    useAgentStore.getState().markWorkspaceHydrated("/ws-b")
+    useWorkspaceStore.setState({ workspacePath: "/ws-a" })
+    const view = render(<AgentZonePanel />)
+    await waitFor(() => expect(connection.newSession).toHaveBeenCalledWith("/ws-a", "pi"))
+
+    act(() => useWorkspaceStore.setState({ workspacePath: "/ws-b" }))
+    view.rerender(<AgentZonePanel />)
+    await waitFor(() => expect(connection.newSession).toHaveBeenCalledWith("/ws-b", "pi"))
+
+    resolveA({ sessionId: "draft-a", startupInfo: null })
+    await waitFor(() => expect(connection.dropSession).toHaveBeenCalledWith("draft-a"))
+    expect(useAgentStore.getState().sessions.has("draft-a")).toBe(false)
+
+    resolveB({ sessionId: "draft-b", startupInfo: null })
+    await waitFor(() => expect(useAgentStore.getState().activeSessionId).toBe("draft-b"))
+  })
+
+  it("activates A→B→A at workspace scope, including the reopened A", async () => {
+    const activateWorkspace = vi.spyOn(workspaceMentionIndex, "activateWorkspace")
+    activateSessionWithCommands([])
+
+    render(<AgentZonePanel />)
+    await waitFor(() => expect(activateWorkspace).toHaveBeenCalledTimes(1))
+    expect(activateWorkspace).toHaveBeenLastCalledWith("/workspace")
+
+    await act(async () => useWorkspaceStore.setState({ workspacePath: "/workspace-b" }))
+    await waitFor(() => expect(activateWorkspace).toHaveBeenCalledTimes(2))
+    expect(activateWorkspace).toHaveBeenLastCalledWith("/workspace-b")
+
+    await act(async () => useWorkspaceStore.setState({ workspacePath: "/workspace" }))
+    await waitFor(() => expect(activateWorkspace).toHaveBeenCalledTimes(3))
+    expect(activateWorkspace).toHaveBeenLastCalledWith("/workspace")
+  })
+
   it("shows auth-required actions, launches terminal login, and retries session/new", async () => {
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
     const connection: AgentConnection = {
@@ -110,7 +333,7 @@ describe("AgentZonePanel", () => {
           cwd: "/workspace",
           sessionId: null,
         }))
-        .mockResolvedValueOnce("s-after-login"),
+        .mockResolvedValueOnce({ sessionId: "s-after-login", startupInfo: null }),
       loadSession: vi.fn(),
       listSessions: vi.fn(async () => []),
       prompt: vi.fn(),
@@ -148,7 +371,7 @@ describe("AgentZonePanel", () => {
   it("renders a connection-error banner with connectionError text and retries via newSession", async () => {
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
     const connection: AgentConnection = {
-      newSession: vi.fn(async () => "s-retry"),
+      newSession: vi.fn(async () => ({ sessionId: "s-retry", startupInfo: null })),
       loadSession: vi.fn(),
       listSessions: vi.fn(async () => []),
       prompt: vi.fn(),
@@ -190,7 +413,7 @@ describe("AgentZonePanel", () => {
     expect(screen.queryByText(pt("agentZonePanel.connectionErrorTitle"))).not.toBeInTheDocument()
   })
 
-  it("renders the active session transcript, block actions, streaming cursor, and minimal markdown", () => {
+  it("renders the active session transcript and minimal markdown without a stale wait-state cursor", () => {
     const respondPermission = vi.fn()
     useAgentStore.setState({
       activeSessionId: "s-1",
@@ -255,7 +478,7 @@ describe("AgentZonePanel", () => {
     expect(screen.getAllByText("Audit git.rs error paths").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0)
     expect(screen.getByText("ACP")).toBeInTheDocument()
-    expect(screen.getByText("codex-1")).toBeInTheDocument()
+    expect(screen.queryByText("codex-1")).not.toBeInTheDocument()
     expect(screen.getByText(pt("agentZonePanel.tone.wait"))).toBeInTheDocument()
 
     expect(screen.getByText(pt("agentZonePanel.you"))).toBeInTheDocument()
@@ -268,12 +491,181 @@ describe("AgentZonePanel", () => {
     expect(screen.getByText("done").tagName).toBe("STRONG")
     expect(screen.getAllByText("src/git.rs").some((node) => node.tagName === "CODE")).toBe(true)
     expect(screen.getByText("const ok = true").closest("pre")).not.toBeNull()
-    expect(screen.getByTestId("agent-streaming-cursor")).toBeInTheDocument()
+    expect(screen.queryByTestId("agent-streaming-cursor")).not.toBeInTheDocument()
 
-    expect(screen.getAllByRole("button", { name: "View" })).toHaveLength(2)
+    // ToolBlock（P2/P6）不再渲染 entry.actions，故 tool 的 "View" action 不再出現；
+    // 僅剩 diff block 的 "View" action。
+    expect(screen.getAllByRole("button", { name: "View" })).toHaveLength(1)
     expect(screen.getByRole("button", { name: "Apply diff" })).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Approve" }))
     expect(respondPermission).toHaveBeenCalledWith("s-1", "allow_once")
+  })
+
+  it("renders exactly one cursor only for a running, streaming agent text at the deduped tail", () => {
+    const cases: Array<{
+      name: string
+      tone: SessionState["tone"]
+      transcript: SessionState["transcript"]
+      infoBanner?: string
+      expected: number
+    }> = [
+      {
+        name: "running streaming agent tail",
+        tone: "run",
+        transcript: [{ who: "agent", text: "live", streaming: true }],
+        expected: 1,
+      },
+      {
+        name: "two streaming agents still produce one tail cursor",
+        tone: "run",
+        transcript: [
+          { who: "agent", text: "older", streaming: true },
+          { who: "agent", text: "live", streaming: true },
+        ],
+        expected: 1,
+      },
+      {
+        name: "streaming agent before user tail",
+        tone: "run",
+        transcript: [
+          { who: "agent", text: "older", streaming: true },
+          { who: "you", text: "follow-up", streaming: true },
+        ],
+        expected: 0,
+      },
+      {
+        name: "streaming agent before tool tail",
+        tone: "run",
+        transcript: [
+          { who: "agent", text: "older", streaming: true },
+          { kind: "tool", text: "running tool" },
+        ],
+        expected: 0,
+      },
+      {
+        name: "permission tail",
+        tone: "run",
+        transcript: [
+          { who: "agent", text: "older", streaming: true },
+          { kind: "perm", text: "Permission requested" },
+        ],
+        expected: 0,
+      },
+      {
+        name: "thought tail",
+        tone: "run",
+        transcript: [
+          { who: "agent", text: "older", streaming: true },
+          { kind: "thought", text: "Thinking" },
+        ],
+        expected: 0,
+      },
+      {
+        name: "wait tone",
+        tone: "wait",
+        transcript: [{ who: "agent", text: "waiting", streaming: true }],
+        expected: 0,
+      },
+      {
+        name: "done tone",
+        tone: "done",
+        transcript: [{ who: "agent", text: "done", streaming: true }],
+        expected: 0,
+      },
+      {
+        name: "cancel notice tail",
+        tone: "idle",
+        transcript: [
+          { who: "agent", text: "older", streaming: true },
+          { kind: "notice", text: "Cancelled" },
+        ],
+        expected: 0,
+      },
+      {
+        name: "error tail",
+        tone: "fail",
+        transcript: [
+          { who: "agent", text: "older", streaming: true },
+          { kind: "error", text: "Failed" },
+        ],
+        expected: 0,
+      },
+      {
+        name: "non-streaming agent tail",
+        tone: "run",
+        transcript: [{ who: "agent", text: "complete", streaming: false }],
+        expected: 0,
+      },
+      {
+        name: "deduped sole info banner",
+        tone: "run",
+        infoBanner: "Startup",
+        transcript: [{ who: "agent", text: "Startup", streaming: true }],
+        expected: 0,
+      },
+      {
+        name: "live tail after info-banner dedupe",
+        tone: "run",
+        infoBanner: "Startup",
+        transcript: [
+          { who: "agent", text: "Startup", streaming: false },
+          { who: "agent", text: "live", streaming: true },
+        ],
+        expected: 1,
+      },
+    ]
+
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const view = render(<AgentZonePanel />)
+
+    for (const testCase of cases) {
+      act(() => {
+        useAgentStore.setState({
+          activeSessionId: "s-1",
+          sessions: new Map([["s-1", session({
+            tone: testCase.tone,
+            transcript: testCase.transcript,
+            infoBanner: testCase.infoBanner,
+          })]]),
+        })
+      })
+      view.rerender(<AgentZonePanel />)
+      expect(
+        screen.queryAllByTestId("agent-streaming-cursor"),
+        testCase.name
+      ).toHaveLength(testCase.expected)
+    }
+  })
+
+  it("P2/P6: tool block collapses, expands on click, and uses failed style", () => {
+    const failedMeta = JSON.stringify({ toolCallId: "tc1", status: "failed", rawOutput: { error: "nope" } })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([
+        [
+          "s-1",
+          session({
+            transcript: [
+              { kind: "tool", text: `write a.txt\n${"x".repeat(120)}`, meta: failedMeta },
+            ],
+          }),
+        ],
+      ]),
+    })
+
+    render(<AgentZonePanel />)
+
+    // 收合：rawOutput 未展開
+    expect(screen.queryByText(/"error": "nope"/)).toBeNull()
+
+    // 失敗色：ToolBlock wrapper 用 danger token（THREAD_KIND_STYLE.error）
+    const toggle = screen.getByRole("button", { name: pt("agentZonePanel.toolToggle") })
+    const wrapper = toggle.parentElement as HTMLElement
+    expect(wrapper.getAttribute("style")).toMatch(/danger-soft|226, ?59, ?84/)
+
+    // 展開
+    fireEvent.click(toggle)
+    expect(screen.getByText(/"error": "nope"/)).toBeInTheDocument()
   })
 
   it("opens a diff block View action with text blobs and treats null oldText as empty", () => {
@@ -315,6 +707,41 @@ describe("AgentZonePanel", () => {
     })
   })
 
+  it("Phase 4: renders a degrade notice block and starts a new session via its action", () => {
+    const newSession = vi.fn(async () => "s-2")
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      newSession,
+      sessions: new Map([
+        [
+          "s-1",
+          session({
+            transcript: [
+              {
+                kind: "notice",
+                text: "This agent can't restore the previous conversation.",
+                actions: [
+                  {
+                    label: "Start a new conversation with the same agent",
+                    kind: "start_new_session",
+                    payload: { cwd: "/workspace", agentId: "codex" },
+                  },
+                ],
+              },
+            ],
+          }),
+        ],
+      ]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText("This agent can't restore the previous conversation.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation with the same agent" }))
+
+    expect(newSession).toHaveBeenCalledWith("/workspace", "codex")
+  })
+
   it("opens slash commands, inserts a command, and sends with Cmd+Enter", async () => {
     const sendPrompt = vi.fn(async () => "end_turn" as const)
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
@@ -337,7 +764,9 @@ describe("AgentZonePanel", () => {
 
     render(<AgentZonePanel />)
 
-    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
+    const composer = screen.getByRole("combobox", {
+      name: pt("agentZonePanel.composerAriaLabel"),
+    }) as HTMLTextAreaElement
     fireEvent.change(composer, { target: { value: "/f" } })
 
     expect(screen.getByRole("listbox", { name: "Slash commands" })).toBeInTheDocument()
@@ -347,8 +776,687 @@ describe("AgentZonePanel", () => {
     fireEvent.change(composer, { target: { value: "Run tests" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
-    await waitFor(() => expect(sendPrompt).toHaveBeenCalledWith("/workspace", "Run tests"))
+    await waitFor(() => expect(sendPrompt).toHaveBeenCalledWith("/workspace", [
+      { type: "text", text: "Run tests" },
+    ]))
     expect(composer).toHaveValue("")
+  })
+
+  it("uses one keyboard path for direct typing with complete listbox ARIA and nearest scrolling", async () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: scrollIntoView,
+    })
+    activateSessionWithCommands([
+      { name: "fix", description: "Fix selected issue" },
+      { name: "format", description: "Format the current file" },
+      { name: "review", description: "Review the current file" },
+    ])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    composer.focus()
+    fireEvent.change(composer, { target: { value: "/f" } })
+
+    const listbox = screen.getByRole("listbox", { name: pt("agentZonePanel.slashCommands") })
+    const fix = screen.getByRole("option", { name: "/fix Fix selected issue" })
+    const format = screen.getByRole("option", { name: "/format Format the current file" })
+    expect(composer).toHaveAttribute("aria-expanded", "true")
+    expect(composer).toHaveAttribute("aria-autocomplete", "list")
+    expect(composer).toHaveAttribute("aria-controls", listbox.id)
+    expect(composer).toHaveAttribute("aria-activedescendant", fix.id)
+    expect(fix).toHaveAttribute("aria-selected", "true")
+    expect(format).toHaveAttribute("aria-selected", "false")
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" }))
+
+    scrollIntoView.mockClear()
+    fireEvent.keyDown(composer, { key: "ArrowDown" })
+    expect(fix).toHaveAttribute("aria-selected", "false")
+    expect(format).toHaveAttribute("aria-selected", "true")
+    expect(composer).toHaveAttribute("aria-activedescendant", format.id)
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" }))
+
+    fireEvent.keyDown(composer, { key: "Tab" })
+    await waitFor(() => {
+      expect(composer).toHaveValue("/format ")
+      expect(composer).toHaveFocus()
+      expect(composer).toHaveProperty("selectionStart", 8)
+    })
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    expect(composer).not.toHaveAttribute("aria-controls")
+    expect(composer).not.toHaveAttribute("aria-activedescendant")
+
+    fireEvent.change(composer, { target: { value: "/r" } })
+    fireEvent.keyDown(composer, { key: "Enter" })
+    await waitFor(() => expect(composer).toHaveValue("/review "))
+  })
+
+  it("inserts slash at the caret, preserves range-external text, and toggles without duplicate slashes", async () => {
+    activateSessionWithCommands([
+      { name: "fix", description: "Fix selected issue" },
+      { name: "format", description: "Format the current file" },
+    ])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", {
+      name: pt("agentZonePanel.composerAriaLabel"),
+    }) as HTMLTextAreaElement
+    const slashButton = screen.getByRole("button", { name: pt("agentZonePanel.slashCommands") })
+    fireEvent.change(composer, { target: { value: "prefix suffix" } })
+    composer.setSelectionRange(7, 7)
+    slashButton.focus()
+    fireEvent.click(slashButton)
+
+    await waitFor(() => {
+      expect(composer).toHaveValue("prefix /suffix")
+      expect(composer).toHaveFocus()
+      expect(composer).toHaveProperty("selectionStart", 8)
+      expect(composer).toHaveAttribute("data-slot", "input-group-control")
+      expect(composer.closest('[data-slot="input-group"]')).not.toBeNull()
+    })
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+
+    fireEvent.click(slashButton)
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    expect(composer).toHaveValue("prefix /suffix")
+
+    fireEvent.click(slashButton)
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+    expect(composer).toHaveValue("prefix /suffix")
+
+    fireEvent.keyDown(composer, { key: "ArrowDown" })
+    fireEvent.keyDown(composer, { key: "Enter" })
+    await waitFor(() => {
+      expect(composer).toHaveValue("prefix /format suffix")
+      expect(composer).toHaveProperty("selectionStart", 15)
+    })
+  })
+
+  it("dismisses with Escape and reopens the same trigger from the slash button without editing text", () => {
+    activateSessionWithCommands([{ name: "fix", description: "Fix selected issue" }])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    const slashButton = screen.getByRole("button", { name: pt("agentZonePanel.slashCommands") })
+    fireEvent.change(composer, { target: { value: "/f" } })
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+
+    fireEvent.keyDown(composer, { key: "Escape" })
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    expect(composer).toHaveValue("/f")
+    expect(composer).toHaveAttribute("aria-expanded", "false")
+    expect(composer).not.toHaveAttribute("aria-controls")
+
+    fireEvent.click(slashButton)
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+    expect(composer).toHaveValue("/f")
+  })
+
+  it("refreshes directly from late availableCommands updates and clamps selection after shrink", () => {
+    activateSessionWithCommands([
+      { name: "one", description: "First" },
+      { name: "two", description: "Second" },
+      { name: "three", description: "Third" },
+    ])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "/" } })
+    fireEvent.keyDown(composer, { key: "ArrowDown" })
+    fireEvent.keyDown(composer, { key: "ArrowDown" })
+    expect(screen.getByRole("option", { name: "/three Third" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    )
+
+    act(() => useAgentStore.getState().setAvailableCommands("s-1", []))
+    expect(screen.queryByRole("option")).not.toBeInTheDocument()
+    expect(screen.getByText(pt("agentZonePanel.noCommands"))).toBeInTheDocument()
+    expect(composer).not.toHaveAttribute("aria-activedescendant")
+
+    act(() => useAgentStore.getState().setAvailableCommands("s-1", [
+      { name: "late", description: "Arrived later" },
+    ]))
+    const late = screen.getByRole("option", { name: "/late Arrived later" })
+    expect(late).toHaveAttribute("aria-selected", "true")
+    expect(composer).toHaveAttribute("aria-activedescendant", late.id)
+  })
+
+  it("preserves composer focus on pointer down and explicitly restores it after selection", async () => {
+    activateSessionWithCommands([{ name: "fix", description: "Fix selected issue" }])
+    const outside = document.createElement("button")
+    document.body.appendChild(outside)
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    composer.focus()
+    fireEvent.change(composer, { target: { value: "/f" } })
+    const option = screen.getByRole("option", { name: "/fix Fix selected issue" })
+    const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+    fireEvent(option, mouseDown)
+    expect(mouseDown.defaultPrevented).toBe(true)
+    expect(composer).toHaveFocus()
+
+    outside.focus()
+    expect(composer).not.toHaveFocus()
+    fireEvent.click(option)
+    await waitFor(() => {
+      expect(composer).toHaveFocus()
+      expect(composer).toHaveValue("/fix ")
+      expect(composer).toHaveProperty("selectionStart", 5)
+      expect(composer).toHaveAttribute("data-slot", "input-group-control")
+      expect(composer.closest('[data-slot="input-group"]')).not.toBeNull()
+    })
+    outside.remove()
+  })
+
+  it("suppresses suggestion opening and application for the full IME composition", () => {
+    activateSessionWithCommands([{ name: "fix", description: "Fix selected issue" }])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    const slashButton = screen.getByRole("button", { name: pt("agentZonePanel.slashCommands") })
+    fireEvent.compositionStart(composer)
+    fireEvent.change(composer, { target: { value: "/f" } })
+    fireEvent.keyDown(composer, { key: "ArrowDown" })
+    fireEvent.keyDown(composer, { key: "Enter" })
+    fireEvent.click(slashButton)
+    expect(composer).toHaveValue("/f")
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+
+    fireEvent.compositionEnd(composer)
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+
+    fireEvent.change(composer, { target: { value: "/fi" } })
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+    fireEvent.compositionStart(composer)
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    fireEvent.keyDown(composer, { key: "Enter" })
+    expect(composer).toHaveValue("/fi")
+  })
+
+  it("remounts composer intent by session so text, popup, and selection never cross sessions", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([
+        ["s-1", session({ tone: "done", availableCommands: [
+          { name: "fix", description: "Fix" },
+          { name: "format", description: "Format" },
+        ] })],
+        ["s-2", session({ title: "Second", tone: "done", availableCommands: [
+          { name: "review", description: "Review" },
+        ] })],
+      ]),
+    })
+    render(<AgentZonePanel />)
+
+    let composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "/f" } })
+    fireEvent.keyDown(composer, { key: "ArrowDown" })
+    expect(screen.getByRole("option", { name: "/format Format" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    )
+
+    act(() => useAgentStore.setState({ activeSessionId: "s-2" }))
+    composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    expect(composer).toHaveValue("")
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    expect(composer).not.toHaveAttribute("aria-activedescendant")
+    fireEvent.change(composer, { target: { value: "second draft" } })
+
+    act(() => useAgentStore.setState({ activeSessionId: "s-1" }))
+    composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    expect(composer).toHaveValue("")
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+  })
+
+  it("lazily indexes legal @ triggers, dedupes the active file, and sends ordered resource links", async () => {
+    const connection = connectedAgent()
+    focusWorkspaceFile("/workspace/src/main.ts")
+    const load = vi.spyOn(workspaceMentionIndex, "load").mockResolvedValue(workspaceIndexSnapshot([
+      { relativePath: "src/main.ts", canonicalPath: "/workspace/src/main.ts" },
+      { relativePath: "docs/spec file.md", canonicalPath: "/workspace/docs/spec file.md" },
+    ], true))
+
+    render(<AgentZonePanel />)
+    expect(load).not.toHaveBeenCalled()
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "email@example.com" } })
+    expect(load).not.toHaveBeenCalled()
+
+    fireEvent.change(composer, { target: { value: "@src" } })
+    const activeFileOption = await screen.findByRole("option", { name: "Attach src/main.ts" })
+    expect(load).toHaveBeenCalledWith("/workspace", useWorkspaceStore.getState().treeRevision)
+    expect(screen.getByText(/first 50,000 files/)).toBeInTheDocument()
+    fireEvent.click(activeFileOption)
+
+    fireEvent.change(composer, { target: { value: "@spec" } })
+    fireEvent.click(await screen.findByRole("option", { name: "Attach docs/spec file.md" }))
+    expect(screen.getAllByRole("listitem")).toHaveLength(2)
+
+    fireEvent.change(composer, { target: { value: "Review both" } })
+    fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
+    await waitFor(() => expect(connection.prompt).toHaveBeenCalledWith("s-1", [
+      { type: "text", text: "Review both" },
+      { type: "resource_link", uri: "file:///workspace/src/main.ts", name: "main.ts" },
+      {
+        type: "resource_link",
+        uri: "file:///workspace/docs/spec%20file.md",
+        name: "docs/spec file.md",
+      },
+    ]))
+  })
+
+  it("renders nonblocking workspace-index loading and visible error states", async () => {
+    let rejectLoad!: (error: unknown) => void
+    vi.spyOn(workspaceMentionIndex, "load").mockReturnValue(new Promise((_resolve, reject) => {
+      rejectLoad = reject
+    }))
+    activateSessionWithCommands([])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "@src" } })
+    expect(await screen.findByText(pt("agentZonePanel.workspaceIndexLoading"))).toBeInTheDocument()
+    expect(composer).toHaveValue("@src")
+
+    await act(async () => rejectLoad(new Error("walk failed")))
+    expect(await screen.findByRole("alert")).toHaveTextContent("walk failed")
+    expect(composer).toHaveValue("@src")
+  })
+
+  it("renders a dedicated ready-but-empty @ state", async () => {
+    vi.spyOn(workspaceMentionIndex, "load").mockResolvedValue(workspaceIndexSnapshot([]))
+    activateSessionWithCommands([])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "@nothing" } })
+    expect(await screen.findByText(pt("agentZonePanel.noMatchingFiles"))).toBeInTheDocument()
+    expect(screen.getByRole("listbox", { name: pt("agentZonePanel.fileSuggestions") })).not
+      .toHaveAttribute("aria-busy")
+  })
+
+  it("removes explicit attachments individually without disturbing the others", async () => {
+    vi.spyOn(workspaceMentionIndex, "load").mockResolvedValue(workspaceIndexSnapshot([
+      { relativePath: "src/a.ts", canonicalPath: "/workspace/src/a.ts" },
+      { relativePath: "src/b.ts", canonicalPath: "/workspace/src/b.ts" },
+    ]))
+    activateSessionWithCommands([])
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "@a" } })
+    fireEvent.click(await screen.findByRole("option", { name: "Attach src/a.ts" }))
+    fireEvent.change(composer, { target: { value: "@b" } })
+    fireEvent.click(await screen.findByRole("option", { name: "Attach src/b.ts" }))
+
+    fireEvent.click(screen.getByRole("button", {
+      name: pt("agentZonePanel.removeFileContext", { fileName: "src/a.ts" }),
+    }))
+    expect(screen.queryByText("src/a.ts")).not.toBeInTheDocument()
+    expect(screen.getByText("src/b.ts")).toBeInTheDocument()
+  })
+
+  it("partitions trusted Codex skills, replaces one chip, and sends the exact skill-only raw prefix", async () => {
+    const sendPrompt = vi.fn(async () => "end_turn" as const)
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sendPrompt,
+      sessions: new Map([["s-1", session({
+        agentId: "codex",
+        tone: "done",
+        availableCommands: [
+          { name: "fix", description: "Fix" },
+          { name: "$review", description: "Review" },
+          { name: "$deploy", description: "Deploy" },
+        ],
+      })]]),
+    })
+    render(<AgentZonePanel />)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "/" } })
+    expect(screen.getByRole("option", { name: "/fix Fix" })).toBeInTheDocument()
+    expect(screen.queryByRole("option", { name: /\$review/ })).not.toBeInTheDocument()
+
+    fireEvent.change(composer, { target: { value: "$rev" } })
+    fireEvent.click(screen.getByRole("option", { name: /\$review skill: Review/ }))
+    expect(screen.getByRole("listitem", { name: "Selected skill: $review" })).toBeInTheDocument()
+
+    fireEvent.change(composer, { target: { value: "/fix $dep" } })
+    fireEvent.click(screen.getByRole("option", { name: /\$deploy skill: Deploy/ }))
+    expect(composer).toHaveValue("")
+    expect(screen.queryByRole("listitem", { name: "Selected skill: $review" })).not.toBeInTheDocument()
+    expect(screen.getByRole("listitem", { name: "Selected skill: $deploy" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.sendAriaLabel") }))
+    await waitFor(() => expect(sendPrompt).toHaveBeenCalledWith("/workspace", [
+      { type: "text", text: "/$deploy" },
+    ]))
+    expect(screen.queryByRole("list", { name: pt("agentZonePanel.composerIntent") }))
+      .not.toBeInTheDocument()
+  })
+
+  it("clears a selected skill and explicit attachments after successful send", async () => {
+    const sendPrompt = vi.fn(async () => "end_turn" as const)
+    vi.spyOn(workspaceMentionIndex, "load").mockResolvedValue(workspaceIndexSnapshot([
+      { relativePath: "docs/spec.md", canonicalPath: "/workspace/docs/spec.md" },
+    ]))
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sendPrompt,
+      sessions: new Map([["s-1", session({
+        agentId: "codex",
+        tone: "done",
+        availableCommands: [{ name: "$review", description: "Review" }],
+      })]]),
+    })
+    render(<AgentZonePanel />)
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+
+    fireEvent.change(composer, { target: { value: "$rev" } })
+    fireEvent.click(screen.getByRole("option", { name: /\$review skill: Review/ }))
+    fireEvent.change(composer, { target: { value: "@spec" } })
+    fireEvent.click(await screen.findByRole("option", { name: "Attach docs/spec.md" }))
+    fireEvent.change(composer, { target: { value: "Inspect" } })
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.sendAriaLabel") }))
+
+    await waitFor(() => expect(sendPrompt).toHaveBeenCalledWith("/workspace", [
+      { type: "text", text: "/$review Inspect" },
+      { type: "resource_link", uri: "file:///workspace/docs/spec.md", name: "docs/spec.md" },
+    ]))
+    expect(composer).toHaveValue("")
+    expect(screen.queryByRole("list", { name: pt("agentZonePanel.composerIntent") }))
+      .not.toBeInTheDocument()
+  })
+
+  it("clears selected skill and explicit attachment intent on cancel and session switches", async () => {
+    const cancel = vi.fn(async () => true)
+    vi.spyOn(workspaceMentionIndex, "load").mockResolvedValue(workspaceIndexSnapshot([
+      { relativePath: "docs/spec.md", canonicalPath: "/workspace/docs/spec.md" },
+    ]))
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      cancel,
+      sessions: new Map([
+        ["s-1", session({
+          agentId: "codex",
+          tone: "done",
+          availableCommands: [{ name: "$review", description: "Review" }],
+        })],
+        ["s-2", session({ title: "Second", agentId: "codex", tone: "done" })],
+      ]),
+    })
+    render(<AgentZonePanel />)
+
+    async function selectIntent() {
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+      fireEvent.change(composer, { target: { value: "$rev" } })
+      fireEvent.click(screen.getByRole("option", { name: /\$review skill: Review/ }))
+      fireEvent.change(composer, { target: { value: "@spec" } })
+      fireEvent.click(await screen.findByRole("option", { name: "Attach docs/spec.md" }))
+      expect(screen.getByRole("list", { name: pt("agentZonePanel.composerIntent") }))
+        .toBeInTheDocument()
+    }
+
+    await selectIntent()
+    act(() => {
+      const state = useAgentStore.getState()
+      const sessions = new Map(state.sessions)
+      sessions.set("s-1", { ...sessions.get("s-1")!, tone: "run", running: true })
+      useAgentStore.setState({ sessions })
+    })
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.cancelAriaLabel") }))
+    expect(cancel).toHaveBeenCalledWith("s-1")
+    expect(screen.queryByRole("list", { name: pt("agentZonePanel.composerIntent") }))
+      .not.toBeInTheDocument()
+
+    act(() => {
+      const state = useAgentStore.getState()
+      const sessions = new Map(state.sessions)
+      sessions.set("s-1", { ...sessions.get("s-1")!, tone: "done", running: false })
+      useAgentStore.setState({ sessions })
+    })
+    await selectIntent()
+    act(() => useAgentStore.setState({ activeSessionId: "s-2" }))
+    expect(screen.queryByRole("list", { name: pt("agentZonePanel.composerIntent") }))
+      .not.toBeInTheDocument()
+    act(() => useAgentStore.setState({ activeSessionId: "s-1" }))
+    expect(screen.queryByRole("list", { name: pt("agentZonePanel.composerIntent") }))
+      .not.toBeInTheDocument()
+  })
+
+  it("fails closed for custom agents and clears a stale selected skill immediately", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({
+        agentId: "custom",
+        tone: "done",
+        availableCommands: [{ name: "$review", description: "Review" }],
+      })]]),
+    })
+    const { rerender } = render(<AgentZonePanel />)
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "$" } })
+    expect(screen.getByText(pt("agentZonePanel.skillsUnsupported"))).toBeInTheDocument()
+    expect(screen.queryByRole("option")).not.toBeInTheDocument()
+
+    act(() => useAgentStore.setState({
+      sessions: new Map([["s-1", session({
+        agentId: "codex",
+        tone: "done",
+        availableCommands: [{ name: "$review", description: "Review" }],
+      })]]),
+    }))
+    rerender(<AgentZonePanel />)
+    fireEvent.change(composer, { target: { value: "$rev" } })
+    fireEvent.click(screen.getByRole("option", { name: /\$review skill: Review/ }))
+    expect(screen.getByRole("listitem", { name: "Selected skill: $review" })).toBeInTheDocument()
+
+    act(() => useAgentStore.getState().setAvailableCommands("s-1", []))
+    await waitFor(() => {
+      expect(screen.queryByRole("listitem", { name: "Selected skill: $review" })).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole("button", { name: pt("agentZonePanel.sendAriaLabel") })).toBeDisabled()
+  })
+
+  it("derives compact shadcn Model/Effort menus only from exact select categories and renders groups", async () => {
+    const setSessionConfigOption = vi.fn(async () => [])
+    const longModelLabel = "Reasoning model with an intentionally long descriptive label"
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      setSessionConfigOption,
+      sessions: new Map([["s-1", session({
+        model: "legacy-header-model",
+        tone: "idle",
+        configOptions: [
+          {
+            id: "adapter-model-id",
+            name: "Runtime model",
+            category: "model",
+            type: "select",
+            currentValue: "reasoning",
+            options: [{
+              group: "reasoning",
+              name: "Reasoning models",
+              options: [{ value: "reasoning", name: longModelLabel }],
+            }],
+          },
+          {
+            id: "adapter-effort-id",
+            name: "Runtime effort",
+            category: "thought_level",
+            type: "select",
+            currentValue: "high",
+            options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+          },
+          {
+            id: "boolean-model-id",
+            name: "Boolean model",
+            category: "model",
+            type: "boolean",
+            currentValue: true,
+          },
+          {
+            id: "similar-category-id",
+            name: "Similar category",
+            category: "model_variant",
+            type: "select",
+            currentValue: "ignored",
+            options: [{ value: "ignored", name: "Ignored" }],
+          },
+        ],
+        configRevision: 1,
+        configRequest: null,
+        configError: null,
+      })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    const model = screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") })
+    const effort = screen.getByRole("button", { name: pt("agentZonePanel.effortConfigAria") })
+    expect(model).toHaveAttribute("data-slot", "dropdown-menu-trigger")
+    expect(effort).toHaveAttribute("data-slot", "dropdown-menu-trigger")
+    expect(model).toHaveAttribute("data-variant", "ghost")
+    expect(effort).toHaveAttribute("data-variant", "ghost")
+    expect(screen.getByTestId("agent-config-controls")).toHaveAttribute(
+      "data-layout",
+      "composer-toolbar"
+    )
+    expect(model).toHaveTextContent(longModelLabel)
+    expect(screen.getByTestId("agent-session-header")).not.toHaveTextContent("legacy-header-model")
+
+    fireEvent.pointerDown(model, { button: 0, ctrlKey: false })
+    expect(await screen.findByText("Reasoning models")).toBeInTheDocument()
+    expect(await screen.findByRole("menuitemradio", { name: longModelLabel })).toHaveAttribute(
+      "data-state",
+      "checked"
+    )
+
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+    await waitFor(() => expect(screen.queryByText("Reasoning models")).not.toBeInTheDocument())
+    fireEvent.pointerDown(effort, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Low" }))
+    expect(setSessionConfigOption).toHaveBeenCalledWith("s-1", "adapter-effort-id", "low")
+  })
+
+  it("disables config menu triggers during a turn or setter request and renders a retryable error", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({
+        tone: "idle",
+        configOptions: [{
+          id: "adapter-model-id",
+          name: "Runtime model",
+          category: "model",
+          type: "select",
+          currentValue: "fast",
+          options: [{ value: "fast", name: "Fast" }],
+        }],
+        configRequest: { token: 7, configId: "adapter-model-id", value: "fast" },
+        configError: null,
+      })]]),
+    })
+    const { rerender } = render(<AgentZonePanel />)
+
+    expect(screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") })).toBeDisabled()
+
+    useAgentStore.setState({
+      sessions: new Map([["s-1", session({
+        tone: "idle",
+        configOptions: [{
+          id: "adapter-model-id",
+          name: "Runtime model",
+          category: "model",
+          type: "select",
+          currentValue: "fast",
+          options: [{ value: "fast", name: "Fast" }],
+        }],
+        configRequest: null,
+        configError: "Adapter rejected the model",
+      })]]),
+    })
+    rerender(<AgentZonePanel />)
+    expect(screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") })).toBeEnabled()
+    expect(screen.getByRole("alert")).toHaveTextContent("Adapter rejected the model")
+
+    useAgentStore.setState({
+      sessions: new Map([["s-1", session({
+        tone: "run",
+        running: true,
+        configOptions: [{
+          id: "adapter-model-id",
+          name: "Runtime model",
+          category: "model",
+          type: "select",
+          currentValue: "fast",
+          options: [{ value: "fast", name: "Fast" }],
+        }],
+        configRequest: null,
+      })]]),
+    })
+    rerender(<AgentZonePanel />)
+    expect(screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") })).toBeDisabled()
+  })
+
+  it("uses a compact shadcn shell and expands transcript content width", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({
+        tone: "done",
+        transcript: [
+          { who: "you", text: "Please inspect this", streaming: false },
+          { who: "agent", text: "I can use the wider thread surface.", streaming: false },
+        ],
+      })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    const header = screen.getByTestId("agent-session-header")
+    expect(header).toHaveAttribute("data-density", "compact")
+    expect(within(header).getByText("ACP").closest('[data-slot="badge"]')).not.toBeNull()
+
+    const composer = screen.getByTestId("agent-composer")
+    expect(composer).toHaveAttribute("data-slot", "input-group")
+    expect(composer).toHaveAttribute("data-layout", "stacked-toolbar")
+
+    const bubbles = screen.getAllByTestId("agent-message-bubble")
+    const userBubble = bubbles.find((bubble) => bubble.getAttribute("data-sender") === "you")
+    const agentBubble = bubbles.find((bubble) => bubble.getAttribute("data-sender") === "agent")
+    expect(userBubble).toHaveStyle({ maxWidth: "88%" })
+    expect(agentBubble).toHaveStyle({ maxWidth: "94%" })
+  })
+
+  it("focuses the active composer when continueSession requests focus for that session", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ tone: "idle" })]]),
+    })
+    const outside = document.createElement("button")
+    document.body.appendChild(outside)
+    render(<AgentZonePanel />)
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    outside.focus()
+    expect(composer).not.toHaveFocus()
+
+    await act(async () => {
+      await useAgentStore.getState().continueSession("s-1")
+    })
+
+    expect(composer).toHaveFocus()
+    outside.remove()
   })
 
   it("sends the active editor file as a resource_link block", async () => {
@@ -358,7 +1466,7 @@ describe("AgentZonePanel", () => {
     render(<AgentZonePanel />)
 
     expect(screen.getByText("main.ts")).toBeInTheDocument()
-    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "Explain this file" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
@@ -388,7 +1496,7 @@ describe("AgentZonePanel", () => {
     render(<AgentZonePanel />)
 
     expect(screen.getByText(name)).toBeInTheDocument()
-    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "Explain this file" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
@@ -413,7 +1521,7 @@ describe("AgentZonePanel", () => {
     )
     expect(screen.queryByText("main.ts")).not.toBeInTheDocument()
 
-    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "Explain without file" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
@@ -433,7 +1541,7 @@ describe("AgentZonePanel", () => {
 
   it("refuses to spawn with a relative cwd and keeps the workspace guidance visible", async () => {
     const prompt = vi.fn(async () => "end_turn" as const)
-    const newSession = vi.fn(async () => "s-1")
+    const newSession = vi.fn(async () => ({ sessionId: "s-1", startupInfo: null }))
     const connection: AgentConnection = {
       newSession,
       loadSession: vi.fn(),
@@ -452,7 +1560,7 @@ describe("AgentZonePanel", () => {
 
     expect(screen.getByText(pt("agentZonePanel.noWorkspaceTitle"))).toBeInTheDocument()
 
-    const composer = screen.getByRole("textbox", { name: pt("agentZonePanel.composerAriaLabel") })
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
     fireEvent.change(composer, { target: { value: "Hi" } })
     fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
 
@@ -460,5 +1568,376 @@ describe("AgentZonePanel", () => {
     expect(newSession).not.toHaveBeenCalled()
     expect(prompt).not.toHaveBeenCalled()
     expect(composer).toHaveValue("Hi")
+  })
+
+  it.each([
+    { agentId: "pi", colorVar: "var(--agent-pi)", bgVar: "var(--agent-pi-soft)" },
+    { agentId: "claude", colorVar: "var(--agent-claude)", bgVar: "var(--agent-claude-soft)" },
+    { agentId: "codex", colorVar: "var(--agent-codex)", bgVar: "var(--agent-codex-soft)" },
+  ] as const)(
+    "resolves agentId=$agentId to the $colorVar brand token regardless of agentLabel",
+    ({ agentId, colorVar, bgVar }) => {
+      useAgentStore.setState({
+        activeSessionId: "s-1",
+        sessions: new Map([["s-1", session({ agentId, agentLabel: "Some Random" })]]),
+      })
+
+      render(<AgentZonePanel />)
+
+      expect(screen.getByTestId("agent-avatar")).toHaveStyle({ background: colorVar })
+      expect(screen.getByTestId("agent-session-header").getAttribute("style")).toContain(bgVar)
+    }
+  )
+
+  it("falls back to the neutral --agent-custom token when agentId is undefined, regardless of agentLabel", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ agentId: undefined, agentLabel: "Some Random" })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByTestId("agent-avatar")).toHaveStyle({ background: "var(--agent-custom)" })
+    expect(screen.getByTestId("agent-session-header").getAttribute("style")).toContain(
+      "var(--agent-custom-soft)"
+    )
+  })
+
+  it("falls back to the neutral --agent-custom token when agentId is the custom preset", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ agentId: "custom", agentLabel: "My Custom Agent" })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByTestId("agent-avatar")).toHaveStyle({ background: "var(--agent-custom)" })
+  })
+
+  it("does not render the usage chip when session.usage is undefined", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session()]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.queryByTestId("agent-usage-chip")).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { used: 18234, size: 200000, expected: "18.2k / 200k" },
+    { used: 999, size: 1000, expected: "999 / 1k" },
+    { used: 1500000, size: 2000000, expected: "1.5M / 2M" },
+    { used: 999_950, size: 2_000_000, expected: "1M / 2M" },
+    { used: 999_949, size: 2_000_000, expected: "999.9k / 2M" },
+  ])("formats the usage chip as $expected", ({ used, size, expected }) => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ usage: { used, size } })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByTestId("agent-usage-chip")).toHaveTextContent(expected)
+  })
+
+  it("does not render the usage chip when usage.size is 0", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ usage: { used: 5, size: 0 } })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.queryByTestId("agent-usage-chip")).not.toBeInTheDocument()
+  })
+
+  it("still renders a complete cost chip when usage.size is 0", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({
+        usage: { used: 0, size: 0, cost: { amount: 0.000001, currency: "EUR" } },
+      })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.queryByTestId("agent-usage-chip")).not.toBeInTheDocument()
+    const cost = screen.getByTestId("agent-cost-chip")
+    expect(cost).toHaveTextContent("0.000001 EUR")
+    expect(cost.getAttribute("style")).not.toMatch(/max-width|overflow|text-overflow/)
+  })
+
+  it.each([
+    { used: 50, size: 100, level: "normal" },
+    { used: 85, size: 100, level: "warn" },
+    { used: 97, size: 100, level: "danger" },
+  ])("switches the usage ring level to $level at $used%", ({ used, size, level }) => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ usage: { used, size } })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByTestId("agent-usage-ring")).toHaveAttribute("data-usage-level", level)
+  })
+
+  it("shows exact structured usage and zero/EUR cost in the named context popover", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([
+        [
+          "s-1",
+          session({ usage: { used: 18234, size: 200000, cost: { amount: 0, currency: "EUR" } } }),
+        ],
+      ]),
+    })
+
+    render(<AgentZonePanel />)
+
+    const context = screen.getByTestId("agent-usage-chip")
+    expect(context.tagName).toBe("BUTTON")
+    expect(context).not.toHaveAttribute("title")
+    expect(context).toHaveAttribute("aria-controls", "agent-usage-popover")
+    fireEvent.keyDown(context, { key: "Enter" })
+    const popover = screen.getByRole("dialog", { name: pt("agentZonePanel.usagePopoverAria") })
+    expect(screen.getByTestId("agent-usage-used")).toHaveTextContent("18,234")
+    expect(screen.getByTestId("agent-usage-size")).toHaveTextContent("200,000")
+    expect(screen.getByTestId("agent-usage-remaining")).toHaveTextContent("181,766")
+    expect(screen.getByTestId("agent-usage-percent")).toHaveTextContent("9.117%")
+    expect(screen.getByTestId("agent-usage-cost")).toHaveTextContent("0 EUR")
+    expect(popover).toHaveTextContent(pt("agentZonePanel.usageUsed"))
+    expect(popover).toHaveTextContent(pt("agentZonePanel.usageRemaining"))
+    expect(popover.getAttribute("style")).toContain("100cqw")
+    const cost = screen.getByTestId("agent-cost-chip")
+    expect(cost).toHaveTextContent("0 EUR")
+    expect(cost).not.toHaveTextContent("$")
+    expect(cost.getAttribute("style")).not.toMatch(/max-width|overflow|text-overflow/)
+  })
+
+  it.each([
+    { amount: 0, currency: "EUR", expected: "0 EUR" },
+    { amount: 0.000001, currency: "EUR", expected: "0.000001 EUR" },
+    { amount: 1e-24, currency: "EUR", expected: "1e-24 EUR" },
+    { amount: 0.42, currency: "JPY", expected: "0.42 JPY" },
+  ])("keeps zero/micro cost exact in both chip and popover ($expected)", ({ amount, currency, expected }) => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([
+        ["s-1", session({ usage: { used: 10, size: 100, cost: { amount, currency } } })],
+      ]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByTestId("agent-cost-chip")).toHaveTextContent(expected)
+    expect(screen.getByTestId("agent-cost-chip")).not.toHaveTextContent("$")
+    expect(screen.getByTestId("agent-cost-chip").getAttribute("style"))
+      .not.toMatch(/max-width|overflow|text-overflow/)
+    fireEvent.keyDown(screen.getByTestId("agent-usage-chip"), { key: "Enter" })
+    expect(screen.getByTestId("agent-usage-cost")).toHaveTextContent(expected)
+  })
+
+  it("opens context details with Space and returns focus after Escape or outside click", async () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ usage: { used: 10, size: 100 } })]]),
+    })
+    const outside = document.createElement("button")
+    document.body.appendChild(outside)
+    render(<AgentZonePanel />)
+    const context = screen.getByTestId("agent-usage-chip")
+
+    context.focus()
+    fireEvent.keyDown(context, { key: " " })
+    expect(screen.getByTestId("agent-usage-popover")).toBeInTheDocument()
+    expect(screen.queryByTestId("agent-usage-cost")).not.toBeInTheDocument()
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(screen.queryByTestId("agent-usage-popover")).not.toBeInTheDocument()
+    expect(context).toHaveFocus()
+
+    fireEvent.keyDown(context, { key: " " })
+    outside.focus()
+    fireEvent.mouseDown(outside)
+    expect(screen.queryByTestId("agent-usage-popover")).not.toBeInTheDocument()
+    await waitFor(() => expect(context).toHaveFocus())
+    outside.remove()
+  })
+
+  it("does not render the info chip when infoBanner is null", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ infoBanner: null })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.queryByTestId("agent-info-chip")).not.toBeInTheDocument()
+    expect(screen.queryByRole("note")).not.toBeInTheDocument()
+  })
+
+  it("shows the info chip's stripped first line, opens/closes the popover, and no longer renders the old full-width banner", () => {
+    const infoBanner = "## **pi v0.0.31**\n\nStartup details go here.\nSecond line of detail."
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ infoBanner })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    // 舊版整寬 InfoBanner 不再渲染
+    expect(screen.queryByRole("note")).not.toBeInTheDocument()
+
+    const chip = screen.getByTestId("agent-info-chip")
+    expect(chip).toHaveTextContent("pi v0.0.31")
+    expect(chip.textContent).not.toContain("#")
+    expect(chip.textContent).not.toContain("**")
+
+    expect(screen.queryByTestId("agent-info-popover")).not.toBeInTheDocument()
+    fireEvent.click(chip)
+    expect(screen.getByTestId("agent-info-popover")).toHaveTextContent("Startup details go here.")
+    expect(screen.getByTestId("agent-info-popover")).toHaveTextContent("Second line of detail.")
+
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(screen.queryByTestId("agent-info-popover")).not.toBeInTheDocument()
+
+    fireEvent.click(chip)
+    expect(screen.getByTestId("agent-info-popover")).toBeInTheDocument()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByTestId("agent-info-popover")).not.toBeInTheDocument()
+
+    fireEvent.click(chip)
+    expect(screen.getByTestId("agent-info-popover")).toBeInTheDocument()
+    fireEvent.click(chip)
+    expect(screen.queryByTestId("agent-info-popover")).not.toBeInTheDocument()
+  })
+
+  it("strips a leading non-content markdown line (e.g. a bare separator) to find the first real info line", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ infoBanner: "---\nStartup v1" })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByTestId("agent-info-chip")).toHaveTextContent("Startup v1")
+  })
+
+  it("does not render the info chip when infoBanner strips down to nothing (blank/marker-only lines)", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ infoBanner: "\n  \n" })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.queryByTestId("agent-info-chip")).not.toBeInTheDocument()
+  })
+
+  it("closes the info popover when the underlying session's infoBanner text changes", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ infoBanner: "First session info" })]]),
+    })
+    const { rerender } = render(<AgentZonePanel />)
+
+    const chip = screen.getByTestId("agent-info-chip")
+    fireEvent.click(chip)
+    expect(screen.getByTestId("agent-info-popover")).toBeInTheDocument()
+
+    useAgentStore.setState({
+      sessions: new Map([["s-1", session({ infoBanner: "Second session info" })]]),
+    })
+    rerender(<AgentZonePanel />)
+
+    expect(screen.queryByTestId("agent-info-popover")).not.toBeInTheDocument()
+  })
+
+  it("dedupes a transcript's first agent entry when it matches infoBanner, but keeps it otherwise", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([
+        [
+          "s-1",
+          session({
+            infoBanner: "  Startup notice  ",
+            transcript: [
+              { who: "agent", text: "Startup notice", streaming: false },
+              { who: "you", text: "hello", streaming: false },
+            ],
+          }),
+        ],
+      ]),
+    })
+
+    render(<AgentZonePanel />)
+
+    // "Startup notice" 只該出現在 info chip pill 裡（=firstInfoLine 本身），transcript
+    // 首則已被 dedupeInfoBanner 濾除，故不會有第二個節點。
+    expect(screen.getAllByText("Startup notice")).toHaveLength(1)
+    expect(screen.getAllByText("Startup notice")[0]).toBe(screen.getByTestId("agent-info-chip"))
+    expect(screen.getByText("hello")).toBeInTheDocument()
+  })
+
+  it("keeps the first transcript entry when its text differs from infoBanner", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([
+        [
+          "s-1",
+          session({
+            infoBanner: "Startup notice",
+            transcript: [
+              { who: "agent", text: "Different first message", streaming: false },
+            ],
+          }),
+        ],
+      ]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText("Different first message")).toBeInTheDocument()
+  })
+
+  it("keeps a non-first transcript entry even if its text matches infoBanner", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([
+        [
+          "s-1",
+          session({
+            infoBanner: "Startup notice",
+            transcript: [
+              { who: "you", text: "hi", streaming: false },
+              { who: "agent", text: "Startup notice", streaming: false },
+            ],
+          }),
+        ],
+      ]),
+    })
+
+    render(<AgentZonePanel />)
+
+    // 非首則相同文字不被 dedupe：info chip 與 transcript 各出現一次，共兩個節點。
+    expect(screen.getAllByText("Startup notice")).toHaveLength(2)
+  })
+
+  it("hides a null-cwd active session once the workspace has an absolute path (P10-B)", () => {
+    // active session 沒有 cwd（null），但目前 workspace 已是絕對路徑：sendPrompt 會
+    // 透過 selectActiveSessionForCwd 視為「不屬於這個 workspace」而開新 session，
+    // 面板不該仍顯示這個 null-cwd session（否則顯示與送出行為不一致）。
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ tone: "done", cwd: null })]]),
+    })
+    useWorkspaceStore.setState({ workspacePath: "/ws-b" })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText(pt("agentZonePanel.emptyTitle"))).toBeInTheDocument()
+    expect(screen.queryByText(session().title)).not.toBeInTheDocument()
   })
 })
