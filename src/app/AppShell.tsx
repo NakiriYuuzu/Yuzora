@@ -75,6 +75,7 @@ export function AppShell() {
   const [navWidth, setNavWidth] = useState(DEFAULT_NAV_WIDTH)
   const [navResizing, setNavResizing] = useState(false)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const workspaceStackRef = useRef<HTMLDivElement>(null)
   // Whether the current collapse was applied automatically (narrow window) vs.
   // by the user, and the last-seen narrow/wide side, so auto-collapse only fires
   // on threshold crossings and only auto-expand undoes an auto-collapse.
@@ -218,6 +219,8 @@ export function AppShell() {
     void logUserAction("theme_change", `Switched to ${next} theme`, { theme: next })
   }
 
+  const mainSurfaceMinHeight = mode === "agent" ? 280 : 44
+
   return (
     <div
       onContextMenu={contextMenuHandler({ kind: "general" })}
@@ -293,10 +296,15 @@ export function AppShell() {
           </div>
 
           <div
-            className="flex min-w-0 flex-1 flex-col transition-[gap] duration-[280ms] ease-(--ease-spring)"
+            ref={workspaceStackRef}
+            className="flex min-h-0 min-w-0 flex-1 flex-col transition-[gap] duration-[280ms] ease-(--ease-spring)"
             style={{ gap: terminalOpen ? 10 : 0 }}
           >
-            <div className="flex min-h-0 flex-1 flex-col gap-[10px]">
+            <div
+              data-testid="main-surface"
+              className="flex min-h-0 flex-1 flex-col gap-[10px]"
+              style={{ minHeight: mainSurfaceMinHeight }}
+            >
               {/* EditorPanel stays mounted (CSS-hidden, not unmounted) across mode
                   switches so unsaved edits and undo history survive leaving Files mode. */}
               <div className={mode === "files" ? "contents" : "hidden"}>
@@ -312,7 +320,11 @@ export function AppShell() {
               {mode === "agent" && <AgentZonePanel />}
             </div>
 
-            <TerminalDrawer visible={terminalOpen} />
+            <TerminalDrawer
+              visible={terminalOpen}
+              containerRef={workspaceStackRef}
+              mainSurfaceMinHeight={mainSurfaceMinHeight}
+            />
           </div>
         </div>
       </div>

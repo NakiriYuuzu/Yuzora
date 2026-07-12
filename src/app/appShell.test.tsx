@@ -39,7 +39,7 @@ afterEach(() => {
   delete (globalThis as { isTauri?: boolean }).isTauri
   // 移除測試蓋上的 own property，讓 jsdom 原本的 prototype getter 復原
   delete (window.navigator as { userAgent?: string }).userAgent
-  useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
+  useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
 })
 
 describe("AppShell", () => {
@@ -137,6 +137,17 @@ describe("AppShell", () => {
     expect(screen.getByLabelText("Workspace rail")).toBeInTheDocument()
     expect(screen.getByLabelText("Project navigation")).toBeInTheDocument()
     expect(screen.getByLabelText("Status bar")).toBeInTheDocument()
+  })
+
+  it("uses the shared 44px floor normally and 280px floor in Agent mode", () => {
+    render(<AppShell />)
+    const mainSurface = screen.getByTestId("main-surface")
+
+    expect(mainSurface).toHaveStyle({ minHeight: "44px" })
+    fireEvent.click(screen.getByRole("tab", { name: "AgentZone" }))
+    expect(mainSurface).toHaveStyle({ minHeight: "280px" })
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }))
+    expect(mainSurface).toHaveStyle({ minHeight: "44px" })
   })
 
   it("switches to Git mode and shows the selected state", () => {

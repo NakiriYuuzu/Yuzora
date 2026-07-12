@@ -102,6 +102,34 @@ describe("useTerminalStore", () => {
         })
     })
 
+    it("focuses the removed pane's next neighbor, then the previous neighbor", () => {
+        const third = { ...second, sessionId: "term-4", title: "third" }
+        useTerminalStore.setState({
+            sessions: {
+                [first.sessionId]: first,
+                [second.sessionId]: second,
+                [third.sessionId]: third
+            },
+            layouts: {
+                "/ws/a": {
+                    panes: [
+                        { paneId: "pane-a", sessionId: first.sessionId },
+                        { paneId: "pane-b", sessionId: second.sessionId },
+                        { paneId: "pane-c", sessionId: third.sessionId }
+                    ],
+                    activePaneId: "pane-a",
+                    splitDirection: "right"
+                }
+            }
+        })
+
+        useTerminalStore.getState().removeSession("/ws/a", second.sessionId)
+        expect(useTerminalStore.getState().layouts["/ws/a"].activePaneId).toBe("pane-c")
+
+        useTerminalStore.getState().removeSession("/ws/a", third.sessionId)
+        expect(useTerminalStore.getState().layouts["/ws/a"].activePaneId).toBe("pane-a")
+    })
+
     it("clears the active pane when the last session is removed", () => {
         const s = useTerminalStore.getState()
         s.addSession("/ws/a", first, "pane-a")

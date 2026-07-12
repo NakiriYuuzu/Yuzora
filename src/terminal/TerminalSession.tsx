@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/xterm"
 
 import { ptyClose, ptyOpen, ptyResize, ptyWrite } from "../lib/ipc"
 import type { PtyEvent } from "../lib/types"
+import { registerTerminalView } from "./terminalViewRegistry"
 import { buildXtermTheme } from "./xtermTheme"
 
 export interface TerminalSessionProps {
@@ -66,10 +67,13 @@ export function TerminalSession({
     const observerRef = useRef<ResizeObserver | null>(null)
     const themeObserverRef = useRef<MutationObserver | null>(null)
     const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const capturedPasteWritesRef = useRef<Promise<void>[] | null>(null)
+    const unregisterViewRef = useRef<(() => void) | null>(null)
     const openedRef = useRef(false)
     const disposedRef = useRef(false)
     const openPromiseRef = useRef<Promise<unknown> | null>(null)
     const openSettledRef = useRef(true)
+    const openReadyRef = useRef(false)
     const cleanupTimerRef = useRef<number | null>(null)
     const lastSizeRef = useRef({ cols: defaultCols, rows: defaultRows })
     const onExitRef = useRef(onExit)
@@ -83,6 +87,7 @@ export function TerminalSession({
         function scheduleCleanup() {
             if (cleanupTimerRef.current !== null) return
             disposedRef.current = true
+            openReadyRef.current = false
 
             cleanupTimerRef.current = window.setTimeout(() => {
                 cleanupTimerRef.current = null
@@ -90,11 +95,14 @@ export function TerminalSession({
                 themeObserverRef.current?.disconnect()
                 observerRef.current?.disconnect()
                 dataDisposableRef.current?.dispose()
+                unregisterViewRef.current?.()
                 fitRef.current?.dispose()
                 termRef.current?.dispose()
                 themeObserverRef.current = null
                 observerRef.current = null
                 dataDisposableRef.current = null
+                capturedPasteWritesRef.current = null
+                unregisterViewRef.current = null
                 fitRef.current = null
                 termRef.current = null
                 openedRef.current = false
@@ -133,15 +141,43 @@ export function TerminalSession({
         fitRef.current = fitAddon
         openedRef.current = true
         disposedRef.current = false
+        openReadyRef.current = false
 
         term.loadAddon(fitAddon)
         term.open(container)
+        unregisterViewRef.current = registerTerminalView(sessionId, {
+            hasSelection: () => term.hasSelection(),
+            getSelection: () => term.getSelection(),
+            isReady: () => openReadyRef.current && !disposedRef.current,
+            paste: async (text) => {
+                const pendingOpen = openPromiseRef.current
+                if (pendingOpen) await pendingOpen
+                if (!openReadyRef.current || disposedRef.current) {
+                    throw new Error("Terminal session is not ready")
+                }
+                const writes: Promise<void>[] = []
+                capturedPasteWritesRef.current = writes
+                try {
+                    // Keep xterm's bracketed-paste transformation, but capture the
+                    // resulting PTY write promise so the command can observe failure.
+                    term.paste(text)
+                } finally {
+                    capturedPasteWritesRef.current = null
+                }
+                if (writes.length === 0) throw new Error("Terminal paste produced no input")
+                await Promise.all(writes)
+            },
+            clear: () => term.clear()
+        })
         safeFit(fitAddon)
         lastSizeRef.current = terminalSize(term)
 
         const dataDisposable = term.onData((data) => {
             if (disposedRef.current) return
-            void ptyWrite(sessionId, data).catch(() => undefined)
+            const write = ptyWrite(sessionId, data)
+            const captured = capturedPasteWritesRef.current
+            if (captured) captured.push(write)
+            else void write.catch(() => undefined)
         })
         dataDisposableRef.current = dataDisposable
 
@@ -169,6 +205,11 @@ export function TerminalSession({
         )
         openPromiseRef.current = openPromise
         void openPromise
+            .then(() => {
+                if (openPromiseRef.current === openPromise && !disposedRef.current) {
+                    openReadyRef.current = true
+                }
+            })
             .catch((error) => {
                 if (disposedRef.current) return
                 const message = error instanceof Error ? error.message : String(error)

@@ -1,4 +1,10 @@
 {
+  "sizeMemoryLabel": "Terminal size memory",
+  "sizeMemoryDescription": "Share the Terminal split size across all workspaces, or remember it separately for each workspace.",
+  "sizeMemoryGlobal": "Global",
+  "sizeMemoryWorkspace": "Per workspace",
+  "resizeAriaLabel": "Resize terminal",
+  "ratioText": "Main {{main}}% · Terminal {{terminal}}%",
   "shellLabel": "Shell settings",
   "shellDescription": "When the shell path is empty, the backend resolves it via $SHELL → getpwuid → the system default shell; a set value takes priority. Default args are persisted with the terminal settings.",
   "noSessions": "No terminal sessions yet",

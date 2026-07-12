@@ -17,10 +17,15 @@ const xtermMock = vi.hoisted(() => {
         options: Record<string, unknown>
         cols = 80
         rows = 24
+        selection = ""
         dataHandler: DataHandler | null = null
         open = vi.fn()
         write = vi.fn()
         focus = vi.fn()
+        hasSelection = vi.fn(() => this.selection.length > 0)
+        getSelection = vi.fn(() => this.selection)
+        paste = vi.fn((text: string) => this.dataHandler?.(text))
+        clear = vi.fn()
         dispose = vi.fn()
         loadAddon = vi.fn((addon: { activate?: (terminal: TerminalMock) => void }) => {
             addon.activate?.(this)
@@ -85,6 +90,7 @@ vi.mock("../lib/ipc", () => ({
 }))
 
 import { TerminalSession } from "./TerminalSession"
+import { getTerminalView } from "./terminalViewRegistry"
 
 type ResizeObserverMock = {
     observe: ReturnType<typeof vi.fn>
@@ -171,6 +177,28 @@ describe("TerminalSession", () => {
         expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith("ready\n")
     })
 
+    it("registers the minimal xterm handle and unregisters it on unmount", async () => {
+        const { unmount } = render(
+            <TerminalSession workspace="/w" sessionId="pty-view" active={false} />
+        )
+        await waitFor(() => expect(getTerminalView("pty-view")).toBeDefined())
+
+        const term = xtermMock.state.terminals[0]
+        term.selection = "selected"
+        const view = getTerminalView("pty-view")
+        await waitFor(() => expect(view?.isReady?.()).toBe(true))
+        expect(view?.hasSelection()).toBe(true)
+        expect(view?.getSelection()).toBe("selected")
+        await view?.paste("clipboard")
+        view?.clear()
+        expect(ipcMock.ptyWrite).toHaveBeenCalledWith("pty-view", "clipboard")
+        expect(term.paste).toHaveBeenCalledWith("clipboard")
+        expect(term.clear).toHaveBeenCalledTimes(1)
+
+        unmount()
+        await waitFor(() => expect(getTerminalView("pty-view")).toBeUndefined())
+    })
+
     it("renders exited state and invokes onExit when the pty exits", async () => {
         const onExit = vi.fn()
 
@@ -241,6 +269,34 @@ describe("TerminalSession", () => {
 
         ipcMock.onEvent?.({ type: "output", data: "late\n" })
         expect(xtermMock.state.terminals[0].write).not.toHaveBeenCalled()
+    })
+
+    it("keeps the registered paste handle unready until ptyOpen succeeds", async () => {
+        let resolveOpen!: () => void
+        const openPromise = new Promise<void>((resolve) => {
+            resolveOpen = resolve
+        })
+        ipcMock.ptyOpen.mockImplementation(async () => {
+            await openPromise
+        })
+        render(<TerminalSession workspace="/w" sessionId="pty-pending" active={false} />)
+        await waitFor(() => expect(getTerminalView("pty-pending")).toBeDefined())
+        const view = getTerminalView("pty-pending")!
+
+        expect(view.isReady?.()).toBe(false)
+        resolveOpen()
+        await waitFor(() => expect(view.isReady?.()).toBe(true))
+        await view.paste("after-open")
+        expect(ipcMock.ptyWrite).toHaveBeenCalledWith("pty-pending", "after-open")
+    })
+
+    it("propagates paste PTY write failures through the registered handle", async () => {
+        ipcMock.ptyWrite.mockRejectedValueOnce(new Error("write failed"))
+        render(<TerminalSession workspace="/w" sessionId="pty-write-fail" active={false} />)
+        await waitFor(() => expect(getTerminalView("pty-write-fail")?.isReady?.()).toBe(true))
+
+        await expect(getTerminalView("pty-write-fail")?.paste("clipboard"))
+            .rejects.toThrow("write failed")
     })
 
     it("passes shell args to ptyOpen", async () => {

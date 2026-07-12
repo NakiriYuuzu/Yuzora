@@ -38,7 +38,7 @@ interface TerminalState {
     reset: () => void
 }
 
-const MAX_PANES = 2
+export const MAX_PANES = 2
 
 export const terminalInitialState = {
     sessions: {} as Record<string, TerminalSessionMeta>,
@@ -79,17 +79,17 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
             const session = s.sessions[sessionId]
             if (session && session.workspace !== workspace) return s
             const layout = s.layouts[workspace] ?? emptyLayout()
+            const removedIndex = layout.panes.findIndex((pane) => pane.sessionId === sessionId)
             const sessions = { ...s.sessions }
             delete sessions[sessionId]
             const panes = layout.panes.filter((pane) => pane.sessionId !== sessionId)
-            const removedActive = layout.panes.some(
-                (pane) => pane.sessionId === sessionId && pane.paneId === layout.activePaneId
-            )
-            const activePaneId = removedActive
-                ? panes[0]?.paneId ?? null
-                : panes.some((pane) => pane.paneId === layout.activePaneId)
-                  ? layout.activePaneId
-                  : panes[0]?.paneId ?? null
+            const destination = removedIndex >= 0
+                ? layout.panes[removedIndex + 1] ?? layout.panes[removedIndex - 1]
+                : undefined
+            const activePaneId = destination?.paneId
+                ?? (panes.some((pane) => pane.paneId === layout.activePaneId)
+                    ? layout.activePaneId
+                    : null)
             return {
                 sessions,
                 layouts: {
