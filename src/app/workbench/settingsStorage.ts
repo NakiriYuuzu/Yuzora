@@ -1,11 +1,17 @@
+import {
+  AGENT_PRESETS, DEFAULT_AGENT_COMMAND, DEFAULT_AGENT_ID, agentPresetForCommand,
+  resolveCuratedAgentCommand,
+  type AgentCommandIdentity, type AgentCommandMode, type AgentCommandResolution,
+  type AgentId, type AgentPreset,
+} from "@/lib/agentPresets"
+
+export { AGENT_PRESETS, DEFAULT_AGENT_COMMAND, agentPresetForCommand }
+export type { AgentId, AgentPreset }
+
 export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 export const PREVIEW_SETTINGS_STORAGE_KEY = "yuzora:preview-settings"
 export const AGENT_SETTINGS_STORAGE_KEY = "yuzora:agent-settings"
-// pin 版本：bunx 不 pin 會每次 re-resolve latest（網路解析 hang＋版本漂移，
-// 2026-07-06 的 EPIPE crash 即升版當下引入），診斷見 docs/html logger 分析報告
-export const DEFAULT_AGENT_COMMAND = "bunx pi-acp@0.0.31"
-
-export type AgentPreset = "pi" | "custom"
+export const LAST_USED_CURATED_AGENT_STORAGE_KEY = "yuzora:last-used-curated-agent"
 
 export interface TerminalSettings {
   shellPath: string
@@ -21,6 +27,12 @@ export interface AgentSettings {
   preset: AgentPreset
   command: string
   traceEnabled: boolean
+  presetCommands: Record<AgentId, AgentPresetCommandSettings>
+}
+
+export interface AgentPresetCommandSettings {
+  mode: AgentCommandMode
+  customCommand: string
 }
 
 const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
@@ -37,6 +49,11 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   preset: "pi",
   command: DEFAULT_AGENT_COMMAND,
   traceEnabled: false,
+  presetCommands: {
+    pi: { mode: "verified", customCommand: "" },
+    claude: { mode: "verified", customCommand: "" },
+    codex: { mode: "verified", customCommand: "" },
+  },
 }
 
 export function readJsonSetting<T extends object>(key: string, fallback: T): T {
@@ -66,16 +83,110 @@ export function loadPreviewSettings(): PreviewSettings {
   return readJsonSetting(PREVIEW_SETTINGS_STORAGE_KEY, DEFAULT_PREVIEW_SETTINGS)
 }
 
+const VALID_PRESETS: AgentPreset[] = ["pi", "claude", "codex", "custom"]
+const VALID_COMMAND_MODES: AgentCommandMode[] = ["verified", "latest", "custom"]
+
 export function loadAgentSettings(): AgentSettings {
-  const settings = readJsonSetting(AGENT_SETTINGS_STORAGE_KEY, DEFAULT_AGENT_SETTINGS)
+  const settings = readJsonSetting<Partial<AgentSettings>>(AGENT_SETTINGS_STORAGE_KEY, {})
   return {
-    preset: settings.preset === "custom" ? "custom" : "pi",
-    command: settings.command.trim() || DEFAULT_AGENT_COMMAND,
+    preset: VALID_PRESETS.includes(settings.preset as AgentPreset)
+      ? settings.preset as AgentPreset
+      : DEFAULT_AGENT_SETTINGS.preset,
+    command: typeof settings.command === "string" && settings.command.trim()
+      ? settings.command.trim()
+      : DEFAULT_AGENT_SETTINGS.command,
     traceEnabled: settings.traceEnabled === true,
+    presetCommands: normalizePresetCommands(settings.presetCommands),
   }
 }
 
 export function resolveAgentCommand(settings = loadAgentSettings()): string {
-  if (settings.preset === "pi") return DEFAULT_AGENT_COMMAND
-  return settings.command.trim() || DEFAULT_AGENT_COMMAND
+  return resolveAgentCommandRoute(undefined, settings).command
+}
+
+export function resolveAgentCommandRoute(
+  agentId?: AgentId,
+  settings = loadAgentSettings(),
+): AgentCommandResolution {
+  const selectedPreset = agentId ?? settings.preset
+  if (selectedPreset === "custom") {
+    return {
+      selectedPreset,
+      commandMode: "custom",
+      command: settings.command.trim() || DEFAULT_AGENT_COMMAND,
+      trustedAgentId: null,
+    }
+  }
+  const preference = settings.presetCommands[selectedPreset]
+  return resolveCuratedAgentCommand(
+    selectedPreset,
+    preference.mode,
+    preference.customCommand,
+  )
+}
+
+export function loadLastUsedCuratedAgent(): AgentId | null {
+  try {
+    const value = localStorage.getItem(LAST_USED_CURATED_AGENT_STORAGE_KEY)
+    return value === "pi" || value === "claude" || value === "codex" ? value : null
+  } catch {
+    return null
+  }
+}
+
+// Only a successful session/new result can supply this trusted identity. Custom
+// commands never enter the last-used channel, including custom mode selected
+// from a branded preset.
+export function rememberLastUsedCuratedAgent(identity: AgentCommandIdentity | undefined): void {
+  const agentId = identity?.commandMode === "custom" ? null : identity?.trustedAgentId
+  if (!agentId) return
+  try {
+    localStorage.setItem(LAST_USED_CURATED_AGENT_STORAGE_KEY, agentId)
+  } catch {
+    // private mode / quota — resolver will use Settings instead
+  }
+}
+
+// Resolve only identities that remain curated under today's Settings. If no
+// successful session has been recorded, prefer the selected trusted preset and
+// then the verified/default Pi route. A branded preset in Custom mode is still
+// untrusted and therefore produces no prewarm candidate.
+export function resolvePrewarmAgentId(settings = loadAgentSettings()): AgentId | null {
+  const lastUsed = loadLastUsedCuratedAgent()
+  if (lastUsed) {
+    if (resolveAgentCommandRoute(lastUsed, settings).trustedAgentId) return lastUsed
+  }
+  const selected = resolveAgentCommandRoute(undefined, settings)
+  if (selected.trustedAgentId) return selected.trustedAgentId
+  const fallback = resolveAgentCommandRoute(DEFAULT_AGENT_ID, settings)
+  return fallback.trustedAgentId ? DEFAULT_AGENT_ID : null
+}
+
+// AgentPickerPopover 的「自訂 command…」流用：把 picker 內填的 command 存為
+// 全域 custom preset（保留既有 traceEnabled），讓後續省略 agentId 的
+// newSession(cwd) 走 resolveAgentCommand() 解出同一條 command。
+export function saveCustomAgentCommand(command: string): AgentSettings {
+  const next: AgentSettings = { ...loadAgentSettings(), preset: "custom", command: command.trim() }
+  writeJsonSetting(AGENT_SETTINGS_STORAGE_KEY, next)
+  return next
+}
+
+function normalizePresetCommands(value: unknown): AgentSettings["presetCommands"] {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {}
+  return {
+    pi: normalizePresetCommand(record.pi),
+    claude: normalizePresetCommand(record.claude),
+    codex: normalizePresetCommand(record.codex),
+  }
+}
+
+function normalizePresetCommand(value: unknown): AgentPresetCommandSettings {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {}
+  const mode = VALID_COMMAND_MODES.includes(record.mode as AgentCommandMode)
+    ? record.mode as AgentCommandMode
+    : "verified"
+  return {
+    mode,
+    customCommand: typeof record.customCommand === "string" ? record.customCommand : "",
+  }
 }

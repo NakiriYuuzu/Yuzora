@@ -65,25 +65,96 @@ describe("SettingsDialog agent section", () => {
 
     expect(screen.getByRole("heading", { name: "Agent" })).toBeInTheDocument()
     const preset = screen.getByRole("combobox", { name: "Agent preset" })
-    const command = screen.getByLabelText("自訂 command")
+    const command = screen.getByLabelText("Command")
 
     expect(preset).toHaveValue("pi")
+    expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("verified")
     expect(command).toHaveValue("bunx pi-acp@0.0.31")
     expect(command).toBeDisabled()
 
     fireEvent.change(preset, { target: { value: "custom" } })
     fireEvent.change(command, { target: { value: "uvx my-acp" } })
 
-    expect(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ preset: "custom", command: "uvx my-acp", traceEnabled: false }),
-    )
+    expect(JSON.parse(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY) ?? "{}")).toMatchObject({
+      preset: "custom",
+      command: "uvx my-acp",
+      traceEnabled: false,
+    })
 
     cleanup()
     renderDialog()
 
     expect(screen.getByRole("combobox", { name: "Agent preset" })).toHaveValue("custom")
-    expect(screen.getByLabelText("自訂 command")).toHaveValue("uvx my-acp")
-    expect(screen.getByLabelText("自訂 command")).toBeEnabled()
+    expect(screen.getByLabelText("Command")).toHaveValue("uvx my-acp")
+    expect(screen.getByLabelText("Command")).toBeEnabled()
+    expect(screen.queryByRole("combobox", { name: "Command mode" })).not.toBeInTheDocument()
+  })
+
+  it("persists independent verified/latest/custom modes for curated presets", () => {
+    renderDialog()
+    const preset = screen.getByRole("combobox", { name: "Agent preset" })
+    const command = screen.getByLabelText("Command")
+    fireEvent.change(preset, { target: { value: "claude" } })
+    const mode = screen.getByRole("combobox", { name: "Command mode" })
+    expect(mode).toHaveValue("verified")
+    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@0.58.1")
+    expect(command).toBeDisabled()
+
+    fireEvent.change(mode, { target: { value: "latest" } })
+    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@latest")
+    expect(command).toBeDisabled()
+
+    fireEvent.change(preset, { target: { value: "codex" } })
+    expect(mode).toHaveValue("verified")
+    expect(command).toHaveValue("bunx @agentclientprotocol/codex-acp@1.1.2")
+    fireEvent.change(mode, { target: { value: "custom" } })
+    expect(command).toBeEnabled()
+    fireEvent.change(command, { target: { value: "uvx wrapped-codex" } })
+
+    fireEvent.change(preset, { target: { value: "claude" } })
+    expect(mode).toHaveValue("latest")
+    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@latest")
+    fireEvent.change(preset, { target: { value: "codex" } })
+    expect(mode).toHaveValue("custom")
+    expect(command).toHaveValue("uvx wrapped-codex")
+
+    const stored = JSON.parse(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY) ?? "{}")
+    expect(stored.presetCommands).toMatchObject({
+      claude: { mode: "latest" },
+      codex: { mode: "custom", customCommand: "uvx wrapped-codex" },
+    })
+  })
+
+  it("restores the custom command after switching away and back to custom preset", () => {
+    renderDialog()
+    const preset = screen.getByRole("combobox", { name: "Agent preset" })
+    const command = screen.getByLabelText("Command")
+
+    fireEvent.change(preset, { target: { value: "custom" } })
+    fireEvent.change(command, { target: { value: "uvx my-acp" } })
+    fireEvent.change(preset, { target: { value: "claude" } })
+    fireEvent.change(preset, { target: { value: "custom" } })
+
+    expect(screen.getByLabelText("Command")).toHaveValue("uvx my-acp")
+    expect(JSON.parse(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY) ?? "{}")).toMatchObject({
+      preset: "custom",
+      command: "uvx my-acp",
+      traceEnabled: false,
+    })
+  })
+
+  it("loads the legacy settings envelope and migrates curated presets to verified defaults", () => {
+    localStorage.setItem(
+      AGENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ preset: "codex", command: "", traceEnabled: true }),
+    )
+
+    renderDialog()
+
+    expect(screen.getByRole("combobox", { name: "Agent preset" })).toHaveValue("codex")
+    expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("verified")
+    expect(screen.getByLabelText("Command")).toHaveValue("bunx @agentclientprotocol/codex-acp@1.1.2")
+    expect(screen.getByRole("switch", { name: "ACP trace" })).toBeChecked()
   })
 
   it("persists ACP trace and calls agent_set_trace", async () => {
