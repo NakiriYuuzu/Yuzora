@@ -1,6 +1,8 @@
 pub mod agent_process;
 pub mod agent_terminal;
 pub mod askpass;
+pub mod db_connection_actor;
+pub mod db_result_session;
 pub mod db_service;
 pub mod dev_server_detect;
 pub mod env_path;
@@ -43,9 +45,8 @@ pub fn run() {
         .manage(search_service::SearchState(std::sync::Arc::new(
             std::sync::atomic::AtomicU64::new(0),
         )))
-        .manage(db_service::DbState(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )))
+        .manage(db_service::DbState::default())
+        .manage(db_result_session::ResultSessionState::default())
         .manage(perf_service::PerfState(std::sync::Mutex::new(
             sysinfo::System::new(),
         )))
@@ -108,11 +109,12 @@ pub fn run() {
             watcher::start_watch,
             workspace_path_index::workspace_path_index,
             search_service::search_workspace,
-            db_service::db_open,
-            db_service::db_close,
             db_service::db_list_tables,
             db_service::db_table_columns,
-            db_service::db_query,
+            db_service::db_query_run,
+            db_service::db_query_cancel,
+            db_service::db_result_page,
+            db_service::db_result_session_release,
             perf_service::perf_snapshot,
             preview_server::preview_serve,
             preview_server::preview_stop_all,
