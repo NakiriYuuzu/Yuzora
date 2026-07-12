@@ -2,6 +2,8 @@ pub mod agent_process;
 pub mod agent_terminal;
 pub mod askpass;
 pub mod db_connection_actor;
+pub mod db_credentials;
+pub mod db_profiles;
 pub mod db_result_session;
 pub mod db_service;
 pub mod dev_server_detect;
@@ -28,6 +30,80 @@ pub mod ssh_service;
 pub mod watcher;
 pub mod workspace_path_index;
 
+const DATABASE_SHUTDOWN_THREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+#[derive(Debug)]
+enum DatabaseShutdownThreadError {
+    SpawnFailed(String),
+    RuntimeBuildFailed(String),
+    TimedOut,
+    WorkerDisconnected,
+    WorkerPanicked,
+}
+
+impl std::fmt::Display for DatabaseShutdownThreadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SpawnFailed(error) => write!(formatter, "worker spawn failed: {error}"),
+            Self::RuntimeBuildFailed(error) => {
+                write!(formatter, "shutdown runtime build failed: {error}")
+            }
+            Self::TimedOut => formatter.write_str("shutdown worker timed out"),
+            Self::WorkerDisconnected => formatter.write_str("shutdown worker disconnected"),
+            Self::WorkerPanicked => formatter.write_str("shutdown worker panicked"),
+        }
+    }
+}
+
+fn shutdown_database_runtime_on_dedicated_thread(
+    state: db_profiles::DatabaseProfileState,
+) -> Result<db_profiles::DatabaseRuntimeShutdownReport, DatabaseShutdownThreadError> {
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::Builder::new()
+        .name("database-shutdown".to_string())
+        .spawn(move || {
+            let result =
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build()
+                    .map_err(|error| error.to_string())
+                    .map(|runtime| {
+                        runtime.block_on(state.shutdown_database_runtime(
+                            db_service::DatabaseShutdownTimeouts::default(),
+                        ))
+                    });
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| DatabaseShutdownThreadError::SpawnFailed(error.to_string()))?;
+
+    match result_rx.recv_timeout(DATABASE_SHUTDOWN_THREAD_TIMEOUT) {
+        Ok(Ok(report)) => {
+            worker
+                .join()
+                .map_err(|_| DatabaseShutdownThreadError::WorkerPanicked)?;
+            Ok(report)
+        }
+        Ok(Err(error)) => {
+            let _ = worker.join();
+            Err(DatabaseShutdownThreadError::RuntimeBuildFailed(error))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Dropping the JoinHandle detaches the bounded database cleanup
+            // attempt so a pathological worker cannot hold process exit open.
+            drop(worker);
+            Err(DatabaseShutdownThreadError::TimedOut)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let panicked = worker.join().is_err();
+            Err(if panicked {
+                DatabaseShutdownThreadError::WorkerPanicked
+            } else {
+                DatabaseShutdownThreadError::WorkerDisconnected
+            })
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // GUI（Finder/Dock）啟動的 .app 只拿到 launchd 預設 PATH，撈不到 homebrew/nvm/
@@ -35,6 +111,7 @@ pub fn run() {
     env_path::fix_gui_path();
     // 啟動期清理一次；其後由共享 sink 在每日首筆寫入時觸發
     logging::cleanup_global();
+    let database_shutdown_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -59,6 +136,18 @@ pub fn run() {
         .setup(|app| {
             use tauri::{Emitter, Manager};
             let handle = app.handle().clone();
+            let profile_repository_path =
+                app.path().app_data_dir()?.join("database-profiles-v1.json");
+            let database_state = app.state::<db_service::DbState>().inner().clone();
+            let result_sessions = app
+                .state::<db_result_session::ResultSessionState>()
+                .inner()
+                .clone();
+            app.manage(db_profiles::DatabaseProfileState::production(
+                profile_repository_path,
+                database_state,
+                result_sessions,
+            ));
             // Windows stub / bind 失敗回 Err → 降級：manage AskpassState(None)，四個 remote
             // command 經 env_for 取空 env（git 仍可用系統 credential helper）。務必 manage，
             // 否則 State<AskpassState> 取用時 panic。
@@ -115,6 +204,16 @@ pub fn run() {
             db_service::db_query_cancel,
             db_service::db_result_page,
             db_service::db_result_session_release,
+            db_profiles::db_profile_list,
+            db_profiles::db_profile_import_legacy,
+            db_profiles::db_profile_create,
+            db_profiles::db_profile_update,
+            db_profiles::db_profile_remove_credential,
+            db_profiles::db_profile_forget,
+            db_profiles::db_profile_recover,
+            db_profiles::db_profile_open,
+            db_profiles::db_profile_disconnect,
+            db_profiles::db_test_connection,
             perf_service::perf_snapshot,
             preview_server::preview_serve,
             preview_server::preview_stop_all,
@@ -191,12 +290,29 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running yuzora application")
-        .run(|app, event| {
+        .run(move |app, event| {
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 use tauri::Manager;
+                if !database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    let database_profiles = app
+                        .state::<db_profiles::DatabaseProfileState>()
+                        .inner()
+                        .clone();
+                    match shutdown_database_runtime_on_dedicated_thread(database_profiles) {
+                        Ok(report) if report.has_failures() => {
+                            eprintln!("database shutdown completed with failures: {report:?}");
+                        }
+                        Ok(report) => {
+                            eprintln!("database shutdown completed: {report:?}");
+                        }
+                        Err(error) => {
+                            eprintln!("database shutdown did not complete: {error}");
+                        }
+                    }
+                }
                 app.state::<pty_service::PtyState>().0.kill_all();
                 app.state::<process_service::ProcessState>().0.kill_all();
                 app.state::<agent_process::AgentProcessState>().0.kill_all();
@@ -207,4 +323,53 @@ pub fn run() {
                 app.state::<preview_server::PreviewServerState>().stop_all();
             }
         })
+}
+
+#[cfg(test)]
+mod command_inventory_tests {
+    #[test]
+    fn app_exit_inventory_runs_bounded_database_shutdown_once() {
+        let source = include_str!("lib.rs");
+        for required in [
+            "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
+            "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
+            "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
+            "recv_timeout(DATABASE_SHUTDOWN_THREAD_TIMEOUT)",
+        ] {
+            assert!(
+                source.contains(required),
+                "missing bounded app-exit database shutdown seam: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn p6_query_commands_replace_the_legacy_unsplit_query_command() {
+        let inventory_source = include_str!("lib.rs");
+        let service_source = include_str!("db_service.rs");
+        let legacy = ["db_service::db_", "query,"].concat();
+        assert!(
+            !inventory_source.lines().any(|line| line.trim() == legacy),
+            "legacy db_query must not be reachable through Tauri invoke"
+        );
+        let legacy_wrapper = ["fn db_", "query("].concat();
+        assert!(
+            !service_source
+                .lines()
+                .any(|line| line.contains(&legacy_wrapper)),
+            "legacy db_query Tauri wrapper must not exist in production source"
+        );
+        for suffix in [
+            "query_run,",
+            "query_cancel,",
+            "result_page,",
+            "result_session_release,",
+        ] {
+            let required = format!("db_service::db_{suffix}");
+            assert!(
+                inventory_source.lines().any(|line| line.trim() == required),
+                "missing P6 command registration: {required}"
+            );
+        }
+    }
 }
