@@ -8,10 +8,11 @@ import {
     createAcpClientRuntime,
     createAcpConnection,
     isAgentAuthRequiredError,
+    normalizeSessionConfigOptions,
     reduceSessionUpdate
 } from "./acpConnection"
 import type { BlockEntry, TranscriptEntry } from "./acpTypes"
-import { createFakeAcpAgentBridge } from "./fakeAcpAgent"
+import { createFakeAcpAgentBridge, PINNED_AGENT_COMMAND_FIXTURES } from "./fakeAcpAgent"
 import { dropDocument, getDocument } from "../editor/documentRegistry"
 import { registerView, unregisterView } from "../editor/viewRegistry"
 import { handleExternalChange } from "../lib/externalChange"
@@ -133,7 +134,10 @@ describe("reduceSessionUpdate", () => {
         t = reduceSessionUpdate(t, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Hi" } })
         expect(t).toEqual([{ who: "you", text: "Hi", streaming: true }])
 
-        expect(reduceSessionUpdate(t, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hidden" } })).toBe(t)
+        const withThought = reduceSessionUpdate(t, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hidden" } })
+        expect(withThought.at(-1)).toMatchObject({ kind: "thought", text: "hidden" })
+        const merged = reduceSessionUpdate(withThought, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: " more" } })
+        expect(merged.at(-1)).toMatchObject({ kind: "thought", text: "hidden more" })
         expect(reduceSessionUpdate(t, { sessionUpdate: "session_info_update" })).toBe(t)
         expect(reduceSessionUpdate(t, { sessionUpdate: "current_mode_update", currentModeId: "plan" })).toBe(t)
 
@@ -168,6 +172,310 @@ describe("reduceSessionUpdate", () => {
             content: [{ type: "content", content: { type: "resource_link", name: "Log", uri: "file:///log" } }]
         })
         expect(t.some((entry) => "kind" in entry && entry.kind === "tool" && entry.text.includes("Log"))).toBe(true)
+    })
+
+    it("treats usage_update and config_option_update as no-ops that never touch the transcript", () => {
+        const t: TranscriptEntry[] = [{ who: "agent", text: "hi", streaming: false }]
+        expect(reduceSessionUpdate(t, {
+            sessionUpdate: "usage_update",
+            used: 120,
+            size: 1000,
+            cost: { amount: 0.01, currency: "USD" }
+        })).toBe(t)
+        expect(reduceSessionUpdate(t, {
+            sessionUpdate: "config_option_update",
+            configOptions: []
+        })).toBe(t)
+    })
+
+    it("silently ignores a truly unknown session update variant and warns instead of rendering an error block", () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+        const t: TranscriptEntry[] = [{ who: "agent", text: "hi", streaming: false }]
+
+        const result = reduceSessionUpdate(t, { sessionUpdate: "some_future_variant", foo: "bar" })
+
+        expect(result).toBe(t)
+        expect(result.some((entry) => "kind" in entry && entry.kind === "error")).toBe(false)
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("some_future_variant"))
+    })
+
+    it("warns only once per unknown session update variant, even across multiple occurrences", () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+        const t: TranscriptEntry[] = []
+
+        reduceSessionUpdate(t, { sessionUpdate: "another_future_variant" })
+        reduceSessionUpdate(t, { sessionUpdate: "another_future_variant" })
+
+        const callsForVariant = warn.mock.calls.filter((args) =>
+            typeof args[0] === "string" && args[0].includes("another_future_variant")
+        )
+        expect(callsForVariant).toHaveLength(1)
+    })
+
+    it("still renders an error block when tool_call/tool_call_update payloads are malformed (regression)", () => {
+        const withBadToolCall = reduceSessionUpdate([], { sessionUpdate: "tool_call", title: "no id" })
+        expect(withBadToolCall.at(-1)).toMatchObject({
+            kind: "error",
+            text: expect.stringContaining("tool_call")
+        })
+
+        const withBadToolCallUpdate = reduceSessionUpdate([], { sessionUpdate: "tool_call_update", status: "completed" })
+        expect(withBadToolCallUpdate.at(-1)).toMatchObject({
+            kind: "error",
+            text: expect.stringContaining("tool_call_update")
+        })
+    })
+})
+
+describe("session config normalization", () => {
+    it("preserves grouped select, boolean, category, currentValue, and raw metadata", () => {
+        expect(normalizeSessionConfigOptions([
+            {
+                id: "model",
+                name: "Model",
+                description: null,
+                category: "model",
+                type: "select",
+                currentValue: "fast",
+                options: [{
+                    group: "recommended",
+                    name: "Recommended",
+                    options: [{
+                        value: "fast",
+                        name: "Fast",
+                        description: "Quick",
+                        _meta: { raw: "option" }
+                    }],
+                    _meta: { raw: "group" }
+                }],
+                _meta: { raw: "config" }
+            },
+            {
+                id: "auto",
+                name: "Auto",
+                category: "_custom",
+                type: "boolean",
+                currentValue: true
+            }
+        ])).toEqual([
+            {
+                id: "model",
+                name: "Model",
+                description: null,
+                category: "model",
+                type: "select",
+                currentValue: "fast",
+                options: [{
+                    group: "recommended",
+                    name: "Recommended",
+                    options: [{
+                        value: "fast",
+                        name: "Fast",
+                        description: "Quick",
+                        _meta: { raw: "option" }
+                    }],
+                    _meta: { raw: "group" }
+                }],
+                _meta: { raw: "config" }
+            },
+            {
+                id: "auto",
+                name: "Auto",
+                category: "_custom",
+                type: "boolean",
+                currentValue: true
+            }
+        ])
+    })
+})
+
+describe("recordUserPrompt (P3)", () => {
+  it("seeds the user block so a later agent chunk keeps the you prefix", async () => {
+    const seen: TranscriptEntry[][] = []
+    const runtime = createAcpClientRuntime({ onTranscript: (_id, t) => seen.push(t) })
+    runtime.recordUserPrompt("s1", [{ type: "text", text: "hello" }])
+    expect(seen).toHaveLength(0) // 刻意不觸發 onTranscript
+    await runtime.client.sessionUpdate({
+      sessionId: "s1",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+    } as never)
+    expect(seen.at(-1)).toEqual([
+      { who: "you", text: "hello", streaming: true },
+      { who: "agent", text: "hi", streaming: true },
+    ])
+  })
+
+  it("settles previous turn's streaming entries before appending the next user turn", async () => {
+    const seen: TranscriptEntry[][] = []
+    const runtime = createAcpClientRuntime({ onTranscript: (_id, t) => seen.push(t) })
+    // Turn 1：agent 回覆到一半就中斷（連線層的 transcripts 仍停在 streaming:true）。
+    await runtime.client.sessionUpdate({
+      sessionId: "s1",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "turn1 reply" } },
+    } as never)
+    // Turn 2 開始：recordUserPrompt 應先把 turn1 的殘留 streaming 收斂。
+    runtime.recordUserPrompt("s1", [{ type: "text", text: "turn2" }])
+    await runtime.client.sessionUpdate({
+      sessionId: "s1",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "turn2 reply" } },
+    } as never)
+    const last = seen.at(-1)!
+    expect(last).toEqual([
+      { who: "agent", text: "turn1 reply", streaming: false },
+      { who: "you", text: "turn2", streaming: true },
+      { who: "agent", text: "turn2 reply", streaming: true },
+    ])
+  })
+})
+
+describe("dropSession (F10)", () => {
+  it("clears the session's transcript so a later update starts fresh instead of appending to old history", async () => {
+    const seen: TranscriptEntry[][] = []
+    const runtime = createAcpClientRuntime({ onTranscript: (_id, t) => seen.push(t) })
+    await runtime.client.sessionUpdate({
+      sessionId: "s1",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "old history" } },
+    } as never)
+    expect(seen.at(-1)).toEqual([{ who: "agent", text: "old history", streaming: true }])
+
+    runtime.dropSession("s1")
+
+    await runtime.client.sessionUpdate({
+      sessionId: "s1",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "fresh" } },
+    } as never)
+    // dropSession 已清掉 transcripts.get("s1")，所以 reduceSessionUpdate 是從空陣列
+    // 開始累加，不再帶著已移除 session 的舊 "old history"。
+    expect(seen.at(-1)).toEqual([{ who: "agent", text: "fresh", streaming: true }])
+  })
+})
+
+describe("usage and title side-effect dispatch", () => {
+    it("dispatches onUsage with used/size/cost parsed from a usage_update notification", async () => {
+        const usages: unknown[] = []
+        const runtime = createAcpClientRuntime({ onUsage: (sessionId, usage) => usages.push([sessionId, usage]) })
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: { sessionUpdate: "usage_update", used: 120, size: 1000, cost: { amount: 0.01, currency: "USD" } }
+        } as never)
+
+        expect(usages).toEqual([["s1", { used: 120, size: 1000, cost: { amount: 0.01, currency: "USD" } }]])
+    })
+
+    it("ignores usage_update when used/size are not numbers, and tolerates a missing cost", async () => {
+        const usages: unknown[] = []
+        const runtime = createAcpClientRuntime({ onUsage: (sessionId, usage) => usages.push([sessionId, usage]) })
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: { sessionUpdate: "usage_update", used: "not-a-number", size: 1000 }
+        } as never)
+        expect(usages).toEqual([])
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: { sessionUpdate: "usage_update", used: 5, size: 10 }
+        } as never)
+        expect(usages).toEqual([["s1", { used: 5, size: 10 }]])
+    })
+
+    it("ignores usage_update when used/size is NaN or Infinity", async () => {
+        const usages: unknown[] = []
+        const runtime = createAcpClientRuntime({ onUsage: (sessionId, usage) => usages.push([sessionId, usage]) })
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: { sessionUpdate: "usage_update", used: NaN, size: 1000 }
+        } as never)
+        expect(usages).toEqual([])
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: { sessionUpdate: "usage_update", used: 120, size: Infinity }
+        } as never)
+        expect(usages).toEqual([])
+    })
+
+    it("drops cost when cost.amount is NaN but still reports used/size", async () => {
+        const usages: unknown[] = []
+        const runtime = createAcpClientRuntime({ onUsage: (sessionId, usage) => usages.push([sessionId, usage]) })
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: { sessionUpdate: "usage_update", used: 120, size: 1000, cost: { amount: NaN, currency: "USD" } }
+        } as never)
+
+        expect(usages).toEqual([["s1", { used: 120, size: 1000 }]])
+    })
+
+    it("dispatches onSessionTitle for a non-empty official title, alongside onSessionInfo for _meta.piAcp", async () => {
+        const titles: unknown[] = []
+        const sessionInfo: unknown[] = []
+        const runtime = createAcpClientRuntime({
+            onSessionTitle: (sessionId, title) => titles.push([sessionId, title]),
+            onSessionInfo: (sessionId, info) => sessionInfo.push([sessionId, info])
+        })
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: {
+                sessionUpdate: "session_info_update",
+                title: "Fix login bug",
+                _meta: { piAcp: { queueDepth: 1, running: true } }
+            }
+        } as never)
+
+        expect(titles).toEqual([["s1", "Fix login bug"]])
+        expect(sessionInfo).toEqual([["s1", { queueDepth: 1, running: true }]])
+    })
+
+    it("does not dispatch onSessionTitle when title is absent, while onSessionInfo still fires", async () => {
+        const titles: unknown[] = []
+        const sessionInfo: unknown[] = []
+        const runtime = createAcpClientRuntime({
+            onSessionTitle: (sessionId, title) => titles.push([sessionId, title]),
+            onSessionInfo: (sessionId, info) => sessionInfo.push([sessionId, info])
+        })
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: { sessionUpdate: "session_info_update", _meta: { piAcp: { queueDepth: 0, running: false } } }
+        } as never)
+
+        expect(titles).toEqual([])
+        expect(sessionInfo).toEqual([["s1", { queueDepth: 0, running: false }]])
+    })
+
+    it("routes config_option_update through the authoritative side-effect callback", async () => {
+        const updates: unknown[] = []
+        const runtime = createAcpClientRuntime({
+            onConfigOptions: (sessionId, configOptions) => updates.push([sessionId, configOptions])
+        })
+
+        await runtime.client.sessionUpdate({
+            sessionId: "s1",
+            update: {
+                sessionUpdate: "config_option_update",
+                configOptions: [{
+                    id: "model",
+                    name: "Model",
+                    category: "model",
+                    type: "select",
+                    currentValue: "fast",
+                    options: [{ value: "fast", name: "Fast" }]
+                }]
+            }
+        })
+
+        expect(updates).toEqual([["s1", [{
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "fast",
+            options: [{ value: "fast", name: "Fast" }]
+        }]]])
     })
 })
 
@@ -484,7 +792,7 @@ describe("createAcpConnection", () => {
             initializeTimeoutMs: 1_000
         })
 
-        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
         let error: unknown
         try {
             await connection.prompt("fake-session", [{ type: "text", text: "hello" }])
@@ -590,10 +898,13 @@ describe("createAcpConnection", () => {
             onAvailableCommands: (sessionId, availableCommands) => commands.push([sessionId, availableCommands])
         })
 
-        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
         await expect(connection.prompt("fake-session", [{ type: "text", text: "edit hello" }])).resolves.toBe("end_turn")
         await expect(connection.listSessions("/w")).resolves.toEqual([{ id: "fake-session", cwd: "/w" }])
-        await expect(connection.loadSession("loaded-session", "/other")).resolves.toBeUndefined()
+        await expect(connection.loadSession("loaded-session", "/other")).resolves.toMatchObject({
+            startupInfo: null,
+            configOptions: expect.any(Array)
+        })
         await expect(connection.listSessions("/w")).resolves.toEqual([{ id: "fake-session", cwd: "/w" }])
         await expect(connection.listSessions("/other")).resolves.toEqual([{ id: "loaded-session", cwd: "/other" }])
 
@@ -610,6 +921,551 @@ describe("createAcpConnection", () => {
         const finalTranscript = transcriptSnapshots.at(-1) ?? []
         expect(finalTranscript.some((entry) => "who" in entry && entry.who === "agent" && entry.text.includes("Ready"))).toBe(true)
         expect(finalTranscript.some((entry) => "kind" in entry && entry.kind === "diff" && entry.text === "hello.txt")).toBe(true)
+    })
+
+    it("carries usage_update and titled session_info_update through the SDK bridge to onUsage/onSessionTitle", async () => {
+        const agentId = "agent-usage"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        const usages: unknown[] = []
+        const titles: unknown[] = []
+
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-acp-agent",
+            initializeTimeoutMs: 1_000,
+            onUsage: (sessionId, usage) => usages.push([sessionId, usage]),
+            onSessionTitle: (sessionId, title) => titles.push([sessionId, title])
+        })
+
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
+        await fake.emitSessionUpdate({ sessionUpdate: "usage_update", used: 42, size: 500 })
+        await fake.emitSessionUpdate({ sessionUpdate: "session_info_update", title: "Fix login bug" })
+
+        expect(usages).toEqual([["fake-session", { used: 42, size: 500 }]])
+        expect(titles).toEqual([["fake-session", "Fix login bug"]])
+    })
+
+    it("returns initial configOptions from new/load and setter responses as full authoritative sets", async () => {
+        const agentId = "agent-config"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        const created = await connection.newSession("/w")
+        expect(created.configOptions).toHaveLength(3)
+        expect(created.configOptions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "model", type: "select", category: "model", currentValue: "fake-fast" }),
+            expect.objectContaining({ id: "auto-execute", type: "boolean", currentValue: true })
+        ]))
+
+        const updated = await connection.setSessionConfigOption?.("fake-session", "model", "fake-reasoning")
+        expect(updated).toHaveLength(3)
+        expect(updated).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "model", currentValue: "fake-reasoning" }),
+            expect.objectContaining({
+                id: "effort",
+                currentValue: "high",
+                options: [
+                    { value: "medium", name: "Medium" },
+                    { value: "high", name: "High" }
+                ]
+            })
+        ]))
+
+        const booleanUpdated = await connection.setSessionConfigOption?.("fake-session", "auto-execute", false)
+        expect(booleanUpdated).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "auto-execute", type: "boolean", currentValue: false })
+        ]))
+        expect(fake.messages).toContainEqual(expect.objectContaining({
+            method: "session/set_config_option",
+            params: { sessionId: "fake-session", configId: "auto-execute", type: "boolean", value: false }
+        }))
+
+        const loaded = await connection.loadSession("fake-session", "/w")
+        expect(loaded && "configOptions" in loaded ? loaded.configOptions : undefined).toHaveLength(3)
+    })
+
+    it("rejects active/pending setters and keeps a newer notification over a late setter response", async () => {
+        const agentId = "agent-config-race"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { deferConfigSet: true }
+        )
+        const notifications: unknown[] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-acp-agent",
+            initializeTimeoutMs: 1_000,
+            onConfigOptions: (_sessionId, configOptions) => notifications.push(configOptions)
+        })
+        await connection.newSession("/w")
+
+        await fake.emitSessionUpdate({
+            sessionUpdate: "session_info_update",
+            _meta: { piAcp: { queueDepth: 0, running: true } }
+        })
+        await expect(
+            connection.setSessionConfigOption?.("fake-session", "model", "fake-reasoning")
+        ).rejects.toThrow(/active turn/i)
+
+        await fake.emitSessionUpdate({
+            sessionUpdate: "session_info_update",
+            _meta: { piAcp: { queueDepth: 0, running: false } }
+        })
+        const pending = connection.setSessionConfigOption!("fake-session", "model", "fake-reasoning")
+        await expect(
+            connection.setSessionConfigOption!("fake-session", "model", "fake-fast")
+        ).rejects.toThrow(/pending/i)
+
+        const notificationOptions = [{
+            id: "effort-after-notification",
+            name: "Effort",
+            category: "thought_level",
+            type: "select",
+            currentValue: "high",
+            options: [{ value: "high", name: "High" }]
+        }]
+        await fake.emitSessionUpdate({
+            sessionUpdate: "config_option_update",
+            configOptions: notificationOptions
+        })
+        await fake.resolveConfigSet([{
+            id: "model-from-late-response",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "fake-reasoning",
+            options: [{ value: "fake-reasoning", name: "Fake Reasoning" }]
+        }])
+
+        await expect(pending).resolves.toEqual(notificationOptions)
+        expect(notifications).toEqual([notificationOptions])
+        expect(fake.messages.filter((message) => message.method === "session/set_config_option")).toHaveLength(1)
+    })
+
+    it("dropSession clears the old setter guard without letting its response clear a new request", async () => {
+        const agentId = "agent-config-drop"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { deferConfigSet: true }
+        )
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        await connection.newSession("/w")
+        const stale = connection.setSessionConfigOption!("fake-session", "model", "fake-reasoning")
+        await vi.waitFor(() => {
+            expect(fake.messages.filter((message) => message.method === "session/set_config_option"))
+                .toHaveLength(1)
+        })
+
+        connection.dropSession?.("fake-session")
+        await connection.newSession("/w")
+        const current = connection.setSessionConfigOption!("fake-session", "effort", "medium")
+        await vi.waitFor(() => {
+            expect(fake.messages.filter((message) => message.method === "session/set_config_option"))
+                .toHaveLength(2)
+        })
+
+        const staleResponse = [{
+            id: "stale-response",
+            name: "Stale",
+            category: "model",
+            type: "select",
+            currentValue: "stale",
+            options: [{ value: "stale", name: "Stale" }]
+        }]
+        await fake.resolveConfigSet(staleResponse)
+        await expect(stale).resolves.not.toEqual(staleResponse)
+        await expect(
+            connection.setSessionConfigOption!("fake-session", "effort", "low")
+        ).rejects.toThrow(/pending/i)
+
+        const currentResponse = [{
+            id: "current-response",
+            name: "Effort",
+            category: "thought_level",
+            type: "select",
+            currentValue: "medium",
+            options: [{ value: "medium", name: "Medium" }]
+        }]
+        await fake.resolveConfigSet(currentResponse)
+        await expect(current).resolves.toEqual(currentResponse)
+    })
+
+    it("preserves SlashCommand input/_meta from pinned adapter fixtures", async () => {
+        const agentId = "agent-commands"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { commandFixture: "codex" }
+        )
+        const commands: unknown[] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-acp-agent",
+            initializeTimeoutMs: 1_000,
+            onAvailableCommands: (_sessionId, available) => commands.push(available),
+            onPermissionRequest: (_sessionId, _block, choose) => choose("allow")
+        })
+
+        await connection.newSession("/w")
+        await connection.prompt("fake-session", [{ type: "text", text: "commands" }])
+
+        expect(commands).toContainEqual(PINNED_AGENT_COMMAND_FIXTURES.codex)
+        expect(PINNED_AGENT_COMMAND_FIXTURES.pi[0]?.name).toBe("skill:review")
+        expect(PINNED_AGENT_COMMAND_FIXTURES.claude[0]?.name).toBe("review")
+        expect(PINNED_AGENT_COMMAND_FIXTURES.pi[0]?._meta).toEqual({
+            yuzoraFixture: { agentId: "pi", adapterVersion: "0.0.31" }
+        })
+        expect(PINNED_AGENT_COMMAND_FIXTURES.claude[0]?._meta).toEqual({
+            yuzoraFixture: { agentId: "claude", adapterVersion: "0.58.1" }
+        })
+        expect(PINNED_AGENT_COMMAND_FIXTURES.codex[0]?._meta).toEqual({
+            yuzoraFixture: { agentId: "codex", adapterVersion: "1.1.2" }
+        })
+    })
+
+    it("prepare initializes without creating a session", async () => {
+        const agentId = "agent-prepare"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        const spawns: unknown[] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") {
+                spawns.push(payload)
+                return agentId
+            }
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ initializeTimeoutMs: 1_000 })
+        await connection.prepare?.("/w")
+
+        expect(spawns).toEqual([{ command: "bunx pi-acp@0.0.31", cwd: "/w" }])
+        expect(fake.messages.filter((message) => message.method === "initialize")).toHaveLength(1)
+        expect(fake.messages.find((message) => message.method === "initialize")?.params)
+            .toMatchObject({ clientCapabilities: { session: { configOptions: { boolean: {} } } } })
+        expect(fake.messages.some((message) => message.method === "session/new")).toBe(false)
+        expect(await connection.listSessions("/w")).toEqual([])
+    })
+
+    it("records controlled cold and warm session timing with spawn removed from the warm path", async () => {
+        vi.useFakeTimers()
+        try {
+            vi.setSystemTime(new Date("2026-07-12T00:00:00Z"))
+            const agentId = "agent-controlled-timing"
+            const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+            let spawnCount = 0
+            mockIPC((cmd, payload) => {
+                if (cmd === "agent_spawn") {
+                    spawnCount += 1
+                    return new Promise<string>((resolve) => {
+                        setTimeout(() => resolve(agentId), 250)
+                    })
+                }
+                if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+            const coldStartedAt = Date.now()
+            const coldSession = connection.newSession("/w")
+
+            await vi.advanceTimersByTimeAsync(249)
+            expect(spawnCount).toBe(1)
+            expect(fake.messages).toEqual([])
+            await vi.advanceTimersByTimeAsync(1)
+            await coldSession
+            const coldMs = Date.now() - coldStartedAt
+
+            const warmStartedAt = Date.now()
+            await connection.newSession("/w")
+            const warmMs = Date.now() - warmStartedAt
+
+            expect({ coldMs, warmMs }).toEqual({ coldMs: 250, warmMs: 0 })
+            expect(spawnCount).toBe(1)
+            expect(fake.messages.filter((message) => message.method === "initialize")).toHaveLength(1)
+            expect(fake.messages.filter((message) => message.method === "session/new")).toHaveLength(2)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("concurrent prepare/new shares one spawn and initialize", async () => {
+        const agentId = "agent-prepare-new"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        let spawnCount = 0
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") {
+                spawnCount += 1
+                return agentId
+            }
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        await Promise.all([connection.prepare?.("/w"), connection.newSession("/w")])
+
+        expect(spawnCount).toBe(1)
+        expect(fake.messages.filter((message) => message.method === "initialize")).toHaveLength(1)
+        expect(fake.messages.filter((message) => message.method === "session/new")).toHaveLength(1)
+    })
+
+    it("retries initialization after prepare fails", async () => {
+        let spawnCount = 0
+        const second = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: "agent-2", line }))
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return `agent-${++spawnCount}`
+            if (cmd === "agent_write") {
+                const { id, chunk } = payload as { id: string; chunk: string }
+                if (id === "agent-1") throw new Error("first initialize failed")
+                return second.write(chunk)
+            }
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        await expect(connection.prepare?.("/w")).rejects.toThrow("first initialize failed")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
+        expect(spawnCount).toBe(2)
+    })
+
+    it("disposes only prepared connections without owned sessions", async () => {
+        let spawnCount = 0
+        const kills: unknown[] = []
+        const fakes = new Map<string, ReturnType<typeof createFakeAcpAgentBridge>>()
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") {
+                const id = `agent-${++spawnCount}`
+                fakes.set(id, createFakeAcpAgentBridge((line) => emit("agent://stdout", { id, line })))
+                return id
+            }
+            if (cmd === "agent_write") {
+                const { id, chunk } = payload as { id: string; chunk: string }
+                return fakes.get(id)?.write(chunk)
+            }
+            if (cmd === "agent_kill") {
+                kills.push(payload)
+                return undefined
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const prepared = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        await prepared.prepare?.("/w")
+        await expect(prepared.disposePrepared?.("/w")).resolves.toBe(true)
+        expect(kills).toContainEqual({ id: "agent-1", reason: "prepared_dispose" })
+
+        const owned = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        await owned.newSession("/w")
+        await expect(owned.disposePrepared?.("/w")).resolves.toBe(false)
+        expect(kills).toHaveLength(1)
+    })
+
+    it("does not dispose while session/new is establishing an owner", async () => {
+        const agentId = "agent-pending-owner"
+        const kills: unknown[] = []
+        let pendingNewId: string | number | null | undefined
+        mockIPC(async (cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_kill") {
+                kills.push(payload)
+                return undefined
+            }
+            if (cmd !== "agent_write") return undefined
+            const message = JSON.parse((payload as { chunk: string }).chunk.trim()) as {
+                id?: string | number | null
+                method?: string
+            }
+            if (message.method === "initialize") {
+                await emit("agent://stdout", {
+                    id: agentId,
+                    line: JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] }
+                    })
+                })
+            } else if (message.method === "session/new") {
+                pendingNewId = message.id
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+
+        const pending = connection.newSession("/w")
+        await vi.waitFor(() => expect(pendingNewId).toBeDefined())
+
+        await expect(connection.disposePrepared?.("/w")).resolves.toBe(false)
+        expect(kills).toEqual([])
+
+        await emit("agent://stdout", {
+            id: agentId,
+            line: JSON.stringify({
+                jsonrpc: "2.0",
+                id: pendingNewId,
+                result: { sessionId: "owned", configOptions: [] }
+            })
+        })
+        await expect(pending).resolves.toMatchObject({ sessionId: "owned" })
+    })
+
+    it("supportsLoadSession reports true when the agent declares agentCapabilities.loadSession", async () => {
+        const agentId = "agent-load-capable"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+
+        await expect(connection.supportsLoadSession?.("/w")).resolves.toBe(true)
+    })
+
+    it("supportsLoadSession reports false when the agent does not declare the capability", async () => {
+        const agentId = "agent-load-incapable"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { loadSessionCapability: false }
+        )
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+
+        await expect(connection.supportsLoadSession?.("/w")).resolves.toBe(false)
+    })
+
+    it("loadSession replays prior session/update history before resolving", async () => {
+        const agentId = "agent-load-replay"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            {
+                replayUpdates: [
+                    { sessionUpdate: "user_message_chunk", content: { type: "text", text: "earlier question" } },
+                    { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "earlier answer" } }
+                ]
+            }
+        )
+        const snapshots: TranscriptEntry[][] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-acp-agent",
+            initializeTimeoutMs: 1_000,
+            onTranscript: (_sessionId, transcript) => snapshots.push(transcript)
+        })
+
+        await connection.loadSession("fake-session", "/w")
+
+        const finalTranscript = snapshots.at(-1) ?? []
+        expect(finalTranscript.some((e) => "who" in e && e.who === "you" && e.text === "earlier question")).toBe(true)
+        expect(finalTranscript.some((e) => "who" in e && e.who === "agent" && e.text === "earlier answer")).toBe(true)
+    })
+
+    it("loadSession resolves with the _meta.piAcp.startupInfo banner when the agent sends one", async () => {
+        const agentId = "agent-load-startup-info"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { loadStartupInfo: "pi 0.0.31 · restored session" }
+        )
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+
+        await expect(connection.loadSession("fake-session", "/w")).resolves.toEqual({
+            startupInfo: "pi 0.0.31 · restored session",
+            configOptions: expect.any(Array)
+        })
+    })
+
+    it("loadSession rejects when the agent responds with a JSON-RPC error", async () => {
+        const agentId = "agent-load-fail"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { failLoadSession: true }
+        )
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+
+        await expect(connection.loadSession("fake-session", "/w")).rejects.toThrow()
+    })
+
+    it("exposes the spawned agent process id via processId(), undefined before connecting", async () => {
+        const agentId = "agent-process-id"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "fake-acp-agent",
+            initializeTimeoutMs: 1_000
+        })
+
+        expect(connection.processId?.()).toBeUndefined()
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
+        expect(connection.processId?.()).toBe(agentId)
     })
 
     it("rejects prompt before initialize", async () => {
@@ -674,7 +1530,7 @@ describe("createAcpConnection", () => {
             }
         })
 
-        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
         const prompt = withTestTimeout(
             connection.prompt("fake-session", [{ type: "text", text: "wait for exit" }]),
             100
@@ -714,7 +1570,7 @@ describe("createAcpConnection", () => {
                 onPermissionRequest: (_sessionId, _block, choose) => choose("allow")
             })
 
-            await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+            await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
             await expect(connection.prompt("fake-session", [{ type: "text", text: "complete before exit" }]))
                 .resolves.toBe("end_turn")
             await emit("agent://exit", { id: agentId, code: 0 })
@@ -755,7 +1611,7 @@ describe("createAcpConnection", () => {
             onPermissionRequest: (_sessionId, _block, choose) => choose("allow")
         })
 
-        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
         exited.add("agent-1")
         await emit("agent://exit", { id: "agent-1", code: 0 })
 
@@ -764,7 +1620,7 @@ describe("createAcpConnection", () => {
             100
         ))
             .rejects.toThrow("ACP agent exited")
-        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
         expect(spawnCount).toBe(2)
         await expect(connection.prompt("fake-session", [{ type: "text", text: "after respawn" }]))
             .resolves.toBe("end_turn")
@@ -868,7 +1724,7 @@ describe("createAcpConnection", () => {
             }
         })
 
-        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
         const prompt = withTestTimeout(
             connection.prompt("fake-session", [{ type: "text", text: "wait for crash" }]),
             100
@@ -917,7 +1773,7 @@ describe("createAcpConnection", () => {
         // kill 後 Rust 會 emit 舊 agent 的 exit——不得波及下一條連線的全域狀態
         await emit("agent://exit", { id: "agent-1", code: null, stderrTail: [] })
 
-        await expect(connection.newSession("/w")).resolves.toBe("fake-session")
+        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
         expect(spawnCount).toBe(2)
         await expect(connection.prompt("fake-session", [{ type: "text", text: "hi" }]))
             .resolves.toBe("end_turn")

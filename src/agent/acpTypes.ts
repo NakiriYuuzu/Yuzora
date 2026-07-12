@@ -11,7 +11,7 @@ export interface MsgEntry {
 }
 
 export interface BlockEntry {
-    kind: "tool" | "diff" | "perm" | "error" | "plan"
+    kind: "tool" | "diff" | "perm" | "error" | "plan" | "thought" | "notice"
     text: string
     meta?: string
     actions?: TranscriptAction[]

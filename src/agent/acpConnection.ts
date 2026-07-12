@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event"
+import type { AgentCommandIdentity, AgentId } from "@/lib/agentPresets"
 import { invoke } from "@/lib/ipc"
 import {
     ClientSideConnection,
@@ -6,7 +7,7 @@ import {
     type AnyMessage,
     type Client,
     type Stream
-} from "@zed-industries/agent-client-protocol"
+} from "@agentclientprotocol/sdk"
 import { getDocument, documentGeneration, updateBuffer } from "../editor/documentRegistry"
 import { getView } from "../editor/viewRegistry"
 import { saveFile } from "../lib/ipc"
@@ -14,6 +15,10 @@ import { recentlySaved } from "../lib/saveSuppress"
 import type { BlockEntry, TranscriptEntry } from "./acpTypes"
 
 const TERMINAL_OUTPUT_BYTE_LIMIT = 1_048_576
+
+// default case（見 reduceSessionUpdate）用來記錄「已 warn 過」的變體名，同一變體只 warn 一次，
+// 避免高頻更新（如未來 SDK 新增的變體）洗版 console。
+const warnedUnknownUpdates = new Set<string>()
 
 type ToolContent = Record<string, unknown>
 type SessionUpdate = Record<string, unknown>
@@ -129,11 +134,52 @@ interface TerminalOutputResponse {
 export interface SlashCommand {
     name: string
     description: string
+    input?: Record<string, unknown> | null
+    _meta?: Record<string, unknown> | null
 }
+
+export interface SessionConfigSelectOption {
+    value: string
+    name: string
+    description?: string | null
+    _meta?: Record<string, unknown> | null
+}
+
+export interface SessionConfigSelectGroup {
+    group: string
+    name: string
+    options: SessionConfigSelectOption[]
+    _meta?: Record<string, unknown> | null
+}
+
+interface SessionConfigOptionBase {
+    id: string
+    name: string
+    description?: string | null
+    category?: string | null
+    _meta?: Record<string, unknown> | null
+}
+
+export type SessionConfigOption = SessionConfigOptionBase & (
+    | {
+        type: "select"
+        currentValue: string
+        options: SessionConfigSelectOption[] | SessionConfigSelectGroup[]
+    }
+    | { type: "boolean"; currentValue: boolean }
+)
+
+export type SessionConfigValue = string | boolean
 
 export interface SessionInfoUpdate {
     queueDepth: number
     running: boolean
+}
+
+export interface UsageInfo {
+    used: number
+    size: number
+    cost?: { amount: number; currency: string }
 }
 
 export type PromptBlock =
@@ -164,16 +210,22 @@ export class AgentAuthRequiredError extends Error {
     readonly authMethods: AgentAuthMethod[]
     readonly cwd: string | null
     readonly sessionId: string | null
+    readonly agentCommand?: string
+    readonly agentIdentity?: AgentCommandIdentity
 
     constructor({
         authMethods,
         cwd,
         sessionId = null,
+        agentCommand,
+        agentIdentity,
         cause
     }: {
         authMethods: AgentAuthMethod[]
         cwd: string | null
         sessionId?: string | null
+        agentCommand?: string
+        agentIdentity?: AgentCommandIdentity
         cause?: unknown
     }) {
         super("Authentication required")
@@ -181,6 +233,8 @@ export class AgentAuthRequiredError extends Error {
         this.authMethods = authMethods
         this.cwd = cwd
         this.sessionId = sessionId
+        this.agentCommand = agentCommand
+        this.agentIdentity = agentIdentity
         if (cause !== undefined) {
             ;(this as Error & { cause?: unknown }).cause = cause
         }
@@ -195,12 +249,55 @@ export function isAgentAuthRequiredError(value: unknown): value is AgentAuthRequ
         )
 }
 
+export interface NewSessionResult {
+    sessionId: string
+    startupInfo: string | null
+    configOptions?: SessionConfigOption[]
+    agentIdentity?: AgentCommandIdentity
+    /** SHA-256 identity for a custom command. The raw command is never persisted. */
+    customCommandFingerprint?: string
+}
+
+export interface LoadSessionResult {
+    startupInfo: string | null
+    configOptions?: SessionConfigOption[]
+    agentIdentity?: AgentCommandIdentity
+}
+
 export interface AgentConnection {
-    newSession(cwd: string): Promise<string>
-    loadSession(id: string, cwd: string): Promise<void>
+    prepare?(cwd: string, agentId?: AgentId): Promise<void>
+    newSession(cwd: string, agentId?: AgentId): Promise<NewSessionResult>
+    // Union with `void` so existing stubs/mocks that resolve to nothing (most
+    // tests don't care about replayed startupInfo) stay valid without change.
+    // agentId（optional）：restored session 續聊時的路由提示，供 agentRouter 決定
+    // unknown sessionId 該走哪個 sub connection；單連線實作（本檔）忽略之，照現行為。
+    loadSession(
+        id: string,
+        cwd: string,
+        agentId?: AgentId,
+        customCommandFingerprint?: string
+    ): Promise<LoadSessionResult | void>
     listSessions(cwd: string): Promise<SessionMeta[]>
     prompt(sessionId: string, blocks: PromptBlock[]): Promise<StopReason>
-    cancel(sessionId: string): void
+    cancel(sessionId: string): void | Promise<void>
+    setSessionConfigOption?(
+        sessionId: string,
+        configId: string,
+        value: SessionConfigValue
+    ): Promise<SessionConfigOption[]>
+    disposePrepared?(cwd?: string): Promise<boolean>
+    processId?(): string | undefined
+    // Ensures a connection for cwd (spawning if needed) and reports whether the
+    // agent declared the loadSession capability at initialize time. Used by the
+    // Continue-session flow to decide between replay and the degrade path.
+    supportsLoadSession?(
+        cwd: string,
+        agentId?: AgentId,
+        customCommandFingerprint?: string
+    ): Promise<boolean>
+    // F10：removeSession 收尾用——通知連線把該 session 的 runtime 內部狀態
+    // （transcript／pending permission）清掉。找不到對應 sub／session 時靜默略過。
+    dropSession?(sessionId: string): void
 }
 
 interface AcpClientHandlers {
@@ -218,12 +315,19 @@ interface AcpClientHandlers {
 export interface AcpClientRuntime {
     client: AcpClientHandlers
     cancelPendingPermissions(sessionId: string): void
+    recordUserPrompt(sessionId: string, blocks: PromptBlock[]): void
+    // F10：removeSession 收尾用——把該 session 的 transcript／pending permission
+    // 記錄從 runtime 內部的 Map 中清掉，避免長駐 in-memory 累積。
+    dropSession(sessionId: string): void
 }
 
 export interface AcpClientRuntimeDeps {
     onTranscript?: (sessionId: string, transcript: TranscriptEntry[]) => void
     onAvailableCommands?: (sessionId: string, availableCommands: SlashCommand[]) => void
     onSessionInfo?: (sessionId: string, info: SessionInfoUpdate) => void
+    onUsage?: (sessionId: string, usage: UsageInfo) => void
+    onSessionTitle?: (sessionId: string, title: string) => void
+    onConfigOptions?: (sessionId: string, configOptions: SessionConfigOption[]) => void
     onPermissionRequest?: (
         sessionId: string,
         block: BlockEntry,
@@ -248,9 +352,12 @@ export function reduceSessionUpdate(
         case "agent_message_chunk":
             return appendMessage(transcript, "agent", contentToText(record.content))
         case "agent_thought_chunk":
+            return appendThought(transcript, contentToText(record.content))
         case "available_commands_update":
         case "current_mode_update":
         case "session_info_update":
+        case "usage_update":
+        case "config_option_update":
             return transcript
         case "tool_call": {
             const parsed = parseToolCallUpdate(record, "tool_call")
@@ -263,7 +370,15 @@ export function reduceSessionUpdate(
         case "plan":
             return upsertPlan(transcript, parsePlanUpdate(record))
         default:
-            return unknownSessionUpdate(transcript, sessionUpdate)
+            // 這裡攔到的是「SDK schema 認得、本端 switch 尚未處理」的變體（如 plan_update／
+            // plan_removed，或未來 SDK 升級新增者）——官方 SDK 的 zod 驗證已在更上游擋掉
+            // SDK 層也未知的變體與 malformed tool_call，不會落到這裡。靜默略過、不渲染成
+            // error block，同一變體僅 warn 一次供排查（見 warnedUnknownUpdates）。
+            if (!warnedUnknownUpdates.has(sessionUpdate)) {
+                warnedUnknownUpdates.add(sessionUpdate)
+                console.warn(`Unknown session update: ${sessionUpdate || "unknown"}`)
+            }
+            return transcript
     }
 }
 
@@ -278,10 +393,31 @@ export function createAcpClientRuntime(deps: AcpClientRuntimeDeps = {}): AcpClie
         deps.onTranscript?.(sessionId, next)
     }
 
+    const recordUserPrompt = (sessionId: string, blocks: PromptBlock[]) => {
+        const text = promptBlocksToText(blocks)
+        if (!text) return
+        // 先把先前 entries 的 streaming 收斂，否則下一輪 onTranscript 覆蓋會讓上一輪
+        // 已結束的訊息又變回 streaming:true（殘留游標）。
+        const settled = (transcripts.get(sessionId) ?? []).map((entry) =>
+            "streaming" in entry ? { ...entry, streaming: false } : entry
+        )
+        const next = [
+            ...settled,
+            { who: "you" as const, text, streaming: true },
+        ]
+        transcripts.set(sessionId, next)
+        // 刻意不呼叫 deps.onTranscript：beginTurn 已在 store 樂觀顯示。
+    }
+
     const cancelPendingPermissions = (sessionId: string) => {
         const pending = pendingBySession.get(sessionId)
         if (!pending) return
         for (const cancel of [...pending]) cancel()
+    }
+
+    const dropSession = (sessionId: string) => {
+        transcripts.delete(sessionId)
+        pendingBySession.delete(sessionId)
     }
 
     return {
@@ -297,6 +433,18 @@ export function createAcpClientRuntime(deps: AcpClientRuntimeDeps = {}): AcpClie
                 if (update.sessionUpdate === "session_info_update") {
                     const info = sessionInfoFromUpdate(update)
                     if (info) deps.onSessionInfo?.(params.sessionId, info)
+                    const title = sessionTitleFromUpdate(update)
+                    if (title) deps.onSessionTitle?.(params.sessionId, title)
+                }
+                if (update.sessionUpdate === "usage_update") {
+                    const usage = usageFromUpdate(update)
+                    if (usage) deps.onUsage?.(params.sessionId, usage)
+                }
+                if (update.sessionUpdate === "config_option_update") {
+                    deps.onConfigOptions?.(
+                        params.sessionId,
+                        normalizeSessionConfigOptions(update.configOptions)
+                    )
                 }
 
                 const current = transcripts.get(params.sessionId) ?? []
@@ -419,19 +567,51 @@ export function createAcpClientRuntime(deps: AcpClientRuntimeDeps = {}): AcpClie
                 })
             }
         },
-        cancelPendingPermissions
+        cancelPendingPermissions,
+        recordUserPrompt,
+        dropSession
     }
 }
 
 export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnection {
-    const runtime = createAcpClientRuntime(deps)
     const sessionRegistry = new Map<string, SessionMeta>()
+    const sessionConfigOptions = new Map<string, SessionConfigOption[]>()
+    const configRevisions = new Map<string, number>()
+    const configRequests = new Map<string, number>()
+    const promptInFlight = new Set<string>()
+    const runningSessions = new Set<string>()
+    let nextConfigRequestToken = 0
+
+    const replaceAuthoritativeConfig = (
+        sessionId: string,
+        configOptions: SessionConfigOption[]
+    ): SessionConfigOption[] => {
+        const next = [...configOptions]
+        sessionConfigOptions.set(sessionId, next)
+        configRevisions.set(sessionId, (configRevisions.get(sessionId) ?? 0) + 1)
+        return next
+    }
+
+    const runtime = createAcpClientRuntime({
+        ...deps,
+        onSessionInfo: (sessionId, info) => {
+            if (info.running) runningSessions.add(sessionId)
+            else runningSessions.delete(sessionId)
+            deps.onSessionInfo?.(sessionId, info)
+        },
+        onConfigOptions: (sessionId, configOptions) => {
+            const next = replaceAuthoritativeConfig(sessionId, configOptions)
+            deps.onConfigOptions?.(sessionId, next)
+        }
+    })
     let agent: ClientSideConnection | undefined
     let agentProcessId: string | undefined
     let initialization: Promise<ClientSideConnection> | undefined
     let stdoutController: ReadableStreamDefaultController<Uint8Array> | undefined
     let disconnectedError: Error | undefined
     let authMethods: AgentAuthMethod[] = []
+    let agentCapabilities: { loadSession: boolean } = { loadSession: false }
+    let pendingSessionOwners = 0
     const inFlightRequests = new Set<(error: Error) => void>()
     const decoder = new TextDecoder()
     const encoder = new TextEncoder()
@@ -466,6 +646,9 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
     const markDisconnected = (error: Error) => {
         disconnectedError = error
         rejectInFlightRequests(error)
+        configRequests.clear()
+        promptInFlight.clear()
+        runningSessions.clear()
         agent = undefined
         agentProcessId = undefined
         initialization = undefined
@@ -578,8 +761,19 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         const teardownListeners = () => {
             if (torndown) return
             torndown = true
-            unlistenStdout()
-            unlistenExit()
+            // Tauri's UnlistenFn may reject in a partially torn-down test/app
+            // event runtime. Listener cleanup is best-effort and must not turn a
+            // prepared-only disposal into an unhandled rejection.
+            try {
+                void Promise.resolve(unlistenStdout()).catch(() => {})
+            } catch {
+                // event runtime already gone
+            }
+            try {
+                void Promise.resolve(unlistenExit()).catch(() => {})
+            } catch {
+                // event runtime already gone
+            }
         }
 
         try {
@@ -591,14 +785,17 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             agentProcessId = processId
             teardownActiveListeners = teardownListeners
             authMethods = []
+            agentCapabilities = { loadSession: false }
             const initializeResult = await trackAgentRequest(() => connection.initialize({
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: true, writeTextFile: true },
-                    terminal: true
+                    terminal: true,
+                    session: { configOptions: { boolean: {} } }
                 }
             }))
             authMethods = normalizeAuthMethods(asRecord(initializeResult).authMethods)
+            agentCapabilities = normalizeAgentCapabilities(asRecord(initializeResult).agentCapabilities)
             return connection
         } catch (error) {
             teardownListeners()
@@ -608,20 +805,52 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
     }
 
     return {
-        async newSession(cwd) {
-            const connection = await ensureConnection(cwd)
-            const result = await trackAuthRequired(
-                () => trackAgentRequest(() => connection.newSession({ cwd, mcpServers: [] })),
-                { cwd, sessionId: null },
-                () => authMethods
-            )
-            rememberSession(result.sessionId, cwd)
-            return result.sessionId
+        async prepare(cwd) {
+            await ensureConnection(cwd)
+        },
+        // agentId 在單一連線實作被忽略；Phase 2 router 才會據此選 agent。
+        async newSession(cwd, _agentId) {
+            pendingSessionOwners += 1
+            try {
+                const connection = await ensureConnection(cwd)
+                const result = await trackAuthRequired(
+                    () => trackAgentRequest(() => connection.newSession({ cwd, mcpServers: [] })),
+                    { cwd, sessionId: null },
+                    () => authMethods
+                )
+                rememberSession(result.sessionId, cwd)
+                const piAcp = asRecord(asRecord(asRecord(result)._meta).piAcp)
+                const startupInfo = firstString(piAcp.startupInfo) ?? null
+                return {
+                    sessionId: result.sessionId,
+                    startupInfo,
+                    configOptions: replaceAuthoritativeConfig(
+                        result.sessionId,
+                        normalizeSessionConfigOptions(asRecord(result).configOptions)
+                    )
+                }
+            } finally {
+                pendingSessionOwners -= 1
+            }
         },
         async loadSession(id, cwd) {
-            const connection = await ensureConnection(cwd)
-            await trackAgentRequest(() => connection.loadSession({ sessionId: id, cwd, mcpServers: [] }))
-            rememberSession(id, cwd)
+            pendingSessionOwners += 1
+            try {
+                const connection = await ensureConnection(cwd)
+                const result = await trackAgentRequest(() => connection.loadSession({ sessionId: id, cwd, mcpServers: [] }))
+                rememberSession(id, cwd)
+                const piAcp = asRecord(asRecord(asRecord(result)._meta).piAcp)
+                const startupInfo = firstString(piAcp.startupInfo) ?? null
+                return {
+                    startupInfo,
+                    configOptions: replaceAuthoritativeConfig(
+                        id,
+                        normalizeSessionConfigOptions(asRecord(result).configOptions)
+                    )
+                }
+            } finally {
+                pendingSessionOwners -= 1
+            }
         },
         async listSessions(cwd) {
             return [...sessionRegistry.values()].filter((session) => session.cwd === cwd)
@@ -629,18 +858,99 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         async prompt(sessionId, blocks) {
             const connection = agent
             if (!connection) throw disconnectedError ?? new Error("ACP connection is not initialized")
-            const response = await trackAuthRequired(
-                () => trackAgentRequest(() => connection.prompt({ sessionId, prompt: blocks })),
-                { cwd: sessionRegistry.get(sessionId)?.cwd ?? null, sessionId },
-                () => authMethods
-            )
-            return response.stopReason
+            runtime.recordUserPrompt(sessionId, blocks)
+            promptInFlight.add(sessionId)
+            try {
+                const response = await trackAuthRequired(
+                    () => trackAgentRequest(() => connection.prompt({ sessionId, prompt: blocks })),
+                    { cwd: sessionRegistry.get(sessionId)?.cwd ?? null, sessionId },
+                    () => authMethods
+                )
+                return response.stopReason
+            } finally {
+                promptInFlight.delete(sessionId)
+            }
         },
-        cancel(sessionId) {
+        async cancel(sessionId) {
+            const connection = agent
+            if (!connection) throw disconnectedError ?? new Error("ACP connection is not initialized")
+            await connection.cancel({ sessionId })
             runtime.cancelPendingPermissions(sessionId)
-            void agent?.cancel({ sessionId }).catch(() => {})
+        },
+        async setSessionConfigOption(sessionId, configId, value) {
+            const connection = agent
+            if (!connection) throw disconnectedError ?? new Error("ACP connection is not initialized")
+            if (promptInFlight.has(sessionId) || runningSessions.has(sessionId)) {
+                throw new Error("Session configuration cannot change during an active turn")
+            }
+            if (configRequests.has(sessionId)) {
+                throw new Error("A session configuration change is already pending")
+            }
+            const token = ++nextConfigRequestToken
+            const requestRevision = configRevisions.get(sessionId) ?? 0
+            configRequests.set(sessionId, token)
+            const params = typeof value === "boolean"
+                ? { sessionId, configId, type: "boolean" as const, value }
+                : { sessionId, configId, value }
+            try {
+                const result = await trackAgentRequest(() => connection.setSessionConfigOption(params))
+                if (
+                    configRequests.get(sessionId) !== token
+                    || (configRevisions.get(sessionId) ?? 0) !== requestRevision
+                ) {
+                    return [...(sessionConfigOptions.get(sessionId) ?? [])]
+                }
+                return replaceAuthoritativeConfig(
+                    sessionId,
+                    normalizeSessionConfigOptions(asRecord(result).configOptions)
+                )
+            } finally {
+                if (configRequests.get(sessionId) === token) configRequests.delete(sessionId)
+            }
+        },
+        async disposePrepared() {
+            if (sessionRegistry.size > 0 || pendingSessionOwners > 0) return false
+            if (initialization) {
+                try {
+                    await initialization
+                } catch {
+                    return false
+                }
+            }
+            if (sessionRegistry.size > 0 || pendingSessionOwners > 0) return false
+            const processId = agentProcessId
+            if (!processId) return false
+            markDisconnected(new Error("ACP prepared connection disposed"))
+            await invoke("agent_kill", { id: processId, reason: "prepared_dispose" }).catch(() => {})
+            return true
+        },
+        processId: () => agentProcessId,
+        async supportsLoadSession(cwd) {
+            await ensureConnection(cwd)
+            return agentCapabilities.loadSession
+        },
+        dropSession(sessionId) {
+            runtime.dropSession(sessionId)
+            sessionRegistry.delete(sessionId)
+            sessionConfigOptions.delete(sessionId)
+            configRevisions.delete(sessionId)
+            configRequests.delete(sessionId)
+            promptInFlight.delete(sessionId)
+            runningSessions.delete(sessionId)
         }
     }
+}
+
+function normalizeAgentCapabilities(value: unknown): { loadSession: boolean } {
+    const record = asRecord(value)
+    return { loadSession: record.loadSession === true }
+}
+
+function promptBlocksToText(blocks: PromptBlock[]): string {
+    return blocks.flatMap((block) => {
+        if (block.type === "text") return [block.text]
+        return [block.title ?? block.name]
+    }).join(" ").trim()
 }
 
 function appendMessage(
@@ -656,6 +966,15 @@ function appendMessage(
         ]
     }
     return [...transcript, { who, text, streaming: true }]
+}
+
+function appendThought(transcript: TranscriptEntry[], text: string): TranscriptEntry[] {
+    if (!text) return transcript
+    const last = transcript.at(-1)
+    if (last && "kind" in last && last.kind === "thought") {
+        return [...transcript.slice(0, -1), { ...last, text: `${last.text}${text}` }]
+    }
+    return [...transcript, { kind: "thought", text }]
 }
 
 function permissionBlock(params: RequestPermissionRequest): BlockEntry {
@@ -688,10 +1007,90 @@ function normalizeAvailableCommands(value: unknown): SlashCommand[] {
     if (!Array.isArray(value)) return []
     return value.flatMap((item) => {
         const record = asRecord(item)
-        return typeof record.name === "string" && typeof record.description === "string"
-            ? [{ name: record.name, description: record.description }]
-            : []
+        if (typeof record.name !== "string" || typeof record.description !== "string") return []
+        return [{
+            name: record.name,
+            description: record.description,
+            ...optionalRecordField(record, "input"),
+            ...optionalRecordField(record, "_meta")
+        }]
     })
+}
+
+export function normalizeSessionConfigOptions(value: unknown): SessionConfigOption[] {
+    if (!Array.isArray(value)) return []
+    return value.flatMap<SessionConfigOption>((item) => {
+        const record = asRecord(item)
+        if (typeof record.id !== "string" || typeof record.name !== "string") return []
+        const base = {
+            id: record.id,
+            name: record.name,
+            ...optionalStringOrNullField(record, "description"),
+            ...optionalStringOrNullField(record, "category"),
+            ...optionalRecordField(record, "_meta")
+        }
+        if (record.type === "boolean" && typeof record.currentValue === "boolean") {
+            return [{ ...base, type: "boolean" as const, currentValue: record.currentValue }]
+        }
+        if (record.type !== "select" || typeof record.currentValue !== "string") return []
+        return [{
+            ...base,
+            type: "select" as const,
+            currentValue: record.currentValue,
+            options: normalizeSessionConfigSelectOptions(record.options)
+        }]
+    })
+}
+
+function normalizeSessionConfigSelectOptions(
+    value: unknown
+): SessionConfigSelectOption[] | SessionConfigSelectGroup[] {
+    if (!Array.isArray(value)) return []
+    const grouped = value.some((item) => typeof asRecord(item).group === "string")
+    return grouped
+        ? value.flatMap((item) => {
+            const record = asRecord(item)
+            if (typeof record.group !== "string" || typeof record.name !== "string") return []
+            return [{
+                group: record.group,
+                name: record.name,
+                options: normalizeSessionConfigSelectValues(record.options),
+                ...optionalRecordField(record, "_meta")
+            }]
+        })
+        : normalizeSessionConfigSelectValues(value)
+}
+
+function normalizeSessionConfigSelectValues(value: unknown): SessionConfigSelectOption[] {
+    if (!Array.isArray(value)) return []
+    return value.flatMap((item) => {
+        const record = asRecord(item)
+        if (typeof record.value !== "string" || typeof record.name !== "string") return []
+        return [{
+            value: record.value,
+            name: record.name,
+            ...optionalStringOrNullField(record, "description"),
+            ...optionalRecordField(record, "_meta")
+        }]
+    })
+}
+
+function optionalStringOrNullField(
+    record: Record<string, unknown>,
+    key: string
+): Record<string, string | null> {
+    if (!(key in record)) return {}
+    const value = record[key]
+    return typeof value === "string" || value === null ? { [key]: value } : {}
+}
+
+function optionalRecordField(
+    record: Record<string, unknown>,
+    key: string
+): Record<string, Record<string, unknown> | null> {
+    if (!(key in record)) return {}
+    const value = record[key]
+    return value === null || isRecord(value) ? { [key]: value } : {}
 }
 
 function sessionInfoFromUpdate(update: unknown): SessionInfoUpdate | undefined {
@@ -702,6 +1101,25 @@ function sessionInfoFromUpdate(update: unknown): SessionInfoUpdate | undefined {
     return typeof piAcp.queueDepth === "number" && typeof piAcp.running === "boolean"
         ? { queueDepth: piAcp.queueDepth, running: piAcp.running }
         : undefined
+}
+
+function sessionTitleFromUpdate(update: unknown): string | undefined {
+    const record = asRecord(update)
+    if (record.sessionUpdate !== "session_info_update") return undefined
+    return typeof record.title === "string" && record.title.trim() !== "" ? record.title : undefined
+}
+
+function usageFromUpdate(update: unknown): UsageInfo | undefined {
+    const record = asRecord(update)
+    if (record.sessionUpdate !== "usage_update") return undefined
+    if (!Number.isFinite(record.used) || !Number.isFinite(record.size)) return undefined
+    const cost = asRecord(record.cost)
+    const hasCost = Number.isFinite(cost.amount) && typeof cost.currency === "string"
+    return {
+        used: record.used as number,
+        size: record.size as number,
+        ...(hasCost ? { cost: { amount: cost.amount as number, currency: cost.currency as string } } : {})
+    }
 }
 
 function interceptUnsupportedSessionUpdates(
