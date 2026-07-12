@@ -26,11 +26,13 @@ for _ in $(seq 1 60); do
 done
 
 [[ "$ready" -eq 1 ]]
+# 不加 -o /dev/null：sqlcmd 的 -o 會連錯誤訊息一起改寫到檔案，失敗時
+# container log 什麼都看不到；init 輸出留在 stdout 供 CI dump 診斷。
 "$sqlcmd" -S mssql -U sa "${tls_args[@]}" -b \
-  -i /yuzora-fixtures/mssql/init.sql -o /dev/null
+  -i /yuzora-fixtures/mssql/init.sql
 "$sqlcmd" -S mssql -U sa "${tls_args[@]}" -d yuzora_p8 \
   -Q "SET NOCOUNT ON; IF (SELECT COUNT(*) FROM alpha.rows_1201) <> 1201 THROW 51000, 'fixture validation failed', 1;" \
-  -b -o /dev/null
+  -b
 
 touch /tmp/yuzora-mssql-ready
 exec tail -f /dev/null

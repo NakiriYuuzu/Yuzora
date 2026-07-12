@@ -158,6 +158,10 @@ jobs:
           YUZORA_P8_DATABASE_PASSWORD: "Yuzora-P8-Only-2026!"
         run: YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql cargo test --locked --test database_integration -- --ignored --nocapture
 
+      - name: Dump database fixture logs on failure
+        if: failure()
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql logs --no-color
+
       - name: Stop database fixtures and remove volumes
         if: always()
         run: docker compose -f tests/database/docker-compose.yml --profile mssql down -v
