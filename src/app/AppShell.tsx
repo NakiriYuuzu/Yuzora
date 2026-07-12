@@ -220,7 +220,7 @@ export function AppShell() {
 
   return (
     <div
-      onContextMenu={contextMenuHandler("general")}
+      onContextMenu={contextMenuHandler({ kind: "general" })}
       className="relative flex h-screen w-screen flex-col overflow-hidden font-sans text-[13px] text-(--ink-1)"
       style={{ background: "var(--yz-bg)" }}
     >

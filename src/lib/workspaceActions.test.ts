@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 
+const openPicker = vi.hoisted(() => vi.fn())
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openPicker }))
 vi.mock("@/lib/ipc", () => ({
     openWorkspace: vi.fn(),
     startWatch: vi.fn().mockResolvedValue(undefined),
@@ -8,7 +10,7 @@ vi.mock("@/lib/ipc", () => ({
 vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn() }))
 vi.mock("@/editor/saveDocument", () => ({ saveDirtyTab: vi.fn() }))
 
-import { openWorkspaceAtPath } from "@/lib/workspaceActions"
+import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
 import { openWorkspace } from "@/lib/ipc"
 import { saveDirtyTab } from "@/editor/saveDocument"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
@@ -53,6 +55,7 @@ beforeEach(() => {
     localStorage.clear()
     vi.mocked(openWorkspace).mockReset().mockResolvedValue("/canonical")
     vi.mocked(saveDirtyTab).mockReset().mockResolvedValue(undefined)
+    openPicker.mockReset().mockResolvedValue(null)
     useConfirmDialogStore.setState({ pending: null })
     useRecentWorkspacesStore.setState({ list: [] })
 })
@@ -101,4 +104,19 @@ test("無 dirty 分頁：不彈 modal、直接開新工作區", async () => {
     await openWorkspaceAtPath("/new")
     expect(useConfirmDialogStore.getState().pending).toBeNull()
     expect(openWorkspace).toHaveBeenCalledWith("/new")
+})
+
+test("pickWorkspace native picker cancel 回傳 false", async () => {
+    expect(await pickWorkspace()).toBe(false)
+    expect(openWorkspace).not.toHaveBeenCalled()
+})
+
+test("pickWorkspace 選擇路徑後取消 dirty switch 仍回傳 false", async () => {
+    dirtyWorkspace()
+    openPicker.mockResolvedValue("/new")
+    const pending = pickWorkspace()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await pending).toBe(false)
+    expect(openWorkspace).not.toHaveBeenCalled()
 })

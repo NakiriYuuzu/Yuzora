@@ -17,7 +17,7 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
  * workspace rail's Open/Recent popover. Rejects (backend error, e.g. the
  * folder was moved or deleted) without recording anything.
  */
-export async function openWorkspaceAtPath(path: string): Promise<void> {
+async function openWorkspaceAtPathWithOutcome(path: string): Promise<boolean> {
     // Guard unsaved work before discarding the current workspace's buffers.
     // Restore-on-launch runs with no workspace and no tabs open (SessionRestore
     // only fires when workspacePath is null), so there are never dirty tabs then
@@ -37,7 +37,7 @@ export async function openWorkspaceAtPath(path: string): Promise<void> {
             description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
             saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
         })
-        if (decision === "cancel") return
+        if (decision === "cancel") return false
         if (decision === "save") await Promise.all(dirtyPaths.map((p) => saveDirtyTab(p)))
     }
 
@@ -47,6 +47,11 @@ export async function openWorkspaceAtPath(path: string): Promise<void> {
     void startWatch(canonical)
     void logUserAction("open_workspace", `open workspace ${canonical}`)
     useRecentWorkspacesStore.getState().record(canonical)
+    return true
+}
+
+export async function openWorkspaceAtPath(path: string): Promise<void> {
+    await openWorkspaceAtPathWithOutcome(path)
 }
 
 /**
@@ -58,6 +63,5 @@ export async function openWorkspaceAtPath(path: string): Promise<void> {
 export async function pickWorkspace(): Promise<boolean> {
     const selected = await open({ directory: true, multiple: false })
     if (typeof selected !== "string") return false
-    await openWorkspaceAtPath(selected)
-    return true
+    return openWorkspaceAtPathWithOutcome(selected)
 }

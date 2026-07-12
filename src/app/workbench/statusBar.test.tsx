@@ -268,7 +268,7 @@ describe("StatusBar", () => {
   it("右鍵狀態列開啟 status 選單", () => {
     render(<StatusBar />);
     fireEvent.contextMenu(screen.getByLabelText("Status bar"));
-    expect(useContextMenuStore.getState().kind).toBe("status");
+    expect(useContextMenuStore.getState().request?.kind).toBe("status");
   });
 
   it("有 perf snapshot 時顯示 mono chip（cpu% · MB）並註明主程序", () => {

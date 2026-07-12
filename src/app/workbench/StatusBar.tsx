@@ -201,7 +201,10 @@ export function StatusBar() {
   return (
     <footer
       aria-label={t("statusBar.ariaLabel")}
-      onContextMenu={contextMenuHandler("status")}
+      onContextMenu={contextMenuHandler({
+        kind: "status",
+        repositoryRoot: environment?.status === "ready" ? environment.root : null,
+      })}
       className="flex h-[30px] shrink-0 items-center gap-1 border-t border-(--line-1) bg-(--yz-glass-strong) px-2 font-mono text-[11.5px] text-(--ink-2) backdrop-blur-[20px] backdrop-saturate-[1.5]"
     >
       <span className="rounded-[6px] px-[6px] font-medium text-(--ink-1)">yuzora</span>

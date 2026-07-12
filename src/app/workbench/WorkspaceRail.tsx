@@ -84,7 +84,7 @@ export function WorkspaceRail({
   return (
     <nav
       aria-label={t("rail.ariaLabel")}
-      onContextMenu={contextMenuHandler("rail")}
+      onContextMenu={contextMenuHandler({ kind: "rail" })}
       className="flex w-[60px] shrink-0 flex-col items-center gap-[5px] pt-[13px] pb-[11px]"
     >
       <button

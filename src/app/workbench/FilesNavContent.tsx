@@ -20,7 +20,9 @@ export function FilesNavContent() {
 
   if (!workspacePath) {
     return (
-      <div onContextMenu={contextMenuHandler("explorer")} className="flex h-full flex-col gap-[10px]">
+      <div
+        className="flex h-full flex-col gap-[10px]"
+      >
         <div className="flex flex-1 items-center justify-center">
           <EmptyState
             icon={FolderOpen}
@@ -34,7 +36,10 @@ export function FilesNavContent() {
   }
 
   return (
-    <div onContextMenu={contextMenuHandler("explorer")} className="flex h-full flex-col">
+    <div
+      onContextMenu={contextMenuHandler({ kind: "explorer", workspacePath })}
+      className="flex h-full flex-col"
+    >
       <div className="flex-1 overflow-y-auto py-[4px]">
         <FileTree />
       </div>

@@ -1,14 +1,23 @@
 import { confirm, message } from "@tauri-apps/plugin-dialog"
 import { revealItemInDir } from "@tauri-apps/plugin-opener"
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
-import { formatDocument } from "@codemirror/lsp-client"
 import type { EditorView } from "@codemirror/view"
 import type { MouseEvent as ReactMouseEvent } from "react"
 import { create } from "zustand"
 
+import {
+    CONTEXT_MENU_CANCELLED,
+    CONTEXT_MENU_COMPLETED,
+    type ContextMenuCommandOutcome,
+    type ContextMenuCommandDefinition,
+    type ContextMenuRequest,
+    type ContextMenuRunOutcome
+} from "@/app/workbench/contextMenuModel"
+import i18n from "@/lib/i18n"
 import { dropDocument, renameDocument } from "../editor/documentRegistry"
-import { getView } from "../editor/viewRegistry"
+import { getView, getViewEntry, type RegisteredEditorView } from "../editor/viewRegistry"
 import { logUserAction } from "@/features/logs/userAction"
+import { showActionError } from "@/lib/actionFeedback"
 import {
     fsCreateDir,
     fsCreateFile,
@@ -22,73 +31,78 @@ import {
 import { useMarkdownPreviewStore } from "../workbench/MarkdownPreview"
 import { usePreviewStore } from "./previewStore"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
-import { useAgentStore } from "./agentStore"
 import { useDiffModalStore, type WorktreeDiffFile } from "./diffModalStore"
 import { useGitStore } from "./gitStore"
+import { savedConnectionAddress, useDbStore } from "./dbStore"
 import { useSftpStore } from "./sftpStore"
 import { useSshStore } from "./sshStore"
-import { useTerminalStore } from "./terminalStore"
 import { useUiStore } from "./uiStore"
 import { useWorkspaceStore, type TabInfo } from "./workspaceStore"
 
-export type ContextMenuKind =
-    | "general"
-    | "rail"
-    | "explorer"
-    | "file"
-    | "tab"
-    | "editor"
-    | "terminal"
-    | "agent"
-    | "git"
-    | "status"
-    | "sshhost"
-
-export interface ContextMenuPayload {
-    path?: string
-    groupIndex?: number
-    host?: string
-    // sshhost rows carry the host id so cmOpenSsh/cmDisconnect can reach sshStore.
-    hostId?: string
-    // Set by FileTree's "file" entries so cmDelete can word its confirm text for
-    // a folder ("將刪除整個資料夾") vs a single file.
-    isDir?: boolean
-}
+export type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contextMenuModel"
 
 interface ContextMenuState {
-    kind: ContextMenuKind | null
+    request: ContextMenuRequest | null
     x: number
     y: number
-    payload: ContextMenuPayload
-    open: (kind: ContextMenuKind, x: number, y: number, payload?: ContextMenuPayload) => void
+    availabilityRevision: number
+    open: (request: ContextMenuRequest, x: number, y: number) => void
     close: () => void
+    refreshAvailability: () => void
 }
 
 // x/y 存 pointer 的 visual px；換算 layout px（body zoom）由 ContextMenu 元件
 // 在 render 時處理，store 不需要知道縮放。
 export const useContextMenuStore = create<ContextMenuState>((set) => ({
-    kind: null,
+    request: null,
     x: 0,
     y: 0,
-    payload: {},
-    open: (kind, x, y, payload = {}) => set({ kind, x, y, payload }),
-    close: () => set({ kind: null })
+    availabilityRevision: 0,
+    open: (request, x, y) => set({ request, x, y }),
+    close: () => set({ request: null }),
+    refreshAvailability: () => set((state) => ({ availabilityRevision: state.availabilityRevision + 1 }))
 }))
 
 // 每個區域共用的 handler factory：右鍵開啟該區選單、擋掉 WebView 原生選單、
 // 停止冒泡（否則外層區域的 handler 會蓋掉這次 open）。
-export function contextMenuHandler(kind: ContextMenuKind, payload?: ContextMenuPayload) {
+export function contextMenuHandler(request: ContextMenuRequest) {
     return (event: ReactMouseEvent) => {
         event.preventDefault()
         event.stopPropagation()
-        useContextMenuStore.getState().open(kind, event.clientX, event.clientY, payload)
+        useContextMenuStore.getState().open(request, event.clientX, event.clientY)
     }
 }
 
-// 設計要求 preview 面板整個吃掉右鍵：不彈選單、也不冒泡到 general。
-export function suppressContextMenu(event: ReactMouseEvent) {
-    event.preventDefault()
-    event.stopPropagation()
+export async function runContextMenuAction(
+    request: ContextMenuRequest,
+    command: ContextMenuCommandDefinition
+): Promise<ContextMenuRunOutcome> {
+    const menu = useContextMenuStore.getState()
+    if (menu.request !== null && menu.request !== request) return "cancelled"
+
+    const availability = command.availability(request)
+    if (!availability.visible || !availability.enabled) {
+        menu.refreshAvailability()
+        return "cancelled"
+    }
+
+    menu.close()
+    const label = command.label(request)
+    try {
+        const outcome = await command.executor(request)
+        if (outcome === "completed") {
+            void logUserAction("context_menu_action", `${request.kind}:${command.id}`, { ...request })
+        }
+        return outcome
+    } catch (error) {
+        await showActionError(label, error)
+        return "error"
+    }
+}
+
+function currentGitRepositoryMatches(repositoryRoot: string | null): boolean {
+    const environment = useGitStore.getState().environment
+    return environment?.status === "ready" && environment.root === repositoryRoot
 }
 
 // Repo-relative form of an absolute editor-tab path (mirrors FileTree's
@@ -108,15 +122,11 @@ function relativeToRepoRoot(activePath: string): string | null {
 // list (staged first, then the working-tree changes — matching the design's
 // openDiffWork ordering). Returns null when no file is active, the repo is not
 // ready, the active file is outside the repo, or it has no git change.
-function worktreeCompareTarget(): { files: WorktreeDiffFile[]; activePath: string } | null {
-    const ws = useWorkspaceStore.getState()
-    const activePath = ws.groups[ws.activeGroupIndex]?.activePath ?? null
-    if (!activePath) return null
-
+export function worktreeCompareTarget(path: string): { files: WorktreeDiffFile[]; activePath: string } | null {
     const status = useGitStore.getState().status
     if (!status) return null
 
-    const rel = relativeToRepoRoot(activePath)
+    const rel = relativeToRepoRoot(path)
     if (!rel) return null
 
     const files: WorktreeDiffFile[] = worktreeFilesFrom(status)
@@ -132,23 +142,11 @@ function worktreeCompareTarget(): { files: WorktreeDiffFile[]; activePath: strin
 // (the folder the user opened), per spec — the two roots can differ (a repo
 // opened at a subdirectory). Falls back to the absolute path when it isn't
 // under the workspace (e.g. no workspace open yet).
-function relativeToWorkspace(absPath: string): string {
-    const workspacePath = useWorkspaceStore.getState().workspacePath
+function relativeToWorkspace(absPath: string, workspacePath: string | null): string {
     if (workspacePath && absPath.startsWith(workspacePath + "/")) {
         return absPath.slice(workspacePath.length + 1)
     }
     return absPath
-}
-
-// The active editor's CodeMirror view, resolved via the shared view registry
-// (EditorPane registers/unregisters on mount/unmount) rather than through a
-// specific pane's local ref — the dispatch here lives outside any one pane's
-// component tree.
-function activeEditorView(): EditorView | null {
-    const ws = useWorkspaceStore.getState()
-    const path = ws.groups[ws.activeGroupIndex]?.activePath
-    if (!path) return null
-    return getView(path) ?? null
 }
 
 function selectedText(view: EditorView): string {
@@ -158,23 +156,36 @@ function selectedText(view: EditorView): string {
         .join("\n")
 }
 
-async function copySelection(view: EditorView): Promise<void> {
+async function copySelection(view: EditorView): Promise<boolean> {
     const text = selectedText(view)
-    if (!text) return
+    if (!text) return false
     await writeText(text)
+    return true
 }
 
-async function cutSelection(view: EditorView): Promise<void> {
+async function cutSelection(view: EditorView): Promise<boolean> {
     const text = selectedText(view)
-    if (!text) return
+    if (!text) return false
     await writeText(text)
     view.dispatch(view.state.replaceSelection(""))
+    return true
 }
 
-async function pasteIntoEditor(view: EditorView): Promise<void> {
+async function pasteIntoEditor(view: EditorView): Promise<boolean> {
     const text = await readText()
-    if (!text) return
+    if (!text) return false
     view.dispatch(view.state.replaceSelection(text))
+    return true
+}
+
+function editorTarget(
+    request: Extract<ContextMenuRequest, { kind: "editor" }>
+): RegisteredEditorView | null {
+    const workspace = useWorkspaceStore.getState()
+    if (workspace.workspacePath !== request.workspacePath) return null
+    if (workspace.groups[request.groupIndex]?.activePath !== request.path) return null
+    const entry = getViewEntry(request.path)
+    return entry?.groupIndex === request.groupIndex ? entry : null
 }
 
 // Cleanup that mirrors TabBar's onClose for a single non-preview tab (minus
@@ -187,52 +198,58 @@ function dropTabSideEffects(tab: TabInfo): void {
 // Single-tab close, replicating TabBar's onClose confirm flow so the tab
 // context menu's "Close tab" behaves identically to clicking the tab's own
 // close button.
-async function closeTabWithConfirm(groupIndex: number, path: string): Promise<void> {
+async function closeTabWithConfirm(groupIndex: number, path: string): Promise<ContextMenuCommandOutcome> {
     const group = useWorkspaceStore.getState().groups[groupIndex]
     const tab = group?.tabs.find((t) => t.path === path)
-    if (!tab) return
+    if (!tab) return CONTEXT_MENU_CANCELLED
     if (tab.kind === "preview") {
         useWorkspaceStore.getState().closePreviewTab()
-        return
+        return CONTEXT_MENU_COMPLETED
     }
     if (tab.dirty) {
-        const ok = await confirm("檔案有未儲存的變更，確定關閉？")
-        if (!ok) return
+        const ok = await confirm(i18n.t("contextMenu.confirm.closeDirtyTab", {
+            ns: "menus",
+            name: tab.path.split("/").pop() ?? tab.path
+        }))
+        if (!ok) return CONTEXT_MENU_CANCELLED
     }
     useWorkspaceStore.getState().closeTab(groupIndex, path)
     dropTabSideEffects(tab)
+    return CONTEXT_MENU_COMPLETED
 }
 
 // "Close others" / "Close all": one combined confirm when any target tab is
 // dirty (rather than TabBar's per-tab prompt) — closing a batch of tabs one
 // dialog at a time would be tedious; declining leaves every tab open.
-async function closeOtherTabsWithConfirm(groupIndex: number, keepPath: string): Promise<void> {
+async function closeOtherTabsWithConfirm(groupIndex: number, keepPath: string): Promise<ContextMenuCommandOutcome> {
     const group = useWorkspaceStore.getState().groups[groupIndex]
-    if (!group) return
+    if (!group) return CONTEXT_MENU_CANCELLED
     const toClose = group.tabs.filter((t) => t.path !== keepPath)
-    if (toClose.length === 0) return
+    if (toClose.length === 0) return CONTEXT_MENU_CANCELLED
     if (toClose.some((t) => t.kind !== "preview" && t.dirty)) {
-        const ok = await confirm("有分頁未儲存的變更，確定全部關閉？")
-        if (!ok) return
+        const ok = await confirm(i18n.t("contextMenu.confirm.closeDirtyBatch", { ns: "menus" }))
+        if (!ok) return CONTEXT_MENU_CANCELLED
     }
     useWorkspaceStore.getState().closeOtherTabs(groupIndex, keepPath)
     for (const t of toClose) {
         if (t.kind !== "preview") dropTabSideEffects(t)
     }
+    return CONTEXT_MENU_COMPLETED
 }
 
-async function closeAllTabsWithConfirm(groupIndex: number): Promise<void> {
+async function closeAllTabsWithConfirm(groupIndex: number): Promise<ContextMenuCommandOutcome> {
     const group = useWorkspaceStore.getState().groups[groupIndex]
-    if (!group || group.tabs.length === 0) return
+    if (!group || group.tabs.length === 0) return CONTEXT_MENU_CANCELLED
     if (group.tabs.some((t) => t.kind !== "preview" && t.dirty)) {
-        const ok = await confirm("有分頁未儲存的變更，確定全部關閉？")
-        if (!ok) return
+        const ok = await confirm(i18n.t("contextMenu.confirm.closeDirtyBatch", { ns: "menus" }))
+        if (!ok) return CONTEXT_MENU_CANCELLED
     }
     const tabs = group.tabs
     useWorkspaceStore.getState().closeAllTabs(groupIndex)
     for (const t of tabs) {
         if (t.kind !== "preview") dropTabSideEffects(t)
     }
+    return CONTEXT_MENU_COMPLETED
 }
 
 // --- explorer/file: filesystem operations (PROB-5 後波) ---
@@ -245,12 +262,14 @@ function joinName(dir: string, name: string): string {
     return `${dir.replace(/\/+$/, "")}/${name}`
 }
 
-async function createEntry(kind: "file" | "folder"): Promise<void> {
+async function createEntry(kind: "file" | "folder", workspace: string): Promise<ContextMenuCommandOutcome> {
     const ws = useWorkspaceStore.getState()
-    const workspace = ws.workspacePath
-    if (!workspace) return
-    const name = window.prompt(kind === "file" ? "輸入新檔案名稱" : "輸入新資料夾名稱")?.trim()
-    if (!name) return
+    if (ws.workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
+    const name = window.prompt(i18n.t(
+        kind === "file" ? "contextMenu.prompt.newFile" : "contextMenu.prompt.newFolder",
+        { ns: "menus" }
+    ))?.trim()
+    if (!name) return CONTEXT_MENU_CANCELLED
     const target = joinName(workspace, name)
     try {
         if (kind === "file") {
@@ -261,8 +280,13 @@ async function createEntry(kind: "file" | "folder"): Promise<void> {
             await fsCreateDir(workspace, target)
             useWorkspaceStore.getState().refreshTree()
         }
+        return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), { title: "建立失敗", kind: "error" })
+        await message(String(e), {
+            title: i18n.t("contextMenu.actionErrorTitle.create", { ns: "menus" }),
+            kind: "error"
+        })
+        return CONTEXT_MENU_CANCELLED
     }
 }
 
@@ -280,12 +304,14 @@ function affectedTabPaths(target: string): string[] {
     return [...paths]
 }
 
-async function renameEntry(path: string): Promise<void> {
-    const workspace = useWorkspaceStore.getState().workspacePath
-    if (!workspace) return
+async function renameEntry(path: string, workspace: string): Promise<ContextMenuCommandOutcome> {
+    if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
     const currentName = path.split("/").pop() ?? path
-    const name = window.prompt("輸入新名稱", currentName)?.trim()
-    if (!name || name === currentName) return
+    const name = window.prompt(
+        i18n.t("contextMenu.prompt.rename", { ns: "menus" }),
+        currentName
+    )?.trim()
+    if (!name || name === currentName) return CONTEXT_MENU_CANCELLED
     const slash = path.lastIndexOf("/")
     const target = path.slice(0, slash + 1) + name
     try {
@@ -306,23 +332,31 @@ async function renameEntry(path: string): Promise<void> {
         }
         useWorkspaceStore.getState().updateTabPath(path, target)
         useWorkspaceStore.getState().refreshTree()
+        return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), { title: "重新命名失敗", kind: "error" })
+        await message(String(e), {
+            title: i18n.t("contextMenu.actionErrorTitle.rename", { ns: "menus" }),
+            kind: "error"
+        })
+        return CONTEXT_MENU_CANCELLED
     }
 }
 
-async function deleteEntry(path: string, isDir: boolean): Promise<void> {
-    const workspace = useWorkspaceStore.getState().workspacePath
-    if (!workspace) return
+async function deleteEntry(path: string, isDir: boolean, workspace: string): Promise<ContextMenuCommandOutcome> {
+    if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
     const name = path.split("/").pop() ?? path
     // The delete confirm below already covers the destructive intent (the file's
     // content — dirty buffer included — is going away regardless), so no separate
     // per-tab dirty prompt: it would be redundant once the user confirms delete.
-    const text = isDir
-        ? `確定刪除「${name}」？將刪除整個資料夾及其內容。`
-        : `確定刪除「${name}」？`
-    const ok = await confirm(text, { title: "刪除", kind: "warning" })
-    if (!ok) return
+    const text = i18n.t(
+        isDir ? "contextMenu.confirm.deleteFolder" : "contextMenu.confirm.deleteFile",
+        { ns: "menus", name }
+    )
+    const ok = await confirm(text, {
+        title: i18n.t("contextMenu.confirm.deleteTitle", { ns: "menus" }),
+        kind: "warning"
+    })
+    if (!ok) return CONTEXT_MENU_CANCELLED
     try {
         await fsDelete(workspace, path)
         // Close every tab that pointed at the deleted file/folder and drop its
@@ -337,17 +371,21 @@ async function deleteEntry(path: string, isDir: boolean): Promise<void> {
             }
         }
         useWorkspaceStore.getState().refreshTree()
+        return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), { title: "刪除失敗", kind: "error" })
+        await message(String(e), {
+            title: i18n.t("contextMenu.actionErrorTitle.delete", { ns: "menus" }),
+            kind: "error"
+        })
+        return CONTEXT_MENU_CANCELLED
     }
 }
 
 // cmOpenInBrowser (P3): serve the HTML file's own directory over a local http
 // origin (so relative css/js/module specifiers resolve) and open that URL in the
 // singleton preview tab. Same dir reuses one server/port on the Rust side.
-async function openInBrowser(path: string): Promise<void> {
-    const workspace = useWorkspaceStore.getState().workspacePath
-    if (!workspace) return
+async function openInBrowser(path: string, workspace: string): Promise<ContextMenuCommandOutcome> {
+    if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
     // Split on either separator so Windows paths (C:\dir\file.html) serve the
     // right directory and produce a valid URL basename.
     const sep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
@@ -358,208 +396,219 @@ async function openInBrowser(path: string): Promise<void> {
         const url = `http://127.0.0.1:${port}/${encodeURIComponent(fileName)}`
         useWorkspaceStore.getState().openPreviewTab()
         usePreviewStore.getState().navigate(workspace, url)
+        return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), { title: "無法開啟預覽", kind: "error" })
+        await message(String(e), {
+            title: i18n.t("contextMenu.actionErrorTitle.preview", { ns: "menus" }),
+            kind: "error"
+        })
+        return CONTEXT_MENU_CANCELLED
     }
 }
 
-// The single dispatch seam: every menu item routes here. Real actions are
-// wired in per item as capabilities land — the rest stay UI-only (close +
-// log) until a backend capability (or larger UX, e.g. destructive-op confirm)
-// lands; see PROB-5 deferred list.
-export function runContextMenuAction(
-    kind: ContextMenuKind,
-    actionId: string,
-    payload: ContextMenuPayload
-) {
-    useContextMenuStore.getState().close()
-    void logUserAction("context_menu_action", `${kind}:${actionId}`, { ...payload })
-
-    if (actionId === "cmCompareHead") {
-        const target = worktreeCompareTarget()
-        if (!target) return
+// Target-specific legacy adapter for commands that still share existing domain
+// operations. The registry owns visibility, availability, and dispatch.
+export async function executeLegacyContextMenuAction(
+    request: ContextMenuRequest,
+    actionId: string
+): Promise<ContextMenuCommandOutcome> {
+    if (request.kind === "editor" && actionId === "cmCompareHead") {
+        if (!editorTarget(request)) return CONTEXT_MENU_CANCELLED
+        const target = worktreeCompareTarget(request.path)
+        if (!target) return CONTEXT_MENU_CANCELLED
         useUiStore.getState().setMode("git")
-        // Path-only active target (string overload) keeps the existing
-        // Compare-with-HEAD semantics: open the first row for this path. For an MM
-        // file that is the staged side (worktreeFilesFrom lists staged first) —
-        // acceptable here, the menu compares the file against HEAD regardless of
-        // side, and the user can switch sides in the modal's file list.
         useDiffModalStore.getState().openWorktree(target.files, target.activePath)
-        return
+        return CONTEXT_MENU_COMPLETED
     }
 
-    // --- general / rail (shared switches: same behaviour wherever the item
-    // appears, so no kind check) ---
     if (actionId === "cmSettings") {
         useUiStore.getState().openSettings()
-        return
+        return CONTEXT_MENU_COMPLETED
     }
     if (actionId === "cmHideSidebar") {
         useUiStore.getState().requestSidebarToggle()
-        return
+        return CONTEXT_MENU_COMPLETED
     }
     if (actionId === "cmCmdPalette") {
         useUiStore.getState().requestOpenPalette()
-        return
+        return CONTEXT_MENU_COMPLETED
     }
 
-    // --- tab ---
+    if (request.kind === "tab" && actionId === "cmCloseTab") {
+        return closeTabWithConfirm(request.groupIndex, request.path)
+    }
+    if (request.kind === "tab" && actionId === "cmCloseOthers") {
+        return closeOtherTabsWithConfirm(request.groupIndex, request.path)
+    }
+    if (request.kind === "tab" && actionId === "cmCloseAll") {
+        return closeAllTabsWithConfirm(request.groupIndex)
+    }
+    if (request.kind === "tab" && actionId === "cmSplit") {
+        useWorkspaceStore.getState().splitAndMoveRight(request.groupIndex, request.path)
+        return CONTEXT_MENU_COMPLETED
+    }
+
+    if ((request.kind === "tab" || request.kind === "file") && actionId === "cmCopyRel") {
+        await writeText(relativeToWorkspace(request.path, request.workspacePath))
+        return CONTEXT_MENU_COMPLETED
+    }
+
+    if (request.kind === "file" && actionId === "cmOpen") {
+        useWorkspaceStore.getState().openTab(request.path, request.sourceGroupIndex)
+        return CONTEXT_MENU_COMPLETED
+    }
+    if (request.kind === "file" && actionId === "cmOpenSplit") {
+        useWorkspaceStore.getState().openInRightSplit(request.path, request.sourceGroupIndex)
+        return CONTEXT_MENU_COMPLETED
+    }
+    if (request.kind === "file" && actionId === "cmRename") {
+        return renameEntry(request.path, request.workspacePath)
+    }
+    if (request.kind === "file" && actionId === "cmDelete") {
+        return deleteEntry(request.path, request.isDirectory, request.workspacePath)
+    }
+    if (request.kind === "file" && actionId === "cmReveal") {
+        await revealItemInDir(request.path)
+        return CONTEXT_MENU_COMPLETED
+    }
+    if (request.kind === "file" && actionId === "cmOpenInBrowser") {
+        return openInBrowser(request.path, request.workspacePath)
+    }
+
+    if (request.kind === "explorer" && request.workspacePath) {
+        if (actionId === "cmCopyPath") {
+            await writeText(request.workspacePath)
+            return CONTEXT_MENU_COMPLETED
+        }
+        if (actionId === "cmNewFile") return createEntry("file", request.workspacePath)
+        if (actionId === "cmNewFolder") return createEntry("folder", request.workspacePath)
+    }
+
+    if (request.kind === "editor" && (actionId === "cmCut" || actionId === "cmCopy" || actionId === "cmPaste")) {
+        const target = editorTarget(request)
+        if (!target) return CONTEXT_MENU_CANCELLED
+        const changed = actionId === "cmCopy"
+            ? await copySelection(target.view)
+            : actionId === "cmCut"
+              ? await cutSelection(target.view)
+              : await pasteIntoEditor(target.view)
+        return changed ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
+    }
+    if (request.kind === "editor" && actionId === "cmFormatDoc") {
+        const target = editorTarget(request)
+        if (!target?.formatDocument) return CONTEXT_MENU_CANCELLED
+        return (await target.formatDocument()) ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
+    }
+
     if (
-        kind === "tab" &&
-        actionId === "cmCloseTab" &&
-        payload.path !== undefined &&
-        payload.groupIndex !== undefined
+        (request.kind === "git" || request.kind === "status") &&
+        currentGitRepositoryMatches(request.repositoryRoot) &&
+        actionId === "cmFetch"
     ) {
-        void closeTabWithConfirm(payload.groupIndex, payload.path)
-        return
+        if (!request.repositoryRoot) return CONTEXT_MENU_CANCELLED
+        return (await useGitStore.getState().runOp(
+            "fetch",
+            () => gitFetch(false, request.repositoryRoot!)
+        ))
+            ? CONTEXT_MENU_COMPLETED
+            : CONTEXT_MENU_CANCELLED
     }
     if (
-        kind === "tab" &&
-        actionId === "cmCloseOthers" &&
-        payload.path !== undefined &&
-        payload.groupIndex !== undefined
+        (request.kind === "git" || request.kind === "status") &&
+        currentGitRepositoryMatches(request.repositoryRoot) &&
+        actionId === "cmPull"
     ) {
-        void closeOtherTabsWithConfirm(payload.groupIndex, payload.path)
-        return
+        if (!request.repositoryRoot) return CONTEXT_MENU_CANCELLED
+        return (await useGitStore.getState().runOp("pull", () => gitPull(request.repositoryRoot!)))
+            ? CONTEXT_MENU_COMPLETED
+            : CONTEXT_MENU_CANCELLED
     }
-    if (kind === "tab" && actionId === "cmCloseAll" && payload.groupIndex !== undefined) {
-        void closeAllTabsWithConfirm(payload.groupIndex)
-        return
+    if (
+        (request.kind === "git" || request.kind === "status") &&
+        currentGitRepositoryMatches(request.repositoryRoot) &&
+        actionId === "cmPush"
+    ) {
+        if (!request.repositoryRoot) return CONTEXT_MENU_CANCELLED
+        return (await useGitStore.getState().runOp("push", () => gitPush(request.repositoryRoot!)))
+            ? CONTEXT_MENU_COMPLETED
+            : CONTEXT_MENU_CANCELLED
     }
-
-    // --- tab / file: shared "copy relative path" ---
-    if (actionId === "cmCopyRel" && payload.path !== undefined) {
-        void writeText(relativeToWorkspace(payload.path))
-        return
-    }
-
-    // --- tab / file: "split" — wired to the same groups/split primitive the
-    // EditorArea "+" button uses (splitRight only adds an empty second group;
-    // it does not itself open the source file into it — no such capability
-    // exists yet, see PROB-5 report). ---
-    if (actionId === "cmSplit" || actionId === "cmOpenSplit") {
-        useWorkspaceStore.getState().splitRight()
-        return
-    }
-
-    // --- file ---
-    if (kind === "file" && actionId === "cmOpen" && payload.path !== undefined) {
-        useWorkspaceStore.getState().openTab(payload.path)
-        return
-    }
-    if (kind === "file" && actionId === "cmRename" && payload.path !== undefined) {
-        void renameEntry(payload.path)
-        return
-    }
-    if (kind === "file" && actionId === "cmDelete" && payload.path !== undefined) {
-        void deleteEntry(payload.path, payload.isDir ?? false)
-        return
-    }
-    if (kind === "file" && actionId === "cmReveal" && payload.path !== undefined) {
-        void revealItemInDir(payload.path)
-        return
-    }
-    if (kind === "file" && actionId === "cmOpenInBrowser" && payload.path !== undefined) {
-        void openInBrowser(payload.path)
-        return
-    }
-
-    // --- explorer ---
-    if (kind === "explorer" && actionId === "cmCopyPath") {
-        const workspacePath = useWorkspaceStore.getState().workspacePath
-        if (workspacePath) void writeText(workspacePath)
-        return
-    }
-    // New file/folder create at the workspace root (the explorer menu carries no
-    // target dir); cmNewFile opens the freshly-created file in a tab.
-    if (kind === "explorer" && actionId === "cmNewFile") {
-        void createEntry("file")
-        return
-    }
-    if (kind === "explorer" && actionId === "cmNewFolder") {
-        void createEntry("folder")
-        return
-    }
-
-    // --- editor ---
-    if (kind === "editor" && (actionId === "cmCut" || actionId === "cmCopy" || actionId === "cmPaste")) {
-        const view = activeEditorView()
-        if (!view) return
-        if (actionId === "cmCopy") void copySelection(view)
-        else if (actionId === "cmCut") void cutSelection(view)
-        else void pasteIntoEditor(view)
-        return
-    }
-    if (kind === "editor" && actionId === "cmFormatDoc") {
-        const view = activeEditorView()
-        if (view) formatDocument(view)
-        return
-    }
-
-    // --- git / status (shared: same command regardless of which panel) ---
-    if ((kind === "git" || kind === "status") && actionId === "cmFetch") {
-        void useGitStore.getState().runOp("fetch", () => gitFetch(false))
-        return
-    }
-    if ((kind === "git" || kind === "status") && actionId === "cmPull") {
-        void useGitStore.getState().runOp("pull", () => gitPull())
-        return
-    }
-    if ((kind === "git" || kind === "status") && actionId === "cmPush") {
-        void useGitStore.getState().runOp("push", () => gitPush())
-        return
-    }
-    if ((kind === "git" || kind === "status") && actionId === "cmCopyBranch") {
+    if (
+        (request.kind === "git" || request.kind === "status") &&
+        currentGitRepositoryMatches(request.repositoryRoot) &&
+        actionId === "cmCopyBranch"
+    ) {
         const branch = useGitStore.getState().status?.branch
-        if (branch) void writeText(branch)
-        return
+        if (!branch) return CONTEXT_MENU_CANCELLED
+        await writeText(branch)
+        return CONTEXT_MENU_COMPLETED
     }
-    if ((kind === "git" || kind === "status") && actionId === "cmCopyHash") {
+    if (
+        (request.kind === "git" || request.kind === "status") &&
+        currentGitRepositoryMatches(request.repositoryRoot) &&
+        actionId === "cmCopyHash"
+    ) {
         const headOid = useGitStore.getState().status?.headOid
-        if (headOid) void writeText(headOid)
-        return
+        if (!headOid) return CONTEXT_MENU_CANCELLED
+        await writeText(headOid)
+        return CONTEXT_MENU_COMPLETED
     }
 
-    // --- agent ---
-    if (kind === "agent" && actionId === "cmStop") {
-        useAgentStore.getState().cancel()
-        return
+    if (request.kind === "sshhost" && actionId === "cmCopyAddr") {
+        const host = useSshStore.getState().hosts.find((candidate) => candidate.id === request.hostId)
+        if (!host) return CONTEXT_MENU_CANCELLED
+        await writeText(`${host.user}@${host.host}:${host.port}`)
+        return CONTEXT_MENU_COMPLETED
+    }
+    if (request.kind === "sshhost" && actionId === "cmOpenSsh") {
+        const state = useSshStore.getState()
+        if (
+            !state.hosts.some((host) => host.id === request.hostId) ||
+            state.pendingAuthHostId === request.hostId ||
+            state.sessions[request.hostId]?.status === "connecting"
+        ) {
+            return CONTEXT_MENU_CANCELLED
+        }
+        state.beginConnect(request.hostId)
+        return CONTEXT_MENU_COMPLETED
+    }
+    if (request.kind === "sshhost" && actionId === "cmDisconnect") {
+        const state = useSshStore.getState()
+        if (!state.hosts.some((host) => host.id === request.hostId)) return CONTEXT_MENU_CANCELLED
+        const session = state.sessions[request.hostId]
+        if (session?.status !== "connected" || !session.sessionId) return CONTEXT_MENU_CANCELLED
+        await state.disconnect(request.hostId)
+        return CONTEXT_MENU_COMPLETED
+    }
+    if (request.kind === "sshhost" && actionId === "cmOpenSftp") {
+        const state = useSshStore.getState()
+        if (
+            !state.hosts.some((host) => host.id === request.hostId) ||
+            state.pendingAuthHostId === request.hostId ||
+            state.sessions[request.hostId]?.status === "connecting"
+        ) {
+            return CONTEXT_MENU_CANCELLED
+        }
+        useSftpStore.getState().openSftp(request.hostId)
+        return CONTEXT_MENU_COMPLETED
     }
 
-    // --- sshhost (FEAT-2) ---
-    if (kind === "sshhost" && actionId === "cmCopyAddr" && payload.host !== undefined) {
-        void writeText(payload.host)
-        return
+    if (request.kind === "dbconn" && actionId === "cmCopyAddr") {
+        const descriptor = useDbStore.getState().saved.find(
+            (candidate) => candidate.id === request.descriptorId
+        )
+        if (!descriptor) return CONTEXT_MENU_CANCELLED
+        await writeText(savedConnectionAddress(descriptor))
+        return CONTEXT_MENU_COMPLETED
     }
-    if (kind === "sshhost" && actionId === "cmOpenSsh" && payload.hostId !== undefined) {
-        useSshStore.getState().beginConnect(payload.hostId)
-        return
-    }
-    if (kind === "sshhost" && actionId === "cmDisconnect" && payload.hostId !== undefined) {
-        void useSshStore.getState().disconnect(payload.hostId)
-        return
-    }
-    if (kind === "sshhost" && actionId === "cmOpenSftp" && payload.hostId !== undefined) {
-        // Reveal the SFTP browser tab and (re)connect the host (F5). The panel's
-        // own effect loads the remote listing once the session is connected.
-        useSftpStore.getState().openSftp(payload.hostId)
-        return
+    if (request.kind === "dbconn" && actionId === "cmDisconnect") {
+        const disconnected = await useDbStore.getState().disconnect(request.descriptorId)
+        if (!disconnected) {
+            const errorCode = useDbStore.getState().sessions[request.descriptorId]?.error ?? "unknown"
+            throw new Error(i18n.t(`database.profileError.${errorCode}`, { ns: "workbench" }))
+        }
+        return CONTEXT_MENU_COMPLETED
     }
 
-    // --- terminal ---
-    if (kind === "terminal" && actionId === "cmKill") {
-        const workspace = useWorkspaceStore.getState().workspacePath
-        if (!workspace) return
-        const layout = useTerminalStore.getState().layouts[workspace]
-        const pane = layout?.panes.find((p) => p.paneId === layout.activePaneId) ?? layout?.panes[0]
-        if (!pane) return
-        useTerminalStore.getState().removeSession(workspace, pane.sessionId)
-        return
-    }
-
-    // Everything else (cmRefresh, cmNewProject, cmStage/cmRollback,
-    // cmDuplicate/cmRenameSession/cmCopyPath[agent], cmClear/cmCopySel/
-    // cmPaste[terminal]/cmDockTerm/cmSplitTermRight/cmSplitTermDown) has no
-    // reachable front-end-only capability yet — stays UI-only (close + log
-    // above). Deferred list + reasons: see PROB-5 report.
+    return CONTEXT_MENU_CANCELLED
 }

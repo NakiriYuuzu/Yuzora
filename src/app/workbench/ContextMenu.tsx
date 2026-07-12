@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react"
+import { useTranslation } from "react-i18next"
 
-import { CONTEXT_MENU_DEFS } from "@/app/workbench/contextMenuDefs"
+import { resolveContextMenuEntries } from "@/app/workbench/contextMenuDefs"
 import { cn } from "@/lib/utils"
 import { runContextMenuAction, useContextMenuStore } from "@/state/contextMenuStore"
 
@@ -38,19 +39,19 @@ function bodyZoom() {
 
 /**
  * 全 app 唯一的右鍵選單 overlay — 設計文件 "CONTEXT MENU (all regions)"
- * （L1467）。內容由 CONTEXT_MENU_DEFS 依 store 的 kind 決定；UI-only 階段
- * 每個項目點擊只走 runContextMenuAction（關閉 + log）。
+ * （L1467）。內容由 command registry 依 typed request 決定。
  */
 export function ContextMenu() {
-  const kind = useContextMenuStore((s) => s.kind)
+  const { t } = useTranslation("menus")
+  const request = useContextMenuStore((s) => s.request)
   const x = useContextMenuStore((s) => s.x)
   const y = useContextMenuStore((s) => s.y)
-  const payload = useContextMenuStore((s) => s.payload)
+  useContextMenuStore((s) => s.availabilityRevision)
   const close = useContextMenuStore((s) => s.close)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    if (!kind) return
+    if (!request) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") close()
     }
@@ -71,15 +72,11 @@ export function ContextMenu() {
       window.removeEventListener("resize", close)
       window.removeEventListener("blur", close)
     }
-  }, [kind, close])
+  }, [request, close])
 
-  if (!kind) return null
+  if (!request) return null
 
-  // Items may carry a `when` predicate (e.g. cmOpenInBrowser only for .html);
-  // filter against the current payload before measuring/rendering.
-  const entries = CONTEXT_MENU_DEFS[kind].filter(
-    (entry) => entry === "separator" || !entry.when || entry.when(payload)
-  )
+  const entries = resolveContextMenuEntries(request)
   const { left, top } = placeMenu(x, y, entries.length, bodyZoom(), window.innerWidth, window.innerHeight)
 
   return (
@@ -87,7 +84,7 @@ export function ContextMenu() {
       ref={menuRef}
       role="menu"
       data-testid="context-menu"
-      data-kind={kind}
+      data-kind={request.kind}
       className="yz-pop fixed z-[80] flex w-[212px] flex-col rounded-[12px] border border-(--line-2) bg-(--frost-light) p-[5px] shadow-(--shadow-xl) [backdrop-filter:var(--blur-frost)]"
       style={{ left, top }}
       onContextMenu={(event) => {
@@ -96,7 +93,7 @@ export function ContextMenu() {
       }}
     >
       {entries.map((entry, index) =>
-        entry === "separator" ? (
+        entry.type === "separator" ? (
           <div
             key={`separator-${index}`}
             role="separator"
@@ -104,18 +101,32 @@ export function ContextMenu() {
             className="mx-[8px] my-[4px] h-px shrink-0 bg-(--line-1)"
           />
         ) : (
-          <button
-            key={entry.id}
-            type="button"
-            role="menuitem"
-            onClick={() => runContextMenuAction(kind, entry.id, payload)}
-            className={cn(
-              "flex h-[31px] shrink-0 items-center rounded-[8px] px-[12px] text-left text-[12.5px] font-medium transition-colors duration-100 hover:bg-(--yz-hover)",
-              entry.danger ? "text-[#c2293f]" : "text-(--ink-1)"
-            )}
+          <div
+            key={entry.command.id}
+            title={entry.availability.enabled || !entry.availability.disabledReasonKey
+              ? undefined
+              : t(entry.availability.disabledReasonKey)}
+            className="shrink-0"
           >
-            {entry.label}
-          </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!entry.availability.enabled}
+              aria-describedby={entry.availability.enabled ? undefined : `context-menu-reason-${entry.command.id}`}
+              onClick={() => void runContextMenuAction(request, entry.command)}
+              className={cn(
+                "flex h-[31px] w-full items-center rounded-[8px] px-[12px] text-left text-[12.5px] font-medium transition-colors duration-100 enabled:hover:bg-(--yz-hover) disabled:cursor-not-allowed disabled:opacity-50",
+                entry.command.danger ? "text-[#c2293f]" : "text-(--ink-1)"
+              )}
+            >
+              {entry.label}
+            </button>
+            {!entry.availability.enabled && entry.availability.disabledReasonKey ? (
+              <span id={`context-menu-reason-${entry.command.id}`} className="sr-only">
+                {t(entry.availability.disabledReasonKey)}
+              </span>
+            ) : null}
+          </div>
         )
       )}
     </div>

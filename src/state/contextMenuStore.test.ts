@@ -6,11 +6,14 @@ import type { MouseEvent as ReactMouseEvent } from "react"
 
 import {
     contextMenuHandler,
+    executeLegacyContextMenuAction,
     runContextMenuAction,
-    suppressContextMenu,
     useContextMenuStore
 } from "@/state/contextMenuStore"
-import { useAgentStore } from "@/state/agentStore"
+import { commandFor } from "@/app/workbench/contextMenuDefs"
+import type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contextMenuModel"
+import { useAgentStore, type SessionState } from "@/state/agentStore"
+import { useDbStore } from "@/state/dbStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { useGitStore } from "@/state/gitStore"
 import { usePreviewStore } from "@/state/previewStore"
@@ -20,22 +23,10 @@ import { useTerminalStore, terminalInitialState } from "@/state/terminalStore"
 import { useUiStore, uiInitialState } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { registerView, unregisterView } from "@/editor/viewRegistry"
+import { registerTerminalView } from "@/terminal/terminalViewRegistry"
 import type { GitStatus } from "@/lib/types"
 
-// contextMenuStore's cmFormatDoc dispatch calls the real @codemirror/lsp-client
-// formatDocument Command against the active view — mocked here (not the whole
-// LSP stack) so the wiring test only asserts "dispatch reached the command",
-// without needing a live language server. Declared before the mock factory so
-// the closure captures this exact spy (same pattern as lspExtensions.test.ts).
-// vi.mock is hoisted above every import above regardless of this textual
-// position, so contextMenuStore's own static import of formatDocument still
-// resolves to this mock.
-const formatDocument = vi.fn()
-vi.mock("@codemirror/lsp-client", () => ({
-    formatDocument: (view: unknown) => formatDocument(view)
-}))
-
-// Registered under the view registry so runContextMenuAction("editor", …) can
+// Registered under the view registry so runLegacyContextMenuAction("editor", …) can
 // resolve it as "the active editor" the same way EditorPane does in prod.
 const EDIT_PATH = "/w/edit.ts"
 
@@ -60,11 +51,106 @@ function makeStatus(over: Partial<GitStatus> = {}): GitStatus {
     }
 }
 
+function makeAgentSession(overrides: Partial<SessionState> = {}): SessionState {
+    return {
+        title: "Session",
+        agentLabel: "Agent",
+        model: null,
+        tone: "idle",
+        transcript: [],
+        availableCommands: [],
+        stopReason: null,
+        stopBadge: null,
+        error: null,
+        queueDepth: null,
+        running: null,
+        pendingTurn: false,
+        metadataTitle: false,
+        cwd: "/w",
+        ...overrides
+    }
+}
+
+const originalAgentCancel = useAgentStore.getState().cancel
+
+type LegacyKind = Exclude<ContextMenuKind, "agentSession" | "gitChange" | "preview">
+interface LegacyPayload {
+    path?: string
+    groupIndex?: number
+    isDir?: boolean
+    hostId?: string
+    host?: string
+    descriptorId?: string
+    addr?: string
+    sessionId?: string
+}
+
+function legacyRequest(kind: LegacyKind, payload: LegacyPayload = {}): ContextMenuRequest {
+    const workspace = useWorkspaceStore.getState()
+    const git = useGitStore.getState()
+    if (kind === "general" || kind === "rail") return { kind }
+    if (kind === "explorer") return { kind, workspacePath: workspace.workspacePath }
+    if (kind === "file") {
+        return {
+            kind,
+            workspacePath: workspace.workspacePath ?? "/w",
+            path: payload.path ?? "/w/file.ts",
+            isDirectory: payload.isDir ?? false,
+            sourceGroupIndex: payload.groupIndex ?? workspace.activeGroupIndex,
+        }
+    }
+    if (kind === "tab") {
+        return {
+            kind,
+            workspacePath: workspace.workspacePath,
+            path: payload.path ?? "/w/file.ts",
+            groupIndex: payload.groupIndex ?? workspace.activeGroupIndex,
+        }
+    }
+    if (kind === "editor") {
+        return {
+            kind,
+            workspacePath: workspace.workspacePath,
+            path: payload.path ?? workspace.groups[workspace.activeGroupIndex]?.activePath ?? EDIT_PATH,
+            groupIndex: payload.groupIndex ?? workspace.activeGroupIndex,
+        }
+    }
+    if (kind === "terminal") {
+        const workspacePath = workspace.workspacePath ?? "/w"
+        const layout = useTerminalStore.getState().layouts[workspacePath]
+        const pane = layout?.panes.find((candidate) => candidate.paneId === layout.activePaneId)
+        return {
+            kind,
+            workspacePath,
+            paneId: pane?.paneId ?? "missing-pane",
+            sessionId: payload.sessionId ?? pane?.sessionId ?? "missing-session",
+        }
+    }
+    if (kind === "git" || kind === "status") {
+        return {
+            kind,
+            repositoryRoot: git.environment?.status === "ready" ? git.environment.root : null,
+        }
+    }
+    if (kind === "sshhost") {
+        return { kind, hostId: payload.hostId ?? "missing-host", address: payload.host ?? "" }
+    }
+    return {
+        kind: "dbconn",
+        descriptorId: payload.descriptorId ?? "missing-descriptor",
+        address: payload.addr ?? "",
+    }
+}
+
+function runLegacyContextMenuAction(kind: LegacyKind, actionId: string, payload: LegacyPayload = {}) {
+    return executeLegacyContextMenuAction(legacyRequest(kind, payload), actionId)
+}
+
 beforeEach(() => {
     clearMocks()
     mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
     vi.clearAllMocks()
-    useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
+    useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useDiffModalStore.setState({ open: false, source: null, activeIndex: 0, mode: "unified" })
     useUiStore.setState(uiInitialState)
     useWorkspaceStore.setState({
@@ -81,21 +167,30 @@ beforeEach(() => {
         connectionState: "idle",
         connectionError: null,
         connection: null,
-        authRequired: null
+        authRequired: null,
+        pendingNewSession: false,
+        renamingSessionId: null,
+        confirmRemoveRequest: null,
+        cancel: originalAgentCancel
     })
 })
 
 describe("contextMenuStore", () => {
-    it("open 記錄 kind、座標與 payload；close 清掉 kind", () => {
-        useContextMenuStore.getState().open("tab", 120, 240, { path: "/a.md", groupIndex: 0 })
-        expect(useContextMenuStore.getState()).toMatchObject({
+    it("open 原子保存 typed request 與座標；close 清掉 request", () => {
+        const request: ContextMenuRequest = {
             kind: "tab",
+            workspacePath: "/w",
+            path: "/a.md",
+            groupIndex: 0,
+        }
+        useContextMenuStore.getState().open(request, 120, 240)
+        expect(useContextMenuStore.getState()).toMatchObject({
+            request,
             x: 120,
             y: 240,
-            payload: { path: "/a.md", groupIndex: 0 }
         })
         useContextMenuStore.getState().close()
-        expect(useContextMenuStore.getState().kind).toBeNull()
+        expect(useContextMenuStore.getState().request).toBeNull()
     })
 
     it("contextMenuHandler 阻止原生選單、停止冒泡並開啟對應選單", () => {
@@ -105,24 +200,13 @@ describe("contextMenuStore", () => {
             clientX: 33,
             clientY: 44
         } as unknown as ReactMouseEvent
-        contextMenuHandler("rail")(event)
+        contextMenuHandler({ kind: "rail" })(event)
         expect(event.preventDefault).toHaveBeenCalled()
         expect(event.stopPropagation).toHaveBeenCalled()
-        expect(useContextMenuStore.getState()).toMatchObject({ kind: "rail", x: 33, y: 44 })
+        expect(useContextMenuStore.getState()).toMatchObject({ request: { kind: "rail" }, x: 33, y: 44 })
     })
 
-    it("suppressContextMenu 只吃掉事件，不開選單", () => {
-        const event = {
-            preventDefault: vi.fn(),
-            stopPropagation: vi.fn()
-        } as unknown as ReactMouseEvent
-        suppressContextMenu(event)
-        expect(event.preventDefault).toHaveBeenCalled()
-        expect(event.stopPropagation).toHaveBeenCalled()
-        expect(useContextMenuStore.getState().kind).toBeNull()
-    })
-
-    it("runContextMenuAction 關閉選單並記 user-action log（UI-only stub）", async () => {
+    it("completed 才關閉後記 user-action log", async () => {
         const logged: unknown[] = []
         mockIPC((cmd, args) => {
             if (cmd === "log_event") {
@@ -131,30 +215,110 @@ describe("contextMenuStore", () => {
             }
             return undefined
         })
-        useContextMenuStore.getState().open("tab", 0, 0, { path: "/a.md" })
-        runContextMenuAction("tab", "cmCloseTab", { path: "/a.md" })
-        expect(useContextMenuStore.getState().kind).toBeNull()
-        await Promise.resolve()
+        const request: ContextMenuRequest = { kind: "general" }
+        const command = commandFor(request, "cmSettings")
+        expect(command).not.toBeNull()
+        useContextMenuStore.getState().open(request, 0, 0)
+        await runContextMenuAction(request, command!)
+        expect(useContextMenuStore.getState().request).toBeNull()
         expect(logged).toHaveLength(1)
-        const entry = (logged[0] as { event: { event: string; message: string; metadata: { path?: string } } }).event
+        const entry = (logged[0] as { event: { event: string; message: string; metadata: { kind: string } } }).event
         expect(entry.event).toBe("context_menu_action")
-        expect(entry.message).toBe("tab:cmCloseTab")
-        expect(entry.metadata.path).toBe("/a.md")
+        expect(entry.message).toBe("general:cmSettings")
+        expect(entry.metadata.kind).toBe("general")
     })
 
-    it("cmCompareHead 把絕對 activePath 相對化後對『在變更清單中的檔案』開 Diff modal", () => {
+    it("stale preflight disabled 時保留 menu、重算 reason，且不 dispatch/log", async () => {
+        const logged: unknown[] = []
+        mockIPC((cmd, args) => {
+            if (cmd === "log_event") logged.push(args)
+            return null
+        })
+        const request: ContextMenuRequest = { kind: "general" }
+        const executor = vi.fn(async () => "completed" as const)
+        const command = {
+            id: "stale",
+            label: () => "Stale",
+            availability: () => ({
+                visible: true,
+                enabled: false,
+                disabledReasonKey: "contextMenu.disabled.targetUnavailable",
+            }),
+            danger: false,
+            executor,
+        }
+        useContextMenuStore.getState().open(request, 1, 2)
+        const before = useContextMenuStore.getState().availabilityRevision
+        expect(await runContextMenuAction(request, command)).toBe("cancelled")
+        expect(useContextMenuStore.getState().request).toBe(request)
+        expect(useContextMenuStore.getState().availabilityRevision).toBe(before + 1)
+        expect(executor).not.toHaveBeenCalled()
+        expect(logged).toHaveLength(0)
+    })
+
+    it("cancelled outcome 關閉 menu 但不記成功 log", async () => {
+        const logged: unknown[] = []
+        mockIPC((cmd, args) => {
+            if (cmd === "log_event") logged.push(args)
+            return null
+        })
+        const request: ContextMenuRequest = { kind: "general" }
+        const command = {
+            id: "cancelled",
+            label: () => "Cancelled",
+            availability: () => ({ visible: true, enabled: true }),
+            danger: false,
+            executor: async () => "cancelled" as const,
+        }
+        useContextMenuStore.getState().open(request, 1, 2)
+        expect(await runContextMenuAction(request, command)).toBe("cancelled")
+        expect(useContextMenuStore.getState().request).toBeNull()
+        expect(logged).toHaveLength(0)
+    })
+
+    it("executor throw 交 actionFeedback，回傳 error 且不記成功 log", async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args })
+            return cmd === "plugin:dialog|message" ? "Ok" : null
+        })
+        const request: ContextMenuRequest = { kind: "general" }
+        const command = {
+            id: "throws",
+            label: () => "Throwing action",
+            availability: () => ({ visible: true, enabled: true }),
+            danger: false,
+            executor: async (): Promise<"completed"> => {
+                throw new Error("safe failure")
+            },
+        }
+        useContextMenuStore.getState().open(request, 1, 2)
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(calls.some((call) => call.cmd === "plugin:dialog|message")).toBe(true)
+        expect(calls.some((call) => call.cmd === "log_event")).toBe(false)
+    })
+
+    it("cmCompareHead 把 clicked path 相對化後對『在變更清單中的檔案』開 Diff modal", async () => {
         // Editor tabs open with ABSOLUTE paths (FileTree passes node.path); git
         // status paths are repo-relative. cmCompareHead must strip the repo root
         // before matching — otherwise this entry is a永久 no-op in production.
         useWorkspaceStore.setState({
-            groups: [{ tabs: [], activePath: "/w/src/git.rs" }],
-            activeGroupIndex: 0
+            groups: [
+                { tabs: [], activePath: "/w/src/git.rs" },
+                { tabs: [], activePath: "/w/src/other.rs" }
+            ],
+            activeGroupIndex: 1
         })
+        const view = makeEditorView("changed")
+        registerView("/w/src/git.rs", view, { groupIndex: 0 })
         useGitStore.setState({
             environment: { status: "ready", root: "/w", version: "2.50" },
             status: makeStatus({ unstaged: [{ path: "src/git.rs", origPath: null, status: "M" }] })
         })
-        runContextMenuAction("editor", "cmCompareHead", {})
+        await runLegacyContextMenuAction("editor", "cmCompareHead", {
+            path: "/w/src/git.rs",
+            groupIndex: 0
+        })
         expect(useUiStore.getState().mode).toBe("git")
         const s = useDiffModalStore.getState()
         expect(s.open).toBe(true)
@@ -165,6 +329,7 @@ describe("contextMenuStore", () => {
             expect(s.source.files.some((f) => f.path === "src/git.rs")).toBe(true)
             expect(s.activeIndex).toBe(s.source.files.findIndex((f) => f.path === "src/git.rs"))
         }
+        unregisterView("/w/src/git.rs", view)
     })
 
     it("cmCompareHead 對不在變更清單中的檔案是 no-op", () => {
@@ -176,7 +341,7 @@ describe("contextMenuStore", () => {
             environment: { status: "ready", root: "/w", version: "2.50" },
             status: makeStatus({ unstaged: [{ path: "src/git.rs", origPath: null, status: "M" }] })
         })
-        runContextMenuAction("editor", "cmCompareHead", {})
+        runLegacyContextMenuAction("editor", "cmCompareHead", {})
         expect(useDiffModalStore.getState().open).toBe(false)
         expect(useUiStore.getState().mode).toBe(uiInitialState.mode)
     })
@@ -186,7 +351,7 @@ describe("contextMenuStore", () => {
             environment: { status: "ready", root: "/w", version: "2.50" },
             status: makeStatus({ unstaged: [{ path: "src/git.rs", origPath: null, status: "M" }] })
         })
-        runContextMenuAction("editor", "cmCompareHead", {})
+        runLegacyContextMenuAction("editor", "cmCompareHead", {})
         expect(useDiffModalStore.getState().open).toBe(false)
     })
 
@@ -200,7 +365,7 @@ describe("contextMenuStore", () => {
             environment: { status: "notARepo" },
             status: makeStatus({ unstaged: [{ path: "src/git.rs", origPath: null, status: "M" }] })
         })
-        runContextMenuAction("editor", "cmCompareHead", {})
+        runLegacyContextMenuAction("editor", "cmCompareHead", {})
         expect(useDiffModalStore.getState().open).toBe(false)
 
         // active 檔在 repo root 之外：無法相對化 → no-op。
@@ -212,29 +377,161 @@ describe("contextMenuStore", () => {
             environment: { status: "ready", root: "/w", version: "2.50" },
             status: makeStatus({ unstaged: [{ path: "src/git.rs", origPath: null, status: "M" }] })
         })
-        runContextMenuAction("editor", "cmCompareHead", {})
+        runLegacyContextMenuAction("editor", "cmCompareHead", {})
         expect(useDiffModalStore.getState().open).toBe(false)
+    })
+})
+
+describe("agentSession command preflight", () => {
+    it("非 pending 的 clicked session 保持 menu 開啟、顯示原因且不 fallback 到 pending active session", async () => {
+        const cancel = vi.fn(async () => true)
+        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
+        useAgentStore.setState({
+            activeSessionId: "active",
+            cancel,
+            sessions: new Map([
+                ["clicked", makeAgentSession({ pendingTurn: false })],
+                ["active", makeAgentSession({ pendingTurn: true })]
+            ])
+        })
+        const command = commandFor(request, "cmCancelResponse")
+        if (!command) throw new Error("missing cmCancelResponse")
+        expect(command.availability(request)).toEqual({
+            visible: true,
+            enabled: false,
+            disabledReasonKey: "contextMenu.disabled.noPendingResponse"
+        })
+        useContextMenuStore.getState().open(request, 10, 20)
+
+        expect(await runContextMenuAction(request, command)).toBe("cancelled")
+        expect(useContextMenuStore.getState().request).toBe(request)
+        expect(cancel).not.toHaveBeenCalled()
+    })
+
+    it("pending clicked session 只 dispatch clicked sessionId，不使用 activeSessionId", async () => {
+        const cancel = vi.fn(async () => true)
+        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
+        useAgentStore.setState({
+            activeSessionId: "active",
+            cancel,
+            sessions: new Map([
+                ["clicked", makeAgentSession({ pendingTurn: true })],
+                ["active", makeAgentSession({ pendingTurn: true })]
+            ])
+        })
+        const command = commandFor(request, "cmCancelResponse")
+        if (!command) throw new Error("missing cmCancelResponse")
+        useContextMenuStore.getState().open(request, 10, 20)
+
+        expect(await runContextMenuAction(request, command)).toBe("completed")
+        expect(cancel).toHaveBeenCalledTimes(1)
+        expect(cancel).toHaveBeenCalledWith("clicked")
+        expect(useAgentStore.getState().activeSessionId).toBe("active")
+    })
+
+    it("Cancel Response failure reaches actionFeedback and preserves the clicked pending turn", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            return cmd === "plugin:dialog|message" ? "Ok" : null
+        })
+        const cancel = vi.fn(async () => {
+            throw new Error("cancel failed")
+        })
+        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
+        useAgentStore.setState({
+            activeSessionId: "other",
+            connection: { cancel } as never,
+            sessions: new Map([
+                ["clicked", makeAgentSession({ pendingTurn: true, running: true, tone: "run" })],
+                ["other", makeAgentSession({ pendingTurn: true })]
+            ])
+        })
+        const command = commandFor(request, "cmCancelResponse")
+        if (!command) throw new Error("missing cmCancelResponse")
+        useContextMenuStore.getState().open(request, 10, 20)
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(cancel).toHaveBeenCalledWith("clicked")
+        expect(useAgentStore.getState().sessions.get("clicked")).toMatchObject({
+            pendingTurn: true,
+            running: true,
+            tone: "run"
+        })
+        expect(useAgentStore.getState().sessions.get("other")?.pendingTurn).toBe(true)
+        expect(calls).toContain("plugin:dialog|message")
+        expect(calls).not.toContain("log_event")
+    })
+
+    it("Remove Session confirms first, then keeps a pending session when cancel fails", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            return cmd === "plugin:dialog|message" ? "Ok" : null
+        })
+        const cancel = vi.fn(async () => {
+            throw new Error("cancel refused")
+        })
+        const dropSession = vi.fn()
+        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
+        useAgentStore.setState({
+            connection: { cancel, dropSession } as never,
+            sessions: new Map([["clicked", makeAgentSession({ pendingTurn: true, running: true })]])
+        })
+        const command = commandFor(request, "cmRemoveSession")
+        if (!command) throw new Error("missing cmRemoveSession")
+        useContextMenuStore.getState().open(request, 10, 20)
+
+        const removing = runContextMenuAction(request, command)
+        useAgentStore.getState().respondRemoveSessionConfirm(true)
+
+        expect(await removing).toBe("error")
+        expect(useAgentStore.getState().sessions.has("clicked")).toBe(true)
+        expect(dropSession).not.toHaveBeenCalled()
+        expect(calls).toContain("plugin:dialog|message")
+        expect(calls).not.toContain("log_event")
+    })
+
+    it("Copy Working Directory clipboard failure 交給 actionFeedback 顯示，不冒充成功", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            if (cmd === "plugin:clipboard-manager|write_text") throw new Error("clipboard denied")
+            return cmd === "plugin:dialog|message" ? "Ok" : null
+        })
+        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
+        useAgentStore.setState({
+            sessions: new Map([["clicked", makeAgentSession({ cwd: "/clicked/project" })]])
+        })
+        const command = commandFor(request, "cmCopyWorkingDirectory")
+        if (!command) throw new Error("missing cmCopyWorkingDirectory")
+        useContextMenuStore.getState().open(request, 10, 20)
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(calls).toContain("plugin:clipboard-manager|write_text")
+        expect(calls).toContain("plugin:dialog|message")
+        expect(calls).not.toContain("log_event")
     })
 })
 
 // PROB-5 前波：純前端可完成的 action 真的接到目標 API（而非只 close+log）。
 describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
     it("cmSettings 開啟 Settings dialog（general／rail 共用）", () => {
-        runContextMenuAction("general", "cmSettings", {})
+        runLegacyContextMenuAction("general", "cmSettings", {})
         expect(useUiStore.getState().settingsOpen).toBe(true)
     })
 
     it("cmHideSidebar bump sidebarToggleRequest（AppShell 據此切換 navCollapsed，見該 store）", () => {
         const before = useUiStore.getState().sidebarToggleRequest
-        runContextMenuAction("rail", "cmHideSidebar", {})
+        runLegacyContextMenuAction("rail", "cmHideSidebar", {})
         expect(useUiStore.getState().sidebarToggleRequest).toBe(before + 1)
     })
 
     it("cmCmdPalette（general／editor 共用）bump paletteOpenRequest", () => {
         const before = useUiStore.getState().paletteOpenRequest
-        runContextMenuAction("general", "cmCmdPalette", {})
+        runLegacyContextMenuAction("general", "cmCmdPalette", {})
         expect(useUiStore.getState().paletteOpenRequest).toBe(before + 1)
-        runContextMenuAction("editor", "cmCmdPalette", {})
+        runLegacyContextMenuAction("editor", "cmCmdPalette", {})
         expect(useUiStore.getState().paletteOpenRequest).toBe(before + 2)
     })
 
@@ -260,7 +557,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
                 }
             ]
         })
-        runContextMenuAction("tab", "cmCloseTab", { path: "/w/b.ts", groupIndex: 0 })
+        runLegacyContextMenuAction("tab", "cmCloseTab", { path: "/w/b.ts", groupIndex: 0 })
         await vi.waitFor(() => {
             expect(useWorkspaceStore.getState().groups[0].tabs.map((t) => t.path)).toEqual(["/w/a.ts"])
         })
@@ -285,7 +582,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             if (cmd === "plugin:dialog|message") return "Cancel"
             return cmd === "log_event" ? null : undefined
         })
-        runContextMenuAction("tab", "cmCloseTab", { path: "/w/b.ts", groupIndex: 0 })
+        runLegacyContextMenuAction("tab", "cmCloseTab", { path: "/w/b.ts", groupIndex: 0 })
         await vi.waitFor(() => {
             expect(useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")).toBe(true)
         })
@@ -294,7 +591,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             if (cmd === "plugin:dialog|message") return "Ok"
             return cmd === "log_event" ? null : undefined
         })
-        runContextMenuAction("tab", "cmCloseTab", { path: "/w/b.ts", groupIndex: 0 })
+        runLegacyContextMenuAction("tab", "cmCloseTab", { path: "/w/b.ts", groupIndex: 0 })
         await vi.waitFor(() => {
             expect(useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")).toBe(false)
         })
@@ -315,7 +612,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
                 }
             ]
         })
-        runContextMenuAction("tab", "cmCloseOthers", { path: "/w/b.ts", groupIndex: 0 })
+        runLegacyContextMenuAction("tab", "cmCloseOthers", { path: "/w/b.ts", groupIndex: 0 })
         await vi.waitFor(() => {
             expect(useWorkspaceStore.getState().groups[0].tabs.map((t) => t.path)).toEqual(["/w/b.ts"])
         })
@@ -336,7 +633,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
                 }
             ]
         })
-        runContextMenuAction("tab", "cmCloseAll", { groupIndex: 0 })
+        runLegacyContextMenuAction("tab", "cmCloseAll", { groupIndex: 0 })
         await vi.waitFor(() => {
             expect(useWorkspaceStore.getState().groups[0].tabs).toEqual([])
         })
@@ -351,7 +648,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         })
         useWorkspaceStore.setState({ workspacePath: "/w" })
 
-        runContextMenuAction("tab", "cmCopyRel", { path: "/w/src/a.ts", groupIndex: 0 })
+        runLegacyContextMenuAction("tab", "cmCopyRel", { path: "/w/src/a.ts", groupIndex: 0 })
         await vi.waitFor(() => {
             expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
         })
@@ -360,7 +657,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         ).toBe("src/a.ts")
 
         calls.length = 0
-        runContextMenuAction("file", "cmCopyRel", { path: "/other/a.ts" })
+        runLegacyContextMenuAction("file", "cmCopyRel", { path: "/other/a.ts" })
         await vi.waitFor(() => {
             expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
         })
@@ -369,19 +666,28 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         ).toBe("/other/a.ts")
     })
 
-    it("tab/file: cmSplit／cmOpenSplit 都呼叫既有的 splitRight（groups/split 機制）", () => {
-        useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 })
-        runContextMenuAction("tab", "cmSplit", { path: "/w/a.ts", groupIndex: 0 })
+    it("tab/file: split action 執行 atomic move/open，不留下空 group", async () => {
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        const tab = { path: "/w/a.ts", name: "a.ts", dirty: true, externallyModified: true }
+        useWorkspaceStore.setState({ groups: [{ tabs: [tab], activePath: tab.path }], activeGroupIndex: 0 })
+        expect(await runLegacyContextMenuAction("tab", "cmSplit", { path: tab.path, groupIndex: 0 })).toBe("completed")
         expect(useWorkspaceStore.getState().groups).toHaveLength(2)
+        expect(useWorkspaceStore.getState().groups[0].tabs).toEqual([])
+        expect(useWorkspaceStore.getState().groups[1].tabs[0]).toMatchObject({
+            path: tab.path,
+            dirty: true,
+            externallyModified: true
+        })
 
         useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 })
-        runContextMenuAction("file", "cmOpenSplit", { path: "/w/a.ts" })
+        expect(await runLegacyContextMenuAction("file", "cmOpenSplit", { path: "/w/b.ts" })).toBe("completed")
         expect(useWorkspaceStore.getState().groups).toHaveLength(2)
+        expect(useWorkspaceStore.getState().groups[1].activePath).toBe("/w/b.ts")
     })
 
     it("file: cmOpen 開啟該檔案分頁", () => {
         useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 })
-        runContextMenuAction("file", "cmOpen", { path: "/w/a.ts" })
+        runLegacyContextMenuAction("file", "cmOpen", { path: "/w/a.ts" })
         const group = useWorkspaceStore.getState().groups[0]
         expect(group.activePath).toBe("/w/a.ts")
         expect(group.tabs.some((t) => t.path === "/w/a.ts")).toBe(true)
@@ -394,25 +700,13 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             return cmd === "log_event" ? null : undefined
         })
         useWorkspaceStore.setState({ workspacePath: "/w/project" })
-        runContextMenuAction("explorer", "cmCopyPath", {})
+        runLegacyContextMenuAction("explorer", "cmCopyPath", {})
         await vi.waitFor(() => {
             expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
         })
         expect(
             (calls.find((c) => c.cmd === "plugin:clipboard-manager|write_text")?.args as { text: string }).text
         ).toBe("/w/project")
-    })
-
-    it("agent: cmCopyPath 沒有可用的 payload/store 對映，維持 UI-only（deferred，不誤觸 explorer 的邏輯）", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
-            return cmd === "log_event" ? null : undefined
-        })
-        useWorkspaceStore.setState({ workspacePath: "/w/project" })
-        runContextMenuAction("agent", "cmCopyPath", {})
-        await new Promise((resolve) => setTimeout(resolve, 0))
-        expect(calls).not.toContain("plugin:clipboard-manager|write_text")
     })
 
     it("editor: cmCopy 複製選取文字到 clipboard", async () => {
@@ -422,10 +716,10 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             return cmd === "log_event" ? null : undefined
         })
         const view = makeEditorView("hello world", { anchor: 0, head: 5 })
-        registerView(EDIT_PATH, view)
+        registerView(EDIT_PATH, view, { groupIndex: 0 })
         useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: EDIT_PATH }], activeGroupIndex: 0 })
 
-        runContextMenuAction("editor", "cmCopy", {})
+        runLegacyContextMenuAction("editor", "cmCopy", {})
         await vi.waitFor(() => {
             expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
         })
@@ -435,15 +729,47 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         unregisterView(EDIT_PATH)
     })
 
+    it("editor actions use the clicked path/group even when another group is active", async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args })
+            return cmd === "log_event" ? null : undefined
+        })
+        const clickedPath = "/w/clicked.ts"
+        const activePath = "/w/active.ts"
+        const clicked = makeEditorView("clicked", { anchor: 0, head: 7 })
+        const active = makeEditorView("active", { anchor: 0, head: 6 })
+        registerView(clickedPath, clicked, { groupIndex: 0 })
+        registerView(activePath, active, { groupIndex: 1 })
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 1,
+            groups: [
+                { tabs: [], activePath: clickedPath },
+                { tabs: [], activePath }
+            ]
+        })
+
+        await runLegacyContextMenuAction("editor", "cmCopy", {
+            path: clickedPath,
+            groupIndex: 0
+        })
+
+        const write = calls.find((call) => call.cmd === "plugin:clipboard-manager|write_text")
+        expect((write?.args as { text: string }).text).toBe("clicked")
+        unregisterView(clickedPath, clicked)
+        unregisterView(activePath, active)
+    })
+
     it("editor: cmCut 複製並移除選取文字", async () => {
         mockIPC((cmd) =>
             cmd === "log_event" || cmd === "plugin:clipboard-manager|write_text" ? null : undefined
         )
         const view = makeEditorView("hello world", { anchor: 0, head: 5 })
-        registerView(EDIT_PATH, view)
+        registerView(EDIT_PATH, view, { groupIndex: 0 })
         useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: EDIT_PATH }], activeGroupIndex: 0 })
 
-        runContextMenuAction("editor", "cmCut", {})
+        runLegacyContextMenuAction("editor", "cmCut", {})
         await vi.waitFor(() => {
             expect(view.state.doc.toString()).toBe(" world")
         })
@@ -456,126 +782,168 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             return cmd === "log_event" ? null : undefined
         })
         const view = makeEditorView("hello world", { anchor: 0, head: 0 })
-        registerView(EDIT_PATH, view)
+        registerView(EDIT_PATH, view, { groupIndex: 0 })
         useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: EDIT_PATH }], activeGroupIndex: 0 })
 
-        runContextMenuAction("editor", "cmPaste", {})
+        runLegacyContextMenuAction("editor", "cmPaste", {})
         await vi.waitFor(() => {
             expect(view.state.doc.toString()).toBe("PASTED-hello world")
         })
         unregisterView(EDIT_PATH)
     })
 
-    it("editor: cmFormatDoc 呼叫 CodeMirror 的 formatDocument command", () => {
+    it("editor: cmFormatDoc 只呼叫 clicked view 註冊的 formatter", async () => {
         const view = makeEditorView("const x=1")
-        registerView(EDIT_PATH, view)
+        const format = vi.fn(async () => true)
+        registerView(EDIT_PATH, view, {
+            groupIndex: 0,
+            formatter: "available",
+            formatDocument: format
+        })
         useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: EDIT_PATH }], activeGroupIndex: 0 })
 
-        runContextMenuAction("editor", "cmFormatDoc", {})
-        expect(formatDocument).toHaveBeenCalledWith(view)
+        expect(await runLegacyContextMenuAction("editor", "cmFormatDoc", {})).toBe("completed")
+        expect(format).toHaveBeenCalledTimes(1)
         unregisterView(EDIT_PATH)
+    })
+
+    it("editor: Paste clipboard failure reaches the shared action-error dialog", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            if (cmd === "plugin:clipboard-manager|read_text") throw new Error("clipboard denied")
+            return null
+        })
+        const view = makeEditorView("hello")
+        registerView(EDIT_PATH, view, { groupIndex: 0 })
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            groups: [{ tabs: [], activePath: EDIT_PATH }],
+            activeGroupIndex: 0
+        })
+        const request: ContextMenuRequest = {
+            kind: "editor",
+            workspacePath: "/w",
+            path: EDIT_PATH,
+            groupIndex: 0
+        }
+        const command = commandFor(request, "cmPaste")!
+        useContextMenuStore.getState().open(request, 1, 1)
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(calls).toContain("plugin:dialog|message")
+        unregisterView(EDIT_PATH, view)
+    })
+
+    it("editor: formatter rejection reaches the shared action-error dialog", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            return null
+        })
+        const view = makeEditorView("hello")
+        registerView(EDIT_PATH, view, {
+            groupIndex: 0,
+            formatter: "available",
+            formatDocument: async () => {
+                throw new Error("formatter failed")
+            }
+        })
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            groups: [{ tabs: [], activePath: EDIT_PATH }],
+            activeGroupIndex: 0
+        })
+        const request: ContextMenuRequest = {
+            kind: "editor",
+            workspacePath: "/w",
+            path: EDIT_PATH,
+            groupIndex: 0
+        }
+        const command = commandFor(request, "cmFormatDoc")!
+        useContextMenuStore.getState().open(request, 1, 1)
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(calls).toContain("plugin:dialog|message")
+        unregisterView(EDIT_PATH, view)
     })
 
     it("editor: 沒有 active view 時 cmCut/cmCopy/cmPaste/cmFormatDoc 都是 no-op、不 throw", () => {
         useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 })
-        expect(() => runContextMenuAction("editor", "cmCopy", {})).not.toThrow()
-        expect(() => runContextMenuAction("editor", "cmCut", {})).not.toThrow()
-        expect(() => runContextMenuAction("editor", "cmPaste", {})).not.toThrow()
-        expect(() => runContextMenuAction("editor", "cmFormatDoc", {})).not.toThrow()
-        expect(formatDocument).not.toHaveBeenCalled()
+        expect(() => runLegacyContextMenuAction("editor", "cmCopy", {})).not.toThrow()
+        expect(() => runLegacyContextMenuAction("editor", "cmCut", {})).not.toThrow()
+        expect(() => runLegacyContextMenuAction("editor", "cmPaste", {})).not.toThrow()
+        expect(() => runLegacyContextMenuAction("editor", "cmFormatDoc", {})).not.toThrow()
     })
 
     it("git: cmFetch 呼叫 gitStore.runOp('fetch', …) → git_fetch_cmd", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args })
             if (cmd === "git_branches") return { local: [], remote: [] }
             return cmd === "log_event" ? null : null
         })
-        runContextMenuAction("git", "cmFetch", {})
-        await vi.waitFor(() => expect(calls).toContain("git_fetch_cmd"))
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50" } })
+        await runLegacyContextMenuAction("git", "cmFetch", {})
+        await vi.waitFor(() => expect(calls.find((call) => call.cmd === "git_fetch_cmd")?.args)
+            .toMatchObject({ background: false, repositoryRoot: "/w" }))
         await vi.waitFor(() => expect(useGitStore.getState().busy).toBeNull())
     })
 
     it("status: cmPull 呼叫 gitStore.runOp('pull', …) → git_pull_cmd（git／status 共用同一段 dispatch）", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args })
             if (cmd === "git_branches") return { local: [], remote: [] }
             return cmd === "log_event" ? null : null
         })
-        runContextMenuAction("status", "cmPull", {})
-        await vi.waitFor(() => expect(calls).toContain("git_pull_cmd"))
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50" } })
+        await runLegacyContextMenuAction("status", "cmPull", {})
+        await vi.waitFor(() => expect(calls.find((call) => call.cmd === "git_pull_cmd")?.args)
+            .toMatchObject({ repositoryRoot: "/w" }))
         await vi.waitFor(() => expect(useGitStore.getState().busy).toBeNull())
     })
 
     it("git: cmPush 呼叫 gitStore.runOp('push', …) → git_push_cmd", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args })
             if (cmd === "git_branches") return { local: [], remote: [] }
             return cmd === "log_event" ? null : null
         })
-        runContextMenuAction("git", "cmPush", {})
-        await vi.waitFor(() => expect(calls).toContain("git_push_cmd"))
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50" } })
+        await runLegacyContextMenuAction("git", "cmPush", {})
+        await vi.waitFor(() => expect(calls.find((call) => call.cmd === "git_push_cmd")?.args)
+            .toMatchObject({ repositoryRoot: "/w" }))
         await vi.waitFor(() => expect(useGitStore.getState().busy).toBeNull())
     })
 
-    it("git/status: cmCopyBranch／cmCopyHash 複製目前分支與 HEAD oid", async () => {
+    it("git/status: cmCopyBranch／cmCopyHash 複製 requested repository 的目前分支與 HEAD oid", async () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         mockIPC((cmd, args) => {
             calls.push({ cmd, args })
             return cmd === "log_event" ? null : undefined
         })
-        useGitStore.setState({ status: makeStatus({ branch: "feature/x", headOid: "a".repeat(40) }) })
-
-        runContextMenuAction("git", "cmCopyBranch", {})
-        await vi.waitFor(() => {
-            expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50" },
+            status: makeStatus({ branch: "feature/x", headOid: "a".repeat(40) })
         })
+
+        await runLegacyContextMenuAction("git", "cmCopyBranch", {})
         expect(
             (calls.find((c) => c.cmd === "plugin:clipboard-manager|write_text")?.args as { text: string }).text
         ).toBe("feature/x")
 
         calls.length = 0
-        runContextMenuAction("status", "cmCopyHash", {})
-        await vi.waitFor(() => {
-            expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
-        })
+        await runLegacyContextMenuAction("status", "cmCopyHash", {})
         expect(
             (calls.find((c) => c.cmd === "plugin:clipboard-manager|write_text")?.args as { text: string }).text
         ).toBe("a".repeat(40))
-    })
 
-    it("agent: cmStop 呼叫 agentStore.cancel() 結束目前 session", () => {
-        useAgentStore.setState({
-            activeSessionId: "s1",
-            sessions: new Map([
-                [
-                    "s1",
-                    {
-                        title: "t",
-                        agentLabel: "Agent",
-                        model: null,
-                        tone: "run",
-                        transcript: [],
-                        availableCommands: [],
-                        stopReason: null,
-                        stopBadge: null,
-                        error: null,
-                        queueDepth: null,
-                        running: true,
-                        pendingTurn: true,
-                        metadataTitle: false,
-                        cwd: "/w"
-                    }
-                ]
-            ])
-        })
-        runContextMenuAction("agent", "cmStop", {})
-        const session = useAgentStore.getState().sessions.get("s1")
-        expect(session?.stopReason).toBe("cancelled")
-        expect(session?.running).toBe(false)
+        calls.length = 0
+        const staleRequest: ContextMenuRequest = { kind: "status", repositoryRoot: "/other" }
+        expect(await executeLegacyContextMenuAction(staleRequest, "cmCopyHash")).toBe("cancelled")
+        expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(false)
     })
 
     it("sshhost: cmOpenSftp 切到 SFTP tab、聚焦該 host 並開始連線（F5）", () => {
@@ -588,26 +956,412 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             user: "u",
             authKind: "password"
         })
-        runContextMenuAction("sshhost", "cmOpenSftp", { hostId: host.id })
+        runLegacyContextMenuAction("sshhost", "cmOpenSftp", { hostId: host.id })
         expect(useSftpStore.getState().activeTab).toBe("sftp")
         expect(useSshStore.getState().activeHostId).toBe(host.id)
         // Password host → begins the connect flow rather than silently no-op'ing.
         expect(useSshStore.getState().pendingAuthHostId).toBe(host.id)
     })
 
-    it("terminal: cmKill 移除目前 active pane 的 session（terminalStore.removeSession）", () => {
-        useWorkspaceStore.setState({ workspacePath: "/w" })
+    it("sshhost: Disconnect backend failure enters shared action feedback and preserves the live session", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            if (cmd === "ssh_disconnect") throw new Error("disconnect failed")
+            return cmd === "log_event" ? null : undefined
+        })
+        const request: ContextMenuRequest = {
+            kind: "sshhost",
+            hostId: "clicked",
+            address: "clicked@example.com:22"
+        }
+        useSshStore.setState({
+            hosts: [{
+                id: "clicked",
+                name: "Clicked",
+                host: "example.com",
+                port: 22,
+                user: "clicked",
+                authKind: "password"
+            }],
+            sessions: {
+                clicked: {
+                    hostId: "clicked",
+                    sessionId: "session-clicked",
+                    status: "connected",
+                    fingerprint: null,
+                    knownHost: true,
+                    error: null
+                }
+            },
+            activeHostId: "unrelated-active-host",
+            pendingAuthHostId: null
+        })
+        const command = commandFor(request, "cmDisconnect")
+        if (!command) throw new Error("missing cmDisconnect")
+        useContextMenuStore.getState().open(request, 1, 1)
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(calls).toContain("plugin:dialog|message")
+        expect(useSshStore.getState().sessions.clicked).toMatchObject({
+            status: "connected",
+            sessionId: "session-clicked"
+        })
+    })
+
+    it("dbconn: cmDisconnect 呼叫 dbStore.disconnect — 保留描述子、標記 disconnected", async () => {
+        useDbStore.setState({
+            connections: [
+                { connId: "c1", connectionGeneration: "generation-1" as never, kind: "sqlite", name: "a", descriptorId: "d1", targetKey: "/a.db", title: "/a.db" }
+            ],
+            saved: [{ id: "d1", configGeneration: 1, targetKey: "/a.db", kind: "sqlite", name: "a", path: "/a.db" }],
+            sessions: { d1: { descriptorId: "d1", connId: "c1", status: "connected", error: null } },
+            activeDescriptorId: "d1",
+            activeConnId: "c1",
+            tables: {},
+            queries: {}
+        })
+        runLegacyContextMenuAction("dbconn", "cmDisconnect", { descriptorId: "d1" })
+        await vi.waitFor(() => {
+            expect(useDbStore.getState().connections).toEqual([])
+        })
+        expect(useDbStore.getState().sessions.d1).toMatchObject({ status: "disconnected", connId: null })
+        // The saved descriptor survives so the row can reconnect.
+        expect(useDbStore.getState().saved.map((x) => x.id)).toEqual(["d1"])
+    })
+
+    it("dbconn: cmDisconnect failure preserves the live connection and reaches action feedback", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            if (cmd === "db_profile_disconnect") {
+                throw { code: "connectionFailed", message: "database close failed" }
+            }
+            if (cmd === "plugin:dialog|message") return "Ok"
+            return null
+        })
+        useDbStore.setState({
+            connections: [
+                { connId: "c1", connectionGeneration: "generation-1" as never, kind: "sqlite", name: "a", descriptorId: "d1", targetKey: "/a.db", title: "/a.db" }
+            ],
+            saved: [{ id: "d1", configGeneration: 1, targetKey: "/a.db", kind: "sqlite", name: "a", path: "/a.db" }],
+            sessions: { d1: { descriptorId: "d1", connId: "c1", status: "connected", error: null } },
+            activeDescriptorId: "d1",
+            activeConnId: "c1",
+            tables: { c1: [] },
+            queries: {}
+        })
+        const request: ContextMenuRequest = { kind: "dbconn", descriptorId: "d1", address: "/a.db" }
+        const command = commandFor(request, "cmDisconnect")
+        if (!command) throw new Error("missing cmDisconnect")
+        useContextMenuStore.getState().open(request, 1, 1)
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(useDbStore.getState().connections.map((connection) => connection.connId)).toEqual(["c1"])
+        expect(useDbStore.getState().sessions.d1).toMatchObject({
+            status: "error",
+            connId: "c1",
+            error: "connectionFailed"
+        })
+        expect(calls).toContain("plugin:dialog|message")
+        expect(calls).not.toContain("log_event")
+    })
+
+    it("dbconn: cmOpenDb 已移出 legacy dispatcher，必須由 typed registry 執行", async () => {
+        useDbStore.setState({
+            connections: [
+                { connId: "c1", kind: "sqlite", name: "a", descriptorId: "d1", targetKey: "/a.db", title: "/a.db" }
+            ],
+            saved: [{ id: "d1", targetKey: "/a.db", kind: "sqlite", name: "a", path: "/a.db" }],
+            sessions: {},
+            activeConnId: null,
+            tables: { c1: [] },
+            queries: {}
+        })
+        expect(await runLegacyContextMenuAction("dbconn", "cmOpenDb", { descriptorId: "d1" }))
+            .toBe("cancelled")
+        expect(useDbStore.getState().activeConnId).toBeNull()
+    })
+
+    it("dbconn: SQLite Open failure keeps row error and reaches shared actionFeedback", async () => {
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            if (cmd === "db_profile_open") {
+                throw { code: "connectionFailed", message: "RAW FILE DETAIL" }
+            }
+            if (cmd === "plugin:dialog|message") return "Ok"
+            return null
+        })
+        useDbStore.setState({
+            connections: [],
+            saved: [{ id: "d1", targetKey: "/a.db", kind: "sqlite", name: "a", path: "/a.db" }],
+            sessions: {},
+            activeConnId: null,
+            tables: {},
+            queries: {},
+            reconnectRequest: null
+        })
+        const request: ContextMenuRequest = {
+            kind: "dbconn",
+            descriptorId: "d1",
+            address: "/a.db"
+        }
+        const command = commandFor(request, "cmOpenDb")
+        if (!command) throw new Error("missing cmOpenDb")
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(useDbStore.getState().sessions.d1).toEqual({
+            descriptorId: "d1",
+            connId: null,
+            status: "error",
+            error: "connectionFailed"
+        })
+        expect(calls).toContain("plugin:dialog|message")
+    })
+
+    it("dbconn: cmCopyAddr 依 descriptorId 重讀目前位址，不信任 stale payload", async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args })
+            return cmd === "log_event" ? null : undefined
+        })
+        useDbStore.setState({
+            saved: [{
+                id: "d1",
+                targetKey: "postgres:current.example:5432:app",
+                kind: "postgres",
+                name: "app",
+                host: "current.example",
+                port: 5432,
+                database: "app",
+                user: "admin",
+                ssl: false
+            }]
+        })
+        runLegacyContextMenuAction("dbconn", "cmCopyAddr", {
+            descriptorId: "d1",
+            addr: "stale@old.example:1/old"
+        })
+        await vi.waitFor(() => {
+            expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
+        })
+        expect(
+            (calls.find((c) => c.cmd === "plugin:clipboard-manager|write_text")?.args as { text: string }).text
+        ).toBe("admin@current.example:5432/app")
+    })
+
+    it("terminal: 無 selection 時 disabled preflight 不 close、不 log、不 dispatch", async () => {
+        const request: ContextMenuRequest = {
+            kind: "terminal",
+            workspacePath: "/w",
+            paneId: "pane-clicked",
+            sessionId: "t1"
+        }
         useTerminalStore.setState({
             sessions: {
                 t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
             },
             layouts: {
-                "/w": { panes: [{ paneId: "t1", sessionId: "t1" }], activePaneId: "t1", splitDirection: null }
+                "/w": {
+                    panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
+                    activePaneId: "other-pane",
+                    splitDirection: null
+                }
             }
         })
-        runContextMenuAction("terminal", "cmKill", {})
-        expect(useTerminalStore.getState().layouts["/w"].panes).toHaveLength(0)
-        expect(useTerminalStore.getState().sessions.t1).toBeUndefined()
+        const unregister = registerTerminalView("t1", {
+            hasSelection: () => false,
+            getSelection: () => "",
+            paste: vi.fn(),
+            clear: vi.fn()
+        })
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            return undefined
+        })
+        useContextMenuStore.getState().open(request, 10, 20)
+        const command = commandFor(request, "cmCopySel")
+        if (!command) throw new Error("missing cmCopySel")
+
+        expect(await runContextMenuAction(request, command)).toBe("cancelled")
+        expect(useContextMenuStore.getState().request).toBe(request)
+        expect(calls).not.toContain("plugin:clipboard-manager|write_text")
+        expect(calls).not.toContain("log_event")
+        unregister()
+    })
+
+    it("terminal: empty clipboard cancels Paste and never logs success", async () => {
+        const request: ContextMenuRequest = {
+            kind: "terminal",
+            workspacePath: "/w",
+            paneId: "pane-clicked",
+            sessionId: "t1"
+        }
+        useTerminalStore.setState({
+            sessions: {
+                t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
+            },
+            layouts: {
+                "/w": {
+                    panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
+                    activePaneId: "unrelated-active-pane",
+                    splitDirection: null
+                }
+            }
+        })
+        const paste = vi.fn(async () => undefined)
+        const unregister = registerTerminalView("t1", {
+            hasSelection: () => false,
+            getSelection: () => "",
+            isReady: () => true,
+            paste,
+            clear: vi.fn()
+        })
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            return cmd === "plugin:clipboard-manager|read_text" ? "" : undefined
+        })
+        const command = commandFor(request, "cmPaste")
+        if (!command) throw new Error("missing cmPaste")
+        useContextMenuStore.getState().open(request, 10, 20)
+
+        expect(await runContextMenuAction(request, command)).toBe("cancelled")
+        expect(paste).not.toHaveBeenCalled()
+        expect(calls).toContain("plugin:clipboard-manager|read_text")
+        expect(calls).not.toContain("log_event")
+        unregister()
+    })
+
+    it("terminal: clicked-pane Paste failure reaches actionFeedback without active-pane fallback", async () => {
+        const request: ContextMenuRequest = {
+            kind: "terminal",
+            workspacePath: "/w",
+            paneId: "pane-clicked",
+            sessionId: "t-clicked"
+        }
+        useTerminalStore.setState({
+            sessions: {
+                "t-clicked": { sessionId: "t-clicked", title: "Clicked", workspace: "/w", shell: "", cols: 80, rows: 24 },
+                "t-active": { sessionId: "t-active", title: "Active", workspace: "/w", shell: "", cols: 80, rows: 24 }
+            },
+            layouts: {
+                "/w": {
+                    panes: [
+                        { paneId: "pane-clicked", sessionId: "t-clicked" },
+                        { paneId: "pane-active", sessionId: "t-active" }
+                    ],
+                    activePaneId: "pane-active",
+                    splitDirection: "right"
+                }
+            }
+        })
+        const clickedPaste = vi.fn(async () => {
+            throw new Error("pty write failed")
+        })
+        const activePaste = vi.fn(async () => undefined)
+        const unregisterClicked = registerTerminalView("t-clicked", {
+            hasSelection: () => false,
+            getSelection: () => "",
+            isReady: () => true,
+            paste: clickedPaste,
+            clear: vi.fn()
+        })
+        const unregisterActive = registerTerminalView("t-active", {
+            hasSelection: () => false,
+            getSelection: () => "",
+            isReady: () => true,
+            paste: activePaste,
+            clear: vi.fn()
+        })
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            if (cmd === "plugin:clipboard-manager|read_text") return "clipboard"
+            return cmd === "plugin:dialog|message" ? "Ok" : undefined
+        })
+        const command = commandFor(request, "cmPaste")
+        if (!command) throw new Error("missing cmPaste")
+        useContextMenuStore.getState().open(request, 10, 20)
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(clickedPaste).toHaveBeenCalledWith("clipboard")
+        expect(activePaste).not.toHaveBeenCalled()
+        expect(calls).toContain("plugin:dialog|message")
+        expect(calls).not.toContain("log_event")
+        unregisterClicked()
+        unregisterActive()
+    })
+
+    it("terminal: Close cancel 不改 state，也不 dispatch pty_close", async () => {
+        const request: ContextMenuRequest = {
+            kind: "terminal",
+            workspacePath: "/w",
+            paneId: "pane-clicked",
+            sessionId: "t1"
+        }
+        useTerminalStore.setState({
+            sessions: {
+                t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
+            },
+            layouts: {
+                "/w": {
+                    panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
+                    activePaneId: "pane-clicked",
+                    splitDirection: null
+                }
+            }
+        })
+        const calls: string[] = []
+        mockIPC((cmd) => {
+            calls.push(cmd)
+            if (cmd === "plugin:dialog|message") return "Cancel"
+            return undefined
+        })
+        const command = commandFor(request, "cmCloseTerminal")
+        if (!command) throw new Error("missing cmCloseTerminal")
+
+        expect(await runContextMenuAction(request, command)).toBe("cancelled")
+        expect(calls).not.toContain("pty_close")
+        expect(useTerminalStore.getState().layouts["/w"].panes).toHaveLength(1)
+    })
+
+    it("terminal: Close error 顯示 action feedback 且保留 pane", async () => {
+        const request: ContextMenuRequest = {
+            kind: "terminal",
+            workspacePath: "/w",
+            paneId: "pane-clicked",
+            sessionId: "t1"
+        }
+        useTerminalStore.setState({
+            sessions: {
+                t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
+            },
+            layouts: {
+                "/w": {
+                    panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
+                    activePaneId: "pane-clicked",
+                    splitDirection: null
+                }
+            }
+        })
+        const dialogMessages: string[] = []
+        mockIPC((cmd, args) => {
+            if (cmd === "plugin:dialog|message") {
+                dialogMessages.push(String((args as { message?: string })?.message ?? ""))
+                return "Ok"
+            }
+            if (cmd === "pty_close") throw new Error("close failed")
+            return undefined
+        })
+        const command = commandFor(request, "cmCloseTerminal")
+        if (!command) throw new Error("missing cmCloseTerminal")
+
+        expect(await runContextMenuAction(request, command)).toBe("error")
+        expect(useTerminalStore.getState().layouts["/w"].panes).toHaveLength(1)
+        expect(dialogMessages.some((text) => text.includes("close failed"))).toBe(true)
     })
 })
 
@@ -635,7 +1389,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         })
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("new.ts")
 
-        runContextMenuAction("explorer", "cmNewFile", {})
+        runLegacyContextMenuAction("explorer", "cmNewFile", {})
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_create_file")).toBe(true))
         expect(calls.find((c) => c.cmd === "fs_create_file")?.args).toMatchObject({
             workspace: "/w",
@@ -658,7 +1412,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         })
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("assets")
 
-        runContextMenuAction("explorer", "cmNewFolder", {})
+        runLegacyContextMenuAction("explorer", "cmNewFolder", {})
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_create_dir")).toBe(true))
         expect(calls.find((c) => c.cmd === "fs_create_dir")?.args).toMatchObject({
             workspace: "/w",
@@ -674,7 +1428,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null)
 
-        runContextMenuAction("explorer", "cmNewFile", {})
+        runLegacyContextMenuAction("explorer", "cmNewFile", {})
         await new Promise((resolve) => setTimeout(resolve, 0))
         expect(calls.some((c) => c.cmd === "fs_create_file")).toBe(false)
         expect(useWorkspaceStore.getState().treeRevision).toBe(0)
@@ -686,7 +1440,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("renamed.ts")
 
-        runContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
+        runLegacyContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_rename")).toBe(true))
         expect(calls.find((c) => c.cmd === "fs_rename")?.args).toMatchObject({
             workspace: "/w",
@@ -702,7 +1456,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("old.ts")
 
-        runContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
+        runLegacyContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
         await new Promise((resolve) => setTimeout(resolve, 0))
         expect(calls.some((c) => c.cmd === "fs_rename")).toBe(false)
         promptSpy.mockRestore()
@@ -712,7 +1466,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         const calls = ipcCalls()
         useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
 
-        runContextMenuAction("file", "cmDelete", { path: "/w/f.ts", isDir: false })
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/f.ts", isDir: false })
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_delete")).toBe(true))
         const confirmCall = calls.find((c) => c.cmd === "plugin:dialog|message")
         expect(String(confirmCall?.args.message)).toContain("f.ts")
@@ -724,14 +1478,15 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         await vi.waitFor(() => expect(useWorkspaceStore.getState().treeRevision).toBe(1))
     })
 
-    it("file: cmDelete 資料夾 → confirm 文字帶「將刪除整個資料夾」警告", async () => {
+    it("file: cmDelete 資料夾 → localized confirm 明確涵蓋全部內容", async () => {
         const calls = ipcCalls()
         useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
 
-        runContextMenuAction("file", "cmDelete", { path: "/w/dir", isDir: true })
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/dir", isDir: true })
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_delete")).toBe(true))
         const confirmCall = calls.find((c) => c.cmd === "plugin:dialog|message")
-        expect(String(confirmCall?.args.message)).toContain("將刪除整個資料夾")
+        expect(String(confirmCall?.args.message)).toContain("dir")
+        expect(String(confirmCall?.args.message)).toContain("all of its contents")
     })
 
     it("file: cmDelete 取消 confirm 不呼叫 fs_delete、不 refreshTree", async () => {
@@ -743,7 +1498,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         })
         useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
 
-        runContextMenuAction("file", "cmDelete", { path: "/w/f.ts", isDir: false })
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/f.ts", isDir: false })
         await new Promise((resolve) => setTimeout(resolve, 0))
         expect(calls.some((c) => c.cmd === "fs_delete")).toBe(false)
         expect(useWorkspaceStore.getState().treeRevision).toBe(0)
@@ -751,7 +1506,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
 
     it("file: cmReveal 呼叫 opener 的 reveal_item_in_dir（傳目標 path）", async () => {
         const calls = ipcCalls()
-        runContextMenuAction("file", "cmReveal", { path: "/w/f.ts" })
+        runLegacyContextMenuAction("file", "cmReveal", { path: "/w/f.ts" })
         await vi.waitFor(() =>
             expect(calls.some((c) => c.cmd === "plugin:opener|reveal_item_in_dir")).toBe(true)
         )
@@ -775,7 +1530,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
             activeGroupIndex: 0
         })
 
-        runContextMenuAction("file", "cmOpenInBrowser", { path: "/w/site/index.html" })
+        runLegacyContextMenuAction("file", "cmOpenInBrowser", { path: "/w/site/index.html" })
 
         await vi.waitFor(() =>
             expect(usePreviewStore.getState().navForWorkspace("/w").url).toBe(
@@ -811,7 +1566,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
                 }
             ]
         })
-        runContextMenuAction("file", "cmDelete", { path: "/w/f.ts", isDir: false })
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/f.ts", isDir: false })
         await vi.waitFor(() => {
             const gs = useWorkspaceStore.getState().groups
             expect(gs[0].tabs.some((t) => t.path === "/w/f.ts")).toBe(false)
@@ -841,7 +1596,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
                 }
             ]
         })
-        runContextMenuAction("file", "cmDelete", { path: "/w/dir", isDir: true })
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/dir", isDir: true })
         await vi.waitFor(() => {
             expect(useWorkspaceStore.getState().groups[0].tabs.map((t) => t.path)).toEqual([
                 "/w/outside.ts"
@@ -866,7 +1621,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
             ]
         })
         const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("renamed.ts")
-        runContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
+        runLegacyContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
         await vi.waitFor(() => {
             expect(
                 useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/src/renamed.ts")

@@ -80,9 +80,10 @@ export function SshNavContent() {
             return (
               <li key={host.id}>
                 <div
-                  onContextMenu={contextMenuHandler("sshhost", {
+                  onContextMenu={contextMenuHandler({
+                    kind: "sshhost",
                     hostId: host.id,
-                    host: `${host.user}@${host.host}:${host.port}`
+                    address: `${host.user}@${host.host}:${host.port}`
                   })}
                   className={cn(
                     "group flex h-[34px] items-center gap-[7px] rounded-[8px] px-[8px] text-[12.5px] transition-colors",

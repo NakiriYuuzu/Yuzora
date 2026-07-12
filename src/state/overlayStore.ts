@@ -44,7 +44,7 @@ export function useOverlayPresence(active: boolean): void {
 export function useAnyOverlayOpen(): boolean {
     const settingsOpen = useUiStore((s) => s.settingsOpen)
     const resolverOpen = useUiStore((s) => s.resolverPath !== null)
-    const contextMenuOpen = useContextMenuStore((s) => s.kind !== null)
+    const contextMenuOpen = useContextMenuStore((s) => s.request !== null)
     const diffModalOpen = useDiffModalStore((s) => s.open)
     const sshAuthOpen = useSshStore((s) => s.pendingAuthHostId !== null)
     const localCount = useOverlayStore((s) => s.count)

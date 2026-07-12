@@ -27,15 +27,15 @@ const { FilesNavContent } = await import("@/app/workbench/FilesNavContent")
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
+  useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
   useWorkspaceStore.setState({ workspacePath: null })
 })
 
 describe("FilesNavContent context menu", () => {
-  it("右鍵檔案面板（空狀態）開啟 explorer 選單", () => {
+  it("無 workspace 時不開啟空白 explorer 選單", () => {
     render(<FilesNavContent />)
     fireEvent.contextMenu(screen.getByText("No files yet"))
-    expect(useContextMenuStore.getState().kind).toBe("explorer")
+    expect(useContextMenuStore.getState().request).toBeNull()
   })
 })
 
