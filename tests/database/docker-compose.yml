@@ -1,0 +1,92 @@
+name: yuzora-p8-database
+
+x-test-password: &test-password "Yuzora-P8-Only-2026!"
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: yuzora_p8
+      POSTGRES_USER: yuzora_full
+      POSTGRES_PASSWORD: *test-password
+      YUZORA_READONLY_PASSWORD: *test-password
+    entrypoint: ["/bin/bash", "/yuzora-fixtures/postgres/entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/yuzora-test-tls/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/yuzora-test-tls/server.key
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./fixtures/postgres:/yuzora-fixtures/postgres:ro
+      - ./fixtures/postgres/init.sql:/docker-entrypoint-initdb.d/10-yuzora-p8.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -U yuzora_full -d yuzora_p8 >/dev/null 2>&1
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    stop_grace_period: 10s
+
+  mssql:
+    profiles: ["mssql"]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: *test-password
+    ports:
+      - "127.0.0.1:51433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          SQLCMDPASSWORD="$${MSSQL_SA_PASSWORD}"
+          /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -C -Q "SELECT 1" -b -o /dev/null
+          || SQLCMDPASSWORD="$${MSSQL_SA_PASSWORD}"
+          /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -Q "SELECT 1" -b -o /dev/null
+          || SQLCMDPASSWORD="$${MSSQL_SA_PASSWORD}"
+          /opt/mssql-tools/bin/sqlcmd -S 127.0.0.1 -U sa -C -Q "SELECT 1" -b -o /dev/null
+          || SQLCMDPASSWORD="$${MSSQL_SA_PASSWORD}"
+          /opt/mssql-tools/bin/sqlcmd -S 127.0.0.1 -U sa -Q "SELECT 1" -b -o /dev/null
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+    stop_grace_period: 15s
+
+  mssql-setup:
+    profiles: ["mssql"]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: *test-password
+      YUZORA_FULL_PASSWORD: *test-password
+      YUZORA_READONLY_PASSWORD: *test-password
+    volumes:
+      - ./fixtures/mssql:/yuzora-fixtures/mssql:ro
+    entrypoint: ["/bin/bash", "/yuzora-fixtures/mssql/setup.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/yuzora-mssql-ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+    restart: "no"
+
+volumes:
+  postgres-data:
+  mssql-data:

@@ -71,6 +71,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 tiny_http = "0.12.0"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
