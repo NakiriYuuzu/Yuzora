@@ -2358,11 +2358,13 @@ fn actor_error(error: ActorError) -> DatabaseOperationalError {
             DatabaseOperationalErrorCode::ConnectionBusy,
             "database connection is busy",
         ),
-        ActorError::OwnerMismatch | ActorError::StaleLease => (
+        // Closed 表示這個 actor 世代已被 disconnect 或 cancel 終止，identity 永遠
+        // 不再可用——對呼叫端而言與拿到舊世代 lease 相同，都是 stale。
+        ActorError::OwnerMismatch | ActorError::StaleLease | ActorError::Closed => (
             DatabaseOperationalErrorCode::StaleConnection,
             "database connection identity is stale",
         ),
-        ActorError::Closed | ActorError::NoActiveExecution => (
+        ActorError::NoActiveExecution => (
             DatabaseOperationalErrorCode::ServerDisconnected,
             "database connection is disconnected",
         ),
