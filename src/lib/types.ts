@@ -236,8 +236,9 @@ export type FileAtRevResult =
 
 // --- Database (FEAT-1 SQLite + F2 network backends; Rust serde is camelCase) ---
 export type DbKind = "sqlite" | "postgres" | "mssql"
-// The tagged descriptor db_open takes (Rust `DbOpenConfig`). Passwords are sent
-// in-flight only and are NEVER persisted anywhere.
+// Write-only connection input used behind the Rust profile/Test Connection
+// authority. No renderer-facing command can register this config directly;
+// passwords are sent in-flight only and are NEVER persisted anywhere.
 export type DbOpenConfig =
     | { kind: "sqlite"; path: string }
     | {
@@ -248,6 +249,7 @@ export type DbOpenConfig =
           user: string
           password: string
           ssl: boolean
+          trustCert: boolean
       }
     | {
           kind: "mssql"
@@ -258,14 +260,320 @@ export type DbOpenConfig =
           password: string
           trustCert: boolean
       }
-export interface DbTable { name: string; kind: "table" | "view" }
+
+declare const dbOpaqueId: unique symbol
+
+/** IDs are deliberately content-independent. A host/path/database tuple is a
+ * target address, never the identity of a saved profile or live operation. */
+export type DbOpaqueId<Kind extends string> = string & {
+    readonly [dbOpaqueId]: Kind
+}
+export type DbDescriptorId = DbOpaqueId<"descriptor">
+/** Product terminology uses profile and descriptor for the same saved entity. */
+export type DbProfileId = DbDescriptorId
+export type DbConnectionId = DbOpaqueId<"connection">
+export type DbConnectionGeneration = DbOpaqueId<"connectionGeneration">
+export type DbQueryRunId = DbOpaqueId<"queryRun">
+export type DbStatementExecutionId = DbOpaqueId<"statementExecution">
+export type DbResultSessionId = DbOpaqueId<"resultSession">
+
+/** Non-secret connection address. Passwords are accepted only by write-only
+ * request contracts and can never appear in a returned descriptor. */
+export type DbProfileTarget =
+    | { kind: "sqlite"; path: string }
+    | {
+          kind: "postgres"
+          host: string
+          port: number
+          database: string
+          user: string
+          ssl: boolean
+          trustCert: boolean
+      }
+    | {
+          kind: "mssql"
+          host: string
+          port: number
+          database: string
+          user: string
+          trustCert: boolean
+      }
+
+export type DbCredentialState = "notRequired" | "stored" | "required" | "unavailable"
+export interface DbProfileDescriptor {
+    descriptorId: DbDescriptorId
+    /** Monotonic non-secret configuration revision owned by the Rust profile
+     * repository. Async work must revalidate it before publishing results. */
+    configGeneration: number
+    name: string
+    target: DbProfileTarget
+    credentialState: DbCredentialState
+}
+export type DbProfileErrorCode =
+    | "repositoryUnavailable"
+    | "vaultMissing"
+    | "vaultDenied"
+    | "vaultUnavailable"
+    | "vaultCorrupt"
+    | "vaultWriteFailed"
+    | "vaultDeleteFailed"
+    | "profileNotFound"
+    | "pendingOperationConflict"
+    | "recoveryNotFound"
+    | "recoveryActionInvalid"
+    | "credentialRequired"
+    | "lifecycleCancelFailed"
+    | "lifecycleCloseFailed"
+    | "connectionFailed"
+    | "connectionBusy"
+    | "serverDisconnected"
+    | "metadataFailed"
+    | "queryFailed"
+    | "staleConnection"
+    | "sqlitePathMissing"
+    | "sqlitePathNotFile"
+    | "sqlitePathUnreadable"
+    | "sqlitePathInvalid"
+    | "sqliteOpenFailed"
+    | "invalidRequest"
+export interface DbProfileError {
+    code: DbProfileErrorCode
+    message: string
+}
+export interface DbCredentialInput { password: string }
+export interface DbProfileCreateRequest {
+    name: string
+    target: DbProfileTarget
+    credential: DbCredentialInput | null
+}
+export interface DbProfileUpdateRequest {
+    descriptorId: DbDescriptorId
+    name: string
+    target: DbProfileTarget
+    replacementCredential: DbCredentialInput | null
+}
+export type DbProfileRecoveryKind =
+    | "pendingCreate"
+    | "pendingReplace"
+    | "cleanupOld"
+    | "pendingForget"
+    | "pendingRemoveCredential"
+export type DbProfileRecoveryAction = "resume" | "abort" | "retryCleanup"
+export interface DbProfileRecoveryRow {
+    operationId: string
+    descriptorId: DbDescriptorId
+    kind: DbProfileRecoveryKind
+    allowedActions: DbProfileRecoveryAction[]
+}
+export interface DbProfileLoadResult {
+    profiles: DbProfileDescriptor[]
+    recovery: DbProfileRecoveryRow[]
+}
+export interface DbLegacyProfileImportRequest {
+    profiles: DbProfileDescriptor[]
+}
+export interface DbProfileRecoveryRequest {
+    operationId: string
+    action: DbProfileRecoveryAction
+    credential: DbCredentialInput | null
+}
+
+export interface DbConnectionIdentity {
+    descriptorId: DbDescriptorId
+    connectionId: DbConnectionId
+    connectionGeneration: DbConnectionGeneration
+}
+export type DbLiveEngine = DbKind
+export interface DbLiveConnection extends DbConnectionIdentity { engine: DbLiveEngine }
+export type DbSaveAndConnectOutcome =
+    | {
+          outcome: "connected"
+          profile: DbProfileDescriptor
+          connection: DbLiveConnection
+      }
+    | {
+          outcome: "savedButConnectFailed"
+          profile: DbProfileDescriptor
+          error: DbProfileError
+      }
+
+export type DbTestConnectionRequest =
+    | { kind: "ephemeral"; target: DbProfileTarget; credential: DbCredentialInput | null }
+    | { kind: "saved"; descriptorId: DbDescriptorId }
+export interface DbTestConnectionResult {
+    elapsedMs: number
+    serverVersion: string | null
+}
+
+/** Schema-qualified object reference used as the stable identity everywhere
+ * outside the legacy P1 UI path. All fields are present for every engine. */
+export interface DbObjectReference {
+    catalog: string
+    schema: string
+    name: string
+    kind: "table" | "view"
+}
+export type DbTable = DbObjectReference
 export interface DbColumn { name: string; type: string; notnull: boolean; pk: boolean }
-// A serialised value: numbers/bool/null map to native JSON; BLOB/numeric/date and
-// other engine-specific types arrive as strings (see db_service value mappers).
-export type DbValue = string | number | boolean | null
+
+/** Every cell is tagged. Integers/decimals use strings so JavaScript never
+ * rounds a 64-bit integer or an engine decimal; binary bytes use lossless hex. */
+export type DbValue =
+    | { kind: "null" }
+    | { kind: "boolean"; value: boolean }
+    | {
+          kind: "integer" | "decimal" | "text" | "json" | "date" | "time" | "dateTime"
+          value: string
+      }
+    | { kind: "binary"; hex: string }
+
+export function formatDbValue(value: DbValue): string | null {
+    switch (value.kind) {
+        case "null":
+            return null
+        case "boolean":
+            return String(value.value)
+        case "binary":
+            return `<blob ${value.hex.length / 2} bytes>`
+        default:
+            return value.value
+    }
+}
+
+export type DbRetryability = "retryable" | "notRetryable" | "unknown"
+export type DbErrorEngine = DbKind | "yuzora"
+export interface DbErrorPosition {
+    offset: number | null
+    line: number | null
+    column: number | null
+}
+export interface DbError {
+    engine: DbErrorEngine
+    message: string
+    code: string | null
+    position: DbErrorPosition | null
+    detail: string | null
+    hint: string | null
+    retryability: DbRetryability
+}
+
+export type DbOperationalErrorCode =
+    | "connectionFailed"
+    | "connectionBusy"
+    | "serverDisconnected"
+    | "metadataFailed"
+    | "queryFailed"
+    | "staleConnection"
+    | "sqlitePathMissing"
+    | "sqlitePathNotFile"
+    | "sqlitePathUnreadable"
+    | "sqlitePathInvalid"
+    | "sqliteOpenFailed"
+
+/** Stable recovery code plus optional engine diagnostics. The backend omits
+ * `error` when no engine evidence exists. */
+export interface DbOperationalError {
+    code: DbOperationalErrorCode
+    message: string
+    error?: DbError | null
+}
+
+export type DbEffectOutcome =
+    | "none"
+    | "committed"
+    | "rolledBack"
+    | "transactionPending"
+    | "unknown"
+
 export type DbQueryResult =
-    | { kind: "select"; columns: string[]; rows: DbValue[][]; truncated: boolean }
-    | { kind: "execute"; affectedRows: number }
+    | {
+          kind: "select"
+          columns: string[]
+          rows: DbValue[][]
+          truncated: boolean
+          affectedRows: string | null
+          effectOutcome: DbEffectOutcome
+      }
+    | { kind: "execute"; affectedRows: string | null; effectOutcome: DbEffectOutcome }
+
+export interface DbQueryRunOwner extends DbConnectionIdentity { queryRunId: DbQueryRunId }
+export interface DbStatementExecutionOwner extends DbQueryRunOwner {
+    statementExecutionId: DbStatementExecutionId
+}
+export interface DbResultSessionOwner extends DbStatementExecutionOwner {
+    resultSessionId: DbResultSessionId
+}
+
+export interface DbResultSession {
+    owner: DbResultSessionOwner
+    columns: string[]
+    initialPage: DbResultPage
+}
+export type DbStatementExecutionResult =
+    | {
+          kind: "rows"
+          resultSession: DbResultSession | null
+          affectedRows: string | null
+      }
+    | { kind: "execute"; affectedRows: string | null }
+    | { kind: "error"; error: DbError }
+    | { kind: "cancelled"; error: DbError }
+    | {
+          kind: "resultLimitReached"
+          resultSession: DbResultSession
+          affectedRows: string | null
+      }
+    | { kind: "skipped" }
+export interface DbStatementExecution {
+    statementExecutionId: DbStatementExecutionId
+    statementIndex: number
+    sql: string
+    effectOutcome: DbEffectOutcome
+    result: DbStatementExecutionResult
+}
+export type DbNonEmptyArray<T> = readonly [T, ...T[]]
+export interface DbQueryRun extends DbQueryRunOwner {
+    statements: DbNonEmptyArray<DbStatementExecution>
+    transactionMayBeOpen: boolean
+    connectionTerminated: boolean
+}
+
+export type DbQueryRunMode = "primary" | "script"
+export type DbTransactionBoundary = "none" | "begin" | "commit" | "rollback"
+export interface DbQueryRunStatement {
+    sql: string
+    transactionBoundary: DbTransactionBoundary
+}
+export interface DbQueryRunRequest extends DbConnectionIdentity {
+    queryRunId: DbQueryRunId
+    mode: DbQueryRunMode
+    statements: DbNonEmptyArray<DbQueryRunStatement>
+}
+export interface DbQueryCancelResult {
+    outcome: "cancelled" | "cancelledConnectionTerminated" | "alreadyRequested"
+}
+export type DbResultPageDirection = "previous" | "next"
+export type DbResultSessionLifecycle =
+    | "streaming"
+    | "complete"
+    | "released"
+    | "cancelled"
+    | "error"
+export interface DbResultPageRequest {
+    owner: DbResultSessionOwner
+    direction: DbResultPageDirection
+}
+export interface DbResultPage {
+    owner: DbResultSessionOwner
+    pageIndex: number
+    columns: string[]
+    rows: DbValue[][]
+    hasPrevious: boolean
+    hasNext: boolean
+    effectOutcome: DbEffectOutcome
+    lifecycle: DbResultSessionLifecycle
+    resultLimitReached: boolean
+}
 
 // --- SSH terminal (FEAT-2 MVP; Rust serde outputs camelCase) ---
 export type SshAuthKind = "password" | "key"

@@ -29,14 +29,32 @@ import type {
     DevServerInfo,
     DbTable,
     DbColumn,
-    DbQueryResult,
-    DbOpenConfig,
+    DbDescriptorId,
+    DbProfileDescriptor,
+    DbProfileLoadResult,
+    DbLegacyProfileImportRequest,
+    DbProfileCreateRequest,
+    DbProfileUpdateRequest,
+    DbProfileRecoveryRequest,
+    DbSaveAndConnectOutcome,
+    DbTestConnectionRequest,
+    DbTestConnectionResult,
+    DbLiveConnection,
+    DbConnectionIdentity,
+    DbQueryRunOwner,
+    DbQueryCancelResult,
+    DbQueryRunRequest,
+    DbQueryRun,
+    DbResultSessionOwner,
+    DbResultPageRequest,
+    DbResultPage,
     SshAuthInput,
     SshConnectResult,
     SftpListing,
     PerfSnapshot
 } from "./types"
 
+/** Full latest-status snapshot for one deduplicated rollback path. */
 export function openWorkspace(path: string): Promise<string> {
     return invoke("open_workspace", { path })
 }
@@ -304,24 +322,87 @@ export function agentList(cwd: string): Promise<string[]> {
     return invoke("agent_list", { cwd })
 }
 
-export function dbOpen(config: DbOpenConfig): Promise<{ connId: string }> {
-    return invoke("db_open", { config })
+export function dbListTables(identity: DbConnectionIdentity): Promise<DbTable[]> {
+    return invoke("db_list_tables", { identity })
 }
 
-export function dbClose(connId: string): Promise<void> {
-    return invoke("db_close", { connId })
+export function dbTableColumns(
+    identity: DbConnectionIdentity,
+    table: DbTable
+): Promise<DbColumn[]> {
+    return invoke("db_table_columns", { identity, table })
 }
 
-export function dbListTables(connId: string): Promise<DbTable[]> {
-    return invoke("db_list_tables", { connId })
+// --- Database v2 contract seams (P1) ---
+// These commands are intentionally thin invokes. Later phases own their Rust
+// implementations; an unavailable command must reject instead of being
+// replaced with optimistic frontend state or a synthetic success response.
+export function dbProfileList(): Promise<DbProfileLoadResult> {
+    return invoke("db_profile_list")
 }
 
-export function dbTableColumns(connId: string, table: string): Promise<DbColumn[]> {
-    return invoke("db_table_columns", { connId, table })
+export function dbProfileImportLegacy(
+    request: DbLegacyProfileImportRequest
+): Promise<DbProfileLoadResult> {
+    return invoke("db_profile_import_legacy", { request })
 }
 
-export function dbQuery(connId: string, sql: string, maxRows?: number): Promise<DbQueryResult> {
-    return invoke("db_query", { connId, sql, maxRows: maxRows ?? null })
+export function dbProfileCreate(request: DbProfileCreateRequest): Promise<DbSaveAndConnectOutcome> {
+    return invoke("db_profile_create", { request })
+}
+
+export function dbProfileUpdate(request: DbProfileUpdateRequest): Promise<DbProfileDescriptor> {
+    return invoke("db_profile_update", { request })
+}
+
+export function dbProfileRemoveCredential(
+    descriptorId: DbDescriptorId
+): Promise<DbProfileLoadResult> {
+    return invoke("db_profile_remove_credential", { descriptorId })
+}
+
+export function dbProfileForget(descriptorId: DbDescriptorId): Promise<DbProfileLoadResult> {
+    return invoke("db_profile_forget", { descriptorId })
+}
+
+export function dbProfileRecover(request: DbProfileRecoveryRequest): Promise<DbProfileLoadResult> {
+    return invoke("db_profile_recover", { request })
+}
+
+export function dbProfileOpen(descriptorId: DbDescriptorId): Promise<DbLiveConnection> {
+    return invoke("db_profile_open", { descriptorId })
+}
+
+export function dbProfileDisconnect(identity: DbConnectionIdentity): Promise<void> {
+    return invoke("db_profile_disconnect", { identity })
+}
+
+export function dbTestConnection(request: DbTestConnectionRequest): Promise<DbTestConnectionResult> {
+    return invoke("db_test_connection", { request })
+}
+
+export function dbQueryRun(request: DbQueryRunRequest): Promise<DbQueryRun> {
+    return invoke("db_query_run", { request })
+}
+
+export function dbQueryCancel(owner: DbQueryRunOwner): Promise<DbQueryCancelResult> {
+    return invoke("db_query_cancel", { owner })
+}
+
+export function dbResultPage(request: DbResultPageRequest): Promise<DbResultPage> {
+    return invoke("db_result_page", { request })
+}
+
+export function dbResultPagePrevious(owner: DbResultSessionOwner): Promise<DbResultPage> {
+    return dbResultPage({ owner, direction: "previous" })
+}
+
+export function dbResultPageNext(owner: DbResultSessionOwner): Promise<DbResultPage> {
+    return dbResultPage({ owner, direction: "next" })
+}
+
+export function dbResultSessionRelease(owner: DbResultSessionOwner): Promise<DbResultPage> {
+    return invoke("db_result_session_release", { owner })
 }
 
 export function agentKill(id: string, reason?: string): Promise<void> {
