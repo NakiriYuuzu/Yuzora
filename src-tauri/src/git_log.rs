@@ -26,6 +26,36 @@ const FIELD_SEP: char = '\x1f';
 /// --format 記錄分隔（record separator）。
 const RECORD_SEP: char = '\x1e';
 
+/// Log graph 顯示所有 branch（比照 JetBrains git log）：`--all` 把 HEAD＋refs/*
+/// 全數當起點，未合入當前 branch 的 local／remote／tag commit 才會入圖。
+///
+/// 取 `--all`＋blacklist 而非 whitelist（`--branches --remotes --tags`）：後者不含
+/// HEAD，detached HEAD 需補 positional HEAD，而 positional HEAD 在空 repo 會直接
+/// fatal（"ambiguous argument"），錯誤形狀與 ref-glob 選項不同。故用 `--all`（內建含
+/// HEAD、空 repo exit 0）並排除機制 ref namespace——它們是工具狀態而非歷史，多數不出
+/// 現在 %D decoration，會以突兀的孤立節點污染 graph（且如 refs/stash 無已知前綴，
+/// decoration 會被 classify_ref 誤標成 local）：stash、notes、original（filter-branch
+/// 備份，整份改寫前歷史會重複入圖）、pull（GitHub PR refspec）、wip（magit）、
+/// rewritten（rebase 進行中）、replace、bisect。
+/// `--exclude` 只影響其後的 ref-glob 選項，故必須排在 `--all` 之前。
+///
+/// `--date-order` 是 `--all` 的必要配套：`--all` 會把「指向祖先的 ref」放進初始走訪
+/// 集合，commit timestamp 平手時 parent 可能先於 child 出列；前端 graphLayout 的
+/// active-lanes 演算法假設 children-before-parents，違反時 parent 會被畫成孤立節點。
+/// `--date-order` 維持時間降冪但保證 child 先出列。
+const ALL_REFS_ARGS: [&str; 10] = [
+    "--exclude=refs/stash",
+    "--exclude=refs/notes/*",
+    "--exclude=refs/original/*",
+    "--exclude=refs/pull/*",
+    "--exclude=refs/wip/*",
+    "--exclude=refs/rewritten/*",
+    "--exclude=refs/replace/*",
+    "--exclude=refs/bisect/*",
+    "--all",
+    "--date-order",
+];
+
 // ── DTO ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -248,12 +278,12 @@ fn log_format() -> String {
     )
 }
 
-/// 一頁 commit 歷史。
+/// 一頁 commit 歷史（涵蓋所有 branch，見 ALL_REFS_ARGS）。
 ///
-/// 無 query：`git log --skip N --max-count M+1`（多取 1 判 has_more）＋自訂 --format
-/// ＋ `--decorate=full`（見 run_log）。分頁順序用預設（reverse chronological / commit
-/// graph 序），穩定。可選 author（精確作者，`--author=^<name> <` 錨定 name＋email 定界符
-/// 避免子字串誤匹配）、since/until（`--since`/`--until`）。
+/// 無 query：`git log --all --skip N --max-count M+1`（多取 1 判 has_more）＋自訂
+/// --format ＋ `--decorate=full`（見 run_log）。分頁順序用預設（reverse chronological /
+/// commit graph 序），穩定。可選 author（精確作者，`--author=^<name> <` 錨定 name＋email
+/// 定界符避免子字串誤匹配）、since/until（`--since`/`--until`）。
 ///
 /// query（OR 語意，成本 = 多趟 git log）：query 同時比對
 ///   (a) commit message（`--grep`, `-i`）
@@ -301,6 +331,7 @@ pub fn log_page(
             let skip_arg = format!("--skip={skip}");
             let max_arg = format!("--max-count={}", limit.saturating_add(1));
             let mut args: Vec<&str> = vec!["log", &format_arg, &skip_arg, &max_arg];
+            args.extend(ALL_REFS_ARGS);
             args.extend(filters.iter().copied());
             let commits = run_log(root, &args)?;
             Ok(paginate_fetched(commits, limit as usize))
@@ -315,6 +346,7 @@ pub fn log_page(
             // (a) message、(b) author 各一趟全量 log（套用共用 filters）。
             for extra in [grep_arg.as_str(), qauthor_arg.as_str()] {
                 let mut args: Vec<&str> = vec!["log", &format_arg, "-i", extra];
+                args.extend(ALL_REFS_ARGS);
                 args.extend(filters.iter().copied());
                 for c in run_log(root, &args)? {
                     if seen.insert(c.hash.clone()) {
@@ -616,9 +648,12 @@ pub fn merge_file_changes(name_status_raw: &str, numstat_raw: &str) -> Vec<Commi
 }
 
 /// 去重的作者清單（依出現次數降冪，上限 MAX_AUTHORS）。給 filter 的 User 下拉用。
+/// 同 log_page 涵蓋所有 branch（--all），否則其他 branch 獨有的作者無法被篩選。
 pub fn log_authors(root: &Path) -> Result<Vec<AuthorEntry>, String> {
     let fmt = format!("--format=%an{f}%ae", f = FIELD_SEP);
-    let out = run_git(root, &["log", &fmt], DEFAULT_TIMEOUT, &[])?;
+    let mut args: Vec<&str> = vec!["log", &fmt];
+    args.extend(ALL_REFS_ARGS);
+    let out = run_git(root, &args, DEFAULT_TIMEOUT, &[])?;
     if out.code != 0 {
         let stderr = out.stderr.to_lowercase();
         if stderr.contains("does not have any commits") || stderr.contains("bad default revision") {
@@ -989,6 +1024,100 @@ mod tests {
         let locals: Vec<_> = head.refs.iter().filter(|x| x.kind == "local").collect();
         assert!(locals.iter().any(|x| x.name == "main"));
         assert!(locals.iter().any(|x| x.name == "second"));
+    }
+
+    #[test]
+    fn log_page_includes_unmerged_branch_commits() {
+        // 未合入 main 的 side branch commit 也要入圖（--all）；query 亦同。
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
+        run_git(r, &["switch", "-c", "side"], T, &iso()).unwrap();
+        test_repo::write_and_commit(r, "s.txt", "side\n", "side only");
+        run_git(r, &["switch", "main"], T, &iso()).unwrap();
+        test_repo::write_and_commit(r, "m.txt", "main\n", "main tip");
+
+        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let subjects: Vec<&str> = page.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(page.commits.len(), 3, "subjects: {subjects:?}");
+        assert!(subjects.contains(&"side only"));
+        assert!(subjects.contains(&"main tip"));
+        // side tip 帶 local branch decoration。
+        let side = page
+            .commits
+            .iter()
+            .find(|c| c.subject == "side only")
+            .unwrap();
+        assert!(side
+            .refs
+            .iter()
+            .any(|x| x.kind == "local" && x.name == "side"));
+
+        // query 也涵蓋其他 branch。
+        let hit = log_page(r, 0, 10, Some("side only"), None, None, None).unwrap();
+        assert_eq!(hit.commits.len(), 1);
+        assert_eq!(hit.commits[0].subject, "side only");
+    }
+
+    #[test]
+    fn log_page_excludes_stash_commits() {
+        // refs/stash 是機制 ref，--all 下須被 --exclude 擋掉，不得以孤立節點入圖。
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
+        std::fs::write(r.join("f.txt"), "dirty\n").unwrap();
+        run_git(r, &["stash"], T, &iso()).unwrap();
+
+        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        assert_eq!(
+            page.commits.len(),
+            1,
+            "stash 不應入圖: {:?}",
+            page.commits.iter().map(|c| &c.subject).collect::<Vec<_>>()
+        );
+        assert_eq!(page.commits[0].subject, "c1");
+    }
+
+    #[test]
+    fn log_page_excludes_notes_commits() {
+        // refs/notes/* 同 stash：機制 ref，不得以 "Notes added by..." commit 入圖。
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
+        run_git(r, &["notes", "add", "-m", "a note"], T, &iso()).unwrap();
+
+        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        assert_eq!(
+            page.commits.len(),
+            1,
+            "notes 不應入圖: {:?}",
+            page.commits.iter().map(|c| &c.subject).collect::<Vec<_>>()
+        );
+        assert_eq!(page.commits[0].subject, "c1");
+    }
+
+    #[test]
+    fn log_page_orders_children_before_parents_on_timestamp_tie() {
+        // --all 會把「指向祖先的 ref」放進初始走訪集合；timestamp 平手時若無
+        // --date-order，parent（被 backup 指著的 base）會先於 child（tip）出列，
+        // 前端 graphLayout（假設 children-before-parents）會把 base 畫成孤立節點。
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        let mut env = iso();
+        for k in ["GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"] {
+            env.push((k.to_string(), "2026-01-01T00:00:00 +0000".to_string()));
+        }
+        run_git(r, &["commit", "--allow-empty", "-m", "base"], T, &env).unwrap();
+        run_git(r, &["branch", "backup"], T, &env).unwrap();
+        run_git(r, &["commit", "--allow-empty", "-m", "tip"], T, &env).unwrap();
+
+        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let subjects: Vec<&str> = page.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, vec!["tip", "base"]);
     }
 
     #[test]

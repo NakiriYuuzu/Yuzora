@@ -150,12 +150,38 @@ describe("computeGraphLayout", () => {
     })
 
     it("caps lane width at MAX_LANES without crashing", () => {
-        // Many independent tips would each open a lane; the cap pins overflow to
-        // the last lane instead of growing unbounded.
+        // Many independent tips would each open a lane; OUTPUT indices clamp to
+        // the last lane instead of growing unbounded (tracking is unbounded).
         const many: GraphInputCommit[] = []
         for (let i = 0; i < MAX_LANES + 5; i++) many.push(c(`tip${i}`, [`base${i}`]))
         const { rows, laneCount } = computeGraphLayout(many, MAX_LANES)
         expect(laneCount).toBeLessThanOrEqual(MAX_LANES)
         for (const r of rows) expect(r.lane).toBeLessThan(MAX_LANES)
+    })
+
+    it("keeps overflow-lane topology: 13+ concurrent tips do not corrupt tracked lanes", () => {
+        // Regression: the old cap OVERWROTE the last slot's waiting parent when
+        // tip 13 arrived, so that branch's line died mid-graph and its parent
+        // re-materialised as a false new tip (fresh colour, disconnected). With
+        // --all feeding the graph this shape is everyday, not pathological.
+        // Tracking is now unbounded; every parent must keep its tip's colour.
+        const n = MAX_LANES + 3
+        const many: GraphInputCommit[] = []
+        for (let i = 0; i < n; i++) many.push(c(`t${i}`, [`p${i}`]))
+        for (let i = 0; i < n; i++) many.push(c(`p${i}`, []))
+        const { rows, laneCount } = computeGraphLayout(many, MAX_LANES)
+        const byHash = new Map(rows.map((r) => [r.hash, r]))
+        for (let i = 0; i < n; i++) {
+            expect(byHash.get(`p${i}`)!.colorIdx).toBe(byHash.get(`t${i}`)!.colorIdx)
+        }
+        // Output stays clamped even though tracking exceeded the cap.
+        expect(laneCount).toBeLessThanOrEqual(MAX_LANES)
+        for (const r of rows) {
+            expect(r.lane).toBeLessThan(MAX_LANES)
+            for (const s of r.segments) {
+                expect(s.fromLane).toBeLessThan(MAX_LANES)
+                expect(s.toLane).toBeLessThan(MAX_LANES)
+            }
+        }
     })
 })

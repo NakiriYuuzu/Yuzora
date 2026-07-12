@@ -11,7 +11,9 @@
 //     new colour;
 //   - after the node, its lane waits for the first parent; remaining parents each
 //     open (or reuse an existing lane already waiting for the same hash).
-// Closed lane slots are recycled so the graph never grows without bound.
+// Closed lane slots are recycled so the lane list stays tight; histories with
+// more concurrent lines than MAX_LANES keep full bookkeeping and only clamp at
+// the output (see MAX_LANES).
 
 export interface GraphSegment {
     // Lane at the row's top boundary (incoming) and bottom boundary (outgoing).
@@ -39,8 +41,13 @@ export interface GraphInputCommit {
     parents: string[]
 }
 
-// Cap lane width so pathological histories degrade gracefully instead of growing
-// unbounded. Commits that would exceed the cap stay pinned to the last lane.
+// Visual lane cap. Lane BOOKKEEPING is unbounded — capping the tracking itself
+// (the old behaviour: overwrite the last slot) destroyed the overwritten lane's
+// waiting-parent, so a line still on screen died mid-row and its parent later
+// re-materialised as a false new tip. With --all feeding the graph, >12
+// concurrent branch lines is an everyday shape, not a pathological one. Output
+// lane indices clamp to MAX_LANES-1 instead: overflow lanes collapse onto the
+// last (offscreen) column while every visible lane keeps correct topology.
 export const MAX_LANES = 12
 
 // A slot in the active-lanes array. `parent` is the commit hash this lane is
@@ -60,8 +67,9 @@ export function computeGraphLayout(
     let nextColorIdx = 0
     let widest = 0
 
-    // Find the leftmost free slot (recycled) or append a new one, respecting the
-    // lane cap. Returns the chosen lane index.
+    // Find the leftmost free slot (recycled) or append a new one. Never caps:
+    // the cap is applied to OUTPUT indices only (clampLane), so tracking stays
+    // correct for every in-flight line. Returns the chosen lane index.
     const allocLane = (parent: string, colorIdx: number): number => {
         for (let i = 0; i < lanes.length; i++) {
             if (lanes[i].parent === null) {
@@ -69,15 +77,12 @@ export function computeGraphLayout(
                 return i
             }
         }
-        if (lanes.length < maxLanes) {
-            lanes.push({ parent, colorIdx })
-            return lanes.length - 1
-        }
-        // Cap reached: pin to the last lane (degrade gracefully, never crash).
-        const last = maxLanes - 1
-        lanes[last] = { parent, colorIdx }
-        return last
+        lanes.push({ parent, colorIdx })
+        return lanes.length - 1
     }
+
+    // Overflow lanes collapse onto the last visual lane in the output.
+    const clampLane = (lane: number): number => Math.min(lane, maxLanes - 1)
 
     for (const commit of commits) {
         // Snapshot the incoming lane boundary (top of this row) so segments can
@@ -130,16 +135,20 @@ export function computeGraphLayout(
             lanes.pop()
         }
 
-        // Build segments: map each incoming line to where it exits at the bottom.
-        const segments = buildSegments(incoming, lanes, commit.hash, nodeLane)
+        // Build segments from the TRUE lane states, then clamp for output.
+        const segments = buildSegments(incoming, lanes, commit.hash, nodeLane).map((s) => ({
+            ...s,
+            fromLane: clampLane(s.fromLane),
+            toLane: clampLane(s.toLane)
+        }))
 
-        rows.push({ hash: commit.hash, lane: nodeLane, colorIdx, isMerge, segments })
+        rows.push({ hash: commit.hash, lane: clampLane(nodeLane), colorIdx, isMerge, segments })
         // Widen for the incoming/outgoing boundaries and the node lane itself (a
         // lone root commit closes its only lane, but the column still needs it).
         widest = Math.max(widest, incoming.length, lanes.length, nodeLane + 1)
     }
 
-    return { rows, laneCount: widest }
+    return { rows, laneCount: Math.min(widest, maxLanes) }
 }
 
 // Derive the line segments for one row from the top boundary (`incoming`) and

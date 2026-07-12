@@ -138,11 +138,22 @@ export const useGitLogStore = create<GitLogState>()((set, get) => ({
                 set({ loadingMore: false })
                 return
             }
-            set((s) => ({
-                commits: [...s.commits, ...page.commits],
-                hasMore: page.hasMore,
-                loadingMore: false
-            }))
+            set((s) => {
+                // skip-based pagination can overlap with the loaded list when a
+                // ref moves between pages (fetch / branch create-delete — with
+                // --all any ref movement shifts the stream, not just HEAD).
+                // Dedup by hash so overlapping rows never produce duplicate
+                // React keys; gaps from shifts self-heal on the next reload.
+                const seen = new Set(s.commits.map((c) => c.hash))
+                return {
+                    commits: [
+                        ...s.commits,
+                        ...page.commits.filter((c) => !seen.has(c.hash))
+                    ],
+                    hasMore: page.hasMore,
+                    loadingMore: false
+                }
+            })
         } catch (e) {
             if (gen !== generation) {
                 set({ loadingMore: false })

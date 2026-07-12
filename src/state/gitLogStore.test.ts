@@ -79,6 +79,22 @@ describe("gitLogStore", () => {
         expect(ipc.gitLogPage).toHaveBeenLastCalledWith(2, 200, null, null, null, null)
     })
 
+    it("loadMore drops hashes already loaded (page overlap after a ref moved)", async () => {
+        // skip-based pagination overlaps when a ref moves between requests
+        // (--all makes any ref movement shift the stream); duplicate hashes
+        // would break hash-keyed React rows.
+        const { useGitLogStore } = await import("./gitLogStore")
+        const ipc = await import("../lib/ipc")
+        ;(ipc.gitLogPage as ReturnType<typeof vi.fn>)
+            .mockResolvedValueOnce(page([mkCommit("a"), mkCommit("b")], true))
+            .mockResolvedValueOnce(page([mkCommit("b"), mkCommit("c")], false))
+        await useGitLogStore.getState().loadFirstPage()
+        await useGitLogStore.getState().loadMore()
+        expect(
+            useGitLogStore.getState().commits.map((c) => c.hash)
+        ).toEqual(["a", "b", "c"])
+    })
+
     it("loadMore is a no-op when hasMore is false", async () => {
         const { useGitLogStore } = await import("./gitLogStore")
         const ipc = await import("../lib/ipc")
