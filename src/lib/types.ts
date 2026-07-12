@@ -4,6 +4,17 @@ export interface FileNode {
     isDir: boolean
 }
 
+export interface WorkspacePathIndexEntry {
+    relativePath: string
+    canonicalPath: string
+}
+
+export interface WorkspacePathIndexResult {
+    workspace: string
+    entries: WorkspacePathIndexEntry[]
+    truncated: boolean
+}
+
 export type OpenFileResult =
     | { kind: "full"; content: string; size: number }
     | { kind: "limited"; content: string; size: number }

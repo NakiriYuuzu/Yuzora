@@ -44,6 +44,13 @@ function flaggedTab() {
 }
 
 describe("ExternalChangeBridge reload settling", () => {
+    it("bumps the shared tree revision for every external filesystem event", () => {
+        const revision = useWorkspaceStore.getState().treeRevision
+        render(<ExternalChangeBridge />)
+        capturedFsListener({ payload: [PATH] })
+        expect(useWorkspaceStore.getState().treeRevision).toBe(revision + 1)
+    })
+
     it("clears the external flag and bumps the generation after a successful reload", async () => {
         vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "x", size: 1 })
         const gen0 = documentGeneration(PATH)

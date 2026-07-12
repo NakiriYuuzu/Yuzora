@@ -9,6 +9,7 @@ export { invoke }
 
 import type {
     FileNode,
+    WorkspacePathIndexResult,
     OpenFileResult,
     GitEnvironment,
     GitStatus,
@@ -42,6 +43,10 @@ export function openWorkspace(path: string): Promise<string> {
 
 export function listDir(path: string): Promise<FileNode[]> {
     return invoke("list_dir", { path })
+}
+
+export function workspacePathIndex(workspace: string): Promise<WorkspacePathIndexResult> {
+    return invoke("workspace_path_index", { workspace })
 }
 
 export function openFile(path: string): Promise<OpenFileResult> {

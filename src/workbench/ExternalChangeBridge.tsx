@@ -9,6 +9,10 @@ export function ExternalChangeBridge() {
     useEffect(() => {
         const unlisten = listen<string[]>("fs:external-change", (e) => {
             const s = useWorkspaceStore.getState()
+            // The workspace mention index shares FileTree's revision authority.
+            // External watcher events must invalidate both even when no open tab
+            // needs a document reload.
+            s.refreshTree()
             const allTabs = s.groups.flatMap((g) => g.tabs)
             const plan = handleExternalChange(e.payload, allTabs, recentlySaved.snapshot())
             for (const path of plan.markModified) s.markExternallyModified(path, true)

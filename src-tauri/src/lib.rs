@@ -24,6 +24,7 @@ pub mod pty_service;
 pub mod search_service;
 pub mod ssh_service;
 pub mod watcher;
+pub mod workspace_path_index;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -105,6 +106,7 @@ pub fn run() {
             logging::log_sources,
             logging::log_export,
             watcher::start_watch,
+            workspace_path_index::workspace_path_index,
             search_service::search_workspace,
             db_service::db_open,
             db_service::db_close,
