@@ -1,0 +1,971 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yuzora — 桌面開發工作台</title>
+<meta name="description" content="Yuzora 是整合 ACP agent、SSH、資料庫與 terminal 的桌面開發工作台。以 Tauri 打造，輕量、快速、在地執行。" />
+<meta property="og:title" content="Yuzora" />
+<meta property="og:description" content="整合 ACP agent、SSH、資料庫與 terminal 的桌面開發工作台。" />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0.4' y2='1'%3E%3Cstop offset='0' stop-color='%23ffb23e'/%3E%3Cstop offset='0.55' stop-color='%23ff6b54'/%3E%3Cstop offset='1' stop-color='%23e0539b'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-weight='700' font-size='16' fill='%23fff' text-anchor='middle'%3EY%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400..800&family=JetBrains+Mono:wght@400..600&family=Newsreader:opsz,wght@6..72,400..600&display=swap" rel="stylesheet" />
+<noscript><style>.reveal { opacity: 1 !important; transform: none !important; }</style></noscript>
+<style>
+  /* Tokens 1:1 對齊 app 本體 src/styles.css（paper/ink/line/--yz-accent/--yz-bg） */
+  :root {
+    --paper: #fbfaf6;      /* --paper-1 */
+    --paper-2: #f4f1ea;
+    --paper-3: #ebe7dd;
+    --surface: #ffffff;    /* --paper-0 */
+    --ink: #2e2c28;        /* --ink-1 */
+    --ink-0: #1b1a17;
+    --basalt: #57534b;     /* --ink-2 */
+    --ink-3: #8a857a;
+    --ink-4: #b6b0a3;
+    --border: rgba(27, 26, 23, 0.10);   /* --line-1 */
+    --border-2: rgba(27, 26, 23, 0.16);
+    --accent: #86b81f;                  /* --yz-accent */
+    --accent-ink: #5f8c1e;              /* --yz-accent-ink */
+    --accent-wash: rgba(134, 184, 31, 0.14);
+    --night: #1a191f;                   /* dark --paper-1 */
+    --glass: rgba(251, 250, 246, 0.55);
+    --term-bg: #f1ede4;
+    --term-bar: #e8e2d7;
+    --term-fg: #46433c;
+    --term-fg2: #8a8691;
+    --term-coral: #c0562f;
+    --grad-sunrise: linear-gradient(160deg, #ffb23e 0%, #ff6b54 55%, #e0539b 100%);
+    --grad-dusk: linear-gradient(160deg, #7b5bff 0%, #2f6bff 100%);
+    --mesh: radial-gradient(125% 120% at 0% 0%, #e9f4c8 0%, transparent 46%),
+            radial-gradient(120% 115% at 100% 2%, #cdeed3 0%, transparent 50%),
+            radial-gradient(125% 130% at 96% 100%, #c4dbf6 0%, transparent 54%),
+            radial-gradient(120% 120% at 8% 100%, #f6e6c8 0%, transparent 48%),
+            #f6f5ef;                    /* --yz-bg */
+    --shadow-lg: 0 16px 40px rgba(27, 26, 23, 0.12), 0 4px 12px rgba(27, 26, 23, 0.07);
+    --shadow-xs: 0 1px 2px rgba(27, 26, 23, 0.06);
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --sans: "Hanken Grotesk", "PingFang TC", "Noto Sans TC", sans-serif;
+    --serif: "Newsreader", Georgia, serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--mesh);
+    background-attachment: fixed;
+    color: var(--ink);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 clamp(1.25rem, 4vw, 2.5rem);
+  }
+
+  a { color: inherit; text-decoration: none; }
+
+  ::selection { background: rgba(134, 184, 31, 0.22); }
+
+  /* ---------- Nav ---------- */
+  nav {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(251, 250, 246, 0.72);
+    backdrop-filter: saturate(150%) blur(20px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 60px;
+    gap: 1rem;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.35rem 0;
+  }
+  .brand-logo {
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
+    background-image: var(--grad-sunrise);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-xs);
+  }
+  .wordmark {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 1.3rem;
+    letter-spacing: -0.01em;
+    color: var(--ink-0);
+  }
+  /* 右側單一群組：連結 · 語言 · GitHub，統一 36px 視覺高度 */
+  .nav-actions { display: flex; align-items: center; gap: 0.4rem; }
+  .nav-links { display: flex; align-items: center; gap: 0.1rem; margin-right: 0.5rem; }
+  .nav-link {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--basalt);
+    padding: 0 0.8rem;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    transition: color 0.22s var(--ease-out), background 0.22s var(--ease-out);
+  }
+  .nav-link:hover { color: var(--ink-0); background: var(--accent-wash); }
+  /* 語言切換：app 的 segmented pill 樣式（淡底、選中白底＋shadow） */
+  .lang-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    height: 36px;
+    border-radius: 999px;
+    background: rgba(27, 26, 23, 0.05);
+    border: 1px solid var(--border);
+  }
+  .lang-switch button {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink-3);
+    padding: 0 0.7rem;
+    height: 28px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.22s var(--ease-out), color 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out);
+  }
+  .lang-switch button:hover { color: var(--ink); }
+  .lang-switch button[aria-pressed="true"] {
+    background: var(--surface);
+    color: var(--ink-0);
+    box-shadow: var(--shadow-xs);
+  }
+  .nav-gh {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--ink);
+    padding: 0 1rem;
+    height: 36px;
+    margin-left: 0.35rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-xs);
+    transition: background 0.22s var(--ease-out), transform 0.22s var(--ease-out);
+  }
+  .nav-gh:hover { background: var(--accent-wash); transform: translateY(-1px); }
+  .nav-gh:active { transform: translateY(0); }
+  .nav-gh svg { width: 16px; height: 16px; fill: currentColor; }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    min-height: calc(100dvh - 64px);
+    display: grid;
+    grid-template-columns: 45fr 55fr;
+    align-items: center;
+    gap: clamp(2rem, 5vw, 4rem);
+    padding-block: clamp(3rem, 8vw, 5rem);
+  }
+  .hero > * { min-width: 0; } /* mock 內 pre 的 min-content 不得撐寬 grid */
+  .hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent-ink);
+    background: var(--accent-wash);
+    border-radius: 0.5rem;
+    padding: 0.3rem 0.7rem;
+    margin-bottom: 1.5rem;
+  }
+  .hero h1 {
+    font-size: clamp(2.1rem, 4.4vw, 3.4rem);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    color: var(--ink-0);
+  }
+  .hero h1 .nowrap { white-space: nowrap; }
+  .hero h1 em {
+    font-style: normal;
+    color: var(--accent-ink);
+  }
+  .hero .tagline {
+    margin-top: 1.5rem;
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    color: var(--basalt);
+    max-width: 34em;
+  }
+  .hero .cta-row {
+    margin-top: 2.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: var(--ink);
+    color: var(--paper);
+    font-weight: 700;
+    font-size: 1rem;
+    padding: 0.85rem 1.75rem;
+    min-height: 44px;
+    border-radius: 0.85rem;
+    box-shadow: var(--shadow-xs);
+    transition: transform 0.22s var(--ease-out), background 0.22s var(--ease-out);
+  }
+  .cta:hover { transform: translateY(-1px); background: var(--ink-0); }
+  .cta:active { transform: translateY(0); }
+  .cta-note {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--ink-3);
+  }
+
+  /* ---------- Hero workbench mock（忠實還原 app：rail + glass sidebar + panel + statusbar） ---------- */
+  .mock-wrap { position: relative; }
+  @media (min-width: 1024px) {
+    .mock-wrap { margin-right: clamp(-6rem, -5vw, -2rem); } /* bleed */
+  }
+  .appframe {
+    background: var(--mesh);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    display: flex;
+    flex-direction: column;
+    aspect-ratio: 16 / 10;
+  }
+  .appbody { display: flex; flex: 1; min-height: 0; }
+  .rail {
+    width: 38px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 9px 0 8px;
+  }
+  .rail i {
+    width: 24px; height: 21px;
+    border-radius: 7px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-xs);
+    display: block;
+  }
+  .rail i.on { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .rail .avatar {
+    margin-top: auto;
+    width: 21px; height: 21px;
+    border-radius: 50%;
+    background-image: var(--grad-dusk);
+    color: #fff;
+    font-size: 0.6rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .side {
+    width: 148px;
+    margin: 6px 0;
+    border-radius: 13px;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    padding: 9px 8px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .side-head { display: flex; align-items: center; gap: 6px; }
+  .side-logo {
+    width: 18px; height: 18px;
+    border-radius: 6px;
+    background-image: var(--grad-sunrise);
+    color: #fff;
+    font-size: 0.58rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .side-title { font-family: var(--serif); font-size: 0.78rem; font-weight: 600; color: var(--ink-0); line-height: 1.1; }
+  .side-path { font-size: 0.5rem; color: var(--ink-3); }
+  .side-search {
+    margin-top: 7px;
+    height: 20px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--ink-3);
+    font-size: 0.55rem;
+    gap: 4px;
+  }
+  .side-search span:first-child {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .side-search .k { margin-left: auto; border: 1px solid var(--border); border-radius: 4px; padding: 0 3px; background: var(--surface); font-size: 0.5rem; }
+  .side-label {
+    margin: 8px 2px 4px;
+    font-size: 0.52rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--ink-3);
+  }
+  .side li {
+    list-style: none;
+    height: 19px;
+    display: flex;
+    align-items: center;
+    border-radius: 6px;
+    padding: 0 6px;
+    color: var(--basalt);
+    white-space: nowrap;
+    overflow: hidden;
+    font-size: 0.58rem;
+  }
+  .side li.on {
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow: var(--shadow-xs);
+    color: var(--ink-0);
+    font-weight: 600;
+  }
+  .side li.dir { color: var(--ink); font-weight: 600; }
+  .maincol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 6px 6px 6px 8px; }
+  .panel-card {
+    flex: 1;
+    min-height: 0;
+    border-radius: 13px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .tabsbar {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 5px 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tabpill {
+    height: 19px;
+    border-radius: 6px;
+    padding: 0 7px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.56rem;
+    color: var(--ink-3);
+  }
+  .tabpill.on {
+    background: rgba(255, 255, 255, 0.78);
+    outline: 1px solid var(--border);
+    box-shadow: var(--shadow-xs);
+    color: var(--ink-0);
+    font-weight: 600;
+  }
+  .tabpill .dot { width: 5px; height: 5px; border-radius: 50%; background: #d68a0c; }
+  .code {
+    flex: 1;
+    padding: 8px 10px;
+    color: var(--basalt);
+    overflow: hidden;
+    line-height: 1.85;
+    white-space: pre;
+    font-size: 0.6rem;
+  }
+  .code .ln { color: var(--ink-4); margin-right: 8px; }
+  .code b { color: var(--ink-0); font-weight: 600; }
+  .term-card {
+    height: 34%;
+    border-radius: 13px;
+    background: var(--term-bg);
+    border: 1px solid rgba(27, 26, 23, 0.08);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .term-bar {
+    height: 18px;
+    background: var(--term-bar);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 8px;
+    color: var(--term-fg2);
+    font-size: 0.52rem;
+  }
+  .term-bar b { color: var(--term-fg); font-weight: 600; font-family: var(--sans); }
+  .term-body {
+    flex: 1;
+    padding: 5px 9px;
+    color: var(--term-fg);
+    line-height: 1.9;
+    white-space: pre;
+    overflow: hidden;
+    font-size: 0.58rem;
+  }
+  .term-body .p { color: var(--term-fg2); }
+  .term-body .h { color: var(--term-coral); font-weight: 600; }
+  .statusbar {
+    height: 20px;
+    border-top: 1px solid var(--border);
+    background: rgba(251, 250, 246, 0.7);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 9px;
+    font-size: 0.55rem;
+    color: var(--basalt);
+  }
+  .statusbar .lime { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+  .cursor {
+    display: inline-block;
+    width: 5px; height: 9px;
+    background: var(--term-fg);
+    vertical-align: -1px;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---------- Sections ---------- */
+  section { padding-block: clamp(4rem, 10vw, 8rem); }
+  .section-head {
+    max-width: 38em;
+    margin-bottom: clamp(2.5rem, 6vw, 4rem);
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--accent-ink);
+    display: block;
+    margin-bottom: 0.75rem;
+  }
+  h2 {
+    font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    color: var(--ink-0);
+  }
+  .section-head p { margin-top: 1rem; color: var(--basalt); }
+
+  /* zig-zag feature rows */
+  .feature {
+    display: grid;
+    grid-template-columns: 5fr 7fr;
+    gap: clamp(2rem, 5vw, 4.5rem);
+    align-items: center;
+    padding-block: clamp(2.5rem, 6vw, 4rem);
+    border-top: 1px solid var(--border);
+  }
+  .feature.flip { grid-template-columns: 7fr 5fr; }
+  .feature.flip .feature-copy { order: 2; }
+  .feature.flip .feature-visual { order: 1; }
+  .feature h3 {
+    font-size: clamp(1.3rem, 2.2vw, 1.6rem);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--ink-0);
+  }
+  .feature p { margin-top: 0.85rem; color: var(--basalt); max-width: 32em; }
+  .feature .tags {
+    margin-top: 1.25rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .tag {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 0.5rem;
+    background: var(--accent-wash);
+    color: var(--accent-ink);
+  }
+  /* 影片＝完整 app 畫面截錄，框成 app 視窗樣式 */
+  .feature-visual video {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* ---------- Download ---------- */
+  .dl-list { border-top: 1px solid var(--border); }
+  .dl-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.15rem 0.5rem;
+    min-height: 44px;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.22s var(--ease-out), padding 0.22s var(--ease-out);
+  }
+  .dl-row:hover { background: var(--accent-wash); padding-left: 1rem; }
+  .dl-row .os {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+  .dl-row .fmt {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-3);
+  }
+  .dl-row .go { color: var(--accent-ink); font-weight: 700; }
+  .dl-note {
+    margin-top: 1.5rem;
+    font-size: 0.85rem;
+    color: var(--basalt);
+  }
+  .dl-link {
+    color: var(--accent-ink);
+    font-weight: 600;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.22s var(--ease-out);
+  }
+  .dl-link:hover { border-color: var(--accent-ink); }
+  .dl-note code {
+    font-family: var(--mono);
+    font-size: 0.8em;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    padding: 0.1rem 0.4rem;
+  }
+
+  /* ---------- Footer ---------- */
+  footer {
+    background: var(--night);
+    color: #8a8691;
+    padding-block: clamp(2.5rem, 6vw, 4rem);
+    margin-top: clamp(4rem, 10vw, 8rem);
+  }
+  .footer-inner {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+  }
+  footer .wordmark { color: #f5f3ef; font-size: 1.1rem; }
+  footer a { border-bottom: 1px solid transparent; transition: border-color 0.22s var(--ease-out), color 0.22s var(--ease-out); }
+  footer a:hover { color: #f5f3ef; border-color: var(--accent); }
+
+  /* ---------- Reveal on scroll ---------- */
+  .reveal {
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity 0.7s var(--ease-out), transform 0.7s var(--ease-out);
+    transition-delay: var(--d, 0ms);
+  }
+  .reveal.in { opacity: 1; transform: translateY(0); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .cursor { animation: none; }
+    html { scroll-behavior: auto; }
+  }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 767px) {
+    body { background-attachment: scroll; } /* iOS Safari fixed bg 效能 */
+    .nav-links { display: none; }
+    .hero { grid-template-columns: 1fr; min-height: auto; }
+    .mock-wrap { margin-right: 0; }
+    .side { display: none; }
+    .feature, .feature.flip { grid-template-columns: 1fr; }
+    .feature.flip .feature-copy { order: 1; }
+    .feature.flip .feature-visual { order: 2; }
+    .dl-row .fmt { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a class="brand" href="#">
+      <span class="brand-logo">Y</span>
+      <span class="wordmark">Yuzora</span>
+    </a>
+    <div class="nav-actions">
+      <div class="nav-links">
+        <a class="nav-link" href="#features" data-i18n="nav.features">功能</a>
+        <a class="nav-link" href="#download" data-i18n="nav.download">下載</a>
+      </div>
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" data-lang="zh" aria-pressed="true">中文</button>
+        <button type="button" data-lang="en" aria-pressed="false">EN</button>
+      </div>
+      <a class="nav-gh" href="https://github.com/yuuzu/yuzora" rel="noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header class="container hero">
+  <div class="reveal in">
+    <span class="hero-badge" data-i18n="hero.badge">開源 · Tauri 打造</span>
+    <h1 data-i18n-html="hero.title"><span class="nowrap">把 agent、</span><span class="nowrap">遠端與資料</span><br /><span class="nowrap">收進<em>同一張桌面</em>。</span></h1>
+    <p class="tagline" data-i18n="hero.tagline">
+      Yuzora 是整合 ACP agent、SSH、資料庫與 terminal 的桌面開發工作台。
+      以 Tauri 打造——輕量啟動、在地執行，你的憑證與程式碼不離開你的機器。
+    </p>
+    <div class="cta-row">
+      <a class="cta" href="https://github.com/yuuzu/yuzora/releases/latest" rel="noopener" data-i18n="hero.cta">下載 Yuzora</a>
+      <span class="cta-note">macOS · Windows · Linux</span>
+    </div>
+  </div>
+
+  <!-- workbench mock：結構與樣式對齊真實 app（rail / glass sidebar / panel 卡 / terminal drawer / statusbar） -->
+  <div class="mock-wrap reveal in" style="--d: 120ms" aria-hidden="true">
+    <div class="appframe">
+      <div class="appbody">
+        <div class="rail">
+          <i class="on"></i><i></i><i></i>
+          <span class="avatar">Y</span>
+        </div>
+        <div class="side">
+          <div class="side-head">
+            <span class="side-logo">Y</span>
+            <div>
+              <div class="side-title">Yuzora</div>
+              <div class="side-path">~/App/Tauri/yuzora</div>
+            </div>
+          </div>
+          <div class="side-search"><span data-i18n="mock.search">搜尋或執行命令</span><span class="k">⌘K</span></div>
+          <div class="side-label">FILES</div>
+          <ul>
+            <li class="dir">src-tauri/src</li>
+            <li class="on">  db_service.rs</li>
+            <li>  ssh_service.rs</li>
+            <li>  lib.rs</li>
+            <li class="dir">src</li>
+            <li>  App.tsx</li>
+          </ul>
+        </div>
+        <div class="maincol">
+          <div class="panel-card">
+            <div class="tabsbar">
+              <span class="tabpill on"><span class="dot"></span>db_service.rs <span>×</span></span>
+              <span class="tabpill">lib.rs <span>×</span></span>
+            </div>
+            <div class="code"><span class="ln">1</span><b>pub async fn</b> connect(&self) -> Result<Client> {
+<span class="ln">2</span>    <b>let</b> tls = MakeTlsConnector::new(builder.build()?);
+<span class="ln">3</span>    <b>let</b> (client, conn) = config.connect(tls).await?;
+<span class="ln">4</span>    tokio::spawn(conn);
+<span class="ln">5</span>    Ok(client)
+<span class="ln">6</span>}</div>
+          </div>
+          <div class="term-card">
+            <div class="term-bar">&gt;_ <b data-i18n="mock.terminal">終端機</b> ~/App/Tauri/yuzora</div>
+            <div class="term-body"><span class="p">yuzora %</span> bun run tauri:dev
+<span class="p">→</span> vite dev server :1420
+<span class="p">→</span> app ready <span class="cursor"></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span style="color:var(--ink)">Yuzora</span>
+        <span class="lime"></span>
+        <span>main</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="container" id="features">
+    <div class="section-head reveal">
+      <span class="kicker">features</span>
+      <h2 data-i18n-html="features.title">開發時真正會開著的東西，<br />不用再開四個視窗。</h2>
+      <p data-i18n="features.lede">編輯器、agent、遠端連線、資料庫、terminal——Yuzora 把它們放進同一個工作台，共用同一份 workspace 脈絡。</p>
+    </div>
+
+    <div class="feature reveal">
+      <div class="feature-copy">
+        <h3 data-i18n="f1.title">AgentZone：ACP agent 並肩工作</h3>
+        <p data-i18n="f1.body">
+          透過 Agent Client Protocol 接上 Claude Code、Codex 等 agent。
+          agent 讀得到你正在看的 workspace，回覆、diff 與工具呼叫都在側欄即時呈現，權限逐項確認。
+        </p>
+        <div class="tags">
+          <span class="tag">ACP</span><span class="tag">claude-code</span><span class="tag">codex</span><span class="tag" data-i18n="f1.tag">權限控管</span>
+        </div>
+      </div>
+      <div class="feature-visual">
+        <video data-video="agentzone" autoplay muted loop playsinline preload="auto" aria-label="AgentZone demo">
+          <source src="assets/agentzone-zh.mp4" type="video/mp4" />
+        </video>
+      </div>
+    </div>
+
+    <div class="feature flip reveal">
+      <div class="feature-copy">
+        <h3 data-i18n="f2.title">遠端即在地：SSH 與資料庫</h3>
+        <p data-i18n="f2.body">
+          SSH 連上遠端主機瀏覽與編輯檔案、SFTP 傳輸；資料庫面板直接查表、下 query、看結構。
+          連線設定集中管理，known hosts 與憑證都留在本機。
+        </p>
+        <div class="tags">
+          <span class="tag">SSH / SFTP</span><span class="tag">PostgreSQL</span><span class="tag">MySQL</span><span class="tag">SQLite</span>
+        </div>
+      </div>
+      <div class="feature-visual">
+        <video data-video="remote-db" autoplay muted loop playsinline preload="auto" aria-label="SSH and database demo">
+          <source src="assets/remote-db-zh.mp4" type="video/mp4" />
+        </video>
+      </div>
+    </div>
+
+    <div class="feature reveal">
+      <div class="feature-copy">
+        <h3 data-i18n="f3.title">內建 terminal 與 git 工具</h3>
+        <p data-i18n="f3.body">
+          xterm 驅動的 terminal drawer 就在編輯器下方；git 面板看歷史、看 diff、
+          從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
+        </p>
+        <div class="tags">
+          <span class="tag">xterm + pty</span><span class="tag">git log / cherry-pick</span><span class="tag" data-i18n="f3.tag">log 查詢</span>
+        </div>
+      </div>
+      <div class="feature-visual">
+        <video data-video="terminal-git" autoplay muted loop playsinline preload="auto" aria-label="Terminal and git demo">
+          <source src="assets/terminal-git-zh.mp4" type="video/mp4" />
+        </video>
+      </div>
+    </div>
+  </section>
+
+  <section class="container" id="download">
+    <div class="section-head reveal">
+      <span class="kicker">download</span>
+      <h2 data-i18n="dl.title">選你的平台，開始使用。</h2>
+      <p data-i18n="dl.lede">所有版本皆由 GitHub Actions 建置並發佈於 GitHub Releases，原始碼公開可查。</p>
+    </div>
+    <!-- 直接下載：release workflow 會上傳固定檔名別名 asset（方案 A），latest/download 永久有效 -->
+    <div class="dl-list reveal" style="--d: 100ms">
+      <a class="dl-row" href="https://github.com/yuuzu/yuzora/releases/latest/download/Yuzora-macos-universal.dmg" rel="noopener">
+        <span class="os">macOS</span>
+        <span class="fmt">.dmg — universal (Apple Silicon / Intel)</span>
+        <span class="go">↓</span>
+      </a>
+      <a class="dl-row" href="https://github.com/yuuzu/yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe" rel="noopener">
+        <span class="os">Windows</span>
+        <span class="fmt">.exe (NSIS) — x64</span>
+        <span class="go">↓</span>
+      </a>
+      <a class="dl-row" href="https://github.com/yuuzu/yuzora/releases/latest/download/Yuzora-linux-x86_64.AppImage" rel="noopener">
+        <span class="os">Linux</span>
+        <span class="fmt">.AppImage — x86_64</span>
+        <span class="go">↓</span>
+      </a>
+    </div>
+    <p class="dl-note reveal" style="--d: 180ms">
+      <span data-i18n="dl.other">其他安裝格式（.msi／.deb／.rpm）與歷史版本見</span>
+      <a class="dl-link" href="https://github.com/yuuzu/yuzora/releases" rel="noopener">GitHub Releases</a>
+    </p>
+    <p class="dl-note reveal" style="--d: 220ms">
+      <span data-i18n="dl.note">想從原始碼建置：</span><code>bun install && bun run tauri:build</code>
+    </p>
+  </section>
+</main>
+
+<footer>
+  <div class="container footer-inner">
+    <div>
+      <span class="wordmark">Yuzora</span>
+      <span style="margin-left: 0.75rem" data-i18n="footer.tagline">夕空下的開發工作台</span>
+    </div>
+    <div>
+      <a href="https://github.com/yuuzu/yuzora" rel="noopener" data-i18n="footer.source">原始碼</a>
+      <span style="margin: 0 0.6rem">·</span>
+      <a href="https://github.com/yuuzu/yuzora/issues" rel="noopener" data-i18n="footer.issues">回報問題</a>
+      <span style="margin: 0 0.6rem">·</span>
+      <a href="https://github.com/yuuzu/yuzora/releases" rel="noopener" data-i18n="footer.releases">所有版本</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  /* ---------- i18n ---------- */
+  const I18N = {
+    zh: {
+      "meta.title": "Yuzora — 桌面開發工作台",
+      "meta.description": "Yuzora 是整合 ACP agent、SSH、資料庫與 terminal 的桌面開發工作台。以 Tauri 打造，輕量、快速、在地執行。",
+      "nav.features": "功能",
+      "nav.download": "下載",
+      "hero.badge": "開源 · Tauri 打造",
+      "hero.title": '<span class="nowrap">把 agent、</span><span class="nowrap">遠端與資料</span><br /><span class="nowrap">收進<em>同一張桌面</em>。</span>',
+      "hero.tagline": "Yuzora 是整合 ACP agent、SSH、資料庫與 terminal 的桌面開發工作台。以 Tauri 打造——輕量啟動、在地執行，你的憑證與程式碼不離開你的機器。",
+      "hero.cta": "下載 Yuzora",
+      "mock.search": "搜尋或執行命令",
+      "mock.terminal": "終端機",
+      "features.title": "開發時真正會開著的東西，<br />不用再開四個視窗。",
+      "features.lede": "編輯器、agent、遠端連線、資料庫、terminal——Yuzora 把它們放進同一個工作台，共用同一份 workspace 脈絡。",
+      "f1.title": "AgentZone：ACP agent 並肩工作",
+      "f1.body": "透過 Agent Client Protocol 接上 Claude Code、Codex 等 agent。agent 讀得到你正在看的 workspace，回覆、diff 與工具呼叫都在側欄即時呈現，權限逐項確認。",
+      "f1.tag": "權限控管",
+      "f2.title": "遠端即在地：SSH 與資料庫",
+      "f2.body": "SSH 連上遠端主機瀏覽與編輯檔案、SFTP 傳輸；資料庫面板直接查表、下 query、看結構。連線設定集中管理，known hosts 與憑證都留在本機。",
+      "f3.title": "內建 terminal 與 git 工具",
+      "f3.body": "xterm 驅動的 terminal drawer 就在編輯器下方；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。",
+      "f3.tag": "log 查詢",
+      "dl.title": "選你的平台，開始使用。",
+      "dl.lede": "所有版本皆由 GitHub Actions 建置並發佈於 GitHub Releases，原始碼公開可查。",
+      "dl.other": "其他安裝格式（.msi／.deb／.rpm）與歷史版本見",
+      "dl.note": "想從原始碼建置：",
+      "footer.tagline": "夕空下的開發工作台",
+      "footer.source": "原始碼",
+      "footer.issues": "回報問題",
+      "footer.releases": "所有版本",
+    },
+    en: {
+      "meta.title": "Yuzora — a desktop dev workbench",
+      "meta.description": "Yuzora is a desktop workbench that unifies ACP agents, SSH, databases and a terminal. Built with Tauri — light, fast, local-first.",
+      "nav.features": "Features",
+      "nav.download": "Download",
+      "hero.badge": "Open source · Built with Tauri",
+      "hero.title": 'Agents, remotes and data —<br /><span class="nowrap">all on <em>one desk</em>.</span>',
+      "hero.tagline": "Yuzora is a desktop workbench that unifies ACP agents, SSH, databases and a terminal. Built with Tauri — quick to launch, local-first: your credentials and code never leave your machine.",
+      "hero.cta": "Download Yuzora",
+      "mock.search": "Search or run a command",
+      "mock.terminal": "Terminal",
+      "features.title": "Everything you actually keep open,<br />without four separate windows.",
+      "features.lede": "Editor, agent, remote connections, databases, terminal — Yuzora puts them in one workbench, sharing one workspace context.",
+      "f1.title": "AgentZone: work alongside ACP agents",
+      "f1.body": "Connect Claude Code, Codex and other agents over the Agent Client Protocol. Agents see the workspace you're looking at; replies, diffs and tool calls stream into the panel, with per-action permission prompts.",
+      "f1.tag": "permissions",
+      "f2.title": "Remote feels local: SSH & databases",
+      "f2.body": "Browse and edit files over SSH with SFTP transfer; query tables, run SQL and inspect schemas in the database panel. Connections are managed in one place — known hosts and credentials stay on your machine.",
+      "f3.title": "Built-in terminal & git tools",
+      "f3.body": "An xterm-powered terminal drawer sits right under the editor; the git panel shows history and diffs, with cherry-pick straight from commit details. Log query and export keep debugging inside the workbench.",
+      "f3.tag": "log query",
+      "dl.title": "Pick your platform and get started.",
+      "dl.lede": "Every build is produced by GitHub Actions and published on GitHub Releases — the source is open.",
+      "dl.other": "Other installer formats (.msi / .deb / .rpm) and past versions live on",
+      "dl.note": "Build from source: ",
+      "footer.tagline": "a dev workbench under the evening sky",
+      "footer.source": "Source",
+      "footer.issues": "Issues",
+      "footer.releases": "Releases",
+    },
+  };
+
+  function setLang(lang) {
+    const dict = I18N[lang] || I18N.zh;
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const v = dict[el.getAttribute('data-i18n')];
+      if (v !== undefined) el.textContent = v;
+    });
+    document.querySelectorAll('[data-i18n-html]').forEach((el) => {
+      const v = dict[el.getAttribute('data-i18n-html')];
+      if (v !== undefined) el.innerHTML = v;
+    });
+    document.documentElement.lang = lang === 'zh' ? 'zh-Hant' : 'en';
+    document.title = dict['meta.title'];
+    const desc = document.querySelector('meta[name="description"]');
+    if (desc) desc.setAttribute('content', dict['meta.description']);
+    document.querySelectorAll('.lang-switch button').forEach((b) => {
+      b.setAttribute('aria-pressed', String(b.dataset.lang === lang));
+    });
+    // 影片全部依語言切換（UI chrome 內含文字）
+    document.querySelectorAll('video[data-video]').forEach((v) => {
+      const src = 'assets/' + v.dataset.video + '-' + lang + '.mp4';
+      const sourceEl = v.querySelector('source');
+      if (sourceEl && !sourceEl.getAttribute('src').endsWith(src)) {
+        sourceEl.setAttribute('src', src);
+        v.load();
+        v.play().catch(() => {});
+      }
+    });
+    try { localStorage.setItem('yuzora-lang', lang); } catch (_) {}
+  }
+
+  document.querySelectorAll('.lang-switch button').forEach((b) => {
+    b.addEventListener('click', () => setLang(b.dataset.lang));
+  });
+
+  let saved = null;
+  try { saved = localStorage.getItem('yuzora-lang'); } catch (_) {}
+  const initial = saved || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+  if (initial !== 'zh') setLang(initial);
+
+  /* ---------- 進場級聯 reveal ---------- */
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    }
+  }, { threshold: 0.15 });
+  document.querySelectorAll('.reveal:not(.in)').forEach((el) => io.observe(el));
+
+  /* ---------- 影片：進 viewport 才播放，離開暫停 ---------- */
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const vio = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      const v = e.target;
+      if (e.isIntersecting && !reduced) v.play().catch(() => {});
+      else v.pause();
+    }
+  }, { threshold: 0.25 });
+  document.querySelectorAll('video').forEach((v) => {
+    if (reduced) { v.removeAttribute('autoplay'); v.pause(); }
+    vio.observe(v);
+  });
+</script>
+</body>
+</html>
