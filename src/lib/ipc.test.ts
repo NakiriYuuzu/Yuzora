@@ -1,14 +1,17 @@
-import { expect, test, it, afterEach } from "vitest"
+import { expect, test, it, afterEach, describe } from "vitest"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
+import * as ipcModule from "./ipc"
 import {
     openFile,
     saveFile,
     listDir,
+    workspacePathIndex,
     gitDetect,
     gitStatus,
     gitStage,
     gitUnstage,
     gitDiscard,
+    gitRollbackPaths,
     gitCommit,
     gitBranches,
     gitCreateBranch,
@@ -47,7 +50,24 @@ import {
     lspSetTrace,
     lspInstallServer,
     agentKill,
-    agentStderrTail
+    agentStderrTail,
+    dbProfileList,
+    dbProfileImportLegacy,
+    dbProfileCreate,
+    dbProfileUpdate,
+    dbProfileRemoveCredential,
+    dbProfileForget,
+    dbProfileRecover,
+    dbProfileOpen,
+    dbProfileDisconnect,
+    dbTestConnection,
+    dbListTables,
+    dbTableColumns,
+    dbQueryRun,
+    dbQueryCancel,
+    dbResultPagePrevious,
+    dbResultPageNext,
+    dbResultSessionRelease
 } from "./ipc"
 import { languageFromPath, fileGradeOf, MAX_LINE_LEN_SYNTAX_OFF } from "./types"
 import type {
@@ -57,6 +77,24 @@ import type {
     OpenFileResult,
     PtyEvent,
     DevServerStatus
+} from "./types"
+import type {
+    DbConnectionGeneration,
+    DbConnectionId,
+    DbDescriptorId,
+    DbError,
+    DbLiveConnection,
+    DbOperationalError,
+    DbProfileDescriptor,
+    DbProfileErrorCode,
+    DbProfileLoadResult,
+    DbProfileRecoveryRequest,
+    DbQueryRunRequest,
+    DbQueryRunId,
+    DbResultPage,
+    DbResultSessionId,
+    DbSaveAndConnectOutcome,
+    DbStatementExecutionId
 } from "./types"
 
 const sampleServerInfo: LspServerInfo = {
@@ -96,6 +134,25 @@ test("listDir 回傳節點", async () => {
     )
     const nodes = await listDir("/w")
     expect(nodes[0].isDir).toBe(true)
+})
+
+test("workspacePathIndex uses a typed request/response without a search channel", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => {
+        seen.push([cmd, payload])
+        return {
+            workspace: "/w",
+            entries: [{ relativePath: "src/a.ts", canonicalPath: "/w/src/a.ts" }],
+            truncated: false
+        }
+    })
+
+    await expect(workspacePathIndex("/w")).resolves.toEqual({
+        workspace: "/w",
+        entries: [{ relativePath: "src/a.ts", canonicalPath: "/w/src/a.ts" }],
+        truncated: false
+    })
+    expect(seen).toEqual([["workspace_path_index", { workspace: "/w" }]])
 })
 
 test("languageFromPath 依副檔名判斷", () => {
@@ -143,22 +200,54 @@ it("gitStatus defaults pathspec to null", async () => {
 it("gitStage forwards paths", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitStage(["a.ts"])
-    expect(seen[0]).toEqual(["git_stage", { paths: ["a.ts"] }])
+    await gitStage("/w", ["a.ts"])
+    expect(seen[0]).toEqual(["git_stage", { repositoryRoot: "/w", paths: ["a.ts"] }])
 })
 
 it("gitUnstage forwards paths", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitUnstage(["a.ts"])
-    expect(seen[0]).toEqual(["git_unstage", { paths: ["a.ts"] }])
+    await gitUnstage("/w", ["a.ts"])
+    expect(seen[0]).toEqual(["git_unstage", { repositoryRoot: "/w", paths: ["a.ts"] }])
 })
 
 it("gitDiscard forwards tracked and untracked lists", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitDiscard(["a.ts"], ["b.txt"])
-    expect(seen[0]).toEqual(["git_discard", { paths: ["a.ts"], untracked: ["b.txt"] }])
+    await gitDiscard("/w", ["a.ts"], ["b.txt"])
+    expect(seen[0]).toEqual([
+        "git_discard",
+        { repositoryRoot: "/w", paths: ["a.ts"], untracked: ["b.txt"] }
+    ])
+})
+
+it("gitRollbackPaths forwards deduplicated status snapshots and explicit delete opt-in", async () => {
+    const targets = [
+        {
+            path: "renamed.ts",
+            classification: {
+                kind: "tracked" as const,
+                stagedStatus: "R",
+                unstagedStatus: null,
+                origPath: "original.ts"
+            }
+        }
+    ]
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("git_rollback_paths")
+        expect(payload).toEqual({
+            repositoryRoot: "/w",
+            targets,
+            deleteUntrackedOrAdded: true
+        })
+        return { restored: ["renamed.ts"], preservedUntracked: [], deleted: [] }
+    })
+
+    await expect(gitRollbackPaths("/w", targets, true)).resolves.toEqual({
+        restored: ["renamed.ts"],
+        preservedUntracked: [],
+        deleted: []
+    })
 })
 
 it("gitCommit forwards message", async () => {
@@ -191,25 +280,25 @@ it("gitCheckout forwards name", async () => {
     expect(seen[0]).toEqual(["git_checkout", { name: "main" }])
 })
 
-it("gitFetch forwards background flag", async () => {
+it("gitFetch forwards background flag and optional repository authority", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitFetch(true)
-    expect(seen[0]).toEqual(["git_fetch_cmd", { background: true }])
+    await gitFetch(true, "/repo")
+    expect(seen[0]).toEqual(["git_fetch_cmd", { background: true, repositoryRoot: "/repo" }])
 })
 
-it("gitPull invokes git_pull_cmd", async () => {
+it("gitPull forwards optional repository authority", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitPull()
-    expect(seen[0]).toEqual(["git_pull_cmd", {}])
+    await gitPull("/repo")
+    expect(seen[0]).toEqual(["git_pull_cmd", { repositoryRoot: "/repo" }])
 })
 
-it("gitPush invokes git_push_cmd", async () => {
+it("gitPush forwards optional repository authority", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitPush()
-    expect(seen[0]).toEqual(["git_push_cmd", {}])
+    await gitPush("/repo")
+    expect(seen[0]).toEqual(["git_push_cmd", { repositoryRoot: "/repo" }])
 })
 
 it("gitCherryPick forwards hash", async () => {
@@ -661,4 +750,299 @@ it("fileGradeOf returns the underlying kind for non-full results", () => {
     expect(fileGradeOf({ kind: "binary", size: 99 })).toBe("binary")
     expect(fileGradeOf({ kind: "nonUtf8Readonly", content: "x", encoding: "latin1", size: 1 }))
         .toBe("nonUtf8Readonly")
+})
+
+describe("database v2 IPC contract seams", () => {
+    const descriptorId = "descriptor-1" as DbDescriptorId
+    const connectionId = "connection-1" as DbConnectionId
+    const connectionGeneration = "generation-7" as DbConnectionGeneration
+    const queryRunId = "query-run-1" as DbQueryRunId
+    const statementExecutionId = "statement-1" as DbStatementExecutionId
+    const resultSessionId = "result-session-1" as DbResultSessionId
+    const identity = { descriptorId, connectionId, connectionGeneration }
+    const queryOwner = { ...identity, queryRunId }
+    const resultOwner = { ...queryOwner, statementExecutionId, resultSessionId }
+    const target = {
+        kind: "postgres" as const,
+        host: "db.internal",
+        port: 5432,
+        database: "app",
+        user: "alice",
+        ssl: true,
+        trustCert: false
+    }
+    const profile: DbProfileDescriptor = {
+        descriptorId,
+        configGeneration: 4,
+        name: "App",
+        target,
+        credentialState: "stored"
+    }
+    const loadResult: DbProfileLoadResult = {
+        profiles: [profile],
+        recovery: [{
+            operationId: "operation-1",
+            descriptorId,
+            kind: "pendingReplace",
+            allowedActions: ["resume", "abort"]
+        }]
+    }
+
+    it("keeps live engines separate from local structured-error provenance", () => {
+        const live: DbLiveConnection = { ...identity, engine: "sqlite" }
+        const localError: DbError = {
+            engine: "yuzora",
+            message: "local validation failed",
+            code: null,
+            position: null,
+            detail: null,
+            hint: null,
+            retryability: "notRetryable"
+        }
+        expect(live.engine).toBe("sqlite")
+        expect(localError.engine).toBe("yuzora")
+    })
+
+    it("preserves an operational recovery code with optional engine diagnostics", () => {
+        const error: DbOperationalError = {
+            code: "queryFailed",
+            message: "database query failed",
+            error: {
+                engine: "postgres",
+                message: "syntax error",
+                code: "42601",
+                position: { offset: 9, line: null, column: null },
+                detail: "near FROM",
+                hint: "check the select list",
+                retryability: "notRetryable"
+            }
+        }
+        expect(error.code).toBe("queryFailed")
+        expect(error.error).toMatchObject({
+            engine: "postgres",
+            code: "42601",
+            position: { offset: 9 }
+        })
+    })
+
+    it("forwards metadata requests with exact live ownership", async () => {
+        const seen: unknown[] = []
+        mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+        const table = {
+            catalog: "app",
+            schema: "public",
+            name: "orders",
+            kind: "table" as const
+        }
+
+        await dbListTables(identity)
+        await dbTableColumns(identity, table)
+
+        expect(seen).toEqual([
+            ["db_list_tables", { identity }],
+            ["db_table_columns", { identity, table }]
+        ])
+    })
+
+    it("keeps P3 operational error codes stable and exhaustive at the frontend boundary", () => {
+        const codes: DbProfileErrorCode[] = [
+            "connectionFailed",
+            "connectionBusy",
+            "serverDisconnected",
+            "metadataFailed",
+            "queryFailed",
+            "staleConnection",
+            "sqlitePathMissing",
+            "sqlitePathNotFile",
+            "sqlitePathUnreadable",
+            "sqlitePathInvalid",
+            "sqliteOpenFailed"
+        ]
+        expect(codes).toHaveLength(11)
+        expect(profile.configGeneration).toBe(4)
+    })
+
+    it("forwards profile list/import/create/update lifecycle requests and returns exact results", async () => {
+        const seen: unknown[] = []
+        const connected: DbSaveAndConnectOutcome = {
+            outcome: "connected",
+            profile,
+            connection: { ...identity, engine: "postgres" }
+        }
+        const updated = { ...profile, name: "App 2" }
+        mockIPC((cmd, payload) => {
+            seen.push([cmd, payload])
+            if (cmd === "db_profile_list" || cmd === "db_profile_import_legacy") return loadResult
+            if (cmd === "db_profile_create") return connected
+            if (cmd === "db_profile_update") return updated
+        })
+        const listed = await dbProfileList()
+        const imported = await dbProfileImportLegacy({ profiles: [profile] })
+        const created = await dbProfileCreate({
+            name: "App",
+            target,
+            credential: { password: "write-only" }
+        })
+        const updateRequest = {
+            descriptorId,
+            name: "App 2",
+            target,
+            replacementCredential: null
+        }
+        const updateResult = await dbProfileUpdate(updateRequest)
+        expect(listed).toEqual(loadResult)
+        expect(imported).toEqual(loadResult)
+        expect(created).toEqual(connected)
+        expect(updateResult).toEqual(updated)
+        expect(seen).toEqual([
+            ["db_profile_list", {}],
+            ["db_profile_import_legacy", { request: { profiles: [profile] } }],
+            ["db_profile_create", {
+                request: { name: "App", target, credential: { password: "write-only" } }
+            }],
+            ["db_profile_update", { request: updateRequest }]
+        ])
+    })
+
+    it("returns saved-but-connect-failed as a tagged create outcome", async () => {
+        const outcome: DbSaveAndConnectOutcome = {
+            outcome: "savedButConnectFailed",
+            profile,
+            error: { code: "connectionFailed", message: "database connection failed" }
+        }
+        mockIPC((cmd) => (cmd === "db_profile_create" ? outcome : undefined))
+        await expect(dbProfileCreate({ name: "App", target, credential: null }))
+            .resolves.toEqual(outcome)
+    })
+
+    it("forwards recovery/removal/forget/open/disconnect and returns exact results", async () => {
+        const seen: unknown[] = []
+        const noRecovery: DbProfileLoadResult = { profiles: [profile], recovery: [] }
+        const connection = { ...identity, engine: "postgres" as const }
+        mockIPC((cmd, payload) => {
+            seen.push([cmd, payload])
+            if (
+                cmd === "db_profile_remove_credential"
+                || cmd === "db_profile_forget"
+                || cmd === "db_profile_recover"
+            ) return noRecovery
+            if (cmd === "db_profile_open") return connection
+        })
+        const removed = await dbProfileRemoveCredential(descriptorId)
+        const forgotten = await dbProfileForget(descriptorId)
+        const recoverRequest: DbProfileRecoveryRequest = {
+            operationId: "operation-1",
+            action: "retryCleanup",
+            credential: null
+        }
+        const recovered = await dbProfileRecover(recoverRequest)
+        const opened = await dbProfileOpen(descriptorId)
+        await dbProfileDisconnect(identity)
+        expect(removed).toEqual(noRecovery)
+        expect(forgotten).toEqual(noRecovery)
+        expect(recovered).toEqual(noRecovery)
+        expect(opened).toEqual(connection)
+        expect(seen).toEqual([
+            ["db_profile_remove_credential", { descriptorId }],
+            ["db_profile_forget", { descriptorId }],
+            ["db_profile_recover", { request: recoverRequest }],
+            ["db_profile_open", { descriptorId }],
+            ["db_profile_disconnect", { identity }]
+        ])
+    })
+
+    it("forwards a test connection request and returns the backend probe result", async () => {
+        const seen: unknown[] = []
+        const result = { elapsedMs: 42, serverVersion: "16.3" }
+        mockIPC((cmd, payload) => {
+            seen.push([cmd, payload])
+            if (cmd === "db_test_connection") return result
+        })
+        const request = { kind: "ephemeral" as const, target, credential: { password: "probe" } }
+        await expect(dbTestConnection(request)).resolves.toEqual(result)
+        expect(seen).toEqual([["db_test_connection", { request }]])
+    })
+
+    it("exposes the exact profile wrapper inventory without credential readback", () => {
+        const wrappers = Object.keys(ipcModule)
+            .filter((name) => name.startsWith("dbProfile"))
+            .sort()
+
+        expect(wrappers).toEqual([
+            "dbProfileCreate",
+            "dbProfileDisconnect",
+            "dbProfileForget",
+            "dbProfileImportLegacy",
+            "dbProfileList",
+            "dbProfileOpen",
+            "dbProfileRecover",
+            "dbProfileRemoveCredential",
+            "dbProfileUpdate"
+        ])
+        expect(Object.keys(ipcModule).filter((name) => /credential/i.test(name)))
+            .toEqual(["dbProfileRemoveCredential"])
+        expect("dbOpen" in ipcModule).toBe(false)
+        expect("dbClose" in ipcModule).toBe(false)
+    })
+
+    it("forwards an ordered query run and exact generation-bound cancellation", async () => {
+        const seen: unknown[] = []
+        mockIPC((cmd, payload) => {
+            seen.push([cmd, payload])
+            if (cmd === "db_query_cancel") return { outcome: "cancelledConnectionTerminated" }
+        })
+        const request = {
+            ...queryOwner,
+            mode: "script",
+            statements: [
+                { sql: "BEGIN;", transactionBoundary: "begin" },
+                { sql: "UPDATE t SET n = 2", transactionBoundary: "none" }
+            ]
+        } satisfies DbQueryRunRequest
+        await dbQueryRun(request)
+        const cancelled = await dbQueryCancel(queryOwner)
+        expect(cancelled).toEqual({ outcome: "cancelledConnectionTerminated" })
+        expect(seen).toEqual([
+            ["db_query_run", { request }],
+            ["db_query_cancel", { owner: queryOwner }]
+        ])
+    })
+
+    it("forwards previous/next/release on one exact result owner and returns wire pages", async () => {
+        const seen: unknown[] = []
+        const page = (
+            pageIndex: number,
+            lifecycle: DbResultPage["lifecycle"]
+        ): DbResultPage => ({
+            owner: resultOwner,
+            pageIndex,
+            columns: ["value"],
+            rows: [[{ kind: "integer", value: String(pageIndex + 1) }]],
+            hasPrevious: pageIndex > 0,
+            hasNext: lifecycle === "streaming",
+            effectOutcome: lifecycle === "released" ? "committed" : "transactionPending",
+            lifecycle,
+            resultLimitReached: false
+        })
+        const previousPage = page(0, "streaming")
+        const nextPage = page(1, "streaming")
+        const releasedPage = page(1, "released")
+        mockIPC((cmd, payload) => {
+            seen.push([cmd, payload])
+            if (cmd === "db_result_page") {
+                const direction = (payload as { request: { direction: string } }).request.direction
+                return direction === "previous" ? previousPage : nextPage
+            }
+            if (cmd === "db_result_session_release") return releasedPage
+        })
+
+        await expect(dbResultPagePrevious(resultOwner)).resolves.toEqual(previousPage)
+        await expect(dbResultPageNext(resultOwner)).resolves.toEqual(nextPage)
+        await expect(dbResultSessionRelease(resultOwner)).resolves.toEqual(releasedPage)
+        expect(seen).toEqual([
+            ["db_result_page", { request: { owner: resultOwner, direction: "previous" } }],
+            ["db_result_page", { request: { owner: resultOwner, direction: "next" } }],
+            ["db_result_session_release", { owner: resultOwner }]
+        ])
+    })
 })

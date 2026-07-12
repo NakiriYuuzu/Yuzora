@@ -1,17 +1,24 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react"
 import { FolderGit2, GitBranch, RefreshCw } from "lucide-react"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { logUserAction } from "@/features/logs/userAction"
 import { gitCommit, gitDiscard, gitStage, gitUnstage } from "@/lib/ipc"
-import type { GitStatus } from "@/lib/types"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { changedPathSet, useGitStore } from "@/state/gitStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { BranchPopover } from "@/workbench/git/BranchPopover"
-import { GitBadge, SectionHeader, badgeChar, worktreeFilesFrom } from "@/workbench/git/fileRows"
+import { GitBadge, SectionHeader, worktreeFilesFrom } from "@/workbench/git/fileRows"
 import { splitPath } from "@/workbench/git/diffLoad"
+import { openGitChangeContextMenu } from "@/workbench/git/gitChangeContextMenu"
+import {
+    gitChangeRows,
+    isGitToggleModifier,
+    sameGitChange,
+    uniquePaths,
+    type GitChangeRow
+} from "@/workbench/git/gitChangeSelection"
 
 // Hold-to-discard timing — copied from the design prototype (dc.html L1893:
 // setTimeout 760ms; L4086: fill grows `width 760ms linear` while discarding and
@@ -90,55 +97,18 @@ export function GitNavContent() {
     return <GitNavReady />
 }
 
-// A flattened row from the four GitStatus buckets. `staged` picks which side the
-// row belongs to so its stage/unstage action targets the right git side.
-interface Row {
-    path: string
-    badge: string
-    staged: boolean
-    untracked: boolean
-}
-
-function stagedRowsFrom(status: GitStatus | null): Row[] {
-    return (status?.staged ?? []).map((e) => ({
-        path: e.path,
-        badge: badgeChar(e.status),
-        staged: true,
-        untracked: false
-    }))
-}
-
-// CHANGED bucket = unstaged + untracked + conflicted (same basis as
-// changedPathSet). Conflicted shows "!", untracked "?".
-function changedRowsFrom(status: GitStatus | null): Row[] {
-    return [
-        ...(status?.unstaged ?? []).map((e) => ({
-            path: e.path,
-            badge: badgeChar(e.status),
-            staged: false,
-            untracked: false
-        })),
-        ...(status?.untracked ?? []).map((path) => ({
-            path,
-            badge: "?",
-            staged: false,
-            untracked: true
-        })),
-        ...(status?.conflicted ?? []).map((e) => ({
-            path: e.path,
-            badge: "!",
-            staged: false,
-            untracked: false
-        }))
-    ]
-}
-
 function GitNavReady() {
     const status = useGitStore((s) => s.status)
     const runOp = useGitStore((s) => s.runOp)
+    const repositoryRoot = useGitStore((s) =>
+        s.environment?.status === "ready" ? s.environment.root : null
+    )
     const commitMessage = useGitStore((s) => s.commitMessage)
     const setCommitMessage = useGitStore((s) => s.setCommitMessage)
     const openWorktree = useDiffModalStore((s) => s.openWorktree)
+    const selection = useUiStore((s) => s.gitChangeSelection)
+    const selectGitChange = useUiStore((s) => s.selectGitChange)
+    const reconcileGitChangeSelection = useUiStore((s) => s.reconcileGitChangeSelection)
 
     const [branchOpen, setBranchOpen] = useState(false)
 
@@ -149,54 +119,81 @@ function GitNavReady() {
     const behind = status?.behind ?? 0
     const changedCount = changedPathSet(status).size
 
-    const stagedRows = stagedRowsFrom(status)
-    const changedRows = changedRowsFrom(status)
+    const rows = gitChangeRows(status)
+    const stagedRows = rows.filter((row) => row.staged)
+    const changedRows = rows.filter((row) => !row.staged)
     const stagedCount = stagedRows.length
     const canCommit = stagedCount > 0 && commitMessage.trim().length > 0
 
     const files = worktreeFilesFrom(status)
 
-    async function stageOne(row: Row) {
-        const ok = await runOp("stage", () => gitStage([row.path]))
+    useEffect(() => {
+        reconcileGitChangeSelection(gitChangeRows(status))
+    }, [status, reconcileGitChangeSelection])
+
+    async function stageOne(row: GitChangeRow) {
+        if (!repositoryRoot) return
+        const ok = await runOp("stage", () => gitStage(repositoryRoot, [row.path]))
         if (ok) {
             void logUserAction("git_stage", `stage ${row.path}`)
-            // Keep the Local-changes selection following this file across sections
-            // so the diff re-resolves against the side it now lives on (T15).
-            const ui = useUiStore.getState()
-            if (ui.gitSelectedPath === row.path) ui.selectGitFile(row.path, true)
+            reconcileGitChangeSelection(gitChangeRows(useGitStore.getState().status), {
+                [row.path]: true
+            })
         }
     }
-    async function unstageOne(row: Row) {
-        const ok = await runOp("unstage", () => gitUnstage([row.path]))
+    async function unstageOne(row: GitChangeRow) {
+        if (!repositoryRoot) return
+        const ok = await runOp("unstage", () => gitUnstage(repositoryRoot, [row.path]))
         if (ok) {
             void logUserAction("git_unstage", `unstage ${row.path}`)
-            const ui = useUiStore.getState()
-            if (ui.gitSelectedPath === row.path) ui.selectGitFile(row.path, false)
+            reconcileGitChangeSelection(gitChangeRows(useGitStore.getState().status), {
+                [row.path]: false
+            })
         }
     }
     async function stageAll() {
-        const paths = changedRows.map((r) => r.path)
+        if (!repositoryRoot) return
+        const paths = uniquePaths(changedRows)
         if (paths.length === 0) return
-        const ok = await runOp("stage", () => gitStage(paths))
-        if (ok) void logUserAction("git_stage", `stage all (${paths.length})`)
+        const ok = await runOp("stage", () => gitStage(repositoryRoot, paths))
+        if (ok) {
+            void logUserAction("git_stage", `stage all (${paths.length})`)
+            reconcileGitChangeSelection(
+                gitChangeRows(useGitStore.getState().status),
+                Object.fromEntries(paths.map((path) => [path, true]))
+            )
+        }
     }
     async function unstageAll() {
-        const paths = stagedRows.map((r) => r.path)
+        if (!repositoryRoot) return
+        const paths = uniquePaths(stagedRows)
         if (paths.length === 0) return
-        const ok = await runOp("unstage", () => gitUnstage(paths))
-        if (ok) void logUserAction("git_unstage", `unstage all (${paths.length})`)
+        const ok = await runOp("unstage", () => gitUnstage(repositoryRoot, paths))
+        if (ok) {
+            void logUserAction("git_unstage", `unstage all (${paths.length})`)
+            reconcileGitChangeSelection(
+                gitChangeRows(useGitStore.getState().status),
+                Object.fromEntries(paths.map((path) => [path, false]))
+            )
+        }
     }
     async function discardAll() {
+        if (!repositoryRoot) return
         if (changedCount === 0) return
         // Exclude conflicted files: `git restore`/clean on an unmerged path errors
         // out mid-merge, surfacing spurious failures. Discard only the resolvable
         // working changes (m7).
         const conflicted = new Set((status?.conflicted ?? []).map((e) => e.path))
         const discardable = changedRows.filter((r) => !conflicted.has(r.path))
-        const tracked = discardable.filter((r) => !r.untracked).map((r) => r.path)
-        const untracked = discardable.filter((r) => r.untracked).map((r) => r.path)
-        const done = await runOp("discard", () => gitDiscard(tracked, untracked))
-        if (done) void logUserAction("git_discard", `discard all (${changedCount})`)
+        const tracked = uniquePaths(discardable.filter((r) => r.classification !== "untracked"))
+        const untracked = uniquePaths(discardable.filter((r) => r.classification === "untracked"))
+        const done = await runOp("discard", () =>
+            gitDiscard(repositoryRoot, tracked, untracked)
+        )
+        if (done) {
+            void logUserAction("git_discard", `discard all (${changedCount})`)
+            reconcileGitChangeSelection(gitChangeRows(useGitStore.getState().status))
+        }
     }
     async function commit() {
         if (!canCommit) return
@@ -361,7 +358,18 @@ function GitNavReady() {
                 <SidebarFileRow
                     key={`s:${row.path}`}
                     row={row}
-                    onSelect={() => openWorktree(files, { path: row.path, staged: row.staged })}
+                    selected={selection.some((candidate) => sameGitChange(candidate, row))}
+                    onSelect={(event) => {
+                        selectGitChange(
+                            row,
+                            rows,
+                            event.shiftKey
+                                ? "range"
+                                : isGitToggleModifier(event) ? "toggle" : "single"
+                        )
+                        openWorktree(files, { path: row.path, staged: row.staged })
+                    }}
+                    onContextMenu={(event) => openGitChangeContextMenu(event, row, rows)}
                     onStageToggle={() => void unstageOne(row)}
                 />
             ))}
@@ -384,7 +392,18 @@ function GitNavReady() {
                 <SidebarFileRow
                     key={`c:${row.path}`}
                     row={row}
-                    onSelect={() => openWorktree(files, { path: row.path, staged: row.staged })}
+                    selected={selection.some((candidate) => sameGitChange(candidate, row))}
+                    onSelect={(event) => {
+                        selectGitChange(
+                            row,
+                            rows,
+                            event.shiftKey
+                                ? "range"
+                                : isGitToggleModifier(event) ? "toggle" : "single"
+                        )
+                        openWorktree(files, { path: row.path, staged: row.staged })
+                    }}
+                    onContextMenu={(event) => openGitChangeContextMenu(event, row, rows)}
                     onStageToggle={() => void stageOne(row)}
                 />
             ))}
@@ -398,11 +417,15 @@ function GitNavReady() {
 // see brief 已知偏差).
 function SidebarFileRow({
     row,
+    selected,
     onSelect,
+    onContextMenu,
     onStageToggle
 }: {
-    row: Row
-    onSelect: () => void
+    row: GitChangeRow
+    selected: boolean
+    onSelect: (event: ReactMouseEvent) => void
+    onContextMenu: (event: ReactMouseEvent) => void
     onStageToggle: () => void
 }) {
     const { name, dir } = splitPath(row.path)
@@ -411,8 +434,12 @@ function SidebarFileRow({
             role="button"
             tabIndex={0}
             onClick={onSelect}
+            onContextMenu={onContextMenu}
             title="Open diff"
-            className="group mx-[3px] flex h-[30px] cursor-pointer items-center gap-[9px] rounded-[8px] px-[8px] transition-[background] duration-[120ms] hover:bg-(--yz-panel)"
+            className={
+                "group mx-[3px] flex h-[30px] cursor-pointer items-center gap-[9px] rounded-[8px] px-[8px] transition-[background] duration-[120ms] " +
+                (selected ? "bg-(--yz-active) shadow-(--shadow-xs)" : "hover:bg-(--yz-panel)")
+            }
         >
             <GitBadge badge={row.badge} />
             <span className="flex min-w-0 flex-1 items-baseline overflow-hidden">

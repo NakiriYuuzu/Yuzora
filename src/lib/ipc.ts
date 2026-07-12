@@ -55,6 +55,32 @@ import type {
 } from "./types"
 
 /** Full latest-status snapshot for one deduplicated rollback path. */
+export type GitRollbackClassification =
+    | {
+          kind: "tracked"
+          stagedStatus: string | null
+          unstagedStatus: string | null
+          origPath: string | null
+      }
+    | {
+          kind: "added"
+          stagedStatus: string | null
+          unstagedStatus: string | null
+      }
+    | { kind: "untracked" }
+    | { kind: "conflicted" }
+
+export interface GitRollbackTarget {
+    path: string
+    classification: GitRollbackClassification
+}
+
+export interface GitRollbackResult {
+    restored: string[]
+    preservedUntracked: string[]
+    deleted: string[]
+}
+
 export function openWorkspace(path: string): Promise<string> {
     return invoke("open_workspace", { path })
 }
@@ -103,16 +129,28 @@ export function gitStatus(pathspec?: string[]): Promise<GitStatus> {
     return invoke("git_status_cmd", { pathspec: pathspec ?? null })
 }
 
-export function gitStage(paths: string[]): Promise<void> {
-    return invoke("git_stage", { paths })
+export function gitStage(repositoryRoot: string, paths: string[]): Promise<void> {
+    return invoke("git_stage", { repositoryRoot, paths })
 }
 
-export function gitUnstage(paths: string[]): Promise<void> {
-    return invoke("git_unstage", { paths })
+export function gitUnstage(repositoryRoot: string, paths: string[]): Promise<void> {
+    return invoke("git_unstage", { repositoryRoot, paths })
 }
 
-export function gitDiscard(paths: string[], untracked: string[]): Promise<void> {
-    return invoke("git_discard", { paths, untracked })
+export function gitDiscard(
+    repositoryRoot: string,
+    paths: string[],
+    untracked: string[]
+): Promise<void> {
+    return invoke("git_discard", { repositoryRoot, paths, untracked })
+}
+
+export function gitRollbackPaths(
+    repositoryRoot: string,
+    targets: GitRollbackTarget[],
+    deleteUntrackedOrAdded: boolean
+): Promise<GitRollbackResult> {
+    return invoke("git_rollback_paths", { repositoryRoot, targets, deleteUntrackedOrAdded })
 }
 
 export function gitCommit(message: string): Promise<void> {
@@ -135,16 +173,19 @@ export function gitCherryPick(hash: string): Promise<void> {
     return invoke("git_cherry_pick", { hash })
 }
 
-export function gitFetch(background: boolean): Promise<void> {
-    return invoke("git_fetch_cmd", { background })
+export function gitFetch(background: boolean, repositoryRoot?: string): Promise<void> {
+    return invoke("git_fetch_cmd", {
+        background,
+        ...(repositoryRoot ? { repositoryRoot } : {})
+    })
 }
 
-export function gitPull(): Promise<void> {
-    return invoke("git_pull_cmd")
+export function gitPull(repositoryRoot?: string): Promise<void> {
+    return invoke("git_pull_cmd", repositoryRoot ? { repositoryRoot } : undefined)
 }
 
-export function gitPush(): Promise<void> {
-    return invoke("git_push_cmd")
+export function gitPush(repositoryRoot?: string): Promise<void> {
+    return invoke("git_push_cmd", repositoryRoot ? { repositoryRoot } : undefined)
 }
 
 export function gitRemoteProbe(): Promise<RemoteProbe> {

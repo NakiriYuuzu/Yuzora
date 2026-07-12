@@ -25,7 +25,10 @@ export function GitPanel() {
 
   return (
     <div
-      onContextMenu={contextMenuHandler("git")}
+      onContextMenu={contextMenuHandler({
+        kind: "git",
+        repositoryRoot: environment?.status === "ready" ? environment.root : null,
+      })}
       className="yz-modein flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-1) bg-(--paper-0) shadow-(--shadow-lg)"
     >
       {environment?.status === "missing" ? (

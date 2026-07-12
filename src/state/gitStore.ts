@@ -44,6 +44,7 @@ const CONSOLE_CMD_LABELS: Record<string, string> = {
     stage: "git add",
     unstage: "git restore --staged",
     discard: "git restore",
+    rollback: "git restore --staged --worktree",
     commit: 'git commit -m "…"',
     checkout: "git checkout",
     "cherry-pick": "git cherry-pick",

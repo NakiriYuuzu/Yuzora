@@ -171,7 +171,16 @@ fn detect_in_progress(git_dir: &Path) -> Option<String> {
 
 /// 純函式核心：跑 status --porcelain=v2 並解析。commands 是薄包裝。
 pub fn status_of(root: &Path, pathspec: Option<Vec<String>>) -> Result<GitStatusDto, String> {
-    let mut args: Vec<&str> = vec!["status", "--porcelain=v2", "--branch", "-z"];
+    // `all` is safety-critical for path-scoped rollback: the default `normal`
+    // mode collapses an untracked tree to `scratch/`, which would hide dirty
+    // editor descendants while `git clean -fd -- scratch/` deletes them all.
+    let mut args: Vec<&str> = vec![
+        "status",
+        "--porcelain=v2",
+        "--branch",
+        "--untracked-files=all",
+        "-z",
+    ];
     let spec = pathspec.unwrap_or_default();
     if !spec.is_empty() {
         args.push("--");
@@ -213,6 +222,10 @@ pub fn git_detect(
             *watch_state.0.lock().map_err(|e| e.to_string())? = Some(watcher);
         }
         GitEnvironment::NotARepo | GitEnvironment::Missing { .. } => {
+            // Clear the authority as well as the watcher. Leaving the previous
+            // RepoHandle alive would let an in-flight request for that old root
+            // pass root validation after the UI switched to a non-repository.
+            *state.0.lock().map_err(|e| e.to_string())? = None;
             // 非 repo / 無 git → 清空 watch state（drop 即停）。
             *watch_state.0.lock().map_err(|e| e.to_string())? = None;
         }
@@ -273,6 +286,39 @@ pub struct DiffContent {
     pub modified: GradedText,
 }
 
+/// Frontend 對單一路徑所見的完整 status 快照。Rollback 執行前會和最新
+/// porcelain v2 status 做 exact match，避免 stale menu 對已變化的檔案動手。
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum GitRollbackClassification {
+    Tracked {
+        staged_status: Option<String>,
+        unstaged_status: Option<String>,
+        orig_path: Option<String>,
+    },
+    Added {
+        staged_status: Option<String>,
+        unstaged_status: Option<String>,
+    },
+    Untracked,
+    Conflicted,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRollbackTarget {
+    pub path: String,
+    pub classification: GitRollbackClassification,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRollbackResult {
+    pub restored: Vec<String>,
+    pub preserved_untracked: Vec<String>,
+    pub deleted: Vec<String>,
+}
+
 /// 非零 exit → 統一錯誤格式 "git <sub>: <stderr 摘要 500 字>"。
 pub(crate) fn git_err(sub: &str, stderr: &str) -> String {
     let summary: String = stderr.trim().chars().take(500).collect();
@@ -320,6 +366,295 @@ pub fn discard(root: &Path, paths: &[String], untracked: &[String]) -> Result<()
         run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
     }
     Ok(())
+}
+
+#[derive(Debug)]
+enum GitRollbackPlan {
+    Tracked {
+        path: String,
+        restore_paths: Vec<String>,
+    },
+    Added {
+        path: String,
+    },
+    Untracked {
+        path: String,
+    },
+}
+
+/// Git pathspec 必須是 repo-relative，且現存檔案（或最近的現存 parent）不可經
+/// symlink 逃出 repo。此檢查也套用於由最新 status 取得的 rename origPath。
+fn validate_repo_relative_path(
+    root: &Path,
+    canonical_root: &Path,
+    value: &str,
+) -> Result<(), String> {
+    use std::path::Component;
+
+    if value.is_empty() || value.contains('\0') {
+        return Err("git rollback rejected an empty or NUL-containing path".to_string());
+    }
+    let relative = Path::new(value);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "git rollback rejected non-repo-relative path: {value}"
+        ));
+    }
+
+    let joined = root.join(relative);
+    let mut existing = joined.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(|| {
+            format!("git rollback could not resolve path inside repository: {value}")
+        })?;
+    }
+    let canonical_existing = existing
+        .canonicalize()
+        .map_err(|e| format!("git rollback could not resolve {value}: {e}"))?;
+    if !canonical_existing.starts_with(canonical_root) {
+        return Err(format!(
+            "git rollback rejected path outside repository: {value}"
+        ));
+    }
+    Ok(())
+}
+
+fn actual_rollback_classification(
+    parsed: &crate::git_status::ParsedStatus,
+    path: &str,
+) -> Result<Option<GitRollbackClassification>, String> {
+    if parsed.conflicted.iter().any(|entry| entry.path == path) {
+        return Ok(Some(GitRollbackClassification::Conflicted));
+    }
+    if parsed.untracked.iter().any(|entry| entry == path) {
+        return Ok(Some(GitRollbackClassification::Untracked));
+    }
+
+    let staged = parsed.staged.iter().find(|entry| entry.path == path);
+    let unstaged = parsed.unstaged.iter().find(|entry| entry.path == path);
+    if staged.is_none() && unstaged.is_none() {
+        return Ok(None);
+    }
+
+    let staged_orig = staged.and_then(|entry| entry.orig_path.clone());
+    let unstaged_orig = unstaged.and_then(|entry| entry.orig_path.clone());
+    if staged_orig.is_some() && unstaged_orig.is_some() && staged_orig != unstaged_orig {
+        return Err(format!(
+            "git rollback found inconsistent rename origins for {path}"
+        ));
+    }
+    let orig_path = staged_orig.or(unstaged_orig);
+    let staged_status = staged.map(|entry| entry.status.clone());
+    let unstaged_status = unstaged.map(|entry| entry.status.clone());
+    let is_added = staged_status.as_deref() == Some("A") || unstaged_status.as_deref() == Some("A");
+
+    if is_added {
+        if orig_path.is_some() {
+            return Err(format!(
+                "git rollback found an added path with a rename origin: {path}"
+            ));
+        }
+        Ok(Some(GitRollbackClassification::Added {
+            staged_status,
+            unstaged_status,
+        }))
+    } else {
+        Ok(Some(GitRollbackClassification::Tracked {
+            staged_status,
+            unstaged_status,
+            orig_path,
+        }))
+    }
+}
+
+fn rollback_failure(path: &str, stage: &str, completed: &[String], error: String) -> String {
+    let completed = if completed.is_empty() {
+        "none".to_string()
+    } else {
+        completed.join(", ")
+    };
+    format!("git rollback failed for {path} during {stage}; completed stages: {completed}; {error}")
+}
+
+/// JetBrains-aligned path-scoped rollback。所有 target 先做 path + latest-status preflight；
+/// preflight 全數通過後才開始 mutation，避免 stale selection 造成部分改動。
+pub fn rollback_paths(
+    root: &Path,
+    targets: &[GitRollbackTarget],
+    delete_untracked_or_added: bool,
+) -> Result<GitRollbackResult, String> {
+    if targets.is_empty() {
+        return Err("git rollback paths requires at least one target".to_string());
+    }
+
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("git rollback could not resolve repository root: {e}"))?;
+    let latest = status_of(root, None)?;
+    let has_head = latest.parsed.head_oid != "(initial)";
+    let mut seen = std::collections::HashSet::new();
+    let mut plans = Vec::with_capacity(targets.len());
+
+    for target in targets {
+        validate_repo_relative_path(root, &canonical_root, &target.path)?;
+        if !seen.insert(target.path.clone()) {
+            return Err(format!(
+                "git rollback rejected duplicate target path: {}",
+                target.path
+            ));
+        }
+
+        let actual = actual_rollback_classification(&latest.parsed, &target.path)?
+            .ok_or_else(|| format!("git rollback target is no longer changed: {}", target.path))?;
+        if matches!(actual, GitRollbackClassification::Conflicted)
+            || matches!(target.classification, GitRollbackClassification::Conflicted)
+        {
+            return Err(format!(
+                "git rollback rejected conflicted path: {}",
+                target.path
+            ));
+        }
+        if actual != target.classification {
+            let expected = serde_json::to_string(&target.classification)
+                .unwrap_or_else(|_| format!("{:?}", target.classification));
+            let actual_text =
+                serde_json::to_string(&actual).unwrap_or_else(|_| format!("{actual:?}"));
+            return Err(format!(
+                "git rollback classification drift for {}: expected {}, latest {}",
+                target.path, expected, actual_text
+            ));
+        }
+
+        match actual {
+            GitRollbackClassification::Tracked { orig_path, .. } => {
+                if !has_head {
+                    return Err(format!(
+                        "git rollback cannot restore tracked path without HEAD: {}",
+                        target.path
+                    ));
+                }
+                let mut restore_paths = Vec::with_capacity(2);
+                if let Some(orig_path) = orig_path {
+                    validate_repo_relative_path(root, &canonical_root, &orig_path)?;
+                    restore_paths.push(orig_path);
+                }
+                if !restore_paths.iter().any(|path| path == &target.path) {
+                    restore_paths.push(target.path.clone());
+                }
+                plans.push(GitRollbackPlan::Tracked {
+                    path: target.path.clone(),
+                    restore_paths,
+                });
+            }
+            GitRollbackClassification::Added { .. } => {
+                plans.push(GitRollbackPlan::Added {
+                    path: target.path.clone(),
+                });
+            }
+            GitRollbackClassification::Untracked => {
+                plans.push(GitRollbackPlan::Untracked {
+                    path: target.path.clone(),
+                });
+            }
+            GitRollbackClassification::Conflicted => unreachable!("rejected above"),
+        }
+    }
+
+    let mut result = GitRollbackResult {
+        restored: Vec::new(),
+        preserved_untracked: Vec::new(),
+        deleted: Vec::new(),
+    };
+    let mut completed = Vec::new();
+
+    for plan in plans {
+        match plan {
+            GitRollbackPlan::Tracked {
+                path,
+                restore_paths,
+            } => {
+                let mut args: Vec<&str> =
+                    vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+                args.extend(restore_paths.iter().map(String::as_str));
+                run_ok(root, &args, DEFAULT_TIMEOUT, &[]).map_err(|error| {
+                    rollback_failure(&path, "restore tracked path", &completed, error)
+                })?;
+                completed.push(format!("restore:{path}"));
+                result.restored.push(path);
+            }
+            GitRollbackPlan::Added { path } => {
+                run_ok(
+                    root,
+                    &["rm", "--cached", "-f", "--", path.as_str()],
+                    DEFAULT_TIMEOUT,
+                    &[],
+                )
+                .map_err(|error| {
+                    rollback_failure(&path, "unstage added path", &completed, error)
+                })?;
+                completed.push(format!("unstage-added:{path}"));
+
+                if delete_untracked_or_added {
+                    run_ok(
+                        root,
+                        &["clean", "-fd", "--", path.as_str()],
+                        DEFAULT_TIMEOUT,
+                        &[],
+                    )
+                    .map_err(|error| {
+                        rollback_failure(&path, "delete added path", &completed, error)
+                    })?;
+                    completed.push(format!("clean-command:{path}"));
+                    if std::fs::symlink_metadata(root.join(&path)).is_ok() {
+                        return Err(rollback_failure(
+                            &path,
+                            "verify added path deletion",
+                            &completed,
+                            "git clean completed but left the path in place".to_string(),
+                        ));
+                    }
+                    completed.push(format!("delete:{path}"));
+                    result.deleted.push(path);
+                } else {
+                    completed.push(format!("preserve-untracked:{path}"));
+                    result.preserved_untracked.push(path);
+                }
+            }
+            GitRollbackPlan::Untracked { path } => {
+                if delete_untracked_or_added {
+                    run_ok(
+                        root,
+                        &["clean", "-fd", "--", path.as_str()],
+                        DEFAULT_TIMEOUT,
+                        &[],
+                    )
+                    .map_err(|error| {
+                        rollback_failure(&path, "delete untracked path", &completed, error)
+                    })?;
+                    completed.push(format!("clean-command:{path}"));
+                    if std::fs::symlink_metadata(root.join(&path)).is_ok() {
+                        return Err(rollback_failure(
+                            &path,
+                            "verify untracked path deletion",
+                            &completed,
+                            "git clean completed but left the path in place".to_string(),
+                        ));
+                    }
+                    completed.push(format!("delete:{path}"));
+                    result.deleted.push(path);
+                } else {
+                    completed.push(format!("preserve-untracked:{path}"));
+                    result.preserved_untracked.push(path);
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 pub fn commit(root: &Path, message: &str) -> Result<(), String> {
@@ -555,29 +890,77 @@ fn repo_root(state: &tauri::State<'_, GitServiceState>) -> Result<PathBuf, Strin
         .clone())
 }
 
+/// Bind a mutating request to the repository snapshot the frontend acted on.
+/// The state lock stays held through `operation`, making compare + mutation
+/// atomic relative to `git_detect` switching the active repository.
+fn with_requested_repo<T>(
+    state: &GitServiceState,
+    requested_root: &str,
+    operation: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let active = &guard
+        .as_ref()
+        .ok_or_else(|| "no repository detected".to_string())?
+        .root;
+    let canonical_active = active
+        .canonicalize()
+        .map_err(|e| format!("git could not resolve active repository root: {e}"))?;
+    let canonical_requested = Path::new(requested_root)
+        .canonicalize()
+        .map_err(|e| format!("git could not resolve requested repository root: {e}"))?;
+    if canonical_active != canonical_requested {
+        return Err(format!(
+            "git repository changed before operation: requested {}, active {}",
+            canonical_requested.display(),
+            canonical_active.display()
+        ));
+    }
+    operation(&canonical_active)
+}
+
 #[tauri::command]
 pub fn git_stage(
     state: tauri::State<'_, GitServiceState>,
+    repository_root: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    stage(&repo_root(&state)?, &paths)
+    with_requested_repo(state.inner(), &repository_root, |root| stage(root, &paths))
 }
 
 #[tauri::command]
 pub fn git_unstage(
     state: tauri::State<'_, GitServiceState>,
+    repository_root: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    unstage(&repo_root(&state)?, &paths)
+    with_requested_repo(state.inner(), &repository_root, |root| {
+        unstage(root, &paths)
+    })
 }
 
 #[tauri::command]
 pub fn git_discard(
     state: tauri::State<'_, GitServiceState>,
+    repository_root: String,
     paths: Vec<String>,
     untracked: Vec<String>,
 ) -> Result<(), String> {
-    discard(&repo_root(&state)?, &paths, &untracked)
+    with_requested_repo(state.inner(), &repository_root, |root| {
+        discard(root, &paths, &untracked)
+    })
+}
+
+#[tauri::command]
+pub fn git_rollback_paths(
+    state: tauri::State<'_, GitServiceState>,
+    repository_root: String,
+    targets: Vec<GitRollbackTarget>,
+    delete_untracked_or_added: bool,
+) -> Result<GitRollbackResult, String> {
+    with_requested_repo(state.inner(), &repository_root, |root| {
+        rollback_paths(root, &targets, delete_untracked_or_added)
+    })
 }
 
 #[tauri::command]
@@ -619,35 +1002,50 @@ pub fn git_fetch_cmd(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     background: bool,
+    repository_root: Option<String>,
 ) -> Result<(), String> {
-    let root = repo_root(&state)?;
     let env = askpass.env_for(background);
-    run_ok(&root, &["fetch"], REMOTE_TIMEOUT, &env)?;
-    Ok(())
+    if let Some(requested_root) = repository_root {
+        with_requested_repo(state.inner(), &requested_root, |root| {
+            run_ok(root, &["fetch"], REMOTE_TIMEOUT, &env).map(|_| ())
+        })
+    } else {
+        run_ok(&repo_root(&state)?, &["fetch"], REMOTE_TIMEOUT, &env).map(|_| ())
+    }
 }
 
 #[tauri::command]
 pub fn git_pull_cmd(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
+    repository_root: Option<String>,
 ) -> Result<(), String> {
-    let root = repo_root(&state)?;
     // pull 觸發的 merge commit 在無 TTY 下同樣需抑制 editor（見 conflict_continue 註）。
     let mut env = askpass.env_for(false);
     env.extend(editor_true());
-    run_ok(&root, &["pull"], REMOTE_TIMEOUT, &env)?;
-    Ok(())
+    if let Some(requested_root) = repository_root {
+        with_requested_repo(state.inner(), &requested_root, |root| {
+            run_ok(root, &["pull"], REMOTE_TIMEOUT, &env).map(|_| ())
+        })
+    } else {
+        run_ok(&repo_root(&state)?, &["pull"], REMOTE_TIMEOUT, &env).map(|_| ())
+    }
 }
 
 #[tauri::command]
 pub fn git_push_cmd(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
+    repository_root: Option<String>,
 ) -> Result<(), String> {
-    let root = repo_root(&state)?;
     let env = askpass.env_for(false);
-    run_ok(&root, &["push"], REMOTE_TIMEOUT, &env)?;
-    Ok(())
+    if let Some(requested_root) = repository_root {
+        with_requested_repo(state.inner(), &requested_root, |root| {
+            run_ok(root, &["push"], REMOTE_TIMEOUT, &env).map(|_| ())
+        })
+    } else {
+        run_ok(&repo_root(&state)?, &["push"], REMOTE_TIMEOUT, &env).map(|_| ())
+    }
 }
 
 #[tauri::command]
@@ -729,6 +1127,35 @@ pub mod test_repo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rollback_target(path: &str, classification: GitRollbackClassification) -> GitRollbackTarget {
+        GitRollbackTarget {
+            path: path.to_string(),
+            classification,
+        }
+    }
+
+    fn tracked_classification(
+        staged_status: Option<&str>,
+        unstaged_status: Option<&str>,
+        orig_path: Option<&str>,
+    ) -> GitRollbackClassification {
+        GitRollbackClassification::Tracked {
+            staged_status: staged_status.map(String::from),
+            unstaged_status: unstaged_status.map(String::from),
+            orig_path: orig_path.map(String::from),
+        }
+    }
+
+    fn added_classification(
+        staged_status: Option<&str>,
+        unstaged_status: Option<&str>,
+    ) -> GitRollbackClassification {
+        GitRollbackClassification::Added {
+            staged_status: staged_status.map(String::from),
+            unstaged_status: unstaged_status.map(String::from),
+        }
+    }
 
     #[test]
     fn detect_ready_on_fixture_repo() {
@@ -826,6 +1253,33 @@ mod tests {
     }
 
     #[test]
+    fn status_expands_untracked_directories_to_leaf_paths_for_safe_ui_gates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        std::fs::create_dir_all(r.join("scratch/sub")).unwrap();
+        std::fs::write(r.join("scratch/b.txt"), "b\n").unwrap();
+        std::fs::write(r.join("scratch/sub/a.txt"), "a\n").unwrap();
+
+        let status = status_of(r, None).unwrap().parsed;
+        assert_eq!(
+            status.untracked,
+            vec!["scratch/b.txt".to_string(), "scratch/sub/a.txt".to_string()]
+        );
+
+        let targets: Vec<_> = status
+            .untracked
+            .iter()
+            .map(|path| rollback_target(path, GitRollbackClassification::Untracked))
+            .collect();
+        let result = rollback_paths(r, &targets, true).unwrap();
+        assert_eq!(result.deleted, status.untracked);
+        assert!(!r.join("scratch/b.txt").exists());
+        assert!(!r.join("scratch/sub/a.txt").exists());
+    }
+
+    #[test]
     fn status_on_empty_repo_has_initial_head_and_main_branch() {
         // T3 review 遺留：空 repo（init 後未 commit）→ branch=Some("main")、head_oid="(initial)"、不 panic
         let tmp = tempfile::tempdir().unwrap();
@@ -837,6 +1291,55 @@ mod tests {
     }
 
     // ── M2 Task 6: git 操作 commands 核心 ─────────────────────────────
+
+    #[test]
+    fn mutating_request_rejects_a_switched_repository_before_running_closure() {
+        let repo_a = tempfile::tempdir().unwrap();
+        let repo_b = tempfile::tempdir().unwrap();
+        test_repo::init(repo_a.path());
+        test_repo::init(repo_b.path());
+        std::fs::write(repo_a.path().join("same.txt"), "a\n").unwrap();
+        std::fs::write(repo_b.path().join("same.txt"), "b\n").unwrap();
+        let state = GitServiceState(std::sync::Mutex::new(Some(RepoHandle {
+            root: repo_b.path().to_path_buf(),
+        })));
+
+        let error = with_requested_repo(&state, repo_a.path().to_str().unwrap(), |root| {
+            stage(root, &["same.txt".into()])
+        })
+        .unwrap_err();
+        assert!(error.contains("repository changed before operation"));
+        assert!(status_of(repo_b.path(), None)
+            .unwrap()
+            .parsed
+            .staged
+            .is_empty());
+        assert_eq!(
+            status_of(repo_b.path(), None).unwrap().parsed.untracked,
+            vec!["same.txt".to_string()]
+        );
+
+        *state.0.lock().unwrap() = Some(RepoHandle {
+            root: repo_a.path().to_path_buf(),
+        });
+        with_requested_repo(&state, repo_a.path().to_str().unwrap(), |root| {
+            assert!(
+                state.0.try_lock().is_err(),
+                "repository lock must cover mutation"
+            );
+            stage(root, &["same.txt".into()])
+        })
+        .unwrap();
+        assert_eq!(
+            status_of(repo_a.path(), None).unwrap().parsed.staged[0].path,
+            "same.txt"
+        );
+
+        *state.0.lock().unwrap() = None;
+        let error =
+            with_requested_repo(&state, repo_a.path().to_str().unwrap(), |_| Ok(())).unwrap_err();
+        assert!(error.contains("no repository detected"));
+    }
 
     #[test]
     fn stage_unstage_discard_roundtrip() {
@@ -854,6 +1357,368 @@ mod tests {
         std::fs::write(r.join("junk.txt"), "x").unwrap();
         discard(r, &[], &["junk.txt".into()]).unwrap();
         assert!(!r.join("junk.txt").exists());
+    }
+
+    #[test]
+    fn rollback_tracked_resets_staged_unstaged_and_partially_staged_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "unstaged.txt", "base-u\n", "base unstaged");
+        test_repo::write_and_commit(r, "partial.txt", "base-p\n", "base partial");
+
+        std::fs::write(r.join("unstaged.txt"), "changed-u\n").unwrap();
+        std::fs::write(r.join("partial.txt"), "staged-p\n").unwrap();
+        stage(r, &["partial.txt".into()]).unwrap();
+        std::fs::write(r.join("partial.txt"), "worktree-p\n").unwrap();
+
+        let targets = vec![
+            rollback_target(
+                "unstaged.txt",
+                tracked_classification(None, Some("M"), None),
+            ),
+            rollback_target(
+                "partial.txt",
+                tracked_classification(Some("M"), Some("M"), None),
+            ),
+        ];
+        let result = rollback_paths(r, &targets, false).unwrap();
+
+        assert_eq!(
+            result,
+            GitRollbackResult {
+                restored: vec!["unstaged.txt".into(), "partial.txt".into()],
+                preserved_untracked: vec![],
+                deleted: vec![],
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(r.join("unstaged.txt")).unwrap(),
+            "base-u\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(r.join("partial.txt")).unwrap(),
+            "base-p\n"
+        );
+        let status = status_of(r, None).unwrap().parsed;
+        assert!(status.staged.is_empty());
+        assert!(status.unstaged.is_empty());
+    }
+
+    #[test]
+    fn rollback_rejects_duplicate_path_before_mutating_partially_staged_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "partial.txt", "base\n", "base");
+        std::fs::write(r.join("partial.txt"), "staged\n").unwrap();
+        stage(r, &["partial.txt".into()]).unwrap();
+        std::fs::write(r.join("partial.txt"), "worktree\n").unwrap();
+
+        let target = rollback_target(
+            "partial.txt",
+            tracked_classification(Some("M"), Some("M"), None),
+        );
+        let error = rollback_paths(r, &[target.clone(), target], false).unwrap_err();
+
+        assert!(error.contains("duplicate target path: partial.txt"));
+        let status = status_of(r, None).unwrap().parsed;
+        assert_eq!(status.staged[0].status, "M");
+        assert_eq!(status.unstaged[0].status, "M");
+        assert_eq!(
+            std::fs::read_to_string(r.join("partial.txt")).unwrap(),
+            "worktree\n"
+        );
+    }
+
+    #[test]
+    fn rollback_added_preserves_by_default_and_deletes_only_when_explicit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        std::fs::write(r.join("keep.txt"), "keep\n").unwrap();
+        std::fs::write(r.join("delete.txt"), "delete\n").unwrap();
+        stage(r, &["keep.txt".into(), "delete.txt".into()]).unwrap();
+
+        let kept = rollback_paths(
+            r,
+            &[rollback_target(
+                "keep.txt",
+                added_classification(Some("A"), None),
+            )],
+            false,
+        )
+        .unwrap();
+        assert_eq!(kept.preserved_untracked, vec!["keep.txt"]);
+        assert!(r.join("keep.txt").exists());
+        assert!(status_of(r, None)
+            .unwrap()
+            .parsed
+            .untracked
+            .contains(&"keep.txt".to_string()));
+
+        let deleted = rollback_paths(
+            r,
+            &[rollback_target(
+                "delete.txt",
+                added_classification(Some("A"), None),
+            )],
+            true,
+        )
+        .unwrap();
+        assert_eq!(deleted.deleted, vec!["delete.txt"]);
+        assert!(!r.join("delete.txt").exists());
+    }
+
+    #[test]
+    fn rollback_untracked_preserves_by_default_and_deletes_only_when_explicit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        std::fs::write(r.join("keep.txt"), "keep\n").unwrap();
+        std::fs::write(r.join("delete.txt"), "delete\n").unwrap();
+
+        let kept = rollback_paths(
+            r,
+            &[rollback_target(
+                "keep.txt",
+                GitRollbackClassification::Untracked,
+            )],
+            false,
+        )
+        .unwrap();
+        assert_eq!(kept.preserved_untracked, vec!["keep.txt"]);
+        assert!(r.join("keep.txt").exists());
+
+        let deleted = rollback_paths(
+            r,
+            &[rollback_target(
+                "delete.txt",
+                GitRollbackClassification::Untracked,
+            )],
+            true,
+        )
+        .unwrap();
+        assert_eq!(deleted.deleted, vec!["delete.txt"]);
+        assert!(!r.join("delete.txt").exists());
+    }
+
+    #[test]
+    fn rollback_does_not_report_success_when_git_clean_skips_nested_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        let nested = r.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        test_repo::init(&nested);
+        let path = status_of(r, None).unwrap().parsed.untracked[0].clone();
+
+        let error = rollback_paths(
+            r,
+            &[rollback_target(&path, GitRollbackClassification::Untracked)],
+            true,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("git clean completed but left the path in place"));
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn rollback_added_handles_unborn_head_for_preserve_and_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        std::fs::write(r.join("keep.txt"), "keep\n").unwrap();
+        stage(r, &["keep.txt".into()]).unwrap();
+        assert_eq!(status_of(r, None).unwrap().parsed.head_oid, "(initial)");
+
+        rollback_paths(
+            r,
+            &[rollback_target(
+                "keep.txt",
+                added_classification(Some("A"), None),
+            )],
+            false,
+        )
+        .unwrap();
+        assert!(r.join("keep.txt").exists());
+        assert!(status_of(r, None)
+            .unwrap()
+            .parsed
+            .untracked
+            .contains(&"keep.txt".to_string()));
+
+        std::fs::write(r.join("delete.txt"), "delete\n").unwrap();
+        stage(r, &["delete.txt".into()]).unwrap();
+        rollback_paths(
+            r,
+            &[rollback_target(
+                "delete.txt",
+                added_classification(Some("A"), None),
+            )],
+            true,
+        )
+        .unwrap();
+        assert!(!r.join("delete.txt").exists());
+        assert_eq!(status_of(r, None).unwrap().parsed.head_oid, "(initial)");
+    }
+
+    #[test]
+    fn rollback_rejects_conflicted_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "conflict.txt", "base\n", "base");
+        create_branch(r, "side").unwrap();
+        test_repo::write_and_commit(r, "conflict.txt", "side\n", "side");
+        checkout(r, "main").unwrap();
+        test_repo::write_and_commit(r, "conflict.txt", "main\n", "main");
+        let merge = run_git(r, &["merge", "side"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_ne!(merge.code, 0);
+
+        let error = rollback_paths(
+            r,
+            &[rollback_target(
+                "conflict.txt",
+                GitRollbackClassification::Conflicted,
+            )],
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("rejected conflicted path: conflict.txt"));
+        assert_eq!(status_of(r, None).unwrap().parsed.conflicted.len(), 1);
+    }
+
+    #[test]
+    fn rollback_rejects_classification_drift_without_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "drift.txt", "base\n", "base");
+        std::fs::write(r.join("drift.txt"), "changed\n").unwrap();
+        let stale = rollback_target("drift.txt", tracked_classification(None, Some("M"), None));
+        stage(r, &["drift.txt".into()]).unwrap();
+
+        let error = rollback_paths(r, &[stale], false).unwrap_err();
+        assert!(error.contains("classification drift for drift.txt"));
+        assert_eq!(status_of(r, None).unwrap().parsed.staged[0].status, "M");
+        assert_eq!(
+            std::fs::read_to_string(r.join("drift.txt")).unwrap(),
+            "changed\n"
+        );
+    }
+
+    #[test]
+    fn rollback_rename_uses_latest_exact_orig_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "old.txt", "base\n", "base");
+        let moved = run_git(r, &["mv", "--", "old.txt", "new.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(moved.code, 0, "{}", moved.stderr);
+
+        let fake_orig = rollback_target(
+            "new.txt",
+            tracked_classification(Some("R"), None, Some("other.txt")),
+        );
+        let error = rollback_paths(r, &[fake_orig], false).unwrap_err();
+        assert!(error.contains("classification drift for new.txt"));
+        assert!(r.join("new.txt").exists());
+        assert!(!r.join("old.txt").exists());
+
+        let exact = rollback_target(
+            "new.txt",
+            tracked_classification(Some("R"), None, Some("old.txt")),
+        );
+        rollback_paths(r, &[exact], false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(r.join("old.txt")).unwrap(),
+            "base\n"
+        );
+        assert!(!r.join("new.txt").exists());
+        let status = status_of(r, None).unwrap().parsed;
+        assert!(status.staged.is_empty());
+        assert!(status.unstaged.is_empty());
+    }
+
+    #[test]
+    fn rollback_rejects_traversal_and_absolute_paths() {
+        let outer = tempfile::tempdir().unwrap();
+        let r = outer.path().join("repo");
+        std::fs::create_dir(&r).unwrap();
+        test_repo::init(&r);
+        test_repo::write_and_commit(&r, "base.txt", "base\n", "base");
+        let outside = outer.path().join("outside.txt");
+        std::fs::write(&outside, "outside\n").unwrap();
+
+        let traversal = rollback_target("../outside.txt", GitRollbackClassification::Untracked);
+        let traversal_error = rollback_paths(&r, &[traversal], true).unwrap_err();
+        assert!(traversal_error.contains("non-repo-relative path"));
+
+        let absolute = rollback_target(
+            outside.to_str().unwrap(),
+            GitRollbackClassification::Untracked,
+        );
+        let absolute_error = rollback_paths(&r, &[absolute], true).unwrap_err();
+        assert!(absolute_error.contains("non-repo-relative path"));
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "outside\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_rejects_symlink_that_resolves_outside_repository() {
+        use std::os::unix::fs::symlink;
+
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let r = repo.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        let outside_file = outside.path().join("outside.txt");
+        std::fs::write(&outside_file, "outside\n").unwrap();
+        symlink(&outside_file, r.join("link.txt")).unwrap();
+
+        let error = rollback_paths(
+            r,
+            &[rollback_target(
+                "link.txt",
+                GitRollbackClassification::Untracked,
+            )],
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("path outside repository: link.txt"));
+        assert_eq!(std::fs::read_to_string(outside_file).unwrap(), "outside\n");
+        assert!(r.join("link.txt").exists());
+    }
+
+    #[test]
+    fn rollback_command_error_reports_completed_stages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "tracked.txt", "base\n", "base");
+        std::fs::write(r.join("tracked.txt"), "changed\n").unwrap();
+        std::fs::write(r.join("loose.txt"), "loose\n").unwrap();
+        std::fs::write(r.join(".git/index.lock"), "locked").unwrap();
+
+        let targets = vec![
+            rollback_target("loose.txt", GitRollbackClassification::Untracked),
+            rollback_target("tracked.txt", tracked_classification(None, Some("M"), None)),
+        ];
+        let error = rollback_paths(r, &targets, false).unwrap_err();
+
+        assert!(error.contains("during restore tracked path"));
+        assert!(error.contains("completed stages: preserve-untracked:loose.txt"));
+        assert!(r.join("loose.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(r.join("tracked.txt")).unwrap(),
+            "changed\n"
+        );
     }
 
     #[test]

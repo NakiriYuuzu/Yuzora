@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react"
 import { useTranslation } from "react-i18next"
 
 import { gitStage, gitUnstage } from "../../lib/ipc"
@@ -8,18 +8,17 @@ import { useGitStore } from "../../state/gitStore"
 import { useUiStore } from "../../state/uiStore"
 import { diffStats, langLabel, loadWorktreeDiff, splitPath } from "./diffLoad"
 import { DiffView } from "./DiffView"
-import { GitBadge, badgeChar } from "./fileRows"
+import { GitBadge } from "./fileRows"
+import { openGitChangeContextMenu } from "./gitChangeContextMenu"
+import {
+    gitChangeRows,
+    isGitToggleModifier,
+    sameGitChange,
+    uniquePaths,
+    type GitChangeRow
+} from "./gitChangeSelection"
 
 type DiffMode = "unified" | "split"
-
-// A single row's data, flattened from the four GitStatus buckets. `staged`
-// records which side (staged↔changes) the row belongs to so a click selects
-// the right diff and the per-row action targets the correct git side.
-interface Row {
-    path: string
-    badge: string
-    staged: boolean
-}
 
 // §2.5 flat local-changes file row (dc.html L881-887): badge + name/dir + a
 // hover-revealed stage/unstage icon. Row click selects the file into the right
@@ -29,11 +28,13 @@ function FileRow({
     row,
     selected,
     onSelect,
+    onContextMenu,
     onStageToggle
 }: {
-    row: Row
+    row: GitChangeRow
     selected: boolean
-    onSelect: () => void
+    onSelect: (event: ReactMouseEvent) => void
+    onContextMenu: (event: ReactMouseEvent) => void
     onStageToggle: () => void
 }) {
     const { t } = useTranslation("menus")
@@ -43,6 +44,7 @@ function FileRow({
             role="button"
             tabIndex={0}
             onClick={onSelect}
+            onContextMenu={onContextMenu}
             className={
                 "group flex h-[32px] items-center gap-[9px] rounded-[8px] px-[8px] my-[1px] cursor-pointer transition-[background] duration-[120ms] " +
                 (selected
@@ -110,9 +112,14 @@ export function LocalChangesTab() {
     const { t } = useTranslation("menus")
     const status = useGitStore((s) => s.status)
     const runOp = useGitStore((s) => s.runOp)
+    const repositoryRoot = useGitStore((s) =>
+        s.environment?.status === "ready" ? s.environment.root : null
+    )
     const selectedPath = useUiStore((s) => s.gitSelectedPath)
     const selectedStaged = useUiStore((s) => s.gitSelectedStaged)
-    const selectGitFile = useUiStore((s) => s.selectGitFile)
+    const selection = useUiStore((s) => s.gitChangeSelection)
+    const selectGitChange = useUiStore((s) => s.selectGitChange)
+    const reconcileGitChangeSelection = useUiStore((s) => s.reconcileGitChangeSelection)
 
     const [diffMode, setDiffMode] = useState<DiffMode>("unified")
     const [diff, setDiff] = useState<DiffContent | null>(null)
@@ -120,20 +127,11 @@ export function LocalChangesTab() {
     // §2.5 flat list — staged first, then unstaged/untracked/conflicted
     // (staged.concat(changed) ordering). `staged` picks the diff side and the
     // stage/unstage direction. Untracked → "?", conflicted → "!".
-    const rows: Row[] = [
-        ...(status?.staged ?? []).map((e) => ({
-            path: e.path,
-            badge: badgeChar(e.status),
-            staged: true
-        })),
-        ...(status?.unstaged ?? []).map((e) => ({
-            path: e.path,
-            badge: badgeChar(e.status),
-            staged: false
-        })),
-        ...(status?.untracked ?? []).map((path) => ({ path, badge: "?", staged: false })),
-        ...(status?.conflicted ?? []).map((e) => ({ path: e.path, badge: "!", staged: false }))
-    ]
+    const rows = gitChangeRows(status)
+
+    useEffect(() => {
+        reconcileGitChangeSelection(gitChangeRows(status))
+    }, [status, reconcileGitChangeSelection])
 
     const changesCount = rows.filter((r) => !r.staged).length
 
@@ -168,21 +166,40 @@ export function LocalChangesTab() {
         }
     }, [selectedPath, selectedStaged])
 
-    async function stageOne(row: Row) {
-        const ok = await runOp("stage", () => gitStage([row.path]))
-        if (ok) void logUserAction("git_stage", `stage ${row.path}`)
+    async function stageOne(row: GitChangeRow) {
+        if (!repositoryRoot) return
+        const ok = await runOp("stage", () => gitStage(repositoryRoot, [row.path]))
+        if (ok) {
+            void logUserAction("git_stage", `stage ${row.path}`)
+            reconcileGitChangeSelection(gitChangeRows(useGitStore.getState().status), {
+                [row.path]: true
+            })
+        }
     }
 
-    async function unstageOne(row: Row) {
-        const ok = await runOp("unstage", () => gitUnstage([row.path]))
-        if (ok) void logUserAction("git_unstage", `unstage ${row.path}`)
+    async function unstageOne(row: GitChangeRow) {
+        if (!repositoryRoot) return
+        const ok = await runOp("unstage", () => gitUnstage(repositoryRoot, [row.path]))
+        if (ok) {
+            void logUserAction("git_unstage", `unstage ${row.path}`)
+            reconcileGitChangeSelection(gitChangeRows(useGitStore.getState().status), {
+                [row.path]: false
+            })
+        }
     }
 
     async function stageAll() {
-        const paths = rows.filter((r) => !r.staged).map((r) => r.path)
+        if (!repositoryRoot) return
+        const paths = uniquePaths(rows.filter((r) => !r.staged))
         if (paths.length === 0) return
-        const ok = await runOp("stage", () => gitStage(paths))
-        if (ok) void logUserAction("git_stage", `stage all (${paths.length})`)
+        const ok = await runOp("stage", () => gitStage(repositoryRoot, paths))
+        if (ok) {
+            void logUserAction("git_stage", `stage all (${paths.length})`)
+            reconcileGitChangeSelection(
+                gitChangeRows(useGitStore.getState().status),
+                Object.fromEntries(paths.map((path) => [path, true]))
+            )
+        }
     }
 
     return (
@@ -211,8 +228,15 @@ export function LocalChangesTab() {
                         <FileRow
                             key={`${row.staged ? "s" : "c"}:${row.path}`}
                             row={row}
-                            selected={selectedStaged === row.staged && selectedPath === row.path}
-                            onSelect={() => selectGitFile(row.path, row.staged)}
+                            selected={selection.some((candidate) => sameGitChange(candidate, row))}
+                            onSelect={(event) => selectGitChange(
+                                row,
+                                rows,
+                                event.shiftKey
+                                    ? "range"
+                                    : isGitToggleModifier(event) ? "toggle" : "single"
+                            )}
+                            onContextMenu={(event) => openGitChangeContextMenu(event, row, rows)}
                             onStageToggle={() =>
                                 void (row.staged ? unstageOne(row) : stageOne(row))
                             }

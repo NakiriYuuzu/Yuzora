@@ -1,6 +1,29 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { uiInitialState, useUiStore } from "./uiStore"
+import {
+    gitChangeRows,
+    isGitToggleModifier,
+    rollbackTargetsFromKeys
+} from "@/workbench/git/gitChangeSelection"
+import type { GitStatus } from "@/lib/types"
+
+function status(over: Partial<GitStatus> = {}): GitStatus {
+    return {
+        branch: "main",
+        headOid: "0".repeat(40),
+        detached: false,
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        staged: [],
+        unstaged: [],
+        untracked: [],
+        conflicted: [],
+        inProgress: null,
+        ...over
+    }
+}
 
 describe("uiStore", () => {
     beforeEach(() => {
@@ -65,5 +88,87 @@ describe("uiStore", () => {
         expect(useUiStore.getState().terminalOpen).toBe(true)
         useUiStore.getState().toggleTerminal()
         expect(useUiStore.getState().terminalOpen).toBe(false)
+    })
+
+    it("Git change single/toggle/range selection keeps an independent primary and anchor", () => {
+        const rows = gitChangeRows(status({
+            staged: [{ path: "a.ts", origPath: null, status: "M" }],
+            unstaged: [{ path: "b.ts", origPath: null, status: "M" }],
+            untracked: ["c.ts"]
+        }))
+        const store = useUiStore.getState()
+        store.selectGitChange(rows[0], rows, "single")
+        store.selectGitChange(rows[1], rows, "toggle")
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual([
+            "a.ts",
+            "b.ts"
+        ])
+        expect(useUiStore.getState().gitChangePrimary?.path).toBe("b.ts")
+        expect(useUiStore.getState().gitSelectedPath).toBe("b.ts")
+
+        useUiStore.getState().selectGitChange(rows[2], rows, "range")
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual([
+            "b.ts",
+            "c.ts"
+        ])
+        expect(useUiStore.getState().gitChangeAnchor?.path).toBe("b.ts")
+        expect(useUiStore.getState().gitChangePrimary?.path).toBe("c.ts")
+    })
+
+    it("partially-staged rows have separate identities and remap to one surviving side", () => {
+        const before = gitChangeRows(status({
+            staged: [{ path: "partial.ts", origPath: null, status: "M" }],
+            unstaged: [{ path: "partial.ts", origPath: null, status: "M" }]
+        }))
+        useUiStore.getState().selectGitChange(before[0], before, "single")
+        useUiStore.getState().selectGitChange(before[1], before, "toggle")
+        expect(useUiStore.getState().gitChangeSelection).toHaveLength(2)
+
+        const after = gitChangeRows(status({
+            staged: [{ path: "partial.ts", origPath: null, status: "M" }]
+        }))
+        useUiStore.getState().reconcileGitChangeSelection(after, { "partial.ts": true })
+        expect(useUiStore.getState().gitChangeSelection).toEqual([after[0]])
+        expect(useUiStore.getState().gitChangePrimary).toEqual(after[0])
+        expect(useUiStore.getState().gitSelectedStaged).toBe(true)
+    })
+
+    it("right-click selection keeps an already-selected row, but replaces selection for an unselected row", () => {
+        const rows = gitChangeRows(status({ untracked: ["a.ts", "b.ts", "c.ts"] }))
+        useUiStore.getState().selectGitChange(rows[0], rows, "single")
+        useUiStore.getState().selectGitChange(rows[1], rows, "toggle")
+        useUiStore.getState().ensureGitChangeContextSelection(rows[0])
+        expect(useUiStore.getState().gitChangeSelection).toHaveLength(2)
+
+        useUiStore.getState().ensureGitChangeContextSelection(rows[2])
+        expect(useUiStore.getState().gitChangeSelection).toEqual([rows[2]])
+        expect(useUiStore.getState().gitChangePrimary).toEqual(rows[2])
+    })
+
+    it("uses Command on macOS and Control on other platforms for additive selection", () => {
+        const platform = vi.spyOn(navigator, "platform", "get")
+        platform.mockReturnValue("MacIntel")
+        expect(isGitToggleModifier({ metaKey: true, ctrlKey: false })).toBe(true)
+        expect(isGitToggleModifier({ metaKey: false, ctrlKey: true })).toBe(false)
+
+        platform.mockReturnValue("Linux x86_64")
+        expect(isGitToggleModifier({ metaKey: false, ctrlKey: true })).toBe(true)
+        expect(isGitToggleModifier({ metaKey: true, ctrlKey: false })).toBe(false)
+        platform.mockRestore()
+    })
+
+    it("classifies an unstaged A snapshot as added for the rollback contract", () => {
+        const rows = gitChangeRows(status({
+            unstaged: [{ path: "intent-to-add.ts", origPath: null, status: "A" }]
+        }))
+        expect(rows[0].classification).toBe("added")
+        expect(rollbackTargetsFromKeys(rows)).toEqual([{
+            path: "intent-to-add.ts",
+            classification: {
+                kind: "added",
+                stagedStatus: null,
+                unstagedStatus: "A"
+            }
+        }])
     })
 })

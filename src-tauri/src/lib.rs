@@ -229,6 +229,7 @@ pub fn run() {
             git_service::git_stage,
             git_service::git_unstage,
             git_service::git_discard,
+            git_service::git_rollback_paths,
             git_service::git_commit_cmd,
             git_service::git_branches,
             git_service::git_create_branch,

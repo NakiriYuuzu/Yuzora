@@ -11,6 +11,7 @@ import { PerfBridge } from "@/workbench/PerfBridge";
 import { SessionRestoreBridge } from "@/workbench/SessionRestoreBridge";
 import { AskpassHost } from "@/workbench/AskpassHost";
 import { ConfirmDialogHost } from "@/workbench/ConfirmDialogHost";
+import { GitRollbackDialog } from "@/workbench/git/GitRollbackDialog";
 
 function App() {
   return (
@@ -28,6 +29,7 @@ function App() {
       <SessionRestoreBridge />
       <AskpassHost />
       <ConfirmDialogHost />
+      <GitRollbackDialog />
     </>
   );
 }

@@ -44,6 +44,7 @@ const { GitNavContent } = await import("@/app/workbench/GitNavContent")
 const { useGitStore, initialGitState } = await import("@/state/gitStore")
 const { useDiffModalStore } = await import("@/state/diffModalStore")
 const { useUiStore, uiInitialState } = await import("@/state/uiStore")
+const { useContextMenuStore } = await import("@/state/contextMenuStore")
 
 const READY = { status: "ready", root: "/w", version: "2.50.1" } as const
 
@@ -59,6 +60,7 @@ describe("GitNavContent — ready state (E1)", () => {
     beforeEach(() => {
         useGitStore.setState(initialGitState)
         useUiStore.setState(uiInitialState)
+        useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
         resetDiffModal()
     })
     afterEach(() => {
@@ -162,14 +164,14 @@ describe("GitNavContent — ready state (E1)", () => {
         setReady({ unstaged: [{ path: "b.ts", origPath: null, status: "M" }] })
         render(<GitNavContent />)
         fireEvent.click(screen.getByRole("button", { name: "Stage b.ts" }))
-        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith(["b.ts"]))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["b.ts"]))
     })
 
     it("per-file unstage forwards the path", async () => {
         setReady({ staged: [{ path: "a.ts", origPath: null, status: "M" }] })
         render(<GitNavContent />)
         fireEvent.click(screen.getByRole("button", { name: "Unstage a.ts" }))
-        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith(["a.ts"]))
+        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith("/w", ["a.ts"]))
     })
 
     it("Stage all forwards only the changed buckets", async () => {
@@ -180,7 +182,7 @@ describe("GitNavContent — ready state (E1)", () => {
         })
         render(<GitNavContent />)
         fireEvent.click(screen.getByRole("button", { name: "Stage all" }))
-        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith(["b.ts", "c.txt"]))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["b.ts", "c.txt"]))
     })
 
     it("Unstage all forwards the staged bucket", async () => {
@@ -192,7 +194,7 @@ describe("GitNavContent — ready state (E1)", () => {
         })
         render(<GitNavContent />)
         fireEvent.click(screen.getByRole("button", { name: "Unstage all" }))
-        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith(["a.ts", "d.ts"]))
+        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith("/w", ["a.ts", "d.ts"]))
     })
 
     it("clicking a file row opens the modal on that path", () => {
@@ -213,9 +215,12 @@ describe("GitNavContent — ready state (E1)", () => {
         // The panel had this file selected on the unstaged (changes) side.
         useUiStore.getState().selectGitFile("b.ts", false)
         setReady({ unstaged: [{ path: "b.ts", origPath: null, status: "M" }] })
+        vi.mocked(ipc.gitStatus).mockResolvedValueOnce(makeStatus({
+            staged: [{ path: "b.ts", origPath: null, status: "M" }]
+        }))
         render(<GitNavContent />)
         fireEvent.click(screen.getByRole("button", { name: "Stage b.ts" }))
-        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith(["b.ts"]))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["b.ts"]))
         // Selection follows the row to the staged side so the diff re-resolves.
         await waitFor(() => expect(useUiStore.getState().gitSelectedStaged).toBe(true))
         expect(useUiStore.getState().gitSelectedPath).toBe("b.ts")
@@ -224,9 +229,12 @@ describe("GitNavContent — ready state (E1)", () => {
     it("unstaging a file keeps the Local-changes selection following it (T15)", async () => {
         useUiStore.getState().selectGitFile("a.ts", true)
         setReady({ staged: [{ path: "a.ts", origPath: null, status: "M" }] })
+        vi.mocked(ipc.gitStatus).mockResolvedValueOnce(makeStatus({
+            unstaged: [{ path: "a.ts", origPath: null, status: "M" }]
+        }))
         render(<GitNavContent />)
         fireEvent.click(screen.getByRole("button", { name: "Unstage a.ts" }))
-        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith(["a.ts"]))
+        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith("/w", ["a.ts"]))
         await waitFor(() => expect(useUiStore.getState().gitSelectedStaged).toBe(false))
         expect(useUiStore.getState().gitSelectedPath).toBe("a.ts")
     })
@@ -253,6 +261,31 @@ describe("GitNavContent — ready state (E1)", () => {
         fireEvent.click(rows[0])
         expect(useDiffModalStore.getState().activeIndex).toBe(0)
     })
+
+    it("shares plain/Ctrl/Shift selection and right-click preservation with Local Changes", () => {
+        setReady({
+            staged: [{ path: "a.ts", origPath: null, status: "M" }],
+            unstaged: [{ path: "b.ts", origPath: null, status: "M" }],
+            untracked: ["c.ts"]
+        })
+        render(<GitNavContent />)
+        fireEvent.click(screen.getByText("a.ts"))
+        fireEvent.click(screen.getByText("b.ts"), { ctrlKey: true })
+        fireEvent.click(screen.getByText("c.ts"), { shiftKey: true })
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual([
+            "b.ts",
+            "c.ts"
+        ])
+        expect(useDiffModalStore.getState().open).toBe(true)
+
+        fireEvent.contextMenu(screen.getByText("b.ts"), { clientX: 11, clientY: 12 })
+        expect(useContextMenuStore.getState().request).toMatchObject({
+            kind: "gitChange",
+            selected: [{ path: "b.ts" }, { path: "c.ts" }]
+        })
+        fireEvent.contextMenu(screen.getByText("a.ts"), { clientX: 21, clientY: 22 })
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual(["a.ts"])
+    })
 })
 
 describe("GitNavContent — hold-to-discard (E1 §1.4)", () => {
@@ -277,7 +310,7 @@ describe("GitNavContent — hold-to-discard (E1 §1.4)", () => {
         fireEvent.pointerDown(btn)
         // 760ms hold; the op fires after the timer elapses.
         await vi.advanceTimersByTimeAsync(760)
-        expect(ipc.gitDiscard).toHaveBeenCalledWith(["b.ts"], ["c.txt"])
+        expect(ipc.gitDiscard).toHaveBeenCalledWith("/w", ["b.ts"], ["c.txt"])
     })
 
     it("discard all excludes conflicted paths (m7)", async () => {
@@ -291,7 +324,7 @@ describe("GitNavContent — hold-to-discard (E1 §1.4)", () => {
         fireEvent.pointerDown(btn)
         await vi.advanceTimersByTimeAsync(760)
         // Conflicted files must not be restored/cleaned during a merge.
-        expect(ipc.gitDiscard).toHaveBeenCalledWith(["b.ts"], ["c.txt"])
+        expect(ipc.gitDiscard).toHaveBeenCalledWith("/w", ["b.ts"], ["c.txt"])
         const [tracked, untracked] = (ipc.gitDiscard as ReturnType<typeof vi.fn>).mock.calls[0]
         expect(tracked).not.toContain("conf.ts")
         expect(untracked).not.toContain("conf.ts")

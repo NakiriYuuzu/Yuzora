@@ -42,11 +42,16 @@ const ipc = await import("../../lib/ipc")
 const { LocalChangesTab } = await import("./LocalChangesTab")
 const { useGitStore, initialGitState } = await import("../../state/gitStore")
 const { useUiStore, uiInitialState } = await import("../../state/uiStore")
+const { useContextMenuStore } = await import("../../state/contextMenuStore")
 
 describe("LocalChangesTab", () => {
     beforeEach(() => {
-        useGitStore.setState(initialGitState)
+        useGitStore.setState({
+            ...initialGitState,
+            environment: { status: "ready", root: "/w", version: "2.50.1" }
+        })
         useUiStore.setState(uiInitialState)
+        useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     })
     afterEach(() => {
         vi.clearAllMocks()
@@ -87,7 +92,8 @@ describe("LocalChangesTab", () => {
         })
         render(<LocalChangesTab />)
         fireEvent.click(screen.getByRole("button", { name: "Stage b.ts" }))
-        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith(["b.ts"]))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["b.ts"]))
+        await waitFor(() => expect(useGitStore.getState().busy).toBeNull())
     })
 
     it("staged row unstage button forwards path via runOp", async () => {
@@ -96,7 +102,8 @@ describe("LocalChangesTab", () => {
         })
         render(<LocalChangesTab />)
         fireEvent.click(screen.getByRole("button", { name: "Unstage a.ts" }))
-        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith(["a.ts"]))
+        await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith("/w", ["a.ts"]))
+        await waitFor(() => expect(useGitStore.getState().busy).toBeNull())
     })
 
     it("Stage all forwards only the changed paths", async () => {
@@ -110,7 +117,8 @@ describe("LocalChangesTab", () => {
         })
         render(<LocalChangesTab />)
         fireEvent.click(screen.getByRole("button", { name: "Stage all" }))
-        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith(["b.ts", "c.txt"]))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["b.ts", "c.txt"]))
+        await waitFor(() => expect(useGitStore.getState().busy).toBeNull())
     })
 
     it("row click loads diff for the selected side", async () => {
@@ -159,5 +167,73 @@ describe("LocalChangesTab", () => {
         const header = screen.getByRole("button", { name: "Unified" }).closest("[data-diff-header]")
         const h = header as HTMLElement
         expect(within(h).queryByText(/^[+−]\d/)).not.toBeInTheDocument()
+    })
+
+    it("plain, Ctrl-toggle and Shift-range use the shared flat order", () => {
+        useGitStore.setState({
+            status: {
+                ...makeStatus(),
+                staged: [{ path: "a.ts", origPath: null, status: "M" }],
+                unstaged: [{ path: "b.ts", origPath: null, status: "M" }],
+                untracked: ["c.txt"]
+            }
+        })
+        render(<LocalChangesTab />)
+        fireEvent.click(screen.getByText("a.ts"))
+        fireEvent.click(screen.getByText("b.ts"), { ctrlKey: true })
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual([
+            "a.ts",
+            "b.ts"
+        ])
+
+        fireEvent.click(screen.getByText("c.txt"), { shiftKey: true })
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual([
+            "b.ts",
+            "c.txt"
+        ])
+        expect(useUiStore.getState().gitSelectedPath).toBe("c.txt")
+    })
+
+    it("partially-staged rows with the same path can both be selected", () => {
+        useGitStore.setState({
+            status: {
+                ...makeStatus(),
+                staged: [{ path: "partial.ts", origPath: null, status: "M" }],
+                unstaged: [{ path: "partial.ts", origPath: null, status: "M" }]
+            }
+        })
+        render(<LocalChangesTab />)
+        const rows = screen.getAllByText("partial.ts")
+        fireEvent.click(rows[0])
+        fireEvent.click(rows[1], { ctrlKey: true })
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.staged)).toEqual([
+            true,
+            false
+        ])
+    })
+
+    it("right-click preserves selected multi rows and replaces it for an unselected row", () => {
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: { ...makeStatus(), untracked: ["a.ts", "b.ts", "c.ts"] }
+        })
+        render(<LocalChangesTab />)
+        fireEvent.click(screen.getByText("a.ts"))
+        fireEvent.click(screen.getByText("b.ts"), { ctrlKey: true })
+        fireEvent.contextMenu(screen.getByText("a.ts"), { clientX: 10, clientY: 20 })
+        expect(useUiStore.getState().gitChangeSelection).toHaveLength(2)
+        expect(useContextMenuStore.getState().request).toMatchObject({
+            kind: "gitChange",
+            repositoryRoot: "/w",
+            clicked: { path: "a.ts" },
+            selected: [{ path: "a.ts" }, { path: "b.ts" }]
+        })
+
+        fireEvent.contextMenu(screen.getByText("c.ts"), { clientX: 30, clientY: 40 })
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual(["c.ts"])
+        expect(useContextMenuStore.getState().request).toMatchObject({
+            clicked: { path: "c.ts" },
+            selected: [{ path: "c.ts" }]
+        })
     })
 })

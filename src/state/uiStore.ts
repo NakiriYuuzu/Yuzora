@@ -1,6 +1,12 @@
 import { create } from "zustand"
 
 import { DEFAULT_MODE, type Mode } from "@/app/modes"
+import {
+    currentGitChange,
+    sameGitChange,
+    type GitChangeKey,
+    type GitChangeRow
+} from "@/workbench/git/gitChangeSelection"
 
 type SettingsTargetOptions = {
     language?: string
@@ -13,6 +19,19 @@ interface UiState {
     gitSelectedPath: string | null            // GitPanel Local changes 目前選中檔
     gitSelectedStaged: boolean                // 選中的是 staged 節或 changes 節
     selectGitFile: (path: string | null, staged: boolean) => void
+    gitChangeSelection: GitChangeKey[]
+    gitChangePrimary: GitChangeKey | null
+    gitChangeAnchor: GitChangeKey | null
+    selectGitChange: (
+        key: GitChangeKey,
+        order: readonly GitChangeRow[],
+        mode: "single" | "toggle" | "range"
+    ) => void
+    ensureGitChangeContextSelection: (key: GitChangeKey) => void
+    reconcileGitChangeSelection: (
+        rows: readonly GitChangeRow[],
+        movedSides?: Readonly<Record<string, boolean>>
+    ) => void
     openDiffInGitMode: (path: string) => void // FileTree 入口：selectGitFile+setMode("git")
     resolverPath: string | null               // external-change 解決器目標檔
     openResolver: (path: string) => void
@@ -49,6 +68,9 @@ export const uiInitialState = {
     mode: DEFAULT_MODE,
     gitSelectedPath: null,
     gitSelectedStaged: false,
+    gitChangeSelection: [] as GitChangeKey[],
+    gitChangePrimary: null as GitChangeKey | null,
+    gitChangeAnchor: null as GitChangeKey | null,
     resolverPath: null,
     settingsOpen: false,
     settingsSection: null,
@@ -66,8 +88,107 @@ export const useUiStore = create<UiState>()((set) => ({
     setMode: (mode) => set({ mode }),
     selectGitFile: (path, staged) =>
         set({ gitSelectedPath: path, gitSelectedStaged: staged }),
+    selectGitChange: (key, order, mode) =>
+        set((state) => {
+            const current = state.gitChangeSelection
+            let selection: GitChangeKey[]
+            let primary: GitChangeKey | null = key
+            let anchor: GitChangeKey | null = key
+
+            if (mode === "toggle") {
+                const exists = current.some((candidate) => sameGitChange(candidate, key))
+                selection = exists
+                    ? current.filter((candidate) => !sameGitChange(candidate, key))
+                    : [...current, key]
+                if (exists && sameGitChange(state.gitChangePrimary, key)) {
+                    primary = selection.at(-1) ?? null
+                } else if (exists) {
+                    primary = state.gitChangePrimary
+                }
+            } else if (mode === "range") {
+                const rangeAnchor = currentGitChange(
+                    state.gitChangeAnchor ?? state.gitChangePrimary ?? key,
+                    order
+                ) ?? key
+                const from = order.findIndex((candidate) => sameGitChange(candidate, rangeAnchor))
+                const to = order.findIndex((candidate) => sameGitChange(candidate, key))
+                selection = from === -1 || to === -1
+                    ? [key]
+                    : order.slice(Math.min(from, to), Math.max(from, to) + 1)
+                anchor = rangeAnchor
+            } else {
+                selection = [key]
+            }
+
+            return {
+                gitChangeSelection: selection,
+                gitChangePrimary: primary,
+                gitChangeAnchor: anchor,
+                gitSelectedPath: primary?.path ?? null,
+                gitSelectedStaged: primary?.staged ?? false
+            }
+        }),
+    ensureGitChangeContextSelection: (key) =>
+        set((state) => {
+            if (state.gitChangeSelection.some((candidate) => sameGitChange(candidate, key))) {
+                return state
+            }
+            return {
+                gitChangeSelection: [key],
+                gitChangePrimary: key,
+                gitChangeAnchor: key,
+                gitSelectedPath: key.path,
+                gitSelectedStaged: key.staged
+            }
+        }),
+    reconcileGitChangeSelection: (rows, movedSides = {}) =>
+        set((state) => {
+            const remap = (key: GitChangeKey | null): GitChangeRow | null => {
+                if (!key) return null
+                const desiredSide = Object.prototype.hasOwnProperty.call(movedSides, key.path)
+                    ? movedSides[key.path]
+                    : key.staged
+                return rows.find((row) => row.path === key.path && row.staged === desiredSide)
+                    ?? rows.find((row) => sameGitChange(row, key))
+                    ?? rows.find((row) => row.path === key.path)
+                    ?? null
+            }
+            const seen = new Set<string>()
+            const selection = state.gitChangeSelection.flatMap((key) => {
+                const row = remap(key)
+                if (!row) return []
+                const id = `${row.staged ? "s" : "c"}:${row.path}`
+                if (seen.has(id)) return []
+                seen.add(id)
+                return [row]
+            })
+            const primary = remap(state.gitChangePrimary)
+                ?? (state.gitChangePrimary ? selection[0] ?? null : null)
+            const anchor = remap(state.gitChangeAnchor) ?? primary
+            const diff = primary ?? (state.gitSelectedPath
+                ? rows.find((row) => row.path === state.gitSelectedPath && row.staged === (
+                    Object.prototype.hasOwnProperty.call(movedSides, state.gitSelectedPath)
+                        ? movedSides[state.gitSelectedPath]
+                        : state.gitSelectedStaged
+                )) ?? rows.find((row) => row.path === state.gitSelectedPath) ?? null
+                : null)
+            return {
+                gitChangeSelection: selection,
+                gitChangePrimary: primary,
+                gitChangeAnchor: anchor,
+                gitSelectedPath: diff?.path ?? null,
+                gitSelectedStaged: diff?.staged ?? false
+            }
+        }),
     openDiffInGitMode: (path) =>
-        set({ mode: "git", gitSelectedPath: path, gitSelectedStaged: false }),
+        set({
+            mode: "git",
+            gitSelectedPath: path,
+            gitSelectedStaged: false,
+            gitChangeSelection: [],
+            gitChangePrimary: null,
+            gitChangeAnchor: null
+        }),
     openResolver: (path) => set({ resolverPath: path }),
     closeResolver: () => set({ resolverPath: null }),
     openSettings: (section, target) =>
