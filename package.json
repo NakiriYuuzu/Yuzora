@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "bun run typecheck && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.json && bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.node.json"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -58,14 +58,14 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "dompurify": "^3.4.11",
-    "i18next": "^26.3.4",
-    "lucide-react": "^1.23.0",
+    "i18next": "^26.3.6",
+    "lucide-react": "^1.24.0",
     "markdown-it": "^14.3.0",
     "material-icon-theme": "^5.36.1",
     "radix-ui": "^1.6.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-i18next": "^17.0.8",
+    "react-i18next": "^17.0.9",
     "shadcn": "^4.13.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.2",
@@ -77,17 +77,17 @@
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@typescript/native": "npm:typescript@7.0.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.3",
-    "eslint": "^10.6.0",
+    "eslint": "^10.7.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.7.0",
     "jsdom": "^29.1.1",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.63.0",
-    "vite": "^8.1.3",
+    "vite": "^8.1.4",
     "vitest": "^4.1.10"
   }
 }

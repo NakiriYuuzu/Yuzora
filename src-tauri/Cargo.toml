@@ -27,19 +27,19 @@ tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-dirs = "5"
+dirs = "6"
 encoding_rs = "0.8"
-notify = "6"
-notify-debouncer-mini = "0.4"
+notify = "8.2.0"
+notify-debouncer-mini = "0.7.0"
 thiserror = "1"
 ignore = "0.4"
 grep-searcher = "0.1"
 grep-regex = "0.1"
-rand = "0.8"
-ureq = "2"
-sha2 = "0.10"
+rand = "0.10.2"
+ureq = "3.3.0"
+sha2 = "0.11.0"
 flate2 = "1"
-zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 libc = "0.2"
 portable-pty = "0.9.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
@@ -53,7 +53,7 @@ russh-sftp = "2.3.0"
 tokio = { version = "1", features = ["macros", "time", "sync", "net"] }
 # perf_service samples only this process's cpu/memory; the `system` feature is
 # all it needs — drop disk/network/component/user to keep the build lean.
-sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 # db_service network backends (F2). tokio-postgres is the pure-tokio PG driver;
 # tiberius the MSSQL driver over a tokio TcpStream (compat shim from tokio-util).
 # TLS reuses the existing rustls+ring provider (russh already pulls rustls 0.23);

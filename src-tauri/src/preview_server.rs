@@ -228,17 +228,16 @@ mod tests {
     use std::io::Read;
 
     fn read_body(url: &str) -> (u16, String) {
-        let response = ureq::get(url).call();
+        let response = ureq::get(url)
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .call();
         match response {
-            Ok(resp) => {
-                let status = resp.status();
+            Ok(mut resp) => {
+                let status = resp.status().as_u16();
                 let mut body = String::new();
-                let _ = resp.into_reader().read_to_string(&mut body);
-                (status, body)
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                let mut body = String::new();
-                let _ = resp.into_reader().read_to_string(&mut body);
+                let _ = resp.body_mut().as_reader().read_to_string(&mut body);
                 (status, body)
             }
             Err(_) => (0, String::new()),

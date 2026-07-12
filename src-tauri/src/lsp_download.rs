@@ -240,17 +240,21 @@ fn download(
         Some(0),
         Some("下載中"),
     ));
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-        .timeout_read(Duration::from_secs(READ_TIMEOUT_SECS))
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(CONNECT_TIMEOUT_SECS)))
+        .timeout_recv_response(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
+        .timeout_recv_body(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
         .build();
-    let resp = agent
+    let agent: ureq::Agent = config.into();
+    let mut resp = agent
         .get(url)
         .call()
         .map_err(|e| format!("下載失敗（{url}）：{e}"))?;
     let total: Option<u64> = resp
-        .header("Content-Length")
-        .and_then(|s| s.parse().ok())
+        .headers()
+        .get("Content-Length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
         .filter(|t| *t > 0);
     // Reject an over-cap download upfront when the length is declared.
     if let Some(t) = total {
@@ -258,7 +262,7 @@ fn download(
             return Err(cap_err());
         }
     }
-    let mut reader = resp.into_reader();
+    let mut reader = resp.body_mut().as_reader();
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
     let mut last_pct = 0u8;
