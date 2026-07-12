@@ -380,27 +380,31 @@ impl SshManager {
         let connect_fut = client::connect(config, (host.clone(), port), handler);
         let mut session = match tokio::time::timeout(CONNECT_TIMEOUT, connect_fut).await {
             Err(_) => {
-                return Err(format!(
+                let msg = format!(
                     "連線逾時：{host}:{port} 在 {} 秒內沒有回應",
                     CONNECT_TIMEOUT.as_secs()
-                ))
+                );
+                self.log_connect_failure(&host, port, &user, &msg);
+                return Err(msg);
             }
             Ok(Err(e)) => {
                 // A rejected host key aborts the handshake with `UnknownKey`
                 // before any credential is sent — surface it as a distinct,
                 // actionable warning rather than a generic transport error.
                 let outcome = outcome.lock().unwrap();
-                if let Some(reason) = &outcome.corrupt {
-                    return Err(format!(
+                let msg = if let Some(reason) = &outcome.corrupt {
+                    format!(
                         "known_hosts 檔案損毀，連線已中止（{reason}）；請修復或重設 ~/.yuzora/known_hosts.json 後再試"
-                    ));
-                }
-                if outcome.rejected {
-                    return Err(format!(
+                    )
+                } else if outcome.rejected {
+                    format!(
                         "主機金鑰驗證失敗：{host}:{port} 的 fingerprint 與已記錄的不符，連線已中止（伺服器金鑰可能已更換，或遭到中間人攻擊）"
-                    ));
-                }
-                return Err(format!("無法連線到 {host}:{port}：{e}"));
+                    )
+                } else {
+                    format!("無法連線到 {host}:{port}：{e}")
+                };
+                self.log_connect_failure(&host, port, &user, &msg);
+                return Err(msg);
             }
             Ok(Ok(session)) => session,
         };
@@ -409,18 +413,29 @@ impl SshManager {
             SshAuth::Password { password } => session
                 .authenticate_password(user.clone(), password)
                 .await
-                .map_err(|e| format!("SSH 認證發生錯誤：{e}"))?
+                .map_err(|e| {
+                    let msg = format!("SSH 認證發生錯誤：{e}");
+                    self.log_connect_failure(&host, port, &user, &msg);
+                    msg
+                })?
                 .success(),
             SshAuth::Key {
                 key_path,
                 passphrase,
             } => {
-                let key = load_secret_key(&key_path, passphrase.as_deref())
-                    .map_err(|e| format!("無法讀取私鑰 {key_path}：{e}"))?;
+                let key = load_secret_key(&key_path, passphrase.as_deref()).map_err(|e| {
+                    let msg = format!("無法讀取私鑰 {key_path}：{e}");
+                    self.log_connect_failure(&host, port, &user, &msg);
+                    msg
+                })?;
                 let hash = session
                     .best_supported_rsa_hash()
                     .await
-                    .map_err(|e| format!("SSH 認證發生錯誤：{e}"))?
+                    .map_err(|e| {
+                        let msg = format!("SSH 認證發生錯誤：{e}");
+                        self.log_connect_failure(&host, port, &user, &msg);
+                        msg
+                    })?
                     .flatten();
                 session
                     .authenticate_publickey(
@@ -428,13 +443,19 @@ impl SshManager {
                         PrivateKeyWithHashAlg::new(Arc::new(key), hash),
                     )
                     .await
-                    .map_err(|e| format!("SSH 認證發生錯誤：{e}"))?
+                    .map_err(|e| {
+                        let msg = format!("SSH 認證發生錯誤：{e}");
+                        self.log_connect_failure(&host, port, &user, &msg);
+                        msg
+                    })?
                     .success()
             }
         };
 
         if !authenticated {
-            return Err("SSH 認證失敗：帳號、密碼或金鑰不正確".to_string());
+            let msg = "SSH 認證失敗：帳號、密碼或金鑰不正確".to_string();
+            self.log_connect_failure(&host, port, &user, &msg);
+            return Err(msg);
         }
 
         let (fingerprint, known_host) = {
@@ -911,6 +932,12 @@ impl SshManager {
             }),
         });
     }
+
+    fn log_connect_failure(&self, host: &str, port: u16, user: &str, reason: &str) {
+        (self.log)(logging::connect_failure_event(
+            "ssh", host, port, user, reason,
+        ));
+    }
 }
 
 async fn shell_loop(
@@ -1222,6 +1249,32 @@ mod tests {
         assert_eq!(chunker.push(&euro[..1]), None);
         assert_eq!(chunker.push(&euro[1..]), Some("€".to_string()));
         assert_eq!(chunker.finish_lossy(), None);
+    }
+
+    #[tokio::test]
+    async fn connect_failure_is_logged() {
+        use std::sync::{Arc, Mutex};
+        let captured: Arc<Mutex<Vec<logging::LogEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let mgr = SshManager::with_log(Box::new(move |ev| sink.lock().unwrap().push(ev)));
+
+        // 127.0.0.1:1 幾乎必然 ECONNREFUSED → 走傳輸層錯誤分支
+        let res = mgr
+            .connect(
+                "127.0.0.1".into(),
+                1,
+                "nobody".into(),
+                SshAuth::Password {
+                    password: "x".into(),
+                },
+            )
+            .await;
+
+        assert!(res.is_err());
+        let events = captured.lock().unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.event == "connect_failed" && e.source == "ssh" && e.level == "warn"));
     }
 
     #[test]

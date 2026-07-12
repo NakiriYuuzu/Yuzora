@@ -238,6 +238,18 @@ describe("useSshStore connection lifecycle", () => {
         expect(mockDisconnect).toHaveBeenCalledWith("sess-1")
     })
 
+    it("disconnect propagates backend failure and keeps the live session intact", async () => {
+        const host = useSshStore.getState().addHost(passwordHost)
+        await useSshStore.getState().connect(host.id, "pw")
+        mockDisconnect.mockRejectedValueOnce(new Error("disconnect failed"))
+
+        await expect(useSshStore.getState().disconnect(host.id)).rejects.toThrow("disconnect failed")
+        expect(useSshStore.getState().sessions[host.id]).toMatchObject({
+            status: "connected",
+            sessionId: "sess-1"
+        })
+    })
+
     it("markExit disconnects the session matching a sessionId", async () => {
         const host = useSshStore.getState().addHost(passwordHost)
         await useSshStore.getState().connect(host.id, "pw")

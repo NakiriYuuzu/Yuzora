@@ -238,11 +238,7 @@ export const useSshStore = create<SshStore>()((set, get) => ({
     disconnect: async (id) => {
         const session = get().sessions[id]
         if (session?.sessionId) {
-            try {
-                await sshDisconnect(session.sessionId)
-            } catch {
-                // Best-effort: mark the UI disconnected even if the backend call errored.
-            }
+            await sshDisconnect(session.sessionId)
         }
         set((s) => {
             const prev = s.sessions[id]
