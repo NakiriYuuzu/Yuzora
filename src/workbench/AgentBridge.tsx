@@ -1,16 +1,24 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
-import { createAcpConnection, type AgentConnection } from "../agent/acpConnection"
-import { loadAgentSettings, resolveAgentCommand } from "../app/workbench/SettingsDialog"
+import { type AgentConnection } from "../agent/acpConnection"
+import { createAgentRouter } from "../agent/agentRouter"
+import { loadAgentSettings, resolvePrewarmAgentId } from "../app/workbench/settingsStorage"
 import { agentKill, agentList, agentSetTrace } from "../lib/ipc"
+import { firstAbsolutePath } from "../lib/paths"
 import { useAgentStore } from "../state/agentStore"
+import { normalizeWorkspacePath } from "../state/recentWorkspaces"
+import { loadSessionIndex } from "../state/sessionIndexStorage"
 import { useWorkspaceStore } from "../state/workspaceStore"
+
+const IDLE_PREPARE_TIMEOUT_MS = 2_000
 
 // Headless bridge wiring the ACP connection lifecycle to app-level agent state.
 export function AgentBridge() {
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const connection = useMemo(createStoreBackedConnection, [])
     const [startupTraceSettled, setStartupTraceSettled] = useState(false)
+    const recoveryRef = useRef<Promise<void> | null>(null)
+    const workspaceGenerationRef = useRef(0)
 
     useEffect(() => {
         let cancelled = false
@@ -30,19 +38,73 @@ export function AgentBridge() {
 
     useEffect(() => {
         if (!workspacePath || !startupTraceSettled) return
+        const cwd = firstAbsolutePath(workspacePath)
+        if (!cwd) return
+        const generation = ++workspaceGenerationRef.current
         let cancelled = false
-        void recoverStaleAgents(workspacePath, connection, () => cancelled)
+        let cancelIdle = () => {}
+        const isCurrent = () => !cancelled && workspaceGenerationRef.current === generation
+
+        void (async () => {
+            // Recovery is app-start work and stays single-flight across workspace
+            // changes/StrictMode setup cycles. Each workspace still hydrates its own
+            // Session Index after that shared prerequisite settles.
+            recoveryRef.current ??= recoverStaleAgents(cwd, connection)
+            await recoveryRef.current
+            if (!isCurrent()) return
+            hydrateSessionIndexForWorkspace(cwd)
+            useAgentStore.getState().markWorkspaceHydrated(cwd)
+            if (!isCurrent()) return
+
+            cancelIdle = scheduleIdleWork(() => {
+                if (!isCurrent()) return
+                const agentId = resolvePrewarmAgentId()
+                if (!agentId || !connection.prepare) return
+                // Interactive paths never await this promise. A failed prewarm is
+                // diagnostic-only; explicit session/new reuses the connection and
+                // can retry initialization normally.
+                void connection.prepare(cwd, agentId).catch(() => {
+                    if (isCurrent()) warnSanitizedPrepareFailure()
+                })
+            })
+        })()
+
         return () => {
             cancelled = true
+            cancelIdle()
+            if (workspaceGenerationRef.current === generation) {
+                workspaceGenerationRef.current += 1
+            }
+            // Router + connection both enforce the no-owner gate, so cleanup only
+            // tears down a prepared-only sub. In-flight prepare is awaited by that
+            // gate and then disposed if it still has no session owner.
+            void connection.disposePrepared?.(cwd).catch(() => undefined)
         }
     }, [workspacePath, connection, startupTraceSettled])
 
     return null
 }
 
+function scheduleIdleWork(run: () => void): () => void {
+    if (typeof globalThis.requestIdleCallback === "function") {
+        const id = globalThis.requestIdleCallback(
+            () => run(),
+            { timeout: IDLE_PREPARE_TIMEOUT_MS }
+        )
+        return () => globalThis.cancelIdleCallback?.(id)
+    }
+    const id = globalThis.setTimeout(run, 0)
+    return () => globalThis.clearTimeout(id)
+}
+
+function warnSanitizedPrepareFailure(): void {
+    // Never forward the thrown value: ACP errors may contain raw commands,
+    // filesystem paths, environment values, or stderr secrets.
+    console.warn("ACP background prepare failed", { event: "acp_prepare_failed" })
+}
+
 function createStoreBackedConnection(): AgentConnection {
-    return createAcpConnection({
-        command: () => resolveAgentCommand(loadAgentSettings()),
+    return createAgentRouter({
         onTranscript: (sessionId, transcript) => {
             useAgentStore.getState().replaceTranscript(sessionId, transcript)
         },
@@ -52,35 +114,53 @@ function createStoreBackedConnection(): AgentConnection {
         onSessionInfo: (sessionId, info) => {
             useAgentStore.getState().onSessionInfo(sessionId, info)
         },
+        onUsage: (sessionId, usage) => {
+            useAgentStore.getState().setUsage(sessionId, usage)
+        },
+        onConfigOptions: (sessionId, configOptions) => {
+            useAgentStore.getState().replaceConfigOptions(sessionId, configOptions)
+        },
+        onSessionTitle: (sessionId, title) => {
+            useAgentStore.getState().applyAgentTitle(sessionId, title)
+        },
         onPermissionRequest: (sessionId, block, choose) => {
             useAgentStore.getState().onPermissionRequest(sessionId, block, choose)
         }
     })
 }
 
-async function recoverStaleAgents(
-    cwd: string,
-    connection: AgentConnection,
-    isCancelled: () => boolean
-) {
+// 重啟後從 Session Index 重建當前 workspace 的 restored sessions（先回收孤兒
+// 再 hydrate，避免把已死行程的 session 誤判成可續聊）。沒有絕對路徑的 workspace
+// 不 hydrate——沿既有 cwd 防呆慣例。
+function hydrateSessionIndexForWorkspace(workspacePath: string): void {
+    const cwd = firstAbsolutePath(workspacePath)
+    if (!cwd) return
+    const entries = loadSessionIndex().filter(
+        (entry) => normalizeWorkspacePath(entry.cwd) === normalizeWorkspacePath(cwd)
+    )
+    if (entries.length === 0) return
+    useAgentStore.getState().hydrateRestoredSessions(entries)
+}
+
+async function recoverStaleAgents(cwd: string, connection: AgentConnection) {
     let staleIds: string[]
     try {
         staleIds = await agentList(cwd)
     } catch {
         return
     }
-    if (isCancelled() || staleIds.length === 0) return
+    if (staleIds.length === 0) return
+
+    const owned = new Set(
+        await (connection as { ownedProcessIds?: () => Promise<string[]> }).ownedProcessIds?.() ?? []
+    )
 
     try {
         for (const id of staleIds) {
-            if (isCancelled()) return
+            if (owned.has(id)) continue
             await agentKill(id, "app_exit")
         }
     } catch {
         return
     }
-    if (isCancelled()) return
-
-    useAgentStore.getState().reset()
-    useAgentStore.getState().setConnection(connection)
 }

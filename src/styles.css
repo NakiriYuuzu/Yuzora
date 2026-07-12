@@ -110,6 +110,7 @@
     --yz-accent-rgb: 134, 184, 31;
     --yz-accent: #86b81f;
     --yz-accent-ink: #5f8c1e;
+    --yz-run: #f5820a;
 
     /* ---- surface / glass tokens ---- */
     --yz-bg: radial-gradient(125% 120% at 0% 0%, #e9f4c8 0%, transparent 46%), radial-gradient(120% 115% at 100% 2%, #cdeed3 0%, transparent 50%), radial-gradient(125% 130% at 96% 100%, #c4dbf6 0%, transparent 54%), radial-gradient(120% 120% at 8% 100%, #f6e6c8 0%, transparent 48%), #f6f5ef;
@@ -145,6 +146,20 @@
     --amber-soft: #fff2dc;
     --mint-soft: #e0f6ee;
     --danger-soft: #ffe6e9;
+    --run-soft: #ffe9d2;
+
+    /* ---- agent brand colors (Phase 2 tokens; single source of truth for
+       the pi/claude/codex hex values — TS reads these via var(), never
+       the hex directly) ---- */
+    --agent-pi: #6d4dd6;
+    --agent-pi-soft: rgba(109, 77, 214, 0.12);
+    --agent-claude: #c0562f;
+    --agent-claude-soft: rgba(192, 86, 47, 0.12);
+    --agent-codex: #0f7a5f;
+    --agent-codex-soft: rgba(15, 122, 95, 0.12);
+    --agent-custom: #57534b;
+    --agent-custom-soft: rgba(87, 83, 75, 0.12);
+    --agent-badge-ink: #ffffff;
 
     /* ---- git status colors (M/A/D/U/R) ---- */
     --status-m: #2456cc;
@@ -298,6 +313,20 @@
     --amber-soft: rgba(255, 178, 62, 0.2);
     --mint-soft: rgba(43, 191, 138, 0.22);
     --danger-soft: rgba(226, 59, 84, 0.24);
+    --run-soft: rgba(245, 130, 10, 0.2);
+
+    /* ---- agent brand colors (dark) — solid tokens brightened a step for
+       contrast on dark surfaces; -soft keeps the light hue at higher alpha,
+       matching the mint/danger/run-soft convention above ---- */
+    --agent-pi: #9d85e8;
+    --agent-pi-soft: rgba(109, 77, 214, 0.24);
+    --agent-claude: #e2825a;
+    --agent-claude-soft: rgba(192, 86, 47, 0.24);
+    --agent-codex: #2bbf95;
+    --agent-codex-soft: rgba(15, 122, 95, 0.24);
+    --agent-custom: #b6b2bb;
+    --agent-custom-soft: rgba(182, 178, 187, 0.2);
+    --agent-badge-ink: #1c1917;
 
     /* ---- shadows ---- */
     --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);

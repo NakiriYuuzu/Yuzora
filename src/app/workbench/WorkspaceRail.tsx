@@ -1,9 +1,10 @@
 import { PanelLeft, Plus } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
+import { selectWorkspaceAgentCounts, useAgentStore } from "@/state/agentStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { normalizeWorkspacePath, useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -43,6 +44,8 @@ export function WorkspaceRail({
   const recents = useRecentWorkspacesStore((s) => s.list)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const activePath = workspacePath ? normalizeWorkspacePath(workspacePath) : null
+  const sessions = useAgentStore((s) => s.sessions)
+  const agentCounts = useMemo(() => selectWorkspaceAgentCounts(sessions), [sessions])
 
   const [notice, setNotice] = useState<string | null>(null)
   const noticeTimer = useRef<number | null>(null)
@@ -154,23 +157,36 @@ export function WorkspaceRail({
           <div className="flex min-h-0 w-full flex-col items-center gap-[4px] overflow-y-auto">
             {recents.map((path) => {
               const active = activePath === path
+              const counts = agentCounts.get(normalizeWorkspacePath(path))
               return (
-                <button
-                  key={path}
-                  type="button"
-                  aria-label={t("rail.openRecentWorkspace", { name: folderName(path) })}
-                  aria-pressed={active}
-                  title={path}
-                  onClick={() => handleOpenRecent(path)}
-                  className={cn(
-                    "flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold transition-all duration-[160ms] ease-(--ease-out)",
-                    active
-                      ? "bg-(--yz-hover) text-(--yz-accent-ink) shadow-(--shadow-xs)"
-                      : "border border-(--line-1) text-(--ink-2) hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
+                <div key={path} className="relative">
+                  <button
+                    type="button"
+                    aria-label={t("rail.openRecentWorkspace", { name: folderName(path) })}
+                    aria-pressed={active}
+                    title={path}
+                    onClick={() => handleOpenRecent(path)}
+                    className={cn(
+                      "flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold transition-all duration-[160ms] ease-(--ease-out)",
+                      active
+                        ? "bg-(--yz-hover) text-(--yz-accent-ink) shadow-(--shadow-xs)"
+                        : "border border-(--line-1) text-(--ink-2) hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
+                    )}
+                  >
+                    {folderName(path).charAt(0).toUpperCase()}
+                  </button>
+                  {counts && counts.total > 0 && (
+                    <span
+                      aria-label={t("rail.agentCount", { total: counts.total, running: counts.running })}
+                      className={cn(
+                        "absolute -right-[3px] -top-[3px] flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[9px] font-semibold leading-none text-white",
+                        counts.running > 0 ? "bg-(--yz-accent)" : "bg-(--ink-4)"
+                      )}
+                    >
+                      {counts.running > 0 ? `${counts.running}/${counts.total}` : counts.total}
+                    </span>
                   )}
-                >
-                  {folderName(path).charAt(0).toUpperCase()}
-                </button>
+                </div>
               )
             })}
           </div>

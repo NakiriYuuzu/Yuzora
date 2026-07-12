@@ -3,9 +3,32 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 import { WorkspaceRail } from "@/app/workbench/WorkspaceRail"
 import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
+import type { SessionState } from "@/state/agentStore"
+import { useAgentStore } from "@/state/agentStore"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+
+function session(overrides: Partial<SessionState> = {}): SessionState {
+  return {
+    title: "New session",
+    agentId: "codex",
+    agentLabel: "Codex",
+    model: null,
+    tone: "idle",
+    transcript: [],
+    availableCommands: [],
+    stopReason: null,
+    stopBadge: null,
+    error: null,
+    queueDepth: null,
+    running: null,
+    pendingTurn: false,
+    metadataTitle: false,
+    cwd: null,
+    ...overrides
+  }
+}
 
 vi.mock("@/lib/workspaceActions", () => ({
   openWorkspaceAtPath: vi.fn(),
@@ -64,7 +87,8 @@ afterEach(() => {
   delete (globalThis as { isTauri?: boolean }).isTauri
   // 移除測試蓋上的 own property，讓 jsdom 原本的 prototype getter 復原
   delete (window.navigator as { userAgent?: string }).userAgent
-  useContextMenuStore.setState({ kind: null, x: 0, y: 0, payload: {} })
+  useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
+  useAgentStore.setState({ sessions: new Map() })
 })
 
 describe("WorkspaceRail 紅綠燈區塊", () => {
@@ -82,7 +106,7 @@ describe("WorkspaceRail 紅綠燈區塊", () => {
 it("右鍵 rail 開啟 rail 選單", () => {
   const { container } = renderRail()
   fireEvent.contextMenu(container.querySelector("nav") as HTMLElement)
-  expect(useContextMenuStore.getState().kind).toBe("rail")
+  expect(useContextMenuStore.getState().request?.kind).toBe("rail")
 })
 
 describe("WorkspaceRail 開啟 workspace 按鈕", () => {
@@ -140,5 +164,66 @@ describe("WorkspaceRail RECENT tiles", () => {
   it("沒有最近 workspace 時不渲染 RECENT 區塊", () => {
     renderRail()
     expect(screen.queryByText("Recent")).toBeNull()
+  })
+})
+
+describe("WorkspaceRail agent 徽章", () => {
+  it("有 agent session 的 tile 顯示總數徽章，且 running>0 時套用 accent 色", () => {
+    useRecentWorkspacesStore.setState({ list: ["/Users/tester/projects/yuzora"] })
+    useAgentStore.setState({
+      sessions: new Map([
+        ["a1", session({ cwd: "/Users/tester/projects/yuzora", running: true })],
+        ["a2", session({ cwd: "/Users/tester/projects/yuzora", tone: "run" })]
+      ])
+    })
+    renderRail()
+    const tile = screen.getByRole("button", { name: "Open yuzora" })
+    const badge = tile.parentElement?.querySelector("span")
+    expect(badge).not.toBeNull()
+    expect(badge).toHaveTextContent("2/2")
+    expect(badge?.className).toContain("yz-accent")
+  })
+
+  it("total>0 但 running=0 時徽章套用灰色而非 accent 色", () => {
+    useRecentWorkspacesStore.setState({ list: ["/Users/tester/projects/yuzora"] })
+    useAgentStore.setState({
+      sessions: new Map([["a1", session({ cwd: "/Users/tester/projects/yuzora" })]])
+    })
+    renderRail()
+    const tile = screen.getByRole("button", { name: "Open yuzora" })
+    const badge = tile.parentElement?.querySelector("span")
+    expect(badge).toHaveTextContent("1")
+    expect(badge?.className).toContain("ink-4")
+    expect(badge?.className).not.toContain("yz-accent")
+  })
+
+  it("零 agent 的 tile 不渲染徽章", () => {
+    useRecentWorkspacesStore.setState({ list: ["/Users/tester/projects/yuzora"] })
+    renderRail()
+    const tile = screen.getByRole("button", { name: "Open yuzora" })
+    expect(tile.parentElement?.querySelector("span")).toBeNull()
+  })
+
+  it("依 normalizeWorkspacePath 對齊 — trailing slash 的 session cwd 仍計入同一 tile", () => {
+    useRecentWorkspacesStore.setState({ list: ["/Users/tester/projects/yuzora"] })
+    useAgentStore.setState({
+      sessions: new Map([["a1", session({ cwd: "/Users/tester/projects/yuzora/" })]])
+    })
+    renderRail()
+    const tile = screen.getByRole("button", { name: "Open yuzora" })
+    expect(tile.parentElement?.querySelector("span")).toHaveTextContent("1")
+  })
+
+  it("F2: rail badge shows total and running with an accessible label", () => {
+    useRecentWorkspacesStore.setState({ list: ["/Users/tester/projects/yuzora"] })
+    useAgentStore.setState({
+      sessions: new Map([
+        ["a1", session({ cwd: "/Users/tester/projects/yuzora", running: true })],
+        ["a2", session({ cwd: "/Users/tester/projects/yuzora" })]
+      ])
+    })
+    renderRail()
+    expect(screen.getByText("1/2")).toBeInTheDocument()
+    expect(screen.getByLabelText("2 agents, 1 running")).toBeInTheDocument()
   })
 })
