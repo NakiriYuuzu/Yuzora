@@ -97,7 +97,8 @@ jobs:
           RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
           ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
         run: |
-          echo "$ARTIFACTS" | jq -r '.[]' | while read -r f; do
+          # Windows 的 jq.exe 輸出 CRLF，殘留的 \r 會讓 case 樣式永不匹配而靜默跳過
+          echo "$ARTIFACTS" | jq -r '.[]' | tr -d '\r' | while read -r f; do
             case "$f" in
               *.dmg)       alias="Yuzora-macos-universal.dmg" ;;
               *setup.exe)  alias="Yuzora-windows-x64-setup.exe" ;;
