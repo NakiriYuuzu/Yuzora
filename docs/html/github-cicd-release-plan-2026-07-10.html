@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>規劃報告：yuzora GitHub CI/CD 與發布流程</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.7; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+.tldr li { margin-left: 1.2rem; margin-bottom: 0.3rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.25rem; }
+.metric-card .value { font-size: 1.6rem; font-weight: 700; font-family: var(--font-mono); }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.75rem 1.25rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; }
+p + p { margin-top: 0.6rem; }
+
+.chart-container { background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; overflow-x: auto; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); font-family: var(--font-sans); font-weight: 600; }
+.chart-container .caption { font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 0.75rem; }
+
+.timeline { position: relative; padding-left: 2rem; }
+.timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--color-border); }
+.timeline-item { position: relative; margin-bottom: 1.25rem; }
+.timeline-item::before { content: ''; position: absolute; left: -2rem; top: 0.5rem; width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); }
+.timeline-item .date { font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 600; }
+.timeline-item .content { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; margin-top: 0.4rem; }
+.timeline-item .content code { font-family: var(--font-mono); font-size: 0.82em; background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.05rem 0.35rem; }
+
+details { margin-bottom: 1rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-surface-soft); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-bottom: 1rem; }
+th { text-align: left; padding: 0.75rem; border-bottom: 2px solid var(--color-border); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.75rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+td code, li code, p code { font-family: var(--font-mono); font-size: 0.82em; background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.05rem 0.35rem; }
+
+.codeblock { position: relative; margin-bottom: 1.5rem; }
+.codeblock pre { background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-lg); padding: 1.25rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.65; }
+.codeblock .copy-btn { position: absolute; top: 0.6rem; right: 0.6rem; background: var(--color-surface-dark-elevated); color: var(--color-on-dark); border: 1px solid rgba(250,249,245,0.2); border-radius: 6px; padding: 0.3rem 0.7rem; font-size: 0.75rem; cursor: pointer; font-family: var(--font-sans); }
+.codeblock .copy-btn:hover { border-color: var(--color-accent); }
+.codeblock .filename { font-family: var(--font-mono); font-size: 0.8rem; color: var(--color-text-secondary); margin-bottom: 0.4rem; }
+
+.badge { display: inline-block; font-size: 0.72rem; font-weight: 700; border-radius: 999px; padding: 0.1rem 0.6rem; vertical-align: 1px; }
+.badge.done { background: rgba(93,184,114,0.15); color: #3d7a4c; }
+.badge.todo { background: rgba(204,120,92,0.15); color: var(--color-accent-active); }
+.badge.opt { background: rgba(93,184,166,0.15); color: #34756a; }
+.badge.risk-h { background: rgba(198,69,69,0.14); color: var(--color-error); }
+.badge.risk-m { background: rgba(212,160,23,0.16); color: #92700f; }
+.badge.risk-l { background: rgba(93,184,114,0.15); color: #3d7a4c; }
+
+ul.plain { margin-left: 1.2rem; }
+ul.plain li { margin-bottom: 0.35rem; }
+
+.check-list { list-style: none; }
+.check-list li { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.45rem 0; border-bottom: 1px solid var(--color-border); }
+.check-list input { margin-top: 0.35rem; accent-color: var(--color-accent); }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1rem; margin-bottom: 1.25rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; }
+.scorecard .name { font-weight: 700; font-size: 0.9rem; }
+.scorecard .desc { font-size: 0.78rem; color: var(--color-text-secondary); margin: 0.25rem 0 0.6rem; }
+.scorecard input[type=range] { width: 100%; accent-color: var(--color-accent); }
+.scorecard .val { font-family: var(--font-mono); font-size: 0.8rem; color: var(--color-accent-active); }
+textarea.fb { width: 100%; min-height: 90px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: #fff; padding: 0.75rem; font-family: var(--font-sans); font-size: 0.9rem; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
+
+@media print { .tabs, .actions, .copy-btn, .scorecards, textarea.fb { display: none; } .tab-content { display: block !important; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Plan · Report</div>
+        <h1>yuzora — GitHub CI/CD 與發布流程規劃</h1>
+        <p class="meta">Claude Code · 2026-07-10 · 含 gh-pages 產品頁部署（頁面本體已完成於 <code>site/</code>）</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <ul>
+            <li><strong>現況</strong>：<code>ci.yml</code> 已存在且完整（前端 lint/typecheck/test/build ＋ Rust fmt/clippy/test）；<strong>repo 尚未設定任何 git remote</strong>，發布流程的前置是先建 GitHub repo。</li>
+            <li><strong>建議新增兩條 workflow</strong>：<code>release.yml</code>（tag <code>v*</code> 觸發，tauri-action 三平台建置 → draft release）與 <code>deploy-pages.yml</code>（main 分支 <code>site/**</code> 變更時部署 gh-pages）。YAML 草案在「Workflows」分頁，可直接採用。</li>
+            <li><strong>發布 SOP</strong>：main 綠燈 → 三處版本號同步 bump → tag <code>vX.Y.Z</code> → CI 產 draft release → 人工檢查後 Publish。guard job 會擋下 tag 與版本不一致的情況。</li>
+            <li><strong>需要你決定</strong>：repo 可見性（gh-pages 免費方案需 public）、macOS 簽章／notarization 時程（Phase 1 建議先不簽、頁面補開啟說明）。</li>
+            <li>依慣例，<code>.github/workflows/</code> 的變更與所有 git 操作等你確認後才落地。</li>
+        </ul>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">1 / 3</div><div class="label">workflow 已就緒（ci.yml 已在，release + pages 待建）</div></div>
+        <div class="metric-card"><div class="value">3 處</div><div class="label">版本號所在（package.json / tauri.conf.json / Cargo.toml）</div></div>
+        <div class="metric-card"><div class="value">3 平台</div><div class="label">macOS universal · Windows · Linux</div></div>
+        <div class="metric-card"><div class="value">0</div><div class="label">git remote（發布前置：建 GitHub repo）</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('overview')">總覽</button>
+        <button class="tab" onclick="showTab('workflows')">Workflows</button>
+        <button class="tab" onclick="showTab('sop')">發布 SOP</button>
+        <button class="tab" onclick="showTab('risks')">決策・風險・驗收</button>
+    </div>
+
+    <!-- ==================== 總覽 ==================== -->
+    <div id="overview" class="tab-content active">
+        <div class="chart-container">
+            <h3>整體流水線：三條 workflow 的觸發與產出</h3>
+            <svg viewBox="0 0 860 360" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+              <defs>
+                <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0,0 L10,5 L0,10 z" fill="#6c6a64"/>
+                </marker>
+              </defs>
+              <!-- lane labels -->
+              <text x="16" y="52" font-size="12" fill="#cc785c" font-weight="700">CI（已存在）</text>
+              <text x="16" y="162" font-size="12" fill="#cc785c" font-weight="700">Release（新增）</text>
+              <text x="16" y="292" font-size="12" fill="#cc785c" font-weight="700">Pages（新增）</text>
+              <!-- CI lane -->
+              <rect x="130" y="28" width="150" height="40" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+              <text x="205" y="53" font-size="12" text-anchor="middle" fill="#141413">push / PR → main</text>
+              <rect x="330" y="28" width="200" height="40" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+              <text x="430" y="46" font-size="12" text-anchor="middle" fill="#141413">frontend：lint · tsc · test · build</text>
+              <text x="430" y="61" font-size="12" text-anchor="middle" fill="#141413">rust：fmt · clippy · test</text>
+              <rect x="580" y="28" width="120" height="40" rx="8" fill="#efe9de" stroke="#5db872"/>
+              <text x="640" y="53" font-size="12" text-anchor="middle" fill="#3d7a4c">merge 門檻</text>
+              <line x1="280" y1="48" x2="326" y2="48" stroke="#6c6a64" marker-end="url(#arr)"/>
+              <line x1="530" y1="48" x2="576" y2="48" stroke="#6c6a64" marker-end="url(#arr)"/>
+              <!-- Release lane -->
+              <rect x="130" y="128" width="150" height="40" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+              <text x="205" y="153" font-size="12" text-anchor="middle" fill="#141413">git tag v0.1.0</text>
+              <rect x="330" y="128" width="130" height="40" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+              <text x="395" y="146" font-size="12" text-anchor="middle" fill="#141413">guard：tag ==</text>
+              <text x="395" y="161" font-size="12" text-anchor="middle" fill="#141413">tauri.conf version</text>
+              <rect x="510" y="108" width="180" height="26" rx="6" fill="#181715"/>
+              <text x="600" y="125" font-size="11" text-anchor="middle" fill="#faf9f5">macOS universal (.dmg)</text>
+              <rect x="510" y="140" width="180" height="26" rx="6" fill="#181715"/>
+              <text x="600" y="157" font-size="11" text-anchor="middle" fill="#faf9f5">Windows (.msi / .exe)</text>
+              <rect x="510" y="172" width="180" height="26" rx="6" fill="#181715"/>
+              <text x="600" y="189" font-size="11" text-anchor="middle" fill="#faf9f5">Linux (.AppImage/.deb/.rpm)</text>
+              <rect x="730" y="128" width="115" height="40" rx="8" fill="#efe9de" stroke="#cc785c"/>
+              <text x="787" y="146" font-size="12" text-anchor="middle" fill="#a9583e">Draft Release</text>
+              <text x="787" y="161" font-size="12" text-anchor="middle" fill="#a9583e">→ 人工 Publish</text>
+              <line x1="280" y1="148" x2="326" y2="148" stroke="#6c6a64" marker-end="url(#arr)"/>
+              <line x1="460" y1="148" x2="506" y2="148" stroke="#6c6a64" marker-end="url(#arr)"/>
+              <line x1="690" y1="148" x2="726" y2="148" stroke="#6c6a64" marker-end="url(#arr)"/>
+              <!-- Pages lane -->
+              <rect x="130" y="268" width="150" height="40" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+              <text x="205" y="286" font-size="12" text-anchor="middle" fill="#141413">main push</text>
+              <text x="205" y="301" font-size="12" text-anchor="middle" fill="#141413">（paths: site/**）</text>
+              <rect x="330" y="268" width="200" height="40" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+              <text x="430" y="286" font-size="12" text-anchor="middle" fill="#141413">upload-pages-artifact</text>
+              <text x="430" y="301" font-size="12" text-anchor="middle" fill="#141413">（只上傳 site/）</text>
+              <rect x="580" y="268" width="180" height="40" rx="8" fill="#efe9de" stroke="#cc785c"/>
+              <text x="670" y="286" font-size="12" text-anchor="middle" fill="#a9583e">deploy-pages</text>
+              <text x="670" y="301" font-size="12" text-anchor="middle" fill="#a9583e">→ 產品頁上線</text>
+              <line x1="280" y1="288" x2="326" y2="288" stroke="#6c6a64" marker-end="url(#arr)"/>
+              <line x1="530" y1="288" x2="576" y2="288" stroke="#6c6a64" marker-end="url(#arr)"/>
+              <!-- lane separators -->
+              <line x1="16" y1="95" x2="845" y2="95" stroke="#e6dfd8" stroke-dasharray="4"/>
+              <line x1="16" y1="235" x2="845" y2="235" stroke="#e6dfd8" stroke-dasharray="4"/>
+            </svg>
+            <p class="caption">三條 workflow 各自獨立：CI 顧品質、Release 顧產物、Pages 顧產品頁。Release 產出為 draft，最後一步始終由人工 Publish。</p>
+        </div>
+
+        <section>
+            <h2>現況盤點（證據）</h2>
+            <table>
+                <thead><tr><th>項目</th><th>狀態</th><th>證據</th></tr></thead>
+                <tbody>
+                    <tr><td>CI workflow</td><td><span class="badge done">已存在</span></td><td><code>.github/workflows/ci.yml</code>：frontend（bun lint/typecheck/test/build）＋ rust（fmt/clippy/test，macos-latest）</td></tr>
+                    <tr><td>git remote</td><td><span class="badge todo">未設定</span></td><td><code>git remote -v</code> 輸出為空 → 需先 <code>gh repo create</code></td></tr>
+                    <tr><td>版本號</td><td><span class="badge todo">三處各自為政</span></td><td><code>package.json</code> 0.1.0、<code>src-tauri/tauri.conf.json</code> 0.1.0、<code>src-tauri/Cargo.toml</code>（隨 cargo 慣例）</td></tr>
+                    <tr><td>bundle 設定</td><td><span class="badge done">可用</span></td><td><code>tauri.conf.json</code>：<code>bundle.active: true</code>、<code>targets: "all"</code>、icons 齊全</td></tr>
+                    <tr><td>產品頁</td><td><span class="badge done">已完成</span></td><td><code>site/index.html</code> ＋ <code>site/assets/*.mp4</code>（Remotion 渲染，本次一併交付）</td></tr>
+                    <tr><td>Release / Pages workflow</td><td><span class="badge todo">待建</span></td><td>本報告「Workflows」分頁提供完整草案</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>設計原則</h2>
+            <ul class="plain">
+                <li><strong>tag 驅動發布</strong>：<code>v*</code> tag 是唯一的發布觸發點，main 上的日常 commit 永不觸發建置發布。</li>
+                <li><strong>draft-first</strong>：tauri-action 建立 draft release，三平台 artifacts 齊了、release notes 寫了，才由人工 Publish——機器不直接對外發布。</li>
+                <li><strong>單一版本真相</strong>：以 <code>tauri.conf.json</code> 的 <code>version</code> 為準；guard job 驗 tag 一致性，擋掉「tag 打了但忘記 bump」的事故。</li>
+                <li><strong>產品頁零維護（方案 A）</strong>：release workflow 會把主要安裝檔以固定檔名（如 <code>Yuzora-macos-universal.dmg</code>）額外上傳一份，產品頁連 <code>releases/latest/download/&lt;固定檔名&gt;</code> 即可「點了直接下載」，發新版不需要動頁面。注意：首次 Publish 之前這些直接下載連結會 404（預期行為）。</li>
+                <li><strong>Pages 用 Actions source</strong>：不用 gh-pages branch，避免產物 commit 汙染歷史；只上傳 <code>site/</code>，Remotion 原始碼（<code>site-remotion/</code>）不進部署產物。</li>
+            </ul>
+        </section>
+    </div>
+
+    <!-- ==================== Workflows ==================== -->
+    <div id="workflows" class="tab-content">
+        <section>
+            <h2>release.yml <span class="badge todo">新增</span></h2>
+            <p>tag <code>v*</code> 觸發。guard 先驗版本一致，再以 matrix 三平台跑 <code>tauri-apps/tauri-action</code>，自動建 draft release 並上傳安裝檔。macOS 出 universal binary（Apple Silicon ＋ Intel 單一 .dmg）。</p>
+            <div class="codeblock">
+                <div class="filename">.github/workflows/release.yml</div>
+                <button class="copy-btn" onclick="copyCode('yaml-release', this)">Copy</button>
+                <pre id="yaml-release">name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Tag / version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches tauri.conf.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag v$TAG != tauri.conf.json version $VERSION" >&2
+            exit 1
+          fi
+
+  build:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+            rust-targets: ''
+          - platform: windows-latest
+            args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Install Linux system deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ---- macOS 簽章／notarization（Phase 2：補上 secrets 即自動生效）----
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Yuzora ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # 產品頁「直接下載」用的固定檔名別名（方案 A）：
+      # tauri-action 的產物檔名含版本號，這裡把主要安裝檔以不變的檔名
+      # 再上傳一份到同一個 draft release，讓
+      # releases/latest/download/&lt;固定檔名&gt; 永久有效。
+      - name: Upload fixed-name alias assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          echo "$ARTIFACTS" | jq -r '.[]' | while read -r f; do
+            case "$f" in
+              *.dmg)       alias="Yuzora-macos-universal.dmg" ;;
+              *setup.exe)  alias="Yuzora-windows-x64-setup.exe" ;;
+              *.msi)       alias="Yuzora-windows-x64.msi" ;;
+              *.AppImage)  alias="Yuzora-linux-x86_64.AppImage" ;;
+              *.deb)       alias="Yuzora-linux-amd64.deb" ;;
+              *.rpm)       alias="Yuzora-linux-x86_64.rpm" ;;
+              *)           continue ;;
+            esac
+            echo "upload $f -> $alias"
+            curl -sf -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${alias}" > /dev/null
+          done</pre>
+            </div>
+        </section>
+
+        <section>
+            <h2>deploy-pages.yml <span class="badge todo">新增</span></h2>
+            <p>main 上 <code>site/**</code> 有變更時部署；也可用 <code>workflow_dispatch</code> 手動觸發。前置：repo Settings → Pages → Source 選「GitHub Actions」。</p>
+            <div class="codeblock">
+                <div class="filename">.github/workflows/deploy-pages.yml</div>
+                <button class="copy-btn" onclick="copyCode('yaml-pages', this)">Copy</button>
+                <pre id="yaml-pages">name: Deploy Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['site/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4</pre>
+            </div>
+        </section>
+
+        <section>
+            <h2>ci.yml <span class="badge done">已存在，維持現狀</span></h2>
+            <p>現有內容已涵蓋 lint、typecheck、test、build 與 Rust fmt/clippy/test，並有 concurrency 取消機制，不需改動。可選補強（非必要）：</p>
+            <ul class="plain">
+                <li>Rust job 目前跑在 <code>macos-latest</code>（合理，開發平台一致）；若之後 Linux/Windows release 常紅，可加對應平台的 <code>cargo check</code> matrix 提前暴露平台相依問題。</li>
+                <li>若希望 PR 也驗產品頁，可加一個極輕量 job 對 <code>site/index.html</code> 做 link check——目前頁面是單檔靜態 HTML，先不加。</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>首次設定指令（一次性）</h2>
+            <div class="codeblock">
+                <div class="filename">bootstrap（依你的 Git 安全規則，push 等你明令才執行）</div>
+                <button class="copy-btn" onclick="copyCode('yaml-bootstrap', this)">Copy</button>
+                <pre id="yaml-bootstrap"># 1) 建 repo 並推上 main（gh-pages 免費方案需 public）
+gh repo create yuuzu/yuzora --public --source . --remote origin
+git push -u origin main
+
+# 2) Pages 改用 GitHub Actions 作為 source（或到 Settings → Pages 手動設）
+gh api -X POST repos/yuuzu/yuzora/pages -f build_type=workflow
+
+# 3) 首次發布
+#    （bump 三處版本 → commit → tag → push tag，詳見「發布 SOP」分頁）
+git tag v0.1.0
+git push origin v0.1.0</pre>
+            </div>
+        </section>
+    </div>
+
+    <!-- ==================== 發布 SOP ==================== -->
+    <div id="sop" class="tab-content">
+        <section>
+            <h2>每次發版的標準流程</h2>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="date">Step 1 · 品質門檻</div>
+                    <div class="content"><strong>確認 main 綠燈</strong><p>最後一個 commit 的 CI（frontend ＋ rust）全數通過；本機 <code>bun run build</code>、<code>bun run test</code>、<code>cargo check</code> 亦可先行驗證。</p></div>
+                </div>
+                <div class="timeline-item">
+                    <div class="date">Step 2 · 版本同步</div>
+                    <div class="content"><strong>三處版本號一起 bump</strong><p><code>package.json</code> → <code>src-tauri/tauri.conf.json</code> → <code>src-tauri/Cargo.toml</code>，改完跑 <code>bun install</code> 與 <code>cargo check</code> 讓 lockfile 跟上。三處必須一致，guard job 會以 <code>tauri.conf.json</code> 為準驗 tag。</p></div>
+                </div>
+                <div class="timeline-item">
+                    <div class="date">Step 3 · commit ＋ tag</div>
+                    <div class="content"><strong>版本 commit 與 tag（需你明令）</strong><p><code>git commit -m "chore(release): v0.2.0"</code> → <code>git tag v0.2.0</code> → <code>git push origin main v0.2.0</code>。tag push 即觸發 release workflow。</p></div>
+                </div>
+                <div class="timeline-item">
+                    <div class="date">Step 4 · 自動建置</div>
+                    <div class="content"><strong>三平台並行建置（約 20–40 分鐘）</strong><p>guard 通過後，macOS universal / Windows / Linux 各自建置並把安裝檔上傳到同一個 <strong>draft</strong> release。任一平台失敗不影響其他平台（<code>fail-fast: false</code>），可單獨 re-run。</p></div>
+                </div>
+                <div class="timeline-item">
+                    <div class="date">Step 5 · 人工把關</div>
+                    <div class="content"><strong>檢查 draft → Publish</strong><p>確認三平台 artifacts 齊全、抽驗下載安裝、撰寫 release notes（可用 Releases 頁的 generate notes），按下 Publish 才正式對外。</p></div>
+                </div>
+                <div class="timeline-item">
+                    <div class="date">Step 6 · 產品頁</div>
+                    <div class="content"><strong>不需動作</strong><p><code>site/</code> 的下載連結固定指向 <code>releases/latest</code>，Publish 後自動生效。產品頁本身只在 <code>site/**</code> 變更時才重新部署。</p></div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>版本號管理建議</h2>
+            <p>三處版本並存是 Tauri 專案的常態；規則定為「<code>tauri.conf.json</code> 是真相，其他兩處跟隨」。若之後嫌手動 bump 麻煩，可加一個 <code>scripts/bump-version.ts</code>（bun 腳本，一次改三處＋更新 lockfile），屬 nice-to-have，Phase 1 手動即可。</p>
+        </section>
+    </div>
+
+    <!-- ==================== 決策・風險・驗收 ==================== -->
+    <div id="risks" class="tab-content">
+        <section>
+            <h2>待你決定的事項</h2>
+            <table>
+                <thead><tr><th>決策點</th><th>選項與建議</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Repo 可見性</strong></td>
+                        <td>gh-pages 在免費方案僅 public repo 可用（private 需 Pro）。產品頁 ＋ open source 定位 → <strong>建議 public</strong>（頁面文案已寫「原始碼公開可查」，若要 private 需回頭調整文案與 Pages 方案）。</td>
+                    </tr>
+                    <tr>
+                        <td><strong>macOS 簽章</strong></td>
+                        <td>Phase 1 <strong>不簽</strong>：使用者首次開啟需右鍵 → 開啟（或 <code>xattr -cr /Applications/Yuzora.app</code>），建議在 Releases notes 與產品頁 FAQ 註明。Phase 2 申請 Apple Developer（USD 99/年）後把六個 secrets 填入，release.yml 的註解解開即自動簽章＋notarize。</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Windows 簽章</strong></td>
+                        <td>不簽會有 SmartScreen 警告；程式碼簽章憑證成本較高，<strong>建議 Phase 2 再議</strong>。</td>
+                    </tr>
+                    <tr>
+                        <td><strong>自動更新（updater）</strong></td>
+                        <td>需引入 <code>tauri-plugin-updater</code>、簽章金鑰（<code>TAURI_SIGNING_PRIVATE_KEY</code>）與 <code>latest.json</code> endpoint，牽動 app 本體。<strong>明確列為 Phase 2</strong>，本次不納入。</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>風險與緩解</h2>
+            <table>
+                <thead><tr><th>風險</th><th>等級</th><th>緩解（已納入設計）</th></tr></thead>
+                <tbody>
+                    <tr><td>tag 與版本號不一致，發出錯誤版本</td><td><span class="badge risk-h">高</span></td><td>guard job 比對 tag 與 <code>tauri.conf.json</code>，不一致直接 fail，不進建置</td></tr>
+                    <tr><td>未簽章的 macOS 版被 Gatekeeper 擋，使用者以為壞檔</td><td><span class="badge risk-m">中</span></td><td>Release notes ＋ 產品頁註明開啟方式；Phase 2 補簽章後消失</td></tr>
+                    <tr><td>universal build 拉長 CI 時間、吃 Actions 額度</td><td><span class="badge risk-m">中</span></td><td><code>rust-cache</code>＋只在 tag 時建置；public repo 的 Actions 免費無上限</td></tr>
+                    <tr><td>Pages 誤把 Remotion 原始碼、node_modules 部署上線</td><td><span class="badge risk-l">低</span></td><td>artifact 只上傳 <code>site/</code>；<code>site-remotion/</code> 不在部署路徑內</td></tr>
+                    <tr><td>機器直接對外發布出事故</td><td><span class="badge risk-l">低</span></td><td><code>releaseDraft: true</code>，Publish 永遠人工</td></tr>
+                    <tr><td>Linux 建置缺系統套件紅燈</td><td><span class="badge risk-l">低</span></td><td>workflow 內建 webkit2gtk 4.1 等 apt 相依（Tauri v2 × ubuntu-22.04 對應版本）</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>驗收 checklist（實作後逐項打勾）</h2>
+            <ul class="check-list">
+                <li><input type="checkbox" /> <span><code>gh repo create</code> ＋ push 後，main 的 CI 綠燈</span></li>
+                <li><input type="checkbox" /> <span>Pages source 設為 GitHub Actions，<code>deploy-pages.yml</code> 跑過一輪，產品頁可公開瀏覽（含影片、中英切換）</span></li>
+                <li><input type="checkbox" /> <span>打 <code>v0.1.0</code> tag → guard 通過 → 三平台 artifacts 出現在 draft release</span></li>
+                <li><input type="checkbox" /> <span>故意打不一致的 tag（如 <code>v9.9.9</code>）→ guard 正確 fail</span></li>
+                <li><input type="checkbox" /> <span>macOS .dmg 下載可安裝可開啟（含 Gatekeeper 繞行流程確認）</span></li>
+                <li><input type="checkbox" /> <span>Publish 後六個固定檔名別名 asset 齊全，產品頁「下載」各列可直接下載對應安裝檔（<code>releases/latest/download/…</code>）</span></li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>報告評分（回饋給 Claude 用）</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="name">完整性</div><div class="desc">CI、release、pages、SOP、風險是否都涵蓋</div><input type="range" min="1" max="5" value="4" data-k="completeness" oninput="this.nextElementSibling.textContent=this.value+' / 5'"/><span class="val">4 / 5</span></div>
+                <div class="scorecard"><div class="name">可執行性</div><div class="desc">YAML 與指令是否可直接採用</div><input type="range" min="1" max="5" value="4" data-k="actionability" oninput="this.nextElementSibling.textContent=this.value+' / 5'"/><span class="val">4 / 5</span></div>
+                <div class="scorecard"><div class="name">風險覆蓋</div><div class="desc">決策點與失敗模式是否想到位</div><input type="range" min="1" max="5" value="4" data-k="risk" oninput="this.nextElementSibling.textContent=this.value+' / 5'"/><span class="val">4 / 5</span></div>
+                <div class="scorecard"><div class="name">下一步清晰度</div><div class="desc">看完知道現在該做什麼</div><input type="range" min="1" max="5" value="4" data-k="nextStep" oninput="this.nextElementSibling.textContent=this.value+' / 5'"/><span class="val">4 / 5</span></div>
+            </div>
+            <textarea class="fb" id="fb-note" placeholder="修改意見（例如：改用 nightly channel、加上 changelog 自動化、macOS 先簽章…）"></textarea>
+            <div class="actions">
+                <button class="btn primary" onclick="copyFeedback()">Copy as Prompt</button>
+                <button class="btn" onclick="window.print()">Print / PDF</button>
+            </div>
+        </section>
+    </div>
+</div>
+
+<script>
+function showTab(id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    event.target.classList.add('active');
+}
+function copyCode(id, btn) {
+    navigator.clipboard.writeText(document.getElementById(id).textContent).then(() => {
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 1500);
+    });
+}
+function copyFeedback() {
+    const scores = {};
+    document.querySelectorAll('.scorecard input[type=range]').forEach(r => scores[r.dataset.k] = Number(r.value));
+    const payload = {
+        artifact: 'github-cicd-release-plan-2026-07-10.html',
+        scores,
+        note: document.getElementById('fb-note').value || null,
+        next_prompt: '依上述評分與意見修訂 yuzora 的 CI/CD 發布規劃；若已同意，直接落地 .github/workflows/release.yml 與 deploy-pages.yml。'
+    };
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    event.target.textContent = 'Copied!';
+    setTimeout(() => event.target.textContent = 'Copy as Prompt', 1500);
+}
+</script>
+</body>
+</html>

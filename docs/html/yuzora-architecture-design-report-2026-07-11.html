@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>yuzora 整體架構與設計分析報告 · 2026-07-11</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", "Noto Serif TC", "Songti TC", Georgia, serif;
+    --font-sans: StyreneB, Inter, "PingFang TC", "Noto Sans TC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-strong: #e8e0d2;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-strong: #252523;
+    --color-text-secondary: #6c6a64;
+    --color-text-muted: #8e8b82;
+    --color-border: #e6dfd8;
+    --color-border-soft: #ebe6df;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.7; padding: 2rem; font-size: 15px; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; color: var(--color-text-strong); }
+.container { max-width: 1080px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2.1rem; margin: 0.3rem 0 0.2rem; }
+header .meta { color: var(--color-text-secondary); font-size: 0.88rem; }
+header .meta code { font-size: 0.82rem; }
+code, .file { font-family: var(--font-mono); font-size: 0.82em; background: var(--color-surface-soft); border: 1px solid var(--color-border-soft); border-radius: 4px; padding: 0.08em 0.35em; white-space: nowrap; }
+pre { background: var(--color-surface-dark); color: var(--color-on-dark); padding: 0.9rem 1.1rem; border-radius: var(--radius-md); font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.6; overflow-x: auto; margin: 0.6rem 0 1rem; }
+pre code { background: none; border: none; color: inherit; padding: 0; white-space: pre; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem 1.4rem; margin-bottom: 1.6rem; }
+.tldr h3 { font-family: var(--font-sans); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; font-weight: 600; }
+.tldr p { margin-bottom: 0.5rem; }
+.tldr p:last-child { margin-bottom: 0; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.8rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; }
+.metric-card .value { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.02em; }
+.metric-card .value small { font-size: 0.9rem; font-weight: 500; color: var(--color-text-secondary); }
+.metric-card .label { font-size: 0.76rem; color: var(--color-text-secondary); margin-top: 0.15rem; }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.6rem; position: sticky; top: 0; background: var(--color-bg); z-index: 30; overflow-x: auto; }
+.tab { padding: 0.7rem 1.05rem; border: none; background: none; cursor: pointer; font-family: var(--font-sans); font-size: 0.88rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; white-space: nowrap; }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2.2rem; }
+section h2 { font-size: 1.35rem; margin-bottom: 0.8rem; }
+section h3 { font-size: 1.08rem; margin: 1.2rem 0 0.5rem; }
+section p { margin-bottom: 0.7rem; }
+section ul, section ol { margin: 0 0 0.9rem 1.4rem; }
+section li { margin-bottom: 0.35rem; }
+.takeaway { font-size: 0.85rem; color: var(--color-text-secondary); border-left: 3px solid var(--color-info); padding-left: 0.7rem; margin: 0.5rem 0 1rem; }
+
+.chart-container, .diagram-panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.3rem; margin-bottom: 1.2rem; overflow-x: auto; }
+.chart-container h3 { font-size: 0.92rem; margin: 0 0 0.8rem; color: var(--color-text-secondary); font-family: var(--font-sans); font-weight: 600; }
+.diagram-panel svg { width: 100%; height: auto; }
+.diagram-panel svg .node { cursor: pointer; transition: opacity 0.15s; }
+.diagram-panel svg .node:hover { opacity: 0.78; }
+.legend { display: flex; gap: 1.2rem; flex-wrap: wrap; margin-top: 0.9rem; font-size: 0.8rem; color: var(--color-text-secondary); }
+.legend-item { display: flex; align-items: center; gap: 0.38rem; }
+.legend-item .dot { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.node-detail-box { background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1.1rem; margin-top: 0.9rem; font-size: 0.88rem; min-height: 3.2rem; }
+.node-detail-box .nd-title { font-weight: 700; margin-bottom: 0.2rem; }
+.node-detail-box .nd-files { font-size: 0.78rem; color: var(--color-text-secondary); }
+
+details { margin-bottom: 0.7rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.65rem 0.9rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.92rem; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 0.9rem 1.1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-surface-soft); font-size: 0.92rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin: 0.4rem 0 1.1rem; }
+th { text-align: left; padding: 0.55rem 0.7rem; border-bottom: 2px solid var(--color-border); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--color-border-soft); vertical-align: top; }
+tr:hover td { background: rgba(239,233,222,0.35); }
+
+.badge { display: inline-block; font-size: 0.68rem; font-weight: 700; padding: 0.12rem 0.5rem; border-radius: 999px; letter-spacing: 0.04em; white-space: nowrap; }
+.badge.high { background: #f6dfdb; color: #9a3324; }
+.badge.med { background: #f8ead5; color: #7a4b12; }
+.badge.low { background: #e7f4f1; color: #2f766d; }
+.badge.good { background: #edf8ef; color: #2f7140; }
+.badge.info { background: #e7f0f4; color: #2b5f74; }
+
+.timeline { position: relative; padding-left: 2rem; }
+.timeline::before { content: ''; position: absolute; left: 7px; top: 4px; bottom: 4px; width: 2px; background: var(--color-border); }
+.timeline-item { position: relative; margin-bottom: 1.1rem; }
+.timeline-item::before { content: ''; position: absolute; left: -2rem; top: 0.45rem; width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); }
+.timeline-item .date { font-size: 0.78rem; color: var(--color-text-secondary); font-weight: 700; letter-spacing: 0.03em; }
+.timeline-item .content { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.75rem 1rem; margin-top: 0.35rem; font-size: 0.9rem; }
+.timeline-item .content strong { display: block; margin-bottom: 0.2rem; }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(235px, 1fr)); gap: 0.9rem; margin-bottom: 1.4rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1rem 1.1rem; }
+.scorecard .sc-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.35rem; }
+.scorecard .sc-name { font-weight: 700; font-size: 0.92rem; }
+.scorecard .sc-score { font-family: var(--font-display); font-size: 1.35rem; color: var(--color-accent-active); }
+.scorecard .sc-bar { height: 6px; border-radius: 999px; background: var(--color-surface-strong); overflow: hidden; margin-bottom: 0.5rem; }
+.scorecard .sc-bar > div { height: 100%; border-radius: 999px; background: var(--color-accent); }
+.scorecard .sc-note { font-size: 0.8rem; color: var(--color-text-secondary); line-height: 1.55; }
+
+.review-box { background: var(--color-surface-soft); border: 1px dashed var(--color-accent); border-radius: var(--radius-lg); padding: 1.2rem 1.4rem; margin-top: 1rem; }
+.review-box h3 { margin-top: 0; }
+.review-row { display: flex; gap: 0.8rem; align-items: center; margin-bottom: 0.55rem; flex-wrap: wrap; }
+.review-row label { font-size: 0.88rem; font-weight: 600; min-width: 9.5rem; }
+.review-row textarea { flex: 1; min-width: 240px; min-height: 2.2rem; font-family: var(--font-sans); font-size: 0.85rem; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: #fff; resize: vertical; }
+.review-row input[type="range"] { flex: 1; min-width: 140px; accent-color: var(--color-accent); }
+.review-row .range-val { font-family: var(--font-mono); font-size: 0.85rem; width: 1.6rem; text-align: center; }
+.actions { display: flex; gap: 0.8rem; margin-top: 1.2rem; flex-wrap: wrap; }
+.btn { padding: 0.55rem 1.15rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-family: var(--font-sans); font-size: 0.88rem; font-weight: 600; color: var(--color-text); }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
+.btn.primary:hover { background: var(--color-accent-active); }
+
+.callout { background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-lg); padding: 1.1rem 1.3rem; margin: 1rem 0; font-size: 0.9rem; }
+.callout .co-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-info); font-weight: 700; margin-bottom: 0.35rem; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
+@media (max-width: 820px) { .two-col { grid-template-columns: 1fr; } body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+@media print { .tabs, .actions, .review-box { display: none; } .tab-content { display: block !important; } body { padding: 0.4in; } .diagram-panel { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Architecture Report</div>
+        <h1>yuzora 整體架構與設計分析</h1>
+        <p class="meta">2026-07-11 · 分析基準：<code>main@0809c9b</code> ＋ 未提交工作樹（初掃 118 檔；<strong>分析期間另一 session 並行開發中</strong>，量化數據以 22:0x 覆核掃描為準 — 見「獨立覆核」分頁）· 方法：4 個平行深掘 agent ＋ 主線交叉驗證（specs／SDD ledgers／原始碼）</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p><strong>yuzora 是一個 local-first IDE workbench</strong>（Tauri 2 ＋ React 19 ＋ CodeMirror 6 ＋ Rust services），在 2026-07-02 → 07-10 的九天內，以「spec 先行 → 多代理波次實作 → 對抗式 review → 實機 GUI 驗收」的流程從零推進到 MVP＋。五個 mode（Files／Git／Database／SSH／AgentZone）加 editor、terminal、preview、LSP、logs 全部落地，前端 31.8k 行、Rust 22.6k 行、測試近 1:1（29.4k 行）。</p>
+        <p><strong>架構體質良好</strong>：邊界原則清楚（IDE 管 workspace，agent runtime 自管 MCP／memory）、105 個 IPC command 的薄契約層、22 個 zustand store ＋ 9 個 Bridge 的事件驅動前端、每個關鍵選型都有書面論證與 spike 驗證。<strong>風險集中在四處</strong>：手寫 IPC 型別契約無 codegen（drift 風險）、安全縫（<code>csp: null</code>、SFTP 無 client 端 containment、SSH TOFU 無首次確認）、Windows 平台債（askpass stub、Job Objects 未實作、CI 不編譯 Windows）、以及 160 項未提交異動混雜三個主題。建議依 07-10 分析報告的 <strong>RC1 收斂路線</strong>：先拆分提交、補契約與平台防線，再開新功能。<strong>獨立覆核</strong>（見末頁分頁）另補兩個高槓桿缺口：發布就緒最小集（LICENSE／auto-updater／使用者文件）與持久化 versioning（現況 discard-only、無 migration）。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">31,797</div><div class="label">前端 TS/TSX 行數（非測試）</div></div>
+        <div class="metric-card"><div class="value">22,618</div><div class="label">Rust 行數 · 33 模組</div></div>
+        <div class="metric-card"><div class="value">29,405</div><div class="label">測試行數 · 113 檔（≈0.92 : 1）</div></div>
+        <div class="metric-card"><div class="value">105</div><div class="label">Tauri IPC commands</div></div>
+        <div class="metric-card"><div class="value">22</div><div class="label">zustand stores</div></div>
+        <div class="metric-card"><div class="value">353</div><div class="label">Rust tests（實跑全綠）</div></div>
+        <div class="metric-card"><div class="value">9 <small>天</small></div><div class="label">M1 → M6 交付時間</div></div>
+        <div class="metric-card"><div class="value">2</div><div class="label">ADR（session index／credential vault）</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab(event,'overview')">總覽</button>
+        <button class="tab" onclick="showTab(event,'frontend')">前端架構</button>
+        <button class="tab" onclick="showTab(event,'backend')">Rust 後端</button>
+        <button class="tab" onclick="showTab(event,'agent')">AgentZone / ACP</button>
+        <button class="tab" onclick="showTab(event,'quality')">品質與治理</button>
+        <button class="tab" onclick="showTab(event,'history')">演進史</button>
+        <button class="tab" onclick="showTab(event,'assess')">評估與建議</button>
+        <button class="tab" onclick="showTab(event,'audit')">獨立覆核</button>
+    </div>
+
+    <div id="overview" class="tab-content active">
+        <section>
+            <h2>產品定位與邊界原則</h2>
+            <p>創始 spec（<span class="file">docs/superpowers/specs/2026-07-02-yuzora-mvp-workbench-design.md</span>）把 yuzora 定義為「能日常使用的核心工作流」優先的本機 IDE workbench，而非一次做完整 IDE 平台。最重要的架構決定是<strong>邊界宣言</strong>：</p>
+            <div class="callout">
+                <div class="co-label">Boundary Principle（spec 原文改寫）</div>
+                IDE 管 workspace、檔案、編輯、Git、terminal、Preview、LSP 與本機診斷；<strong>Agent runtime 自己管理 MCP、memory、tooling 與大型檔案 context</strong>。yuzora 明確不內建 codebase-memory-mcp、不管理 MCP server lifecycle、不替 agent 裝工具。這條邊界在 M5 落實為協定行為：<code>session/new</code> 的 <code>mcpServers</code> 一律傳空陣列。
+            </div>
+            <p>五個 workspace mode 定義在 <span class="file">src/app/modes.ts</span>：<code>files / git / database / ssh / agent</code>；Preview 是 editor 區的 singleton tab、Terminal 是全域 drawer、Settings 是 modal — 七個功能入口、三種層次，出自 UI Phase 的九條 architecture decisions（<span class="file">.superpowers/sdd/progress.md:15-25</span>）。</p>
+        </section>
+
+        <section>
+            <h2>系統架構總覽</h2>
+            <div class="diagram-panel">
+                <h3 style="font-family:var(--font-sans);font-size:0.92rem;color:var(--color-text-secondary);margin-bottom:0.8rem;">三層架構：WebView 前端 ↔ Tauri IPC ↔ Rust services ↔ 外部程序（點擊節點看細節）</h3>
+                <svg viewBox="0 0 940 640" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8e8b82"/></marker>
+                    </defs>
+                    <!-- band frames -->
+                    <rect x="8" y="8" width="924" height="240" rx="14" fill="#f5f0e8" stroke="#e6dfd8"/>
+                    <text x="24" y="32" font-size="12" font-weight="700" fill="#6c6a64" letter-spacing="2">REACT 19 前端（WKWebView）</text>
+                    <rect x="8" y="262" width="924" height="46" rx="10" fill="#181715"/>
+                    <text x="470" y="286" text-anchor="middle" font-size="12" font-weight="700" fill="#faf9f5">Tauri IPC — invoke × 105 commands（src-tauri/src/lib.rs:106-212）· events（git:* / lsp:* / agent:// / ssh:// / fs:* / dev-server:*）· Channel streams（pty / search / lsp / dev-server）</text>
+                    <rect x="8" y="322" width="924" height="200" rx="14" fill="#efe9de" stroke="#e6dfd8"/>
+                    <text x="24" y="346" font-size="12" font-weight="700" fill="#6c6a64" letter-spacing="2">RUST 後端（33 modules · 22.6k 行）</text>
+                    <rect x="8" y="536" width="924" height="96" rx="14" fill="#faf9f5" stroke="#e6dfd8" stroke-dasharray="5 4"/>
+                    <text x="24" y="560" font-size="12" font-weight="700" fill="#8e8b82" letter-spacing="2">外部程序與資源</text>
+
+                    <!-- frontend row 1: shell -->
+                    <g class="node" onclick="showNode('n-shell')"><rect x="24" y="44" width="200" height="56" rx="9" fill="#fff" stroke="#cc785c" stroke-width="1.6"/><text x="124" y="67" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">AppShell（chrome）</text><text x="124" y="85" text-anchor="middle" font-size="10" fill="#6c6a64">rail · nav · panels · drawer · palette</text></g>
+                    <g class="node" onclick="showNode('n-panels')"><rect x="238" y="44" width="228" height="56" rx="9" fill="#fff" stroke="#cc785c" stroke-width="1.6"/><text x="352" y="67" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">5 mode panels</text><text x="352" y="85" text-anchor="middle" font-size="10" fill="#6c6a64">Editor keep-alive · SSH keep-alive · 其餘 remount</text></g>
+                    <g class="node" onclick="showNode('n-verticals')"><rect x="480" y="44" width="256" height="56" rx="9" fill="#fff" stroke="#cc785c" stroke-width="1.6"/><text x="608" y="67" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">六條 feature verticals</text><text x="608" y="85" text-anchor="middle" font-size="10" fill="#6c6a64">editor(CM6) · lsp · terminal(xterm) · git · preview · agent</text></g>
+                    <g class="node" onclick="showNode('n-ui')"><rect x="750" y="44" width="168" height="56" rx="9" fill="#fff" stroke="#cc785c" stroke-width="1.6"/><text x="834" y="67" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">UI 基礎</text><text x="834" y="85" text-anchor="middle" font-size="10" fill="#6c6a64">shadcn ×15 · Tailwind 4 · i18n</text></g>
+
+                    <!-- frontend row 2: state / bridges / ipc / acp -->
+                    <g class="node" onclick="showNode('n-stores')"><rect x="24" y="130" width="200" height="56" rx="9" fill="#fdf9f2" stroke="#d4a017" stroke-width="1.6"/><text x="124" y="153" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">state：22 zustand stores</text><text x="124" y="171" text-anchor="middle" font-size="10" fill="#6c6a64">agentStore 1172 行最大 · 手寫 localStorage</text></g>
+                    <g class="node" onclick="showNode('n-bridges')"><rect x="238" y="130" width="228" height="56" rx="9" fill="#fdf9f2" stroke="#d4a017" stroke-width="1.6"/><text x="352" y="153" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">9 × Bridge ＋ 4 × Host</text><text x="352" y="171" text-anchor="middle" font-size="10" fill="#6c6a64">null-render 元件：listen(event) → store.getState()</text></g>
+                    <g class="node" onclick="showNode('n-ipc')"><rect x="480" y="130" width="256" height="56" rx="9" fill="#fdf9f2" stroke="#d4a017" stroke-width="1.6"/><text x="608" y="153" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">lib/ipc.ts ＋ lib/types.ts</text><text x="608" y="171" text-anchor="middle" font-size="10" fill="#6c6a64">薄 invoke 包裝 · 手寫 serde 契約（無 codegen）</text></g>
+                    <g class="node" onclick="showNode('n-acp')"><rect x="750" y="130" width="168" height="56" rx="9" fill="#f3e9f5" stroke="#9061a8" stroke-width="1.6"/><text x="834" y="153" text-anchor="middle" font-size="12.5" font-weight="700" fill="#141413">ACP client 層</text><text x="834" y="171" text-anchor="middle" font-size="10" fill="#6c6a64">acpConnection ＋ agentRouter</text></g>
+
+                    <!-- arrows frontend internal -->
+                    <line x1="124" y1="100" x2="124" y2="130" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="352" y1="130" x2="352" y2="100" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="608" y1="100" x2="608" y2="130" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="834" y1="100" x2="834" y2="130" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <!-- arrows to IPC -->
+                    <line x1="608" y1="186" x2="608" y2="262" stroke="#8e8b82" stroke-width="1.5" marker-end="url(#arr)"/>
+                    <line x1="352" y1="262" x2="352" y2="186" stroke="#8e8b82" stroke-width="1.5" marker-end="url(#arr)"/>
+                    <line x1="834" y1="186" x2="834" y2="262" stroke="#8e8b82" stroke-width="1.5" marker-end="url(#arr)"/>
+                    <!-- IPC to backend -->
+                    <line x1="470" y1="308" x2="470" y2="322" stroke="#8e8b82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+                    <!-- backend nodes -->
+                    <g class="node" onclick="showNode('n-fs')"><rect x="24" y="360" width="140" height="64" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="94" y="383" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">fs / watch / search</text><text x="94" y="399" text-anchor="middle" font-size="9.5" fill="#6c6a64">fs_service · file_content</text><text x="94" y="412" text-anchor="middle" font-size="9.5" fill="#6c6a64">watcher · search_service</text></g>
+                    <g class="node" onclick="showNode('n-git')"><rect x="176" y="360" width="140" height="64" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="246" y="383" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">git ×4 ＋ askpass</text><text x="246" y="399" text-anchor="middle" font-size="9.5" fill="#6c6a64">service · status · log · watch</text><text x="246" y="412" text-anchor="middle" font-size="9.5" fill="#6c6a64">porcelain v2 · unix socket</text></g>
+                    <g class="node" onclick="showNode('n-lsp')"><rect x="328" y="360" width="140" height="64" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="398" y="383" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">lsp ×4</text><text x="398" y="399" text-anchor="middle" font-size="9.5" fill="#6c6a64">service+framing · adapters</text><text x="398" y="412" text-anchor="middle" font-size="9.5" fill="#6c6a64">config · download(+plan)</text></g>
+                    <g class="node" onclick="showNode('n-proc')"><rect x="480" y="360" width="156" height="64" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="558" y="383" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">行程治理 ×6</text><text x="558" y="399" text-anchor="middle" font-size="9.5" fill="#6c6a64">pty · process · dev_detect</text><text x="558" y="412" text-anchor="middle" font-size="9.5" fill="#6c6a64">agent_process · agent_terminal · kill</text></g>
+                    <g class="node" onclick="showNode('n-ssh')"><rect x="648" y="360" width="130" height="64" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="713" y="383" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">ssh_service</text><text x="713" y="399" text-anchor="middle" font-size="9.5" fill="#6c6a64">russh ＋ russh-sftp</text><text x="713" y="412" text-anchor="middle" font-size="9.5" fill="#6c6a64">TOFU known-hosts</text></g>
+                    <g class="node" onclick="showNode('n-db')"><rect x="790" y="360" width="128" height="64" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="854" y="383" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">db_service</text><text x="854" y="399" text-anchor="middle" font-size="9.5" fill="#6c6a64">rusqlite · tokio-postgres</text><text x="854" y="412" text-anchor="middle" font-size="9.5" fill="#6c6a64">tiberius(MSSQL)</text></g>
+                    <g class="node" onclick="showNode('n-preview')"><rect x="176" y="440" width="200" height="56" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="276" y="463" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">preview_server ＋ webview</text><text x="276" y="480" text-anchor="middle" font-size="9.5" fill="#6c6a64">tiny_http 靜態伺服 · child webview 疊層</text></g>
+                    <g class="node" onclick="showNode('n-log')"><rect x="480" y="440" width="298" height="56" rx="9" fill="#fff" stroke="#5db8a6" stroke-width="1.6"/><text x="629" y="463" text-anchor="middle" font-size="12" font-weight="700" fill="#141413">橫切面：logging · perf_service · env_path</text><text x="629" y="480" text-anchor="middle" font-size="9.5" fill="#6c6a64">JSONL sink（14 天／100MB rotation）· sysinfo · GUI PATH 修復</text></g>
+
+                    <!-- backend to external -->
+                    <line x1="246" y1="424" x2="246" y2="440" stroke="#8e8b82" stroke-width="1" marker-end="url(#arr)"/>
+                    <line x1="94" y1="424" x2="94" y2="536" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="290" y1="424" x2="330" y2="536" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="398" y1="424" x2="440" y2="536" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="558" y1="424" x2="558" y2="536" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="713" y1="424" x2="713" y2="536" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+                    <line x1="854" y1="424" x2="854" y2="536" stroke="#8e8b82" stroke-width="1.3" marker-end="url(#arr)"/>
+
+                    <!-- external labels -->
+                    <text x="94" y="580" text-anchor="middle" font-size="11" font-weight="600" fill="#3d3d3a">workspace 檔案</text>
+                    <text x="94" y="596" text-anchor="middle" font-size="9.5" fill="#8e8b82">~/.yuzora（logs · lsp.json · known_hosts）</text>
+                    <text x="330" y="580" text-anchor="middle" font-size="11" font-weight="600" fill="#3d3d3a">git CLI（系統）</text>
+                    <text x="330" y="596" text-anchor="middle" font-size="9.5" fill="#8e8b82">GIT_ASKPASS → yuzora 自身</text>
+                    <text x="452" y="580" text-anchor="middle" font-size="11" font-weight="600" fill="#3d3d3a">LSP servers</text>
+                    <text x="452" y="596" text-anchor="middle" font-size="9.5" fill="#8e8b82">vtsls · rust-analyzer · pyright…</text>
+                    <text x="578" y="580" text-anchor="middle" font-size="11" font-weight="600" fill="#3d3d3a">shells / dev servers /</text>
+                    <text x="578" y="596" text-anchor="middle" font-size="11" font-weight="600" fill="#3d3d3a">ACP agents（pi·claude·codex）</text>
+                    <text x="713" y="580" text-anchor="middle" font-size="11" font-weight="600" fill="#3d3d3a">遠端 SSH hosts</text>
+                    <text x="854" y="580" text-anchor="middle" font-size="11" font-weight="600" fill="#3d3d3a">PG / MSSQL / SQLite</text>
+                </svg>
+                <div class="legend">
+                    <div class="legend-item"><div class="dot" style="background:#cc785c"></div>前端 UI 層</div>
+                    <div class="legend-item"><div class="dot" style="background:#d4a017"></div>前端狀態／通訊層</div>
+                    <div class="legend-item"><div class="dot" style="background:#9061a8"></div>ACP 協定層</div>
+                    <div class="legend-item"><div class="dot" style="background:#5db8a6"></div>Rust services</div>
+                    <div class="legend-item"><div class="dot" style="background:#181715"></div>IPC 邊界</div>
+                </div>
+                <div class="node-detail-box" id="nodeDetail"><span style="color:var(--color-text-secondary);font-size:0.85rem;">點擊上方任一節點，這裡會顯示職責、關鍵檔案與設計要點。</span></div>
+            </div>
+            <p class="takeaway">一句話讀圖：前端持有所有互動與協定狀態（包含 ACP client），Rust 是「能力提供者」— 檔案、行程、網路、密碼學都在 Rust；兩者之間只有 105 個顯式 command 與一小組事件，沒有隱式共享狀態。</p>
+        </section>
+
+        <section>
+            <h2>關鍵技術選型（皆有書面論證）</h2>
+            <table>
+                <thead><tr><th>領域</th><th>選型</th><th>核心依據（spec 記載）</th><th>落點</th></tr></thead>
+                <tbody>
+                    <tr><td>Editor</td><td><strong>CodeMirror 6</strong>（棄 Monaco）</td><td>大檔保護是架構內建；多實例天生獨立（Monaco 是 global singleton）；bundle 8.2MB vs 51MB，WKWebView 記憶體天花板下差距被放大；@codemirror/merge 直接銜接 diff/conflict UX</td><td><span class="file">src/editor/**</span></td></tr>
+                    <tr><td>Git</td><td><strong>系統 git CLI</strong>（棄 gitoxide／git2-rs）</td><td>gitoxide push 未完成；git2 credential callback 有無限迴圈已知坑；GitButler／VS Code 同路線實證；<code>--porcelain=v2</code> 對版本穩定</td><td><span class="file">src-tauri/src/git_service.rs</span>（2,010 行）</td></tr>
+                    <tr><td>Terminal</td><td><strong>xterm.js ＋ portable-pty</strong></td><td>Windows 走 ConPTY；terminal（user shell）與 dev server（managed process）分離 lifecycle、共用 spawn/清理基建</td><td><span class="file">src-tauri/src/pty_service.rs</span>（941 行）</td></tr>
+                    <tr><td>Agent 協定</td><td><strong>ACP</strong>（棄 Claude Agent SDK 深度整合）</td><td>開放協定一次接多家；SDK 自帶 MCP/memory 管理與邊界原則衝突</td><td><span class="file">src/agent/acpConnection.ts</span>（1,279 行）</td></tr>
+                    <tr><td>LSP client</td><td><strong>@codemirror/lsp-client ＋ 自訂 Tauri Transport</strong></td><td>M1 blocking spike 實測 vtsls／rust-analyzer；semantic tokens／code actions 缺口列 M3 自寫清單（6 項），fallback Monaco 未觸發</td><td><span class="file">src/lsp/transport.ts:22</span></td></tr>
+                    <tr><td>Log 儲存</td><td><strong>JSONL ＋ rotation</strong>（SQLite 列 v2）</td><td>省 schema migration 與多視窗鎖成本；14 天／100MB 上限</td><td><span class="file">src-tauri/src/logging.rs</span>（1,054 行）</td></tr>
+                    <tr><td>Preview 嵌入</td><td><strong>Tauri child webview</strong>（fallback iframe）</td><td>iframe 受 X-Frame-Options/CSP frame-ancestors 限制；需 tauri <code>unstable</code> feature（multiwebview）</td><td><span class="file">src-tauri/src/preview_webview.rs:1-9</span></td></tr>
+                    <tr><td>SSH</td><td><strong>russh ＋ russh-sftp</strong></td><td>SFTP 走既有 channel 的 stream，與 russh 版本解耦（Cargo.toml 註解）</td><td><span class="file">src-tauri/src/ssh_service.rs</span>（1,457 行）</td></tr>
+                    <tr><td>DB drivers</td><td><strong>rusqlite ＋ tokio-postgres ＋ tiberius</strong></td><td>TLS 統一 rustls＋<code>ring</code> provider 釘死（防第二個 aws-lc provider 造成 builder panic）</td><td><span class="file">src-tauri/Cargo.toml:56-68</span></td></tr>
+                </tbody>
+            </table>
+            <p class="takeaway">值得注意的模式：每個高風險選型都配了「blocking spike ＋ 明文 fallback」，例如 CM6 semantic tokens 缺口的 fallback 是 Monaco、rust-analyzer managed download 的 fallback 是 guided manual install — 沒有一項是裸信仰決策。</p>
+        </section>
+
+        <section>
+            <h2>里程碑狀態</h2>
+            <table>
+                <thead><tr><th>里程碑</th><th>內容</th><th>狀態</th></tr></thead>
+                <tbody>
+                    <tr><td>M1（07-02）</td><td>Editor core、大檔分級、watcher、UI Phase（Arc 風格 design system）</td><td><span class="badge good">完成</span> GUI 復驗 8/8</td></tr>
+                    <tr><td>M2（07-03）</td><td>Git core（porcelain v2／askpass／diff／conflict）＋ workspace search</td><td><span class="badge good">完成</span> fable final review 7 項修畢</td></tr>
+                    <tr><td>M3（07-03～）</td><td>LSP adapter manager、四語言、managed download、Markdown preview</td><td><span class="badge good">完成</span></td></tr>
+                    <tr><td>M4（07-05）</td><td>Terminal drawer、process manager、dev-server 偵測、docked preview</td><td><span class="badge good">完成</span></td></tr>
+                    <tr><td>M5（07-06）</td><td>AgentZone ACP bridge（方案 A′）、Logs UI、cherry-pick、MVP 收尾</td><td><span class="badge good">完成</span></td></tr>
+                    <tr><td>M6（07-07）</td><td>回饋批次（8 已知問題＋6 新功能）</td><td><span class="badge good">完成</span></td></tr>
+                    <tr><td>ACP 統一（07-08）</td><td>SDK 遷移＋agentRouter＋pi/claude/codex 三選</td><td><span class="badge good">完成</span></td></tr>
+                    <tr><td>在途（07-11）</td><td>DB credential vault（ADR 0002）、sessions UX（ADR 0001）、markdown split sync、工具鏈升級</td><td><span class="badge med">未提交</span> 持續增長中 · 三主題混雜 · vitest 紅（30 fail）</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+    <div id="frontend" class="tab-content">
+        <section>
+            <h2>Shell 組成鏈與 keep-alive 策略</h2>
+            <pre><code>main.tsx（i18n side-effect → StrictMode）
+ └─ App.tsx（純組合根，src/App.tsx:16-35）
+     ├─ AppShell（chrome 狀態唯一擁有者：mode/nav/theme/palette，353 行）
+     │   ├─ WorkspaceRail ＋ ProjectNavPanel（per-mode nav content）
+     │   ├─ 5 × mode panel ＋ TerminalDrawer ＋ StatusBar
+     │   └─ CommandPalette · SettingsDialog · ContextMenu · DiffModal
+     └─ 9 × Bridge ＋ AskpassHost/ConfirmDialogHost/GitRollbackDialog（null-render）</code></pre>
+            <p><strong>Keep-alive 是刻意的差別待遇</strong>（<span class="file">src/app/AppShell.tsx:306-318</span>）：EditorPanel 與 SshPanel 用 CSS <code>contents/hidden</code> 保持掛載 — 前者保住未存檔 buffer 與 undo 歷史（M1 final review 的 Critical C2 修正），後者保住 xterm scrollback；Git／Database／Agent panel 則條件 unmount，因為它們的狀態本來就住在 store 裡，remount 無損。這是「狀態歸屬決定渲染策略」的乾淨示範。</p>
+        </section>
+
+        <section>
+            <h2>狀態層：22 個 zustand store</h2>
+            <table>
+                <thead><tr><th>Store</th><th>行數</th><th>職責</th><th>持久化 / 事件來源</th></tr></thead>
+                <tbody>
+                    <tr><td><code>agentStore</code></td><td>1,172</td><td>ACP 連線／session／transcript／usage 狀態機（最大 store）</td><td>session index → localStorage（ADR 0001）；AgentBridge 驅動</td></tr>
+                    <tr><td><code>dbStore</code></td><td>756</td><td>DB 連線 profile／query／分頁結果</td><td>connections＋history → localStorage</td></tr>
+                    <tr><td><code>contextMenuStore</code></td><td>614</td><td>右鍵選單 dispatch＋nonce</td><td>—</td></tr>
+                    <tr><td><code>previewStore</code> / <code>workspaceStore</code> / <code>gitStore</code></td><td>374 / 356 / 330</td><td>preview 導覽連續性／tabs+groups／git 狀態與 runOp console</td><td>ProcessBridge／SessionRestoreBridge／GitBridge（<code>git:state-changed</code>）</td></tr>
+                    <tr><td><code>sftpStore</code> / <code>sshStore</code> / <code>uiStore</code> / <code>workbenchLayoutStore</code> / <code>gitLogStore</code>…</td><td>≤300</td><td>其餘 13 個單一職責 store</td><td>sshStore hosts、layout ratio、editor settings 各自 localStorage</td></tr>
+                </tbody>
+            </table>
+            <p><strong>持久化慣例是全庫一致的自訂模式</strong>：沒有任何一處使用 zustand <code>persist</code> middleware — 一律手寫 <code>localStorage</code> 讀寫＋<code>try/catch</code>＋白名單校驗。但覆核發現<strong>版本化並不一致</strong>：11 個持久化 key 中僅 2 個有內部 version 欄位（sessionIndex、workbenchLayout）、7 個靠 key 名 <code>.v1</code> 後綴、3 個完全無版本（agent／terminal／preview settings）；且既有版本檢查全是 <strong>discard-on-mismatch 而非 migration</strong> — schema bump 即靜默重置使用者資料。另一代價是八套幾乎重複的樣板，<span class="file">settingsStorage.ts:45-62</span> 的 <code>readJsonSetting/writeJsonSetting</code> helper 只有部分模組採用。</p>
+            <p>Store 之間幾乎零橫向依賴，唯一例外是 <code>agentStore</code> import 了 <code>terminalStore／uiStore／recentWorkspaces／sessionIndexStorage</code> 四個模組（<span class="file">src/state/agentStore.ts:19,26-28</span>）— agent 功能天生跨界，是日後拆分的最大阻力點。</p>
+        </section>
+
+        <section>
+            <h2>Bridge pattern：事件接線的統一形狀</h2>
+            <p>9 個 <span class="file">src/workbench/*Bridge.tsx</span>（22～115 行）全是「render null 的 React 元件」：<code>useEffect</code> 內 <code>listen()</code> Tauri 事件 → <code>store.getState().action()</code> 命令式更新。用 React 元件而非裸模組的理由是白拿生命週期（mount/unmount 自動 listen/unlisten）與依賴陣列驅動的監聽重建（如 GitBridge 的輪詢間隔隨設定變動，<span class="file">GitBridge.tsx:42-49</span>）。</p>
+            <div class="two-col">
+                <div><strong>優點</strong><ul><li>每個事件域一個檔案，App.tsx 一覽無遺</li><li>事件處理不進 React render cycle，不觸發無謂 re-render</li><li>可單獨 render 測試（每個 Bridge 都有對應 test）</li></ul></div>
+                <div><strong>代價</strong><ul><li><code>getState()</code> 命令式存取散佈 36 個非測試檔，無單一審計點</li><li>Bridge 數量隨事件域線性成長，缺統一 registry</li><li>externalChange 例外地拆成 Bridge＋Resolver 兩件，命名不對稱</li></ul></div>
+            </div>
+        </section>
+
+        <section>
+            <h2>IPC 契約層與宣告式命令模型</h2>
+            <p><span class="file">src/lib/ipc.ts</span>（559 行）是「極薄」包裝：每個 command 一個具名函式、手寫參數與回傳型別、直接 <code>return invoke(...)</code>，不吞錯、不重試、不記 log；串流型 command（pty／search／lsp／dev-server）用 Tauri <code>Channel</code> 包 callback。<span class="file">src/lib/types.ts</span>（476 行）與 Rust serde 型別是<strong>純手寫對應</strong> — 無 ts-rs／specta codegen，Rust 端改欄位不會有編譯期警訊，是全案最明確的 drift 風險（詳見「評估」分頁）。</p>
+            <p>右鍵選單採宣告式模型：<span class="file">contextMenuModel.ts</span> 定義 13 種 kind 的 discriminated union ＋ <code>{id, label, availability, danger, executor}</code> 命令物件；<span class="file">contextMenuDefs.ts</span>（758 行）是註冊表 — 但它 import 了 9 個 store＋3 個 command 模組＋ipc，是全 repo import 面最廣的檔案，「新增一條選單命令 ≈ 要理解全 app store 拓撲」。</p>
+        </section>
+
+        <section>
+            <h2>Editor / LSP / Terminal 客戶端的關鍵設計</h2>
+            <ul>
+                <li><strong>documentRegistry／viewRegistry 是 module singleton 而非 store</strong>（<span class="file">src/editor/documentRegistry.ts:24-66</span>）：entry 以 EditorView 物件身分守衛＋generation 計數器防 remount 競態（M1 驗收 FAIL-1 的 write-through＋generation guard 修法），這種細粒度身分語意不適合塞進 reactive store。已知取捨：generations map 刻意永不清除（跨 workspace 的微小常駐記憶體）。</li>
+                <li><strong>Minimap 自製</strong>（<span class="file">src/editor/minimap.ts:10-53</span>）：ViewPlugin 取樣行密度、<code>MAX_BARS=2000</code> 上限、rAF 合併重繪 —「建構絕不阻塞大檔打字」。</li>
+                <li><strong>LSP 分段掛載</strong>（<span class="file">src/editor/EditorPane.tsx:175-195</span>）：先同步掛無-LSP view（立即可打字），LSP extensions 之後經 <code>StateEffect.appendConfig</code> 併入。</li>
+                <li><strong>Push/pull diagnostics 雙軌</strong>（<span class="file">src/lsp/diagnosticsPull.ts:1-11,71-74</span>）：官方 <code>serverDiagnostics()</code> 服務 push 型 server；rust-analyzer 只答 pull，自寫 pull loop 且刻意不與 codeActions 的 lintSource 同掛（避免診斷雙渲染）。</li>
+                <li><strong>Hover/completion HTML 一律過 DOMPurify</strong>（<span class="file">src/lsp/lspManager.ts:51-61</span>）— LSP server 回傳任意 Markdown/HTML，是被明確處理的 XSS 面。</li>
+                <li><strong>Terminal 延遲清理</strong>（<span class="file">src/terminal/TerminalSession.tsx:86-116</span>）：<code>setTimeout(0)</code> 推遲 PTY 關閉、追蹤 in-flight openPromise — 專治 React StrictMode double-invoke 與 unmount 競態。</li>
+                <li><strong>Preview 原生 webview 串行化</strong>（<span class="file">src/preview/previewCommands.ts:24-30,73-99</span>）：child webview 是 process-wide singleton，所有操作走單一 promise chain；back/forward 只在能「證明導覽連續性」時才動真 webview。iframe 分支只允許 localhost（defence in depth，<span class="file">src/preview/PreviewFrame.tsx:10-20</span>）。</li>
+            </ul>
+        </section>
+    </div>
+
+    <div id="backend" class="tab-content">
+        <section>
+            <h2>模組地圖（33 modules · 22,618 行）</h2>
+            <table>
+                <thead><tr><th>群組</th><th>模組（行數）</th><th>要點</th></tr></thead>
+                <tbody>
+                    <tr><td>檔案</td><td><code>fs_service</code>(541) · <code>file_content</code>(129) · <code>watcher</code>(102) · <code>search_service</code>(386)</td><td>path containment（canonicalize＋starts_with）；1KB sniff 大檔/binary 分級；notify debouncer → <code>fs:external-change</code>；grep-searcher 經 Channel 串流</td></tr>
+                    <tr><td>Git</td><td><code>git_service</code>(2,010) · <code>git_log</code>(1,374) · <code>git_status</code>(223) · <code>git_watch</code>(61) · <code>askpass</code>(473)</td><td>spawn 系統 git＋timeout；porcelain v2 純解析器；.git 監看 → <code>git:state-changed</code>；unix-socket askpass（秘密不落盤/argv/log、60s 快取）</td></tr>
+                    <tr><td>LSP</td><td><code>lsp_service</code>(1,179)＋<code>framing</code>(407) · <code>lsp_adapters</code>(208) · <code>lsp_config</code>(206) · <code>lsp_download</code>(765)＋<code>plan</code>(767)</td><td>Content-Length framing 帶 64MB/8KB 防禦上限；7 個 curated adapters；<code>~/.yuzora/lsp.json</code>；一鍵安裝（binary/npm/pip 三路、原子 rename）</td></tr>
+                    <tr><td>行程</td><td><code>pty_service</code>(941) · <code>process_service</code>(920) · <code>agent_process</code>(1,188) · <code>agent_terminal</code>(522) · <code>dev_server_detect</code>(197) · <code>process_kill</code>(279)</td><td>四類子行程分域管理；統一 process-group kill（SIGTERM→300ms→SIGKILL）；Windows 走 taskkill fallback（Job Objects 未實作，<span class="file">process_kill.rs:32-35</span> 標 [SPIKE 驗證]）</td></tr>
+                    <tr><td>遠端</td><td><code>ssh_service</code>(1,457) · <code>db_service</code>(2,518) · <code>db_profiles</code>(2,148)＋<code>db_credentials</code>(735)（分析期間落地）· <code>db_connection_actor</code>(612)</td><td>russh TOFU（SHA256 指紋、壞檔 fail-closed、key 變更硬拒）；db 三引擎三鎖策略；profiles/credentials 實作 ADR 0002 vault（10 個 IPC commands）；actor 模組零呼叫點（未接線的取消基建）</td></tr>
+                    <tr><td>Preview</td><td><code>preview_server</code>(313) · <code>preview_webview</code>(141)</td><td>tiny_http per-workspace 靜態伺服（同款 traversal 防禦）；multiwebview 疊層（tauri <code>unstable</code>）</td></tr>
+                    <tr><td>橫切面</td><td><code>logging</code>(1,054) · <code>perf_service</code>(73) · <code>env_path</code>(343) · <code>lib.rs</code>(212) · <code>main.rs</code>(12)</td><td>JSONL sink；sysinfo 自身行程取樣；GUI 啟動 PATH/env 修復（必須先於 Builder）；main.rs 偵測 <code>YUZORA_ASKPASS_ENDPOINT</code> 切 askpass-client 模式</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>IPC command surface（105 commands，lib.rs:106-212）</h2>
+            <table>
+                <thead><tr><th>領域</th><th>數量</th><th>代表 command</th></tr></thead>
+                <tbody>
+                    <tr><td>git（ops＋log）</td><td>22</td><td><code>git_status_cmd</code> · <code>git_commit_cmd</code> · <code>git_cherry_pick</code> · <code>git_log_page</code> · <code>git_file_at_rev</code></td></tr>
+                    <tr><td>ssh / sftp</td><td>11</td><td><code>ssh_connect</code> · <code>ssh_open_shell</code> · <code>sftp_upload</code> · <code>sftp_download</code></td></tr>
+                    <tr><td>agent（process＋terminal）</td><td>11</td><td><code>agent_spawn</code> · <code>agent_write</code> · <code>agent_terminal_create</code> · <code>agent_terminal_wait_for_exit</code></td></tr>
+                    <tr><td>lsp（含安裝）</td><td>10</td><td><code>lsp_start</code> · <code>lsp_send</code> · <code>lsp_config_set_server</code> · <code>lsp_install_server</code></td></tr>
+                    <tr><td>preview（server＋webview）</td><td>9</td><td><code>preview_serve</code> · <code>preview_open_url</code> · <code>preview_set_bounds</code></td></tr>
+                    <tr><td>fs</td><td>8</td><td><code>open_workspace</code> · <code>open_file</code> · <code>save_file</code> · <code>fs_rename</code></td></tr>
+                    <tr><td>logs</td><td>6</td><td><code>log_event</code> · <code>log_query</code> · <code>log_export</code> · <code>set_log_level</code></td></tr>
+                    <tr><td>pty ／ db（service＋profiles）</td><td>5 ／ 15</td><td><code>pty_open</code>… ／ <code>db_open</code> · <code>db_query</code> · <code>db_profile_create</code> 等 10 個 profile commands（分析期間新增）</td></tr>
+                    <tr><td>其他</td><td>8</td><td>dev-server ×3 · search ×1 · watcher ×1 · perf ×1 · askpass ×1 ＋ <code>dev_server_detect</code></td></tr>
+                </tbody>
+            </table>
+            <p class="takeaway">事件命名有三套並存的慣例：<code>git:state-changed</code>（冒號）、<code>agent://stdout</code>（URL scheme）、<code>dev-server:status</code>（dash+冒號）— 功能無礙，但前端維護者得記三套規則，值得收斂。</p>
+        </section>
+
+        <section>
+            <h2>並行模型與行程治理</h2>
+            <ul>
+                <li><strong>兩級狀態管理</strong>（<span class="file">lib.rs:42-93</span>）：輕量狀態用 <code>Mutex&lt;Option/HashMap&gt;</code> 直包（絕不跨 await 持鎖）；長生命週期子系統用 <code>Arc&lt;Manager&gt;</code> 自管內部鎖（Lsp/Pty/Process/Agent×2/Ssh）。</li>
+                <li><strong>DbHandle 三引擎三策略</strong>（<span class="file">db_service.rs:6-9,38-47</span>）：SQLite＝<code>std Mutex＋spawn_blocking</code>；Postgres＝免鎖（client 本身 Send+Sync）；MSSQL＝<code>tokio::Mutex</code>（driver 要 &amp;mut self）— 按驅動特性配鎖而非一刀切。</li>
+                <li><strong>async 紀律</strong>：一律 <code>tauri::async_runtime</code>；只有 ssh/db 直接 named tokio（select!/timeout 不被 re-export，Cargo.toml 註解言明）。</li>
+                <li><strong>退出即殲滅</strong>（<span class="file">lib.rs:196-210</span>）：RunEvent::Exit 時對 pty/process/agent_process/agent_terminal/ssh 全部 <code>kill_all()</code>＋preview <code>stop_all()</code>；kill_all 同時作為 Drop 路徑，防孤兒行程。</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>安全設計盤點</h2>
+            <table>
+                <thead><tr><th>面向</th><th>現況</th><th>評註</th></tr></thead>
+                <tbody>
+                    <tr><td>Git/SSH 憑證</td><td>askpass unix socket：token＋JSON 協定、秘密不落盤/不進 argv/不進 log、60s 記憶體快取、background 請求 fail-fast（<span class="file">askpass.rs:7,72-115</span>）</td><td><span class="badge good">紮實</span> Windows 為 stub（降級 native prompt）</td></tr>
+                    <tr><td>路徑防禦</td><td>fs 與 preview server 同款 canonicalize＋containment（<span class="file">fs_service.rs:198-222</span>、<span class="file">preview_server.rs:128-165</span>），同時擋 <code>..</code> 與 symlink</td><td><span class="badge good">紮實</span> 但 SFTP 無 client 端等價檢查</td></tr>
+                    <tr><td>SSH host key</td><td>TOFU＋SHA256 指紋（<span class="file">~/.yuzora/known_hosts.json</span>）、壞檔 fail-closed、key 變更硬拒</td><td><span class="badge med">尚可</span> 首次連線自動信任、無確認 UI（程式碼註解自承）</td></tr>
+                    <tr><td>DB 憑證</td><td>ADR 0002 決議交 OS credential vault（IPC 只寫不讀），db_profiles.rs＋db_credentials.rs 已於分析期間落地；<code>DbOpenConfig</code> 刻意無 Debug impl、密碼僅 in-flight；連線失敗 log 過 <code>mask_url_userinfo</code> 去敏</td><td><span class="badge info">落地中</span>（在途工作主線之一）</td></tr>
+                    <tr><td>Capabilities</td><td>最小集：無 fs:*／shell:* plugin 權限（檔案與行程全走自訂 command）；<code>opener</code> 已收斂 scope 到 <code>$HOME/.yuzora/**</code></td><td><span class="badge good">紮實</span></td></tr>
+                    <tr><td>WebView CSP</td><td><code>csp: null</code>（<span class="file">tauri.conf.json:27</span>）</td><td><span class="badge high">缺口</span> 對會渲染 LSP hover HTML／markdown／preview 的 app 而言值得補上</td></tr>
+                    <tr><td>協定防禦</td><td>LSP framing 64MB/8KB 上限；ACP spawn 前先分離 login-shell env 收集與協定 stdout（profile 輸出污染雙保險）</td><td><span class="badge good">紮實</span></td></tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+    <div id="agent" class="tab-content">
+        <section>
+            <h2>方案 A′：前端 host ACP client</h2>
+            <p>M5 設計（<span class="file">docs/superpowers/specs/2026-07-06-yuzora-m5-agentzone-design.md §2.3</span>）調查了 Zed／Superconductor／Orca 後裁定：<strong>ACP client 回呼本質是 UI 事務，在 Tauri 雙層架構中應住 webview</strong>。Rust host（方案 B）會自造 Zed 刻意避免的跨邊界 correlation 簿記，且官方 Rust crate 的 <code>!Send</code> futures 與 tokio runtime 整合彆扭。Rust 因此退為「薄管道」：<code>agent_spawn/agent_write/agent_kill/agent_list</code> ＋ stdout 逐行事件。</p>
+            <div class="diagram-panel">
+                <svg viewBox="0 0 920 330" xmlns="http://www.w3.org/2000/svg">
+                    <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8e8b82"/></marker></defs>
+                    <rect x="10" y="14" width="180" height="52" rx="9" fill="#fff" stroke="#cc785c" stroke-width="1.6"/>
+                    <text x="100" y="36" text-anchor="middle" font-size="12" font-weight="700">AgentZonePanel</text>
+                    <text x="100" y="52" text-anchor="middle" font-size="9.5" fill="#6c6a64">transcript · composer · perm blocks</text>
+                    <rect x="10" y="90" width="180" height="52" rx="9" fill="#fdf9f2" stroke="#d4a017" stroke-width="1.6"/>
+                    <text x="100" y="112" text-anchor="middle" font-size="12" font-weight="700">agentStore（1,172 行）</text>
+                    <text x="100" y="128" text-anchor="middle" font-size="9.5" fill="#6c6a64">sessions Map · tone · usage · title</text>
+                    <rect x="240" y="90" width="190" height="52" rx="9" fill="#f3e9f5" stroke="#9061a8" stroke-width="1.6"/>
+                    <text x="335" y="112" text-anchor="middle" font-size="12" font-weight="700">agentRouter</text>
+                    <text x="335" y="128" text-anchor="middle" font-size="9.5" fill="#6c6a64">key = (command, cwd) 惰性子連線</text>
+                    <rect x="480" y="76" width="230" height="80" rx="9" fill="#f3e9f5" stroke="#9061a8" stroke-width="1.6"/>
+                    <text x="595" y="98" text-anchor="middle" font-size="12" font-weight="700">acpConnection（1,279 行）</text>
+                    <text x="595" y="114" text-anchor="middle" font-size="9.5" fill="#6c6a64">ClientSideConnection ＋ ndJsonStream</text>
+                    <text x="595" y="128" text-anchor="middle" font-size="9.5" fill="#6c6a64">WritableStream → agent_write</text>
+                    <text x="595" y="142" text-anchor="middle" font-size="9.5" fill="#6c6a64">agent://stdout → ReadableStream</text>
+                    <rect x="760" y="76" width="150" height="80" rx="9" fill="#efe9de" stroke="#5db8a6" stroke-width="1.6"/>
+                    <text x="835" y="100" text-anchor="middle" font-size="12" font-weight="700">agent_process.rs</text>
+                    <text x="835" y="116" text-anchor="middle" font-size="9.5" fill="#6c6a64">login-shell env 收集與</text>
+                    <text x="835" y="130" text-anchor="middle" font-size="9.5" fill="#6c6a64">協定 stdout 分離；非 JSON</text>
+                    <text x="835" y="144" text-anchor="middle" font-size="9.5" fill="#6c6a64">前導行丟棄＋log</text>
+                    <rect x="760" y="196" width="150" height="46" rx="9" fill="#faf9f5" stroke="#8e8b82" stroke-dasharray="4 3"/>
+                    <text x="835" y="215" text-anchor="middle" font-size="11" font-weight="600">pi-acp / claude-acp /</text>
+                    <text x="835" y="230" text-anchor="middle" font-size="11" font-weight="600">codex-acp 子行程</text>
+                    <rect x="240" y="196" width="470" height="110" rx="9" fill="#fff" stroke="#e6dfd8"/>
+                    <text x="256" y="218" font-size="10.5" font-weight="700" fill="#6c6a64">CLIENT 回呼（agent → yuzora）</text>
+                    <text x="256" y="238" font-size="10.5" fill="#3d3d3a">• sessionUpdate → reduceSessionUpdate（純 reducer）→ transcript</text>
+                    <text x="256" y="256" font-size="10.5" fill="#3d3d3a">• fs read/write → editor buffer 層（dirty buffer 優先、走 save 路徑＋saveSuppress）</text>
+                    <text x="256" y="274" font-size="10.5" fill="#3d3d3a">• terminal/* → agent_terminal.rs（headless、與 drawer 完全隔離、byte-cap 環形緩衝）</text>
+                    <text x="256" y="292" font-size="10.5" fill="#3d3d3a">• requestPermission → perm block UI（allow_always 記 session、寫 audit log）</text>
+                    <line x1="100" y1="66" x2="100" y2="90" stroke="#8e8b82" stroke-width="1.4" marker-end="url(#arr2)"/>
+                    <line x1="190" y1="116" x2="240" y2="116" stroke="#8e8b82" stroke-width="1.4" marker-end="url(#arr2)"/>
+                    <line x1="430" y1="116" x2="480" y2="116" stroke="#8e8b82" stroke-width="1.4" marker-end="url(#arr2)"/>
+                    <line x1="710" y1="116" x2="760" y2="116" stroke="#8e8b82" stroke-width="1.4" marker-end="url(#arr2)"/>
+                    <line x1="835" y1="156" x2="835" y2="196" stroke="#8e8b82" stroke-width="1.4" marker-end="url(#arr2)"/>
+                    <line x1="595" y1="156" x2="595" y2="196" stroke="#8e8b82" stroke-width="1.4" marker-end="url(#arr2)"/>
+                </svg>
+            </div>
+            <p class="takeaway">讀圖重點：JSON-RPC 的解析、session 狀態、permission UX 全部留在單一語言（TS）裡；跨 IPC 邊界流動的只有「原始行」與「行程生命週期事件」。</p>
+        </section>
+
+        <section>
+            <h2>統一架構（07-07~08 rev.2）的三個核心修正</h2>
+            <ul>
+                <li><strong>SDK 遷移</strong>：<code>@zed-industries/agent-client-protocol</code> → <code>@agentclientprotocol/sdk@1.2.x</code>（精確 pin），並用 <span class="file">acpConnection.deps.test.ts</span> 以 <code>?raw</code> 原始碼斷言防止 import 退化 — 用測試而非 lint 規則做防護欄。</li>
+                <li><strong>agentRouter 以 <code>(command, cwd)</code> 為 key</strong>（<span class="file">src/agent/agentRouter.ts:18,34,58-65</span>）：pi／claude／codex／custom 各自惰性建子連線，agentStore 只看到統一的 <code>AgentConnection</code> 介面；命令解析 TOCTOU-safe（route 算一次重用），custom command 以 SHA-256 指紋比對、原文不落盤。</li>
+                <li><strong>Session 持久化走 ADR 0001</strong>：只存 Session Index（id／title／agentId／cwd／時間戳，每 workspace 20 筆），transcript 一律不落地，重啟靠 <code>session/load</code> replay 重建 — 拒絕了完整落地與完全不持久化兩個極端。</li>
+            </ul>
+            <p><code>reduceSessionUpdate</code>（<span class="file">acpConnection.ts:288-328</span>）是純 switch reducer：message/thought/tool_call（以 toolCallId 合併 update）/plan 進 transcript；<code>available_commands_update</code>、<code>session_info_update</code>、<code>usage_update</code> 三個 side-channel 在 reducer 之前被攔截送 store callback；未知 variant 走「每型一次警告」的前向相容 default（SDK 的 zod 已擋真正畸形訊息）。</p>
+        </section>
+
+        <section>
+            <h2>AgentZone 殘餘風險</h2>
+            <ul>
+                <li><span class="badge med">MED</span> <strong><code>ClientSideConnection</code> 在 SDK 1.2.1 已標 @deprecated</strong>（建議改用 <code>client()</code> typed-handler API）— 目前功能正常，但 SDK 2.0 移除時會被迫遷移，宜排程。</li>
+                <li><span class="badge med">MED</span> <strong>Agent → Editor 硬耦合</strong>：<code>writeTextFile/readTextFile</code> 回呼直接 import <code>getView／documentRegistry／saveFile</code>（<span class="file">acpConnection.ts:11-14,396-427</span>），沒有抽象層 — 這正是 M5 設計「fs 回呼走 buffer 層」的落實，行為正確，但依賴方向值得用介面固定下來。</li>
+                <li><span class="badge low">LOW</span> pi-acp 仍是 0.0.x 早期版本、auth 依賴非標準 authMethod 擴充欄位；已用假 agent fixture（<span class="file">src/agent/fakeAcpAgent.ts</span>＋<span class="file">fixtures/fake-acp-agent-0b.mjs</span>）隔離測試。</li>
+            </ul>
+        </section>
+    </div>
+
+    <div id="quality" class="tab-content">
+        <section>
+            <h2>測試工程：規劃 vs 實際</h2>
+            <p>Spec 規劃了 L1–L6 六層金字塔（unit → mock-IPC Playwright → tauri-driver 原生 E2E → macOS 手動 checklist → release smoke → 探索 QA）。<strong>實際落地的是 L1 加強版＋L4</strong>：</p>
+            <table>
+                <thead><tr><th>層</th><th>規劃</th><th>實際</th></tr></thead>
+                <tbody>
+                    <tr><td>L1 單元</td><td>cargo ＋ vitest，每 PR</td><td><span class="badge good">超額</span> 113 個前端測試檔（29k 行，≈1:1 code ratio）＋328 個 Rust #[test]；mockIPC 逐案例 stub；zustand 跨測試污染在 setup.ts 統一重置</td></tr>
+                    <tr><td>L2 Playwright mock-IPC</td><td>chromium＋webkit 每 PR</td><td><span class="badge high">未建</span></td></tr>
+                    <tr><td>L3 tauri-driver E2E</td><td>Linux＋Windows blocking</td><td><span class="badge high">未建</span></td></tr>
+                    <tr><td>L4 macOS 手動</td><td>腳本化 checklist</td><td><span class="badge good">制度化</span> 每 milestone 一份 checklist ＋ <code>gui-acceptance</code> skill（computer-use 實機驅動、留證據截圖）— 把 jsdom 測不到的 watcher/tab/dialog/視覺全掛在這層</td></tr>
+                </tbody>
+            </table>
+            <p>兩個值得推廣的自家發明：<strong>deps 防退化測試</strong>（用 <code>?raw</code> import 斷言依賴 scope，取代 lint 防護欄）與 <strong>fixture 產生器家族</strong>（<span class="file">fixtures/gen-*.ts</span>：大檔／encoding（與 Rust 測試逐位元組一致）／git 三態＋衝突 repo／LSP 四語言錯誤專案／preview 假專案），專供手動驗收復現。</p>
+        </section>
+
+        <section>
+            <h2>工具鏈與 CI</h2>
+            <ul>
+                <li><strong>bun 全家桶</strong>：install／test（vitest 4）／build（vite 8）；typecheck 用 <code>@typescript/native</code>（tsgo，typescript@7.0.2 preview）跑兩份 tsconfig — 快，但屬實驗性工具鏈，是「已知取捨」。</li>
+                <li><strong>eslint 10 flat config</strong>：react-hooks v7 的 compiler 系規則降 warn（避免誤判 ref-as-cache 等既有模式）；<code>no-undef</code> 關閉（typescript-eslint 覆蓋）；無 no-restricted-imports 類防護欄（由 deps.test 代打）。</li>
+                <li><strong>CI</strong>（<span class="file">.github/workflows/ci.yml</span>）：frontend job（ubuntu：lint→typecheck→test→build）∥ rust job（<strong>只跑 macOS</strong>：fmt→clippy -D warnings→test）。<span class="badge high">缺口</span>：Windows/Linux 的 <code>#[cfg]</code> 分支平時不被編譯，首次驗證落在 release tag。</li>
+                <li><strong>Release</strong>（<span class="file">release.yml</span>）：tag 版本與 tauri.conf.json 一致性守門 → 三平台矩陣（macOS universal／ubuntu／windows）→ draft release；macOS 簽章/notarization env 整段註解待 secrets。<span class="file">deploy-pages.yml</span> 部署 <code>site/</code> 產品頁。</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>治理制度：這個 repo 最特別的資產</h2>
+            <p>yuzora 的開發流程本身是被設計過的系統，文件鏈完整到可考古：</p>
+            <pre><code>docs/superpowers/specs/      設計決策稿（選型論證、風險表、逐段核可）
+  → docs/superpowers/plans/  實作計畫（task/wave 分解、checkbox、TDD 指令）
+  → .superpowers/sdd/        執行帳本（逐 task 裁決、review findings、偏差記錄）
+  → docs/superpowers/checklists/  人工驗收清單（每 milestone 一份）
+  → docs/html/               結案報告（HTML）
+.yuuzu/                      新一代制度：specs（HTML）· eval（分 phase review）
+                             · adr（0001 session-index-replay · 0002 db-credential-vault）
+                             · CONTEXT.html（ubiquitous language 詞彙表）</code></pre>
+            <ul>
+                <li><strong>多代理波次開發</strong>：M2 = 20 tasks／7 waves，每 task「brief → implement → 對抗式 review → fix → 複審」，final review 由獨立 fable 執行（抓到 C1＋I1–I6 跨 task 整合縫隙）；M5 帳本顯示每 task 五段式產物（brief/prompt/report/review-package.diff/rereview）。</li>
+                <li><strong>程式碼內決策標記</strong>：Rust 註解帶 task ID（M2/M3/F/T/P 系列），Cargo.toml 每個非常規依賴都有理由註解（multiwebview unstable、rustls ring 釘死、russh-sftp 版本解耦）。</li>
+                <li><strong>git log 不是歷史真相</strong>：main 只有 11 個壓縮提交（M1–M3 一顆、M4–M6 wiring 一顆）— 考古請讀 SDD ledgers，這也是「拆分提交」建議的動機之一。</li>
+            </ul>
+        </section>
+    </div>
+    <div id="history" class="tab-content">
+        <section>
+            <h2>九天演進史（依 plan 日期＋SDD 帳本，非 git log）</h2>
+            <div class="timeline">
+                <div class="timeline-item"><div class="date">2026-07-02</div><div class="content"><strong>MVP spec rev2 ＋ UI Phase ＋ M1 editor core</strong>同日三線並行：創始 spec 定案（含全部選型論證）；UI Phase 以 shadcn＋Tailwind 4 建 Arc 風格 workbench（九條 architecture decisions、lime accent、266px sidebar、@fontsource 自架字型）；M1 完成 CM6 editor＋大檔分級＋watcher。CM6 LSP spike 判 CONDITIONAL-GO。GUI 驗收抓到兩個 jsdom 測不到的 Critical（切 tab 掉 buffer、WKWebView confirm shim 失效），催生 write-through＋generation guard 與 plugin-dialog 方案，復驗 8/8。</div></div>
+                <div class="timeline-item"><div class="date">2026-07-03</div><div class="content"><strong>M2 git＋search（20 tasks／7 waves）＋ context-menu UI ＋ M3 LSP 計畫</strong>porcelain v2 解析、askpass unix socket、@codemirror/merge diff、conflict flow、workspace search。獨立 fable final review 抓到 GIT_EDITOR 抑制缺失等 7 項跨 task 縫隙，全數修畢。宣告式 context-menu 模型同期落地。</div></div>
+                <div class="timeline-item"><div class="date">2026-07-05</div><div class="content"><strong>M4 terminal／preview／process manager</strong>xterm.js＋portable-pty drawer、dev-server 偵測與 managed process、child webview 疊層 spike 成功（tauri unstable multiwebview）。</div></div>
+                <div class="timeline-item"><div class="date">2026-07-06</div><div class="content"><strong>M5 AgentZone（方案 A′）＋ Logs UI ＋ cherry-pick</strong>調查 Zed／Orca 後定案前端 host ACP client；agent_process 薄管道（env 收集與協定流分離）；agent_terminal headless runner；session/update 對照表；permission／diff preview／resume；logging query/export。</div></div>
+                <div class="timeline-item"><div class="date">2026-07-07 ~ 08</div><div class="content"><strong>M6 回饋批次 ＋ ACP 統一架構 rev.2</strong>8 已知問題＋6 新功能批次；SDK 遷移到 @agentclientprotocol/sdk（deps 防退化測試）；agentRouter (command, cwd)；pi／claude／codex 三選 preset。</div></div>
+                <div class="timeline-item"><div class="date">2026-07-10</div><div class="content"><strong>品質工具鏈 ＋ CI/CD ＋ next-step 分析</strong>tsgo typecheck、eslint 10、ci/release/pages workflows、site 產品頁；當日分析報告結論：「現在不該再加功能；下一步是把已做完變成可證明可交付」— RC1 收斂 → 統一驗收 → 才開 M7。</div></div>
+                <div class="timeline-item"><div class="date">2026-07-11（現在）</div><div class="content"><strong>在途三主線（118 檔未提交）</strong>① DB 可靠性＋OS credential vault（ADR 0002，db_service +1,724 行）② 多 agent 品牌／preset（AgentId 型別、brand tokens、sessions UX＝ADR 0001）③ 工具鏈收尾（capabilities scope 收斂、logging min_level＋connect_failure 去敏事件、env_path 全 env 搬運）。</div></div>
+            </div>
+            <p class="takeaway">開發模式的可複製精華：每個 milestone 都是「spec（含 fallback）→ spike 拆雷 → 波次實作＋對抗式 review → 實機 GUI 驗收 → 結案報告」，而且垂直切片 — 每個 milestone 結束都是可用狀態。</p>
+        </section>
+    </div>
+
+    <div id="assess" class="tab-content">
+        <section>
+            <h2>設計評分卡（分析者評分，證據見各分頁）</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">邊界與模組化</span><span class="sc-score">4.5</span></div><div class="sc-bar"><div style="width:90%"></div></div><div class="sc-note">IDE／agent runtime 邊界成文且落實到協定行為；六條 vertical 乾淨。扣分：contextMenuDefs god module、agentStore 橫向依賴。</div></div>
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">決策可追溯性</span><span class="sc-score">4.5</span></div><div class="sc-bar"><div style="width:90%"></div></div><div class="sc-note">spec→plan→ledger→ADR→程式碼註解全鏈可考古；每個非常規依賴都有理由。覆核下修 0.5：ledger 藏在 .superpowers（loop 外貢獻者不可見）、九天數十個決策僅 2 條 ADR。</div></div>
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">型別與契約安全</span><span class="sc-score">3.0</span></div><div class="sc-bar"><div style="width:60%"></div></div><div class="sc-note">TS strict＋serde 兩端各自嚴格，但 105 命令的跨界契約純手寫、無 codegen／runtime 校驗 — 全案最大系統性風險（覆核期間統計基準即漂移一次，佐證此風險為活的）。</div></div>
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">測試工程</span><span class="sc-score">4.0</span></div><div class="sc-bar"><div style="width:80%"></div></div><div class="sc-note">1:1 測試比、mockIPC、假 agent、fixture 產生器、gui-acceptance 制度。覆核下修 0.5：L2/L3 整合層 100% 缺席且不可 CI 復現 — 而 M1 兩個 Critical 正是只有實機才抓到的整合縫。</div></div>
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">安全設計</span><span class="sc-score">3.5</span></div><div class="sc-bar"><div style="width:70%"></div></div><div class="sc-note">askpass／path containment／vault ADR／協定防禦認真；csp:null、SFTP 無 containment、TOFU 無首次確認三缺口。</div></div>
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">跨平台就緒</span><span class="sc-score">2.5</span></div><div class="sc-bar"><div style="width:50%"></div></div><div class="sc-note">Windows askpass stub、Job Objects 未實作、CI 不編 Windows/Linux — 出貨平台含 Windows x64，此軸是 RC 前必還之債。</div></div>
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">效能保護</span><span class="sc-score">4.0</span></div><div class="sc-bar"><div style="width:80%"></div></div><div class="sc-note">大檔分級（spike 校準）、minimap rAF＋2000 bars、git graph MAX_LANES、LSP frame 上限、log ring-buffer 掃描 — 防禦性上限是慣例。註（覆核）：皆為 a-priori 上限，無持續量測；perf_service 對 WKWebView renderer 記憶體是盲的（XPC 獨立行程）、cm6-perf spike 數據凍結於 07-02。</div></div>
+                <div class="scorecard"><div class="sc-head"><span class="sc-name">可維護性</span><span class="sc-score">4.0</span></div><div class="sc-bar"><div style="width:80%"></div></div><div class="sc-note">慣例一致（Bridge、手寫持久化、Manager 模式）、註解密度高。扣分：getState 散佈 36 檔、事件命名三套、持久化樣板八份；覆核另補：錯誤呈現 4 套並存、git 失敗對使用者靜默（gitStore.lastError 寫 4 處但 UI 從不渲染）。</div></div>
+            </div>
+        </section>
+
+        <section>
+            <h2>風險矩陣</h2>
+            <table>
+                <thead><tr><th>風險</th><th>嚴重度</th><th>發生面</th><th>建議處置</th></tr></thead>
+                <tbody>
+                    <tr><td>手寫 IPC 契約 drift（types.ts ↔ serde 無機器校驗）</td><td><span class="badge high">HIGH</span></td><td>每次改 Rust DTO 都暴露</td><td>導入 ts-rs／specta codegen，或先為 105 命令建 round-trip contract tests（覆核建議：這才是第一步）</td></tr>
+                    <tr><td>Windows 平台債（askpass stub／taskkill fallback／CI 無 Windows 編譯）</td><td><span class="badge high">HIGH</span></td><td>Windows 出貨即觸發</td><td>CI 加 windows/ubuntu <code>cargo check</code> 矩陣；askpass 與 Job Objects 排 RC 前 spike</td></tr>
+                    <tr><td><code>csp: null</code> ＋ 渲染外部 HTML（LSP hover／markdown／preview）</td><td><span class="badge med">MED</span></td><td>惡意 LSP server／檔案內容</td><td>設定基準 CSP；DOMPurify 已在但屬單點防禦</td></tr>
+                    <tr><td>SFTP 無 client 端路徑 containment；SSH TOFU 首次自動信任</td><td><span class="badge med">MED</span></td><td>惡意/被入侵 SSH server</td><td>補 remote path 正規化檢查；首次連線加指紋確認 UI</td></tr>
+                    <tr><td><code>ClientSideConnection</code> deprecated（SDK 1.2.1）</td><td><span class="badge med">MED</span></td><td>SDK 下次 major</td><td>排程遷移 <code>client()</code> typed-handler API</td></tr>
+                    <tr><td>160 項未提交異動混雜三主題</td><td><span class="badge med">MED</span></td><td>回溯／review／bisect 即痛</td><td>依 spec 邊界拆 3+ 個提交（vault／agent presets／工具鏈）</td></tr>
+                    <tr><td>tsgo（typescript@7 preview）當唯一 typecheck</td><td><span class="badge med">MED</span></td><td>與官方 tsc 行為分歧時</td><td>CI 定期跑官方 tsc 對照，或鎖定已驗證版本</td></tr>
+                    <tr><td>LSP crash 靜默 respawn，client 不重新 initialize（lspManager.ts:78-81 自承）</td><td><span class="badge med">MED</span></td><td>server crash 後功能半殘</td><td>respawn 時重發 <code>lsp:server-status</code>＋client 重初始化</td></tr>
+                    <tr><td>死碼：db_connection_actor.rs（612 行、零呼叫點）</td><td><span class="badge low">LOW</span></td><td>誤導後續貢獻者</td><td>接線進 db 取消路徑，或移除。註：原列的 ProfileDescriptor 家族經覆核<strong>已接線</strong>（db_profiles.rs、10 個 IPC commands，分析期間落地）— 移出死碼清單</td></tr>
+                    <tr><td><code>Mutex::lock().unwrap()</code> 毒鎖即全域癱瘓模式遍佈</td><td><span class="badge low">LOW</span></td><td>任一持鎖 panic</td><td>熱路徑改 <code>unwrap_or_else(PoisonError::into_inner)</code> 或收斂到 Manager 內</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>建議路線（與 07-10 分析報告對齊）</h2>
+            <ol>
+                <li><strong>先收斂再擴張</strong>：把在途 118 檔依三主題拆分提交，恢復「git log 可讀」；ADR 0002 留白的 vault 降級 UX 補訪談定案。</li>
+                <li><strong>發布就緒最小集（覆核新增，高槓桿低成本）</strong>：LICENSE（現況 private:true 且無授權檔，法務上不可散佈）＋ tauri-updater（現況零更新通道 — 沒有它，後列所有安全修補都送不到已安裝使用者手上）＋ 基本使用者文件（README 僅 12 行）。</li>
+                <li><strong>持久化 versioning＋migration envelope（覆核新增）</strong>：統一 11 個 localStorage key 為「envelope＋version＋migrate 函式」— 現況 discard-only，每次 schema bump 都靜默清使用者資料；趁 agent-settings（ADR 0001）還在動先收斂。</li>
+                <li><strong>契約防線</strong>：先以 per-command round-trip contract tests 增量止血（mockIPC payload ↔ serde fixture，便宜、可漸進），再評估 ts-rs/specta codegen 全面替換 105 命令的手寫契約 — 覆核指出直接上重工具的遷移成本被低估。</li>
+                <li><strong>平台防線</strong>：CI 矩陣補 Windows/Linux cargo check（便宜、立即）；Windows askpass 與 Job Objects 排 spike。</li>
+                <li><strong>安全三小補</strong>：CSP 基準、SFTP containment、TOFU 首次確認 — 各自都是小 PR。</li>
+                <li><strong>SDK 現代化</strong>：ClientSideConnection → client() 遷移，趁 ACP 層測試覆蓋還熱。</li>
+                <li><strong>債務登記</strong>：死碼一件（db_connection_actor）、事件命名三套、錯誤 surface 統一（含 gitStore.lastError 死狀態與 20 處靜默 .catch）、Settings 家族 39 處硬編字串補進 i18n — 列 backlog 不阻 RC。</li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>審閱區（可回饋給 Claude）</h2>
+            <div class="review-box">
+                <h3>人工評分與備註</h3>
+                <div class="review-row"><label>完整性</label><input type="range" min="1" max="5" value="4" oninput="this.nextElementSibling.textContent=this.value" data-score="completeness"><span class="range-val">4</span></div>
+                <div class="review-row"><label>證據品質</label><input type="range" min="1" max="5" value="4" oninput="this.nextElementSibling.textContent=this.value" data-score="evidence"><span class="range-val">4</span></div>
+                <div class="review-row"><label>可行動性</label><input type="range" min="1" max="5" value="4" oninput="this.nextElementSibling.textContent=this.value" data-score="actionability"><span class="range-val">4</span></div>
+                <div class="review-row"><label>風險覆蓋</label><input type="range" min="1" max="5" value="4" oninput="this.nextElementSibling.textContent=this.value" data-score="risk_coverage"><span class="range-val">4</span></div>
+                <div class="review-row"><label>總覽分頁備註</label><textarea data-section="overview" placeholder="對總覽／架構圖的修正或補充…"></textarea></div>
+                <div class="review-row"><label>前端分頁備註</label><textarea data-section="frontend" placeholder=""></textarea></div>
+                <div class="review-row"><label>後端分頁備註</label><textarea data-section="backend" placeholder=""></textarea></div>
+                <div class="review-row"><label>AgentZone 備註</label><textarea data-section="agent" placeholder=""></textarea></div>
+                <div class="review-row"><label>品質治理備註</label><textarea data-section="quality" placeholder=""></textarea></div>
+                <div class="review-row"><label>評估建議備註</label><textarea data-section="assess" placeholder="不同意的評分或風險排序…"></textarea></div>
+                <div class="review-row"><label><input type="checkbox" id="approveChk" style="accent-color:var(--color-accent);margin-right:0.4rem;">核可本報告</label></div>
+                <div class="actions">
+                    <button class="btn primary" onclick="copyFeedback()">Copy as JSON（貼回 Claude）</button>
+                    <button class="btn" onclick="copyPrompt()">Copy as Prompt</button>
+                    <button class="btn" onclick="window.print()">Print / PDF</button>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <div id="audit" class="tab-content">
+        <section>
+            <h2>獨立覆核（2026-07-11 22:0x）</h2>
+            <p>本分頁由三個 fresh-context 獨立 agent ＋ 實跑驗證產出：①事實逐條查核（25 條主張＋5 處行號抽查）②對抗式盲點審查（明令不得重複報告已列風險）③Windows 就緒度深掘（產出獨立姊妹報告 <code>yuzora-windows-readiness-report-2026-07-11.html</code>）。查核抓到的修正<strong>已全數套用</strong>至本報告各分頁（帶「覆核」字樣處）。</p>
+
+            <h3>工作樹 gate 現況（實跑，非推估）</h3>
+            <table>
+                <thead><tr><th>Gate</th><th>結果</th><th>細節</th></tr></thead>
+                <tbody>
+                    <tr><td><code>bun run test</code>（vitest）</td><td><span class="badge high">紅</span></td><td>30 failed ／ 1,375 passed ／ 10 todo（1,415）。失敗集中 5 檔，全在在途 DB 工作區（<span class="file">dbStore.test.ts</span>、<span class="file">databasePanel.test.tsx</span>；斷點 <span class="file">dbStore.ts:727/792</span> 的 openConfig／openConnection）— 正是並行 session 施工中的區域。</td></tr>
+                    <tr><td><code>cargo check</code></td><td><span class="badge good">綠</span></td><td>乾淨，14.15s</td></tr>
+                    <tr><td><code>cargo test</code></td><td><span class="badge good">綠</span></td><td>353 ／ 353 通過（4.47s）</td></tr>
+                </tbody>
+            </table>
+            <p class="takeaway">結論不變且更具體：目前工作樹不是可交付狀態 — 但紅燈邊界清楚（單一在途 feature），符合「先收斂再擴張」的建議。</p>
+
+            <h3>發現一：分析期間工作樹在並行演進（快照漂移）</h3>
+            <p>初掃（21:2x）與覆核掃（22:0x）之間，另一個 session 在同一工作樹落地了 <span class="file">db_profiles.rs</span>（2,148 行，21:28:09 建立）與 <span class="file">db_credentials.rs</span>（735 行，21:30:31），並改寫 <span class="file">lib.rs</span>（21:40:28，新增 10 個 <code>db_profile_*</code> IPC commands）。這解釋了初版報告的量化偏差，也<strong>現場示範了兩件事</strong>：①「手寫契約 drift」風險是活的（統計基準一小時內即漂移）②「多主題混雜工作樹」的審查成本是真的。本報告的量化數據已全部改以 22:0x 覆核掃為準。</p>
+
+            <h3>發現二：事實查核 — 30 條抽驗，23 PASS、7 修正（已套用）</h3>
+            <table>
+                <thead><tr><th>#</th><th>原宣稱</th><th>修正後</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td>前端非測試 31,098 行</td><td>31,797 行</td></tr>
+                    <tr><td>2</td><td>測試 29,174 行</td><td>29,405 行（113 檔正確）</td></tr>
+                    <tr><td>3</td><td>Rust 19,592 行／31 檔</td><td>22,618 行／33 檔（補列 db_profiles＋db_credentials）</td></tr>
+                    <tr><td>4</td><td>IPC 95 commands（lib.rs:97-193）</td><td>105 commands（lib.rs:106-212）</td></tr>
+                    <tr><td>5</td><td>Rust #[test] 328</td><td>351＋2 tokio；實跑 353 全綠</td></tr>
+                    <tr><td>6</td><td>「ProfileDescriptor 家族未接線（死碼）」</td><td><strong>實質性錯誤</strong> — 已由 db_profiles.rs 完整接線並曝露 10 個 commands；死碼清單只剩 db_connection_actor.rs（612 行、零呼叫點）</td></tr>
+                    <tr><td>7</td><td>contextMenuDefs import 8 個 store；另兩處行號區間偏差</td><td>9 個 store（含 contextMenuStore）；fs_service.rs:198-222、preview_server.rs:128-165</td></tr>
+                </tbody>
+            </table>
+            <p>其餘 23 條全數通過 — 包含 csp:null、TOFU 自承缺口、SFTP 無 containment、64MB/8KB framing、usage_update 攔截、?raw deps 測試、(command,cwd) router、keep-alive 策略、CI 平台、事件名 11 個等質性主張，證據與原始碼逐字相符。</p>
+
+            <h3>發現三：對抗式盲點審查 — 2 Critical、5 Important、5 Minor</h3>
+            <table>
+                <thead><tr><th>級</th><th>發現</th><th>證據錨點</th><th>處置</th></tr></thead>
+                <tbody>
+                    <tr><td><span class="badge high">C1</span></td><td>「持久化一律含版本欄位」過度宣稱：11 key 中 2 內部版本／7 key 後綴／3 無版本；且全為 discard-on-mismatch、無 migration — schema bump 即靜默重置使用者資料（agent-settings 正在 ADR 0001 下活躍演進，最裸奔）</td><td><span class="file">sessionIndexStorage.ts:45</span>、<span class="file">workbenchLayoutStore.ts:74</span>、<span class="file">agentStore.ts:11</span></td><td>已修正前端分頁措辭；升列建議路線 #3</td></tr>
+                    <tr><td><span class="badge high">C2</span></td><td>漏列三個 release blocker：無 LICENSE（private:true，法務上不可散佈）、無 auto-updater（零更新通道 — 安全修補送不到使用者）、無使用者文件（README 12 行）</td><td>ls LICENSE* 無檔；grep updater 零命中；<span class="file">README.md</span></td><td>已新增建議路線 #2「發布就緒最小集」</td></tr>
+                    <tr><td><span class="badge med">I1</span></td><td>多視窗／多 workspace 是架構邊界：git_service／git_watch／watcher 三個 process-wide 單槽 singleton 無 keying（git_detect 無條件覆寫）；workspaceSession／layout 為全域 localStorage key（雙視窗 last-write-wins）；repo 無任何視窗建立路徑</td><td><span class="file">git_service.rs:6</span>、<span class="file">watcher.rs:40</span>、<span class="file">workspaceStore.ts:88</span></td><td>記錄為已知架構邊界（single-window-by-construction）</td></tr>
+                    <tr><td><span class="badge med">I2</span></td><td>錯誤 UX 四套並存（native dialog／inline／chat bubble／混用）且無 toast 系統；<strong>gitStore.lastError 寫 4 處但 UI 從不渲染</strong> — git 失敗對使用者靜默；20 處 .catch(() =&gt; undefined) 靜默吞錯</td><td><span class="file">gitStore.ts:102</span>、<span class="file">actionFeedback.ts:11</span></td><td>已補進可維護性評分註記與債務清單</td></tr>
+                    <tr><td><span class="badge med">I3</span></td><td>效能「保護」≠「量測」：perf_service 對 WKWebView renderer 記憶體全盲（XPC 獨立行程）、無 startup 量測、cm6-perf 數據凍結於 07-02、無 CI perf gate</td><td><span class="file">perf_service.rs</span>（73 行）自承註解</td><td>已補進效能評分註記</td></tr>
+                    <tr><td><span class="badge med">I4</span></td><td>測試工程 4.5 偏高：L2/L3 整合層 100% 缺席，而 M1 兩個 Critical 正是只有實機抓到的整合縫</td><td>演進史 07-02 段自證</td><td>已下修 4.0</td></tr>
+                    <tr><td><span class="badge med">I5</span></td><td>i18n 覆蓋不含 Settings dialog 家族：39 處使用者可見硬編字串（中英混雜、未過 t()）— en 使用者在 Settings 會看到中文。locale 檔本身 en/zh 同步（複數形差異非缺漏）</td><td><span class="file">AgentSection.tsx:43</span> 等 5 檔</td><td>已補進債務清單</td></tr>
+                    <tr><td><span class="badge low">M</span></td><td>Minor ×5：a11y 現況未著墨（radix 帶起基本覆蓋、自製元件未稽核）；118 vs 160 分母未交代；docs/upgrade.md（408 行升級 runbook）未被引用 — pin 策略其實是有文件的刻意設計；決策可追溯性 5.0→4.5；HTML 呈現（無 hash 定址、scorecard 無刻度、tab 無 aria role）</td><td>—</td><td>評分已調；呈現面回饋記錄於此、未全數套用</td></tr>
+                </tbody>
+            </table>
+
+            <h3>反駁失敗區 — 審查者試圖攻破但報告站得住的部分</h3>
+            <ul>
+                <li><strong>記憶體洩漏面</strong>：逐一查 xterm dispose、9 個 Bridge unlisten、viewRegistry、terminalViewRegistry、lspManager teardown — 全部正確清理；唯一刻意不清的正是報告點名的 documentRegistry.generations。報告在此軸準確且完整。</li>
+                <li><strong>i18n locale 同步</strong>：en=238 vs zh=236 的差異是 i18next 複數形（英文需 _one、中文只需 _other），非缺漏。</li>
+                <li><strong>documentRegistry 語意</strong>：entries 有 delete＋clear、僅 generations 保留 — 報告描述精確。</li>
+            </ul>
+
+            <h3>覆核判定</h3>
+            <div class="callout">
+                <div class="co-label">Verdict</div>
+                <strong>報告品質 4.0／5</strong> — 已知範圍內的證據密度與技術準確度高（多軸攻擊未破），但初版有系統性盲區：工程健康挖到見骨、release-blocking 外部性（授權／更新通道／文件／錯誤 UX／持久化 migration）整段缺席 — 本次覆核已補。<br><br>
+                <strong>「整體是否有改進空間」的答案：有，且排序經覆核修訂</strong> — ①持久化 versioning＋migration envelope（唯一會主動傷害既有使用者的債）②發布就緒最小集（LICENSE／tauri-updater／user docs — 沒有 updater，一切安全修補都送不到使用者）③錯誤 surface 統一（git 失敗靜默是使用者最先撞到的洞）。原建議的契約 codegen 降為「先 contract smoke tests、再評估 codegen」；Windows 差距則獨立成篇（5 blocker，見姊妹報告）。
+            </div>
+        </section>
+    </div>
+
+</div>
+<script>
+function showTab(ev, id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    ev.target.classList.add('active');
+    window.scrollTo({top: 0});
+}
+var NODE_INFO = {
+  'n-shell':   {t:'AppShell — chrome 狀態唯一擁有者', f:'src/app/AppShell.tsx（353 行）· src/app/modes.ts', d:'mode／nav collapse+width／theme／palette／settings target 全在此；nav 自動收合只在跨越 880px 門檻時觸發、手動操作永遠優先；原生紅綠燈以 20px drag 帶避讓。'},
+  'n-panels':  {t:'5 mode panels — 狀態歸屬決定渲染策略', f:'src/app/panels/*.tsx · AppShell.tsx:306-318', d:'EditorPanel／SshPanel 以 CSS contents/hidden 保持掛載（保 buffer、undo、xterm scrollback）；Git／Database／Agent 條件 unmount（狀態住 store，remount 無損）。'},
+  'n-verticals':{t:'六條 feature verticals', f:'src/editor · src/lsp · src/terminal · src/workbench/git · src/preview · src/agent', d:'每條 vertical 自帶 UI＋commands＋store 綁定；跨線共用點是 documentRegistry/viewRegistry（editor 的 module singletons）與 DiffView。'},
+  'n-ui':      {t:'UI 基礎', f:'src/components/ui（15 個 shadcn primitives）· src/styles.css · src/lib/i18n', d:'Tailwind 4 CSS-variable tokens；Hanken Grotesk／JetBrains Mono／Newsreader 自架字型；i18n en/zh-TW、namespace-per-domain、import.meta.glob eager 自動註冊。'},
+  'n-stores':  {t:'22 zustand stores', f:'src/state/*.ts（agentStore 1,172 行最大）', d:'全庫零 persist middleware — 手寫 localStorage＋白名單校驗；版本化不一（2 內部版本／7 key 後綴／3 無版本，全部 discard-only 無 migration）；唯一橫向依賴是 agentStore→terminal/ui/recentWorkspaces/sessionIndex。'},
+  'n-bridges': {t:'9 Bridges ＋ 4 Hosts', f:'src/workbench/*Bridge.tsx（22-115 行）· App.tsx:16-35', d:'null-render 元件：listen(Tauri event) → store.getState().action()。生命週期靠 React、事件處理不進 render cycle；代價是 getState 散佈 36 檔。'},
+  'n-ipc':     {t:'IPC 契約層', f:'src/lib/ipc.ts（559 行）· src/lib/types.ts（476 行）', d:'每 command 一個具名薄包裝、不吞錯不記 log；串流走 Channel。型別純手寫對應 serde — 無 codegen，是全案最大 drift 風險。'},
+  'n-acp':     {t:'ACP 協定層', f:'src/agent/acpConnection.ts（1,279 行）· agentRouter.ts', d:'ClientSideConnection＋ndJsonStream 跑在 webview；router 以 (command,cwd) 惰性建子連線；custom command 只存 SHA-256 指紋。詳見 AgentZone 分頁。'},
+  'n-fs':      {t:'檔案群組', f:'fs_service.rs · file_content.rs · watcher.rs · search_service.rs', d:'canonicalize＋containment 防越界；1KB sniff 分級（≤10MB full／10-50 limited／>50 tooLarge／binary 拒開）；notify debouncer＋750ms 存檔抑制窗。'},
+  'n-git':     {t:'Git 群組', f:'git_service.rs(2,010) · git_log.rs · git_status.rs · git_watch.rs · askpass.rs', d:'spawn 系統 git＋timeout＋GIT_EDITOR=true；porcelain v2 純解析；askpass unix socket（秘密不落盤、60s 快取、background fail-fast）。'},
+  'n-lsp':     {t:'LSP 群組', f:'lsp_service.rs＋framing.rs · lsp_adapters.rs · lsp_config.rs · lsp_download.rs＋plan.rs', d:'per (workspace,language) 單一 server、crash 退避重啟（<3 次）；framing 64MB/8KB 防禦上限；managed install 三路（binary/npm/pip）＋原子 rename。'},
+  'n-proc':    {t:'行程治理群組', f:'pty_service.rs · process_service.rs · agent_process.rs · agent_terminal.rs · process_kill.rs', d:'四類子行程（user shell／dev server／ACP agent／agent 工具指令）分域管理；統一 process-group kill；app 退出時 lib.rs 對五個 manager kill_all()。'},
+  'n-ssh':     {t:'ssh_service', f:'ssh_service.rs（1,457 行）', d:'russh＋russh-sftp（走既有 channel stream）；TOFU＋SHA256 指紋、壞檔 fail-closed、key 變更硬拒；憑證僅 in-flight。缺口：SFTP 無 client 端 containment、首次連線無確認 UI。'},
+  'n-db':      {t:'db 群組', f:'db_service.rs（2,518）· db_profiles.rs（2,148）· db_credentials.rs（735）· db_connection_actor.rs（612，未接線）', d:'三引擎三鎖策略（SQLite=Mutex+spawn_blocking／PG=免鎖／MSSQL=tokio Mutex）；TLS 統一 rustls ring；profiles/credentials 實作 ADR 0002 vault（10 個 IPC commands，分析期間由並行 session 落地）。'},
+  'n-preview': {t:'Preview 群組', f:'preview_server.rs · preview_webview.rs', d:'tiny_http 靜態伺服（同款 traversal 防禦）；外部 URL 用 child webview 疊層（iframe 被 X-Frame-Options 擋）— 前端以 ResizeObserver 同步 bounds、overlay 開啟時隱藏原生層。'},
+  'n-log':     {t:'橫切面', f:'logging.rs（1,054 行）· perf_service.rs · env_path.rs', d:'OnceLock<Mutex<LogSink>>；JSONL 每日切檔＋14 天/100MB rotation；query 走 spawn_blocking＋ring buffer；export zip 帶 sanitize。env_path 修復 GUI 啟動的 launchd PATH（必須先於 Builder）。'}
+};
+function showNode(id) {
+    var n = NODE_INFO[id];
+    if (!n) return;
+    document.getElementById('nodeDetail').innerHTML =
+        '<div class="nd-title">' + n.t + '</div><div class="nd-files">' + n.f + '</div><div style="margin-top:0.3rem;">' + n.d + '</div>';
+}
+function collectFeedback() {
+    var scores = {};
+    document.querySelectorAll('input[type=range][data-score]').forEach(function(r){ scores[r.dataset.score] = Number(r.value); });
+    var comments = [];
+    document.querySelectorAll('textarea[data-section]').forEach(function(t){ if (t.value.trim()) comments.push({section: t.dataset.section, note: t.value.trim()}); });
+    return {
+        artifact: 'yuzora-architecture-design-report-2026-07-11.html',
+        reviewed_at: new Date().toISOString(),
+        scores: scores,
+        comments: comments,
+        approved: document.getElementById('approveChk').checked,
+        next_prompt: comments.length ? '請依上述 comments 修訂架構報告對應章節。' : ''
+    };
+}
+function copyFeedback() {
+    navigator.clipboard.writeText(JSON.stringify(collectFeedback(), null, 2));
+    event.target.textContent = 'Copied!';
+    setTimeout(function(){ event.target.textContent = 'Copy as JSON（貼回 Claude）'; }, 1500);
+}
+function copyPrompt() {
+    var fb = collectFeedback();
+    var lines = ['請修訂 docs/html/yuzora-architecture-design-report-2026-07-11.html：'];
+    fb.comments.forEach(function(c){ lines.push('- [' + c.section + '] ' + c.note); });
+    if (!fb.comments.length) lines.push('（無備註 — 報告已核可）');
+    navigator.clipboard.writeText(lines.join('\n'));
+    event.target.textContent = 'Copied!';
+    setTimeout(function(){ event.target.textContent = 'Copy as Prompt'; }, 1500);
+}
+</script>
+</body>
+</html>

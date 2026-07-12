@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yuzora 下一步分析報告 — 2026-07-10</title>
+<style>
+:root {
+  --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+  --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --bg: #faf9f5;
+  --surface: #efe9de;
+  --surface-soft: #f5f0e8;
+  --surface-strong: #e8e0d2;
+  --dark: #181715;
+  --dark-elevated: #252320;
+  --text: #141413;
+  --text-strong: #252523;
+  --muted: #686660;
+  --muted-soft: #8e8b82;
+  --border: #e6dfd8;
+  --accent: #cc785c;
+  --accent-action: #98482f;
+  --accent-dark: #8a412c;
+  --accent-soft: #f4dfd6;
+  --teal: #397e71;
+  --green: #2f6f40;
+  --amber: #7d5e00;
+  --red: #a63838;
+  --blue: #547b9b;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --shadow: 0 12px 35px rgba(20,20,19,.08);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  line-height: 1.65;
+}
+a { color: var(--accent-dark); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+button, input, textarea { font: inherit; }
+code, pre, .mono { font-family: var(--font-mono); }
+.container { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+.hero {
+  padding: 72px 0 44px;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(circle at 84% 18%, rgba(204,120,92,.17), transparent 26%),
+    radial-gradient(circle at 10% 100%, rgba(93,184,166,.11), transparent 24%),
+    var(--bg);
+}
+.eyebrow { color: var(--accent-action); text-transform: uppercase; letter-spacing: .14em; font-size: 12px; font-weight: 700; }
+h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 400; letter-spacing: -.025em; margin-top: 0; }
+h1 { font-size: clamp(38px, 6vw, 68px); line-height: 1.03; margin: 12px 0 18px; max-width: 900px; }
+.hero-copy { color: var(--text-strong); font-size: clamp(17px, 2vw, 21px); max-width: 900px; margin: 0; }
+.meta { color: var(--muted); font-size: 13px; margin-top: 22px; display: flex; gap: 14px; flex-wrap: wrap; }
+.meta span { padding-right: 14px; border-right: 1px solid var(--border); }
+.meta span:last-child { border-right: 0; }
+.verdict {
+  margin: -1px auto 0;
+  background: var(--dark);
+  color: var(--bg);
+  padding: 24px 0;
+}
+.verdict-grid { display: grid; grid-template-columns: 1.35fr .65fr; gap: 28px; align-items: center; }
+.verdict h2 { font-size: 28px; margin-bottom: 8px; }
+.verdict p { color: #cfcbc2; margin: 0; }
+.verdict-badge {
+  justify-self: end;
+  border: 1px solid rgba(255,255,255,.15);
+  background: var(--dark-elevated);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  min-width: 260px;
+}
+.verdict-badge strong { display: block; color: #fff; font-size: 16px; }
+.verdict-badge span { color: #b8b4ac; font-size: 13px; }
+main { padding: 34px 0 80px; }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 28px; }
+.metric { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 19px; min-height: 130px; }
+.metric .value { font-size: 31px; line-height: 1; font-weight: 750; letter-spacing: -.04em; }
+.metric .label { color: var(--muted); font-size: 13px; margin-top: 9px; }
+.metric .note { font-size: 12px; margin-top: 8px; font-weight: 650; }
+.ok { color: var(--green); }
+.warn { color: var(--amber); }
+.bad { color: var(--red); }
+.info { color: var(--blue); }
+.status-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 26px; }
+.status-pill { border: 1px solid var(--border); border-radius: 999px; padding: 8px 11px; text-align: center; font-size: 12px; font-weight: 700; background: var(--surface-soft); }
+.status-pill.pass::before, .status-pill.fail::before, .status-pill.note::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+.status-pill.pass::before { background: var(--green); }
+.status-pill.fail::before { background: var(--red); }
+.status-pill.note::before { background: var(--amber); }
+.tabs { position: sticky; top: 0; z-index: 10; display: flex; gap: 4px; overflow-x: auto; padding: 9px; margin: 0 0 24px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: rgba(250,249,245,.95); backdrop-filter: blur(14px); }
+.tab { white-space: nowrap; border: 0; background: transparent; color: var(--muted); padding: 10px 15px; border-radius: var(--radius-md); cursor: pointer; font-weight: 700; }
+.tab:hover { color: var(--text); background: var(--surface-soft); }
+.tab:focus-visible { outline: 3px solid rgba(152,72,47,.28); outline-offset: 2px; }
+.tab.active { color: #fff; background: var(--accent-action); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+.section { margin: 0 0 34px; scroll-margin-top: 90px; }
+.section-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 15px; }
+.section h2 { font-size: 31px; margin-bottom: 0; }
+.section-lead { color: var(--muted); max-width: 720px; margin: 5px 0 0; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.card { background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; }
+.card.dark { background: var(--dark); color: var(--bg); border-color: var(--dark); }
+.card.dark p, .card.dark li { color: #ccc8bf; }
+.card.accent { background: var(--accent-action); color: #fff; border-color: var(--accent-action); }
+.card h3 { font-size: 22px; margin-bottom: 9px; }
+.card p { margin: 0 0 10px; }
+.card ul { margin: 10px 0 0; padding-left: 20px; }
+.card li + li { margin-top: 6px; }
+.badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 9px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; background: var(--surface-strong); color: var(--text-strong); }
+.badge.rec { background: var(--accent-action); color: white; }
+.badge.pass { background: #dcecdf; color: #2f6f40; }
+.badge.pending { background: #f3e7bd; color: #7f6100; }
+.badge.risk { background: #f2d9d9; color: #8e2e2e; }
+.callout { border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-md); padding: 17px 18px; margin: 16px 0; }
+.callout strong { color: var(--accent-dark); }
+.callout.warning { border-left-color: var(--amber); background: #f7efd3; }
+.callout.warning strong { color: #7d5e00; }
+.callout.danger { border-left-color: var(--red); background: #f6e2e2; }
+.callout.danger strong { color: #922e2e; }
+.diagram { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 16px; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+.diagram-caption { color: var(--muted); font-size: 12px; margin: 10px 4px 0; }
+.roadmap { display: grid; gap: 14px; }
+.phase { display: grid; grid-template-columns: 92px 1fr auto; gap: 18px; align-items: start; background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px; }
+.phase-no { font-family: var(--font-display); font-size: 30px; color: var(--accent-action); line-height: 1; }
+.phase h3 { margin: 0 0 5px; font-size: 21px; }
+.phase p { margin: 0; color: var(--muted); }
+.phase ul { margin: 10px 0 0; padding-left: 20px; }
+.phase-gate { font-size: 12px; border: 1px solid var(--border); background: var(--bg); padding: 8px 10px; border-radius: var(--radius-md); min-width: 160px; }
+.option { position: relative; display: flex; flex-direction: column; }
+.option.recommended { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(204,120,92,.14); }
+.option .score { font-size: 34px; font-weight: 780; letter-spacing: -.04em; margin: 6px 0; }
+.option .pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: auto; padding-top: 12px; }
+.option .pros-cons div { background: rgba(255,255,255,.45); border-radius: var(--radius-md); padding: 10px; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; font-size: 11px; padding: 11px 12px; border-bottom: 2px solid var(--border); }
+td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.table-wrap { background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow-x: auto; }
+.path { font-family: var(--font-mono); font-size: 11px; color: var(--accent-dark); word-break: break-word; }
+.bar { height: 8px; background: var(--surface-strong); border-radius: 999px; overflow: hidden; min-width: 90px; }
+.bar > span { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.risk-matrix { display: grid; grid-template-columns: 92px repeat(3, 1fr); grid-template-rows: 38px repeat(3, minmax(116px, auto)); gap: 8px; }
+.axis { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; }
+.risk-cell { border-radius: var(--radius-md); padding: 11px; border: 1px solid rgba(20,20,19,.08); font-size: 12px; }
+.risk-cell h4 { font-family: var(--font-sans); font-size: 12px; font-weight: 800; margin: 0 0 4px; letter-spacing: 0; }
+.low { background: #e5efe6; }
+.medium { background: #f5eac9; }
+.high { background: #f4d6c9; }
+.critical { background: #efc8c8; }
+details { margin-bottom: 10px; }
+summary { cursor: pointer; list-style: none; background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 13px 15px; font-weight: 750; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; float: right; color: var(--accent-action); }
+details[open] summary::after { content: "−"; }
+.details-body { background: var(--surface-soft); border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--radius-md) var(--radius-md); padding: 15px; }
+.checklist { display: grid; gap: 9px; }
+.check { display: flex; align-items: flex-start; gap: 10px; padding: 11px; border-radius: var(--radius-md); background: var(--surface-soft); border: 1px solid var(--border); }
+.check input { margin-top: 4px; accent-color: var(--accent); }
+.review-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+.review-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 15px; }
+.review-card label { display: block; font-weight: 750; font-size: 12px; margin-bottom: 8px; }
+.review-card output { float: right; color: var(--accent-dark); font-weight: 800; }
+.review-card input[type=range] { width: 100%; accent-color: var(--accent); }
+textarea { width: 100%; min-height: 120px; resize: vertical; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; background: var(--bg); color: var(--text); }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.btn { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 14px; background: var(--surface); color: var(--text); cursor: pointer; font-weight: 750; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent-action); border-color: var(--accent-action); color: white; }
+.btn.dark { background: var(--dark); border-color: var(--dark); color: var(--bg); }
+#copy-status { display: none; max-width: 100%; margin-top: 14px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; overflow-x: auto; }
+.source-list { columns: 2; column-gap: 28px; }
+.source-list li { break-inside: avoid; margin-bottom: 7px; }
+.footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; padding: 24px 0 45px; }
+@media (max-width: 920px) {
+  .metrics { grid-template-columns: 1fr 1fr; }
+  .status-strip { grid-template-columns: repeat(3, 1fr); }
+  .grid-3, .review-grid { grid-template-columns: 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .verdict-grid { grid-template-columns: 1fr; }
+  .verdict-badge { justify-self: start; }
+  .phase { grid-template-columns: 64px 1fr; }
+  .phase-gate { grid-column: 2; }
+  .source-list { columns: 1; }
+}
+@media (max-width: 600px) {
+  .hero { padding-top: 45px; }
+  .container { width: min(100% - 20px, 1180px); }
+  .metrics { grid-template-columns: 1fr; }
+  .status-strip { grid-template-columns: 1fr 1fr; }
+  .phase { grid-template-columns: 1fr; }
+  .phase-no, .phase-gate { grid-column: 1; }
+  .risk-matrix { grid-template-columns: 62px repeat(3, minmax(150px, 1fr)); overflow-x: auto; }
+}
+@media print {
+  body { background: white; }
+  .tabs, .actions, .review-controls { display: none !important; }
+  .tab-content { display: block !important; }
+  .tab-content + .tab-content { break-before: page; }
+  .card, .metric, .phase, .table-wrap, .diagram { break-inside: avoid; }
+  .diagram { overflow: visible; padding: 8px; }
+  .diagram svg { width: 100%; min-width: 0; max-width: 100%; }
+  .hero { padding-top: 24px; }
+}
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="container">
+    <div class="eyebrow">Project Analysis · Yuzora 0.1.0</div>
+    <h1>現在不該再加功能；下一步是把「已做完」變成「可證明可交付」</h1>
+    <p class="hero-copy">M1–M6 與 ACP 已累積大量功能和自動測試，但目前仍有歷史 GUI 驗收缺口、文件互相矛盾、跨平台風險，以及一個會讓 CI 直接失敗的 rustfmt gate。建議先建立 RC1 收斂階段，再定義正式 M7。</p>
+    <div class="meta">
+      <span>分析日期：2026-07-10</span>
+      <span>分支：main</span>
+      <span>證據：code graph、git diff、progress/checklists、實際 build/test/CI commands</span>
+      <span>本報告未執行 git add / commit / push</span>
+    </div>
+  </div>
+</header>
+<section class="verdict">
+  <div class="container verdict-grid">
+    <div>
+      <h2>建議路線：RC1 收斂 → 統一驗收 → 才開 M7</h2>
+      <p>先修本批次 gate、建立一份取代過時 checklist 的 current-state acceptance matrix，完成 macOS / Windows 高風險實機證據，接著再把下一個里程碑定義為「Release & Cross-platform Hardening」。</p>
+    </div>
+    <div class="verdict-badge">
+      <strong>推薦信心：高</strong>
+      <span>核心邏輯已綠；阻力主要集中在驗收、整合與文件真相，而非缺新功能。</span>
+    </div>
+  </div>
+</section>
+<main>
+<div class="container">
+  <section class="metrics" aria-label="目前專案指標">
+    <div class="metric"><div class="value ok">1,036</div><div class="label">目前 Vitest 全量通過</div><div class="note ok">103 / 103 test files</div></div>
+    <div class="metric"><div class="value">47 + 10</div><div class="label">tracked 修改 + untracked 檔案</div><div class="note warn">+2,834 / −347 僅計 tracked；untracked 另計</div></div>
+    <div class="metric"><div class="value ok">298</div><div class="label">Rust tests 通過</div><div class="note ok">clippy -D warnings 亦通過</div></div>
+    <div class="metric"><div class="value bad">1</div><div class="label">確定的 CI blocker</div><div class="note bad">cargo fmt --check 失敗</div></div>
+  </section>
+
+  <div class="status-strip" aria-label="自動 gate 狀態">
+    <div class="status-pill pass">build PASS</div>
+    <div class="status-pill pass">Vitest PASS</div>
+    <div class="status-pill pass">cargo check PASS</div>
+    <div class="status-pill pass">clippy/test PASS</div>
+    <div class="status-pill fail">rustfmt FAIL</div>
+    <div class="status-pill note">lint 43 warnings</div>
+  </div>
+
+  <nav class="tabs" role="tablist" aria-label="報告分頁" onkeydown="handleTabKey(event)">
+    <button id="tab-overview" class="tab active" role="tab" aria-controls="overview" aria-selected="true" tabindex="0" onclick="showTab(event,'overview')">總覽</button>
+    <button id="tab-roadmap" class="tab" role="tab" aria-controls="roadmap" aria-selected="false" tabindex="-1" onclick="showTab(event,'roadmap')">下一步路線</button>
+    <button id="tab-evidence" class="tab" role="tab" aria-controls="evidence" aria-selected="false" tabindex="-1" onclick="showTab(event,'evidence')">證據與現況</button>
+    <button id="tab-risks" class="tab" role="tab" aria-controls="risks" aria-selected="false" tabindex="-1" onclick="showTab(event,'risks')">風險與架構</button>
+    <button id="tab-review" class="tab" role="tab" aria-controls="review" aria-selected="false" tabindex="-1" onclick="showTab(event,'review')">審閱與回饋</button>
+    <button id="tab-verification" class="tab" role="tab" aria-controls="verification" aria-selected="false" tabindex="-1" onclick="showTab(event,'verification')">獨立覆核</button>
+  </nav>
+
+  <div id="overview" class="tab-content active" role="tabpanel" aria-labelledby="tab-overview">
+    <section class="section">
+      <div class="section-head"><div><h2>一句話判斷</h2><p class="section-lead">專案不是「功能不足」，而是「完成狀態沒有被同一套證據閉環」。</p></div></div>
+      <div class="grid-3">
+        <article class="card">
+          <span class="badge pass">已具備</span>
+          <h3>核心功能與自動測試</h3>
+          <p>M1–M6、ACP、DB/SSH、logging、preview、terminal 等主體已落地；目前 build、1036 tests、cargo check、clippy、298 Rust tests 均通過。</p>
+        </article>
+        <article class="card">
+          <span class="badge risk">尚未閉環</span>
+          <h3>GUI / 原生 / 外部系統</h3>
+          <p>M5 記錄仍是 GUI 0/32；M6 與 ACP checklist 目前未勾。child webview、auth、真 DB/TLS、SSH/SFTP atomic、dirty modal、Windows 行為都需要實機證據。</p>
+        </article>
+        <article class="card">
+          <span class="badge pending">真相分裂</span>
+          <h3>文件與現況不一致</h3>
+          <p>M4 原始決策是 iframe-only，現況卻是 local iframe + external child webview；ACP 結案報告同時寫 waived、未完成與舊 build 紅燈，已不適合作為唯一真相源。</p>
+        </article>
+      </div>
+      <div class="callout warning"><strong>重要：</strong>不要直接照舊 checklist 從頭跑。先建立一份「以目前程式碼為準」的統一驗收矩陣，將 M4 iframe-only 等過時項標記 superseded，否則會驗到不存在的舊架構。</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>從 MVP 到 RC1 的位置</h2><p class="section-lead">原始 roadmap 到 M5 結束；M6 是後續回饋批次（其計畫文件仍標示草案），ACP 是再後續的架構整合，目前沒有正式 M7。</p></div></div>
+      <div class="diagram">
+        <svg viewBox="0 0 1080 310" role="img" aria-labelledby="flowTitle flowDesc">
+          <title id="flowTitle">Yuzora 里程碑與建議下一步</title>
+          <desc id="flowDesc">M1 到 M5 完成功能，自動化後進入 M6 和 ACP，目前需經過 RC1 收斂，再定義 M7。</desc>
+          <defs>
+            <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#8e8b82"/></marker>
+          </defs>
+          <line x1="110" y1="116" x2="955" y2="116" stroke="#d1cbc2" stroke-width="3" marker-end="url(#arrow)"/>
+          <g font-family="Inter,system-ui,sans-serif" text-anchor="middle">
+            <g transform="translate(95 116)"><circle r="35" fill="#2f6f40"/><text y="5" fill="white" font-weight="800">M1</text><text y="67" fill="#3d3d3a" font-size="12">完整閉環</text></g>
+            <g transform="translate(235 116)"><circle r="35" fill="#7d5e00"/><text y="5" fill="white" font-weight="800">M2</text><text y="67" fill="#3d3d3a" font-size="12">GUI pending</text></g>
+            <g transform="translate(375 116)"><circle r="35" fill="#7d5e00"/><text y="5" fill="white" font-weight="800">M3</text><text y="67" fill="#3d3d3a" font-size="12">GUI pending</text></g>
+            <g transform="translate(515 116)"><circle r="35" fill="#7d5e00"/><text y="5" fill="white" font-weight="800">M4</text><text y="67" fill="#3d3d3a" font-size="12">文件已漂移</text></g>
+            <g transform="translate(655 116)"><circle r="35" fill="#7d5e00"/><text y="5" fill="white" font-weight="800">M5</text><text y="67" fill="#3d3d3a" font-size="12">GUI 0 / 32</text></g>
+            <g transform="translate(795 116)"><circle r="35" fill="#98482f"/><text y="5" fill="white" font-weight="800">M6</text><text y="67" fill="#3d3d3a" font-size="12">實作完成／未驗</text></g>
+            <g transform="translate(935 116)"><circle r="35" fill="#98482f"/><text y="5" fill="white" font-weight="800">ACP</text><text y="67" fill="#3d3d3a" font-size="12">自動綠／手動待驗</text></g>
+          </g>
+          <rect x="284" y="224" width="512" height="60" rx="14" fill="#181715"/>
+          <text x="540" y="250" text-anchor="middle" fill="#faf9f5" font-family="Georgia,serif" font-size="21">建議插入：RC1 收斂與統一驗收</text>
+          <text x="540" y="271" text-anchor="middle" fill="#bbb7ae" font-family="Inter,system-ui,sans-serif" font-size="12">format → current-state matrix → macOS/Windows evidence → baseline</text>
+          <line x1="935" y1="153" x2="750" y2="224" stroke="#cc785c" stroke-width="2" marker-end="url(#arrow)"/>
+          <line x1="796" y1="254" x2="970" y2="254" stroke="#cc785c" stroke-width="2" marker-end="url(#arrow)"/>
+          <rect x="970" y="224" width="95" height="60" rx="14" fill="#efe9de" stroke="#cc785c"/>
+          <text x="1017" y="250" text-anchor="middle" fill="#141413" font-family="Georgia,serif" font-size="20">M7</text>
+          <text x="1017" y="270" text-anchor="middle" fill="#6c6a64" font-family="Inter,system-ui,sans-serif" font-size="11">正式定義</text>
+        </svg>
+        <p class="diagram-caption">判讀：功能曲線已走到後段，但證據曲線落後。RC1 的目的不是再造一套功能，而是讓兩條曲線重新對齊。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>最先做的五件事</h2></div></div>
+      <div class="checklist">
+        <label class="check"><input type="checkbox" data-plan-check><span><strong>1. Freeze scope：</strong>暫停新增功能；把現有 47 tracked + 10 untracked 檔視為待收斂批次（10 個包含本報告）。</span></label>
+        <label class="check"><input type="checkbox" data-plan-check><span><strong>2. 清自動 gate：</strong>修 3 個 Rust 檔的 rustfmt 差異；處理本批次 3 個 ESLint warnings；重跑完整 CI parity。</span></label>
+        <label class="check"><input type="checkbox" data-plan-check><span><strong>3. 建 current-state acceptance matrix：</strong>合併 M2–M6 + ACP，明確標示 automated / macOS / Windows / external-service。</span></label>
+        <label class="check"><input type="checkbox" data-plan-check><span><strong>4. 先驗高風險：</strong>preview z-order、三 agent auth、DB/TLS、SSH/SFTP atomic、known_hosts、dirty modal、秘密不落 log。</span></label>
+        <label class="check"><input type="checkbox" data-plan-check><span><strong>5. 收斂文件與 baseline：</strong>標記 obsolete 計畫，寫一份唯一 closeout，確認後才設計 M7。</span></label>
+      </div>
+    </section>
+  </div>
+
+  <div id="roadmap" class="tab-content" role="tabpanel" aria-labelledby="tab-roadmap">
+    <section class="section">
+      <div class="section-head"><div><h2>推薦執行順序</h2><p class="section-lead">每一階段都有明確 exit gate；前一階段沒過，就不進下一階段。</p></div></div>
+      <div class="roadmap">
+        <article class="phase">
+          <div class="phase-no">P0</div>
+          <div><h3>建立可相信的自動基線</h3><p>只處理會影響本批次交付的 gate，不擴張成全 repo 大重構。</p><ul><li><code>cargo fmt --check</code>：目前在 <code>db_service.rs</code>、<code>env_path.rs</code>、<code>ssh_service.rs</code> 失敗。</li><li>Changed-file ESLint：3 warnings，位於 AgentZonePanel、LogsSection、AgentBridge。</li><li>重跑 lint / typecheck / test / build / fmt / clippy / cargo test。</li></ul></div>
+          <div class="phase-gate"><strong>Exit gate</strong><br>完整 CI parity exit 0；不以「build/test/cargo check 三件套」取代 CI。</div>
+        </article>
+        <article class="phase">
+          <div class="phase-no">P1</div>
+          <div><h3>重寫一份目前有效的統一驗收矩陣</h3><p>舊 checklist 先做 truth reconciliation，再決定哪些要執行。</p><ul><li>M4 iframe-only 項標記 superseded，改驗 hybrid preview。</li><li>ACP closeout 中的 waived / 未完成 / build 紅燈矛盾改由目前證據覆蓋。</li><li>每項標註 platform、外部依賴、data-loss / security / native-layer 等級。</li></ul></div>
+          <div class="phase-gate"><strong>Exit gate</strong><br>所有未驗項都能追到當前程式碼與明確驗證方式。</div>
+        </article>
+        <article class="phase">
+          <div class="phase-no">P2</div>
+          <div><h3>macOS 高風險實機驗收</h3><p>先驗最可能產生不可逆後果或整合失敗的路徑。</p><ul><li>Preview child webview：resize、overlay、askpass、SymbolPicker、close/unmount。</li><li>ACP：pi / Claude / Codex picker、auth terminal、workspace session retention、multi-agent。</li><li>DB/SSH：PG TLS / trustCert、MSSQL、SFTP atomic、known_hosts fail-closed。</li><li>Dirty modal、workspace restore race、log secret redaction、opener scope。</li></ul></div>
+          <div class="phase-gate"><strong>Exit gate</strong><br>高風險項逐條 PASS/FAIL，有 screenshot / log / fixture 證據。</div>
+        </article>
+        <article class="phase">
+          <div class="phase-no">P3</div>
+          <div><h3>Windows 專項與交叉平台確認</h3><p>macOS PASS 不代表 multiwebview、path、ConPTY 或 Job Objects 在 Windows 成立。</p><ul><li>child webview、canonical <code>\\?\C:\…</code>、ConPTY、Job Objects。</li><li>MSSQL 實機、SFTP drag/drop、工作管理員效能數值。</li><li>若無 Windows 環境，明確把 RC1 標為 platform-limited，不偽稱跨平台完成。</li></ul></div>
+          <div class="phase-gate"><strong>Exit gate</strong><br>Windows PASS，或有被接受且文件化的 release limitation。</div>
+        </article>
+        <article class="phase">
+          <div class="phase-no">P4</div>
+          <div><h3>收斂 baseline 並設計 M7</h3><p>到這一步才決定下一輪產品投資。</p><ul><li>唯一 closeout + 唯一 current acceptance checklist。</li><li>Preview hybrid 寫 ADR：正式接受 unstable child webview，或回退簡化。</li><li>建立 release artifact 流程；updater、全面 lint 清債先維持非目標。</li></ul></div>
+          <div class="phase-gate"><strong>Exit gate</strong><br>RC1 有版本、證據、限制與可重現驗證命令。</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>三條候選方向</h2><p class="section-lead">分數是依風險降低、就緒度、範圍清晰、使用者價值與驗證成本做的分析評分，非遙測數據。</p></div></div>
+      <div class="grid-3">
+        <article class="card option recommended">
+          <span class="badge rec">推薦</span>
+          <h3>A. RC1 收斂與 Release Hardening</h3>
+          <div class="score">4.8 / 5</div>
+          <p>把現有功能轉成可發佈、可回歸、可交接的基線。</p>
+          <div class="pros-cons"><div><strong>優點</strong><br>最大幅度降風險；符合目前缺口；範圍最明確。</div><div><strong>代價</strong><br>短期沒有醒目的新功能。</div></div>
+        </article>
+        <article class="card option">
+          <span class="badge">候選</span>
+          <h3>B. AgentZone 產品深度</h3>
+          <div class="score">3.4 / 5</div>
+          <p>加強 agent context、actions、session UX 或 provider 能力。</p>
+          <div class="pros-cons"><div><strong>優點</strong><br>差異化高；現有 ACP 基礎完整。</div><div><strong>風險</strong><br>三 agent auth 尚未實機驗，先擴張會放大整合面。</div></div>
+        </article>
+        <article class="card option">
+          <span class="badge">候選</span>
+          <h3>C. DB / SSH 遠端工作台</h3>
+          <div class="score">3.0 / 5</div>
+          <p>深化資料庫、SFTP、遠端操作與連線管理。</p>
+          <div class="pros-cons"><div><strong>優點</strong><br>實用價值高；已有完整骨架。</div><div><strong>風險</strong><br>真 DB/TLS/SFTP/Windows 尚未驗，外部依賴最多。</div></div>
+        </article>
+      </div>
+      <div class="callout"><strong>推薦決策：</strong>A 不是否定 B/C，而是替 B/C 建一個不會持續漂移的起跑線。RC1 通過後，B 與 C 才值得進入正式 brainstorming/spec。</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>建議的 M7 定義</h2></div></div>
+      <article class="card dark">
+        <span class="badge rec">Proposed Milestone</span>
+        <h3>M7 — Release Candidate & Cross-platform Hardening</h3>
+        <div class="grid-2">
+          <div><p><strong>Goal</strong></p><ul><li>把 Yuzora 0.1.0 轉成有證據的 RC。</li><li>macOS / Windows 關鍵路徑可重現驗證。</li><li>文件、架構決策與程式碼一致。</li><li>產出可安裝 artifact 與 release notes。</li></ul></div>
+          <div><p><strong>Non-goals</strong></p><ul><li>不新增大型 editor / agent / DB / SSH 功能。</li><li>不先做 updater，除非已有真實發佈頻率需求。</li><li>不為清 43 個既有 lint warnings 做全面重構；先清本批次與 correctness 類 warning。</li><li>不因檔案很長就機械拆檔。</li></ul></div>
+        </div>
+      </article>
+    </section>
+  </div>
+
+  <div id="evidence" class="tab-content" role="tabpanel" aria-labelledby="tab-evidence">
+    <section class="section">
+      <div class="section-head"><div><h2>目前 gate 的真實狀態</h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Gate</th><th>結果</th><th>證據</th><th>判讀</th></tr></thead>
+          <tbody>
+            <tr><td><code>bun run build</code></td><td><span class="badge pass">PASS</span></td><td>2,315 modules；最大 JS chunk 2,553.26 kB / gzip 819.49 kB</td><td>可產 production build；有 chunk-size warning，非 blocker。</td></tr>
+            <tr><td><code>bun run test</code></td><td><span class="badge pass">PASS</span></td><td>103 files / 1,036 tests；0 failures</td><td>邏輯面健康；輸出仍有 localStorage 與 jsdom diagnostics noise。</td></tr>
+            <tr><td><code>cargo check</code></td><td><span class="badge pass">PASS</span></td><td>0 compile error / 0 warning</td><td>Rust backend 可編譯。</td></tr>
+            <tr><td><code>cargo clippy --all-targets -- -D warnings</code></td><td><span class="badge pass">PASS</span></td><td>與 <code>cargo test</code> 串行 exit 0</td><td>Rust correctness/style lint 無 warning。</td></tr>
+            <tr><td><code>cargo test</code></td><td><span class="badge pass">PASS</span></td><td>298 passed</td><td>Rust 自動測試健康。</td></tr>
+            <tr><td><code>cargo fmt --check</code></td><td><span class="badge risk">FAIL</span></td><td>3 files / 4 formatting hunks</td><td>GitHub Actions Rust job 會在 clippy/test 前失敗；目前不可宣稱 CI 全綠。</td></tr>
+            <tr><td><code>bun run lint</code></td><td><span class="badge pending">PASS + WARN</span></td><td>0 errors / 43 warnings；changed-file subset 3 warnings</td><td>目前 CI 會過，但本批次仍有 3 個 React lint 警訊應先收斂。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>里程碑與驗收狀態</h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>範圍</th><th>實作判定</th><th>手動驗收</th><th>目前要怎麼處理</th></tr></thead>
+          <tbody>
+            <tr><td>M1</td><td><span class="badge pass">Closed</span></td><td>8 / 8 PASS</td><td>保留為可信基線。</td></tr>
+            <tr><td>M2–M3</td><td><span class="badge pass">Auto-ready</span></td><td>歷史 GUI pending</td><td>抽成 current regression matrix，不再維護平行舊清單。</td></tr>
+            <tr><td>M4</td><td><span class="badge pending">Drifted</span></td><td>原 iframe checklist 未完成</td><td>先標記 iframe-only 決策 superseded，再驗 hybrid preview。</td></tr>
+            <tr><td>M5</td><td><span class="badge pending">Partial closeout</span></td><td>GUI 0 / 32</td><td>把仍適用的項目併入 RC1。</td></tr>
+            <tr><td>M6</td><td><span class="badge pass">Implemented by code evidence</span></td><td>checklist 全未勾</td><td>計畫文件仍標「草案」；以程式碼、測試與 commit 證據判定已實作，優先補 data-loss / security / native-layer 驗收。</td></tr>
+            <tr><td>ACP unified</td><td><span class="badge pass">Automated complete</span></td><td>仍待三 agent/auth 實機</td><td>以目前 1,036 tests 綠為邏輯基線，補 real-agent evidence。</td></tr>
+            <tr><td>正式 M7</td><td><span class="badge risk">Not defined</span></td><td>—</td><td>RC1 完成後再寫 spec；不要把 review finding 編號 M7 誤當里程碑。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>工作樹與範圍</h2><p class="section-lead">目前不是一個小 patch，而是多條跨層 workstream 疊在同一個 unstaged working tree。</p></div></div>
+      <div class="grid-2">
+        <article class="card"><h3>變更規模</h3><ul><li>47 tracked files，+2,834 / −347；這組 insert/delete 數字不包含 untracked 內容。</li><li>10 untracked files：6 份 agent implementation/test + 4 份 HTML（包含本報告）。</li><li>主要 workstreams：ACP routing/auth、Agent UX/workspace、DB/SSH、logs/runtime、i18n/capabilities。</li></ul></article>
+        <article class="card"><h3>近期基線</h3><ul><li><code>f236785</code> 曾一次整合 209 files、25,541 insertions，涵蓋 M4–M6 與品質工具鏈。</li><li>目前工作樹又在其上增加 ACP unified 與診斷收尾。</li><li>這種批次大小使「局部測試綠」不足以代表整合完成。</li></ul></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>主要來源</h2></div></div>
+      <ul class="source-list">
+        <li><span class="path">docs/superpowers/specs/2026-07-02-yuzora-mvp-workbench-design.md:80-126</span></li>
+        <li><span class="path">docs/superpowers/plans/2026-07-07-yuzora-m6-feedback-batch.md:1-3</span></li>
+        <li><span class="path">.superpowers/sdd/acp-remaining-progress.md:7-29</span></li>
+        <li><span class="path">.superpowers/sdd/m5-task-20-apptest-report.md:8-18</span></li>
+        <li><span class="path">.superpowers/sdd/2026-07-07-logdiag-progress.md:9-43</span></li>
+        <li><span class="path">docs/superpowers/checklists/2026-07-07-yuzora-m6-feedback-batch.md:8-91</span></li>
+        <li><span class="path">docs/superpowers/checklists/2026-07-08-acp-unified-acceptance.md</span></li>
+        <li><span class="path">docs/superpowers/checklists/m4-manual-checklist.md:1-59</span></li>
+        <li><span class="path">docs/superpowers/spikes/2026-07-05-preview-embedding.md</span></li>
+        <li><span class="path">src-tauri/Cargo.toml:21-23</span></li>
+        <li><span class="path">src-tauri/src/preview_webview.rs:1-10,53-55</span></li>
+        <li><span class="path">src/app/panels/PreviewPanel.tsx:131-167,381-390</span></li>
+        <li><span class="path">src/state/previewStore.ts:36-56</span></li>
+        <li><span class="path">.github/workflows/ci.yml</span></li>
+        <li><span class="path">package.json</span></li>
+        <li><span class="path">src-tauri/tauri.conf.json</span></li>
+        <li><span class="path">git status / diff / log / show</span></li>
+        <li><span class="path">codebase-memory graph: 5,738 nodes / 16,959 edges</span></li>
+      </ul>
+    </section>
+  </div>
+
+  <div id="risks" class="tab-content" role="tabpanel" aria-labelledby="tab-risks">
+    <section class="section">
+      <div class="section-head"><div><h2>風險集中區</h2><p class="section-lead">縱軸是 impact、橫軸是 likelihood。顏色越深越應先驗。</p></div></div>
+      <div class="risk-matrix" role="img" aria-label="專案風險矩陣">
+        <div></div><div class="axis">低機率</div><div class="axis">中機率</div><div class="axis">高機率</div>
+        <div class="axis">高影響</div>
+        <div class="risk-cell medium"><h4>Bundle 體積</h4>2.55 MB chunk；可能影響啟動，但尚無量測。</div>
+        <div class="risk-cell high"><h4>Windows 專項</h4>ConPTY、Job Objects、MSSQL、path 尚未實機閉環。</div>
+        <div class="risk-cell critical"><h4>未驗原生／外部路徑</h4>child webview z-order、三 agent auth、DB/TLS、SFTP atomic。</div>
+        <div class="axis">中影響</div>
+        <div class="risk-cell low"><h4>既有 lint noise</h4>多數不阻 CI，可分批處理。</div>
+        <div class="risk-cell medium"><h4>大型 module</h4>變更容易跨責任，但不應機械拆檔。</div>
+        <div class="risk-cell high"><h4>工作樹範圍過大</h4>47 + 10 檔跨 ACP、DB、SSH、logs、UI（含本報告）。</div>
+        <div class="axis">低影響</div>
+        <div class="risk-cell low"><h4>測試輸出 noise</h4>localStorage / jsdom diagnostics，不影響 pass。</div>
+        <div class="risk-cell medium"><h4>文件考古成本</h4>多份 progress / closeout / checklist 互相重疊。</div>
+        <div class="risk-cell high"><h4>CI status 誤判</h4>三件套綠，但 rustfmt 會讓正式 CI 失敗。</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>架構判讀：哪裡該深、哪裡先別動</h2></div></div>
+      <div class="grid-2">
+        <article class="card">
+          <h3>保留既有深 module</h3>
+          <p><code>db_service.rs</code>、<code>ssh_service.rs</code>、<code>logging.rs</code> 雖然都超過 1,000 行，但它們把多引擎、連線生命週期與檔案格式藏在集中 interface 後面。檔案長度本身不是拆分理由。</p>
+          <p><strong>原則：</strong>下一步只在驗收發現 caller 必須知道太多內部規則時，才調整 seam。</p>
+        </article>
+        <article class="card">
+          <h3>Agent seam 需要觀察</h3>
+          <p>目前行為分散於 <code>agentRouter</code>、<code>acpConnection</code>、<code>agentStore</code>、<code>AgentBridge</code> 與 UI。Router 已把 provider/cwd routing 隱藏起來，是值得保留的 seam。</p>
+          <p><strong>原則：</strong>先完成 real-agent acceptance；若 provider-specific 分支持續外漏，再把 runtime/auth deeper 到單一 interface，別在驗收前重構。</p>
+        </article>
+        <article class="card">
+          <h3>Preview 是目前最明顯的 seam leakage</h3>
+          <p>child webview 是 native layer，必須讓 CommandPalette、Settings、ContextMenu、DiffModal、SymbolPicker、askpass 都協調 hide/show。這代表 preview implementation 的 z-order 規則已外漏到多個 caller。</p>
+          <p><strong>決策：</strong>要嘛以 ADR + acceptance 正式接受這個成本；要嘛回到較小 interface（local iframe + external open）。</p>
+        </article>
+        <article class="card">
+          <h3>大型 UI hotspot 不宜趁機全面拆</h3>
+          <p><code>AgentZonePanel.tsx</code> 1,398 行、<code>acpConnection.ts</code> 1,177 行、<code>agentStore.ts</code> 751 行。這些是未來變更風險訊號，但 RC1 只應處理與 current gate / acceptance 直接相關的部分。</p>
+          <p><strong>刪除測試：</strong>若抽出 module 後，刪掉它只會讓同樣複雜度散回多個 caller，才算真正有 depth。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>已知矛盾與需要裁決的點</h2></div></div>
+      <details open><summary>Preview：M4 iframe NO-GO child webview vs 現況 hybrid</summary><div class="details-body">M4 spike 明確判定 unstable child webview 為 NO-GO；現況 Cargo 已啟用 <code>tauri/unstable</code>，外部 https 使用 child webview，local server 留 iframe。這可能是合理的 M6 後續決策，但缺少一份 superseding ADR 與跨平台實證。</div></details>
+      <details><summary>ACP：closeout 宣稱 waived，checklist 與 open section仍顯示未完成</summary><div class="details-body">目前應以 2026-07-10 實測（1,036 tests / build / cargo check）取代舊 build 紅燈；但 real-agent GUI 仍沒有證據，因此不能只靠「waived」推定功能完成。</div></details>
+      <details><summary>CI：quick facts 三件套 vs GitHub Actions 完整 gate</summary><div class="details-body">專案日常 quick checks 是 build/test/cargo check；正式 CI 還包含 frontend lint/typecheck 與 Rust fmt/clippy/test。此次正好證明 quick checks 全綠仍可能讓 CI 因 rustfmt 失敗。</div></details>
+      <details><summary>Roadmap：MVP 到 M5，M6/ACP 為後續批次，沒有正式 M7</summary><div class="details-body">因此「下一步」不是執行某個現成 M7，而是先完成 RC1 收斂，再用當時的實證決定 Agent-first、Remote/Data-first 或 Release-first 的正式 spec。</div></details>
+    </section>
+  </div>
+
+  <div id="review" class="tab-content" role="tabpanel" aria-labelledby="tab-review">
+    <section class="section">
+      <div class="section-head"><div><h2>報告品質自評</h2><p class="section-lead">分數依可追溯證據與可執行程度評估；你可以調整並複製回饋。</p></div></div>
+      <div class="review-grid review-controls">
+        <div class="review-card"><label for="score-completeness">完整性 <output id="out-completeness" for="score-completeness">5</output></label><input id="score-completeness" type="range" min="1" max="5" value="5" aria-describedby="help-completeness" oninput="syncScore('completeness')"><small id="help-completeness">涵蓋現況、選項、路線與風險。</small></div>
+        <div class="review-card"><label for="score-evidence">證據性 <output id="out-evidence" for="score-evidence">5</output></label><input id="score-evidence" type="range" min="1" max="5" value="5" aria-describedby="help-evidence" oninput="syncScore('evidence')"><small id="help-evidence">來自實際命令、檔案與 graph。</small></div>
+        <div class="review-card"><label for="score-actionability">可行動性 <output id="out-actionability" for="score-actionability">5</output></label><input id="score-actionability" type="range" min="1" max="5" value="5" aria-describedby="help-actionability" oninput="syncScore('actionability')"><small id="help-actionability">每 phase 有 exit gate。</small></div>
+        <div class="review-card"><label for="score-risk">風險覆蓋 <output id="out-risk" for="score-risk">5</output></label><input id="score-risk" type="range" min="1" max="5" value="5" aria-describedby="help-risk" oninput="syncScore('risk')"><small id="help-risk">含 native、external、platform、CI。</small></div>
+        <div class="review-card"><label for="score-readiness">下一步就緒 <output id="out-readiness" for="score-readiness">4</output></label><input id="score-readiness" type="range" min="1" max="5" value="4" aria-describedby="help-readiness" oninput="syncScore('readiness')"><small id="help-readiness">仍需你決定是否採 RC1。</small></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="grid-2">
+        <article class="card">
+          <h3>建議核准內容</h3>
+          <label class="check"><input id="approve-route" type="checkbox"><span>接受「RC1 收斂優先」作為目前下一步。</span></label>
+          <label class="check"><input id="approve-m7" type="checkbox"><span>RC1 後以「Release Candidate & Cross-platform Hardening」作為 M7 候選。</span></label>
+          <label class="check"><input id="approve-preview" type="checkbox"><span>要求 preview hybrid 先有 ADR + GUI evidence，才視為正式架構。</span></label>
+        </article>
+        <article class="card">
+          <h3 id="review-comment-label">你的補充</h3>
+          <textarea id="review-comment" aria-labelledby="review-comment-label" placeholder="例如：先只做 macOS；Windows 延後。或：M7 改成 AgentZone-first。"></textarea>
+        </article>
+      </div>
+      <div class="actions review-controls">
+        <button class="btn primary" onclick="copyFeedback()">複製回饋 JSON</button>
+        <button class="btn dark" onclick="copyNextPrompt()">複製建議下一個 Prompt</button>
+        <button class="btn" onclick="window.print()">列印 / 匯出 PDF</button>
+      </div>
+      <pre id="copy-status" class="card dark" role="status" aria-live="polite"></pre>
+    </section>
+
+    <section class="section">
+      <div class="callout"><strong>如果直接採用建議：</strong>下一個 session 應先寫一份 RC1 current-state acceptance spec / checklist，範圍只包含 gate 收斂、文件 supersession、macOS/Windows 高風險驗收；不要在同一輪新增產品功能。</div>
+    </section>
+  </div>
+
+  <div id="verification" class="tab-content" role="tabpanel" aria-labelledby="tab-verification">
+    <section class="section">
+      <div class="section-head"><div><h2>獨立覆核（2026-07-10 實測）</h2><p class="section-lead">由另一個 session 對本報告所有可驗證宣稱重新執行命令與檔案抽查；九項宣稱 9/9 屬實。</p></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>報告宣稱</th><th>覆核結果</th><th>實測證據</th></tr></thead>
+          <tbody>
+            <tr><td><code>cargo fmt --check</code> 失敗：3 檔 / 4 hunks</td><td><span class="badge pass">屬實</span></td><td><code>db_service.rs:528</code>、<code>env_path.rs:331</code>、<code>ssh_service.rs:934/1262</code>；exit 1</td></tr>
+            <tr><td>Vitest 103 files / 1,036 tests 全綠</td><td><span class="badge pass">屬實</span></td><td>13.93s 全數通過；localStorage noise 亦如報告所述</td></tr>
+            <tr><td><code>clippy -D warnings</code> + 298 Rust tests</td><td><span class="badge pass">屬實</span></td><td>clippy exit 0；298 passed / 0 failed</td></tr>
+            <tr><td>lint 0 errors / 43 warnings</td><td><span class="badge pass">屬實</span></td><td>✖ 43 problems (0 errors, 43 warnings)</td></tr>
+            <tr><td>工作樹 47 tracked + 10 untracked</td><td><span class="badge pass">屬實</span></td><td>git status 逐檔清點吻合</td></tr>
+            <tr><td>M5 GUI 驗收 0 / 32</td><td><span class="badge pass">屬實</span></td><td><span class="path">.superpowers/sdd/m5-task-20-apptest-report.md</span>：PASS 0 / UNVERIFIED 32</td></tr>
+            <tr><td>M6、ACP checklist 全未勾</td><td><span class="badge pass">屬實</span></td><td>M6 48 項、ACP 23 項全為 <code>[ ]</code></td></tr>
+            <tr><td>M6 計畫仍標「草案」</td><td><span class="badge pass">屬實</span></td><td>檔頭明載「草案，待使用者確認」</td></tr>
+            <tr><td>M4 spike NO-GO vs 現況 hybrid 漂移</td><td><span class="badge pass">屬實</span></td><td>spike 明寫 NO-GO；<code>Cargo.toml</code> 已啟用 <code>tauri/unstable</code>、<code>preview_webview.rs</code> 存在</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>覆核發現的瑕疵</h2><p class="section-lead">皆為小瑕疵，不影響報告結論。</p></div></div>
+      <div class="grid-3">
+        <article class="card">
+          <span class="badge pending">可追溯性</span>
+          <h3>「waived」是報告自己的改述</h3>
+          <p>全 repo 只有本報告出現 "waived" 一詞。ACP 結案 HTML 實際措辭為：舊 build 失敗「與 ACP 無關……故 gate 收緊為『ACP 範圍』」。語意等同豁免、改述公允，但引用時應標明是詮釋而非引文。</p>
+        </article>
+        <article class="card">
+          <span class="badge pending">未附量測</span>
+          <h3>少數宣稱屬推測</h3>
+          <p>bundle 2.55 MB chunk 對啟動的影響尚無量測（報告已自承）；三條候選方向的評分為分析性主觀分數（報告亦有揭露）。</p>
+        </article>
+        <article class="card">
+          <span class="badge pending">可能遺漏</span>
+          <h3>pi-acp startupInfo 缺口</h3>
+          <p>ACP 驗收範圍未提及 pi-acp <code>_meta.piAcp.startupInfo</code> 目前被 yuzora 丟棄的已知缺口；若 RC1 要驗三 agent 實機，建議併入驗收矩陣。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><div><h2>覆核判定</h2></div></div>
+      <div class="grid-2">
+        <article class="card dark">
+          <span class="badge pass">同意推薦路線 A</span>
+          <h3>核心論點被數據強力支撐</h3>
+          <p>「專案缺的不是功能，是同一套證據閉環」：自動測試 1,334 項全綠（1,036 前端 + 298 Rust），但 GUI／實機驗收累積 0/32 + 48 + 23 項未勾；quick checks 三件套確實漏掉今天就存在的 rustfmt CI blocker。</p>
+          <ul>
+            <li>「不要照舊 checklist 從頭跑」判斷正確——M4 iframe-only 漂移已實證。</li>
+            <li>P0 範圍收斂得當：只修 4 個 fmt hunks + 本批次 3 個 lint warnings。</li>
+            <li>P3「無 Windows 環境就標 platform-limited」處理誠實。</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>覆核後的下一步</h3>
+          <p>rustfmt 這個唯一確定的 CI blocker 只有 4 hunks，修復成本極低。若採納路線 A，下一步為撰寫 RC1 current-state acceptance spec（gate 收斂 + 文件 supersession + macOS/Windows 高風險驗收矩陣），不加新功能。</p>
+          <p class="path">覆核方式：重跑 build/test/lint/fmt/clippy/cargo test 並抽查 spike、checklist、progress、closeout 原文。</p>
+        </article>
+      </div>
+    </section>
+  </div>
+</div>
+</main>
+<footer class="footer">
+  <div class="container">Yuzora 下一步分析 · 2026-07-10 · HTML-first report · 報告本身位於 <span class="path">docs/html/yuzora-next-step-analysis-report-2026-07-10.html</span></div>
+</footer>
+<script>
+function activateTab(tab, id, focusTab = false) {
+  document.querySelectorAll('.tab').forEach((item) => {
+    item.classList.remove('active');
+    item.setAttribute('aria-selected', 'false');
+    item.tabIndex = -1;
+  });
+  document.querySelectorAll('.tab-content').forEach((content) => content.classList.remove('active'));
+  tab.classList.add('active');
+  tab.setAttribute('aria-selected', 'true');
+  tab.tabIndex = 0;
+  document.getElementById(id).classList.add('active');
+  if (focusTab) tab.focus();
+}
+function showTab(event, id) {
+  activateTab(event.currentTarget, id);
+  window.scrollTo({ top: document.querySelector('main').offsetTop - 8, behavior: 'smooth' });
+}
+function handleTabKey(event) {
+  const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+  if (!keys.includes(event.key) || !event.target.matches('[role="tab"]')) return;
+  event.preventDefault();
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const current = tabs.indexOf(event.target);
+  const next = event.key === 'Home'
+    ? 0
+    : event.key === 'End'
+      ? tabs.length - 1
+      : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  const target = tabs[next];
+  activateTab(target, target.getAttribute('aria-controls'), true);
+}
+function syncScore(name) {
+  document.getElementById('out-' + name).textContent = document.getElementById('score-' + name).value;
+}
+function reviewPayload() {
+  return {
+    artifact: 'docs/html/yuzora-next-step-analysis-report-2026-07-10.html',
+    reviewed_at: new Date().toISOString(),
+    scores: {
+      completeness: Number(document.getElementById('score-completeness').value),
+      evidence: Number(document.getElementById('score-evidence').value),
+      actionability: Number(document.getElementById('score-actionability').value),
+      risk_coverage: Number(document.getElementById('score-risk').value),
+      next_step_readiness: Number(document.getElementById('score-readiness').value)
+    },
+    approved: {
+      rc1_closure_first: document.getElementById('approve-route').checked,
+      m7_release_hardening_candidate: document.getElementById('approve-m7').checked,
+      preview_hybrid_requires_adr_and_gui_evidence: document.getElementById('approve-preview').checked
+    },
+    comments: [{ section: 'overall', note: document.getElementById('review-comment').value.trim(), severity: 'user' }],
+    next_prompt: '依照 Yuzora 下一步分析報告，先規劃 RC1 current-state acceptance：清完整 CI gate、收斂過時文件、建立 macOS/Windows 高風險驗收矩陣。不要實作新功能，先提出 spec 給我確認。'
+  };
+}
+async function writeClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const helper = document.createElement('textarea');
+  helper.value = text;
+  helper.setAttribute('readonly', '');
+  helper.style.position = 'fixed';
+  helper.style.opacity = '0';
+  document.body.appendChild(helper);
+  helper.select();
+  const copied = document.execCommand('copy');
+  helper.remove();
+  if (!copied) throw new Error('Clipboard API unavailable');
+}
+async function copyText(text, label) {
+  const status = document.getElementById('copy-status');
+  status.style.display = 'block';
+  try {
+    await writeClipboard(text);
+    status.textContent = label + '\n\n' + text;
+  } catch (error) {
+    status.textContent = '複製失敗，請手動選取以下內容：\n\n' + text;
+  }
+}
+function copyFeedback() {
+  void copyText(JSON.stringify(reviewPayload(), null, 2), '已複製回饋 JSON');
+}
+function copyNextPrompt() {
+  void copyText(reviewPayload().next_prompt, '已複製建議 Prompt');
+}
+</script>
+</body>
+</html>

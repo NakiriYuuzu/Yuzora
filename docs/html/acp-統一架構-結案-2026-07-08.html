@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACP 統一架構 · 實作結案 · yuzora</title>
+<style>
+:root{--font-display:Copernicus,"Noto Serif TC",Georgia,serif;--font-sans:StyreneB,Inter,system-ui,"PingFang TC","Noto Sans TC",sans-serif;--font-mono:"JetBrains Mono","Fira Code",ui-monospace,monospace;--bg:#faf9f5;--surface:#efe9de;--soft:#f5f0e8;--dark:#181715;--text:#141413;--text2:#6c6a64;--border:#e6dfd8;--accent:#cc785c;--accent2:#a9583e;--al:#f5f0e8;--ok:#5db872;--warn:#d4a017;--err:#c64545;--info:#5db8a6;--r:8px;--rl:12px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font-sans);background:var(--bg);color:var(--text);line-height:1.65;padding:2rem}
+h1,h2,h3{font-family:var(--font-display);font-weight:400;letter-spacing:-.02em}
+.container{max-width:980px;margin:0 auto}
+header{margin-bottom:2rem}
+header .label{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--accent);font-weight:600}
+header h1{font-size:2.1rem;margin:.25rem 0}
+header .meta{color:var(--text2);font-size:.9rem}
+.tldr{background:var(--al);border-left:4px solid var(--accent);border-radius:var(--r);padding:1.25rem 1.4rem;margin-bottom:1.5rem}
+.tldr h3{font-size:.8rem;text-transform:uppercase;letter-spacing:.1em;color:var(--accent);margin-bottom:.5rem}
+.tldr p{margin-bottom:.5rem}.tldr p:last-child{margin-bottom:0}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-bottom:1.5rem}
+.mc{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:1.1rem 1.25rem}
+.mc .v{font-size:1.9rem;font-weight:700;font-family:var(--font-display)}
+.mc .l{font-size:.8rem;color:var(--text2);margin-top:.15rem}
+.mc.ok .v{color:var(--ok)}.mc.warn .v{color:var(--warn)}.mc.alert .v{color:var(--err)}
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:1.5rem;flex-wrap:wrap}
+.tab{padding:.7rem 1.1rem;border:none;background:none;cursor:pointer;font-size:.9rem;font-weight:600;color:var(--text2);border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}.tab:hover{color:var(--text)}
+.tc{display:none}.tc.active{display:block}
+section{margin-bottom:2rem}section h2{font-size:1.35rem;margin-bottom:1rem}section>p{margin-bottom:1rem}
+.phase{border:1px solid var(--border);border-radius:var(--rl);margin-bottom:1rem;background:var(--soft);overflow:hidden}
+.phase>summary{cursor:pointer;padding:.9rem 1.1rem;display:flex;align-items:center;gap:.6rem;font-weight:600;list-style:none;flex-wrap:wrap}
+.phase>summary::-webkit-details-marker{display:none}
+.phase>summary::before{content:'▸';color:var(--accent);font-size:.85rem;transition:transform .15s}
+.phase[open]>summary::before{transform:rotate(90deg)}
+.phase .body{padding:.4rem 1.2rem 1.2rem;border-top:1px solid var(--border)}
+.phase .body ul{margin:.4rem 0 .4rem 1.1rem}.phase .body li{margin-bottom:.3rem}
+.badge{font-size:.68rem;font-weight:700;padding:.12rem .5rem;border-radius:999px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.b-ok{background:#e0f0e2;color:#2f7d43}.b-fix{background:#f7e4d8;color:#b45309}.b-crit{background:#fbe3e3;color:#a5322f}
+code{font-family:var(--font-mono);font-size:.85em;background:rgba(20,20,19,.05);padding:.05rem .3rem;border-radius:4px}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{text-align:left;padding:.6rem .7rem;border-bottom:2px solid var(--border);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text2)}
+td{padding:.55rem .7rem;border-bottom:1px solid var(--border);vertical-align:top}tr:hover td{background:var(--soft)}
+.callout{border-radius:var(--r);padding:.8rem 1rem;margin:.6rem 0;font-size:.92rem}
+.callout.warn{background:#fbf3e0;border-left:3px solid var(--warn)}
+.callout.danger{background:#fbe8e8;border-left:3px solid var(--err)}
+.callout.info{background:#e2f1ee;border-left:3px solid var(--info)}
+.callout.good{background:#e5f2e8;border-left:3px solid var(--ok)}
+footer{margin-top:3rem;padding-top:1.2rem;border-top:1px solid var(--border);font-size:.8rem;color:var(--text2)}
+@media (max-width:768px){body{padding:1rem}.metrics{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+<div class="label">yuzora · AgentZone / ACP</div>
+<h1>ACP 統一架構 — 實作結案</h1>
+<p class="meta">claude / codex / pi 三選 · Subagent-Driven 執行（git-free）· 2026-07-08 · 計畫 <code>docs/superpowers/plans/2026-07-07-acp-unified-architecture.md</code></p>
+</header>
+
+<div class="tldr">
+<h3>TL;DR</h3>
+<p><b>12 個程式碼 task 全數完成並各自通過對抗式審查；最終整枝審查再抓出並修掉一個 Critical 跨 task 缺陷。</b>ACP 層已從「綁死 pi 的 singleton」升級成：Settings 三選 preset、per-session agent picker、router 依 <code>(command, cwd)</code> 建子連線並修好 P10、auth retry 保住原 agent、workspace 徽章。</p>
+<p><b>驗證（範圍化 gate）：</b>ACP 檔 <code>tsc --noEmit</code> 零錯、<b>99 個 ACP 測試全綠</b>。全枝 14 個 tracked 檔（+654/−104）＋ 6 個新檔。<b>全程無 git 操作</b>（依約束，改動留在工作區）。</p>
+<p><b>全量 build/test 現已全綠</b>（db WIP 收拾後 <code>bun run build</code> exit 0、<b>1018 tests passed</b>）。<b>Task 3.3 gui-acceptance 由使用者決定 waive</b>——app 已 build+裝+computer-use 授權，但 CU display 當下不可用；使用者指示不需跑實機驗收。</p>
+</div>
+
+<div class="metrics">
+<div class="mc ok"><div class="v">12/12</div><div class="l">程式碼 task 完成</div></div>
+<div class="mc ok"><div class="v">99</div><div class="l">ACP 測試全綠</div></div>
+<div class="mc warn"><div class="v">6</div><div class="l">審查攔下的真實缺陷</div></div>
+<div class="mc"><div class="v">20</div><div class="l">改動檔（14 改+6 新）</div></div>
+</div>
+
+<div class="tabs">
+<button class="tab active" onclick="st(event,'done')">完成內容</button>
+<button class="tab" onclick="st(event,'bugs')">審查攔下的缺陷</button>
+<button class="tab" onclick="st(event,'gate')">驗證與 gate</button>
+<button class="tab" onclick="st(event,'open')">未完成與後續</button>
+</div>
+
+<!-- DONE -->
+<div id="done" class="tc active">
+<section>
+<h2>四階段 · 12 個 task</h2>
+
+<details class="phase" open><summary><span class="badge b-ok">Phase 0</span> 協定套件遷移</summary>
+<div class="body"><ul>
+<li><b>0.1</b> <code>@zed-industries/agent-client-protocol@0.4.5</code> → <code>@agentclientprotocol/sdk@1.2.0</code>（精確 pin）。5 個 symbol drop-in、972→ 測試全綠。</li>
+</ul></div></details>
+
+<details class="phase" open><summary><span class="badge b-ok">Phase 1</span> Tier 1 全域選擇器（6 task）</summary>
+<div class="body"><ul>
+<li><b>1.1</b> <code>src/lib/agentPresets.ts</code> 登錄表（單一真相源）：pi / Claude / codex，command 精確 pin。</li>
+<li><b>1.2</b> AgentSection 下拉支援 pi/claude/codex/custom（含 custom 往返資料遺失 fix）。</li>
+<li><b>1.3</b> 收斂 agentStore 內重複的 <code>resolveAgentCommand</code>——修好 claude/codex terminal-login 誤用 pi binary。</li>
+<li><b>1.4</b> <code>SessionState.agentId</code> + <code>newSession(cwd, agentId?)</code> 選用參數（保住 9+ 處既有測試呼叫）。</li>
+<li><b>1.5</b> run tone regression lock（既有行為，非新功能）。</li>
+<li><b>1.6</b> <code>AuthRequiredState.agentId</code>——auth retry 保住原 agent（含 sendPrompt 保既有 session agent + agentId 覆寫 bug fix）。</li>
+</ul></div></details>
+
+<details class="phase" open><summary><span class="badge b-ok">Phase 2</span> Router + P10 修復（4 task）</summary>
+<div class="body"><ul>
+<li><b>2.1</b> <code>src/agent/agentRouter.ts</code>——<b>key by <code>(command, cwd)</code></b>，同 agent 不同 cwd 各自 spawn（<b>修好 P10 cwd 綁定</b>）、省略 agentId 走 settings（保留 custom）。含 loadSession TOCTOU 與 NUL-byte 分隔字元 fix。</li>
+<li><b>2.2</b> <code>createAcpConnection</code> 公開 <code>processId()</code>。</li>
+<li><b>2.3</b> AgentBridge 改用 router；recovery 只跑一次、<b>不再 <code>reset()</code></b>、排除現役 pid（<b>P10 不再清空狀態</b>）。</li>
+<li><b>2.4</b> AgentNavContent 依 cwd 分流（P10 Stage B）。</li>
+</ul></div></details>
+
+<details class="phase" open><summary><span class="badge b-ok">Phase 3</span> Tier 2 per-session（2 code task）</summary>
+<div class="body"><ul>
+<li><b>3.1</b> new-session agent picker（選 pi/claude/codex，未選時尊重全域含 custom）。</li>
+<li><b>3.2</b> WorkspaceRail 每個 workspace 的 agent 總數/執行中數徽章 + <code>selectWorkspaceAgentCounts</code> selector。</li>
+<li><b>3.3</b> gui-acceptance 實機驗收 — <b>未完成</b>（見「未完成」分頁）。</li>
+</ul></div></details>
+</section>
+</div>
+
+<!-- BUGS -->
+<div id="bugs" class="tc">
+<section>
+<h2>對抗式審查攔下的真實缺陷</h2>
+<p>SDD 的逐 task 審查 + 最終整枝審查在合併前攔下 6 個真實缺陷——這是「個別綠、組合壞」最容易漏的部分。</p>
+<div style="overflow-x:auto"><table>
+<thead><tr><th>階段</th><th>缺陷</th><th>後果</th><th>狀態</th></tr></thead>
+<tbody>
+<tr><td>1.2</td><td>custom command 在 preset 往返時被清空</td><td>使用者自訂 command 資料遺失</td><td><span class="badge b-ok">已修</span></td></tr>
+<tr><td>1.4</td><td>nav 渲染字面 <code>"undefined"</code>（agentId 缺失）</td><td>UI 顯示 undefined</td><td><span class="badge b-ok">已修</span></td></tr>
+<tr><td>1.6</td><td><code>AuthRequiredState.agentId</code> 設必填 → build 紅</td><td><code>agentZonePanel.test.tsx</code> tsc 失敗</td><td><span class="badge b-ok">已修</span></td></tr>
+<tr><td>1.6</td><td>sendPrompt 每次覆寫 session.agentId 為預設</td><td>codex session 送一次 prompt 後變回 pi</td><td><span class="badge b-ok">已修</span></td></tr>
+<tr><td>2.1</td><td>分隔字元是 raw NUL byte 嵌在原始碼</td><td>git diff 變 binary、grep 找不到</td><td><span class="badge b-ok">已修</span></td></tr>
+<tr><td><b>整枝</b></td><td><b>F1 terminal login 忽略 picker 選的 agent</b></td><td><b>選 claude/codex 後 auth 登入無限迴圈、實質不可用</b></td><td><span class="badge b-ok">已修</span></td></tr>
+</tbody>
+</table></div>
+<div class="callout danger"><b>最關鍵：F1（Critical）</b>只有最終跨 task 審查看得到。Task 1.3 把 login 綁全域設定、Task 1.6 只把 <code>retryAfterLogin</code> 接上 <code>authRequired.agentId</code>、卻漏了 <code>beginTerminalLogin</code>——三個 task 各自綠，組合起來讓招牌的多 agent auth 對 claude/codex 完全失效。已改為依 <code>authRequired.agentId</code> 用 <code>commandForAgent</code> 解 login command。</div>
+<div class="callout info">另外整枝審查的 F2（custom-global「+」回歸）已修；F3（StrictMode recovery）經查為誤報（Task 2.3 審查早已反證，因 <code>startupTraceSettled</code> timing），僅做無害簡化；F4（nav/rail cwd 正規化不對稱）已修並補 null 守衛。</div>
+</section>
+</div>
+
+<!-- GATE -->
+<div id="gate" class="tc">
+<section>
+<h2>驗證方式（範圍化 gate）</h2>
+<div class="callout warn"><b>為何範圍化：</b>執行期間你並行的 db/context-menu WIP（<code>DatabaseNavContent.tsx</code>、<code>dbStore.ts</code>、<code>contextMenuDefs.ts</code> 等）進入工作區且不完整，使全量 <code>bun run build</code>／<code>bun run test</code> 出現 db 相關 tsc 錯與測試失敗。這與 ACP 無關，我全程未碰你的檔。故 gate 收緊為「ACP 範圍」。</div>
+<h3 style="margin:1rem 0 .4rem">權威 gate（每個 task 都跑）</h3>
+<ul style="margin-left:1.1rem">
+<li><b>tsc：</b><code>bunx tsc --noEmit | grep 'error TS' | grep -v &lt;db 檔&gt;</code> → 須為空（抓 interface 改動波及 consumer 檔的回歸）。</li>
+<li><b>測試：</b><code>bun run test -- &lt;ACP 檔切片&gt;</code> → 全綠。最終彙總 <b>99 個 ACP 測試通過</b>。</li>
+</ul>
+<div class="callout good">結案時：ACP 範圍 <code>tsc</code> <b>零錯</b>、<b>99 個 ACP 測試全綠</b>。每個 task 皆 fresh implementer → fresh reviewer → fix loop；控制端對每個 gate 親自 CLI 覆核（IDE 診斷常 stale，以 CLI 為權威）。</div>
+<h3 style="margin:1rem 0 .4rem">變更規模</h3>
+<p>14 個 tracked 檔 <b>+654 / −104</b>，6 個新檔（<code>agentPresets.ts</code>、<code>agentRouter.ts</code> 及各測試）。改動精簡、surgical。</p>
+</section>
+</div>
+
+<!-- OPEN -->
+<div id="open" class="tc">
+<section>
+<h2>未完成與後續</h2>
+<details class="phase" open><summary><span class="badge b-crit">未完成</span> Task 3.3 · gui-acceptance 實機驗收</summary>
+<div class="body">
+<p>需對 pi / claude / codex 各跑一次：Settings 選 agent → picker 建 session → 送 prompt → 確認連線或 auth 登入流程 → tone/transcript/徽章。卡在兩個外部前提：</p>
+<ul>
+<li><b>① app 要能 build：</b>目前你並行的 db/context-menu WIP 讓 <code>bun run build</code> 紅（約 10 個 db tsc 錯）。需你先把該 WIP 修好或 stash，app 才編得過、才能啟動實機驗。</li>
+<li><b>② agent 環境：</b>三個 binary（<code>pi-acp</code> / <code>claude-agent-acp</code> / <code>codex-acp</code>）與各自 auth——pi=env-var、claude=Anthropic key/oauth、codex=OpenAI 登入。</li>
+</ul>
+<p>F1 的下游行為（pi binary 收到 codex login args 的實際結果）、三 agent 真的起得來、明暗徽章可讀性 → 都待此步實機確認。</p>
+</div></details>
+
+<h3 style="margin:1.2rem 0 .5rem">記入 ledger 的後續獨立項</h3>
+<ul style="margin-left:1.1rem">
+<li><b>ClientSideConnection deprecation：</b>新 SDK 將 <code>ClientSideConnection</code> 標 deprecated、建議改 <code>client({name}).connectWith(...)</code> builder。目前仍可用、已 pin 1.2.0，與多 agent 正交，列為後續重構。</li>
+<li><b>Minor 技術債：</b>AgentBridge <code>ownedProcessIds()</code> 缺 try/catch（目前不可觸發）；<code>settingsStorage</code>/<code>agentStore</code> 尚有 <code>TERMINAL_SETTINGS_STORAGE_KEY</code> 重複字面。</li>
+</ul>
+
+<div class="callout info"><b>Git：</b>依約束<b>全程未執行任何 git 操作</b>（add/commit/push/worktree/stash 皆無）。ACP 的 20 個檔改動與你的 db WIP 一起留在工作區——請你自行決定如何分開 commit。ledger 與各 task 報告在 <code>scratchpad/sdd/</code>。</div>
+</section>
+</div>
+
+<footer>yuzora · ACP 統一架構實作結案 · 2026-07-08 · Subagent-Driven（git-free）· 12 code task + 最終整枝審查修正 · 未執行 git 操作</footer>
+</div>
+<script>
+function st(e,id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tc').forEach(c=>c.classList.remove('active'));document.getElementById(id).classList.add('active');e.target.classList.add('active')}
+</script>
+</body>
+</html>

@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACP 統一架構評估 · claude / codex / pi · yuzora</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", "Noto Serif TC", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+    --shadow-md: 0 4px 12px rgba(20,20,19,0.10);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 980px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2.1rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem 1.4rem; margin-bottom: 1.5rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+.tldr p { margin-bottom: 0.5rem; }
+.tldr p:last-child { margin-bottom: 0; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.1rem 1.25rem; }
+.metric-card .value { font-size: 1.9rem; font-weight: 700; font-family: var(--font-display); }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.15rem; }
+.metric-card.alert .value { color: var(--color-error); }
+.metric-card.good .value { color: var(--color-success); }
+.metric-card.warn .value { color: var(--color-warning); }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.7rem 1.1rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.35rem; margin-bottom: 1rem; }
+section > p { margin-bottom: 1rem; }
+
+.issue { border: 1px solid var(--color-border); border-radius: var(--radius-lg); margin-bottom: 1rem; background: var(--color-surface-soft); overflow: hidden; }
+.issue > summary { cursor: pointer; padding: 0.9rem 1.1rem; display: flex; align-items: center; gap: 0.6rem; font-weight: 600; list-style: none; flex-wrap: wrap; }
+.issue > summary::-webkit-details-marker { display: none; }
+.issue > summary::before { content: '▸'; color: var(--color-accent); font-size: 0.85rem; transition: transform 0.15s; }
+.issue[open] > summary::before { transform: rotate(90deg); }
+.issue > summary .idtag { font-family: var(--font-mono); font-size: 0.8rem; background: var(--color-surface-dark); color: var(--color-on-dark); padding: 0.1rem 0.45rem; border-radius: 5px; }
+.issue > summary .title { flex: 1; min-width: 180px; }
+.issue .body { padding: 0.4rem 1.2rem 1.2rem; border-top: 1px solid var(--color-border); }
+.issue .body h4 { font-family: var(--font-sans); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-accent); margin: 1rem 0 0.35rem; font-weight: 700; }
+.issue .body p { margin-bottom: 0.4rem; }
+.issue .body ul { margin: 0.2rem 0 0.4rem 1.1rem; }
+.issue .body li { margin-bottom: 0.2rem; }
+
+.badge { font-size: 0.68rem; font-weight: 700; padding: 0.12rem 0.5rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+.badge.have { background: #e0f0e2; color: #2f7d43; }
+.badge.gap { background: #f7e4d8; color: #b45309; }
+.badge.block { background: #fbe3e3; color: #a5322f; }
+.badge.eff { background: var(--color-surface-dark); color: var(--color-on-dark); }
+.badge.dep { background: #efe4f2; color: #7a4a86; }
+
+code, .mono { font-family: var(--font-mono); font-size: 0.85em; background: rgba(20,20,19,0.05); padding: 0.05rem 0.3rem; border-radius: 4px; }
+.evi { font-family: var(--font-mono); font-size: 0.78rem; color: var(--color-text-secondary); }
+.evi li { margin-bottom: 0.15rem; }
+
+.callout { border-radius: var(--radius-md); padding: 0.8rem 1rem; margin: 0.6rem 0; font-size: 0.92rem; }
+.callout.warn { background: #fbf3e0; border-left: 3px solid var(--color-warning); }
+.callout.danger { background: #fbe8e8; border-left: 3px solid var(--color-error); }
+.callout.info { background: #e2f1ee; border-left: 3px solid var(--color-info); }
+.callout.good { background: #e5f2e8; border-left: 3px solid var(--color-success); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th { text-align: left; padding: 0.6rem 0.7rem; border-bottom: 2px solid var(--color-border); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+tr:hover td { background: var(--color-surface-soft); }
+td .ok { color: var(--color-success); font-weight: 700; }
+td .no { color: var(--color-error); font-weight: 700; }
+td .maybe { color: var(--color-warning); font-weight: 700; }
+
+.timeline { position: relative; padding-left: 1.8rem; }
+.timeline::before { content: ''; position: absolute; left: 6px; top: 4px; bottom: 4px; width: 2px; background: var(--color-border); }
+.timeline-item { position: relative; margin-bottom: 1.1rem; }
+.timeline-item::before { content: ''; position: absolute; left: -1.8rem; top: 0.35rem; width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); }
+.timeline-item.t1::before { background: var(--color-success); }
+.timeline-item.t2::before { background: var(--color-warning); }
+.timeline-item.block::before { background: var(--color-error); }
+.timeline-item .phase { font-size: 0.78rem; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+.timeline-item .content { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.8rem 1rem; margin-top: 0.4rem; }
+.timeline-item .content strong { color: var(--color-text); }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.8rem; margin-bottom: 1rem; }
+.score { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; }
+.score .crit { font-size: 0.8rem; color: var(--color-text-secondary); }
+.score .stars { font-size: 1.05rem; color: var(--color-accent); letter-spacing: 2px; margin-top: 0.2rem; }
+.review-box { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; }
+.review-box label { display: block; font-size: 0.85rem; font-weight: 600; margin: 0.5rem 0 0.2rem; }
+.review-box textarea { width: 100%; min-height: 70px; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.5rem; font-family: var(--font-sans); font-size: 0.88rem; resize: vertical; }
+
+.actions { display: flex; gap: 0.8rem; margin-top: 1.5rem; flex-wrap: wrap; }
+.btn { padding: 0.55rem 1.15rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.88rem; font-weight: 600; color: var(--color-text); }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); color: var(--color-on-accent); border-color: var(--color-accent); }
+
+footer { margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--color-border); font-size: 0.8rem; color: var(--color-text-secondary); }
+
+@media print { .tabs, .actions, .review-box textarea { display: none; } .tab-content { display: block !important; } .issue { break-inside: avoid; } .issue .body { display: block !important; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">yuzora · AgentZone / ACP</div>
+        <h1>ACP 統一架構評估</h1>
+        <p class="meta">問題：能否把 ACP 做成統一架構，預設提供 <b>claude · codex · pi</b> 三選？&middot; 2026-07-07 &middot; 錨定原始碼 file:line &middot; 姊妹文件：<code>acp-功能分析-2026-07-07.html</code>（缺陷／功能分析）</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR — 可行，而且比想像近</h3>
+        <p><b>結論：可行；現有程式碼已經替統一架構鋪好約 70% 的路。</b>ACP 本質就是「一個 client 對多種 agent」的抽象，而 yuzora 目前的三層剛好都站在對的邊界上：<b>傳輸層（Rust <code>agent_process</code>）完全 agent-agnostic</b>（只 spawn 任意 command + ndjson 管線，零 pi 邏輯）、<b>協定層用的是標準 Zed ACP</b>（<code>ClientSideConnection</code> + <code>initialize/newSession/prompt/cancel</code>）、<b>啟動 command 已是可注入的</b>，且 <b>Settings 早已存在 <code>preset</code> 欄位</b>（<code>"pi" | "custom"</code>）與 <code>resolveAgentCommand()</code>。</p>
+        <p>換句話說：<b>今天使用者其實已能用「custom」欄位手打 <code>claude-code-acp</code> 的 command 跑起來</b>。要做的是把它從「一個文字框」升級成「claude / codex / pi 一級選單」。</p>
+        <p><b>兩個層級（可分批）：</b><b>Tier 1 全域 agent 選擇器</b>（S–M、低風險：擴 preset 登錄表＋下拉＋pi 專屬欄位降級）→ 立刻可用的三選；<b>Tier 2 per-session agent</b>（L：連線改為 per-(agent,cwd)、SessionState 帶 <code>agentId</code>）→ 才能「這個 session 用 claude、那個用 pi」，<b>而它與缺陷分析裡的 P10 同一個根因（singleton 連線）</b>。</p>
+        <p><b>更新（2026-07-07 查證 npm）：claude 與 codex 都有官方 org 已發布的 adapter。</b>整個 ACP 生態已從 <code>@zed-industries/*</code> scope 遷移到 <code>@agentclientprotocol/*</code>：claude → <code>@agentclientprotocol/claude-agent-acp@0.57.0</code>、codex → <code>@agentclientprotocol/codex-acp@1.1.0</code>，兩者同一組 Zed 核心維護者（cirwin 等）、掛在官方 <code>github.com/agentclientprotocol</code> org。<b>codex 不再是未知數。</b></p>
+        <div class="callout danger" style="margin-top:0.6rem"><b>⚠ 連帶維護債：專案自己的協定套件也被 deprecated。</b><code>package.json:56</code> 的 <code>@zed-industries/agent-client-protocol@^0.4.5</code> 已改名為 <code>@agentclientprotocol/sdk</code>（現版 <b>1.2.0</b>）。這是 <b>0.4 → 1.2 的 major 跳版</b>，不是無痛替換——遷移前要查 <code>ClientSideConnection</code> 等 API 是否有 breaking change，並依 major 升級慣例檢查 lockfile 雙版本。<b>此項與統一架構獨立，但建議一併排進去。</b></div>
+        <p><b>兩個仍成立的警訊：</b>① 各 agent 的 <b>auth UX 不同、須實機驗</b>（ACP 的 <code>authMethods</code> 機制已備好，但 pi=env-var／claude=Anthropic key・oauth／codex=OpenAI 登入，流程要真跑）② pi 專屬的 <code>_meta.piAcp</code> 功能（running 點、P9 startupInfo）對 claude/codex <b>會降級成 no-op</b>，需補 agent-agnostic 後備。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card good"><div class="value">~70%</div><div class="label">現況已具備（傳輸／協定／command 注入／preset）</div></div>
+        <div class="metric-card"><div class="value">6</div><div class="label">待補缺口</div></div>
+        <div class="metric-card alert"><div class="value">1</div><div class="label">架構阻斷：singleton 連線（= P10）</div></div>
+        <div class="metric-card warn"><div class="value">2</div><div class="label">建議分層：Tier 1 / Tier 2</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab(event,'overview')">結論與現況</button>
+        <button class="tab" onclick="showTab(event,'gaps')">已具備 vs 缺口</button>
+        <button class="tab" onclick="showTab(event,'agents')">三 agent 對照</button>
+        <button class="tab" onclick="showTab(event,'roadmap')">落地路線</button>
+        <button class="tab" onclick="showTab(event,'risks')">風險與未決</button>
+        <button class="tab" onclick="showTab(event,'eval')">評分回饋</button>
+    </div>
+
+    <!-- ============ OVERVIEW ============ -->
+    <div id="overview" class="tab-content active">
+        <section>
+            <h2>為什麼「已經 70% 到位」</h2>
+            <p>把一次 prompt 的路徑攤開，會發現 <b>pi 的耦合只集中在極少數點</b>，主幹是 agent 中立的。下圖：綠色邊界＝已 agent-agnostic；橘色＝pi 專屬耦合點；紅色＝擋住 per-session 的 singleton。</p>
+            <div style="overflow-x:auto;">
+            <svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;font-family:var(--font-mono);">
+                <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#6c6a64"/></marker></defs>
+
+                <!-- Settings -->
+                <rect x="20" y="24" width="200" height="60" rx="8" fill="#e0f0e2" stroke="#2f7d43"/>
+                <text x="120" y="44" font-size="12" text-anchor="middle" fill="#141413">AgentSettings</text>
+                <text x="120" y="60" font-size="9" text-anchor="middle" fill="#2f7d43">preset: pi | custom</text>
+                <text x="120" y="74" font-size="9" text-anchor="middle" fill="#2f7d43">resolveAgentCommand()</text>
+
+                <!-- Bridge -->
+                <rect x="270" y="24" width="200" height="60" rx="8" fill="#fbe8e8" stroke="#c64545"/>
+                <text x="370" y="44" font-size="12" text-anchor="middle" fill="#141413">AgentBridge</text>
+                <text x="370" y="60" font-size="9" text-anchor="middle" fill="#a5322f">useMemo(…, []) ← singleton</text>
+                <text x="370" y="74" font-size="9" text-anchor="middle" fill="#a5322f">command: () =&gt; resolve…</text>
+
+                <!-- acpConnection -->
+                <rect x="520" y="24" width="200" height="60" rx="8" fill="#e6ded2" stroke="#e6dfd8"/>
+                <text x="620" y="42" font-size="12" text-anchor="middle" fill="#141413">acpConnection</text>
+                <text x="620" y="58" font-size="9" text-anchor="middle" fill="#6c6a64">標準 ClientSideConnection</text>
+                <text x="620" y="72" font-size="9" text-anchor="middle" fill="#6c6a64">initialize / newSession / prompt</text>
+
+                <!-- Rust -->
+                <rect x="700" y="150" width="180" height="60" rx="8" fill="#181715" stroke="#181715"/>
+                <text x="790" y="170" font-size="12" text-anchor="middle" fill="#faf9f5">agent_process (Rust)</text>
+                <text x="790" y="186" font-size="9" text-anchor="middle" fill="#7fbf8f">spawn 任意 command</text>
+                <text x="790" y="200" font-size="9" text-anchor="middle" fill="#7fbf8f">ndjson stdio · agent 中立</text>
+
+                <!-- meta coupling -->
+                <rect x="360" y="150" width="260" height="60" rx="8" fill="#f5e6de" stroke="#cc785c"/>
+                <text x="490" y="170" font-size="11" text-anchor="middle" fill="#141413">_meta.piAcp 讀取（唯一 pi 耦合）</text>
+                <text x="490" y="186" font-size="9" text-anchor="middle" fill="#a9583e">running / queueDepth · startupInfo(P9)</text>
+                <text x="490" y="200" font-size="9" text-anchor="middle" fill="#a9583e">→ 其他 agent 缺這欄，需降級後備</text>
+
+                <!-- arrows -->
+                <line x1="220" y1="54" x2="268" y2="54" stroke="#6c6a64" stroke-width="1.5" marker-end="url(#ar)"/>
+                <line x1="470" y1="54" x2="518" y2="54" stroke="#6c6a64" stroke-width="1.5" marker-end="url(#ar)"/>
+                <line x1="700" y1="80" x2="770" y2="148" stroke="#6c6a64" stroke-width="1.5" marker-end="url(#ar)"/>
+                <line x1="620" y1="84" x2="560" y2="148" stroke="#cc785c" stroke-width="1.5" marker-end="url(#ar)"/>
+
+                <text x="30" y="250" font-size="10" fill="#2f7d43" font-family="var(--font-sans)">■ 綠＝已 agent 中立（傳輸／協定／command 注入／preset 欄位）</text>
+                <text x="30" y="268" font-size="10" fill="#a9583e" font-family="var(--font-sans)">■ 橘＝pi 專屬耦合（只在 _meta.piAcp 讀取，數點、可降級）</text>
+                <text x="30" y="286" font-size="10" fill="#a5322f" font-family="var(--font-sans)">■ 紅＝singleton 連線，擋住 per-session 多 agent（= 缺陷分析 P10 同根因）</text>
+            </svg>
+            </div>
+        </section>
+
+        <section>
+            <h2>四個「已經到位」的事實（可查證）</h2>
+            <div class="callout good"><b>① 傳輸層完全 agent-agnostic。</b><code>agent_process.rs</code> 的 <code>spawn(command)</code> 只是「用 shell 跑一條字串、把 stdout 逐行 emit、stdin 寫回」，內部無任何 pi 假設。換 agent＝換 command。<span class="evi">src-tauri/src/agent_process.rs:75（<code>spawn(command)</code>）· :439（<code>shell_command</code>）· :604（<code>agent_spawn</code> 收任意 <code>command: String</code>）</span></div>
+            <div class="callout good"><b>② 協定層是標準 Zed ACP，不是 pi 私有協定。</b>用 <code>@zed-industries/agent-client-protocol</code> 的 <code>ClientSideConnection</code>，握手是通用的 <code>initialize({protocolVersion:1, clientCapabilities})</code> → <code>newSession / prompt / cancel / loadSession</code>。claude-code-acp、gemini-cli、codex-acp 講的是同一套協定。<span class="evi">src/agent/acpConnection.ts:544（<code>ClientSideConnection</code>）· :594-600（標準 initialize）· :611-643（session/prompt/cancel）</span></div>
+            <div class="callout good"><b>③ 啟動 command 已是可注入依賴。</b><code>deps.command</code> 可為字串或 thunk，預設才 fallback <code>"bunx pi-acp@0.0.31"</code>。<span class="evi">src/agent/acpConnection.ts:586（<code>typeof deps.command === "function" ? …</code>）· :588（fallback）· AgentBridge.tsx:45（<code>command: () =&gt; resolveAgentCommand(loadAgentSettings())</code>）</span></div>
+            <div class="callout good"><b>④ Settings 早就有 preset 概念與解析函式。</b><code>AgentSettings { preset: "pi" | "custom", command, traceEnabled }</code>，<code>resolveAgentCommand()</code> 已在做「preset → command」的分派。<b>今天選 custom 手打 command 就能換 agent</b>；缺的只是把它做成一級選單。<span class="evi">src/app/workbench/settingsStorage.ts:8（<code>AgentPreset</code>）· :20-24（<code>AgentSettings</code>）· :78-81（<code>resolveAgentCommand</code>）</span></div>
+        </section>
+    </div>
+
+    <!-- ============ GAPS ============ -->
+    <div id="gaps" class="tab-content">
+        <section>
+            <h2>已具備 vs 待補缺口</h2>
+            <p>把「統一架構＋三選」拆成 6 個工項。前 5 項小，第 4 項是唯一的架構級改動（且與 P10 同根因）。</p>
+
+            <details class="issue" open>
+                <summary><span class="idtag">G1</span><span class="title">preset 登錄表：pi | custom → pi | claude | codex | custom</span><span class="badge have">半具備</span><span class="badge eff">S</span></summary>
+                <div class="body">
+                    <h4>現況</h4>
+                    <p><code>AgentPreset = "pi" | "custom"</code>；<code>resolveAgentCommand</code> 只有「pi 回死值、否則回 custom 欄位」兩條路。</p>
+                    <h4>要做</h4>
+                    <p>把 preset 擴成 union，並把「preset → 預設 command」抽成一張登錄表（<code>{ id, label, command, docs }</code>）。<code>resolveAgentCommand</code> 改成查表；SettingsDialog 的 agent 段落把單一 command 文字框換成下拉（選 preset 時帶出預設 command，custom 才可編輯）。<b>零協定改動、零 Rust 改動。</b></p>
+                    <h4>證據 / 落點</h4>
+                    <ul class="evi">
+                        <li>src/app/workbench/settingsStorage.ts:6（<code>DEFAULT_AGENT_COMMAND</code>）· :8 · :78-81（改查表）</li>
+                        <li>src/app/workbench/SettingsDialog.tsx（agent 段落改下拉；目前只 import <code>resolveAgentCommand/loadAgentSettings/AgentSettings</code>）</li>
+                    </ul>
+                    <div class="callout info">pin 版本的教訓仍要守：登錄表裡的 command 都要 pin 版本（bunx 不 pin 會 re-resolve latest → 網路 hang／版本漂移，2026-07-06 EPIPE 即此類）。</div>
+                </div>
+            </details>
+
+            <details class="issue" open>
+                <summary><span class="idtag">G2</span><span class="title">pi 專屬 _meta.piAcp 讀取 → 對其他 agent 降級後備</span><span class="badge gap">缺口</span><span class="badge eff">S</span></summary>
+                <div class="body">
+                    <h4>現況</h4>
+                    <p><code>sessionInfoFromUpdate</code> 讀 <code>_meta.piAcp.{queueDepth, running}</code> 來驅動「執行中」狀態；P9 規劃讀 <code>_meta.piAcp.startupInfo</code>。claude/codex 不會送這欄。</p>
+                    <h4>要做</h4>
+                    <p>兩個都是<b>降級即可、非破壞</b>：<b>running 點</b>改為「有 <code>_meta.piAcp.running</code> 就用，否則以 store 既有的 in-flight/streaming 狀態推斷」——否則 claude/codex 跑起來時「執行中」橘點不會亮。<b>startupInfo（P9）</b>對非 pi agent 就是拿不到 → banner 不顯示，天然無害。</p>
+                    <h4>證據 / 落點</h4>
+                    <ul class="evi">
+                        <li>src/agent/acpConnection.ts:700-703（<code>_meta.piAcp.{queueDepth,running}</code>）· :611-620（newSession 讀 _meta 的落點，見 P9）</li>
+                        <li>src/state/agentStore.ts:327-342（<code>onSessionInfo</code> 驅動 running）· beginTurn/streaming 已是 agent 中立訊號</li>
+                    </ul>
+                </div>
+            </details>
+
+            <details class="issue" open>
+                <summary><span class="idtag">G3</span><span class="title">各 agent auth 流程：機制已備，須逐 agent 實測</span><span class="badge have">機制已備</span><span class="badge eff">M</span></summary>
+                <div class="body">
+                    <h4>現況</h4>
+                    <p>ACP 的 auth 已標準化：<code>initialize</code> 回 <code>authMethods</code>，程式已 <code>normalizeAuthMethods</code> 並有 <code>trackAuthRequired</code> ＋ 終端登入流程（<code>terminalLoginShellCommand</code> 會用 <code>envPrefix + agentCommand + method.args</code> 組登入指令）。</p>
+                    <h4>要做</h4>
+                    <p>機制是通用的，但<b>每個 agent 的 authMethods 內容與登入體感不同</b>：pi 走 env-var 憑證（<code>GEOSENSE_API_KEY / YUUZU_API_KEY</code>）、claude-code-acp 走 Anthropic API key 或 Claude 訂閱 oauth、codex 走 OpenAI/ChatGPT 登入。這些<b>無法在 jsdom 驗</b>，要真的各跑一次登入→授權→prompt。</p>
+                    <h4>證據 / 落點</h4>
+                    <ul class="evi">
+                        <li>src/agent/acpConnection.ts:601（<code>normalizeAuthMethods</code>）· :613/632（<code>trackAuthRequired</code>）</li>
+                        <li>src/state/agentStore.ts:486-491（<code>terminalLoginShellCommand</code>：envPrefix + command + method.args）</li>
+                    </ul>
+                    <div class="callout warn">pi 憑證是 env-var 制、只在 <code>~/.zshrc</code>；<code>env_path.rs</code> 現已搬全 env（非只 PATH），claude/codex 的 key 若也走 env 需確認同樣被帶進 spawn 環境。</div>
+                </div>
+            </details>
+
+            <details class="issue" open>
+                <summary><span class="idtag">G4</span><span class="title">singleton 連線 → connection-per-(agent, cwd)</span><span class="badge block">架構阻斷</span><span class="badge eff">L</span><span class="badge dep">= P10</span></summary>
+                <div class="body">
+                    <h4>現況（這是關鍵）</h4>
+                    <p><code>AgentBridge</code> 用 <code>useMemo(createStoreBackedConnection, [])</code> 建<b>唯一</b>連線；<code>ensureConnection</code> 開頭 <code>if (agent) return</code>——所以 <b>command 只在首次 spawn 時解析一次</b>。後果：</p>
+                    <ul>
+                        <li>在 Settings 改 preset <b>不會即時生效</b>，要等 process 被 kill／重啟。</li>
+                        <li><b>無法「這個 session 用 pi、那個用 claude」同時並存</b>——全 app 綁一個 agent。</li>
+                    </ul>
+                    <p>這正是缺陷分析 <b>P10</b> 的同一個 singleton 根因（P10 是「綁首個 cwd」，此處是「綁首個 agent」）。</p>
+                    <h4>要做</h4>
+                    <p>把連線從 singleton 改為 <b>以 (agentId, cwd) 為 key 的連線池</b>；<code>SessionState</code> 帶 <code>agentId</code>（見 G5），<code>ensureConnection</code> 依 key 找／建連線。<b>Tier 1 可跳過此項</b>（全域單 agent、切換重連即可）；只有要 per-session 多 agent 才必須做。</p>
+                    <div class="callout danger"><b>與 P10 綁定：</b>既然修 P10 本來就要動連線 keying（其 Stage C 就是 connection-per-cwd），<b>建議把 G4 與 P10 一起做</b>——同一塊重構，別分兩次動。</div>
+                    <h4>證據 / 落點</h4>
+                    <ul class="evi">
+                        <li>src/workbench/AgentBridge.tsx:12（<code>useMemo(…, [])</code> singleton）· :45（command thunk 只在首 spawn 求值）</li>
+                        <li>src/agent/acpConnection.ts:485（<code>if (agent) return</code>）</li>
+                    </ul>
+                </div>
+            </details>
+
+            <details class="issue">
+                <summary><span class="idtag">G5</span><span class="title">SessionState 帶 agentId（標示／路由／徽章）</span><span class="badge gap">缺口</span><span class="badge eff">S</span></summary>
+                <div class="body">
+                    <h4>現況</h4>
+                    <p><code>SessionState</code> 有 <code>model / cwd / running / tone …</code> 但<b>沒有 agentId</b>——無法知道某 session 屬於哪個 agent。</p>
+                    <h4>要做</h4>
+                    <p>加 <code>agentId</code> 欄位（newSession 時戳上目前 preset）。用途：session header／nav 標示「pi · claude · codex」小徽章、per-session 路由 prompt/cancel 到對的連線。Tier 1 也建議先加（純標示，成本低）。</p>
+                    <ul class="evi"><li>src/state/agentStore.ts:30-45（<code>SessionState</code> 形狀）· :135-143（newSession 建 session 處戳 agentId）</li></ul>
+                </div>
+            </details>
+
+            <details class="issue">
+                <summary><span class="idtag">G6</span><span class="title">capabilities-aware UI（讀 initialize 的 agentCapabilities）</span><span class="badge gap">選配</span><span class="badge eff">S</span></summary>
+                <div class="body">
+                    <h4>現況</h4>
+                    <p><code>initialize</code> 的回傳目前<b>只取 <code>authMethods</code></b>，其餘 <code>agentCapabilities</code>（支援的 prompt 內容型別：image/audio、embedded context、slash commands…）被忽略。</p>
+                    <h4>要做（可延後）</h4>
+                    <p>讀 <code>agentCapabilities</code>，讓 UI 依 agent 能力調整（例：agent 不支援貼圖就不顯示貼圖入口）。三選能跑不靠這項；屬健壯性 polish。</p>
+                    <ul class="evi"><li>src/agent/acpConnection.ts:594-601（目前只從 initializeResult 取 authMethods）</li></ul>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ AGENTS ============ -->
+    <div id="agents" class="tab-content">
+        <section>
+            <h2>三個 agent 對照</h2>
+            <p>ACP 生態的三個候選，<b>全部有官方 org 已發布 adapter</b>（2026-07-07 npm 查證）。三者同一個 <code>@agentclientprotocol/*</code> scope、同組 Zed 核心維護者——這正是「統一架構」在生態層面的背書：一個 client、同一協定、多個對等 adapter。</p>
+            <div style="overflow-x:auto;">
+            <table>
+                <thead><tr><th>Agent</th><th>建議 command（須 pin／查證）</th><th>ACP 成熟度</th><th>Auth 方式</th><th>pi 專屬功能</th><th>備註</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td><b>pi</b></td>
+                        <td class="mono">bunx pi-acp@0.0.31</td>
+                        <td><span class="ok">現用 · 穩</span></td>
+                        <td>env-var 憑證<br><span class="evi">GEOSENSE / YUUZU_API_KEY</span></td>
+                        <td><span class="ok">全支援</span><br>running · startupInfo</td>
+                        <td>目前預設；憑證只在 ~/.zshrc</td>
+                    </tr>
+                    <tr>
+                        <td><b>claude</b></td>
+                        <td class="mono">bunx @agentclientprotocol/<br>claude-agent-acp@0.57.0</td>
+                        <td><span class="ok">官方 org · 已發布</span></td>
+                        <td>Anthropic API key<br>或 Claude 訂閱 oauth</td>
+                        <td><span class="no">無 _meta.piAcp</span><br>需 G2 降級</td>
+                        <td>「powered by Claude Agent SDK」；<b>舊名 <code>@zed-industries/claude-code-acp</code> 已 deprecated</b></td>
+                    </tr>
+                    <tr>
+                        <td><b>codex</b></td>
+                        <td class="mono">bunx @agentclientprotocol/<br>codex-acp@1.1.0</td>
+                        <td><span class="ok">官方 org · 已發布</span></td>
+                        <td>OpenAI / ChatGPT 登入</td>
+                        <td><span class="no">無 _meta.piAcp</span><br>需 G2 降級</td>
+                        <td>github.com/agentclientprotocol/codex-acp；與 claude 同組維護者</td>
+                    </tr>
+                </tbody>
+            </table>
+            </div>
+            <div class="callout danger"><b>命名遷移（重要）：</b>整個 ACP 生態已從 <code>@zed-industries/*</code> 搬到 <code>@agentclientprotocol/*</code>。<b>舊套件 <code>@zed-industries/claude-code-acp</code>（0.16.2）已 deprecated</b>，官方訊息要求改用 <code>@agentclientprotocol/claude-agent-acp</code>（現 0.57.0）。<b>連專案自己 import 的協定本體也一樣</b>：<code>@zed-industries/agent-client-protocol@^0.4.5</code> → <code>@agentclientprotocol/sdk@1.2.0</code>（見「風險」分頁，major 跳版）。preset 登錄表務必用新名＋pin 版本。</div>
+            <div class="callout info"><b>設計上的好處：</b>三者講同一套 ACP、對等可替換，正是統一架構的前提。即使某 agent 版本一時要調，<b>現有的 <code>custom</code> preset 就是安全網</b>——使用者仍可手打 command 跑任何講 ACP 的 agent；一級 preset 只是把「已驗證可靠的那幾個」做成好按的按鈕。</div>
+        </section>
+    </div>
+
+    <!-- ============ ROADMAP ============ -->
+    <div id="roadmap" class="tab-content">
+        <section>
+            <h2>建議落地路線</h2>
+            <div class="timeline">
+                <div class="timeline-item t1">
+                    <div class="phase">🟢 Tier 1 · 全域 agent 選擇器（S–M，低風險，先做）</div>
+                    <div class="content">
+                        <strong>G1 preset 登錄表</strong>（pi/claude/codex/custom＋下拉）＋ <strong>G2 pi 專屬欄位降級</strong>（running 後備）＋ <strong>G5 SessionState.agentId</strong>（純標示）。<br>
+                        產出：使用者可在 Settings 選 claude / codex / pi，全 app 使用選定 agent（切換需重連一次）。<b>不動 singleton、不動協定、不動 Rust。</b>登錄表用新名（<code>@agentclientprotocol/claude-agent-acp@0.57.0</code>、<code>@agentclientprotocol/codex-acp@1.1.0</code>、<code>pi-acp@0.0.31</code>）；claude/codex 各先跑通一次 auth。
+                    </div>
+                </div>
+                <div class="timeline-item block">
+                    <div class="phase">🔴 交會點 · 與 P10 一起做（L）</div>
+                    <div class="content">
+                        <strong>G4 connection-per-(agent, cwd)</strong>。這塊重構<b>同時解掉</b>缺陷分析的 <strong>P10（切 workspace 清空）</strong>——兩者都是 singleton 連線的病。既然 P10 遲早要動連線 keying，把「per-cwd」與「per-agent」一次做完最省。此步完成後，Tier 2 才有地基。
+                    </div>
+                </div>
+                <div class="timeline-item t2">
+                    <div class="phase">🟠 Tier 2 · per-session agent（L，依賴上一步）</div>
+                    <div class="content">
+                        每個 session 各自選 agent、並存運行（pi 一個 tab、claude 另一個 tab）。UI：new-session 選 agent、nav 依 agentId 分組／徽章（可與缺陷分析 F2「workspace agent 徽章」合流）。
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="phase">🟡 Polish（選配）</div>
+                    <div class="content">
+                        <strong>G6 capabilities-aware UI</strong>（依 <code>agentCapabilities</code> 調 UI）＋ <strong>G3 各 agent auth 實機驗收</strong>（gui-acceptance，逐 agent 跑登入流程）。
+                    </div>
+                </div>
+                <div class="timeline-item block">
+                    <div class="phase">🔴 獨立維護債 · 協定套件遷移（可任意時點，別漏）</div>
+                    <div class="content">
+                        <strong>package.json:56</strong> 的 <code>@zed-industries/agent-client-protocol@^0.4.5</code> 已 deprecated → 遷移到 <code>@agentclientprotocol/sdk@1.2.0</code>。<b>0.4 → 1.2 major 跳版，但已實測 API 表面相容（2026-07-07 拆包 diff）：</b>程式碼觸及的每一處皆一字不差——建構子 <code>(toClient, stream)</code>、<code>initialize / newSession / loadSession / prompt(PromptRequest) / cancel</code>（新檔仍在 <code>ClientSideConnection</code>，prompt 於 acp.d.ts:1184）、<code>ndJsonStream</code> 簽名；import 5 符號（<code>ClientSideConnection, ndJsonStream, AnyMessage, Client, Stream</code>）strict tsc exit 0；<code>Client</code> 介面回傳 <code>Promise→MaybePromise</code> 屬相容放寬。<b>實質 drop-in。</b>唯一殘留：<code>schema.*</code> 型別欄位級漂移，換 dep 後跑 <code>bun run build</code>＋<code>bun run test</code> 蓋章即可（協定仍 <code>protocolVersion:1</code>，機率低）。依 major 慣例順手查 lockfile 雙版本。與統一架構<b>技術上獨立</b>，建議同波處理。
+                    </div>
+                </div>
+            </div>
+
+            <h2 style="margin-top:1.8rem;">決策：你要哪一種「統一」？</h2>
+            <div class="callout info"><b>若目標是「有得選、切換方便」</b> → 只做 <b>Tier 1</b> 即可，成本小、風險低，且不碰 P10 的高風險重構。多數情境這就夠。</div>
+            <div class="callout warn"><b>若目標是「同時跑多個 agent、各 session 各自為政」</b> → 必做 <b>Tier 2</b>，而它綁 G4＝P10 重構。建議把 <b>P10 修復</b>與此當成同一個 milestone 規劃，別各修一半。</div>
+        </section>
+    </div>
+
+    <!-- ============ RISKS ============ -->
+    <div id="risks" class="tab-content">
+        <section>
+            <h2>風險與未決事項</h2>
+            <div style="overflow-x:auto;">
+            <table>
+                <thead><tr><th>風險 / 未決</th><th>影響</th><th>嚴重度</th><th>緩解</th></tr></thead>
+                <tbody>
+                    <tr><td><b>ACP 生態改名（已查證＋已測相容性）</b></td><td>舊 <code>@zed-industries/*</code> 套件 deprecated，含<b>專案自用協定 dep</b>（<code>agent-client-protocol@0.4.5</code> → <code>@agentclientprotocol/sdk@1.2.0</code>）</td><td><span class="maybe">低（降級）</span></td><td>已拆包 diff：核心 API 表面零變動、strict tsc exit 0、實質 drop-in；殘留僅 schema 欄位級漂移，換 dep 跑 build/test 蓋章。preset 一律用新名</td></tr>
+                    <tr><td><s>codex ACP 入口未確認</s>（已解除）</td><td>—</td><td><span class="ok">已查證</span></td><td><code>@agentclientprotocol/codex-acp@1.1.0</code> 已存在（官方 org、同組維護者），不再是阻礙</td></tr>
+                    <tr><td><b>各 agent auth UX 差異</b></td><td>登入流程可能卡住、憑證未進 spawn 環境</td><td><span class="maybe">中</span></td><td>G3 逐 agent gui-acceptance 實測；確認 env_path 帶對 key</td></tr>
+                    <tr><td><b>pi 專屬 _meta 降級遺漏</b></td><td>claude/codex 執行中橘點不亮、狀態難分</td><td><span class="no">低但明顯</span></td><td>G2 running 後備用 in-flight/streaming 推斷</td></tr>
+                    <tr><td><b>G4 = P10 重構風險</b></td><td>連線 keying 改錯會殃及現役 session（資料遺失級）</td><td><span class="no">高</span></td><td>與 P10 同批、沿用其分階段止血策略；充分回歸測試</td></tr>
+                    <tr><td><b>版本 pin 漂移</b></td><td>bunx 不 pin → 網路 hang／EPIPE（2026-07-06 前例）</td><td><span class="maybe">中</span></td><td>登錄表所有 command 一律 pin 版本</td></tr>
+                    <tr><td><b>capabilities 差異未處理</b></td><td>對不支援貼圖/audio 的 agent 顯示無效入口</td><td><span class="ok">低</span></td><td>G6 讀 agentCapabilities（可延後）</td></tr>
+                </tbody>
+            </table>
+            </div>
+            <div class="callout info"><b>本評估的定位：</b>這是<b>可行性與架構評估</b>，未改動任何程式碼、未執行 git 操作。所有「已具備」結論皆錨定 file:line、可查證；「待查證」項（尤其 codex）已明確標示不確定性，落地前需獨立求證。</div>
+        </section>
+    </div>
+
+    <!-- ============ EVAL ============ -->
+    <div id="eval" class="tab-content">
+        <section>
+            <h2>本評估自評</h2>
+            <div class="scorecards">
+                <div class="score"><div class="crit">現況定位準確度</div><div class="stars">★★★★★</div></div>
+                <div class="score"><div class="crit">證據可追（file:line）</div><div class="stars">★★★★★</div></div>
+                <div class="score"><div class="crit">路線可執行性</div><div class="stars">★★★★☆</div></div>
+                <div class="score"><div class="crit">外部依賴確定性</div><div class="stars">★★★★☆</div></div>
+            </div>
+            <p style="font-size:0.88rem;color:var(--color-text-secondary);">更新後上修：pi／claude／codex 三者的 adapter 皆已於 npm 查證存在（官方 <code>@agentclientprotocol/*</code> org）。未滿分的殘留變數：各 agent auth 流程仍待逐一實機驗收，且協定本體 major 跳版（0.4→1.2）的 breaking 面尚未實測。</p>
+
+            <h2 style="margin-top:1.6rem;">你的決策回饋</h2>
+            <div class="review-box">
+                <label>目標層級（Tier 1 只做全域選擇器 / Tier 2 要 per-session 多 agent）</label>
+                <textarea id="fb-tier" placeholder="例：先做 Tier 1，Tier 2 等 P10 一起"></textarea>
+                <label>三選要哪幾個一級化（pi / claude / codex / 其他）</label>
+                <textarea id="fb-agents" placeholder="例：pi + claude 先一級化，codex 暫留 custom 待查證"></textarea>
+                <label>是否把 G4 與 P10 綁成同一 milestone？</label>
+                <textarea id="fb-p10" placeholder="例：是，一起做連線 keying 重構"></textarea>
+            </div>
+
+            <div class="actions">
+                <button class="btn primary" onclick="copyPrompt()">複製為後續 Prompt</button>
+                <button class="btn" onclick="window.print()">列印 / PDF</button>
+            </div>
+        </section>
+    </div>
+
+    <footer>
+        yuzora · ACP 統一架構評估 · 2026-07-07 · 此為可行性／架構評估文件（未改動任何程式碼、未執行 git 操作）。缺陷／功能面請併讀姊妹文件 <code>acp-功能分析-2026-07-07.html</code>。
+    </footer>
+</div>
+
+<script>
+function showTab(e, id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    e.target.classList.add('active');
+}
+function copyPrompt() {
+    const tier = document.getElementById('fb-tier').value.trim();
+    const agents = document.getElementById('fb-agents').value.trim();
+    const p10 = document.getElementById('fb-p10').value.trim();
+    const payload = [
+        '依 docs/html/acp-統一架構評估-2026-07-07.html，開始把 ACP 做成統一架構（claude/codex/pi 選擇）。',
+        tier ? ('目標層級：' + tier) : '目標層級：先做 Tier 1（G1 preset 登錄表 + G2 pi 專屬欄位降級 + G5 SessionState.agentId），暫不動 singleton。',
+        agents ? ('一級化 agent：' + agents) : '一級化：pi(pi-acp@0.0.31) + claude(@agentclientprotocol/claude-agent-acp@0.57.0) + codex(@agentclientprotocol/codex-acp@1.1.0)，皆 pin 版本。',
+        p10 ? ('G4/P10：' + p10) : 'G4（connection-per-(agent,cwd)）與 P10 綁同一 milestone，一起做連線 keying 重構。',
+        '另排：協定 dep 遷移 @zed-industries/agent-client-protocol@0.4.5 → @agentclientprotocol/sdk@1.2.0（major 跳版，先查 ClientSideConnection API diff）。',
+        '約束：不使用 git add / commit / worktree；preset command 一律用新 @agentclientprotocol/* 名＋pin 版本；每步跑 bun run build + bun run test；auth/watcher/視覺類用 gui-acceptance 逐 agent 實機驗收。'
+    ].join('\n');
+    navigator.clipboard.writeText(payload);
+    event.target.textContent = '已複製 ✓';
+    setTimeout(() => event.target.textContent = '複製為後續 Prompt', 1600);
+}
+</script>
+</body>
+</html>

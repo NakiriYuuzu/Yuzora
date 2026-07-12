@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACP 功能分析與修法評估 · yuzora</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", "Noto Serif TC", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+    --shadow-md: 0 4px 12px rgba(20,20,19,0.10);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2.1rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem 1.4rem; margin-bottom: 1.5rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+.tldr p { margin-bottom: 0.5rem; }
+.tldr p:last-child { margin-bottom: 0; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.1rem 1.25rem; }
+.metric-card .value { font-size: 1.9rem; font-weight: 700; font-family: var(--font-display); }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.15rem; }
+.metric-card.alert .value { color: var(--color-error); }
+.metric-card.good .value { color: var(--color-success); }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.7rem 1.1rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.35rem; margin-bottom: 1rem; }
+section > p { margin-bottom: 1rem; }
+
+/* issue cards */
+.issue { border: 1px solid var(--color-border); border-radius: var(--radius-lg); margin-bottom: 1rem; background: var(--color-surface-soft); overflow: hidden; }
+.issue > summary { cursor: pointer; padding: 0.9rem 1.1rem; display: flex; align-items: center; gap: 0.6rem; font-weight: 600; list-style: none; flex-wrap: wrap; }
+.issue > summary::-webkit-details-marker { display: none; }
+.issue > summary::before { content: '▸'; color: var(--color-accent); font-size: 0.85rem; transition: transform 0.15s; }
+.issue[open] > summary::before { transform: rotate(90deg); }
+.issue > summary .idtag { font-family: var(--font-mono); font-size: 0.8rem; background: var(--color-surface-dark); color: var(--color-on-dark); padding: 0.1rem 0.45rem; border-radius: 5px; }
+.issue > summary .title { flex: 1; min-width: 180px; }
+.issue .body { padding: 0.4rem 1.2rem 1.2rem; border-top: 1px solid var(--color-border); }
+.issue .body h4 { font-family: var(--font-sans); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-accent); margin: 1rem 0 0.35rem; font-weight: 700; }
+.issue .body p { margin-bottom: 0.4rem; }
+.issue .body ul { margin: 0.2rem 0 0.4rem 1.1rem; }
+.issue .body li { margin-bottom: 0.2rem; }
+
+.badge { font-size: 0.68rem; font-weight: 700; padding: 0.12rem 0.5rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+.badge.sev-p0 { background: #fbe3e3; color: #a5322f; }
+.badge.sev-high { background: #f7e4d8; color: #b45309; }
+.badge.sev-med { background: #f6efd6; color: #8a6d0d; }
+.badge.sev-feat { background: #dcefe9; color: #2f7d6b; }
+.badge.eff { background: var(--color-surface-dark); color: var(--color-on-dark); }
+.badge.conf { background: #e0f0e2; color: #2f7d43; }
+.badge.dep { background: #efe4f2; color: #7a4a86; }
+
+code, .mono { font-family: var(--font-mono); font-size: 0.85em; background: rgba(20,20,19,0.05); padding: 0.05rem 0.3rem; border-radius: 4px; }
+.evi { font-family: var(--font-mono); font-size: 0.78rem; color: var(--color-text-secondary); }
+.evi li { margin-bottom: 0.15rem; }
+
+.callout { border-radius: var(--radius-md); padding: 0.8rem 1rem; margin: 0.6rem 0; font-size: 0.92rem; }
+.callout.warn { background: #fbf3e0; border-left: 3px solid var(--color-warning); }
+.callout.danger { background: #fbe8e8; border-left: 3px solid var(--color-error); }
+.callout.info { background: #e2f1ee; border-left: 3px solid var(--color-info); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th { text-align: left; padding: 0.6rem 0.7rem; border-bottom: 2px solid var(--color-border); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+tr:hover td { background: var(--color-surface-soft); }
+
+/* palette swatches */
+.swatches { display: flex; gap: 0.8rem; flex-wrap: wrap; margin: 0.6rem 0; }
+.swatch { border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; width: 120px; background: #fff; }
+.swatch .chip { height: 46px; display: flex; align-items: center; justify-content: center; }
+.swatch .chip .dot { width: 12px; height: 12px; border-radius: 50%; }
+.swatch .cap { font-size: 0.72rem; padding: 0.35rem 0.5rem; }
+.swatch .cap b { display: block; font-size: 0.75rem; }
+.swatch .cap .hex { font-family: var(--font-mono); color: var(--color-text-secondary); }
+
+/* timeline */
+.timeline { position: relative; padding-left: 1.8rem; }
+.timeline::before { content: ''; position: absolute; left: 6px; top: 4px; bottom: 4px; width: 2px; background: var(--color-border); }
+.timeline-item { position: relative; margin-bottom: 1.1rem; }
+.timeline-item::before { content: ''; position: absolute; left: -1.8rem; top: 0.35rem; width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); }
+.timeline-item.p0::before { background: var(--color-error); }
+.timeline-item .phase { font-size: 0.78rem; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+.timeline-item .content { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.8rem 1rem; margin-top: 0.4rem; }
+.timeline-item .content strong { color: var(--color-text); }
+
+/* eval */
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.8rem; margin-bottom: 1rem; }
+.score { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; }
+.score .crit { font-size: 0.8rem; color: var(--color-text-secondary); }
+.score .stars { font-size: 1.05rem; color: var(--color-accent); letter-spacing: 2px; margin-top: 0.2rem; }
+.review-box { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; }
+.review-box label { display: block; font-size: 0.85rem; font-weight: 600; margin: 0.5rem 0 0.2rem; }
+.review-box textarea { width: 100%; min-height: 70px; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.5rem; font-family: var(--font-sans); font-size: 0.88rem; resize: vertical; }
+
+.actions { display: flex; gap: 0.8rem; margin-top: 1.5rem; flex-wrap: wrap; }
+.btn { padding: 0.55rem 1.15rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.88rem; font-weight: 600; color: var(--color-text); }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); color: var(--color-on-accent); border-color: var(--color-accent); }
+
+footer { margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--color-border); font-size: 0.8rem; color: var(--color-text-secondary); }
+
+@media print { .tabs, .actions, .review-box textarea { display: none; } .tab-content { display: block !important; } .issue { break-inside: avoid; } .issue .body { display: block !important; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">yuzora · AgentZone / ACP</div>
+        <h1>ACP 功能分析與修法評估</h1>
+        <p class="meta">分析對象：<code>src/agent · src/state/agentStore · src/app/panels/AgentZonePanel · src/workbench/AgentBridge · src-tauri/agent_process</code> &middot; 2026-07-07 &middot; 12 項議題全數定位根因（file:line）</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p><b>10 個回報問題全部確認可複現，2 個新功能評估完成。</b>其中兩項屬「資料遺失級」須優先處理：<b>P10 切換 workspace 清空全部 session</b>（<code>recoverStaleAgents</code> 誤把「當前正在用的 agent」當殘留 kill 掉並 <code>reset()</code> 整個 store）與 <b>P3 提問消失</b>（transcript 有兩個真相源，連線層的空白 transcript 會覆蓋掉樂觀寫入的使用者訊息）。</p>
+        <p>其餘 P4–P8、P5 皆為 <b>S 工時、低風險的表層修復</b>（thinking 顯示、tool 折疊、自動置底、失敗色、中斷標記、執行中橘色）。</p>
+        <p><b>F1 逐請求 token 用量：今天拿不到</b> — ACP 協定沒有 usage 欄位，pi-acp@0.0.31 內部雖有 <code>getSessionStats()</code>（cost+tokens）但只透過 <code>/session</code> 文字輸出，需上游 pi-acp 改動才能結構化取得。<b>F2 側邊欄 agent 數量徽章：可行，但依賴 P10 先修好</b>。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">12</div><div class="label">議題全數定位根因</div></div>
+        <div class="metric-card"><div class="value">9</div><div class="label">確認缺陷 (P1–P8, P10)</div></div>
+        <div class="metric-card alert"><div class="value">2</div><div class="label">資料遺失級 (P10 · P3)</div></div>
+        <div class="metric-card good"><div class="value">6</div><div class="label">S 級快速修復</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab(event,'overview')">總覽與排序</button>
+        <button class="tab" onclick="showTab(event,'bugs')">缺陷詳解 (9)</button>
+        <button class="tab" onclick="showTab(event,'features')">新功能評估 (3)</button>
+        <button class="tab" onclick="showTab(event,'palette')">色調 (P8)</button>
+        <button class="tab" onclick="showTab(event,'table')">一覽表</button>
+        <button class="tab" onclick="showTab(event,'eval')">評分回饋</button>
+    </div>
+
+    <!-- ============ OVERVIEW ============ -->
+    <div id="overview" class="tab-content active">
+        <section>
+            <h2>資料流全貌</h2>
+            <p>一次 prompt 的路徑決定了大多數問題的根因。關鍵在於 <b>transcript 有兩個獨立的真相源</b>，且 <b>ACP 連線是綁定首個 cwd 的 singleton</b>：</p>
+            <div style="overflow-x:auto;">
+            <svg viewBox="0 0 900 250" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;font-family:var(--font-mono);">
+                <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#6c6a64"/></marker></defs>
+                <!-- UI -->
+                <rect x="20" y="30" width="150" height="52" rx="8" fill="#efe9de" stroke="#e6dfd8"/>
+                <text x="95" y="52" font-size="12" text-anchor="middle" fill="#141413">AgentZonePanel</text>
+                <text x="95" y="68" font-size="10" text-anchor="middle" fill="#6c6a64">送出 / cancel</text>
+                <!-- store -->
+                <rect x="230" y="30" width="170" height="52" rx="8" fill="#f5e6de" stroke="#cc785c"/>
+                <text x="315" y="50" font-size="12" text-anchor="middle" fill="#141413">agentStore</text>
+                <text x="315" y="66" font-size="9.5" text-anchor="middle" fill="#a9583e">beginTurn → 樂觀寫入 you</text>
+                <!-- connection -->
+                <rect x="460" y="30" width="180" height="52" rx="8" fill="#e6ded2" stroke="#e6dfd8"/>
+                <text x="550" y="50" font-size="12" text-anchor="middle" fill="#141413">acpConnection</text>
+                <text x="550" y="66" font-size="9.5" text-anchor="middle" fill="#6c6a64">自持 transcripts Map</text>
+                <!-- rust -->
+                <rect x="700" y="30" width="170" height="52" rx="8" fill="#181715" stroke="#181715"/>
+                <text x="785" y="50" font-size="12" text-anchor="middle" fill="#faf9f5">agent_process (Rust)</text>
+                <text x="785" y="66" font-size="9.5" text-anchor="middle" fill="#b6b0a3">spawn bunx pi-acp</text>
+                <!-- arrows top -->
+                <line x1="170" y1="56" x2="228" y2="56" stroke="#6c6a64" stroke-width="1.5" marker-end="url(#ar)"/>
+                <line x1="400" y1="56" x2="458" y2="56" stroke="#6c6a64" stroke-width="1.5" marker-end="url(#ar)"/>
+                <line x1="640" y1="56" x2="698" y2="56" stroke="#6c6a64" stroke-width="1.5" marker-end="url(#ar)"/>
+                <!-- return path -->
+                <rect x="460" y="150" width="180" height="46" rx="8" fill="#e6ded2" stroke="#e6dfd8"/>
+                <text x="550" y="170" font-size="11" text-anchor="middle" fill="#141413">reduceSessionUpdate</text>
+                <text x="550" y="186" font-size="9" text-anchor="middle" fill="#6c6a64">丟棄 thought · tool 全展開</text>
+                <line x1="550" y1="150" x2="550" y2="84" stroke="#6c6a64" stroke-width="1.5" marker-end="url(#ar)"/>
+                <path d="M460,173 C360,173 360,82 316,82" fill="none" stroke="#c64545" stroke-width="1.8" marker-end="url(#ar)"/>
+                <text x="330" y="128" font-size="10" fill="#c64545">onTranscript → replaceTranscript（整批覆蓋 → P3 提問消失）</text>
+                <!-- workspace switch -->
+                <rect x="20" y="150" width="360" height="70" rx="8" fill="#fbe8e8" stroke="#c64545"/>
+                <text x="34" y="172" font-size="11" fill="#a5322f" font-family="var(--font-sans)">切換 workspace →</text>
+                <text x="34" y="190" font-size="10" fill="#a5322f" font-family="var(--font-sans)">AgentBridge 對每次切換跑 recoverStaleAgents</text>
+                <text x="34" y="206" font-size="10" fill="#a5322f" font-family="var(--font-sans)">→ 回到原 workspace 時 kill 現役 agent + reset() 全清 (P10)</text>
+            </svg>
+            </div>
+        </section>
+
+        <section>
+            <h2>建議處理順序</h2>
+            <div class="timeline">
+                <div class="timeline-item p0">
+                    <div class="phase">🔴 立即 · 資料遺失</div>
+                    <div class="content">
+                        <strong>P10 切換 workspace 清空狀態</strong>（M）＋ <strong>P3 提問消失</strong>（S）。兩者都會讓使用者「辛苦跑出來的對話直接不見」，體感最糟、也擋住 F2。P10 建議分階段：先止血（recovery 只跑一次、不再 reset），再做 nav 依 workspace 分流。
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="phase">🟠 快速 UX 修復 · 全 S 級</div>
+                    <div class="content">
+                        <strong>P5 自動置底 · P6 失敗改錯誤色 · P7 中斷標記 · P8 執行中改橘色</strong>。四項皆低風險、改動面小、對體感提升明顯，適合一批一起做。
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="phase">🟡 中型體驗</div>
+                    <div class="content">
+                        <strong>P4 顯示 thinking</strong>（S，需改測試）· <strong>P2 tool-use 折疊</strong>（M）· <strong>P1 new-session 樂觀 UI</strong>（M）。
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="phase">🟢 新功能</div>
+                    <div class="content">
+                        <strong>F2 側邊欄 agent 徽章</strong>（S，<b>依賴 P10</b>）· <strong>P9 首則訊息 ! info</strong>（M）· <strong>F1 token 用量</strong>（卡在上游 pi-acp，先觀望）。
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- ============ BUGS ============ -->
+    <div id="bugs" class="tab-content">
+        <section>
+            <h2>缺陷詳解</h2>
+            <p>每項皆已由獨立 verifier 對照原始碼覆核。展開查看根因、file:line 證據與最小修法。</p>
+
+            <!-- P10 -->
+            <details class="issue" open>
+                <summary><span class="idtag">P10</span><span class="title">切換 workspace／folder 清空上一個的 ACP 狀態與紀錄</span><span class="badge sev-p0">P0 資料遺失</span><span class="badge eff">M</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>現象</h4>
+                    <p>切到另一個 workspace 後，再切回來，前一個 workspace 的所有 session 與對話紀錄直接消失。</p>
+                    <h4>根因</h4>
+                    <p>三個設計缺陷疊加：</p>
+                    <ul>
+                        <li><b>連線是綁定首個 cwd 的 singleton</b>：<code>AgentBridge</code> 用 <code>useMemo(createStoreBackedConnection, [])</code> 只建一次；<code>ensureConnection</code> 開頭 <code>if (agent) return</code>，永不為新 cwd 重新 spawn，所以 Rust registry 裡那條現役 agent 的 <code>child.cwd</code> 永遠是「最初的 workspace」。</li>
+                        <li><b>recovery 每次切換都跑</b>：AgentBridge 的 effect 依賴 <code>[workspacePath]</code>，每次切 workspace 都執行 <code>recoverStaleAgents</code>。它 <code>agentList(cwd)</code>（Rust <code>list()</code> 以 <code>child.cwd == cwd</code> 過濾）會撈回<b>現役、不是殘留</b>的 agent，接著 <code>agentKill</code> 它並呼叫 <code>useAgentStore.reset()</code> — 這是唯一的 production reset 呼叫點，會清掉<b>所有</b> workspace 的 sessions。</li>
+                        <li><b>sessions 未依 workspace 分流</b>：<code>agentStore.sessions</code> 是單一全域 Map，<code>AgentNavContent</code> 不分 cwd 全部列出。即使沒有 reset，B 的 session 也會在 A 底下混著顯示。</li>
+                    </ul>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/workbench/AgentBridge.tsx:12（singleton）· :31-38（effect 依賴 workspacePath）· :77（agentKill）· :84（reset — 唯一 production 呼叫點）</li>
+                        <li>src/agent/acpConnection.ts:485（<code>if (agent) return</code>）· :587-590（首個 cwd spawn）· :614（newSession 有帶 per-session cwd）</li>
+                        <li>src-tauri/src/agent_process.rs:235-246（<code>list()</code> 過濾 child.cwd，回傳現役）</li>
+                        <li>src/state/agentStore.ts:72（全域 sessions）· :401-408（reset 全清）· src/state/workspaceStore.ts:72-78（setWorkspace 不碰 agentStore）</li>
+                    </ul>
+                    <h4>修法（分階段）</h4>
+                    <p><b>Stage A — 止血（急）：</b>用 <code>useRef</code> 讓 recovery <b>整個 app 生命週期只跑一次</b>（reap HMR／webview reload 遺留的孤兒），並從 <code>recoverStaleAgents</code> 移除 <code>reset()</code> 與尾端 <code>setConnection</code>；首跑時新連線尚未持有任何 process，撈到的才是真孤兒。可再讓連線公開 <code>agentProcessId</code>，把現役那條排除在 kill 名單外做雙保險。</p>
+                    <p><b>Stage B — nav 依 workspace 分流：</b><code>AgentNavContent</code> 的 <code>sessionEntries</code> 過濾 <code>session.cwd === cwd</code>（保留所有 session 在 store），並加一個 <code>activeSessionForCwd</code> selector，避免 <code>sendPrompt/cancel</code> 打到隱藏的他 workspace session。</p>
+                    <p><b>Stage C — 可延後：</b>connection-per-cwd／切 cwd 重連。因為 <code>newSession({ cwd })</code> 在協定層已正確 root 每個 session，只有在確認 pi-acp adapter 依賴 OS process cwd 時才需要。</p>
+                    <div class="callout warn"><b>測試影響：</b><code>agentBridge.test.tsx:111-137</code> 目前<b>寫死了「清空」為預期</b>（reset 後 <code>sessions.size===0</code>），必須改寫成「孤兒被 kill 但 store 保留」，並新增 A→B→A 不觸發 recovery、不 kill 現役 agent 的案例。<code>agentNavContent.test.tsx</code> 新增「只列當前 cwd」案例。</div>
+                </div>
+            </details>
+
+            <!-- P3 -->
+            <details class="issue" open>
+                <summary><span class="idtag">P3</span><span class="title">我提問的內容會被隱藏</span><span class="badge sev-p0">P0 資料遺失</span><span class="badge eff">S</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>現象</h4>
+                    <p>送出 prompt 後，自己剛打的那句話從對話中消失。</p>
+                    <h4>根因</h4>
+                    <p><b>transcript 有兩個真相源。</b><code>beginTurn</code> 樂觀地把 <code>{who:'you', text, streaming:true}</code> 寫進 <b>store</b> 的 transcript；但 <code>createAcpClientRuntime</code> 另外自持一個 <b>transcripts Map</b>。每收到一則 <code>session/update</code>，runtime 都是從<b>它自己那個（一開始是空的）Map</b> reduce 出 next，再經 <code>onTranscript → replaceTranscript</code> <b>整批覆蓋</b> store 的 transcript。因為 pi-acp 不會回送 <code>user_message_chunk</code>，第一則 <code>agent_message_chunk</code> 進來時就把樂觀寫入的 <code>you</code> 區塊蓋掉了。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/state/agentStore.ts:549-563（beginTurn 只寫 store）· :314-325（replaceTranscript 整批覆蓋、不合併）</li>
+                        <li>src/agent/acpConnection.ts:273（自持 transcripts Map）· :302-307（從自身 Map reduce → onTranscript）· :246-247（you 只由 user_message_chunk 進入，pi-acp 不送）</li>
+                        <li>src/agent/fakeAcpAgent.ts:71-74（fake 直接跳 agent_message_chunk，重現丟失）· agentBridge.test.tsx:94-104（只驗 agent 訊息，故 CI 看不見此 bug）</li>
+                    </ul>
+                    <h4>修法</h4>
+                    <p>在送 prompt 時，<b>把同一個 user 區塊也 seed 進 runtime 的 transcripts Map</b>，這樣整批覆蓋時就會保留它。具體：於 <code>acpConnection.ts</code> 的 <code>AcpClientRuntime</code> 加 <code>recordUserPrompt(sessionId, blocks)</code>（push <code>you</code> 區塊、<b>不</b>觸發 onTranscript 以免閃爍），並在 <code>createAcpConnection.prompt</code>（:629）呼叫 <code>connection.prompt</code> 前先叫它。抽一個和 store <code>textFromBlocks</code> 同款的 helper，確保 seed 文字與 <code>beginTurn</code> 逐字相同。<code>beginTurn / replaceTranscript / AgentBridge</code> 都不動。</p>
+                    <div class="callout info"><b>測試影響：</b><code>agentBridge.test.tsx</code> 加一條 <code>transcript</code> 含 <code>{who:'you'}</code> 的回歸斷言（修前失敗、修後通過）；store-only 測試不受影響。</div>
+                </div>
+            </details>
+
+            <!-- P1 -->
+            <details class="issue">
+                <summary><span class="idtag">P1</span><span class="title">點擊 new-session 有點慢，不會立刻打開視窗</span><span class="badge sev-med">中</span><span class="badge eff">M</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>根因</h4>
+                    <p><code>newSession</code> 同步設了 <code>connectionState:'connecting'</code>，但 session 只在 <code>await</code> 完成後才進 map、才設 <code>activeSessionId</code>。那個 await 首次會冷啟 <code>bunx pi-acp@0.0.31</code>（下載＋node 啟動）＋ <code>initialize</code>（15s timeout）＋ newSession RPC，數秒延遲。而 <code>AgentZonePanel</code> 只在 <code>activeSessionId && session</code> 才渲染 session，否則停在 disabled 的空狀態 — <code>connecting</code> 狀態根本沒被渲染成「連線中」畫面。AgentBridge 也不預熱。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/state/agentStore.ts:138（同步 connecting）· :140-151（await 後才設 activeSessionId）</li>
+                        <li>src/agent/acpConnection.ts:488（withTimeout startConnection 15s）· :587（spawn bunx）</li>
+                        <li>src/app/panels/AgentZonePanel.tsx:145-149（無 pending 畫面）· :130-131（connectionState 只用於 error banner）</li>
+                    </ul>
+                    <h4>修法</h4>
+                    <p>加 <b>樂觀「連線中」畫面</b>：store 新增 <code>pendingNewSession</code> flag（放進 <code>agentInitialState</code> 讓 reset 一併清），<code>newSession</code> 同步 set true、成功／失敗兩條路徑都 set false；<code>AgentZonePanel</code> 在 pending 時渲染一個帶 spinner 的 <code>ConnectingState</code>（沿用空狀態外殼）優先於空狀態；<code>AgentNavContent</code> 的新增鈕在 pending 時 disabled 防重複 spawn。i18n 加 <code>connecting / connectingHint</code>。</p>
+                    <div class="callout warn"><b>不建議一起做的：</b>在 AgentBridge mount 時預熱連線 — 會在使用者根本沒開 AgentZone 時就 spawn pi-acp，且與 <code>recoverStaleAgents</code> 每次切 workspace 的 kill 邏輯衝突（須先修 P10）。</div>
+                </div>
+            </details>
+
+            <!-- P2 -->
+            <details class="issue">
+                <summary><span class="idtag">P2</span><span class="title">tool-use 改為點擊展開；預設只顯示工具／做了什麼／結果前 50 字</span><span class="badge sev-med">中</span><span class="badge eff">M</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>根因</h4>
+                    <p>所有 block（tool/diff/perm/error/plan）都走同一個 <code>TranscriptBlock</code>，把 <code>entry.text</code> 用 <code>whiteSpace:pre-wrap</code> 全印出來（旁邊的 ellipsis 因 pre-wrap 只會換行、不會截斷）。<code>appendToolCall/mergeToolCallUpdate</code> 把 title＋每個 content chunk 全累進 <code>text</code>，而 <code>title/kind/status/locations/rawInput/rawOutput</code> 早就序列化在 <code>meta</code> 裡 — 展開檢視所需資料<b>已經有了</b>。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/app/panels/AgentZonePanel.tsx:786（全 block 走 TranscriptBlock）· :837-851（單一 span、pre-wrap、無截斷）</li>
+                        <li>src/agent/acpConnection.ts:941-987（text 累加）· :1098-1112（meta 帶 rawInput/rawOutput/locations）</li>
+                    </ul>
+                    <h4>修法</h4>
+                    <p>新增專用可折疊 <code>ToolBlock</code>，只有 <code>kind==='tool'</code> 走它，其餘 block 維持原樣。<code>useState(expanded=false)</code>；解析 meta 取 title/kind/status；把 <code>entry.text</code> 於首個換行切成 <code>firstLine / body</code>，<b>收合時</b>顯示 <code>[kind] title · body.slice(0,50)…</code>（單行 ellipsis），<b>展開時</b>顯示完整 text ＋ <code>rawInput/rawOutput</code>（<code>JSON.stringify(x,null,2)</code> 放進 mono <code>&lt;pre&gt;</code>）＋ locations。外層整塊做成一顆 <code>&lt;button&gt;</code> toggle（子元素皆非互動 span，無巢狀 button 問題），加旋轉的 <code>ChevronDown</code>。i18n 加 <code>toolToggle/toolInput/toolOutput/toolLocations</code>。無須動 store／acpConnection。</p>
+                    <div class="callout info"><b>測試影響：</b><code>agentZonePanel.test.tsx:273</code> 的 <code>toHaveLength(2)</code> 需改（tool 折疊後其 inert 的 View action 併入 toggle）；建議新增「展開前隱藏、點擊後顯示」案例。</div>
+                </div>
+            </details>
+
+            <!-- P4 -->
+            <details class="issue">
+                <summary><span class="idtag">P4</span><span class="title">不會顯示 thinking 內容</span><span class="badge sev-med">中</span><span class="badge eff">S</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>根因</h4>
+                    <p><code>reduceSessionUpdate</code> 把 <code>agent_thought_chunk</code> 和其他無視事件歸在一起、<b>原樣返回 transcript（直接丟棄）</b>，且有測試 <code>acpConnection.test.ts:136</code> 用 <code>.toBe(t)</code> 把這行為釘死。型別 <code>BlockEntry.kind</code> 也只有 tool|diff|perm|error|plan，沒有 thought。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/agent/acpConnection.ts:250-254（丟棄）· :646-659（appendMessage 的 streaming append 可仿）</li>
+                        <li>src/agent/acpTypes.ts:14（kind 無 thought）· AgentZonePanel.tsx:74-110（THREAD_KIND_STYLE 無 thought）· acpConnection.test.ts:136（釘死丟棄）</li>
+                    </ul>
+                    <h4>修法</h4>
+                    <p>新增 <code>thought</code> block kind：(1) acpTypes union 加 <code>"thought"</code>；(2) acpConnection 給 <code>agent_thought_chunk</code> 獨立 case → <code>appendThought</code>（仿 appendMessage 合併連續 chunk 成一塊）；(3) THREAD_KIND_STYLE 加一個<b>刻意調暗</b>的 thought 樣式（<code>fg:var(--ink-3)</code>），讓思考內容明顯次於正式回覆。</p>
+                    <div class="callout warn"><b>測試影響：</b>必改 <code>acpConnection.test.ts:136</code>：把 <code>.toBe(t)</code> 改成預期產生 thought 區塊；建議再加「兩個 thought chunk 合併成一塊」案例。</div>
+                </div>
+            </details>
+
+            <!-- P5 -->
+            <details class="issue">
+                <summary><span class="idtag">P5</span><span class="title">不會自動置底</span><span class="badge sev-high">高頻</span><span class="badge eff">S</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>根因</h4>
+                    <p><code>TranscriptList</code> 的捲動容器是純 <code>&lt;div overflow:auto&gt;</code>，<b>完全沒有 ref／scroll 處理</b>（全 panel grep 不到 <code>scrollTop/scrollHeight/scrollIntoView/useRef</code>）。串流每個 token 都產生新 transcript 陣列參考，list 會重繪長高，但視窗不跟。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/app/panels/AgentZonePanel.tsx:691-704（容器無 ref/onScroll）· :9-16（import 無 useRef）</li>
+                        <li>src/agent/acpConnection.ts:653-658（串流每 token 回新陣列 → effect 會觸發）</li>
+                    </ul>
+                    <h4>修法</h4>
+                    <p><code>TranscriptList</code> 加 <code>scrollRef</code> ＋ <code>nearBottomRef</code>；<code>onScroll</code> 判斷「距底 &lt; 80px 才算跟隨」（使用者往上捲即暫停自動置底、捲回底部恢復）；<code>useEffect([session.transcript])</code> 在 nearBottom 時把 <code>scrollTop = scrollHeight</code>。以 <code>session.transcript</code> 為唯一 dep 即可（串流每 token 換參考，故文字增長也會跟）。jsdom-safe（讀值為 0、賦值 no-op）。</p>
+                    <div class="callout info"><b>驗收：</b>置底跟隨與「往上捲暫停」在 jsdom 測不到，需用 <code>gui-acceptance</code> 實機驗。</div>
+                </div>
+            </details>
+
+            <!-- P6 -->
+            <details class="issue">
+                <summary><span class="idtag">P6</span><span class="title">調用失敗也是綠色，應改為錯誤色</span><span class="badge sev-high">高頻</span><span class="badge eff">S</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>根因</h4>
+                    <p>tool block 的顏色<b>只看 <code>entry.kind</code>、從不看 status</b>。<code>THREAD_KIND_STYLE.tool</code> 的左側 accent 條是 <code>var(--yz-accent-ink)</code>（<code>#5f8c1e</code> 萊姆綠），所以不論 in_progress／completed／failed，tool 卡都是「中性紙底＋綠條」。status（failed／completed）雖然存在 meta 裡、<code>displayMeta</code> 也會顯示，但只是不起眼的灰字，從不驅動卡片顏色。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/app/panels/AgentZonePanel.tsx:792（style 只由 kind 決定）· :80-85（tool 樣式）· :827-836（accent 條）· :1214-1229（status 僅灰字）</li>
+                        <li>src/agent/acpConnection.ts:1013 / 1098-1112 / 970-974（status 一路存進 meta）· styles.css:112（accent-ink 綠）</li>
+                    </ul>
+                    <h4>修法</h4>
+                    <p>在 tool block 讓樣式 status-aware：加一個防呆 <code>toolStatus(meta)</code>（try/catch JSON.parse），當 <code>status==='failed'</code> 時改用既有的 <code>THREAD_KIND_STYLE.error</code>（紅底紅條）— <b>零新樣式常數</b>。不加 completed 的成功底色（避免動到常見路徑、擴大改動）。</p>
+                    <div class="callout info"><b>測試影響：</b>現有 fixture 用非 JSON meta，<code>toolStatus</code> 回 undefined 故不受影響；建議新增一條 <code>status:"failed"</code> 斷言卡片為 <code>var(--danger-soft)</code>。</div>
+                </div>
+            </details>
+
+            <!-- P7 -->
+            <details class="issue">
+                <summary><span class="idtag">P7</span><span class="title">點擊停止時不會在對話視窗顯示 interrupt</span><span class="badge sev-high">高頻</span><span class="badge eff">S</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>根因</h4>
+                    <p><code>cancel()</code> 呼叫 <code>applyStopReason(current,'cancelled')</code>，但 cancelled 分支只把 tone 設 idle、settle streaming，<b>不 append 任何 transcript entry</b>（走到 <code>return base</code>）。只有 refusal／max_tokens 會加標記。UI 也沒有任何中斷提示元件。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/state/agentStore.ts:565-605（cancelled 落到 return base，無 append）· :257-269（cancel 只叫 connection.cancel + applyStopReason）· :590-602（truncated 有加 tool 標記的前例）</li>
+                        <li>src/state/agentStore.test.ts:197-209（甚至斷言 cancelled 後<b>無</b> error entry，鎖住現況）</li>
+                    </ul>
+                    <h4>修法</h4>
+                    <p>在 <code>applyStopReason</code> cancelled 分支（return base 前）仿 truncated 前例 append 一塊 <b>中性</b> <code>{kind:'tool', text:t('interrupted'), meta:{stopReason:'cancelled',interrupted:true}}</code>（不用 <code>kind:'error'</code> 紅色，與 idle 語氣不符）。因為 <code>applyStopReason('cancelled')</code> 可能觸發兩次（cancel 同步一次＋prompt resolve 一次），需<b>檢查末尾 entry 去重</b>。i18n 加 <code>interrupted</code>（en「Interrupted by user」／zh-TW「已由使用者中斷」）。</p>
+                    <div class="callout warn"><b>測試影響：</b><code>agentStore.test.ts</code> 兩處需補正：斷言恰好一個中斷標記（用穩定的 <code>meta/kind</code> 簽名、<b>非</b>翻譯文字，因 vitest 未初始化 i18n）；並補一條「in-flight sendPrompt 被 cancel 只產生單一標記」驗去重。</div>
+                </div>
+            </details>
+
+            <!-- P8 -->
+            <details class="issue">
+                <summary><span class="idtag">P8</span><span class="title">執行中改成橘色（確認專案色調）</span><span class="badge sev-high">高頻</span><span class="badge eff">S</span><span class="badge conf">confirmed</span></summary>
+                <div class="body">
+                    <h4>根因（確認色調）</h4>
+                    <p><code>TONE_STYLE.run</code> 用 <code>var(--yz-accent)</code>＝<code>#86b81f</code> <b>萊姆綠</b>；而 <code>done</code> 用 <code>#2bbf8a</code> <b>薄荷綠</b> — <b>兩者都是綠色</b>，所以「執行中」和「完成」看起來幾乎一樣（這也是你覺得「失敗也像綠色／狀態難分」的來源之一）。<code>wait</code>（權限）已佔用琥珀 <code>#ffb23e</code>。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/app/panels/AgentZonePanel.tsx:63-68（run=yz-accent）· :69（done=#2bbf8a）· :70（wait=#ffb23e）· AgentNavContent.tsx:12（TONE_DOT.run 同樣 yz-accent）</li>
+                        <li>src/styles.css:111-112（yz-accent 僅定義於 :root，dark 不覆蓋）· :145-147 / 298-300（-soft token 明暗兩套）</li>
+                    </ul>
+                    <h4>修法（見「色調」分頁看色票）</h4>
+                    <p>仿既有 <code>--*-soft</code> token 模式新增橘色：<code>:root</code> 加 <code>--yz-run:#f5820a</code>（與 wait 琥珀 <code>#ffb23e</code> 明顯區隔）＋ <code>--run-soft:#ffe9d2</code>，<code>.dark</code> 加 <code>--run-soft:rgba(245,130,10,.2)</code>。改 <code>TONE_STYLE.run → {dot:var(--yz-run), bg:var(--run-soft), fg:#b45309, pulse:true}</code> 與 <code>TONE_DOT.run → var(--yz-run)</code>。<code>yzpulse</code> keyframe 只動 opacity/scale、繼承 dot 底色，橘色自動生效、<b>無須改動畫</b>。</p>
+                    <div class="callout info"><b>測試影響：</b><code>agentNavContent.test.tsx:72-74</code> 斷言 run dot 為 <code>var(--yz-accent)</code>，改為 <code>var(--yz-run)</code>；建議 <code>gui-acceptance</code> 明暗兩色都看 run/done/wait 三點是否夠分。</div>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ FEATURES ============ -->
+    <div id="features" class="tab-content">
+        <section>
+            <h2>新功能評估</h2>
+
+            <!-- P9 -->
+            <details class="issue" open>
+                <summary><span class="idtag">P9</span><span class="title">每建新 session 時，把首則系統資訊包成 ! info 放到 session header</span><span class="badge sev-feat">功能</span><span class="badge eff">M</span><span class="badge conf">可行 ✓</span></summary>
+                <div class="body">
+                    <div class="callout info"><b>實測更正（反編譯 pi-acp@0.0.31 bundle 確認）：</b>先前初判「pi-acp 不會主動送開場訊息、newSession 只回 sessionId」<b>是錯的</b>。pi-acp 確實會在 newSession 時建立開場系統資訊，並經<b>兩條路</b>輸出。你觀察到的「開頭列系統資訊」就是它。</div>
+                    <h4>pi-acp 實際行為</h4>
+                    <p><code>newSession</code> 會呼叫 <code>buildStartupInfo({cwd, fileCommands, updateNotice})</code> 產生一段 Markdown（<code>preludeText</code>），輸出兩處：</p>
+                    <ul>
+                        <li><b>① newSession response 的 <code>_meta.piAcp.startupInfo</code></b> ＝ 完整 preludeText（或 null）。</li>
+                        <li><b>② 主動 emit 一則 <code>agent_message_chunk</code></b>：<code>sendStartupInfoIfPending()</code> 於 newSession 回傳後用 <code>setTimeout(0)</code> 送出（註解明說是為「Zed 等 client 在 UI ready 前才 render agent 訊息」而設）。因此這份系統資訊<b>現在就已經以第一則 agent 泡泡出現在 transcript</b>。</li>
+                    </ul>
+                    <p>內容（<code>buildStartupInfo</code>）：<code>pi vX.Y.Z</code> 版本 · <code>## Context</code>（AGENTS.md）· <code>## Skills</code>（全域／.agents／專案 .pi/skills 的 SKILL.md/.md）· <code>## Prompts</code>（~/.pi/agent/prompts 的 /name）· <code>## Extensions</code> · 選配 update notice。另有 <code>quietStartup</code>／<code>quietStart</code> 設定可關成只剩 update notice。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>pi-acp dist/index.js:1883-1902（newSession 建 preludeText、回 <code>_meta.piAcp.startupInfo</code>）· :1904（<code>setTimeout(()=&gt;session.sendStartupInfoIfPending(),0)</code>）· :773-780（emit <code>agent_message_chunk</code>）· :2677-2786（buildStartupInfo 內容）· :1608-1615（getQuietStartup）</li>
+                        <li>src/agent/acpConnection.ts:611-620（yuzora newSession <b>只讀 result.sessionId、丟掉 _meta</b>）· :246-249（agent_message_chunk → appendMessage 進 transcript）· AgentZonePanel.tsx:536-679（SessionHeader 無 info 槽）· :154-235（可沿用的 soft banner 樣式）</li>
+                    </ul>
+                    <h4>修法（更正後更乾淨）</h4>
+                    <p><b>直接取 authoritative 來源，不靠猜首則回覆：</b>(1) <code>acpConnection.newSession</code> 讀 <code>result._meta?.piAcp?.startupInfo</code>，經 <code>upsertSessionMeta</code>／新 callback 帶進 <code>SessionState.infoBanner</code>（emptySession 預設 null）。(2) <code>ActiveAgentSession</code> 在 <code>SessionHeader</code> 後插 <code>&lt;InfoBanner&gt;</code> soft strip，帶「!」badge、行數 clamp（首訊可能很長）。(3) <b>抑制 transcript body 的重複副本</b>：因為現在有 authoritative 的 startupInfo 可比對，把「文字等於 startupInfo 的首則 agent 訊息」從 transcript 濾掉，避免 header 與 body 同時出現。(4) 尊重 <code>quietStartup</code>：startupInfo 為 null 就不顯示 banner。</p>
+                    <div class="callout warn"><b>測試影響：</b><code>acpConnection.newSession</code> 回傳型別需從 <code>string</code> 擴充（帶 startupInfo）或改用 meta callback，牽動 <code>AgentConnection</code> 介面與其 mock；<code>agentZonePanel.test.tsx</code> 的 session() factory 需補 <code>infoBanner:null</code>；<code>fakeAcpAgent.ts</code> 可加一則 startupInfo 便於測 banner 與 body 去重。</div>
+                </div>
+            </details>
+
+            <!-- F1 -->
+            <details class="issue" open>
+                <summary><span class="idtag">F1</span><span class="title">能否取得請求使用的 token 量？</span><span class="badge sev-feat">功能</span><span class="badge eff">S</span><span class="badge dep">卡上游 pi-acp</span></summary>
+                <div class="body">
+                    <h4>結論：<b>逐請求 token 用量今天拿不到</b></h4>
+                    <p>verifier 實際反編譯了 <code>pi-acp@0.0.31</code> 的 bundle 求證：</p>
+                    <ul>
+                        <li><b>ACP 協定本身沒有 usage 欄位</b>：<code>PromptResponse</code> 只有 <code>stopReason</code> ＋ 通用 <code>_meta?</code>；<code>SessionNotification.update</code> union 也沒有 usage 變體。唯一結構化通道是 <code>_meta</code> passthrough。</li>
+                        <li><b>pi-acp 內部其實有數字</b>：<code>getSessionStats()</code> → <code>{cost, tokens:{input,output,cacheRead,cacheWrite,total}}</code>，<b>但只透過 <code>/session</code> slash command 以人類可讀文字輸出</b>。</li>
+                        <li>它每則 <code>session_info_update._meta.piAcp</code> <b>只帶 <code>{queueDepth, running}</code></b>；turn_end／agent_end 事件都沒被拿來塞 usage。</li>
+                    </ul>
+                    <p>所以：無上游改動下，<b>結構化的逐請求用量取不到</b>；能拿的只有 <code>/session</code> 的<b>累計文字</b>（per-session、非 per-request，且要靠脆弱的文字 scraping）。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>node_modules/@zed-industries/agent-client-protocol/dist/schema.d.ts:1381-1392（PromptResponse 只有 stopReason+_meta）· :1418-1553（update union 無 usage）</li>
+                        <li>pi-acp dist/index.js:1969-1983（getSessionStats：cost+tokens，只給 /session 文字）· :796/815/841/856/1102（session_info 只帶 queueDepth/running）</li>
+                        <li>src/agent/acpConnection.ts:134-137 / 697-705（SessionInfoUpdate 只讀 queueDepth/running）· :629-637（prompt 丟棄 response._meta）</li>
+                    </ul>
+                    <h4>若日後 pi-acp 願意 emit（純加法 plumbing，S）</h4>
+                    <p>沿現成的 <code>session_info_update → onSessionInfo</code> 通道：<code>SessionInfoUpdate</code> 加 <code>usage?</code>（鏡射 pi 的 <code>input/output/cacheRead/cacheWrite/total + cost</code>）→ <code>sessionInfoFromUpdate</code> 解析 <code>piAcp.tokens/cost</code> → <code>SessionState.usage</code> → <code>SessionHeader</code> model chip 旁加一個 mono usage chip。</p>
+                    <div class="callout info"><b>通道已證實可用：</b>pi-acp 已透過 <code>newSession</code> response 的 <code>_meta.piAcp.startupInfo</code> 傳結構化資料（見 P9），代表這條 <code>_meta.piAcp</code> passthrough 是活的、plumbing 低風險 — 缺的只是 pi-acp 把 tokens 也塞進來。</div>
+                    <div class="callout warn"><b>建議：</b>短期可先做「<code>/session</code> 一鍵查詢 → 顯示累計用量」這種低期望值方案；逐請求精準用量請等 pi-acp 在 <code>_meta.piAcp</code> 補 tokens（可向上游提 feature request）。</div>
+                </div>
+            </details>
+
+            <!-- F2 -->
+            <details class="issue" open>
+                <summary><span class="idtag">F2</span><span class="title">側邊欄 workspace icons 顯示 agent 總數與執行中數</span><span class="badge sev-feat">功能</span><span class="badge eff">S</span><span class="badge dep">依賴 P10</span></summary>
+                <div class="body">
+                    <h4>可行性：<b>可行，但要先修 P10</b></h4>
+                    <p>資料今天就有：每個 <code>SessionState</code> 都帶 <code>cwd / running / tone</code>，<code>cwd</code> 在 newSession／sendPrompt／loadSessions 都可靠戳上，且 rail tile 的 path 與 session cwd 來自同一個後端正規化字串（key 對得上）。所以「group-by-cwd → {total, running}」的 selector 現在就寫得出來。</p>
+                    <p>但價值取決於 P10：目前切回原 workspace 會被 <code>recoverStaleAgents</code> kill＋<code>reset()</code> 清空全部 session，徽章會在<b>正是這個功能要服務的多 workspace 情境</b>下突然歸零。故為 <b>feasible-after-P10</b>。</p>
+                    <h4>證據</h4>
+                    <ul class="evi">
+                        <li>src/state/agentStore.ts:72（全域 sessions）· :42/45（running/cwd）· :327-342（onSessionInfo 驅動 running）</li>
+                        <li>src/app/workbench/WorkspaceRail.tsx:148-178（recent tiles）· src/lib/workspaceActions.ts:44-49（path 與 session cwd 同源）</li>
+                    </ul>
+                    <h4>設計</h4>
+                    <p>加純函式 selector <code>selectWorkspaceAgentCounts(sessions)</code>（skip cwd=null、以 <code>normalizeWorkspacePath</code> 為 key、<code>running===true||tone==='run'</code> 計 running）。WorkspaceRail 用 <code>useAgentStore(s=&gt;s.sessions)</code> 訂閱 ＋ <code>useMemo</code> 分組（<b>切勿</b>直接在 selector 回新物件，否則 render 迴圈）。recents map 內查 <code>counts.get(path)</code>，total&gt;0 時在 tile 角落畫一個小徽章：running&gt;0 用 <code>--yz-accent</code>（或改後的 run 橘）＋白字，否則灰。i18n 放 <code>workbench</code> namespace 的 <code>rail.agentCount</code>。</p>
+                    <div class="callout info"><b>測試影響：</b>擴充 <code>workspaceRail.test.tsx</code>（seed 兩個 cwd 的 sessions，驗徽章數與 running 標示、零 agent tile 無徽章）；加 <code>selectWorkspaceAgentCounts</code> 單元測試（total/running、cwd-null 排除、尾斜線正規化）。</div>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ PALETTE ============ -->
+    <div id="palette" class="tab-content">
+        <section>
+            <h2>目前 tone 色調（確認）</h2>
+            <p>AgentZone 的 5 種 tone 目前色票如下。問題核心：<b>run（執行中）與 done（完成）都是綠色</b>，難以分辨；建議把 run 改為橘色。</p>
+            <div class="swatches">
+                <div class="swatch"><div class="chip" style="background:#f4f2ec"><span class="dot" style="background:#b6b0a3"></span></div><div class="cap"><b>idle 閒置</b><span class="hex">--ink-4</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#eef6d6"><span class="dot" style="background:#86b81f"></span></div><div class="cap"><b>run 執行中</b><span class="hex">#86b81f 萊姆</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#e0f6ee"><span class="dot" style="background:#2bbf8a"></span></div><div class="cap"><b>done 完成</b><span class="hex">#2bbf8a 薄荷</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#fff2dc"><span class="dot" style="background:#ffb23e"></span></div><div class="cap"><b>wait 等權限</b><span class="hex">#ffb23e 琥珀</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#ffe6e9"><span class="dot" style="background:#e23b54"></span></div><div class="cap"><b>fail 失敗</b><span class="hex">#e23b54 紅</span></div></div>
+            </div>
+            <div class="callout danger"><b>衝突：</b>run <code>#86b81f</code>（萊姆）與 done <code>#2bbf8a</code>（薄荷）同為綠色系；wait 已佔用琥珀 <code>#ffb23e</code>。</div>
+
+            <h2 style="margin-top:2rem;">建議：run 改橘色</h2>
+            <div class="callout info"><b>已定案：<code>#f5820a</code>（首選）</b> — 新增 <code>--yz-run: #f5820a</code> / <code>--run-soft: #ffe9d2</code>（dark: <code>rgba(245,130,10,.2)</code>）token，改 <code>TONE_STYLE.run</code> 與 <code>TONE_DOT.run</code>。</div>
+            <p>選一個和 wait 琥珀明顯區隔、也不撞 fail 紅的<b>飽和橘</b>。定案 <code>#f5820a</code>；備案 <code>#ea6d0a</code>（更強對比）。專案已有可參考的暖色（coral <code>#c0562f</code>、sunrise 漸層 <code>#ff6b54</code>），但這兩者偏紅、易與 fail 混淆，故不採用。</p>
+            <div class="swatches">
+                <div class="swatch" style="border-color:#f5820a"><div class="chip" style="background:#ffe9d2"><span class="dot" style="background:#f5820a"></span></div><div class="cap"><b>run 首選</b><span class="hex">--yz-run #f5820a</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#ffe3c8"><span class="dot" style="background:#ea6d0a"></span></div><div class="cap"><b>run 高對比</b><span class="hex">#ea6d0a</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#fff2dc"><span class="dot" style="background:#ffb23e"></span></div><div class="cap"><b>wait（保持）</b><span class="hex">#ffb23e</span></div></div>
+            </div>
+            <p>改後三態並排：<b>執行中＝橘</b>、<b>等權限＝黃琥珀</b>、<b>完成＝薄荷綠</b>，語義清楚且色相拉開。實際落地就是新增 <code>--yz-run</code> / <code>--run-soft</code> token（明暗兩套）＋改 <code>TONE_STYLE.run</code>、<code>TONE_DOT.run</code>，<code>yzpulse</code> 動畫自動繼承新色。</p>
+            <div class="callout info">最終色值屬設計取捨，可於實作時微調；上表為建議起點，明暗模式需 <code>gui-acceptance</code> 實機確認可讀性。</div>
+        </section>
+    </div>
+
+    <!-- ============ TABLE ============ -->
+    <div id="table" class="tab-content">
+        <section>
+            <h2>一覽表</h2>
+            <div style="overflow-x:auto;">
+            <table>
+                <thead><tr><th>ID</th><th>議題</th><th>類型</th><th>根因（極簡）</th><th>工時</th><th>相依</th></tr></thead>
+                <tbody>
+                    <tr><td class="mono">P10</td><td>切換 workspace 清空狀態</td><td>P0 資料遺失</td><td>recovery 每次切換都跑，kill 現役 agent + reset 全清；singleton 綁首 cwd；sessions 未分流</td><td>M</td><td>—</td></tr>
+                    <tr><td class="mono">P3</td><td>提問被隱藏</td><td>P0 資料遺失</td><td>雙真相源；連線層空 transcript 整批覆蓋掉樂觀 you 區塊</td><td>S</td><td>—</td></tr>
+                    <tr><td class="mono">P1</td><td>new-session 慢</td><td>缺陷</td><td>冷啟 bunx pi-acp + initialize 才設 activeSessionId；無 pending 畫面</td><td>M</td><td>—</td></tr>
+                    <tr><td class="mono">P2</td><td>tool-use 折疊</td><td>缺陷</td><td>全 block 走同一 render、pre-wrap 全展；meta 已有 rawInput/Output</td><td>M</td><td>—</td></tr>
+                    <tr><td class="mono">P4</td><td>顯示 thinking</td><td>缺陷</td><td>agent_thought_chunk 被丟棄（測試釘死）；無 thought kind</td><td>S</td><td>—</td></tr>
+                    <tr><td class="mono">P5</td><td>自動置底</td><td>缺陷</td><td>捲動容器無 ref／scroll 處理</td><td>S</td><td>—</td></tr>
+                    <tr><td class="mono">P6</td><td>失敗改錯誤色</td><td>缺陷</td><td>tool 色只看 kind、綠 accent 條；status 不驅動顏色</td><td>S</td><td>—</td></tr>
+                    <tr><td class="mono">P7</td><td>中斷標記</td><td>缺陷</td><td>cancel 的 cancelled 分支不 append 任何 entry</td><td>S</td><td>—</td></tr>
+                    <tr><td class="mono">P8</td><td>執行中改橘</td><td>缺陷</td><td>run=萊姆綠 與 done=薄荷綠 撞色；新增 --yz-run 橘</td><td>S</td><td>—</td></tr>
+                    <tr><td class="mono">P9</td><td>首則系統資訊 ! info</td><td>功能</td><td>pi-acp 有開場系統資訊，回在 <code>_meta.piAcp.startupInfo</code> ＋ 主動 emit agent 訊息；yuzora 現丟掉 _meta。讀它 → header banner ＋ 去重 body</td><td>M</td><td>—</td></tr>
+                    <tr><td class="mono">F1</td><td>token 用量</td><td>功能</td><td>ACP 無 usage 欄位；pi-acp 只給 /session 文字，須上游改動</td><td>S*</td><td>pi-acp</td></tr>
+                    <tr><td class="mono">F2</td><td>側邊欄 agent 徽章</td><td>功能</td><td>資料已足，但需 P10 先讓 session 依 workspace 穩定不被清</td><td>S</td><td>P10</td></tr>
+                </tbody>
+            </table>
+            </div>
+            <p style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:0.6rem;">* F1 的 S 僅指 yuzora 端 plumbing；真正的阻塞是上游 pi-acp 是否 emit 結構化 usage。</p>
+        </section>
+    </div>
+
+    <!-- ============ EVAL ============ -->
+    <div id="eval" class="tab-content">
+        <section>
+            <h2>本報告自評</h2>
+            <div class="scorecards">
+                <div class="score"><div class="crit">根因定位</div><div class="stars">★★★★★</div></div>
+                <div class="score"><div class="crit">證據可追（file:line）</div><div class="stars">★★★★★</div></div>
+                <div class="score"><div class="crit">修法可執行性</div><div class="stars">★★★★☆</div></div>
+                <div class="score"><div class="crit">風險／測試覆蓋</div><div class="stars">★★★★☆</div></div>
+            </div>
+            <p style="font-size:0.88rem;color:var(--color-text-secondary);">分析法：直讀完整資料流後，用 12 位獨立 verifier 對抗式覆核每條根因與修法（其中 P3／P5／P10／F1 二次重跑確認；F1 反編譯 pi-acp bundle 求證）。所有結論皆錨定原始碼行號。</p>
+
+            <h2 style="margin-top:1.6rem;">你的回饋</h2>
+            <div class="review-box">
+                <label>要先做哪些？（例：先修 P10 + P3，再一批做 P5–P8）</label>
+                <textarea id="fb-priority" placeholder="輸入你的排序或決策…"></textarea>
+                <label>P8 橘色定案（#f5820a / #ea6d0a / 其他）</label>
+                <textarea id="fb-orange" placeholder="例：用 #f5820a"></textarea>
+                <label>P9 ! info 要放什麼（首則回覆 / session 中繼資訊 / 不做）</label>
+                <textarea id="fb-p9" placeholder="例：改放 agent+model+cwd 中繼資訊"></textarea>
+            </div>
+
+            <div class="actions">
+                <button class="btn primary" onclick="copyPrompt()">複製為後續 Prompt</button>
+                <button class="btn" onclick="window.print()">列印 / PDF</button>
+            </div>
+        </section>
+    </div>
+
+    <footer>
+        yuzora · ACP 功能分析 · 2026-07-07  · 此為分析／評估文件（未改動任何程式碼、未執行 git 操作）。修法皆標註最小改動面與測試影響，供你決定後再實作。
+    </footer>
+</div>
+
+<script>
+function showTab(e, id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    e.target.classList.add('active');
+}
+function copyPrompt() {
+    const pr = document.getElementById('fb-priority').value.trim();
+    const or = document.getElementById('fb-orange').value.trim();
+    const p9 = document.getElementById('fb-p9').value.trim();
+    const payload = [
+        '依 docs/html/acp-功能分析-2026-07-07.html 的分析，請開始實作 ACP 修法。',
+        pr ? ('優先順序：' + pr) : '優先順序：先 P10（分階段止血）+ P3，再一批做 P5/P6/P7/P8，之後 P4/P2/P1，最後 F2（依賴 P10）。',
+        or ? ('P8 執行中橘色用：' + or) : 'P8 橘色用 #f5820a（新增 --yz-run / --run-soft token）。',
+        p9 ? ('P9 ! info 放：' + p9) : 'P9 待確認：! info 要放首則 agent 回覆或 session 中繼資訊。',
+        '約束：不使用 git add / commit / worktree；每步跑 bun run build + bun run test，watcher/視覺類用 gui-acceptance 實機驗收。'
+    ].join('\n');
+    navigator.clipboard.writeText(payload);
+    event.target.textContent = '已複製 ✓';
+    setTimeout(() => event.target.textContent = '複製為後續 Prompt', 1600);
+}
+</script>
+</body>
+</html>

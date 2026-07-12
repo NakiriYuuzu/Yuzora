@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACP 協定確認與 yuzora 實作評估 — 2026-07-10</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-text-muted: #8e8b82;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 980px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 2rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+.tldr p { margin-bottom: 0.5rem; }
+.tldr p:last-child { margin-bottom: 0; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.1rem; }
+.metric-card .value { font-size: 1.7rem; font-weight: 700; }
+.metric-card .label { font-size: 0.78rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+.metric-card .trend { font-size: 0.78rem; font-weight: 600; margin-top: 0.25rem; }
+.trend.up { color: var(--color-success); }
+.trend.down { color: var(--color-error); }
+.trend.flat { color: var(--color-warning); }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.7rem 1.05rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.3rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.6rem; }
+section p { margin-bottom: 0.75rem; }
+section ul, section ol { margin: 0 0 0.9rem 1.4rem; }
+section li { margin-bottom: 0.35rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; overflow-x: auto; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); }
+.chart-container .caption { font-size: 0.82rem; color: var(--color-text-muted); margin-top: 0.75rem; }
+
+details { margin-bottom: 0.9rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.92rem; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-bg); font-size: 0.92rem; }
+details .details-body p { margin-bottom: 0.6rem; }
+details .details-body ul { margin: 0 0 0.6rem 1.3rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-bottom: 1.25rem; }
+th { text-align: left; padding: 0.6rem 0.7rem; border-bottom: 2px solid var(--color-border); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-surface); padding: 0.1em 0.35em; border-radius: 4px; }
+pre { background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-md); padding: 1rem 1.2rem; overflow-x: auto; font-size: 0.82rem; margin-bottom: 1rem; }
+pre code { background: none; padding: 0; color: inherit; }
+
+.badge { display: inline-block; padding: 0.1em 0.55em; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em; white-space: nowrap; }
+.badge.ok { background: rgba(93,184,114,0.15); color: #3d7a4c; }
+.badge.miss { background: rgba(198,69,69,0.12); color: var(--color-error); }
+.badge.part { background: rgba(212,160,23,0.15); color: #97720f; }
+.badge.na { background: var(--color-surface); color: var(--color-text-muted); }
+.badge.sev-a { background: var(--color-error); color: #fff; }
+.badge.sev-b { background: var(--color-warning); color: #fff; }
+.badge.sev-c { background: var(--color-info); color: #fff; }
+.badge.stable { background: rgba(93,184,166,0.16); color: #2e7d70; }
+.badge.unstable { background: var(--color-surface); color: var(--color-text-muted); border: 1px dashed var(--color-border); }
+
+.finding { border: 1px solid var(--color-border); border-radius: var(--radius-lg); margin-bottom: 1.1rem; background: var(--color-bg); overflow: hidden; }
+.finding .head { display: flex; align-items: center; gap: 0.6rem; padding: 0.8rem 1rem; background: var(--color-surface); }
+.finding .head .title { font-weight: 700; font-size: 0.95rem; flex: 1; }
+.finding .body { padding: 0.9rem 1rem; font-size: 0.92rem; }
+.finding .body p { margin-bottom: 0.55rem; }
+.finding .evidence { font-size: 0.82rem; color: var(--color-text-secondary); background: var(--color-surface-soft); border-radius: var(--radius-sm); padding: 0.6rem 0.8rem; margin: 0.6rem 0; }
+.finding .evidence code { background: rgba(20,20,19,0.06); }
+
+.highlight-card { background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1.1rem; margin-bottom: 0.8rem; font-size: 0.92rem; }
+.highlight-card strong { color: var(--color-accent-active); }
+
+.scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.score-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.1rem; }
+.score-card .score { font-size: 1.6rem; font-weight: 700; }
+.score-card .name { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.2rem; }
+.score-card .why { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.3rem; }
+.score-bar { height: 6px; border-radius: 3px; background: var(--color-border); margin-top: 0.5rem; overflow: hidden; }
+.score-bar > div { height: 100%; border-radius: 3px; background: var(--color-accent); }
+
+.review-box { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.2rem; background: var(--color-surface-soft); margin-bottom: 1.5rem; }
+.review-box h3 { margin-top: 0; }
+.review-box label { display: block; font-size: 0.85rem; font-weight: 600; margin: 0.7rem 0 0.25rem; }
+.review-box textarea { width: 100%; min-height: 70px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 0.6rem; font-family: var(--font-sans); font-size: 0.88rem; background: var(--color-bg); }
+.review-box .row { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: center; margin-top: 0.6rem; font-size: 0.88rem; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
+.btn.primary:hover { background: var(--color-accent-active); }
+
+.flow-note { font-size: 0.85rem; color: var(--color-text-secondary); }
+@media print { .tabs, .actions, .review-box { display: none; } .tab-content { display: block !important; } body { padding: 0.5rem; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Report · Protocol Audit</div>
+        <h1>ACP 協定確認與 yuzora 實作評估</h1>
+        <p class="meta">yuzora AgentZone · 2026-07-10 · 依據官方 <code>agentclientprotocol/agent-client-protocol</code>（schema v1 stable）與本地 <code>@agentclientprotocol/sdk@1.2.0</code> 實機驗證</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p><strong>體質良好，債務集中在「協定演進跟進」，不是架構錯誤。</strong>yuzora 已正確使用官方 SDK 的 <code>ClientSideConnection</code>（非手寫 JSON-RPC），client 義務面（<code>session/update</code>、permission、fs×2、terminal×5）9/9 全實作，cancel 語義符合 spec 的 MUST，lifecycle 工程與測試紀律是亮點。</p>
+        <p>但對照 stable v1 全貌有 <strong>3 個實際會出錯的問題</strong>（A 級）：stable 變體 <code>usage_update</code>／<code>config_option_update</code> 會被渲染成紅色錯誤塊、<code>current_mode_update</code> 的 store 接線是斷路（dead path）、45 行 <code>session_info_update</code> 攔截 hack 在 SDK 1.2.0 之後已是死重。另有功能缺口（<code>session/set_mode</code>、<code>authenticate</code> RPC、prompt capabilities）與版本債（SDK 1.2.1、adapter 版本、deprecated API）。建議先做一輪低風險同步（約 1–2 天），中期再補 mode／auth／附件能力。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">v1</div><div class="label">wire protocol（雙方一致）</div><div class="trend up">相容 ✓</div></div>
+        <div class="metric-card"><div class="value">9/9</div><div class="label">client 義務面方法（agent→client）</div><div class="trend up">全實作 ✓</div></div>
+        <div class="metric-card"><div class="value">8/11</div><div class="label">SessionUpdate stable 變體正常處理</div><div class="trend down">2 個顯示成錯誤塊</div></div>
+        <div class="metric-card"><div class="value">4/5</div><div class="label">必選 client→agent 方法（缺 authenticate）</div><div class="trend flat">+可選 1/8</div></div>
+        <div class="metric-card"><div class="value">3</div><div class="label">A 級發現（實際出錯／死重）</div><div class="trend down">需優先處理</div></div>
+        <div class="metric-card"><div class="value">1.2.0</div><div class="label">SDK 版本（最新 1.2.1）</div><div class="trend flat">patch 落後</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('overview', event)">總覽與架構</button>
+        <button class="tab" onclick="showTab('protocol', event)">官方協定全貌</button>
+        <button class="tab" onclick="showTab('coverage', event)">覆蓋矩陣</button>
+        <button class="tab" onclick="showTab('findings', event)">Gap 發現</button>
+        <button class="tab" onclick="showTab('plan', event)">行動計畫</button>
+        <button class="tab" onclick="showTab('eval', event)">評分與回饋</button>
+    </div>
+
+    <!-- ============ TAB: 總覽與架構 ============ -->
+    <div id="overview" class="tab-content active">
+        <section>
+            <h2>評估結論</h2>
+            <p>本次以官方 monorepo（schema v1 stable + docs）、TypeScript SDK 1.2.1 原始碼、Rust SDK 1.2.0，與 yuzora 本地 <code>node_modules</code> 內的 SDK 1.2.0 交叉驗證。結論分三層：</p>
+            <div class="highlight-card"><strong>架構層：方案 A′ 是正確選擇，維持。</strong>前端 host <code>ClientSideConnection</code> 與官方 TS SDK 的設計意圖一致（Client interface 的回呼——permission、fs、terminal、update——本質上都是 UI 事務）；Zed 本身也是 client 活在 UI process。Rust 端只做 process spawn 與 NDJSON stdio 橋接，薄而穩。官方 Rust SDK 1.2.0 雖然存在，但已是大改寫的 builder API，遷移到 Rust host 沒有收益、只有風險。</div>
+            <div class="highlight-card"><strong>協定層：義務面全齊，可選面落後半個版本世代。</strong>核心 prompt turn 迴圈（initialize → session/new → prompt → update 串流 → permission → stopReason）完整且正確。缺口全部集中在 1.x 期間 stabilize 的新方法（set_mode、set_config_option、list/resume/close、logout、authenticate）與新 SessionUpdate 變體（usage_update、config_option_update）。</div>
+            <div class="highlight-card"><strong>工程層：紀律是亮點。</strong><code>acpConnection.deps.test.ts</code> 用 <code>?raw</code> import 斷言防止退回 deprecated scope；init timeout 先撈 stderr tail 再 kill；EPIPE 特判；孤兒 process 啟動回收；permission <code>allow_always</code> 記憶；cancel 時對 pending permission 回 <code>cancelled</code> outcome（spec 的 MUST）。~1000 行的 connection 測試涵蓋端到端 SDK bridge。</div>
+        </section>
+
+        <section>
+            <h2>方案 A′ 資料流（現況實測）</h2>
+            <div class="chart-container">
+                <h3>front-end-hosted ACP client：WebView 持有協定狀態，Rust 只做 stdio 橋</h3>
+                <svg viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; min-width:640px;">
+                    <!-- WebView group -->
+                    <rect x="15" y="15" width="440" height="400" rx="12" fill="var(--color-surface-soft)" stroke="var(--color-border)"/>
+                    <text x="35" y="45" font-size="13" font-weight="700" fill="var(--color-accent-active)">WebView（React）</text>
+                    <rect x="35" y="60" width="180" height="52" rx="8" fill="var(--color-bg)" stroke="var(--color-border)"/>
+                    <text x="45" y="82" font-size="12" font-weight="600" fill="var(--color-text)">AgentZonePanel</text>
+                    <text x="45" y="99" font-size="10.5" fill="var(--color-text-secondary)">transcript / perm / plan / diff UI</text>
+                    <rect x="245" y="60" width="180" height="52" rx="8" fill="var(--color-bg)" stroke="var(--color-border)"/>
+                    <text x="255" y="82" font-size="12" font-weight="600" fill="var(--color-text)">agentStore（zustand）</text>
+                    <text x="255" y="99" font-size="10.5" fill="var(--color-text-secondary)">sessions / auth / mode / info</text>
+                    <rect x="35" y="145" width="390" height="50" rx="8" fill="var(--color-bg)" stroke="var(--color-border)"/>
+                    <text x="45" y="167" font-size="12" font-weight="600" fill="var(--color-text)">AgentBridge → createAgentRouter</text>
+                    <text x="45" y="184" font-size="10.5" fill="var(--color-text-secondary)">每個 (command, cwd) 一條連線；presets：pi / claude / codex / custom</text>
+                    <rect x="35" y="228" width="390" height="80" rx="8" fill="var(--color-surface-dark)" stroke="var(--color-surface-dark)"/>
+                    <text x="45" y="252" font-size="12" font-weight="700" fill="var(--color-on-dark)">acpConnection.ts</text>
+                    <text x="45" y="271" font-size="10.5" fill="#b8b5ad">@agentclientprotocol/sdk 1.2.0 · ClientSideConnection + ndJsonStream</text>
+                    <text x="45" y="288" font-size="10.5" fill="#b8b5ad">Client handlers：permission / fs×2 / terminal×5 / sessionUpdate reducer</text>
+                    <rect x="35" y="340" width="390" height="52" rx="8" fill="var(--color-bg)" stroke="var(--color-border)" stroke-dasharray="4"/>
+                    <text x="45" y="362" font-size="11.5" font-weight="600" fill="var(--color-warning)">⚠ interceptUnsupportedSessionUpdates（SDK 1.2.0 後已是死重）</text>
+                    <text x="45" y="379" font-size="10.5" fill="var(--color-text-secondary)">為 0.4.5 時代 SDK 不認得 session_info_update 而生 → 現可移除</text>
+
+                    <!-- IPC arrows -->
+                    <line x1="455" y1="200" x2="545" y2="200" stroke="var(--color-accent)" stroke-width="2"/>
+                    <polygon points="545,200 536,195 536,205" fill="var(--color-accent)"/>
+                    <line x1="545" y1="245" x2="455" y2="245" stroke="var(--color-info)" stroke-width="2"/>
+                    <polygon points="455,245 464,240 464,250" fill="var(--color-info)"/>
+                    <text x="460" y="188" font-size="10" fill="var(--color-accent-active)">invoke agent_write（stdin）</text>
+                    <text x="460" y="263" font-size="10" fill="#2e7d70">event agent://stdout ·  agent://exit</text>
+
+                    <!-- Rust group -->
+                    <rect x="555" y="15" width="330" height="250" rx="12" fill="var(--color-surface)" stroke="var(--color-border)"/>
+                    <text x="575" y="45" font-size="13" font-weight="700" fill="var(--color-accent-active)">Tauri / Rust</text>
+                    <rect x="575" y="60" width="290" height="80" rx="8" fill="var(--color-bg)" stroke="var(--color-border)"/>
+                    <text x="585" y="82" font-size="12" font-weight="600" fill="var(--color-text)">agent_process.rs（AgentManager）</text>
+                    <text x="585" y="99" font-size="10.5" fill="var(--color-text-secondary)">$SHELL -lc 啟動 · piped stdio · 新 process group</text>
+                    <text x="585" y="116" font-size="10.5" fill="var(--color-text-secondary)">只轉發 JSON 行 · stderr tail · init timeout · 孤兒回收</text>
+                    <rect x="575" y="160" width="290" height="52" rx="8" fill="var(--color-bg)" stroke="var(--color-border)"/>
+                    <text x="585" y="182" font-size="12" font-weight="600" fill="var(--color-text)">agent_terminal.rs</text>
+                    <text x="585" y="199" font-size="10.5" fill="var(--color-text-secondary)">terminal/* 後端：headless runner（非 pty）</text>
+
+                    <!-- Agent process -->
+                    <rect x="555" y="300" width="330" height="92" rx="12" fill="var(--color-surface-dark)"/>
+                    <text x="575" y="328" font-size="13" font-weight="700" fill="var(--color-on-dark)">Agent process（stdio JSON-RPC）</text>
+                    <text x="575" y="349" font-size="10.5" fill="#b8b5ad">bunx pi-acp@0.0.31</text>
+                    <text x="575" y="366" font-size="10.5" fill="#b8b5ad">bunx @agentclientprotocol/claude-agent-acp@0.57.0（最新 0.58.1）</text>
+                    <text x="575" y="383" font-size="10.5" fill="#b8b5ad">bunx @agentclientprotocol/codex-acp@1.1.0（最新 1.1.2）</text>
+                    <line x1="720" y1="265" x2="720" y2="300" stroke="var(--color-text-muted)" stroke-width="2"/>
+                    <polygon points="720,300 715,291 725,291" fill="var(--color-text-muted)"/>
+                    <text x="730" y="286" font-size="10" fill="var(--color-text-secondary)">spawn + pipe</text>
+                </svg>
+                <div class="caption">一句話 takeaway：協定狀態全部活在 WebView；Rust 是無協定知識的字節橋。這與官方 TS SDK 的 Client interface 設計吻合，也是官方 adapter 生態（跑在 node/bun 子行程）最順的組合。</div>
+            </div>
+        </section>
+
+        <section>
+            <h2>做對的事（keep）</h2>
+            <ul>
+                <li><strong>JSON-RPC runtime 交給官方 SDK</strong>：correlation、cancel（<code>$/cancel_request</code>，1.2.0 已內建 <code>PROTOCOL_METHODS.cancel_request</code>）、zod 驗證都由 SDK 處理；<code>acpConnection.deps.test.ts</code> 防止退回 deprecated 的 <code>@zed-industries/*</code>。</li>
+                <li><strong>client 義務面 9/9</strong>：<code>fs/read_text_file</code> 優先讀開啟中 buffer（未存檔內容對 agent 可見）、<code>fs/write_text_file</code> 走 CodeMirror + save IPC；terminal 五方法齊且後端有 byte-limit 處理。</li>
+                <li><strong>cancel 語義正確</strong>：<code>session/cancel</code> 前先把 pending permission 以 <code>cancelled</code> outcome 收掉（spec MUST）；容忍 cancel 後遲到的 <code>tool_call_update</code>。</li>
+                <li><strong>lifecycle 工程成熟</strong>：init 15s timeout（先撈 stderr 再 kill）、EPIPE 特判、exit 帶 stderr tail、respawn、啟動時孤兒 agent 回收、write 失敗立即斷線 reject。</li>
+                <li><strong>UX 超出最小實作</strong>：slash commands popup（吃 <code>available_commands_update</code>）、plan 進度、diff 檢視／套用、permission <code>allow_always</code> 記憶、auth banner + 終端登入 fallback、pi-acp <code>startupInfo</code> banner。</li>
+            </ul>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 官方協定全貌 ============ -->
+    <div id="protocol" class="tab-content">
+        <section>
+            <h2>版本語義：先分清三個「版本」</h2>
+            <table>
+                <thead><tr><th>層</th><th>現值</th><th>說明</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>wire protocol version</strong></td><td><code>1</code>（stable）</td><td><code>initialize</code> 協商的數字。v2 存在但是 unstable draft（load/resume 統一、新 diff 格式、auth 歸 <code>auth/*</code>），尚未 wire-stable。<strong>yuzora 送 <code>protocolVersion: 1</code>，正確。</strong></td></tr>
+                    <tr><td>TS SDK（npm）</td><td><code>@agentclientprotocol/sdk</code> <strong>1.2.1</strong></td><td>產物版本 ≠ wire 版本。yuzora 用 1.2.0，差一個 patch。舊名 <code>@zed-industries/agent-client-protocol</code> 停在 0.4.5，npm 明標 DEPRECATED。</td></tr>
+                    <tr><td>Rust SDK（crates.io）</td><td><code>agent-client-protocol</code> <strong>1.2.0</strong>；schema crate <code>agent-client-protocol-schema</code> 1.4.0</td><td>1.2.0 是大改寫的 role-generic builder API（<code>Client.builder().connect_with(...)</code>）。官方另有 Python／Kotlin／Java SDK。repo 已拆分：monorepo 只剩 schema + docs，各語言 SDK 獨立 repo。</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>Stable v1 方法全表</h2>
+            <h3>client → agent（agent 實作、client 呼叫）</h3>
+            <table>
+                <thead><tr><th>method</th><th>必選性</th><th>用途</th></tr></thead>
+                <tbody>
+                    <tr><td><code>initialize</code></td><td><span class="badge stable">必選</span></td><td>協商 protocolVersion、交換 capabilities 與 <code>authMethods</code></td></tr>
+                    <tr><td><code>authenticate</code></td><td><span class="badge stable">必選</span>（有 authMethods 時）</td><td>以指定 method 認證；stable 只有 <code>agent</code> 變體（<code>env_var</code>／<code>terminal</code> 型是 unstable）</td></tr>
+                    <tr><td><code>session/new</code></td><td><span class="badge stable">必選</span></td><td>建 session、連 MCP servers；回應可含 modes／config options</td></tr>
+                    <tr><td><code>session/prompt</code></td><td><span class="badge stable">必選</span></td><td>送 user prompt、跑完整 turn、回 <code>stopReason</code></td></tr>
+                    <tr><td><code>session/cancel</code></td><td><span class="badge stable">必選</span>（notification）</td><td>取消進行中 turn；agent 收尾後對 prompt 回 <code>cancelled</code></td></tr>
+                    <tr><td><code>session/load</code></td><td><span class="badge na">loadSession cap</span></td><td>載入舊 session，<strong>replay 全部歷史</strong>為 <code>session/update</code> 後才回應</td></tr>
+                    <tr><td><code>session/resume</code></td><td><span class="badge na">sessionCapabilities.resume</span></td><td>恢復 context、重連 MCP，<strong>不 replay</strong>（長 session 的高效恢復）</td></tr>
+                    <tr><td><code>session/set_mode</code></td><td><span class="badge na">有 modes 時</span></td><td>切 session mode（ask／architect／code…）；idle 或生成中皆可</td></tr>
+                    <tr><td><code>session/set_config_option</code></td><td><span class="badge na">configOptions cap</span></td><td>設 session 級設定，回完整選項現值（boolean 型 1.3.0 stabilized）</td></tr>
+                    <tr><td><code>session/list</code> · <code>session/delete</code> · <code>session/close</code></td><td><span class="badge na">sessionCapabilities.*</span></td><td>session 管理（cursor 分頁、依 cwd 過濾／刪除／釋放資源）</td></tr>
+                    <tr><td><code>logout</code></td><td><span class="badge na">auth 相關</span></td><td>登出目前 auth method（1.x stabilized）</td></tr>
+                </tbody>
+            </table>
+
+            <h3>agent → client（client 實作、agent 呼叫）</h3>
+            <table>
+                <thead><tr><th>method</th><th>必選性</th><th>用途</th></tr></thead>
+                <tbody>
+                    <tr><td><code>session/update</code></td><td><span class="badge stable">必選</span>（notification）</td><td>串流所有進度（11 種 stable 變體，見下）</td></tr>
+                    <tr><td><code>session/request_permission</code></td><td><span class="badge stable">必選</span></td><td>tool call 授權；turn 被 cancel 時 client <strong>MUST</strong> 回 <code>cancelled</code> outcome</td></tr>
+                    <tr><td><code>fs/read_text_file</code> · <code>fs/write_text_file</code></td><td><span class="badge na">clientCapabilities.fs.*</span></td><td>讀寫 client 側檔案（可含未存檔 buffer 狀態）</td></tr>
+                    <tr><td><code>terminal/create</code> · <code>output</code> · <code>wait_for_exit</code> · <code>kill</code> · <code>release</code></td><td><span class="badge na">clientCapabilities.terminal</span></td><td>terminal 生命週期；kill 保留 id、release 使 id 失效（agent 用完 MUST release）</td></tr>
+                </tbody>
+            </table>
+
+            <h3>SessionUpdate stable 11 變體</h3>
+            <table>
+                <thead><tr><th>#</th><th>變體</th><th>內容</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td><code>user_message_chunk</code></td><td>user 訊息片段（replay／回顯）</td></tr>
+                    <tr><td>2</td><td><code>agent_message_chunk</code></td><td>LLM 輸出串流</td></tr>
+                    <tr><td>3</td><td><code>agent_thought_chunk</code></td><td>thinking 串流</td></tr>
+                    <tr><td>4</td><td><code>tool_call</code></td><td>新 tool call（kind×10、status 狀態機 pending→in_progress→completed|failed、content 含 diff／terminal 內嵌）</td></tr>
+                    <tr><td>5</td><td><code>tool_call_update</code></td><td>增量更新（除 toolCallId 外全 optional；content/locations 整批替換）</td></tr>
+                    <tr><td>6</td><td><code>plan</code></td><td>整份計畫（entries: content + priority + status）</td></tr>
+                    <tr><td>7</td><td><code>available_commands_update</code></td><td>slash commands 清單更新</td></tr>
+                    <tr><td>8</td><td><code>current_mode_update</code></td><td>agent 自主切 mode 時通知 <code>currentModeId</code></td></tr>
+                    <tr><td>9</td><td><code>config_option_update</code></td><td>session config 選項狀態更新</td></tr>
+                    <tr><td>10</td><td><code>session_info_update</code></td><td>session metadata（<code>title?</code>、<code>updatedAt?</code>——全欄位 optional）</td></tr>
+                    <tr><td>11</td><td><code>usage_update</code></td><td>token／用量更新（含 cost 型別）</td></tr>
+                </tbody>
+            </table>
+            <p class="flow-note">unstable 另有 <code>plan_update</code>／<code>plan_removed</code>（增量 plan）、elicitation、NES（Next Edit Suggestions）、providers、document sync、MCP-over-ACP、<code>session/fork</code> 等——都還會變動，暫不列入 gap。</p>
+
+            <h3>其他關鍵語義</h3>
+            <ul>
+                <li><strong><code>$/cancel_request</code></strong>（1.2.0 stabilized）：JSON-RPC 層通用取消。agent 收到 <code>session/cancel</code> 後會把取消<strong>級聯</strong>到它對 client 發出的 in-flight 請求（permission／terminal），接收方 MUST 回原請求（結果或 <code>-32800 Request Cancelled</code>）。<em>SDK runtime 已內建處理，yuzora 不需手做。</em></li>
+                <li><strong><code>_meta</code> 擴充</strong>：協定所有型別都帶 <code>_meta?</code>；實作 MUST NOT 對值做假設；vendor key 建議帶命名空間（如 <code>zed.dev/debugMode</code>）；root 層禁止加自訂欄位；<code>_</code> 開頭 method 保留給 vendor 擴充。<em>yuzora 讀 <code>_meta.piAcp.*</code> 的做法符合此規範。</em></li>
+                <li><strong>StopReason</strong>：<code>end_turn | max_tokens | max_turn_requests | refusal | cancelled</code>（與 yuzora 手抄一致）。</li>
+                <li><strong>PromptCapabilities baseline</strong>：agent 未宣告時，client 只能送 <code>text</code> + <code>resource_link</code>；<code>image</code>／<code>audio</code>／<code>embeddedContext</code>（內嵌 resource）須看 agent 宣告。</li>
+            </ul>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 覆蓋矩陣 ============ -->
+    <div id="coverage" class="tab-content">
+        <section>
+            <h2>yuzora × stable v1 覆蓋矩陣</h2>
+            <p class="flow-note">判準：「前端是否實作對應 handler／是否有呼叫路徑」。行號皆為現行工作區狀態。</p>
+            <h3>client → agent</h3>
+            <table>
+                <thead><tr><th>method</th><th>狀態</th><th>證據／說明</th></tr></thead>
+                <tbody>
+                    <tr><td><code>initialize</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:620</code>；送 v1 + fs／terminal capabilities，正確</td></tr>
+                    <tr><td><code>session/new</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:641</code>；<code>mcpServers:[]</code>（設計決策：yuzora 不代管 MCP）</td></tr>
+                    <tr><td><code>session/prompt</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:663</code>；但送出 block 僅 text＋resource_link（見 B3）</td></tr>
+                    <tr><td><code>session/cancel</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:671</code>；先收 pending permissions，符合 MUST</td></tr>
+                    <tr><td><code>session/load</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:652</code>；replay 由既有 sessionUpdate 路徑吸收</td></tr>
+                    <tr><td><code>authenticate</code></td><td><span class="badge miss">無</span></td><td>改走 out-of-band 終端登入（B2）；stable <code>agent</code> 變體 authMethods 無協定路徑</td></tr>
+                    <tr><td><code>session/set_mode</code></td><td><span class="badge miss">無</span></td><td>全庫無呼叫；modes 資料在 newSession 回應中被丟（B1）</td></tr>
+                    <tr><td><code>session/set_config_option</code></td><td><span class="badge miss">無</span></td><td>1.x 新方法，未跟進</td></tr>
+                    <tr><td><code>session/list</code>／<code>resume</code>／<code>delete</code>／<code>close</code>／<code>logout</code></td><td><span class="badge miss">無</span></td><td>list 現以 router 本地聚合替代；皆 capability-gated 可漸進（B4）</td></tr>
+                </tbody>
+            </table>
+
+            <h3>agent → client</h3>
+            <table>
+                <thead><tr><th>method</th><th>狀態</th><th>證據／說明</th></tr></thead>
+                <tbody>
+                    <tr><td><code>session/request_permission</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:411-445</code>；option 映射、allow_always 記憶、cancel 支援</td></tr>
+                    <tr><td><code>fs/read_text_file</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:350-366</code>；開啟中 buffer 優先，line／limit 支援</td></tr>
+                    <tr><td><code>fs/write_text_file</code></td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:334-349</code>；寫 editor view + save IPC</td></tr>
+                    <tr><td><code>terminal/*</code>（5 方法）</td><td><span class="badge ok">有</span></td><td><code>acpConnection.ts:367-410</code> → <code>agent_terminal.rs</code>；輸出併入 tool transcript</td></tr>
+                    <tr><td><code>$/cancel_request</code> 回應</td><td><span class="badge ok">SDK 代管</span></td><td>SDK 1.2.0 runtime 內建（<code>acp.js:97</code>），無需 yuzora 手做</td></tr>
+                </tbody>
+            </table>
+
+            <h3>SessionUpdate 11 變體</h3>
+            <table>
+                <thead><tr><th>變體</th><th>狀態</th><th>說明</th></tr></thead>
+                <tbody>
+                    <tr><td><code>user_message_chunk</code>／<code>agent_message_chunk</code>／<code>agent_thought_chunk</code></td><td><span class="badge ok">有</span></td><td>reducer 串流合併（<code>acpConnection.ts:254-259</code>）</td></tr>
+                    <tr><td><code>tool_call</code>／<code>tool_call_update</code></td><td><span class="badge ok">有</span></td><td>append／merge by toolCallId；diff／terminal 內容有渲染（264-271）</td></tr>
+                    <tr><td><code>plan</code></td><td><span class="badge ok">有</span></td><td>upsert 單一 plan block（272-273）</td></tr>
+                    <tr><td><code>available_commands_update</code></td><td><span class="badge ok">有</span></td><td>→ slash popup（316-321）</td></tr>
+                    <tr><td><code>session_info_update</code></td><td><span class="badge part">部分</span></td><td>只讀 <code>_meta.piAcp.{queueDepth,running}</code>；官方 <code>title</code>／<code>updatedAt</code> 欄位被忽略；且經多餘的 stream 攔截（A3）</td></tr>
+                    <tr><td><code>current_mode_update</code></td><td><span class="badge part">斷線</span></td><td>reducer 刻意跳過（261-263）；store 的 mode 提取在 <code>appendUpdate</code> 但產品碼零呼叫（A2）</td></tr>
+                    <tr><td><code>usage_update</code></td><td><span class="badge miss">出錯</span></td><td>落到 default → 渲染成「Unknown session update」錯誤塊（A1）</td></tr>
+                    <tr><td><code>config_option_update</code></td><td><span class="badge miss">出錯</span></td><td>同上（A1）</td></tr>
+                </tbody>
+            </table>
+
+            <h3>依賴與生態版本</h3>
+            <table>
+                <thead><tr><th>套件</th><th>yuzora 現值</th><th>最新</th><th>備註</th></tr></thead>
+                <tbody>
+                    <tr><td><code>@agentclientprotocol/sdk</code></td><td>1.2.0</td><td>1.2.1（2026-07-07）</td><td>patch 差；deps test 已防 scope 退化 ✓</td></tr>
+                    <tr><td><code>@agentclientprotocol/claude-agent-acp</code></td><td>pin 0.57.0</td><td>0.58.1</td><td>preset 以 <code>bunx</code> 拉取，非 package.json 依賴</td></tr>
+                    <tr><td><code>@agentclientprotocol/codex-acp</code></td><td>pin 1.1.0</td><td>1.1.2</td><td>同上</td></tr>
+                    <tr><td><code>pi-acp</code></td><td>pin 0.0.31</td><td>—</td><td>自家 agent；<code>_meta.piAcp</code> 擴充符合官方 vendor 規範</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <!-- ============ TAB: Gap 發現 ============ -->
+    <div id="findings" class="tab-content">
+        <section>
+            <h2>A 級：實際會出錯／死重（3 項）</h2>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-a">A1</span><span class="title">stable 變體 usage_update／config_option_update 被渲染成紅色錯誤塊</span></div>
+                <div class="body">
+                    <p>reducer 的 default case 把未知變體變成 <code>kind:"error"</code> 的「Unknown session update: X」transcript block。<code>usage_update</code> 與 <code>config_option_update</code> 是 stable v1 變體，且<strong>本地 SDK 1.2.0 的 zod schema 已認得它們</strong>——通知會通過 SDK 驗證、抵達 reducer、變成錯誤塊直接呈現給使用者。</p>
+                    <div class="evidence">證據：<code>src/agent/acpConnection.ts:274-276</code>（default → unknownSessionUpdate）；<code>node_modules/@agentclientprotocol/sdk/dist/schema/zod.gen.js:2051-2053</code>（<code>zUsageUpdate</code> literal 存在）。</div>
+                    <p><strong>影響：</strong>claude-agent-acp／codex-acp 新版與 pi-acp 一旦送 usage（token 用量的官方 stable 通道），對話裡就出現錯誤塊。這同時是被記錄過的「pi-acp token 用量顯示」需求的正解入口——官方已有通道，不必等 vendor 擴充。</p>
+                    <p><strong>建議：</strong>reducer 補兩個 case：<code>usage_update</code> 餵給 UI 顯示 token 用量（或先靜默＋存 store）；<code>config_option_update</code> 靜默更新。default 改為「靜默＋console.warn」——官方 extensibility 精神是未知內容不應以錯誤驚擾使用者（forward-compat）。</p>
+                </div>
+            </div>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-a">A2</span><span class="title">current_mode_update 的 store 接線是斷路（dead path）</span></div>
+                <div class="body">
+                    <p>reducer 對 <code>current_mode_update</code> 刻意回傳原 transcript（正確——它不是 transcript 事件），mode 的提取邏輯放在 store 的 <code>appendUpdate</code>；但 <strong><code>appendUpdate</code> 在產品碼中零呼叫者（只有測試在呼叫）</strong>。實際接線 <code>AgentBridge</code> 只接了 <code>onTranscript</code>／<code>onAvailableCommands</code>／<code>onSessionInfo</code> 三條 callback。</p>
+                    <div class="evidence">證據：<code>src/agent/acpConnection.ts:261-263</code>（reducer 跳過）；<code>src/state/agentStore.ts:321,703-704</code>（mode 提取，僅測試觸達）;<code>src/workbench/AgentBridge.tsx:47-54</code>（三條 callback，無 mode）。grep 全庫確認 <code>appendUpdate</code> 無產品呼叫點。</div>
+                    <p><strong>影響：</strong>agent 自主切 mode（例如 claude 的 plan mode 進出）時 UI 永遠不知道；store 的 <code>mode</code> 欄位只在 session 建立時有值。</p>
+                    <p><strong>建議：</strong>runtime 加 <code>onModeChange</code> callback 接到 store（比照 onSessionInfo 模式），同時決定 <code>appendUpdate</code> 的去留（留作測試 helper 或刪除）。</p>
+                </div>
+            </div>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-a">A3</span><span class="title">interceptUnsupportedSessionUpdates 已是死重（45 行 stream hack）</span></div>
+                <div class="body">
+                    <p>這段 stream 攔截為「SDK 不認得 <code>session_info_update</code>」而生（0.4.5 時代成立）。但本地 SDK 1.2.0 的 <code>zSessionInfoUpdate</code> 已存在且<strong>全欄位 optional</strong>（title／updatedAt／_meta 皆 <code>nullish</code> + <code>defaultOnError</code>）——pi-acp 只帶 <code>_meta.piAcp</code> 的 payload 可直接通過 zod 驗證，由 SDK 正常派發到同一個 <code>client.sessionUpdate</code>。攔截與否行為等價，hack 純屬負債。</p>
+                    <div class="evidence">證據：<code>src/agent/acpConnection.ts:754-797</code>（intercept + isSessionInfoNotification）；<code>node_modules/@agentclientprotocol/sdk/dist/schema/zod.gen.js:1985-1989</code>（全 optional schema）。</div>
+                    <p><strong>建議：</strong>直接移除 intercept、把原 stream 餵給 <code>ClientSideConnection</code>；跑既有 session_info 端到端測試迴歸（<code>acpConnection.test.ts</code> 已涵蓋）。</p>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>B 級：功能缺口（4 項）</h2>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-b">B1</span><span class="title">session modes 整層缺席（set_mode + mode UI）</span></div>
+                <div class="body">
+                    <p><code>session/new</code>／<code>session/load</code> 回應中的 <code>modes</code>（currentModeId + availableModes）被丟棄；無 <code>session/set_mode</code> 呼叫路徑；面板無 mode 顯示或切換器。三個 preset agent 都有 mode 概念（claude-agent-acp 的 permission modes、pi 的模式），這是對使用者可見度最高的功能缺口。</p>
+                    <div class="evidence">證據：grep 全庫無 <code>set_mode</code>／<code>setSessionMode</code>；<code>AgentZonePanel.tsx</code> SessionHeader 僅顯示 model。</div>
+                    <p><strong>建議：</strong>newSession 存 modes → SessionHeader 加 mode selector → 呼叫 <code>setSessionMode</code>；與 A2 的 <code>onModeChange</code> 一起做成完整迴路。</p>
+                </div>
+            </div>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-b">B2</span><span class="title">authenticate RPC 無呼叫路徑；現行 workaround 對應的是 unstable 擴充</span></div>
+                <div class="body">
+                    <p>yuzora 收到 <code>-32000 Authentication required</code> 後走終端登入（開 terminal session 跑 agent 的 login 指令）再 retry——這對「CLI login／env var」型 agent 有效（pi／claude／codex 現況都能動）。但 stable v1 的 <code>AuthMethod</code> 只有 <code>agent</code> 變體（agent 自行處理認證，client 呼 <code>authenticate {methodId}</code>）；<code>env_var</code>／<code>terminal</code> 型其實還是 unstable。也就是說：<strong>協定的正規路徑（authenticate RPC）yuzora 反而沒有</strong>，遇到宣告 agent-variant authMethods 的 agent 會卡在 banner。</p>
+                    <div class="evidence">證據：grep 無 <code>connection.authenticate</code> 呼叫；<code>acpConnection.ts:843-852</code>（isAuthRequiredRpcError）→ <code>agentStore.ts:179-195</code>（terminal login + retry）。</div>
+                    <p><strong>建議：</strong>authMethods 含 agent-variant 時提供「透過協定認證」按鈕（呼 <code>authenticate</code> 後 retry newSession）；terminal workaround 保留為 fallback。</p>
+                </div>
+            </div>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-b">B3</span><span class="title">promptCapabilities 未讀；送出端只有 baseline（text + resource_link）</span></div>
+                <div class="body">
+                    <p><code>initialize</code> 回應的 <code>agentCapabilities.promptCapabilities</code>（image／audio／embeddedContext）被丟棄，composer 送出的 <code>PromptBlock</code> 型別也只定義 text 與 resource_link。附圖、把開啟中 buffer 以 embedded resource 內嵌（對不能讀 client fs 的遠端 agent 重要）都不可能。</p>
+                    <div class="evidence">證據：<code>acpConnection.ts:140-142</code>（PromptBlock 型別）；initialize 回應只取 authMethods（620-635）。</div>
+                    <p><strong>建議：</strong>存 per-connection capabilities → composer 依 capability 開放附件類型（第一步：image）。</p>
+                </div>
+            </div>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-b">B4</span><span class="title">session 管理方法未跟進（list／resume／delete／close／logout）</span></div>
+                <div class="body">
+                    <p>皆為 1.x stabilized、capability-gated。現況 <code>listSessions</code> 靠 router 本地聚合（只看得到本次 app 生命週期內的 session）；<code>session/resume</code>（不 replay 的恢復）對長 session 的恢復 UX 比 <code>session/load</code> replay 更省。</p>
+                    <p><strong>建議：</strong>依 agent 宣告的 <code>sessionCapabilities</code> 漸進採用；優先順序 resume &gt; list &gt; delete／close。</p>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>C 級：演進債／衛生（3 項）</h2>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-c">C1</span><span class="title">ClientSideConnection 已被官方標 @deprecated</span></div>
+                <div class="body">
+                    <p>本地 1.2.0 的 <code>acp.d.ts</code> 即已標註：「Prefer <code>client()</code>, which registers typed handlers with a single context object and supports <code>connectWith</code> and session helpers.」1.x 內仍完整支援，不急；但下個 major 有移除風險。</p>
+                    <div class="evidence">證據：<code>node_modules/@agentclientprotocol/sdk/dist/acp.d.ts:975</code> 前的 doc comment（實機確認）。</div>
+                    <p><strong>建議：</strong>列入中期遷移（builder <code>client()</code> + <code>onRequest</code>／<code>onNotification</code>）；遷移時可一併消掉 A3 的 stream 包裝層。</p>
+                </div>
+            </div>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-c">C2</span><span class="title">版本落後：SDK 1.2.0→1.2.1；adapter pins 0.57.0→0.58.1、1.1.0→1.1.2</span></div>
+                <div class="body">
+                    <p>pin 策略本身正確（可重現），缺的是升級節奏。SDK patch 升級低風險；adapter bump 建議搭配一次實機 smoke（gui-acceptance）。</p>
+                </div>
+            </div>
+
+            <div class="finding">
+                <div class="head"><span class="badge sev-c">C3</span><span class="title">手抄協定型別子集＋Record&lt;string,unknown&gt; 解析</span></div>
+                <div class="body">
+                    <p><code>acpConnection.ts:19-161</code> 手抄了 ToolCallUpdate／PlanUpdate／PermissionOption 等型別，SessionUpdate 用 <code>Record&lt;string,unknown&gt;</code> + runtime guard 解析；SDK 有完整生成型別（<code>types.gen</code>）可直接 import。exitStatus 同時容忍 camelCase／snake_case（899-909）——官方 schema 是 camelCase，snake_case 容忍屬早期上游混亂的遺留。</p>
+                    <p><strong>建議：</strong>與 C1 遷移一起改 import SDK 型別，刪手抄與雙格式容忍。</p>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 行動計畫 ============ -->
+    <div id="plan" class="tab-content">
+        <section>
+            <h2>建議路線（三波）</h2>
+            <p class="flow-note">每波以本專案 gate 收尾：<code>bun run build</code>（含 tsc）＋ <code>bun run test</code>（vitest）＋ <code>cd src-tauri && cargo check</code>；涉及 UI 行為的加 gui-acceptance 實機驗收。</p>
+
+            <h3>第一波：低風險同步（估 1–2 天）— 對應 A1／A2／A3／C2</h3>
+            <table>
+                <thead><tr><th>#</th><th>工作</th><th>驗證</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td>reducer 補 <code>usage_update</code>（顯示或入 store）與 <code>config_option_update</code>（靜默）case；default 改「靜默＋log」不再產生錯誤塊</td><td>vitest 新 case：兩變體不產生 error entry；unknown 變體僅 log</td></tr>
+                    <tr><td>2</td><td>移除 <code>interceptUnsupportedSessionUpdates</code>（45 行）＋直接餵 stream</td><td>既有 session_info 端到端測試綠燈</td></tr>
+                    <tr><td>3</td><td>runtime 加 <code>onModeChange</code> → AgentBridge → store；處置 <code>appendUpdate</code> dead code</td><td>vitest：current_mode_update 更新 store.mode</td></tr>
+                    <tr><td>4</td><td>升級 <code>@agentclientprotocol/sdk</code> 1.2.1；presets bump claude-agent-acp 0.58.1、codex-acp 1.1.2</td><td>全量 gate＋三 preset 實機各開一次 session（gui-acceptance smoke）</td></tr>
+                </tbody>
+            </table>
+
+            <h3>第二波：功能補齊 — 對應 B1／B2／B3</h3>
+            <table>
+                <thead><tr><th>#</th><th>工作</th><th>驗證</th></tr></thead>
+                <tbody>
+                    <tr><td>5</td><td>modes 完整迴路：newSession 存 availableModes → SessionHeader mode selector → <code>setSessionMode</code>；與 onModeChange 收斂同一狀態</td><td>claude preset 實機切 plan／default mode，UI 與 agent 行為一致</td></tr>
+                    <tr><td>6</td><td>agent-variant <code>authenticate</code> RPC 路徑（banner 加「透過協定認證」），terminal login 降為 fallback</td><td>fakeAcpAgent 模擬 agent-variant authMethods 的 vitest 情境</td></tr>
+                    <tr><td>7</td><td>promptCapabilities 存取＋composer 附件依 capability 開放（第一步 image）</td><td>宣告 image:true 的 fake agent 能收到 image block</td></tr>
+                </tbody>
+            </table>
+
+            <h3>第三波：演進債 — 對應 C1／C3／B4</h3>
+            <table>
+                <thead><tr><th>#</th><th>工作</th><th>驗證</th></tr></thead>
+                <tbody>
+                    <tr><td>8</td><td>遷移 builder <code>client()</code> API（棄 ClientSideConnection），同時改 import SDK 生成型別、刪手抄與 snake_case 容忍</td><td>全量 gate＋端到端測試不變綠</td></tr>
+                    <tr><td>9</td><td>依 sessionCapabilities 漸進：resume → list → delete/close</td><td>各 capability 的 fake agent 情境測試</td></tr>
+                </tbody>
+            </table>
+
+            <h3>明確不做（non-goals）</h3>
+            <ul>
+                <li><strong>不遷移 Rust host（方案 B）</strong>：官方 Rust SDK 1.2.0 是全新 builder API，遷移只有風險沒有收益；A′ 已被測試與實機驗證背書。</li>
+                <li><strong>不追 unstable 特性</strong>（plan_update／elicitation／NES／providers／document sync／MCP-over-ACP／session-fork）：官方明言隨時可變；等 stabilize 再評。</li>
+                <li><strong>不代管 MCP servers</strong>（維持 <code>mcpServers:[]</code>）：既有設計決策，與本次發現無衝突。</li>
+            </ul>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 評分與回饋 ============ -->
+    <div id="eval" class="tab-content">
+        <section>
+            <h2>評分卡（rubric）</h2>
+            <div class="scores">
+                <div class="score-card"><div class="name">協定義務符合度</div><div class="score">9<span style="font-size:0.9rem; color:var(--color-text-muted);">/10</span></div><div class="score-bar"><div style="width:90%"></div></div><div class="why">client 義務 9/9、cancel MUST 正確、_meta 用法合規；扣 1：unknown 變體以錯誤塊呈現違 forward-compat 精神（A1）</div></div>
+                <div class="score-card"><div class="name">stable 功能覆蓋</div><div class="score">5<span style="font-size:0.9rem; color:var(--color-text-muted);">/10</span></div><div class="score-bar"><div style="width:50%"></div></div><div class="why">核心 turn loop 完整；modes／authenticate／prompt caps／session 管理整層未跟進（B1–B4）</div></div>
+                <div class="score-card"><div class="name">工程品質</div><div class="score">9<span style="font-size:0.9rem; color:var(--color-text-muted);">/10</span></div><div class="score-bar"><div style="width:90%"></div></div><div class="why">測試深度（端到端 SDK bridge、timeout/EPIPE/respawn）、deps 紀律、lifecycle 成熟；扣 1：dead path（A2）與死重（A3）</div></div>
+                <div class="score-card"><div class="name">生態同步度</div><div class="score">6<span style="font-size:0.9rem; color:var(--color-text-muted);">/10</span></div><div class="score-bar"><div style="width:60%"></div></div><div class="why">已完成 scope 遷移（大加分）；SDK patch、adapter pins 落後，deprecated API 未排遷移（C1–C3）</div></div>
+            </div>
+            <p><strong>綜合判定：</strong>不需要重構，需要一輪「協定同步」。第一波（4 項）即可消除所有實際出錯路徑，之後的功能補齊都是增量。</p>
+        </section>
+
+        <section class="review-box">
+            <h3>人工覆核</h3>
+            <label>對本報告結論的備註（異議、補充、優先序調整）：</label>
+            <textarea id="review-comment" placeholder="例：B1 提前到第一波；usage_update 先入 store 不上 UI…"></textarea>
+            <div class="row">
+                <label style="margin:0;"><input type="checkbox" id="approve-check"> 認可此評估與行動計畫</label>
+                <label style="margin:0;">優先波次：
+                    <select id="wave-select" style="font-family:var(--font-sans); padding:0.2rem 0.4rem;">
+                        <option value="wave1">第一波（低風險同步）</option>
+                        <option value="wave2">第二波（功能補齊）</option>
+                        <option value="wave3">第三波（演進債）</option>
+                    </select>
+                </label>
+            </div>
+        </section>
+
+        <section>
+            <h2>驗證證據索引</h2>
+            <details>
+                <summary>本報告關鍵論斷的一手證據（親自覆核部分）</summary>
+                <div class="details-body">
+                    <ul>
+                        <li>SDK 1.2.0 認得全部 11 種 stable 變體：<code>node_modules/@agentclientprotocol/sdk/dist/schema/zod.gen.js:2035-2053</code>（zSessionUpdate union 含 config_option_update／session_info_update／usage_update literals）。</li>
+                        <li><code>zSessionInfoUpdate</code> 全欄位 optional：同檔 <code>1985-1989</code>（title／updatedAt／_meta 皆 nullish + defaultOnError）→ A3 可刪的依據。</li>
+                        <li><code>ClientSideConnection</code> @deprecated：<code>dist/acp.d.ts:975</code> 前 doc comment，「Prefer client()…」。</li>
+                        <li><code>$/cancel_request</code> SDK 內建：<code>dist/acp.js:97</code>（PROTOCOL_METHODS.cancel_request）。</li>
+                        <li><code>appendUpdate</code> 產品碼零呼叫：grep <code>src/</code> 排除測試後無結果 → A2 斷路的依據。</li>
+                        <li>reducer default 產生錯誤塊：<code>src/agent/acpConnection.ts:274-276</code> + <code>977-986</code>（unknownSessionUpdate → kind:"error"）。</li>
+                        <li>AgentBridge 僅三條 callback：<code>src/workbench/AgentBridge.tsx:47-54</code>。</li>
+                    </ul>
+                    <p>官方協定內容出自 2026-07-10 實機 clone：<code>agentclientprotocol/agent-client-protocol</code>（schema/v1/meta.json、docs/protocol/v1/*.mdx）、<code>typescript-sdk</code>（acp.ts、types.gen.ts）、<code>rust-sdk</code>（lib.rs、Cargo.toml）；npm registry 版本以 <code>npm view</code> 查證。</p>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <div class="actions">
+        <button class="btn primary" onclick="copyFeedback()">Copy 回饋 as JSON</button>
+        <button class="btn" onclick="copyNextPrompt()">Copy 第一波執行 Prompt</button>
+        <button class="btn" onclick="window.print()">Print / PDF</button>
+    </div>
+</div>
+
+<script>
+function showTab(id, ev) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    ev.target.classList.add('active');
+}
+function copyFeedback() {
+    const payload = {
+        artifact: "acp-協定確認與實作評估-2026-07-10.html",
+        reviewed_at: new Date().toISOString(),
+        scores: { protocol_compliance: 9, stable_coverage: 5, engineering: 9, ecosystem_sync: 6 },
+        comments: [{ section: "overall", note: document.getElementById('review-comment').value || "(無備註)", severity: "info" }],
+        approved: document.getElementById('approve-check').checked,
+        priority_wave: document.getElementById('wave-select').value,
+        next_prompt: "依報告執行選定波次；每項完成後跑 bun run build / bun run test / cargo check。"
+    };
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    flashBtn(event.target);
+}
+function copyNextPrompt() {
+    const prompt = `依 docs/html/acp-協定確認與實作評估-2026-07-10.html 執行第一波（低風險同步）：
+1. reduceSessionUpdate 補 usage_update 與 config_option_update case；default 改靜默＋log，不再產生 error transcript block（A1）
+2. 移除 interceptUnsupportedSessionUpdates 與 isSessionInfoNotification，stream 直接餵 ClientSideConnection；跑既有 session_info 端到端測試迴歸（A3）
+3. acpConnection runtime 加 onModeChange callback，AgentBridge 接到 agentStore；處置 appendUpdate dead code（A2）
+4. 升級 @agentclientprotocol/sdk 至 1.2.1；agentPresets bump claude-agent-acp@0.58.1、codex-acp@1.1.2（C2）
+每步完成跑 gate：bun run build ＋ bun run test ＋ cd src-tauri && cargo check；第 4 步後用 gui-acceptance 對三個 preset 各做一次開 session smoke。`;
+    navigator.clipboard.writeText(prompt);
+    flashBtn(event.target);
+}
+function flashBtn(btn) {
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+}
+</script>
+</body>
+</html>
