@@ -1,6 +1,7 @@
 import "./index.css";
 import { Composition } from "remotion";
 import { AgentZone } from "./AgentZone";
+import { HERO_DURATION, Hero } from "./Hero";
 import { RemoteDb } from "./RemoteDb";
 import { TerminalGit } from "./TerminalGit";
 
@@ -13,6 +14,18 @@ const LANGS = ["zh", "en"] as const;
 export const RemotionRoot: React.FC = () => {
   return (
     <>
+      {LANGS.map((lang) => (
+        <Composition
+          key={`hero-${lang}`}
+          id={`hero-${lang}`}
+          component={Hero}
+          defaultProps={{ lang }}
+          durationInFrames={HERO_DURATION}
+          fps={FPS}
+          width={WIDTH}
+          height={HEIGHT}
+        />
+      ))}
       {LANGS.map((lang) => (
         <Composition
           key={`agentzone-${lang}`}
