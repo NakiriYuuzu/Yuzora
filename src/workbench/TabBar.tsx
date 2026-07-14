@@ -9,6 +9,7 @@ import { logUserAction } from "@/features/logs/userAction"
 import { FileIcon } from "../lib/fileIcons"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { isMarkdownPath, useMarkdownPreviewStore } from "./MarkdownPreview"
+import { isSvgPath, useSvgPreviewStore } from "./SvgSplitView"
 
 export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
@@ -20,6 +21,9 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const previewOpen = useMarkdownPreviewStore((s) => s.openPaths)
     const togglePreview = useMarkdownPreviewStore((s) => s.toggle)
     const closePreview = useMarkdownPreviewStore((s) => s.close)
+    const svgClosedPaths = useSvgPreviewStore((s) => s.closedPaths)
+    const toggleSvgPreview = useSvgPreviewStore((s) => s.toggle)
+    const forgetSvgPreview = useSvgPreviewStore((s) => s.forget)
     if (!group) return null
 
     async function onClose(tab: TabInfo) {
@@ -43,6 +47,8 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         closeTab(groupIndex, tab.path)
         dropDocument(tab.path)
         closePreview(tab.path)
+        // Reopening an SVG returns to the default-open preview state.
+        forgetSvgPreview(tab.path)
         void logUserAction("close_tab", `close ${tab.path}`)
     }
 
@@ -109,25 +115,40 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 aria-hidden="true"
                             />
                         )}
-                        {isMarkdownPath(tab.name) && (
+                        {(isMarkdownPath(tab.name) || isSvgPath(tab.name)) && (
                             <button
                                 type="button"
                                 className={
                                     "preview-toggle flex size-[18px] shrink-0 items-center justify-center rounded-[6px] transition-colors " +
-                                    (previewOpen[tab.path]
+                                    ((isMarkdownPath(tab.name)
+                                        ? previewOpen[tab.path]
+                                        : !svgClosedPaths[tab.path])
                                         ? "bg-(--yz-accent)/16 text-(--yz-accent-ink)"
                                         : "text-(--ink-3) hover:bg-(--paper-3) hover:text-(--ink-0)")
                                 }
                                 aria-label={t("tabBar.togglePreview", { name: tab.name })}
-                                aria-pressed={!!previewOpen[tab.path]}
-                                title={t("tabBar.toggleMarkdownPreviewTitle")}
+                                aria-pressed={
+                                    isMarkdownPath(tab.name)
+                                        ? !!previewOpen[tab.path]
+                                        : !svgClosedPaths[tab.path]
+                                }
+                                title={
+                                    isMarkdownPath(tab.name)
+                                        ? t("tabBar.toggleMarkdownPreviewTitle")
+                                        : t("tabBar.toggleSvgPreviewTitle")
+                                }
                                 onClick={(e) => {
                                     e.stopPropagation()
                                     // panel gate 綁 active tab；先 activate 被點的 tab 再 toggle，
                                     // 使 aria-pressed 與可見 panel 一致（非 active tab 不再說謊）（R11-2）。
                                     setActiveTab(groupIndex, tab.path)
-                                    togglePreview(tab.path)
-                                    void logUserAction("toggle_md_preview", `toggle preview ${tab.path}`)
+                                    if (isMarkdownPath(tab.name)) {
+                                        togglePreview(tab.path)
+                                        void logUserAction("toggle_md_preview", `toggle preview ${tab.path}`)
+                                    } else {
+                                        toggleSvgPreview(tab.path)
+                                        void logUserAction("toggle_svg_preview", `toggle preview ${tab.path}`)
+                                    }
                                 }}
                             >
                                 <svg

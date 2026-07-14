@@ -4,7 +4,7 @@ import { clearAll } from "@/editor/documentRegistry"
 import { saveDirtyTab } from "@/editor/saveDocument"
 import { logUserAction } from "@/features/logs/userAction"
 import i18n from "@/lib/i18n"
-import { openWorkspace, startWatch } from "@/lib/ipc"
+import { allowWorkspaceAssetScope, openWorkspace, startWatch } from "@/lib/ipc"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -44,6 +44,12 @@ async function openWorkspaceAtPathWithOutcome(path: string): Promise<boolean> {
     const canonical = await openWorkspace(path)
     clearAll()
     useWorkspaceStore.getState().setWorkspace(canonical)
+    // Image tabs load through the asset protocol; await the grant so restored
+    // image tabs never race it, but a grant failure must not block opening the
+    // workspace — affected images surface a load error instead.
+    await allowWorkspaceAssetScope(canonical).catch((err) => {
+        console.warn("allow_workspace_asset_scope failed:", err)
+    })
     void startWatch(canonical)
     void logUserAction("open_workspace", `open workspace ${canonical}`)
     useRecentWorkspacesStore.getState().record(canonical)

@@ -10,6 +10,8 @@ import { documentGeneration } from "../editor/documentRegistry"
 import { TabBar } from "./TabBar"
 import { isMarkdownPath } from "./MarkdownPreview"
 import { MarkdownSplitView } from "./MarkdownSplitView"
+import { ImageView, isImagePath } from "./ImageView"
+import { SvgSplitView, isSvgPath } from "./SvgSplitView"
 
 const ACTION_BUTTON_CLASS =
     "flex size-[28px] items-center justify-center rounded-[9px] transition-all duration-150"
@@ -84,6 +86,14 @@ export function EditorArea() {
                                     path={group.activePath}
                                     groupIndex={i}
                                 />
+                            ) : isSvgPath(group.activePath) ? (
+                                <SvgSplitView
+                                    key={`${group.activePath}:${documentGeneration(group.activePath)}`}
+                                    path={group.activePath}
+                                    groupIndex={i}
+                                />
+                            ) : isImagePath(group.activePath) ? (
+                                <ImageView key={group.activePath} path={group.activePath} />
                             ) : (
                                 <EditorPane
                                     key={`${group.activePath}:${documentGeneration(group.activePath)}`}

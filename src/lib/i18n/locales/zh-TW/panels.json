@@ -216,5 +216,17 @@
     "revealInSystem": "在系統中顯示",
     "openExternally": "以外部程式開啟",
     "copyPath": "複製路徑"
+  },
+  "imageViewer": {
+    "zoomIn": "放大",
+    "zoomOut": "縮小",
+    "zoomActual": "實際大小（1:1）",
+    "zoomFit": "符合視窗",
+    "loadError": "無法載入圖片",
+    "loadErrorDescription": "「{{path}}」可能已損壞、被移除，或格式不受目前 WebView 支援"
+  },
+  "svgPreview": {
+    "renderError": "無法渲染 SVG",
+    "renderErrorDescription": "內容不是有效的 SVG；修正原始碼後預覽會自動更新"
   }
 }

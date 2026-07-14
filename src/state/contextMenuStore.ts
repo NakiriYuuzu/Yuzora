@@ -30,6 +30,7 @@ import {
 } from "../lib/ipc"
 import { useMarkdownPreviewStore } from "../workbench/MarkdownPreview"
 import { usePreviewStore } from "./previewStore"
+import { useSvgPreviewStore } from "./svgPreviewStore"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
 import { useDiffModalStore, type WorktreeDiffFile } from "./diffModalStore"
 import { useGitStore } from "./gitStore"
@@ -193,6 +194,9 @@ function editorTarget(
 function dropTabSideEffects(tab: TabInfo): void {
     dropDocument(tab.path)
     useMarkdownPreviewStore.getState().close(tab.path)
+    // Reopening an SVG returns to the default-open preview state (its store
+    // records explicit closes, so dropping the flag restores the default).
+    useSvgPreviewStore.getState().forget(tab.path)
 }
 
 // Single-tab close, replicating TabBar's onClose confirm flow so the tab
@@ -322,6 +326,7 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
         // buffer so unsaved edits survive) and the markdown-preview toggle BEFORE
         // updateTabPath triggers the EditorPane remount at the new key.
         const preview = useMarkdownPreviewStore.getState()
+        const svgPreview = useSvgPreviewStore.getState()
         for (const oldPath of affectedTabPaths(path)) {
             const newPath = oldPath === path ? target : target + oldPath.slice(path.length)
             renameDocument(oldPath, newPath, getView(oldPath)?.state.doc.toString())
@@ -329,6 +334,14 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
                 preview.close(oldPath)
                 if (!preview.isOpen(newPath)) preview.toggle(newPath)
             }
+            // SVG previews default open, so the *closed* flag is what follows
+            // the rename (mirror image of the markdown migration above).
+            // Forget the old path unconditionally: after a double-toggle the
+            // store holds a false-valued flag (isOpen already true) that would
+            // otherwise linger on the stale path until a workspace switch.
+            const svgWasClosed = !svgPreview.isOpen(oldPath)
+            svgPreview.forget(oldPath)
+            if (svgWasClosed && svgPreview.isOpen(newPath)) svgPreview.toggle(newPath)
         }
         useWorkspaceStore.getState().updateTabPath(path, target)
         useWorkspaceStore.getState().refreshTree()
@@ -368,6 +381,7 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
             for (const p of affected) {
                 dropDocument(p)
                 useMarkdownPreviewStore.getState().close(p)
+                useSvgPreviewStore.getState().forget(p)
             }
         }
         useWorkspaceStore.getState().refreshTree()

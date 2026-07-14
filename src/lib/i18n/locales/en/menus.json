@@ -113,6 +113,7 @@
     "unsavedChangesTitle": "Unsaved changes",
     "togglePreview": "Toggle preview {{name}}",
     "toggleMarkdownPreviewTitle": "Toggle Markdown preview",
+    "toggleSvgPreviewTitle": "Toggle SVG preview",
     "close": "Close {{name}}"
   },
   "unsavedDialog": {

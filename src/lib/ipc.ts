@@ -97,6 +97,10 @@ export function openFile(path: string): Promise<OpenFileResult> {
     return invoke("open_file", { path })
 }
 
+export function allowWorkspaceAssetScope(path: string): Promise<void> {
+    return invoke("allow_workspace_asset_scope", { path })
+}
+
 export function saveFile(path: string, content: string): Promise<number> {
     return invoke("save_file", { path, content })
 }

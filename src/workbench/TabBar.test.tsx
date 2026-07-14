@@ -21,6 +21,7 @@ vi.mock("../editor/saveDocument", () => ({ saveDirtyTab: vi.fn() }))
 import { TabBar } from "./TabBar"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { useContextMenuStore } from "../state/contextMenuStore"
+import { useSvgPreviewStore } from "../state/svgPreviewStore"
 import { useUiStore, uiInitialState } from "../state/uiStore"
 import { useMarkdownPreviewStore } from "./MarkdownPreview"
 import { saveDirtyTab } from "../editor/saveDocument"
@@ -36,6 +37,7 @@ afterEach(() => {
     useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useUiStore.setState(uiInitialState)
     useMarkdownPreviewStore.setState({ openPaths: {} })
+    useSvgPreviewStore.getState().reset()
 })
 
 function seedTabs() {
@@ -211,6 +213,69 @@ test("關閉 .md 分頁時清除其 preview 開關狀態（W5）", async () => {
     await waitFor(() =>
         expect(useMarkdownPreviewStore.getState().isOpen("/w/r.md")).toBe(false)
     )
+})
+
+// SVG 分頁的 preview toggle 是「反相語意」：store 記明確關閉、預設開啟，
+// 與 markdown（記開啟、預設關閉）相反——這裡固定住雙模式各自的行為。
+function seedMixedPreviewTabs() {
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        activeGroupIndex: 0,
+        groups: [
+            {
+                activePath: "/w/logo.svg",
+                tabs: [
+                    { path: "/w/logo.svg", name: "logo.svg", dirty: false, externallyModified: false },
+                    { path: "/w/r.md", name: "r.md", dirty: false, externallyModified: false }
+                ]
+            }
+        ]
+    })
+}
+
+test("svg 分頁 toggle 預設 aria-pressed=true（反相語意），點擊後關閉並記錄", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedMixedPreviewTabs()
+    render(<TabBar groupIndex={0} />)
+    const svgEye = screen.getByLabelText("Toggle preview logo.svg")
+    expect(svgEye.getAttribute("aria-pressed")).toBe("true")
+    fireEvent.click(svgEye)
+    expect(svgEye.getAttribute("aria-pressed")).toBe("false")
+    expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(false)
+    fireEvent.click(svgEye)
+    expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(true)
+})
+
+test("md 與 svg 分頁並存：toggle 各自分流（title 與 aria-pressed 互不干擾）", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedMixedPreviewTabs()
+    render(<TabBar groupIndex={0} />)
+    const svgEye = screen.getByLabelText("Toggle preview logo.svg")
+    const mdEye = screen.getByLabelText("Toggle preview r.md")
+    expect(svgEye.getAttribute("title")).toBe("Toggle SVG preview")
+    expect(mdEye.getAttribute("title")).toBe("Toggle Markdown preview")
+    // 預設：svg 開（true）、md 關（false）。
+    expect(svgEye.getAttribute("aria-pressed")).toBe("true")
+    expect(mdEye.getAttribute("aria-pressed")).toBe("false")
+    fireEvent.click(mdEye)
+    expect(useMarkdownPreviewStore.getState().isOpen("/w/r.md")).toBe(true)
+    expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(true)
+    expect(useSvgPreviewStore.getState().closedPaths["/w/logo.svg"]).toBeUndefined()
+})
+
+test("關閉 svg 分頁清除其明確關閉狀態（重開回到預設開啟）", async () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedMixedPreviewTabs()
+    render(<TabBar groupIndex={0} />)
+    fireEvent.click(screen.getByLabelText("Toggle preview logo.svg"))
+    expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(false)
+    fireEvent.click(screen.getByLabelText("Close logo.svg"))
+    await waitFor(() =>
+        expect(
+            useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/logo.svg")
+        ).toBe(false)
+    )
+    expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(true)
 })
 
 function seedPreviewTab() {

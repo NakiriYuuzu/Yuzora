@@ -1,6 +1,7 @@
 pub mod agent_process;
 pub mod agent_terminal;
 pub mod askpass;
+pub mod asset_scope;
 pub mod db_connection_actor;
 pub mod db_credentials;
 pub mod db_profiles;
@@ -215,6 +216,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            asset_scope::allow_workspace_asset_scope,
             fs_service::open_workspace,
             fs_service::list_dir,
             fs_service::open_file,

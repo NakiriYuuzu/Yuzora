@@ -113,6 +113,7 @@
     "unsavedChangesTitle": "未儲存的變更",
     "togglePreview": "切換預覽 {{name}}",
     "toggleMarkdownPreviewTitle": "切換 Markdown 預覽",
+    "toggleSvgPreviewTitle": "切換 SVG 預覽",
     "close": "關閉 {{name}}"
   },
   "unsavedDialog": {

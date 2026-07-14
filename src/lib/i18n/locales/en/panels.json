@@ -216,5 +216,17 @@
     "revealInSystem": "Reveal in system",
     "openExternally": "Open with external program",
     "copyPath": "Copy path"
+  },
+  "imageViewer": {
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "zoomActual": "Actual size (1:1)",
+    "zoomFit": "Fit",
+    "loadError": "Could not load this image",
+    "loadErrorDescription": "“{{path}}” may be corrupted, removed, or in a format this WebView cannot decode"
+  },
+  "svgPreview": {
+    "renderError": "Cannot render this SVG",
+    "renderErrorDescription": "The content is not valid SVG; the preview refreshes automatically once the source is fixed"
   }
 }

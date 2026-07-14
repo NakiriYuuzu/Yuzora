@@ -20,7 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # `unstable` unlocks the multiwebview API (Window::add_child) the preview panel
 # uses to overlay an external-URL browser webview over the panel region (P3).
-tauri = { version = "2", features = ["unstable"] }
+tauri = { version = "2", features = ["unstable", "protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"

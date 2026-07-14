@@ -19,6 +19,7 @@ import { useGitStore } from "@/state/gitStore"
 import { usePreviewStore } from "@/state/previewStore"
 import { useSftpStore } from "@/state/sftpStore"
 import { useSshStore } from "@/state/sshStore"
+import { useSvgPreviewStore } from "@/state/svgPreviewStore"
 import { useTerminalStore, terminalInitialState } from "@/state/terminalStore"
 import { useUiStore, uiInitialState } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -152,6 +153,7 @@ beforeEach(() => {
     vi.clearAllMocks()
     useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useDiffModalStore.setState({ open: false, source: null, activeIndex: 0, mode: "unified" })
+    useSvgPreviewStore.getState().reset()
     useUiStore.setState(uiInitialState)
     useWorkspaceStore.setState({
         workspacePath: null,
@@ -1632,6 +1634,120 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         expect(g.tabs[0].name).toBe("renamed.ts")
         expect(g.tabs[0].dirty).toBe(true)
         expect(g.activePath).toBe("/w/src/renamed.ts")
+        promptSpy.mockRestore()
+    })
+
+    // SVG preview 的 close→forget／rename 遷移契約不只走 TabBar 的關閉鈕：
+    // context-menu 的關閉、刪除、重新命名三條路徑也必須維持同一語意
+    // （store 記「明確關閉」，預設開啟——SvgSplitView plan t3-3b）。
+    it("tab: cmCloseTab 關閉 SVG tab 時清除其 preview 關閉狀態（重開回到預設開啟）", async () => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [
+                {
+                    activePath: "/w/logo.svg",
+                    tabs: [
+                        { path: "/w/a.ts", name: "a.ts", dirty: false, externallyModified: false },
+                        { path: "/w/logo.svg", name: "logo.svg", dirty: false, externallyModified: false }
+                    ]
+                }
+            ]
+        })
+        useSvgPreviewStore.getState().toggle("/w/logo.svg")
+        expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(false)
+
+        runLegacyContextMenuAction("tab", "cmCloseTab", { path: "/w/logo.svg", groupIndex: 0 })
+        await vi.waitFor(() => {
+            expect(
+                useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/logo.svg")
+            ).toBe(false)
+        })
+        expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(true)
+    })
+
+    it("file: cmDelete SVG → 清除其 preview 關閉狀態（不殘留 closedPaths）", async () => {
+        ipcCalls()
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                {
+                    activePath: "/w/logo.svg",
+                    tabs: [
+                        { path: "/w/logo.svg", name: "logo.svg", dirty: false, externallyModified: false }
+                    ]
+                }
+            ]
+        })
+        useSvgPreviewStore.getState().toggle("/w/logo.svg")
+
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/logo.svg", isDir: false })
+        await vi.waitFor(() => {
+            expect(useWorkspaceStore.getState().groups[0].tabs).toEqual([])
+        })
+        expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(true)
+    })
+
+    it("file: cmRename SVG → 使用者的 preview 關閉狀態遷移到新路徑、舊路徑不殘留", async () => {
+        ipcCalls()
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                {
+                    activePath: "/w/old.svg",
+                    tabs: [
+                        { path: "/w/old.svg", name: "old.svg", dirty: false, externallyModified: false }
+                    ]
+                }
+            ]
+        })
+        useSvgPreviewStore.getState().toggle("/w/old.svg")
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("new.svg")
+
+        runLegacyContextMenuAction("file", "cmRename", { path: "/w/old.svg" })
+        await vi.waitFor(() => {
+            expect(
+                useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/new.svg")
+            ).toBe(true)
+        })
+        expect(useSvgPreviewStore.getState().isOpen("/w/new.svg")).toBe(false)
+        expect(useSvgPreviewStore.getState().closedPaths["/w/old.svg"]).toBeUndefined()
+        promptSpy.mockRestore()
+    })
+
+    it("file: cmRename SVG（toggle 兩次＝回到開啟）→ 舊路徑的 false 旗標不殘留、新路徑維持預設開啟", async () => {
+        ipcCalls()
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                {
+                    activePath: "/w/old.svg",
+                    tabs: [
+                        { path: "/w/old.svg", name: "old.svg", dirty: false, externallyModified: false }
+                    ]
+                }
+            ]
+        })
+        useSvgPreviewStore.getState().toggle("/w/old.svg")
+        useSvgPreviewStore.getState().toggle("/w/old.svg")
+        expect(useSvgPreviewStore.getState().closedPaths["/w/old.svg"]).toBe(false)
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("new.svg")
+
+        runLegacyContextMenuAction("file", "cmRename", { path: "/w/old.svg" })
+        await vi.waitFor(() => {
+            expect(
+                useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/new.svg")
+            ).toBe(true)
+        })
+        expect(useSvgPreviewStore.getState().closedPaths["/w/old.svg"]).toBeUndefined()
+        expect(useSvgPreviewStore.getState().isOpen("/w/new.svg")).toBe(true)
+        expect(useSvgPreviewStore.getState().closedPaths["/w/new.svg"]).toBeUndefined()
         promptSpy.mockRestore()
     })
 })
