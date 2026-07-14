@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
 import {
+    MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY,
     RECENT_WORKSPACES_STORAGE_KEY,
+    loadMoveOpenedWorkspaceToTop,
     loadRecentWorkspaces,
     normalizeWorkspacePath,
     useRecentWorkspacesStore
@@ -33,13 +35,18 @@ function installLocalStorage(): void {
 const record = (p: string) => useRecentWorkspacesStore.getState().record(p)
 const remove = (p: string) => useRecentWorkspacesStore.getState().remove(p)
 const list = () => useRecentWorkspacesStore.getState().list
+const setMoveOpenedWorkspaceToTop = (enabled: boolean) =>
+    useRecentWorkspacesStore.getState().setMoveOpenedWorkspaceToTop(enabled)
 
 beforeEach(() => {
     installLocalStorage()
     localStorage.clear()
     // The store's in-memory list is seeded once at import; re-sync it to the
     // freshly-cleared storage so each test starts empty.
-    useRecentWorkspacesStore.setState({ list: loadRecentWorkspaces() })
+    useRecentWorkspacesStore.setState({
+        list: loadRecentWorkspaces(),
+        moveOpenedWorkspaceToTop: loadMoveOpenedWorkspaceToTop()
+    })
 })
 
 describe("useRecentWorkspacesStore", () => {
@@ -54,6 +61,32 @@ describe("useRecentWorkspacesStore", () => {
         record("/b")
         record("/a")
         expect(list()).toEqual(["/a", "/b"])
+    })
+
+    it("keeps an existing workspace in place when move-opened-to-top is disabled", () => {
+        record("/a")
+        record("/b")
+
+        setMoveOpenedWorkspaceToTop(false)
+        record("/a")
+
+        expect(list()).toEqual(["/b", "/a"])
+        expect(localStorage.getItem(MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY)).toBe("false")
+    })
+
+    it("still adds a new workspace when move-opened-to-top is disabled", () => {
+        record("/a")
+        setMoveOpenedWorkspaceToTop(false)
+
+        record("/b")
+
+        expect(list()).toEqual(["/b", "/a"])
+    })
+
+    it("loads a persisted disabled move-opened-to-top preference", () => {
+        localStorage.setItem(MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY, "false")
+
+        expect(loadMoveOpenedWorkspaceToTop()).toBe(false)
     })
 
     it("dedupes paths that differ only by a trailing slash", () => {

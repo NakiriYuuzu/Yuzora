@@ -29,6 +29,7 @@ import {
   type LanguagePreference,
 } from "@/lib/i18n"
 import { useEditorSettingsStore, type EditorFontSize } from "@/state/editorSettingsStore"
+import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { SettingCard, Segmented, ToggleRow } from "./settingsPrimitives"
 import { GitSection } from "./GitSection"
@@ -139,6 +140,10 @@ export function SettingsDialog({
   const setFontSize = useEditorSettingsStore((s) => s.setFontSize)
   const minimap = useEditorSettingsStore((s) => s.minimap)
   const setMinimap = useEditorSettingsStore((s) => s.setMinimap)
+  const moveOpenedWorkspaceToTop = useRecentWorkspacesStore((s) => s.moveOpenedWorkspaceToTop)
+  const setMoveOpenedWorkspaceToTop = useRecentWorkspacesStore(
+    (s) => s.setMoveOpenedWorkspaceToTop
+  )
   const [reconcile, setReconcile] = useState(true)
   const [confirmGit, setConfirmGit] = useState(true)
   const settingsLogSource = useUiStore((s) => s.settingsLogSource)
@@ -307,6 +312,15 @@ export function SettingsDialog({
                     onChange={(id) => changeLanguage(id as LanguagePreference)}
                   />
                 </SettingCard>
+
+                <div className="flex flex-col">
+                  <ToggleRow
+                    label={tw("settings.moveOpenedWorkspaceToTop")}
+                    sub={tw("settings.moveOpenedWorkspaceToTopSub")}
+                    checked={moveOpenedWorkspaceToTop}
+                    onCheckedChange={setMoveOpenedWorkspaceToTop}
+                  />
+                </div>
               </div>
             )}
 

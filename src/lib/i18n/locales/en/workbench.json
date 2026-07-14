@@ -223,7 +223,7 @@
   },
   "settings": {
     "sections": {
-      "appearance": { "label": "Appearance", "sub": "Theme and display language" },
+      "appearance": { "label": "Appearance", "sub": "Theme, language, and workspace rail" },
       "editor": { "label": "Editor", "sub": "Formatting and editor surface" },
       "lsp": { "label": "LSP", "sub": "Language servers" },
       "agent": { "label": "Agent", "sub": "Agent launch and ACP trace" },
@@ -242,6 +242,8 @@
     "themeAuto": "Auto",
     "accentColor": "Accent color",
     "language": "Language",
+    "moveOpenedWorkspaceToTop": "Move opened workspace to top",
+    "moveOpenedWorkspaceToTopSub": "Turn off to preserve existing positions when switching workspaces",
     "editorFontSize": "Editor font size",
     "editorFontSizeSub": "Applied to the code editor",
     "showMinimap": "Show minimap",

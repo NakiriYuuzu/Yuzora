@@ -154,7 +154,7 @@ export function WorkspaceRail({
           <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-(--ink-3)">
             {t("rail.recent")}
           </div>
-          <div className="flex min-h-0 w-full flex-col items-center gap-[4px] overflow-y-auto">
+          <div className="flex min-h-0 w-full flex-col items-center gap-[4px] overflow-y-auto pt-[3px]">
             {recents.map((path) => {
               const active = activePath === path
               const counts = agentCounts.get(normalizeWorkspacePath(path))

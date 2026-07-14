@@ -223,7 +223,7 @@
   },
   "settings": {
     "sections": {
-      "appearance": { "label": "外觀", "sub": "主題與顯示語言" },
+      "appearance": { "label": "外觀", "sub": "主題、顯示語言與專案列" },
       "editor": { "label": "編輯器", "sub": "格式化與編輯器介面" },
       "lsp": { "label": "LSP", "sub": "語言伺服器" },
       "agent": { "label": "Agent", "sub": "Agent 啟動與 ACP trace" },
@@ -242,6 +242,8 @@
     "themeAuto": "自動",
     "accentColor": "主題色",
     "language": "語言",
+    "moveOpenedWorkspaceToTop": "切換專案時移至最上方",
+    "moveOpenedWorkspaceToTopSub": "開啟時採用最近使用排序；關閉後保留既有專案位置",
     "editorFontSize": "編輯器字型大小",
     "editorFontSizeSub": "套用至程式碼編輯器",
     "showMinimap": "顯示縮圖",

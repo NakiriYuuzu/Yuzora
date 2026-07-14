@@ -1,11 +1,13 @@
-// Recent-workspaces MRU list — localStorage-backed, reactive. Powers the
-// workspace rail's RECENT tiles. Hand-written localStorage read/write mirrors
-// sshStore's persistence shape (no persist middleware): the store is the
-// authoritative in-memory copy, localStorage the durable mirror.
+// Recent-workspaces list — localStorage-backed, reactive, with optional MRU
+// promotion. Powers the workspace rail's RECENT tiles. Hand-written localStorage
+// read/write mirrors sshStore's persistence shape (no persist middleware): the
+// store is the authoritative in-memory copy, localStorage the durable mirror.
 
 import { create } from "zustand"
 
 export const RECENT_WORKSPACES_STORAGE_KEY = "yuzora.workspace.recent.v1"
+export const MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY =
+    "yuzora.workspace.move-opened-to-top.v1"
 
 const MAX_RECENT_WORKSPACES = 10
 
@@ -30,6 +32,14 @@ export function loadRecentWorkspaces(): string[] {
     }
 }
 
+export function loadMoveOpenedWorkspaceToTop(): boolean {
+    try {
+        return localStorage.getItem(MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY) !== "false"
+    } catch {
+        return true
+    }
+}
+
 function saveRecentWorkspaces(list: string[]): void {
     try {
         localStorage.setItem(RECENT_WORKSPACES_STORAGE_KEY, JSON.stringify(list))
@@ -38,26 +48,44 @@ function saveRecentWorkspaces(list: string[]): void {
     }
 }
 
+function saveMoveOpenedWorkspaceToTop(enabled: boolean): void {
+    try {
+        localStorage.setItem(MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY, String(enabled))
+    } catch {
+        // private mode / quota — keep the in-memory preference authoritative
+    }
+}
+
 interface RecentWorkspacesStore {
     list: string[]
-    /** Move `path` to the front of the MRU list (deduped, capped). Call once a
-     * workspace has actually opened successfully. */
+    moveOpenedWorkspaceToTop: boolean
+    /** Record a successfully-opened workspace (deduped, capped). New paths are
+     * added first; existing paths move only when the preference is enabled. */
     record: (path: string) => void
+    setMoveOpenedWorkspaceToTop: (enabled: boolean) => void
     /** Drop `path` — used when opening a recent entry fails (folder moved/deleted). */
     remove: (path: string) => void
 }
 
 export const useRecentWorkspacesStore = create<RecentWorkspacesStore>()((set, get) => ({
     list: loadRecentWorkspaces(),
+    moveOpenedWorkspaceToTop: loadMoveOpenedWorkspaceToTop(),
 
     record: (path) => {
         const normalized = normalizeWorkspacePath(path)
-        const next = [normalized, ...get().list.filter((p) => p !== normalized)].slice(
+        const current = get().list
+        if (!get().moveOpenedWorkspaceToTop && current.includes(normalized)) return
+        const next = [normalized, ...current.filter((p) => p !== normalized)].slice(
             0,
             MAX_RECENT_WORKSPACES
         )
         saveRecentWorkspaces(next)
         set({ list: next })
+    },
+
+    setMoveOpenedWorkspaceToTop: (enabled) => {
+        saveMoveOpenedWorkspaceToTop(enabled)
+        set({ moveOpenedWorkspaceToTop: enabled })
     },
 
     remove: (path) => {
