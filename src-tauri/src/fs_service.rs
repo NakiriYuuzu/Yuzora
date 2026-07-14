@@ -281,6 +281,36 @@ pub fn fs_delete(workspace: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct FileBase64 {
+    pub data: String,
+    pub size: u64,
+}
+
+/// Reads a user-picked file (AgentZone image attachments) as base64. The
+/// caller enforces the mime whitelist by extension; this side enforces only
+/// the size ceiling so an oversized pick fails with a structured error
+/// instead of ballooning the IPC payload.
+#[tauri::command]
+pub fn read_file_base64(path: String, max_bytes: u64) -> Result<FileBase64, String> {
+    use base64::Engine;
+    let meta = std::fs::metadata(&path).map_err(|e| format!("stat failed: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("not a regular file: {path}"));
+    }
+    if meta.len() > max_bytes {
+        return Err(format!(
+            "file too large: {} bytes (max {max_bytes})",
+            meta.len()
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("read failed: {e}"))?;
+    Ok(FileBase64 {
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        size: bytes.len() as u64,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

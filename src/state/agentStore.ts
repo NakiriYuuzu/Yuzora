@@ -1431,8 +1431,17 @@ function promptBlocks(prompt: string | PromptBlock[]): PromptBlock[] {
 function textFromBlocks(blocks: PromptBlock[]): string {
     return blocks.flatMap((block) => {
         if (block.type === "text") return [block.text]
+        if (block.type === "image") return ["[image]"]
         return [block.title ?? block.name]
     }).join(" ").trim()
+}
+
+function imagesFromBlocks(blocks: PromptBlock[]): { mimeType: string; dataUrl: string }[] {
+    return blocks.flatMap((block) =>
+        block.type === "image"
+            ? [{ mimeType: block.mimeType, dataUrl: `data:${block.mimeType};base64,${block.data}` }]
+            : []
+    )
 }
 
 function titleFromPrompt(blocks: PromptBlock[]): string {
@@ -1447,7 +1456,16 @@ function truncateTitle(title: string): string {
 
 function beginTurn(session: SessionState, promptTitle: string, blocks: PromptBlock[]): SessionState {
     const promptText = textFromBlocks(blocks)
-    const userEntry = promptText ? [{ who: "you" as const, text: promptText, streaming: true }] : []
+    const images = imagesFromBlocks(blocks)
+    const userEntry =
+        promptText || images.length > 0
+            ? [{
+                who: "you" as const,
+                text: promptText,
+                streaming: true,
+                ...(images.length > 0 ? { images } : {})
+            }]
+            : []
     // 首句 prompt 衍生標題路徑：只在三欄位都還沒有值時才寫 derivedTitle，不再直接寫 title。
     const hasTitle = Boolean(session.sessionAlias || session.agentTitle || session.derivedTitle)
     const next: SessionState = {

@@ -93,7 +93,17 @@
       "done": "完成",
       "wait": "等待",
       "fail": "失敗"
-    }
+    },
+    "attachImage": "附加圖片",
+    "attachImageTitle": "附加圖片（png / jpeg / gif / webp，單張 5MB 內）",
+    "removeImageAttachment": "移除圖片 {{name}}",
+    "pastedImageLabel": "貼上的圖片",
+    "imageNotSupported": "{{agent}} 不支援圖片輸入",
+    "imageBadType": "只支援 png / jpeg / gif / webp 圖片",
+    "imageTooLarge": "圖片超過單張上限 {{max}}",
+    "imageTooMany": "每則訊息最多附加 {{max}} 張圖片",
+    "imageEmpty": "圖片內容是空的，已略過",
+    "imageReadFailed": "無法讀取貼上的圖片"
   },
   "sshPanel": {
     "tabsAriaLabel": "SFTP 或 SSH",

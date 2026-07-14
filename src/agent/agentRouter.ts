@@ -161,6 +161,15 @@ export function createAgentRouter(
         async prompt(sessionId, blocks: PromptBlock[]): Promise<StopReason> {
             return subForSession(sessionId).connection.prompt(sessionId, blocks)
         },
+        supportsImagePrompt(sessionId) {
+            // 未知 session（如尚未 respawn 的 restored session）視同不支援：
+            // composer 以 feature detection 隱藏入口，而非猜測（C3）。
+            try {
+                return subForSession(sessionId).connection.supportsImagePrompt?.(sessionId) ?? false
+            } catch {
+                return false
+            }
+        },
         async cancel(sessionId) {
             if (!sessionKey.has(sessionId)) throw new Error(`Unknown session ${sessionId}`)
             await subForSession(sessionId).connection.cancel(sessionId)

@@ -227,6 +227,45 @@ describe("createAgentStore tone transitions", () => {
         expect(session?.transcript.every((entry) => !("streaming" in entry) || !entry.streaming)).toBe(true)
     })
 
+    it("image blocks 進 transcript 縮圖；Session Index 序列化不含任何圖片資料（C2 防退化）", async () => {
+        const fake = fakeConnection()
+        const store = createAgentStore({ connection: fake.connection })
+
+        await store.getState().sendPrompt("/w", [
+            { type: "text", text: "look at this" },
+            { type: "image", data: "aGVsbG8=", mimeType: "image/png" }
+        ])
+
+        const session = store.getState().sessions.get("s-1")
+        const userEntry = session?.transcript.find((entry) => "who" in entry && entry.who === "you")
+        expect(userEntry).toMatchObject({
+            text: "look at this [image]",
+            images: [{ mimeType: "image/png", dataUrl: "data:image/png;base64,aGVsbG8=" }]
+        })
+
+        // ADR 0001／C2：索引只存識別欄位——整包 localStorage 不得出現圖片位元組。
+        const raw = localStorage.getItem("yuzora:agent-sessions") ?? ""
+        expect(raw).not.toContain("data:image")
+        expect(raw).not.toContain("aGVsbG8=")
+        expect(raw).not.toContain("dataUrl")
+    })
+
+    it("純圖片 prompt（無文字）也建立帶縮圖的 user entry", async () => {
+        const fake = fakeConnection()
+        const store = createAgentStore({ connection: fake.connection })
+
+        await store.getState().sendPrompt("/w", [
+            { type: "image", data: "eA==", mimeType: "image/webp" }
+        ])
+
+        const session = store.getState().sessions.get("s-1")
+        const userEntry = session?.transcript.find((entry) => "who" in entry && entry.who === "you")
+        expect(userEntry).toMatchObject({
+            text: "[image]",
+            images: [{ mimeType: "image/webp" }]
+        })
+    })
+
     it("marks connection/process prompt errors as fail without losing the transcript", async () => {
         const fake = fakeConnection()
         fake.rejectPrompt(new Error("ACP agent exited"))

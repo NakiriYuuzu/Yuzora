@@ -2,12 +2,14 @@ import {
   Bot,
   ChevronDown,
   FileText,
+  Paperclip,
   SendHorizontal,
   Slash,
   Sparkles,
   Square,
   X,
 } from "lucide-react"
+import { open as openImageFileDialog } from "@tauri-apps/plugin-dialog"
 import {
   useEffect,
   useLayoutEffect,
@@ -23,6 +25,7 @@ import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { resolvePrewarmAgentId } from "@/app/workbench/settingsStorage"
+import { readFileBase64 } from "@/lib/ipc"
 import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
@@ -208,6 +211,37 @@ interface ComposerAttachment {
   canonicalPath: string
   label: string
   resourceName: string
+}
+
+// 圖片附件（貼上／上傳）：與 file mention 分開的 state，dataUrl 供 chip 縮圖
+// 直接使用；送出時剝除 data: 前綴轉 ACP ImageContent 的純 base64（t4-2a）。
+interface ComposerImageAttachment {
+  id: string
+  label: string
+  mimeType: string
+  byteSize: number
+  dataUrl: string
+}
+
+// 限制值（plan Q4）：mime 白名單、單張原始 ≤5MB、每 turn ≤8 張。
+const IMAGE_ATTACHMENT_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+])
+const IMAGE_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024
+const IMAGE_ATTACHMENT_MAX_COUNT = 8
+const IMAGE_EXTENSION_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+}
+
+function dataUrlToBase64(dataUrl: string): string {
+  return dataUrl.slice(dataUrl.indexOf(",") + 1)
 }
 
 /**
@@ -448,8 +482,17 @@ function ActiveAgentSession({
   )
   const [fileIndexState, setFileIndexState] = useState<FileIndexViewState>({ status: "idle" })
   const [explicitAttachments, setExplicitAttachments] = useState<WorkspacePathIndexEntry[]>([])
+  const [imageAttachments, setImageAttachments] = useState<ComposerImageAttachment[]>([])
+  // 同步權威：paste 的多個 FileReader.onload 與檔案多選的 await 迴圈都在「舊
+  // render 的 closure」內連續呼叫 addImageAttachments，直接讀 state 會拿到過期
+  // 值而超收（張數上限失效）。所有寫入一律走 writeImageAttachments，ref 先行、
+  // state 跟隨。
+  const imageAttachmentsRef = useRef<ComposerImageAttachment[]>([])
+  const [composerNotice, setComposerNotice] = useState<string | null>(null)
+  const composerNoticeTimerRef = useRef<number | null>(null)
   const [selectedSkillRawName, setSelectedSkillRawName] = useState<string | null>(null)
   const [removedFilePath, setRemovedFilePath] = useState<string | null>(null)
+  const connection = useAgentStore((s) => s.connection)
   const sendPrompt = useAgentStore((s) => s.sendPrompt)
   const cancel = useAgentStore((s) => s.cancel)
   const composerFocusRequest = useAgentStore((s) => s.composerFocusRequest)
@@ -770,12 +813,148 @@ function ActiveAgentSession({
     else pickFile(choice.file)
   }
 
+  function writeImageAttachments(next: ComposerImageAttachment[]) {
+    imageAttachmentsRef.current = next
+    setImageAttachments(next)
+  }
+
   function clearComposerIntent() {
     setComposer("")
     setExplicitAttachments([])
+    writeImageAttachments([])
     setSelectedSkillRawName(null)
     setRemovedFilePath(null)
     dispatchSuggestion({ type: "reset" })
+  }
+
+  // 依 promptCapabilities.image 做 feature detection（C3）：能力未知（連線未建立、
+  // restored 未 respawn）一律視同不支援——隱藏入口而非猜測。
+  const supportsImageAttachments = Boolean(connection?.supportsImagePrompt?.(sessionId))
+
+  function showComposerNotice(text: string) {
+    setComposerNotice(text)
+    if (composerNoticeTimerRef.current !== null) {
+      window.clearTimeout(composerNoticeTimerRef.current)
+    }
+    composerNoticeTimerRef.current = window.setTimeout(() => {
+      setComposerNotice(null)
+      composerNoticeTimerRef.current = null
+    }, 4000)
+  }
+
+  useEffect(() => () => {
+    if (composerNoticeTimerRef.current !== null) {
+      window.clearTimeout(composerNoticeTimerRef.current)
+    }
+  }, [])
+
+  // 貼上與上傳共用的驗證管線：mime 白名單 → 空檔 → 單張大小 → 張數上限（Q4）。
+  // 任何拒絕以 composer notice 告知原因。容量判斷讀 imageAttachmentsRef（見宣告
+  // 處說明），通知與寫入都留在 handler 層，state updater 保持純函式。
+  function addImageAttachments(
+    candidates: { label: string; mimeType: string; byteSize: number; dataUrl: string }[]
+  ): void {
+    if (!supportsImageAttachments) {
+      showComposerNotice(t("agentZonePanel.imageNotSupported", { agent: agent.label }))
+      return
+    }
+    const accepted: ComposerImageAttachment[] = []
+    for (const candidate of candidates) {
+      if (!IMAGE_ATTACHMENT_MIME_TYPES.has(candidate.mimeType)) {
+        showComposerNotice(t("agentZonePanel.imageBadType"))
+        continue
+      }
+      // 0-byte 圖（空檔／讀出空內容）拒收，避免送出空 base64 的 image block。
+      if (candidate.byteSize <= 0) {
+        showComposerNotice(t("agentZonePanel.imageEmpty"))
+        continue
+      }
+      if (candidate.byteSize > IMAGE_ATTACHMENT_MAX_BYTES) {
+        showComposerNotice(t("agentZonePanel.imageTooLarge", { max: "5MB" }))
+        continue
+      }
+      accepted.push({
+        // eslint-disable-next-line react-hooks/purity -- called only from paste/file-picker callbacks
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        label: candidate.label,
+        mimeType: candidate.mimeType,
+        byteSize: candidate.byteSize,
+        dataUrl: candidate.dataUrl,
+      })
+    }
+    if (accepted.length === 0) return
+    const current = imageAttachmentsRef.current
+    const room = IMAGE_ATTACHMENT_MAX_COUNT - current.length
+    if (room <= 0) {
+      showComposerNotice(t("agentZonePanel.imageTooMany", { max: IMAGE_ATTACHMENT_MAX_COUNT }))
+      return
+    }
+    if (accepted.length > room) {
+      showComposerNotice(t("agentZonePanel.imageTooMany", { max: IMAGE_ATTACHMENT_MAX_COUNT }))
+    }
+    writeImageAttachments([...current, ...accepted.slice(0, room)])
+  }
+
+  function onComposerPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = [...(event.clipboardData?.items ?? [])]
+    const imageItems = items.filter((item) => item.type.startsWith("image/"))
+    if (imageItems.length === 0) return
+    // 圖片部分自行處理；文字部分交還預設貼上行為（不 preventDefault 文字）。
+    if (!supportsImageAttachments) {
+      showComposerNotice(t("agentZonePanel.imageNotSupported", { agent: agent.label }))
+      return
+    }
+    for (const item of imageItems) {
+      const file = item.getAsFile()
+      if (!file) continue
+      const mimeType = file.type
+      const reader = new FileReader()
+      reader.onload = () => {
+        if (typeof reader.result !== "string") return
+        addImageAttachments([{
+          label: file.name || t("agentZonePanel.pastedImageLabel"),
+          mimeType,
+          byteSize: file.size,
+          dataUrl: reader.result,
+        }])
+      }
+      reader.onerror = () => {
+        showComposerNotice(t("agentZonePanel.imageReadFailed"))
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  async function pickAndAttachImages() {
+    const selected = await openImageFileDialog({
+      multiple: true,
+      filters: [{ name: "Images", extensions: Object.keys(IMAGE_EXTENSION_MIME) }],
+    }).catch(() => null)
+    const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : []
+    for (const path of paths) {
+      const ext = path.includes(".") ? path.split(".").pop()!.toLowerCase() : ""
+      const mimeType = IMAGE_EXTENSION_MIME[ext]
+      if (!mimeType) {
+        showComposerNotice(t("agentZonePanel.imageBadType"))
+        continue
+      }
+      try {
+        const file = await readFileBase64(path, IMAGE_ATTACHMENT_MAX_BYTES)
+        addImageAttachments([{
+          label: path.split("/").pop() ?? path,
+          mimeType,
+          byteSize: file.size,
+          dataUrl: `data:${mimeType};base64,${file.data}`,
+        }])
+      } catch {
+        // 結構化錯誤（超限／不可讀）以大小提示概括——超限是唯一可預期案例。
+        showComposerNotice(t("agentZonePanel.imageTooLarge", { max: "5MB" }))
+      }
+    }
+  }
+
+  function removeImageAttachment(id: string) {
+    writeImageAttachments(imageAttachmentsRef.current.filter((entry) => entry.id !== id))
   }
 
   function removeAttachment(attachment: ComposerAttachment) {
@@ -793,16 +972,22 @@ function ActiveAgentSession({
     const prompt = activeSkill
       ? buildSkillPromptText(activeSkill.rawName, composer, commandPartition.slashCommands)
       : composer.trim()
-    if (!prompt) return
+    // 純圖片（無文字、無 skill）也可送出；三者皆空才擋。
+    if (!prompt && imageAttachments.length === 0) return
     // cwd 防呆：沒有絕對路徑就不 spawn（引導訊息由 WorkspaceGuideBanner 顯示）。
     const cwd = firstAbsolutePath(workspacePath, session.cwd)
     if (!cwd) return
     const promptPayload: PromptBlock[] = [
-      { type: "text", text: prompt },
+      ...(prompt ? [{ type: "text", text: prompt } as PromptBlock] : []),
       ...attachments.map((attachment): PromptBlock => ({
         type: "resource_link",
         uri: pathToUri(attachment.canonicalPath),
         name: attachment.resourceName,
+      })),
+      ...imageAttachments.map((image): PromptBlock => ({
+        type: "image",
+        data: dataUrlToBase64(image.dataUrl),
+        mimeType: image.mimeType,
       })),
     ]
     clearComposerIntent()
@@ -882,7 +1067,7 @@ function ActiveAgentSession({
               data-layout="stacked-toolbar"
               className="h-auto rounded-xl border-(--line-2) bg-(--yz-field) shadow-xs has-disabled:bg-(--yz-field) has-disabled:opacity-100 dark:has-disabled:bg-(--yz-field)"
             >
-              {(activeSkill || attachments.length > 0) && (
+              {(activeSkill || attachments.length > 0 || imageAttachments.length > 0) && (
                 <InputGroupAddon
                   align="block-start"
                   role="list"
@@ -929,6 +1114,33 @@ function ActiveAgentSession({
                     </InputGroupButton>
                   </div>
                 ))}
+                {imageAttachments.map((image) => (
+                  <div
+                    key={image.id}
+                    role="listitem"
+                    data-testid="composer-image-chip"
+                    title={image.label}
+                    className="inline-flex h-6 max-w-full min-w-0 items-center gap-1.5 rounded-full border border-(--line-2) bg-(--paper-0) pl-1 pr-1 text-(--ink-2) shadow-xs"
+                  >
+                    <img
+                      src={image.dataUrl}
+                      alt={image.label}
+                      className="size-4 shrink-0 rounded-full object-cover"
+                    />
+                    <span className="min-w-0 truncate text-[11px] font-semibold">
+                      {image.label}
+                    </span>
+                    <InputGroupButton
+                      aria-label={t("agentZonePanel.removeImageAttachment", { name: image.label })}
+                      size="icon-xs"
+                      variant="ghost"
+                      onClick={() => removeImageAttachment(image.id)}
+                      className="size-4 rounded-full bg-[rgba(27,26,23,0.06)] text-(--ink-3) hover:bg-[rgba(27,26,23,0.1)]"
+                    >
+                      <X aria-hidden="true" />
+                    </InputGroupButton>
+                  </div>
+                ))}
                 </InputGroupAddon>
               )}
             <InputGroupTextarea
@@ -966,6 +1178,7 @@ function ActiveAgentSession({
                 isComposingRef.current = false
               }}
               onKeyDown={onComposerKeyDown}
+              onPaste={onComposerPaste}
               placeholder={t("agentZonePanel.replyPlaceholder", { agent: agent.label })}
               className="max-h-32 min-h-11 px-3 pt-3 pb-2 text-[13px] leading-5 text-(--ink-1) placeholder:text-(--ink-4)"
             />
@@ -988,6 +1201,18 @@ function ActiveAgentSession({
                 >
                   <Slash aria-hidden="true" />
                 </InputGroupButton>
+                {supportsImageAttachments && (
+                  <InputGroupButton
+                    aria-label={t("agentZonePanel.attachImage")}
+                    title={t("agentZonePanel.attachImageTitle")}
+                    size="icon-xs"
+                    variant="ghost"
+                    onClick={() => void pickAndAttachImages()}
+                    className="text-(--ink-2)"
+                  >
+                    <Paperclip aria-hidden="true" />
+                  </InputGroupButton>
+                )}
                 <SessionConfigControls
                   sessionId={sessionId}
                   session={session}
@@ -1024,7 +1249,7 @@ function ActiveAgentSession({
                     size="icon-sm"
                     variant="default"
                     onClick={submitPrompt}
-                    disabled={!composer.trim() && !activeSkill}
+                    disabled={!composer.trim() && !activeSkill && imageAttachments.length === 0}
                     className="bg-(--ink-1) text-(--paper-0) hover:bg-(--ink-2)"
                   >
                     <SendHorizontal aria-hidden="true" />
@@ -1034,6 +1259,17 @@ function ActiveAgentSession({
             </InputGroupAddon>
             </InputGroup>
           </div>
+          {composerNotice && (
+            <div
+              role="status"
+              aria-live="polite"
+              data-testid="composer-notice"
+              className="px-1 pt-1.5 text-[10.5px] text-(--ink-3)"
+              style={{ overflowWrap: "anywhere" }}
+            >
+              {composerNotice}
+            </div>
+          )}
           {session.configError && (
             <div
               role="alert"
@@ -1714,6 +1950,13 @@ function TranscriptEntryRow({
   const { t } = useTranslation("panels")
   if ("who" in entry) {
     const you = entry.who === "you"
+    // 純圖片訊息的 text 只剩 "[image]" 佔位（store 以它派生 session 標題）；
+    // 縮圖列已呈現內容，佔位字不再重複顯示。混合訊息保留原文中的佔位。
+    const placeholderOnlyText =
+      you &&
+      entry.images !== undefined &&
+      entry.images.length > 0 &&
+      /^(\s*\[image\])+\s*$/.test(entry.text)
     return (
       <div
         style={{
@@ -1760,7 +2003,33 @@ function TranscriptEntryRow({
                 }),
           }}
         >
-          {you ? entry.text : <MinimalMarkdown text={entry.text} />}
+          {you && entry.images && entry.images.length > 0 && (
+            <div
+              data-testid="message-image-strip"
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+                marginBottom: entry.text && !placeholderOnlyText ? 8 : 0,
+              }}
+            >
+              {entry.images.map((image, index) => (
+                <img
+                  key={index}
+                  src={image.dataUrl}
+                  alt=""
+                  style={{
+                    maxWidth: 180,
+                    maxHeight: 120,
+                    borderRadius: 8,
+                    border: "1px solid var(--line-1)",
+                    objectFit: "cover",
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          {you ? (placeholderOnlyText ? null : entry.text) : <MinimalMarkdown text={entry.text} />}
           {showStreamingCursor && <StreamingCursor />}
         </div>
       </div>

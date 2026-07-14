@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 
 import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
 import { ComposerSuggestionPopup } from "@/app/panels/ComposerSuggestionPopup"
-import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod } from "@/agent/acpConnection"
+import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod, type PromptBlock } from "@/agent/acpConnection"
 import { workspaceMentionIndex } from "@/agent/workspaceMentionIndex"
 import i18n from "@/lib/i18n"
 import { agentInitialState, type SessionState } from "@/state/agentStore"
@@ -780,6 +780,259 @@ describe("AgentZonePanel", () => {
       { type: "text", text: "Run tests" },
     ]))
     expect(composer).toHaveValue("")
+  })
+
+  describe("圖片附件（P4）", () => {
+    function imageCapableSetup(
+      sendPrompt = vi.fn(async (_cwd: string, _prompt: string | PromptBlock[]) => "end_turn" as const)
+    ) {
+      const connection = {
+        newSession: vi.fn(async () => ({ sessionId: "s-1", startupInfo: null })),
+        loadSession: vi.fn(),
+        listSessions: vi.fn(async () => []),
+        prompt: vi.fn(async () => "end_turn" as const),
+        cancel: vi.fn(),
+        supportsImagePrompt: vi.fn(() => true),
+      } as unknown as AgentConnection
+      useWorkspaceStore.setState({ workspacePath: "/workspace" })
+      useAgentStore.getState().setConnection(connection)
+      useAgentStore.setState({
+        activeSessionId: "s-1",
+        sendPrompt,
+        sessions: new Map([["s-1", session({ tone: "done" })]]),
+      })
+      return { connection, sendPrompt }
+    }
+
+    function pasteImage(composer: HTMLElement, file: File) {
+      fireEvent.paste(composer, {
+        clipboardData: {
+          items: [{ type: file.type, getAsFile: () => file }],
+        },
+      })
+    }
+
+    function pngFile(name = "shot.png", bytes = 8, type = "image/png") {
+      return new File([new Uint8Array(bytes)], name, { type })
+    }
+
+    it("貼上圖片建立縮圖 chip；送出時轉 image block 且送後清空", async () => {
+      const { sendPrompt } = imageCapableSetup()
+      render(<AgentZonePanel />)
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+
+      pasteImage(composer, pngFile())
+      const chip = await screen.findByTestId("composer-image-chip")
+      expect(within(chip).getByRole("img")).toHaveAttribute("src", expect.stringContaining("data:image/png;base64,"))
+
+      fireEvent.change(composer, { target: { value: "what is this" } })
+      fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
+
+      await waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1))
+      const blocks = sendPrompt.mock.calls[0][1] as PromptBlock[]
+      expect(blocks[0]).toEqual({ type: "text", text: "what is this" })
+      expect(blocks[1]).toMatchObject({ type: "image", mimeType: "image/png" })
+      expect(typeof (blocks[1] as { data: unknown }).data).toBe("string")
+      expect((blocks[1] as { data: string }).data).not.toContain("data:")
+      expect(screen.queryByTestId("composer-image-chip")).not.toBeInTheDocument()
+    })
+
+    it("純圖片（無文字）也可送出", async () => {
+      const { sendPrompt } = imageCapableSetup()
+      render(<AgentZonePanel />)
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+
+      pasteImage(composer, pngFile())
+      await screen.findByTestId("composer-image-chip")
+      fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
+
+      await waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1))
+      const blocks = sendPrompt.mock.calls[0][1] as PromptBlock[]
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0]).toMatchObject({ type: "image" })
+    })
+
+    it("超過 5MB 拒絕並顯示 notice", async () => {
+      imageCapableSetup()
+      render(<AgentZonePanel />)
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+
+      const big = pngFile("big.png")
+      Object.defineProperty(big, "size", { value: 6 * 1024 * 1024 })
+      pasteImage(composer, big)
+
+      expect(await screen.findByTestId("composer-notice")).toHaveTextContent(
+        pt("agentZonePanel.imageTooLarge", { max: "5MB" })
+      )
+      expect(screen.queryByTestId("composer-image-chip")).not.toBeInTheDocument()
+    })
+
+    it("非白名單 mime 拒絕並顯示 notice", async () => {
+      imageCapableSetup()
+      render(<AgentZonePanel />)
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+
+      pasteImage(composer, pngFile("art.tiff", 8, "image/tiff"))
+
+      expect(await screen.findByTestId("composer-notice")).toHaveTextContent(
+        pt("agentZonePanel.imageBadType")
+      )
+      expect(screen.queryByTestId("composer-image-chip")).not.toBeInTheDocument()
+    })
+
+    it("超過 8 張上限時拒絕多的並顯示 notice", async () => {
+      imageCapableSetup()
+      render(<AgentZonePanel />)
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+
+      for (let i = 0; i < 9; i++) pasteImage(composer, pngFile(`s${i}.png`))
+
+      await waitFor(() =>
+        expect(screen.getAllByTestId("composer-image-chip")).toHaveLength(8)
+      )
+      expect(screen.getByTestId("composer-notice")).toHaveTextContent(
+        pt("agentZonePanel.imageTooMany", { max: 8 })
+      )
+    })
+
+    it("capability=false：不渲染上傳按鈕，貼圖顯示不支援提示", async () => {
+      const sendPrompt = vi.fn(async () => "end_turn" as const)
+      const connection = {
+        newSession: vi.fn(async () => ({ sessionId: "s-1", startupInfo: null })),
+        loadSession: vi.fn(),
+        listSessions: vi.fn(async () => []),
+        prompt: vi.fn(async () => "end_turn" as const),
+        cancel: vi.fn(),
+        supportsImagePrompt: vi.fn(() => false),
+      } as unknown as AgentConnection
+      useWorkspaceStore.setState({ workspacePath: "/workspace" })
+      useAgentStore.getState().setConnection(connection)
+      useAgentStore.setState({
+        activeSessionId: "s-1",
+        sendPrompt,
+        sessions: new Map([["s-1", session({ tone: "done" })]]),
+      })
+      render(<AgentZonePanel />)
+
+      expect(
+        screen.queryByRole("button", { name: pt("agentZonePanel.attachImage") })
+      ).not.toBeInTheDocument()
+
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+      pasteImage(composer, pngFile())
+
+      expect(await screen.findByTestId("composer-notice")).toHaveTextContent(
+        pt("agentZonePanel.imageNotSupported", { agent: "Codex" })
+      )
+      expect(screen.queryByTestId("composer-image-chip")).not.toBeInTheDocument()
+    })
+
+    it("capability=true：渲染上傳按鈕", () => {
+      imageCapableSetup()
+      render(<AgentZonePanel />)
+
+      expect(
+        screen.getByRole("button", { name: pt("agentZonePanel.attachImage") })
+      ).toBeInTheDocument()
+    })
+
+    it("user bubble 渲染已送圖片縮圖", () => {
+      useWorkspaceStore.setState({ workspacePath: "/workspace" })
+      useAgentStore.setState({
+        activeSessionId: "s-1",
+        sessions: new Map([
+          [
+            "s-1",
+            session({
+              tone: "done",
+              transcript: [
+                {
+                  who: "you",
+                  text: "look",
+                  streaming: false,
+                  images: [{ mimeType: "image/png", dataUrl: "data:image/png;base64,aGVsbG8=" }],
+                },
+              ],
+            }),
+          ],
+        ]),
+      })
+      render(<AgentZonePanel />)
+
+      const strip = screen.getByTestId("message-image-strip")
+      expect(within(strip).getByRole("presentation")).toHaveAttribute(
+        "src",
+        "data:image/png;base64,aGVsbG8="
+      )
+    })
+
+    it("0-byte 圖片拒收並顯示 notice", async () => {
+      imageCapableSetup()
+      render(<AgentZonePanel />)
+      const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+
+      pasteImage(composer, pngFile("empty.png", 0))
+
+      expect(await screen.findByTestId("composer-notice")).toHaveTextContent(
+        pt("agentZonePanel.imageEmpty")
+      )
+      expect(screen.queryByTestId("composer-image-chip")).not.toBeInTheDocument()
+    })
+
+    it("純圖片訊息的 bubble 只顯示縮圖，不重複渲染 [image] 佔位文字", () => {
+      useWorkspaceStore.setState({ workspacePath: "/workspace" })
+      useAgentStore.setState({
+        activeSessionId: "s-1",
+        sessions: new Map([
+          [
+            "s-1",
+            session({
+              tone: "done",
+              transcript: [
+                {
+                  who: "you",
+                  text: "[image] [image]",
+                  streaming: false,
+                  images: [
+                    { mimeType: "image/png", dataUrl: "data:image/png;base64,aGVsbG8=" },
+                    { mimeType: "image/png", dataUrl: "data:image/png;base64,d29ybGQ=" },
+                  ],
+                },
+              ],
+            }),
+          ],
+        ]),
+      })
+      render(<AgentZonePanel />)
+
+      const bubble = screen.getByTestId("agent-message-bubble")
+      expect(within(bubble).getByTestId("message-image-strip")).toBeInTheDocument()
+      expect(bubble.textContent).not.toContain("[image]")
+      // 混合訊息保留原文（佔位標記圖片在文中的位置）。
+      act(() => {
+        useAgentStore.setState({
+          sessions: new Map([
+            [
+              "s-1",
+              session({
+                tone: "done",
+                transcript: [
+                  {
+                    who: "you",
+                    text: "look at this [image]",
+                    streaming: false,
+                    images: [{ mimeType: "image/png", dataUrl: "data:image/png;base64,aGVsbG8=" }],
+                  },
+                ],
+              }),
+            ],
+          ]),
+        })
+      })
+      expect(screen.getByTestId("agent-message-bubble").textContent).toContain(
+        "look at this [image]"
+      )
+    })
   })
 
   it("uses one keyboard path for direct typing with complete listbox ARIA and nearest scrolling", async () => {

@@ -225,6 +225,7 @@ pub fn run() {
             fs_service::fs_create_dir,
             fs_service::fs_rename,
             fs_service::fs_delete,
+            fs_service::read_file_base64,
             logging::log_event,
             logging::log_query,
             logging::log_sources,

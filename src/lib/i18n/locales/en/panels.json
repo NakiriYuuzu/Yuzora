@@ -93,7 +93,17 @@
       "done": "Done",
       "wait": "Waiting",
       "fail": "Failed"
-    }
+    },
+    "attachImage": "Attach image",
+    "attachImageTitle": "Attach images (png / jpeg / gif / webp, up to 5MB each)",
+    "removeImageAttachment": "Remove image {{name}}",
+    "pastedImageLabel": "Pasted image",
+    "imageNotSupported": "{{agent}} does not accept image input",
+    "imageBadType": "Only png / jpeg / gif / webp images are supported",
+    "imageTooLarge": "Image exceeds the {{max}} per-image limit",
+    "imageTooMany": "At most {{max}} images per message",
+    "imageEmpty": "The image is empty and was skipped",
+    "imageReadFailed": "Could not read the pasted image"
   },
   "sshPanel": {
     "tabsAriaLabel": "SFTP or SSH",

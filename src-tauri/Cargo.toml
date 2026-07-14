@@ -26,6 +26,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 keyring = "4.1.4"
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.9.0"

@@ -129,6 +129,36 @@ describe("reduceSessionUpdate", () => {
         expect(t.some((e) => "kind" in e && e.kind === "diff")).toBe(true)
     })
 
+    it("user_message_chunk 的 image content（replay 場景）轉入 MsgEntry.images 而非文字佔位", () => {
+        let t: TranscriptEntry[] = []
+        t = reduceSessionUpdate(t, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "look:" } })
+        t = reduceSessionUpdate(t, {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" }
+        })
+        expect(t).toHaveLength(1)
+        expect(t[0]).toMatchObject({
+            who: "you",
+            text: "look:",
+            images: [{ mimeType: "image/png", dataUrl: "data:image/png;base64,aGVsbG8=" }]
+        })
+
+        // 沒有前導文字時 image chunk 自建 user entry；缺 data/mimeType 落回文字佔位。
+        let solo: TranscriptEntry[] = []
+        solo = reduceSessionUpdate(solo, {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "image", data: "eA==", mimeType: "image/webp" }
+        })
+        expect(solo[0]).toMatchObject({ who: "you", text: "", images: [{ mimeType: "image/webp" }] })
+
+        let malformed: TranscriptEntry[] = []
+        malformed = reduceSessionUpdate(malformed, {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "image" }
+        })
+        expect(malformed[0]).toMatchObject({ who: "you", text: "[image]" })
+    })
+
     it("covers session/update discriminants and content placeholders", () => {
         let t: TranscriptEntry[] = []
         t = reduceSessionUpdate(t, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Hi" } })
@@ -1374,6 +1404,69 @@ describe("createAcpConnection", () => {
         const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
 
         await expect(connection.supportsLoadSession?.("/w")).resolves.toBe(false)
+    })
+
+    it("supportsImagePrompt 反映 initialize 的 promptCapabilities.image；未宣告視為 false", async () => {
+        const capable = "agent-image-capable"
+        const fakeCapable = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: capable, line }),
+            { imagePromptCapability: true }
+        )
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return capable
+            if (cmd === "agent_write") return fakeCapable.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        // 初始化前（尚未 spawn）讀取為 false——保守 gating。
+        expect(connection.supportsImagePrompt?.("s1")).toBe(false)
+        await connection.newSession("/w")
+        expect(connection.supportsImagePrompt?.("s1")).toBe(true)
+
+        const incapable = "agent-image-incapable"
+        const fakeIncapable = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: incapable, line })
+        )
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return incapable
+            if (cmd === "agent_write") return fakeIncapable.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+        const plain = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        await plain.newSession("/w")
+        expect(plain.supportsImagePrompt?.("s1")).toBe(false)
+    })
+
+    it("image PromptBlock 以 ACP ImageContent 形狀過 wire", async () => {
+        const agentId = "agent-image-wire"
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { imagePromptCapability: true }
+        )
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({ command: "fake-acp-agent", initializeTimeoutMs: 1_000 })
+        const created = await connection.newSession("/w")
+        await connection.prompt(created.sessionId, [
+            { type: "text", text: "what is this" },
+            { type: "image", data: "aGVsbG8=", mimeType: "image/png" }
+        ])
+
+        const promptMessage = fake.messages.find((m) => m.method === "session/prompt")
+        expect(promptMessage?.params).toMatchObject({
+            prompt: [
+                { type: "text", text: "what is this" },
+                { type: "image", data: "aGVsbG8=", mimeType: "image/png" }
+            ]
+        })
     })
 
     it("loadSession replays prior session/update history before resolving", async () => {

@@ -101,6 +101,15 @@ export function allowWorkspaceAssetScope(path: string): Promise<void> {
     return invoke("allow_workspace_asset_scope", { path })
 }
 
+export interface FileBase64 {
+    data: string
+    size: number
+}
+
+export function readFileBase64(path: string, maxBytes: number): Promise<FileBase64> {
+    return invoke("read_file_base64", { path, maxBytes })
+}
+
 export function saveFile(path: string, content: string): Promise<number> {
     return invoke("save_file", { path, content })
 }

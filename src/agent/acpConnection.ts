@@ -185,6 +185,8 @@ export interface UsageInfo {
 export type PromptBlock =
     | { type: "text"; text: string }
     | { type: "resource_link"; name: string; uri: string; title?: string | null }
+    // 對齊 ACP SDK ImageContent 的必填欄位：data 為「純 base64」（無 data: 前綴）。
+    | { type: "image"; data: string; mimeType: string }
 
 export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled"
 
@@ -295,6 +297,11 @@ export interface AgentConnection {
         agentId?: AgentId,
         customCommandFingerprint?: string
     ): Promise<boolean>
+    // Synchronous feature-detection read (C3): whether the session's agent
+    // declared promptCapabilities.image at initialize time. Unknown session or
+    // pre-initialize state reads as false — the composer hides image entry
+    // points rather than guessing.
+    supportsImagePrompt?(sessionId: string): boolean
     // F10：removeSession 收尾用——通知連線把該 session 的 runtime 內部狀態
     // （transcript／pending permission）清掉。找不到對應 sub／session 時靜默略過。
     dropSession?(sessionId: string): void
@@ -347,8 +354,24 @@ export function reduceSessionUpdate(
     const record = asRecord(update)
     const sessionUpdate = typeof record.sessionUpdate === "string" ? record.sessionUpdate : ""
     switch (sessionUpdate) {
-        case "user_message_chunk":
+        case "user_message_chunk": {
+            // Replayed (session/load) user turns may carry image content blocks.
+            // Attach them to the streaming user entry as thumbnails instead of
+            // collapsing to the "[image]" text placeholder (plan t4-3c). A block
+            // missing data/mimeType falls through to the text path silently.
+            const content = asRecord(record.content)
+            if (
+                content.type === "image" &&
+                typeof content.data === "string" &&
+                typeof content.mimeType === "string"
+            ) {
+                return appendUserImage(transcript, {
+                    mimeType: content.mimeType,
+                    dataUrl: `data:${content.mimeType};base64,${content.data}`
+                })
+            }
             return appendMessage(transcript, "you", contentToText(record.content))
+        }
         case "agent_message_chunk":
             return appendMessage(transcript, "agent", contentToText(record.content))
         case "agent_thought_chunk":
@@ -610,7 +633,10 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
     let stdoutController: ReadableStreamDefaultController<Uint8Array> | undefined
     let disconnectedError: Error | undefined
     let authMethods: AgentAuthMethod[] = []
-    let agentCapabilities: { loadSession: boolean } = { loadSession: false }
+    let agentCapabilities: { loadSession: boolean; promptImage: boolean } = {
+        loadSession: false,
+        promptImage: false
+    }
     let pendingSessionOwners = 0
     const inFlightRequests = new Set<(error: Error) => void>()
     const decoder = new TextDecoder()
@@ -785,7 +811,7 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             agentProcessId = processId
             teardownActiveListeners = teardownListeners
             authMethods = []
-            agentCapabilities = { loadSession: false }
+            agentCapabilities = { loadSession: false, promptImage: false }
             const initializeResult = await trackAgentRequest(() => connection.initialize({
                 protocolVersion: 1,
                 clientCapabilities: {
@@ -929,6 +955,9 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             await ensureConnection(cwd)
             return agentCapabilities.loadSession
         },
+        supportsImagePrompt() {
+            return agentCapabilities.promptImage
+        },
         dropSession(sessionId) {
             runtime.dropSession(sessionId)
             sessionRegistry.delete(sessionId)
@@ -941,14 +970,19 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
     }
 }
 
-function normalizeAgentCapabilities(value: unknown): { loadSession: boolean } {
+function normalizeAgentCapabilities(value: unknown): { loadSession: boolean; promptImage: boolean } {
     const record = asRecord(value)
-    return { loadSession: record.loadSession === true }
+    const promptCapabilities = asRecord(record.promptCapabilities)
+    return {
+        loadSession: record.loadSession === true,
+        promptImage: promptCapabilities.image === true
+    }
 }
 
 function promptBlocksToText(blocks: PromptBlock[]): string {
     return blocks.flatMap((block) => {
         if (block.type === "text") return [block.text]
+        if (block.type === "image") return ["[image]"]
         return [block.title ?? block.name]
     }).join(" ").trim()
 }
@@ -966,6 +1000,20 @@ function appendMessage(
         ]
     }
     return [...transcript, { who, text, streaming: true }]
+}
+
+function appendUserImage(
+    transcript: TranscriptEntry[],
+    image: { mimeType: string; dataUrl: string }
+): TranscriptEntry[] {
+    const last = transcript.at(-1)
+    if (last && "who" in last && last.who === "you" && last.streaming) {
+        return [
+            ...transcript.slice(0, -1),
+            { ...last, images: [...(last.images ?? []), image], streaming: true }
+        ]
+    }
+    return [...transcript, { who: "you", text: "", streaming: true, images: [image] }]
 }
 
 function appendThought(transcript: TranscriptEntry[], text: string): TranscriptEntry[] {

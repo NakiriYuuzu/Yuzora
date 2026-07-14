@@ -44,6 +44,9 @@ export interface FakeAcpAgentOptions {
     // Declared agentCapabilities.loadSession in the initialize response.
     // Defaults to true (existing behavior/tests rely on this).
     loadSessionCapability?: boolean
+    // Declared agentCapabilities.promptCapabilities.image in the initialize
+    // response. Defaults to false — image support is feature-detected.
+    imagePromptCapability?: boolean
     // session/update payloads to replay (in order) before responding to
     // session/load — simulates an agent restoring prior transcript history.
     replayUpdates?: Record<string, unknown>[]
@@ -91,7 +94,12 @@ export function createFakeAcpAgentBridge(
                 id: message.id,
                 result: {
                     protocolVersion: 1,
-                    agentCapabilities: { loadSession: options.loadSessionCapability ?? true },
+                    agentCapabilities: {
+                        loadSession: options.loadSessionCapability ?? true,
+                        ...(options.imagePromptCapability !== undefined
+                            ? { promptCapabilities: { image: options.imagePromptCapability } }
+                            : {})
+                    },
                     authMethods: []
                 }
             })
