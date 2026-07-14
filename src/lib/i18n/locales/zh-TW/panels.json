@@ -129,6 +129,7 @@
     "sftpRenamePrompt": "新名稱",
     "sftpDeleteConfirm": "確定刪除「{{name}}」？",
     "sftpDeleteDirConfirm": "確定刪除資料夾「{{name}}」？資料夾必須為空。",
+    "sftpOverwriteConfirm": "本機已有「{{name}}」，要覆蓋嗎？",
     "sftpUploading": "上傳中",
     "sftpDownloading": "下載中",
     "sftpTransferDone": "完成",

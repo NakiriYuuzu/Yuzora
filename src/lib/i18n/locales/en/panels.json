@@ -129,6 +129,7 @@
     "sftpRenamePrompt": "New name",
     "sftpDeleteConfirm": "Delete \"{{name}}\"?",
     "sftpDeleteDirConfirm": "Delete folder \"{{name}}\"? It must be empty.",
+    "sftpOverwriteConfirm": "\"{{name}}\" already exists here. Overwrite it?",
     "sftpUploading": "Uploading",
     "sftpDownloading": "Downloading",
     "sftpTransferDone": "Done",

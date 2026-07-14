@@ -50,7 +50,8 @@ interface SftpStore {
     mkdir: (hostId: string, name: string) => Promise<void>
     rename: (hostId: string, entry: SftpEntry, newName: string) => Promise<void>
     remove: (hostId: string, entry: SftpEntry) => Promise<void>
-    upload: (hostId: string, localPath: string) => Promise<void>
+    // destDir（可選）：拖放到遠端資料夾 row 時的目標目錄；預設遠端 cwd。
+    upload: (hostId: string, localPath: string, destDir?: string) => Promise<void>
     download: (hostId: string, entry: SftpEntry, localPath: string) => Promise<void>
     applyProgress: (evt: SftpProgressEvent) => void
     clearTransfer: (transferId: string) => void
@@ -193,9 +194,9 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         await get().listRemote(hostId, cwd)
     },
 
-    upload: async (hostId, localPath) => {
+    upload: async (hostId, localPath, destDir) => {
         const sessionId = sessionIdOf(hostId)
-        const cwd = get().remote[hostId]?.cwd
+        const cwd = destDir || get().remote[hostId]?.cwd
         // Reject an empty cwd too: the loading placeholder seeds cwd:"" before the
         // first listing resolves, and remoteJoin("", name) would target the remote
         // root "/" instead of the real home directory.
@@ -218,7 +219,10 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         try {
             await sftpUpload(sessionId, transferId, localPath, cwd)
             get().applyProgress({ sessionId, transferId, transferred: 0, total: 0, done: true })
-            await get().listRemote(hostId, cwd)
+            // Refresh the pane the user is looking at — uploading into a folder
+            // row (destDir) must not navigate the view into that folder.
+            const viewCwd = get().remote[hostId]?.cwd
+            if (viewCwd) await get().listRemote(hostId, viewCwd)
         } catch (e) {
             set((s) => {
                 const prev = s.transfers[transferId]

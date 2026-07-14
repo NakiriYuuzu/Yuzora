@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { open as openFileDialog, save as saveDialog } from "@tauri-apps/plugin-dialog"
+import { confirm as confirmDialog, open as openFileDialog, save as saveDialog } from "@tauri-apps/plugin-dialog"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import {
   ArrowUp,
@@ -269,12 +269,127 @@ function SftpTabContent() {
 }
 
 function SftpBrowser({ hostId }: { hostId: string }) {
+  const { t } = useTranslation("panels")
   const remote = useSftpStore((s) => s.remote[hostId])
   const listRemote = useSftpStore((s) => s.listRemote)
   const upload = useSftpStore((s) => s.upload)
+  const download = useSftpStore((s) => s.download)
   const transfers = useSftpStore((s) => s.transfers)
   const [dragOver, setDragOver] = useState(false)
   const remotePaneRef = useRef<HTMLDivElement>(null)
+
+  // Pane-internal pointer drag (P5): state drives the target highlights, the
+  // ref gives the window-level handlers the current value without re-binding.
+  const [drag, setDrag] = useState<SftpDragState | null>(null)
+  const [hover, setHover] = useState<SftpHoverTarget | null>(null)
+  const dragRef = useRef<SftpDragState | null>(null)
+  dragRef.current = drag
+  // Pressing a file row selects it (row highlight); a stale path simply stops
+  // matching after navigation, so no explicit clearing is needed.
+  const [selected, setSelected] = useState<{ pane: SftpPaneKind; path: string } | null>(null)
+  // Bumped after a drop-download completes so LocalPane re-lists in place.
+  const [localRefreshTick, setLocalRefreshTick] = useState(0)
+
+  function beginRowDrag(
+    kind: SftpPaneKind,
+    payload: { path: string; name: string; size: number },
+    event: React.PointerEvent
+  ) {
+    if (event.button !== 0) return
+    // The row's hover action buttons (upload/download/rename/delete) bubble
+    // their pointerdown up here — a press-and-wiggle on an action button must
+    // stay a button click, never become a drag. Only the marked action area is
+    // excluded: the filename itself (also a <button>) covers most of the row
+    // and must remain a drag handle.
+    if ((event.target as HTMLElement).closest("[data-sftp-row-actions]")) return
+    // Pressing a file row selects it (highlight), holding + moving drags it.
+    setSelected({ pane: kind, path: payload.path })
+    setDrag({ kind, ...payload, active: false, startX: event.clientX, startY: event.clientY })
+  }
+
+  // Remote file dropped on the local pane / a local folder row → download, with
+  // the same overwrite guard as before (the button path goes through saveDialog,
+  // which confirms natively; a drop must not silently clobber a local file).
+  // confirm comes from plugin-dialog, matching the repo's confirm convention
+  // (contextMenuStore) rather than relying on wry's window.confirm.
+  async function acceptRemoteToLocalDrop(payload: SftpDragState, target: SftpHoverTarget) {
+    const targetDir = target.dirPath ?? target.paneCwd
+    if (!targetDir) return
+    let exists = false
+    try {
+      exists = (await listDir(targetDir)).some((node) => node.name === payload.name)
+    } catch {
+      // Target dir unreadable — let the transfer surface the real error.
+    }
+    if (exists && !(await confirmDialog(t("sshPanel.sftpOverwriteConfirm", { name: payload.name })))) {
+      return
+    }
+    await download(
+      hostId,
+      { name: payload.name, path: payload.path, isDir: false, isSymlink: false, size: payload.size },
+      localJoin(targetDir, payload.name)
+    )
+    setLocalRefreshTick((tick) => tick + 1)
+  }
+
+  const dragInProgress = drag !== null
+  useEffect(() => {
+    if (!dragInProgress) return
+    const finish = () => {
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
+      setDrag(null)
+      setHover(null)
+    }
+    const onMove = (event: PointerEvent) => {
+      const current = dragRef.current
+      if (!current) return
+      if (!current.active) {
+        const travelled = Math.hypot(event.clientX - current.startX, event.clientY - current.startY)
+        if (travelled < SFTP_DRAG_ACTIVATE_PX) return
+        document.body.style.userSelect = "none"
+        document.body.style.cursor = "grabbing"
+        setDrag({ ...current, active: true })
+        return
+      }
+      const target = sftpDropTargetAt(event.clientX, event.clientY)
+      // Mutually exclusive directions: hovering the drag's own pane is a no-op.
+      setHover(target && target.pane !== current.kind ? target : null)
+    }
+    const onUp = (event: PointerEvent) => {
+      const current = dragRef.current
+      finish()
+      if (!current?.active) return
+      const target = sftpDropTargetAt(event.clientX, event.clientY)
+      if (!target || target.pane === current.kind) return
+      if (current.kind === "local") {
+        // Local file → remote pane / folder row: undefined destDir falls back
+        // to the remote cwd inside the store.
+        void upload(hostId, current.path, target.dirPath ?? undefined)
+      } else {
+        void acceptRemoteToLocalDrop(current, target)
+      }
+    }
+    const onCancel = () => finish()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") finish()
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onUp)
+    window.addEventListener("pointercancel", onCancel)
+    window.addEventListener("keydown", onKey)
+    return () => {
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+      window.removeEventListener("pointercancel", onCancel)
+      window.removeEventListener("keydown", onKey)
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers read the
+    // live drag through dragRef; a drag is a single press-hold interaction, so
+    // hostId/actions cannot change mid-drag.
+  }, [dragInProgress])
 
   // Load the remote home directory the first time the browser mounts for a host.
   useEffect(() => {
@@ -319,16 +434,29 @@ function SftpBrowser({ hostId }: { hostId: string }) {
 
   const hostTransfers = Object.entries(transfers).filter(([, tr]) => tr.hostId === hostId)
 
+  const activeDragKind = drag?.active ? drag.kind : null
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex min-h-0 flex-1">
-        <LocalPane hostId={hostId} />
+        <LocalPane
+          hostId={hostId}
+          dragKind={activeDragKind}
+          hover={hover}
+          selectedPath={selected?.pane === "local" ? selected.path : null}
+          onFileDragStart={beginRowDrag}
+          refreshTick={localRefreshTick}
+        />
         <div className="w-px shrink-0 bg-(--line-1)" />
         <RemotePane
           hostId={hostId}
           remote={remote}
           dragOver={dragOver}
           paneRef={remotePaneRef}
+          dragKind={activeDragKind}
+          hover={hover}
+          selectedPath={selected?.pane === "remote" ? selected.path : null}
+          onFileDragStart={beginRowDrag}
         />
       </div>
       {hostTransfers.length > 0 ? <TransfersStrip entries={hostTransfers} /> : null}
@@ -336,7 +464,77 @@ function SftpBrowser({ hostId }: { hostId: string }) {
   )
 }
 
-function LocalPane({ hostId }: { hostId: string }) {
+// Pane-internal drags (P5) are pointer-driven, NOT HTML5 drag & drop: Tauri's
+// drag-drop layer (dragDropEnabled, required for OS file drops) swallows HTML5
+// drops inside the webview on macOS, so internal transfers track pointer events
+// and hit-test their drop targets themselves. Direction stays mutually
+// exclusive in the drop handler (a target pane equal to the drag's source kind
+// is a no-op), and OS file drops keep flowing through onDragDropEvent — the two
+// channels never touch by construction (pointer events bypass the drag layer).
+type SftpPaneKind = "local" | "remote"
+
+interface SftpDragState {
+  kind: SftpPaneKind
+  path: string
+  name: string
+  size: number
+  /** True once the pointer travelled past the activation threshold. */
+  active: boolean
+  startX: number
+  startY: number
+}
+
+interface SftpHoverTarget {
+  pane: SftpPaneKind
+  /** Directory row under the pointer, or null for the pane body itself. */
+  dirPath: string | null
+  /** The pane's current directory, read from the pane's data attribute. */
+  paneCwd: string
+}
+
+// A press only becomes a drag after moving this many logical px, so plain
+// clicks (open folder, hover buttons) keep working on draggable rows.
+const SFTP_DRAG_ACTIVATE_PX = 4
+
+// Resolve the drop target under the pointer from DOM data attributes — the
+// rendered rows/panes are the single source of truth for cwd and dir paths.
+function sftpDropTargetAt(x: number, y: number): SftpHoverTarget | null {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null
+  if (!el) return null
+  const paneEl = el.closest<HTMLElement>("[data-sftp-drop-pane]")
+  if (!paneEl) return null
+  const pane = paneEl.dataset.sftpDropPane as SftpPaneKind
+  const paneCwd = paneEl.dataset.sftpPaneCwd ?? ""
+  const dirEl = el.closest<HTMLElement>("[data-sftp-dir-pane]")
+  if (dirEl && dirEl.dataset.sftpDirPane === pane) {
+    return { pane, dirPath: dirEl.dataset.sftpDirPath ?? null, paneCwd }
+  }
+  return { pane, dirPath: null, paneCwd }
+}
+
+function localJoin(dir: string, name: string): string {
+  return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`
+}
+
+function LocalPane({
+  hostId,
+  dragKind,
+  hover,
+  selectedPath,
+  onFileDragStart,
+  refreshTick
+}: {
+  hostId: string
+  dragKind: SftpPaneKind | null
+  hover: SftpHoverTarget | null
+  selectedPath: string | null
+  onFileDragStart: (
+    kind: SftpPaneKind,
+    payload: { path: string; name: string; size: number },
+    event: React.PointerEvent
+  ) => void
+  refreshTick: number
+}) {
   const { t } = useTranslation("panels")
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const upload = useSftpStore((s) => s.upload)
@@ -344,10 +542,16 @@ function LocalPane({ hostId }: { hostId: string }) {
   const [entries, setEntries] = useState<FileNode[]>([])
   const [error, setError] = useState<string | null>(null)
 
+  // This pane only receives remote-sourced drags (download direction).
+  const paneDropActive = dragKind === "remote" && hover?.pane === "local" && hover.dirPath === null
+  const rowDropPath = dragKind === "remote" && hover?.pane === "local" ? hover.dirPath : null
+
   useEffect(() => {
     if (cwd === null && workspacePath) setCwd(workspacePath)
   }, [workspacePath, cwd])
 
+  // refreshTick: bumped by SftpBrowser after a drop-download completes so the
+  // freshly downloaded file appears without leaving the directory.
   useEffect(() => {
     if (!cwd) return
     let cancelled = false
@@ -362,7 +566,7 @@ function LocalPane({ hostId }: { hostId: string }) {
     return () => {
       cancelled = true
     }
-  }, [cwd])
+  }, [cwd, refreshTick])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -374,7 +578,15 @@ function LocalPane({ hostId }: { hostId: string }) {
           icon={ArrowUp}
         />
       </PaneHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-[4px] py-[4px]">
+      <div
+        data-testid="sftp-local-pane-body"
+        data-sftp-drop-pane="local"
+        data-sftp-pane-cwd={cwd ?? ""}
+        className={cn(
+          "min-h-0 flex-1 overflow-y-auto px-[4px] py-[4px]",
+          paneDropActive && "bg-(--yz-hover) ring-2 ring-inset ring-(--yz-accent)"
+        )}
+      >
         {!cwd ? (
           <PaneNote text={t("sshPanel.sftpLocalNoWorkspace")} />
         ) : error ? (
@@ -385,7 +597,19 @@ function LocalPane({ hostId }: { hostId: string }) {
           entries.map((node) => (
             <div
               key={node.path}
-              className="group flex h-[26px] items-center gap-[6px] rounded-[6px] px-[6px] text-[12px] hover:bg-(--yz-hover)"
+              onPointerDown={
+                !node.isDir
+                  ? (event) =>
+                      onFileDragStart("local", { path: node.path, name: node.name, size: 0 }, event)
+                  : undefined
+              }
+              data-sftp-dir-pane={node.isDir ? "local" : undefined}
+              data-sftp-dir-path={node.isDir ? node.path : undefined}
+              className={cn(
+                "group flex h-[26px] items-center gap-[6px] rounded-[6px] px-[6px] text-[12px] hover:bg-(--yz-hover)",
+                selectedPath === node.path && "bg-(--yz-active) shadow-(--shadow-xs)",
+                rowDropPath === node.path && "bg-(--yz-hover) ring-1 ring-inset ring-(--yz-accent)"
+              )}
             >
               <button
                 type="button"
@@ -400,12 +624,14 @@ function LocalPane({ hostId }: { hostId: string }) {
                 <span className="truncate text-(--ink-2)">{node.name}</span>
               </button>
               {!node.isDir ? (
-                <IconButton
-                  label={t("sshPanel.sftpUploadFile", { name: node.name })}
-                  onClick={() => void upload(hostId, node.path)}
-                  icon={Upload}
-                  hoverOnly
-                />
+                <span data-sftp-row-actions className="flex shrink-0 items-center">
+                  <IconButton
+                    label={t("sshPanel.sftpUploadFile", { name: node.name })}
+                    onClick={() => void upload(hostId, node.path)}
+                    icon={Upload}
+                    hoverOnly
+                  />
+                </span>
               ) : null}
             </div>
           ))
@@ -419,12 +645,24 @@ function RemotePane({
   hostId,
   remote,
   dragOver,
-  paneRef
+  paneRef,
+  dragKind,
+  hover,
+  selectedPath,
+  onFileDragStart
 }: {
   hostId: string
   remote: RemotePaneState | undefined
   dragOver: boolean
   paneRef: React.RefObject<HTMLDivElement | null>
+  dragKind: SftpPaneKind | null
+  hover: SftpHoverTarget | null
+  selectedPath: string | null
+  onFileDragStart: (
+    kind: SftpPaneKind,
+    payload: { path: string; name: string; size: number },
+    event: React.PointerEvent
+  ) => void
 }) {
   const { t } = useTranslation("panels")
   const listRemote = useSftpStore((s) => s.listRemote)
@@ -435,6 +673,10 @@ function RemotePane({
   const remove = useSftpStore((s) => s.remove)
   const upload = useSftpStore((s) => s.upload)
   const download = useSftpStore((s) => s.download)
+
+  // This pane only receives local-sourced drags (upload direction).
+  const paneDropActive = dragKind === "local" && hover?.pane === "remote" && hover.dirPath === null
+  const rowDropPath = dragKind === "local" && hover?.pane === "remote" ? hover.dirPath : null
 
   async function pickAndUpload() {
     const selected = await openFileDialog({ multiple: true })
@@ -500,7 +742,15 @@ function RemotePane({
           icon={Upload}
         />
       </PaneHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-[4px] py-[4px]">
+      <div
+        data-testid="sftp-remote-pane-body"
+        data-sftp-drop-pane="remote"
+        data-sftp-pane-cwd={remote?.cwd ?? ""}
+        className={cn(
+          "min-h-0 flex-1 overflow-y-auto px-[4px] py-[4px]",
+          paneDropActive && "bg-(--yz-hover) ring-2 ring-inset ring-(--yz-accent)"
+        )}
+      >
         {remote?.error ? (
           <PaneNote text={remote.error} />
         ) : remote?.loading && remote.entries.length === 0 ? (
@@ -511,7 +761,23 @@ function RemotePane({
           remote?.entries.map((entry) => (
             <div
               key={entry.path}
-              className="group flex h-[26px] items-center gap-[6px] rounded-[6px] px-[6px] text-[12px] hover:bg-(--yz-hover)"
+              onPointerDown={
+                !entry.isDir
+                  ? (event) =>
+                      onFileDragStart(
+                        "remote",
+                        { path: entry.path, name: entry.name, size: entry.size },
+                        event
+                      )
+                  : undefined
+              }
+              data-sftp-dir-pane={entry.isDir ? "remote" : undefined}
+              data-sftp-dir-path={entry.isDir ? entry.path : undefined}
+              className={cn(
+                "group flex h-[26px] items-center gap-[6px] rounded-[6px] px-[6px] text-[12px] hover:bg-(--yz-hover)",
+                selectedPath === entry.path && "bg-(--yz-active) shadow-(--shadow-xs)",
+                rowDropPath === entry.path && "bg-(--yz-hover) ring-1 ring-inset ring-(--yz-accent)"
+              )}
             >
               <button
                 type="button"
@@ -531,7 +797,10 @@ function RemotePane({
                   </span>
                 ) : null}
               </button>
-              <div className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-hover:opacity-100">
+              <div
+                data-sftp-row-actions
+                className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-hover:opacity-100"
+              >
                 {!entry.isDir ? (
                   <IconButton
                     label={t("sshPanel.sftpDownload", { name: entry.name })}
