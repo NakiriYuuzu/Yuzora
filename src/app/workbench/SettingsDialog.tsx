@@ -55,9 +55,10 @@ export type {
   TerminalSettings,
   PreviewSettings,
   AgentSettings,
+  ThemePreference,
 } from "./settingsStorage"
 
-export type ThemePreference = "light" | "dark" | "auto"
+import type { ThemePreference } from "./settingsStorage"
 
 interface SettingsDialogProps {
   open: boolean

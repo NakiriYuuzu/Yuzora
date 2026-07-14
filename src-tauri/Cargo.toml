@@ -72,5 +72,6 @@ futures-util = { version = "0.3.32", default-features = false, features = ["std"
 uuid = { version = "1", default-features = false, features = ["v4"] }
 tiny_http = "0.12.0"
 tempfile = "3"
+tauri-plugin-window-state = "2.4.1"
 
 [dev-dependencies]

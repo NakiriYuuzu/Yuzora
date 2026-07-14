@@ -118,6 +118,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // Remember window size/position/maximized across launches. VISIBLE is
+        // excluded on purpose: the window starts hidden (anti-FOUC) and the
+        // frontend shows it on the first themed frame — restoring a persisted
+        // visible=true here would defeat that.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
         .manage(watcher::WatcherState(std::sync::Mutex::new(None)))
         .manage(git_service::GitServiceState(std::sync::Mutex::new(None)))
         .manage(git_watch::GitWatchState(std::sync::Mutex::new(None)))
@@ -182,6 +194,24 @@ pub fn run() {
             app.manage(ssh_service::SshState(std::sync::Arc::new(
                 ssh_service::SshManager::new(app.handle().clone()),
             )));
+            // The main window starts hidden (tauri.conf `visible: false`) so the
+            // native chrome never flashes the OS theme before the persisted
+            // preference applies; the frontend shows it on its first themed
+            // frame (AppShell). Failsafe: if the frontend wedges before that,
+            // force-show after 3s so the app can never boot into an invisible
+            // window.
+            let show_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(window) = show_handle.get_webview_window("main") {
+                    // Err defaults to "not visible": show() is idempotent, so
+                    // when the state is unreadable, erring toward a redundant
+                    // show can never leave the window invisible.
+                    if !window.is_visible().unwrap_or(false) {
+                        let _ = window.show();
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

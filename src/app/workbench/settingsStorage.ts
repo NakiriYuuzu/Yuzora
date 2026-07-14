@@ -12,6 +12,13 @@ export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 export const PREVIEW_SETTINGS_STORAGE_KEY = "yuzora:preview-settings"
 export const AGENT_SETTINGS_STORAGE_KEY = "yuzora:agent-settings"
 export const LAST_USED_CURATED_AGENT_STORAGE_KEY = "yuzora:last-used-curated-agent"
+export const APPEARANCE_SETTINGS_STORAGE_KEY = "yuzora:appearance-settings"
+
+export type ThemePreference = "light" | "dark" | "auto"
+
+export interface AppearanceSettings {
+  theme: ThemePreference
+}
 
 export interface TerminalSettings {
   shellPath: string
@@ -44,6 +51,12 @@ const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
   command: "",
   port: "",
 }
+
+const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
+  theme: "auto",
+}
+
+const VALID_THEME_PREFERENCES: ThemePreference[] = ["light", "dark", "auto"]
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   preset: "pi",
@@ -81,6 +94,19 @@ export function loadTerminalSettings(): TerminalSettings {
 
 export function loadPreviewSettings(): PreviewSettings {
   return readJsonSetting(PREVIEW_SETTINGS_STORAGE_KEY, DEFAULT_PREVIEW_SETTINGS)
+}
+
+export function loadAppearanceSettings(): AppearanceSettings {
+  const settings = readJsonSetting<Partial<AppearanceSettings>>(APPEARANCE_SETTINGS_STORAGE_KEY, {})
+  return {
+    theme: VALID_THEME_PREFERENCES.includes(settings.theme as ThemePreference)
+      ? settings.theme as ThemePreference
+      : DEFAULT_APPEARANCE_SETTINGS.theme,
+  }
+}
+
+export function saveAppearanceSettings(settings: AppearanceSettings): void {
+  writeJsonSetting(APPEARANCE_SETTINGS_STORAGE_KEY, settings)
 }
 
 const VALID_PRESETS: AgentPreset[] = ["pi", "claude", "codex", "custom"]

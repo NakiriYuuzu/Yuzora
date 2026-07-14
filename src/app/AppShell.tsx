@@ -14,6 +14,7 @@ import { ContextMenu } from "@/app/workbench/ContextMenu"
 import { DiffModal } from "@/workbench/git/DiffModal"
 import { ProjectNavPanel } from "@/app/workbench/ProjectNavPanel"
 import { SettingsDialog, type ThemePreference } from "@/app/workbench/SettingsDialog"
+import { loadAppearanceSettings, saveAppearanceSettings } from "@/app/workbench/settingsStorage"
 import { StatusBar } from "@/app/workbench/StatusBar"
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import { WorkspaceRail } from "@/app/workbench/WorkspaceRail"
@@ -71,7 +72,7 @@ export function AppShell() {
   const currentWorkspace = useWorkspaceStore((s) => s.workspacePath)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [theme, setTheme] = useState<ThemePreference>("light")
+  const [theme, setTheme] = useState<ThemePreference>(() => loadAppearanceSettings().theme)
   const [navWidth, setNavWidth] = useState(DEFAULT_NAV_WIDTH)
   const [navResizing, setNavResizing] = useState(false)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -86,6 +87,9 @@ export function AppShell() {
   // pattern above uses the same idea via SettingsDialog's own sync effect).
   const sidebarToggleHandledRef = useRef(sidebarToggleRequest)
   const paletteOpenHandledRef = useRef(paletteOpenRequest)
+  // The window starts hidden (tauri.conf `visible: false`) so the native
+  // chrome never paints the OS theme before the persisted preference applies.
+  const windowShownRef = useRef(false)
 
   const onNavResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -137,10 +141,28 @@ export function AppShell() {
   useEffect(() => {
     const root = document.documentElement
 
+    saveAppearanceSettings({ theme })
+
     // Native window chrome (border hairline, traffic-light backdrop) must
     // follow the app theme, not the OS — a dark system theme otherwise draws
     // a dark frame around the light UI.
-    if (isTauri()) void getCurrentWindow().setTheme(theme === "auto" ? null : theme)
+    if (isTauri()) {
+      const themed = getCurrentWindow().setTheme(theme === "auto" ? null : theme)
+      // Reveal the hidden window only after the native side has applied the
+      // theme (awaiting the invoke, not just JS call order), so the very
+      // first visible frame carries the persisted theme — no OS-theme
+      // titlebar flash. lib.rs holds a 3s failsafe show in case the frontend
+      // never reaches this point; show even if setTheme rejected.
+      if (!windowShownRef.current) {
+        windowShownRef.current = true
+        void themed
+          .catch(() => {})
+          .then(() => getCurrentWindow().show())
+          .catch(() => {})
+      } else {
+        void themed.catch(() => {})
+      }
+    }
 
     if (theme === "auto") {
       const media = window.matchMedia("(prefers-color-scheme: dark)")

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react"
 
 import { getDocument } from "@/editor/documentRegistry"
+import { dismissSplash } from "@/lib/splash"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import {
     clearWorkspaceSession,
@@ -30,6 +31,7 @@ export function SessionRestoreBridge() {
         if (store.workspacePath || !session) {
             // Nothing to restore — open the save gate immediately.
             restoredRef.current = true
+            dismissSplash()
             return
         }
 
@@ -71,6 +73,9 @@ export function SessionRestoreBridge() {
             } finally {
                 unsubscribeGuard()
                 if (!cancelled) restoredRef.current = true
+                // The splash lives exactly as long as the restore attempt —
+                // success, workspace-gone and cancellation all release it.
+                dismissSplash()
             }
         })()
 

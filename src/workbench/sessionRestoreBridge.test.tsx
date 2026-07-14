@@ -73,6 +73,69 @@ const SESSION: WorkspaceSession = {
   activePath: "/ws/a.ts"
 }
 
+// Startup splash contract: the bridge dismisses the index.html splash exactly
+// when the restore attempt settles (or immediately when there is nothing to
+// restore). `yz-splash-leave` marks dismissal without waiting the fade timer.
+function insertSplash(): HTMLElement {
+  const el = document.createElement("div")
+  el.id = "yz-splash"
+  document.body.appendChild(el)
+  return el
+}
+
+const splashDismissed = (el: HTMLElement) =>
+  !document.getElementById("yz-splash") || el.classList.contains("yz-splash-leave")
+
+describe("SessionRestoreBridge splash 退場", () => {
+  afterEach(() => {
+    document.getElementById("yz-splash")?.remove()
+  })
+
+  it("無可還原 session 時 mount 即退場 splash", async () => {
+    const el = insertSplash()
+
+    render(<SessionRestoreBridge />)
+
+    await waitFor(() => expect(splashDismissed(el)).toBe(true))
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
+  it("有 session 時等還原 settle 才退場 splash", async () => {
+    saveWorkspaceSession(SESSION)
+    let resolveOpen!: () => void
+    vi.mocked(openWorkspaceAtPath).mockImplementation(
+      (path: string) =>
+        new Promise<void>((resolve) => {
+          resolveOpen = () => {
+            useWorkspaceStore.getState().setWorkspace(path)
+            resolve()
+          }
+        })
+    )
+    const el = insertSplash()
+
+    render(<SessionRestoreBridge />)
+
+    // openWorkspaceAtPath 進行中：splash 必須還在。
+    await waitFor(() => expect(openWorkspaceAtPath).toHaveBeenCalled())
+    expect(splashDismissed(el)).toBe(false)
+
+    resolveOpen()
+    await waitFor(() => expect(splashDismissed(el)).toBe(true))
+  })
+
+  it("workspace 消失（還原拋錯）時仍退場，不留永久遮罩", async () => {
+    saveWorkspaceSession(SESSION)
+    vi.mocked(openWorkspaceAtPath).mockRejectedValue(new Error("gone"))
+    const el = insertSplash()
+
+    render(<SessionRestoreBridge />)
+
+    await waitFor(() => expect(splashDismissed(el)).toBe(true))
+    expect(loadWorkspaceSession()).toBeNull()
+  })
+})
+
 describe("SessionRestoreBridge 還原", () => {
   it("有 session 時開啟 workspace、還原分頁與 active", async () => {
     saveWorkspaceSession(SESSION)

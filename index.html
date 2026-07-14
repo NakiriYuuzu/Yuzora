@@ -5,9 +5,83 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Yuzora</title>
+    <style>
+      /* Startup splash — self-contained: no external assets, colors mirror
+         styles.css --paper-1 / --ink-1 for both themes so the first paint
+         matches the app shell that replaces it. */
+      #yz-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #fbfaf6;
+        color: #2e2c28;
+        font-family: "Hanken Grotesk Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        opacity: 1;
+        transition: opacity 250ms ease;
+      }
+      .dark #yz-splash {
+        background: #1a191f;
+        color: #e7e4df;
+      }
+      #yz-splash.yz-splash-leave {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #yz-splash .yz-wordmark {
+        font-size: 27px;
+        font-weight: 650;
+        letter-spacing: 0.35em;
+        text-transform: uppercase;
+        /* re-center: tracking adds a trailing gap after the last glyph */
+        padding-left: 0.35em;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #yz-splash {
+          transition: none;
+        }
+      }
+    </style>
+    <script>
+      // Runs synchronously before first paint: pin the html background (and
+      // the `dark` class the app itself uses) from the persisted theme
+      // preference so neither the splash nor the first React frame flashes
+      // the wrong color. Storage key/logic mirror settingsStorage.ts
+      // (yuzora:appearance-settings, default "auto" = follow system).
+      ;(function () {
+        var theme = "auto"
+        try {
+          var raw = localStorage.getItem("yuzora:appearance-settings")
+          var parsed = raw ? JSON.parse(raw) : null
+          if (parsed && (parsed.theme === "light" || parsed.theme === "dark")) theme = parsed.theme
+        } catch (e) {
+          /* unreadable storage → keep "auto", the same fallback as loadAppearanceSettings */
+        }
+        var dark =
+          theme === "dark" ||
+          (theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches)
+        document.documentElement.style.backgroundColor = dark ? "#1a191f" : "#fbfaf6"
+        if (dark) document.documentElement.classList.add("dark")
+        // Hard ceiling: the splash may never outlive 4s even if the app
+        // wedges before wiring dismissSplash (window.__yzDismissSplash).
+        window.setTimeout(function () {
+          if (window.__yzDismissSplash) {
+            window.__yzDismissSplash()
+            return
+          }
+          var el = document.getElementById("yz-splash")
+          if (el && el.parentNode) el.parentNode.removeChild(el)
+        }, 4000)
+      })()
+    </script>
   </head>
 
   <body>
+    <div id="yz-splash" role="status" aria-label="Yuzora is starting">
+      <div class="yz-wordmark">Yuzora</div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
