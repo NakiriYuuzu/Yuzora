@@ -537,7 +537,7 @@ test("font reflow subscription cleanup removes loadingdone and ignores stale rea
         const rendered = render(<MarkdownPreview path="/w/font-cleanup.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         const queryAnchors = vi.spyOn(preview, "querySelectorAll")
-        expect(fonts.listenerCount()).toBe(1)
+        await waitFor(() => expect(fonts.listenerCount()).toBe(1))
 
         rendered.unmount()
         queryAnchors.mockClear()
