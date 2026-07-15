@@ -932,7 +932,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             let current = child_conhost_pids();
-            let created = current.difference(baseline).copied().collect();
+            let created: std::collections::HashSet<_> =
+                current.difference(baseline).copied().collect();
             if !created.is_empty() {
                 return created;
             }
