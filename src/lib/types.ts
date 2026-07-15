@@ -341,6 +341,8 @@ export type DbProfileErrorCode =
 export interface DbProfileError {
     code: DbProfileErrorCode
     message: string
+    /** Sanitized engine diagnostics, present for connection failures. */
+    error?: DbError | null
 }
 export interface DbCredentialInput { password: string }
 export interface DbProfileCreateRequest {

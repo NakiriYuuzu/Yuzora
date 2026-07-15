@@ -964,6 +964,36 @@ describe("DatabaseNavContent saved connections", () => {
     expect(persisted).not.toContain(secret)
   })
 
+  it("localizes a structured PostgreSQL authentication failure without exposing driver detail", async () => {
+    const secret = "UI_AUTH_SECRET"
+    mockTestConnection.mockRejectedValueOnce({
+      code: "connectionFailed",
+      message: `postgres://alice:${secret}@db.example/app failed`,
+      error: {
+        engine: "postgres",
+        message: `password authentication failed for ${secret}`,
+        code: "28P01",
+        position: null,
+        detail: `credential ${secret} rejected`,
+        hint: null,
+        retryability: "notRetryable"
+      }
+    })
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    render(<DatabaseNavContent />)
+    await fillNewPostgresForm(secret)
+
+    fireEvent.click(screen.getByText("Test connection"))
+
+    expect(await screen.findByText("PostgreSQL rejected the user name or password. Enter the credential again.")).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(secret))).not.toBeInTheDocument()
+    expect(screen.queryByText(/password authentication failed/)).not.toBeInTheDocument()
+
+    await act(async () => { await i18n.changeLanguage("zh-TW") })
+    expect(await screen.findByText("PostgreSQL 拒絕使用者名稱或密碼，請重新輸入憑證。")).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(secret))).not.toBeInTheDocument()
+  })
+
   it("disables edit Test Connection with localized guidance when a network draft changed but password is empty", async () => {
     const profile = storedPostgres("pg-edit-disabled")
     useDbStore.setState({ connections: [], saved: [profile], activeConnId: null })

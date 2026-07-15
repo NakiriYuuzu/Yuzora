@@ -113,6 +113,11 @@ export type DbSessionStatus = "connecting" | "connected" | "error" | "disconnect
  * React state because they are neither localizable nor safe display contracts. */
 export type DbProfileUiErrorCode =
     | DbProfileErrorCode
+    | "connectionAuthenticationFailed"
+    | "connectionDnsFailed"
+    | "connectionTlsFailed"
+    | "connectionTimedOut"
+    | "connectionServerRejected"
     | "legacyCleanupFailed"
     | "legacyHistoryCleanupFailed"
     | "savedButConnectFailed"
@@ -565,8 +570,25 @@ const DB_ERROR_RETRYABILITY = new Set(["retryable", "notRetryable", "unknown"])
 
 /** Convert the typed IPC error envelope to a display-safe token. Unknown or
  * malformed rejections deliberately collapse to a fixed fallback. */
-export function dbProfileUiErrorCode(error: unknown): DbProfileErrorCode | "unknown" {
+function postgresProfileUiErrorCode(error: unknown): DbProfileUiErrorCode | null {
+    if (typeof error !== "object" || error === null) return null
+    const envelope = error as Record<string, unknown>
+    if (envelope.code !== "connectionFailed" || typeof envelope.message !== "string") return null
+    const diagnostic = databaseErrorFromOperationalEnvelope(error)
+    if (diagnostic?.engine !== "postgres" || diagnostic.code === null) return null
+    if (diagnostic.code === "dnsFailed") return "connectionDnsFailed"
+    if (diagnostic.code === "tlsFailed") return "connectionTlsFailed"
+    if (diagnostic.code === "connectionTimedOut") return "connectionTimedOut"
+    if (!/^[0-9A-Z]{5}$/.test(diagnostic.code)) return null
+    return diagnostic.code.startsWith("28")
+        ? "connectionAuthenticationFailed"
+        : "connectionServerRejected"
+}
+
+export function dbProfileUiErrorCode(error: unknown): DbProfileUiErrorCode {
     if (typeof error !== "object" || error === null) return "unknown"
+    const postgresCode = postgresProfileUiErrorCode(error)
+    if (postgresCode) return postgresCode
     const code = (error as { code?: unknown }).code
     return typeof code === "string" && DB_PROFILE_ERROR_CODES.has(code)
         ? (code as DbProfileErrorCode)
@@ -575,6 +597,7 @@ export function dbProfileUiErrorCode(error: unknown): DbProfileErrorCode | "unkn
 
 export function dbProfileNeedsCredentialPrompt(code: DbProfileUiErrorCode): boolean {
     return code === "credentialRequired" ||
+        code === "connectionAuthenticationFailed" ||
         code === "vaultMissing" ||
         code === "vaultCorrupt" ||
         code === "vaultDenied"
@@ -1744,7 +1767,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                             descriptorId: descriptor.id,
                             connId: null,
                             status: "error",
-                            error: outcome.error.code
+                            error: dbProfileUiErrorCode(outcome.error)
                         }
                     },
                     historyBuckets: current.historyBuckets[descriptor.id]

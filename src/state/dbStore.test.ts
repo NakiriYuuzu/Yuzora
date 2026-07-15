@@ -60,6 +60,8 @@ import {
     DB_HISTORY_LIMIT,
     DB_HISTORY_SQL_MAX,
     DB_HISTORY_STORAGE_KEY,
+    dbProfileNeedsCredentialPrompt,
+    dbProfileUiErrorCode,
     loadSavedConnections,
     resultPageKey,
     useDbStore
@@ -420,6 +422,48 @@ beforeEach(() => {
         }
     })
     mockProfileDisconnect.mockResolvedValue(undefined)
+})
+
+describe("Issue #14 PostgreSQL profile diagnostics", () => {
+    const diagnostic = (code: string) => ({
+        code: "connectionFailed",
+        message: "database connection failed",
+        error: {
+            engine: "postgres",
+            message: "sanitized driver diagnostic",
+            code,
+            position: null,
+            detail: null,
+            hint: null,
+            retryability: "unknown"
+        }
+    })
+
+    it.each([
+        ["28P01", "connectionAuthenticationFailed"],
+        ["dnsFailed", "connectionDnsFailed"],
+        ["tlsFailed", "connectionTlsFailed"],
+        ["connectionTimedOut", "connectionTimedOut"],
+        ["57P01", "connectionServerRejected"]
+    ])("maps nested PostgreSQL diagnostic %s to stable UI code %s", (driverCode, expected) => {
+        expect(dbProfileUiErrorCode(diagnostic(driverCode))).toBe(expected)
+    })
+
+    it("treats an authentication diagnostic as a credential-replacement flow", () => {
+        const code = dbProfileUiErrorCode(diagnostic("28P01"))
+        expect(code).toBe("connectionAuthenticationFailed")
+        expect(dbProfileNeedsCredentialPrompt(code)).toBe(true)
+    })
+
+    it.each([
+        [{ error: diagnostic("28P01").error }, "unknown"],
+        [{ ...diagnostic("28P01"), code: "queryFailed" }, "queryFailed"],
+        [{ ...diagnostic("28P01"), message: undefined }, "connectionFailed"],
+        [diagnostic("28"), "connectionFailed"],
+        [diagnostic("28garbage"), "connectionFailed"]
+    ])("fails closed for malformed PostgreSQL profile envelopes", (error, expected) => {
+        expect(dbProfileUiErrorCode(error)).toBe(expected)
+    })
 })
 
 describe("useDbStore", () => {
@@ -1864,6 +1908,61 @@ describe("dbStore descriptor identity + sessions", () => {
         expect(useDbStore.getState().connections).toEqual([])
     })
 
+    it("projects a saved PostgreSQL authentication failure to the session without raw detail", async () => {
+        const descriptorId = "profile-pg-auth-failed" as DbProfileDescriptor["descriptorId"]
+        mockProfileCreate.mockResolvedValueOnce({
+            outcome: "savedButConnectFailed",
+            profile: {
+                descriptorId,
+                configGeneration: 1,
+                name: "app@db.example",
+                target: {
+                    kind: "postgres",
+                    host: "db.example",
+                    port: 5432,
+                    database: "app",
+                    user: "alice",
+                    ssl: false,
+                    trustCert: false
+                },
+                credentialState: "stored"
+            },
+            error: {
+                code: "connectionFailed",
+                message: "database connection failed",
+                error: {
+                    engine: "postgres",
+                    message: "sanitized authentication failure",
+                    code: "28P01",
+                    position: null,
+                    detail: null,
+                    hint: null,
+                    retryability: "notRetryable"
+                }
+            }
+        })
+
+        await useDbStore.getState().openConfig({
+            kind: "postgres",
+            host: "db.example",
+            port: 5432,
+            database: "app",
+            user: "alice",
+            password: "one-shot-secret",
+            ssl: false,
+            trustCert: false
+        })
+
+        expect(useDbStore.getState().sessions[descriptorId]).toEqual({
+            descriptorId,
+            connId: null,
+            status: "error",
+            error: "connectionAuthenticationFailed"
+        })
+        expect(JSON.stringify(useDbStore.getState())).not.toContain("sanitized authentication failure")
+        expect(JSON.stringify(useDbStore.getState())).not.toContain("one-shot-secret")
+    })
+
     it("disconnect keeps the saved descriptor and marks the session disconnected", async () => {
         await useDbStore.getState().openConnection("/a.db")
         const id = useDbStore.getState().saved[0].id
@@ -2268,6 +2367,43 @@ describe("dbStore saved-descriptor open command", () => {
             token: 2
         })
         expect(mockProfileOpen).toHaveBeenCalledTimes(2)
+    })
+
+    it("requests credential replacement for a structured PostgreSQL auth rejection", async () => {
+        useDbStore.setState({
+            saved: [postgres],
+            connections: [],
+            activeConnId: null,
+            sessions: {},
+            reconnectRequest: null
+        })
+        mockProfileOpen.mockRejectedValueOnce({
+            code: "connectionFailed",
+            message: "database connection failed",
+            error: {
+                engine: "postgres",
+                message: "sanitized authentication failure",
+                code: "28P01",
+                position: null,
+                detail: null,
+                hint: null,
+                retryability: "notRetryable"
+            }
+        })
+
+        expect(await useDbStore.getState().openOrReconnectSavedConnection(postgres.id)).toEqual({
+            outcome: "completed"
+        })
+        expect(useDbStore.getState().sessions[postgres.id]).toEqual({
+            descriptorId: postgres.id,
+            connId: null,
+            status: "error",
+            error: "connectionAuthenticationFailed"
+        })
+        expect(useDbStore.getState().reconnectRequest).toEqual({
+            descriptorId: postgres.id,
+            token: 1
+        })
     })
 })
 

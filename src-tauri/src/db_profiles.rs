@@ -604,18 +604,25 @@ pub enum ProfileErrorCode {
     InvalidRequest,
 }
 
-/// IPC-safe domain error. Underlying filesystem, keyring and driver messages are
-/// deliberately discarded so neither paths nor credential material can escape.
+/// IPC-safe domain error. Filesystem and keyring details are discarded. A
+/// connection failure may carry an engine diagnostic only after the database
+/// service has removed URL userinfo and the exact in-flight credential.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileError {
     pub code: ProfileErrorCode,
     pub message: &'static str,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<db_service::DatabaseError>,
 }
 
 impl ProfileError {
     fn new(code: ProfileErrorCode, message: &'static str) -> Self {
-        Self { code, message }
+        Self {
+            code,
+            message,
+            error: None,
+        }
     }
 }
 
@@ -2134,7 +2141,11 @@ impl DatabaseProfileState {
             Code::StaleConnection => ProfileErrorCode::StaleConnection,
             Code::ConnectionFailed | Code::QueryFailed => ProfileErrorCode::ConnectionFailed,
         };
-        ProfileError::new(code, error.message)
+        ProfileError {
+            code,
+            message: error.message,
+            error: error.error,
+        }
     }
 
     async fn list_profiles(&self) -> Result<ProfileLoadResult, ProfileError> {
@@ -3899,6 +3910,32 @@ mod tests {
         assert!(loaded.profiles.is_empty());
         assert!(loaded.recovery.is_empty());
         assert_eq!(vault.counts(), (0, 0, 0));
+    }
+
+    #[test]
+    fn connection_error_preserves_sanitized_postgres_diagnostics() {
+        let diagnostic = db_service::DatabaseError {
+            engine: db_service::DatabaseErrorEngine::Postgres,
+            message: "password authentication failed".to_string(),
+            code: Some("28P01".to_string()),
+            position: None,
+            detail: None,
+            hint: Some("verify the saved credential".to_string()),
+            retryability: db_service::Retryability::NotRetryable,
+        };
+        let profile_error = DatabaseProfileState::connection_error(
+            db_service::DatabaseOperationalError::new(
+                db_service::DatabaseOperationalErrorCode::ConnectionFailed,
+                "database connection failed",
+            )
+            .with_database_error(diagnostic.clone()),
+        );
+
+        assert_eq!(profile_error.code, ProfileErrorCode::ConnectionFailed);
+        assert_eq!(profile_error.error, Some(diagnostic));
+        let serialized = serde_json::to_string(&profile_error).unwrap();
+        assert!(serialized.contains("28P01"));
+        assert!(!serialized.contains("password\":\""));
     }
 
     #[tokio::test]

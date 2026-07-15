@@ -454,7 +454,7 @@ impl DatabaseOperationalError {
         }
     }
 
-    fn with_database_error(mut self, error: DatabaseError) -> Self {
+    pub(crate) fn with_database_error(mut self, error: DatabaseError) -> Self {
         self.error = Some(error);
         self
     }
@@ -1669,12 +1669,115 @@ fn postgres_database_error(error: &tokio_postgres::Error) -> DatabaseError {
     }
 }
 
-/// 連線失敗的訊息（帶 `cannot connect to postgres:` 前綴，供 log／對話框）。
-fn pg_err(e: tokio_postgres::Error) -> String {
-    format!("cannot connect to postgres: {}", pg_err_detail(&e))
+const POSTGRES_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Debug)]
+struct PgConnectFailure {
+    error: DatabaseError,
 }
 
-async fn pg_open(
+fn pg_transport_error_code(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if [
+        "no such host",
+        "host not found",
+        "name or service not known",
+        "failed to lookup address",
+        "nodename nor servname",
+        "getaddrinfo",
+        "os error 11001",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        "dnsFailed"
+    } else if [
+        "tls",
+        "certificate",
+        "unknownissuer",
+        "invalid peer",
+        "handshake",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        "tlsFailed"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "connectionTimedOut"
+    } else {
+        "connectionFailed"
+    }
+}
+
+fn redact_pg_connection_diagnostic(input: &str, secret: &str) -> String {
+    let masked = crate::logging::mask_url_userinfo(input);
+    if secret.is_empty() {
+        masked
+    } else {
+        masked.replace(secret, "<redacted>")
+    }
+}
+
+fn redact_postgres_database_error(mut error: DatabaseError, secret: &str) -> DatabaseError {
+    error.message = redact_pg_connection_diagnostic(&error.message, secret);
+    error.detail = error
+        .detail
+        .map(|detail| redact_pg_connection_diagnostic(&detail, secret));
+    error.hint = error
+        .hint
+        .map(|hint| redact_pg_connection_diagnostic(&hint, secret));
+    error
+}
+
+fn pg_driver_connect_failure(error: tokio_postgres::Error, secret: &str) -> PgConnectFailure {
+    let mut diagnostic = postgres_database_error(&error);
+    if diagnostic.code.is_none() {
+        let code = pg_transport_error_code(&diagnostic.message);
+        diagnostic.code = Some(code.to_string());
+        diagnostic.retryability = match code {
+            "dnsFailed" | "connectionTimedOut" | "connectionFailed" => Retryability::Retryable,
+            "tlsFailed" => Retryability::NotRetryable,
+            _ => Retryability::Unknown,
+        };
+    }
+    PgConnectFailure {
+        error: redact_postgres_database_error(diagnostic, secret),
+    }
+}
+
+fn pg_timeout_failure() -> PgConnectFailure {
+    PgConnectFailure {
+        error: DatabaseError {
+            engine: DatabaseErrorEngine::Postgres,
+            message: "PostgreSQL connection timed out".to_string(),
+            code: Some("connectionTimedOut".to_string()),
+            position: None,
+            detail: None,
+            hint: Some("Verify the host, port, firewall, and server availability".to_string()),
+            retryability: Retryability::Retryable,
+        },
+    }
+}
+
+fn pg_tls_configuration_failure(message: String, secret: &str) -> PgConnectFailure {
+    PgConnectFailure {
+        error: DatabaseError {
+            engine: DatabaseErrorEngine::Postgres,
+            message: redact_pg_connection_diagnostic(&message, secret),
+            code: Some("tlsFailed".to_string()),
+            position: None,
+            detail: None,
+            hint: Some("Verify the PostgreSQL TLS and trust-certificate settings".to_string()),
+            retryability: Retryability::NotRetryable,
+        },
+    }
+}
+
+fn pg_connect_failure_database_error(failure: &PgConnectFailure) -> DatabaseError {
+    failure.error.clone()
+}
+
+async fn pg_open_with_timeout(
     host: String,
     port: u16,
     database: String,
@@ -1682,7 +1785,8 @@ async fn pg_open(
     password: SecretString,
     ssl: bool,
     trust_cert: bool,
-) -> Result<DbHandle, String> {
+    connect_timeout: Duration,
+) -> Result<DbHandle, PgConnectFailure> {
     let mut cfg = tokio_postgres::Config::new();
     cfg.host(&host)
         .port(port)
@@ -1693,8 +1797,12 @@ async fn pg_open(
     // The Connection future's concrete type differs per TLS choice, but it is
     // consumed (spawned) inside each branch so both yield the same (Client, task).
     let (client, conn_task, cancel) = if ssl {
-        let tls = pg_tls(trust_cert)?;
-        let (client, connection) = cfg.connect(tls.clone()).await.map_err(pg_err)?;
+        let tls = pg_tls(trust_cert)
+            .map_err(|error| pg_tls_configuration_failure(error, password.expose_secret()))?;
+        let (client, connection) = tokio::time::timeout(connect_timeout, cfg.connect(tls.clone()))
+            .await
+            .map_err(|_| pg_timeout_failure())?
+            .map_err(|error| pg_driver_connect_failure(error, password.expose_secret()))?;
         let cancel = PostgresCancelResource::rustls(&client, tls);
         let task = tauri::async_runtime::spawn(async move {
             if let Err(e) = connection.await {
@@ -1703,7 +1811,11 @@ async fn pg_open(
         });
         (client, task, cancel)
     } else {
-        let (client, connection) = cfg.connect(tokio_postgres::NoTls).await.map_err(pg_err)?;
+        let (client, connection) =
+            tokio::time::timeout(connect_timeout, cfg.connect(tokio_postgres::NoTls))
+                .await
+                .map_err(|_| pg_timeout_failure())?
+                .map_err(|error| pg_driver_connect_failure(error, password.expose_secret()))?;
         let cancel = PostgresCancelResource::no_tls(&client);
         let task = tauri::async_runtime::spawn(async move {
             if let Err(e) = connection.await {
@@ -1717,6 +1829,28 @@ async fn pg_open(
         conn_task,
         cancel,
     }))
+}
+
+async fn pg_open(
+    host: String,
+    port: u16,
+    database: String,
+    user: String,
+    password: SecretString,
+    ssl: bool,
+    trust_cert: bool,
+) -> Result<DbHandle, PgConnectFailure> {
+    pg_open_with_timeout(
+        host,
+        port,
+        database,
+        user,
+        password,
+        ssl,
+        trust_cert,
+        POSTGRES_CONNECT_TIMEOUT,
+    )
+    .await
 }
 
 const PG_LIST_TABLES_SQL: &str =
@@ -2511,15 +2645,20 @@ pub(crate) async fn open_unregistered(
             let (lh, lu, ld) = (host.clone(), user.clone(), database.clone());
             pg_open(host, port, database, user, password, ssl, trust_cert)
                 .await
-                .map_err(|e| {
+                .map_err(|failure| {
+                    let diagnostic = pg_connect_failure_database_error(&failure);
+                    let diagnostic_code = diagnostic.code.as_deref().unwrap_or("connectionFailed");
                     crate::logging::write_global(crate::logging::connect_failure_event(
                         "db",
                         &lh,
                         port,
                         &lu,
-                        &format!("database={ld}: {e}"),
+                        &format!(
+                            "database={ld}: code={diagnostic_code}: {}",
+                            diagnostic.message
+                        ),
                     ));
-                    DatabaseOperationalError::connection_failed()
+                    DatabaseOperationalError::connection_failed().with_database_error(diagnostic)
                 })?
         }
         DbOpenConfig::Mssql {
@@ -9113,15 +9252,131 @@ mod tests {
             false,
         )
         .await;
-        let err = match result {
-            Err(e) => e,
+        let error = match result {
+            Err(failure) => pg_connect_failure_database_error(&failure),
             Ok(_) => panic!("expected connection to refused port to fail"),
         };
-        assert!(err.starts_with("cannot connect to postgres:"), "got: {err}");
+        assert_eq!(error.code.as_deref(), Some("connectionFailed"));
         // 真因（io 層）必須由 source() chain 帶出，而非只到泛稱 "error connecting to server"。
         assert!(
-            err.to_lowercase().contains("refused"),
-            "expected the OS-level cause to be surfaced, got: {err}"
+            error.message.to_lowercase().contains("refused"),
+            "expected the OS-level cause to be surfaced, got: {}",
+            error.message
         );
+    }
+
+    #[test]
+    fn postgres_transport_diagnostics_have_stable_windows_categories() {
+        assert_eq!(
+            pg_transport_error_code("failed to lookup address information: No such host is known"),
+            "dnsFailed"
+        );
+        assert_eq!(
+            pg_transport_error_code("invalid peer certificate: UnknownIssuer"),
+            "tlsFailed"
+        );
+        assert_eq!(
+            pg_transport_error_code("connection timed out while opening socket"),
+            "connectionTimedOut"
+        );
+        assert_eq!(
+            pg_transport_error_code("Connection refused (os error 10061)"),
+            "connectionFailed"
+        );
+    }
+
+    #[test]
+    fn postgres_connection_diagnostic_redacts_password_and_url_userinfo() {
+        const SECRET: &str = "YUZORA_POSTGRES_SECRET_SENTINEL";
+        let redacted = redact_pg_connection_diagnostic(
+            "server rejected postgres://alice:YUZORA_POSTGRES_SECRET_SENTINEL@db.example/app and repeated YUZORA_POSTGRES_SECRET_SENTINEL",
+            SECRET,
+        );
+        assert!(!redacted.contains(SECRET));
+        assert!(!redacted.contains("alice:"));
+        assert!(redacted.contains("postgres://<redacted>@db.example/app"));
+    }
+
+    #[tokio::test]
+    async fn pg_open_timeout_is_bounded_structured_and_secret_free() {
+        const SECRET: &str = "YUZORA_POSTGRES_TIMEOUT_SECRET";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        });
+
+        let result = pg_open_with_timeout(
+            address.ip().to_string(),
+            address.port(),
+            "app".to_string(),
+            "alice".to_string(),
+            SECRET.to_string().into(),
+            false,
+            false,
+            std::time::Duration::from_millis(40),
+        )
+        .await;
+        server.abort();
+
+        let failure = match result {
+            Err(failure) => failure,
+            Ok(_) => panic!("silent server must hit the connect deadline"),
+        };
+        let error = pg_connect_failure_database_error(&failure);
+        assert_eq!(error.engine, DatabaseErrorEngine::Postgres);
+        assert_eq!(error.code.as_deref(), Some("connectionTimedOut"));
+        assert_eq!(error.retryability, Retryability::Retryable);
+        assert!(!format!("{error:?}").contains(SECRET));
+    }
+
+    #[tokio::test]
+    async fn postgres_auth_sqlstate_survives_open_envelope_without_secret() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const SECRET: &str = "YUZORA_POSTGRES_AUTH_SECRET";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut length = [0_u8; 4];
+            socket.read_exact(&mut length).await.unwrap();
+            let startup_len = u32::from_be_bytes(length) as usize;
+            let mut startup = vec![0_u8; startup_len.saturating_sub(4)];
+            socket.read_exact(&mut startup).await.unwrap();
+
+            let fields = format!("SFATAL\0C28P01\0Mpassword authentication failed: {SECRET}\0\0");
+            socket.write_all(b"E").await.unwrap();
+            socket
+                .write_all(&((fields.len() + 4) as u32).to_be_bytes())
+                .await
+                .unwrap();
+            socket.write_all(fields.as_bytes()).await.unwrap();
+        });
+
+        let result = open_unregistered(DbOpenConfig::Postgres {
+            host: address.ip().to_string(),
+            port: address.port(),
+            database: "app".to_string(),
+            user: "alice".to_string(),
+            password: SECRET.to_string().into(),
+            ssl: false,
+            trust_cert: false,
+        })
+        .await;
+        server.await.unwrap();
+
+        let failure = match result {
+            Err(failure) => failure,
+            Ok(_) => panic!("fake authentication rejection must fail"),
+        };
+        assert_eq!(failure.code, DatabaseOperationalErrorCode::ConnectionFailed);
+        let diagnostic = failure.error.expect("structured PostgreSQL diagnostic");
+        assert_eq!(diagnostic.code.as_deref(), Some("28P01"));
+        assert_eq!(diagnostic.retryability, Retryability::NotRetryable);
+        let serialized = serde_json::to_string(&diagnostic).unwrap();
+        assert!(!serialized.contains(SECRET));
+        assert!(serialized.contains("&lt;redacted&gt;") || serialized.contains("<redacted>"));
     }
 }
