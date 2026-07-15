@@ -93,7 +93,7 @@ impl AgentManager {
         if self.children.lock().unwrap().contains_key(&id) {
             return Err(format!("agent {id} already exists"));
         }
-        preflight_command(command)?;
+        preflight_command(command, cwd)?;
 
         let shell = crate::pty_service::resolve_shell(None);
         let mut cmd = shell_command(&shell, command);
@@ -101,7 +101,9 @@ impl AgentManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        process_kill::configure_new_group(&mut cmd);
+        // ACP adapters are background stdio processes. On Windows this keeps
+        // the killable process group while also suppressing a console window.
+        process_kill::configure_background_process(&mut cmd);
 
         let mut child: Child = cmd
             .spawn()
@@ -492,9 +494,60 @@ fn resolve_on_path(token: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn resolve_on_path(token: &str) -> Option<std::path::PathBuf> {
+    let path_dirs: Vec<_> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    let pathext = std::env::var_os("PATHEXT")
+        .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+    resolve_windows_on_path_from(token, &path_dirs, &pathext)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn resolve_on_path(_token: &str) -> Option<std::path::PathBuf> {
     None
+}
+
+#[cfg(any(windows, test))]
+fn resolve_windows_on_path_from(
+    token: &str,
+    path_dirs: &[std::path::PathBuf],
+    pathext: &std::ffi::OsStr,
+) -> Option<std::path::PathBuf> {
+    let token_path = std::path::PathBuf::from(token);
+    let candidates = if token_path.extension().is_some() {
+        vec![token_path]
+    } else {
+        let extensions: Vec<String> = pathext
+            .to_string_lossy()
+            .split(';')
+            .filter_map(|extension| {
+                let extension = extension.trim();
+                if extension.is_empty() {
+                    None
+                } else if extension.starts_with('.') {
+                    Some(extension.to_string())
+                } else {
+                    Some(format!(".{extension}"))
+                }
+            })
+            .collect();
+        extensions
+            .into_iter()
+            .map(|extension| std::path::PathBuf::from(format!("{token}{extension}")))
+            .collect()
+    };
+
+    if token.contains(['/', '\\']) {
+        return candidates.into_iter().find(|candidate| candidate.is_file());
+    }
+    path_dirs.iter().find_map(|dir| {
+        candidates
+            .iter()
+            .map(|candidate| dir.join(candidate))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 /// spawn 前置檢查（unix）：單純指令（無 shell 元字元）的第一個 token 不在 PATH 上
@@ -502,7 +555,7 @@ fn resolve_on_path(_token: &str) -> Option<std::path::PathBuf> {
 /// 原則是 fail open：任何我們無法用與 shell 一致的規則解析的形式（引號、`~`、
 /// 相對路徑）都放行，交給 shell 處理，只擋得住「裸字不在 PATH」與「絕對路徑不存在」。
 #[cfg(unix)]
-fn preflight_command(command: &str) -> Result<(), String> {
+fn preflight_command(command: &str, _cwd: &str) -> Result<(), String> {
     if has_shell_metachars(command) || command.contains('"') || command.contains('\'') {
         return Ok(()); // 複合／帶引號指令交給 shell 自行解析與報錯
     }
@@ -521,8 +574,46 @@ fn preflight_command(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn preflight_command(_command: &str) -> Result<(), String> {
+#[cfg(windows)]
+fn preflight_command(command: &str, cwd: &str) -> Result<(), String> {
+    let path_dirs: Vec<_> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    let pathext = std::env::var_os("PATHEXT")
+        .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+    preflight_windows_command_from(command, std::path::Path::new(cwd), &path_dirs, &pathext)
+}
+
+#[cfg(any(windows, test))]
+fn preflight_windows_command_from(
+    command: &str,
+    cwd: &std::path::Path,
+    path_dirs: &[std::path::PathBuf],
+    pathext: &std::ffi::OsStr,
+) -> Result<(), String> {
+    if has_shell_metachars(command) || command.contains('"') || command.contains('\'') {
+        return Ok(());
+    }
+    let Some(token) = command_first_token(command) else {
+        return Ok(());
+    };
+    let token_path = std::path::Path::new(token);
+    if token.starts_with('~') || (token.contains(['/', '\\']) && !token_path.is_absolute()) {
+        return Ok(());
+    }
+    let mut search_dirs = Vec::with_capacity(path_dirs.len() + 1);
+    search_dirs.push(cwd.to_path_buf());
+    search_dirs.extend_from_slice(path_dirs);
+    if resolve_windows_on_path_from(token, &search_dirs, pathext).is_none() {
+        return Err(format!(
+            "'{token}' was not found on the app PATH; check the installation or customize the agent command in Settings"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn preflight_command(_command: &str, _cwd: &str) -> Result<(), String> {
     Ok(())
 }
 
@@ -730,6 +821,92 @@ mod tests {
     }
 
     #[test]
+    fn local_fake_acp_process_roundtrips_initialize_session_and_prompt() {
+        let executable = std::env::current_exe().unwrap();
+        let command = format!(
+            "\"{}\" --ignored --exact agent_process::tests::fake_acp_child --nocapture",
+            executable.display()
+        );
+        let mgr = AgentManager::new_for_test();
+        let lines: Arc<Mutex<Vec<String>>> = Default::default();
+        let lines2 = lines.clone();
+        let id = mgr
+            .spawn(
+                &command,
+                ".",
+                Arc::new(move |line| lines2.lock().unwrap().push(line)),
+                Arc::new(|_, _| {}),
+            )
+            .unwrap();
+
+        for (request_id, method) in [(1, "initialize"), (2, "session/new"), (3, "session/prompt")] {
+            mgr.write(
+                &id,
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": {}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(
+                poll_until(Duration::from_secs(5), || {
+                    lines.lock().unwrap().iter().any(|line| {
+                        serde_json::from_str::<serde_json::Value>(line)
+                            .ok()
+                            .is_some_and(|value| value["id"] == request_id)
+                    })
+                }),
+                "fake ACP did not answer {method}"
+            );
+        }
+
+        let responses: Vec<serde_json::Value> = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        assert_eq!(responses[0]["result"]["protocolVersion"], 1);
+        assert_eq!(responses[1]["result"]["sessionId"], "fake-session");
+        assert_eq!(responses[2]["result"]["stopReason"], "end_turn");
+        mgr.kill(&id, "test");
+    }
+
+    #[test]
+    #[ignore = "spawned by local_fake_acp_process_roundtrips_initialize_session_and_prompt"]
+    fn fake_acp_child() {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let request: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let result = match request["method"].as_str().unwrap() {
+                "initialize" => serde_json::json!({
+                    "protocolVersion": 1,
+                    "agentCapabilities": {},
+                    "authMethods": []
+                }),
+                "session/new" => serde_json::json!({
+                    "sessionId": "fake-session",
+                    "configOptions": []
+                }),
+                "session/prompt" => serde_json::json!({ "stopReason": "end_turn" }),
+                method => panic!("unexpected fake ACP method: {method}"),
+            };
+            println!(
+                "{}",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result
+                })
+            );
+            std::io::stdout().flush().unwrap();
+        }
+    }
+
+    #[test]
     fn spawn_with_id_event_payloads_include_assigned_id() {
         let mgr = AgentManager::new_for_test();
         let events: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
@@ -907,7 +1084,8 @@ mod tests {
         let mgr = AgentManager::new_for_test();
 
         let err = mgr
-            .spawn(
+            .spawn_with_id(
+                "agent-retry".to_string(),
                 "definitely-missing-binary-yz --flag",
                 ".",
                 Arc::new(|_| {}),
@@ -915,6 +1093,24 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("not found on the app PATH"), "{err}");
+        assert!(mgr.list(".").is_empty());
+
+        let valid_command = if cfg!(windows) {
+            "echo {\"jsonrpc\":\"2.0\"}"
+        } else {
+            "printf '{\"jsonrpc\":\"2.0\"}\\n'"
+        };
+        let retry = mgr
+            .spawn_with_id(
+                "agent-retry".to_string(),
+                valid_command,
+                ".",
+                Arc::new(|_| {}),
+                Arc::new(|_, _| {}),
+            )
+            .unwrap();
+        assert_eq!(retry, "agent-retry");
+        mgr.kill(&retry, "test");
 
         // 含 shell 元字元的複合指令不做 preflight，交給 shell 自行報錯
         let id = mgr
@@ -952,6 +1148,68 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("not found on the app PATH"), "{err}");
+    }
+
+    #[test]
+    fn windows_path_lookup_honors_pathext_without_leaking_command_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let bunx = temp.path().join("bunx.CMD");
+        std::fs::write(&bunx, "@echo off\r\n").unwrap();
+
+        assert_eq!(
+            resolve_windows_on_path_from(
+                "bunx",
+                &[temp.path().to_path_buf()],
+                std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"),
+            ),
+            Some(bunx),
+        );
+        assert!(resolve_windows_on_path_from(
+            "missing-agent",
+            &[temp.path().to_path_buf()],
+            std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn windows_preflight_rejects_missing_simple_command_and_allows_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("bunx.CMD"), "@echo off\r\n").unwrap();
+        let path = [temp.path().to_path_buf()];
+        let pathext = std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD");
+
+        let error =
+            preflight_windows_command_from("missing-agent --stdio", temp.path(), &path, pathext)
+                .unwrap_err();
+        assert!(error.contains("'missing-agent' was not found on the app PATH"));
+        assert!(error.contains("Settings"));
+
+        assert!(
+            preflight_windows_command_from("bunx pi-acp@0.0.31", temp.path(), &path, pathext)
+                .is_ok()
+        );
+        assert!(preflight_windows_command_from(
+            "missing-agent && echo handled",
+            temp.path(),
+            &path,
+            pathext,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn windows_preflight_searches_spawn_cwd_before_path() {
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::write(cwd.path().join("workspace-agent.CMD"), "@echo off\r\n").unwrap();
+
+        assert!(preflight_windows_command_from(
+            "workspace-agent --stdio",
+            cwd.path(),
+            &[],
+            std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"),
+        )
+        .is_ok());
     }
 
     #[test]
