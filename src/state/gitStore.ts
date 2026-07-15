@@ -320,11 +320,18 @@ export const useGitStore = create<GitState>()((set, get) => ({
     }
 }))
 
-export function changedPathSet(status: GitStatus | null): Set<string> {
+const EMPTY_CHANGED_PATHS: ReadonlySet<string> = new Set()
+const changedPathsByStatus = new WeakMap<GitStatus, ReadonlySet<string>>()
+
+export function changedPathSet(status: GitStatus | null): ReadonlySet<string> {
+    if (!status) return EMPTY_CHANGED_PATHS
+    const cached = changedPathsByStatus.get(status)
+    if (cached) return cached
+
     const set = new Set<string>()
-    if (!status) return set
     for (const entry of status.unstaged) set.add(entry.path)
     for (const path of status.untracked) set.add(path)
     for (const entry of status.conflicted) set.add(entry.path)
+    changedPathsByStatus.set(status, set)
     return set
 }

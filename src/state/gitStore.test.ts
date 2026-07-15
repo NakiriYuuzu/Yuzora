@@ -265,6 +265,50 @@ describe("gitStore", () => {
         expect(JSON.parse(localStorage.getItem(REMOTE_CHECK_STORAGE_KEY)!)).toEqual({ mode: "autofetch", intervalSec: 60 })
     })
 
+    it("reuses one changed-path index for the same Git status snapshot", async () => {
+        const { changedPathSet } = await import("./gitStore")
+        const status: GitStatus = {
+            ...makeStatus(),
+            unstaged: [{ path: "src/changed.ts", origPath: null, status: "M" }],
+            untracked: ["src/new.ts"],
+            conflicted: [{ path: "src/conflict.ts", origPath: null, status: "UU" }]
+        }
+
+        const first = changedPathSet(status)
+
+        expect([...first].sort()).toEqual(["src/changed.ts", "src/conflict.ts", "src/new.ts"])
+        expect(changedPathSet(status)).toBe(first)
+        expect(changedPathSet(null)).toBe(changedPathSet(null))
+    })
+
+    it("isolates changed-path indexes between Git status snapshots", async () => {
+        const { changedPathSet } = await import("./gitStore")
+        const previous = { ...makeStatus(), untracked: ["old.ts"] }
+        const current = { ...makeStatus(), untracked: ["current.ts"] }
+
+        const previousIndex = changedPathSet(previous)
+        const currentIndex = changedPathSet(current)
+
+        expect(currentIndex).not.toBe(previousIndex)
+        expect(currentIndex.has("current.ts")).toBe(true)
+        expect(currentIndex.has("old.ts")).toBe(false)
+    })
+
+    it("reuses the index across large rendered-node lookup batches", async () => {
+        const { changedPathSet } = await import("./gitStore")
+        const status = {
+            ...makeStatus(),
+            untracked: Array.from({ length: 2_000 }, (_, index) => `generated/file-${index}.ts`)
+        }
+        const index = changedPathSet(status)
+
+        for (let node = 0; node < 4_000; node += 1) {
+            const lookupIndex = changedPathSet(status)
+            expect(lookupIndex).toBe(index)
+            expect(lookupIndex.has(`generated/file-${node % 2_000}.ts`)).toBe(true)
+        }
+    })
+
     it("appendConsole prepends newest-first", async () => {
         const { useGitStore } = await import("./gitStore")
         const mk = (id: number, cmd: string) => ({ id, cmd, out: [], tone: "ok" as const, time: "12:00" })
