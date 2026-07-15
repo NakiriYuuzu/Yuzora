@@ -64,6 +64,20 @@ frontend（lint→typecheck→test→build）＋三平台 `cargo check --locked 
 
 **Clippy 是 exact baseline**（`.github/clippy-baseline.json`，fingerprint＝code/file/line/message/count）：任何 warning 的新增、消失、搬移都會 fail。修掉或新增 warning 後要同步更新該 JSON（腳本只驗證、不重產）。
 
+## Agent skills
+
+### Issue tracker
+
+工作項目與 PRD 追蹤於 GitHub `NakiriYuuzu/Yuzora` Issues。見 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用五個 canonical triage roles：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。見 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+本 repo 採 single-context domain layout，以 `.yuuzu/CONTEXT.html` 與 `.yuuzu/adr/` 為權威來源。見 `docs/agents/domain.md`。
+
 ## 慣例與路徑
 
 - 語言：回覆繁體中文；技術詞英文、UI 文字中文。
