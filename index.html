@@ -64,16 +64,6 @@
           (theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches)
         document.documentElement.style.backgroundColor = dark ? "#1a191f" : "#fbfaf6"
         if (dark) document.documentElement.classList.add("dark")
-        // Hard ceiling: the splash may never outlive 4s even if the app
-        // wedges before wiring dismissSplash (window.__yzDismissSplash).
-        window.setTimeout(function () {
-          if (window.__yzDismissSplash) {
-            window.__yzDismissSplash()
-            return
-          }
-          var el = document.getElementById("yz-splash")
-          if (el && el.parentNode) el.parentNode.removeChild(el)
-        }, 4000)
       })()
     </script>
   </head>

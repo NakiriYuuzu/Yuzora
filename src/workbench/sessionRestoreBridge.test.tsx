@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, render, waitFor } from "@testing-library/react"
+import { act, cleanup, render, waitFor } from "@testing-library/react"
+import indexHtml from "../../index.html?raw"
 
 import { getDocument } from "@/editor/documentRegistry"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
@@ -65,6 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
 })
 
 const SESSION: WorkspaceSession = {
@@ -85,6 +87,12 @@ function insertSplash(): HTMLElement {
 
 const splashDismissed = (el: HTMLElement) =>
   !document.getElementById("yz-splash") || el.classList.contains("yz-splash-leave")
+
+function runInlineBootScript(): void {
+  const script = indexHtml.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1]
+  if (!script) throw new Error("index.html inline boot script not found")
+  Function(script)()
+}
 
 describe("SessionRestoreBridge splash 退場", () => {
   afterEach(() => {
@@ -122,6 +130,43 @@ describe("SessionRestoreBridge splash 退場", () => {
 
     resolveOpen()
     await waitFor(() => expect(splashDismissed(el)).toBe(true))
+  })
+
+  it("慢速文件還原超過 4 秒時仍保持 splash，直到所有文件 ready", async () => {
+    vi.useFakeTimers()
+    saveWorkspaceSession({
+      workspacePath: "/ws",
+      tabs: ["/ws/a.ts"],
+      activePath: null
+    })
+    mockOpenResolves()
+    let resolveFirstDocument!: () => void
+    vi.mocked(getDocument)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstDocument = () => resolve({} as never)
+          })
+      )
+      .mockResolvedValue({} as never)
+    const el = insertSplash()
+    runInlineBootScript()
+
+    render(<SessionRestoreBridge />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(getDocument).toHaveBeenCalledWith("/ws/a.ts")
+
+    act(() => vi.advanceTimersByTime(4_001))
+
+    expect(splashDismissed(el)).toBe(false)
+
+    await act(async () => {
+      resolveFirstDocument()
+      await Promise.resolve()
+    })
+    expect(splashDismissed(el)).toBe(true)
   })
 
   it("workspace 消失（還原拋錯）時仍退場，不留永久遮罩", async () => {

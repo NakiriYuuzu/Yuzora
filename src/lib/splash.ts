@@ -34,14 +34,3 @@ export function dismissSplash(): void {
     // jsdom and throttled browsers may never fire transitionend.
     window.setTimeout(finish, FADE_MS + 150)
 }
-
-// The inline 4s-ceiling timer in index.html prefers this hook so the timeout
-// path shares the same fade/cleanup instead of its bare-removal fallback.
-declare global {
-    interface Window {
-        __yzDismissSplash?: () => void
-    }
-}
-if (typeof window !== "undefined") {
-    window.__yzDismissSplash = dismissSplash
-}

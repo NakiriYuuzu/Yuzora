@@ -88,8 +88,4 @@ describe("dismissSplash", () => {
             matchMediaSpy.mockRestore()
         }
     })
-
-    it("把自己掛上 window.__yzDismissSplash 供 index.html 4 秒上限 timer 呼叫", () => {
-        expect(window.__yzDismissSplash).toBe(dismissSplash)
-    })
 })
