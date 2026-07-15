@@ -552,6 +552,11 @@
     transition: background 0.22s var(--ease-out), padding 0.22s var(--ease-out);
   }
   .dl-row:hover { background: var(--accent-wash); padding-left: 1rem; }
+  .dl-row.is-recommended {
+    background: var(--accent-wash);
+    box-shadow: inset 3px 0 var(--accent);
+    padding-left: 1rem;
+  }
   .dl-row .os {
     font-family: var(--mono);
     font-weight: 600;
@@ -562,7 +567,23 @@
     font-size: 0.78rem;
     color: var(--ink-3);
   }
-  .dl-row .go { color: var(--accent-ink); font-weight: 700; }
+  .dl-row .go {
+    color: var(--accent-ink);
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+  }
+  .recommended-badge {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent-ink);
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid rgba(95, 140, 30, 0.2);
+    border-radius: 999px;
+    padding: 0.15rem 0.55rem;
+  }
   .dl-note {
     margin-top: 1.5rem;
     font-size: 0.85rem;
@@ -666,8 +687,15 @@
       以 Tauri 打造——輕量啟動、在地執行，你的憑證與程式碼不離開你的機器。
     </p>
     <div class="cta-row">
-      <a class="cta" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest" rel="noopener" data-i18n="hero.cta">下載 Yuzora</a>
-      <span class="cta-note">macOS · Windows · Linux</span>
+      <a id="primary-download" class="cta" href="#download" aria-describedby="download-device-note" data-i18n="hero.cta">下載 Yuzora</a>
+      <span id="download-device-note" class="cta-note" data-status="unknown" aria-live="polite">
+        <span data-device-message="macos" data-i18n="dl.device.macos" hidden>已辨識：macOS · Universal</span>
+        <span data-device-message="windows" data-i18n="dl.device.windows" hidden>已辨識：Windows · x64</span>
+        <span data-device-message="linux" data-i18n="dl.device.linux" hidden>已辨識：Linux · x86_64</span>
+        <span data-device-message="unsupported" data-i18n="dl.device.unsupported" hidden>僅支援 macOS、Windows 與 Linux 桌面裝置</span>
+        <span data-device-message="unsupported-architecture" data-i18n="dl.device.unsupportedArchitecture" hidden>此裝置架構尚未提供安裝檔</span>
+        <span data-device-message="unknown" data-i18n="dl.device.unknown">請從下方選擇你的平台</span>
+      </span>
     </div>
   </div>
 
@@ -797,22 +825,22 @@
       <h2 data-i18n="dl.title">選你的平台，開始使用。</h2>
       <p data-i18n="dl.lede">所有版本皆由 GitHub Actions 建置並發佈於 GitHub Releases，原始碼公開可查。</p>
     </div>
-    <!-- 直接下載：release workflow 會上傳固定檔名別名 asset（方案 A），latest/download 永久有效 -->
+    <!-- 直接下載：release workflow 會上傳固定檔名別名 asset；downloads.js 依裝置推薦其中一項 -->
     <div class="dl-list reveal" style="--d: 100ms">
-      <a class="dl-row" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-universal.dmg" rel="noopener">
+      <a class="dl-row" data-platform-download="macos" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-universal.dmg" rel="noopener">
         <span class="os">macOS</span>
         <span class="fmt">.dmg — universal (Apple Silicon / Intel)</span>
-        <span class="go">↓</span>
+        <span class="go"><span class="recommended-badge" data-recommended-badge data-i18n="dl.recommended" hidden>適合此裝置</span><span aria-hidden="true">↓</span></span>
       </a>
-      <a class="dl-row" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe" rel="noopener">
+      <a class="dl-row" data-platform-download="windows" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe" rel="noopener">
         <span class="os">Windows</span>
         <span class="fmt">.exe (NSIS) — x64</span>
-        <span class="go">↓</span>
+        <span class="go"><span class="recommended-badge" data-recommended-badge data-i18n="dl.recommended" hidden>適合此裝置</span><span aria-hidden="true">↓</span></span>
       </a>
-      <a class="dl-row" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-linux-x86_64.AppImage" rel="noopener">
+      <a class="dl-row" data-platform-download="linux" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-linux-x86_64.AppImage" rel="noopener">
         <span class="os">Linux</span>
         <span class="fmt">.AppImage — x86_64</span>
-        <span class="go">↓</span>
+        <span class="go"><span class="recommended-badge" data-recommended-badge data-i18n="dl.recommended" hidden>適合此裝置</span><span aria-hidden="true">↓</span></span>
       </a>
     </div>
     <p class="dl-note reveal" style="--d: 180ms">
@@ -867,6 +895,13 @@
       "f3.tag": "log 查詢",
       "dl.title": "選你的平台，開始使用。",
       "dl.lede": "所有版本皆由 GitHub Actions 建置並發佈於 GitHub Releases，原始碼公開可查。",
+      "dl.device.macos": "已辨識：macOS · Universal",
+      "dl.device.windows": "已辨識：Windows · x64",
+      "dl.device.linux": "已辨識：Linux · x86_64",
+      "dl.device.unsupported": "僅支援 macOS、Windows 與 Linux 桌面裝置",
+      "dl.device.unsupportedArchitecture": "此裝置架構尚未提供安裝檔",
+      "dl.device.unknown": "請從下方選擇你的平台",
+      "dl.recommended": "適合此裝置",
       "dl.other": "其他安裝格式（.msi／.deb／.rpm）與歷史版本見",
       "dl.note": "想從原始碼建置：",
       "footer.tagline": "夕空下的開發工作台",
@@ -897,6 +932,13 @@
       "f3.tag": "log query",
       "dl.title": "Pick your platform and get started.",
       "dl.lede": "Every build is produced by GitHub Actions and published on GitHub Releases — the source is open.",
+      "dl.device.macos": "Detected: macOS · Universal",
+      "dl.device.windows": "Detected: Windows · x64",
+      "dl.device.linux": "Detected: Linux · x86_64",
+      "dl.device.unsupported": "Available for macOS, Windows and Linux desktop devices",
+      "dl.device.unsupportedArchitecture": "No installer is available for this device architecture yet",
+      "dl.device.unknown": "Choose your platform below",
+      "dl.recommended": "Recommended",
       "dl.other": "Other installer formats (.msi / .deb / .rpm) and past versions live on",
       "dl.note": "Build from source: ",
       "footer.tagline": "a dev workbench under the evening sky",
@@ -966,6 +1008,10 @@
     if (reduced) { v.removeAttribute('autoplay'); v.pause(); }
     vio.observe(v);
   });
+</script>
+<script type="module">
+  import { initDownloadExperience } from "./downloads.js";
+  void initDownloadExperience(navigator, document);
 </script>
 </body>
 </html>
