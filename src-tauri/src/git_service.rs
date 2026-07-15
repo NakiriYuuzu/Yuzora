@@ -99,7 +99,7 @@ pub fn run_git(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::process_kill::configure_new_group(&mut cmd);
+    crate::process_kill::configure_background_process(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("git spawn failed: {e}"))?;
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
