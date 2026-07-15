@@ -25,8 +25,8 @@ export function dropDocument(path: string) {
 // tab hits the cache under the new key instead of the (now-gone) old one.
 // `liveContent`, when given, snapshots the live editor buffer — which holds
 // newer text than the registry until the pane unmounts — so unsaved edits
-// survive the remount. Generations are deliberately left untouched: the
-// EditorArea remount is already forced by the path portion of its key changing.
+// survive the remount. Move the generation with the cached entry so metadata
+// hydration can distinguish an ordinary rename remount from a later disk reload.
 export function renameDocument(oldPath: string, newPath: string, liveContent?: string) {
     const entry = registry.get(oldPath)
     if (!entry) return
@@ -38,6 +38,11 @@ export function renameDocument(oldPath: string, newPath: string, liveContent?: s
         }
     }
     registry.set(newPath, entry)
+    const generation = generations.get(oldPath)
+    if (generation !== undefined) {
+        generations.delete(oldPath)
+        generations.set(newPath, generation)
+    }
 }
 
 export function updateBuffer(path: string, content: string, generation: number) {

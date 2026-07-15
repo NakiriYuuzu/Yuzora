@@ -42,6 +42,25 @@ test("renameDocument 帶 liveContent 時把未存檔內容一起帶到新 key（
     if (moved.result.kind === "full") expect(moved.result.content).toBe("unsaved-edit")
 })
 
+test("renameDocument 把 generation 一起移到新 path，後續 reload 仍能前進", async () => {
+    let calls = 0
+    mockIPC((cmd) => {
+        if (cmd !== "open_file") return undefined
+        calls++
+        return { kind: "full", content: `disk-${calls}`, size: 6, lineEnding: "lf" }
+    })
+    await getDocument("/w/gen-old.ts")
+    await reloadDocument("/w/gen-old.ts")
+    const movedGeneration = documentGeneration("/w/gen-old.ts")
+
+    renameDocument("/w/gen-old.ts", "/w/gen-new.ts")
+
+    expect(documentGeneration("/w/gen-old.ts")).toBe(0)
+    expect(documentGeneration("/w/gen-new.ts")).toBe(movedGeneration)
+    await reloadDocument("/w/gen-new.ts")
+    expect(documentGeneration("/w/gen-new.ts")).toBe(movedGeneration + 1)
+})
+
 test("renameDocument 對未開啟的 path 為 no-op（不會憑空建立新 key）", async () => {
     let calls = 0
     mockIPC((cmd) => {

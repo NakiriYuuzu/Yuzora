@@ -25,7 +25,7 @@ beforeEach(() => {
     vi.mocked(ensureClient).mockResolvedValue(managed as never)
     vi.mocked(requestDocumentSymbols).mockResolvedValue([])
     vi.mocked(requestWorkspaceSymbols).mockResolvedValue([])
-    vi.mocked(getDocument).mockResolvedValue({ result: { kind: "full", content: "", size: 0 } })
+    vi.mocked(getDocument).mockResolvedValue({ result: { kind: "full", content: "", size: 0, lineEnding: "lf" } })
     useWorkspaceStore.setState({
         workspacePath: "/ws",
         groups: [{ tabs: [], activePath: "/ws/a.ts" }],

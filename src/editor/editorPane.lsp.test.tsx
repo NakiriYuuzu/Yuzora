@@ -4,10 +4,13 @@ import type { EditorView } from "@codemirror/view"
 
 import { useWorkspaceStore } from "../state/workspaceStore"
 
+const initialWorkspaceState = useWorkspaceStore.getState()
+
 // Spy on the view registry so we can grab the live view and assert timing.
 const registerView = vi.fn()
 const unregisterView = vi.fn()
 const updateViewMetadata = vi.fn()
+const showActionError = vi.fn(async (_action: string, _error: unknown) => undefined)
 vi.mock("./viewRegistry", () => ({
     registerView: (path: string, view: EditorView, metadata: unknown) => registerView(path, view, metadata),
     unregisterView: (path: string, view?: EditorView) => unregisterView(path, view),
@@ -18,7 +21,7 @@ vi.mock("./viewRegistry", () => ({
 }))
 
 const getDocument = vi.fn(async (_path: string) => ({
-    result: { kind: "full", content: "const x = 1\n", size: 12 }
+    result: { kind: "full", content: "const x = 1\n", size: 12, lineEnding: "lf" }
 }))
 vi.mock("./documentRegistry", () => ({
     getDocument: (path: string) => getDocument(path),
@@ -29,6 +32,9 @@ vi.mock("./documentRegistry", () => ({
 const saveFile = vi.fn(async (_path: string, _content: string) => 0)
 vi.mock("../lib/ipc", () => ({
     saveFile: (path: string, content: string) => saveFile(path, content)
+}))
+vi.mock("../lib/actionFeedback", () => ({
+    showActionError: (action: string, error: unknown) => showActionError(action, error)
 }))
 
 vi.mock("@/features/logs/userAction", () => ({
@@ -133,14 +139,17 @@ beforeEach(() => {
         grade === "full" ? { managed, extensions: [] } : null
     )
     clientRequest.mockResolvedValue([])
-    getDocument.mockResolvedValue({ result: { kind: "full", content: "const x = 1\n", size: 12 } })
+    getDocument.mockResolvedValue({
+        result: { kind: "full", content: "const x = 1\n", size: 12, lineEnding: "lf" }
+    })
+    useWorkspaceStore.setState(initialWorkspaceState, true)
     useWorkspaceStore.setState({ workspacePath: "/w", pendingReveal: null })
 })
 
 afterEach(() => {
     cleanup()
     vi.clearAllMocks()
-    useWorkspaceStore.setState({ pendingReveal: null, workspacePath: null })
+    useWorkspaceStore.setState(initialWorkspaceState, true)
 })
 
 describe("EditorPane LSP integration", () => {
@@ -182,14 +191,26 @@ describe("EditorPane LSP integration", () => {
 
     it("passes the very-long-line grade so lspExtensionsForFile refuses the server", async () => {
         getDocument.mockResolvedValue({
-            result: { kind: "full", content: "x".repeat(10_001) + "\n", size: 10_002 }
+            result: {
+                kind: "full",
+                content: "x".repeat(10_001) + "\n",
+                size: 10_002,
+                lineEnding: "lf"
+            }
         })
         render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalledWith(PATH, "veryLongLine"))
     })
 
     it("passes the limited grade so lspExtensionsForFile refuses the server", async () => {
-        getDocument.mockResolvedValue({ result: { kind: "limited", content: "const x = 1\n", size: 12 } })
+        getDocument.mockResolvedValue({
+            result: {
+                kind: "limited",
+                content: "const x = 1\n",
+                size: 12,
+                lineEnding: "lf"
+            }
+        })
         render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalledWith(PATH, "limited"))
     })
@@ -290,6 +311,45 @@ describe("EditorPane LSP integration", () => {
         await waitFor(() => expect(saveFile).toHaveBeenCalled())
         expect(view.state.doc.toString()).toBe("const x = 1;\n")
         expect(saveFile).toHaveBeenCalledWith(PATH, "const x = 1;\n")
+    })
+
+    it("serializes editor content back to the detected CRLF convention", async () => {
+        getDocument.mockResolvedValue({
+            result: {
+                kind: "full",
+                content: "const x = 1\r\n",
+                size: 13,
+                lineEnding: "crlf"
+            }
+        })
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
+        await flushMount()
+        const view = registerView.mock.calls[0][1] as EditorView
+
+        pressSave(view)
+
+        await waitFor(() => expect(saveFile).toHaveBeenCalledWith(PATH, "const x = 1\r\n"))
+    })
+
+    it("blocks a Mixed document before I/O and reports a localized action error", async () => {
+        getDocument.mockResolvedValue({
+            result: {
+                kind: "full",
+                content: "const x = 1\r\nnext\n",
+                size: 18,
+                lineEnding: "mixed"
+            }
+        })
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalled())
+        await flushMount()
+        const view = registerView.mock.calls[0][1] as EditorView
+
+        pressSave(view)
+
+        await waitFor(() => expect(showActionError).toHaveBeenCalledTimes(1))
+        expect(saveFile).not.toHaveBeenCalled()
     })
 
     it("saves the un-formatted text when a malformed server returns an inverted range, rather than dropping the save (R2-2)", async () => {

@@ -5,11 +5,17 @@ import type { EditorView } from "@codemirror/view"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useEditorSettingsStore } from "../state/editorSettingsStore"
 import { useContextMenuStore } from "../state/contextMenuStore"
+import type { OpenFileResult } from "../lib/types"
 
 // Spy on the view registry so we can assert the exact (path, view) call args.
 const registerView = vi.fn()
 const unregisterView = vi.fn()
 const updateViewMetadata = vi.fn()
+const getDocument = vi.fn(async (): Promise<{ result: OpenFileResult }> => ({
+    result: { kind: "full", content: "one\ntwo\nthree", size: 13, lineEnding: "lf" }
+}))
+const documentGeneration = vi.fn(() => 0)
+const saveFile = vi.fn(async () => 0)
 vi.mock("./viewRegistry", () => ({
     registerView: (path: string, view: EditorView, metadata: unknown) => registerView(path, view, metadata),
     unregisterView: (path: string, view?: EditorView) => unregisterView(path, view),
@@ -20,15 +26,13 @@ vi.mock("./viewRegistry", () => ({
 }))
 
 vi.mock("./documentRegistry", () => ({
-    getDocument: vi.fn(async () => ({
-        result: { kind: "full", content: "one\ntwo\nthree", size: 13 }
-    })),
+    getDocument: () => getDocument(),
     updateBuffer: vi.fn(),
-    documentGeneration: vi.fn(() => 0)
+    documentGeneration: () => documentGeneration()
 }))
 
 vi.mock("../lib/ipc", () => ({
-    saveFile: vi.fn(async () => 0)
+    saveFile: () => saveFile()
 }))
 
 vi.mock("@/features/logs/userAction", () => ({
@@ -46,12 +50,173 @@ const PATH = "/w/a.ts"
 afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+    getDocument.mockResolvedValue({
+        result: { kind: "full", content: "one\ntwo\nthree", size: 13, lineEnding: "lf" }
+    })
+    documentGeneration.mockReturnValue(0)
     useWorkspaceStore.setState({ pendingReveal: null })
     useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useEditorSettingsStore.setState({ fontSize: 13, minimap: false })
 })
 
 describe("EditorPane", () => {
+    it("hydrates the editable tab line ending without marking it dirty", async () => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: PATH,
+                tabs: [{ path: PATH, name: "a.ts", dirty: false, externallyModified: false }]
+            }]
+        })
+
+        render(<EditorPane path={PATH} groupIndex={0} />)
+
+        await waitFor(() =>
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: "lf",
+                dirty: false
+            })
+        )
+    })
+
+    it("preserves an explicit target across an ordinary pane remount", async () => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: PATH,
+                tabs: [{ path: PATH, name: "a.ts", dirty: false, externallyModified: false }]
+            }]
+        })
+
+        const first = render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() =>
+            expect(useWorkspaceStore.getState().getLineEnding(PATH)).toBe("lf")
+        )
+        act(() => useWorkspaceStore.getState().setLineEnding(PATH, "crlf"))
+        first.unmount()
+
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() => expect(registerView).toHaveBeenCalled())
+
+        expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+            lineEnding: "crlf",
+            lineEndingGeneration: 0,
+            dirty: true
+        })
+    })
+
+    it("replaces the target when a successful disk reload advances generation", async () => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: PATH,
+                tabs: [{
+                    path: PATH,
+                    name: "a.ts",
+                    dirty: true,
+                    externallyModified: true,
+                    lineEnding: "crlf",
+                    lineEndingGeneration: 0
+                }]
+            }]
+        })
+        getDocument.mockResolvedValue({
+            result: { kind: "full", content: "disk\n", size: 5, lineEnding: "lf" }
+        })
+        documentGeneration.mockReturnValue(1)
+
+        render(<EditorPane path={PATH} groupIndex={0} />)
+
+        await waitFor(() =>
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: "lf",
+                lineEndingGeneration: 1
+            })
+        )
+    })
+
+    it.each([
+        ["binary", { kind: "binary", size: 8 }],
+        ["tooLarge", { kind: "tooLarge", size: 20_000_000 }],
+        [
+            "nonUtf8Readonly",
+            { kind: "nonUtf8Readonly", content: "legacy", encoding: "windows-1252", size: 6 }
+        ]
+    ] as const)("successful reload to %s clears stale editable metadata", async (_kind, result) => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: PATH,
+                tabs: [{
+                    path: PATH,
+                    name: "a.ts",
+                    dirty: false,
+                    externallyModified: false,
+                    lineEnding: "lf",
+                    lineEndingGeneration: 0
+                }]
+            }]
+        })
+        getDocument.mockResolvedValue({ result })
+        documentGeneration.mockReturnValue(1)
+
+        render(<EditorPane path={PATH} groupIndex={0} />)
+
+        await waitFor(() =>
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: undefined,
+                lineEndingGeneration: 1
+            })
+        )
+    })
+
+    it("readonly reload keeps Mod-S from calling saveFile after metadata is cleared", async () => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: PATH,
+                tabs: [{
+                    path: PATH,
+                    name: "a.ts",
+                    dirty: false,
+                    externallyModified: false,
+                    lineEnding: "lf",
+                    lineEndingGeneration: 0
+                }]
+            }]
+        })
+        getDocument.mockResolvedValue({
+            result: {
+                kind: "nonUtf8Readonly",
+                content: "legacy",
+                encoding: "windows-1252",
+                size: 6
+            }
+        })
+        documentGeneration.mockReturnValue(1)
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() => expect(registerView).toHaveBeenCalled())
+        const view = registerView.mock.calls[0][1] as EditorView
+
+        view.contentDOM.dispatchEvent(
+            new KeyboardEvent("keydown", {
+                key: "s",
+                code: "KeyS",
+                ctrlKey: true,
+                bubbles: true,
+                cancelable: true
+            })
+        )
+        await act(async () => Promise.resolve())
+
+        expect(saveFile).not.toHaveBeenCalled()
+    })
+
     it("right-click focuses and targets the clicked pane group", async () => {
         useWorkspaceStore.setState({
             workspacePath: "/w",

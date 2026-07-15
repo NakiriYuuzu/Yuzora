@@ -9,9 +9,11 @@ import {
     type Stream
 } from "@agentclientprotocol/sdk"
 import { getDocument, documentGeneration, updateBuffer } from "../editor/documentRegistry"
+import { normalizeDocumentLineEndings, serializeDocumentLineEndings } from "../editor/lineEndings"
 import { getView } from "../editor/viewRegistry"
 import { saveFile } from "../lib/ipc"
 import { recentlySaved } from "../lib/saveSuppress"
+import { useWorkspaceStore } from "../state/workspaceStore"
 import type { BlockEntry, TranscriptEntry } from "./acpTypes"
 
 const TERMINAL_OUTPUT_BYTE_LIMIT = 1_048_576
@@ -479,18 +481,29 @@ export function createAcpClientRuntime(deps: AcpClientRuntimeDeps = {}): AcpClie
             },
             async writeTextFile(params) {
                 const view = getView(params.path)
-                recentlySaved.mark(params.path)
+                const normalizedContent = normalizeDocumentLineEndings(params.content)
+                let writableContent = params.content
                 if (view) {
+                    const lineEnding = useWorkspaceStore.getState().getLineEnding(params.path)
+                    if (!lineEnding) {
+                        throw new Error("Line-ending metadata is unavailable for the open document")
+                    }
+                    const serialized = serializeDocumentLineEndings(normalizedContent, lineEnding)
+                    if (serialized.kind === "blocked") {
+                        throw new Error("Mixed line endings require an explicit LF or CRLF selection")
+                    }
+                    writableContent = serialized.content
                     view.dispatch({
                         changes: {
                             from: 0,
                             to: view.state.doc.length,
-                            insert: params.content
+                            insert: normalizedContent
                         }
                     })
-                    updateBuffer(params.path, params.content, documentGeneration(params.path))
+                    updateBuffer(params.path, normalizedContent, documentGeneration(params.path))
                 }
-                await saveFile(params.path, params.content)
+                recentlySaved.mark(params.path)
+                await saveFile(params.path, writableContent)
                 return {}
             },
             async readTextFile(params) {

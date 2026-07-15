@@ -13,10 +13,11 @@ import {
 } from "./acpConnection"
 import type { BlockEntry, TranscriptEntry } from "./acpTypes"
 import { createFakeAcpAgentBridge, PINNED_AGENT_COMMAND_FIXTURES } from "./fakeAcpAgent"
-import { dropDocument, getDocument } from "../editor/documentRegistry"
+import { documentGeneration, dropDocument, getDocument } from "../editor/documentRegistry"
 import { registerView, unregisterView } from "../editor/viewRegistry"
 import { handleExternalChange } from "../lib/externalChange"
 import { recentlySaved } from "../lib/saveSuppress"
+import { useWorkspaceStore } from "../state/workspaceStore"
 
 const registeredViews: { path: string; view: EditorView }[] = []
 
@@ -25,6 +26,7 @@ afterEach(() => {
         unregisterView(path, view)
         view.destroy()
         dropDocument(path)
+        useWorkspaceStore.getState().closeTabsByPath([path])
     }
     vi.restoreAllMocks()
     clearMocks()
@@ -609,12 +611,14 @@ describe("fs callbacks", () => {
         const calls: unknown[] = []
         mockIPC((cmd, payload) => {
             calls.push([cmd, payload])
-            if (cmd === "open_file") return { kind: "full", content: "old", size: 3 }
+            if (cmd === "open_file") return { kind: "full", content: "old", size: 3, lineEnding: "lf" }
             if (cmd === "save_file") return 123
             return undefined
         })
         await getDocument(path)
         const view = mountView(path, "old")
+        useWorkspaceStore.getState().openTab(path)
+        useWorkspaceStore.getState().hydrateLineEnding(path, "lf", documentGeneration(path))
         const runtime = createAcpClientRuntime()
 
         await runtime.client.writeTextFile({
@@ -633,6 +637,55 @@ describe("fs callbacks", () => {
             [{ path, name: "open.ts", dirty: false, externallyModified: false }],
             new Set(mark.mock.calls.map(([markedPath]) => markedPath))
         )).toEqual({ reload: [], markModified: [] })
+    })
+
+    it("preserves CRLF on ACP writes to an open normalized document", async () => {
+        const path = "/w/open-crlf.ts"
+        const calls: unknown[] = []
+        mockIPC((cmd, payload) => {
+            calls.push([cmd, payload])
+            if (cmd === "save_file") return 123
+            return undefined
+        })
+        const view = mountView(path, "old\nline\n")
+        const store = useWorkspaceStore.getState()
+        store.openTab(path)
+        store.hydrateLineEnding(path, "crlf", documentGeneration(path))
+        const runtime = createAcpClientRuntime()
+
+        await runtime.client.writeTextFile({
+            sessionId: "s1",
+            path,
+            content: "new\nline\n"
+        })
+
+        expect(view.state.doc.toString()).toBe("new\nline\n")
+        expect(calls).toContainEqual(["save_file", { path, content: "new\r\nline\r\n" }])
+    })
+
+    it("blocks ACP writes to an open Mixed document before buffer mutation or I/O", async () => {
+        const path = "/w/open-mixed.ts"
+        const calls: unknown[] = []
+        const mark = vi.spyOn(recentlySaved, "mark")
+        mockIPC((cmd, payload) => {
+            calls.push([cmd, payload])
+            return undefined
+        })
+        const view = mountView(path, "old\nline\n")
+        const store = useWorkspaceStore.getState()
+        store.openTab(path)
+        store.hydrateLineEnding(path, "mixed", documentGeneration(path))
+        const runtime = createAcpClientRuntime()
+
+        await expect(runtime.client.writeTextFile({
+            sessionId: "s1",
+            path,
+            content: "new\nline\n"
+        })).rejects.toThrow("Mixed")
+
+        expect(view.state.doc.toString()).toBe("old\nline\n")
+        expect(mark).not.toHaveBeenCalled()
+        expect(calls.some((entry) => Array.isArray(entry) && entry[0] === "save_file")).toBe(false)
     })
 
     it("writes unopened files through save_file IPC and marks the path recently saved", async () => {

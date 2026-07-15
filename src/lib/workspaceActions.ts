@@ -38,7 +38,12 @@ async function openWorkspaceAtPathWithOutcome(path: string): Promise<boolean> {
             saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
         })
         if (decision === "cancel") return false
-        if (decision === "save") await Promise.all(dirtyPaths.map((p) => saveDirtyTab(p)))
+        if (decision === "save") {
+            for (const dirtyPath of dirtyPaths) {
+                const outcome = await saveDirtyTab(dirtyPath)
+                if (outcome.kind !== "saved") return false
+            }
+        }
     }
 
     const canonical = await openWorkspace(path)

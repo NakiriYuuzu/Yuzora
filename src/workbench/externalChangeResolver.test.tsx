@@ -9,9 +9,15 @@ import { useUiStore } from "../state/uiStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { ExternalChangeResolver, maybeInterceptSave } from "./ExternalChangeResolver"
 
+const showActionError = vi.fn(async (_action: string, _error: unknown) => undefined)
+
 vi.mock("../lib/ipc", () => ({
     openFile: vi.fn(),
     saveFile: vi.fn(async () => 0)
+}))
+
+vi.mock("../lib/actionFeedback", () => ({
+    showActionError: (action: string, error: unknown) => showActionError(action, error)
 }))
 
 vi.mock("@/features/logs/userAction", () => ({
@@ -29,14 +35,18 @@ vi.mock("@tauri-apps/api/event", () => ({
 }))
 
 const PATH = "/w/a.ts"
+const initialWorkspaceState = useWorkspaceStore.getState()
+const initialUiState = useUiStore.getState()
 
-function mountMainView(doc: string): EditorView {
+function mountMainView(doc: string, path = PATH): EditorView {
     const view = new EditorView({ state: EditorState.create({ doc }), parent: document.body })
-    registerView(PATH, view)
+    registerView(path, view)
     return view
 }
 
 beforeEach(() => {
+    useWorkspaceStore.setState(initialWorkspaceState, true)
+    useUiStore.setState(initialUiState, true)
     vi.clearAllMocks()
     capturedFsListener = () => {}
 })
@@ -55,10 +65,25 @@ describe("maybeInterceptSave", () => {
 })
 
 describe("ExternalChangeResolver", () => {
+    it("shows an extended Windows path without the raw prefix while loading the raw target", async () => {
+        const rawPath = String.raw`\\?\C:\Work\中文 workspace\a.ts`
+        const displayPath = String.raw`C:\Work\中文 workspace\a.ts`
+        mountMainView("mine", rawPath)
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useUiStore.getState().openResolver(rawPath)
+
+        render(<ExternalChangeResolver />)
+
+        expect(await screen.findByText(displayPath)).toBeInTheDocument()
+        expect(screen.queryByText(rawPath)).not.toBeInTheDocument()
+        expect(ipc.openFile).toHaveBeenCalledWith(rawPath)
+    })
+
     it("take-disk then resolve-and-save writes disk text and clears state", async () => {
         const main = mountMainView("mine")
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
         useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().hydrateLineEnding(PATH, "lf", documentGeneration(PATH))
         useWorkspaceStore.getState().markExternallyModified(PATH, true)
         useUiStore.getState().openResolver(PATH)
         render(<ExternalChangeResolver />)
@@ -73,7 +98,7 @@ describe("ExternalChangeResolver", () => {
 
     it("cancel keeps buffer and flags untouched", async () => {
         const main = mountMainView("mine")
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
         useWorkspaceStore.getState().openTab(PATH)
         useWorkspaceStore.getState().markExternallyModified(PATH, true)
         useUiStore.getState().openResolver(PATH)
@@ -101,8 +126,9 @@ describe("ExternalChangeResolver", () => {
     // ref captured at open time.
     it("keep-all then take-disk still resolves to disk text", async () => {
         const main = mountMainView("mine")
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
         useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().hydrateLineEnding(PATH, "lf", documentGeneration(PATH))
         useWorkspaceStore.getState().markExternallyModified(PATH, true)
         useUiStore.getState().openResolver(PATH)
         render(<ExternalChangeResolver />)
@@ -118,8 +144,9 @@ describe("ExternalChangeResolver", () => {
     // disk -> 全部保留我的 -> resolve-and-save writes the buffer verbatim.
     it("keep-all then resolve-and-save writes buffer text", async () => {
         const main = mountMainView("mine")
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
         useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().hydrateLineEnding(PATH, "lf", documentGeneration(PATH))
         useWorkspaceStore.getState().markExternallyModified(PATH, true)
         useUiStore.getState().openResolver(PATH)
         render(<ExternalChangeResolver />)
@@ -131,14 +158,90 @@ describe("ExternalChangeResolver", () => {
         expect(tab?.externallyModified).toBe(false)
     })
 
+    it("preserves the tab CRLF target when resolving and saving a normalized merge buffer", async () => {
+        const main = mountMainView("mine\nline\n")
+        vi.mocked(ipc.openFile).mockResolvedValue({
+            kind: "full",
+            content: "disk\r\nline\r\n",
+            size: 12,
+            lineEnding: "crlf"
+        })
+        const store = useWorkspaceStore.getState()
+        store.openTab(PATH)
+        store.hydrateLineEnding(PATH, "crlf", documentGeneration(PATH))
+        store.markDirty(PATH, true)
+        store.markExternallyModified(PATH, true)
+        useUiStore.getState().openResolver(PATH)
+        render(<ExternalChangeResolver />)
+
+        fireEvent.click(await screen.findByRole("button", { name: "全部保留我的" }))
+        fireEvent.click(screen.getByRole("button", { name: "解決並存檔" }))
+
+        await waitFor(() => expect(ipc.saveFile).toHaveBeenCalledWith(PATH, "mine\r\nline\r\n"))
+        expect(main.state.doc.toString()).toBe("mine\nline\n")
+        expect(useUiStore.getState().resolverPath).toBe(null)
+    })
+
+    it("blocks Mixed resolver saves before I/O and keeps dirty external state", async () => {
+        mountMainView("mine\nline\n")
+        vi.mocked(ipc.openFile).mockResolvedValue({
+            kind: "full",
+            content: "disk\r\nline\n",
+            size: 11,
+            lineEnding: "mixed"
+        })
+        const store = useWorkspaceStore.getState()
+        store.openTab(PATH)
+        store.hydrateLineEnding(PATH, "mixed", documentGeneration(PATH))
+        store.markDirty(PATH, true)
+        store.markExternallyModified(PATH, true)
+        useUiStore.getState().openResolver(PATH)
+        render(<ExternalChangeResolver />)
+
+        fireEvent.click(await screen.findByRole("button", { name: "全部保留我的" }))
+        fireEvent.click(screen.getByRole("button", { name: "解決並存檔" }))
+
+        await waitFor(() => expect(showActionError).toHaveBeenCalledTimes(1))
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+        expect(useUiStore.getState().resolverPath).toBe(PATH)
+        const tab = useWorkspaceStore.getState().groups[0].tabs.find((candidate) => candidate.path === PATH)
+        expect(tab?.dirty).toBe(true)
+        expect(tab?.externallyModified).toBe(true)
+    })
+
+    it("allows a Mixed resolver save after explicit CRLF selection", async () => {
+        mountMainView("mine\nline\n")
+        vi.mocked(ipc.openFile).mockResolvedValue({
+            kind: "full",
+            content: "disk\r\nline\n",
+            size: 11,
+            lineEnding: "mixed"
+        })
+        const store = useWorkspaceStore.getState()
+        store.openTab(PATH)
+        store.hydrateLineEnding(PATH, "mixed", documentGeneration(PATH))
+        store.setLineEnding(PATH, "crlf")
+        store.markExternallyModified(PATH, true)
+        useUiStore.getState().openResolver(PATH)
+        render(<ExternalChangeResolver />)
+
+        fireEvent.click(await screen.findByRole("button", { name: "全部保留我的" }))
+        fireEvent.click(screen.getByRole("button", { name: "解決並存檔" }))
+
+        await waitFor(() => expect(ipc.saveFile).toHaveBeenCalledWith(PATH, "mine\r\nline\r\n"))
+        expect(useUiStore.getState().resolverPath).toBe(null)
+        expect(showActionError).not.toHaveBeenCalled()
+    })
+
     // Finding #2: saveFile failure must not silently swallow errors. The
     // resolver stays open (resolverPath unchanged), externallyModified stays
     // true, and an error message appears so the user can retry or cancel.
     it("save failure keeps resolver open and shows an error", async () => {
         mountMainView("mine")
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
         vi.mocked(ipc.saveFile).mockRejectedValue(new Error("disk full"))
         useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().hydrateLineEnding(PATH, "lf", documentGeneration(PATH))
         useWorkspaceStore.getState().markExternallyModified(PATH, true)
         useUiStore.getState().openResolver(PATH)
         render(<ExternalChangeResolver />)
@@ -205,13 +308,13 @@ describe("ExternalChangeResolver", () => {
     // event for this path surfaces the "磁碟版已再次變更" hint.
     it("fs:external-change for this path shows the re-changed hint", async () => {
         mountMainView("mine")
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
         useWorkspaceStore.getState().openTab(PATH)
         useWorkspaceStore.getState().markExternallyModified(PATH, true)
         useUiStore.getState().openResolver(PATH)
         render(<ExternalChangeResolver />)
         await screen.findByRole("button", { name: "解決並存檔" })
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk2", size: 5 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk2", size: 5, lineEnding: "lf" })
         capturedFsListener({ payload: [PATH] })
         expect(await screen.findByText("磁碟版已再次變更")).toBeInTheDocument()
     })

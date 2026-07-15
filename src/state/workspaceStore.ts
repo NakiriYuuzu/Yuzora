@@ -1,4 +1,6 @@
 import { create } from "zustand"
+import type { DocumentLineEnding } from "../lib/types"
+import { workspacePathBasename } from "../lib/paths"
 
 // Singleton preview tab: a reserved sentinel path keeps preview inside the
 // path-keyed tab model without ever being mistaken for a real file. Only one
@@ -11,6 +13,8 @@ export interface TabInfo {
     name: string
     dirty: boolean
     externallyModified: boolean
+    lineEnding?: DocumentLineEnding
+    lineEndingGeneration?: number
     // Absent ⇒ a normal file tab. "preview" marks the singleton preview tab so
     // EditorArea/TabBar can special-case it without touching file-path logic.
     kind?: "file" | "preview"
@@ -56,6 +60,13 @@ interface WorkspaceState {
     setActiveTab: (groupIndex: number, path: string) => void
     setActiveGroup: (groupIndex: number) => void
     markDirty: (path: string, dirty: boolean) => void
+    hydrateLineEnding: (
+        path: string,
+        lineEnding: DocumentLineEnding | undefined,
+        generation: number
+    ) => void
+    setLineEnding: (path: string, lineEnding: Exclude<DocumentLineEnding, "mixed">) => void
+    getLineEnding: (path: string) => DocumentLineEnding | undefined
     markExternallyModified: (path: string, modified: boolean) => void
     splitRight: () => void
     closeSplit: () => void
@@ -66,10 +77,24 @@ interface WorkspaceState {
 const emptyGroup = (): EditorGroup => ({ tabs: [], activePath: null })
 
 function mergeConservativeTab(primary: TabInfo, other: TabInfo): TabInfo {
+    const otherHasNewerLineEnding =
+        other.lineEndingGeneration !== undefined &&
+        (primary.lineEndingGeneration === undefined ||
+            other.lineEndingGeneration > primary.lineEndingGeneration)
+    const lineEnding = otherHasNewerLineEnding
+        ? other.lineEnding
+        : primary.lineEndingGeneration !== undefined
+          ? primary.lineEnding
+          : primary.lineEnding ?? other.lineEnding
+    const lineEndingGeneration = otherHasNewerLineEnding
+        ? other.lineEndingGeneration
+        : primary.lineEndingGeneration ?? other.lineEndingGeneration
     return {
         ...primary,
         dirty: primary.dirty || other.dirty,
         externallyModified: primary.externallyModified || other.externallyModified,
+        lineEnding,
+        lineEndingGeneration,
         kind: primary.kind ?? other.kind
     }
 }
@@ -119,7 +144,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             if (!g.tabs.some((t) => t.path === path)) {
                 g.tabs.push({
                     path,
-                    name: path.split("/").pop() ?? path,
+                    name: workspacePathBasename(path),
                     dirty: false,
                     externallyModified: false
                 })
@@ -149,7 +174,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             }
             tab ??= {
                 path,
-                name: path.split("/").pop() ?? path,
+                name: workspacePathBasename(path),
                 dirty: false,
                 externallyModified: false
             }
@@ -254,7 +279,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                         const np = remap(t.path)
                         if (np === null) return t
                         changed = true
-                        return { ...t, path: np, name: np.split("/").pop() ?? np }
+                        return { ...t, path: np, name: workspacePathBasename(np) }
                     })
                     const activePath =
                         g.activePath !== null ? remap(g.activePath) ?? g.activePath : null
@@ -329,6 +354,36 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 tabs: g.tabs.map((t) => (t.path === path ? { ...t, dirty } : t))
             }))
         })),
+    hydrateLineEnding: (path, lineEnding, generation) =>
+        set((s) => ({
+            groups: s.groups.map((g) => ({
+                ...g,
+                tabs: g.tabs.map((t) =>
+                    t.path === path &&
+                    (t.lineEndingGeneration === undefined || generation > t.lineEndingGeneration)
+                        ? { ...t, lineEnding, lineEndingGeneration: generation }
+                        : t
+                )
+            }))
+        })),
+    setLineEnding: (path, lineEnding) =>
+        set((s) => ({
+            groups: s.groups.map((g) => ({
+                ...g,
+                tabs: g.tabs.map((t) =>
+                    t.path === path && t.lineEnding !== lineEnding
+                        ? { ...t, lineEnding, dirty: true }
+                        : t
+                )
+            }))
+        })),
+    getLineEnding: (path) => {
+        for (const group of get().groups) {
+            const tab = group.tabs.find((candidate) => candidate.path === path)
+            if (tab?.lineEnding) return tab.lineEnding
+        }
+        return undefined
+    },
     markExternallyModified: (path, modified) =>
         set((s) => ({
             groups: s.groups.map((g) => ({

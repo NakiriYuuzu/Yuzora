@@ -29,7 +29,7 @@ import { saveDirtyTab } from "../editor/saveDocument"
 beforeEach(() => {
     requestUnsavedDecision.mockReset()
     nativeConfirm.mockReset()
-    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue(undefined)
+    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue({ kind: "saved" })
 })
 
 afterEach(() => {
@@ -110,6 +110,36 @@ test("dirty tab 關閉走新 modal：save → 先 saveDirtyTab 再關", async ()
         useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")
     ).toBe(false)
     expect(nativeConfirm).not.toHaveBeenCalled()
+})
+
+test("dirty Mixed tab 儲存被 block 時不關閉 tab", async () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    requestUnsavedDecision.mockResolvedValue("save")
+    vi.mocked(saveDirtyTab).mockResolvedValue({ kind: "blocked", reason: "mixed" })
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+
+    fireEvent.click(screen.getByLabelText("Close b.ts"))
+
+    await waitFor(() => expect(saveDirtyTab).toHaveBeenCalledWith("/w/b.ts"))
+    expect(
+        useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")
+    ).toBe(true)
+})
+
+test("dirty tab 儲存 I/O failed 時不關閉 tab", async () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    requestUnsavedDecision.mockResolvedValue("save")
+    vi.mocked(saveDirtyTab).mockResolvedValue({ kind: "failed" })
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+
+    fireEvent.click(screen.getByLabelText("Close b.ts"))
+
+    await waitFor(() => expect(saveDirtyTab).toHaveBeenCalledWith("/w/b.ts"))
+    expect(
+        useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === "/w/b.ts")
+    ).toBe(true)
 })
 
 test("externallyModified tab 點 ⟳ 主動開啟解決器（spec 入口 b）", () => {
@@ -332,6 +362,24 @@ test("右鍵 tab 開啟 tab 選單並帶 path 與 groupIndex", () => {
         kind: "tab",
         workspacePath: "/w",
         path: "/w/b.ts",
+        groupIndex: 0
+    })
+})
+
+test("tab path tooltip 移除 extended prefix，但 context target 保留 raw path", () => {
+    const rawPath = "\\\\?\\C:\\Work\\專案 空間\\a.ts"
+    useWorkspaceStore.getState().setWorkspace("\\\\?\\C:\\Work\\專案 空間")
+    useWorkspaceStore.getState().openTab(rawPath)
+    render(<TabBar groupIndex={0} />)
+
+    const tabName = screen.getByRole("button", { name: "a.ts" })
+    expect(tabName).toHaveAttribute("title", "C:\\Work\\專案 空間\\a.ts")
+
+    fireEvent.contextMenu(tabName)
+    expect(useContextMenuStore.getState().request).toMatchObject({
+        kind: "tab",
+        workspacePath: "\\\\?\\C:\\Work\\專案 空間",
+        path: rawPath,
         groupIndex: 0
     })
 })

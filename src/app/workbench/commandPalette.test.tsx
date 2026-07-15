@@ -36,7 +36,7 @@ beforeEach(() => {
     vi.mocked(ensureClient).mockResolvedValue(managed as never)
     vi.mocked(requestDocumentSymbols).mockResolvedValue([])
     vi.mocked(requestWorkspaceSymbols).mockResolvedValue([])
-    vi.mocked(getDocument).mockResolvedValue({ result: { kind: "full", content: "", size: 0 } })
+    vi.mocked(getDocument).mockResolvedValue({ result: { kind: "full", content: "", size: 0, lineEnding: "lf" } })
     useWorkspaceStore.setState({
         workspacePath: "/ws",
         groups: [{ tabs: [], activePath: "/ws/a.ts" }],
@@ -155,5 +155,34 @@ it("a plain query renders the workspace search group and reveals a hit on select
     fireEvent.click(screen.getByText("needle"))
     expect(useWorkspaceStore.getState().pendingReveal).toEqual({ path: "/ws/src/a.ts", line: 3 })
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    vi.useRealTimers()
+})
+
+it("workspace search sanitizes an extended Windows child path but reveals the raw target", async () => {
+    vi.useFakeTimers()
+    const workspace = String.raw`\\?\C:\Work\中文 workspace`
+    const rawPath = String.raw`\\?\C:\Work\中文 workspace\src\a.ts`
+    useWorkspaceStore.setState({ workspacePath: workspace })
+    searchWorkspace.mockImplementation((_r, _q, _cs, cb) => {
+        cb({ type: "match", path: rawPath, matches: [{ line: 3, col: 2, preview: "a needle b" }] })
+        cb({ type: "done", truncated: false, fileCount: 1 })
+        return Promise.resolve()
+    })
+
+    render(<Harness />)
+    fireEvent.change(screen.getByPlaceholderText("Search files, run a command…"), {
+        target: { value: "needle" }
+    })
+    await act(async () => {
+        await vi.advanceTimersByTimeAsync(250)
+    })
+
+    expect(searchWorkspace).toHaveBeenCalledWith(workspace, "needle", false, expect.any(Function))
+    expect(screen.getByText("a.ts")).toBeInTheDocument()
+    expect(screen.getByText(String.raw`src\a.ts`)).toBeInTheDocument()
+    expect(screen.queryByText(rawPath)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("needle"))
+    expect(useWorkspaceStore.getState().pendingReveal).toEqual({ path: rawPath, line: 3 })
     vi.useRealTimers()
 })

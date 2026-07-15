@@ -5,10 +5,13 @@ import { EditorView } from "@codemirror/view"
 import { acceptChunk, getChunks, unifiedMergeView } from "@codemirror/merge"
 
 import { openFile, saveFile } from "../lib/ipc"
+import { workspacePathForDisplay } from "../lib/paths"
 import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
 import { getView } from "../editor/viewRegistry"
 import { reloadDocument } from "../editor/documentRegistry"
+import { serializeDocumentLineEndings } from "../editor/lineEndings"
+import { showMixedLineEndingSaveError } from "../editor/saveDocument"
 import { useUiStore } from "../state/uiStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import {
@@ -175,8 +178,18 @@ function ResolverBody({ path }: { path: string }) {
     function commitMerged(merged: string) {
         const mainView = getView(path)
         setSaveError(false)
+        const lineEnding = useWorkspaceStore.getState().getLineEnding(path)
+        if (!lineEnding) {
+            setSaveError(true)
+            return
+        }
+        const serialized = serializeDocumentLineEndings(merged, lineEnding)
+        if (serialized.kind === "blocked") {
+            void showMixedLineEndingSaveError()
+            return
+        }
         recentlySaved.mark(path)
-        void saveFile(path, merged)
+        void saveFile(path, serialized.content)
             .then(() => {
                 if (mainView) {
                     mainView.dispatch({
@@ -259,7 +272,7 @@ function ResolverBody({ path }: { path: string }) {
                             ? "磁碟上的檔案已不存在，無法比對差異。"
                             : degraded === "binary"
                               ? "磁碟版無法比對差異（二進位或過大）。"
-                              : path}
+                              : workspacePathForDisplay(path)}
                     </DialogDescription>
                 </DialogHeader>
 

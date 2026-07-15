@@ -52,7 +52,7 @@ describe("ExternalChangeBridge reload settling", () => {
     })
 
     it("clears the external flag and bumps the generation after a successful reload", async () => {
-        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "x", size: 1 })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "x", size: 1, lineEnding: "lf" })
         const gen0 = documentGeneration(PATH)
         render(<ExternalChangeBridge />)
         capturedFsListener({ payload: [PATH] })

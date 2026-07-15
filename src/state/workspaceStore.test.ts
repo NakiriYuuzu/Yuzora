@@ -36,6 +36,105 @@ describe("workspaceStore", () => {
         })
     })
 
+    describe("path presentation", () => {
+        it("keeps an extended Windows path as tab identity but stores only its basename", () => {
+            const rawPath = String.raw`\\?\C:\Work\中文 workspace\a.ts`
+
+            useWorkspaceStore.getState().openTab(rawPath)
+
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                path: rawPath,
+                name: "a.ts"
+            })
+        })
+
+        it("keeps the renamed Windows tab basename sanitized", () => {
+            const fromPath = String.raw`\\?\C:\Work\中文 workspace\a.ts`
+            const toPath = String.raw`\\?\C:\Work\中文 workspace\b.ts`
+            useWorkspaceStore.getState().openTab(fromPath)
+
+            useWorkspaceStore.getState().updateTabPath(fromPath, toPath)
+
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                path: toPath,
+                name: "b.ts"
+            })
+        })
+    })
+
+    describe("line ending metadata", () => {
+        it("hydrates detected metadata without dirtying the tab", () => {
+            useWorkspaceStore.getState().openTab("/w/a.ts")
+
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "crlf", 0)
+
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: "crlf",
+                dirty: false
+            })
+        })
+
+        it("marks an explicit conversion dirty only when the value changes", () => {
+            useWorkspaceStore.getState().openTab("/w/a.ts")
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "lf", 0)
+
+            useWorkspaceStore.getState().setLineEnding("/w/a.ts", "lf")
+            expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(false)
+
+            useWorkspaceStore.getState().setLineEnding("/w/a.ts", "crlf")
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: "crlf",
+                dirty: true
+            })
+        })
+
+        it("preserves metadata across split moves and rename", () => {
+            useWorkspaceStore.getState().openTab("/w/a.ts")
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "crlf", 0)
+
+            useWorkspaceStore.getState().splitAndMoveRight(0, "/w/a.ts")
+            useWorkspaceStore.getState().updateTabPath("/w/a.ts", "/w/b.ts")
+
+            expect(useWorkspaceStore.getState().getLineEnding("/w/b.ts")).toBe("crlf")
+            expect(useWorkspaceStore.getState().groups[1].tabs[0]).toMatchObject({
+                path: "/w/b.ts",
+                lineEnding: "crlf"
+            })
+        })
+
+        it("preserves an explicit target on same-generation remount and replaces it after reload", () => {
+            useWorkspaceStore.getState().openTab("/w/a.ts")
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "mixed", 0)
+            useWorkspaceStore.getState().setLineEnding("/w/a.ts", "crlf")
+
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "mixed", 0)
+            expect(useWorkspaceStore.getState().getLineEnding("/w/a.ts")).toBe("crlf")
+
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "lf", 1)
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: "lf",
+                lineEndingGeneration: 1
+            })
+        })
+
+        it("clears editable metadata only for a newer non-editable generation", () => {
+            useWorkspaceStore.getState().openTab("/w/a.ts")
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "lf", 0)
+
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", undefined, 1)
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: undefined,
+                lineEndingGeneration: 1
+            })
+
+            useWorkspaceStore.getState().hydrateLineEnding("/w/a.ts", "lf", 1)
+            expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+                lineEnding: undefined,
+                lineEndingGeneration: 1
+            })
+        })
+    })
+
     describe("right split atomic operations", () => {
         it("openInRightSplit uses the request snapshot, creates destination, and focuses it", () => {
             useWorkspaceStore.getState().openTab("/w/a.ts")

@@ -13,6 +13,14 @@ import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
 import { fileGradeOf, languageFromPath, lspLanguageOf } from "@/lib/types";
 import type { FileGrade, LspDisplayState } from "@/lib/types";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // Right-segment LSP labels/colours (design reference §6). State names stay in
 // English (technical terms); colours reuse the shared status tokens.
@@ -55,6 +63,11 @@ export function StatusBar() {
   const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex);
   const rawActivePath = groups[activeGroupIndex]?.activePath ?? null;
   const activePath = rawActivePath === PREVIEW_TAB_PATH ? null : rawActivePath;
+  const activeTab = activePath
+    ? groups[activeGroupIndex]?.tabs.find((tab) => tab.path === activePath)
+    : undefined;
+  const lineEnding = activeTab?.kind === "preview" ? undefined : activeTab?.lineEnding;
+  const setLineEnding = useWorkspaceStore((s) => s.setLineEnding);
   const devServer = usePreviewStore((s) =>
     workspacePath ? s.devServerForWorkspace(workspacePath) : null
   );
@@ -142,6 +155,9 @@ export function StatusBar() {
   const perf = usePerfStore((s) => s.snapshot);
   const perfText = perf
     ? `${Math.round(perf.cpuPercent)}% · ${Math.round(perf.memoryBytes / 1_000_000)}MB`
+    : null;
+  const lineEndingLabel = lineEnding
+    ? t(`statusBar.lineEnding.${lineEnding}`)
     : null;
 
   const branchButton = (
@@ -261,6 +277,39 @@ export function StatusBar() {
         >
           {perfText}
         </span>
+      )}
+
+      {activePath && lineEnding && lineEndingLabel && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={t("statusBar.lineEnding.ariaLabel", { value: lineEndingLabel })}
+              className="flex h-[22px] items-center gap-1 rounded-[6px] px-[6px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)]"
+            >
+              {lineEndingLabel}
+              <ChevronUp className="size-[11px] text-(--ink-3)" aria-hidden="true" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="top" align="end" className="w-40">
+            <DropdownMenuLabel>{t("statusBar.lineEnding.menuLabel")}</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={lineEnding === "mixed" ? "" : lineEnding}
+              onValueChange={(value) => {
+                if (value === "lf" || value === "crlf") {
+                  setLineEnding(activePath, value);
+                }
+              }}
+            >
+              <DropdownMenuRadioItem value="lf">
+                {t("statusBar.lineEnding.useLf")}
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="crlf">
+                {t("statusBar.lineEnding.useCrlf")}
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
 
       {!activePath ? (

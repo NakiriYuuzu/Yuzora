@@ -219,7 +219,18 @@
     "ariaLabel": "狀態列",
     "noFileOpen": "未開啟檔案",
     "devPort": "Dev {{port}}",
-    "perfTitle": "主程序 CPU · 記憶體"
+    "perfTitle": "主程序 CPU · 記憶體",
+    "saveAction": "儲存檔案",
+    "mixedSaveError": "此檔案包含混合換行格式，請先從狀態列選擇 LF 或 CRLF 再儲存。",
+    "lineEnding": {
+      "ariaLabel": "換行格式：{{value}}",
+      "menuLabel": "換行格式",
+      "lf": "LF",
+      "crlf": "CRLF",
+      "mixed": "混合",
+      "useLf": "使用 LF",
+      "useCrlf": "使用 CRLF"
+    }
   },
   "settings": {
     "sections": {

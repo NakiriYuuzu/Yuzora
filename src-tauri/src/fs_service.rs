@@ -58,9 +58,17 @@ pub fn list_dir(path: String) -> Result<Vec<FileNode>, String> {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum OpenFileResult {
     #[serde(rename_all = "camelCase")]
-    Full { content: String, size: u64 },
+    Full {
+        content: String,
+        size: u64,
+        line_ending: LineEnding,
+    },
     #[serde(rename_all = "camelCase")]
-    Limited { content: String, size: u64 },
+    Limited {
+        content: String,
+        size: u64,
+        line_ending: LineEnding,
+    },
     #[serde(rename_all = "camelCase")]
     TooLarge { size: u64 },
     #[serde(rename_all = "camelCase")]
@@ -71,6 +79,49 @@ pub enum OpenFileResult {
         encoding: String,
         size: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LineEnding {
+    Lf,
+    #[serde(rename = "crlf")]
+    CrLf,
+    Mixed,
+}
+
+fn detect_line_ending(content: &str) -> LineEnding {
+    let bytes = content.as_bytes();
+    let mut has_lf = false;
+    let mut has_crlf = false;
+    let mut has_bare_cr = false;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
+                has_crlf = true;
+                index += 2;
+            }
+            b'\r' => {
+                has_bare_cr = true;
+                index += 1;
+            }
+            b'\n' => {
+                has_lf = true;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+
+    if has_bare_cr || (has_lf && has_crlf) {
+        LineEnding::Mixed
+    } else if has_crlf {
+        LineEnding::CrLf
+    } else {
+        LineEnding::Lf
+    }
 }
 
 pub fn classify_and_read(path: &Path) -> Result<OpenFileResult, String> {
@@ -106,10 +157,19 @@ pub fn classify_and_read(path: &Path) -> Result<OpenFileResult, String> {
             let bytes = read_rest(&mut file, prefix, size)?;
             match String::from_utf8(bytes) {
                 Ok(content) => {
+                    let line_ending = detect_line_ending(&content);
                     if size > FULL_FEATURE_MAX_BYTES {
-                        Ok(OpenFileResult::Limited { content, size })
+                        Ok(OpenFileResult::Limited {
+                            content,
+                            size,
+                            line_ending,
+                        })
                     } else {
-                        Ok(OpenFileResult::Full { content, size })
+                        Ok(OpenFileResult::Full {
+                            content,
+                            size,
+                            line_ending,
+                        })
                     }
                 }
                 Err(err) => {
@@ -365,22 +425,89 @@ mod tests {
     }
 
     #[test]
+    fn detects_editable_line_endings_without_changing_content() {
+        for (name, bytes, expected) in [
+            ("lf.txt", b"one\ntwo\n".as_slice(), LineEnding::Lf),
+            ("crlf.txt", b"one\r\ntwo\r\n".as_slice(), LineEnding::CrLf),
+            ("mixed.txt", b"one\r\ntwo\n".as_slice(), LineEnding::Mixed),
+            ("bare-cr.txt", b"one\rtwo".as_slice(), LineEnding::Mixed),
+            ("empty.txt", b"".as_slice(), LineEnding::Lf),
+            ("no-newline.txt", b"one".as_slice(), LineEnding::Lf),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            match classify_and_read(&path).unwrap() {
+                OpenFileResult::Full {
+                    content,
+                    line_ending,
+                    ..
+                } => {
+                    assert_eq!(content.as_bytes(), bytes);
+                    assert_eq!(line_ending, expected);
+                }
+                other => panic!("expected Full, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn editable_line_ending_contract_serializes_as_typescript_shape() {
+        let value = serde_json::to_value(OpenFileResult::Full {
+            content: "one\r\ntwo\r\n".into(),
+            size: 10,
+            line_ending: LineEnding::CrLf,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "full",
+                "content": "one\r\ntwo\r\n",
+                "size": 10,
+                "lineEnding": "crlf"
+            })
+        );
+    }
+
+    #[test]
+    fn utf8_bom_content_and_line_ending_are_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("utf8-bom.txt");
+        let bytes = b"\xef\xbb\xbfone\r\ntwo\r\n";
+        fs::write(&path, bytes).unwrap();
+        match classify_and_read(&path).unwrap() {
+            OpenFileResult::Full {
+                content,
+                line_ending,
+                ..
+            } => {
+                assert_eq!(content.as_bytes(), bytes);
+                assert_eq!(line_ending, LineEnding::CrLf);
+            }
+            other => panic!("expected Full, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn open_file_limited_between_thresholds() {
         use std::io::Write;
         let tmp = tempfile::tempdir().unwrap();
         let mid = tmp.path().join("mid.txt");
         // 實寫文字內容（稀疏檔的 NUL 會被 sniff 判成 Binary，不可用 set_len）
-        let block = "abcdefghij".repeat(103);
+        let block = "abcdefghij\r\n".repeat(86);
         let mut f = std::io::BufWriter::new(fs::File::create(&mid).unwrap());
         let times = crate::file_content::FULL_FEATURE_MAX_BYTES / 1024 + 2;
         for _ in 0..times {
             f.write_all(block.as_bytes()).unwrap();
         }
         drop(f);
-        assert!(matches!(
-            classify_and_read(&mid).unwrap(),
-            OpenFileResult::Limited { .. }
-        ));
+        match classify_and_read(&mid).unwrap() {
+            OpenFileResult::Limited { line_ending, .. } => {
+                assert_eq!(line_ending, LineEnding::CrLf)
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
     }
 
     #[test]

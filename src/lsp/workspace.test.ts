@@ -82,7 +82,7 @@ it("dedups concurrent requestFile for the same uri: one openFile, one didOpen, o
 })
 
 it("seeds the background file version via nextFileVersion so didOpen=v0 and the first didChange=v1 (W2 monotonic)", async () => {
-    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11 })
+    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11, lineEnding: "lf" })
     const client = fakeClient()
     const ws = new YuzoraWorkspace(client as never, "typescript")
     const uri = pathToUri("/ws/bg.ts")
@@ -97,7 +97,7 @@ it("seeds the background file version via nextFileVersion so didOpen=v0 and the 
 })
 
 it("background writeback also notifies the server via a full-document didChange (W6 resync)", async () => {
-    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11 })
+    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11, lineEnding: "lf" })
     const client = fakeClient()
     const ws = new YuzoraWorkspace(client as never, "typescript")
     const uri = pathToUri("/ws/bg.ts")
@@ -113,7 +113,7 @@ it("background writeback also notifies the server via a full-document didChange 
 })
 
 it("background writeback attaches a .catch to saveFile so a disk failure can't go unhandled, and does not throw (R6-1)", async () => {
-    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11 })
+    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11, lineEnding: "lf" })
     // Deterministic check (like R4-6): the fire-and-forget saveFile result must
     // have .catch() invoked on it. A real rejected promise would surface as an
     // unhandled rejection only on a flaky later tick, so observe the handler.
@@ -198,7 +198,7 @@ it("does NOT background-load a full file whose content has a very long line (R3-
 })
 
 it("rename on an unopened file applies the edit to the background doc and writes it back to disk, marking recentlySaved first", async () => {
-    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11 })
+    openFile.mockResolvedValue({ kind: "full", content: "let foo = 1", size: 11, lineEnding: "lf" })
     const markSpy = vi.spyOn(recentlySaved, "mark")
     const client = fakeClient()
     const ws = new YuzoraWorkspace(client as never, "typescript")
@@ -212,6 +212,48 @@ it("rename on an unopened file applies the edit to the background doc and writes
     expect(saveFile).toHaveBeenCalledWith("/ws/bg.ts", "let bar = 1")
     // mark must happen before the disk write
     expect(markSpy.mock.invocationCallOrder[0]).toBeLessThan(saveFile.mock.invocationCallOrder[0])
+})
+
+it("normalizes a background CRLF document for LSP and restores CRLF at writeback", async () => {
+    openFile.mockResolvedValue({
+        kind: "full",
+        content: "one\r\ntwo\r\n",
+        size: 10,
+        lineEnding: "crlf"
+    })
+    const client = fakeClient()
+    const ws = new YuzoraWorkspace(client as never, "typescript")
+    const uri = pathToUri("/ws/crlf.ts")
+
+    const file = await ws.requestFile(uri)
+    expect(file?.doc.toString()).toBe("one\ntwo\n")
+    ws.updateFile(uri, { changes: [{ from: 4, to: 7, insert: "TWO" }] })
+
+    expect(saveFile).toHaveBeenCalledWith("/ws/crlf.ts", "one\r\nTWO\r\n")
+    const change = client.notification.mock.calls.find((call) => call[0] === "textDocument/didChange")
+    expect(change?.[1].contentChanges[0].text).toBe("one\nTWO\n")
+})
+
+it("blocks background Mixed writeback before resident mutation, notification, suppression, or I/O", async () => {
+    openFile.mockResolvedValue({
+        kind: "full",
+        content: "one\r\ntwo\n",
+        size: 9,
+        lineEnding: "mixed"
+    })
+    const markSpy = vi.spyOn(recentlySaved, "mark")
+    const client = fakeClient()
+    const ws = new YuzoraWorkspace(client as never, "typescript")
+    const uri = pathToUri("/ws/mixed.ts")
+
+    const file = await ws.requestFile(uri)
+    expect(file?.doc.toString()).toBe("one\ntwo\n")
+    ws.updateFile(uri, { changes: [{ from: 4, to: 7, insert: "TWO" }] })
+
+    expect(file?.doc.toString()).toBe("one\ntwo\n")
+    expect(client.notification).not.toHaveBeenCalled()
+    expect(markSpy).not.toHaveBeenCalled()
+    expect(saveFile).not.toHaveBeenCalled()
 })
 
 it("does NOT write back to disk when the target file is open in a tab: it dispatches into that view (single source of truth)", async () => {

@@ -56,7 +56,7 @@ beforeEach(() => {
     localStorage.clear()
     vi.mocked(openWorkspace).mockReset().mockResolvedValue("/canonical")
     vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
-    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue(undefined)
+    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue({ kind: "saved" })
     openPicker.mockReset().mockResolvedValue(null)
     useConfirmDialogStore.setState({ pending: null })
     useRecentWorkspacesStore.setState({ list: [] })
@@ -95,6 +95,32 @@ test("有 dirty 分頁：save → 先存檔再開新工作區", async () => {
     await p
     expect(saveDirtyTab).toHaveBeenCalledWith("/old/a.ts")
     expect(openWorkspace).toHaveBeenCalledWith("/new")
+})
+
+test("有 dirty Mixed 分頁：save 被 block → 不切換工作區", async () => {
+    dirtyWorkspace()
+    vi.mocked(saveDirtyTab).mockResolvedValue({ kind: "blocked", reason: "mixed" })
+    const pending = openWorkspaceAtPath("/new")
+    useConfirmDialogStore.getState().respond("save")
+
+    await pending
+
+    expect(saveDirtyTab).toHaveBeenCalledWith("/old/a.ts")
+    expect(openWorkspace).not.toHaveBeenCalled()
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+})
+
+test("有 dirty 分頁：save I/O failed → 不切換工作區", async () => {
+    dirtyWorkspace()
+    vi.mocked(saveDirtyTab).mockResolvedValue({ kind: "failed" })
+    const pending = openWorkspaceAtPath("/new")
+    useConfirmDialogStore.getState().respond("save")
+
+    await pending
+
+    expect(saveDirtyTab).toHaveBeenCalledWith("/old/a.ts")
+    expect(openWorkspace).not.toHaveBeenCalled()
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
 })
 
 test("無 dirty 分頁：不彈 modal、直接開新工作區", async () => {

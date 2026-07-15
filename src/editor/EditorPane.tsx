@@ -23,6 +23,8 @@ import {
 } from "../lsp/lspManager"
 import type { ManagedClient } from "../lsp/lspManager"
 import { contextMenuHandler } from "../state/contextMenuStore"
+import { serializeDocumentLineEndings } from "./lineEndings"
+import { showDocumentSaveError, showMixedLineEndingSaveError } from "./saveDocument"
 import "./editor.css"
 
 // Format-on-save is opt-in and default OFF (A7). The switch is persisted under
@@ -66,6 +68,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
     const [result, setResult] = useState<OpenFileResult | null>(null)
     const markDirty = useWorkspaceStore((s) => s.markDirty)
     const markExternallyModified = useWorkspaceStore((s) => s.markExternallyModified)
+    const hydrateLineEnding = useWorkspaceStore((s) => s.hydrateLineEnding)
     const pendingReveal = useWorkspaceStore((s) => s.pendingReveal)
     const consumeReveal = useWorkspaceStore((s) => s.consumeReveal)
     const fontSize = useEditorSettingsStore((s) => s.fontSize)
@@ -113,6 +116,11 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
             if (disposed) return
             setResult(entry.result)
             const r = entry.result
+            hydrateLineEnding(
+                path,
+                r.kind === "full" || r.kind === "limited" ? r.lineEnding : undefined,
+                generation
+            )
             if (r.kind === "tooLarge" || r.kind === "binary") return
             const content = r.content
             const flags = {
@@ -135,16 +143,30 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
                     : Promise.resolve()
                 void formatted
                     .then(() => {
+                        const lineEnding =
+                            useWorkspaceStore.getState().getLineEnding(path) ??
+                            (r.kind === "full" || r.kind === "limited"
+                                ? r.lineEnding
+                                : undefined)
+                        if (!lineEnding) return
+                        const serialized = serializeDocumentLineEndings(
+                            view.state.doc.toString(),
+                            lineEnding
+                        )
+                        if (serialized.kind === "blocked") {
+                            void showMixedLineEndingSaveError()
+                            return
+                        }
                         recentlySaved.mark(path)
-                        void saveFile(path, view.state.doc.toString())
+                        void saveFile(path, serialized.content)
                             .then(() => {
                                 markDirty(path, false)
                                 markExternallyModified(path, false)
                                 void logUserAction("save_file", `save ${path}`)
                             })
                             // Save failed: dirty stays true (markDirty(false) never runs)
-                            // so the tab still shows unsaved. Full error UX is out of scope.
-                            .catch((e) => console.error("save failed", e))
+                            // and the shared localized action-error surface reports it.
+                            .catch((error) => void showDocumentSaveError(error))
                     })
                     .catch(() => {})
             }
@@ -231,7 +253,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
             viewRef.current = null
             managedRef.current = null
         }
-    }, [path, groupIndex, markDirty, markExternallyModified])
+    }, [path, groupIndex, markDirty, markExternallyModified, hydrateLineEnding])
 
     // Jump to a requested line once the pane for its file is mounted. The view
     // is created asynchronously above, so a request that lands before creation

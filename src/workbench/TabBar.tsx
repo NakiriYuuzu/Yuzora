@@ -7,6 +7,7 @@ import { dropDocument } from "../editor/documentRegistry"
 import { saveDirtyTab } from "../editor/saveDocument"
 import { logUserAction } from "@/features/logs/userAction"
 import { FileIcon } from "../lib/fileIcons"
+import { workspacePathForDisplay } from "../lib/paths"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { isMarkdownPath, useMarkdownPreviewStore } from "./MarkdownPreview"
 import { isSvgPath, useSvgPreviewStore } from "./SvgSplitView"
@@ -42,7 +43,10 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                 saveLabel: t("unsavedDialog.save")
             })
             if (decision === "cancel") return
-            if (decision === "save") await saveDirtyTab(tab.path)
+            if (decision === "save") {
+                const outcome = await saveDirtyTab(tab.path)
+                if (outcome.kind !== "saved") return
+            }
         }
         closeTab(groupIndex, tab.path)
         dropDocument(tab.path)
@@ -82,6 +86,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                         )}
                         <button
                             type="button"
+                            title={workspacePathForDisplay(tab.path)}
                             className={
                                 "tab-name max-w-[140px] truncate text-left text-[12.5px] whitespace-nowrap " +
                                 (active ? "font-semibold" : "font-medium")

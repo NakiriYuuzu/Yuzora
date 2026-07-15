@@ -115,12 +115,15 @@ test("openFile 傳遞 path 並回傳分級結果", async () => {
     mockIPC((cmd, args) => {
         if (cmd === "open_file") {
             expect((args as { path: string }).path).toBe("/w/a.ts")
-            return { kind: "full", content: "let a = 1", size: 9 }
+            return { kind: "full", content: "let a = 1", size: 9, lineEnding: "crlf" }
         }
     })
     const r = await openFile("/w/a.ts")
     expect(r.kind).toBe("full")
-    if (r.kind === "full") expect(r.content).toContain("a = 1")
+    if (r.kind === "full") {
+        expect(r.content).toContain("a = 1")
+        expect(r.lineEnding).toBe("crlf")
+    }
 })
 
 test("saveFile 回傳 mtime", async () => {
@@ -725,13 +728,18 @@ it("agentStderrTail forwards id and returns the stderr tail", async () => {
 })
 
 it("fileGradeOf returns veryLongLine for full content with an over-long line", () => {
-    const result: OpenFileResult = { kind: "full", content: "", size: 0 }
+    const result: OpenFileResult = { kind: "full", content: "", size: 0, lineEnding: "lf" }
     const content = "x".repeat(MAX_LINE_LEN_SYNTAX_OFF + 1)
     expect(fileGradeOf(result, content)).toBe("veryLongLine")
 })
 
 it("fileGradeOf returns full for normal full content", () => {
-    const result: OpenFileResult = { kind: "full", content: "let a = 1\nlet b = 2", size: 19 }
+    const result: OpenFileResult = {
+        kind: "full",
+        content: "let a = 1\nlet b = 2",
+        size: 19,
+        lineEnding: "lf"
+    }
     expect(fileGradeOf(result, "let a = 1\nlet b = 2")).toBe("full")
 })
 
@@ -739,13 +747,15 @@ it("fileGradeOf falls back to result.content when content arg omitted", () => {
     const result: OpenFileResult = {
         kind: "full",
         content: "y".repeat(MAX_LINE_LEN_SYNTAX_OFF + 1),
-        size: MAX_LINE_LEN_SYNTAX_OFF + 1
+        size: MAX_LINE_LEN_SYNTAX_OFF + 1,
+        lineEnding: "lf"
     }
     expect(fileGradeOf(result)).toBe("veryLongLine")
 })
 
 it("fileGradeOf returns the underlying kind for non-full results", () => {
-    expect(fileGradeOf({ kind: "limited", content: "x", size: 1 })).toBe("limited")
+    expect(fileGradeOf({ kind: "limited", content: "x", size: 1, lineEnding: "lf" }))
+        .toBe("limited")
     expect(fileGradeOf({ kind: "tooLarge", size: 99 })).toBe("tooLarge")
     expect(fileGradeOf({ kind: "binary", size: 99 })).toBe("binary")
     expect(fileGradeOf({ kind: "nonUtf8Readonly", content: "x", encoding: "latin1", size: 1 }))

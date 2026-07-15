@@ -15,9 +15,11 @@ export interface WorkspacePathIndexResult {
     truncated: boolean
 }
 
+export type DocumentLineEnding = "lf" | "crlf" | "mixed"
+
 export type OpenFileResult =
-    | { kind: "full"; content: string; size: number }
-    | { kind: "limited"; content: string; size: number }
+    | { kind: "full"; content: string; size: number; lineEnding: DocumentLineEnding }
+    | { kind: "limited"; content: string; size: number; lineEnding: DocumentLineEnding }
     | { kind: "tooLarge"; size: number }
     | { kind: "binary"; size: number }
     | { kind: "nonUtf8Readonly"; content: string; encoding: string; size: number }

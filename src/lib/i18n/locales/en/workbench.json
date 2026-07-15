@@ -219,7 +219,18 @@
     "ariaLabel": "Status bar",
     "noFileOpen": "No file open",
     "devPort": "Dev {{port}}",
-    "perfTitle": "Main process CPU · memory"
+    "perfTitle": "Main process CPU · memory",
+    "saveAction": "Save file",
+    "mixedSaveError": "Choose LF or CRLF in the status bar before saving this mixed line-ending file.",
+    "lineEnding": {
+      "ariaLabel": "Line ending: {{value}}",
+      "menuLabel": "Line ending",
+      "lf": "LF",
+      "crlf": "CRLF",
+      "mixed": "Mixed",
+      "useLf": "Use LF",
+      "useCrlf": "Use CRLF"
+    }
   },
   "settings": {
     "sections": {

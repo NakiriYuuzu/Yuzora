@@ -7,7 +7,8 @@ import type { LSPClient, WorkspaceFile } from "@codemirror/lsp-client"
 import { openFile, saveFile } from "../lib/ipc"
 import { recentlySaved } from "../lib/saveSuppress"
 import { fileGradeOf } from "../lib/types"
-import type { LspLanguage } from "../lib/types"
+import type { DocumentLineEnding, LspLanguage } from "../lib/types"
+import { normalizeDocumentLineEndings, serializeDocumentLineEndings } from "../editor/lineEndings"
 import { getView } from "../editor/viewRegistry"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
@@ -68,7 +69,8 @@ class YuzoraFile implements WorkspaceFile {
         public uri: string,
         public languageId: string,
         public version: number,
-        public doc: Text
+        public doc: Text,
+        public lineEnding?: DocumentLineEnding
     ) {}
 
     getView(): EditorView | null {
@@ -178,7 +180,14 @@ export class YuzoraWorkspace extends Workspace {
         // Seed the version through nextFileVersion so didOpen is v0 and the first
         // didChange is v1 — monotonic even after the file is promoted to an
         // editor (W2). Hard-coding 0 desynced the version counter.
-        const file = new YuzoraFile(uri, this.language, this.nextFileVersion(uri), Text.of(result.content.split("\n")))
+        const normalizedContent = normalizeDocumentLineEndings(result.content)
+        const file = new YuzoraFile(
+            uri,
+            this.language,
+            this.nextFileVersion(uri),
+            Text.of(normalizedContent.split("\n")),
+            result.lineEnding
+        )
         this.files.push(file)
         this.bgOrder.push(uri)
         this.client.didOpen(file)
@@ -230,7 +239,7 @@ export class YuzoraWorkspace extends Workspace {
     // doesn't flag it as an external change.
     updateFile(uri: string, update: TransactionSpec): void {
         const file = this.getFile(uri)
-        if (!file) return
+        if (!(file instanceof YuzoraFile)) return
 
         const view = file.getView()
         if (view) {
@@ -242,6 +251,9 @@ export class YuzoraWorkspace extends Workspace {
         const changes = ChangeSet.of(update.changes, file.doc.length)
         const newDoc = changes.apply(file.doc)
         const content = newDoc.toString()
+        if (!file.lineEnding) return
+        const serialized = serializeDocumentLineEndings(content, file.lineEnding)
+        if (serialized.kind === "blocked") return
         file.doc = newDoc
         file.version = this.nextFileVersion(uri)
 
@@ -260,7 +272,7 @@ export class YuzoraWorkspace extends Workspace {
         // Best-effort writeback: a disk failure (read-only / deleted / disk full)
         // must not become an unhandled rejection (R6-1, same as the other
         // fire-and-forget IPCs).
-        void saveFile(path, content).catch(() => {})
+        void saveFile(path, serialized.content).catch(() => {})
     }
 
     // User navigation into a (possibly unopened) file: open a real tab. The view

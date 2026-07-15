@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { StatusBar } from "@/app/workbench/StatusBar";
 import { useContextMenuStore } from "@/state/contextMenuStore";
@@ -10,7 +10,7 @@ import { usePreviewStore } from "@/state/previewStore";
 import { usePerfStore } from "@/state/perfStore";
 import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
-import type { GitStatus, LspServerInfo } from "@/lib/types";
+import type { DocumentLineEnding, GitStatus, LspServerInfo } from "@/lib/types";
 
 // StatusBar reads the active file's grade through the documentRegistry cache; the
 // mock lets each test control that grade without an openFile IPC. documentGeneration
@@ -54,13 +54,20 @@ function makeServer(over: Partial<LspServerInfo> = {}): LspServerInfo {
   };
 }
 
-function openPython() {
+function openPython(lineEnding: DocumentLineEnding = "lf") {
   useWorkspaceStore.setState({
     workspacePath: "/w",
     groups: [
       {
         tabs: [
-          { path: "/w/a.py", name: "a.py", dirty: false, externallyModified: false },
+          {
+            path: "/w/a.py",
+            name: "a.py",
+            dirty: false,
+            externallyModified: false,
+            lineEnding,
+            lineEndingGeneration: 0,
+          },
         ],
         activePath: "/w/a.py",
       },
@@ -80,7 +87,7 @@ describe("StatusBar", () => {
     // Replace with the captured snapshot so a spied openSettings never leaks.
     useUiStore.setState(initialUiState, true);
     vi.mocked(getDocument).mockResolvedValue({
-      result: { kind: "full", content: "", size: 0 },
+      result: { kind: "full", content: "", size: 0, lineEnding: "lf" },
     });
     vi.mocked(documentGeneration).mockReturnValue(0);
   });
@@ -207,10 +214,12 @@ describe("StatusBar", () => {
     });
     vi.mocked(documentGeneration).mockReturnValue(1);
     act(() => {
+      useWorkspaceStore.getState().hydrateLineEnding("/w/a.py", undefined, 1);
       useWorkspaceStore.getState().markExternallyModified("/w/a.py", true);
     });
 
     expect(await screen.findByText(/Python · Syntax only/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Line ending:/ })).not.toBeInTheDocument();
   });
 
   it("非 LSP 語言檔顯示 Lang · Syntax only", async () => {
@@ -235,6 +244,140 @@ describe("StatusBar", () => {
     render(<StatusBar />);
 
     expect(screen.getByText(/No file open/)).toBeInTheDocument();
+  });
+
+  it("editable active file 顯示目前換行格式與 radio selection", async () => {
+    openPython("lf");
+    render(<StatusBar />);
+
+    const trigger = screen.getByRole("button", { name: "Line ending: LF" });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+
+    expect(await screen.findByRole("menuitemradio", { name: "Use LF" })).toHaveAttribute(
+      "data-state",
+      "checked",
+    );
+    expect(screen.getByRole("menuitemradio", { name: "Use CRLF" })).toHaveAttribute(
+      "data-state",
+      "unchecked",
+    );
+  });
+
+  it("active group 切換時 selector 跟著該 group 的 active file", () => {
+    useWorkspaceStore.setState({
+      workspacePath: "/w",
+      activeGroupIndex: 0,
+      groups: [
+        {
+          activePath: "/w/left.ts",
+          tabs: [{
+            path: "/w/left.ts",
+            name: "left.ts",
+            dirty: false,
+            externallyModified: false,
+            lineEnding: "lf",
+          }],
+        },
+        {
+          activePath: "/w/right.ts",
+          tabs: [{
+            path: "/w/right.ts",
+            name: "right.ts",
+            dirty: false,
+            externallyModified: false,
+            lineEnding: "crlf",
+          }],
+        },
+      ],
+    });
+    render(<StatusBar />);
+    expect(screen.getByRole("button", { name: "Line ending: LF" })).toBeInTheDocument();
+
+    act(() => useWorkspaceStore.getState().setActiveGroup(1));
+
+    expect(screen.getByRole("button", { name: "Line ending: CRLF" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["lf", "Use CRLF", "crlf"],
+    ["crlf", "Use LF", "lf"],
+    ["mixed", "Use LF", "lf"],
+  ] as const)("從 %s 選擇 %s 會更新 metadata 並標記 dirty", async (from, option, target) => {
+    openPython(from);
+    render(<StatusBar />);
+    const label = from === "mixed" ? "Mixed" : from.toUpperCase();
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: `Line ending: ${label}` }),
+      { button: 0, ctrlKey: false },
+    );
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: option }));
+
+    expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+      lineEnding: target,
+      dirty: true,
+    });
+  });
+
+  it("選擇相同格式為 no-op，不標記 dirty", async () => {
+    openPython("lf");
+    render(<StatusBar />);
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Line ending: LF" }),
+      { button: 0, ctrlKey: false },
+    );
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Use LF" }));
+
+    expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+      lineEnding: "lf",
+      dirty: false,
+    });
+  });
+
+  it("Mixed trigger 沒有 radio selection，且可用鍵盤選擇 CRLF 並把 focus 還給 trigger", async () => {
+    openPython("mixed");
+    render(<StatusBar />);
+    const trigger = screen.getByRole("button", { name: "Line ending: Mixed" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    const crlf = await screen.findByRole("menuitemradio", { name: "Use CRLF" });
+    expect(screen.getByRole("menuitemradio", { name: "Use LF" })).toHaveAttribute(
+      "data-state",
+      "unchecked",
+    );
+    expect(crlf).toHaveAttribute("data-state", "unchecked");
+
+    crlf.focus();
+    fireEvent.keyDown(crlf, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+        lineEnding: "crlf",
+        dirty: true,
+      }),
+    );
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("preview 與沒有 editable metadata 的 readonly/unknown tab 隱藏 selector", () => {
+    useWorkspaceStore.setState({
+      workspacePath: "/w",
+      activeGroupIndex: 0,
+      groups: [{
+        activePath: "/w/legacy.txt",
+        tabs: [{
+          path: "/w/legacy.txt",
+          name: "legacy.txt",
+          dirty: false,
+          externallyModified: false,
+        }],
+      }],
+    });
+    const { rerender } = render(<StatusBar />);
+    expect(screen.queryByRole("button", { name: /Line ending:/ })).not.toBeInTheDocument();
+
+    act(() => useWorkspaceStore.getState().openPreviewTab());
+    rerender(<StatusBar />);
+    expect(screen.queryByRole("button", { name: /Line ending:/ })).not.toBeInTheDocument();
   });
 
   it("dev server running 時在中段顯示 port chip", () => {
