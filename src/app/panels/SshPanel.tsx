@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { listDir } from "@/lib/ipc"
+import { workspacePathForDisplay } from "@/lib/paths"
 import type { FileNode, SftpEntry } from "@/lib/types"
 import { SshTerminalSession } from "@/terminal/SshTerminalSession"
 import {
@@ -570,7 +571,7 @@ function LocalPane({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <PaneHeader title={t("sshPanel.sftpLocalTitle")} path={cwd ?? ""}>
+      <PaneHeader title={t("sshPanel.sftpLocalTitle")} path={workspacePathForDisplay(cwd ?? "")}>
         <IconButton
           label={t("sshPanel.sftpUp")}
           onClick={() => cwd && setCwd(localParent(cwd))}

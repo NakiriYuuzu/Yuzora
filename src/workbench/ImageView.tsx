@@ -5,6 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { openFile } from "@/lib/ipc"
+import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 
 // Binary raster formats the WebView can decode natively. SVG is intentionally
 // absent: it is a text file and opens as an editor with SvgSplitView.
@@ -47,7 +48,7 @@ export function ImageView({ path }: { path: string }) {
     const [loadError, setLoadError] = useState(false)
 
     const src = useMemo(() => convertFileSrc(path), [path])
-    const name = path.split("/").pop() ?? path
+    const name = workspacePathBasename(path)
 
     // File size comes from the existing open_file metadata path (binary kind
     // carries size without reading content). Best-effort: on failure the
@@ -127,7 +128,9 @@ export function ImageView({ path }: { path: string }) {
                 <EmptyState
                     icon={ImageOff}
                     title={t("imageViewer.loadError")}
-                    description={t("imageViewer.loadErrorDescription", { path })}
+                    description={t("imageViewer.loadErrorDescription", {
+                        path: workspacePathForDisplay(path)
+                    })}
                 />
             </div>
         )

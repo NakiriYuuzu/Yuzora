@@ -95,6 +95,40 @@ describe("useRecentWorkspacesStore", () => {
         expect(list()).toEqual(["/a/b"])
     })
 
+    it("dedupes extended and ordinary Windows aliases while retaining the newest raw path", () => {
+        record("C:\\Work\\專案 空間")
+        record("\\\\?\\C:\\Work\\專案 空間")
+
+        expect(list()).toEqual(["\\\\?\\C:\\Work\\專案 空間"])
+        expect(loadRecentWorkspaces()).toEqual(["\\\\?\\C:\\Work\\專案 空間"])
+    })
+
+    it("keeps the existing raw alias in place when MRU promotion is disabled", () => {
+        record("\\\\Server\\Share\\Repo")
+        setMoveOpenedWorkspaceToTop(false)
+
+        record("\\\\?\\UNC\\Server\\Share\\Repo")
+
+        expect(list()).toEqual(["\\\\Server\\Share\\Repo"])
+    })
+
+    it("dedupes drive-root aliases while retaining the newest raw root", () => {
+        record("C:\\")
+        record("\\\\?\\c:\\")
+
+        expect(list()).toEqual(["\\\\?\\c:\\"])
+        expect(loadRecentWorkspaces()).toEqual(["\\\\?\\c:\\"])
+    })
+
+    it("keeps an existing drive-root alias when MRU promotion is disabled", () => {
+        record("C:\\")
+        setMoveOpenedWorkspaceToTop(false)
+
+        record("\\\\?\\c:\\")
+
+        expect(list()).toEqual(["C:\\"])
+    })
+
     it("caps the list at 10 entries, dropping the oldest", () => {
         for (let i = 0; i < 12; i++) record(`/w${i}`)
         expect(list()).toHaveLength(10)
@@ -109,6 +143,38 @@ describe("useRecentWorkspacesStore", () => {
         remove("/a")
         expect(list()).toEqual(["/b"])
         expect(loadRecentWorkspaces()).toEqual(["/b"])
+    })
+
+    it("removes a Windows recent entry by an equivalent extended alias", () => {
+        record("\\\\Server\\Share\\Repo")
+
+        remove("\\\\?\\UNC\\server\\share\\repo")
+
+        expect(list()).toEqual([])
+        expect(loadRecentWorkspaces()).toEqual([])
+    })
+
+    it("removes a drive root by an equivalent extended alias", () => {
+        record("C:\\")
+
+        remove("\\\\?\\c:\\")
+
+        expect(list()).toEqual([])
+        expect(loadRecentWorkspaces()).toEqual([])
+    })
+
+    it("dedupes persisted drive and UNC aliases while preserving the first MRU raw value", () => {
+        localStorage.setItem(RECENT_WORKSPACES_STORAGE_KEY, JSON.stringify([
+            "\\\\?\\C:\\Work\\Repo",
+            "c:/work/repo/",
+            "\\\\Server\\Share\\Repo",
+            "\\\\?\\UNC\\server\\share\\repo\\"
+        ]))
+
+        expect(loadRecentWorkspaces()).toEqual([
+            "\\\\?\\C:\\Work\\Repo",
+            "\\\\Server\\Share\\Repo"
+        ])
     })
 
     it("removing a path not in the list is a no-op", () => {
@@ -139,5 +205,10 @@ describe("normalizeWorkspacePath", () => {
 
     it("dedupes Windows paths that differ only by a trailing backslash", () => {
         expect(normalizeWorkspacePath("C:\\repo\\")).toBe(normalizeWorkspacePath("C:\\repo"))
+    })
+
+    it("preserves ordinary and extended Windows drive roots", () => {
+        expect(normalizeWorkspacePath("C:\\")).toBe("C:\\")
+        expect(normalizeWorkspacePath("\\\\?\\C:\\")).toBe("\\\\?\\C:\\")
     })
 })

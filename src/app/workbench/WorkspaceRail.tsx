@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
+import { canonicalPathKey, workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
 import { selectWorkspaceAgentCounts, useAgentStore } from "@/state/agentStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
@@ -43,7 +44,7 @@ export function WorkspaceRail({
   const { t } = useTranslation("workbench")
   const recents = useRecentWorkspacesStore((s) => s.list)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-  const activePath = workspacePath ? normalizeWorkspacePath(workspacePath) : null
+  const activePathKey = workspacePath ? canonicalPathKey(workspacePath) : null
   const sessions = useAgentStore((s) => s.sessions)
   const agentCounts = useMemo(() => selectWorkspaceAgentCounts(sessions), [sessions])
 
@@ -69,7 +70,7 @@ export function WorkspaceRail({
     } catch {
       // Folder moved/deleted — drop it from the MRU and flag it once.
       useRecentWorkspacesStore.getState().remove(path)
-      showNotice(t("rail.recentNotFound", { name: folderName(path) }))
+      showNotice(t("rail.recentNotFound", { name: workspacePathBasename(path) }))
     }
   }
 
@@ -156,15 +157,15 @@ export function WorkspaceRail({
           </div>
           <div className="flex min-h-0 w-full flex-col items-center gap-[4px] overflow-y-auto pt-[3px]">
             {recents.map((path) => {
-              const active = activePath === path
+              const active = activePathKey === canonicalPathKey(path)
               const counts = agentCounts.get(normalizeWorkspacePath(path))
               return (
                 <div key={path} className="relative">
                   <button
                     type="button"
-                    aria-label={t("rail.openRecentWorkspace", { name: folderName(path) })}
+                    aria-label={t("rail.openRecentWorkspace", { name: workspacePathBasename(path) })}
                     aria-pressed={active}
-                    title={path}
+                    title={workspacePathForDisplay(path)}
                     onClick={() => handleOpenRecent(path)}
                     className={cn(
                       "flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold transition-all duration-[160ms] ease-(--ease-out)",
@@ -173,7 +174,7 @@ export function WorkspaceRail({
                         : "border border-(--line-1) text-(--ink-2) hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
                     )}
                   >
-                    {folderName(path).charAt(0).toUpperCase()}
+                    {workspacePathBasename(path).charAt(0).toUpperCase()}
                   </button>
                   {counts && counts.total > 0 && (
                     <span
@@ -226,12 +227,4 @@ export function WorkspaceRail({
       )}
     </nav>
   )
-}
-
-// path.split("/").pop() would return "" for a normalized ("/a/b" — no
-// trailing slash) path, but never for these MRU entries; filter(Boolean)
-// only guards the theoretical bare "/" case.
-function folderName(path: string): string {
-  const parts = path.split("/").filter(Boolean)
-  return parts.length > 0 ? parts[parts.length - 1] : path
 }

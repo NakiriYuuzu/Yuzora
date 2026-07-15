@@ -8,6 +8,7 @@ import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 import { FilesNavContent } from "@/app/workbench/FilesNavContent"
 import { GitNavContent } from "@/app/workbench/GitNavContent"
 import { SshNavContent } from "@/app/workbench/SshNavContent"
+import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 interface ProjectNavPanelProps {
@@ -26,10 +27,10 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
   const { t } = useTranslation("workbench")
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
-  const folderName = workspacePath?.split("/").filter(Boolean).pop() ?? null
+  const folderName = workspacePath ? workspacePathBasename(workspacePath) : null
   const displayName = folderName ?? "Yuzora"
   const displayPath = workspacePath
-    ? workspacePath.replace(/^\/Users\/[^/]+/, "~")
+    ? workspacePathForDisplay(workspacePath).replace(/^\/Users\/[^/]+/, "~")
     : "~/App/Tauri/yuzora"
   const iconLetter = folderName ? folderName.charAt(0).toUpperCase() : "Y"
 

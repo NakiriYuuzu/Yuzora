@@ -150,6 +150,21 @@ describe("WorkspaceRail RECENT tiles", () => {
     expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/tester/projects/yuzora")
   })
 
+  it("以 safe name/title 顯示 extended UNC，alias active 仍對齊且 open target 保留 raw path", () => {
+    const rawPath = "\\\\?\\UNC\\Server\\Share\\專案 空間"
+    vi.mocked(openWorkspaceAtPath).mockResolvedValue(undefined)
+    useRecentWorkspacesStore.setState({ list: [rawPath] })
+    useWorkspaceStore.setState({ workspacePath: "\\\\server\\share\\專案 空間\\" })
+    renderRail()
+
+    const tile = screen.getByRole("button", { name: "Open 專案 空間" })
+    expect(tile).toHaveAttribute("title", "\\\\Server\\Share\\專案 空間")
+    expect(tile).toHaveAttribute("aria-pressed", "true")
+
+    fireEvent.click(tile)
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith(rawPath)
+  })
+
   it("開啟失敗時把 tile 從最近清單移除並顯示提示", async () => {
     vi.mocked(openWorkspaceAtPath).mockRejectedValue(new Error("gone"))
     useRecentWorkspacesStore.setState({ list: ["/Users/tester/projects/yuzora"] })

@@ -27,4 +27,14 @@ describe("ProjectNavPanel header", () => {
     expect(screen.getByText("~/projects/hanaoka")).toBeInTheDocument()
     expect(screen.getByText("H")).toBeInTheDocument()
   })
+
+  it("presents an extended Windows workspace without exposing its prefix", () => {
+    useWorkspaceStore.setState({ workspacePath: "\\\\?\\C:\\Users\\Yuuzu\\專案 空間" })
+    renderPanel()
+
+    expect(screen.getByText("專案 空間")).toBeInTheDocument()
+    expect(screen.getByText("C:\\Users\\Yuuzu\\專案 空間")).toBeInTheDocument()
+    expect(screen.queryByText(/\\\\\?\\/)).toBeNull()
+    expect(screen.getByText("專")).toBeInTheDocument()
+  })
 })

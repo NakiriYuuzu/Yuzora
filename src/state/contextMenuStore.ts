@@ -14,6 +14,7 @@ import {
     type ContextMenuRunOutcome
 } from "@/app/workbench/contextMenuModel"
 import i18n from "@/lib/i18n"
+import { workspacePathBasename } from "@/lib/paths"
 import { dropDocument, renameDocument } from "../editor/documentRegistry"
 import { getView, getViewEntry, type RegisteredEditorView } from "../editor/viewRegistry"
 import { logUserAction } from "@/features/logs/userAction"
@@ -213,7 +214,7 @@ async function closeTabWithConfirm(groupIndex: number, path: string): Promise<Co
     if (tab.dirty) {
         const ok = await confirm(i18n.t("contextMenu.confirm.closeDirtyTab", {
             ns: "menus",
-            name: tab.path.split("/").pop() ?? tab.path
+            name: workspacePathBasename(tab.path)
         }))
         if (!ok) return CONTEXT_MENU_CANCELLED
     }
@@ -310,13 +311,13 @@ function affectedTabPaths(target: string): string[] {
 
 async function renameEntry(path: string, workspace: string): Promise<ContextMenuCommandOutcome> {
     if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
-    const currentName = path.split("/").pop() ?? path
+    const currentName = workspacePathBasename(path)
     const name = window.prompt(
         i18n.t("contextMenu.prompt.rename", { ns: "menus" }),
         currentName
     )?.trim()
     if (!name || name === currentName) return CONTEXT_MENU_CANCELLED
-    const slash = path.lastIndexOf("/")
+    const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
     const target = path.slice(0, slash + 1) + name
     try {
         await fsRename(workspace, path, target)
@@ -357,7 +358,7 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
 
 async function deleteEntry(path: string, isDir: boolean, workspace: string): Promise<ContextMenuCommandOutcome> {
     if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
-    const name = path.split("/").pop() ?? path
+    const name = workspacePathBasename(path)
     // The delete confirm below already covers the destructive intent (the file's
     // content — dirty buffer included — is going away regardless), so no separate
     // per-tab dirty prompt: it would be redundant once the user confirms delete.

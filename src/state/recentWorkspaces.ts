@@ -5,6 +5,8 @@
 
 import { create } from "zustand"
 
+import { canonicalPathKey } from "@/lib/paths"
+
 export const RECENT_WORKSPACES_STORAGE_KEY = "yuzora.workspace.recent.v1"
 export const MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY =
     "yuzora.workspace.move-opened-to-top.v1"
@@ -14,6 +16,9 @@ const MAX_RECENT_WORKSPACES = 10
 // Strip trailing slashes so "/a/b" and "/a/b/" dedupe to the same entry;
 // keep a bare "/" as-is instead of collapsing it to "".
 export function normalizeWorkspacePath(path: string): string {
+    if (/^[A-Za-z]:[\\/]+$/.test(path) || /^[\\/]{2}\?[\\/][A-Za-z]:[\\/]+$/.test(path)) {
+        return path
+    }
     const stripped = path.replace(/[/\\]+$/, "")
     return stripped === "" ? "/" : stripped
 }
@@ -24,7 +29,15 @@ export function loadRecentWorkspaces(): string[] {
         if (!raw) return []
         const parsed = JSON.parse(raw)
         if (!Array.isArray(parsed)) return []
-        return parsed.filter((p): p is string => typeof p === "string")
+        const seen = new Set<string>()
+        return parsed
+            .filter((p): p is string => typeof p === "string")
+            .filter((path) => {
+                const key = canonicalPathKey(path)
+                if (seen.has(key)) return false
+                seen.add(key)
+                return true
+            })
     } catch {
         // Malformed JSON (or storage unavailable) — reset to an empty list
         // rather than throw.
@@ -74,8 +87,13 @@ export const useRecentWorkspacesStore = create<RecentWorkspacesStore>()((set, ge
     record: (path) => {
         const normalized = normalizeWorkspacePath(path)
         const current = get().list
-        if (!get().moveOpenedWorkspaceToTop && current.includes(normalized)) return
-        const next = [normalized, ...current.filter((p) => p !== normalized)].slice(
+        const key = canonicalPathKey(normalized)
+        const alreadyRecorded = current.some((p) => canonicalPathKey(p) === key)
+        if (!get().moveOpenedWorkspaceToTop && alreadyRecorded) return
+        const next = [
+            normalized,
+            ...current.filter((p) => canonicalPathKey(p) !== key)
+        ].slice(
             0,
             MAX_RECENT_WORKSPACES
         )
@@ -90,7 +108,8 @@ export const useRecentWorkspacesStore = create<RecentWorkspacesStore>()((set, ge
 
     remove: (path) => {
         const normalized = normalizeWorkspacePath(path)
-        const next = get().list.filter((p) => p !== normalized)
+        const key = canonicalPathKey(normalized)
+        const next = get().list.filter((p) => canonicalPathKey(p) !== key)
         saveRecentWorkspaces(next)
         set({ list: next })
     }

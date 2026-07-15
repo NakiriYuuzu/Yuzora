@@ -8,6 +8,7 @@ import { SplitRatioIndicator } from "@/app/workbench/SplitRatioIndicator"
 import { getDocument } from "@/editor/documentRegistry"
 import { getView } from "@/editor/viewRegistry"
 import { EditorPane } from "@/editor/EditorPane"
+import { workspacePathBasename } from "@/lib/paths"
 import { useSvgPreviewStore } from "@/state/svgPreviewStore"
 import { useWorkbenchLayoutStore } from "@/state/workbenchLayoutStore"
 import { useUiStore } from "@/state/uiStore"
@@ -116,7 +117,7 @@ function SvgPreview({ path, style }: { path: string; style?: React.CSSProperties
             ) : url ? (
                 <img
                     src={url}
-                    alt={path.split("/").pop() ?? path}
+                    alt={workspacePathBasename(path)}
                     draggable={false}
                     data-testid="svg-preview-img"
                     className="max-h-full max-w-full select-none"

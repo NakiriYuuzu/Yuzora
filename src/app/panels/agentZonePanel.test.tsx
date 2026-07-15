@@ -1,18 +1,26 @@
 import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { open as openImageFileDialog } from "@tauri-apps/plugin-dialog"
 
 import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
 import { ComposerSuggestionPopup } from "@/app/panels/ComposerSuggestionPopup"
 import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod, type PromptBlock } from "@/agent/acpConnection"
 import { workspaceMentionIndex } from "@/agent/workspaceMentionIndex"
 import i18n from "@/lib/i18n"
+import { readFileBase64 } from "@/lib/ipc"
 import { agentInitialState, type SessionState } from "@/state/agentStore"
 import { useAgentStore } from "@/state/agentStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { useTerminalStore } from "@/state/terminalStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }))
+vi.mock("@/lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ipc")>()),
+  readFileBase64: vi.fn(),
+}))
 
 // Shorthand for the "panels" namespace this file's strings live in — keeps the
 // many assertions below readable while still asserting against the en value.
@@ -936,6 +944,21 @@ describe("AgentZonePanel", () => {
       ).toBeInTheDocument()
     })
 
+    it("Windows extended image picker 只顯示 basename 並以 raw path 讀檔", async () => {
+      imageCapableSetup()
+      const rawPath = String.raw`\\?\C:\工作區\截圖.png`
+      vi.mocked(openImageFileDialog).mockResolvedValue(rawPath)
+      vi.mocked(readFileBase64).mockResolvedValue({ data: "aGVsbG8=", size: 5 })
+      render(<AgentZonePanel />)
+
+      fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.attachImage") }))
+
+      const chip = await screen.findByTestId("composer-image-chip")
+      expect(chip).toHaveTextContent("截圖.png")
+      expect(chip).not.toHaveTextContent(rawPath)
+      expect(readFileBase64).toHaveBeenCalledWith(rawPath, expect.any(Number))
+    })
+
     it("user bubble 渲染已送圖片縮圖", () => {
       useWorkspaceStore.setState({ workspacePath: "/workspace" })
       useAgentStore.setState({
@@ -1729,6 +1752,39 @@ describe("AgentZonePanel", () => {
         { type: "resource_link", uri: "file:///workspace/src/main.ts", name: "main.ts" },
       ])
     })
+  })
+
+  it("sanitizes an extended workspace attachment tooltip but keeps the raw resource path", async () => {
+    const connection = connectedAgent()
+    const workspace = String.raw`\\?\C:\工作區`
+    const path = String.raw`\\?\C:\工作區\src\main.ts`
+    useWorkspaceStore.setState({
+      workspacePath: workspace,
+      groups: [{
+        tabs: [{ path, name: "main.ts", dirty: false, externallyModified: false }],
+        activePath: path,
+      }],
+      activeGroupIndex: 0,
+    })
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ cwd: workspace, tone: "done" })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    const chip = screen.getByText("main.ts").closest("[role='listitem']")
+    expect(chip).toHaveAttribute("title", String.raw`C:\工作區\src\main.ts`)
+    expect(chip).not.toHaveAttribute("title", path)
+
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "Explain this file" } })
+    fireEvent.keyDown(composer, { key: "Enter", metaKey: true })
+
+    await waitFor(() => expect(connection.prompt).toHaveBeenCalledWith("s-1", [
+      { type: "text", text: "Explain this file" },
+      { type: "resource_link", uri: "file:///C:/%E5%B7%A5%E4%BD%9C%E5%8D%80/src/main.ts", name: "main.ts" },
+    ]))
   })
 
   it.each([

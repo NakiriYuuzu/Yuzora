@@ -85,7 +85,11 @@ import {
   type AgentId,
   type AgentPreset,
 } from "@/lib/agentPresets"
-import { firstAbsolutePath } from "@/lib/paths"
+import {
+  firstAbsolutePath,
+  workspacePathBasename,
+  workspacePathForDisplay,
+} from "@/lib/paths"
 import type { WorkspacePathIndexEntry } from "@/lib/types"
 import { pathToUri } from "@/lsp/workspace"
 import type { AgentTone, SessionState } from "@/state/agentStore"
@@ -941,7 +945,7 @@ function ActiveAgentSession({
       try {
         const file = await readFileBase64(path, IMAGE_ATTACHMENT_MAX_BYTES)
         addImageAttachments([{
-          label: path.split("/").pop() ?? path,
+          label: workspacePathBasename(path),
           mimeType,
           byteSize: file.size,
           dataUrl: `data:${mimeType};base64,${file.data}`,
@@ -1097,7 +1101,7 @@ function ActiveAgentSession({
                   <div
                     key={canonicalPathKey(attachment.canonicalPath)}
                     role="listitem"
-                    title={attachment.canonicalPath}
+                    title={workspacePathForDisplay(attachment.canonicalPath)}
                     className="inline-flex h-6 max-w-full min-w-0 items-center gap-1.5 rounded-full border border-(--line-2) bg-(--paper-0) pl-2.5 pr-1 text-(--ink-2) shadow-xs"
                   >
                     <span className="min-w-0 truncate text-[11px] font-semibold">

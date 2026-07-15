@@ -599,6 +599,32 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         })
     })
 
+    it("tab: dirty confirm 顯示 Windows basename，但 request identity 保留 raw path", async () => {
+        const rawPath = String.raw`\\?\C:\Work\中文 workspace\a.ts`
+        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+            if (cmd === "plugin:dialog|message") return "Cancel"
+            return cmd === "log_event" ? null : undefined
+        })
+        useWorkspaceStore.setState({
+            workspacePath: String.raw`\\?\C:\Work\中文 workspace`,
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: rawPath,
+                tabs: [{ path: rawPath, name: rawPath, dirty: true, externallyModified: false }]
+            }]
+        })
+
+        runLegacyContextMenuAction("tab", "cmCloseTab", { path: rawPath, groupIndex: 0 })
+
+        await vi.waitFor(() => expect(calls.some((call) => call.cmd === "plugin:dialog|message")).toBe(true))
+        const message = String(calls.find((call) => call.cmd === "plugin:dialog|message")?.args.message)
+        expect(message).toContain("a.ts")
+        expect(message).not.toContain(rawPath)
+        expect(useWorkspaceStore.getState().groups[0].tabs[0].path).toBe(rawPath)
+    })
+
     it("tab: cmCloseOthers 關閉其餘 tabs、保留指定 path", async () => {
         useWorkspaceStore.setState({
             workspacePath: "/w",
@@ -1464,6 +1490,19 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         promptSpy.mockRestore()
     })
 
+    it("file: cmRename 的 Windows prompt 預設值只顯示 basename", async () => {
+        const workspace = String.raw`\\?\C:\Work\中文 workspace`
+        const path = String.raw`\\?\C:\Work\中文 workspace\old.ts`
+        useWorkspaceStore.setState({ workspacePath: workspace, treeRevision: 0 })
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null)
+
+        runLegacyContextMenuAction("file", "cmRename", { path })
+
+        await vi.waitFor(() => expect(promptSpy).toHaveBeenCalled())
+        expect(promptSpy).toHaveBeenCalledWith(expect.any(String), "old.ts")
+        promptSpy.mockRestore()
+    })
+
     it("file: cmDelete 檔案 → confirm（文字含檔名、不含資料夾警告）→ fs_delete + refreshTree", async () => {
         const calls = ipcCalls()
         useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
@@ -1489,6 +1528,26 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         const confirmCall = calls.find((c) => c.cmd === "plugin:dialog|message")
         expect(String(confirmCall?.args.message)).toContain("dir")
         expect(String(confirmCall?.args.message)).toContain("all of its contents")
+    })
+
+    it("file: cmDelete 的 Windows confirm 顯示 basename，後端仍收到 raw path", async () => {
+        const workspace = String.raw`\\?\C:\Work\中文 workspace`
+        const path = String.raw`\\?\C:\Work\中文 workspace\a.ts`
+        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+            if (cmd === "plugin:dialog|message") return "Ok"
+            return cmd === "log_event" ? null : undefined
+        })
+        useWorkspaceStore.setState({ workspacePath: workspace, treeRevision: 0 })
+
+        runLegacyContextMenuAction("file", "cmDelete", { path, isDir: false })
+
+        await vi.waitFor(() => expect(calls.some((call) => call.cmd === "fs_delete")).toBe(true))
+        const message = String(calls.find((call) => call.cmd === "plugin:dialog|message")?.args.message)
+        expect(message).toContain("a.ts")
+        expect(message).not.toContain(path)
+        expect(calls.find((call) => call.cmd === "fs_delete")?.args).toMatchObject({ workspace, path })
     })
 
     it("file: cmDelete 取消 confirm 不呼叫 fs_delete、不 refreshTree", async () => {

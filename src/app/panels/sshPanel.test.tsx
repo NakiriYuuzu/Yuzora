@@ -299,6 +299,24 @@ describe("SshPanel SFTP browser (F5)", () => {
         )
     })
 
+    it("sanitizes only the local extended workspace header while listing the raw path", async () => {
+        const rawWorkspace = String.raw`\\?\C:\Work\中文 workspace`
+        const displayWorkspace = String.raw`C:\Work\中文 workspace`
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        await connectTwoHosts()
+        act(() => {
+            useWorkspaceStore.setState({ workspacePath: rawWorkspace })
+            useSftpStore.getState().setActiveTab("sftp")
+        })
+
+        render(<SshPanel />)
+
+        expect(await screen.findByTitle(displayWorkspace)).toBeInTheDocument()
+        expect(screen.queryByTitle(rawWorkspace)).not.toBeInTheDocument()
+        expect(screen.getByTitle("/home/u")).toBeInTheDocument()
+        expect(ipcMock.listDir).toHaveBeenCalledWith(rawWorkspace)
+    })
+
     it("uploads OS files dropped inside the remote pane to the remote cwd", async () => {
         ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
         const { hostB } = await connectTwoHosts()

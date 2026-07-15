@@ -2,6 +2,7 @@ import { Loader2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { CommandGroup, CommandItem } from "@/components/ui/command"
+import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 import type { SearchEvent, SearchMatch } from "@/lib/types"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -52,12 +53,21 @@ function highlight(preview: string, query: string) {
 }
 
 function relativePath(path: string, root: string | null) {
-    if (root && path.startsWith(root + "/")) return path.slice(root.length + 1)
-    return path
+    const displayPath = workspacePathForDisplay(path)
+    if (!root) return displayPath
+    const displayRoot = workspacePathForDisplay(root).replace(/[\\/]+$/, "")
+    const windowsPath = /^[A-Za-z]:[\\/]/.test(displayPath) || /^[\\/]{2}/.test(displayPath)
+    const prefixMatches = windowsPath
+        ? displayPath.slice(0, displayRoot.length).toLowerCase() === displayRoot.toLowerCase()
+        : displayPath.startsWith(displayRoot)
+    if (prefixMatches && /^[\\/]$/.test(displayPath[displayRoot.length] ?? "")) {
+        return displayPath.slice(displayRoot.length + 1)
+    }
+    return displayPath
 }
 
 function baseName(path: string) {
-    return path.split("/").pop() ?? path
+    return workspacePathBasename(path)
 }
 
 /**

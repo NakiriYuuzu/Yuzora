@@ -1,5 +1,8 @@
 import { workspacePathIndex } from "@/lib/ipc"
+import { canonicalPathKey } from "@/lib/paths"
 import type { WorkspacePathIndexEntry, WorkspacePathIndexResult } from "@/lib/types"
+
+export { canonicalPathKey } from "@/lib/paths"
 
 export const MAX_WORKSPACE_MENTION_RESULTS = 100
 
@@ -21,27 +24,6 @@ interface CacheRecord {
   generation: number
   promise?: Promise<WorkspaceMentionIndexSnapshot | null>
   value?: WorkspaceMentionIndexSnapshot
-}
-
-export function canonicalPathKey(path: string): string {
-  let normalized = path.replace(/\\/g, "/")
-  if (normalized.toLowerCase().startsWith("//?/unc/")) {
-    normalized = `//${normalized.slice("//?/UNC/".length)}`
-  } else if (normalized.startsWith("//?/")) {
-    normalized = normalized.slice("//?/".length)
-  }
-  const isUnc = normalized.startsWith("//")
-  if (!isUnc) normalized = normalized.replace(/\/{2,}/g, "/")
-  while (
-    normalized.length > 1
-    && normalized.endsWith("/")
-    && !/^[A-Za-z]:\/$/.test(normalized)
-  ) {
-    normalized = normalized.slice(0, -1)
-  }
-  return /^[A-Za-z]:\//.test(normalized) || isUnc
-    ? normalized.toLowerCase()
-    : normalized
 }
 
 function isCanonicalPathWithin(workspace: string, candidate: string): boolean {

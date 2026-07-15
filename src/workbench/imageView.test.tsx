@@ -112,13 +112,16 @@ describe("ImageView", () => {
         expect(screen.getByTestId("image-view-meta").textContent).toContain("125%")
     })
 
-    it("載入失敗顯示錯誤狀態（含完整路徑）", () => {
-        render(<ImageView path="/ws/broken.png" />)
+    it("載入失敗顯示安全路徑，不洩漏 Windows extended prefix", () => {
+        const rawPath = String.raw`\\?\C:\Work\中文 workspace\broken.png`
+        const displayPath = String.raw`C:\Work\中文 workspace\broken.png`
+        render(<ImageView path={rawPath} />)
 
         fireEvent.error(screen.getByTestId("image-view-img"))
 
         expect(screen.getByText("Could not load this image")).toBeInTheDocument()
-        expect(screen.getByText(/\/ws\/broken\.png/)).toBeInTheDocument()
+        expect(screen.getByText(new RegExp(displayPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))).toBeInTheDocument()
+        expect(screen.queryByText(new RegExp(rawPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))).not.toBeInTheDocument()
     })
 })
 

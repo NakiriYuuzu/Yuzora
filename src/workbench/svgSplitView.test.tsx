@@ -20,6 +20,7 @@ vi.mock("@/app/panels/PreviewPanel", () => ({
 
 import { SvgSplitView, isSvgPath, useSvgPreviewStore } from "./SvgSplitView"
 import { EditorArea } from "./EditorArea"
+import { getDocument } from "../editor/documentRegistry"
 
 const createdUrls = vi.hoisted(() => ({ count: 0, revoked: [] as string[] }))
 
@@ -71,6 +72,15 @@ describe("isSvgPath", () => {
 })
 
 describe("SvgSplitView", () => {
+    it("uses a Windows basename for preview alt while loading the raw path", async () => {
+        const rawPath = String.raw`\\?\C:\Work\中文 workspace\logo.svg`
+
+        render(<SvgSplitView path={rawPath} groupIndex={0} />)
+
+        expect(await screen.findByTestId("svg-preview-img")).toHaveAttribute("alt", "logo.svg")
+        expect(getDocument).toHaveBeenCalledWith(rawPath)
+    })
+
     it("開檔預設開啟預覽（與 Markdown 的預設關閉相反）", async () => {
         render(<SvgSplitView path="/ws/logo.svg" groupIndex={0} />)
 
