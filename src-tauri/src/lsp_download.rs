@@ -175,38 +175,221 @@ fn expected_sha256(_server: BinaryServer, _os: &str, _arch: &str) -> Option<&'st
 // the frontend promise. Generous — these are hang guards, not perf targets.
 const NPM_PIP_TIMEOUT_SECS: u64 = 600;
 const VENV_TIMEOUT_SECS: u64 = 120;
+const MAX_DIAGNOSTIC_BYTES: usize = 4096;
+
+type OutputReader = std::thread::JoinHandle<Vec<u8>>;
+
+fn diagnostic_capture_limit() -> usize {
+    let home_context = dirs::home_dir()
+        .map(|home| home.to_string_lossy().len())
+        .unwrap_or(0);
+    MAX_DIAGNOSTIC_BYTES.saturating_add(home_context.saturating_add(1))
+}
+
+fn read_bounded_tail(mut reader: impl std::io::Read, max: usize) -> Vec<u8> {
+    let mut tail = Vec::with_capacity(max);
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = match reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        if read >= max {
+            tail.clear();
+            tail.extend_from_slice(&chunk[read - max..read]);
+            continue;
+        }
+        let overflow = tail.len().saturating_add(read).saturating_sub(max);
+        if overflow > 0 {
+            tail.drain(..overflow);
+        }
+        tail.extend_from_slice(&chunk[..read]);
+    }
+    tail
+}
+
+fn collect_command_output(
+    stdout_reader: &mut Option<OutputReader>,
+    stderr_reader: &mut Option<OutputReader>,
+) -> (Vec<u8>, Vec<u8>) {
+    let stdout = stdout_reader
+        .take()
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .take()
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    (stdout, stderr)
+}
+
+fn output_readers_finished(
+    stdout_reader: &Option<OutputReader>,
+    stderr_reader: &Option<OutputReader>,
+) -> bool {
+    stdout_reader
+        .as_ref()
+        .is_none_or(std::thread::JoinHandle::is_finished)
+        && stderr_reader
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+}
+
+fn mask_truncated_url_userinfo_prefix(input: &str) -> String {
+    let authority_end = input
+        .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace())
+        .unwrap_or(input.len());
+    let authority = &input[..authority_end];
+    if authority.contains("://") {
+        return input.to_string();
+    }
+    match authority.rfind('@') {
+        Some(at) => format!("<redacted>{}", &input[at..]),
+        None => input.to_string(),
+    }
+}
+
+fn diagnostic_text_tail(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+fn bound_sanitized_diagnostic(text: String) -> String {
+    let tail = diagnostic_text_tail(&text, MAX_DIAGNOSTIC_BYTES);
+    let masked = mask_truncated_url_userinfo_prefix(tail);
+    if masked.len() <= MAX_DIAGNOSTIC_BYTES {
+        return masked;
+    }
+    if let Some(rest) = masked.strip_prefix("<redacted>") {
+        let rest = diagnostic_text_tail(rest, MAX_DIAGNOSTIC_BYTES - "<redacted>".len());
+        return format!("<redacted>{rest}");
+    }
+    diagnostic_text_tail(&masked, MAX_DIAGNOSTIC_BYTES).to_string()
+}
+
+fn sanitize_diagnostic(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut text = mask_truncated_url_userinfo_prefix(text.trim());
+    text = crate::logging::mask_url_userinfo(&text);
+    if let Some(home) = dirs::home_dir() {
+        let home = home.to_string_lossy();
+        if !home.is_empty() {
+            text = text.replace(home.as_ref(), "~");
+            text = text.replace(&home.replace('\\', "/"), "~");
+            text = text.replace(&home.replace('/', "\\"), "~");
+        }
+    }
+    bound_sanitized_diagnostic(text)
+}
+
+fn command_error(
+    stage: &str,
+    program: &str,
+    outcome: &str,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> String {
+    let tool = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program);
+    let mut message = format!("{stage} 失敗（工具 {tool}；{outcome}）");
+    let stderr = sanitize_diagnostic(stderr);
+    if !stderr.is_empty() {
+        message.push_str("\nstderr（已去敏，末尾）：");
+        message.push_str(&stderr);
+    }
+    let stdout = sanitize_diagnostic(stdout);
+    if !stdout.is_empty() {
+        message.push_str("\nstdout（已去敏，末尾）：");
+        message.push_str(&stdout);
+    }
+    message
+}
 
 /// Run a subprocess to completion, killing and reaping it if it outlives
 /// `timeout` (M3F-2). Mirrors git_service::run_git's deadline poll+kill loop so a
 /// stalled child can't block the install thread indefinitely.
-fn run_command(program: &str, args: &[String], timeout: Duration) -> Result<(), String> {
-    // Inherited stdio (spawn default) matches the previous `.status()` behavior, so
-    // npm/pip output still reaches the app's stdout/stderr — and an inherited fd
-    // never fills an unread pipe, so the poll loop can't deadlock.
+fn run_command(
+    stage: &str,
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<(), String> {
     let mut cmd = std::process::Command::new(program);
-    cmd.args(args);
-    crate::process_kill::configure_new_group(&mut cmd);
+    cmd.args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::process_kill::configure_background_process(&mut cmd);
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("執行 {program} 失敗：{e}"))?;
+        .map_err(|error| command_error(stage, program, &format!("無法啟動：{error}"), &[], &[]))?;
+    let capture_limit = diagnostic_capture_limit();
+    let mut stdout_reader = child
+        .stdout
+        .take()
+        .map(|stdout| std::thread::spawn(move || read_bounded_tail(stdout, capture_limit)));
+    let mut stderr_reader = child
+        .stderr
+        .take()
+        .map(|stderr| std::thread::spawn(move || read_bounded_tail(stderr, capture_limit)));
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        match child
-            .try_wait()
-            .map_err(|e| format!("等待 {program} 失敗：{e}"))?
-        {
-            Some(status) => {
+        if std::time::Instant::now() > deadline {
+            let _ = crate::process_kill::kill_tree(&mut child);
+            let (stdout, stderr) = collect_command_output(&mut stdout_reader, &mut stderr_reader);
+            return Err(command_error(
+                stage,
+                program,
+                &format!("逾時 {timeout:?}"),
+                &stdout,
+                &stderr,
+            ));
+        }
+        if !output_readers_finished(&stdout_reader, &stderr_reader) {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let (stdout, stderr) =
+                    collect_command_output(&mut stdout_reader, &mut stderr_reader);
                 return if status.success() {
                     Ok(())
                 } else {
-                    Err(format!("{program} 以非零狀態結束（{:?}）", status.code()))
+                    Err(command_error(
+                        stage,
+                        program,
+                        &format!(
+                            "exit {}",
+                            status
+                                .code()
+                                .map_or("unknown".to_string(), |c| c.to_string())
+                        ),
+                        &stdout,
+                        &stderr,
+                    ))
                 };
             }
-            None if std::time::Instant::now() > deadline => {
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => {
                 let _ = crate::process_kill::kill_tree(&mut child);
-                return Err(format!("{program} 逾時（{timeout:?}）"));
+                let (stdout, stderr) =
+                    collect_command_output(&mut stdout_reader, &mut stderr_reader);
+                return Err(command_error(
+                    stage,
+                    program,
+                    &format!("等待程序失敗：{error}"),
+                    &stdout,
+                    &stderr,
+                ));
             }
-            None => std::thread::sleep(Duration::from_millis(50)),
         }
     }
 }
@@ -303,6 +486,178 @@ fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+fn unzip_binary(bytes: &[u8], expected_name: &str) -> Result<Vec<u8>, String> {
+    unzip_binary_with_limit(bytes, expected_name, MAX_DOWNLOAD_BYTES)
+}
+
+fn unzip_binary_with_limit(
+    bytes: &[u8],
+    expected_name: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let reader = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| format!("開啟 ZIP 失敗：{e}"))?;
+    let mut entry = archive
+        .by_name(expected_name)
+        .map_err(|_| format!("ZIP 缺少預期執行檔 {expected_name}"))?;
+    if entry.is_dir() || entry.size() > max_bytes {
+        return Err(format!("ZIP 內的 {expected_name} 無效或超過大小上限"));
+    }
+    let mut out = Vec::with_capacity(entry.size() as usize);
+    entry
+        .read_to_end(&mut out)
+        .map_err(|e| format!("解壓 {expected_name} 失敗：{e}"))?;
+    if out.is_empty() {
+        return Err(format!("ZIP 內的 {expected_name} 是空檔案"));
+    }
+    Ok(out)
+}
+
+fn remove_path(path: &Path) -> Result<(), String> {
+    let result = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("清理 {} 失敗：{e}", path.display())),
+    }
+}
+
+/// Start from an empty managed directory and remove it again on any failure, so
+/// an interrupted npm/pip install never poisons the next retry.
+fn with_clean_dir<T>(
+    target: &Path,
+    install: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    remove_path(target)?;
+    std::fs::create_dir_all(target).map_err(|e| format!("建立 {} 失敗：{e}", target.display()))?;
+    match install(target) {
+        Ok(value) => Ok(value),
+        Err(error) => match remove_path(target) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}；{cleanup}")),
+        },
+    }
+}
+
+fn managed_sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut sibling = path.as_os_str().to_os_string();
+    sibling.push(suffix);
+    PathBuf::from(sibling)
+}
+
+/// Build a replacement directory away from the live target, then swap it in.
+/// A failed build never touches the previous successful target; a failed swap
+/// restores it before returning the error.
+fn replace_managed_dir(
+    target: &Path,
+    build: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let staging = managed_sibling(target, ".installing");
+    let previous = managed_sibling(target, ".previous");
+    remove_path(&staging)?;
+    remove_path(&previous)?;
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("建立 {} 失敗：{e}", staging.display()))?;
+
+    if let Err(error) = build(&staging) {
+        return match remove_path(&staging) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}；{cleanup}")),
+        };
+    }
+
+    let had_previous = target.exists();
+    if had_previous {
+        if let Err(error) = std::fs::rename(target, &previous) {
+            let _ = remove_path(&staging);
+            return Err(format!("備份 {} 失敗：{error}", target.display()));
+        }
+    }
+    if let Err(error) = std::fs::rename(&staging, target) {
+        let rollback = if had_previous {
+            std::fs::rename(&previous, target)
+                .map_err(|e| format!("；還原 {} 失敗：{e}", target.display()))
+        } else {
+            Ok(())
+        };
+        let _ = remove_path(&staging);
+        return Err(format!(
+            "換位 {} 失敗：{error}{}",
+            target.display(),
+            rollback.err().unwrap_or_default()
+        ));
+    }
+    if had_previous {
+        remove_path(&previous)?;
+    }
+    Ok(())
+}
+
+fn npm_bin_in_prefix(prefix: &Path, bin: &str, windows: bool) -> PathBuf {
+    let bin_dir = prefix.join("node_modules").join(".bin");
+    if windows {
+        bin_dir.join(format!("{bin}.cmd"))
+    } else {
+        bin_dir.join(bin)
+    }
+}
+
+/// The npm prefix is shared by three curated adapters. Rebuild a clean staging
+/// prefix with the requested package plus every already-usable curated adapter,
+/// so a successful install preserves coexistence and a failed one leaves the
+/// previous prefix untouched.
+fn npm_transaction_packages(
+    prefix: &Path,
+    requested: &[&'static str],
+    windows: bool,
+) -> Vec<&'static str> {
+    const CURATED: &[(&str, &[&str])] = &[
+        ("vtsls", &["@vtsls/language-server"]),
+        (
+            "typescript-language-server",
+            &["typescript-language-server", "typescript"],
+        ),
+        ("pyright-langserver", &["pyright"]),
+    ];
+
+    let mut packages = Vec::new();
+    for (bin, existing_packages) in CURATED {
+        if npm_bin_in_prefix(prefix, bin, windows).is_file() {
+            for package in *existing_packages {
+                if !packages.contains(package) {
+                    packages.push(*package);
+                }
+            }
+        }
+    }
+    for package in requested {
+        if !packages.contains(package) {
+            packages.push(*package);
+        }
+    }
+    packages
+}
+
+static NPM_INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn npm_install_lock() -> &'static Mutex<()> {
+    NPM_INSTALL_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn require_installed_file(path: &Path, stage: &str) -> Result<(), String> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("{stage} 完成但找不到預期執行檔 {}", path.display()))
+    }
+}
+
 /// Download + verify + unpack + install a binary server; returns its (command,
 /// resolved absolute path) landing spot under the servers root.
 fn install_binary(
@@ -315,14 +670,6 @@ fn install_binary(
     let arch = std::env::consts::ARCH;
     let url = asset_url(server, os, arch)?;
     let unpack = unpack_kind(server, os);
-    // F5: short-circuit an unsupported unpack (Windows rust-analyzer .zip) BEFORE
-    // downloading the whole asset.
-    if unpack == UnpackKind::Zip {
-        return Err(
-            "Windows rust-analyzer 以 .zip 發佈，程式內 zip 解壓尚未支援；請改用手動安裝。"
-                .to_string(),
-        );
-    }
     let bytes = download(&url, language, emit)?;
 
     let digest = sha256_hex(&bytes);
@@ -352,7 +699,15 @@ fn install_binary(
             gunzip(&bytes)?
         }
         UnpackKind::Bare => bytes,
-        UnpackKind::Zip => unreachable!("zip is short-circuited before download"),
+        UnpackKind::Zip => {
+            emit(LspInstallProgress::new(
+                language,
+                InstallPhase::Unpack,
+                None,
+                Some("解壓 ZIP"),
+            ));
+            unzip_binary(&bytes, &format!("{}.exe", binary_command(server)))?
+        }
     };
 
     // F3: write to a sibling temp, set perms / clear quarantine on it, then rename
@@ -360,21 +715,31 @@ fn install_binary(
     std::fs::create_dir_all(base).map_err(|e| format!("建立 servers 目錄失敗：{e}"))?;
     let dest = binary_dest(base, server, cfg!(windows));
     let tmp = binary_temp(&dest);
-    std::fs::write(&tmp, &binary).map_err(|e| format!("寫入 {} 失敗：{e}", tmp.display()))?;
+    remove_path(&tmp)?;
+    let install_result = (|| {
+        std::fs::write(&tmp, &binary).map_err(|e| format!("寫入 {} 失敗：{e}", tmp.display()))?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("chmod +x 失敗：{e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("chmod +x 失敗：{e}"))?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let (prog, args) = quarantine_command(tmp.to_string_lossy().as_ref());
+            // Best-effort: the attribute is often absent (non-zero exit) — not fatal.
+            let _ = std::process::Command::new(prog).args(&args).status();
+        }
+        remove_path(&dest)?;
+        std::fs::rename(&tmp, &dest).map_err(|e| format!("換位 {} 失敗：{e}", dest.display()))?;
+        require_installed_file(&dest, "binary install")
+    })();
+    if let Err(error) = install_result {
+        let _ = remove_path(&tmp);
+        let _ = remove_path(&dest);
+        return Err(error);
     }
-    #[cfg(target_os = "macos")]
-    {
-        let (prog, args) = quarantine_command(tmp.to_string_lossy().as_ref());
-        // Best-effort: the attribute is often absent (non-zero exit) — not fatal.
-        let _ = std::process::Command::new(prog).args(&args).status();
-    }
-    std::fs::rename(&tmp, &dest).map_err(|e| format!("換位 {} 失敗：{e}", dest.display()))?;
 
     Ok((binary_command(server).to_string(), dest))
 }
@@ -397,44 +762,63 @@ fn execute_plan(
                 Some("npm install"),
             ));
             let prefix = npm_prefix(base);
-            std::fs::create_dir_all(&prefix).map_err(|e| format!("建立 npm prefix 失敗：{e}"))?;
-            run_command(
-                &npm,
-                &npm_install_args(&prefix, packages),
-                Duration::from_secs(NPM_PIP_TIMEOUT_SECS),
-            )?;
-            Ok((bin.to_string(), npm_bin_path(base, bin, cfg!(windows))))
+            let _npm_guard = npm_install_lock()
+                .lock()
+                .map_err(|_| "npm 安裝鎖已損毀".to_string())?;
+            let transaction_packages = npm_transaction_packages(&prefix, packages, cfg!(windows));
+            replace_managed_dir(&prefix, |staging| {
+                run_command(
+                    "npm install",
+                    &npm,
+                    &npm_install_args(staging, &transaction_packages),
+                    Duration::from_secs(NPM_PIP_TIMEOUT_SECS),
+                )?;
+                let installed = npm_bin_in_prefix(staging, bin, cfg!(windows));
+                require_installed_file(&installed, "npm install")?;
+                Ok(())
+            })?;
+            let installed = npm_bin_path(base, bin, cfg!(windows));
+            require_installed_file(&installed, "npm install")?;
+            Ok((bin.to_string(), installed))
         }
         Plan::Pip {
             python,
             package,
             bin,
         } => {
-            std::fs::create_dir_all(base).map_err(|e| format!("建立 servers 目錄失敗：{e}"))?;
             emit(LspInstallProgress::new(
                 language,
                 InstallPhase::Pip,
                 None,
                 Some("建立 venv"),
             ));
-            run_command(
-                &python,
-                &venv_args(&venv_dir(base)),
-                Duration::from_secs(VENV_TIMEOUT_SECS),
-            )?;
-            emit(LspInstallProgress::new(
-                language,
-                InstallPhase::Pip,
-                None,
-                Some("pip install"),
-            ));
-            let pip = venv_bin_path(base, "pip", cfg!(windows));
-            run_command(
-                pip.to_string_lossy().as_ref(),
-                &pip_install_args(package),
-                Duration::from_secs(NPM_PIP_TIMEOUT_SECS),
-            )?;
-            Ok((bin.to_string(), venv_bin_path(base, bin, cfg!(windows))))
+            std::fs::create_dir_all(base).map_err(|e| format!("建立 servers 目錄失敗：{e}"))?;
+            let venv = venv_dir(base);
+            with_clean_dir(&venv, |venv| {
+                run_command(
+                    "python venv",
+                    &python,
+                    &venv_args(venv),
+                    Duration::from_secs(VENV_TIMEOUT_SECS),
+                )?;
+                emit(LspInstallProgress::new(
+                    language,
+                    InstallPhase::Pip,
+                    None,
+                    Some("pip install"),
+                ));
+                let pip = venv_bin_path(base, "pip", cfg!(windows));
+                require_installed_file(&pip, "python venv")?;
+                run_command(
+                    "pip install",
+                    pip.to_string_lossy().as_ref(),
+                    &pip_install_args(package),
+                    Duration::from_secs(NPM_PIP_TIMEOUT_SECS),
+                )?;
+                let installed = venv_bin_path(base, bin, cfg!(windows));
+                require_installed_file(&installed, "pip install")?;
+                Ok((bin.to_string(), installed))
+            })
         }
     }
 }
@@ -528,7 +912,130 @@ fn install_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::sync::Arc;
+
+    fn zip_fixture(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        for (name, bytes) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn windows_rust_analyzer_zip_extracts_only_expected_executable() {
+        let archive = zip_fixture(&[
+            ("README.txt", b"not the server"),
+            ("rust-analyzer.exe", b"MZ-server"),
+        ]);
+
+        assert_eq!(
+            unzip_binary(&archive, "rust-analyzer.exe").unwrap(),
+            b"MZ-server"
+        );
+        assert!(unzip_binary(&archive, "missing.exe").is_err());
+    }
+
+    #[test]
+    fn windows_rust_analyzer_zip_rejects_empty_and_oversized_executable() {
+        let empty = zip_fixture(&[("rust-analyzer.exe", b"")]);
+        assert!(unzip_binary(&empty, "rust-analyzer.exe").is_err());
+
+        let oversized = zip_fixture(&[("rust-analyzer.exe", b"MZ-server")]);
+        assert!(unzip_binary_with_limit(&oversized, "rust-analyzer.exe", 4).is_err());
+    }
+
+    #[test]
+    fn failed_managed_target_is_removed_and_retry_starts_clean() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("npm");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("stale"), b"partial").unwrap();
+
+        let first = with_clean_dir(&target, |dir| {
+            assert!(
+                !dir.join("stale").exists(),
+                "retry must remove stale partial state"
+            );
+            std::fs::write(dir.join("half-installed"), b"partial").unwrap();
+            Err::<(), String>("npm failed".into())
+        });
+        assert!(first.is_err());
+        assert!(
+            !target.exists(),
+            "a failed install must leave no managed target"
+        );
+
+        let second = with_clean_dir(&target, |dir| {
+            assert!(!dir.join("half-installed").exists());
+            std::fs::write(dir.join("server.cmd"), b"ok").unwrap();
+            Ok(())
+        });
+        assert!(second.is_ok());
+        assert!(target.join("server.cmd").is_file());
+    }
+
+    #[test]
+    fn npm_transaction_preserves_existing_curated_adapter() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = npm_prefix(root.path());
+        let bin_dir = prefix.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join("vtsls"), b"existing").unwrap();
+
+        let packages = npm_transaction_packages(&prefix, &["pyright"], false);
+        assert!(packages.contains(&"@vtsls/language-server"));
+        assert!(packages.contains(&"pyright"));
+
+        replace_managed_dir(&prefix, |staging| {
+            let staging_bin = staging.join("node_modules").join(".bin");
+            std::fs::create_dir_all(&staging_bin).unwrap();
+            std::fs::write(staging_bin.join("vtsls"), b"reinstalled").unwrap();
+            std::fs::write(staging_bin.join("pyright-langserver"), b"installed").unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(prefix.join("node_modules/.bin/vtsls").is_file());
+        assert!(prefix
+            .join("node_modules/.bin/pyright-langserver")
+            .is_file());
+    }
+
+    #[test]
+    fn failed_npm_transaction_preserves_previous_success_and_removes_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = npm_prefix(root.path());
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("previous-success"), b"ok").unwrap();
+
+        let result = replace_managed_dir(&prefix, |staging| {
+            std::fs::write(staging.join("partial"), b"bad").unwrap();
+            Err("npm failed".to_string())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(prefix.join("previous-success")).unwrap(),
+            b"ok"
+        );
+        assert!(!managed_sibling(&prefix, ".installing").exists());
+        assert!(!managed_sibling(&prefix, ".previous").exists());
+    }
+
+    #[test]
+    fn npm_install_lock_serializes_shared_prefix() {
+        let _guard = npm_install_lock().lock().unwrap();
+        let blocked = std::thread::spawn(|| npm_install_lock().try_lock().is_err())
+            .join()
+            .unwrap();
+        assert!(blocked);
+    }
 
     #[test]
     fn download_too_large_rejects_over_cap_only() {
@@ -543,13 +1050,107 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_command_ok_on_success() {
-        assert!(run_command("true", &[], Duration::from_secs(5)).is_ok());
+        assert!(run_command("probe", "true", &[], Duration::from_secs(5)).is_ok());
     }
 
     #[cfg(unix)]
     #[test]
     fn run_command_err_on_nonzero_exit() {
-        assert!(run_command("false", &[], Duration::from_secs(5)).is_err());
+        assert!(run_command("probe", "false", &[], Duration::from_secs(5)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_failure_is_actionable_and_redacted() {
+        let home = dirs::home_dir().unwrap();
+        let script = format!(
+            "printf '%s\\n' 'https://user:secret-token@example.com/pkg' >&2; printf '%s\\n' '{}' >&2; exit 7",
+            home.display()
+        );
+        let error = run_command(
+            "npm install",
+            "/bin/sh",
+            &["-c".to_string(), script],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("npm install"));
+        assert!(error.contains("sh"));
+        assert!(error.contains('7'));
+        assert!(error.contains("stderr"));
+        assert!(error.contains("<redacted>"));
+        assert!(!error.contains("secret-token"));
+        assert!(!error.contains(home.to_string_lossy().as_ref()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_keeps_only_a_bounded_stderr_tail() {
+        let output = format!(
+            "prefix-marker{}tail-marker",
+            "x".repeat(MAX_DIAGNOSTIC_BYTES + 512)
+        );
+        let script = format!("printf '%s' '{output}' >&2; exit 9");
+        let error = run_command(
+            "pip install",
+            "/bin/sh",
+            &["-c".to_string(), script],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("tail-marker"));
+        assert!(!error.contains("prefix-marker"));
+        assert!(error.len() <= MAX_DIAGNOSTIC_BYTES + 512);
+    }
+
+    #[test]
+    fn diagnostic_tail_redacts_url_userinfo_split_at_capture_boundary() {
+        let retained = "user:secret-token@example.com/pkg";
+        let capture_limit = diagnostic_capture_limit();
+        let output = format!(
+            "https://{retained}{}",
+            "x".repeat(capture_limit - retained.len())
+        );
+        let raw_tail = read_bounded_tail(std::io::Cursor::new(output), capture_limit);
+        let diagnostic = sanitize_diagnostic(&raw_tail);
+
+        assert!(diagnostic.starts_with("<redacted>"));
+        assert!(!diagnostic.contains("secret-token"));
+        assert!(diagnostic.len() <= MAX_DIAGNOSTIC_BYTES);
+    }
+
+    #[test]
+    fn diagnostic_tail_redacts_home_split_at_display_boundary() {
+        let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+        let midpoint = home.len() / 2;
+        let split = (0..=midpoint)
+            .rev()
+            .find(|index| home.is_char_boundary(*index))
+            .unwrap_or(0);
+        let suffix = "x".repeat(MAX_DIAGNOSTIC_BYTES - (home.len() - split));
+        let output = format!("{home}{suffix}");
+        let raw_tail = read_bounded_tail(std::io::Cursor::new(output), diagnostic_capture_limit());
+        let diagnostic = sanitize_diagnostic(&raw_tail);
+
+        assert!(home.is_char_boundary(split));
+        assert!(diagnostic.starts_with('~'));
+        assert!(!diagnostic.contains(&home[split..]));
+    }
+
+    #[test]
+    fn diagnostic_home_midpoint_uses_unicode_char_boundary() {
+        let home = "/tmp/使用者";
+        let midpoint = home.len() / 2;
+        let split = (0..=midpoint)
+            .rev()
+            .find(|index| home.is_char_boundary(*index))
+            .unwrap_or(0);
+
+        assert_eq!(split, "/tmp/".len());
+        assert!(home.is_char_boundary(split));
+        assert_eq!(&home[split..], "使用者");
     }
 
     #[cfg(unix)]
@@ -559,7 +1160,12 @@ mod tests {
         // block the install thread for the child's full lifetime (mirrors
         // git_service::run_git_times_out_and_kills).
         let started = std::time::Instant::now();
-        let r = run_command("sleep", &["30".to_string()], Duration::from_millis(300));
+        let r = run_command(
+            "timeout probe",
+            "sleep",
+            &["30".to_string()],
+            Duration::from_millis(300),
+        );
         assert!(r.is_err(), "a timed-out subprocess must return Err");
         assert!(
             started.elapsed() < Duration::from_secs(3),
@@ -575,6 +1181,7 @@ mod tests {
         let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
         let started = std::time::Instant::now();
         let r = run_command(
+            "timeout tree probe",
             "sh",
             &["-c".to_string(), script],
             Duration::from_millis(300),
@@ -598,6 +1205,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         panic!("grandchild {pid} still exists after timeout");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_deadline_kills_descendant_after_parent_exits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_file = tmp.path().join("orphan.pid");
+        let script = format!("sleep 2 & echo $! > {}; exit 0", pid_file.display());
+        let started = std::time::Instant::now();
+        let result = run_command(
+            "orphan pipe probe",
+            "sh",
+            &["-c".to_string(), script],
+            Duration::from_millis(150),
+        );
+
+        assert!(
+            result.is_err(),
+            "inherited pipes must remain deadline-bound"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "reader collection must not wait for the descendant's pipe EOF"
+        );
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("pid file exists")
+            .trim()
+            .parse()
+            .expect("pid is numeric");
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        assert!(
+            !alive,
+            "descendant {pid} must be killed with the process group"
+        );
     }
 
     // ---- in-flight guard ----

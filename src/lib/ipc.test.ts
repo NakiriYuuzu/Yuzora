@@ -43,6 +43,7 @@ import {
     lspSend,
     lspStopWorkspace,
     lspStatus,
+    lspDetectServer,
     lspConfigGet,
     lspConfigSetServer,
     lspConfigStale,
@@ -622,6 +623,19 @@ it("lspStatus forwards workspace and returns server list", async () => {
     })
     const list = await lspStatus("/w")
     expect(list[0].language).toBe("typescript")
+})
+
+it("lspDetectServer forwards nullable workspace and language", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => {
+        seen.push([cmd, payload])
+        return sampleServerInfo
+    })
+
+    await expect(lspDetectServer(null, "typescript")).resolves.toEqual(sampleServerInfo)
+    expect(seen).toEqual([
+        ["lsp_detect_server", { workspace: null, language: "typescript" }]
+    ])
 })
 
 it("lspConfigGet returns config", async () => {

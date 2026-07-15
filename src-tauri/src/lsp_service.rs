@@ -357,6 +357,7 @@ impl LspManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::process_kill::configure_hidden_process(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
         shared.pid.store(child.id(), Ordering::SeqCst);
 
@@ -664,6 +665,67 @@ fn stderr_loop(shared: Arc<ServerShared>, stderr: std::process::ChildStderr) {
 }
 
 // ---- tauri commands (thin: resolve config/adapter, bridge Channel) ----------
+
+fn detect_server_info_from(
+    cfg: &lsp_config::LspConfig,
+    workspace: Option<&str>,
+    language: &str,
+    active: Option<LspServerInfo>,
+    resolve_command: impl Fn(&str) -> Option<String>,
+) -> Result<LspServerInfo, String> {
+    if let Some(info) = active {
+        return Ok(info);
+    }
+
+    let ws_canonical =
+        workspace.map(|path| lsp_config::canonicalize(path).unwrap_or_else(|| path.to_string()));
+    let configured_id = match ws_canonical.as_deref() {
+        Some(workspace) => lsp_config::resolve_server(cfg, workspace, language),
+        None => cfg.defaults.get(language).cloned(),
+    };
+    let server_id = configured_id
+        .or_else(|| lsp_adapters::adapters_for(language).map(|a| a.default_id.to_string()))
+        .ok_or_else(|| format!("no LSP adapter for language {language}"))?;
+    let adapter = lsp_adapters::adapter(language, &server_id)
+        .ok_or_else(|| format!("unknown server {server_id} for {language}"))?;
+    let path = resolve_command(adapter.command);
+    let status = if path.is_some() {
+        LspProcessStatus::Stopped
+    } else {
+        LspProcessStatus::Missing {
+            install_hint: adapter.install_hint.to_string(),
+        }
+    };
+
+    Ok(LspServerInfo {
+        workspace: workspace.unwrap_or_default().to_string(),
+        language: language.to_string(),
+        server_id,
+        command: adapter.command.to_string(),
+        path,
+        status,
+        last_startup_log: None,
+        last_error: None,
+        restart_count: 0,
+    })
+}
+
+#[tauri::command]
+pub fn lsp_detect_server(
+    state: tauri::State<'_, LspState>,
+    workspace: Option<String>,
+    language: String,
+) -> Result<LspServerInfo, String> {
+    let active = workspace.as_deref().and_then(|workspace| {
+        state
+            .0
+            .status(workspace)
+            .into_iter()
+            .find(|info| info.language == language)
+    });
+    let cfg = lsp_config::load_from(&lsp_config::config_path());
+    detect_server_info_from(&cfg, workspace.as_deref(), &language, active, which)
+}
 
 #[tauri::command]
 pub fn lsp_start(
@@ -1112,6 +1174,75 @@ mod tests {
     }
 
     // --- config set-server fallback ---
+
+    #[test]
+    fn detect_installed_but_not_started_returns_stopped_with_path() {
+        let mut cfg = lsp_config::LspConfig::default();
+        cfg.defaults
+            .insert("typescript".into(), "typescript-language-server".into());
+
+        let info = detect_server_info_from(&cfg, None, "typescript", None, |command| {
+            (command == "typescript-language-server")
+                .then(|| "/managed/typescript-language-server".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(info.server_id, "typescript-language-server");
+        assert_eq!(
+            info.path.as_deref(),
+            Some("/managed/typescript-language-server")
+        );
+        assert!(matches!(info.status, LspProcessStatus::Stopped));
+    }
+
+    #[test]
+    fn detect_uses_workspace_override_and_reports_missing_without_spawning() {
+        let mut cfg = lsp_config::LspConfig::default();
+        cfg.defaults.insert("python".into(), "pyright".into());
+        cfg.workspaces.insert(
+            "/workspace".into(),
+            std::collections::BTreeMap::from([("python".into(), "pylsp".into())]),
+        );
+
+        let info =
+            detect_server_info_from(&cfg, Some("/workspace"), "python", None, |_| None).unwrap();
+
+        assert_eq!(info.workspace, "/workspace");
+        assert_eq!(info.server_id, "pylsp");
+        assert!(info.path.is_none());
+        assert!(matches!(
+            info.status,
+            LspProcessStatus::Missing { ref install_hint }
+                if install_hint == "pip install python-lsp-server"
+        ));
+    }
+
+    #[test]
+    fn detect_prefers_active_server_info_over_filesystem_probe() {
+        let active = LspServerInfo {
+            workspace: "/workspace".into(),
+            language: "rust".into(),
+            server_id: "rust-analyzer".into(),
+            command: "rust-analyzer".into(),
+            path: Some("/active/rust-analyzer".into()),
+            status: LspProcessStatus::Starting,
+            last_startup_log: None,
+            last_error: None,
+            restart_count: 0,
+        };
+
+        let info = detect_server_info_from(
+            &lsp_config::LspConfig::default(),
+            Some("/workspace"),
+            "rust",
+            Some(active),
+            |_| panic!("active info must bypass filesystem detection"),
+        )
+        .unwrap();
+
+        assert!(matches!(info.status, LspProcessStatus::Starting));
+        assert_eq!(info.path.as_deref(), Some("/active/rust-analyzer"));
+    }
 
     #[test]
     fn apply_set_server_some_uncanonicalizable_keeps_raw_workspace() {

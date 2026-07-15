@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { listen } from "@tauri-apps/api/event"
 import { Download, FileText, RefreshCw, Trash2 } from "lucide-react"
 
@@ -7,9 +7,9 @@ import {
   lspConfigGet,
   lspConfigSetServer,
   lspConfigStale,
+  lspDetectServer,
   lspInstallServer,
   lspSetTrace,
-  lspStatus,
 } from "@/lib/ipc"
 import type {
   LspConfig,
@@ -17,6 +17,7 @@ import type {
   LspLanguage,
   LspServerInfo,
 } from "@/lib/types"
+import { workspacePathForDisplay } from "@/lib/paths"
 import { cn } from "@/lib/utils"
 import { FORMAT_ON_SAVE_STORAGE_KEY } from "@/editor/EditorPane"
 import { useLspStore } from "@/state/lspStore"
@@ -83,16 +84,17 @@ function statusBadge(
   const s = info.status
   if (s.status === "missing") return { text: "未安裝", tone: "err", detail: s.installHint }
   if (s.status === "crashed") return { text: "已崩潰", tone: "err", detail: s.reason }
-  if (s.status === "stopped") return { text: "已停止", tone: "idle" }
+  if (s.status === "stopped") {
+    return info.path ? { text: "已安裝", tone: "ok" } : { text: "已停止", tone: "idle" }
+  }
   return initialized ? { text: "就緒", tone: "ok" } : { text: "啟動中", tone: "warn" }
 }
 
 /**
  * One language card: active server + resolved binary + install state + startup
- * log / last error, with guided-install and re-detect actions. Data comes only
- * from lspStore (live info) + the parent's config read; there is no frontend
- * catalog wrapper, so the active server is read-only (no switch control) and a
- * bare card ("尚未啟動") is normal until a file mounts or an install resolves.
+ * log / last error, with guided-install and re-detect actions. The parent passes
+ * info already isolated to the selected workspace/global view; a bare card
+ * ("尚未啟動") is normal until detection or installation resolves.
  */
 function LspLanguageCard({
   language,
@@ -274,10 +276,10 @@ function LspLanguageCard({
 
 /**
  * LSP pane — behaviour switches (format-on-save, JSON-RPC trace), stale-override
- * cleanup, and one card per language. Reads live server info from useLspStore
- * (fed by LspBridge) plus the persisted config via lspConfigGet. The switchable
- * server catalog and the trace-file path have no frontend API, so the active
- * server is read-only and the trace note is descriptive (see T12 report gap).
+ * cleanup, and one card per language. Workspace views combine filtered live
+ * server info (fed by LspBridge) with resolve-only detection; global views use
+ * only their own detection/install results so workspace lifecycle events cannot
+ * cross the scope boundary. The persisted config comes from lspConfigGet.
  */
 export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   const servers = useLspStore((s) => s.servers)
@@ -303,6 +305,17 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   const [scope, setScope] = useState<"workspace" | "global">(
     workspacePath ? "workspace" : "global"
   )
+  const detectBatchGenRef = useRef(0)
+  const detectLanguageGenRef = useRef<Partial<Record<LspLanguage, number>>>({})
+  const detectionWorkspace = scope === "workspace" && workspacePath ? workspacePath : null
+  const currentViewKey = `${scope}:${detectionWorkspace ?? ""}`
+  const currentViewKeyRef = useRef(currentViewKey)
+  currentViewKeyRef.current = currentViewKey
+  const [detectedView, setDetectedView] = useState<{
+    key: string
+    servers: Partial<Record<LspLanguage, LspServerInfo>>
+  }>({ key: currentViewKey, servers: {} })
+  const detectedServers = detectedView.key === currentViewKey ? detectedView.servers : {}
 
   // Pull the persisted config + stale-override list once the pane opens.
   const refreshConfig = () => {
@@ -316,6 +329,48 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
       })
   }
   useEffect(refreshConfig, [])
+
+  const detectServers = useCallback(() => {
+    const batchGeneration = ++detectBatchGenRef.current
+    const workspace = scope === "workspace" && workspacePath ? workspacePath : null
+    const viewKeyAtRequest = currentViewKey
+    setDetectedView({ key: viewKeyAtRequest, servers: {} })
+
+    for (const { id: language } of LSP_LANGUAGES) {
+      const languageGeneration = (detectLanguageGenRef.current[language] ?? 0) + 1
+      detectLanguageGenRef.current[language] = languageGeneration
+      void lspDetectServer(workspace, language)
+        .then((info) => {
+          if (
+            batchGeneration === detectBatchGenRef.current &&
+            languageGeneration === detectLanguageGenRef.current[language] &&
+            viewKeyAtRequest === currentViewKeyRef.current
+          ) {
+            setDetectedView((previous) => ({
+              key: viewKeyAtRequest,
+              servers: {
+                ...(previous.key === viewKeyAtRequest ? previous.servers : {}),
+                [language]: info,
+              },
+            }))
+            // Runtime state is workspace-owned. Global probes stay local to
+            // this Settings view and cannot replace LspBridge lifecycle data.
+            if (workspace) useLspStore.getState().setServerInfo(info)
+          }
+        })
+        .catch(() => {})
+    }
+  }, [currentViewKey, scope, workspacePath])
+
+  // Probe every curated language when Settings opens or its effective scope
+  // changes. Invalidating the generation in cleanup prevents a late result from
+  // a prior workspace/scope from replacing the current view's state.
+  useEffect(() => {
+    detectServers()
+    return () => {
+      detectBatchGenRef.current += 1
+    }
+  }, [detectServers])
 
   // Install progress streams over lsp:install-progress (T14 emits). A terminal
   // phase (done/error) clears the entry — idempotent with handleInstall's finally
@@ -331,8 +386,16 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
     }
   }, [])
 
+  const serverInfoForView = (language: LspLanguage): LspServerInfo | undefined => {
+    const detected = detectedServers[language]
+    if (scope !== "workspace" || !workspacePath) return detected
+
+    const live = servers[language]
+    return live?.workspace === workspacePath ? live : detected
+  }
+
   const activeServerId = (language: LspLanguage): string | null => {
-    const live = servers[language]?.serverId
+    const live = serverInfoForView(language)?.serverId
     if (live) return live
     const override = workspacePath ? config?.workspaces[workspacePath]?.[language] : undefined
     return override ?? config?.defaults[language] ?? null
@@ -359,11 +422,11 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   }
 
   async function handleInstall(language: LspLanguage) {
-    // Snapshot the workspace this install was started for; only feed the result
-    // into the store if the UI is still on that workspace at settle — otherwise a
-    // late install for a workspace the user has left pollutes the new one's store
-    // (same workspace-currency guard as lspManager R2-5 / LspBridge :31).
-    const wsAtRequest = workspacePath ?? null
+    // Snapshot both scope and workspace. A global request and a workspace request
+    // can share the same open workspace, so workspace equality alone is not a
+    // sufficient stale-result guard.
+    const wsAtRequest = scope === "workspace" && workspacePath ? workspacePath : null
+    const viewKeyAtRequest = currentViewKey
     setInstallError((p) => ({ ...p, [language]: null }))
     setInstalling((p) => ({
       ...p,
@@ -374,11 +437,25 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
       // install resolves the workspace override, not just the global default
       // (W6A-F1); null when no workspace is open = global resolve.
       const info = await lspInstallServer(wsAtRequest, language)
-      if (wsAtRequest === (useWorkspaceStore.getState().workspacePath ?? null)) {
-        useLspStore.getState().setServerInfo(info)
+      if (viewKeyAtRequest === currentViewKeyRef.current) {
+        // Installation completion is newer evidence than any earlier probe for
+        // this language. Invalidate only that language so a late pre-install
+        // result cannot revert the card while other language probes still land.
+        detectLanguageGenRef.current[language] =
+          (detectLanguageGenRef.current[language] ?? 0) + 1
+        setDetectedView((previous) => ({
+          key: viewKeyAtRequest,
+          servers: {
+            ...(previous.key === viewKeyAtRequest ? previous.servers : {}),
+            [language]: info,
+          },
+        }))
+        if (wsAtRequest) useLspStore.getState().setServerInfo(info)
       }
     } catch (e) {
-      setInstallError((p) => ({ ...p, [language]: String(e) }))
+      if (viewKeyAtRequest === currentViewKeyRef.current) {
+        setInstallError((p) => ({ ...p, [language]: String(e) }))
+      }
     } finally {
       setInstalling((p) => ({ ...p, [language]: null }))
     }
@@ -386,14 +463,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
 
   function redetect() {
     refreshConfig()
-    if (!workspacePath) return
-    // Only surfaces already-started servers — there is no resolve-only probe API,
-    // so an unstarted server stays "尚未啟動" until installed or a file mounts it.
-    void lspStatus(workspacePath)
-      .then((list) => {
-        for (const inf of list) useLspStore.getState().setServerInfo(inf)
-      })
-      .catch(() => {})
+    detectServers()
   }
 
   async function clearStale(ws: string) {
@@ -473,7 +543,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
               {stale.map((ws) => (
                 <div key={ws} className="flex items-center justify-between gap-[10px]">
                   <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-(--ink-2)">
-                    {ws}
+                    {workspacePathForDisplay(ws)}
                   </span>
                   <div className="flex shrink-0 items-center gap-[6px]">
                     <button
@@ -544,8 +614,12 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
           label={lang.label}
           highlighted={lang.id === targetLanguage}
           activeServer={activeServerId(lang.id)}
-          info={servers[lang.id]}
-          initialized={initializedMap[lang.id] ?? false}
+          info={serverInfoForView(lang.id)}
+          initialized={
+            scope === "workspace" && servers[lang.id]?.workspace === workspacePath
+              ? (initializedMap[lang.id] ?? false)
+              : false
+          }
           progress={installing[lang.id] ?? null}
           error={installError[lang.id] ?? null}
           profiles={LSP_PROFILES[lang.id]}

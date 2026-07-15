@@ -288,6 +288,7 @@ pub fn run() {
             lsp_service::lsp_send,
             lsp_service::lsp_stop_workspace,
             lsp_service::lsp_status,
+            lsp_service::lsp_detect_server,
             lsp_service::lsp_config_get,
             lsp_service::lsp_config_set_server,
             lsp_service::lsp_config_stale,

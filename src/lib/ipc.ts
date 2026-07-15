@@ -337,6 +337,13 @@ export function lspStatus(workspace: string): Promise<LspServerInfo[]> {
     return invoke("lsp_status", { workspace })
 }
 
+export function lspDetectServer(
+    workspace: string | null,
+    language: string
+): Promise<LspServerInfo> {
+    return invoke("lsp_detect_server", { workspace, language })
+}
+
 export function lspConfigGet(): Promise<LspConfig> {
     return invoke("lsp_config_get")
 }
