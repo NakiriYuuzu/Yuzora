@@ -30,8 +30,8 @@ pub enum PtyEvent {
 
 struct PtySessionShared {
     info: Mutex<PtySessionInfo>,
-    writer: Mutex<Box<dyn Write + Send>>,
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    writer: Mutex<Option<Box<dyn Write + Send>>>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     stopped: AtomicBool,
     wait_started: AtomicBool,
     pid: u32,
@@ -121,6 +121,7 @@ impl PtyManager {
                 .map_err(|e| format!("take pty writer failed: {e}"))?;
             let mut cmd = CommandBuilder::new(&shell_path);
             cmd.env("SHELL", &shell_path);
+            cmd.env("TERM", "xterm-256color");
             cmd.cwd(workspace);
             #[cfg(unix)]
             cmd.arg("-l");
@@ -148,8 +149,8 @@ impl PtyManager {
             };
             let shared = Arc::new(PtySessionShared {
                 info: Mutex::new(info.clone()),
-                writer: Mutex::new(writer),
-                master: Mutex::new(pair.master),
+                writer: Mutex::new(Some(writer)),
+                master: Mutex::new(Some(pair.master)),
                 stopped: AtomicBool::new(false),
                 wait_started: AtomicBool::new(false),
                 pid,
@@ -203,6 +204,9 @@ impl PtyManager {
             })
             .ok_or_else(|| format!("no pty session {session_id}"))?;
         let mut writer = shared.writer.lock().unwrap();
+        let writer = writer
+            .as_mut()
+            .ok_or_else(|| format!("pty session {session_id} is closed"))?;
         writer
             .write_all(data.as_bytes())
             .map_err(|e| format!("pty write failed: {e}"))?;
@@ -220,10 +224,11 @@ impl PtyManager {
                 PtySessionEntry::Reserved(_) => None,
             })
             .ok_or_else(|| format!("no pty session {session_id}"))?;
-        shared
-            .master
-            .lock()
-            .unwrap()
+        let master = shared.master.lock().unwrap();
+        let master = master
+            .as_ref()
+            .ok_or_else(|| format!("pty session {session_id} is closed"))?;
+        master
             .resize(PtySize {
                 rows,
                 cols,
@@ -338,6 +343,18 @@ impl PtyManager {
         if should_kill {
             let _ = process_kill::kill_tree_pid(shared.pid);
         }
+        Self::release_pty_handles(shared);
+    }
+
+    fn release_pty_handles(shared: &PtySessionShared) {
+        // Dropping the writer closes ConPTY input. Dropping the master owns the
+        // platform PTY teardown; on Windows portable-pty calls ClosePseudoConsole.
+        // Take both out of their mutexes first so ClosePseudoConsole may wait
+        // while the dedicated reader thread continues draining final output.
+        let writer = shared.writer.lock().unwrap().take();
+        drop(writer);
+        let master = shared.master.lock().unwrap().take();
+        drop(master);
     }
 
     fn reader_loop(
@@ -676,10 +693,66 @@ pub async fn pty_close_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    #[cfg(windows)]
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     fn test_manager() -> Arc<PtyManager> {
         Arc::new(PtyManager::with_parts())
+    }
+
+    fn retained_test_session(session_id: &str) -> Arc<PtySessionShared> {
+        let pair = native_pty_system().openpty(PtySize::default()).unwrap();
+        let writer = pair.master.take_writer().unwrap();
+        let shared = Arc::new(PtySessionShared {
+            info: Mutex::new(PtySessionInfo {
+                session_id: session_id.to_string(),
+                workspace: "ws-a".to_string(),
+                shell: "test-shell".to_string(),
+                cols: 80,
+                rows: 24,
+            }),
+            writer: Mutex::new(Some(writer)),
+            master: Mutex::new(Some(pair.master)),
+            stopped: AtomicBool::new(false),
+            // Model the reader thread having reached child.wait(): close must
+            // release PTY resources without trying to kill the synthetic pid.
+            wait_started: AtomicBool::new(true),
+            pid: 0,
+        });
+        drop(pair.slave);
+        shared
+    }
+
+    #[test]
+    fn close_releases_pty_handles_while_reader_retains_shared() {
+        let mgr = test_manager();
+        let retained = retained_test_session("retained-close");
+        mgr.sessions.lock().unwrap().insert(
+            "retained-close".to_string(),
+            PtySessionEntry::Ready(retained.clone()),
+        );
+
+        mgr.close("retained-close").unwrap();
+
+        assert!(retained.writer.lock().unwrap().is_none());
+        assert!(retained.master.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn kill_all_releases_pty_handles_while_reader_retains_shared() {
+        let mgr = test_manager();
+        let retained = retained_test_session("retained-kill-all");
+        mgr.sessions.lock().unwrap().insert(
+            "retained-kill-all".to_string(),
+            PtySessionEntry::Ready(retained.clone()),
+        );
+
+        mgr.kill_all();
+
+        assert!(retained.writer.lock().unwrap().is_none());
+        assert!(retained.master.lock().unwrap().is_none());
     }
 
     fn capture_events() -> (OnEvent, Arc<Mutex<Vec<PtyEvent>>>) {
@@ -698,6 +771,255 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         f()
+    }
+
+    const CWD_FRAME_BEGIN: &str = "__YUZORA_CWD_BEGIN__";
+    const CWD_FRAME_END: &str = "__YUZORA_CWD_END__";
+
+    fn framed_cwd(events: &Arc<Mutex<Vec<PtyEvent>>>) -> Option<String> {
+        let output = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                PtyEvent::Output { data } => Some(data.as_str()),
+                PtyEvent::Exit { .. } => None,
+            })
+            .collect::<String>();
+        let framed = output.rsplit_once(CWD_FRAME_BEGIN)?.1;
+        let value = framed.split_once(CWD_FRAME_END)?.0;
+        Some(value.trim().to_string())
+    }
+
+    fn special_character_workspace() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("專案 空間 #100%");
+        fs::create_dir(&workspace).unwrap();
+        (root, workspace)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_shell_starts_in_existing_workspace_with_special_characters() {
+        let (_root, workspace) = special_character_workspace();
+        let expected = workspace
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let shell_args = vec![
+            "-c".to_string(),
+            format!("printf '%s\\n' {CWD_FRAME_BEGIN}; pwd; printf '%s\\n' {CWD_FRAME_END}"),
+        ];
+        let mgr = test_manager();
+        let (on_event, events) = capture_events();
+
+        mgr.open(
+            workspace.to_str().unwrap(),
+            "cwd-custom-shell",
+            Some("/bin/sh"),
+            Some(&shell_args),
+            80,
+            24,
+            on_event,
+        )
+        .unwrap();
+
+        assert!(
+            poll_until(Duration::from_secs(5), || framed_cwd(&events).as_deref()
+                == Some(expected.as_str())),
+            "PTY output did not contain workspace cwd {expected:?}: {:?}",
+            events.lock().unwrap()
+        );
+        mgr.close("cwd-custom-shell").unwrap();
+    }
+
+    #[cfg(windows)]
+    fn normalized_windows_text(value: &str) -> String {
+        value
+            .replace("\\\\?\\", "")
+            .replace('\r', "")
+            .to_lowercase()
+    }
+
+    #[cfg(windows)]
+    fn assert_windows_shell_starts_in_workspace(
+        session_id: &str,
+        shell: &Path,
+        shell_args: &[String],
+    ) {
+        let (_root, workspace) = special_character_workspace();
+        let expected = normalized_windows_text(&workspace.to_string_lossy());
+        let mgr = test_manager();
+        let (on_event, events) = capture_events();
+
+        mgr.open(
+            workspace.to_str().unwrap(),
+            session_id,
+            Some(shell.to_str().unwrap()),
+            Some(shell_args),
+            80,
+            24,
+            on_event,
+        )
+        .unwrap();
+
+        assert!(
+            poll_until(Duration::from_secs(10), || framed_cwd(&events)
+                .map(|value| normalized_windows_text(&value))
+                .as_deref()
+                == Some(expected.as_str())),
+            "PTY output did not contain workspace cwd {expected:?}: {:?}",
+            events.lock().unwrap()
+        );
+        mgr.close(session_id).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_starts_in_existing_workspace_with_special_characters() {
+        let system_root = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let powershell = system_root.join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        let shell_args = vec![
+            "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            format!(
+                "Write-Output '{CWD_FRAME_BEGIN}'; (Get-Location).Path; Write-Output '{CWD_FRAME_END}'"
+            ),
+        ];
+        assert_windows_shell_starts_in_workspace("cwd-powershell", &powershell, &shell_args);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_starts_in_existing_workspace_with_special_characters() {
+        let cmd = PathBuf::from(std::env::var_os("ComSpec").unwrap());
+        let shell_args = vec![
+            "/D".to_string(),
+            "/Q".to_string(),
+            "/C".to_string(),
+            format!("echo {CWD_FRAME_BEGIN} & cd & echo {CWD_FRAME_END}"),
+        ];
+        assert_windows_shell_starts_in_workspace("cwd-cmd", &cmd, &shell_args);
+    }
+
+    #[cfg(windows)]
+    fn child_conhost_pids() -> std::collections::HashSet<sysinfo::Pid> {
+        use sysinfo::{get_current_pid, ProcessesToUpdate, System};
+
+        let parent = get_current_pid().unwrap();
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        system
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                (process.parent() == Some(parent)
+                    && process
+                        .name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("conhost.exe"))
+                .then_some(*pid)
+            })
+            .collect()
+    }
+
+    #[cfg(windows)]
+    fn wait_for_new_conhosts(
+        baseline: &std::collections::HashSet<sysinfo::Pid>,
+    ) -> std::collections::HashSet<sysinfo::Pid> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let current = child_conhost_pids();
+            let created = current.difference(baseline).copied().collect();
+            if !created.is_empty() {
+                return created;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("ConPTY did not create a Yuzora-child conhost.exe within timeout");
+    }
+
+    #[cfg(windows)]
+    fn wait_for_windows_processes_gone(pids: &[u32]) {
+        use sysinfo::{Pid, ProcessesToUpdate, System};
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let mut system = System::new();
+            system.refresh_processes(ProcessesToUpdate::All, true);
+            if pids
+                .iter()
+                .all(|pid| system.process(Pid::from_u32(*pid)).is_none())
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("Windows PTY processes still exist after timeout: {pids:?}");
+    }
+
+    #[cfg(windows)]
+    fn open_windows_powershell(mgr: &Arc<PtyManager>, workspace: &Path, session_id: &str) -> u32 {
+        let system_root = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let powershell = system_root.join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        let shell_args = vec!["-NoLogo".to_string(), "-NoProfile".to_string()];
+        let (on_event, _events) = capture_events();
+        mgr.open(
+            workspace.to_str().unwrap(),
+            session_id,
+            Some(powershell.to_str().unwrap()),
+            Some(&shell_args),
+            80,
+            24,
+            on_event,
+        )
+        .unwrap();
+        mgr.debug_pid(session_id).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "run natively on Windows with --test-threads=1 to isolate process-tree evidence"]
+    fn windows_close_reaps_shell_and_conhost_without_accumulation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let baseline = child_conhost_pids();
+        let mgr = test_manager();
+
+        for index in 0..3 {
+            let session_id = format!("conhost-close-{index}");
+            let shell_pid = open_windows_powershell(&mgr, workspace.path(), &session_id);
+            let conhost_pids = wait_for_new_conhosts(&baseline);
+
+            mgr.close(&session_id).unwrap();
+
+            let mut pids = vec![shell_pid];
+            pids.extend(conhost_pids.into_iter().map(|pid| pid.as_u32()));
+            wait_for_windows_processes_gone(&pids);
+            assert_eq!(child_conhost_pids(), baseline);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "run natively on Windows with --test-threads=1 to isolate process-tree evidence"]
+    fn windows_kill_all_reaps_shells_and_conhosts() {
+        let workspace = tempfile::tempdir().unwrap();
+        let baseline = child_conhost_pids();
+        let mgr = test_manager();
+        let first_pid = open_windows_powershell(&mgr, workspace.path(), "conhost-kill-all-1");
+        let mut conhost_pids = wait_for_new_conhosts(&baseline);
+        let second_baseline = baseline.union(&conhost_pids).copied().collect();
+        let second_pid = open_windows_powershell(&mgr, workspace.path(), "conhost-kill-all-2");
+        conhost_pids.extend(wait_for_new_conhosts(&second_baseline));
+
+        mgr.kill_all();
+
+        let mut pids = vec![first_pid, second_pid];
+        pids.extend(conhost_pids.into_iter().map(|pid| pid.as_u32()));
+        wait_for_windows_processes_gone(&pids);
+        assert_eq!(child_conhost_pids(), baseline);
     }
 
     #[cfg(unix)]
@@ -898,6 +1220,61 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| matches!(event, PtyEvent::Exit { code: Some(0) }))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawned_terminal_advertises_xterm_256color() {
+        const CHILD_MARKER: &str = "YUZORA_PTY_TERM_TEST_CHILD";
+
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("pty_service::tests::spawned_terminal_advertises_xterm_256color")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env(CHILD_MARKER, "1")
+                .env("TERM", "dumb")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "TERM probe failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let mgr = test_manager();
+        let (on_event, events) = capture_events();
+        let shell_args = vec![
+            "-c".to_string(),
+            "printf '__YUZORA_TERM__%s__END__\\n' \"$TERM\"".to_string(),
+        ];
+        mgr.open(
+            "ws-a",
+            "term-env",
+            Some("/bin/sh"),
+            Some(&shell_args),
+            80,
+            24,
+            on_event,
+        )
+        .unwrap();
+
+        assert!(
+            poll_until(Duration::from_secs(5), || events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    PtyEvent::Output { data }
+                        if data.contains("__YUZORA_TERM__xterm-256color__END__")
+                ))),
+            "spawned shell did not receive TERM=xterm-256color: {:?}",
+            events.lock().unwrap()
+        );
     }
 
     #[test]

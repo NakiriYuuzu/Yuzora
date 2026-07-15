@@ -5,7 +5,6 @@ import { GitBridge } from "@/workbench/GitBridge";
 import { LspBridge } from "@/workbench/LspBridge";
 import { AgentBridge } from "@/workbench/AgentBridge";
 import { ProcessBridge } from "@/workbench/ProcessBridge";
-import { TerminalBridge } from "@/workbench/TerminalBridge";
 import { SshBridge } from "@/workbench/SshBridge";
 import { PerfBridge } from "@/workbench/PerfBridge";
 import { SessionRestoreBridge } from "@/workbench/SessionRestoreBridge";
@@ -21,7 +20,6 @@ function App() {
       <ExternalChangeResolver />
       <GitBridge />
       <LspBridge />
-      <TerminalBridge />
       <AgentBridge />
       <ProcessBridge />
       <SshBridge />

@@ -16,11 +16,13 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 vi.mock("@/terminal/TerminalSession", () => ({
   TerminalSession: ({
     sessionId,
+    workspace,
     shell,
     shellArgs,
     active,
   }: {
     sessionId: string
+    workspace: string
     shell: string | null
     shellArgs?: string[]
     active: boolean
@@ -28,6 +30,7 @@ vi.mock("@/terminal/TerminalSession", () => ({
     <button
       type="button"
       data-testid={`terminal-session-${sessionId}`}
+      data-workspace={workspace}
       data-shell={shell ?? ""}
       data-shell-args={shellArgs?.join("|") ?? ""}
       data-active={String(active)}
@@ -455,6 +458,57 @@ it("header 與 empty state 不會開啟 terminal entity menu", () => {
 })
 
 describe("TerminalDrawer sessions", () => {
+  it("sanitizes the visible workspace label while passing the raw path to the terminal", () => {
+    const rawPath = "\\\\?\\C:\\Users\\Yuuzu\\專案 空間 #100%"
+    useWorkspaceStore.setState({ workspacePath: rawPath })
+    renderDrawer()
+
+    expect(screen.getByText("C:\\Users\\Yuuzu\\專案 空間 #100%")).toBeInTheDocument()
+    expect(screen.queryByText(rawPath)).toBeNull()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+    expect(screen.getByTestId(/terminal-session-/)).toHaveAttribute("data-workspace", rawPath)
+  })
+
+  it("opens new sessions in the current workspace without moving existing sessions", () => {
+    const firstWorkspace = "\\\\?\\C:\\Users\\Yuuzu\\第一個 專案 #100%"
+    const secondWorkspace = "\\\\?\\D:\\工作區\\第二個 專案 #50%"
+    useWorkspaceStore.setState({ workspacePath: firstWorkspace })
+    renderDrawer()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+    const firstSession = useTerminalStore.getState().sessionsForWorkspace(firstWorkspace)[0]
+    expect(firstSession?.workspace).toBe(firstWorkspace)
+    const firstTerminal = screen.getByTestId(`terminal-session-${firstSession.sessionId}`)
+    expect(firstTerminal).toBeVisible()
+
+    act(() => useWorkspaceStore.setState({ workspacePath: secondWorkspace }))
+    expect(firstTerminal).toBeInTheDocument()
+    expect(firstTerminal).not.toBeVisible()
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    const secondSession = useTerminalStore.getState().sessionsForWorkspace(secondWorkspace)[0]
+    expect(secondSession?.workspace).toBe(secondWorkspace)
+    const secondTerminal = screen.getByTestId(`terminal-session-${secondSession.sessionId}`)
+    expect(secondTerminal).toHaveAttribute(
+      "data-workspace",
+      secondWorkspace
+    )
+    expect(secondTerminal).toBeVisible()
+    expect(useTerminalStore.getState().sessionsForWorkspace(firstWorkspace)).toEqual([
+      firstSession,
+    ])
+
+    act(() => useWorkspaceStore.setState({ workspacePath: firstWorkspace }))
+    expect(screen.getByTestId(`terminal-session-${firstSession.sessionId}`)).toBe(firstTerminal)
+    expect(firstTerminal).toHaveAttribute("data-workspace", firstWorkspace)
+    expect(firstTerminal).toBeVisible()
+    expect(secondTerminal).not.toBeVisible()
+    expect(useTerminalStore.getState().sessionsForWorkspace(secondWorkspace)).toEqual([
+      secondSession,
+    ])
+  })
+
   it("does not create sessions from render or visibility alone", () => {
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
 

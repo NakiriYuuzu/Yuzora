@@ -15,6 +15,7 @@ import { EmptyState } from "@/app/workbench/EmptyState"
 import { SplitRatioIndicator } from "@/app/workbench/SplitRatioIndicator"
 import { logUserAction } from "@/features/logs/userAction"
 import { showActionError } from "@/lib/actionFeedback"
+import { workspacePathForDisplay } from "@/lib/paths"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { MAX_PANES, useTerminalStore, type TerminalSplitDirection } from "@/state/terminalStore"
 import { useWorkbenchLayoutStore } from "@/state/workbenchLayoutStore"
@@ -134,7 +135,8 @@ export function TerminalDrawer({
   const { t } = useTranslation("terminal")
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const sessions = useTerminalStore((s) => s.sessions)
-  const layout = useTerminalStore((s) => (workspacePath ? s.layouts[workspacePath] : undefined))
+  const layouts = useTerminalStore((s) => s.layouts)
+  const layout = workspacePath ? layouts[workspacePath] : undefined
   const addSession = useTerminalStore((s) => s.addSession)
   const removeSession = useTerminalStore((s) => s.removeSession)
   const setActivePane = useTerminalStore((s) => s.setActivePane)
@@ -155,6 +157,7 @@ export function TerminalDrawer({
   const transitionResetFrameRef = useRef<number | null>(null)
   const previousMainSurfaceMinHeightRef = useRef(mainSurfaceMinHeight)
   const panes = layout?.panes ?? []
+  const workspaceLayouts = Object.entries(layouts).filter(([, candidate]) => candidate.panes.length > 0)
   const activePaneId = layout?.activePaneId ?? null
   const activePane = panes.find((pane) => pane.paneId === activePaneId)
   const activeSession = activePane ? sessions[activePane.sessionId] : undefined
@@ -280,9 +283,8 @@ export function TerminalDrawer({
     }
   }
 
-  const selectPane = (paneId: string) => {
-    if (!workspacePath) return
-    setActivePane(workspacePath, paneId)
+  const selectPane = (paneWorkspace: string, paneId: string) => {
+    setActivePane(paneWorkspace, paneId)
   }
 
   const finishDrag = (pointerId: number) => {
@@ -432,7 +434,7 @@ export function TerminalDrawer({
             </span>
             {workspacePath && (
               <span className="min-w-0 flex-1 truncate text-right font-mono text-[10px] text-(--term-fg2)">
-                {workspacePath}
+                {workspacePathForDisplay(workspacePath)}
               </span>
             )}
           </div>
@@ -550,60 +552,70 @@ export function TerminalDrawer({
               : "height 220ms var(--ease-spring), opacity 160ms var(--ease-out)",
           }}
         >
-          {panes.length === 0 ? (
-            <div className="flex h-full items-center justify-center">
+          <div className="relative h-full min-h-0">
+            {panes.length === 0 && (
+              <div className="flex h-full items-center justify-center">
               <EmptyState
                 icon={TerminalSquare}
                 title={t("noSessions")}
                 description={t("emptyDescription")}
                 tone="terminal"
               />
-            </div>
-          ) : (
-            <div
-              className={`flex h-full min-h-0 ${layout?.splitDirection === "down" ? "flex-col" : "flex-row"}`}
-              data-testid="terminal-pane-grid"
-            >
-              {panes.map((pane, index) => {
-                const session = sessions[pane.sessionId]
-                if (!session || !workspacePath) return null
-                const active = pane.paneId === activePaneId
-                const shellArgs = (session as TerminalSessionMetaWithArgs).shellArgs
-                const dividerClass =
-                  layout?.splitDirection === "down"
-                    ? index > 0
-                      ? "border-t border-(--term-line)"
-                      : ""
-                    : index > 0
-                      ? "border-l border-(--term-line)"
-                      : ""
+              </div>
+            )}
+            {workspaceLayouts.map(([paneWorkspace, paneLayout]) => {
+              const isCurrentWorkspace = paneWorkspace === workspacePath
+              return (
+                <div
+                  key={paneWorkspace}
+                  hidden={!isCurrentWorkspace}
+                  aria-hidden={!isCurrentWorkspace}
+                  inert={!isCurrentWorkspace}
+                  className={`${isCurrentWorkspace ? "flex" : "hidden"} h-full min-h-0 ${paneLayout.splitDirection === "down" ? "flex-col" : "flex-row"}`}
+                  data-testid={isCurrentWorkspace ? "terminal-pane-grid" : undefined}
+                >
+                  {paneLayout.panes.map((pane, index) => {
+                    const session = sessions[pane.sessionId]
+                    if (!session) return null
+                    const active = isCurrentWorkspace && pane.paneId === paneLayout.activePaneId
+                    const shellArgs = (session as TerminalSessionMetaWithArgs).shellArgs
+                    const dividerClass =
+                      paneLayout.splitDirection === "down"
+                        ? index > 0
+                          ? "border-t border-(--term-line)"
+                          : ""
+                        : index > 0
+                          ? "border-l border-(--term-line)"
+                          : ""
 
-                return (
-                  <div
-                    key={pane.paneId}
-                    data-testid={`terminal-pane-${pane.paneId}`}
-                    onClick={() => selectPane(pane.paneId)}
-                    onContextMenu={contextMenuHandler({
-                      kind: "terminal",
-                      workspacePath,
-                      paneId: pane.paneId,
-                      sessionId: pane.sessionId,
-                    })}
-                    className={`min-h-0 min-w-0 flex-1 ${dividerClass} ${active ? "ring-1 ring-inset ring-(--term-blue)" : ""}`}
-                  >
-                    <TerminalSession
-                      workspace={workspacePath}
-                      sessionId={session.sessionId}
-                      shell={session.shell || null}
-                      shellArgs={shellArgs}
-                      active={active}
-                      onExit={() => removeSession(workspacePath, session.sessionId)}
-                    />
-                  </div>
-                )
-              })}
-            </div>
-          )}
+                    return (
+                      <div
+                        key={pane.paneId}
+                        data-testid={`terminal-pane-${pane.paneId}`}
+                        onClick={() => selectPane(paneWorkspace, pane.paneId)}
+                        onContextMenu={contextMenuHandler({
+                          kind: "terminal",
+                          workspacePath: paneWorkspace,
+                          paneId: pane.paneId,
+                          sessionId: pane.sessionId,
+                        })}
+                        className={`min-h-0 min-w-0 flex-1 ${dividerClass} ${active ? "ring-1 ring-inset ring-(--term-blue)" : ""}`}
+                      >
+                        <TerminalSession
+                          workspace={paneWorkspace}
+                          sessionId={session.sessionId}
+                          shell={session.shell || null}
+                          shellArgs={shellArgs}
+                          active={active}
+                          onExit={() => removeSession(paneWorkspace, session.sessionId)}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
         </div>
       </div>
       {transientRatio !== null && (
