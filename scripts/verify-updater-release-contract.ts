@@ -60,6 +60,15 @@ assert(
   "private key password must come from the protected GitHub secret"
 )
 
+const releaseNotesGuard = guardSteps
+  .map((step, index) => record(step, `guard.steps[${index}]`))
+  .find((step) => step.name === "Verify user-facing release notes")
+assert(releaseNotesGuard, "guard must require release notes for the tagged version")
+assert(
+  releaseNotesGuard.run === 'bun scripts/release-notes.ts "$GITHUB_REF_NAME"',
+  "guard must validate the tagged CHANGELOG.md section"
+)
+
 const strategy = record(build.strategy, "build.strategy")
 const matrix = record(strategy.matrix, "build.strategy.matrix")
 assert(Array.isArray(matrix.include), "release matrix include is required")
@@ -85,6 +94,19 @@ const tauriAction = buildSteps
     typeof step.uses === "string" ? step.uses.startsWith("tauri-apps/tauri-action@") : false
   )
 assert(tauriAction, "tauri-action build step is required")
+const releaseNotesStep = buildSteps
+  .map((step, index) => record(step, `build.steps[${index}]`))
+  .find((step) => step.name === "Extract user-facing release notes")
+assert(releaseNotesStep, "build must extract release notes from CHANGELOG.md")
+assert(releaseNotesStep.id === "release-notes", "release notes step id must be release-notes")
+assert(
+  typeof releaseNotesStep.run === "string" &&
+    releaseNotesStep.run.includes(
+      'bun scripts/release-notes.ts "$GITHUB_REF_NAME" release-notes.md'
+    ) &&
+    releaseNotesStep.run.includes("$GITHUB_OUTPUT"),
+  "release notes step must expose the tagged CHANGELOG.md section"
+)
 const actionEnv = record(tauriAction.env, "tauri action env")
 const actionInputs = record(tauriAction.with, "tauri action inputs")
 assert(
@@ -97,6 +119,10 @@ assert(
   "build must receive the updater key password from GitHub secrets"
 )
 assert(actionInputs.includeUpdaterJson === true, "tauri-action must upload latest.json")
+assert(
+  actionInputs.releaseBody === "${{ steps.release-notes.outputs.body }}",
+  "GitHub Release and latest.json notes must use the tagged CHANGELOG.md section"
+)
 assert(actionInputs.updaterJsonPreferNsis === false, "Windows updater metadata must prefer MSI")
 assert(actionInputs.releaseDraft === true, "release must remain draft")
 assert(actionInputs.prerelease === false, "stable release must not be a prerelease")

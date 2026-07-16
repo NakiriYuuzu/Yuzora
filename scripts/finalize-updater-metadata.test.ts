@@ -11,6 +11,7 @@ const macUrl =
 function metadata() {
   return {
     version: "0.0.2",
+    notes: "### 改善\n\n- 可直接在設定中檢查更新。",
     platforms: {
       "windows-x86_64": { url: msiUrl, signature: "msi-signature" },
       "windows-x86_64-msi": { url: msiUrl, signature: "msi-signature" },
@@ -31,6 +32,12 @@ const assets = [
 ]
 
 describe("finalizeUpdaterMetadata", () => {
+  it("rejects updater metadata without user-facing release notes", () => {
+    expect(() =>
+      finalizeUpdaterMetadata({ ...metadata(), notes: undefined }, assets, "0.0.2")
+    ).toThrow("updater notes are required")
+  })
+
   it("removes NSIS platform entries while keeping MSI as the Windows OTA target", () => {
     const finalized = finalizeUpdaterMetadata(metadata(), assets, "0.0.2")
 
@@ -40,6 +47,7 @@ describe("finalizeUpdaterMetadata", () => {
     })
     expect(finalized.platforms["windows-x86_64-msi"]).toBeDefined()
     expect(finalized.platforms["windows-x86_64-nsis"]).toBeUndefined()
+    expect(finalized.notes).toBe("### 改善\n\n- 可直接在設定中檢查更新。")
   })
 
   it("rejects a generic Windows target that does not use MSI", () => {

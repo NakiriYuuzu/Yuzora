@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { getVersion } from "@tauri-apps/api/app"
+import changelogMarkdown from "../../../CHANGELOG.md?raw"
 import {
   Bot,
   Check,
@@ -18,6 +19,7 @@ import {
 import type { LucideIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { extractReleaseNotes, parseReleaseNoteLines } from "@/lib/releaseNotes"
 import {
   Dialog,
   DialogClose,
@@ -84,6 +86,33 @@ interface SettingsDialogProps {
   openNonce?: number
 }
 
+function ReleaseNotes({ markdown }: { markdown: string }) {
+  return (
+    <div className="flex flex-col gap-[7px] text-[11.5px] leading-[1.55] text-(--ink-2)">
+      {parseReleaseNoteLines(markdown).map((line, index) => {
+        if (line.kind === "heading") {
+          return (
+            <p key={`${line.kind}-${index}`} className="font-semibold text-(--ink-1)">
+              {line.text}
+            </p>
+          )
+        }
+        if (line.kind === "item") {
+          return (
+            <div key={`${line.kind}-${index}`} className="flex gap-[7px]">
+              <span aria-hidden="true" className="text-(--yz-accent-ink)">
+                •
+              </span>
+              <span>{line.text}</span>
+            </div>
+          )
+        }
+        return <p key={`${line.kind}-${index}`}>{line.text}</p>
+      })}
+    </div>
+  )
+}
+
 type SectionId =
   | "appearance"
   | "editor"
@@ -142,6 +171,7 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const { t } = useTranslation("common")
   const { t: tw } = useTranslation("workbench")
+  const { t: tu } = useTranslation("updates")
   const [section, setSection] = useState<SectionId>("appearance")
   const [targetLanguage, setTargetLanguage] = useState<string | undefined>(undefined)
   const [language, setLanguage] = useState<LanguagePreference>(getLanguagePreference)
@@ -216,6 +246,9 @@ export function SettingsDialog({
     contentLength && contentLength > 0
       ? Math.min(100, Math.round((downloadedBytes / contentLength) * 100))
       : null
+  const currentReleaseNotes = appVersion
+    ? extractReleaseNotes(changelogMarkdown, appVersion)
+    : null
 
   const requestInstall = () => {
     if (hasDirtyDocuments) {
@@ -447,6 +480,14 @@ export function SettingsDialog({
                       : tw("settings.appName")}
                   </span>
                 </SettingCard>
+                {currentReleaseNotes && appVersion && (
+                  <SettingCard
+                    label={tu("currentReleaseNotes")}
+                    sub={tu("currentReleaseNotesSub", { version: appVersion })}
+                  >
+                    <ReleaseNotes markdown={currentReleaseNotes} />
+                  </SettingCard>
+                )}
                 <SettingCard label={tw("settings.updates")} sub={tw("settings.updatesSub")}>
                   <div className="flex min-h-[32px] items-center justify-between gap-[12px]">
                     <span aria-live="polite" className="text-[11.5px] text-(--ink-2)">
@@ -522,6 +563,16 @@ export function SettingsDialog({
                         className="h-full rounded-full bg-(--yz-accent) transition-[width]"
                         style={{ width: `${downloadPercent}%` }}
                       />
+                    </div>
+                  )}
+                  {availableUpdate?.body?.trim() && (
+                    <div className="mt-[12px] border-t border-(--line-1) pt-[11px]">
+                      <p className="mb-[8px] text-[11.5px] font-semibold text-(--ink-1)">
+                        {tu("availableReleaseNotes", {
+                          version: availableUpdate.version,
+                        })}
+                      </p>
+                      <ReleaseNotes markdown={availableUpdate.body} />
                     </div>
                   )}
                   {installBlockedByDirty && updateStatus === "downloaded" && (
