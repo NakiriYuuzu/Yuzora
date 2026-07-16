@@ -133,3 +133,27 @@ jobs:
               --data-binary @"$f" \
               "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${alias}" > /dev/null
           done
+
+  finalize-updater-metadata:
+    name: Finalize updater metadata
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Download generated updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p updater-release
+          gh release download "$GITHUB_REF_NAME" --pattern latest.json --dir updater-release
+      - name: Enforce MSI-only Windows updater metadata
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun scripts/finalize-updater-metadata.ts updater-release/latest.json
+      - name: Replace generated updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" updater-release/latest.json --clobber

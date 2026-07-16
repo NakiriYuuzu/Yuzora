@@ -37,10 +37,13 @@ const workflow = record(
 const jobs = record(workflow.jobs, "jobs")
 const guard = record(jobs.guard, "jobs.guard")
 const build = record(jobs.build, "jobs.build")
+const finalize = record(jobs["finalize-updater-metadata"], "jobs.finalize-updater-metadata")
 const guardSteps = guard.steps
 const buildSteps = build.steps
+const finalizeSteps = finalize.steps
 assert(Array.isArray(guardSteps), "guard steps are required")
 assert(Array.isArray(buildSteps), "build steps are required")
+assert(Array.isArray(finalizeSteps), "updater metadata finalizer steps are required")
 
 const signingGuard = guardSteps
   .map((step, index) => record(step, `guard.steps[${index}]`))
@@ -99,4 +102,25 @@ assert(actionInputs.releaseDraft === true, "release must remain draft")
 assert(actionInputs.prerelease === false, "stable release must not be a prerelease")
 assert(actionInputs.tauriScript === "bun tauri", "release build must use the workspace Tauri CLI")
 
-console.log("Updater release contract verified: signed draft, stable latest.json, MSI OTA")
+assert(finalize.needs === "build", "updater metadata must be finalized after every platform build")
+const normalizedFinalizeSteps = finalizeSteps.map((step, index) =>
+  record(step, `finalize.steps[${index}]`)
+)
+const sanitizeStep = normalizedFinalizeSteps.find(
+  (step) => step.name === "Enforce MSI-only Windows updater metadata"
+)
+const replaceStep = normalizedFinalizeSteps.find(
+  (step) => step.name === "Replace generated updater metadata"
+)
+assert(sanitizeStep, "release must remove NSIS entries from updater metadata")
+assert(
+  sanitizeStep.run === "bun scripts/finalize-updater-metadata.ts updater-release/latest.json",
+  "release must run the checked-in updater metadata finalizer"
+)
+assert(replaceStep, "release must replace the generated updater metadata")
+assert(
+  typeof replaceStep.run === "string" && replaceStep.run.includes("--clobber"),
+  "release must upload finalized latest.json with clobber"
+)
+
+console.log("Updater release contract verified: signed draft, stable latest.json, MSI-only OTA")
