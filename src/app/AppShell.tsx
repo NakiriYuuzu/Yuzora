@@ -21,6 +21,7 @@ import { WorkspaceRail } from "@/app/workbench/WorkspaceRail"
 import { logUserAction } from "@/features/logs/userAction"
 import { devServerStopWorkspace, ptyCloseWorkspace } from "@/lib/ipc"
 import { showsNativeTrafficLights } from "@/lib/platform"
+import { useUpdateStore } from "@/state/updateStore"
 import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
@@ -158,6 +159,7 @@ export function AppShell() {
         void themed
           .catch(() => {})
           .then(() => getCurrentWindow().show())
+          .then(() => useUpdateStore.getState().checkInBackgroundOnce())
           .catch(() => {})
       } else {
         void themed.catch(() => {})

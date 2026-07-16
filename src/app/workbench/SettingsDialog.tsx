@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { getVersion } from "@tauri-apps/api/app"
 import {
   Bot,
   Check,
@@ -7,6 +8,7 @@ import {
   Droplet,
   FileText,
   GitBranch,
+  Info,
   MonitorPlay,
   Server,
   Shield,
@@ -21,8 +23,11 @@ import {
   DialogClose,
   DialogContent,
   DialogDescription,
+  DialogFooter,
+  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
 import {
   getLanguagePreference,
   setLanguagePreference,
@@ -31,6 +36,8 @@ import {
 import { useEditorSettingsStore, type EditorFontSize } from "@/state/editorSettingsStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
+import { useUpdateStore } from "@/state/updateStore"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 import { SettingCard, Segmented, ToggleRow } from "./settingsPrimitives"
 import { GitSection } from "./GitSection"
 import { TerminalSection } from "./TerminalSection"
@@ -87,6 +94,7 @@ type SectionId =
   | "logs"
   | "terminal"
   | "preview"
+  | "about"
 
 // Design reference settings nav (§ settingsNav): three panes with icon rows.
 // Labels/sub-copy live in the "workbench" i18n namespace under
@@ -102,6 +110,7 @@ const SECTIONS: { id: SectionId; icon: LucideIcon }[] = [
   { id: "preview", icon: MonitorPlay },
   { id: "safety", icon: Shield },
   { id: "git", icon: GitBranch },
+  { id: "about", icon: Info },
 ]
 
 // Reference §2.5 accent table (rgb/solid/ink). Only "lime" is selected here —
@@ -146,7 +155,35 @@ export function SettingsDialog({
   )
   const [reconcile, setReconcile] = useState(true)
   const [confirmGit, setConfirmGit] = useState(true)
+  const [appVersion, setAppVersion] = useState<string | null>(null)
+  const [installBlockedByDirty, setInstallBlockedByDirty] = useState(false)
+  const [installConfirmationOpen, setInstallConfirmationOpen] = useState(false)
   const settingsLogSource = useUiStore((s) => s.settingsLogSource)
+  const updateStatus = useUpdateStore((s) => s.status)
+  const availableUpdate = useUpdateStore((s) => s.update)
+  const downloadedBytes = useUpdateStore((s) => s.downloadedBytes)
+  const contentLength = useUpdateStore((s) => s.contentLength)
+  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates)
+  const downloadUpdate = useUpdateStore((s) => s.downloadUpdate)
+  const installAndRelaunch = useUpdateStore((s) => s.installAndRelaunch)
+  const hasDirtyDocuments = useWorkspaceStore((s) =>
+    s.groups.some((group) => group.tabs.some((tab) => tab.dirty))
+  )
+
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    void getVersion()
+      .then((version) => {
+        if (active) setAppVersion(version)
+      })
+      .catch(() => {
+        if (active) setAppVersion(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [open])
 
   // Apply an external target on open, and again if the target changes while the
   // dialog stays mounted. `openNonce` (bumped per openSettings) is a dep so
@@ -175,6 +212,19 @@ export function SettingsDialog({
   }
 
   const active = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
+  const downloadPercent =
+    contentLength && contentLength > 0
+      ? Math.min(100, Math.round((downloadedBytes / contentLength) * 100))
+      : null
+
+  const requestInstall = () => {
+    if (hasDirtyDocuments) {
+      setInstallBlockedByDirty(true)
+      return
+    }
+    setInstallBlockedByDirty(false)
+    setInstallConfirmationOpen(true)
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -235,7 +285,11 @@ export function SettingsDialog({
                 aria-hidden="true"
                 className="size-[6px] shrink-0 rounded-full bg-(--yz-accent)"
               />
-              <span className="font-mono text-[10px] text-(--ink-3)">Yuzora v0.1.0</span>
+              <span className="font-mono text-[10px] text-(--ink-3)">
+                {appVersion
+                  ? tw("settings.appVersionValue", { version: appVersion })
+                  : tw("settings.appName")}
+              </span>
             </div>
           </aside>
 
@@ -380,9 +434,128 @@ export function SettingsDialog({
             {section === "preview" && <PreviewSection />}
 
             {section === "git" && <GitSection />}
+
+            {section === "about" && (
+              <div className="flex flex-col gap-[14px]">
+                <SettingCard
+                  label={tw("settings.currentVersion")}
+                  sub={tw("settings.currentVersionSub")}
+                >
+                  <span className="font-mono text-[13px] font-semibold text-(--ink-1)">
+                    {appVersion
+                      ? tw("settings.appVersionValue", { version: appVersion })
+                      : tw("settings.appName")}
+                  </span>
+                </SettingCard>
+                <SettingCard label={tw("settings.updates")} sub={tw("settings.updatesSub")}>
+                  <div className="flex min-h-[32px] items-center justify-between gap-[12px]">
+                    <span aria-live="polite" className="text-[11.5px] text-(--ink-2)">
+                      {updateStatus === "checking" && tw("settings.checkingForUpdates")}
+                      {updateStatus === "up-to-date" && tw("settings.upToDate")}
+                      {updateStatus === "available" && availableUpdate
+                        ? tw("settings.updateAvailable", { version: availableUpdate.version })
+                        : null}
+                      {updateStatus === "error" && tw("settings.updateCheckFailed")}
+                      {updateStatus === "downloading" &&
+                        (downloadPercent === null
+                          ? tw("settings.downloadingUpdate")
+                          : tw("settings.downloadingUpdateProgress", {
+                              percent: downloadPercent,
+                            }))}
+                      {updateStatus === "downloaded" && tw("settings.downloadComplete")}
+                      {updateStatus === "download-error" && tw("settings.downloadFailed")}
+                      {updateStatus === "installing" && tw("settings.installingUpdate")}
+                      {updateStatus === "install-error" && tw("settings.installFailed")}
+                    </span>
+                    {updateStatus === "available" ? (
+                      <Button type="button" size="sm" onClick={() => void downloadUpdate()}>
+                        {tw("settings.downloadUpdate")}
+                      </Button>
+                    ) : updateStatus === "download-error" ? (
+                      <Button type="button" size="sm" onClick={() => void downloadUpdate()}>
+                        {tw("settings.retryDownload")}
+                      </Button>
+                    ) : updateStatus === "downloading" ? (
+                      <Button type="button" size="sm" disabled>
+                        {tw("settings.downloadingUpdate")}
+                      </Button>
+                    ) : updateStatus === "downloaded" ? (
+                      <Button type="button" size="sm" onClick={requestInstall}>
+                        {tw("settings.installAndRestart")}
+                      </Button>
+                    ) : updateStatus === "installing" ? (
+                      <Button type="button" size="sm" disabled>
+                        {tw("settings.installingUpdate")}
+                      </Button>
+                    ) : updateStatus === "install-error" ? (
+                      <Button type="button" size="sm" onClick={requestInstall}>
+                        {tw("settings.retryInstall")}
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={updateStatus === "checking"}
+                        onClick={() => void checkForUpdates()}
+                      >
+                        {updateStatus === "checking"
+                          ? tw("settings.checkingForUpdates")
+                          : updateStatus === "error"
+                            ? tw("settings.retryUpdateCheck")
+                            : updateStatus === "up-to-date"
+                              ? tw("settings.checkAgain")
+                              : tw("settings.checkForUpdates")}
+                      </Button>
+                    )}
+                  </div>
+                  {updateStatus === "downloading" && downloadPercent !== null && (
+                    <div
+                      role="progressbar"
+                      aria-label={tw("settings.downloadProgress")}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={downloadPercent}
+                      className="mt-[8px] h-[5px] overflow-hidden rounded-full bg-(--paper-2)"
+                    >
+                      <div
+                        className="h-full rounded-full bg-(--yz-accent) transition-[width]"
+                        style={{ width: `${downloadPercent}%` }}
+                      />
+                    </div>
+                  )}
+                  {installBlockedByDirty && updateStatus === "downloaded" && (
+                    <p role="alert" className="mt-[9px] text-[11px] text-destructive">
+                      {tw("settings.unsavedDocumentsBlockInstall")}
+                    </p>
+                  )}
+                </SettingCard>
+              </div>
+            )}
           </div>
         </div>
       </DialogContent>
+      <Dialog open={installConfirmationOpen} onOpenChange={setInstallConfirmationOpen}>
+        <DialogContent showCloseButton={false} className="sm:max-w-[440px]">
+          <DialogHeader>
+            <DialogTitle>{tw("settings.installConfirmTitle")}</DialogTitle>
+            <DialogDescription>{tw("settings.installConfirmDescription")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setInstallConfirmationOpen(false)}>
+              {tw("settings.cancelInstall")}
+            </Button>
+            <Button
+              onClick={() => {
+                setInstallConfirmationOpen(false)
+                void installAndRelaunch()
+              }}
+            >
+              {tw("settings.installAndRestart")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   )
 }

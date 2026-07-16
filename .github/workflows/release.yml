@@ -17,14 +17,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify tag matches tauri.conf.json version
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Validate updater signing inputs
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "::error::tag v$TAG != tauri.conf.json version $VERSION" >&2
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required"
             exit 1
           fi
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required"
+            exit 1
+          fi
+      - name: Verify tag and product versions
+        run: bun run check:version
+      - name: Verify updater release contract
+        run: bun run check:updater-release
 
   build:
     needs: guard
@@ -71,6 +84,8 @@ jobs:
         id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # ---- macOS 簽章／notarization（Phase 2：補上 secrets 即自動生效）----
           # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -83,6 +98,9 @@ jobs:
           releaseName: 'Yuzora ${{ github.ref_name }}'
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: false
+          tauriScript: bun tauri
           args: ${{ matrix.args }}
 
       # 產品頁「直接下載」用的固定檔名別名（方案 A）：

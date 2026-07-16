@@ -1,6 +1,6 @@
 [package]
 name = "yuzora"
-version = "0.0.1"
+version = "0.0.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -74,5 +74,9 @@ uuid = { version = "1", default-features = false, features = ["v4"] }
 tiny_http = "0.12.0"
 tempfile = "3"
 tauri-plugin-window-state = "2.4.1"
+tauri-plugin-process = "2.3.1"
 
 [dev-dependencies]
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-updater = "2.10.1"

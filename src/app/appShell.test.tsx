@@ -10,6 +10,7 @@ import {
   useRecentWorkspacesStore,
 } from "@/state/recentWorkspaces"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
+import { useUpdateStore } from "@/state/updateStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const windowMocks = vi.hoisted(() => ({
@@ -24,12 +25,20 @@ const windowMocks = vi.hoisted(() => ({
   ),
 }))
 
+const updaterMocks = vi.hoisted(() => ({
+  check: vi.fn(async () => null as { version: string } | null),
+}))
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setTheme: windowMocks.setTheme,
     show: windowMocks.show,
     onCloseRequested: windowMocks.onCloseRequested,
   }),
+}))
+
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: updaterMocks.check,
 }))
 
 vi.mock("@/features/logs/userAction", () => ({
@@ -78,6 +87,8 @@ describe("AppShell", () => {
     localStorage.removeItem(APPEARANCE_SETTINGS_STORAGE_KEY)
     useRecentWorkspacesStore.setState({ moveOpenedWorkspaceToTop: true })
     useUiStore.setState(uiInitialState)
+    useUpdateStore.getState().reset()
+    updaterMocks.check.mockResolvedValue(null)
     useWorkspaceStore.setState({
       workspacePath: null,
       groups: [{ tabs: [], activePath: null }],
@@ -215,6 +226,61 @@ describe("AppShell", () => {
     render(<AppShell />)
 
     await waitFor(() => expect(windowMocks.show).toHaveBeenCalledTimes(1))
+  })
+
+  it("視窗可互動後只做一次背景更新檢查，更新狀態不在 Settings 外顯示", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    mockWindows("main")
+    mockIPC(() => {})
+    updaterMocks.check.mockResolvedValue({ version: "0.0.3" })
+
+    let resolveShow!: () => void
+    windowMocks.show.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveShow = resolve
+        })
+    )
+
+    render(<AppShell />)
+
+    await waitFor(() => expect(windowMocks.show).toHaveBeenCalledTimes(1))
+    expect(updaterMocks.check).not.toHaveBeenCalled()
+
+    resolveShow()
+    await waitFor(() => expect(updaterMocks.check).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText("Yuzora v0.0.3 is available")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    const dialog = await screen.findByRole("dialog")
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Dark" }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(updaterMocks.check).toHaveBeenCalledTimes(1)
+  })
+
+  it("背景檢查失敗時全域靜默，只記錄去敏感診斷事件", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    mockWindows("main")
+    mockIPC(() => {})
+    updaterMocks.check.mockRejectedValue(
+      new Error("https://updates.invalid/?token=never-log-this")
+    )
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    try {
+      render(<AppShell />)
+
+      await waitFor(() => expect(updaterMocks.check).toHaveBeenCalledTimes(1))
+      await waitFor(() =>
+        expect(warn).toHaveBeenCalledWith("Update check failed", {
+          event: "update_check_failed",
+        })
+      )
+      expect(screen.queryByText("Couldn't check for updates")).not.toBeInTheDocument()
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("never-log-this")
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it("預設 auto 且系統為深色時套用 dark class，並把偏好寫回 localStorage", () => {

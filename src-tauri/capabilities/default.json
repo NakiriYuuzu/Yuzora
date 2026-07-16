@@ -12,6 +12,10 @@
     "opener:default",
     { "identifier": "opener:allow-open-path", "allow": [{ "path": "$HOME/.yuzora/**" }] },
     "dialog:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text"
   ]

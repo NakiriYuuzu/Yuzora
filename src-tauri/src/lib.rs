@@ -117,6 +117,7 @@ pub fn run() {
     let database_shutdown_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         // Remember window size/position/maximized across launches. VISIBLE is
@@ -150,6 +151,9 @@ pub fn run() {
         )))
         .setup(|app| {
             use tauri::{Emitter, Manager};
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             let handle = app.handle().clone();
             let profile_repository_path =
                 app.path().app_data_dir()?.join("database-profiles-v1.json");

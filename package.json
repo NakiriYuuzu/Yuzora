@@ -1,7 +1,7 @@
 {
   "name": "yuzora",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,8 @@
     "tauri:build": "tauri build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check:version": "bun scripts/verify-version-consistency.ts",
+    "check:updater-release": "bun scripts/verify-updater-release-contract.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.json && bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.node.json"
@@ -51,6 +53,8 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@types/markdown-it": "^14.1.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
