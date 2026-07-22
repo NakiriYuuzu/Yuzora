@@ -7,6 +7,7 @@ import { Channel, invoke } from "@tauri-apps/api/core"
 // `platform.ts` (which owns `isTauri`).
 export { invoke }
 
+import type { AgentId, AgentRuntimeAvailability } from "./agentPresets"
 import type {
     FileNode,
     WorkspacePathIndexResult,
@@ -23,6 +24,7 @@ import type {
     FileAtRevResult,
     LspServerInfo,
     LspConfig,
+    PtyActivity,
     PtyEvent,
     PtySessionInfo,
     DevServerDetect,
@@ -79,6 +81,11 @@ export interface GitRollbackResult {
     restored: string[]
     preservedUntracked: string[]
     deleted: string[]
+}
+
+export interface AgentLatestVersion {
+    agentId: AgentId
+    version: string
 }
 
 export function openWorkspace(path: string): Promise<string> {
@@ -284,6 +291,10 @@ export function ptyResize(sessionId: string, cols: number, rows: number): Promis
     return invoke("pty_resize", { sessionId, cols, rows })
 }
 
+export function ptyActivity(sessionId: string): Promise<PtyActivity> {
+    return invoke("pty_activity", { sessionId })
+}
+
 export function ptyClose(sessionId: string): Promise<void> {
     return invoke("pty_close", { sessionId })
 }
@@ -381,6 +392,14 @@ export function lspInstallServer(
 
 export function agentList(cwd: string): Promise<string[]> {
     return invoke("agent_list", { cwd })
+}
+
+export function agentDetectRuntimes(): Promise<AgentRuntimeAvailability> {
+    return invoke("agent_detect_runtimes")
+}
+
+export function agentLatestVersions(): Promise<AgentLatestVersion[]> {
+    return invoke("agent_latest_versions")
 }
 
 export function dbListTables(identity: DbConnectionIdentity): Promise<DbTable[]> {

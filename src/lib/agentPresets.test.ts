@@ -10,7 +10,7 @@ import {
 import {
   AGENT_PRESETS, AGENT_VISUALS, CUSTOM_AGENT_VISUAL, agentDisplayName,
   agentPresetForCommand, commandForAgent, commandForPreset,
-  resolveCuratedAgentCommand,
+  resolveCuratedAgentCommand, resolveRuntimeCommand,
 } from "./agentPresets"
 
 function installLocalStorage(): void {
@@ -35,21 +35,15 @@ describe("agentPresets", () => {
     localStorage.clear()
   })
 
-  it("exposes pi, claude, codex in display order with exact verified defaults", () => {
+  it("exposes pi, claude, codex in display order with latest defaults", () => {
     expect(AGENT_PRESETS.map((a) => a.id)).toEqual(["pi", "claude", "codex"])
-    expect(commandForAgent("pi")).toBe("bunx pi-acp@0.0.31")
-    expect(commandForAgent("claude")).toBe("bunx @agentclientprotocol/claude-agent-acp@0.58.1")
-    expect(commandForAgent("codex")).toBe("bunx @agentclientprotocol/codex-acp@1.1.2")
-    expect(AGENT_PRESETS.map((agent) => agent.verifiedCommand).some((command) => command.includes("@latest"))).toBe(false)
+    expect(commandForAgent("pi")).toBe("bunx pi-acp@latest")
+    expect(commandForAgent("claude")).toBe("bunx @agentclientprotocol/claude-agent-acp@latest")
+    expect(commandForAgent("codex")).toBe("bunx @agentclientprotocol/codex-acp@latest")
+    expect(AGENT_PRESETS.every((agent) => agent.latestCommand.endsWith("@latest"))).toBe(true)
   })
 
-  it("resolves verified, explicitly selected latest, and untrusted custom modes", () => {
-    expect(resolveCuratedAgentCommand("codex", "verified")).toEqual({
-      selectedPreset: "codex",
-      commandMode: "verified",
-      command: "bunx @agentclientprotocol/codex-acp@1.1.2",
-      trustedAgentId: "codex",
-    })
+  it("resolves trusted latest and untrusted custom modes", () => {
     expect(resolveCuratedAgentCommand("codex", "latest")).toEqual({
       selectedPreset: "codex",
       commandMode: "latest",
@@ -85,14 +79,14 @@ describe("agentPresets", () => {
   })
 
   it("resolves preset → command, custom → the custom text (empty custom falls back to pi)", () => {
-    expect(commandForPreset("claude", "ignored")).toBe("bunx @agentclientprotocol/claude-agent-acp@0.58.1")
+    expect(commandForPreset("claude", "ignored")).toBe("bunx @agentclientprotocol/claude-agent-acp@latest")
     expect(commandForPreset("custom", "uvx my-acp")).toBe("uvx my-acp")
-    expect(commandForPreset("custom", "  ")).toBe("bunx pi-acp@0.0.31")
+    expect(commandForPreset("custom", "  ")).toBe("bunx pi-acp@latest")
   })
 
-  it("reverse-maps built-in verified/latest commands for labelling; unknown → custom", () => {
+  it("reverse-maps built-in latest commands for labelling; removed pins and unknown commands are custom", () => {
     expect(agentPresetForCommand("bunx @agentclientprotocol/codex-acp@latest")).toBe("codex")
-    expect(agentPresetForCommand("bunx pi-acp@0.0.31")).toBe("pi")
+    expect(agentPresetForCommand("bunx pi-acp@0.0.31")).toBe("custom")
     expect(agentPresetForCommand("uvx something-unknown")).toBe("custom")
   })
 
@@ -102,9 +96,9 @@ describe("agentPresets", () => {
       command: "ignored",
       traceEnabled: false,
       presetCommands: {
-        pi: { mode: "verified", customCommand: "" },
+        pi: { mode: "latest", customCommand: "" },
         claude: { mode: "latest", customCommand: "" },
-        codex: { mode: "verified", customCommand: "" },
+        codex: { mode: "latest", customCommand: "" },
       },
     })
     expect(resolvePrewarmAgentId()).toBe("claude")
@@ -114,9 +108,9 @@ describe("agentPresets", () => {
       command: "secret custom command",
       traceEnabled: false,
       presetCommands: {
-        pi: { mode: "verified", customCommand: "" },
-        claude: { mode: "verified", customCommand: "" },
-        codex: { mode: "verified", customCommand: "" },
+        pi: { mode: "latest", customCommand: "" },
+        claude: { mode: "latest", customCommand: "" },
+        codex: { mode: "latest", customCommand: "" },
       },
     })
     expect(resolvePrewarmAgentId()).toBe("pi")
@@ -144,8 +138,8 @@ describe("agentPresets", () => {
       traceEnabled: false,
       presetCommands: {
         pi: { mode: "custom", customCommand: "contains-a-secret" },
-        claude: { mode: "verified", customCommand: "" },
-        codex: { mode: "verified", customCommand: "" },
+        claude: { mode: "latest", customCommand: "" },
+        codex: { mode: "latest", customCommand: "" },
       },
     })
     expect(resolvePrewarmAgentId()).toBeNull()
@@ -158,12 +152,68 @@ describe("agentPresets", () => {
       command: "ignored",
       traceEnabled: false,
       presetCommands: {
-        pi: { mode: "verified", customCommand: "" },
+        pi: { mode: "latest", customCommand: "" },
         claude: { mode: "latest", customCommand: "" },
         codex: { mode: "custom", customCommand: "secret wrapper" },
       },
     })
 
     expect(resolvePrewarmAgentId()).toBe("claude")
+  })
+})
+
+describe("resolveRuntimeCommand (#15 runtime fallback)", () => {
+  const all = { bunx: true, deno: true, node: true, npx: true }
+
+  it("keeps a bunx command unchanged when bunx is available", () => {
+    expect(resolveRuntimeCommand("bunx pi-acp@latest", all)).toEqual({
+      kind: "unchanged",
+      command: "bunx pi-acp@latest",
+    })
+  })
+
+  it("rewrites bunx to npx -y when bunx is missing and npx exists", () => {
+    expect(
+      resolveRuntimeCommand("bunx pi-acp@latest", { ...all, bunx: false }),
+    ).toEqual({
+      kind: "fallback",
+      command: "npx -y pi-acp@latest",
+      runtime: "node",
+    })
+    expect(
+      resolveRuntimeCommand(
+        "bunx @agentclientprotocol/claude-agent-acp@latest",
+        { ...all, bunx: false, deno: false },
+      ),
+    ).toEqual({
+      kind: "fallback",
+      command: "npx -y @agentclientprotocol/claude-agent-acp@latest",
+      runtime: "node",
+    })
+  })
+
+  it("does not fall back to deno (unverified adapter compatibility)", () => {
+    // bun 缺席、deno 存在但 npx 缺席：deno 順位刻意跳過 → unavailable。
+    expect(
+      resolveRuntimeCommand("bunx pi-acp@latest", {
+        bunx: false, deno: true, node: false, npx: false,
+      }),
+    ).toEqual({ kind: "unavailable", command: "bunx pi-acp@latest" })
+  })
+
+  it("passes non-bunx commands through untouched regardless of runtimes", () => {
+    const none = { bunx: false, deno: false, node: false, npx: false }
+    expect(resolveRuntimeCommand("node my-agent.js", none)).toEqual({
+      kind: "unchanged",
+      command: "node my-agent.js",
+    })
+  })
+
+  it("reports unavailable when neither bunx nor npx exists", () => {
+    expect(
+      resolveRuntimeCommand("bunx pi-acp@latest", {
+        bunx: false, deno: false, node: true, npx: false,
+      }),
+    ).toEqual({ kind: "unavailable", command: "bunx pi-acp@latest" })
   })
 })

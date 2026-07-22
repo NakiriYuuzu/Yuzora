@@ -1,167 +1,244 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
-import { terminalInitialState, useTerminalStore } from "./terminalStore"
+import {
+    MAX_TERMINAL_TITLE_LENGTH,
+    terminalDisplayTitle,
+    terminalInitialState,
+    useTerminalStore,
+    type TerminalSessionMeta
+} from "./terminalStore"
 
-const first = {
-    sessionId: "term-1",
-    title: "zsh",
-    workspace: "/ws/a",
-    shell: "/bin/zsh",
-    cols: 120,
-    rows: 30
+function session(
+    sessionId: string,
+    workspace = "/ws/a",
+    title = sessionId
+): TerminalSessionMeta {
+    return {
+        sessionId,
+        title,
+        launchStatus: "opening",
+        workspace,
+        shell: "/bin/zsh",
+        cols: 120,
+        rows: 30
+    }
 }
 
-const second = {
-    sessionId: "term-2",
-    title: "node",
-    workspace: "/ws/a",
-    shell: "/bin/zsh",
-    cols: 100,
-    rows: 24
-}
-
-const otherWorkspace = {
-    sessionId: "term-3",
-    title: "other",
-    workspace: "/ws/b",
-    shell: "/bin/zsh",
-    cols: 80,
-    rows: 24
-}
+const first = session("term-1", "/ws/a", "Terminal 1")
+const second = session("term-2", "/ws/a", "Terminal 2")
+const third = session("term-3", "/ws/a", "Terminal 3")
+const otherWorkspace = session("term-b1", "/ws/b", "Terminal 1")
 
 beforeEach(() => useTerminalStore.getState().reset())
 
 describe("useTerminalStore", () => {
-    it("adds sessions as panes and marks the new pane active", () => {
-        const s = useTerminalStore.getState()
+    it("adds the first tab and assigns it to the only visible pane", () => {
+        useTerminalStore.getState().addSession("/ws/a", first, "pane-a")
 
-        s.addSession("/ws/a", first)
-
-        const state = useTerminalStore.getState()
-        expect(state.sessions[first.sessionId]).toEqual(first)
-        expect(state.layouts["/ws/a"]).toEqual({
-            panes: [{ paneId: first.sessionId, sessionId: first.sessionId }],
-            activePaneId: first.sessionId,
-            splitDirection: null
+        expect(useTerminalStore.getState().sessions[first.sessionId]).toEqual(first)
+        expect(useTerminalStore.getState().layouts["/ws/a"]).toEqual({
+            tabIds: [first.sessionId],
+            panes: [{ paneId: "pane-a", sessionId: first.sessionId }],
+            activePaneId: "pane-a",
+            splitRatio: 0.5,
+            nextTerminalNumber: 1,
+            renamingSessionId: null
         })
     })
 
-    it("splits from a pane once and caps the workspace layout at two panes", () => {
-        const s = useTerminalStore.getState()
-        s.addSession("/ws/a", first, "pane-a")
-
-        s.splitFrom("/ws/a", "pane-a", second, "down")
-        s.splitFrom("/ws/a", "pane-a", otherWorkspace)
+    it("keeps unlimited ordered tabs while New replaces only the focused pane", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first, "pane-a")
+        store.addSession("/ws/a", second)
+        store.addSession("/ws/a", third)
 
         const state = useTerminalStore.getState()
+        expect(state.layouts["/ws/a"].tabIds).toEqual([
+            first.sessionId,
+            second.sessionId,
+            third.sessionId
+        ])
+        expect(state.layouts["/ws/a"].panes).toEqual([
+            { paneId: "pane-a", sessionId: third.sessionId }
+        ])
+        expect(state.sessionsForWorkspace("/ws/a")).toEqual([first, second, third])
+    })
+
+    it("splits once to the right and rejects a third visible pane", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first, "pane-a")
+        store.splitFrom("/ws/a", "pane-a", second)
+        store.splitFrom("/ws/a", "pane-a", third)
+
+        const state = useTerminalStore.getState()
+        expect(state.layouts["/ws/a"].tabIds).toEqual([first.sessionId, second.sessionId])
         expect(state.layouts["/ws/a"].panes).toEqual([
             { paneId: "pane-a", sessionId: first.sessionId },
             { paneId: second.sessionId, sessionId: second.sessionId }
         ])
-        expect(state.sessions[second.sessionId]).toEqual(second)
-        expect(state.sessions[otherWorkspace.sessionId]).toBeUndefined()
         expect(state.layouts["/ws/a"].activePaneId).toBe(second.sessionId)
-        expect(state.layouts["/ws/a"].splitDirection).toBe("down")
+        expect(state.sessions[third.sessionId]).toBeUndefined()
     })
 
-    it("applies the split cap per workspace", () => {
-        const s = useTerminalStore.getState()
-        s.addSession("/ws/a", first, "pane-a")
-        s.splitFrom("/ws/a", "pane-a", second)
+    it("selects an already-visible tab by focusing its pane and replaces only the focused pane otherwise", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first, "pane-a")
+        store.splitFrom("/ws/a", "pane-a", second)
+        store.addSession("/ws/a", third)
 
-        s.addSession("/ws/b", otherWorkspace, "pane-b")
-        s.splitFrom("/ws/b", "pane-b", { ...otherWorkspace, sessionId: "term-4", title: "other split" })
-
-        const state = useTerminalStore.getState()
-        expect(state.layouts["/ws/a"].panes).toHaveLength(2)
-        expect(state.layouts["/ws/b"].panes).toEqual([
-            { paneId: "pane-b", sessionId: otherWorkspace.sessionId },
-            { paneId: "term-4", sessionId: "term-4" }
+        expect(useTerminalStore.getState().layouts["/ws/a"].panes).toEqual([
+            { paneId: "pane-a", sessionId: first.sessionId },
+            { paneId: second.sessionId, sessionId: third.sessionId }
         ])
-    })
 
-    it("removes a session and reassigns the active pane within the same workspace", () => {
-        const s = useTerminalStore.getState()
-        s.addSession("/ws/a", first, "pane-a")
-        s.splitFrom("/ws/a", "pane-a", second)
-        s.addSession("/ws/b", otherWorkspace, "pane-b")
+        store.selectTab("/ws/a", second.sessionId)
+        expect(useTerminalStore.getState().layouts["/ws/a"].panes).toEqual([
+            { paneId: "pane-a", sessionId: first.sessionId },
+            { paneId: second.sessionId, sessionId: second.sessionId }
+        ])
 
-        s.removeSession("/ws/a", second.sessionId)
-
-        const state = useTerminalStore.getState()
-        expect(state.sessions[second.sessionId]).toBeUndefined()
-        expect(state.layouts["/ws/a"]).toEqual({
-            panes: [{ paneId: "pane-a", sessionId: first.sessionId }],
-            activePaneId: "pane-a",
-            splitDirection: null
-        })
-        expect(state.layouts["/ws/b"]).toEqual({
-            panes: [{ paneId: "pane-b", sessionId: otherWorkspace.sessionId }],
-            activePaneId: "pane-b",
-            splitDirection: null
-        })
-    })
-
-    it("focuses the removed pane's next neighbor, then the previous neighbor", () => {
-        const third = { ...second, sessionId: "term-4", title: "third" }
-        useTerminalStore.setState({
-            sessions: {
-                [first.sessionId]: first,
-                [second.sessionId]: second,
-                [third.sessionId]: third
-            },
-            layouts: {
-                "/ws/a": {
-                    panes: [
-                        { paneId: "pane-a", sessionId: first.sessionId },
-                        { paneId: "pane-b", sessionId: second.sessionId },
-                        { paneId: "pane-c", sessionId: third.sessionId }
-                    ],
-                    activePaneId: "pane-a",
-                    splitDirection: "right"
-                }
-            }
-        })
-
-        useTerminalStore.getState().removeSession("/ws/a", second.sessionId)
-        expect(useTerminalStore.getState().layouts["/ws/a"].activePaneId).toBe("pane-c")
-
-        useTerminalStore.getState().removeSession("/ws/a", third.sessionId)
+        store.selectTab("/ws/a", first.sessionId)
         expect(useTerminalStore.getState().layouts["/ws/a"].activePaneId).toBe("pane-a")
     })
 
-    it("clears the active pane when the last session is removed", () => {
-        const s = useTerminalStore.getState()
-        s.addSession("/ws/a", first, "pane-a")
+    it("unsplits when a visible tab closes without auto-filling from hidden tabs", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first, "pane-a")
+        store.splitFrom("/ws/a", "pane-a", second)
+        store.addSession("/ws/a", third)
 
-        s.removeSession("/ws/a", first.sessionId)
+        store.removeSession("/ws/a", first.sessionId)
 
-        const state = useTerminalStore.getState()
-        expect(state.sessions).toEqual({})
-        expect(state.layouts["/ws/a"]).toEqual({
-            panes: [],
-            activePaneId: null,
-            splitDirection: null
-        })
+        const layout = useTerminalStore.getState().layouts["/ws/a"]
+        expect(layout.tabIds).toEqual([second.sessionId, third.sessionId])
+        expect(layout.panes).toEqual([{ paneId: second.sessionId, sessionId: third.sessionId }])
+        expect(layout.activePaneId).toBe(second.sessionId)
     })
 
-    it("keeps sessions isolated by workspace", () => {
-        const s = useTerminalStore.getState()
-        s.addSession("/ws/a", first)
-        s.addSession("/ws/b", otherWorkspace)
+    it("selects the right tab neighbor first, then the left, when the only visible tab closes", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first, "pane-a")
+        store.addSession("/ws/a", second)
+        store.addSession("/ws/a", third)
+        store.selectTab("/ws/a", second.sessionId)
 
-        const aSessions = useTerminalStore.getState().sessionsForWorkspace("/ws/a")
-        const bSessions = useTerminalStore.getState().sessionsForWorkspace("/ws/b")
+        store.removeSession("/ws/a", second.sessionId)
+        expect(useTerminalStore.getState().layouts["/ws/a"].panes[0].sessionId).toBe(
+            third.sessionId
+        )
 
-        expect(aSessions).toEqual([first])
-        expect(bSessions).toEqual([otherWorkspace])
+        store.removeSession("/ws/a", third.sessionId)
+        expect(useTerminalStore.getState().layouts["/ws/a"].panes[0].sessionId).toBe(
+            first.sessionId
+        )
+    })
+
+    it("closes a hidden tab without changing visible panes or focus", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first, "pane-a")
+        store.addSession("/ws/a", second)
+        const before = useTerminalStore.getState().layouts["/ws/a"]
+
+        store.removeSession("/ws/a", first.sessionId)
+
+        const after = useTerminalStore.getState().layouts["/ws/a"]
+        expect(after.panes).toEqual(before.panes)
+        expect(after.activePaneId).toBe(before.activePaneId)
+    })
+
+    it("reorders tabs independently from visible pane assignments", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first, "pane-a")
+        store.splitFrom("/ws/a", "pane-a", second)
+        store.addSession("/ws/a", third)
+        const panes = useTerminalStore.getState().layouts["/ws/a"].panes
+
+        store.reorderTab("/ws/a", third.sessionId, 0)
+
+        expect(useTerminalStore.getState().layouts["/ws/a"].tabIds).toEqual([
+            third.sessionId,
+            first.sessionId,
+            second.sessionId
+        ])
+        expect(useTerminalStore.getState().layouts["/ws/a"].panes).toEqual(panes)
+    })
+
+    it("allocates monotonic default title numbers per workspace without reuse", () => {
+        const store = useTerminalStore.getState()
+
+        expect(store.allocateTerminalNumber("/ws/a")).toBe(1)
+        expect(store.allocateTerminalNumber("/ws/a")).toBe(2)
+        expect(store.allocateTerminalNumber("/ws/b")).toBe(1)
+        expect(store.allocateTerminalNumber("/ws/a")).toBe(3)
+    })
+
+    it("applies Manual Alias over Shell Title over Default Name and clears each layer with blank input", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first)
+        store.setShellTitle(first.sessionId, "  dev server\nready  ")
+        expect(terminalDisplayTitle(useTerminalStore.getState().sessions[first.sessionId])).toBe(
+            "dev server ready"
+        )
+
+        store.setManualTitle(first.sessionId, " API ")
+        store.setShellTitle(first.sessionId, "new shell title")
+        expect(terminalDisplayTitle(useTerminalStore.getState().sessions[first.sessionId])).toBe("API")
+
+        store.setManualTitle(first.sessionId, "  ")
+        expect(terminalDisplayTitle(useTerminalStore.getState().sessions[first.sessionId])).toBe(
+            "new shell title"
+        )
+        store.setShellTitle(first.sessionId, "\u0000\n")
+        expect(terminalDisplayTitle(useTerminalStore.getState().sessions[first.sessionId])).toBe(
+            first.title
+        )
+    })
+
+    it("caps normalized titles at 128 Unicode code points", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first)
+        store.setManualTitle(first.sessionId, "🌙".repeat(MAX_TERMINAL_TITLE_LENGTH + 10))
+
+        expect(Array.from(useTerminalStore.getState().sessions[first.sessionId].manualTitle ?? ""))
+            .toHaveLength(MAX_TERMINAL_TITLE_LENGTH)
+    })
+
+    it("retains and clamps the split ratio for later splits", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first)
+
+        store.setSplitRatio("/ws/a", 0.1)
+        expect(useTerminalStore.getState().layouts["/ws/a"].splitRatio).toBe(0.2)
+        store.setSplitRatio("/ws/a", 0.9)
+        expect(useTerminalStore.getState().layouts["/ws/a"].splitRatio).toBe(0.8)
+    })
+
+    it("tracks rename and launch state without changing the display-title priority", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first)
+        store.beginRename("/ws/a", first.sessionId)
+        store.setLaunchStatus(first.sessionId, "failed")
+
+        expect(useTerminalStore.getState().layouts["/ws/a"].renamingSessionId).toBe(first.sessionId)
+        expect(useTerminalStore.getState().sessions[first.sessionId].launchStatus).toBe("failed")
+
+        store.finishRename("/ws/a", first.sessionId)
+        expect(useTerminalStore.getState().layouts["/ws/a"].renamingSessionId).toBeNull()
+    })
+
+    it("keeps sessions and counters isolated by workspace", () => {
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first)
+        store.addSession("/ws/b", otherWorkspace)
+
+        expect(store.sessionsForWorkspace("/ws/a")).toEqual([first])
+        expect(store.sessionsForWorkspace("/ws/b")).toEqual([otherWorkspace])
     })
 
     it("reset restores the exported initial state", () => {
-        const s = useTerminalStore.getState()
-        s.addSession("/ws/a", first)
-
-        s.reset()
+        const store = useTerminalStore.getState()
+        store.addSession("/ws/a", first)
+        store.reset()
 
         expect(useTerminalStore.getState()).toMatchObject(terminalInitialState)
     })

@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest"
 
 import {
     MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY,
+    RECENT_WORKSPACE_PRESENTATIONS_STORAGE_KEY,
     RECENT_WORKSPACES_STORAGE_KEY,
     loadMoveOpenedWorkspaceToTop,
+    loadRecentWorkspacePresentations,
     loadRecentWorkspaces,
     normalizeWorkspacePath,
     useRecentWorkspacesStore
@@ -37,6 +39,12 @@ const remove = (p: string) => useRecentWorkspacesStore.getState().remove(p)
 const list = () => useRecentWorkspacesStore.getState().list
 const setMoveOpenedWorkspaceToTop = (enabled: boolean) =>
     useRecentWorkspacesStore.getState().setMoveOpenedWorkspaceToTop(enabled)
+const presentationFor = (path: string) =>
+    useRecentWorkspacesStore.getState().presentationFor(path)
+const updatePresentation = (
+    path: string,
+    patch: { name?: string; glyph?: string; color?: "ocean" }
+) => useRecentWorkspacesStore.getState().updatePresentation(path, patch)
 
 beforeEach(() => {
     installLocalStorage()
@@ -45,6 +53,7 @@ beforeEach(() => {
     // freshly-cleared storage so each test starts empty.
     useRecentWorkspacesStore.setState({
         list: loadRecentWorkspaces(),
+        presentations: loadRecentWorkspacePresentations(),
         moveOpenedWorkspaceToTop: loadMoveOpenedWorkspaceToTop()
     })
 })
@@ -161,6 +170,57 @@ describe("useRecentWorkspacesStore", () => {
 
         expect(list()).toEqual([])
         expect(loadRecentWorkspaces()).toEqual([])
+    })
+
+    it("stores presentation metadata by canonical workspace path", () => {
+        updatePresentation("C:\\Work\\Repo", {
+            name: "Studio",
+            glyph: "⚡",
+            color: "ocean"
+        })
+
+        expect(presentationFor("\\\\?\\c:\\work\\repo\\")).toEqual({
+            name: "Studio",
+            glyph: "⚡",
+            color: "ocean"
+        })
+        expect(loadRecentWorkspacePresentations()).toEqual({
+            "c:/work/repo": { name: "Studio", glyph: "⚡", color: "ocean" }
+        })
+    })
+
+    it("updates presentation fields without discarding the other fields", () => {
+        updatePresentation("/work/repo", { name: "Studio", glyph: "⚡" })
+
+        updatePresentation("/work/repo/", { name: "Studio Next" })
+
+        expect(presentationFor("/work/repo")).toEqual({
+            name: "Studio Next",
+            glyph: "⚡"
+        })
+    })
+
+    it("removing a recent workspace also clears its presentation metadata", () => {
+        record("C:\\Work\\Repo")
+        updatePresentation("C:\\Work\\Repo", { name: "Studio" })
+
+        remove("\\\\?\\c:\\work\\repo")
+
+        expect(presentationFor("C:\\Work\\Repo")).toBeUndefined()
+        expect(localStorage.getItem(RECENT_WORKSPACE_PRESENTATIONS_STORAGE_KEY)).toBe("{}")
+    })
+
+    it("ignores malformed persisted presentation fields", () => {
+        localStorage.setItem(RECENT_WORKSPACE_PRESENTATIONS_STORAGE_KEY, JSON.stringify({
+            "/good": { name: "Studio", glyph: "🧩", color: "ocean" },
+            "/bad-color": { name: "Unsafe", color: "url(javascript:alert(1))" },
+            "/not-an-object": "nope"
+        }))
+
+        expect(loadRecentWorkspacePresentations()).toEqual({
+            "/good": { name: "Studio", glyph: "🧩", color: "ocean" },
+            "/bad-color": { name: "Unsafe" }
+        })
     })
 
     it("dedupes persisted drive and UNC aliases while preserving the first MRU raw value", () => {

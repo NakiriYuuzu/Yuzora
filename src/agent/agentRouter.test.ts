@@ -101,10 +101,10 @@ describe("createAgentRouter", () => {
         const router = createAgentRouter({}, (command) => makeStub(command))
         const s = await router.newSession("/ws", "codex")
         await router.prompt(s.sessionId, [{ type: "text", text: "x" }])
-        expect(lastPromptCommand()).toBe("bunx @agentclientprotocol/codex-acp@1.1.2")
+        expect(lastPromptCommand()).toBe("bunx @agentclientprotocol/codex-acp@latest")
         expect(s.agentIdentity).toEqual({
             selectedPreset: "codex",
-            commandMode: "verified",
+            commandMode: "latest",
             trustedAgentId: "codex"
         })
     })
@@ -144,10 +144,10 @@ describe("createAgentRouter", () => {
             "yuzora:agent-settings",
             JSON.stringify({
                 preset: "pi",
-                command: "bunx pi-acp@0.0.31",
+                command: "bunx pi-acp@latest",
                 traceEnabled: false,
                 presetCommands: {
-                    pi: { mode: "verified", customCommand: "" },
+                    pi: { mode: "latest", customCommand: "" },
                     claude: { mode: "latest", customCommand: "" },
                     codex: { mode: "custom", customCommand: "uvx wrapped-codex" }
                 }
@@ -213,18 +213,18 @@ describe("createAgentRouter", () => {
     })
 
     it("supportsLoadSession routes to the default-command (pi) sub when there's no known session and no agentId", async () => {
-        const router = createAgentRouter({}, (command) => makeStub(command, command === "bunx pi-acp@0.0.31"))
+        const router = createAgentRouter({}, (command) => makeStub(command, command === "bunx pi-acp@latest"))
 
         await expect(router.supportsLoadSession?.("/ws")).resolves.toBe(true)
     })
 
     it("supportsLoadSession routes to the codex sub when an unknown sessionId is passed with agentId=codex — fixes F1", async () => {
         const factory = vi.fn((command: string) =>
-            makeStub(command, command === "bunx @agentclientprotocol/codex-acp@1.1.2"))
+            makeStub(command, command === "bunx @agentclientprotocol/codex-acp@latest"))
         const router = createAgentRouter({}, factory)
 
         await expect(router.supportsLoadSession?.("/ws", "codex")).resolves.toBe(true)
-        expect(factory).toHaveBeenCalledWith("bunx @agentclientprotocol/codex-acp@1.1.2", "/ws")
+        expect(factory).toHaveBeenCalledWith("bunx @agentclientprotocol/codex-acp@latest", "/ws")
     })
 
     it("loadSession routes an unknown (restored) sessionId to the codex sub when agentId=codex — fixes F1", async () => {
@@ -232,7 +232,7 @@ describe("createAgentRouter", () => {
         const router = createAgentRouter({}, factory)
 
         await router.loadSession("restored-session", "/ws", "codex")
-        expect(factory).toHaveBeenCalledWith("bunx @agentclientprotocol/codex-acp@1.1.2", "/ws")
+        expect(factory).toHaveBeenCalledWith("bunx @agentclientprotocol/codex-acp@latest", "/ws")
     })
 
     it("supportsLoadSession reflects false when the resolved sub does not declare the capability", async () => {
@@ -249,7 +249,7 @@ describe("createAgentRouter", () => {
         const sessions = await router.listSessions("/ws")
         expect(sessions).toHaveLength(2)
         expect(sessions.map((s) => s.id).sort()).toEqual(
-            ["bunx @agentclientprotocol/codex-acp@1.1.2-session-1", "bunx pi-acp@0.0.31-session-0"].sort()
+            ["bunx @agentclientprotocol/codex-acp@latest-session-1", "bunx pi-acp@latest-session-0"].sort()
         )
     })
 
@@ -261,7 +261,7 @@ describe("createAgentRouter", () => {
 
         await router.prepare?.("/ws", "pi")
 
-        expect(factory).toHaveBeenCalledWith("bunx pi-acp@0.0.31", "/ws")
+        expect(factory).toHaveBeenCalledWith("bunx pi-acp@latest", "/ws")
         expect(stub.prepare).toHaveBeenCalledWith("/ws")
         expect(await router.listSessions("/ws")).toEqual([])
     })
@@ -305,10 +305,10 @@ describe("createAgentRouter", () => {
 
         const result = await router.setSessionConfigOption?.(pi.sessionId, "model", "fast")
 
-        expect(result).toEqual([expect.objectContaining({ id: "bunx pi-acp@0.0.31" })])
-        expect(stubs.get("bunx pi-acp@0.0.31")?.setSessionConfigOption)
+        expect(result).toEqual([expect.objectContaining({ id: "bunx pi-acp@latest" })])
+        expect(stubs.get("bunx pi-acp@latest")?.setSessionConfigOption)
             .toHaveBeenCalledWith(pi.sessionId, "model", "fast")
-        expect(stubs.get("bunx @agentclientprotocol/codex-acp@1.1.2")?.setSessionConfigOption)
+        expect(stubs.get("bunx @agentclientprotocol/codex-acp@latest")?.setSessionConfigOption)
             .not.toHaveBeenCalled()
     })
 
@@ -325,8 +325,8 @@ describe("createAgentRouter", () => {
 
         await expect(router.disposePrepared?.("/prepared")).resolves.toBe(true)
         await expect(router.disposePrepared?.("/owned")).resolves.toBe(false)
-        expect(stubs.get("bunx pi-acp@0.0.31")?.disposePrepared).toHaveBeenCalledWith("/prepared")
-        expect(stubs.get("bunx @agentclientprotocol/codex-acp@1.1.2")?.disposePrepared).not.toHaveBeenCalled()
+        expect(stubs.get("bunx pi-acp@latest")?.disposePrepared).toHaveBeenCalledWith("/prepared")
+        expect(stubs.get("bunx @agentclientprotocol/codex-acp@latest")?.disposePrepared).not.toHaveBeenCalled()
     })
 
     it("does not dispose a sub while session ownership is being established", async () => {

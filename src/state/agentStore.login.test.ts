@@ -36,7 +36,7 @@ describe("terminal login command honors the selected preset", () => {
         localStorage.setItem(AGENT_SETTINGS_STORAGE_KEY,
             JSON.stringify({ preset: "claude", command: "", traceEnabled: false }))
         const cmd = build({ id: "l", name: "Login", type: "terminal", args: ["--login"], env: {} })
-        expect(cmd).toContain("@agentclientprotocol/claude-agent-acp@0.58.1")
+        expect(cmd).toContain("@agentclientprotocol/claude-agent-acp@latest")
     })
 
     it("uses the picker-selected agent's login command, not the global preset (F1)", async () => {
@@ -69,7 +69,7 @@ describe("terminal login command honors the selected preset", () => {
             { shellArgs?: string[] }
         >
         const added = sessions.at(-1)
-        expect(added?.shellArgs?.[1]).toContain("@agentclientprotocol/codex-acp@1.1.2")
+        expect(added?.shellArgs?.[1]).toContain("@agentclientprotocol/codex-acp@latest")
         expect(added?.shellArgs?.[1]).not.toContain("claude-agent-acp")
     })
 

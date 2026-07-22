@@ -126,9 +126,57 @@ describe("reduceSessionUpdate", () => {
         t = reduceSessionUpdate(t, { sessionUpdate: "tool_call", toolCallId: "tc1", title: "edit a.rs", status: "pending" })
         t = reduceSessionUpdate(t, { sessionUpdate: "tool_call_update", toolCallId: "tc1", status: "completed", content: [{ type: "diff", path: "a.rs", oldText: "x", newText: "y" }] })
         expect(t[0]).toMatchObject({ who: "agent", text: "Hello" })
-        const tool = t.find((e) => "kind" in e && e.kind !== "diff")
+        const tool = t.find((e) => "kind" in e)
         expect(tool).toMatchObject({ kind: "tool", meta: expect.stringContaining("completed") })
-        expect(t.some((e) => "kind" in e && e.kind === "diff")).toBe(true)
+        // diff content 不再另立 diff 卡（view/apply diff 已移除）；以 [diff: path] 併入 tool 內文。
+        expect(t.some((e) => "kind" in e && e.kind === "diff")).toBe(false)
+        expect(tool).toMatchObject({ text: expect.stringContaining("[diff: a.rs]") })
+        // diff 行數統計進 meta.diffs（composer 上方變更彙總的資料來源）。
+        expect(JSON.parse((tool as { meta: string }).meta).diffs).toEqual([
+            { path: "a.rs", added: 1, removed: 1 }
+        ])
+    })
+
+    // sub-agent UI（soak 回饋 2026-07-22）：claude 對子 agent 內部 tool call 蓋
+    // _meta.claudeCode.parentToolUseId——保留進 block meta，晚到的 update 不得沖掉。
+    it("keeps claude parentToolUseId in tool meta across updates", () => {
+        let t: TranscriptEntry[] = []
+        t = reduceSessionUpdate(t, {
+            sessionUpdate: "tool_call",
+            toolCallId: "child-1",
+            title: "grep TODO",
+            status: "pending",
+            _meta: { claudeCode: { toolName: "Grep", parentToolUseId: "spawn-1" } }
+        })
+        t = reduceSessionUpdate(t, { sessionUpdate: "tool_call_update", toolCallId: "child-1", status: "completed" })
+        const tool = t.find((e) => "kind" in e && e.kind === "tool")
+        const meta = JSON.parse((tool as { meta: string }).meta) as Record<string, unknown>
+        expect(meta.parentToolCallId).toBe("spawn-1")
+        expect(meta.status).toBe("completed")
+    })
+
+    it("accumulates diff line stats across tool_call and tool_call_update", () => {
+        let t: TranscriptEntry[] = []
+        t = reduceSessionUpdate(t, {
+            sessionUpdate: "tool_call",
+            toolCallId: "tc1",
+            title: "write",
+            status: "pending",
+            content: [{ type: "diff", path: "new.ts", oldText: null, newText: "a\nb\nc\n" }]
+        })
+        t = reduceSessionUpdate(t, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tc1",
+            status: "completed",
+            content: [{ type: "diff", path: "old.ts", oldText: "a\nb\nc\n", newText: "a\nc\nd\n" }]
+        })
+        const tool = t.find((e) => "kind" in e && e.kind === "tool") as { meta: string }
+        expect(JSON.parse(tool.meta).diffs).toEqual([
+            // oldText null＝新檔：全部視為新增。
+            { path: "new.ts", added: 3, removed: 0 },
+            // 行多重集合近似：b→d 換行＝+1/−1。
+            { path: "old.ts", added: 1, removed: 1 }
+        ])
     })
 
     it("user_message_chunk 的 image content（replay 場景）轉入 MsgEntry.images 而非文字佔位", () => {
@@ -164,7 +212,7 @@ describe("reduceSessionUpdate", () => {
     it("covers session/update discriminants and content placeholders", () => {
         let t: TranscriptEntry[] = []
         t = reduceSessionUpdate(t, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Hi" } })
-        expect(t).toEqual([{ who: "you", text: "Hi", streaming: true }])
+        expect(t).toEqual([{ id: expect.any(String), who: "you", text: "Hi", streaming: true }])
 
         const withThought = reduceSessionUpdate(t, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hidden" } })
         expect(withThought.at(-1)).toMatchObject({ kind: "thought", text: "hidden" })
@@ -207,7 +255,7 @@ describe("reduceSessionUpdate", () => {
     })
 
     it("treats usage_update and config_option_update as no-ops that never touch the transcript", () => {
-        const t: TranscriptEntry[] = [{ who: "agent", text: "hi", streaming: false }]
+        const t: TranscriptEntry[] = [{ id: "t0", who: "agent", text: "hi", streaming: false }]
         expect(reduceSessionUpdate(t, {
             sessionUpdate: "usage_update",
             used: 120,
@@ -222,7 +270,7 @@ describe("reduceSessionUpdate", () => {
 
     it("silently ignores a truly unknown session update variant and warns instead of rendering an error block", () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-        const t: TranscriptEntry[] = [{ who: "agent", text: "hi", streaming: false }]
+        const t: TranscriptEntry[] = [{ id: "t0", who: "agent", text: "hi", streaming: false }]
 
         const result = reduceSessionUpdate(t, { sessionUpdate: "some_future_variant", foo: "bar" })
 
@@ -332,8 +380,8 @@ describe("recordUserPrompt (P3)", () => {
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
     } as never)
     expect(seen.at(-1)).toEqual([
-      { who: "you", text: "hello", streaming: true },
-      { who: "agent", text: "hi", streaming: true },
+      { id: expect.any(String), who: "you", text: "hello", streaming: true },
+      { id: expect.any(String), who: "agent", text: "hi", streaming: true },
     ])
   })
 
@@ -353,9 +401,9 @@ describe("recordUserPrompt (P3)", () => {
     } as never)
     const last = seen.at(-1)!
     expect(last).toEqual([
-      { who: "agent", text: "turn1 reply", streaming: false },
-      { who: "you", text: "turn2", streaming: true },
-      { who: "agent", text: "turn2 reply", streaming: true },
+      { id: expect.any(String), who: "agent", text: "turn1 reply", streaming: false },
+      { id: expect.any(String), who: "you", text: "turn2", streaming: true },
+      { id: expect.any(String), who: "agent", text: "turn2 reply", streaming: true },
     ])
   })
 })
@@ -368,7 +416,7 @@ describe("dropSession (F10)", () => {
       sessionId: "s1",
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "old history" } },
     } as never)
-    expect(seen.at(-1)).toEqual([{ who: "agent", text: "old history", streaming: true }])
+    expect(seen.at(-1)).toEqual([{ id: expect.any(String), who: "agent", text: "old history", streaming: true }])
 
     runtime.dropSession("s1")
 
@@ -378,7 +426,7 @@ describe("dropSession (F10)", () => {
     } as never)
     // dropSession 已清掉 transcripts.get("s1")，所以 reduceSessionUpdate 是從空陣列
     // 開始累加，不再帶著已移除 session 的舊 "old history"。
-    expect(seen.at(-1)).toEqual([{ who: "agent", text: "fresh", streaming: true }])
+    expect(seen.at(-1)).toEqual([{ id: expect.any(String), who: "agent", text: "fresh", streaming: true }])
   })
 })
 
@@ -951,7 +999,10 @@ describe("createAcpConnection", () => {
 
     it("drives initialize, newSession, prompt, permission, session_info_update, and edit diff through the SDK bridge", async () => {
         const agentId = "agent-1"
-        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        const fake = createFakeAcpAgentBridge(
+            (line) => emit("agent://stdout", { id: agentId, line }),
+            { agentVersion: "0.0.31" }
+        )
         const ipcCalls: unknown[] = []
         const permissionBlocks: BlockEntry[] = []
         const transcriptSnapshots: TranscriptEntry[][] = []
@@ -981,11 +1032,15 @@ describe("createAcpConnection", () => {
             onAvailableCommands: (sessionId, availableCommands) => commands.push([sessionId, availableCommands])
         })
 
-        await expect(connection.newSession("/w")).resolves.toMatchObject({ sessionId: "fake-session" })
+        await expect(connection.newSession("/w")).resolves.toMatchObject({
+            sessionId: "fake-session",
+            agentVersion: "0.0.31"
+        })
         await expect(connection.prompt("fake-session", [{ type: "text", text: "edit hello" }])).resolves.toBe("end_turn")
         await expect(connection.listSessions("/w")).resolves.toEqual([{ id: "fake-session", cwd: "/w" }])
         await expect(connection.loadSession("loaded-session", "/other")).resolves.toMatchObject({
             startupInfo: null,
+            agentVersion: "0.0.31",
             configOptions: expect.any(Array)
         })
         await expect(connection.listSessions("/w")).resolves.toEqual([{ id: "fake-session", cwd: "/w" }])
@@ -1003,7 +1058,10 @@ describe("createAcpConnection", () => {
 
         const finalTranscript = transcriptSnapshots.at(-1) ?? []
         expect(finalTranscript.some((entry) => "who" in entry && entry.who === "agent" && entry.text.includes("Ready"))).toBe(true)
-        expect(finalTranscript.some((entry) => "kind" in entry && entry.kind === "diff" && entry.text === "hello.txt")).toBe(true)
+        expect(finalTranscript.some((entry) => "kind" in entry && entry.kind === "diff")).toBe(false)
+        expect(finalTranscript.some((entry) =>
+            "kind" in entry && entry.kind === "tool" && entry.text.includes("[diff: hello.txt]")
+        )).toBe(true)
     })
 
     it("carries usage_update and titled session_info_update through the SDK bridge to onUsage/onSessionTitle", async () => {
@@ -1079,7 +1137,9 @@ describe("createAcpConnection", () => {
         expect(loaded && "configOptions" in loaded ? loaded.configOptions : undefined).toHaveLength(3)
     })
 
-    it("rejects active/pending setters and keeps a newer notification over a late setter response", async () => {
+    // soak 回饋 #1/#5：running 不再擋 setter（pi 隨時可切）；單飛鎖與「通知較新
+    // 則蓋過晚到 setter 回應」的語意不變。
+    it("rejects same-session pending setters and keeps a newer notification over a late setter response", async () => {
         const agentId = "agent-config-race"
         const fake = createFakeAcpAgentBridge(
             (line) => emit("agent://stdout", { id: agentId, line }),
@@ -1100,17 +1160,10 @@ describe("createAcpConnection", () => {
         })
         await connection.newSession("/w")
 
+        // running 中 setter 不再被擋——這裡直接掛起第一個 setter。
         await fake.emitSessionUpdate({
             sessionUpdate: "session_info_update",
             _meta: { piAcp: { queueDepth: 0, running: true } }
-        })
-        await expect(
-            connection.setSessionConfigOption?.("fake-session", "model", "fake-reasoning")
-        ).rejects.toThrow(/active turn/i)
-
-        await fake.emitSessionUpdate({
-            sessionUpdate: "session_info_update",
-            _meta: { piAcp: { queueDepth: 0, running: false } }
         })
         const pending = connection.setSessionConfigOption!("fake-session", "model", "fake-reasoning")
         await expect(
@@ -1252,7 +1305,7 @@ describe("createAcpConnection", () => {
         const connection = createAcpConnection({ initializeTimeoutMs: 1_000 })
         await connection.prepare?.("/w")
 
-        expect(spawns).toEqual([{ command: "bunx pi-acp@0.0.31", cwd: "/w" }])
+        expect(spawns).toEqual([{ command: "bunx pi-acp@latest", cwd: "/w" }])
         expect(fake.messages.filter((message) => message.method === "initialize")).toHaveLength(1)
         expect(fake.messages.find((message) => message.method === "initialize")?.params)
             .toMatchObject({ clientCapabilities: { session: { configOptions: { boolean: {} } } } })
@@ -1931,5 +1984,167 @@ describe("createAcpConnection", () => {
             .map((entry) => entry.text)
         expect(agentTexts.some((text) => text.includes("Ready"))).toBe(true)
         expect(agentTexts.some((text) => text.includes("ReadyReady"))).toBe(false)
+    })
+})
+
+describe("P3: form elicitation client handler", () => {
+    const formParams = (overrides: Record<string, unknown> = {}) => ({
+        mode: "form",
+        sessionId: "s1",
+        message: "Pick a color",
+        requestedSchema: {
+            type: "object",
+            title: "Colors",
+            properties: {
+                choice: { type: "string", title: "Color", enum: ["red", "blue"] }
+            },
+            required: ["choice"]
+        },
+        ...overrides
+    })
+
+    it("normalizes form requests and resolves with the accept payload", async () => {
+        const seen: unknown[] = []
+        const runtime = createAcpClientRuntime({
+            onElicitationRequest: (sessionId, request, respond) => {
+                seen.push([sessionId, request])
+                respond({ action: "accept", content: { choice: "red" } })
+            }
+        })
+        const result = await runtime.client.unstable_createElicitation(formParams())
+        expect(result).toEqual({ action: "accept", content: { choice: "red" } })
+        expect(seen).toEqual([[
+            "s1",
+            {
+                message: "Pick a color",
+                title: "Colors",
+                fields: [{
+                    key: "choice",
+                    type: "string",
+                    title: "Color",
+                    required: true,
+                    options: [
+                        { value: "red", label: "red" },
+                        { value: "blue", label: "blue" }
+                    ]
+                }]
+            }
+        ]])
+    })
+
+    it("cancels unknown modes, unsupported field types, and missing handlers", async () => {
+        const runtime = createAcpClientRuntime({
+            onElicitationRequest: () => { throw new Error("should not be called") }
+        })
+        await expect(runtime.client.unstable_createElicitation(formParams({ mode: "url" })))
+            .resolves.toEqual({ action: "cancel" })
+        await expect(runtime.client.unstable_createElicitation(formParams({
+            requestedSchema: {
+                type: "object",
+                properties: { picks: { type: "array", items: { type: "string" } } }
+            }
+        }))).resolves.toEqual({ action: "cancel" })
+
+        const withoutHandler = createAcpClientRuntime({})
+        await expect(withoutHandler.client.unstable_createElicitation(formParams()))
+            .resolves.toEqual({ action: "cancel" })
+    })
+
+    it("marks multiline via request _meta and carries defaults", async () => {
+        let captured: unknown
+        const runtime = createAcpClientRuntime({
+            onElicitationRequest: (_sessionId, request, respond) => {
+                captured = request
+                respond({ action: "decline" })
+            }
+        })
+        const result = await runtime.client.unstable_createElicitation(formParams({
+            _meta: { yuzora: { multiline: true } },
+            requestedSchema: {
+                type: "object",
+                properties: {
+                    value: { type: "string", title: "Text", default: "seed" }
+                },
+                required: ["value"]
+            }
+        }))
+        expect(result).toEqual({ action: "decline" })
+        expect(captured).toMatchObject({
+            fields: [{ key: "value", type: "string", multiline: true, defaultValue: "seed" }]
+        })
+    })
+
+    it("resolves in-flight elicitations as cancelled when the session cancels", async () => {
+        let heldRespond: ((response: { action: "accept"; content: Record<string, string> }) => void) | undefined
+        const runtime = createAcpClientRuntime({
+            onElicitationRequest: (_sessionId, _request, respond) => { heldRespond = respond }
+        })
+        const promise = runtime.client.unstable_createElicitation(formParams())
+        runtime.cancelPendingPermissions("s1")
+        await expect(promise).resolves.toEqual({ action: "cancel" })
+        // 晚到的 respond 是 no-op（settled guard），不會覆蓋 cancel。
+        heldRespond?.({ action: "accept", content: { choice: "red" } })
+        await expect(promise).resolves.toEqual({ action: "cancel" })
+    })
+
+    // P4：array multiselect（ACP MultiSelectPropertySchema）——question 多選的
+    // wire 形狀；string[] 內容原樣往返。
+    it("normalizes array multiselect fields and passes string[] answers through", async () => {
+        let captured: unknown
+        const runtime = createAcpClientRuntime({
+            onElicitationRequest: (_sessionId, request, respond) => {
+                captured = request
+                respond({ action: "accept", content: { colors: ["red", "blue"], note: "extra" } })
+            }
+        })
+        const result = await runtime.client.unstable_createElicitation(formParams({
+            requestedSchema: {
+                type: "object",
+                title: "Survey",
+                properties: {
+                    colors: {
+                        type: "array",
+                        title: "Colors",
+                        default: ["red"],
+                        items: {
+                            anyOf: [
+                                { const: "red", title: "Red", description: "warm" },
+                                { const: "blue", title: "Blue" }
+                            ]
+                        }
+                    },
+                    tags: { type: "array", items: { enum: ["a", "b"] } },
+                    note: { type: "string", title: "Note" }
+                },
+                required: ["colors"]
+            }
+        }))
+        expect(result).toEqual({ action: "accept", content: { colors: ["red", "blue"], note: "extra" } })
+        expect(captured).toMatchObject({
+            title: "Survey",
+            fields: [
+                {
+                    key: "colors",
+                    type: "array",
+                    title: "Colors",
+                    required: true,
+                    defaultValue: ["red"],
+                    options: [
+                        { value: "red", label: "Red", description: "warm" },
+                        { value: "blue", label: "Blue" }
+                    ]
+                },
+                {
+                    key: "tags",
+                    type: "array",
+                    required: false,
+                    options: [
+                        { value: "a", label: "a" },
+                        { value: "b", label: "b" }
+                    ]
+                },
+                { key: "note", type: "string", required: false }
+            ]
+        })
     })
 })

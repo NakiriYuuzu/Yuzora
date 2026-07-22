@@ -3,6 +3,8 @@ import { create } from "zustand"
 import type {
     AgentConnection,
     AgentAuthMethod,
+    ElicitationRequest,
+    ElicitationResponsePayload,
     PromptBlock,
     SessionConfigOption,
     SessionConfigValue,
@@ -13,7 +15,8 @@ import type {
     UsageInfo
 } from "@/agent/acpConnection"
 import { isAgentAuthRequiredError, reduceSessionUpdate } from "@/agent/acpConnection"
-import type { BlockEntry, TranscriptAction, TranscriptEntry } from "@/agent/acpTypes"
+import { newEntryId, type BlockEntry, type TranscriptAction, type TranscriptEntry } from "@/agent/acpTypes"
+import { rememberAgentVersion } from "@/agent/agentVersions"
 import {
     loadAgentSettings,
     rememberLastUsedCuratedAgent,
@@ -48,6 +51,10 @@ export interface StopBadge {
 export interface SessionState {
     title: string
     agentId?: AgentPreset
+    /** Adapter version reported by ACP initialize.agentInfo. */
+    agentVersion?: string
+    /** Adapter name from initialize.agentInfo（"pi-acp"／"yuzora-pi-acp"）——P5 runtime badge。 */
+    agentName?: string
     /** SHA-256 identity for a custom command; the raw command is never stored. */
     customCommandFingerprint?: string
     agentLabel: string
@@ -69,6 +76,8 @@ export interface SessionState {
     cwd: string | null
     infoBanner?: string | null
     usage?: UsageInfo
+    /** perm BlockEntry id → 已選 optionId（in-memory；restored replay 產生新 id，不持久化）。 */
+    permissionOutcomes?: Record<string, string>
     /** Latest complete ACP config snapshot. Every update replaces this array. */
     configOptions?: SessionConfigOption[]
     /** Monotonic per-session authoritative config generation. */
@@ -109,12 +118,23 @@ export interface AuthRequiredState {
 }
 
 export interface PendingPermission {
+    // 對應 transcript 內 perm BlockEntry 的 stable id：答覆時以此記錄 outcome。
+    entryId: string
     request: {
         text: string
         actions: TranscriptAction[]
         meta?: string
     }
     choose: PermissionResolver
+}
+
+// ACP form elicitation（P3）：獨立於 pendingPermissions 的通道（response 形狀與
+// 語意不同）。每 session 一個 queue——後到的請求排隊而非覆蓋，避免 orphan 掉前
+// 一個 resolver（永不 resolve 的 wire promise 正是 ask-question 卡死的形狀）。
+export interface PendingElicitation {
+    id: string
+    request: ElicitationRequest
+    respond: (response: ElicitationResponsePayload) => void
 }
 
 export type AgentSessionMeta = SessionMeta & {
@@ -127,6 +147,7 @@ export type AgentSessionMeta = SessionMeta & {
 export interface AgentStoreState {
     sessions: Map<string, SessionState>
     pendingPermissions: Map<string, PendingPermission>
+    pendingElicitations: Map<string, PendingElicitation[]>
     activeSessionId: string | null
     connectionState: AgentConnectionState
     connectionError: string | null
@@ -184,6 +205,12 @@ export interface AgentStoreState {
     applyAgentTitle: (sessionId: string, title: string) => void
     onPermissionRequest: (sessionId: string, block: BlockEntry, choose: PermissionResolver) => void
     respondPermission: (sessionId: string, optionId: string) => void
+    onElicitationRequest: (
+        sessionId: string,
+        request: ElicitationRequest,
+        respond: (response: ElicitationResponsePayload) => void
+    ) => void
+    respondElicitation: (sessionId: string, elicitationId: string, response: ElicitationResponsePayload) => void
     markConnectionError: (sessionId: string, error: Error) => void
     upsertSessionMeta: (meta: AgentSessionMeta) => void
     reset: () => void
@@ -200,6 +227,8 @@ const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 const DEFAULT_TERMINAL_COLS = 80
 const DEFAULT_TERMINAL_ROWS = 24
 const CANCELLED_META = JSON.stringify({ stopReason: "cancelled", interrupted: true })
+// elicitation UI 條目的單調流水號（in-memory；wire promise 的生命週期在連線層）。
+let elicitationSeq = 0
 // F4：continueSession 的 per-session in-flight guard——重複點擊（如雙擊）restored
 // row 時，第二次呼叫直接 return，避免同一 session 併發觸發兩次 loadSession。
 const continueSessionInFlight = new Set<string>()
@@ -207,6 +236,7 @@ const continueSessionInFlight = new Set<string>()
 export const agentInitialState = {
     sessions: new Map<string, SessionState>(),
     pendingPermissions: new Map<string, PendingPermission>(),
+    pendingElicitations: new Map<string, PendingElicitation[]>(),
     activeSessionId: null as string | null,
     connectionState: "idle" as AgentConnectionState,
     connectionError: null as string | null,
@@ -326,6 +356,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         sessions.set(sessionId, ensureSession(sessions, sessionId, {
                             cwd,
                             agentId: resolvedPreset,
+                            agentVersion: result.agentVersion,
                             infoBanner: result.startupInfo,
                             customCommandFingerprint: result.customCommandFingerprint,
                             ephemeral: true,
@@ -351,6 +382,9 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         return visibleSessionForCwd(get(), cwd)
                     }
                     rememberLastUsedCuratedAgent(identity)
+                    if (identity.trustedAgentId) {
+                        rememberAgentVersion(identity.trustedAgentId, result.agentVersion)
+                    }
                     return sessionId
                 } catch (error) {
                     if (draftWorkspaceGeneration === generation
@@ -405,7 +439,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 const result = agentId === undefined
                     ? await connection.newSession(cwd)
                     : await connection.newSession(cwd, agentId)
-                const { sessionId, startupInfo, customCommandFingerprint, agentIdentity } = result
+                const { sessionId, startupInfo, agentVersion, agentName, customCommandFingerprint, agentIdentity } = result
                 const resolvedPreset: AgentPreset = agentIdentity
                     ? agentIdentity.trustedAgentId ?? "custom"
                     : preset
@@ -425,6 +459,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     sessions.set(sessionId, ensureSession(sessions, sessionId, {
                         cwd,
                         agentId: resolvedPreset,
+                        agentVersion,
+                        agentName,
                         infoBanner: startupInfo,
                         customCommandFingerprint,
                         ephemeral: true,
@@ -442,7 +478,9 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         pendingNewSession: false
                     }
                 })
-                rememberLastUsedCuratedAgent(agentIdentity ?? identityFromRoute(requestedRoute))
+                const identity = agentIdentity ?? identityFromRoute(requestedRoute)
+                rememberLastUsedCuratedAgent(identity)
+                if (identity.trustedAgentId) rememberAgentVersion(identity.trustedAgentId, agentVersion)
                 // Explicit New session is still an unused visible draft until
                 // its first prompt starts. Remove a same-id legacy entry
                 // defensively instead of restoring an empty draft next launch.
@@ -515,6 +553,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
             const existingPreset = sessionId ? get().sessions.get(sessionId)?.agentId : undefined
             set({ connectionState: "connecting", connectionError: null })
             let implicitBanner: string | null = null
+            let implicitAgentVersion: string | undefined
+            let implicitAgentName: string | undefined
             let implicitCustomCommandFingerprint: string | undefined
             let implicitConfigOptions: SessionConfigOption[] = []
             const promotedDraft = sessionId ? get().sessions.get(sessionId)?.ephemeral === true : false
@@ -524,10 +564,15 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     sessionId = created.sessionId
                     droppedSessionIds.delete(sessionId)
                     implicitBanner = created.startupInfo
+                    implicitAgentVersion = created.agentVersion
+                    implicitAgentName = created.agentName
                     implicitCustomCommandFingerprint = created.customCommandFingerprint
                     implicitConfigOptions = created.configOptions ?? []
                     const identity = created.agentIdentity ?? identityFromRoute(resolveAgentCommandRoute())
                     rememberLastUsedCuratedAgent(identity)
+                    if (identity.trustedAgentId) {
+                        rememberAgentVersion(identity.trustedAgentId, created.agentVersion)
+                    }
                     if (created.agentIdentity) {
                         implicitPreset = created.agentIdentity.trustedAgentId ?? "custom"
                     }
@@ -539,6 +584,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         ? {
                             cwd,
                             agentId: implicitPreset,
+                            agentVersion: implicitAgentVersion,
+                            agentName: implicitAgentName,
                             infoBanner: implicitBanner,
                             customCommandFingerprint: implicitCustomCommandFingerprint,
                             ...authoritativeConfigPatch(
@@ -558,15 +605,17 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 set((state) => {
                     const pendingPermissions = new Map(state.pendingPermissions)
                     pendingPermissions.delete(activeSessionId)
+                    const pendingElicitations = new Map(state.pendingElicitations)
+                    pendingElicitations.delete(activeSessionId)
                     // session 可能在這輪 prompt in-flight 期間被 removeSession 移除——
                     // 不要用 ensureSession 讓它以 ghost 姿態復活。
                     if (!state.sessions.has(activeSessionId)) {
-                        return { pendingPermissions, connectionState: "ready" }
+                        return { pendingPermissions, pendingElicitations, connectionState: "ready" }
                     }
                     const sessions = new Map(state.sessions)
                     const current = ensureSession(sessions, activeSessionId, { cwd })
                     sessions.set(activeSessionId, applyStopReason(current, stopReason))
-                    return { sessions, pendingPermissions, connectionState: "ready" }
+                    return { sessions, pendingPermissions, pendingElicitations, connectionState: "ready" }
                 })
                 // 每輪 turn 結束（sendPrompt resolve）都 touch lastActiveAt，讓 Session
                 // Index 的最近活躍排序反映真實使用時間。
@@ -587,10 +636,13 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     }
                     const pendingPermissions = new Map(state.pendingPermissions)
                     pendingPermissions.delete(sessionId)
+                    const pendingElicitations = new Map(state.pendingElicitations)
+                    pendingElicitations.delete(sessionId)
                     // 同上：session 可能在 in-flight 期間被移除，跳過 ensureSession 重建。
                     if (!state.sessions.has(sessionId)) {
                         return {
                             pendingPermissions,
+                            pendingElicitations,
                             connectionState: "error",
                             connectionError: err.message,
                             ...(authRequired ? { authRequired } : {})
@@ -601,6 +653,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     return {
                         sessions,
                         pendingPermissions,
+                        pendingElicitations,
                         connectionState: "error",
                         connectionError: err.message,
                         ...(authRequired ? { authRequired } : {})
@@ -630,15 +683,17 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 const sessions = new Map(state.sessions)
                 const pendingPermissions = new Map(state.pendingPermissions)
                 pendingPermissions.delete(sessionId)
+                const pendingElicitations = new Map(state.pendingElicitations)
+                pendingElicitations.delete(sessionId)
                 const current = sessions.get(sessionId)
-                if (!current) return { pendingPermissions, connectionError: null }
+                if (!current) return { pendingPermissions, pendingElicitations, connectionError: null }
                 // The turn may have completed naturally while cancel was in flight.
                 // Preserve that terminal state instead of overwriting it as cancelled.
                 if ((target.pendingTurn || target.running) && !current.pendingTurn && !current.running) {
-                    return { pendingPermissions, connectionError: null }
+                    return { pendingPermissions, pendingElicitations, connectionError: null }
                 }
                 sessions.set(sessionId, applyStopReason(current, "cancelled"))
-                return { sessions, pendingPermissions, connectionError: null }
+                return { sessions, pendingPermissions, pendingElicitations, connectionError: null }
             })
             return get().sessions.has(sessionId)
         },
@@ -732,6 +787,12 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 // loadSession 回應若帶 startupInfo（沿 newSession 的 infoBanner 模式），
                 // feature detection：沒有就不動 infoBanner。
                 const startupInfo = result && "startupInfo" in result ? result.startupInfo : null
+                const agentVersion = result && "agentVersion" in result
+                    ? result.agentVersion
+                    : undefined
+                const agentName = result && "agentName" in result
+                    ? result.agentName
+                    : undefined
                 patchSessionWith(set, sessionId, (current) => ({
                     ...current,
                     restored: false,
@@ -739,6 +800,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     // Router 回傳的 route identity 才是 replay 實際啟動命令的 trust
                     // authority；缺少 identity 也不得沿用舊的 trusted preset。
                     agentId: authoritativeAgentId,
+                    agentVersion,
+                    agentName,
                     customCommandFingerprint: authoritativeAgentId === "custom"
                         ? current.customCommandFingerprint
                         : undefined,
@@ -747,6 +810,9 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         ? authoritativeConfigPatch(current, result.configOptions ?? [])
                         : {})
                 }))
+                if (agentIdentity?.trustedAgentId) {
+                    rememberAgentVersion(agentIdentity.trustedAgentId, agentVersion)
+                }
                 syncSessionIndex(sessionId, get().sessions.get(sessionId))
             } catch {
                 patchSessionWith(set, sessionId, (current) => degradeContinueSession(current, cwd, session.agentId))
@@ -783,12 +849,14 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
             set((state) => {
                 const sessions = new Map(state.sessions)
                 const pendingPermissions = new Map(state.pendingPermissions)
+                const pendingElicitations = new Map(state.pendingElicitations)
                 sessions.delete(sessionId)
                 pendingPermissions.delete(sessionId)
+                pendingElicitations.delete(sessionId)
                 const activeSessionId = state.activeSessionId === sessionId
                     ? nextActiveSessionForCwd(sessions, target.cwd, sessionId)
                     : state.activeSessionId
-                return { sessions, pendingPermissions, activeSessionId }
+                return { sessions, pendingPermissions, pendingElicitations, activeSessionId }
             })
             return true
         },
@@ -920,9 +988,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
         setSessionConfigOption: async (sessionId, configId, value) => {
             const current = get().sessions.get(sessionId)
             if (!current) throw new Error(`Unknown session ${sessionId}`)
-            if (sessionTurnActive(current)) {
-                throw new Error("Session configuration cannot change during an active turn")
-            }
+            // soak 回饋 #1/#5：turn 進行中允許改 config（pi 隨時可切、下一次
+            // LLM 呼叫生效）；只保留 setter 單飛鎖。
             if (current.configRequest) {
                 throw new Error("A session configuration change is already pending")
             }
@@ -1017,6 +1084,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 const pendingPermissions = new Map(state.pendingPermissions)
                 const current = ensureSession(sessions, sessionId)
                 pendingPermissions.set(sessionId, {
+                    entryId: block.id,
                     request: permissionRequestSummary(block),
                     choose
                 })
@@ -1044,10 +1112,60 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                             ...current,
                             tone: "run",
                             pendingTurn: true,
-                            running: true
+                            running: true,
+                            // 記錄所選 option（P3）：perm 卡據此鎖定按鈕並顯示結果。
+                            // in-memory only——restored replay 會產生新 entry id，不持久化。
+                            permissionOutcomes: {
+                                ...current.permissionOutcomes,
+                                [pending.entryId]: optionId
+                            }
                         })
                     }
                     return { sessions, pendingPermissions }
+                })
+            }
+        },
+
+        onElicitationRequest: (sessionId, request, respond) => {
+            set((state) => {
+                if (droppedSessionIds.has(sessionId)) return {}
+                const pendingElicitations = new Map(state.pendingElicitations)
+                const queue = [...(pendingElicitations.get(sessionId) ?? [])]
+                elicitationSeq += 1
+                queue.push({ id: `el${elicitationSeq}`, request, respond })
+                pendingElicitations.set(sessionId, queue)
+                const sessions = new Map(state.sessions)
+                const current = ensureSession(sessions, sessionId)
+                sessions.set(sessionId, { ...current, tone: "wait" })
+                return { sessions, pendingElicitations }
+            })
+        },
+
+        respondElicitation: (sessionId, elicitationId, response) => {
+            const queue = get().pendingElicitations.get(sessionId) ?? []
+            const pending = queue.find((entry) => entry.id === elicitationId)
+            if (!pending) return
+            try {
+                pending.respond(response)
+            } finally {
+                set((state) => {
+                    const pendingElicitations = new Map(state.pendingElicitations)
+                    const remaining = (pendingElicitations.get(sessionId) ?? [])
+                        .filter((entry) => entry.id !== elicitationId)
+                    if (remaining.length > 0) pendingElicitations.set(sessionId, remaining)
+                    else pendingElicitations.delete(sessionId)
+                    const sessions = new Map(state.sessions)
+                    const current = sessions.get(sessionId)
+                    // queue 清空才把 tone 收回 run（仍有排隊中的請求就維持 wait）。
+                    if (current && remaining.length === 0) {
+                        sessions.set(sessionId, {
+                            ...current,
+                            tone: "run",
+                            pendingTurn: true,
+                            running: true
+                        })
+                    }
+                    return { sessions, pendingElicitations }
                 })
             }
         },
@@ -1083,6 +1201,7 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 ...agentInitialState,
                 sessions: new Map<string, SessionState>(),
                 pendingPermissions: new Map<string, PendingPermission>(),
+                pendingElicitations: new Map<string, PendingElicitation[]>(),
                 hydratedWorkspaceCwds: new Set<string>(),
                 connection: options.connection ?? null,
                 connectionState: options.connection ? "ready" : "idle",
@@ -1193,11 +1312,12 @@ function terminalLoginSessionMeta(
     const terminalSettings = loadTerminalSettings()
     const sessionId = terminalSessionId()
     // 優先使用 router 記錄的本次 exact command；fallback 也走與 Settings／
-    // picker／router 相同的 effective resolver，不再假設 curated 必定是 verified。
+    // picker／router 相同的 effective resolver，不再假設 curated 必定走固定版本。
     const agentCommand = attemptedCommand ?? resolveAgentCommandRoute(agentId ?? undefined).command
     return {
         sessionId,
         title: method.name,
+        launchStatus: "opening",
         workspace,
         shell: terminalSettings.shellPath,
         shellArgs: ["-c", terminalLoginShellCommand(agentCommand, method)],
@@ -1287,10 +1407,6 @@ function authoritativeConfigPatch(
     }
 }
 
-function sessionTurnActive(session: SessionState): boolean {
-    return session.pendingTurn || session.running === true || session.tone === "run"
-}
-
 // 三欄位（sessionAlias／agentTitle／derivedTitle）任一變動時的顯示名稱解析：
 // sessionAlias（null 或空視為無 alias）優先，其次 agentTitle，其次 derivedTitle，
 // 都沒有則回退 DEFAULT_SESSION_TITLE。
@@ -1376,6 +1492,7 @@ function degradeContinueSession(session: SessionState, cwd: string, agentId: Age
         return { ...session, tone: "idle" }
     }
     const notice: BlockEntry = {
+        id: newEntryId(),
         kind: "notice",
         text,
         actions: [{
@@ -1460,6 +1577,7 @@ function beginTurn(session: SessionState, promptTitle: string, blocks: PromptBlo
     const userEntry =
         promptText || images.length > 0
             ? [{
+                id: newEntryId(),
                 who: "you" as const,
                 text: promptText,
                 streaming: true,
@@ -1500,6 +1618,7 @@ function applyStopReason(session: SessionState, stopReason: StopReason): Session
             transcript: [
                 ...base.transcript,
                 {
+                    id: newEntryId(),
                     kind: "error",
                     text: "Agent refused the request.",
                     meta: JSON.stringify({ stopReason })
@@ -1514,6 +1633,7 @@ function applyStopReason(session: SessionState, stopReason: StopReason): Session
             transcript: [
                 ...base.transcript,
                 {
+                    id: newEntryId(),
                     kind: "tool",
                     text: stopReasonLabel(stopReason),
                     meta: JSON.stringify({ stopReason, truncated: true })
@@ -1529,6 +1649,7 @@ function applyStopReason(session: SessionState, stopReason: StopReason): Session
             transcript: [
                 ...base.transcript,
                 {
+                    id: newEntryId(),
                     kind: "tool",
                     text: i18n.t("agentZonePanel.interrupted", { ns: "panels" }),
                     meta: CANCELLED_META

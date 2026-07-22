@@ -133,13 +133,14 @@ it("wires agent stdout through the ACP connection and updates the agent store", 
         expect(session?.transcript.some((entry) => (
             "who" in entry && entry.who === "agent" && entry.text.includes("Ready")
         ))).toBe(true)
+        // diff content 不再另立 diff 卡（view/apply diff 已移除）；以 [diff: path] 併入 tool 內文。
         expect(session?.transcript.some((entry) => (
-            "kind" in entry && entry.kind === "diff" && entry.text === "hello.txt"
+            "kind" in entry && entry.kind === "tool" && entry.text.includes("[diff: hello.txt]")
         ))).toBe(true)
     })
     expect(ipcCalls).toContainEqual([
         "agent_spawn",
-        { command: "bunx pi-acp@0.0.31", cwd: "/ws-a" },
+        { command: "bunx pi-acp@latest", cwd: "/ws-a" },
     ])
 })
 
@@ -456,9 +457,9 @@ it("queues trusted Latest prepare only after recovery and Session Index hydratio
         command: "",
         traceEnabled: true,
         presetCommands: {
-            pi: { mode: "verified", customCommand: "" },
+            pi: { mode: "latest", customCommand: "" },
             claude: { mode: "latest", customCommand: "" },
-            codex: { mode: "verified", customCommand: "" }
+            codex: { mode: "latest", customCommand: "" }
         }
     }))
     upsertSessionIndexEntry({
@@ -540,7 +541,7 @@ it("uses a non-blocking timeout fallback when requestIdleCallback is unavailable
     render(<AgentBridge />)
 
     await vi.waitFor(() => expect(spawns).toEqual([{
-        command: "bunx pi-acp@0.0.31",
+        command: "bunx pi-acp@latest",
         cwd: "/ws-a"
     }]))
     expect(fake.messages.some((message) => message.method === "session/new")).toBe(false)

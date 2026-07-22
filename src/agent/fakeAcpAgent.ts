@@ -41,6 +41,9 @@ export interface FakeAcpAgentBridge {
 }
 
 export interface FakeAcpAgentOptions {
+    // Optional initialize.agentInfo.version used by adapter update tests.
+    // Omitted by default to keep capability fallback coverage intact.
+    agentVersion?: string
     // Declared agentCapabilities.loadSession in the initialize response.
     // Defaults to true (existing behavior/tests rely on this).
     loadSessionCapability?: boolean
@@ -100,7 +103,10 @@ export function createFakeAcpAgentBridge(
                             ? { promptCapabilities: { image: options.imagePromptCapability } }
                             : {})
                     },
-                    authMethods: []
+                    authMethods: [],
+                    ...(options.agentVersion
+                        ? { agentInfo: { name: "fake-acp-agent", version: options.agentVersion } }
+                        : {})
                 }
             })
             return

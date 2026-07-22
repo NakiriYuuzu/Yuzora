@@ -5,6 +5,8 @@ export interface TranscriptAction {
 }
 
 export interface MsgEntry {
+    // app session 內唯一的 React key／捲動錨點；串流就地變長時保持不變。
+    id: string
     who: "you" | "agent"
     text: string
     streaming: boolean
@@ -14,10 +16,18 @@ export interface MsgEntry {
 }
 
 export interface BlockEntry {
+    id: string
     kind: "tool" | "diff" | "perm" | "error" | "plan" | "thought" | "notice"
     text: string
     meta?: string
     actions?: TranscriptAction[]
+}
+
+let entrySeq = 0
+
+export function newEntryId(): string {
+    entrySeq += 1
+    return `e${entrySeq}`
 }
 
 export type TranscriptEntry = MsgEntry | BlockEntry

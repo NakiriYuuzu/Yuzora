@@ -160,6 +160,7 @@ export interface PtySessionInfo {
 export type PtyEvent =
     | { type: "output"; data: string }
     | { type: "exit"; code: number | null }
+export type PtyActivity = "idle" | "busy" | "unknown"
 export interface DevServerCandidate {
     scriptName: string
     command: string
