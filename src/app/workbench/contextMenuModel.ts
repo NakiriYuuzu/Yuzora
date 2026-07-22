@@ -6,6 +6,11 @@ export interface RailContextMenuRequest {
   kind: "rail"
 }
 
+export interface RecentWorkspaceContextMenuRequest {
+  kind: "recentWorkspace"
+  path: string
+}
+
 export interface ExplorerContextMenuRequest {
   kind: "explorer"
   workspacePath: string | null
@@ -37,6 +42,12 @@ export interface TerminalContextMenuRequest {
   kind: "terminal"
   workspacePath: string
   paneId: string
+  sessionId: string
+}
+
+export interface TerminalTabContextMenuRequest {
+  kind: "terminalTab"
+  workspacePath: string
   sessionId: string
 }
 
@@ -93,11 +104,13 @@ export interface PreviewContextMenuRequest {
 export type ContextMenuRequest =
   | GeneralContextMenuRequest
   | RailContextMenuRequest
+  | RecentWorkspaceContextMenuRequest
   | ExplorerContextMenuRequest
   | FileContextMenuRequest
   | TabContextMenuRequest
   | EditorContextMenuRequest
   | TerminalContextMenuRequest
+  | TerminalTabContextMenuRequest
   | AgentSessionContextMenuRequest
   | GitContextMenuRequest
   | GitChangeContextMenuRequest

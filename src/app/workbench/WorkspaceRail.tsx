@@ -1,5 +1,5 @@
 import { PanelLeft, Plus } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
@@ -8,7 +8,9 @@ import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
 import { selectWorkspaceAgentCounts, useAgentStore } from "@/state/agentStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { normalizeWorkspacePath, useRecentWorkspacesStore } from "@/state/recentWorkspaces"
+import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
 
 interface WorkspaceRailProps {
   navCollapsed: boolean
@@ -43,12 +45,15 @@ export function WorkspaceRail({
 }: WorkspaceRailProps) {
   const { t } = useTranslation("workbench")
   const recents = useRecentWorkspacesStore((s) => s.list)
+  const presentations = useRecentWorkspacesStore((s) => s.presentations)
+  const removedNotice = useUiStore((s) => s.recentWorkspaceRemovedNotice)
+  const clearRemovedNotice = useUiStore((s) => s.clearRecentWorkspaceRemovedNotice)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const activePathKey = workspacePath ? canonicalPathKey(workspacePath) : null
   const sessions = useAgentStore((s) => s.sessions)
   const agentCounts = useMemo(() => selectWorkspaceAgentCounts(sessions), [sessions])
 
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ message: string; danger: boolean } | null>(null)
   const noticeTimer = useRef<number | null>(null)
 
   useEffect(
@@ -58,11 +63,24 @@ export function WorkspaceRail({
     []
   )
 
-  function showNotice(message: string) {
-    setNotice(message)
+  const showNotice = useCallback((message: string, danger = true) => {
+    setNotice({ message, danger })
     if (noticeTimer.current !== null) clearTimeout(noticeTimer.current)
     noticeTimer.current = window.setTimeout(() => setNotice(null), 4000)
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!removedNotice) return
+    const timer = window.setTimeout(clearRemovedNotice, 4000)
+    return () => clearTimeout(timer)
+  }, [clearRemovedNotice, removedNotice])
+
+  const visibleNotice = removedNotice
+    ? {
+        message: t("rail.removedFromRecent", { name: removedNotice.name }),
+        danger: false,
+      }
+    : notice
 
   async function handleOpenRecent(path: string) {
     try {
@@ -158,23 +176,32 @@ export function WorkspaceRail({
           <div className="flex min-h-0 w-full flex-col items-center gap-[4px] overflow-y-auto pt-[3px]">
             {recents.map((path) => {
               const active = activePathKey === canonicalPathKey(path)
+              const presentation = resolveProjectPresentation(
+                path,
+                presentations[canonicalPathKey(path)]
+              )
               const counts = agentCounts.get(normalizeWorkspacePath(path))
               return (
                 <div key={path} className="relative">
                   <button
                     type="button"
-                    aria-label={t("rail.openRecentWorkspace", { name: workspacePathBasename(path) })}
+                    aria-label={t("rail.openRecentWorkspace", { name: presentation.name })}
                     aria-pressed={active}
                     title={workspacePathForDisplay(path)}
                     onClick={() => handleOpenRecent(path)}
+                    onContextMenu={contextMenuHandler({ kind: "recentWorkspace", path })}
                     className={cn(
                       "flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold transition-all duration-[160ms] ease-(--ease-out)",
                       active
                         ? "bg-(--yz-hover) text-(--yz-accent-ink) shadow-(--shadow-xs)"
                         : "border border-(--line-1) text-(--ink-2) hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
                     )}
+                    style={active ? {
+                      background: presentation.color.background,
+                      color: presentation.color.foreground,
+                    } : undefined}
                   >
-                    {workspacePathBasename(path).charAt(0).toUpperCase()}
+                    {presentation.glyph}
                   </button>
                   {counts && counts.total > 0 && (
                     <span
@@ -216,13 +243,15 @@ export function WorkspaceRail({
         Y
       </button>
 
-      {notice && (
+      {visibleNotice && (
         <div
           role="status"
           className="fixed bottom-[16px] left-[68px] z-50 max-w-[280px] rounded-[10px] border border-(--line-1) px-[12px] py-[8px] text-[11px] shadow-[var(--shadow-xl)]"
-          style={{ background: "var(--danger-soft)", color: "var(--status-d)" }}
+          style={visibleNotice.danger
+            ? { background: "var(--danger-soft)", color: "var(--status-d)" }
+            : { background: "var(--frost-light)", color: "var(--ink-1)" }}
         >
-          {notice}
+          {visibleNotice.message}
         </div>
       )}
     </nav>

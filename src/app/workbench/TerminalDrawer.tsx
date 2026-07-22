@@ -4,20 +4,32 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type DragEvent,
   type KeyboardEvent,
   type PointerEvent,
   type RefObject,
 } from "react"
-import { ChevronDown, ChevronUp, Plus, TerminalSquare, X } from "lucide-react"
+import { ChevronDown, ChevronUp, CircleAlert, List, Plus, TerminalSquare, X } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { SplitRatioIndicator } from "@/app/workbench/SplitRatioIndicator"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { logUserAction } from "@/features/logs/userAction"
 import { showActionError } from "@/lib/actionFeedback"
-import { workspacePathForDisplay } from "@/lib/paths"
 import { contextMenuHandler } from "@/state/contextMenuStore"
-import { MAX_PANES, useTerminalStore, type TerminalSplitDirection } from "@/state/terminalStore"
+import {
+  MAX_TERMINAL_PANE_SPLIT_RATIO,
+  MAX_VISIBLE_TERMINAL_PANES,
+  MIN_TERMINAL_PANE_SPLIT_RATIO,
+  terminalDisplayTitle,
+  useTerminalStore,
+} from "@/state/terminalStore"
 import { useWorkbenchLayoutStore } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { TerminalSession } from "@/terminal/TerminalSession"
@@ -35,6 +47,7 @@ const TERMINAL_HEADER_HEIGHT = 38
 const TERMINAL_FIXED_CHROME_HEIGHT = TERMINAL_HANDLE_HEIGHT + TERMINAL_HEADER_HEIGHT
 const KEYBOARD_STEP = 0.02
 const KEYBOARD_LARGE_STEP = 0.1
+const EMPTY_TERMINAL_TAB_IDS: string[] = []
 
 const toolButtonClass =
   "flex size-[24px] shrink-0 items-center justify-center rounded-[7px] text-(--term-fg2) transition-colors duration-150 hover:bg-(--term-hover) hover:text-(--term-fg) disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-(--term-fg2)"
@@ -68,13 +81,71 @@ interface DragState {
   canCommit: boolean
 }
 
+interface PaneDragState {
+  pointerId: number
+  workspace: string
+  paneKey: string
+  left: number
+  width: number
+  ratio: number
+}
+
+interface TransientPaneRatio {
+  workspace: string
+  paneKey: string
+  ratio: number
+}
+
+interface TerminalRenameInputProps {
+  initialTitle: string
+  ariaLabel: string
+  onSave: (title: string) => void
+  onCancel: () => void
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function TerminalRenameInput({
+  initialTitle,
+  ariaLabel,
+  onSave,
+  onCancel,
+}: TerminalRenameInputProps) {
+  const [draft, setDraft] = useState(initialTitle)
+  const cancelledRef = useRef(false)
+
+  return (
+    <input
+      autoFocus
+      aria-label={ariaLabel}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onFocus={(event) => event.currentTarget.select()}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onBlur={() => {
+        if (cancelledRef.current) return
+        onSave(draft)
+      }}
+      onKeyDown={(event) => {
+        event.stopPropagation()
+        if (event.key === "Enter") event.currentTarget.blur()
+        if (event.key === "Escape") {
+          event.preventDefault()
+          cancelledRef.current = true
+          onCancel()
+        }
+      }}
+      className="min-w-0 flex-1 rounded-[3px] border border-(--term-blue) bg-(--term-bg) px-[4px] py-[1px] text-[11px] text-(--term-fg) outline-none"
+    />
+  )
+}
+
 function ratioBounds(
   containerHeight: number,
-  mainSurfaceMinHeight: number
+  mainSurfaceMinHeight: number,
 ): TerminalRatioBounds & { distributableHeight: number } {
   const distributableHeight = Math.max(0, containerHeight - ACTIVE_GAP)
   if (distributableHeight === 0) {
@@ -100,7 +171,7 @@ function ratioBounds(
 function terminalGeometry(
   ratio: number,
   containerHeight: number,
-  mainSurfaceMinHeight: number
+  mainSurfaceMinHeight: number,
 ): TerminalGeometry {
   const bounds = ratioBounds(containerHeight, mainSurfaceMinHeight)
   if (bounds.distributableHeight === 0) {
@@ -139,7 +210,15 @@ export function TerminalDrawer({
   const layout = workspacePath ? layouts[workspacePath] : undefined
   const addSession = useTerminalStore((s) => s.addSession)
   const removeSession = useTerminalStore((s) => s.removeSession)
+  const selectTab = useTerminalStore((s) => s.selectTab)
+  const reorderTab = useTerminalStore((s) => s.reorderTab)
   const setActivePane = useTerminalStore((s) => s.setActivePane)
+  const setSplitRatio = useTerminalStore((s) => s.setSplitRatio)
+  const beginRename = useTerminalStore((s) => s.beginRename)
+  const finishRename = useTerminalStore((s) => s.finishRename)
+  const setManualTitle = useTerminalStore((s) => s.setManualTitle)
+  const setShellTitle = useTerminalStore((s) => s.setShellTitle)
+  const setLaunchStatus = useTerminalStore((s) => s.setLaunchStatus)
   const storedRatio = useWorkbenchLayoutStore((state) => {
     if (state.terminalRatioScope === "workspace" && workspacePath) {
       return state.terminalWorkspaceRatios[workspacePath] ?? state.terminalGlobalRatio
@@ -150,20 +229,33 @@ export function TerminalDrawer({
   const [expanded, setExpanded] = useState(true)
   const [containerHeight, setContainerHeight] = useState(0)
   const [transientRatio, setTransientRatio] = useState<number | null>(null)
+  const [transientPaneRatio, setTransientPaneRatio] = useState<TransientPaneRatio | null>(null)
   const [resizing, setResizing] = useState(false)
   const [geometryTransitionSuppressed, setGeometryTransitionSuppressed] = useState(false)
   const dragRef = useRef<DragState | null>(null)
+  const paneDragRef = useRef<PaneDragState | null>(null)
+  const paneGridRef = useRef<HTMLDivElement | null>(null)
+  const draggedTabRef = useRef<string | null>(null)
+  const tabRefs = useRef(new Map<string, HTMLDivElement>())
   const measuredContainerHeightRef = useRef(0)
   const transitionResetFrameRef = useRef<number | null>(null)
   const previousMainSurfaceMinHeightRef = useRef(mainSurfaceMinHeight)
   const panes = layout?.panes ?? []
-  const workspaceLayouts = Object.entries(layouts).filter(([, candidate]) => candidate.panes.length > 0)
+  const paneKey = panes.map((pane) => pane.paneId).join(":")
+  const tabIds = layout?.tabIds ?? EMPTY_TERMINAL_TAB_IDS
+  const workspaceLayouts = Object.entries(layouts).filter(
+    ([, candidate]) => candidate.tabIds.length > 0,
+  )
   const activePaneId = layout?.activePaneId ?? null
   const activePane = panes.find((pane) => pane.paneId === activePaneId)
   const activeSession = activePane ? sessions[activePane.sessionId] : undefined
-  const canCreateSession = Boolean(workspacePath) && panes.length < MAX_PANES
-  const canSplit = canCreateSession && Boolean(activePane)
-  const canClose = Boolean(workspacePath && activeSession)
+  const focusedSessionId = activeSession?.sessionId ?? null
+  const canCreateSession = Boolean(workspacePath)
+  const canSplit = Boolean(workspacePath && activePane) && panes.length < MAX_VISIBLE_TERMINAL_PANES
+  const paneRatio =
+    transientPaneRatio?.workspace === workspacePath && transientPaneRatio.paneKey === paneKey
+      ? transientPaneRatio.ratio
+      : (layout?.splitRatio ?? 0.5)
 
   const suppressGeometryTransition = useCallback(() => {
     setGeometryTransitionSuppressed(true)
@@ -178,11 +270,14 @@ export function TerminalDrawer({
     })
   }, [])
 
-  useLayoutEffect(() => () => {
-    if (transitionResetFrameRef.current !== null) {
-      cancelAnimationFrame(transitionResetFrameRef.current)
-    }
-  }, [])
+  useLayoutEffect(
+    () => () => {
+      if (transitionResetFrameRef.current !== null) {
+        cancelAnimationFrame(transitionResetFrameRef.current)
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     const container = containerRef.current
@@ -218,14 +313,34 @@ export function TerminalDrawer({
     suppressGeometryTransition()
   }, [mainSurfaceMinHeight, suppressGeometryTransition])
 
+  useLayoutEffect(() => {
+    const targetId = layout?.renamingSessionId ?? focusedSessionId
+    if (!targetId) return
+    tabRefs.current.get(targetId)?.scrollIntoView?.({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "nearest",
+    })
+  }, [focusedSessionId, layout?.renamingSessionId, tabIds])
+
   const geometry = terminalGeometry(
     transientRatio ?? storedRatio,
     containerHeight,
-    mainSurfaceMinHeight
+    mainSurfaceMinHeight,
   )
   const terminalPercent = Math.round(geometry.effectiveRatio * 100)
   const mainPercent = 100 - terminalPercent
-  const ratioText = t("ratioText", { main: mainPercent, terminal: terminalPercent })
+  const ratioText = t("ratioText", {
+    main: mainPercent,
+    terminal: terminalPercent,
+  })
+  const leftPanePercent = Math.round(paneRatio * 100)
+  const rightPanePercent = 100 - leftPanePercent
+  const paneRatioText = t("terminalDrawer.paneRatioText", {
+    ns: "menus",
+    left: leftPanePercent,
+    right: rightPanePercent,
+  })
   const drawerHeight = !visible
     ? 0
     : expanded
@@ -238,53 +353,100 @@ export function TerminalDrawer({
     void logUserAction(
       "terminal_drawer_toggle",
       next ? "Expanded terminal drawer" : "Collapsed terminal drawer",
-      { expanded: next }
+      { expanded: next },
     )
   }
 
+  const expandForTerminalAction = () => {
+    if (!expanded) setExpanded(true)
+  }
+
   const openSession = () => {
-    if (!workspacePath || panes.length >= MAX_PANES) return
+    if (!workspacePath) return
+    expandForTerminalAction()
     const meta = createTerminalSessionMeta(workspacePath)
     addSession(workspacePath, meta)
     void logUserAction("terminal_new", "Open a new terminal")
   }
 
-  const splitSession = (direction: TerminalSplitDirection) => {
-    if (!workspacePath || !activePane || panes.length >= MAX_PANES) return
+  const splitSession = () => {
+    if (!workspacePath || !activePane || panes.length >= MAX_VISIBLE_TERMINAL_PANES) return
+    expandForTerminalAction()
     const outcome = splitTerminal({
       workspacePath,
       paneId: activePane.paneId,
       sessionId: activePane.sessionId,
-    }, direction)
+    })
     if (outcome === "completed") {
-      void logUserAction(
-        direction === "right" ? "terminal_split_right" : "terminal_split_down",
-        direction === "right" ? "Split terminal right" : "Split terminal down"
-      )
+      void logUserAction("terminal_split_right", "Split terminal right")
     }
   }
 
-  const closeSession = async () => {
-    if (!workspacePath || !activePane || !activeSession) return
+  const closeSession = async (sessionWorkspace: string, sessionId: string) => {
     try {
       const outcome = await closeTerminal({
-        workspacePath,
-        paneId: activePane.paneId,
-        sessionId: activeSession.sessionId,
+        workspacePath: sessionWorkspace,
+        sessionId,
       })
       if (outcome === "completed") {
         void logUserAction("terminal_close", "Close terminal session")
       }
     } catch (error) {
-      await showActionError(
-        t("contextMenu.cmCloseTerminal", { ns: "menus" }),
-        error
-      )
+      await showActionError(t("contextMenu.cmCloseTerminal", { ns: "menus" }), error)
     }
+  }
+
+  const selectTerminalTab = (sessionId: string) => {
+    if (!workspacePath) return
+    expandForTerminalAction()
+    selectTab(workspacePath, sessionId)
   }
 
   const selectPane = (paneWorkspace: string, paneId: string) => {
     setActivePane(paneWorkspace, paneId)
+  }
+
+  const onTabListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (
+      event.target instanceof HTMLInputElement ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey
+    ) {
+      return
+    }
+    if (tabIds.length === 0) return
+
+    const currentIndex = Math.max(0, tabIds.indexOf(focusedSessionId ?? ""))
+    let nextIndex: number
+    if (event.key === "ArrowLeft") nextIndex = Math.max(0, currentIndex - 1)
+    else if (event.key === "ArrowRight") nextIndex = Math.min(tabIds.length - 1, currentIndex + 1)
+    else if (event.key === "Home") nextIndex = 0
+    else if (event.key === "End") nextIndex = tabIds.length - 1
+    else return
+
+    event.preventDefault()
+    const nextId = tabIds[nextIndex]
+    selectTerminalTab(nextId)
+    requestAnimationFrame(() => tabRefs.current.get(nextId)?.focus())
+  }
+
+  const onTabDragStart = (event: DragEvent<HTMLDivElement>, sessionId: string) => {
+    if (layout?.renamingSessionId) {
+      event.preventDefault()
+      return
+    }
+    draggedTabRef.current = sessionId
+    event.dataTransfer.effectAllowed = "move"
+    event.dataTransfer.setData("text/plain", sessionId)
+  }
+
+  const onTabDrop = (event: DragEvent<HTMLDivElement>, destinationIndex: number) => {
+    event.preventDefault()
+    if (!workspacePath || layout?.renamingSessionId) return
+    const sessionId = draggedTabRef.current || event.dataTransfer.getData("text/plain")
+    if (sessionId) reorderTab(workspacePath, sessionId, destinationIndex)
+    draggedTabRef.current = null
   }
 
   const finishDrag = (pointerId: number) => {
@@ -306,7 +468,7 @@ export function TerminalDrawer({
     const capturedGeometry = terminalGeometry(
       transientRatio ?? storedRatio,
       rect.height,
-      mainSurfaceMinHeight
+      mainSurfaceMinHeight,
     )
 
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -327,10 +489,7 @@ export function TerminalDrawer({
   const onResizePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
-    const bounds = ratioBounds(
-      drag.distributableHeight + ACTIVE_GAP,
-      mainSurfaceMinHeight
-    )
+    const bounds = ratioBounds(drag.distributableHeight + ACTIVE_GAP, mainSurfaceMinHeight)
     const allocation = drag.containerBottom - event.clientY
     const next = clamp(allocation / drag.distributableHeight, bounds.min, bounds.max)
     drag.ratio = next
@@ -359,6 +518,74 @@ export function TerminalDrawer({
     if (next !== geometry.effectiveRatio) setTerminalRatio(workspacePath, next)
   }
 
+  const finishPaneResize = (pointerId: number) => {
+    const drag = paneDragRef.current
+    if (!drag || drag.pointerId !== pointerId) return
+    paneDragRef.current = null
+    setTransientPaneRatio(null)
+    setSplitRatio(drag.workspace, drag.ratio)
+  }
+
+  const onPaneResizePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (
+      event.button !== 0 ||
+      !workspacePath ||
+      panes.length !== MAX_VISIBLE_TERMINAL_PANES
+    ) {
+      return
+    }
+    const grid = paneGridRef.current
+    if (!grid) return
+    const rect = grid.getBoundingClientRect()
+    if (rect.width <= 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    paneDragRef.current = {
+      pointerId: event.pointerId,
+      workspace: workspacePath,
+      paneKey,
+      left: rect.left,
+      width: rect.width,
+      ratio: paneRatio,
+    }
+    setTransientPaneRatio({ workspace: workspacePath, paneKey, ratio: paneRatio })
+    event.preventDefault()
+  }
+
+  const onPaneResizePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = paneDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const next = clamp(
+      (event.clientX - drag.left) / drag.width,
+      MIN_TERMINAL_PANE_SPLIT_RATIO,
+      MAX_TERMINAL_PANE_SPLIT_RATIO,
+    )
+    drag.ratio = next
+    setTransientPaneRatio({
+      workspace: drag.workspace,
+      paneKey: drag.paneKey,
+      ratio: next,
+    })
+    event.preventDefault()
+  }
+
+  const onPaneResizePointerUp = (event: PointerEvent<HTMLDivElement>) => {
+    finishPaneResize(event.pointerId)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const onPaneResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!workspacePath || panes.length !== MAX_VISIBLE_TERMINAL_PANES) return
+    let direction = 0
+    if (event.key === "ArrowLeft") direction = -1
+    if (event.key === "ArrowRight") direction = 1
+    if (direction === 0) return
+    event.preventDefault()
+    const step = event.shiftKey ? KEYBOARD_LARGE_STEP : KEYBOARD_STEP
+    setSplitRatio(workspacePath, paneRatio + direction * step)
+  }
+
   return (
     <div
       aria-hidden={!visible}
@@ -381,9 +608,7 @@ export function TerminalDrawer({
           from its centre. opacity:0 while closed also stops the card's drop
           shadow from bleeding a hairline below the editor. No outer
           overflow-hidden so the open card keeps its shadow-lg. */}
-      <div
-        className="flex h-full min-h-0 flex-col overflow-hidden rounded-(--r-lg) bg-(--term-bg) shadow-(--shadow-lg) ring-1 ring-inset ring-(--term-line)"
-      >
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-(--r-lg) bg-(--term-bg) shadow-(--shadow-lg) ring-1 ring-inset ring-(--term-line)">
         {expanded && (
           <div
             role="separator"
@@ -408,13 +633,15 @@ export function TerminalDrawer({
           </div>
         )}
 
-        {/* Design reference: the whole header row toggles the drawer; the
-            chevron stays a real button for keyboard/AT users. */}
         <div
-          onClick={toggle}
-          className="flex h-[38px] shrink-0 cursor-pointer items-center gap-[8px] bg-(--term-bar) px-[11px]"
+          data-testid="terminal-header"
+          className="flex h-[38px] shrink-0 items-center gap-[7px] bg-(--term-bar) px-[9px]"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-[8px] overflow-hidden">
+          <span
+            role="img"
+            aria-label={t("terminalDrawer.iconAriaLabel", { ns: "menus" })}
+            className="flex size-[20px] shrink-0 items-center justify-center text-(--term-fg2)"
+          >
             <svg
               width="14"
               height="14"
@@ -424,30 +651,190 @@ export function TerminalDrawer({
               strokeWidth="1.9"
               strokeLinecap="round"
               strokeLinejoin="round"
-              className="shrink-0 text-(--term-fg2)"
               aria-hidden="true"
             >
               <path d="m5 8 4 4-4 4M13 16h6" />
             </svg>
-            <span className="shrink-0 text-[12px] font-semibold text-(--term-fg)">
-              {t("terminalDrawer.label", { ns: "menus" })}
-            </span>
-            {workspacePath && (
-              <span className="min-w-0 flex-1 truncate text-right font-mono text-[10px] text-(--term-fg2)">
-                {workspacePathForDisplay(workspacePath)}
-              </span>
-            )}
+          </span>
+
+          <div
+            role="tablist"
+            aria-label={t("terminalDrawer.tabListAriaLabel", { ns: "menus" })}
+            data-testid="terminal-tab-list"
+            onKeyDown={onTabListKeyDown}
+            className="flex min-w-0 flex-1 items-stretch gap-[3px] overflow-x-auto py-[3px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            {tabIds.map((sessionId, index) => {
+              const session = sessions[sessionId]
+              if (!session) return null
+              const displayTitle = terminalDisplayTitle(session)
+              const visiblePaneIndex = panes.findIndex((pane) => pane.sessionId === sessionId)
+              const focused = sessionId === focusedSessionId
+              const renaming = sessionId === layout?.renamingSessionId
+              const closeLabel = t("terminalDrawer.closeTabAriaLabel", {
+                ns: "menus",
+                title: displayTitle,
+              })
+
+              return (
+                <div
+                  key={sessionId}
+                  ref={(element) => {
+                    if (element) tabRefs.current.set(sessionId, element)
+                    else tabRefs.current.delete(sessionId)
+                  }}
+                  role="tab"
+                  tabIndex={focused || (!focusedSessionId && index === 0) ? 0 : -1}
+                  aria-selected={focused}
+                  aria-label={displayTitle}
+                  data-session-id={sessionId}
+                  data-visible-pane={
+                    visiblePaneIndex === 0 ? "left" : visiblePaneIndex === 1 ? "right" : "hidden"
+                  }
+                  data-focused={String(focused)}
+                  draggable={!renaming}
+                  onClick={() => selectTerminalTab(sessionId)}
+                  onDoubleClick={() => beginRename(workspacePath!, sessionId)}
+                  onContextMenu={
+                    renaming || !workspacePath
+                      ? (event) => event.preventDefault()
+                      : contextMenuHandler({
+                          kind: "terminalTab",
+                          workspacePath,
+                          sessionId,
+                        })
+                  }
+                  onDragStart={(event) => onTabDragStart(event, sessionId)}
+                  onDragEnd={() => {
+                    draggedTabRef.current = null
+                  }}
+                  onDragOver={(event) => {
+                    if (!layout?.renamingSessionId) event.preventDefault()
+                  }}
+                  onDrop={(event) => onTabDrop(event, index)}
+                  className={`group/tab flex h-[30px] min-w-[112px] max-w-[220px] shrink items-center gap-[5px] rounded-[6px] border px-[8px] text-[11px] outline-none transition-colors ${
+                    focused
+                      ? "border-(--term-blue) bg-(--term-bg) text-(--term-fg)"
+                      : visiblePaneIndex >= 0
+                        ? "border-(--term-line) bg-(--term-hover) text-(--term-fg)"
+                        : "border-transparent text-(--term-fg2) hover:bg-(--term-hover) hover:text-(--term-fg)"
+                  } focus-visible:ring-1 focus-visible:ring-(--term-blue)`}
+                >
+                  {renaming ? (
+                    <TerminalRenameInput
+                      initialTitle={displayTitle}
+                      ariaLabel={t("terminalDrawer.renameInputAriaLabel", {
+                        ns: "menus",
+                        title: displayTitle,
+                      })}
+                      onSave={(title) => {
+                        setManualTitle(sessionId, title)
+                        finishRename(workspacePath!, sessionId)
+                      }}
+                      onCancel={() => finishRename(workspacePath!, sessionId)}
+                    />
+                  ) : (
+                    <>
+                      {session.launchStatus === "failed" && (
+                        <CircleAlert
+                          className="size-[12px] shrink-0 text-destructive"
+                          aria-label={t("terminalDrawer.spawnFailedTitle", {
+                            ns: "menus",
+                          })}
+                        />
+                      )}
+                      <span className="min-w-0 flex-1 truncate" title={displayTitle}>
+                        {displayTitle}
+                      </span>
+                      <button
+                        type="button"
+                        title={closeLabel}
+                        aria-label={closeLabel}
+                        draggable={false}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void closeSession(workspacePath!, sessionId)
+                        }}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                        onDragStart={(event) => event.preventDefault()}
+                        className={`flex size-[16px] shrink-0 items-center justify-center rounded-[4px] text-(--term-fg2) transition-opacity hover:bg-(--term-hover) hover:text-(--term-fg) focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-(--term-blue) ${
+                          focused
+                            ? "opacity-100"
+                            : "opacity-0 group-hover/tab:opacity-100 group-focus-within/tab:opacity-100"
+                        }`}
+                      >
+                        <X className="size-[11px]" aria-hidden="true" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              )
+            })}
           </div>
 
-          <div className="flex shrink-0 items-center gap-[6px]">
+          <div className="flex shrink-0 items-center gap-[5px]">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  title={t("terminalDrawer.allTerminalsTitle", { ns: "menus" })}
+                  aria-label={t("terminalDrawer.allTerminalsTitle", {
+                    ns: "menus",
+                  })}
+                  disabled={tabIds.length === 0}
+                  className={toolButtonClass}
+                >
+                  <List className="size-[13px]" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[260px]">
+                {tabIds.map((sessionId) => {
+                  const session = sessions[sessionId]
+                  if (!session) return null
+                  const visiblePaneIndex = panes.findIndex((pane) => pane.sessionId === sessionId)
+                  const focused = sessionId === focusedSessionId
+                  const paneLabel =
+                    visiblePaneIndex === 0
+                      ? t("terminalDrawer.leftPane", { ns: "menus" })
+                      : visiblePaneIndex === 1
+                        ? t("terminalDrawer.rightPane", { ns: "menus" })
+                        : null
+                  const focusedLabel = focused
+                    ? t("terminalDrawer.focusedPane", { ns: "menus" })
+                    : null
+                  const statusLabel = [paneLabel, focusedLabel].filter(Boolean).join(" · ")
+                  const displayTitle = terminalDisplayTitle(session)
+                  return (
+                    <DropdownMenuItem
+                      key={sessionId}
+                      aria-label={statusLabel ? `${displayTitle} · ${statusLabel}` : displayTitle}
+                      onSelect={() => selectTerminalTab(sessionId)}
+                      className="min-w-0"
+                    >
+                      {session.launchStatus === "failed" && (
+                        <CircleAlert className="size-[12px] text-destructive" aria-hidden="true" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{displayTitle}</span>
+                      {statusLabel && (
+                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                          {statusLabel}
+                        </span>
+                      )}
+                    </DropdownMenuItem>
+                  )
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <button
               type="button"
-              title={t("terminalDrawer.splitRightTitle", { ns: "menus" })}
+              title={t(
+                panes.length >= MAX_VISIBLE_TERMINAL_PANES
+                  ? "terminalDrawer.splitLimitTitle"
+                  : "terminalDrawer.splitRightTitle",
+                { ns: "menus" },
+              )}
               disabled={!canSplit}
-              onClick={(event) => {
-                event.stopPropagation()
-                splitSession("right")
-              }}
+              onClick={splitSession}
               className={toolButtonClass}
             >
               <svg
@@ -467,52 +854,12 @@ export function TerminalDrawer({
             </button>
             <button
               type="button"
-              title={t("terminalDrawer.splitDownTitle", { ns: "menus" })}
-              disabled={!canSplit}
-              onClick={(event) => {
-                event.stopPropagation()
-                splitSession("down")
-              }}
-              className={toolButtonClass}
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.9"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <rect x="3" y="4" width="18" height="16" rx="2" />
-                <path d="M3 13h18" />
-              </svg>
-            </button>
-            <button
-              type="button"
               title={t("terminalDrawer.newTerminalTitle", { ns: "menus" })}
               disabled={!canCreateSession}
-              onClick={(event) => {
-                event.stopPropagation()
-                openSession()
-              }}
+              onClick={openSession}
               className={toolButtonClass}
             >
               <Plus className="size-[13px]" aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              title={t("terminalDrawer.closeTerminalTitle", { ns: "menus" })}
-              disabled={!canClose}
-              onClick={(event) => {
-                event.stopPropagation()
-                void closeSession()
-              }}
-              className={toolButtonClass}
-            >
-              <X className="size-[13px]" aria-hidden="true" />
             </button>
             <button
               type="button"
@@ -522,10 +869,7 @@ export function TerminalDrawer({
                   ? t("terminalDrawer.collapseAriaLabel", { ns: "menus" })
                   : t("terminalDrawer.expandAriaLabel", { ns: "menus" })
               }
-              onClick={(event) => {
-                event.stopPropagation()
-                toggle()
-              }}
+              onClick={toggle}
               className={toolButtonClass}
             >
               {expanded ? (
@@ -553,53 +897,75 @@ export function TerminalDrawer({
           }}
         >
           <div className="relative h-full min-h-0">
-            {panes.length === 0 && (
+            {tabIds.length === 0 && (
               <div className="flex h-full items-center justify-center">
-              <EmptyState
-                icon={TerminalSquare}
-                title={t("noSessions")}
-                description={t("emptyDescription")}
-                tone="terminal"
-              />
+                <EmptyState
+                  icon={TerminalSquare}
+                  title={t("noSessions")}
+                  description={t("emptyDescription")}
+                  tone="terminal"
+                />
               </div>
             )}
             {workspaceLayouts.map(([paneWorkspace, paneLayout]) => {
               const isCurrentWorkspace = paneWorkspace === workspacePath
+              const effectivePaneRatio = isCurrentWorkspace ? paneRatio : paneLayout.splitRatio
+              const splitVisible = paneLayout.panes.length === MAX_VISIBLE_TERMINAL_PANES
               return (
                 <div
                   key={paneWorkspace}
+                  ref={isCurrentWorkspace ? paneGridRef : undefined}
                   hidden={!isCurrentWorkspace}
                   aria-hidden={!isCurrentWorkspace}
                   inert={!isCurrentWorkspace}
-                  className={`${isCurrentWorkspace ? "flex" : "hidden"} h-full min-h-0 ${paneLayout.splitDirection === "down" ? "flex-col" : "flex-row"}`}
+                  className={`${isCurrentWorkspace ? "grid" : "hidden"} h-full min-h-0 overflow-hidden`}
+                  style={{
+                    gridTemplateColumns: splitVisible
+                      ? `${effectivePaneRatio}fr 4px ${1 - effectivePaneRatio}fr`
+                      : "minmax(0, 1fr)",
+                    gridTemplateRows: "minmax(0, 1fr)",
+                  }}
                   data-testid={isCurrentWorkspace ? "terminal-pane-grid" : undefined}
                 >
-                  {paneLayout.panes.map((pane, index) => {
-                    const session = sessions[pane.sessionId]
+                  {paneLayout.tabIds.map((sessionId) => {
+                    const session = sessions[sessionId]
                     if (!session) return null
-                    const active = isCurrentWorkspace && pane.paneId === paneLayout.activePaneId
+                    const visiblePaneIndex = paneLayout.panes.findIndex(
+                      (pane) => pane.sessionId === sessionId,
+                    )
+                    const pane = visiblePaneIndex >= 0 ? paneLayout.panes[visiblePaneIndex] : null
+                    const sessionVisible = Boolean(
+                      visible && expanded && isCurrentWorkspace && pane,
+                    )
+                    const active = Boolean(
+                      sessionVisible && pane?.paneId === paneLayout.activePaneId,
+                    )
                     const shellArgs = (session as TerminalSessionMetaWithArgs).shellArgs
-                    const dividerClass =
-                      paneLayout.splitDirection === "down"
-                        ? index > 0
-                          ? "border-t border-(--term-line)"
-                          : ""
-                        : index > 0
-                          ? "border-l border-(--term-line)"
-                          : ""
 
                     return (
                       <div
-                        key={pane.paneId}
-                        data-testid={`terminal-pane-${pane.paneId}`}
-                        onClick={() => selectPane(paneWorkspace, pane.paneId)}
-                        onContextMenu={contextMenuHandler({
-                          kind: "terminal",
-                          workspacePath: paneWorkspace,
-                          paneId: pane.paneId,
-                          sessionId: pane.sessionId,
-                        })}
-                        className={`min-h-0 min-w-0 flex-1 ${dividerClass} ${active ? "ring-1 ring-inset ring-(--term-blue)" : ""}`}
+                        key={sessionId}
+                        data-testid={pane ? `terminal-pane-${pane.paneId}` : undefined}
+                        data-session-id={sessionId}
+                        onClick={pane ? () => selectPane(paneWorkspace, pane.paneId) : undefined}
+                        onContextMenu={
+                          pane
+                            ? contextMenuHandler({
+                                kind: "terminal",
+                                workspacePath: paneWorkspace,
+                                paneId: pane.paneId,
+                                sessionId,
+                              })
+                            : undefined
+                        }
+                        className={`min-h-0 min-w-0 overflow-hidden ${
+                          active ? "ring-1 ring-inset ring-(--term-blue)" : ""
+                        }`}
+                        style={{
+                          display: pane ? undefined : "none",
+                          gridColumn: visiblePaneIndex === 1 ? 3 : 1,
+                          gridRow: 1,
+                        }}
                       >
                         <TerminalSession
                           workspace={paneWorkspace}
@@ -607,11 +973,40 @@ export function TerminalDrawer({
                           shell={session.shell || null}
                           shellArgs={shellArgs}
                           active={active}
+                          visible={sessionVisible}
                           onExit={() => removeSession(paneWorkspace, session.sessionId)}
+                          onTitleChange={(title) => setShellTitle(session.sessionId, title)}
+                          onReady={() => setLaunchStatus(session.sessionId, "running")}
+                          onOpenError={() => setLaunchStatus(session.sessionId, "failed")}
                         />
                       </div>
                     )
                   })}
+                  {isCurrentWorkspace && splitVisible && (
+                    <div
+                      role="separator"
+                      tabIndex={0}
+                      aria-label={t("terminalDrawer.paneResizeAriaLabel", {
+                        ns: "menus",
+                      })}
+                      aria-orientation="vertical"
+                      aria-valuemin={MIN_TERMINAL_PANE_SPLIT_RATIO * 100}
+                      aria-valuemax={MAX_TERMINAL_PANE_SPLIT_RATIO * 100}
+                      aria-valuenow={leftPanePercent}
+                      aria-valuetext={paneRatioText}
+                      title={t("terminalDrawer.paneResizeAriaLabel", {
+                        ns: "menus",
+                      })}
+                      data-testid="terminal-pane-divider"
+                      onPointerDown={onPaneResizePointerDown}
+                      onPointerMove={onPaneResizePointerMove}
+                      onPointerUp={onPaneResizePointerUp}
+                      onPointerCancel={(event) => finishPaneResize(event.pointerId)}
+                      onLostPointerCapture={(event) => finishPaneResize(event.pointerId)}
+                      onKeyDown={onPaneResizeKeyDown}
+                      className="z-10 col-start-2 row-start-1 h-full w-[4px] cursor-col-resize touch-none bg-(--term-line) outline-none transition-colors hover:bg-(--term-blue) focus-visible:bg-(--term-blue)"
+                    />
+                  )}
                 </div>
               )
             })}

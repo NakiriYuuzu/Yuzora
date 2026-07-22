@@ -1,8 +1,15 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
-import { agentSetTrace } from "@/lib/ipc"
+import {
+  agentUpdateFor,
+  indexLatestAgentVersions,
+  loadAgentVersions,
+  type AgentVersionMap,
+} from "@/agent/agentVersions"
+import { agentLatestVersions, agentSetTrace } from "@/lib/ipc"
 import type { AgentCommandMode, AgentId } from "@/lib/agentPresets"
+import { useAgentStore } from "@/state/agentStore"
 import { SettingCard, SettingsTextInput, ToggleRow } from "./settingsPrimitives"
 import {
   AGENT_PRESETS,
@@ -13,12 +20,37 @@ import {
   writeJsonSetting,
   type AgentPreset,
   type AgentSettings,
+  type PiRuntime,
 } from "./settingsStorage"
 
 export function AgentSection() {
   const { t } = useTranslation("workbench")
   const [settings, setSettings] = useState(loadAgentSettings)
+  const [latestVersions, setLatestVersions] = useState<AgentVersionMap>({})
+  const curatedPreset = settings.preset === "custom" ? null : settings.preset
+  const liveVersion = useAgentStore((state) => {
+    if (!curatedPreset) return undefined
+    let version: string | undefined
+    for (const session of state.sessions.values()) {
+      if (session.agentId === curatedPreset && session.agentVersion) version = session.agentVersion
+    }
+    return version
+  })
   const traceGenRef = useRef(0)
+
+  useEffect(() => {
+    let active = true
+    void agentLatestVersions()
+      .then((versions) => {
+        if (active) setLatestVersions(indexLatestAgentVersions(versions))
+      })
+      .catch(() => {
+        // Update discovery is best-effort and never blocks Agent Settings.
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const persist = (next: AgentSettings) => {
     setSettings(next)
@@ -50,10 +82,14 @@ export function AgentSection() {
     }
   }
 
-  const curatedPreset = settings.preset === "custom" ? null : settings.preset
   const effectiveCommand = resolveAgentCommandRoute(curatedPreset ?? undefined, settings).command
   const commandMode = curatedPreset ? settings.presetCommands[curatedPreset].mode : "custom"
   const commandEditable = settings.preset === "custom" || commandMode === "custom"
+  const currentVersions = { ...loadAgentVersions() }
+  if (curatedPreset && liveVersion) currentVersions[curatedPreset] = liveVersion
+  const availableUpdate = curatedPreset
+    ? agentUpdateFor(curatedPreset, currentVersions, latestVersions)
+    : null
 
   return (
     <div className="flex flex-col gap-[14px]">
@@ -93,11 +129,43 @@ export function AgentSection() {
                 }}
                 className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent)"
               >
-                <option value="verified">{t("settings.agentCommands.modeVerified")}</option>
                 <option value="latest">{t("settings.agentCommands.modeLatest")}</option>
                 <option value="custom">{t("settings.agentCommands.modeCustom")}</option>
               </select>
             </label>
+          )}
+          {curatedPreset === "pi" && commandMode === "latest" && (
+            <label className="flex flex-col gap-[6px]">
+              <span className="text-[11.5px] font-medium text-(--ink-2)">{t("settings.agentCommands.piRuntimeLabel")}</span>
+              <select
+                aria-label={t("settings.agentCommands.piRuntimeLabel")}
+                value={settings.piRuntime}
+                onChange={(event) => {
+                  update({ piRuntime: event.currentTarget.value as PiRuntime })
+                }}
+                className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent)"
+              >
+                <option value="builtin">{t("settings.agentCommands.piRuntimeBuiltin")}</option>
+                <option value="community">{t("settings.agentCommands.piRuntimeCommunity")}</option>
+              </select>
+              <span className="text-[10.5px] text-(--ink-3)">{t("settings.agentCommands.piRuntimeSub")}</span>
+            </label>
+          )}
+          {availableUpdate && (
+            <div
+              role="status"
+              className="rounded-[8px] border border-[rgba(91,63,209,0.22)] bg-[rgba(91,63,209,0.07)] px-[10px] py-[8px]"
+            >
+              <div className="text-[11.5px] font-medium text-(--ink-1)">
+                {t("settings.agentCommands.updateAvailable", {
+                  currentVersion: availableUpdate.currentVersion,
+                  latestVersion: availableUpdate.latestVersion,
+                })}
+              </div>
+              <div className="mt-[2px] text-[10.5px] text-(--ink-3)">
+                {t("settings.agentCommands.updateRestartHint")}
+              </div>
+            </div>
           )}
           <SettingsTextInput
             label={t("settings.agentCommands.commandLabel")}

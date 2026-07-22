@@ -437,14 +437,14 @@ describe("AppShell", () => {
   it("toggles the terminal drawer with Ctrl+`", () => {
     render(<AppShell />)
 
-    const terminalDrawer = screen.getByText("Terminal").closest('[aria-hidden="true"]')
-    expect(terminalDrawer).not.toBeNull()
+    const terminalDrawer = screen.getByTestId("terminal-drawer")
+    expect(terminalDrawer).toHaveAttribute("aria-hidden", "true")
 
     fireEvent.keyDown(window, { key: "`", ctrlKey: true })
-    expect(screen.getByText("Terminal").closest('[aria-hidden="true"]')).toBeNull()
+    expect(terminalDrawer).toHaveAttribute("aria-hidden", "false")
 
     fireEvent.keyDown(window, { key: "`", ctrlKey: true })
-    expect(screen.getByText("Terminal").closest('[aria-hidden="true"]')).not.toBeNull()
+    expect(terminalDrawer).toHaveAttribute("aria-hidden", "true")
   })
 
   it("best-effort closes pty and dev-server workspace on Tauri close request", async () => {

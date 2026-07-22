@@ -72,7 +72,7 @@ describe("AgentPickerPopover", () => {
     render(<AgentPickerPopover cwd="/ws" onClose={() => {}} />)
 
     expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("Pi")
-    expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("bunx pi-acp@0.0.31")
+    expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("bunx pi-acp@latest")
     expect(screen.getByTestId("agent-picker-card-claude")).toHaveTextContent("Claude")
     expect(screen.getByTestId("agent-picker-card-codex")).toHaveTextContent("Codex")
     expect(screen.getByTestId("agent-picker-card-custom")).toHaveTextContent("Custom command…")
@@ -83,12 +83,12 @@ describe("AgentPickerPopover", () => {
       AGENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
         preset: "pi",
-        command: "bunx pi-acp@0.0.31",
+        command: "bunx pi-acp@latest",
         traceEnabled: false,
         presetCommands: {
           pi: { mode: "latest", customCommand: "" },
           claude: { mode: "custom", customCommand: "uvx wrapped-claude" },
-          codex: { mode: "verified", customCommand: "" },
+          codex: { mode: "latest", customCommand: "" },
         },
       }),
     )
@@ -97,7 +97,7 @@ describe("AgentPickerPopover", () => {
 
     expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("bunx pi-acp@latest")
     expect(screen.getByTestId("agent-picker-card-claude")).toHaveTextContent("uvx wrapped-claude")
-    expect(screen.getByTestId("agent-picker-card-codex")).toHaveTextContent("codex-acp@1.1.2")
+    expect(screen.getByTestId("agent-picker-card-codex")).toHaveTextContent("codex-acp@latest")
   })
 
   it("highlights the global preset by default", () => {
