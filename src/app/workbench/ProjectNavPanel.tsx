@@ -1,4 +1,4 @@
-import { SearchIcon } from "lucide-react"
+import { ChevronDown, SearchIcon } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
@@ -8,8 +8,11 @@ import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 import { FilesNavContent } from "@/app/workbench/FilesNavContent"
 import { GitNavContent } from "@/app/workbench/GitNavContent"
 import { SshNavContent } from "@/app/workbench/SshNavContent"
-import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
+import { canonicalPathKey, workspacePathForDisplay } from "@/lib/paths"
+import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
+import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
 
 interface ProjectNavPanelProps {
   mode: Mode
@@ -26,13 +29,15 @@ interface ProjectNavPanelProps {
 export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNavPanelProps) {
   const { t } = useTranslation("workbench")
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const presentations = useRecentWorkspacesStore((s) => s.presentations)
+  const openProjectEditor = useUiStore((s) => s.openProjectEditor)
 
-  const folderName = workspacePath ? workspacePathBasename(workspacePath) : null
-  const displayName = folderName ?? "Yuzora"
+  const project = workspacePath
+    ? resolveProjectPresentation(workspacePath, presentations[canonicalPathKey(workspacePath)])
+    : resolveProjectPresentation("/Yuzora")
   const displayPath = workspacePath
     ? workspacePathForDisplay(workspacePath).replace(/^\/Users\/[^/]+/, "~")
     : "~/App/Tauri/yuzora"
-  const iconLetter = folderName ? folderName.charAt(0).toUpperCase() : "Y"
 
   return (
     <aside
@@ -42,14 +47,26 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
       <div className="flex items-center gap-[10px] px-[15px] pt-[15px] pb-[12px]">
         <div
           aria-hidden="true"
-          className="flex size-[30px] shrink-0 items-center justify-center rounded-[10px] bg-[image:var(--grad-sunrise)] text-[12px] font-semibold text-white"
+          className="flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-[12px] font-semibold shadow-(--shadow-xs)"
+          style={{ background: project.color.background, color: project.color.foreground }}
         >
-          {iconLetter}
+          {project.glyph}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate font-serif text-[20px] font-medium text-(--ink-1)">{displayName}</p>
+          <p className="truncate font-serif text-[20px] font-medium text-(--ink-1)">{project.name}</p>
           <p className="truncate text-[11px] text-(--ink-3)">{displayPath}</p>
         </div>
+        {workspacePath && (
+          <button
+            type="button"
+            aria-label={t("projectNav.editProject", { name: project.name })}
+            title={t("projectNav.editProject", { name: project.name })}
+            onClick={() => openProjectEditor(workspacePath)}
+            className="flex size-[28px] shrink-0 items-center justify-center rounded-[8px] text-(--ink-3) transition-colors duration-150 hover:bg-(--yz-hover) hover:text-(--ink-1)"
+          >
+            <ChevronDown className="size-[16px]" aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       <div className="px-[13px] pb-[12px]">

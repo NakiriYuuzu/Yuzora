@@ -12,6 +12,7 @@ import { SshPanel } from "@/app/panels/SshPanel"
 import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { ContextMenu } from "@/app/workbench/ContextMenu"
 import { DiffModal } from "@/workbench/git/DiffModal"
+import { ProjectEditorPopover } from "@/app/workbench/ProjectEditorPopover"
 import { ProjectNavPanel } from "@/app/workbench/ProjectNavPanel"
 import { SettingsDialog, type ThemePreference } from "@/app/workbench/SettingsDialog"
 import { loadAppearanceSettings, saveAppearanceSettings } from "@/app/workbench/settingsStorage"
@@ -373,6 +374,7 @@ export function AppShell() {
       />
 
       <ContextMenu />
+      <ProjectEditorPopover />
 
       {/* App-level Diff viewer host (design §D). Renders in-tree (no portal) so
           the overlay's absolute inset-0 covers this relative shell root. Inert

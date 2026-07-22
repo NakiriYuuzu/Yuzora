@@ -8,13 +8,14 @@ import {
     type Client,
     type Stream
 } from "@agentclientprotocol/sdk"
+import { resolveAgentSpawnCommand } from "./agentRuntime"
 import { getDocument, documentGeneration, updateBuffer } from "../editor/documentRegistry"
 import { normalizeDocumentLineEndings, serializeDocumentLineEndings } from "../editor/lineEndings"
 import { getView } from "../editor/viewRegistry"
 import { saveFile } from "../lib/ipc"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
-import type { BlockEntry, TranscriptEntry } from "./acpTypes"
+import { newEntryId, type BlockEntry, type TranscriptEntry } from "./acpTypes"
 
 const TERMINAL_OUTPUT_BYTE_LIMIT = 1_048_576
 
@@ -35,6 +36,8 @@ type ToolCallUpdate = {
     locations?: { path: string; line?: number | null }[] | null
     rawInput?: Record<string, unknown>
     rawOutput?: Record<string, unknown>
+    /** claude-agent-acp：子 agent 內部 tool call 歸屬（_meta.claudeCode.parentToolUseId）。 */
+    parentToolCallId?: string
 }
 
 type PlanUpdate = {
@@ -50,7 +53,40 @@ type ToolMeta = {
     locations?: { path: string; line?: number | null }[] | null
     rawInput?: Record<string, unknown>
     rawOutput?: Record<string, unknown>
+    /** sub-agent 內部 tool call → spawn 它的 tool call（UI 據此嵌套呈現）。 */
+    parentToolCallId?: string
+    // diff content 的行數統計（2026-07-21 使用者回饋：composer 上方顯示變更彙總）。
+    // 連線層在收到 diff record 當下計算，UI 端只彙總、不再持有 oldText/newText。
+    diffs?: { path: string; added: number; removed: number }[]
 }
+
+// ACP elicitation（UNSTABLE capability；P3／P4）：form mode 的請求化約為 UI 可
+// 直接渲染的欄位清單。支援 primitive 欄位（string／boolean／number／integer、
+// string enum/oneOf 單選）與 array multiselect（items.enum／items.anyOf，P4
+// question 多選）；其餘型別回 null → cancel。
+export interface ElicitationField {
+    key: string
+    type: "string" | "boolean" | "number" | "integer" | "array"
+    title?: string
+    description?: string
+    required: boolean
+    /** request _meta.yuzora.multiline（editor 語意）→ textarea 呈現。 */
+    multiline?: boolean
+    defaultValue?: string | number | boolean | string[]
+    /** string enum／oneOf → 單選選項；array → multiselect 選項。 */
+    options?: { value: string; label: string; description?: string }[]
+}
+
+export interface ElicitationRequest {
+    message: string
+    title?: string
+    fields: ElicitationField[]
+}
+
+export type ElicitationResponsePayload =
+    | { action: "accept"; content: Record<string, string | number | boolean | string[]> }
+    | { action: "decline" }
+    | { action: "cancel" }
 
 type PermissionKind = "allow_once" | "allow_always" | "reject_once" | "reject_always"
 
@@ -256,6 +292,9 @@ export function isAgentAuthRequiredError(value: unknown): value is AgentAuthRequ
 export interface NewSessionResult {
     sessionId: string
     startupInfo: string | null
+    agentVersion?: string
+    /** initialize.agentInfo.name（如 "pi-acp"／"yuzora-pi-acp"）——P5 runtime badge 的判斷來源。 */
+    agentName?: string
     configOptions?: SessionConfigOption[]
     agentIdentity?: AgentCommandIdentity
     /** SHA-256 identity for a custom command. The raw command is never persisted. */
@@ -264,6 +303,8 @@ export interface NewSessionResult {
 
 export interface LoadSessionResult {
     startupInfo: string | null
+    agentVersion?: string
+    agentName?: string
     configOptions?: SessionConfigOption[]
     agentIdentity?: AgentCommandIdentity
 }
@@ -312,6 +353,9 @@ export interface AgentConnection {
 interface AcpClientHandlers {
     sessionUpdate(params: SessionNotification): Promise<void>
     requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse>
+    // ACP UNSTABLE：elicitation/create（form mode）。SDK Client interface 的
+    // optional method——實作即被 route；未知 mode 一律回 cancel（graceful degradation）。
+    unstable_createElicitation(params: unknown): Promise<Record<string, unknown>>
     writeTextFile(params: WriteTextFileRequest): Promise<Record<string, never>>
     readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse>
     createTerminal(params: CreateTerminalRequest): Promise<CreateTerminalResponse>
@@ -341,6 +385,11 @@ export interface AcpClientRuntimeDeps {
         sessionId: string,
         block: BlockEntry,
         choose: (optionId: string) => void
+    ) => void
+    onElicitationRequest?: (
+        sessionId: string,
+        request: ElicitationRequest,
+        respond: (response: ElicitationResponsePayload) => void
     ) => void
 }
 
@@ -428,7 +477,7 @@ export function createAcpClientRuntime(deps: AcpClientRuntimeDeps = {}): AcpClie
         )
         const next = [
             ...settled,
-            { who: "you" as const, text, streaming: true },
+            { id: newEntryId(), who: "you" as const, text, streaming: true },
         ]
         transcripts.set(sessionId, next)
         // 刻意不呼叫 deps.onTranscript：beginTurn 已在 store 樂觀顯示。
@@ -543,6 +592,7 @@ export function createAcpClientRuntime(deps: AcpClientRuntimeDeps = {}): AcpClie
                 )
                 if (output.output.length > 0) {
                     appendTranscript(params.sessionId, {
+                        id: newEntryId(),
                         kind: "tool",
                         text: output.output,
                         meta: JSON.stringify({
@@ -601,6 +651,35 @@ export function createAcpClientRuntime(deps: AcpClientRuntimeDeps = {}): AcpClie
                     deps.onPermissionRequest?.(params.sessionId, block, choose)
                     if (!deps.onPermissionRequest) cancel()
                 })
+            },
+            unstable_createElicitation(params) {
+                const record = asRecord(params)
+                const sessionId = typeof record.sessionId === "string" ? record.sessionId : null
+                const request = record.mode === "form" ? normalizeElicitationRequest(record) : null
+                if (!sessionId || !request) {
+                    return Promise.resolve({ action: "cancel" })
+                }
+                return new Promise<Record<string, unknown>>((resolve) => {
+                    let settled = false
+                    const finish = (response: Record<string, unknown>) => {
+                        if (settled) return
+                        settled = true
+                        pendingBySession.get(sessionId)?.delete(cancel)
+                        resolve(response)
+                    }
+                    // session/cancel／dropSession 與 permission 共用同一個 cancel set。
+                    const cancel = () => finish({ action: "cancel" })
+                    const respond = (response: ElicitationResponsePayload) => {
+                        finish(response.action === "accept"
+                            ? { action: "accept", content: response.content }
+                            : { action: response.action })
+                    }
+                    const pending = pendingBySession.get(sessionId) ?? new Set<() => void>()
+                    pending.add(cancel)
+                    pendingBySession.set(sessionId, pending)
+                    deps.onElicitationRequest?.(sessionId, request, respond)
+                    if (!deps.onElicitationRequest) cancel()
+                })
             }
         },
         cancelPendingPermissions,
@@ -646,6 +725,8 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
     let stdoutController: ReadableStreamDefaultController<Uint8Array> | undefined
     let disconnectedError: Error | undefined
     let authMethods: AgentAuthMethod[] = []
+    let agentVersion: string | undefined
+    let agentName: string | undefined
     let agentCapabilities: { loadSession: boolean; promptImage: boolean } = {
         loadSession: false,
         promptImage: false
@@ -688,6 +769,8 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         configRequests.clear()
         promptInFlight.clear()
         runningSessions.clear()
+        agentVersion = undefined
+        agentName = undefined
         agent = undefined
         agentProcessId = undefined
         initialization = undefined
@@ -818,23 +901,32 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         try {
             const command = typeof deps.command === "function" ? deps.command() : deps.command
             processId = await invoke<string>("agent_spawn", {
-                command: command ?? "bunx pi-acp@0.0.31",
+                command: await resolveAgentSpawnCommand(command ?? "bunx pi-acp@latest"),
                 cwd
             })
             agentProcessId = processId
             teardownActiveListeners = teardownListeners
             authMethods = []
+            agentVersion = undefined
+            agentName = undefined
             agentCapabilities = { loadSession: false, promptImage: false }
             const initializeResult = await trackAgentRequest(() => connection.initialize({
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: true, writeTextFile: true },
                     terminal: true,
-                    session: { configOptions: { boolean: {} } }
+                    session: { configOptions: { boolean: {} } },
+                    // UNSTABLE capability（P3）：form elicitation。舊 agent 的 zod
+                    // 對未知欄位為 strip 語意，宣告本身不影響相容性。
+                    elicitation: { form: {} }
                 }
             }))
             authMethods = normalizeAuthMethods(asRecord(initializeResult).authMethods)
             agentCapabilities = normalizeAgentCapabilities(asRecord(initializeResult).agentCapabilities)
+            const implementation = asRecord(asRecord(initializeResult).agentInfo)
+            const reportedVersion = firstString(implementation.version)?.trim()
+            agentVersion = reportedVersion || undefined
+            agentName = firstString(implementation.name)?.trim() || undefined
             return connection
         } catch (error) {
             teardownListeners()
@@ -863,6 +955,8 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
                 return {
                     sessionId: result.sessionId,
                     startupInfo,
+                    ...(agentVersion ? { agentVersion } : {}),
+                    ...(agentName ? { agentName } : {}),
                     configOptions: replaceAuthoritativeConfig(
                         result.sessionId,
                         normalizeSessionConfigOptions(asRecord(result).configOptions)
@@ -882,6 +976,8 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
                 const startupInfo = firstString(piAcp.startupInfo) ?? null
                 return {
                     startupInfo,
+                    ...(agentVersion ? { agentVersion } : {}),
+                    ...(agentName ? { agentName } : {}),
                     configOptions: replaceAuthoritativeConfig(
                         id,
                         normalizeSessionConfigOptions(asRecord(result).configOptions)
@@ -919,9 +1015,7 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         async setSessionConfigOption(sessionId, configId, value) {
             const connection = agent
             if (!connection) throw disconnectedError ?? new Error("ACP connection is not initialized")
-            if (promptInFlight.has(sessionId) || runningSessions.has(sessionId)) {
-                throw new Error("Session configuration cannot change during an active turn")
-            }
+            // turn 進行中允許改 config（soak 回饋 #1/#5）；僅擋同 session 並發 setter。
             if (configRequests.has(sessionId)) {
                 throw new Error("A session configuration change is already pending")
             }
@@ -1012,7 +1106,7 @@ function appendMessage(
             { ...last, text: `${last.text}${text}`, streaming: true }
         ]
     }
-    return [...transcript, { who, text, streaming: true }]
+    return [...transcript, { id: newEntryId(), who, text, streaming: true }]
 }
 
 function appendUserImage(
@@ -1026,7 +1120,7 @@ function appendUserImage(
             { ...last, images: [...(last.images ?? []), image], streaming: true }
         ]
     }
-    return [...transcript, { who: "you", text: "", streaming: true, images: [image] }]
+    return [...transcript, { id: newEntryId(), who: "you", text: "", streaming: true, images: [image] }]
 }
 
 function appendThought(transcript: TranscriptEntry[], text: string): TranscriptEntry[] {
@@ -1035,12 +1129,93 @@ function appendThought(transcript: TranscriptEntry[], text: string): TranscriptE
     if (last && "kind" in last && last.kind === "thought") {
         return [...transcript.slice(0, -1), { ...last, text: `${last.text}${text}` }]
     }
-    return [...transcript, { kind: "thought", text }]
+    return [...transcript, { id: newEntryId(), kind: "thought", text }]
+}
+
+function enumOptionsFrom(list: unknown[]): ElicitationField["options"] {
+    return list.flatMap((item) => {
+        const option = asRecord(item)
+        return typeof option.const === "string"
+            ? [{
+                value: option.const,
+                label: typeof option.title === "string" ? option.title : option.const,
+                ...(typeof option.description === "string" ? { description: option.description } : {})
+            }]
+            : []
+    })
+}
+
+// form elicitation → UI 欄位清單；含不支援的欄位型別（object／未知、或 array
+// 缺有效選項）時回 null，caller 以 cancel 回應（agent 端拿 default，graceful
+// degradation）。array＝ACP multiselect：items.enum（字串清單）或 items.anyOf
+// （titled EnumOption）；minItems/maxItems 刻意不驗（producer 是我們的 adapter，
+// 不產生它們）。
+function normalizeElicitationRequest(record: Record<string, unknown>): ElicitationRequest | null {
+    const schema = asRecord(record.requestedSchema)
+    const properties = asRecord(schema.properties)
+    const required = Array.isArray(schema.required)
+        ? schema.required.filter((key): key is string => typeof key === "string")
+        : []
+    const multiline = asRecord(asRecord(record._meta).yuzora).multiline === true
+    const fields: ElicitationField[] = []
+    for (const [key, raw] of Object.entries(properties)) {
+        const property = asRecord(raw)
+        const type = property.type
+        if (type !== "string" && type !== "boolean" && type !== "number" && type !== "integer" && type !== "array") {
+            return null
+        }
+        let options: ElicitationField["options"]
+        if (type === "string") {
+            if (Array.isArray(property.enum)) {
+                options = property.enum
+                    .filter((value): value is string => typeof value === "string")
+                    .map((value) => ({ value, label: value }))
+            } else if (Array.isArray(property.oneOf)) {
+                options = enumOptionsFrom(property.oneOf)
+            }
+        } else if (type === "array") {
+            const items = asRecord(property.items)
+            if (Array.isArray(items.enum)) {
+                options = items.enum
+                    .filter((value): value is string => typeof value === "string")
+                    .map((value) => ({ value, label: value }))
+            } else if (Array.isArray(items.anyOf)) {
+                options = enumOptionsFrom(items.anyOf)
+            }
+            if (!options || options.length === 0) return null
+        }
+        const defaultValue = property.default
+        const defaultStrings = type === "array"
+            && Array.isArray(defaultValue)
+            && defaultValue.every((value): value is string => typeof value === "string")
+            ? defaultValue
+            : undefined
+        fields.push({
+            key,
+            type,
+            ...(typeof property.title === "string" ? { title: property.title } : {}),
+            ...(typeof property.description === "string" ? { description: property.description } : {}),
+            required: required.includes(key),
+            ...(multiline && type === "string" && !options ? { multiline: true } : {}),
+            ...(typeof defaultValue === "string" || typeof defaultValue === "number" || typeof defaultValue === "boolean"
+                ? { defaultValue }
+                : {}),
+            ...(defaultStrings ? { defaultValue: defaultStrings } : {}),
+            ...(options && options.length > 0 ? { options } : {})
+        })
+    }
+    if (fields.length === 0) return null
+    return {
+        message: typeof record.message === "string" ? record.message : "",
+        ...(typeof schema.title === "string" ? { title: schema.title } : {}),
+        fields
+    }
 }
 
 function permissionBlock(params: RequestPermissionRequest): BlockEntry {
     const title = params.toolCall.title ?? "Permission request"
     return {
+        id: newEntryId(),
         kind: "perm",
         text: title,
         meta: JSON.stringify({
@@ -1410,6 +1585,7 @@ function unknownSessionUpdate(transcript: TranscriptEntry[], sessionUpdate: stri
     return [
         ...transcript,
         {
+            id: newEntryId(),
             kind: "error",
             text: `Unknown session update: ${sessionUpdate || "unknown"}`,
             meta: JSON.stringify({ sessionUpdate: sessionUpdate || null })
@@ -1418,16 +1594,17 @@ function unknownSessionUpdate(transcript: TranscriptEntry[], sessionUpdate: stri
 }
 
 function appendToolCall(transcript: TranscriptEntry[], update: ToolCallUpdate): TranscriptEntry[] {
-    const meta = toolMeta(update)
+    const diffs = diffStats(update.content)
+    const meta = { ...toolMeta(update), ...(diffs.length > 0 ? { diffs } : {}) }
     const text = [update.title ?? "Tool call", ...toolContentText(update.content)].join("\n")
     return [
         ...transcript,
         {
+            id: newEntryId(),
             kind: "tool",
             text,
             meta: serializeToolMeta(meta)
-        },
-        ...diffEntries(update)
+        }
     ]
 }
 
@@ -1446,11 +1623,13 @@ function mergeToolCallUpdate(
     const entry = transcript[index]
     if (!("kind" in entry) || entry.kind !== "tool") return transcript
     const previous = parseToolMeta(entry.meta)
-    const nextMeta = {
+    const addedDiffs = diffStats(update.content)
+    const nextMeta: ToolMeta = {
         ...previous,
         ...toolMeta(update),
         toolCallId: update.toolCallId
     }
+    if (addedDiffs.length > 0) nextMeta.diffs = [...(previous?.diffs ?? []), ...addedDiffs]
     const addedText = toolContentText(update.content)
     const nextEntry = {
         ...entry,
@@ -1460,21 +1639,22 @@ function mergeToolCallUpdate(
     return [
         ...transcript.slice(0, index),
         nextEntry,
-        ...transcript.slice(index + 1),
-        ...diffEntries(update)
+        ...transcript.slice(index + 1)
     ]
 }
 
 function upsertPlan(transcript: TranscriptEntry[], update: PlanUpdate): TranscriptEntry[] {
     const completed = update.entries.filter((entry) => entry.status === "completed").length
+    const index = transcript.findIndex((entry) => "kind" in entry && entry.kind === "plan")
     const plan = {
+        // 就地更新沿用原 id，避免 React row 重掛
+        id: index === -1 ? newEntryId() : transcript[index].id,
         kind: "plan" as const,
         text: update.entries
             .map((entry) => `${planStatus(entry.status)} ${entry.content}`)
             .join("\n"),
         meta: JSON.stringify({ completed, total: update.entries.length })
     }
-    const index = transcript.findIndex((entry) => "kind" in entry && entry.kind === "plan")
     if (index === -1) return [...transcript, plan]
     return [...transcript.slice(0, index), plan, ...transcript.slice(index + 1)]
 }
@@ -1484,9 +1664,13 @@ function parseToolCallUpdate(
     sessionUpdate: "tool_call" | "tool_call_update"
 ): ToolCallUpdate | undefined {
     if (typeof record.toolCallId !== "string") return undefined
+    // claude-agent-acp 對 sub-agent 內部 tool call 蓋 parentToolUseId（指向
+    // spawn 它的 Agent/Task call）——保留下來供 UI 嵌套歸組。
+    const parentToolCallId = asRecord(asRecord(record._meta).claudeCode).parentToolUseId
     return {
         sessionUpdate,
         toolCallId: record.toolCallId,
+        ...(typeof parentToolCallId === "string" ? { parentToolCallId } : {}),
         title: typeof record.title === "string" ? record.title : null,
         kind: typeof record.kind === "string" ? record.kind : null,
         status: typeof record.status === "string" ? record.status : null,
@@ -1544,33 +1728,50 @@ function toolContentText(content: ToolContent[] | null | undefined): string[] {
         if (record.type === "terminal") {
             return typeof record.terminalId === "string" ? [`[terminal: ${record.terminalId}]`] : []
         }
-        if (record.type === "diff") return []
+        // diff 內容不再另立 diff 卡（2026-07-21 使用者回饋：不需要 view/apply diff）；
+        // 以佔位行併入 tool step 內文，保留「改了哪個檔」的可見性。
+        if (record.type === "diff") {
+            return typeof record.path === "string" ? [`[diff: ${record.path}]`] : []
+        }
         return typeof record.type === "string" ? [`[${record.type}]`] : []
     })
 }
 
-function diffEntries(update: ToolCallUpdate): TranscriptEntry[] {
-    if (!update.content) return []
-    return update.content.flatMap((item) => {
+function splitDiffLines(text: string): string[] {
+    if (text === "") return []
+    return text.replace(/\n$/, "").split("\n")
+}
+
+// 多重集合行交集近似（O(n+m)）：回答「約略新增/刪除幾行」用，不做精確 LCS——
+// 被搬移的相同行會視為未變，對彙總統計可接受。oldText null＝新檔（全部視為新增）。
+function diffLineStats(oldText: string | null, newText: string): { added: number; removed: number } {
+    const newLines = splitDiffLines(newText)
+    if (oldText === null) return { added: newLines.length, removed: 0 }
+    const oldLines = splitDiffLines(oldText)
+    const counts = new Map<string, number>()
+    for (const line of oldLines) counts.set(line, (counts.get(line) ?? 0) + 1)
+    let common = 0
+    for (const line of newLines) {
+        const remaining = counts.get(line) ?? 0
+        if (remaining > 0) {
+            common += 1
+            counts.set(line, remaining - 1)
+        }
+    }
+    return { added: newLines.length - common, removed: oldLines.length - common }
+}
+
+function diffStats(
+    content: ToolContent[] | null | undefined
+): { path: string; added: number; removed: number }[] {
+    if (!content) return []
+    return content.flatMap((item) => {
         const record = asRecord(item)
         if (record.type !== "diff" || typeof record.path !== "string" || typeof record.newText !== "string") {
             return []
         }
-        const payload = {
-            toolCallId: update.toolCallId,
-            path: record.path,
-            oldText: typeof record.oldText === "string" ? record.oldText : null,
-            newText: record.newText
-        }
-        return [{
-            kind: "diff" as const,
-            text: record.path,
-            meta: JSON.stringify(payload),
-            actions: [
-                { label: "View", kind: "view_diff", payload },
-                { label: "Apply diff", kind: "apply_diff", payload }
-            ]
-        }]
+        const oldText = typeof record.oldText === "string" ? record.oldText : null
+        return [{ path: record.path, ...diffLineStats(oldText, record.newText) }]
     })
 }
 
@@ -1582,7 +1783,8 @@ function toolMeta(update: ToolCallUpdate): ToolMeta {
         ...(update.status ? { status: update.status } : {}),
         ...(update.locations !== undefined ? { locations: update.locations } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
-        ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {})
+        ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
+        ...(update.parentToolCallId !== undefined ? { parentToolCallId: update.parentToolCallId } : {})
     }
 }
 

@@ -6,6 +6,8 @@ import type { PtyEvent } from "../lib/types"
 
 const xtermMock = vi.hoisted(() => {
     type DataHandler = (data: string) => void
+    type KeyHandler = (event: KeyboardEvent) => boolean
+    type TitleHandler = (title: string) => void
 
     const state = {
         terminals: [] as TerminalMock[],
@@ -19,6 +21,9 @@ const xtermMock = vi.hoisted(() => {
         rows = 24
         selection = ""
         dataHandler: DataHandler | null = null
+        keyHandler: KeyHandler | null = null
+        titleHandler: TitleHandler | null = null
+        titleDisposable = { dispose: vi.fn() }
         open = vi.fn()
         write = vi.fn()
         focus = vi.fn()
@@ -34,6 +39,13 @@ const xtermMock = vi.hoisted(() => {
             this.dataHandler = handler
             return { dispose: vi.fn() }
         })
+        attachCustomKeyEventHandler = vi.fn((handler: KeyHandler) => {
+            this.keyHandler = handler
+        })
+        onTitleChange = vi.fn((handler: TitleHandler) => {
+            this.titleHandler = handler
+            return this.titleDisposable
+        })
 
         constructor(options: Record<string, unknown>) {
             this.options = options
@@ -42,6 +54,14 @@ const xtermMock = vi.hoisted(() => {
 
         emitData(data: string) {
             this.dataHandler?.(data)
+        }
+
+        emitKey(event: KeyboardEvent) {
+            return this.keyHandler?.(event) ?? true
+        }
+
+        emitTitle(title: string) {
+            this.titleHandler?.(title)
         }
     }
 
@@ -74,12 +94,35 @@ const ipcMock = vi.hoisted(() => ({
     ptyClose: vi.fn()
 }))
 
+const clipboardMock = vi.hoisted(() => ({
+    readText: vi.fn(),
+    writeText: vi.fn()
+}))
+
+const imeMock = vi.hoisted(() => {
+    const state = { disposables: [] as Array<{ dispose: ReturnType<typeof vi.fn> }> }
+    return {
+        state,
+        install: vi.fn(() => {
+            const disposable = { dispose: vi.fn() }
+            state.disposables.push(disposable)
+            return disposable
+        })
+    }
+})
+
 vi.mock("@xterm/xterm", () => ({
     Terminal: xtermMock.TerminalMock
 }))
 
 vi.mock("@xterm/addon-fit", () => ({
     FitAddon: xtermMock.FitAddonMock
+}))
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => clipboardMock)
+
+vi.mock("./terminalImePositioning", () => ({
+    installTerminalImePositioning: imeMock.install
 }))
 
 vi.mock("../lib/ipc", () => ({
@@ -103,6 +146,7 @@ const resizeObservers: ResizeObserverMock[] = []
 beforeEach(() => {
     xtermMock.state.terminals.length = 0
     xtermMock.state.fits.length = 0
+    imeMock.state.disposables.length = 0
     xtermMock.state.fitDimensions = { cols: 100, rows: 30 }
     ipcMock.onEvent = null
     ipcMock.ptyOpen.mockImplementation(
@@ -122,6 +166,8 @@ beforeEach(() => {
     ipcMock.ptyWrite.mockResolvedValue(undefined)
     ipcMock.ptyResize.mockResolvedValue(undefined)
     ipcMock.ptyClose.mockResolvedValue(undefined)
+    clipboardMock.readText.mockResolvedValue("")
+    clipboardMock.writeText.mockResolvedValue(undefined)
     resizeObservers.length = 0
 
     globalThis.ResizeObserver = class {
@@ -164,6 +210,7 @@ describe("TerminalSession", () => {
         expect(xtermMock.state.terminals[0].options.fontSize).toBe(12)
         expect(xtermMock.state.terminals[0].open).toHaveBeenCalled()
         expect(xtermMock.state.fits[0].fit).toHaveBeenCalled()
+        expect(imeMock.install).toHaveBeenCalledWith(xtermMock.state.terminals[0])
     })
 
     it("wires terminal input to ptyWrite and pty output to term.write", async () => {
@@ -175,6 +222,129 @@ describe("TerminalSession", () => {
 
         ipcMock.onEvent?.({ type: "output", data: "ready\n" })
         expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith("ready\n")
+    })
+
+    it("reports OSC title, ready, and spawn failure lifecycle without owning title policy", async () => {
+        const onTitleChange = vi.fn()
+        const onReady = vi.fn()
+        render(
+            <TerminalSession
+                workspace="/w"
+                sessionId="pty-lifecycle"
+                active={false}
+                onTitleChange={onTitleChange}
+                onReady={onReady}
+            />
+        )
+
+        await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1))
+        xtermMock.state.terminals[0].emitTitle("dev server")
+        expect(onTitleChange).toHaveBeenCalledWith("dev server")
+
+        ipcMock.ptyOpen.mockRejectedValueOnce(new Error("shell missing"))
+        const onOpenError = vi.fn()
+        render(
+            <TerminalSession
+                workspace="/w"
+                sessionId="pty-failed"
+                active={false}
+                onOpenError={onOpenError}
+            />
+        )
+        await waitFor(() => expect(onOpenError).toHaveBeenCalledWith("shell missing"))
+        expect(xtermMock.state.terminals[1].write).toHaveBeenCalledWith(
+            "\r\n[Failed to open terminal: shell missing]\r\n"
+        )
+    })
+
+    it("keeps one PTY and xterm while hidden, then refits and focuses when shown again", async () => {
+        const { rerender } = render(
+            <TerminalSession
+                workspace="/w"
+                sessionId="pty-hidden"
+                active={false}
+                visible
+            />
+        )
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        const term = xtermMock.state.terminals[0]
+
+        rerender(
+            <TerminalSession
+                workspace="/w"
+                sessionId="pty-hidden"
+                active={false}
+                visible={false}
+            />
+        )
+        xtermMock.state.fitDimensions = { cols: 140, rows: 40 }
+        resizeObservers[0].trigger()
+        expect(ipcMock.ptyResize).not.toHaveBeenCalled()
+
+        rerender(
+            <TerminalSession
+                workspace="/w"
+                sessionId="pty-hidden"
+                active
+                visible
+            />
+        )
+        await waitFor(() => expect(term.focus).toHaveBeenCalled())
+        expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1)
+        expect(xtermMock.state.terminals).toHaveLength(1)
+        expect(ipcMock.ptyResize).toHaveBeenCalledWith("pty-hidden", 140, 40)
+    })
+
+    it.each([
+        ["Ctrl", { ctrlKey: true }],
+        ["Cmd", { metaKey: true }]
+    ])("copies the selected text with %s+C", async (_label, modifier) => {
+        render(<TerminalSession workspace="/w" sessionId="pty-copy" active={false} />)
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        const term = xtermMock.state.terminals[0]
+        term.selection = "selected terminal text"
+        const event = new KeyboardEvent("keydown", {
+            key: "c",
+            cancelable: true,
+            ...modifier
+        })
+
+        expect(term.emitKey(event)).toBe(false)
+        await waitFor(() => {
+            expect(clipboardMock.writeText).toHaveBeenCalledWith("selected terminal text")
+        })
+        expect(event.defaultPrevented).toBe(true)
+        expect(ipcMock.ptyWrite).not.toHaveBeenCalled()
+    })
+
+    it("keeps Ctrl+C available to the shell when no text is selected", async () => {
+        render(<TerminalSession workspace="/w" sessionId="pty-interrupt" active={false} />)
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true })
+
+        expect(xtermMock.state.terminals[0].emitKey(event)).toBe(true)
+        expect(clipboardMock.writeText).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        ["Ctrl", { ctrlKey: true }],
+        ["Cmd", { metaKey: true }]
+    ])("pastes clipboard text through xterm with %s+V", async (_label, modifier) => {
+        clipboardMock.readText.mockResolvedValue("clipboard payload")
+        render(<TerminalSession workspace="/w" sessionId="pty-paste" active={false} />)
+        await waitFor(() => expect(getTerminalView("pty-paste")?.isReady?.()).toBe(true))
+        const event = new KeyboardEvent("keydown", {
+            key: "v",
+            cancelable: true,
+            ...modifier
+        })
+
+        expect(xtermMock.state.terminals[0].emitKey(event)).toBe(false)
+        await waitFor(() => {
+            expect(ipcMock.ptyWrite).toHaveBeenCalledWith("pty-paste", "clipboard payload")
+        })
+        expect(event.defaultPrevented).toBe(true)
+        expect(xtermMock.state.terminals[0].paste).toHaveBeenCalledWith("clipboard payload")
     })
 
     it("registers the minimal xterm handle and unregisters it on unmount", async () => {
@@ -232,6 +402,8 @@ describe("TerminalSession", () => {
 
         await waitFor(() => expect(xtermMock.state.terminals[0].dispose).toHaveBeenCalled())
         expect(xtermMock.state.fits[0].dispose).toHaveBeenCalled()
+        expect(xtermMock.state.terminals[0].titleDisposable.dispose).toHaveBeenCalledTimes(1)
+        expect(imeMock.state.disposables[0].dispose).toHaveBeenCalledTimes(1)
         expect(resizeObservers[0].disconnect).toHaveBeenCalled()
         expect(ipcMock.ptyClose).toHaveBeenCalledWith("pty-5")
     })

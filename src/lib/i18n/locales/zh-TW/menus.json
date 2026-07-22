@@ -5,6 +5,8 @@
     "cmSettings": "設定…",
     "cmHideSidebar": "切換側邊欄",
     "cmOpenWorkspace": "開啟工作區…",
+    "cmEditRecentWorkspace": "編輯專案…",
+    "cmRemoveRecentWorkspace": "從最近清單移除",
     "cmNewFile": "新增檔案",
     "cmNewFolder": "新增資料夾",
     "cmCopyPath": "複製路徑",
@@ -26,8 +28,8 @@
     "cmCompareHead": "與 HEAD 比較",
     "cmFormatDoc": "格式化文件",
     "cmSplitTermRight": "向右分割",
-    "cmSplitTermDown": "向下分割",
     "cmClear": "清除緩衝區",
+    "cmRenameTerminal": "重新命名終端機…",
     "cmCloseTerminal": "關閉終端機",
     "cmContinueSession": "繼續對話",
     "cmCancelResponse": "取消目前回應",
@@ -85,7 +87,8 @@
     },
     "terminal": {
       "closeConfirmTitle": "關閉終端機",
-      "closeConfirmMessage": "關閉終端機？Shell 與其子程序將被終止。"
+      "closeBusyConfirmMessage": "「{{title}}」仍有 foreground process 正在執行。要關閉並終止該程序嗎？",
+      "closeUnknownConfirmMessage": "Yuzora 無法判定「{{title}}」是否仍在執行工作。要關閉並終止其程序嗎？"
     },
     "confirm": {
       "closeDirtyTab": "「{{name}}」有未儲存的變更。確定不儲存並關閉？",
@@ -140,11 +143,20 @@
   },
   "terminalDrawer": {
     "dragToResize": "拖曳調整大小",
-    "label": "終端機",
+    "iconAriaLabel": "終端機",
+    "tabListAriaLabel": "終端機分頁",
+    "allTerminalsTitle": "所有終端機",
     "splitRightTitle": "向右分割",
-    "splitDownTitle": "向下分割",
+    "splitLimitTitle": "最多只能同時顯示兩個終端機",
     "newTerminalTitle": "新增終端機",
-    "closeTerminalTitle": "關閉終端機",
+    "closeTabAriaLabel": "關閉 {{title}}",
+    "renameInputAriaLabel": "重新命名 {{title}}",
+    "spawnFailedTitle": "終端機啟動失敗",
+    "leftPane": "左側",
+    "rightPane": "右側",
+    "focusedPane": "已聚焦",
+    "paneResizeAriaLabel": "調整終端機窗格大小",
+    "paneRatioText": "左側 {{left}}% · 右側 {{right}}%",
     "collapseAriaLabel": "收合終端機",
     "expandAriaLabel": "展開終端機"
   },

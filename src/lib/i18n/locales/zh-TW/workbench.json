@@ -12,12 +12,32 @@
     "openRecentWorkspace": "開啟 {{name}}",
     "openFolderFailed": "開啟資料夾失敗：{{error}}",
     "recentNotFound": "找不到「{{name}}」，已從最近清單移除",
+    "removedFromRecent": "已從最近清單移除「{{name}}」，資料夾未變更",
     "agentCount": "{{total}} 個 agent，{{running}} 個執行中"
   },
   "projectNav": {
     "ariaLabel": "專案導覽",
+    "editProject": "編輯專案 {{name}}",
     "searchPlaceholder": "搜尋或執行命令",
     "modeTablist": "工作區模式"
+  },
+  "projectEditor": {
+    "title": "編輯專案",
+    "close": "關閉專案編輯器",
+    "name": "專案名稱",
+    "namePlaceholder": "專案名稱",
+    "icon": "圖示",
+    "color": "顏色",
+    "useIcon": "使用 {{glyph}} 作為專案圖示",
+    "useColor": "使用{{color}}作為專案顏色",
+    "colors": {
+      "lime": "萊姆綠",
+      "dusk": "暮色",
+      "sunrise": "日出",
+      "mint": "薄荷",
+      "coral": "珊瑚",
+      "ocean": "海洋"
+    }
   },
   "commandPalette": {
     "title": "命令面板",
@@ -173,46 +193,46 @@
     "recoveryCredentialDescription": "憑證只用於此次由你明確啟動的復原操作。",
     "testConnection": "測試連線",
     "testingConnection": "測試中…",
-  "testConnectionSuccess": "已在 {{elapsed}} ms 內連線 · {{version}}",
-  "testConnectionUnknownVersion": "無法取得伺服器版本",
-  "testConnectionChangedTargetPasswordRequired": "請輸入密碼，才能測試修改後的連線設定。",
-  "profileError": {
-    "repositoryUnavailable": "連線設定儲存空間目前無法使用。",
-    "vaultMissing": "找不到已儲存的憑證，請重新輸入。",
-    "vaultDenied": "作業系統拒絕存取已儲存的憑證。",
-    "vaultUnavailable": "作業系統憑證 vault 目前無法使用。",
-    "vaultCorrupt": "無法讀取已儲存的憑證，請重新輸入。",
-    "vaultWriteFailed": "無法將憑證儲存至作業系統 vault。",
-    "vaultDeleteFailed": "無法從作業系統 vault 移除憑證。",
-    "profileNotFound": "此連線設定已不存在。",
-    "pendingOperationConflict": "請先完成或復原待處理的憑證操作。",
-    "recoveryNotFound": "此復原操作已不存在。",
-    "recoveryActionInvalid": "此復原動作已無法使用。",
-    "credentialRequired": "請輸入憑證以繼續。",
-    "lifecycleCancelFailed": "無法取消進行中的資料庫操作。",
-    "lifecycleCloseFailed": "無法關閉進行中的資料庫連線。",
-    "connectionFailed": "資料庫連線失敗。",
-    "connectionAuthenticationFailed": "PostgreSQL 拒絕使用者名稱或密碼，請重新輸入憑證。",
-    "connectionDnsFailed": "無法解析 PostgreSQL 主機名稱，請檢查主機與網路設定。",
-    "connectionTlsFailed": "PostgreSQL 安全連線失敗，請檢查 SSL 與憑證設定。",
-    "connectionTimedOut": "PostgreSQL 連線逾時，請檢查主機、連接埠、防火牆與伺服器狀態。",
-    "connectionServerRejected": "PostgreSQL 伺服器拒絕連線，請檢查伺服器設定與記錄。",
-    "connectionBusy": "連線正由目前的結果占用。",
-    "serverDisconnected": "資料庫伺服器已中斷連線，請重新連線後繼續。",
-    "metadataFailed": "無法重新整理資料庫物件。",
-    "queryFailed": "資料庫查詢失敗。",
-    "staleConnection": "資料庫連線狀態已變更，請重試。",
-    "sqlitePathMissing": "SQLite 檔案不存在。",
-    "sqlitePathNotFile": "SQLite 路徑不是一般檔案。",
-    "sqlitePathUnreadable": "無法讀取 SQLite 檔案。",
-    "sqlitePathInvalid": "SQLite 路徑無效。",
-    "sqliteOpenFailed": "無法開啟 SQLite 檔案。",
-    "invalidRequest": "資料庫要求無效。",
-    "legacyCleanupFailed": "連線設定已匯入，但無法移除舊版瀏覽器儲存項目；請在儲存空間恢復後重試。",
+    "testConnectionSuccess": "已在 {{elapsed}} ms 內連線 · {{version}}",
+    "testConnectionUnknownVersion": "無法取得伺服器版本",
+    "testConnectionChangedTargetPasswordRequired": "請輸入密碼，才能測試修改後的連線設定。",
+    "profileError": {
+      "repositoryUnavailable": "連線設定儲存空間目前無法使用。",
+      "vaultMissing": "找不到已儲存的憑證，請重新輸入。",
+      "vaultDenied": "作業系統拒絕存取已儲存的憑證。",
+      "vaultUnavailable": "作業系統憑證 vault 目前無法使用。",
+      "vaultCorrupt": "無法讀取已儲存的憑證，請重新輸入。",
+      "vaultWriteFailed": "無法將憑證儲存至作業系統 vault。",
+      "vaultDeleteFailed": "無法從作業系統 vault 移除憑證。",
+      "profileNotFound": "此連線設定已不存在。",
+      "pendingOperationConflict": "請先完成或復原待處理的憑證操作。",
+      "recoveryNotFound": "此復原操作已不存在。",
+      "recoveryActionInvalid": "此復原動作已無法使用。",
+      "credentialRequired": "請輸入憑證以繼續。",
+      "lifecycleCancelFailed": "無法取消進行中的資料庫操作。",
+      "lifecycleCloseFailed": "無法關閉進行中的資料庫連線。",
+      "connectionFailed": "資料庫連線失敗。",
+      "connectionAuthenticationFailed": "PostgreSQL 拒絕使用者名稱或密碼，請重新輸入憑證。",
+      "connectionDnsFailed": "無法解析 PostgreSQL 主機名稱，請檢查主機與網路設定。",
+      "connectionTlsFailed": "PostgreSQL 安全連線失敗，請檢查 SSL 與憑證設定。",
+      "connectionTimedOut": "PostgreSQL 連線逾時，請檢查主機、連接埠、防火牆與伺服器狀態。",
+      "connectionServerRejected": "PostgreSQL 伺服器拒絕連線，請檢查伺服器設定與記錄。",
+      "connectionBusy": "連線正由目前的結果占用。",
+      "serverDisconnected": "資料庫伺服器已中斷連線，請重新連線後繼續。",
+      "metadataFailed": "無法重新整理資料庫物件。",
+      "queryFailed": "資料庫查詢失敗。",
+      "staleConnection": "資料庫連線狀態已變更，請重試。",
+      "sqlitePathMissing": "SQLite 檔案不存在。",
+      "sqlitePathNotFile": "SQLite 路徑不是一般檔案。",
+      "sqlitePathUnreadable": "無法讀取 SQLite 檔案。",
+      "sqlitePathInvalid": "SQLite 路徑無效。",
+      "sqliteOpenFailed": "無法開啟 SQLite 檔案。",
+      "invalidRequest": "資料庫要求無效。",
+      "legacyCleanupFailed": "連線設定已匯入，但無法移除舊版瀏覽器儲存項目；請在儲存空間恢復後重試。",
       "legacyHistoryCleanupFailed": "無法移除舊版瀏覽器查詢紀錄；請在儲存空間恢復後重試。",
-    "savedButConnectFailed": "連線設定已儲存，但資料庫連線失敗。",
-    "unknown": "無法完成資料庫操作。"
-  },
+      "savedButConnectFailed": "連線設定已儲存，但資料庫連線失敗。",
+      "unknown": "無法完成資料庫操作。"
+    },
     "useSsl": "使用 SSL",
     "trustCert": "信任伺服器憑證",
     "cancel": "取消",
@@ -239,16 +259,46 @@
   },
   "settings": {
     "sections": {
-      "appearance": { "label": "外觀", "sub": "主題、顯示語言與專案列" },
-      "editor": { "label": "編輯器", "sub": "格式化與編輯器介面" },
-      "lsp": { "label": "LSP", "sub": "語言伺服器" },
-      "agent": { "label": "Agent", "sub": "Agent 啟動與 ACP trace" },
-      "logs": { "label": "Logs", "sub": "Debug、user_action、audit 事件" },
-      "terminal": { "label": "終端機", "sub": "Shell 與工作階段" },
-      "preview": { "label": "預覽", "sub": "Dev server 與瀏覽器" },
-      "safety": { "label": "安全性", "sub": "檔案與 git 的防護機制" },
-      "git": { "label": "Git", "sub": "版本控制整合" },
-      "about": { "label": "關於與更新", "sub": "版本與應用程式更新" }
+      "appearance": {
+        "label": "外觀",
+        "sub": "主題、顯示語言與專案列"
+      },
+      "editor": {
+        "label": "編輯器",
+        "sub": "格式化與編輯器介面"
+      },
+      "lsp": {
+        "label": "LSP",
+        "sub": "語言伺服器"
+      },
+      "agent": {
+        "label": "Agent",
+        "sub": "Agent 啟動與 ACP trace"
+      },
+      "logs": {
+        "label": "Logs",
+        "sub": "Debug、user_action、audit 事件"
+      },
+      "terminal": {
+        "label": "終端機",
+        "sub": "Shell 與工作階段"
+      },
+      "preview": {
+        "label": "預覽",
+        "sub": "Dev server 與瀏覽器"
+      },
+      "safety": {
+        "label": "安全性",
+        "sub": "檔案與 git 的防護機制"
+      },
+      "git": {
+        "label": "Git",
+        "sub": "版本控制整合"
+      },
+      "about": {
+        "label": "關於與更新",
+        "sub": "版本與應用程式更新"
+      }
     },
     "dialogTitle": "設定",
     "dialogDescription": "Yuuzu · yuzora 工作區",
@@ -303,12 +353,17 @@
       "presetLabel": "Agent preset",
       "topLevelCustom": "自訂",
       "modeLabel": "Command 模式",
-      "modeVerified": "已驗證",
       "modeLatest": "最新版",
       "modeCustom": "自訂",
       "commandLabel": "Command",
+      "updateAvailable": "ACP 更新可用：v{{currentVersion}} → v{{latestVersion}}",
+      "updateRestartHint": "重新啟動 Agent 後將使用最新版",
       "traceLabel": "ACP trace",
-      "traceSub": "將 ACP JSON-RPC 原始行寫入 debug log（最多 500 字）"
+      "traceSub": "將 ACP JSON-RPC 原始行寫入 debug log（最多 500 字）",
+      "piRuntimeLabel": "Pi 執行環境",
+      "piRuntimeBuiltin": "內建（隨 Yuzora 出貨）",
+      "piRuntimeCommunity": "社群（bunx pi-acp@latest）",
+      "piRuntimeSub": "內建版隨 app 出貨並支援互動問答；一鍵切回社群版即可回退，既有對話兩種執行環境都能續聊。"
     }
   }
 }

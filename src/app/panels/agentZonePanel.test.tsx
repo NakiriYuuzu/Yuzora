@@ -1,11 +1,12 @@
 import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { open as openImageFileDialog } from "@tauri-apps/plugin-dialog"
 
 import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
 import { ComposerSuggestionPopup } from "@/app/panels/ComposerSuggestionPopup"
 import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod, type PromptBlock } from "@/agent/acpConnection"
+import type { BlockEntry, MsgEntry } from "@/agent/acpTypes"
 import { workspaceMentionIndex } from "@/agent/workspaceMentionIndex"
 import i18n from "@/lib/i18n"
 import { readFileBase64 } from "@/lib/ipc"
@@ -68,13 +69,20 @@ afterEach(() => {
   }
 })
 
-function session(overrides: Partial<SessionState> = {}): SessionState {
+// fixture 專用：entry 可省略 id（stable id 由 reducer 生成，測試 literal 不需重複），
+// 由 session() 依索引補上。
+type TestTranscriptEntry = Omit<MsgEntry, "id"> | Omit<BlockEntry, "id">
+
+function session(
+  overrides: Partial<Omit<SessionState, "transcript">> & { transcript?: TestTranscriptEntry[] } = {}
+): SessionState {
+  const { transcript, ...rest } = overrides
   return {
     title: "Audit git.rs error paths",
     agentLabel: "Codex",
     model: "codex-1",
     tone: "wait",
-    transcript: [],
+    transcript: (transcript ?? []).map((entry, index) => ({ id: `t${index}`, ...entry })),
     availableCommands: [],
     stopReason: null,
     stopBadge: null,
@@ -84,7 +92,7 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
     pendingTurn: false,
     metadataTitle: false,
     cwd: "/workspace",
-    ...overrides,
+    ...rest,
   }
 }
 
@@ -202,7 +210,7 @@ describe("AgentZonePanel", () => {
         startupInfo: null,
         agentIdentity: {
           selectedPreset: "pi" as const,
-          commandMode: "verified" as const,
+          commandMode: "latest" as const,
           trustedAgentId: "pi" as const,
         },
       })),
@@ -362,7 +370,7 @@ describe("AgentZonePanel", () => {
       expect.objectContaining({
         title: "Launch pi in the terminal",
         workspace: "/workspace",
-        shellArgs: ["-c", "bunx pi-acp@0.0.31 --terminal-login"],
+        shellArgs: ["-c", "bunx pi-acp@latest --terminal-login"],
       })
     )
     expect(useUiStore.getState().terminalOpen).toBe(true)
@@ -444,15 +452,6 @@ describe("AgentZonePanel", () => {
                 actions: [{ label: "View", kind: "view_tool" }],
               },
               {
-                kind: "diff",
-                text: "src/git.rs",
-                meta: "+9 -3",
-                actions: [
-                  { label: "View", kind: "view_diff" },
-                  { label: "Apply diff", kind: "apply_diff" },
-                ],
-              },
-              {
                 kind: "perm",
                 text: "Permission requested · write src/git.rs",
                 meta: "pending",
@@ -489,7 +488,11 @@ describe("AgentZonePanel", () => {
     expect(screen.queryByText("codex-1")).not.toBeInTheDocument()
     expect(screen.getByText(pt("agentZonePanel.tone.wait"))).toBeInTheDocument()
 
-    expect(screen.getByText(pt("agentZonePanel.you"))).toBeInTheDocument()
+    // P2：sender 標籤列移除、改 aria-label（user 玻璃氣泡）。
+    expect(screen.getByLabelText(pt("agentZonePanel.you"))).toBeInTheDocument()
+    // tool 已聚合進 activity 鏈（P1）：預設收合、標題不直接可見，展開後才出現。
+    expect(screen.queryByText(/run\s+bun test/)).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.chainSteps", { n: 1 }) }))
     expect(screen.getByText(/run\s+bun test/)).toBeInTheDocument()
     expect(screen.getAllByText("src/git.rs").length).toBeGreaterThan(0)
     expect(screen.getByText("Permission requested · write src/git.rs")).toBeInTheDocument()
@@ -501,10 +504,9 @@ describe("AgentZonePanel", () => {
     expect(screen.getByText("const ok = true").closest("pre")).not.toBeNull()
     expect(screen.queryByTestId("agent-streaming-cursor")).not.toBeInTheDocument()
 
-    // ToolBlock（P2/P6）不再渲染 entry.actions，故 tool 的 "View" action 不再出現；
-    // 僅剩 diff block 的 "View" action。
-    expect(screen.getAllByRole("button", { name: "View" })).toHaveLength(1)
-    expect(screen.getByRole("button", { name: "Apply diff" })).toBeInTheDocument()
+    // view/apply diff 功能已移除（2026-07-21 回饋）：不應再出現任何 diff action 按鈕。
+    expect(screen.queryByRole("button", { name: "View" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Apply diff" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Approve" }))
     expect(respondPermission).toHaveBeenCalledWith("s-1", "allow_once")
   })
@@ -513,7 +515,7 @@ describe("AgentZonePanel", () => {
     const cases: Array<{
       name: string
       tone: SessionState["tone"]
-      transcript: SessionState["transcript"]
+      transcript: TestTranscriptEntry[]
       infoBanner?: string
       expected: number
     }> = [
@@ -645,7 +647,7 @@ describe("AgentZonePanel", () => {
     }
   })
 
-  it("P2/P6: tool block collapses, expands on click, and uses failed style", () => {
+  it("P1: failed tool step in the activity chain expands to details with destructive styling", () => {
     const failedMeta = JSON.stringify({ toolCallId: "tc1", status: "failed", rawOutput: { error: "nope" } })
     useAgentStore.setState({
       activeSessionId: "s-1",
@@ -663,56 +665,55 @@ describe("AgentZonePanel", () => {
 
     render(<AgentZonePanel />)
 
-    // 收合：rawOutput 未展開
+    // 收合：鏈只剩一行 header，rawOutput 未展開
     expect(screen.queryByText(/"error": "nope"/)).toBeNull()
 
-    // 失敗色：ToolBlock wrapper 用 danger token（THREAD_KIND_STYLE.error）
-    const toggle = screen.getByRole("button", { name: pt("agentZonePanel.toolToggle") })
-    const wrapper = toggle.parentElement as HTMLElement
-    expect(wrapper.getAttribute("style")).toMatch(/danger-soft|226, ?59, ?84/)
+    // 展開鏈：header 顯示步驟數與失敗計數
+    const header = screen
+      .getByText(pt("agentZonePanel.chainSteps", { n: 1 }))
+      .closest("button") as HTMLElement
+    expect(header.textContent).toContain(pt("agentZonePanel.chainFailed", { n: 1 }))
+    fireEvent.click(header)
 
-    // 展開
-    fireEvent.click(toggle)
+    // 失敗態：step 用 destructive 樣式（vendored chain-of-thought 的 failed 擴充）
+    const stepToggle = screen.getByRole("button", { name: pt("agentZonePanel.toolToggle") })
+    expect(stepToggle.closest(".text-destructive")).not.toBeNull()
+
+    // 展開 step 明細
+    fireEvent.click(stepToggle)
     expect(screen.getByText(/"error": "nope"/)).toBeInTheDocument()
   })
 
-  it("opens a diff block View action with text blobs and treats null oldText as empty", () => {
-    const payload = {
-      toolCallId: "tc1",
-      path: "src/git.rs",
-      oldText: null,
-      newText: "fn main() {}\n",
-    }
+  it("P3: an answered permission card locks its options and shows the chosen result", () => {
     useAgentStore.setState({
       activeSessionId: "s-1",
-      sessions: new Map([
-        [
-          "s-1",
-          session({
-            transcript: [
-              {
-                kind: "diff",
-                text: "agent diff",
-                meta: JSON.stringify(payload),
-                actions: [{ label: "View", kind: "view_diff", payload }],
-              },
+      sessions: new Map([["s-1", session({
+        tone: "run",
+        transcript: [
+          {
+            kind: "perm",
+            text: "Permission requested · write src/git.rs",
+            actions: [
+              { label: "Approve", kind: "allow_once", payload: { optionId: "allow_once" } },
+              { label: "Deny", kind: "reject_once", payload: { optionId: "reject_once" } },
             ],
-          }),
+          },
         ],
-      ]),
+        permissionOutcomes: { t0: "allow_once" },
+      })]]),
     })
 
     render(<AgentZonePanel />)
-    fireEvent.click(screen.getByRole("button", { name: "View" }))
 
-    const s = useDiffModalStore.getState()
-    expect(s.open).toBe(true)
-    expect(s.source).toEqual({
-      type: "text",
-      title: "src/git.rs",
-      original: { kind: "full", content: "" },
-      modified: { kind: "full", content: "fn main() {}\n" },
-    })
+    const approve = screen.getByRole("button", { name: /Approve/ })
+    const deny = screen.getByRole("button", { name: "Deny" })
+    expect(approve).toBeDisabled()
+    expect(deny).toBeDisabled()
+    expect(approve).toHaveAttribute("aria-pressed", "true")
+    expect(deny).toHaveAttribute("aria-pressed", "false")
+    expect(
+      screen.getByText(pt("agentZonePanel.permAnswered", { option: "Approve" }))
+    ).toBeInTheDocument()
   })
 
   it("Phase 4: renders a degrade notice block and starts a new session via its action", () => {
@@ -1601,8 +1602,8 @@ describe("AgentZonePanel", () => {
 
     const model = screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") })
     const effort = screen.getByRole("button", { name: pt("agentZonePanel.effortConfigAria") })
-    expect(model).toHaveAttribute("data-slot", "dropdown-menu-trigger")
-    expect(effort).toHaveAttribute("data-slot", "dropdown-menu-trigger")
+    expect(model).toHaveAttribute("data-slot", "popover-trigger")
+    expect(effort).toHaveAttribute("data-slot", "popover-trigger")
     expect(model).toHaveAttribute("data-variant", "ghost")
     expect(effort).toHaveAttribute("data-variant", "ghost")
     expect(screen.getByTestId("agent-config-controls")).toHaveAttribute(
@@ -1612,21 +1613,125 @@ describe("AgentZonePanel", () => {
     expect(model).toHaveTextContent(longModelLabel)
     expect(screen.getByTestId("agent-session-header")).not.toHaveTextContent("legacy-header-model")
 
-    fireEvent.pointerDown(model, { button: 0, ctrlKey: false })
+    fireEvent.click(model)
     expect(await screen.findByText("Reasoning models")).toBeInTheDocument()
-    expect(await screen.findByRole("menuitemradio", { name: longModelLabel })).toHaveAttribute(
-      "data-state",
-      "checked"
+    expect(await screen.findByRole("option", { name: longModelLabel })).toHaveAttribute(
+      "data-checked",
+      "true"
     )
 
-    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+    fireEvent.keyDown(
+      screen.getByPlaceholderText(pt("agentZonePanel.configSearch", { name: "Runtime model" })),
+      { key: "Escape" }
+    )
     await waitFor(() => expect(screen.queryByText("Reasoning models")).not.toBeInTheDocument())
-    fireEvent.pointerDown(effort, { button: 0, ctrlKey: false })
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Low" }))
+    fireEvent.click(effort)
+    fireEvent.click(await screen.findByRole("option", { name: "Low" }))
     expect(setSessionConfigOption).toHaveBeenCalledWith("s-1", "adapter-effort-id", "low")
   })
 
-  it("disables config menu triggers during a turn or setter request and renders a retryable error", () => {
+  it("filters config menu options through the combobox search input", async () => {
+    const setSessionConfigOption = vi.fn(async () => [])
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      setSessionConfigOption,
+      sessions: new Map([["s-1", session({
+        tone: "idle",
+        configOptions: [{
+          id: "adapter-model-id",
+          name: "Runtime model",
+          category: "model",
+          type: "select",
+          currentValue: "sol",
+          options: [
+            { value: "sol", name: "gpt-5.6-sol" },
+            { value: "luna", name: "gpt-5.6-luna" },
+            { value: "opus", name: "claude-opus" },
+          ],
+        }],
+        configRevision: 1,
+        configRequest: null,
+        configError: null,
+      })]]),
+    })
+
+    render(<AgentZonePanel />)
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") }))
+    const search = await screen.findByPlaceholderText(
+      pt("agentZonePanel.configSearch", { name: "Runtime model" })
+    )
+    fireEvent.change(search, { target: { value: "luna" } })
+    await waitFor(() => {
+      expect(screen.queryByRole("option", { name: "claude-opus" })).toBeNull()
+    })
+    fireEvent.click(screen.getByRole("option", { name: "gpt-5.6-luna" }))
+    expect(setSessionConfigOption).toHaveBeenCalledWith("s-1", "adapter-model-id", "luna")
+    // 選取後選單收合。
+    await waitFor(() => {
+      expect(screen.queryByRole("option", { name: "gpt-5.6-luna" })).toBeNull()
+    })
+  })
+
+  it("aggregates tool diff stats into a changes summary above the composer", async () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({
+        tone: "idle",
+        transcript: [
+          {
+            kind: "tool",
+            text: "edit\n[diff: src/a.ts]",
+            meta: JSON.stringify({
+              toolCallId: "t1",
+              kind: "edit",
+              status: "completed",
+              diffs: [{ path: "src/a.ts", added: 5, removed: 2 }],
+            }),
+          },
+          {
+            kind: "tool",
+            text: "edit\n[diff: src/b.ts]",
+            meta: JSON.stringify({
+              toolCallId: "t2",
+              kind: "edit",
+              status: "completed",
+              diffs: [
+                { path: "src/b.ts", added: 1, removed: 0 },
+                { path: "src/a.ts", added: 2, removed: 1 },
+              ],
+            }),
+          },
+        ],
+      })]]),
+    })
+
+    render(<AgentZonePanel />)
+    const summary = screen.getByTestId("agent-changes-summary")
+    expect(summary).toHaveTextContent(pt("agentZonePanel.changesFiles", { count: 2 }))
+    expect(summary).toHaveTextContent("+8")
+    expect(summary).toHaveTextContent("−3")
+
+    fireEvent.click(summary)
+    // per-file 明細：同檔多次 diff 行數累加。
+    expect(await screen.findByText("src/a.ts")).toBeInTheDocument()
+    expect(screen.getByText("+7")).toBeInTheDocument()
+    expect(screen.getByText("−3", { selector: "li *" })).toBeInTheDocument()
+  })
+
+  it("renders no changes summary when the transcript has no diff stats", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({
+        tone: "idle",
+        transcript: [{ kind: "tool", text: "read\nsrc/a.ts", meta: JSON.stringify({ toolCallId: "t1", kind: "read" }) }],
+      })]]),
+    })
+    render(<AgentZonePanel />)
+    expect(screen.queryByTestId("agent-changes-summary")).toBeNull()
+  })
+
+  // soak 回饋 #1/#5：turn 進行中 config 開放（僅 setter 在途時鎖）。
+  it("disables config menu triggers only during a setter request and renders a retryable error", () => {
     useAgentStore.setState({
       activeSessionId: "s-1",
       sessions: new Map([["s-1", session({
@@ -1682,7 +1787,28 @@ describe("AgentZonePanel", () => {
       })]]),
     })
     rerender(<AgentZonePanel />)
-    expect(screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") })).toBeDisabled()
+    // turn 進行中仍可切換（pi 隨時可切、下一次 LLM 呼叫生效）。
+    expect(screen.getByRole("button", { name: pt("agentZonePanel.modelConfigAria") })).toBeEnabled()
+  })
+
+  // soak 回饋 #4：turn 進行中送出鈕仍在（steering）、與停止鈕並列，送出走一般 prompt 流程。
+  it("keeps the send button during a running turn and steers the next message", async () => {
+    const sendPrompt = vi.fn(async (_cwd: string, _prompt: string | PromptBlock[]) => "end_turn" as const)
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ tone: "run", running: true, pendingTurn: true, cwd: "/workspace" })]]),
+      sendPrompt,
+    })
+    render(<AgentZonePanel />)
+
+    expect(screen.getByRole("button", { name: pt("agentZonePanel.cancelAriaLabel") })).toBeInTheDocument()
+    const send = screen.getByRole("button", { name: pt("agentZonePanel.sendAriaLabel") })
+    const composer = screen.getByRole("combobox", { name: pt("agentZonePanel.composerAriaLabel") })
+    fireEvent.change(composer, { target: { value: "steer this way" } })
+    fireEvent.click(send)
+
+    await waitFor(() => expect(sendPrompt).toHaveBeenCalledOnce())
+    expect(sendPrompt.mock.calls[0][1]).toEqual([{ type: "text", text: "steer this way" }])
   })
 
   it("uses a compact shadcn shell and expands transcript content width", () => {
@@ -1710,8 +1836,10 @@ describe("AgentZonePanel", () => {
     const bubbles = screen.getAllByTestId("agent-message-bubble")
     const userBubble = bubbles.find((bubble) => bubble.getAttribute("data-sender") === "you")
     const agentBubble = bubbles.find((bubble) => bubble.getAttribute("data-sender") === "agent")
-    expect(userBubble).toHaveStyle({ maxWidth: "88%" })
-    expect(agentBubble).toHaveStyle({ maxWidth: "94%" })
+    // P2（Atelier）：user 玻璃氣泡 76%；agent 改頭像＋全寬內容流（不再限寬）。
+    expect(userBubble).toHaveStyle({ maxWidth: "76%" })
+    expect(agentBubble).not.toHaveStyle({ maxWidth: "94%" })
+    expect(agentBubble).toHaveStyle({ flex: "1" })
   })
 
   it("focuses the active composer when continueSession requests focus for that session", async () => {
@@ -1897,6 +2025,39 @@ describe("AgentZonePanel", () => {
       expect(screen.getByTestId("agent-session-header").getAttribute("style")).toContain(bgVar)
     }
   )
+
+  // P5 雙 runtime badge：判斷來源是 initialize.agentInfo.name（live 事實），
+  // 尚未續聊的 restored session 沒有 name → 不顯示。
+  it.each([
+    { agentName: "yuzora-pi-acp", labelKey: "agentZonePanel.runtimeBuiltin" },
+    { agentName: "pi-acp", labelKey: "agentZonePanel.runtimeCommunity" },
+  ] as const)("shows the runtime badge for pi sessions reporting $agentName", ({ agentName, labelKey }) => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ agentId: "pi", agentName })]]),
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByTestId("agent-runtime-badge")).toHaveTextContent(pt(labelKey))
+  })
+
+  it("hides the runtime badge without an adapter name or for non-pi sessions", () => {
+    useAgentStore.setState({
+      activeSessionId: "s-1",
+      sessions: new Map([["s-1", session({ agentId: "pi" })]]),
+    })
+    render(<AgentZonePanel />)
+    expect(screen.queryByTestId("agent-runtime-badge")).toBeNull()
+
+    cleanup()
+    useAgentStore.setState({
+      activeSessionId: "s-2",
+      sessions: new Map([["s-2", session({ agentId: "claude", agentName: "pi-acp" })]]),
+    })
+    render(<AgentZonePanel />)
+    expect(screen.queryByTestId("agent-runtime-badge")).toBeNull()
+  })
 
   it("falls back to the neutral --agent-custom token when agentId is undefined, regardless of agentLabel", () => {
     useAgentStore.setState({

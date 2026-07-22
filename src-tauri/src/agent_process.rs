@@ -617,6 +617,27 @@ fn preflight_command(_command: &str, _cwd: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 各 JS runtime launcher 在 app PATH 上的可用性。偵測用 `resolve_on_path`，
+/// 與 preflight／spawn 讀同一個 process env（env_path.rs 啟動時已把登入 shell
+/// 環境鏡射進來），確保「偵測到」與「spawn 得起來」一致（#15）。
+#[derive(serde::Serialize, Clone, Copy, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeAvailability {
+    pub bunx: bool,
+    pub deno: bool,
+    pub node: bool,
+    pub npx: bool,
+}
+
+fn detect_runtimes() -> AgentRuntimeAvailability {
+    AgentRuntimeAvailability {
+        bunx: resolve_on_path("bunx").is_some(),
+        deno: resolve_on_path("deno").is_some(),
+        node: resolve_on_path("node").is_some(),
+        npx: resolve_on_path("npx").is_some(),
+    }
+}
+
 fn line_looks_like_error(line: &str) -> bool {
     line.contains("Error") || line.contains("error:") || line.contains("panicked")
 }
@@ -775,6 +796,11 @@ pub fn agent_set_trace(
     state.0.set_trace(enabled)
 }
 
+#[tauri::command]
+pub fn agent_detect_runtimes() -> AgentRuntimeAvailability {
+    detect_runtimes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +816,29 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         f()
+    }
+
+    #[test]
+    fn runtime_availability_serializes_camel_case_contract() {
+        // #15：前端 resolveRuntimeCommand 依賴這四個 camelCase 欄位。
+        let value = serde_json::to_value(AgentRuntimeAvailability {
+            bunx: true,
+            deno: false,
+            node: true,
+            npx: true,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({ "bunx": true, "deno": false, "node": true, "npx": true })
+        );
+    }
+
+    #[test]
+    fn detect_runtimes_reports_missing_launcher_as_false() {
+        // resolve_on_path 對不存在的 token 回 None → detect 不 panic、欄位為 bool。
+        assert!(resolve_on_path("definitely-not-a-runtime-xyz").is_none());
+        let _ = detect_runtimes();
     }
 
     #[test]

@@ -117,6 +117,7 @@ describe("Files mode entry states", () => {
     useTerminalStore.getState().addSession("/workspace", {
       sessionId: "persisted",
       title: "Terminal 1",
+      launchStatus: "running",
       workspace: "/workspace",
       shell: "",
       cols: 80,

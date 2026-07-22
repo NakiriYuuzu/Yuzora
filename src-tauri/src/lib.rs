@@ -1,5 +1,6 @@
 pub mod agent_process;
 pub mod agent_terminal;
+pub mod agent_versions;
 pub mod askpass;
 pub mod asset_scope;
 pub mod db_connection_actor;
@@ -302,6 +303,7 @@ pub fn run() {
             pty_service::pty_open,
             pty_service::pty_write,
             pty_service::pty_resize,
+            pty_service::pty_activity,
             pty_service::pty_close,
             pty_service::pty_close_workspace,
             dev_server_detect::dev_server_detect,
@@ -314,6 +316,8 @@ pub fn run() {
             agent_process::agent_list,
             agent_process::agent_set_trace,
             agent_process::agent_stderr_tail,
+            agent_process::agent_detect_runtimes,
+            agent_versions::agent_latest_versions,
             agent_terminal::agent_terminal_create,
             agent_terminal::agent_terminal_output,
             agent_terminal::agent_terminal_wait_for_exit,

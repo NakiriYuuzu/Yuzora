@@ -36,6 +36,8 @@ jobs:
           fi
       - name: Verify tag and product versions
         run: bun run check:version
+      - name: Verify user-facing release notes
+        run: bun scripts/release-notes.ts "$GITHUB_REF_NAME"
       - name: Verify updater release contract
         run: bun run check:updater-release
 
@@ -80,6 +82,17 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Extract user-facing release notes
+        id: release-notes
+        shell: bash
+        run: |
+          bun scripts/release-notes.ts "$GITHUB_REF_NAME" release-notes.md
+          {
+            echo 'body<<YUZORA_RELEASE_NOTES'
+            cat release-notes.md
+            echo 'YUZORA_RELEASE_NOTES'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         id: tauri
         env:
@@ -96,6 +109,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Yuzora ${{ github.ref_name }}'
+          releaseBody: ${{ steps.release-notes.outputs.body }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

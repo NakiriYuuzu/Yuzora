@@ -1,5 +1,6 @@
 import {
   Bot,
+  Check,
   ChevronDown,
   FileText,
   Paperclip,
@@ -17,9 +18,7 @@ import {
   useReducer,
   useRef,
   useState,
-  type CSSProperties,
   type KeyboardEvent,
-  type ReactNode,
 } from "react"
 import { useTranslation } from "react-i18next"
 
@@ -28,14 +27,14 @@ import { resolvePrewarmAgentId } from "@/app/workbench/settingsStorage"
 import { readFileBase64 } from "@/lib/ipc"
 import { Badge } from "@/components/ui/badge"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   InputGroup,
   InputGroupAddon,
@@ -43,6 +42,10 @@ import {
   InputGroupText,
   InputGroupTextarea,
 } from "@/components/ui/input-group"
+import { TranscriptList, type AgentVisual } from "@/app/panels/agentzone/TranscriptList"
+import { ChangesSummary } from "@/app/panels/agentzone/ChangesSummary"
+import { ElicitationDialog } from "@/app/panels/agentzone/ElicitationDialog"
+import { collectChangeStats } from "@/app/panels/agentzone/changeStats"
 import {
   ComposerSuggestionPopup,
   type ComposerSuggestionItem,
@@ -77,12 +80,10 @@ import type {
   SessionConfigSelectOption,
   SlashCommand,
 } from "@/agent/acpConnection"
-import type { BlockEntry, TranscriptAction, TranscriptEntry } from "@/agent/acpTypes"
 import {
   AGENT_VISUALS,
   CUSTOM_AGENT_VISUAL,
   agentDisplayName,
-  type AgentId,
   type AgentPreset,
 } from "@/lib/agentPresets"
 import {
@@ -94,16 +95,8 @@ import type { WorkspacePathIndexEntry } from "@/lib/types"
 import { pathToUri } from "@/lsp/workspace"
 import type { AgentTone, SessionState } from "@/state/agentStore"
 import { useAgentStore } from "@/state/agentStore"
-import { useDiffModalStore } from "@/state/diffModalStore"
 import { normalizeWorkspacePath } from "@/state/recentWorkspaces"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
-
-type AgentVisual = {
-  label: string
-  short: string
-  color: string
-  bg: string
-}
 
 type ToneVisual = {
   label: string
@@ -111,14 +104,6 @@ type ToneVisual = {
   bg: string
   fg: string
   pulse?: boolean
-}
-
-type ThreadKind = BlockEntry["kind"]
-
-interface AgentDiffPayload {
-  path: string
-  oldText: string | null
-  newText: string
 }
 
 // agentId→視覺對照的單一來源是 lib/agentPresets 的 AGENT_VISUALS；這裡只是把它
@@ -144,56 +129,6 @@ const TONE_STYLE: Record<AgentTone, Omit<ToneVisual, "label">> = {
   done: { dot: "#2bbf8a", bg: "var(--mint-soft)", fg: "#0f7a55" },
   wait: { dot: "#ffb23e", bg: "var(--amber-soft)", fg: "#9a6512" },
   fail: { dot: "#e23b54", bg: "var(--danger-soft)", fg: "#b51f38" },
-}
-
-const THREAD_KIND_STYLE: Record<ThreadKind, {
-  bg: string
-  bd: string
-  fg: string
-  accent: string
-}> = {
-  tool: {
-    bg: "var(--paper-1)",
-    bd: "var(--line-1)",
-    fg: "var(--ink-2)",
-    accent: "var(--yz-accent-ink)",
-  },
-  diff: {
-    bg: "var(--mint-soft)",
-    bd: "rgba(43,191,138,0.28)",
-    fg: "#0f7a55",
-    accent: "#0f7a55",
-  },
-  perm: {
-    bg: "var(--amber-soft)",
-    bd: "rgba(214,138,12,0.3)",
-    fg: "#9a6512",
-    accent: "#9a6512",
-  },
-  error: {
-    bg: "var(--danger-soft)",
-    bd: "rgba(226,59,84,0.3)",
-    fg: "#b51f38",
-    accent: "#c2293f",
-  },
-  plan: {
-    bg: "var(--paper-1)",
-    bd: "var(--line-1)",
-    fg: "var(--ink-2)",
-    accent: "#5b3fd1",
-  },
-  thought: {
-    bg: "var(--paper-2)",
-    bd: "var(--line-1)",
-    fg: "var(--ink-3)",
-    accent: "var(--ink-4)",
-  },
-  notice: {
-    bg: "var(--amber-soft)",
-    bd: "rgba(214,138,12,0.3)",
-    fg: "#9a6512",
-    accent: "#9a6512",
-  },
 }
 
 function fileNameFromPath(path: string): string {
@@ -516,6 +451,7 @@ function ActiveAgentSession({
     () => partitionAgentCommands(session.agentId, session.availableCommands),
     [session.agentId, session.availableCommands]
   )
+  const changeStats = useMemo(() => collectChangeStats(session.transcript), [session.transcript])
   const activeSkill = selectedSkillRawName
     ? commandPartition.skills.find((skill) => skill.rawName === selectedSkillRawName) ?? null
     : null
@@ -971,8 +907,9 @@ function ActiveAgentSession({
     }
   }
 
+  // soak 回饋 #4：turn 進行中也可送出（builtin adapter 走 pi 原生 steering、
+  // 社群 adapter 排入其佇列）——不再以 turnInProgress 擋。
   function submitPrompt() {
-    if (turnInProgress) return
     const prompt = activeSkill
       ? buildSkillPromptText(activeSkill.rawName, composer, commandPartition.slashCommands)
       : composer.trim()
@@ -1034,15 +971,30 @@ function ActiveAgentSession({
   return (
     <>
       <SessionHeader session={session} agent={agent} tone={tone} />
+      {/* Atelier（P2）：transcript 與 composer 共用一層 ambient 漸層畫布，
+          composer 以 frost 玻璃艙浮於其上。 */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          background: "var(--yz-bg)",
+        }}
+      >
       <TranscriptList sessionId={sessionId} session={session} agent={agent} />
+      <ElicitationDialog sessionId={sessionId} />
       <div
         style={{
           position: "relative",
-          borderTop: "1px solid var(--line-1)",
-          background: "var(--paper-0)",
         }}
       >
         <div style={{ padding: "8px 12px 10px" }}>
+          {changeStats && (
+            <div style={{ marginBottom: 6 }}>
+              <ChangesSummary stats={changeStats} />
+            </div>
+          )}
           <div style={{ position: "relative" }}>
             {suggestionsOpen && (
               <ComposerSuggestionPopup
@@ -1069,7 +1021,7 @@ function ActiveAgentSession({
             <InputGroup
               data-testid="agent-composer"
               data-layout="stacked-toolbar"
-              className="h-auto rounded-xl border-(--line-2) bg-(--yz-field) shadow-xs has-disabled:bg-(--yz-field) has-disabled:opacity-100 dark:has-disabled:bg-(--yz-field)"
+              className="h-auto rounded-2xl border-(--line-1) bg-(--yz-glass) shadow-sm backdrop-blur-xl has-disabled:bg-(--yz-glass) has-disabled:opacity-100 dark:has-disabled:bg-(--yz-glass)"
             >
               {(activeSkill || attachments.length > 0 || imageAttachments.length > 0) && (
                 <InputGroupAddon
@@ -1217,10 +1169,12 @@ function ActiveAgentSession({
                     <Paperclip aria-hidden="true" />
                   </InputGroupButton>
                 )}
+                {/* soak 回饋 #1/#5：執行中允許切換 model/effort（pi 本身隨時可切，
+                    下一次 LLM 呼叫生效）；僅在 setter 在途時鎖住避免並發。 */}
                 <SessionConfigControls
                   sessionId={sessionId}
                   session={session}
-                  disabled={turnInProgress || Boolean(session.configRequest)}
+                  disabled={Boolean(session.configRequest)}
                 />
               </div>
 
@@ -1231,12 +1185,13 @@ function ActiveAgentSession({
                 >
                   ⌘↵
                 </InputGroupText>
-                {turnInProgress ? (
+                {turnInProgress && (
                   <InputGroupButton
                     aria-label={t("agentZonePanel.cancelAriaLabel")}
                     title={t("agentZonePanel.cancel")}
                     size="icon-sm"
                     variant="destructive"
+                    className="rounded-full"
                     onClick={() => {
                       clearComposerIntent()
                       // cancel() records connectionError before rejecting; the panel's
@@ -1246,19 +1201,19 @@ function ActiveAgentSession({
                   >
                     <Square aria-hidden="true" />
                   </InputGroupButton>
-                ) : (
-                  <InputGroupButton
-                    aria-label={t("agentZonePanel.sendAriaLabel")}
-                    title={t("agentZonePanel.send")}
-                    size="icon-sm"
-                    variant="default"
-                    onClick={submitPrompt}
-                    disabled={!composer.trim() && !activeSkill && imageAttachments.length === 0}
-                    className="bg-(--ink-1) text-(--paper-0) hover:bg-(--ink-2)"
-                  >
-                    <SendHorizontal aria-hidden="true" />
-                  </InputGroupButton>
                 )}
+                {/* 執行中送出＝steering（下一句插進現行 turn）；與停止鈕並列。 */}
+                <InputGroupButton
+                  aria-label={t("agentZonePanel.sendAriaLabel")}
+                  title={turnInProgress ? t("agentZonePanel.steerSend") : t("agentZonePanel.send")}
+                  size="icon-sm"
+                  variant="default"
+                  onClick={submitPrompt}
+                  disabled={!composer.trim() && !activeSkill && imageAttachments.length === 0}
+                  className="rounded-full bg-(--yz-accent) text-[#223005] hover:bg-(--yz-accent-ink) hover:text-(--paper-0)"
+                >
+                  <SendHorizontal aria-hidden="true" />
+                </InputGroupButton>
               </div>
             </InputGroupAddon>
             </InputGroup>
@@ -1285,6 +1240,7 @@ function ActiveAgentSession({
             </div>
           )}
         </div>
+      </div>
       </div>
     </>
   )
@@ -1320,7 +1276,7 @@ function SessionConfigControls({
   const setSessionConfigOption = useAgentStore((state) => state.setSessionConfigOption)
   const model = selectConfigOption(session.configOptions, "model")
   const effort = selectConfigOption(session.configOptions, "thought_level")
-  if (!model && !effort) return null
+  if (!model && !effort && !session.mode) return null
 
   return (
     <div
@@ -1350,6 +1306,15 @@ function SessionConfigControls({
           }}
         />
       )}
+      {/* mode 目前僅有 current_mode_update 單向通道（連線層無 setMode），故只顯示。 */}
+      {session.mode && (
+        <span
+          title={t("agentZonePanel.modeLabel")}
+          className="inline-flex h-6 shrink-0 items-center rounded-full border border-(--line-2) bg-(--yz-field) px-2.5 font-mono text-[10.5px] text-(--ink-2)"
+        >
+          {session.mode}
+        </span>
+      )}
     </div>
   )
 }
@@ -1366,6 +1331,9 @@ function sessionConfigValueName(option: SelectSessionConfigOption): string {
   return option.currentValue
 }
 
+// 2026-07-21 使用者回饋：model／thinking 選單改為可搜尋 combobox（Popover＋
+// cmdk Command）。選中判斷用閉包中的 value.value，不吃 cmdk onSelect 參數——
+// cmdk 會對 value 做正規化，直接回傳可能與 adapter 的 config value 大小寫不符。
 function SessionConfigMenu({
   option,
   label,
@@ -1379,44 +1347,69 @@ function SessionConfigMenu({
   disabled: boolean
   onChange: (value: string) => void
 }) {
+  const { t } = useTranslation("panels")
+  const [open, setOpen] = useState(false)
   const selectedName = sessionConfigValueName(option)
 
+  const renderItem = (value: SessionConfigSelectOption) => {
+    const checked = value.value === option.currentValue
+    return (
+      <CommandItem
+        key={value.value}
+        value={value.value}
+        keywords={[value.name]}
+        data-checked={checked || undefined}
+        onSelect={() => {
+          setOpen(false)
+          if (!checked) onChange(value.value)
+        }}
+      >
+        <Check aria-hidden="true" className={checked ? "opacity-100" : "opacity-0"} />
+        {value.name}
+      </CommandItem>
+    )
+  }
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
         <InputGroupButton
           aria-label={ariaLabel}
           disabled={disabled}
           size="xs"
           variant="ghost"
-          className="min-w-0 max-w-[min(13rem,42vw)] justify-start px-2 font-normal text-(--ink-2)"
+          className="min-w-0 max-w-[min(13rem,42vw)] justify-start rounded-full border border-(--line-2) bg-(--yz-field) px-2.5 font-normal text-(--ink-2)"
         >
           <span className="shrink-0 text-[9.5px] font-semibold text-(--ink-3)">{label}</span>
           <span className="min-w-0 truncate font-mono text-[10.5px]">{selectedName}</span>
           <ChevronDown data-icon="inline-end" className="shrink-0 text-(--ink-4)" aria-hidden="true" />
         </InputGroupButton>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64 max-w-[calc(100vw-2rem)]">
-        <DropdownMenuLabel>{option.name}</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={option.currentValue} onValueChange={onChange}>
-          {option.options.map((item) => isConfigGroup(item) ? (
-            <DropdownMenuGroup key={item.group}>
-              <DropdownMenuLabel className="pt-2">{item.name}</DropdownMenuLabel>
-              {item.options.map((value) => (
-                <DropdownMenuRadioItem key={value.value} value={value.value}>
-                  {value.name}
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuGroup>
-          ) : (
-            <DropdownMenuRadioItem key={item.value} value={item.value}>
-              {item.name}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-64 max-w-[calc(100vw-2rem)] p-0">
+        <Command>
+          <CommandInput placeholder={t("agentZonePanel.configSearch", { name: option.name })} />
+          <CommandList>
+            <CommandEmpty>{t("agentZonePanel.configSearchEmpty")}</CommandEmpty>
+            {option.options.map((item) => isConfigGroup(item) ? (
+              <CommandGroup key={item.group} heading={item.name}>
+                {item.options.map(renderItem)}
+              </CommandGroup>
+            ) : renderItem(item))}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
+}
+
+// P5 雙 runtime：badge 判斷來源是 initialize.agentInfo.name（live 連線的事實），
+// 不是 Settings 現值——restored 尚未續聊的 session 沒有 name、不顯示（誠實：
+// 還不知道會連到哪個 runtime；Settings 切換只影響之後的 spawn）。
+function piRuntimeBadgeKind(session: SessionState): "builtin" | "community" | null {
+  if (session.agentId !== "pi") return null
+  if (session.agentName === "yuzora-pi-acp") return "builtin"
+  if (session.agentName === "pi-acp") return "community"
+  return null
 }
 
 function SessionHeader({
@@ -1428,6 +1421,8 @@ function SessionHeader({
   agent: AgentVisual
   tone: ToneVisual
 }) {
+  const { t } = useTranslation("panels")
+  const runtimeKind = piRuntimeBadgeKind(session)
   return (
     <div
       data-testid="agent-session-header"
@@ -1501,6 +1496,20 @@ function SessionHeader({
         >
           ACP
         </Badge>
+        {runtimeKind && (
+          <Badge
+            variant="outline"
+            data-testid="agent-runtime-badge"
+            title={t(runtimeKind === "builtin"
+              ? "agentZonePanel.runtimeBuiltinTip"
+              : "agentZonePanel.runtimeCommunityTip")}
+            className="h-[19px] border-(--line-1) bg-(--paper-1) px-1.5 text-[9px] text-(--ink-2)"
+          >
+            {t(runtimeKind === "builtin"
+              ? "agentZonePanel.runtimeBuiltin"
+              : "agentZonePanel.runtimeCommunity")}
+          </Badge>
+        )}
         {session.usage && session.usage.size > 0 && <UsageChip usage={session.usage} />}
         {session.usage?.cost && <CostChip cost={session.usage.cost} />}
         {session.infoBanner && firstInfoLine(session.infoBanner) && (
@@ -1860,557 +1869,6 @@ function InfoChip({ text }: { text: string }) {
       )}
     </div>
   )
-}
-
-function TranscriptList({
-  sessionId,
-  session,
-  agent,
-}: {
-  sessionId: string
-  session: SessionState
-  agent: AgentVisual
-}) {
-  const { t } = useTranslation("panels")
-  const entries = dedupeInfoBanner(session.transcript, session.infoBanner)
-  const tailIndex = entries.length - 1
-  const tail = entries[tailIndex]
-  const cursorIndex =
-    session.tone === "run"
-    && tail !== undefined
-    && "who" in tail
-    && tail.who === "agent"
-    && tail.streaming
-      ? tailIndex
-      : -1
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const nearBottomRef = useRef(true)
-  function handleScroll() {
-    const el = scrollRef.current
-    if (!el) return
-    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  }
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el || !nearBottomRef.current) return
-    el.scrollTop = el.scrollHeight
-  }, [session.transcript])
-  return (
-    <div
-      ref={scrollRef}
-      data-testid="agent-transcript"
-      onScroll={handleScroll}
-      className="yzs"
-      style={{
-        flex: 1,
-        minHeight: 0,
-        overflow: "auto",
-        padding: "12px 14px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        background: "var(--yz-sunk)",
-      }}
-    >
-      {entries.length === 0 ? (
-        <div className="flex min-h-full items-center justify-center text-[12.5px] text-(--ink-3)">
-          {t("agentZonePanel.noTranscript")}
-        </div>
-      ) : (
-        entries.map((entry, index) => (
-          <TranscriptEntryRow
-            key={`${index}-${entryKey(entry)}`}
-            entry={entry}
-            sessionId={sessionId}
-            agent={agent}
-            showStreamingCursor={index === cursorIndex}
-          />
-        ))
-      )}
-    </div>
-  )
-}
-
-function dedupeInfoBanner(transcript: TranscriptEntry[], infoBanner?: string | null): TranscriptEntry[] {
-  if (!infoBanner) return transcript
-  const first = transcript[0]
-  if (first && "who" in first && first.who === "agent" && first.text.trim() === infoBanner.trim()) {
-    return transcript.slice(1)
-  }
-  return transcript
-}
-
-function TranscriptEntryRow({
-  entry,
-  sessionId,
-  agent,
-  showStreamingCursor,
-}: {
-  entry: TranscriptEntry
-  sessionId: string
-  agent: AgentVisual
-  showStreamingCursor: boolean
-}) {
-  const { t } = useTranslation("panels")
-  if ("who" in entry) {
-    const you = entry.who === "you"
-    // 純圖片訊息的 text 只剩 "[image]" 佔位（store 以它派生 session 標題）；
-    // 縮圖列已呈現內容，佔位字不再重複顯示。混合訊息保留原文中的佔位。
-    const placeholderOnlyText =
-      you &&
-      entry.images !== undefined &&
-      entry.images.length > 0 &&
-      /^(\s*\[image\])+\s*$/.test(entry.text)
-    return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 4,
-          alignItems: you ? "flex-end" : "flex-start",
-        }}
-      >
-        <span
-          style={{
-            fontSize: 9.5,
-            fontWeight: 600,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            color: "var(--ink-3)",
-            padding: "0 4px",
-          }}
-        >
-          {you ? t("agentZonePanel.you") : agent.label}
-        </span>
-        <div
-          data-testid="agent-message-bubble"
-          data-sender={entry.who}
-          style={{
-            maxWidth: you ? "88%" : "94%",
-            padding: "10px 13px",
-            borderRadius: 14,
-            fontSize: 12.5,
-            lineHeight: 1.55,
-            whiteSpace: "pre-wrap",
-            ...(you
-              ? {
-                  background: "var(--yz-active)",
-                  color: "var(--ink-0)",
-                  border: "1px solid var(--line-1)",
-                  borderBottomRightRadius: 5,
-                }
-              : {
-                  background: "var(--paper-1)",
-                  color: "var(--ink-1)",
-                  border: "1px solid var(--line-1)",
-                  borderBottomLeftRadius: 5,
-                }),
-          }}
-        >
-          {you && entry.images && entry.images.length > 0 && (
-            <div
-              data-testid="message-image-strip"
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 6,
-                marginBottom: entry.text && !placeholderOnlyText ? 8 : 0,
-              }}
-            >
-              {entry.images.map((image, index) => (
-                <img
-                  key={index}
-                  src={image.dataUrl}
-                  alt=""
-                  style={{
-                    maxWidth: 180,
-                    maxHeight: 120,
-                    borderRadius: 8,
-                    border: "1px solid var(--line-1)",
-                    objectFit: "cover",
-                  }}
-                />
-              ))}
-            </div>
-          )}
-          {you ? (placeholderOnlyText ? null : entry.text) : <MinimalMarkdown text={entry.text} />}
-          {showStreamingCursor && <StreamingCursor />}
-        </div>
-      </div>
-    )
-  }
-
-  if (entry.kind === "tool") return <ToolBlock entry={entry} />
-  return <TranscriptBlock entry={entry} sessionId={sessionId} />
-}
-
-interface ToolBlockMeta {
-  status?: string
-  rawInput?: Record<string, unknown>
-  rawOutput?: Record<string, unknown>
-  locations?: { path: string; line?: number | null }[]
-}
-
-function parseToolBlockMeta(meta?: string): ToolBlockMeta {
-  if (!meta) return {}
-  try {
-    const p = JSON.parse(meta) as Record<string, unknown>
-    return {
-      status: typeof p.status === "string" ? p.status : undefined,
-      rawInput: p.rawInput && typeof p.rawInput === "object" ? p.rawInput as Record<string, unknown> : undefined,
-      rawOutput: p.rawOutput && typeof p.rawOutput === "object" ? p.rawOutput as Record<string, unknown> : undefined,
-      locations: Array.isArray(p.locations) ? p.locations as ToolBlockMeta["locations"] : undefined,
-    }
-  } catch { return {} }
-}
-
-function ToolBlock({ entry }: { entry: BlockEntry }) {
-  const { t } = useTranslation("panels")
-  const [open, setOpen] = useState(false)
-  const meta = parseToolBlockMeta(entry.meta)
-  const style = meta.status === "failed" ? THREAD_KIND_STYLE.error : THREAD_KIND_STYLE.tool
-  const [title, ...rest] = entry.text.split("\n")
-  const body = rest.join("\n")
-  const preview = body.length > 50 ? `${body.slice(0, 50)}…` : body
-  return (
-    <div style={{ display: "flex" }}>
-      <div style={{ flex: 1, minWidth: 0, borderRadius: 12, background: style.bg, border: `1px solid ${style.bd}`, display: "flex", flexDirection: "column" }}>
-        <button type="button" aria-label={t("agentZonePanel.toolToggle")} aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-          style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "transparent", border: 0, cursor: "pointer", textAlign: "left", minWidth: 0 }}>
-          <span aria-hidden="true" style={{ width: 3, alignSelf: "stretch", borderRadius: 3, background: style.accent, flex: "0 0 auto" }} />
-          <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 500, color: style.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {title}{preview ? ` · ${preview}` : ""}
-          </span>
-          {meta.status && <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)", flex: "0 0 auto" }}>{meta.status}</span>}
-        </button>
-        {open && (
-          <div style={{ padding: "0 12px 12px 25px", display: "flex", flexDirection: "column", gap: 8 }}>
-            {body && <pre style={toolPreStyle}>{body}</pre>}
-            {meta.rawInput && <ToolDetail label={t("agentZonePanel.toolInput")} value={meta.rawInput} />}
-            {meta.rawOutput && <ToolDetail label={t("agentZonePanel.toolOutput")} value={meta.rawOutput} />}
-            {meta.locations && meta.locations.length > 0 && (
-              <ToolDetail label={t("agentZonePanel.toolLocations")}
-                value={meta.locations.map((l) => (l.line != null ? `${l.path}:${l.line}` : l.path))} />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-const toolPreStyle: CSSProperties = { margin: 0, fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.5, color: "var(--ink-2)", whiteSpace: "pre-wrap", wordBreak: "break-word" }
-function ToolDetail({ label, value }: { label: string; value: unknown }) {
-  return (
-    <div>
-      <div style={{ fontSize: 9.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--ink-3)", marginBottom: 3 }}>{label}</div>
-      <pre style={toolPreStyle}>{JSON.stringify(value, null, 2)}</pre>
-    </div>
-  )
-}
-
-function TranscriptBlock({ entry, sessionId }: { entry: BlockEntry; sessionId: string }) {
-  const respondPermission = useAgentStore((s) => s.respondPermission)
-  const newSession = useAgentStore((s) => s.newSession)
-  const openText = useDiffModalStore((s) => s.openText)
-  const style = THREAD_KIND_STYLE[entry.kind] ?? THREAD_KIND_STYLE.tool
-  const isMono = entry.kind === "tool"
-
-  function onAction(action: TranscriptAction) {
-    if (entry.kind === "diff" && action.kind === "view_diff") {
-      const diff = diffPayloadFromAction(action)
-      if (diff) {
-        openText(
-          diff.path,
-          { kind: "full", content: diff.oldText ?? "" },
-          { kind: "full", content: diff.newText }
-        )
-      }
-      return
-    }
-    if (entry.kind === "notice" && action.kind === "start_new_session") {
-      const payload = newSessionPayloadFromAction(action)
-      if (payload) void newSession(payload.cwd, payload.agentId).catch(() => undefined)
-      return
-    }
-    if (entry.kind !== "perm") return
-    const optionId = optionIdFromAction(action)
-    if (optionId) respondPermission(sessionId, optionId)
-  }
-
-  return (
-    <div style={{ display: "flex" }}>
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 12px",
-          borderRadius: 12,
-          background: style.bg,
-          border: `1px solid ${style.bd}`,
-          minWidth: 0,
-        }}
-      >
-        <span
-          aria-hidden="true"
-          style={{
-            width: 3,
-            alignSelf: "stretch",
-            borderRadius: 3,
-            flex: "0 0 auto",
-            background: style.accent,
-          }}
-        />
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontSize: isMono ? 11.5 : 12,
-            fontWeight: 500,
-            color: style.fg,
-            fontFamily: isMono ? "var(--font-mono)" : undefined,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          {entry.text}
-        </span>
-        {entry.meta && (
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 10.5,
-              color: "var(--ink-3)",
-              flex: "0 0 auto",
-            }}
-          >
-            {displayMeta(entry)}
-          </span>
-        )}
-        {entry.actions && entry.actions.length > 0 && (
-          <div style={{ display: "flex", gap: 7, flex: "0 0 auto" }}>
-            {entry.actions.map((action, index) => (
-              <button
-                key={`${action.label}-${index}`}
-                type="button"
-                onClick={() => onAction(action)}
-                style={actionChipStyle(index === 0, style.accent)}
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function MinimalMarkdown({ text }: { text: string }) {
-  return <>{renderMarkdownBlocks(text)}</>
-}
-
-function renderMarkdownBlocks(text: string): ReactNode[] {
-  const nodes: ReactNode[] = []
-  const fence = /```([^\n`]*)\n?([\s\S]*?)```/g
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-
-  while ((match = fence.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(
-        <span key={`txt-${lastIndex}`} className="whitespace-pre-wrap">
-          {renderInlineMarkdown(text.slice(lastIndex, match.index), `in-${lastIndex}`)}
-        </span>
-      )
-    }
-    const code = match[2] ?? ""
-    nodes.push(
-      <pre
-        key={`pre-${match.index}`}
-        style={{
-          margin: "8px 0 0",
-          padding: "8px 10px",
-          borderRadius: 8,
-          background: "var(--yz-field)",
-          border: "1px solid var(--line-1)",
-          overflowX: "auto",
-          fontFamily: "var(--font-mono)",
-          fontSize: 11.5,
-          lineHeight: 1.5,
-        }}
-      >
-        <code>{code.replace(/\n$/, "")}</code>
-      </pre>
-    )
-    lastIndex = fence.lastIndex
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(
-      <span key={`txt-${lastIndex}`} className="whitespace-pre-wrap">
-        {renderInlineMarkdown(text.slice(lastIndex), `in-${lastIndex}`)}
-      </span>
-    )
-  }
-
-  return nodes.length > 0 ? nodes : [text]
-}
-
-function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
-  const nodes: ReactNode[] = []
-  let index = 0
-  let key = 0
-
-  while (index < text.length) {
-    const codeIndex = text.indexOf("`", index)
-    const boldIndex = text.indexOf("**", index)
-    const next = nextMarker(codeIndex, boldIndex)
-
-    if (next === -1) {
-      nodes.push(text.slice(index))
-      break
-    }
-
-    if (next > index) nodes.push(text.slice(index, next))
-
-    if (next === codeIndex) {
-      const end = text.indexOf("`", codeIndex + 1)
-      if (end === -1) {
-        nodes.push(text.slice(codeIndex))
-        break
-      }
-      nodes.push(
-        <code
-          key={`${keyPrefix}-code-${key++}`}
-          style={{
-            padding: "1px 4px",
-            borderRadius: 5,
-            background: "var(--yz-field)",
-            border: "1px solid var(--line-1)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.92em",
-          }}
-        >
-          {text.slice(codeIndex + 1, end)}
-        </code>
-      )
-      index = end + 1
-      continue
-    }
-
-    const end = text.indexOf("**", boldIndex + 2)
-    if (end === -1) {
-      nodes.push(text.slice(boldIndex))
-      break
-    }
-    nodes.push(
-      <strong key={`${keyPrefix}-strong-${key++}`}>{text.slice(boldIndex + 2, end)}</strong>
-    )
-    index = end + 2
-  }
-
-  return nodes
-}
-
-function nextMarker(codeIndex: number, boldIndex: number): number {
-  if (codeIndex === -1) return boldIndex
-  if (boldIndex === -1) return codeIndex
-  return Math.min(codeIndex, boldIndex)
-}
-
-function StreamingCursor() {
-  return (
-    <span
-      data-testid="agent-streaming-cursor"
-      aria-hidden="true"
-      style={{
-        display: "inline-block",
-        width: 7,
-        height: 13,
-        marginLeft: 3,
-        verticalAlign: -2,
-        background: "#5b3fd1",
-        borderRadius: 2,
-        animation: "yzblink 1.1s step-end infinite",
-      }}
-    />
-  )
-}
-
-function actionChipStyle(primary: boolean, accent: string): CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    height: 26,
-    padding: "0 12px",
-    borderRadius: 8,
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: "pointer",
-    flex: "0 0 auto",
-    border: primary ? "none" : "1px solid var(--line-1)",
-    background: primary ? accent : "var(--yz-solid)",
-    color: primary ? "#fff" : "var(--ink-1)",
-    boxShadow: primary ? "var(--shadow-xs)" : undefined,
-  }
-}
-
-function optionIdFromAction(action: TranscriptAction): string | null {
-  const payload = action.payload
-  if (payload && typeof payload === "object" && "optionId" in payload) {
-    const optionId = (payload as { optionId?: unknown }).optionId
-    return typeof optionId === "string" ? optionId : null
-  }
-  return action.kind || null
-}
-
-function newSessionPayloadFromAction(action: TranscriptAction): { cwd: string; agentId?: AgentId } | null {
-  const payload = action.payload
-  if (!payload || typeof payload !== "object") return null
-  const record = payload as Record<string, unknown>
-  if (typeof record.cwd !== "string") return null
-  const agentId = record.agentId
-  return {
-    cwd: record.cwd,
-    ...(agentId === "pi" || agentId === "claude" || agentId === "codex" ? { agentId } : {})
-  }
-}
-
-function diffPayloadFromAction(action: TranscriptAction): AgentDiffPayload | null {
-  const payload = action.payload
-  if (!payload || typeof payload !== "object") return null
-  const record = payload as Record<string, unknown>
-  if (typeof record.path !== "string" || typeof record.newText !== "string") return null
-  return {
-    path: record.path,
-    oldText: typeof record.oldText === "string" ? record.oldText : null,
-    newText: record.newText,
-  }
-}
-
-function displayMeta(entry: BlockEntry): string {
-  if (!entry.meta) return ""
-  try {
-    const parsed = JSON.parse(entry.meta) as Record<string, unknown>
-    if (entry.kind === "diff" && typeof parsed.path === "string") return parsed.path
-    if (entry.kind === "plan" && typeof parsed.completed === "number" && typeof parsed.total === "number") {
-      return `${parsed.completed}/${parsed.total}`
-    }
-    if (typeof parsed.status === "string") return parsed.status
-    if (typeof parsed.kind === "string") return parsed.kind
-    if (typeof parsed.toolCallId === "string") return parsed.toolCallId
-  } catch {
-    return entry.meta
-  }
-  return entry.meta
-}
-
-function entryKey(entry: TranscriptEntry): string {
-  return "who" in entry ? `${entry.who}:${entry.text}` : `${entry.kind}:${entry.text}`
 }
 
 // 判色依 session.agentId（"pi"/"claude"/"codex"）；agentLabel 只在沒有已知

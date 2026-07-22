@@ -5,6 +5,7 @@ import { createAgentRouter } from "../agent/agentRouter"
 import { loadAgentSettings, resolvePrewarmAgentId } from "../app/workbench/settingsStorage"
 import { agentKill, agentList, agentSetTrace } from "../lib/ipc"
 import { firstAbsolutePath } from "../lib/paths"
+import { initBuiltinPiAdapterCommand } from "../lib/platform"
 import { useAgentStore } from "../state/agentStore"
 import { normalizeWorkspacePath } from "../state/recentWorkspaces"
 import { loadSessionIndex } from "../state/sessionIndexStorage"
@@ -23,7 +24,12 @@ export function AgentBridge() {
     useEffect(() => {
         let cancelled = false
         void (async () => {
-            await agentSetTrace(loadAgentSettings().traceEnabled).catch(() => undefined)
+            // builtin pi adapter 的 command cache 必須先於任何 command 路由
+            //（prewarm／session/new）ready——resolveAgentCommandRoute 是同步的。
+            await Promise.all([
+                agentSetTrace(loadAgentSettings().traceEnabled).catch(() => undefined),
+                initBuiltinPiAdapterCommand().catch(() => undefined)
+            ])
             if (cancelled) return
             useAgentStore.getState().setConnection(connection)
             setStartupTraceSettled(true)
@@ -122,6 +128,9 @@ function createStoreBackedConnection(): AgentConnection {
         },
         onSessionTitle: (sessionId, title) => {
             useAgentStore.getState().applyAgentTitle(sessionId, title)
+        },
+        onElicitationRequest: (sessionId, request, respond) => {
+            useAgentStore.getState().onElicitationRequest(sessionId, request, respond)
         },
         onPermissionRequest: (sessionId, block, choose) => {
             useAgentStore.getState().onPermissionRequest(sessionId, block, choose)

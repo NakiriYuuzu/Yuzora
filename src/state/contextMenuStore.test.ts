@@ -1188,13 +1188,16 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         }
         useTerminalStore.setState({
             sessions: {
-                t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
+                t1: { sessionId: "t1", title: "Terminal 1", launchStatus: "running", workspace: "/w", shell: "", cols: 80, rows: 24 }
             },
             layouts: {
                 "/w": {
+                    tabIds: ["t1"],
                     panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
                     activePaneId: "other-pane",
-                    splitDirection: null
+                    splitRatio: 0.5,
+                    nextTerminalNumber: 2,
+                    renamingSessionId: null
                 }
             }
         })
@@ -1229,13 +1232,16 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         }
         useTerminalStore.setState({
             sessions: {
-                t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
+                t1: { sessionId: "t1", title: "Terminal 1", launchStatus: "running", workspace: "/w", shell: "", cols: 80, rows: 24 }
             },
             layouts: {
                 "/w": {
+                    tabIds: ["t1"],
                     panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
                     activePaneId: "unrelated-active-pane",
-                    splitDirection: null
+                    splitRatio: 0.5,
+                    nextTerminalNumber: 2,
+                    renamingSessionId: null
                 }
             }
         })
@@ -1272,17 +1278,20 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         }
         useTerminalStore.setState({
             sessions: {
-                "t-clicked": { sessionId: "t-clicked", title: "Clicked", workspace: "/w", shell: "", cols: 80, rows: 24 },
-                "t-active": { sessionId: "t-active", title: "Active", workspace: "/w", shell: "", cols: 80, rows: 24 }
+                "t-clicked": { sessionId: "t-clicked", title: "Clicked", launchStatus: "running", workspace: "/w", shell: "", cols: 80, rows: 24 },
+                "t-active": { sessionId: "t-active", title: "Active", launchStatus: "running", workspace: "/w", shell: "", cols: 80, rows: 24 }
             },
             layouts: {
                 "/w": {
+                    tabIds: ["t-clicked", "t-active"],
                     panes: [
                         { paneId: "pane-clicked", sessionId: "t-clicked" },
                         { paneId: "pane-active", sessionId: "t-active" }
                     ],
                     activePaneId: "pane-active",
-                    splitDirection: "right"
+                    splitRatio: 0.5,
+                    nextTerminalNumber: 3,
+                    renamingSessionId: null
                 }
             }
         })
@@ -1332,13 +1341,16 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         }
         useTerminalStore.setState({
             sessions: {
-                t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
+                t1: { sessionId: "t1", title: "Terminal 1", launchStatus: "running", workspace: "/w", shell: "", cols: 80, rows: 24 }
             },
             layouts: {
                 "/w": {
+                    tabIds: ["t1"],
                     panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
                     activePaneId: "pane-clicked",
-                    splitDirection: null
+                    splitRatio: 0.5,
+                    nextTerminalNumber: 2,
+                    renamingSessionId: null
                 }
             }
         })
@@ -1365,13 +1377,16 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         }
         useTerminalStore.setState({
             sessions: {
-                t1: { sessionId: "t1", title: "Terminal 1", workspace: "/w", shell: "", cols: 80, rows: 24 }
+                t1: { sessionId: "t1", title: "Terminal 1", launchStatus: "running", workspace: "/w", shell: "", cols: 80, rows: 24 }
             },
             layouts: {
                 "/w": {
+                    tabIds: ["t1"],
                     panes: [{ paneId: "pane-clicked", sessionId: "t1" }],
                     activePaneId: "pane-clicked",
-                    splitDirection: null
+                    splitRatio: 0.5,
+                    nextTerminalNumber: 2,
+                    renamingSessionId: null
                 }
             }
         })

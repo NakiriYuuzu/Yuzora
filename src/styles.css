@@ -474,3 +474,10 @@
         transition-duration: 0.01ms !important;
     }
 }
+
+/* AgentZone 串流游標（agentzone/TranscriptList StreamingCursor）：reduced-motion 停用呼吸動畫 */
+@media (prefers-reduced-motion: reduce) {
+    [data-testid="agent-streaming-cursor"] {
+        animation: none;
+    }
+}

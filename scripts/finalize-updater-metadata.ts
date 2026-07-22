@@ -8,6 +8,7 @@ export interface UpdaterPlatform {
 
 export interface UpdaterMetadata {
   version: string
+  notes: string
   platforms: Record<string, UpdaterPlatform>
   [key: string]: unknown
 }
@@ -37,6 +38,10 @@ export function finalizeUpdaterMetadata(
   const metadata = record(value, "updater metadata")
   const rawPlatforms = record(metadata.platforms, "updater metadata platforms")
   assert(metadata.version === expectedVersion, `metadata version must be ${expectedVersion}`)
+  assert(
+    typeof metadata.notes === "string" && metadata.notes.trim().length > 0,
+    "updater notes are required"
+  )
 
   const platforms: Record<string, UpdaterPlatform> = {}
   for (const [key, rawPlatform] of Object.entries(rawPlatforms)) {
@@ -66,6 +71,7 @@ export function finalizeUpdaterMetadata(
   return {
     ...metadata,
     version: expectedVersion,
+    notes: metadata.notes,
     platforms,
   }
 }

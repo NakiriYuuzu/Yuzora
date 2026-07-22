@@ -1,11 +1,10 @@
 export type AgentId = "pi" | "claude" | "codex"
 export type AgentPreset = AgentId | "custom"
-export type AgentCommandMode = "verified" | "latest" | "custom"
+export type AgentCommandMode = "latest" | "custom"
 
 export interface AgentDescriptor {
   id: AgentId
   label: string
-  verifiedCommand: string
   latestCommand: string
 }
 
@@ -19,30 +18,28 @@ export interface AgentCommandResolution extends AgentCommandIdentity {
   command: string
 }
 
-// Verified 是預設與可重現 baseline；Latest 只能由使用者明確選擇。
+// Curated ACP adapters always follow the npm latest dist-tag. Custom remains
+// available for users who need an explicit wrapper or locally installed agent.
 export const AGENT_PRESETS: AgentDescriptor[] = [
   {
     id: "pi",
     label: "Pi",
-    verifiedCommand: "bunx pi-acp@0.0.31",
     latestCommand: "bunx pi-acp@latest",
   },
   {
     id: "claude",
     label: "Claude",
-    verifiedCommand: "bunx @agentclientprotocol/claude-agent-acp@0.58.1",
     latestCommand: "bunx @agentclientprotocol/claude-agent-acp@latest",
   },
   {
     id: "codex",
     label: "Codex",
-    verifiedCommand: "bunx @agentclientprotocol/codex-acp@1.1.2",
     latestCommand: "bunx @agentclientprotocol/codex-acp@latest",
   },
 ]
 
 export const DEFAULT_AGENT_ID: AgentId = "pi"
-export const DEFAULT_AGENT_COMMAND = AGENT_PRESETS[0].verifiedCommand
+export const DEFAULT_AGENT_COMMAND = AGENT_PRESETS[0].latestCommand
 
 // agentId → 品牌色 token 的單一對照（single source of truth）。消費點
 // （AgentZonePanel 的 header avatar/chip、AgentNavContent 的 row badge）
@@ -70,7 +67,7 @@ export function agentDisplayName(
 }
 
 export function commandForAgent(agentId: AgentId): string {
-  return descriptorForAgent(agentId).verifiedCommand
+  return descriptorForAgent(agentId).latestCommand
 }
 
 export function commandForPreset(preset: AgentPreset, customCommand: string): string {
@@ -80,9 +77,42 @@ export function commandForPreset(preset: AgentPreset, customCommand: string): st
 
 export function agentPresetForCommand(command: string): AgentPreset {
   const normalized = command.trim()
-  return AGENT_PRESETS.find((agent) => (
-    agent.verifiedCommand === normalized || agent.latestCommand === normalized
-  ))?.id ?? "custom"
+  return AGENT_PRESETS.find((agent) => agent.latestCommand === normalized)?.id ?? "custom"
+}
+
+// agent_detect_runtimes 的回傳形狀（camelCase，Rust 端 AgentRuntimeAvailability）。
+export interface AgentRuntimeAvailability {
+  bunx: boolean
+  deno: boolean
+  node: boolean
+  npx: boolean
+}
+
+export type RuntimeResolution =
+  | { kind: "unchanged"; command: string }
+  | { kind: "fallback"; command: string; runtime: "node" }
+  | { kind: "unavailable"; command: string }
+
+// #15：curated preset 的 `bunx <pkg>@<ver>` 在 bun 缺席時的 runtime fallback。
+// 只改寫 spawn 當下的指令字串，不動 store 裡的設定值（trustedAgentId／custom
+// fingerprint 不受影響）。Deno 順位刻意跳過：pi-acp／claude-agent-acp／codex-acp
+// 未經 Deno 相容性驗證，規格要求只用經驗證的 invocation——確認相容後再插入分支。
+// `npx -y` 對齊 bunx 的非互動語意（否則首次執行會卡在安裝確認提示）。
+export function resolveRuntimeCommand(
+  command: string,
+  runtimes: AgentRuntimeAvailability,
+): RuntimeResolution {
+  const spec = command.trim()
+  if (!spec.startsWith("bunx ")) return { kind: "unchanged", command }
+  if (runtimes.bunx) return { kind: "unchanged", command }
+  if (runtimes.npx) {
+    return {
+      kind: "fallback",
+      command: `npx -y ${spec.slice("bunx ".length)}`,
+      runtime: "node",
+    }
+  }
+  return { kind: "unavailable", command }
 }
 
 export function resolveCuratedAgentCommand(
@@ -91,11 +121,9 @@ export function resolveCuratedAgentCommand(
   customCommand = "",
 ): AgentCommandResolution {
   const descriptor = descriptorForAgent(agentId)
-  const command = commandMode === "latest"
-    ? descriptor.latestCommand
-    : commandMode === "custom"
-      ? customCommand.trim() || descriptor.verifiedCommand
-      : descriptor.verifiedCommand
+  const command = commandMode === "custom"
+    ? customCommand.trim() || descriptor.latestCommand
+    : descriptor.latestCommand
   return {
     selectedPreset: agentId,
     commandMode,

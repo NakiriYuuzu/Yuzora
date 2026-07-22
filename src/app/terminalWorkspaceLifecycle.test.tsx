@@ -24,6 +24,8 @@ const terminalMocks = vi.hoisted(() => {
     })
     open = vi.fn()
     onData = vi.fn(() => ({ dispose: vi.fn() }))
+    onTitleChange = vi.fn(() => ({ dispose: vi.fn() }))
+    attachCustomKeyEventHandler = vi.fn()
     write = vi.fn()
     focus = vi.fn()
     hasSelection = vi.fn(() => false)
@@ -159,6 +161,7 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
   const firstSession = {
     sessionId: "pty-a",
     title: "Terminal A",
+    launchStatus: "running" as const,
     workspace: firstWorkspace,
     shell: "/bin/zsh",
     cols: 80,
@@ -214,6 +217,7 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
   const secondSession = {
     sessionId: "pty-b",
     title: "Terminal B",
+    launchStatus: "running" as const,
     workspace: secondWorkspace,
     shell: "/bin/zsh",
     cols: 80,

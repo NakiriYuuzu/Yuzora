@@ -1,56 +1,52 @@
 # Changelog
 
-## [0.0.1] - 2026-07-13
+這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
-首個公開版本：整合 ACP agent、SSH、資料庫與 terminal 的 local-first 桌面開發工作台（Tauri + React）。
+## [0.0.3] - 2026-07-17
 
-### 🚀 Features
+### 新增
 
-**AgentZone（ACP agent）**
-- 前端 hosted 的 ACP client，遷移至 `@agentclientprotocol/sdk` 1.2（session config、usage/cost、agent 端 session title 通道）
-- curated agent presets（pi／claude／codex／custom）與 AgentRouter 依 command 指紋路由
-- Session Index 持久化與跨重啟續聊、三欄位 session title、agent 品牌徽章
-- composer 補全：`/slash` 指令、`@skill`、`@file`（workspace path index 模糊搜尋）
-- usage/cost chip、session config 選單、tool 詳情展開、startupInfo banner
+- 「關於與更新」現在會列出目前版本及可用更新帶來的主要改變。
 
-**資料庫**
-- exact-owner connection actor：單連線單 in-flight、query 取消、generation 防 stale
-- keyring 憑證保管庫（不落盤）＋ connection profile 持久化（write-ahead ledger）
-- 有界結果分頁 session（500 rows/頁）；PG NUMERIC／MSSQL MONEY 無損精確解碼（vendored tiberius fork）
-- profile CRUD、憑證缺失提示與復原、dialect-aware SQL helpers；SQLite／PostgreSQL／MSSQL
+### 改善
 
-**編輯器**
-- CodeMirror 6 編輯器＋LSP（診斷、補全、格式化）；右分割視窗與手動 Format document
-- Markdown 分割預覽與雙向捲動同步
+- 應用程式內、GitHub 下載頁面與更新通知會顯示一致的版本說明。
+- Changelog 改用白話整理功能、改善與已知限制，不再列出內部開發細節。
 
-**Terminal**
-- xterm 終端抽屜（pty_service）；copy/paste/clear/split 面板命令與拖曳比例記憶
+## [0.0.2] - 2026-07-16
 
-**Git**
-- 狀態、staging、commit、branch、log graph（全 branch lane 圖）、commit 詳情 cherry-pick
-- 變更列多選、右鍵選單與 rollback 對話框（staleness／conflict 防護）
+### 新增
 
-**其他**
-- Preview 面板：dev-server 偵測、原生 webview 導覽狀態機
-- SSH 連線管理；logs 查詢／匯出／verbose 開關；工作區最近清單與 agent 數量徽章
-- 產品頁（雙語＋六支 Remotion 功能影片）與 GitHub Pages 部署
+- 可直接在設定中檢查、下載並安裝新版本。
+- 「關於與更新」會顯示應用程式實際執行的版本。
 
-### 🐛 Bug Fixes
+### 改善
 
-- GUI 啟動（Finder/Dock）補齊 `~/.zshrc` export 的 env——修正 agent 子行程拿不到憑證導致的 Authentication required
-- Windows 路徑正規化（最近工作區反斜線、LSP UNC／磁碟機 URI）
-- SSH 連線失敗寫入 log；disconnect 錯誤不再被吞
-
-### ♻️ Refactoring
-
-- Context menu 系統重構：typed request、per-command availability 與反灰提示
-
-### 🔧 CI / 建置
-
-- CI：前端品質門檻＋三平台 Rust compile matrix＋clippy 指紋基線＋真實資料庫整合測試（docker Postgres/MSSQL）
-- Release：tag 驅動三平台建置（macOS universal `.dmg`、Windows `.msi`/`.exe`、Linux `.AppImage`/`.deb`/`.rpm`）與固定檔名下載別名
+- 下載更新時會顯示進度；失敗後可直接重試，不必重新檢查版本。
+- 安裝前會提醒儲存尚未完成的文件，並在使用者確認後才重新啟動。
+- Windows 自動更新統一使用 MSI 安裝格式，降低不同安裝方式混用造成的問題。
+- 更新入口只顯示在設定中的「關於與更新」，不會打斷日常工作。
 
 ### 已知限制
 
-- macOS 安裝檔未簽章：首次開啟請右鍵 →「打開」，或執行 `xattr -cr /Applications/Yuzora.app`
-- Windows 安裝檔未簽章，SmartScreen 會出現警告
+- macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現安全提示。
+
+## [0.0.1] - 2026-07-13
+
+### 新增
+
+- 在同一個工作區中使用 AI agent、程式碼編輯器、Terminal、Git、SSH 與資料庫工具。
+- 支援程式碼診斷、補全、格式化，以及 Markdown 即時預覽。
+- 可保存最近使用的工作區與 agent 對話，重新開啟後繼續工作。
+- 可查看 Git 變更、提交紀錄與分支，並在執行具風險的操作前取得提醒。
+- 提供本機網站預覽、開發伺服器偵測與應用程式 Logs。
+
+### 修正
+
+- 改善從 Finder 或 Dock 開啟時，AI agent 無法取得登入資訊的問題。
+- 改善 Windows 工作區與語言工具的路徑相容性。
+- SSH 連線失敗時會留下可供排查的紀錄。
+
+### 已知限制
+
+- macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現安全提示。

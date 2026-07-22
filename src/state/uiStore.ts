@@ -48,6 +48,12 @@ interface UiState {
     // 無參數＝一般開啟（rail avatar／CommandPalette），不指定 section 語言。
     openSettings: (section?: string, target?: string | SettingsTargetOptions) => void
     setSettingsOpen: (open: boolean) => void
+    projectEditorPath: string | null
+    openProjectEditor: (path: string) => void
+    closeProjectEditor: () => void
+    recentWorkspaceRemovedNotice: { name: string } | null
+    notifyRecentWorkspaceRemoved: (name: string) => void
+    clearRecentWorkspaceRemovedNotice: () => void
     terminalOpen: boolean
     toggleTerminal: () => void
     traceEnabled: boolean                      // LSP JSON-RPC trace（in-memory，不持久化；重啟＝off）
@@ -77,6 +83,8 @@ export const uiInitialState = {
     settingsLanguage: null,
     settingsLogSource: null,
     settingsNonce: 0,
+    projectEditorPath: null,
+    recentWorkspaceRemovedNotice: null as { name: string } | null,
     terminalOpen: false,
     traceEnabled: false,
     sidebarToggleRequest: 0,
@@ -204,6 +212,11 @@ export const useUiStore = create<UiState>()((set) => ({
             }
         }),
     setSettingsOpen: (open) => set({ settingsOpen: open }),
+    openProjectEditor: (path) => set({ projectEditorPath: path }),
+    closeProjectEditor: () => set({ projectEditorPath: null }),
+    notifyRecentWorkspaceRemoved: (name) =>
+        set({ recentWorkspaceRemovedNotice: { name } }),
+    clearRecentWorkspaceRemovedNotice: () => set({ recentWorkspaceRemovedNotice: null }),
     toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
     setTraceEnabled: (enabled) => set({ traceEnabled: enabled }),
     requestSidebarToggle: () => set((s) => ({ sidebarToggleRequest: s.sidebarToggleRequest + 1 })),

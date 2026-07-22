@@ -5,6 +5,8 @@
     "cmSettings": "Settings…",
     "cmHideSidebar": "Toggle sidebar",
     "cmOpenWorkspace": "Open workspace…",
+    "cmEditRecentWorkspace": "Edit project…",
+    "cmRemoveRecentWorkspace": "Remove from recents",
     "cmNewFile": "New file",
     "cmNewFolder": "New folder",
     "cmCopyPath": "Copy path",
@@ -26,8 +28,8 @@
     "cmCompareHead": "Compare with HEAD",
     "cmFormatDoc": "Format document",
     "cmSplitTermRight": "Split right",
-    "cmSplitTermDown": "Split down",
     "cmClear": "Clear buffer",
+    "cmRenameTerminal": "Rename terminal…",
     "cmCloseTerminal": "Close terminal",
     "cmContinueSession": "Continue conversation",
     "cmCancelResponse": "Cancel current response",
@@ -85,7 +87,8 @@
     },
     "terminal": {
       "closeConfirmTitle": "Close terminal",
-      "closeConfirmMessage": "Close terminal? The shell and its child processes will be terminated."
+      "closeBusyConfirmMessage": "\"{{title}}\" has a foreground process running. Close it and terminate the process?",
+      "closeUnknownConfirmMessage": "Yuzora cannot determine whether \"{{title}}\" is still running work. Close it and terminate its processes?"
     },
     "confirm": {
       "closeDirtyTab": "\"{{name}}\" has unsaved changes. Close without saving?",
@@ -140,11 +143,20 @@
   },
   "terminalDrawer": {
     "dragToResize": "Drag to resize",
-    "label": "Terminal",
+    "iconAriaLabel": "Terminal",
+    "tabListAriaLabel": "Terminal tabs",
+    "allTerminalsTitle": "All terminals",
     "splitRightTitle": "Split right",
-    "splitDownTitle": "Split down",
+    "splitLimitTitle": "A maximum of two terminals can be visible",
     "newTerminalTitle": "New terminal",
-    "closeTerminalTitle": "Close terminal",
+    "closeTabAriaLabel": "Close {{title}}",
+    "renameInputAriaLabel": "Rename {{title}}",
+    "spawnFailedTitle": "Terminal failed to start",
+    "leftPane": "Left",
+    "rightPane": "Right",
+    "focusedPane": "Focused",
+    "paneResizeAriaLabel": "Resize terminal panes",
+    "paneRatioText": "Left {{left}}% · Right {{right}}%",
     "collapseAriaLabel": "Collapse terminal",
     "expandAriaLabel": "Expand terminal"
   },

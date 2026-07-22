@@ -4,11 +4,13 @@ import {
     AgentAuthRequiredError,
     type AgentConnection,
     type AgentAuthMethod,
+    type ElicitationRequest,
     type SessionConfigOption,
     type StopReason
 } from "@/agent/acpConnection"
 import { createAgentRouter, fingerprintAgentCommand } from "@/agent/agentRouter"
 import type { BlockEntry, TranscriptEntry } from "@/agent/acpTypes"
+import { AGENT_VERSION_STORAGE_KEY, loadAgentVersions } from "@/agent/agentVersions"
 import {
     AGENT_SETTINGS_STORAGE_KEY,
     LAST_USED_CURATED_AGENT_STORAGE_KEY
@@ -82,6 +84,7 @@ beforeEach(() => {
 })
 
 const permissionBlock: BlockEntry = {
+    id: "perm-1",
     kind: "perm",
     text: "Run command",
     actions: [{ label: "Allow", kind: "allow_once", payload: { optionId: "allow" } }]
@@ -96,6 +99,27 @@ const terminalAuthMethod: AgentAuthMethod = {
 }
 
 describe("createAgentStore tone transitions", () => {
+    it("records the adapter version only after a trusted session starts successfully", async () => {
+        const fake = fakeConnection()
+        vi.mocked(fake.connection.newSession).mockResolvedValue({
+            sessionId: "versioned",
+            startupInfo: null,
+            agentVersion: "v0.0.32",
+            agentIdentity: {
+                selectedPreset: "pi",
+                commandMode: "latest",
+                trustedAgentId: "pi"
+            }
+        })
+        const store = createAgentStore({ connection: fake.connection })
+
+        await store.getState().newSession("/w", "pi")
+
+        expect(store.getState().sessions.get("versioned")?.agentVersion).toBe("v0.0.32")
+        expect(loadAgentVersions()).toEqual({ pi: "0.0.32" })
+        expect(localStorage.getItem(AGENT_VERSION_STORAGE_KEY)).not.toContain("v0.0.32")
+    })
+
     it("records session/new auth-required state and clears it after retry creates a session", async () => {
         const fake = fakeConnection()
         vi.mocked(fake.connection.newSession)
@@ -276,7 +300,7 @@ describe("createAgentStore tone transitions", () => {
         const session = store.getState().sessions.get("s-1")
         expect(session?.tone).toBe("fail")
         expect(session?.error).toBe("ACP agent exited")
-        expect(session?.transcript).toEqual([{ who: "you", text: "Continue", streaming: false }])
+        expect(session?.transcript).toEqual([{ id: expect.any(String), who: "you", text: "Continue", streaming: false }])
         expect(store.getState().connectionState).toBe("error")
         expect(store.getState().connectionError).toBe("ACP agent exited")
     })
@@ -396,6 +420,7 @@ describe("createAgentStore tone transitions", () => {
                 pendingTurn: true
             }]]),
             pendingPermissions: new Map([["s-1", {
+                entryId: permissionBlock.id,
                 request: {
                     text: permissionBlock.text,
                     actions: permissionBlock.actions ?? []
@@ -414,6 +439,23 @@ describe("createAgentStore tone transitions", () => {
         })
         expect(store.getState().pendingPermissions.has("s-1")).toBe(true)
         expect(store.getState().connectionError).toBe("cancel transport failed")
+    })
+
+    it("records the chosen option per perm entry when a permission is answered", () => {
+        const store = createAgentStore({ connection: fakeConnection().connection })
+        const choose = vi.fn()
+        store.getState().selectSession("s-1")
+        store.getState().onPermissionRequest("s-1", permissionBlock, choose)
+        expect(store.getState().sessions.get("s-1")?.tone).toBe("wait")
+
+        store.getState().respondPermission("s-1", "allow")
+
+        expect(choose).toHaveBeenCalledExactlyOnceWith("allow")
+        expect(store.getState().pendingPermissions.has("s-1")).toBe(false)
+        expect(store.getState().sessions.get("s-1")).toMatchObject({
+            tone: "run",
+            permissionOutcomes: { [permissionBlock.id]: "allow" }
+        })
     })
 
     it("does not overwrite a turn that completes naturally while cancel is in flight", async () => {
@@ -497,7 +539,7 @@ describe("createAgentStore transcript, slash, and session switching", () => {
         expect(session?.title).toBe("Named pi session")
         expect(session?.mode).toBe("plan")
         expect(session?.transcript).toEqual([
-            { who: "you", text: "First prompt should not replace metadata title", streaming: true }
+            { id: expect.any(String), who: "you", text: "First prompt should not replace metadata title", streaming: true }
         ])
     })
 
@@ -596,7 +638,7 @@ describe("createAgentStore transcript, slash, and session switching", () => {
 
     it("does not let running=false session info overwrite a failed session", () => {
         const store = createAgentStore({ connection: fakeConnection().connection })
-        const transcript: TranscriptEntry[] = [{ who: "agent", text: "partial", streaming: true }]
+        const transcript: TranscriptEntry[] = [{ id: "t0", who: "agent", text: "partial", streaming: true }]
 
         store.getState().replaceTranscript("s-1", transcript)
         store.getState().markConnectionError("s-1", new Error("process died"))
@@ -711,7 +753,7 @@ describe("createAgentStore transcript, slash, and session switching", () => {
         expect(markerBefore).toHaveLength(1) // sanity: 取消後標記已存在
 
         // 模擬 late onTranscript：連線層 transcript 沒有中斷標記，直接覆蓋。
-        store.getState().replaceTranscript("s1", [{ who: "agent", text: "late chunk", streaming: false }])
+        store.getState().replaceTranscript("s1", [{ id: "t0", who: "agent", text: "late chunk", streaming: false }])
 
         const after = store.getState().sessions.get("s1")!.transcript
         const markerAfter = after.filter(
@@ -900,7 +942,9 @@ describe("authoritative session config", () => {
         expect(session?.configRevision).toBe(2)
     })
 
-    it("rejects active or same-session pending setters while allowing another session", async () => {
+    // soak 回饋 #1/#5：turn 進行中允許改 config（pi 隨時可切）；僅同 session 的
+    // setter 單飛鎖保留。
+    it("rejects same-session pending setters while allowing another session or an active turn", async () => {
         const first = deferred<SessionConfigOption[]>()
         let nextSession = 0
         const connection = fakeConnection().connection
@@ -926,12 +970,13 @@ describe("authoritative session config", () => {
             store.getState().setSessionConfigOption("s-2", "runtime-model", "new")
         ).resolves.toEqual([modelOption("new")])
 
+        // turn 進行中照樣可切（下一次 LLM 呼叫生效）。
         store.getState().onSessionInfo("s-2", { queueDepth: 0, running: true })
         await expect(
             store.getState().setSessionConfigOption("s-2", "runtime-model", "old")
-        ).rejects.toThrow(/active turn/i)
+        ).resolves.toEqual([modelOption("new")])
 
-        expect(connection.setSessionConfigOption).toHaveBeenCalledTimes(2)
+        expect(connection.setSessionConfigOption).toHaveBeenCalledTimes(3)
         first.resolve([modelOption("new")])
         await pending
     })
@@ -1213,7 +1258,7 @@ describe("Phase P2: one visible ephemeral draft", () => {
         const gate = deferred<{
             sessionId: string
             startupInfo: null
-            agentIdentity: { selectedPreset: "pi"; commandMode: "verified"; trustedAgentId: "pi" }
+            agentIdentity: { selectedPreset: "pi"; commandMode: "latest"; trustedAgentId: "pi" }
         }>()
         const connection = fakeConnection().connection
         connection.newSession = vi.fn(() => gate.promise)
@@ -1229,7 +1274,7 @@ describe("Phase P2: one visible ephemeral draft", () => {
         gate.resolve({
             sessionId: "draft-1",
             startupInfo: null,
-            agentIdentity: { selectedPreset: "pi", commandMode: "verified", trustedAgentId: "pi" }
+            agentIdentity: { selectedPreset: "pi", commandMode: "latest", trustedAgentId: "pi" }
         })
         await expect(first).resolves.toBe("draft-1")
         expect(store.getState().activeSessionId).toBe("draft-1")
@@ -1247,7 +1292,7 @@ describe("Phase P2: one visible ephemeral draft", () => {
         const gate = deferred<{
             sessionId: string
             startupInfo: null
-            agentIdentity: { selectedPreset: "pi"; commandMode: "verified"; trustedAgentId: "pi" }
+            agentIdentity: { selectedPreset: "pi"; commandMode: "latest"; trustedAgentId: "pi" }
         }>()
         const connection = fakeConnection().connection
         connection.newSession = vi.fn(() => gate.promise)
@@ -1264,7 +1309,7 @@ describe("Phase P2: one visible ephemeral draft", () => {
         gate.resolve({
             sessionId: "fresh-id",
             startupInfo: null,
-            agentIdentity: { selectedPreset: "pi", commandMode: "verified", trustedAgentId: "pi" }
+            agentIdentity: { selectedPreset: "pi", commandMode: "latest", trustedAgentId: "pi" }
         })
         await expect(draft).resolves.toBe("fresh-id")
 
@@ -1382,12 +1427,12 @@ describe("Phase P2: one visible ephemeral draft", () => {
         const oldWorkspace = deferred<{
             sessionId: string
             startupInfo: null
-            agentIdentity: { selectedPreset: "pi"; commandMode: "verified"; trustedAgentId: "pi" }
+            agentIdentity: { selectedPreset: "pi"; commandMode: "latest"; trustedAgentId: "pi" }
         }>()
         const currentWorkspace = deferred<{
             sessionId: string
             startupInfo: null
-            agentIdentity: { selectedPreset: "claude"; commandMode: "verified"; trustedAgentId: "claude" }
+            agentIdentity: { selectedPreset: "claude"; commandMode: "latest"; trustedAgentId: "claude" }
         }>()
         const connection = fakeConnection().connection
         connection.newSession = vi.fn((cwd) => cwd === "/ws-a"
@@ -1405,7 +1450,7 @@ describe("Phase P2: one visible ephemeral draft", () => {
         currentWorkspace.resolve({
             sessionId: "current-claude",
             startupInfo: null,
-            agentIdentity: { selectedPreset: "claude", commandMode: "verified", trustedAgentId: "claude" }
+            agentIdentity: { selectedPreset: "claude", commandMode: "latest", trustedAgentId: "claude" }
         })
         await expect(current).resolves.toBe("current-claude")
         expect(localStorage.getItem(LAST_USED_CURATED_AGENT_STORAGE_KEY)).toBe("claude")
@@ -1413,7 +1458,7 @@ describe("Phase P2: one visible ephemeral draft", () => {
         oldWorkspace.resolve({
             sessionId: "stale-pi",
             startupInfo: null,
-            agentIdentity: { selectedPreset: "pi", commandMode: "verified", trustedAgentId: "pi" }
+            agentIdentity: { selectedPreset: "pi", commandMode: "latest", trustedAgentId: "pi" }
         })
         await expect(stale).resolves.toBeNull()
 
@@ -1534,10 +1579,10 @@ describe("Phase P2: one visible ephemeral draft", () => {
         await expect(store.getState().newSession("/ws", "codex")).resolves.toBe("explicit-codex")
 
         await vi.waitFor(() => {
-            expect(stubs.get("bunx pi-acp@0.0.31")?.disposePrepared).toHaveBeenCalledWith("/ws")
+            expect(stubs.get("bunx pi-acp@latest")?.disposePrepared).toHaveBeenCalledWith("/ws")
         })
-        expect(stubs.get("bunx pi-acp@0.0.31")?.dropSession).toHaveBeenCalledWith("draft-pi")
-        expect(stubs.get("bunx @agentclientprotocol/codex-acp@1.1.2")?.disposePrepared).not.toHaveBeenCalled()
+        expect(stubs.get("bunx pi-acp@latest")?.dropSession).toHaveBeenCalledWith("draft-pi")
+        expect(stubs.get("bunx @agentclientprotocol/codex-acp@latest")?.disposePrepared).not.toHaveBeenCalled()
         expect([...store.getState().sessions.keys()]).toEqual(["explicit-codex"])
         expect(store.getState().sessions.get("explicit-codex")?.ephemeral).toBe(true)
     })
@@ -1680,12 +1725,12 @@ describe("Phase 4: hydrateRestoredSessions", () => {
         const store = createAgentStore({ connection: fakeConnection().connection })
         // replaceTranscript no longer creates ghost sessions (F3) — seed it first.
         store.getState().selectSession("restored-1")
-        store.getState().replaceTranscript("restored-1", [{ who: "agent", text: "live", streaming: false }])
+        store.getState().replaceTranscript("restored-1", [{ id: "t0", who: "agent", text: "live", streaming: false }])
 
         store.getState().hydrateRestoredSessions([indexEntry()])
 
         expect(store.getState().sessions.get("restored-1")?.transcript).toEqual([
-            { who: "agent", text: "live", streaming: false }
+            { id: "t0", who: "agent", text: "live", streaming: false }
         ])
         expect(store.getState().sessions.get("restored-1")?.restored).toBeUndefined()
     })
@@ -1736,7 +1781,7 @@ describe("Phase 4: continueSession", () => {
             // 模擬 agent 在回應前先把歷史 replay 進來（透過 store 的 replaceTranscript，
             // 呼叫端在 AgentBridge 會接 onTranscript；這裡直接呼叫 store action 模擬）。
             store.getState().replaceTranscript("restored-1", [
-                { who: "agent", text: "replayed history", streaming: false }
+                { id: "t0", who: "agent", text: "replayed history", streaming: false }
             ])
         })
         const store = createAgentStore({ connection: fake.connection })
@@ -1763,7 +1808,7 @@ describe("Phase 4: continueSession", () => {
         expect(session?.restored).toBe(false)
         expect(session?.tone).toBe("idle")
         expect(session?.transcript).toEqual([
-            { who: "agent", text: "replayed history", streaming: false }
+            { id: "t0", who: "agent", text: "replayed history", streaming: false }
         ])
         expect(store.getState().activeSessionId).toBe("restored-1")
         expect(loadSessionIndex()[0].lastActiveAt).toBeGreaterThanOrEqual(1)
@@ -1821,7 +1866,7 @@ describe("Phase 4: continueSession", () => {
             startupInfo: null,
             agentIdentity: {
                 selectedPreset: "codex",
-                commandMode: "verified",
+                commandMode: "latest",
                 trustedAgentId: "codex"
             }
         })
@@ -2106,7 +2151,7 @@ describe("Phase 4: continueSession", () => {
 
         await store.getState().continueSession("restored-codex")
 
-        expect(spawnedCommands).toEqual(["bunx @agentclientprotocol/codex-acp@1.1.2"])
+        expect(spawnedCommands).toEqual(["bunx @agentclientprotocol/codex-acp@latest"])
         expect(store.getState().sessions.get("restored-codex")?.restored).toBe(false)
     })
 })
@@ -2342,7 +2387,7 @@ describe("Phase 5: Sessions context menu domain actions", () => {
             const store = createAgentStore({ connection: fakeConnection().connection })
 
             store.getState().replaceTranscript("removed-1", [
-                { who: "agent", text: "late replay", streaming: false }
+                { id: "t0", who: "agent", text: "late replay", streaming: false }
             ])
 
             expect(store.getState().sessions.has("removed-1")).toBe(false)
@@ -2365,7 +2410,7 @@ describe("Phase 5: Sessions context menu domain actions", () => {
                 content: { type: "text", text: "late" }
             })
             store.getState().replaceTranscript("removed-1", [
-                { who: "agent", text: "late replay", streaming: false }
+                { id: "t0", who: "agent", text: "late replay", streaming: false }
             ])
             store.getState().onSessionInfo("removed-1", { queueDepth: 1, running: true })
             store.getState().onPermissionRequest("removed-1", permissionBlock, vi.fn())
@@ -2480,5 +2525,67 @@ describe("selectWorkspaceAgentCounts", () => {
         expect(counts.get("/ws-a")).toEqual({ total: 2, running: 2 })
         expect(counts.get("/ws-b")).toEqual({ total: 1, running: 0 })
         expect(counts.size).toBe(2)
+    })
+})
+
+describe("P3: form elicitation queue", () => {
+    const request = (message: string): ElicitationRequest => ({
+        message,
+        fields: [{
+            key: "choice",
+            type: "string",
+            required: true,
+            options: [{ value: "red", label: "Red" }, { value: "blue", label: "Blue" }]
+        }]
+    })
+
+    it("queues elicitations per session without overwriting earlier resolvers", () => {
+        const store = createAgentStore({ connection: fakeConnection().connection })
+        const first = vi.fn()
+        const second = vi.fn()
+        store.getState().onElicitationRequest("s-1", request("first"), first)
+        store.getState().onElicitationRequest("s-1", request("second"), second)
+
+        const queue = store.getState().pendingElicitations.get("s-1") ?? []
+        expect(queue).toHaveLength(2)
+        expect(queue[0].request.message).toBe("first")
+        expect(queue[1].request.message).toBe("second")
+        expect(store.getState().sessions.get("s-1")?.tone).toBe("wait")
+    })
+
+    it("responds by id, keeps wait tone while queued, resumes run when drained", () => {
+        const store = createAgentStore({ connection: fakeConnection().connection })
+        const first = vi.fn()
+        const second = vi.fn()
+        store.getState().onElicitationRequest("s-1", request("first"), first)
+        store.getState().onElicitationRequest("s-1", request("second"), second)
+        const queue = store.getState().pendingElicitations.get("s-1") ?? []
+
+        store.getState().respondElicitation("s-1", queue[0].id, {
+            action: "accept",
+            content: { choice: "red" }
+        })
+        expect(first).toHaveBeenCalledExactlyOnceWith({ action: "accept", content: { choice: "red" } })
+        expect(store.getState().pendingElicitations.get("s-1")).toHaveLength(1)
+        expect(store.getState().sessions.get("s-1")?.tone).toBe("wait")
+
+        const remaining = store.getState().pendingElicitations.get("s-1") ?? []
+        store.getState().respondElicitation("s-1", remaining[0].id, { action: "cancel" })
+        expect(second).toHaveBeenCalledExactlyOnceWith({ action: "cancel" })
+        expect(store.getState().pendingElicitations.has("s-1")).toBe(false)
+        expect(store.getState().sessions.get("s-1")?.tone).toBe("run")
+    })
+
+    it("ignores stale ids and clears the queue when the session is cancelled", async () => {
+        const store = createAgentStore({ connection: fakeConnection().connection })
+        const respond = vi.fn()
+        store.getState().onElicitationRequest("s-1", request("only"), respond)
+
+        store.getState().respondElicitation("s-1", "el-unknown", { action: "cancel" })
+        expect(respond).not.toHaveBeenCalled()
+
+        await store.getState().cancel("s-1")
+        // wire resolver 的取消由連線層 cancelPendingPermissions 負責；store 只清 UI state。
+        expect(store.getState().pendingElicitations.has("s-1")).toBe(false)
     })
 })

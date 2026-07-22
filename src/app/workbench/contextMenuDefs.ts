@@ -2,16 +2,17 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager"
 
 import i18n from "@/lib/i18n"
 import { getViewEntry } from "@/editor/viewRegistry"
-import { isAbsolutePath } from "@/lib/paths"
+import { canonicalPathKey, isAbsolutePath } from "@/lib/paths"
 import { gitStage, gitUnstage } from "@/lib/ipc"
 import { pickWorkspace } from "@/lib/workspaceActions"
 import { useAgentStore } from "@/state/agentStore"
 import { dbProfileUiErrorCode, useDbStore } from "@/state/dbStore"
 import { useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
+import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useSshStore } from "@/state/sshStore"
-import { MAX_PANES, useTerminalStore } from "@/state/terminalStore"
+import { MAX_VISIBLE_TERMINAL_PANES, useTerminalStore } from "@/state/terminalStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import {
   copyPreviewUrl,
@@ -27,11 +28,13 @@ import {
   stopPreviewDevServer,
 } from "@/preview/previewCommands"
 import {
+  beginRenameTerminal,
   clearTerminalBuffer,
   closeTerminal,
   copyTerminalSelection,
   pasteTerminalClipboard,
   splitTerminal,
+  terminalPaneTargetExists,
   terminalTargetExists,
 } from "@/terminal/terminalCommands"
 import { getTerminalView } from "@/terminal/terminalViewRegistry"
@@ -53,6 +56,7 @@ import {
   type GitChangeKey,
   type GitChangeRow,
 } from "@/workbench/git/gitChangeSelection"
+import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
 
 export type ContextMenuItem = ContextMenuCommandDefinition
 export type ContextMenuEntry = ContextMenuCommandDefinition | "separator"
@@ -128,6 +132,15 @@ function currentWorkspace(workspacePath: string | null): boolean {
   return workspacePath !== null && useWorkspaceStore.getState().workspacePath === workspacePath
 }
 
+function recentWorkspaceAvailability(
+  request: ContextMenuRequestFor<"recentWorkspace">
+): ContextMenuAvailability {
+  const key = canonicalPathKey(request.path)
+  return useRecentWorkspacesStore.getState().list.some(
+    (path) => canonicalPathKey(path) === key
+  ) ? available() : disabled(DISABLED_TARGET)
+}
+
 function tabExists(request: ContextMenuRequestFor<"tab">): boolean {
   if (useWorkspaceStore.getState().workspacePath !== request.workspacePath) return false
   return useWorkspaceStore
@@ -170,9 +183,9 @@ function terminalViewAvailability(
 function terminalSplitAvailability(
   request: ContextMenuRequestFor<"terminal">
 ): ContextMenuAvailability {
-  if (!terminalTargetExists(request)) return disabled(DISABLED_TARGET)
+  if (!terminalPaneTargetExists(request)) return disabled(DISABLED_TARGET)
   const panes = useTerminalStore.getState().layouts[request.workspacePath]?.panes ?? []
-  return panes.length >= MAX_PANES
+  return panes.length >= MAX_VISIBLE_TERMINAL_PANES
     ? disabled(DISABLED_TERMINAL_PANE_LIMIT)
     : available()
 }
@@ -300,6 +313,39 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"rail">("cmSettings", { availability: available, danger: false, executor: legacy("cmSettings") }),
     "separator",
     item<"rail">("cmHideSidebar", { availability: available, danger: false, executor: legacy("cmHideSidebar") }),
+  ],
+  recentWorkspace: [
+    item<"recentWorkspace">("cmEditRecentWorkspace", {
+      availability: recentWorkspaceAvailability,
+      danger: false,
+      executor: (request) => {
+        useUiStore.getState().openProjectEditor(request.path)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    "separator",
+    item<"recentWorkspace">("cmRemoveRecentWorkspace", {
+      availability: recentWorkspaceAvailability,
+      danger: false,
+      executor: (request) => {
+        const recent = useRecentWorkspacesStore.getState()
+        const name = resolveProjectPresentation(
+          request.path,
+          recent.presentationFor(request.path)
+        ).name
+        recent.remove(request.path)
+
+        const ui = useUiStore.getState()
+        if (
+          ui.projectEditorPath
+          && canonicalPathKey(ui.projectEditorPath) === canonicalPathKey(request.path)
+        ) {
+          ui.closeProjectEditor()
+        }
+        ui.notifyRecentWorkspaceRemoved(name)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
   ],
   explorer: [
     item<"explorer">("cmNewFile", {
@@ -471,12 +517,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"terminal">("cmSplitTermRight", {
       availability: terminalSplitAvailability,
       danger: false,
-      executor: (request) => splitTerminal(request, "right"),
-    }),
-    item<"terminal">("cmSplitTermDown", {
-      availability: terminalSplitAvailability,
-      danger: false,
-      executor: (request) => splitTerminal(request, "down"),
+      executor: splitTerminal,
     }),
     item<"terminal">("cmClear", {
       availability: terminalViewAvailability,
@@ -485,6 +526,23 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
     item<"terminal">("cmCloseTerminal", {
       availability: (request) => terminalTargetExists(request) ? available() : disabled(DISABLED_TARGET),
+      danger: true,
+      executor: closeTerminal,
+    }),
+  ],
+  terminalTab: [
+    item<"terminalTab">("cmRenameTerminal", {
+      availability: (request) => terminalTargetExists(request)
+        ? available()
+        : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: beginRenameTerminal,
+    }),
+    "separator",
+    item<"terminalTab">("cmCloseTerminal", {
+      availability: (request) => terminalTargetExists(request)
+        ? available()
+        : disabled(DISABLED_TARGET),
       danger: true,
       executor: closeTerminal,
     }),

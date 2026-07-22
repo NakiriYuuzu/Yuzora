@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { WorkspaceRail } from "@/app/workbench/WorkspaceRail"
 import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
@@ -7,6 +7,7 @@ import type { SessionState } from "@/state/agentStore"
 import { useAgentStore } from "@/state/agentStore"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
+import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 function session(overrides: Partial<SessionState> = {}): SessionState {
@@ -76,7 +77,8 @@ function installLocalStorage(): void {
 beforeEach(() => {
   installLocalStorage()
   localStorage.clear()
-  useRecentWorkspacesStore.setState({ list: [] })
+  useRecentWorkspacesStore.setState({ list: [], presentations: {} })
+  useUiStore.setState(uiInitialState)
   useWorkspaceStore.setState({ workspacePath: null })
   vi.mocked(openWorkspaceAtPath).mockReset()
   vi.mocked(pickWorkspace).mockReset().mockResolvedValue(true)
@@ -132,6 +134,32 @@ describe("WorkspaceRail RECENT tiles", () => {
     expect(tile).toHaveAttribute("title", "/Users/tester/projects/yuzora")
   })
 
+  it("以儲存的名稱與 glyph 呈現 recent project", () => {
+    useRecentWorkspacesStore.setState({
+      list: ["/Users/tester/projects/yuzora"],
+      presentations: {
+        "/Users/tester/projects/yuzora": { name: "Studio", glyph: "⚡", color: "ocean" }
+      }
+    })
+
+    renderRail()
+
+    expect(screen.getByRole("button", { name: "Open Studio" })).toHaveTextContent("⚡")
+  })
+
+  it("右鍵 tile 開啟該 raw path 的 recent-project 選單", () => {
+    const path = "/Users/tester/projects/yuzora"
+    useRecentWorkspacesStore.setState({ list: [path] })
+    renderRail()
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Open yuzora" }))
+
+    expect(useContextMenuStore.getState().request).toEqual({
+      kind: "recentWorkspace",
+      path
+    })
+  })
+
   it("highlight 目前開啟的 workspace tile（trailing slash 也對齊）", () => {
     useRecentWorkspacesStore.setState({ list: ["/Users/tester/projects/yuzora"] })
     useWorkspaceStore.setState({ workspacePath: "/Users/tester/projects/yuzora/" })
@@ -179,6 +207,16 @@ describe("WorkspaceRail RECENT tiles", () => {
   it("沒有最近 workspace 時不渲染 RECENT 區塊", () => {
     renderRail()
     expect(screen.queryByText("Recent")).toBeNull()
+  })
+
+  it("顯示從 recent 清單移除的短暫提示", () => {
+    renderRail()
+
+    act(() => useUiStore.getState().notifyRecentWorkspaceRemoved("Studio"))
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      'Removed "Studio" from recents; the folder is unchanged'
+    )
   })
 })
 

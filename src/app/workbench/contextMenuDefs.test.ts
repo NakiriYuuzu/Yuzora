@@ -13,7 +13,7 @@ import i18n from "@/lib/i18n"
 import { registerView, unregisterView, updateViewMetadata } from "@/editor/viewRegistry"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useAgentStore, type SessionState } from "@/state/agentStore"
-import { terminalInitialState, useTerminalStore } from "@/state/terminalStore"
+import { useTerminalStore } from "@/state/terminalStore"
 import { registerTerminalView } from "@/terminal/terminalViewRegistry"
 import { initialGitState, useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
@@ -21,17 +21,21 @@ import { useDbStore } from "@/state/dbStore"
 import { useSftpStore } from "@/state/sftpStore"
 import { useSshStore } from "@/state/sshStore"
 import { usePreviewStore } from "@/state/previewStore"
+import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
+import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { gitChangeRows } from "@/workbench/git/gitChangeSelection"
 import type { GitStatus } from "@/lib/types"
 
 const FINAL_KINDS: ContextMenuKind[] = [
   "general",
   "rail",
+  "recentWorkspace",
   "explorer",
   "file",
   "tab",
   "editor",
   "terminal",
+  "terminalTab",
   "agentSession",
   "git",
   "gitChange",
@@ -99,7 +103,7 @@ beforeEach(async () => {
     groups: [{ tabs: [], activePath: null }],
     activeGroupIndex: 0,
   })
-  useTerminalStore.setState(terminalInitialState)
+  useTerminalStore.getState().reset()
   useAgentStore.setState({
     sessions: new Map(),
     activeSessionId: null,
@@ -125,6 +129,8 @@ beforeEach(async () => {
   })
   useSftpStore.getState().reset()
   usePreviewStore.getState().reset()
+  useRecentWorkspacesStore.setState({ list: [], presentations: {} })
+  useUiStore.setState(uiInitialState)
   if (useGitRollbackDialogStore.getState().pending) {
     useGitRollbackDialogStore.getState().respond(false)
   }
@@ -184,6 +190,53 @@ describe("CONTEXT_MENU_DEFS", () => {
     expect(command?.label(request)).toBe("Open workspace…")
     mockIPC((cmd) => cmd === "plugin:dialog|open" ? null : undefined)
     expect(await command?.executor(request)).toBe("cancelled")
+  })
+
+  it("recent workspace menu edits presentation or forgets only the recent entry", async () => {
+    const request: ContextMenuRequest = { kind: "recentWorkspace", path: "/w" }
+    useRecentWorkspacesStore.setState({
+      list: ["/w"],
+      presentations: { "/w": { name: "Studio", glyph: "⚡", color: "ocean" } },
+    })
+    useWorkspaceStore.setState({
+      workspacePath: "/w",
+      groups: [{
+        tabs: [{ path: "/w/open.ts", name: "open.ts", dirty: true, externallyModified: false }],
+        activePath: "/w/open.ts",
+      }],
+      activeGroupIndex: 0,
+    })
+    const groupsBefore = useWorkspaceStore.getState().groups
+
+    expect(resolveContextMenuEntries(request).map(
+      (entry) => entry.type === "separator" ? "|" : entry.command.id
+    )).toEqual(["cmEditRecentWorkspace", "|", "cmRemoveRecentWorkspace"])
+    expect(commandFor(request, "cmEditRecentWorkspace")?.label(request)).toBe("Edit project…")
+    expect(commandFor(request, "cmRemoveRecentWorkspace")?.label(request)).toBe("Remove from recents")
+    expect(commandFor(request, "cmRemoveRecentWorkspace")?.danger).toBe(false)
+
+    expect(await commandFor(request, "cmEditRecentWorkspace")?.executor(request)).toBe("completed")
+    expect(useUiStore.getState().projectEditorPath).toBe("/w")
+
+    expect(await commandFor(request, "cmRemoveRecentWorkspace")?.executor(request)).toBe("completed")
+    expect(useRecentWorkspacesStore.getState().list).toEqual([])
+    expect(useRecentWorkspacesStore.getState().presentations).toEqual({})
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/w")
+    expect(useWorkspaceStore.getState().groups).toBe(groupsBefore)
+    expect(useUiStore.getState().projectEditorPath).toBeNull()
+    expect(useUiStore.getState().recentWorkspaceRemovedNotice).toMatchObject({ name: "Studio" })
+  })
+
+  it("recent workspace commands become unavailable after the target leaves recents", () => {
+    const request: ContextMenuRequest = { kind: "recentWorkspace", path: "/missing" }
+
+    for (const id of ["cmEditRecentWorkspace", "cmRemoveRecentWorkspace"] as const) {
+      expect(commandFor(request, id)?.availability(request)).toEqual({
+        visible: true,
+        enabled: false,
+        disabledReasonKey: "contextMenu.disabled.targetUnavailable",
+      })
+    }
   })
 
   it("hidden entry 後正規化 separator，沒有 leading/trailing/double separator", () => {
@@ -363,6 +416,7 @@ describe("CONTEXT_MENU_DEFS", () => {
         "session-clicked": {
           sessionId: "session-clicked",
           title: "Terminal 1",
+          launchStatus: "running",
           workspace: "/w",
           shell: "",
           cols: 80,
@@ -371,9 +425,12 @@ describe("CONTEXT_MENU_DEFS", () => {
       },
       layouts: {
         "/w": {
+          tabIds: ["session-clicked"],
           panes: [{ paneId: "pane-clicked", sessionId: "session-clicked" }],
           activePaneId: "unrelated-active-pane",
-          splitDirection: null,
+          splitRatio: 0.5,
+          nextTerminalNumber: 2,
+          renamingSessionId: null,
         },
       },
     })
@@ -408,21 +465,47 @@ describe("CONTEXT_MENU_DEFS", () => {
       {
         sessionId: "session-2",
         title: "Terminal 2",
+        launchStatus: "opening",
         workspace: "/w",
         shell: "",
         cols: 80,
         rows: 24,
-      },
-      "right"
+      }
     )
     expect(byId().get("cmSplitTermRight")?.availability).toMatchObject({
       enabled: false,
       disabledReasonKey: "contextMenu.disabled.terminalPaneLimit",
     })
     expect(commandFor(request, "cmClear")?.label(request)).toBe("Clear buffer")
+    expect(commandFor(request, "cmSplitTermDown")).toBeNull()
     await i18n.changeLanguage("zh-TW")
     expect(commandFor(request, "cmCloseTerminal")?.label(request)).toBe("關閉終端機")
     unregister()
+  })
+
+  it("terminal tab menu exposes only rename and close for the exact tab", async () => {
+    useTerminalStore.getState().addSession("/w", {
+      sessionId: "terminal-tab",
+      title: "Terminal 1",
+      launchStatus: "running",
+      workspace: "/w",
+      shell: "",
+      cols: 80,
+      rows: 24,
+    })
+    const request: ContextMenuRequest = {
+      kind: "terminalTab",
+      workspacePath: "/w",
+      sessionId: "terminal-tab",
+    }
+
+    expect(resolveContextMenuEntries(request).map(
+      (entry) => entry.type === "separator" ? "|" : entry.command.id
+    )).toEqual(["cmRenameTerminal", "|", "cmCloseTerminal"])
+    expect(commandFor(request, "cmRenameTerminal")?.label(request)).toBe("Rename terminal…")
+
+    expect(await commandFor(request, "cmRenameTerminal")?.executor(request)).toBe("completed")
+    expect(useTerminalStore.getState().layouts["/w"].renamingSessionId).toBe("terminal-tab")
   })
 
   it("agentSession registry 只保留 final actions，並提供精確文案與 pending disabled reason", async () => {
@@ -1212,15 +1295,18 @@ describe("CONTEXT_MENU_DEFS", () => {
       activeHostId: null,
       pendingAuthHostId: null,
     })
+    useRecentWorkspacesStore.setState({ list: ["/w"] })
     const change = gitChangeRequest(status)
     const requests: ContextMenuRequest[] = [
       { kind: "general" },
       { kind: "rail" },
+      { kind: "recentWorkspace", path: "/w" },
       { kind: "explorer", workspacePath: "/w" },
       { kind: "file", workspacePath: "/w", path: "/w/a.ts", isDirectory: false, sourceGroupIndex: 0 },
       { kind: "tab", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
       { kind: "editor", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
       { kind: "terminal", workspacePath: "/w", paneId: "pane", sessionId: "session" },
+      { kind: "terminalTab", workspacePath: "/w", sessionId: "session" },
       { kind: "agentSession", sessionId: "missing-session" },
       { kind: "git", repositoryRoot: "/w" },
       change,

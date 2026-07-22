@@ -6,8 +6,13 @@ import {
   AGENT_SETTINGS_STORAGE_KEY,
   SettingsDialog,
 } from "@/app/workbench/SettingsDialog"
+import { AGENT_VERSION_STORAGE_KEY } from "@/agent/agentVersions"
+import type { AgentLatestVersion } from "@/lib/ipc"
+import { setCachedBuiltinPiAdapterCommandForTests } from "@/lib/platform"
 
 let agentTraceCalls: boolean[] = []
+let latestVersions: AgentLatestVersion[] = []
+let latestVersionCalls = 0
 
 function installLocalStorage(): void {
   const store = new Map<string, string>()
@@ -34,6 +39,10 @@ function setupIpc() {
     if (cmd === "agent_set_trace") {
       agentTraceCalls.push(a.enabled as boolean)
     }
+    if (cmd === "agent_latest_versions") {
+      latestVersionCalls += 1
+      return latestVersions
+    }
     return undefined
   })
 }
@@ -56,6 +65,8 @@ beforeEach(() => {
   installLocalStorage()
   localStorage.clear()
   agentTraceCalls = []
+  latestVersions = []
+  latestVersionCalls = 0
   setupIpc()
 })
 
@@ -68,8 +79,9 @@ describe("SettingsDialog agent section", () => {
     const command = screen.getByLabelText("Command")
 
     expect(preset).toHaveValue("pi")
-    expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("verified")
-    expect(command).toHaveValue("bunx pi-acp@0.0.31")
+    expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("latest")
+    expect(screen.queryByRole("option", { name: "Verified" })).not.toBeInTheDocument()
+    expect(command).toHaveValue("bunx pi-acp@latest")
     expect(command).toBeDisabled()
 
     fireEvent.change(preset, { target: { value: "custom" } })
@@ -90,23 +102,19 @@ describe("SettingsDialog agent section", () => {
     expect(screen.queryByRole("combobox", { name: "Command mode" })).not.toBeInTheDocument()
   })
 
-  it("persists independent verified/latest/custom modes for curated presets", () => {
+  it("persists independent latest/custom modes for curated presets", () => {
     renderDialog()
     const preset = screen.getByRole("combobox", { name: "Agent preset" })
     const command = screen.getByLabelText("Command")
     fireEvent.change(preset, { target: { value: "claude" } })
     const mode = screen.getByRole("combobox", { name: "Command mode" })
-    expect(mode).toHaveValue("verified")
-    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@0.58.1")
-    expect(command).toBeDisabled()
-
-    fireEvent.change(mode, { target: { value: "latest" } })
+    expect(mode).toHaveValue("latest")
     expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@latest")
     expect(command).toBeDisabled()
 
     fireEvent.change(preset, { target: { value: "codex" } })
-    expect(mode).toHaveValue("verified")
-    expect(command).toHaveValue("bunx @agentclientprotocol/codex-acp@1.1.2")
+    expect(mode).toHaveValue("latest")
+    expect(command).toHaveValue("bunx @agentclientprotocol/codex-acp@latest")
     fireEvent.change(mode, { target: { value: "custom" } })
     expect(command).toBeEnabled()
     fireEvent.change(command, { target: { value: "uvx wrapped-codex" } })
@@ -123,6 +131,34 @@ describe("SettingsDialog agent section", () => {
       claude: { mode: "latest" },
       codex: { mode: "custom", customCommand: "uvx wrapped-codex" },
     })
+  })
+
+  // P5：pi 專屬的雙 runtime 選擇器——只在 Pi＋latest 顯示；builtin 為預設，
+  // 切 community 立即持久化；jsdom（非 Tauri）builtin cache 為 null，
+  // effective command 誠實顯示會退回的社群 command。
+  it("shows the Pi runtime selector only for Pi latest mode and persists the choice", () => {
+    setCachedBuiltinPiAdapterCommandForTests('node "/App/adapters/yuzora-pi-acp/index.mjs"')
+    try {
+      renderDialog()
+      const runtime = screen.getByRole("combobox", { name: "Pi runtime" })
+      expect(runtime).toHaveValue("builtin")
+      expect(screen.getByLabelText("Command")).toHaveValue('node "/App/adapters/yuzora-pi-acp/index.mjs"')
+
+      fireEvent.change(runtime, { target: { value: "community" } })
+      expect(screen.getByLabelText("Command")).toHaveValue("bunx pi-acp@latest")
+      expect(JSON.parse(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY) ?? "{}")).toMatchObject({
+        piRuntime: "community",
+      })
+
+      fireEvent.change(screen.getByRole("combobox", { name: "Agent preset" }), { target: { value: "claude" } })
+      expect(screen.queryByRole("combobox", { name: "Pi runtime" })).not.toBeInTheDocument()
+
+      fireEvent.change(screen.getByRole("combobox", { name: "Agent preset" }), { target: { value: "pi" } })
+      fireEvent.change(screen.getByRole("combobox", { name: "Command mode" }), { target: { value: "custom" } })
+      expect(screen.queryByRole("combobox", { name: "Pi runtime" })).not.toBeInTheDocument()
+    } finally {
+      setCachedBuiltinPiAdapterCommandForTests(null)
+    }
   })
 
   it("restores the custom command after switching away and back to custom preset", () => {
@@ -143,17 +179,22 @@ describe("SettingsDialog agent section", () => {
     })
   })
 
-  it("loads the legacy settings envelope and migrates curated presets to verified defaults", () => {
+  it("loads the legacy settings envelope and migrates verified modes to latest", () => {
     localStorage.setItem(
       AGENT_SETTINGS_STORAGE_KEY,
-      JSON.stringify({ preset: "codex", command: "", traceEnabled: true }),
+      JSON.stringify({
+        preset: "codex",
+        command: "",
+        traceEnabled: true,
+        presetCommands: { codex: { mode: "verified", customCommand: "" } },
+      }),
     )
 
     renderDialog()
 
     expect(screen.getByRole("combobox", { name: "Agent preset" })).toHaveValue("codex")
-    expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("verified")
-    expect(screen.getByLabelText("Command")).toHaveValue("bunx @agentclientprotocol/codex-acp@1.1.2")
+    expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("latest")
+    expect(screen.getByLabelText("Command")).toHaveValue("bunx @agentclientprotocol/codex-acp@latest")
     expect(screen.getByRole("switch", { name: "ACP trace" })).toBeChecked()
   })
 
@@ -169,5 +210,25 @@ describe("SettingsDialog agent section", () => {
     expect(JSON.parse(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY) ?? "{}")).toMatchObject({
       traceEnabled: true,
     })
+  })
+
+  it("shows an ACP update only when the last successful version differs from registry latest", async () => {
+    localStorage.setItem(AGENT_VERSION_STORAGE_KEY, JSON.stringify({ pi: "0.0.31" }))
+    latestVersions = [{ agentId: "pi", version: "0.0.32" }]
+
+    renderDialog()
+
+    expect(await screen.findByRole("status")).toHaveTextContent("ACP update available: v0.0.31 → v0.0.32")
+    expect(screen.getByRole("status")).toHaveTextContent("Restart the agent to use the latest version")
+  })
+
+  it("does not claim an ACP update when the version is current or unknown", async () => {
+    localStorage.setItem(AGENT_VERSION_STORAGE_KEY, JSON.stringify({ pi: "v0.0.32" }))
+    latestVersions = [{ agentId: "pi", version: "0.0.32" }]
+
+    renderDialog()
+
+    await waitFor(() => expect(latestVersionCalls).toBe(1))
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
   })
 })

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 
 const { check, getVersion, relaunch } = vi.hoisted(() => ({
   check: vi.fn(),
-  getVersion: vi.fn(async () => "0.0.2"),
+  getVersion: vi.fn(async () => "0.0.3"),
   relaunch: vi.fn(async () => undefined),
 }))
 
@@ -41,7 +41,7 @@ beforeEach(() => {
   cleanup()
   vi.clearAllMocks()
   check.mockResolvedValue(null)
-  getVersion.mockResolvedValue("0.0.2")
+  getVersion.mockResolvedValue("0.0.3")
   relaunch.mockResolvedValue(undefined)
   useUpdateStore.getState().reset()
   useWorkspaceStore.setState({
@@ -66,7 +66,24 @@ describe("Settings · About & Updates pane", () => {
     )
 
     expect(await screen.findByRole("heading", { name: "About & Updates" })).toBeInTheDocument()
-    expect(await screen.findAllByText("Yuzora v0.0.2")).toHaveLength(2)
+    expect(await screen.findAllByText("Yuzora v0.0.3")).toHaveLength(2)
+  })
+
+  it("shows readable release notes for the version currently in use", async () => {
+    render(
+      <SettingsDialog
+        open
+        onOpenChange={() => {}}
+        theme="light"
+        onThemeChange={() => {}}
+        initialSection="about"
+      />,
+    )
+
+    expect(await screen.findByText("What's new in this version")).toBeInTheDocument()
+    expect(
+      await screen.findByText("「關於與更新」現在會列出目前版本及可用更新帶來的主要改變。")
+    ).toBeInTheDocument()
   })
 
   it("checks manually and reports when the current version is up to date", async () => {
@@ -87,7 +104,7 @@ describe("Settings · About & Updates pane", () => {
   })
 
   it("shows the stable update version when one is available", async () => {
-    check.mockResolvedValue({ version: "0.0.3" })
+    check.mockResolvedValue({ version: "0.0.4" })
 
     render(
       <SettingsDialog
@@ -101,8 +118,32 @@ describe("Settings · About & Updates pane", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }))
 
-    expect(await screen.findByText("Yuzora v0.0.3 is available")).toBeInTheDocument()
+    expect(await screen.findByText("Yuzora v0.0.4 is available")).toBeInTheDocument()
     expect(check).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows readable release notes for an available update", async () => {
+    check.mockResolvedValue({
+      version: "0.0.4",
+      body: "### 改善\n\n- 更新後會清楚顯示這個版本帶來的改變。",
+    })
+
+    render(
+      <SettingsDialog
+        open
+        onOpenChange={() => {}}
+        theme="light"
+        onThemeChange={() => {}}
+        initialSection="about"
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }))
+
+    expect(await screen.findByText("What's new in Yuzora v0.0.4")).toBeInTheDocument()
+    expect(
+      screen.getByText("更新後會清楚顯示這個版本帶來的改變。")
+    ).toBeInTheDocument()
   })
 
   it("shows a sanitized failure and retries from Settings", async () => {
@@ -144,7 +185,7 @@ describe("Settings · About & Updates pane", () => {
         onEvent?.({ event: "Finished" })
       }
     )
-    check.mockResolvedValue({ version: "0.0.3", download, install })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
 
     render(
       <SettingsDialog
@@ -157,7 +198,7 @@ describe("Settings · About & Updates pane", () => {
     )
 
     fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }))
-    expect(await screen.findByText("Yuzora v0.0.3 is available")).toBeInTheDocument()
+    expect(await screen.findByText("Yuzora v0.0.4 is available")).toBeInTheDocument()
     expect(download).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole("button", { name: "Download update" }))
@@ -179,7 +220,7 @@ describe("Settings · About & Updates pane", () => {
         onEvent?.({ event: "Progress", data: { chunkLength: 10 } })
         onEvent?.({ event: "Finished" })
       })
-    check.mockResolvedValue({ version: "0.0.3", download, install })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
 
     render(
       <SettingsDialog
@@ -207,7 +248,7 @@ describe("Settings · About & Updates pane", () => {
     const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
       onEvent?.({ event: "Finished" })
     })
-    check.mockResolvedValue({ version: "0.0.3", download, install })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
     useWorkspaceStore.setState({
       groups: [
         {
@@ -258,7 +299,7 @@ describe("Settings · About & Updates pane", () => {
     const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
       onEvent?.({ event: "Finished" })
     })
-    check.mockResolvedValue({ version: "0.0.3", download, install })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
 
     render(
       <SettingsDialog

@@ -4,18 +4,18 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 import type { ContextMenuCommandOutcome } from "@/app/workbench/contextMenuModel"
 import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import i18n from "@/lib/i18n"
-import { ptyClose } from "@/lib/ipc"
+import { ptyActivity, ptyClose } from "@/lib/ipc"
 import {
-  MAX_PANES,
+  MAX_VISIBLE_TERMINAL_PANES,
+  terminalDisplayTitle,
   useTerminalStore,
   type TerminalSessionMeta,
-  type TerminalSplitDirection,
 } from "@/state/terminalStore"
 import { getTerminalView } from "@/terminal/terminalViewRegistry"
 
 export interface TerminalCommandTarget {
   workspacePath: string
-  paneId: string
+  paneId?: string
   sessionId: string
 }
 
@@ -31,11 +31,22 @@ function parseShellArgs(value: string): string[] | undefined {
 
 export function terminalTargetExists(target: TerminalCommandTarget): boolean {
   const state = useTerminalStore.getState()
-  const pane = state.layouts[target.workspacePath]?.panes.find(
-    (candidate) => candidate.paneId === target.paneId
-  )
+  const layout = state.layouts[target.workspacePath]
   const session = state.sessions[target.sessionId]
-  return pane?.sessionId === target.sessionId && session?.workspace === target.workspacePath
+  return Boolean(
+    layout?.tabIds.includes(target.sessionId)
+    && session?.workspace === target.workspacePath
+  )
+}
+
+export function terminalPaneTargetExists(target: TerminalCommandTarget): boolean {
+  if (!target.paneId || !terminalTargetExists(target)) return false
+  return useTerminalStore
+    .getState()
+    .layouts[target.workspacePath]
+    ?.panes.some(
+      (pane) => pane.paneId === target.paneId && pane.sessionId === target.sessionId
+    ) ?? false
 }
 
 export function createTerminalSessionMeta(workspace: string): TerminalSessionMetaWithArgs {
@@ -46,11 +57,12 @@ export function createTerminalSessionMeta(workspace: string): TerminalSessionMet
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const paneCount = useTerminalStore.getState().layouts[workspace]?.panes.length ?? 0
+  const terminalNumber = useTerminalStore.getState().allocateTerminalNumber(workspace)
 
   return {
     sessionId,
-    title: `Terminal ${paneCount + 1}`,
+    title: `Terminal ${terminalNumber}`,
+    launchStatus: "opening",
     workspace,
     shell,
     shellArgs,
@@ -95,18 +107,27 @@ export function clearTerminalBuffer(target: TerminalCommandTarget): ContextMenuC
 }
 
 export function splitTerminal(
-  target: TerminalCommandTarget,
-  direction: TerminalSplitDirection
+  target: TerminalCommandTarget
 ): ContextMenuCommandOutcome {
-  if (!terminalTargetExists(target)) return cancelled()
+  if (!terminalPaneTargetExists(target)) return cancelled()
   const state = useTerminalStore.getState()
-  if ((state.layouts[target.workspacePath]?.panes.length ?? 0) >= MAX_PANES) return cancelled()
+  if (
+    (state.layouts[target.workspacePath]?.panes.length ?? 0)
+    >= MAX_VISIBLE_TERMINAL_PANES
+  ) return cancelled()
   state.splitFrom(
     target.workspacePath,
-    target.paneId,
-    createTerminalSessionMeta(target.workspacePath),
-    direction
+    target.paneId!,
+    createTerminalSessionMeta(target.workspacePath)
   )
+  return completed()
+}
+
+export function beginRenameTerminal(
+  target: TerminalCommandTarget
+): ContextMenuCommandOutcome {
+  if (!terminalTargetExists(target)) return cancelled()
+  useTerminalStore.getState().beginRename(target.workspacePath, target.sessionId)
   return completed()
 }
 
@@ -114,14 +135,31 @@ export async function closeTerminal(
   target: TerminalCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!terminalTargetExists(target)) return cancelled()
-  const confirmed = await confirm(
-    i18n.t("contextMenu.terminal.closeConfirmMessage", { ns: "menus" }),
-    {
-      title: i18n.t("contextMenu.terminal.closeConfirmTitle", { ns: "menus" }),
-      kind: "warning",
-    }
-  )
-  if (!confirmed) return cancelled()
+  const state = useTerminalStore.getState()
+  const session = state.sessions[target.sessionId]
+  let activity: "idle" | "busy" | "unknown" = "idle"
+  if (session.launchStatus !== "failed") {
+    activity = await ptyActivity(target.sessionId).catch(() => "unknown")
+  }
+
+  if (activity !== "idle") {
+    const confirmed = await confirm(
+      i18n.t(
+        activity === "busy"
+          ? "contextMenu.terminal.closeBusyConfirmMessage"
+          : "contextMenu.terminal.closeUnknownConfirmMessage",
+        {
+          ns: "menus",
+          title: terminalDisplayTitle(session),
+        }
+      ),
+      {
+        title: i18n.t("contextMenu.terminal.closeConfirmTitle", { ns: "menus" }),
+        kind: "warning",
+      }
+    )
+    if (!confirmed) return cancelled()
+  }
   if (!terminalTargetExists(target)) return cancelled()
 
   await ptyClose(target.sessionId)

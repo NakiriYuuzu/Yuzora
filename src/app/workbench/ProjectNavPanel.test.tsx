@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import { ProjectNavPanel } from "@/app/workbench/ProjectNavPanel"
+import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
+import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 afterEach(() => {
   cleanup()
   useWorkspaceStore.setState({ workspacePath: null })
+  useRecentWorkspacesStore.setState({ list: [], presentations: {} })
+  useUiStore.setState(uiInitialState)
 })
 
 const renderPanel = () =>
@@ -36,5 +40,30 @@ describe("ProjectNavPanel header", () => {
     expect(screen.getByText("C:\\Users\\Yuuzu\\專案 空間")).toBeInTheDocument()
     expect(screen.queryByText(/\\\\\?\\/)).toBeNull()
     expect(screen.getByText("專")).toBeInTheDocument()
+  })
+
+  it("uses the current workspace's saved project presentation", () => {
+    const path = "/Users/yuuzu/projects/hanaoka"
+    useWorkspaceStore.setState({ workspacePath: path })
+    useRecentWorkspacesStore.setState({
+      presentations: {
+        [path]: { name: "Studio", glyph: "🧩", color: "ocean" }
+      }
+    })
+
+    renderPanel()
+
+    expect(screen.getByText("Studio")).toBeInTheDocument()
+    expect(screen.getByText("🧩")).toBeInTheDocument()
+  })
+
+  it("opens the same project editor from the header chevron", () => {
+    const path = "/Users/yuuzu/projects/hanaoka"
+    useWorkspaceStore.setState({ workspacePath: path })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit project hanaoka" }))
+
+    expect(useUiStore.getState().projectEditorPath).toBe(path)
   })
 })

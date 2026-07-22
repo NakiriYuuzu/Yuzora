@@ -1,43 +1,49 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRef } from "react"
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import i18n from "@/lib/i18n"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useTerminalStore } from "@/state/terminalStore"
-import {
-  useWorkbenchLayoutStore,
-  workbenchLayoutInitialState,
-} from "@/state/workbenchLayoutStore"
+import { useWorkbenchLayoutStore, workbenchLayoutInitialState } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
+interface TerminalSessionMockProps {
+  sessionId: string
+  workspace: string
+  shell: string | null
+  shellArgs?: string[]
+  active: boolean
+  visible?: boolean
+  onExit?: (code: number | null) => void
+  onTitleChange?: (title: string) => void
+  onReady?: () => void
+  onOpenError?: (message: string) => void
+}
+
+const terminalSessionMocks = vi.hoisted(() => ({
+  props: new Map<string, TerminalSessionMockProps>(),
+}))
+
 vi.mock("@/terminal/TerminalSession", () => ({
-  TerminalSession: ({
-    sessionId,
-    workspace,
-    shell,
-    shellArgs,
-    active,
-  }: {
-    sessionId: string
-    workspace: string
-    shell: string | null
-    shellArgs?: string[]
-    active: boolean
-  }) => (
-    <button
-      type="button"
-      data-testid={`terminal-session-${sessionId}`}
-      data-workspace={workspace}
-      data-shell={shell ?? ""}
-      data-shell-args={shellArgs?.join("|") ?? ""}
-      data-active={String(active)}
-    >
-      Session {sessionId}
-    </button>
-  ),
+  TerminalSession: (props: TerminalSessionMockProps) => {
+    terminalSessionMocks.props.set(props.sessionId, props)
+    return (
+      <button
+        type="button"
+        data-testid={`terminal-session-${props.sessionId}`}
+        data-workspace={props.workspace}
+        data-shell={props.shell ?? ""}
+        data-shell-args={props.shellArgs?.join("|") ?? ""}
+        data-active={String(props.active)}
+        data-visible={String(props.visible ?? true)}
+      >
+        Session {props.sessionId}
+      </button>
+    )
+  },
 }))
 
 vi.mock("@/features/logs/userAction", () => ({
@@ -114,8 +120,13 @@ function resizeContainer(container: HTMLElement, height: number, top = 100): voi
 
   act(() => {
     observation.callback(
-      [{ target: container, contentRect: nextRect } as unknown as ResizeObserverEntry],
-      observation.observer
+      [
+        {
+          target: container,
+          contentRect: nextRect,
+        } as unknown as ResizeObserverEntry,
+      ],
+      observation.observer,
     )
   })
 }
@@ -137,7 +148,7 @@ function renderDrawer({
         containerRef={containerRef}
         mainSurfaceMinHeight={mainSurfaceMinHeight}
       />
-    </div>
+    </div>,
   )
   const container = screen.getByTestId("terminal-test-stack")
   resizeContainer(container, height)
@@ -146,9 +157,10 @@ function renderDrawer({
 
 beforeEach(() => {
   clearMocks()
-  mockIPC((cmd) => cmd === "plugin:dialog|message" ? "Ok" : undefined)
+  mockIPC((cmd) => (cmd === "plugin:dialog|message" ? "Ok" : undefined))
   installLocalStorage()
   resizeObservations.length = 0
+  terminalSessionMocks.props.clear()
   globalThis.ResizeObserver = ResizeObserverHarness as unknown as typeof ResizeObserver
   useTerminalStore.getState().reset()
   useWorkbenchLayoutStore.setState({
@@ -158,7 +170,12 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
+  useContextMenuStore.setState({
+    request: null,
+    x: 0,
+    y: 0,
+    availabilityRevision: 0,
+  })
   useWorkspaceStore.setState({ workspacePath: null })
   globalThis.ResizeObserver = defaultResizeObserver
 })
@@ -255,7 +272,7 @@ describe("TerminalDrawer content resize", () => {
     rerender(
       <div ref={containerRef} data-testid="terminal-test-stack">
         <TerminalDrawer visible containerRef={containerRef} mainSurfaceMinHeight={280} />
-      </div>
+      </div>,
     )
 
     expect(drawer.style.height).toBe("510px")
@@ -268,7 +285,7 @@ describe("TerminalDrawer content resize", () => {
     rerender(
       <div ref={containerRef} data-testid="terminal-test-stack">
         <TerminalDrawer visible containerRef={containerRef} mainSurfaceMinHeight={44} />
-      </div>
+      </div>,
     )
 
     expect(drawer.style.height).toBe("746px")
@@ -317,7 +334,7 @@ describe("TerminalDrawer content resize", () => {
     rerender(
       <div ref={containerRef} data-testid="terminal-test-stack">
         <TerminalDrawer visible containerRef={containerRef} mainSurfaceMinHeight={280} />
-      </div>
+      </div>,
     )
 
     expect(drawer.style.height).toBe("237px")
@@ -354,9 +371,7 @@ describe("TerminalDrawer content resize", () => {
     expect(useWorkbenchLayoutStore.getState().terminalGlobalRatio).toBe(0.95)
 
     fireEvent.keyDown(handle, { key: "ArrowDown" })
-    expect(useWorkbenchLayoutStore.getState().terminalGlobalRatio).toBeCloseTo(
-      746 / 790 - 0.02
-    )
+    expect(useWorkbenchLayoutStore.getState().terminalGlobalRatio).toBeCloseTo(746 / 790 - 0.02)
   })
 
   it("does not replace a geometry-clamped preference for an outward pointer no-op", () => {
@@ -400,13 +415,17 @@ describe("TerminalDrawer content resize", () => {
     fireEvent.pointerDown(handle, { button: 0, clientY: 584, pointerId: 1 })
     fireEvent.pointerMove(handle, { clientY: 505, pointerId: 1 })
     fireEvent.pointerCancel(handle, { pointerId: 1 })
-    expect(useWorkbenchLayoutStore.getState().terminalWorkspaceRatios["/workspace"]).toBeCloseTo(0.5)
+    expect(useWorkbenchLayoutStore.getState().terminalWorkspaceRatios["/workspace"]).toBeCloseTo(
+      0.5,
+    )
     expect(useWorkbenchLayoutStore.getState().terminalGlobalRatio).toBe(0.4)
 
     fireEvent.pointerDown(handle, { button: 0, clientY: 505, pointerId: 2 })
     fireEvent.pointerMove(handle, { clientY: 426, pointerId: 2 })
     fireEvent.lostPointerCapture(handle, { pointerId: 2 })
-    expect(useWorkbenchLayoutStore.getState().terminalWorkspaceRatios["/workspace"]).toBeCloseTo(0.6)
+    expect(useWorkbenchLayoutStore.getState().terminalWorkspaceRatios["/workspace"]).toBeCloseTo(
+      0.6,
+    )
     expect(screen.queryByText(/Main .* Terminal/)).not.toBeInTheDocument()
   })
 
@@ -415,7 +434,7 @@ describe("TerminalDrawer content resize", () => {
     const view = render(
       <div ref={containerRef} data-testid="terminal-test-stack">
         <TerminalDrawer visible containerRef={containerRef} mainSurfaceMinHeight={44} />
-      </div>
+      </div>,
     )
     const container = screen.getByTestId("terminal-test-stack")
     resizeContainer(container, 800)
@@ -432,18 +451,14 @@ describe("TerminalDrawer content resize", () => {
     expect(drawer.style.height).toBe("237px")
     view.rerender(
       <div ref={containerRef} data-testid="terminal-test-stack">
-        <TerminalDrawer
-          visible={false}
-          containerRef={containerRef}
-          mainSurfaceMinHeight={44}
-        />
-      </div>
+        <TerminalDrawer visible={false} containerRef={containerRef} mainSurfaceMinHeight={44} />
+      </div>,
     )
     expect(drawer.style.height).toBe("0px")
     view.rerender(
       <div ref={containerRef} data-testid="terminal-test-stack">
         <TerminalDrawer visible containerRef={containerRef} mainSurfaceMinHeight={44} />
-      </div>
+      </div>,
     )
     expect(drawer.style.height).toBe("237px")
     expect(useWorkbenchLayoutStore.getState().terminalGlobalRatio).toBe(0.3)
@@ -452,18 +467,18 @@ describe("TerminalDrawer content resize", () => {
 
 it("header 與 empty state 不會開啟 terminal entity menu", () => {
   renderDrawer()
-  fireEvent.contextMenu(screen.getByText("Terminal"))
+  fireEvent.contextMenu(screen.getByTestId("terminal-header"))
   fireEvent.contextMenu(screen.getByText(i18n.t("noSessions", { ns: "terminal" })))
   expect(useContextMenuStore.getState().request).toBeNull()
 })
 
 describe("TerminalDrawer sessions", () => {
-  it("sanitizes the visible workspace label while passing the raw path to the terminal", () => {
+  it("keeps the workspace path out of the compact header while passing the raw path to the terminal", () => {
     const rawPath = "\\\\?\\C:\\Users\\Yuuzu\\專案 空間 #100%"
     useWorkspaceStore.setState({ workspacePath: rawPath })
     renderDrawer()
 
-    expect(screen.getByText("C:\\Users\\Yuuzu\\專案 空間 #100%")).toBeInTheDocument()
+    expect(screen.queryByText("C:\\Users\\Yuuzu\\專案 空間 #100%")).toBeNull()
     expect(screen.queryByText(rawPath)).toBeNull()
 
     fireEvent.click(screen.getByTitle("New terminal"))
@@ -490,14 +505,9 @@ describe("TerminalDrawer sessions", () => {
     const secondSession = useTerminalStore.getState().sessionsForWorkspace(secondWorkspace)[0]
     expect(secondSession?.workspace).toBe(secondWorkspace)
     const secondTerminal = screen.getByTestId(`terminal-session-${secondSession.sessionId}`)
-    expect(secondTerminal).toHaveAttribute(
-      "data-workspace",
-      secondWorkspace
-    )
+    expect(secondTerminal).toHaveAttribute("data-workspace", secondWorkspace)
     expect(secondTerminal).toBeVisible()
-    expect(useTerminalStore.getState().sessionsForWorkspace(firstWorkspace)).toEqual([
-      firstSession,
-    ])
+    expect(useTerminalStore.getState().sessionsForWorkspace(firstWorkspace)).toEqual([firstSession])
 
     act(() => useWorkspaceStore.setState({ workspacePath: firstWorkspace }))
     expect(screen.getByTestId(`terminal-session-${firstSession.sessionId}`)).toBe(firstTerminal)
@@ -556,7 +566,7 @@ describe("TerminalDrawer sessions", () => {
   it("passes the persisted shell override to new terminal sessions", () => {
     localStorage.setItem(
       "yuzora:terminal-settings",
-      JSON.stringify({ shellPath: "/opt/homebrew/bin/fish", shellArgs: "" })
+      JSON.stringify({ shellPath: "/opt/homebrew/bin/fish", shellArgs: "" }),
     )
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
     renderDrawer()
@@ -565,17 +575,17 @@ describe("TerminalDrawer sessions", () => {
 
     expect(screen.getByTestId(/terminal-session-/)).toHaveAttribute(
       "data-shell",
-      "/opt/homebrew/bin/fish"
+      "/opt/homebrew/bin/fish",
     )
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")[0]?.shell).toBe(
-      "/opt/homebrew/bin/fish"
+      "/opt/homebrew/bin/fish",
     )
   })
 
   it("passes persisted shell args to new terminal sessions", () => {
     localStorage.setItem(
       "yuzora:terminal-settings",
-      JSON.stringify({ shellPath: "/bin/sh", shellArgs: "-c echo-ok" })
+      JSON.stringify({ shellPath: "/bin/sh", shellArgs: "-c echo-ok" }),
     )
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
     renderDrawer()
@@ -593,7 +603,7 @@ describe("TerminalDrawer sessions", () => {
     renderDrawer()
 
     fireEvent.click(screen.getByTitle("New terminal"))
-    fireEvent.click(screen.getByTitle("Close terminal"))
+    fireEvent.click(screen.getByRole("button", { name: "Close Terminal 1" }))
 
     await waitFor(() => expect(screen.queryAllByTestId(/terminal-session-/)).toHaveLength(0))
     expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).toBeInTheDocument()
@@ -617,19 +627,318 @@ describe("TerminalDrawer sessions", () => {
     expect(screen.getAllByTestId(/terminal-session-/)[1]).toHaveAttribute("data-active", "false")
   })
 
-  it("splits once and disables split/new actions at the two-pane cap", () => {
+  it("splits only to the right, caps visible panes at two, and keeps New unlimited", () => {
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
     renderDrawer()
 
     fireEvent.click(screen.getByTitle("New terminal"))
-    fireEvent.click(screen.getByTitle("Split down"))
+    fireEvent.click(screen.getByTitle("Split right"))
 
     expect(screen.getAllByTestId(/terminal-session-/)).toHaveLength(2)
-    expect(screen.getByTitle("Split right")).toBeDisabled()
-    expect(screen.getByTitle("Split down")).toBeDisabled()
-    expect(screen.getByTitle("New terminal")).toBeDisabled()
+    expect(screen.getByTitle("A maximum of two terminals can be visible")).toBeDisabled()
+    expect(screen.queryByTitle("Split down")).not.toBeInTheDocument()
+    expect(screen.getByTitle("New terminal")).toBeEnabled()
 
-    fireEvent.click(screen.getByTitle("Split down"))
-    expect(screen.getAllByTestId(/terminal-session-/)).toHaveLength(2)
+    fireEvent.click(screen.getByTitle("New terminal"))
+    expect(screen.getAllByRole("tab")).toHaveLength(3)
+    expect(screen.getAllByTestId(/terminal-session-/)).toHaveLength(3)
+    expect(useTerminalStore.getState().layouts["/workspace"].panes).toHaveLength(2)
+    expect(
+      screen
+        .getAllByTestId(/terminal-session-/)
+        .filter((node) => node.getAttribute("data-visible") === "true"),
+    ).toHaveLength(2)
+  })
+
+  it("keeps the other split pane visible when New replaces only the focused pane", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("Split right"))
+    const [first, second] = useTerminalStore.getState().sessionsForWorkspace("/workspace")
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+    const third = useTerminalStore.getState().sessionsForWorkspace("/workspace")[2]
+    const layout = useTerminalStore.getState().layouts["/workspace"]
+
+    expect(layout.panes.map((pane) => pane.sessionId)).toEqual([first.sessionId, third.sessionId])
+    expect(screen.getByTestId(`terminal-session-${first.sessionId}`)).toHaveAttribute(
+      "data-visible",
+      "true",
+    )
+    expect(screen.getByTestId(`terminal-session-${second.sessionId}`)).toHaveAttribute(
+      "data-visible",
+      "false",
+    )
+    expect(screen.getByTestId(`terminal-session-${third.sessionId}`)).toHaveAttribute(
+      "data-active",
+      "true",
+    )
+  })
+
+  it("selects hidden tabs into the focused pane and focuses already-visible tabs in place", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("Split right"))
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    fireEvent.click(screen.getByRole("tab", { name: "Terminal 2" }))
+    expect(
+      useTerminalStore.getState().layouts["/workspace"].panes.map((pane) => pane.sessionId),
+    ).toEqual(
+      useTerminalStore
+        .getState()
+        .sessionsForWorkspace("/workspace")
+        .slice(0, 2)
+        .map((session) => session.sessionId),
+    )
+    expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute("aria-selected", "true")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Terminal 1" }))
+    expect(screen.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute(
+      "data-visible-pane",
+      "right",
+    )
+  })
+
+  it("lists every tab in All terminals with pane/focus markers and selects hidden entries", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("Split right"))
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByRole("button", { name: "All terminals" }), {
+        button: 0,
+        ctrlKey: false,
+      })
+    })
+    const menu = await screen.findByRole("menu")
+    expect(
+      within(menu).getByRole("menuitem", { name: "Terminal 1 · Left" }),
+    ).toBeInTheDocument()
+    expect(within(menu).getByRole("menuitem", { name: "Terminal 2" })).toBeInTheDocument()
+    expect(
+      within(menu).getByRole("menuitem", { name: "Terminal 3 · Right · Focused" }),
+    ).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Terminal 2" }))
+    })
+    expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    )
+    expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute(
+      "data-visible-pane",
+      "right",
+    )
+  })
+
+  it("keeps tabs mounted while collapsed and expands for tab, New, and Split actions", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByRole("button", { name: "Collapse terminal" }))
+    expect(screen.getByRole("tab", { name: "Terminal 1" })).toBeVisible()
+    expect(screen.getByTestId(/terminal-session-/)).toHaveAttribute("data-visible", "false")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Terminal 1" }))
+    expect(screen.getByRole("button", { name: "Collapse terminal" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse terminal" }))
+    fireEvent.click(screen.getByTitle("New terminal"))
+    expect(screen.getAllByRole("tab")).toHaveLength(2)
+    expect(screen.getByRole("button", { name: "Collapse terminal" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse terminal" }))
+    fireEvent.click(screen.getByTitle("Split right"))
+    expect(screen.getAllByRole("tab")).toHaveLength(3)
+    expect(useTerminalStore.getState().layouts["/workspace"].panes).toHaveLength(2)
+    expect(screen.getByRole("button", { name: "Collapse terminal" })).toBeInTheDocument()
+  })
+
+  it("supports shell-driven titles and inline manual rename priority, clear, and cancel", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    const session = useTerminalStore.getState().sessionsForWorkspace("/workspace")[0]
+    act(() => terminalSessionMocks.props.get(session.sessionId)?.onTitleChange?.("  vite dev  "))
+    expect(screen.getByRole("tab", { name: "vite dev" })).toBeInTheDocument()
+
+    fireEvent.doubleClick(screen.getByRole("tab", { name: "vite dev" }))
+    const renameInput = screen.getByRole("textbox", {
+      name: "Rename vite dev",
+    })
+    expect(renameInput).toHaveValue("vite dev")
+    fireEvent.change(renameInput, { target: { value: "Frontend" } })
+    fireEvent.keyDown(renameInput, { key: "Enter" })
+    expect(screen.getByRole("tab", { name: "Frontend" })).toBeInTheDocument()
+
+    act(() => terminalSessionMocks.props.get(session.sessionId)?.onTitleChange?.("server ready"))
+    expect(screen.getByRole("tab", { name: "Frontend" })).toBeInTheDocument()
+
+    fireEvent.doubleClick(screen.getByRole("tab", { name: "Frontend" }))
+    const clearInput = screen.getByRole("textbox", { name: "Rename Frontend" })
+    fireEvent.change(clearInput, { target: { value: "   " } })
+    fireEvent.blur(clearInput)
+    expect(screen.getByRole("tab", { name: "server ready" })).toBeInTheDocument()
+
+    fireEvent.doubleClick(screen.getByRole("tab", { name: "server ready" }))
+    const cancelInput = screen.getByRole("textbox", {
+      name: "Rename server ready",
+    })
+    fireEvent.change(cancelInput, { target: { value: "Do not save" } })
+    fireEvent.keyDown(cancelInput, { key: "Escape" })
+    expect(screen.getByRole("tab", { name: "server ready" })).toBeInTheDocument()
+  })
+
+  it("opens a dedicated tab menu and reorders tabs without changing visible panes", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("Split right"))
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    const firstTab = screen.getByRole("tab", { name: "Terminal 1" })
+    const thirdTab = screen.getByRole("tab", { name: "Terminal 3" })
+    fireEvent.contextMenu(firstTab)
+    expect(useContextMenuStore.getState().request).toMatchObject({
+      kind: "terminalTab",
+      workspacePath: "/workspace",
+      sessionId: firstTab.getAttribute("data-session-id"),
+    })
+
+    const panesBefore = useTerminalStore.getState().layouts["/workspace"].panes
+    let draggedId = ""
+    const dataTransfer = {
+      effectAllowed: "none",
+      setData: (_type: string, value: string) => {
+        draggedId = value
+      },
+      getData: () => draggedId,
+    }
+    fireEvent.dragStart(firstTab, { dataTransfer })
+    fireEvent.dragOver(thirdTab, { dataTransfer })
+    fireEvent.drop(thirdTab, { dataTransfer })
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label"))).toEqual([
+      "Terminal 2",
+      "Terminal 3",
+      "Terminal 1",
+    ])
+    expect(useTerminalStore.getState().layouts["/workspace"].panes).toEqual(panesBefore)
+  })
+
+  it("uses Arrow keys and Home/End only on the tab row", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    const tabList = screen.getByRole("tablist", { name: "Terminal tabs" })
+    fireEvent.keyDown(tabList, { key: "ArrowLeft" })
+    expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute("aria-selected", "true")
+    fireEvent.keyDown(tabList, { key: "Home" })
+    expect(screen.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true")
+    fireEvent.keyDown(tabList, { key: "End" })
+    expect(screen.getByRole("tab", { name: "Terminal 3" })).toHaveAttribute("aria-selected", "true")
+  })
+
+  it("closes hidden tabs without disturbing panes and unsplits when a visible tab closes", async () => {
+    mockIPC((cmd) => (cmd === "pty_activity" ? "idle" : undefined))
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("Split right"))
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    const sessions = useTerminalStore.getState().sessionsForWorkspace("/workspace")
+    const panesBefore = useTerminalStore.getState().layouts["/workspace"].panes
+    fireEvent.click(screen.getByRole("button", { name: "Close Terminal 2" }))
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "Terminal 2" })).toBeNull())
+    expect(useTerminalStore.getState().layouts["/workspace"].panes).toEqual(panesBefore)
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Terminal 3" }))
+    await waitFor(() => {
+      expect(useTerminalStore.getState().layouts["/workspace"].panes).toHaveLength(1)
+    })
+    expect(useTerminalStore.getState().layouts["/workspace"].panes[0].sessionId).toBe(
+      sessions[0].sessionId,
+    )
+  })
+
+  it("resizes the fixed right split by keyboard and pointer and retains the workspace ratio", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTitle("Split right"))
+
+    const divider = screen.getByRole("separator", {
+      name: "Resize terminal panes",
+    })
+    fireEvent.keyDown(divider, { key: "ArrowRight" })
+    expect(useTerminalStore.getState().layouts["/workspace"].splitRatio).toBeCloseTo(0.52)
+    expect(divider).toHaveAttribute("aria-valuetext", "Left 52% · Right 48%")
+    fireEvent.keyDown(divider, { key: "ArrowLeft", shiftKey: true })
+    expect(useTerminalStore.getState().layouts["/workspace"].splitRatio).toBeCloseTo(0.42)
+
+    const grid = screen.getByTestId("terminal-pane-grid")
+    vi.spyOn(grid, "getBoundingClientRect").mockReturnValue({
+      ...rect(193, 0),
+      width: 1000,
+      right: 1000,
+    })
+    fireEvent.pointerDown(divider, { button: 0, clientX: 420, pointerId: 7 })
+    fireEvent.pointerMove(divider, { clientX: 750, pointerId: 7 })
+    expect(divider).toHaveAttribute("aria-valuetext", "Left 75% · Right 25%")
+    fireEvent.pointerUp(divider, { clientX: 750, pointerId: 7 })
+    expect(useTerminalStore.getState().layouts["/workspace"].splitRatio).toBeCloseTo(0.75)
+  })
+
+  it("marks spawn failures, keeps the error tab selected, and closes it without activity probing", async () => {
+    const commands: string[] = []
+    mockIPC((cmd) => {
+      commands.push(cmd)
+      return undefined
+    })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+    const session = useTerminalStore.getState().sessionsForWorkspace("/workspace")[0]
+
+    act(() => terminalSessionMocks.props.get(session.sessionId)?.onOpenError?.("spawn failed"))
+    expect(screen.getByLabelText("Terminal failed to start")).toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true")
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Terminal 1" }))
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "Terminal 1" })).toBeNull())
+    expect(commands).toContain("pty_close")
+    expect(commands).not.toContain("pty_activity")
+  })
+
+  it("removes a naturally exited tab directly without a close prompt", () => {
+    const commands: string[] = []
+    mockIPC((cmd) => {
+      commands.push(cmd)
+      return undefined
+    })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+    fireEvent.click(screen.getByTitle("New terminal"))
+    const session = useTerminalStore.getState().sessionsForWorkspace("/workspace")[0]
+
+    act(() => terminalSessionMocks.props.get(session.sessionId)?.onExit?.(0))
+    expect(screen.queryByRole("tab", { name: "Terminal 1" })).toBeNull()
+    expect(commands).not.toContain("pty_activity")
+    expect(commands).not.toContain("plugin:dialog|message")
   })
 })

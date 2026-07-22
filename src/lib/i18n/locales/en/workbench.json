@@ -12,12 +12,32 @@
     "openRecentWorkspace": "Open {{name}}",
     "openFolderFailed": "Failed to open folder: {{error}}",
     "recentNotFound": "Couldn't find \"{{name}}\" — removed from recents",
+    "removedFromRecent": "Removed \"{{name}}\" from recents; the folder is unchanged",
     "agentCount": "{{total}} agents, {{running}} running"
   },
   "projectNav": {
     "ariaLabel": "Project navigation",
+    "editProject": "Edit project {{name}}",
     "searchPlaceholder": "Search or run a command",
     "modeTablist": "Workbench mode"
+  },
+  "projectEditor": {
+    "title": "Edit project",
+    "close": "Close project editor",
+    "name": "Project name",
+    "namePlaceholder": "Project name",
+    "icon": "Icon",
+    "color": "Color",
+    "useIcon": "Use {{glyph}} as project icon",
+    "useColor": "Use {{color}} as project color",
+    "colors": {
+      "lime": "Lime",
+      "dusk": "Dusk",
+      "sunrise": "Sunrise",
+      "mint": "Mint",
+      "coral": "Coral",
+      "ocean": "Ocean"
+    }
   },
   "commandPalette": {
     "title": "Command Palette",
@@ -173,46 +193,46 @@
     "recoveryCredentialDescription": "Enter the credential only for this explicit recovery attempt.",
     "testConnection": "Test connection",
     "testingConnection": "Testing…",
-  "testConnectionSuccess": "Connected in {{elapsed}} ms · {{version}}",
-  "testConnectionUnknownVersion": "server version unavailable",
-  "testConnectionChangedTargetPasswordRequired": "Enter the password to test the edited connection settings.",
-  "profileError": {
-    "repositoryUnavailable": "Saved connection storage is unavailable.",
-    "vaultMissing": "The saved credential is missing. Enter it again.",
-    "vaultDenied": "The operating system denied access to the saved credential.",
-    "vaultUnavailable": "The operating system credential vault is unavailable.",
-    "vaultCorrupt": "The saved credential cannot be read. Enter it again.",
-    "vaultWriteFailed": "The credential could not be saved to the operating system vault.",
-    "vaultDeleteFailed": "The credential could not be removed from the operating system vault.",
-    "profileNotFound": "The saved connection no longer exists.",
-    "pendingOperationConflict": "Finish or recover the pending credential operation first.",
-    "recoveryNotFound": "The recovery operation no longer exists.",
-    "recoveryActionInvalid": "That recovery action is no longer available.",
-    "credentialRequired": "Enter the credential to continue.",
-    "lifecycleCancelFailed": "The active database operation could not be cancelled.",
-    "lifecycleCloseFailed": "The active database connection could not be closed.",
-    "connectionFailed": "The database connection failed.",
-    "connectionAuthenticationFailed": "PostgreSQL rejected the user name or password. Enter the credential again.",
-    "connectionDnsFailed": "The PostgreSQL host name could not be resolved. Check the host and network settings.",
-    "connectionTlsFailed": "The secure PostgreSQL connection failed. Check SSL and certificate settings.",
-    "connectionTimedOut": "The PostgreSQL connection timed out. Check the host, port, firewall, and server status.",
-    "connectionServerRejected": "The PostgreSQL server rejected the connection. Check the server configuration and logs.",
-    "connectionBusy": "The connection is busy with an active result.",
-    "serverDisconnected": "The database server disconnected. Reconnect to continue.",
-    "metadataFailed": "Database objects could not be refreshed.",
-    "queryFailed": "The database query failed.",
-    "staleConnection": "The database connection changed. Try again.",
-    "sqlitePathMissing": "The SQLite file does not exist.",
-    "sqlitePathNotFile": "The SQLite path is not a regular file.",
-    "sqlitePathUnreadable": "The SQLite file is not readable.",
-    "sqlitePathInvalid": "The SQLite path is invalid.",
-    "sqliteOpenFailed": "The SQLite file could not be opened.",
-    "invalidRequest": "The database request is invalid.",
-    "legacyCleanupFailed": "Profiles were imported, but the legacy browser entry could not be removed. Retry after storage access is restored.",
+    "testConnectionSuccess": "Connected in {{elapsed}} ms · {{version}}",
+    "testConnectionUnknownVersion": "server version unavailable",
+    "testConnectionChangedTargetPasswordRequired": "Enter the password to test the edited connection settings.",
+    "profileError": {
+      "repositoryUnavailable": "Saved connection storage is unavailable.",
+      "vaultMissing": "The saved credential is missing. Enter it again.",
+      "vaultDenied": "The operating system denied access to the saved credential.",
+      "vaultUnavailable": "The operating system credential vault is unavailable.",
+      "vaultCorrupt": "The saved credential cannot be read. Enter it again.",
+      "vaultWriteFailed": "The credential could not be saved to the operating system vault.",
+      "vaultDeleteFailed": "The credential could not be removed from the operating system vault.",
+      "profileNotFound": "The saved connection no longer exists.",
+      "pendingOperationConflict": "Finish or recover the pending credential operation first.",
+      "recoveryNotFound": "The recovery operation no longer exists.",
+      "recoveryActionInvalid": "That recovery action is no longer available.",
+      "credentialRequired": "Enter the credential to continue.",
+      "lifecycleCancelFailed": "The active database operation could not be cancelled.",
+      "lifecycleCloseFailed": "The active database connection could not be closed.",
+      "connectionFailed": "The database connection failed.",
+      "connectionAuthenticationFailed": "PostgreSQL rejected the user name or password. Enter the credential again.",
+      "connectionDnsFailed": "The PostgreSQL host name could not be resolved. Check the host and network settings.",
+      "connectionTlsFailed": "The secure PostgreSQL connection failed. Check SSL and certificate settings.",
+      "connectionTimedOut": "The PostgreSQL connection timed out. Check the host, port, firewall, and server status.",
+      "connectionServerRejected": "The PostgreSQL server rejected the connection. Check the server configuration and logs.",
+      "connectionBusy": "The connection is busy with an active result.",
+      "serverDisconnected": "The database server disconnected. Reconnect to continue.",
+      "metadataFailed": "Database objects could not be refreshed.",
+      "queryFailed": "The database query failed.",
+      "staleConnection": "The database connection changed. Try again.",
+      "sqlitePathMissing": "The SQLite file does not exist.",
+      "sqlitePathNotFile": "The SQLite path is not a regular file.",
+      "sqlitePathUnreadable": "The SQLite file is not readable.",
+      "sqlitePathInvalid": "The SQLite path is invalid.",
+      "sqliteOpenFailed": "The SQLite file could not be opened.",
+      "invalidRequest": "The database request is invalid.",
+      "legacyCleanupFailed": "Profiles were imported, but the legacy browser entry could not be removed. Retry after storage access is restored.",
       "legacyHistoryCleanupFailed": "The retired browser history entry could not be removed. Retry after storage access is restored.",
-    "savedButConnectFailed": "The connection profile was saved, but the connection failed.",
-    "unknown": "The database operation could not be completed."
-  },
+      "savedButConnectFailed": "The connection profile was saved, but the connection failed.",
+      "unknown": "The database operation could not be completed."
+    },
     "useSsl": "Use SSL",
     "trustCert": "Trust server certificate",
     "cancel": "Cancel",
@@ -239,16 +259,46 @@
   },
   "settings": {
     "sections": {
-      "appearance": { "label": "Appearance", "sub": "Theme, language, and workspace rail" },
-      "editor": { "label": "Editor", "sub": "Formatting and editor surface" },
-      "lsp": { "label": "LSP", "sub": "Language servers" },
-      "agent": { "label": "Agent", "sub": "Agent launch and ACP trace" },
-      "logs": { "label": "Logs", "sub": "Debug, user_action, audit events" },
-      "terminal": { "label": "Terminal", "sub": "Shell and sessions" },
-      "preview": { "label": "Preview", "sub": "Dev server and browser" },
-      "safety": { "label": "Safety", "sub": "Guardrails for files and git" },
-      "git": { "label": "Git", "sub": "Repository integration" },
-      "about": { "label": "About & Updates", "sub": "Version and application updates" }
+      "appearance": {
+        "label": "Appearance",
+        "sub": "Theme, language, and workspace rail"
+      },
+      "editor": {
+        "label": "Editor",
+        "sub": "Formatting and editor surface"
+      },
+      "lsp": {
+        "label": "LSP",
+        "sub": "Language servers"
+      },
+      "agent": {
+        "label": "Agent",
+        "sub": "Agent launch and ACP trace"
+      },
+      "logs": {
+        "label": "Logs",
+        "sub": "Debug, user_action, audit events"
+      },
+      "terminal": {
+        "label": "Terminal",
+        "sub": "Shell and sessions"
+      },
+      "preview": {
+        "label": "Preview",
+        "sub": "Dev server and browser"
+      },
+      "safety": {
+        "label": "Safety",
+        "sub": "Guardrails for files and git"
+      },
+      "git": {
+        "label": "Git",
+        "sub": "Repository integration"
+      },
+      "about": {
+        "label": "About & Updates",
+        "sub": "Version and application updates"
+      }
     },
     "dialogTitle": "Settings",
     "dialogDescription": "Yuuzu · yuzora workspace",
@@ -303,12 +353,17 @@
       "presetLabel": "Agent preset",
       "topLevelCustom": "Custom",
       "modeLabel": "Command mode",
-      "modeVerified": "Verified",
       "modeLatest": "Latest",
       "modeCustom": "Custom",
       "commandLabel": "Command",
+      "updateAvailable": "ACP update available: v{{currentVersion}} → v{{latestVersion}}",
+      "updateRestartHint": "Restart the agent to use the latest version",
       "traceLabel": "ACP trace",
-      "traceSub": "Write raw ACP JSON-RPC lines to the debug log (up to 500 characters)"
+      "traceSub": "Write raw ACP JSON-RPC lines to the debug log (up to 500 characters)",
+      "piRuntimeLabel": "Pi runtime",
+      "piRuntimeBuiltin": "Built-in (bundled with Yuzora)",
+      "piRuntimeCommunity": "Community (bunx pi-acp@latest)",
+      "piRuntimeSub": "Built-in ships with the app and supports interactive questions. Switch to Community to roll back with one click; existing chats can be resumed on either runtime."
     }
   }
 }

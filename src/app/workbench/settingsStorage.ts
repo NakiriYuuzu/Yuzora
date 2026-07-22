@@ -4,9 +4,14 @@ import {
   type AgentCommandIdentity, type AgentCommandMode, type AgentCommandResolution,
   type AgentId, type AgentPreset,
 } from "@/lib/agentPresets"
+import { cachedBuiltinPiAdapterCommand } from "@/lib/platform"
 
 export { AGENT_PRESETS, DEFAULT_AGENT_COMMAND, agentPresetForCommand }
 export type { AgentId, AgentPreset }
+
+/** P5：pi 的 runtime 選擇——builtin（bundle 內 yuzora-pi-acp）為預設，community
+ *（bunx pi-acp@latest）保留為一鍵 rollback。只影響 pi preset 的 latest mode。 */
+export type PiRuntime = "builtin" | "community"
 
 export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 export const PREVIEW_SETTINGS_STORAGE_KEY = "yuzora:preview-settings"
@@ -35,6 +40,7 @@ export interface AgentSettings {
   command: string
   traceEnabled: boolean
   presetCommands: Record<AgentId, AgentPresetCommandSettings>
+  piRuntime: PiRuntime
 }
 
 export interface AgentPresetCommandSettings {
@@ -63,10 +69,11 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   command: DEFAULT_AGENT_COMMAND,
   traceEnabled: false,
   presetCommands: {
-    pi: { mode: "verified", customCommand: "" },
-    claude: { mode: "verified", customCommand: "" },
-    codex: { mode: "verified", customCommand: "" },
+    pi: { mode: "latest", customCommand: "" },
+    claude: { mode: "latest", customCommand: "" },
+    codex: { mode: "latest", customCommand: "" },
   },
+  piRuntime: "builtin",
 }
 
 export function readJsonSetting<T extends object>(key: string, fallback: T): T {
@@ -110,7 +117,7 @@ export function saveAppearanceSettings(settings: AppearanceSettings): void {
 }
 
 const VALID_PRESETS: AgentPreset[] = ["pi", "claude", "codex", "custom"]
-const VALID_COMMAND_MODES: AgentCommandMode[] = ["verified", "latest", "custom"]
+const VALID_COMMAND_MODES: AgentCommandMode[] = ["latest", "custom"]
 
 export function loadAgentSettings(): AgentSettings {
   const settings = readJsonSetting<Partial<AgentSettings>>(AGENT_SETTINGS_STORAGE_KEY, {})
@@ -123,6 +130,7 @@ export function loadAgentSettings(): AgentSettings {
       : DEFAULT_AGENT_SETTINGS.command,
     traceEnabled: settings.traceEnabled === true,
     presetCommands: normalizePresetCommands(settings.presetCommands),
+    piRuntime: settings.piRuntime === "community" ? "community" : DEFAULT_AGENT_SETTINGS.piRuntime,
   }
 }
 
@@ -144,6 +152,22 @@ export function resolveAgentCommandRoute(
     }
   }
   const preference = settings.presetCommands[selectedPreset]
+  // P5：pi＋latest＋builtin runtime → bundle 內 adapter。builtin 一樣是 curated
+  //（trustedAgentId 維持 "pi"，prewarm／last-used 通道不變）；cache 未 ready
+  //（dev server、非 Tauri、resource 缺失）時退回 community command。custom mode
+  // 不受 runtime 選擇影響。agentRouter 契約不動——runtime 差異只反映在 command
+  // 字串，command+cwd keying 天然隔離兩個 runtime 的子行程與 session。
+  if (selectedPreset === "pi" && preference.mode === "latest" && settings.piRuntime === "builtin") {
+    const builtin = cachedBuiltinPiAdapterCommand()
+    if (builtin) {
+      return {
+        selectedPreset,
+        commandMode: "latest",
+        command: builtin,
+        trustedAgentId: "pi",
+      }
+    }
+  }
   return resolveCuratedAgentCommand(
     selectedPreset,
     preference.mode,
@@ -175,7 +199,7 @@ export function rememberLastUsedCuratedAgent(identity: AgentCommandIdentity | un
 
 // Resolve only identities that remain curated under today's Settings. If no
 // successful session has been recorded, prefer the selected trusted preset and
-// then the verified/default Pi route. A branded preset in Custom mode is still
+// then the latest/default Pi route. A branded preset in Custom mode is still
 // untrusted and therefore produces no prewarm candidate.
 export function resolvePrewarmAgentId(settings = loadAgentSettings()): AgentId | null {
   const lastUsed = loadLastUsedCuratedAgent()
@@ -208,9 +232,12 @@ function normalizePresetCommands(value: unknown): AgentSettings["presetCommands"
 
 function normalizePresetCommand(value: unknown): AgentPresetCommandSettings {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {}
+  // `verified` is the pre-latest legacy value. Treat it (and any unknown mode)
+  // as latest without writing during load; the next Settings change persists
+  // the normalized envelope.
   const mode = VALID_COMMAND_MODES.includes(record.mode as AgentCommandMode)
     ? record.mode as AgentCommandMode
-    : "verified"
+    : "latest"
   return {
     mode,
     customCommand: typeof record.customCommand === "string" ? record.customCommand : "",
