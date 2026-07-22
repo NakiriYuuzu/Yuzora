@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 
 import { ptyClose, ptyOpen, ptyResize, ptyWrite } from "../lib/ipc"
 import type { PtyEvent } from "../lib/types"
+import { installTerminalImePositioning } from "./terminalImePositioning"
 import { registerTerminalView } from "./terminalViewRegistry"
 import { buildXtermTheme } from "./xtermTheme"
 
@@ -13,7 +15,11 @@ export interface TerminalSessionProps {
     shell?: string | null
     shellArgs?: string[]
     active: boolean
+    visible?: boolean
     onExit?: (code: number | null) => void
+    onTitleChange?: (title: string) => void
+    onReady?: () => void
+    onOpenError?: (message: string) => void
 }
 
 type TerminalMode = "light" | "dark"
@@ -59,7 +65,11 @@ export function TerminalSession({
     shell = null,
     shellArgs,
     active,
-    onExit
+    visible = true,
+    onExit,
+    onTitleChange,
+    onReady,
+    onOpenError
 }: TerminalSessionProps) {
     const containerRef = useRef<HTMLDivElement | null>(null)
     const termRef = useRef<Terminal | null>(null)
@@ -67,6 +77,8 @@ export function TerminalSession({
     const observerRef = useRef<ResizeObserver | null>(null)
     const themeObserverRef = useRef<MutationObserver | null>(null)
     const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const titleDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const imePositioningRef = useRef<{ dispose: () => void } | null>(null)
     const capturedPasteWritesRef = useRef<Promise<void>[] | null>(null)
     const unregisterViewRef = useRef<(() => void) | null>(null)
     const openedRef = useRef(false)
@@ -77,11 +89,23 @@ export function TerminalSession({
     const cleanupTimerRef = useRef<number | null>(null)
     const lastSizeRef = useRef({ cols: defaultCols, rows: defaultRows })
     const onExitRef = useRef(onExit)
+    const onTitleChangeRef = useRef(onTitleChange)
+    const onReadyRef = useRef(onReady)
+    const onOpenErrorRef = useRef(onOpenError)
+    const visibleRef = useRef(visible)
+    const previousVisibleRef = useRef(visible)
     const [exitCode, setExitCode] = useState<number | null | undefined>(undefined)
+
+    useLayoutEffect(() => {
+        visibleRef.current = visible
+    }, [visible])
 
     useEffect(() => {
         onExitRef.current = onExit
-    }, [onExit])
+        onTitleChangeRef.current = onTitleChange
+        onReadyRef.current = onReady
+        onOpenErrorRef.current = onOpenError
+    }, [onExit, onOpenError, onReady, onTitleChange])
 
     useEffect(() => {
         function scheduleCleanup() {
@@ -95,12 +119,16 @@ export function TerminalSession({
                 themeObserverRef.current?.disconnect()
                 observerRef.current?.disconnect()
                 dataDisposableRef.current?.dispose()
+                titleDisposableRef.current?.dispose()
+                imePositioningRef.current?.dispose()
                 unregisterViewRef.current?.()
                 fitRef.current?.dispose()
                 termRef.current?.dispose()
                 themeObserverRef.current = null
                 observerRef.current = null
                 dataDisposableRef.current = null
+                titleDisposableRef.current = null
+                imePositioningRef.current = null
                 capturedPasteWritesRef.current = null
                 unregisterViewRef.current = null
                 fitRef.current = null
@@ -145,11 +173,12 @@ export function TerminalSession({
 
         term.loadAddon(fitAddon)
         term.open(container)
-        unregisterViewRef.current = registerTerminalView(sessionId, {
+        imePositioningRef.current = installTerminalImePositioning(term)
+        const terminalView = {
             hasSelection: () => term.hasSelection(),
             getSelection: () => term.getSelection(),
             isReady: () => openReadyRef.current && !disposedRef.current,
-            paste: async (text) => {
+            paste: async (text: string) => {
                 const pendingOpen = openPromiseRef.current
                 if (pendingOpen) await pendingOpen
                 if (!openReadyRef.current || disposedRef.current) {
@@ -168,8 +197,39 @@ export function TerminalSession({
                 await Promise.all(writes)
             },
             clear: () => term.clear()
+        }
+        unregisterViewRef.current = registerTerminalView(sessionId, terminalView)
+        term.attachCustomKeyEventHandler((event) => {
+            if (
+                event.type !== "keydown"
+                || event.altKey
+                || (!event.ctrlKey && !event.metaKey)
+            ) return true
+
+            const key = event.key.toLowerCase()
+            if (key === "c") {
+                if (!term.hasSelection()) return true
+                event.preventDefault()
+                void writeText(term.getSelection()).catch(() => undefined)
+                return false
+            }
+            if (key === "v") {
+                event.preventDefault()
+                if (!terminalView.isReady()) return false
+                void readText()
+                    .then((text) => {
+                        if (text.length === 0 || !terminalView.isReady()) return undefined
+                        return terminalView.paste(text)
+                    })
+                    .catch(() => undefined)
+                return false
+            }
+            return true
         })
-        safeFit(fitAddon)
+        titleDisposableRef.current = term.onTitleChange((title) => {
+            if (!disposedRef.current) onTitleChangeRef.current?.(title)
+        })
+        if (visibleRef.current) safeFit(fitAddon)
         lastSizeRef.current = terminalSize(term)
 
         const dataDisposable = term.onData((data) => {
@@ -208,12 +268,14 @@ export function TerminalSession({
             .then(() => {
                 if (openPromiseRef.current === openPromise && !disposedRef.current) {
                     openReadyRef.current = true
+                    onReadyRef.current?.()
                 }
             })
             .catch((error) => {
                 if (disposedRef.current) return
                 const message = error instanceof Error ? error.message : String(error)
                 term.write(`\r\n[Failed to open terminal: ${message}]\r\n`)
+                onOpenErrorRef.current?.(message)
             })
             .finally(() => {
                 if (openPromiseRef.current === openPromise) {
@@ -223,7 +285,7 @@ export function TerminalSession({
             })
 
         const resizeObserver = new ResizeObserver(() => {
-            if (disposedRef.current) return
+            if (disposedRef.current || !visibleRef.current) return
             safeFit(fitAddon)
             const next = terminalSize(term)
             if (next.cols === lastSizeRef.current.cols && next.rows === lastSizeRef.current.rows) return
@@ -241,20 +303,34 @@ export function TerminalSession({
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] })
         themeObserverRef.current = themeObserver
 
-        if (active) safeFocus(term)
-
         return scheduleCleanup
-    }, [active, sessionId, shell, shellArgs, workspace])
+    }, [sessionId, shell, shellArgs, workspace])
 
     useEffect(() => {
-        if (!active || !termRef.current) return
-        safeFocus(termRef.current)
-    }, [active])
+        const term = termRef.current
+        const fitAddon = fitRef.current
+        const becameVisible = visible && !previousVisibleRef.current
+        previousVisibleRef.current = visible
+        if (!visible || !term || !fitAddon) return
+        if (becameVisible) {
+            safeFit(fitAddon)
+            const next = terminalSize(term)
+            if (
+                openReadyRef.current
+                && (next.cols !== lastSizeRef.current.cols || next.rows !== lastSizeRef.current.rows)
+            ) {
+                lastSizeRef.current = next
+                void ptyResize(sessionId, next.cols, next.rows).catch(() => undefined)
+            }
+        }
+        if (active) safeFocus(term)
+    }, [active, sessionId, visible])
 
     return (
         <div
             className="relative h-full min-h-0 w-full overflow-hidden bg-(--term-bg) text-(--term-fg)"
             data-testid={`terminal-session-${sessionId}`}
+            data-visible={String(visible)}
         >
             <div ref={containerRef} className="h-full min-h-0 w-full" />
             {exitCode !== undefined ? (

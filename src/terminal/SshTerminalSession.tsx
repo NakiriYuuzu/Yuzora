@@ -5,6 +5,7 @@ import { Terminal } from "@xterm/xterm"
 
 import { sshOpenShell, sshResize, sshWrite } from "@/lib/ipc"
 import type { SshDataEvent, SshExitEvent } from "@/lib/types"
+import { installTerminalImePositioning } from "./terminalImePositioning"
 import { buildXtermTheme } from "./xtermTheme"
 
 export interface SshTerminalSessionProps {
@@ -93,6 +94,7 @@ export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSes
         termRef.current = term
         term.loadAddon(fitAddon)
         term.open(container)
+        const imePositioning = installTerminalImePositioning(term)
         safeFit(fitAddon)
         lastSizeRef.current = terminalSize(term)
 
@@ -156,6 +158,7 @@ export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSes
             themeObserver.disconnect()
             resizeObserver.disconnect()
             dataDisposable.dispose()
+            imePositioning.dispose()
             for (const p of unlistenPromises) void p.then((fn) => fn()).catch(() => undefined)
             fitAddon.dispose()
             term.dispose()

@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentZone(ACP) UI 元件替換評估：shadcn base × AI Elements</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, "Noto Serif TC", serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-text-muted: #8e8b82;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.7; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 1.9rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+.tldr p + p { margin-top: 0.5rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.1rem 1.25rem; }
+.metric-card .value { font-size: 1.9rem; font-weight: 700; line-height: 1.2; }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; position: sticky; top: 0; background: var(--color-bg); z-index: 5; }
+.tab { padding: 0.75rem 1rem; border: none; background: none; cursor: pointer; font-size: 0.88rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.6rem; }
+section p + p { margin-top: 0.6rem; }
+ul, ol { padding-left: 1.4rem; }
+li { margin-bottom: 0.35rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); }
+.chart-container .caption { font-size: 0.82rem; color: var(--color-text-secondary); margin-top: 0.75rem; }
+
+.badge { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.03em; white-space: nowrap; }
+.badge.skip { background: #f7e3e0; color: var(--color-error); }
+.badge.adapt { background: #eaf3e6; color: #3e7d50; }
+.badge.native { background: #e5eff0; color: #23767c; }
+.badge.family { background: var(--color-surface-soft); color: var(--color-text-secondary); border: 1px solid var(--color-border); font-weight: 600; }
+.badge.sound-ok { background: #eaf3e6; color: #3e7d50; }
+.badge.sound-no { background: #faf0d9; color: #8a6a10; }
+.badge.effort { background: var(--color-surface-dark); color: var(--color-on-dark); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th { text-align: left; padding: 0.65rem 0.6rem; border-bottom: 2px solid var(--color-border); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.65rem 0.6rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+td.center, th.center { text-align: center; }
+
+details { margin-bottom: 1rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem 1rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem 1.25rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-surface-soft); font-size: 0.92rem; }
+.details-body h4 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-accent-active); margin: 1rem 0 0.4rem; }
+.details-body h4:first-child { margin-top: 0; }
+
+code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.05rem 0.35rem; }
+.details-body code, .tldr code { background: #fffdf8; }
+pre.dark { background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-md); padding: 1rem 1.25rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.6; }
+pre.dark code { background: none; border: none; color: inherit; padding: 0; }
+
+.timeline { position: relative; padding-left: 2rem; }
+.timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--color-border); }
+.timeline-item { position: relative; margin-bottom: 1.5rem; }
+.timeline-item::before { content: ''; position: absolute; left: -2rem; top: 0.5rem; width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); }
+.timeline-item.optional::before { background: var(--color-info); }
+.timeline-item .date { font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 600; }
+.timeline-item .content { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.25rem; margin-top: 0.5rem; font-size: 0.92rem; }
+
+.callout { border: 1px solid var(--color-border); border-left: 4px solid var(--color-warning); background: var(--color-surface-soft); border-radius: var(--radius-md); padding: 0.9rem 1.1rem; margin: 1rem 0; font-size: 0.9rem; }
+.callout.info { border-left-color: var(--color-info); }
+.callout.danger { border-left-color: var(--color-error); }
+.callout strong:first-child { display: block; margin-bottom: 0.25rem; }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.1rem; font-size: 0.88rem; }
+.scorecard .name { font-weight: 700; margin-bottom: 0.3rem; }
+.scorecard .crit { color: var(--color-text-secondary); font-size: 0.8rem; margin-bottom: 0.5rem; }
+.scorecard select, .scorecard textarea, .review-box textarea { width: 100%; font-family: var(--font-sans); font-size: 0.85rem; border: 1px solid var(--color-border); border-radius: 6px; padding: 0.4rem 0.5rem; background: #fffdf8; }
+.review-box { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem 1.25rem; margin-bottom: 1rem; }
+.review-box label { font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 0.3rem; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; }
+.btn:hover { border-color: var(--color-accent); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
+.btn.primary:hover { background: var(--color-accent-active); }
+
+.filelink { font-family: var(--font-mono); font-size: 0.8rem; color: var(--color-accent-active); }
+.small { font-size: 0.82rem; color: var(--color-text-secondary); }
+
+@media print { .tabs, .actions, .review-box, .scorecard select, .scorecard textarea { display: none; } .tab-content { display: block !important; } body { padding: 0.5rem; } details { break-inside: avoid; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Evaluation Report</div>
+        <h1>AgentZone(ACP) UI 元件替換評估：shadcn base × AI Elements</h1>
+        <p class="meta">Yuzora · 2026-07-20 · ultracode workflow：38 個 opus subagents（6 路盤點＋10 路文件研究＋10 逐件評估＋10 反方驗證＋批評與綜整）· ~2.4M tokens · 0 agent 失敗</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR — 建議先看這裡</h3>
+        <p><strong>10 個目標元件中，8 個建議 skip、只有 1 個（message-scroller）值得從套件 adapt；plan／task／reasoning 收斂為「零新相依的自建 native block」。</strong>核心原因：這些元件幾乎都是 presentational shell（純展示殼、不吃資料模型），而 AgentZone 真正的難點在 ACP wire → transcript 的 reducer flattening（plan 丟 priority、tool status 不透明、meta 是 JSON 字串）與串流 row-key remount——這兩件事沒有任何一個元件能解決。</p>
+        <p>反直覺發現：<strong>真正高槓桿的元件反而在你的清單之外</strong>——AI Elements 的 <code>Response</code>（真 markdown 渲染，對應現況只支援 code/bold 的 MinimalMarkdown）、<code>Prompt Input + Suggestion</code>（composer 是 AgentZone 最大未評表面）、<code>Context</code>（usage token 分項）。建議路線：先做 Phase 0 地基（stable-id＋拆 2428 行大檔），再自建 native blocks，最後只引入 message-scroller 一個外來元件。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">10</div><div class="label">評估元件（5 shadcn base＋5 AI Elements）</div></div>
+        <div class="metric-card"><div class="value" style="color:var(--color-error)">8</div><div class="label">skip（換皮無淨收益）</div></div>
+        <div class="metric-card"><div class="value" style="color:var(--color-success)">1</div><div class="label">adapt（message-scroller）</div></div>
+        <div class="metric-card"><div class="value" style="color:var(--color-info)">3</div><div class="label">收斂為自建 native（plan/task/reasoning）</div></div>
+        <div class="metric-card"><div class="value">0</div><div class="label">新增 npm 相依（Phase 2 前）</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('overview', event)">總覽與決策矩陣</button>
+        <button class="tab" onclick="showTab('current', event)">現況確認（ACP）</button>
+        <button class="tab" onclick="showTab('percomponent', event)">逐元件評估</button>
+        <button class="tab" onclick="showTab('roadmap', event)">遷移路線</button>
+        <button class="tab" onclick="showTab('risks', event)">風險與開放問題</button>
+        <button class="tab" onclick="showTab('review', event)">評分回饋</button>
+    </div>
+
+    <!-- ============ TAB: 總覽 ============ -->
+    <div id="overview" class="tab-content active">
+        <div class="chart-container">
+            <h3>10 元件 verdict 分佈（含反方驗證後的收斂結果）</h3>
+            <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+                <!-- rows: component bars -->
+                <g font-size="12" font-family="ui-monospace, monospace">
+                    <text x="8" y="24" fill="#141413">message</text>          <rect x="150" y="12" width="180" height="16" rx="4" fill="#c64545" opacity="0.75"/><text x="340" y="24" fill="#6c6a64" font-family="inherit">skip（殼、僅覆蓋沒壞的一小塊）</text>
+                    <text x="8" y="46" fill="#141413">bubble</text>           <rect x="150" y="34" width="180" height="16" rx="4" fill="#c64545" opacity="0.75"/><text x="340" y="46" fill="#6c6a64">skip（現況氣泡能力更多）</text>
+                    <text x="8" y="68" fill="#141413">message-scroller</text> <rect x="150" y="56" width="180" height="16" rx="4" fill="#5db872"/><text x="340" y="68" fill="#3e7d50" font-weight="bold">adapt（唯一值得引入的套件）</text>
+                    <text x="8" y="90" fill="#141413">marker</text>           <rect x="150" y="78" width="180" height="16" rx="4" fill="#c64545" opacity="0.75"/><text x="340" y="90" fill="#6c6a64">skip（與既有 Badge 重疊）</text>
+                    <text x="8" y="112" fill="#141413">attachment</text>      <rect x="150" y="100" width="180" height="16" rx="4" fill="#c64545" opacity="0.75"/><text x="340" y="112" fill="#6c6a64">skip（upload 狀態機無資料可驅動）</text>
+                    <text x="8" y="134" fill="#141413">tool</text>            <rect x="150" y="122" width="180" height="16" rx="4" fill="#c64545" opacity="0.75"/><text x="340" y="134" fill="#6c6a64">skip（cherry-pick status badge 就好）</text>
+                    <text x="8" y="156" fill="#141413">confirmation</text>    <rect x="150" y="144" width="180" height="16" rx="4" fill="#c64545" opacity="0.75"/><text x="340" y="156" fill="#6c6a64">skip（binary vs ACP 四向 kind）</text>
+                    <text x="8" y="178" fill="#141413">plan</text>            <rect x="150" y="166" width="180" height="16" rx="4" fill="#5db8a6"/><text x="340" y="178" fill="#23767c">→ 自建 native PlanBlock</text>
+                    <text x="8" y="200" fill="#141413">task</text>            <rect x="150" y="188" width="180" height="16" rx="4" fill="#5db8a6"/><text x="340" y="200" fill="#23767c">→ 併入 native PlanBlock（與 plan 同表面）</text>
+                    <text x="8" y="222" fill="#141413">reasoning</text>       <rect x="150" y="210" width="180" height="16" rx="4" fill="#5db8a6"/><text x="340" y="222" fill="#23767c">→ 自建 native ReasoningBlock</text>
+                </g>
+            </svg>
+            <p class="caption">一句話 takeaway：紅＝直接沿用現況、綠＝引入套件、青＝拿元件的「點子」但用 Yuzora 既有 idiom 自建（零新相依）。</p>
+        </div>
+
+        <section>
+            <h2>決策矩陣</h2>
+            <table>
+                <thead><tr><th>元件</th><th>生態</th><th class="center">Verdict</th><th class="center">Effort</th><th class="center">反方驗證</th><th>核心理由（一句話）</th></tr></thead>
+                <tbody>
+                    <tr><td><code>message</code></td><td><span class="badge family">shadcn base</span></td><td class="center"><span class="badge skip">SKIP</span></td><td class="center">L</td><td class="center"><span class="badge sound-no">結論成立、理由修正</span></td><td>6 個純 layout div，只覆蓋「已正常運作」的氣泡切片；對 BlockEntry 大宗（tool/diff/perm/plan/thought/notice）零涵蓋</td></tr>
+                    <tr><td><code>bubble</code></td><td><span class="badge family">shadcn base</span></td><td class="center"><span class="badge skip">SKIP</span></td><td class="center">S</td><td class="center"><span class="badge sound-ok">sound</span></td><td>相容性極好（零新相依）但正因是展示殼，現況氣泡（削角/sender/游標/圖片列）能力更多，導入後只剩被覆蓋掉的空殼</td></tr>
+                    <tr><td><code>message-scroller</code></td><td><span class="badge family">shadcn base</span></td><td class="center"><span class="badge adapt">ADAPT</span></td><td class="center">M+</td><td class="center"><span class="badge sound-ok">sound</span></td><td>headless、零 runtime 相依；scroll-to-bottom 按鈕＋virtualization 是現況完全沒有的淨新增 UX——但需先做 stable-id 地基</td></tr>
+                    <tr><td><code>marker</code></td><td><span class="badge family">shadcn base</span></td><td class="center"><span class="badge skip">SKIP</span></td><td class="center">S</td><td class="center"><span class="badge sound-ok">sound</span></td><td>純 chip 容器，角色與已安裝的 shadcn Badge 完全重疊；transcript 內的 status/meta 只是 1 行 span</td></tr>
+                    <tr><td><code>attachment</code></td><td><span class="badge family">shadcn base</span></td><td class="center"><span class="badge skip">SKIP</span></td><td class="center">S/M</td><td class="center"><span class="badge sound-ok">sound</span></td><td>招牌 upload state machine 在 AgentZone 無資料可驅動（chip 讀完才提交）；現況 InputGroup pill 已解決需求</td></tr>
+                    <tr><td><code>tool</code></td><td><span class="badge family">AI Elements</span></td><td class="center"><span class="badge skip">SKIP</span></td><td class="center">M</td><td class="center"><span class="badge sound-ok">sound</span></td><td>只換 7 種 block 之 1 製造樣式孤島，拖進 shiki bundle＋串流 re-highlight；唯二收益（status badge、Collapsible）就地 cherry-pick 更便宜</td></tr>
+                    <tr><td><code>confirmation</code></td><td><span class="badge family">AI Elements</span></td><td class="center"><span class="badge skip">SKIP</span></td><td class="center">M</td><td class="center"><span class="badge sound-ok">sound</span></td><td>答覆後顯示是 binary approved，ACP 是 N 選項＋四向 kind；唯一真實 UX 缺口（答後 disable 按鈕）是 store 側改動，與元件無關</td></tr>
+                    <tr><td><code>plan</code></td><td><span class="badge family">AI Elements</span></td><td class="center"><span class="badge native">NATIVE</span></td><td class="center">M</td><td class="center"><span class="badge sound-ok">sound</span></td><td>元件只是可折疊 Card 殼，checklist 本體仍要自己刻，shimmer 要拖 motion；抄 ToolBlock 折疊 idiom 自建 PlanBlock 完勝</td></tr>
+                    <tr><td><code>task</code></td><td><span class="badge family">AI Elements</span></td><td class="center"><span class="badge native">NATIVE</span></td><td class="center">M</td><td class="center"><span class="badge sound-no">adapt 被反方推翻</span></td><td>評估給 adapt，但反方指出被「自建 in-idiom collapsible」全面壓制（零新檔/零相依/可 jsdom 測）；與 plan 同表面，收斂為同一個 native PlanBlock</td></tr>
+                    <tr><td><code>reasoning</code></td><td><span class="badge family">AI Elements</span></td><td class="center"><span class="badge native">NATIVE</span></td><td class="center">M</td><td class="center"><span class="badge sound-ok">sound</span></td><td>「heavy adapt」——faithful 採用要剝掉 streamdown＋motion＋改 key 策略，剝完只剩 Collapsible 殼＋timer；不如自建 ReasoningBlock（auto-open/auto-collapse 照做）</td></tr>
+                </tbody>
+            </table>
+            <p class="small" style="margin-top:0.6rem">「反方驗證」欄：每份評估都由一個獨立 opus agent 對官方 registry 原始碼與 repo 原始碼做覆核並嘗試推翻。sound=結論與論證都站得住；「理由修正」=結論保留但支撐論證有錯（詳見逐元件分頁）。</p>
+        </section>
+
+        <section>
+            <h2>三個貫穿全案的關鍵事實</h2>
+            <details open>
+                <summary><span class="badge effort">事實 1</span> 這 10 個元件幾乎全是「presentational shell」，沒有一個吃 AI SDK runtime</summary>
+                <div class="details-body">
+                    <p>10 路文件研究逐一驗證（含抓取 registry 原始碼）：AI Elements 的 tool/confirmation/plan/task/reasoning 對 <code>ai</code> 套件的依賴全部是 <code>import type</code>（type-only、可 inline），<strong>不需要 useChat/UIMessage runtime</strong>；shadcn base 五件更是純 layout。所以「會不會被迫接上 AI SDK」的答案是不會——但反面是：它們也不提供任何 ACP 資料建模能力，wire → transcript 的 adapter 一行都省不掉。</p>
+                    <p>真正會拖進重相依的是週邊：<code>tool</code> 經 code-block 拖 <strong>shiki</strong>；<code>reasoning</code> 的 ReasoningContent 綁 <strong>streamdown</strong>（實測 v2.5.0 連 <code>mermaid@11</code> 都在直接相依裡）、Shimmer 綁 <strong>motion</strong>。評估建議全部避開。</p>
+                </div>
+            </details>
+            <details>
+                <summary><span class="badge effort">事實 2</span> 相依疑慮多為假警報：radix-nova 專案裝 Radix 變體即可，Base UI 不會被拖進來</summary>
+                <div class="details-body">
+                    <p>初評把「引入第二套 primitive（@base-ui-components/react）」列為 message/marker 的頭號風險，但反方驗證推翻了這個前提：shadcn 的 base 系列元件都有 <strong>Base UI / React Aria / Radix 三種變體</strong>，而 Yuzora 的 <code>components.json</code> style 是 <code>radix-nova</code>，CLI 會解析出 Radix 版、重用既有 <code>radix-ui@1.6.2</code> monopackage——多數元件是<strong>零新增相依</strong>。同理，<code>src/styles.css</code> 已有完整 shadcn 語意 token layer（light 64-80 行、dark 238-254 行），「元件會整個無樣式」也不成立。</p>
+                    <p>但要立一條全域規則：<strong>一律用 radix-ui monopackage 的 Radix 變體，禁止 standalone <code>@radix-ui/react-*</code> 與 <code>@base-ui-components/react</code></strong>——因為 shadcn CLI 產生的 collapsible.tsx 會 import standalone 套件，需手動改回 monopackage import（repo 內 dialog/popover/tabs 全是這個慣例）。</p>
+                </div>
+            </details>
+            <details>
+                <summary><span class="badge effort">事實 3</span> 真正的瓶頸在 reducer 與 row key，不在 UI 元件</summary>
+                <div class="details-body">
+                    <p>盤點揭露兩個系統性問題，任何元件都解不了、卻是所有「更豐富呈現」的前提：</p>
+                    <ul>
+                        <li><strong>reducer flattening</strong>：<code>upsertPlan</code>（acpConnection.ts:1479-1491）把 plan entries join 成單一字串、丟棄 priority；tool status 是不透明字串；BlockEntry.meta 是 JSON 字串。要逐項顯示 status/priority icon，得先改 reducer 停止壓平。</li>
+                        <li><strong>串流 row-key remount</strong>：transcript row key 是 <code>`${index}-${entryKey(entry)}`</code>（AgentZonePanel.tsx:1922），而 entryKey 內嵌 <code>entry.text</code>——串流時每個 chunk 都改 key，<strong>尾列每個 chunk unmount+remount 一次</strong>。這既是現況的隱形效能成本，也直接破壞 message-scroller 的 anchoring/virtualization 與 reasoning 的 duration timer。修 stable-id 是一次性的共同前置。</li>
+                    </ul>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 現況確認 ============ -->
+    <div id="current" class="tab-content">
+        <section>
+            <h2>AgentZone(ACP) 現況確認</h2>
+            <p>六路 opus 盤點 agents 對原始碼的逐行確認（全部附 file:line）。這回答你請求的第一部分「確認 Agent-Zone(ACP) 的部分」。</p>
+
+            <h3>架構總覽</h3>
+            <pre class="dark"><code>ACP agent 子行程
+   │  @agentclientprotocol/sdk 1.2.1（wire protocol v1，SessionUpdate 11 變體）
+   ▼
+src/agent/acpConnection.ts ── reduceSessionUpdate()
+   │  user/agent_message_chunk → appendMessage（尾端同 who 且 streaming 就地串接文字）
+   │  agent_thought_chunk      → appendThought（連續 thought 合併為 kind:'thought'）
+   │  tool_call(_update)       → appendToolCall / mergeToolCallUpdate（meta＝JSON 字串）
+   │  plan                     → upsertPlan（⚠ join 成字串、丟 priority）
+   │  available_commands / mode / session_info / usage / config → 不進 transcript，走專屬 channel
+   ▼
+src/state/agentStore.ts（SessionState.transcript: (MsgEntry | BlockEntry)[]）
+   │  MsgEntry {who, text, streaming?, images?}
+   │  BlockEntry {kind: tool|diff|perm|plan|thought|error|notice, text, meta?, actions?}
+   ▼
+src/app/panels/AgentZonePanel.tsx（2428 行，單一大檔）
+   ├─ TranscriptList（1865-1932）自製 80px sticky-to-bottom 捲動、cursorIndex
+   ├─ TranscriptEntryRow（1943）→ MsgEntry 氣泡｜kind==='tool'→ToolBlock｜其餘→TranscriptBlock
+   ├─ MinimalMarkdown（2212-2323）自製：僅 fenced code／`code`／**bold**
+   ├─ StreamingCursor（2325-2342）紫色 yzblink 游標（僅尾端 streaming agent 訊息）
+   ├─ THREAD_KIND_STYLE（149-197）7 kind 的 inline CSS-var 色票
+   └─ Composer：auto-grow textarea＋IME 守衛＋/、$、@ 三合一 suggestion＋圖片附件</code></pre>
+
+            <h3>逐面向確認重點</h3>
+            <details>
+                <summary>訊息渲染：不對稱氣泡＋自製 MinimalMarkdown（非 markdown-it）</summary>
+                <div class="details-body">
+                    <ul>
+                        <li>user 右對齊（maxWidth 88%、<code>--yz-active</code>、右下削角 5px）／agent 左對齊（94%、<code>--paper-1</code>、左下削角）；泡泡上方有 uppercase sender 標籤（<span class="filelink">AgentZonePanel.tsx:1955-2040</span>）。</li>
+                        <li><strong>user 訊息是純文字、只有 agent 訊息走 markdown</strong>；而該 markdown 是自製 MinimalMarkdown——僅支援 fenced code、inline code、bold，<strong>不支援標題/清單/連結/表格</strong>。全部輸出 React 節點（無 dangerouslySetInnerHTML），天然免 XSS。repo 裡的 markdown-it＋dompurify 只用在編輯器 MarkdownPreview 與 LSP hover，與 AgentZone 無關——這是盤點點名的<strong>最大內容能力缺口</strong>。</li>
+                        <li>串流：<code>MsgEntry.streaming</code>＋尾端限定 cursorIndex；chunk 由 reducer 就地串接文字。回合結束 settleTranscript 清 streaming 旗標。</li>
+                    </ul>
+                </div>
+            </details>
+            <details>
+                <summary>Tool call／permission／plan／thought：ToolBlock＋TranscriptBlock 二分渲染</summary>
+                <div class="details-body">
+                    <ul>
+                        <li><strong>ToolBlock</strong>（<span class="filelink">2067-2101</span>）：手寫 <code>useState(open)</code>＋aria-expanded 可折疊卡片，header 顯示 title＋前 50 字 preview＋status 純字串；展開見 rawInput/rawOutput（JSON.stringify）＋locations（path:line）。status 只有 failed 會轉紅。</li>
+                        <li><strong>TranscriptBlock</strong>（<span class="filelink">2112-2210</span>）：其餘 6 kind 共用的彩色卡片（3px accent 條＋meta chip＋action chips）。perm 的選項按鈕就是這裡的 action chips → <code>respondPermission(sessionId, optionId)</code>；ACP 的 N 選項＋四向 kind（allow_once/allow_always/reject_once/reject_always）已正確處理，但<strong>答覆後按鈕仍可點（no-op）且 store 不記錄選了哪個</strong>——這是現況真實的小缺陷，與是否換元件無關。</li>
+                        <li><strong>plan</strong>：被 upsertPlan 壓成單一字串（<code>[x]/[wip]/[]</code> 文字標記），displayMeta 顯示 completed/total；<strong>永遠全展開</strong>。<strong>thought</strong>：muted 樣式、同樣永遠全展開、無 typing indicator——這兩個「不可折疊」是現況真實 UX 缺口。</li>
+                    </ul>
+                </div>
+            </details>
+            <details>
+                <summary>捲動與 composer：12 行自製 sticky 捲動；mention／附件已相當完整</summary>
+                <div class="details-body">
+                    <ul>
+                        <li>捲動（<span class="filelink">1886-1897</span>）：scrollRef＋80px near-bottom 門檻，串流 chunk instant jump；<strong>沒有 scroll-to-bottom 按鈕、沒有 virtualization</strong>。</li>
+                        <li>composer：auto-grow textarea、send/cancel 切換、IME composition 守衛、<code>/</code>（slash command）＋<code>$</code>（skill）＋<code>@</code>（workspace 檔案 mention）三合一 suggestion popup、圖片附件（貼上＋picker、5MB 上限、讀完驗證才成 chip）；<strong>缺 drag-and-drop</strong>。附件 chip 是 InputGroup 上的 compact pill，含正確 role=list/listitem 與 testid。</li>
+                        <li>usage/cost：header 的 UsageChip（SVG ring＋used/size＋分頁 popover）＋CostChip；infoBanner（startupInfo）用 InfoChip popover 呈現。</li>
+                    </ul>
+                </div>
+            </details>
+            <details>
+                <summary>測試與樣式體系（影響替換成本的兩個事實）</summary>
+                <div class="details-body">
+                    <ul>
+                        <li>transcript 相關的 data-testid 斷言<strong>全部集中在 <code>agentZonePanel.test.tsx</code> 單一檔</strong>（約 9 處；appShell/editorPanel 測試並未引用——初評高估 4 倍，已由反方驗證修正）。</li>
+                        <li>transcript 區塊全用 <strong>inline style＋Yuzora CSS 變數</strong>（--yz-*/--paper-*/--ink-*/THREAD_KIND_STYLE）上色；但 <code>src/styles.css</code> 同時已有完整 shadcn 語意 token layer，且 badge/button/card 等既有 ui 元件在用——所以引入 shadcn 元件不會「無樣式」，問題只是「與兄弟 block 視覺不一致」需要 reskin。</li>
+                    </ul>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 逐元件 ============ -->
+    <div id="percomponent" class="tab-content">
+        <section>
+            <h2>逐元件評估（含反方驗證修正）</h2>
+            <p class="small">每件格式：對應現況 → 判定與理由 → 反方驗證發現。effort 尺度：S＜半天／M 1-2 天／L 3-5 天／XL＞1 週（單人熟手）。</p>
+
+            <h3>shadcn base 系列</h3>
+            <details>
+                <summary><code>message</code> <span class="badge skip">SKIP</span> <span class="badge effort">L</span> <span class="badge sound-no">結論成立、理由被修正</span></summary>
+                <div class="details-body">
+                    <h4>對應現況</h4>
+                    <p>只對應 MsgEntry 氣泡 layout（<span class="filelink">AgentZonePanel.tsx:1955-2040</span>）。Message/MessageHeader/MessageContent 等 6 個子元件都是純 layout div（只吃 align/className）。</p>
+                    <h4>為何 skip</h4>
+                    <p>它只解決 AgentZone 已解決的最簡單部分（氣泡 layout），對內容大宗 BlockEntry（ToolBlock/TranscriptBlock）、MinimalMarkdown、StreamingCursor、圖片列、捲動<strong>零涵蓋</strong>。換上去等於把能用的 inline div 改成 cn() div，還要保留全部自製件、補 testid——零需求收益。</p>
+                    <h4>反方驗證（重要修正）</h4>
+                    <ul>
+                        <li>初評的三大成本主張被推翻：「必裝 @base-ui-components/react」錯（有 Radix 變體）、「主題會無樣式」錯（styles.css 已有 shadcn token layer）、「40 條測試受影響」錯（實為 9 條、單一檔）。</li>
+                        <li><strong>skip 的正確理由是「零需求收益」，不是「相依/主題成本」</strong>——若未來翻案討論，不可引用初評的成本論。</li>
+                    </ul>
+                </div>
+            </details>
+            <details>
+                <summary><code>bubble</code> <span class="badge skip">SKIP</span> <span class="badge effort">S</span> <span class="badge sound-ok">sound</span></summary>
+                <div class="details-body">
+                    <h4>對應現況</h4>
+                    <p>MsgEntry 氣泡本體（<span class="filelink">1955-2040</span>，反方修正：範圍含 1955-1963 的分支 guard 與 placeholderOnlyText）。radix-nova 變體零新相依、對資料形狀零期望——技術上「能安全採用」。</p>
+                    <h4>為何 skip</h4>
+                    <p>正因它只是展示殼：現況氣泡已有非對稱削角、sender 標籤、串流游標、圖片縮圖列（比 bubble 多三樣）；bubble 多出的能力（7 variant、BubbleReactions、BubbleGroup）在 ACP 場景全用不到（wire 無 reaction 通道）。要視覺一致得覆寫掉幾乎所有 opinion，只剩 <code>&lt;div data-slot="bubble-content"&gt;</code> 空殼。典型「換皮無淨收益」。</p>
+                    <h4>反方驗證</h4>
+                    <p>測試面修正為單一檔 5 處；並補註：TranscriptEntryRow 未 memo 的全列重渲問題 bubble 不改善也不惡化，勿誤想「換 bubble 能改效能」。</p>
+                </div>
+            </details>
+            <details>
+                <summary><code>message-scroller</code> <span class="badge adapt">ADAPT</span> <span class="badge effort">M+</span> <span class="badge sound-ok">sound</span> — 唯一建議引入的套件</summary>
+                <div class="details-body">
+                    <h4>對應現況</h4>
+                    <p>取代 12 行自製 sticky-to-bottom 捲動（<span class="filelink">1886-1914</span>）＋entries.map 外殼。headless（<code>@shadcn/react@0.2.1</code>，實測 tarball：零 runtime deps、只 peer react≥19、單一 export），不碰訊息渲染本身。</p>
+                    <h4>為何 adapt（淨新增 UX）</h4>
+                    <ul>
+                        <li><strong>scroll-to-bottom 按鈕</strong>（現況完全沒有）、user-turn scroll anchoring＋previous-item peek、長 transcript 的 content-visibility virtualization、role=log 等 a11y 強化。</li>
+                        <li>反方補充的好消息：virtualization 不是黑盒——<code>[content-visibility:auto]</code> 掛在你可編輯的 MessageScrollerItem className 上，風險可控（串流尾列可單獨拿掉）。</li>
+                    </ul>
+                    <h4>落地前置與地雷（反方實測發現）</h4>
+                    <ul>
+                        <li><strong>建置地雷</strong>：registry 產物 import 了 shadcn 網站內部的 <code>IconPlaceholder</code>（<code>@/app/(create)/components/icon-placeholder</code>），CLI 不會幫你拉——裝完必須手動改成 <code>import { ArrowDown } from 'lucide-react'</code>，否則 typecheck/build 直接紅。</li>
+                        <li><strong>stable-id 前置</strong>：MessageScrollerItem.messageId 必須跨 chunk 穩定，現況 key 內嵌 text 每 chunk 變動——Phase 0 必做。</li>
+                        <li>非 stock utility（scrollbar-thin/scroll-fade-b 等）在 Tailwind v4 靜默 no-op，需 restyle 成 .yzs/Yuzora token；viewport aria-label 等英文字串需接 react-i18next。</li>
+                        <li>捲動行為 jsdom 測不到 → gui-acceptance 實機驗收必跑。</li>
+                    </ul>
+                </div>
+            </details>
+            <details>
+                <summary><code>marker</code> <span class="badge skip">SKIP</span> <span class="badge effort">S</span> <span class="badge sound-ok">sound</span></summary>
+                <div class="details-body">
+                    <h4>為何 skip</h4>
+                    <p>純 children 驅動的 chip 容器（Marker/MarkerIcon/MarkerContent＋cva），這個角色 header 已由 shadcn Badge 承擔（<span class="filelink">1491-1530</span>），transcript 內的 status/meta 只是 1 行 span。唯二落地方式：換 2 個 span（純換皮、負淨值）或連 THREAD_KIND_STYLE 全改寫（大 churn＋配色回歸風險）。registry 覆核：Radix 變體只 import Slot＋cva，零新相依——便宜、相容、但無事可做。</p>
+                    <h4>反方驗證</h4>
+                    <p>Base UI 相依恐懼下修為註腳（radix-nova 正常流程不會碰到）；補充 marker 的 shimmer 是純樣式 class、非串流資料模型整合。</p>
+                </div>
+            </details>
+            <details>
+                <summary><code>attachment</code> <span class="badge skip">SKIP</span> <span class="badge effort">S/M</span> <span class="badge sound-ok">sound</span></summary>
+                <div class="details-body">
+                    <h4>對應現況</h4>
+                    <p>composer 檔案/圖片 pill chips（<span class="filelink">1100-1147</span>）＋訊息圖片縮圖列（<span class="filelink">2010-2035</span>）。</p>
+                    <h4>為何 skip</h4>
+                    <p>Attachment 是 card/row primitive，重現 compact pill 得覆寫掉幾乎全部 CVA variant；其招牌 upload state machine（idle→uploading→processing→error→done＋shimmer）<strong>在 AgentZone 無資料可驅動</strong>——chip 是讀取＋驗證完成後才提交，過程刻意不顯示 in-flight。還會失去 InputGroupButton 工具列整合，並需手動補回 role=list/listitem＋testid（約 15 個測試案例斷言）。</p>
+                    <h4>回訪觸發點（反方補充）</h4>
+                    <p>若未來做 async 上傳進度或訊息附件 gallery，再回訪：訊息圖片列（2010-2035）與 <code>pickAndAttachImages</code> 的 await 空窗（<span class="filelink">932-957</span>）是兩個候選落點。</p>
+                </div>
+            </details>
+
+            <h3>AI Elements 系列</h3>
+            <details>
+                <summary><code>tool</code> <span class="badge skip">SKIP</span> <span class="badge effort">M</span> <span class="badge sound-ok">sound</span> — 改為就地 cherry-pick</summary>
+                <div class="details-body">
+                    <h4>對應現況</h4>
+                    <p>ToolBlock 及 helpers（<span class="filelink">2043-2110</span>，約 65 行）。元件對 <code>ai</code> 只有 type-only import（可 inline），本體可採——但要 faithful 落地必須：拔 shiki（否則 Tauri bundle 變胖＋<strong>串流每 chunk async re-highlight</strong>）、手寫 collapsible 從 monopackage re-export、全部 class 重貼 Yuzora token、補回 locations 與 content body 兩個元件沒有的 slot、i18n 重接、再寫 meta JSON→ToolUIPart 形狀的 adapter。做完幾乎沒有原元件實體留下。</p>
+                    <h4>資料形狀落差</h4>
+                    <p>ACP status 是不透明自由字串 vs 元件固定 4 值 state union（input-streaming/input-available/output-available/output-error）——映射有損。且 tool 只是 7 種 block 之 1，單獨換會製造樣式孤島。</p>
+                    <h4>建議</h4>
+                    <p><strong>Cherry-pick 唯二好點子</strong>：在既有 ToolBlock 把純字串 status 換成 lucide status badge（failed→紅沿用 THREAD_KIND_STYLE.error）；折疊維持手寫 useState（已可用）。零新相依。</p>
+                </div>
+            </details>
+            <details>
+                <summary><code>confirmation</code> <span class="badge skip">SKIP</span> <span class="badge effort">M</span> <span class="badge sound-ok">sound</span></summary>
+                <div class="details-body">
+                    <h4>資料形狀落差（核心）</h4>
+                    <p>元件的答覆後顯示 gate 在 <code>approval.approved:boolean</code>（binary），ACP 是任意 options[]＋四向 kind。反方修正：children 可自由渲染所選 option 名稱，所以不是硬性「表達力降級」，但 gate 仍是二元，且無論走元件或自建，都需要<strong>同一個 store 改動</strong>——respondPermission 目前只刪 pending＋轉 tone，不記錄選了哪個 option（<span class="filelink">agentStore.ts:1054-1076</span>）。</p>
+                    <h4>為何 skip</h4>
+                    <p>perm 專屬程式碼其實只有 3 行分支＋共用 action-chip 渲染——可替換面極小。唯一真實 UX 收益（答覆後顯示結果＋disable 失效按鈕）是 store 側改動，<strong>與是否採用元件無關</strong>，可直接在既有 perm block 補齊。反方另補：shadcn Button 的 :focus-visible ring 與 Alert 的 role=alert 是元件真實的 a11y 優勢，但不足以翻案。</p>
+                </div>
+            </details>
+            <details>
+                <summary><code>plan</code>＋<code>task</code> <span class="badge native">收斂：自建 native PlanBlock</span> <span class="badge effort">M</span></summary>
+                <div class="details-body">
+                    <h4>兩件評估對同一表面互相矛盾 → 由綜整收斂</h4>
+                    <p><code>plan</code> 初評 skip（元件只是可折疊 Card 殼、PlanContent 吃任意 ReactNode、checklist 本體仍要自己刻、shimmer 拖 motion）；<code>task</code> 初評 adapt（目標也是 plan block），但其反方驗證（sound=false）指出：repo 已有 in-idiom、palette-matched、可 jsdom 測的折疊 pattern（ToolBlock 的 useState＋button＋<code>open &&</code>），自建 PlanBlock 在<strong>每一個評估軸</strong>（相依、樣式一致、測試性）都壓制「adapt task」，而初評沒比較這個支配選項。</p>
+                    <h4>收斂結論</h4>
+                    <p>不引入任一套件。自建 native PlanBlock：collapsible checklist、<code>[x]/[wip]/[]</code> 換 lucide 狀態 icon、completed/total 續用 displayMeta、沿用 THREAD_KIND_STYLE.plan（--paper-1／accent #5b3fd1）。<strong>若要逐項 status/priority icon，前置是改 upsertPlan 停止 flatten</strong>（反方修正：壓平發生在 upsertPlan 1479-1491，不是 parsePlanUpdate——後者其實保留了結構）。</p>
+                </div>
+            </details>
+            <details>
+                <summary><code>reasoning</code> <span class="badge native">收斂：自建 native ReasoningBlock</span> <span class="badge effort">M</span> <span class="badge sound-ok">sound</span></summary>
+                <div class="details-body">
+                    <h4>它瞄準的是真實缺口</h4>
+                    <p>thought 現況永遠全展開、無 typing indicator。元件提供 collapsible＋串流中 auto-open＋結束後 1s auto-collapse＋「Thinking…/Thought for Xs」——這組 UX 值得要。</p>
+                    <h4>但 faithful 採用要剝掉的東西太多</h4>
+                    <ul>
+                        <li>ReasoningContent 綁 <strong>streamdown</strong>（反方實測 v2.5.0 直接相依含 marked/rehype 系列＋<code>mermaid@11</code>——比初評想的更重）；Shimmer 綁 <strong>motion</strong>（只為一個 label）。</li>
+                        <li>uncontrolled duration timer 會被現況的 row-key 每 chunk remount 重置——不修 stable-id 就沒有「Thought for Xs」。</li>
+                        <li>硬編英文（i18n 缺口）＋shadcn token 需 reskin。</li>
+                    </ul>
+                    <h4>收斂結論</h4>
+                    <p>剝完 streamdown＋motion 後元件只剩 Collapsible 殼＋auto-close timer——自建 ReasoningBlock（抄 ToolBlock idiom＋小 timer＋既有 yzblink/tw-animate-css）拿到同樣 UX、零新相依。反方另修正：monopackage 已 vendor collapsible 與 useControllableState，連 <code>bunx shadcn add collapsible</code> 都不必跑。</p>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 遷移路線 ============ -->
+    <div id="roadmap" class="tab-content">
+        <section>
+            <h2>建議遷移路線（分階段）</h2>
+            <p>順序是硬約束：三個涉及 transcript 的改動都碰同一個 2428 行大檔與同一組共用 helper，<strong>先地基、後替換</strong>，否則並行改會在同檔互撞。</p>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="date">Phase 0 — 地基重構（所有後續的共同前置；不採納任何元件）</div>
+                    <div class="content">
+                        <ul>
+                            <li><strong>拆檔</strong>：從 AgentZonePanel.tsx 抽出 MessageBubble／PlanBlock／ReasoningBlock／TranscriptBlock，集中共用 helper（THREAD_KIND_STYLE、parseToolBlockMeta、displayMeta、entryKey、dedupeInfoBanner、cursorIndex、TranscriptEntryRow router）。</li>
+                            <li><strong>串流 stable-id</strong>：MsgEntry/BlockEntry 加穩定 id（reducer 生成），row key 從 <code>`${index}-${entryKey}`</code>（內嵌 text、每 chunk remount）改為 id。附帶淨賺：修掉現況尾列每 chunk remount 的效能成本。</li>
+                            <li><strong>primitive 政策</strong>：一律 radix-ui monopackage Radix 變體；禁 @base-ui-components/react 與 standalone @radix-ui/react-*。</li>
+                            <li>集中協調 agentZonePanel.test.tsx 斷言與 en＋zh-TW i18n key（一次做，避免逐件漂移）。</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="timeline-item optional">
+                    <div class="date">Phase 1 —（可選但強烈建議）reducer 邊界：停止 flatten</div>
+                    <div class="content">
+                        <ul>
+                            <li>upsertPlan 保留結構化 entries＋priority；appendToolCall 保留結構化 status。</li>
+                            <li>同步更新 acpConnection reducer 測試與 Session Index replay 相容性。</li>
+                            <li>不做的後果：native block 只能 re-parse 壓平後的文字，UX 天花板受限。</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="date">Phase 2 — 自建 native blocks（零新相依）</div>
+                    <div class="content">
+                        <ul>
+                            <li><strong>ReasoningBlock</strong>：ToolBlock 折疊 idiom＋串流 auto-open／結束 auto-collapse＋i18n「思考中…」。</li>
+                            <li><strong>PlanBlock</strong>：collapsible checklist＋lucide 狀態 icon＋completed/total chip，沿用 THREAD_KIND_STYLE.plan。</li>
+                            <li><strong>ToolBlock cherry-pick</strong>：純字串 status → lucide status badge（failed→紅）。</li>
+                            <li>（獨立小改）perm 答覆後記錄所選 option＋disable 按鈕——現況真實缺陷，store 側小改。</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="date">Phase 3 — message-scroller（唯一引入的套件）</div>
+                    <div class="content">
+                        <ul>
+                            <li><code>bunx shadcn@latest add message-scroller</code>（新增 @shadcn/react@0.2.1）→ <strong>立刻修 IconPlaceholder 壞 import → lucide ArrowDown</strong>（否則 build 紅）。</li>
+                            <li>messageId 餵 Phase 0 的 stable id；對齊 80px sticky 語意；加 scroll-to-bottom 按鈕；restyle scrollbar/fade 為 .yzs／Yuzora token；aria-label 接 i18n。</li>
+                            <li>gui-acceptance 實機驗：逐 chunk 貼底、上捲保留閱讀位置、virtualization 不裁切就地變長的尾列與 ToolBlock 展開。</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="timeline-item optional">
+                    <div class="date">Phase 4 —（另立 spike）清單外的高槓桿元件</div>
+                    <div class="content">
+                        <ul>
+                            <li><strong>agent 訊息 markdown 升級</strong>：AI Elements Response（Streamdown）vs 擴充既有 markdown-it＋dompurify 管線——傾向後者（零相依 delta、避開串流 hot path 的 async re-highlight）。</li>
+                            <li><strong>Prompt Input＋Suggestion</strong>：composer 是 AgentZone 最大未評表面（缺 drag-and-drop 等）。</li>
+                            <li><strong>Context</strong>：對應 UsageChip/CostChip，多出 input/output/reasoning/cached token 分項，屬能力升級。</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <h3>相依淨變化（採納本路線後）</h3>
+            <table>
+                <thead><tr><th>動作</th><th>套件</th><th>說明</th></tr></thead>
+                <tbody>
+                    <tr><td><span class="badge adapt">新增</span></td><td><code>@shadcn/react@^0.2.1</code></td><td>僅 Phase 3 message-scroller；零 runtime deps；v0.2.1 早期套件有 churn 風險</td></tr>
+                    <tr><td><span class="badge skip">明確不加</span></td><td><code>ai</code>、<code>streamdown</code>（＋mermaid）、<code>shiki</code>、<code>motion</code>、<code>@base-ui-components/react</code>、standalone <code>@radix-ui/react-*</code></td><td>全部违反槓桿或拖入平行 primitive stack／串流 hot path 成本</td></tr>
+                    <tr><td><span class="badge family">不移除</span></td><td><code>markdown-it</code>、<code>dompurify</code></td><td>仍供 MarkdownPreview 與 LSP hover 使用；MinimalMarkdown 保留（Phase 4 再議升級）</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 風險 ============ -->
+    <div id="risks" class="tab-content">
+        <section>
+            <h2>系統性風險（完整性批評者＋綜整）</h2>
+            <table>
+                <thead><tr><th class="center">嚴重度</th><th>風險</th><th>緩解</th></tr></thead>
+                <tbody>
+                    <tr><td class="center"><span class="badge skip">高</span></td><td><strong>樣式孤島放大為 transcript 分裂</strong>：多個 adapt 各自假設「其他 block 維持 inline」，混採 shadcn-token 元件會讓同一 transcript 兩套視覺混排</td><td>Phase 2 一律 native block＋Yuzora token；只讓 message-scroller（headless、無視覺）進場</td></tr>
+                    <tr><td class="center"><span class="badge skip">高</span></td><td><strong>stable-id 重構漣漪</strong>：觸及 acpTypes、reducer、Session Index replay、測試；三個候選改動各自重提「加 id」會重工互撞</td><td>Phase 0 一次做完，做為唯一前置</td></tr>
+                    <tr><td class="center"><span class="badge skip">高</span></td><td><strong>message-scroller 執行期風險</strong>：@shadcn/react v0.2.1 churn；content-visibility 與就地變長尾列／ToolBlock 展開的互動僅執行期可見；IconPlaceholder 壞 import 直接破 build</td><td>裝完立即修 import；串流尾列可拿掉 content-visibility；gui-acceptance 必跑</td></tr>
+                    <tr><td class="center"><span class="badge sound-no">中</span></td><td><strong>Streamdown/shiki 成本錯位</strong>：若未來採 Response/Code Block，async re-highlight 發生在每則 agent 訊息每個 chunk（常態 hot path），衝擊遠大於稀疏的 tool block</td><td>Phase 4 spike 傾向擴充 markdown-it 管線；若採 Streamdown 必須先做串流效能 PoC</td></tr>
+                    <tr><td class="center"><span class="badge sound-no">中</span></td><td><strong>reducer flattening 天花板</strong>：跳過 Phase 1 則 native block 只能 re-parse 壓平文字</td><td>將 Phase 1 視為 richer rendering 的 gate，明確決策做或不做</td></tr>
+                    <tr><td class="center"><span class="badge sound-no">中</span></td><td><strong>gui-acceptance 單點瓶頸</strong>：scroll/animation/collapse/IME/streaming 全 jsdom 測不到，N 件採納＝一次大型人工驗收</td><td>分 phase 驗收；每 phase 結束跑一輪 gui-acceptance 而非最後一次全驗</td></tr>
+                    <tr><td class="center"><span class="badge family">低</span></td><td><strong>測試與 i18n 集中衝突</strong>：斷言集中在 agentZonePanel.test.tsx；各元件英文覆寫方式不一</td><td>Phase 0 一次協調 testid 與 en＋zh-TW key</td></tr>
+                    <tr><td class="center"><span class="badge family">低</span></td><td><strong>雙上游維護</strong>：同時吃 shadcn base（radix-nova/@shadcn/react）與 ai-elements（registry.ai-sdk.dev）＝兩套 registry 更新節奏</td><td>本路線已把 ai-elements 引入量降為零，僅剩單一上游</td></tr>
+                </tbody>
+            </table>
+
+            <h3>開放問題（需要你拍板）</h3>
+            <ol>
+                <li><strong>scroll-to-bottom 按鈕＋長 transcript virtualization 是否為真實痛點？</strong>若否，message-scroller 也應改 skip（現況 12 行捲動可用），本輪就變成純地基重構＋native block。</li>
+                <li><strong>是否把整個 transcript 遷往單一 shadcn token 樣式體系？</strong>只有在此前提下 tool/confirmation/plan/task/bubble 才可能翻成 adopt；否則維持 skip 以避免孤島。</li>
+                <li><strong>Phase 1（reducer 停止 flatten）做不做？</strong>這是結構化 plan/tool 呈現的真正 gate，但動到 acpConnection 測試與 Session Index 持久化相容性。</li>
+                <li><strong>agent 訊息 markdown 升級走哪條路？</strong>Streamdown（重、新 stack、hot path re-highlight）vs 擴充既有 markdown-it＋dompurify（零相依 delta）。</li>
+                <li><strong>清單外的 Prompt Input／Suggestion／Context 是否納入範圍？</strong>它們不在原始請求內，但對 AgentZone 的槓桿比本次 10 件中的大多數更高。</li>
+            </ol>
+        </section>
+    </div>
+
+    <!-- ============ TAB: 評分回饋 ============ -->
+    <div id="review" class="tab-content">
+        <section>
+            <h2>報告品質自評與回饋</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="name">Completeness</div><div class="crit">10 元件全評＋6 面向盤點＋清單外盲區（Response/Prompt Input/Context）已點名</div><select data-score="completeness"><option value="5" selected>5</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option></select></div>
+                <div class="scorecard"><div class="name">Evidence</div><div class="crit">全部主張附 file:line；相依主張經 registry 原始碼／npm tarball 實測；每件皆有獨立反方驗證</div><select data-score="evidence"><option value="5" selected>5</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option></select></div>
+                <div class="scorecard"><div class="name">Actionability</div><div class="crit">分 5 phase 路線、相依淨變化表、每件含遷移步驟與驗證指令</div><select data-score="actionability"><option value="5" selected>5</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option></select></div>
+                <div class="scorecard"><div class="name">Risk Coverage</div><div class="crit">8 項系統性風險含嚴重度與緩解；5 個開放問題待拍板</div><select data-score="risk"><option value="5" selected>5</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option></select></div>
+            </div>
+            <div class="review-box">
+                <label for="review-comment">審閱備註（會包進 Copy as JSON）</label>
+                <textarea id="review-comment" rows="3" placeholder="例：Phase 1 先做；message-scroller 暫緩；Prompt Input 納入下輪 spike…"></textarea>
+                <div style="margin-top:0.6rem"><label style="display:inline-flex;align-items:center;gap:0.4rem;font-weight:600;font-size:0.85rem"><input type="checkbox" id="review-approved"> 核可此評估結論與遷移路線</label></div>
+            </div>
+            <div class="actions" style="margin-top:0">
+                <button class="btn primary" onclick="copyFeedback()">Copy as JSON（貼回 Claude Code 續作）</button>
+                <button class="btn" onclick="copyNextPrompt()">Copy 下一步 Prompt（Phase 0 開工）</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="actions">
+        <button class="btn" onclick="window.print()">Print / PDF</button>
+    </div>
+
+    <p class="small" style="margin-top:2rem">方法：ultracode workflow（wf_d1e76a36-06d）— 6 路現況盤點 → 10 路官方文件＋registry 原始碼研究 → 10 逐件映射評估 → 10 反方對抗驗證（每件嘗試推翻） → 完整性批評 → 綜整。全程 opus subagents，共 38 agents／490 tool uses／~2.4M tokens／0 失敗。原始 per-agent 結果見 session transcript journal。</p>
+</div>
+
+<script>
+function showTab(id, ev) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    ev.target.classList.add('active');
+}
+function collectFeedback() {
+    const scores = {};
+    document.querySelectorAll('[data-score]').forEach(s => scores[s.dataset.score] = parseInt(s.value, 10));
+    return {
+        artifact: "agentzone-acp-components-evaluation-report-2026-07-20.html",
+        reviewed_at: new Date().toISOString(),
+        scores,
+        comments: [{ section: "overall", note: document.getElementById('review-comment').value || "", severity: "info" }],
+        approved: document.getElementById('review-approved').checked,
+        next_prompt: "依報告的遷移路線與我的備註，調整/執行對應 phase。"
+    };
+}
+function copyFeedback() {
+    navigator.clipboard.writeText(JSON.stringify(collectFeedback(), null, 2));
+    event.target.textContent = 'Copied!';
+    setTimeout(() => event.target.textContent = 'Copy as JSON（貼回 Claude Code 續作）', 1500);
+}
+function copyNextPrompt() {
+    navigator.clipboard.writeText("請依 docs/html/agentzone-acp-components-evaluation-report-2026-07-20.html 的 Phase 0 開工：拆 AgentZonePanel.tsx（抽 MessageBubble/PlanBlock/ReasoningBlock/TranscriptBlock＋共用 helper）、為 MsgEntry/BlockEntry 加串流 stable id 並改 row key、立 radix-ui monopackage primitive 政策、集中協調 agentZonePanel.test.tsx 斷言與 en+zh-TW i18n key。完成後跑 bun run test / typecheck / lint。");
+    event.target.textContent = 'Copied!';
+    setTimeout(() => event.target.textContent = 'Copy 下一步 Prompt（Phase 0 開工）', 1500);
+}
+</script>
+</body>
+</html>

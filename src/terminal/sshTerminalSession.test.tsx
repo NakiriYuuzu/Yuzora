@@ -61,7 +61,22 @@ const ipcMock = vi.hoisted(() => ({
     sshResize: vi.fn()
 }))
 
+const imeMock = vi.hoisted(() => {
+    const state = { disposables: [] as Array<{ dispose: ReturnType<typeof vi.fn> }> }
+    return {
+        state,
+        install: vi.fn(() => {
+            const disposable = { dispose: vi.fn() }
+            state.disposables.push(disposable)
+            return disposable
+        })
+    }
+})
+
 vi.mock("@/lib/ipc", () => ipcMock)
+vi.mock("./terminalImePositioning", () => ({
+    installTerminalImePositioning: imeMock.install
+}))
 
 import { SshTerminalSession } from "./SshTerminalSession"
 
@@ -73,6 +88,7 @@ class ResizeObserverStub {
 
 beforeEach(() => {
     xtermMock.state.terminals.length = 0
+    imeMock.state.disposables.length = 0
     vi.clearAllMocks()
     globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
     ipcMock.sshOpenShell.mockResolvedValue(undefined)
@@ -97,6 +113,7 @@ describe("SshTerminalSession shell-open guard", () => {
         await Promise.resolve()
         expect(ipcMock.sshOpenShell).toHaveBeenCalledTimes(1)
         expect(ipcMock.sshOpenShell).toHaveBeenCalledWith("ssh-strict", 80, 24)
+        expect(imeMock.install).toHaveBeenCalledWith(xtermMock.state.terminals[0])
     })
 
     it("does not reopen the shell when a live session remounts", async () => {
@@ -129,5 +146,14 @@ describe("SshTerminalSession shell-open guard", () => {
         // Marker was cleared on failure, so the remount reopens instead of
         // being skipped forever.
         await waitFor(() => expect(ipcMock.sshOpenShell).toHaveBeenCalledTimes(2))
+    })
+
+    it("disposes IME positioning with the xterm session", async () => {
+        const { unmount } = render(<SshTerminalSession sessionId="ssh-ime" active={false} />)
+        await waitFor(() => expect(ipcMock.sshOpenShell).toHaveBeenCalledTimes(1))
+
+        unmount()
+
+        expect(imeMock.state.disposables[0].dispose).toHaveBeenCalledTimes(1)
     })
 })

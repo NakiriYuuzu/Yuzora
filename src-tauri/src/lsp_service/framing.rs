@@ -136,15 +136,18 @@ fn candidate_names(command: &str) -> Vec<String> {
 }
 
 /// Executable file-name candidates for `command`. Unix uses the bare name;
-/// Windows also tries `.exe` and `.cmd` (F-C: npm shims land as `.cmd`), so
+/// Windows tries `.exe` then `.cmd` (F-C: npm shims land as `.cmd`), so
 /// `which` resolves the same landing spots the `server_bin_dirs_from`
-/// `cfg!(windows)` branch prepares.
+/// `cfg!(windows)` branch prepares. The bare name goes last on Windows: Node's
+/// install dir ships an extensionless `npm` (a Unix sh script) next to
+/// `npm.cmd`, and `is_executable` on Windows is only `is_file()`, so a
+/// bare-name-first order resolves a shim CreateProcessW cannot run (#11).
 fn candidate_names_for(command: &str, windows: bool) -> Vec<String> {
     if windows {
         vec![
-            command.to_string(),
             format!("{command}.exe"),
             format!("{command}.cmd"),
+            command.to_string(),
         ]
     } else {
         vec![command.to_string()]
@@ -390,18 +393,32 @@ mod tests {
 
     #[test]
     fn candidate_names_shapes_per_platform() {
-        // F-C: Windows also tries .exe/.cmd (npm shims are .cmd); unix is bare.
+        // F-C: Windows tries .exe/.cmd before the bare name (npm shims are
+        // .cmd; the extensionless npm next to them is a Unix sh script that
+        // CreateProcessW cannot spawn, #11); unix is bare.
         assert_eq!(candidate_names_for("npm", false), vec!["npm".to_string()]);
         assert_eq!(
             candidate_names_for("npm", true),
             vec![
-                "npm".to_string(),
                 "npm.exe".to_string(),
-                "npm.cmd".to_string()
+                "npm.cmd".to_string(),
+                "npm".to_string()
             ]
         );
         // The live wrapper picks the current platform's shape.
         #[cfg(unix)]
         assert_eq!(candidate_names("cat"), vec!["cat".to_string()]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn which_prefers_cmd_shim_over_bare_sh_script_on_windows() {
+        // #11: Node's install dir ships both an extensionless `npm` (sh
+        // script) and `npm.cmd`; resolution must land on the spawnable .cmd.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("npm"), "#!/bin/sh\n").unwrap();
+        std::fs::write(tmp.path().join("npm.cmd"), "@echo off\r\n").unwrap();
+        let resolved = resolve_in_dirs("npm", &[tmp.path().to_path_buf()]).unwrap();
+        assert!(resolved.ends_with("npm.cmd"), "resolved: {resolved}");
     }
 }

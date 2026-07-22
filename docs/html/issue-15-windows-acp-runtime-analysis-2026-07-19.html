@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Issue #15 · Windows ACP Runtime Resolver 分析</title>
+<style>
+:root {
+  --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+  --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --bg: #faf9f5;
+  --surface: #efe9de;
+  --surface-soft: #f5f0e8;
+  --surface-strong: #e8e0d2;
+  --dark: #181715;
+  --dark-2: #252320;
+  --ink: #141413;
+  --body: #3d3d3a;
+  --muted: #6c6a64;
+  --line: #e6dfd8;
+  --coral: #cc785c;
+  --coral-dark: #a9583e;
+  --teal: #5db8a6;
+  --amber: #d4a017;
+  --green: #5db872;
+  --red: #c64545;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow: 0 1px 3px rgba(20,20,19,.08);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.62 var(--font-sans); }
+button, input, textarea { font: inherit; }
+a { color: var(--coral-dark); text-underline-offset: 3px; }
+code, pre { font-family: var(--font-mono); }
+code { background: var(--surface); border-radius: 4px; padding: .08em .34em; font-size: .88em; }
+.shell { max-width: 1120px; margin: 0 auto; padding: clamp(1rem, 3vw, 2.5rem); }
+.hero { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, .6fr); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--surface-soft); margin-bottom: 1.25rem; }
+.hero-main { padding: clamp(1.4rem, 4vw, 3.3rem); }
+.eyebrow { color: var(--coral-dark); font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -.025em; }
+h1 { font-size: clamp(2rem, 5vw, 3.75rem); line-height: 1.04; margin: .4rem 0 1rem; }
+.lede { color: var(--body); font-size: clamp(1rem, 2vw, 1.18rem); max-width: 68ch; margin: 0; }
+.hero-side { background: var(--dark); color: #faf9f5; padding: 1.5rem; display: grid; align-content: center; gap: .8rem; }
+.status { display: inline-flex; width: fit-content; align-items: center; gap: .5rem; border: 1px solid rgba(255,255,255,.22); border-radius: 999px; padding: .4rem .7rem; font: 700 .7rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.status::before { content: ""; width: .55rem; height: .55rem; border-radius: 50%; background: var(--red); }
+.hero-side strong { font-size: 1.12rem; }
+.hero-side p { color: #c8c4bd; margin: 0; font-size: .88rem; }
+.tldr { border-left: 4px solid var(--coral); background: var(--surface-soft); border-radius: var(--radius); padding: 1.1rem 1.25rem; margin: 0 0 1.25rem; }
+.tldr b { color: var(--coral-dark); }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: .85rem; margin-bottom: 1.35rem; }
+.metric { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; min-width: 0; }
+.metric .value { font: 500 clamp(1.6rem, 4vw, 2.35rem)/1 var(--font-display); }
+.metric .label { color: var(--muted); font-size: .78rem; margin-top: .5rem; }
+.metric.good .value { color: #387249; }
+.metric.bad .value { color: var(--red); }
+.tabs { position: sticky; top: 0; z-index: 10; display: flex; gap: .2rem; overflow-x: auto; padding: .55rem; margin-bottom: 1.35rem; background: rgba(250,249,245,.94); backdrop-filter: blur(12px); border: 1px solid var(--line); border-radius: 12px; }
+.tab { border: 0; background: transparent; color: var(--muted); padding: .65rem .9rem; border-radius: 8px; cursor: pointer; white-space: nowrap; font-weight: 650; }
+.tab:hover, .tab:focus-visible { color: var(--ink); outline: 2px solid var(--coral); outline-offset: 1px; }
+.tab.active { background: var(--surface); color: var(--ink); }
+.panel { display: none; }
+.panel.active { display: block; }
+.section { margin: 0 0 2rem; }
+.section h2 { font-size: clamp(1.45rem, 3vw, 2rem); margin: 0 0 .9rem; }
+.section h3 { font-size: 1.12rem; margin: 0 0 .65rem; }
+.card-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 1rem; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 1.2rem; }
+.card.dark { background: var(--dark); color: #faf9f5; }
+.card.dark p, .card.dark li { color: #c8c4bd; }
+.card p:first-child { margin-top: 0; }
+.card p:last-child { margin-bottom: 0; }
+.badge { display: inline-block; border-radius: 999px; padding: .18rem .55rem; font: 700 .68rem var(--font-mono); letter-spacing: .05em; text-transform: uppercase; }
+.badge.pass { background: rgba(93,184,114,.16); color: #2e6d40; }
+.badge.fail { background: rgba(198,69,69,.13); color: #9b3434; }
+.badge.partial { background: rgba(212,160,23,.16); color: #7b5d08; }
+.badge.info { background: rgba(93,184,166,.18); color: #2f6f64; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--bg); }
+table { width: 100%; border-collapse: collapse; min-width: 720px; }
+th, td { padding: .78rem .85rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); background: var(--surface-soft); font: 700 .7rem var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+tr:last-child td { border-bottom: 0; }
+.flow { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 1rem; }
+.flow svg { display: block; width: 100%; min-width: 820px; height: auto; }
+.flow .node { fill: var(--bg); stroke: var(--muted); stroke-width: 1.5; }
+.flow .node-fail { fill: #f8e7e3; stroke: var(--red); stroke-width: 2; }
+.flow .node-ok { fill: #e6f2ea; stroke: #3e7a52; stroke-width: 1.7; }
+.flow .node-idle { fill: #f4edcf; stroke: var(--amber); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.flow text { font-family: var(--font-sans); fill: var(--ink); font-size: 13px; }
+.flow .small { fill: var(--muted); font-size: 11px; }
+.flow .edge { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+.flow .edge-fail { stroke: var(--red); stroke-width: 2; fill: none; marker-end: url(#arrow-red); }
+.caption { color: var(--muted); font-size: .82rem; margin-top: .65rem; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--dark); color: #f6f0e8; border-radius: 12px; padding: 1rem; font-size: .78rem; line-height: 1.6; }
+.timeline { border-left: 2px solid var(--line); margin-left: .5rem; padding-left: 1.35rem; }
+.event { position: relative; margin-bottom: 1.2rem; }
+.event::before { content: ""; position: absolute; left: -1.72rem; top: .4rem; width: .65rem; height: .65rem; border-radius: 50%; background: var(--coral); border: 2px solid var(--bg); }
+.event time { color: var(--muted); font: 700 .72rem var(--font-mono); }
+.event p { margin: .25rem 0 0; }
+details { margin-bottom: .75rem; }
+summary { cursor: pointer; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: .78rem .9rem; font-weight: 700; }
+details[open] summary { border-radius: var(--radius) var(--radius) 0 0; }
+.detail-body { background: var(--surface-soft); border: 1px solid var(--line); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); padding: .9rem; }
+.detail-body p, .detail-body ul { margin-top: 0; }
+.callout { padding: 1rem 1.1rem; border-radius: var(--radius); margin: 1rem 0; }
+.callout.warn { background: #f4edcf; border-left: 4px solid var(--amber); }
+.callout.fail { background: #f8e7e3; border-left: 4px solid var(--red); }
+.callout.ok { background: #e6f2ea; border-left: 4px solid var(--green); }
+.option { display: grid; grid-template-columns: 120px 1fr 110px; gap: 1rem; align-items: start; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+.option:last-child { border-bottom: 0; }
+.option .verdict { text-align: right; }
+ul.compact { margin: .5rem 0 0; padding-left: 1.2rem; }
+ul.compact li { margin: .25rem 0; }
+.score-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: .8rem; margin-bottom: 1rem; }
+.score { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: .9rem; }
+.score b { display: block; font-size: 1.35rem; }
+.score span { color: var(--muted); font-size: .75rem; }
+.review-box { background: var(--surface-soft); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 1.1rem; }
+.review-row { display: grid; grid-template-columns: 1fr 140px; gap: 1rem; padding: .7rem 0; border-bottom: 1px solid var(--line); }
+.review-row:last-of-type { border-bottom: 0; }
+.review-row input[type="range"] { width: 100%; }
+textarea { width: 100%; min-height: 110px; resize: vertical; margin-top: .75rem; padding: .75rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+.actions { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: 1rem; }
+.btn { border: 1px solid var(--line); border-radius: 8px; padding: .65rem .9rem; cursor: pointer; background: var(--bg); color: var(--ink); font-weight: 700; }
+.btn.primary { background: var(--coral); border-color: var(--coral); color: white; }
+.btn:hover { border-color: var(--coral-dark); }
+footer { color: var(--muted); border-top: 1px solid var(--line); margin-top: 2.5rem; padding: 1.2rem 0; font-size: .78rem; }
+@media (max-width: 850px) {
+  .hero { grid-template-columns: 1fr; }
+  .metrics, .score-grid { grid-template-columns: repeat(2,1fr); }
+  .card-grid { grid-template-columns: 1fr; }
+  .option { grid-template-columns: 1fr; gap: .35rem; }
+  .option .verdict { text-align: left; }
+}
+@media (max-width: 520px) {
+  .metrics, .score-grid { grid-template-columns: 1fr; }
+  .shell { padding: .75rem; }
+  .tabs { position: static; flex-wrap: wrap; overflow-x: visible; }
+  .tab { flex: 1 1 calc(50% - .2rem); }
+  .review-row { grid-template-columns: 1fr; }
+}
+@media print {
+  .tabs, .actions, .review-box { display: none !important; }
+  .panel { display: block !important; break-before: page; }
+  .panel:first-of-type { break-before: auto; }
+  body { background: white; }
+  .shell { max-width: none; padding: 0; }
+  .hero, .card, .table-wrap, .flow, pre { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="hero">
+    <div class="hero-main">
+      <div class="eyebrow">Diagnostic report · GitHub Issue #15</div>
+      <h1>Windows ACP session<br>runtime resolver 缺口</h1>
+      <p class="lede">分析官方 v0.0.2 在 Windows 已有 Node/npm/npx、但沒有 Bun 時，AgentZone 為何仍無法建立 ACP session；並重新界定 7/15 舊修復已完成與尚未完成的責任邊界。</p>
+    </div>
+    <aside class="hero-side">
+      <span class="status">Open · unresolved</span>
+      <strong>根因信心：高</strong>
+      <p>原生 Windows 證據＋可重現 source harness＋package primary-source probe。</p>
+      <p>2026-07-19 · read-only analysis</p>
+    </aside>
+  </header>
+
+  <div class="tldr"><b>TL;DR：</b>v0.0.2 的 <code>dc5c89d</code> 已修好 hidden process、PATH/PATHEXT/cwd-first preflight 與 command-specific 早期錯誤，但 curated Pi／Claude／Codex commands 仍全部硬編成 <code>bunx …</code>。因此 Windows 即使已有可用的 Node/npm/npx，流程仍在 ACP process spawn 前被擋下。三個 pinned adapters 都已由 primary-source probe 證明可透過 Node <code>npx/npm exec</code> 完成 ACP initialize；目前真正缺少的是「包含 package/bin/Verified＋Latest policy 的 structured adapter spec＋只從受信任 App PATH 取得絕對 launcher 與版本的 resolver」，而不是 generic 字串替換。另有第二個 Windows blocker：auth-required 的 terminal login 目前固定使用 POSIX <code>-c</code>／<code>env</code>／單引號語法，不能只靠換成 resolved command 解決。</div>
+
+  <div class="metrics" aria-label="關鍵指標">
+    <div class="metric bad"><div class="value">3 / 3</div><div class="label">curated presets 在 Node-only fixture 仍不可執行</div></div>
+    <div class="metric good"><div class="value">3 / 3</div><div class="label">pinned adapters 以 Node 完成 ACP initialize probe</div></div>
+    <div class="metric good"><div class="value">19 / 19</div><div class="label">既有 agent_process 測試通過；證明舊 scope 穩定</div></div>
+    <div class="metric bad"><div class="value">0</div><div class="label">現有 runtime fallback regression tests</div></div>
+  </div>
+
+  <nav class="tabs" aria-label="報告分頁" role="tablist">
+    <button id="tab-overview" class="tab active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview">結論</button>
+    <button id="tab-evidence" class="tab" data-tab="evidence" role="tab" aria-selected="false" aria-controls="evidence" tabindex="-1">證據</button>
+    <button id="tab-architecture" class="tab" data-tab="architecture" role="tab" aria-selected="false" aria-controls="architecture" tabindex="-1">修復邊界</button>
+    <button id="tab-validation" class="tab" data-tab="validation" role="tab" aria-selected="false" aria-controls="validation" tabindex="-1">驗收與風險</button>
+    <button id="tab-review" class="tab" data-tab="review" role="tab" aria-selected="false" aria-controls="review" tabindex="-1">人工審閱</button>
+  </nav>
+
+  <section id="overview" class="panel active" role="tabpanel" aria-labelledby="tab-overview" aria-hidden="false" tabindex="0">
+    <div class="section">
+      <h2>一、目前判定</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Issue #15 要求</th><th>目前證據</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr><td>Windows ACP process 不彈 console</td><td><code>configure_background_process</code> 已套 hidden＋process-group flags；尚無本輪 native Windows UI proof。</td><td><span class="badge partial">部分完成</span></td></tr>
+            <tr><td>三種 runtime 皆不可用時顯示可採取行動的 prerequisite UI</td><td>舊版 Windows preflight 能提早顯示 <code>'bunx' was not found on the app PATH</code>，但最新驗收要求列出 Bun／Deno／Node 安裝選項，且不得停留在 generic command-not-found。</td><td><span class="badge fail">未完成</span></td></tr>
+            <tr><td>已有 Node 時可建立 curated ACP session</td><td>App PATH 有 <code>node.exe</code>／<code>npm.cmd</code>／<code>npx.cmd</code>，但 preset command 只可能產生 <code>bunx</code>。</td><td><span class="badge fail">未完成</span></td></tr>
+            <tr><td>failure 後無殘留並可 retry</td><td>backend retry／process cleanup 與 frontend listener lifecycle tests 維持綠燈；Node fallback path 本身不存在，尚無端到端覆蓋。</td><td><span class="badge partial">分層證據</span></td></tr>
+            <tr><td>缺少 credentials 時提供可執行的 Windows terminal login</td><td>目前 login meta 固定產生 <code>shellArgs: ["-c", …]</code>、<code>env NAME=…</code> 與 POSIX 單引號；Windows 預設 shell 卻是 <code>cmd.exe</code>，語法不相容。</td><td><span class="badge fail">未完成</span></td></tr>
+            <tr><td>spawn → initialize → session → prompt</td><td>fake ACP 與各 adapter runtime initialize probe 通過；未在 Windows Node-only packaged app 串成完整鏈。</td><td><span class="badge partial">仍需實機</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout fail"><strong>狀態裁決：</strong>Issue #15 應保持 OPEN。7/15 的 <code>completed-reduced-assurance</code> plan 只完成舊的單檔 backend scope，且當時明確禁止 frontend/router 變更；7/18 新的 Windows runtime evidence 已證明真正 resolver 必然跨越 preset metadata、router、auth/login、timeout 與 backend executable discovery，舊 plan 不再足以代表整張 Issue 已完成。</div>
+    </div>
+
+    <div class="section">
+      <h2>二、現在的失敗鏈</h2>
+      <div class="flow">
+        <svg viewBox="0 0 980 270" role="img" aria-labelledby="current-title current-desc">
+          <title id="current-title">目前 curated ACP 啟動失敗鏈</title>
+          <desc id="current-desc">Preset 產生 bunx command，router 以 command 與 cwd 建 key，Windows preflight 找不到 bunx 後在 spawn 前失敗；已安裝的 Node 與 npx 未被使用。</desc>
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#6c6a64"/></marker>
+            <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#c64545"/></marker>
+          </defs>
+          <rect class="node" x="20" y="55" width="150" height="70" rx="10"/><text x="95" y="82" text-anchor="middle">Curated preset</text><text class="small" x="95" y="104" text-anchor="middle">Pi / Claude / Codex</text>
+          <rect class="node" x="205" y="55" width="175" height="70" rx="10"/><text x="292" y="82" text-anchor="middle">Logical route</text><text class="small" x="292" y="104" text-anchor="middle">command = bunx …</text>
+          <rect class="node" x="415" y="55" width="165" height="70" rx="10"/><text x="497" y="82" text-anchor="middle">Router cache key</text><text class="small" x="497" y="104" text-anchor="middle">command + cwd</text>
+          <rect class="node" x="615" y="55" width="155" height="70" rx="10"/><text x="692" y="82" text-anchor="middle">agent_spawn</text><text class="small" x="692" y="104" text-anchor="middle">{ command, cwd }</text>
+          <rect class="node-fail" x="805" y="55" width="155" height="70" rx="10"/><text x="882" y="80" text-anchor="middle">Preflight FAIL</text><text class="small" x="882" y="102" text-anchor="middle">bunx.CMD missing</text>
+          <path class="edge" d="M170 90H205"/><path class="edge" d="M380 90H415"/><path class="edge" d="M580 90H615"/><path class="edge-fail" d="M770 90H805"/>
+          <rect class="node-idle" x="610" y="180" width="350" height="58" rx="10"/><text x="785" y="203" text-anchor="middle">可用但完全未進入決策的 runtime</text><text class="small" x="785" y="223" text-anchor="middle">node.exe · npm.cmd · npx.cmd</text>
+          <path d="M882 125V180" stroke="#d4a017" stroke-width="1.5" stroke-dasharray="5 4" fill="none"/>
+        </svg>
+      </div>
+      <p class="caption">失敗發生於 process spawn 前，因此 provider authentication、ACP initialize 與 session creation 都尚未開始。</p>
+    </div>
+
+    <div class="section">
+      <h2>三、根因與次要因素</h2>
+      <div class="card-grid">
+        <article class="card"><span class="badge fail">Primary cause</span><h3>Curated command model 把「Agent 身分」與「啟動 runtime」綁死</h3><p><code>src/lib/agentPresets.ts</code> 的 Verified／Latest command 都直接保存完整 <code>bunx package@version</code> 字串，沒有 package spec、bin name 或 runtime-specific launch templates。</p></article>
+        <article class="card"><span class="badge info">Boundary</span><h3>Backend preflight 是 verifier，不是 resolver</h3><p><code>agent_process.rs</code> 只接收 command/cwd，能可靠判斷第一個 token 是否存在，但不知道這是 curated Pi、Claude、Codex，無從選擇等價 Node 或 Deno invocation。</p></article>
+        <article class="card"><span class="badge partial">Identity risk</span><h3>不能在 Rust 端悄悄替換字串</h3><p>Frontend 以 <code>command + cwd</code> 作 connection key，並把 command route 用於 auth、prewarm、restore 與 custom fingerprint。若 backend 暗換命令，邏輯身分與實跑 process 會漂移。</p></article>
+        <article class="card"><span class="badge partial">Secondary</span><h3>Authentication 可能是下一關，但不是目前第一個根因</h3><p>它無法解釋現在的 <code>bunx not found</code>，因為 adapter 尚未 spawn；但 resolver 修好後，auth-required provider 仍會走 terminal login。</p></article>
+        <article class="card"><span class="badge fail">Windows blocker</span><h3>Terminal login command builder 是 POSIX-only</h3><p><code>agentStore.ts</code> 固定組出 <code>-c</code>、<code>env NAME=…</code> 與單引號 quoting；Windows 預設 <code>cmd.exe</code> 需要不同參數、env 與 quoting contract。共用 resolved command 只是必要條件，不是完整修復。</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section id="evidence" class="panel" role="tabpanel" aria-labelledby="tab-evidence" aria-hidden="true" tabindex="0">
+    <div class="section">
+      <h2>四、證據時間線</h2>
+      <div class="timeline">
+        <div class="event"><time>2026-07-13</time><p><strong>Issue #15 建立。</strong> 原始症狀只知道 Windows AgentZone 無法取得可用 session，尚未確認卡在 spawn、initialize、auth 或 session/new。</p></div>
+        <div class="event"><time>2026-07-15</time><p><strong>舊計畫實作。</strong> <code>dc5c89d</code> 加入 hidden Windows process、PATH/PATHEXT/cwd-first preflight、sanitized diagnostics 與 retry tests；因缺 native Windows 證據，以 reduced assurance 完成。</p></div>
+        <div class="event"><time>2026-07-16</time><p><strong>v0.0.2 發布包含該 commit。</strong> 因此 7/18 的官方 v0.0.2 實機結果已直接驗證這套 preflight 行為。</p></div>
+        <div class="event"><time>2026-07-18</time><p><strong>Windows runtime inventory 定案。</strong> Yuzora app PATH 找不到 Bun/Deno，但找到 Node v26.5.0、npm 11.17.0、npx 11.17.0；UI 立即顯示 <code>'bunx' was not found</code>。Issue 判定由 prerequisite blocked 更正為 runtime fallback FAIL。</p></div>
+        <div class="event"><time>2026-07-19</time><p><strong>本分析重現。</strong> Node-only source harness 對三個 curated presets 全部出現紅燈；三個 pinned adapters 的 Node ACP initialize probe 全部成功。</p></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>五、最小紅燈</h2>
+      <pre><span style="color:#e8a55a">$ bun -e '&lt;Node/npm/npx-only fixture against AGENT_PRESETS&gt;'</span>
+{
+  "fixture": "Windows with Node/npm/npx only",
+  "result": [
+    { "preset": "pi",     "firstToken": "bunx", "runnable": false },
+    { "preset": "claude", "firstToken": "bunx", "runnable": false },
+    { "preset": "codex",  "firstToken": "bunx", "runnable": false }
+  ]
+}
+RED: curated ACP presets cannot resolve through the installed Node runtime
+Command exited with code 1</pre>
+      <p class="caption">此 loop 快速、決定性、可由 agent 執行，精準捕捉新的 runtime resolver acceptance；但它也揭露架構缺口：目前沒有可直接單測的正式 resolver seam。</p>
+    </div>
+
+    <div class="section">
+      <h2>六、Adapter runtime 相容性</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Adapter</th><th>Package metadata</th><th>Node</th><th>Bun</th><th>Deno</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Pi 0.0.31</strong></td><td><code>pi-acp → dist/index.js</code><br>engine <code>&gt;=20</code>；README 建議 Node 22+</td><td><code>npx/npm exec</code> initialize PASS</td><td><code>bunx</code> initialize PASS</td><td><code>deno run -A npm:…</code> initialize PASS（macOS probe）</td><td><span class="badge pass">Node 可用</span></td></tr>
+            <tr><td><strong>Claude 0.58.1</strong></td><td><code>claude-agent-acp → dist/index.js</code><br>engine <code>&gt;=22</code></td><td><code>npx/npm exec</code> initialize PASS</td><td><code>bunx</code> initialize PASS</td><td>initialize PASS（macOS probe）</td><td><span class="badge pass">Node 可用</span></td></tr>
+            <tr><td><strong>Codex 1.1.2</strong></td><td><code>codex-acp → dist/index.js</code><br>未宣告 engine</td><td><code>npx/npm exec</code> initialize PASS</td><td><code>bunx</code> initialize PASS</td><td>initialize PASS（macOS probe）</td><td><span class="badge pass">Node 可用</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn"><strong>Deno 注意：</strong>最新 Issue acceptance 已固定 <code>Bun → Deno → Node</code>，且「無 Bun、有 Deno/Node 時選 Deno」。三個 adapter 在 macOS Deno 2.9.3 的 ACP initialize probe 均成功，但 packages 沒有正式宣告 Deno 支援，也尚未在 Windows 執行 session/prompt；因此 successor plan 必須先完成 Windows Deno compatibility gate。若無法達成，只能取得使用者明確 amendment，不能自行改選 Node。</div>
+      <p class="caption">Node v26.5.0 滿足 Pi／Claude 的 engine 條件；Codex 未宣告 engine。Primary sources：
+        <a href="https://registry.npmjs.org/pi-acp/0.0.31">pi npm metadata</a> ·
+        <a href="https://registry.npmjs.org/%40agentclientprotocol%2Fclaude-agent-acp/0.58.1">Claude npm metadata</a> ·
+        <a href="https://registry.npmjs.org/%40agentclientprotocol%2Fcodex-acp/1.1.2">Codex npm metadata</a> ·
+        <a href="https://docs.npmjs.com/cli/v11/commands/npm-exec/">npm exec</a> ·
+        <a href="https://docs.deno.com/runtime/fundamentals/node/#run-an-npm-cli-tool">Deno npm CLI</a>。
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>七、Source evidence map</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>證據</th><th>位置</th><th>證明內容</th></tr></thead>
+        <tbody>
+          <tr><td>所有 curated command 都是 bunx</td><td><code>src/lib/agentPresets.ts:23–40</code></td><td>Node/Deno 不可能被現有 resolver 選中。</td></tr>
+          <tr><td>route 只回完整 command</td><td><code>src/app/workbench/settingsStorage.ts:120–151</code></td><td>資料模型沒有 package/bin/runtime。</td></tr>
+          <tr><td>router key = command + cwd</td><td><code>src/agent/agentRouter.ts:41–78</code></td><td>launch command 參與 process reuse identity。</td></tr>
+          <tr><td>IPC 送出 command/cwd</td><td><code>src/agent/acpConnection.ts:818–825</code></td><td>frontend 到 backend 前沒有 runtime negotiation。</td></tr>
+          <tr><td>preflight 後才 spawn</td><td><code>src-tauri/src/agent_process.rs:96–106</code></td><td>目前錯誤發生在 adapter process 建立之前。</td></tr>
+          <tr><td>Windows cwd/PATH/PATHEXT verifier</td><td><code>src-tauri/src/agent_process.rs:498–612</code></td><td>舊修復能可靠找命令，但 cwd-first 對使用者明確 command 合理；trusted background resolver 不可直接沿用，否則 workspace 可用同名 <code>npm.cmd</code> 影響 prewarm。</td></tr>
+          <tr><td>backend 不知道 preset</td><td><code>src-tauri/src/agent_process.rs:695–727</code></td><td>不能安全將 arbitrary custom command 改寫成另一 runtime。</td></tr>
+          <tr><td>Windows terminal login 仍用 POSIX shell contract</td><td><code>src/state/agentStore.ts:1185–1256</code> · <code>src-tauri/src/pty_service.rs:620–632</code></td><td>預設 <code>cmd.exe</code> 收到 <code>-c</code>／<code>env</code>／單引號，auth-required flow 仍可能失敗。</td></tr>
+          <tr><td>custom 只存 one-way fingerprint</td><td><code>src/state/sessionIndexStorage.ts:7–10</code></td><td>未來 resolver 必須保持 custom command 原樣與 fingerprint contract。</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="architecture" class="panel" role="tabpanel" aria-labelledby="tab-architecture" aria-hidden="true" tabindex="0">
+    <div class="section">
+      <h2>八、建議責任切分</h2>
+      <div class="flow">
+        <svg viewBox="0 0 980 300" role="img" aria-labelledby="target-title target-desc">
+          <title id="target-title">建議的兩階段 runtime resolution</title>
+          <desc id="target-desc">先以 structured adapter spec 保存 logical curated route，再由 backend 只從受信任 App PATH 探測 launcher 絕對路徑與版本並產生 effective launch command，最後由 router 與 spawn 共用同一結果；custom command 繼續原樣直通。</desc>
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#6c6a64"/></marker>
+          </defs>
+          <rect class="node" x="20" y="45" width="165" height="72" rx="10"/><text x="102" y="72" text-anchor="middle">Adapter launch spec</text><text class="small" x="102" y="94" text-anchor="middle">package + bin + mode</text>
+          <rect class="node-ok" x="225" y="45" width="170" height="72" rx="10"/><text x="310" y="72" text-anchor="middle">Trusted runtime probe</text><text class="small" x="310" y="94" text-anchor="middle">App PATH only + versions</text>
+          <rect class="node-ok" x="435" y="45" width="180" height="72" rx="10"/><text x="525" y="72" text-anchor="middle">Launch resolver</text><text class="small" x="525" y="94" text-anchor="middle">Bun / Deno / Node policy</text>
+          <rect class="node" x="655" y="45" width="145" height="72" rx="10"/><text x="727" y="72" text-anchor="middle">Router key</text><text class="small" x="727" y="94" text-anchor="middle">launch + cwd</text>
+          <rect class="node-ok" x="840" y="45" width="120" height="72" rx="10"/><text x="900" y="72" text-anchor="middle">Spawn</text><text class="small" x="900" y="94" text-anchor="middle">same command</text>
+          <path d="M185 81H225" stroke="#6c6a64" stroke-width="1.6" marker-end="url(#arrow2)"/><path d="M395 81H435" stroke="#6c6a64" stroke-width="1.6" marker-end="url(#arrow2)"/><path d="M615 81H655" stroke="#6c6a64" stroke-width="1.6" marker-end="url(#arrow2)"/><path d="M800 81H840" stroke="#6c6a64" stroke-width="1.6" marker-end="url(#arrow2)"/>
+          <rect class="node" x="20" y="190" width="165" height="64" rx="10"/><text x="102" y="217" text-anchor="middle">Custom command</text><text class="small" x="102" y="237" text-anchor="middle">trustedAgentId = null</text>
+          <rect class="node" x="435" y="190" width="180" height="64" rx="10"/><text x="525" y="217" text-anchor="middle">原樣直通</text><text class="small" x="525" y="237" text-anchor="middle">不 fallback、不改寫</text>
+          <path d="M185 222H435" stroke="#6c6a64" stroke-width="1.6" marker-end="url(#arrow2)"/>
+          <path d="M615 222H727V117" stroke="#6c6a64" stroke-width="1.6" fill="none" marker-end="url(#arrow2)"/>
+        </svg>
+      </div>
+      <p class="caption">核心原則：把「使用者選的是哪個 Agent／版本模式」與「這次 connection attempt 實際用哪個 runtime 啟動」拆成兩個明確欄位；trusted curated launcher 必須使用 App PATH 解析出的絕對路徑，避免 workspace-local 同名檔案劫持 background prewarm。</p>
+      <div class="callout fail"><strong>新增安全邊界：</strong>既有 Windows preflight 會搜尋 workspace cwd，符合 shell 執行使用者 command 的語意；但自動執行的 curated preset 不得從 cwd 選 <code>bunx.cmd</code>／<code>deno.exe</code>／<code>npm.cmd</code>。resolver 必須排除 cwd、檢查 runtime 版本，並把絕對 launcher path 帶到實際 spawn。</div>
+    </div>
+
+    <div class="section">
+      <h2>九、方案比較</h2>
+      <div class="card">
+        <div class="option"><div><strong>A · 維持 Bun 必須安裝</strong></div><div>只改善安裝提示，不使用已存在的 Node。最小但直接違反 7/18 補充驗收，Windows 使用者仍被不必要阻擋。</div><div class="verdict"><span class="badge fail">Reject</span></div></div>
+        <div class="option"><div><strong>B · Rust spawn 暗換 bunx→其他 launcher</strong></div><div>backend 最容易做，但看不到 trusted preset/mode；會讓 router key、UI command、terminal login、auth route 與實跑 process 不一致，也可能誤改 custom command。</div><div class="verdict"><span class="badge fail">Reject</span></div></div>
+        <div class="option"><div><strong>C · Frontend 猜 runtime</strong></div><div>Webview 無法可靠讀取 packaged app 的 Windows PATH/PATHEXT、絕對 executable path 與 runtime version；容易再次產生「UI 說有、spawn 說沒有」的雙真相。</div><div class="verdict"><span class="badge fail">Reject</span></div></div>
+        <div class="option"><div><strong>D · Structured adapter spec＋backend trusted resolver</strong></div><div>frontend 提供 package/bin/version/runtime candidates；backend 僅從 App PATH 驗證絕對 launcher 與版本、依固定優先序回傳 effective command。router、auth、prewarm、new/load attempt 與 spawn 共用結果。</div><div class="verdict"><span class="badge pass">Recommend</span></div></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>十、最小 interface seam</h2>
+      <div class="card-grid">
+        <article class="card dark"><h3>Frontend descriptor：adapter 單一真相</h3><pre>type CuratedAdapterLaunchSpec = {
+  packageName: string
+  binName: string
+  versions: {
+    verified: {
+      packageVersion: string
+      minRuntime: Partial&lt;Record&lt;Runtime, string&gt;&gt;
+    }
+    latest: {
+      packageTag: "latest"
+      compatibility: "query-package-metadata" | "best-effort"
+    }
+  }
+  runtimeCandidates: Array&lt;{
+    runtime: "bun" | "deno" | "node"
+    invocation: "bunx" | "deno-npm" | "npm-exec"
+  }&gt;
+}</pre></article>
+        <article class="card dark"><h3>Backend resolver：受信任 executable 與版本</h3><pre>type AgentLaunchResolution = {
+  identity: AgentCommandIdentity
+  launchCommand: string
+  runtime: "bun" | "deno" | "node"
+  runtimeVersion: string
+  launcherPath: string
+}
+
+agent_resolve_curated_launch(spec, mode)
+// App PATH/PATHEXT only; never workspace cwd
+// validate version; return absolute launcher command
+// custom command never enters this command</pre></article>
+      </div>
+      <ul class="compact">
+        <li><strong>Metadata 先行：</strong><code>AgentDescriptor</code> 必須新增 package name、bin name、Verified exact contract、Latest compatibility policy 與 runtime-specific invocation；不可再從 <code>bunx …</code> 字串反向解析，也不可另建隱性重複表。</li>
+        <li><strong>最佳插入點：</strong><code>agentRouter.routeFor()</code> 已是 async，可在 <code>ensureSub()</code> 前把 trusted logical route 轉成 resolved launch route。</li>
+        <li><strong>安全搜尋：</strong>trusted launcher 只從 App PATH/PATHEXT 解析並使用絕對路徑；workspace cwd 只保留給使用者明確輸入的 custom command。</li>
+        <li><strong>可用候選順位：</strong><code>Bun → Deno → Node</code> 只在「launcher 完整且版本相容」的 candidates 間排序。高順位缺 component 或過舊時必須繼續嘗試下一順位；只有全部 rejected 才回聚合 prerequisite。</li>
+        <li><strong>Node invocation 定案：</strong>建議只採 <code>npm exec --yes --package=&lt;spec&gt; -- &lt;bin&gt;</code>，因此 Node candidate 要求 <code>node.exe + npm.cmd</code>；不在同一版本同時支援 npx 與 npm exec，避免 interface/test 分叉。</li>
+        <li><strong>Latest 不是 Verified：</strong><code>@latest</code> 的 adapter version 與 engine 會移動，不能沿用 Verified 的 min-runtime。successor plan 必須選擇啟動前查 package metadata，或明確標示 best-effort 並把 engine mismatch 分類為 package compatibility error。</li>
+        <li><strong>同一真相：</strong>prewarm、newSession、該次 loadSession connection、router cache key 與 process spawn 必須拿同一 resolution。這不新增「跨重啟保存 latest 精確版本」承諾；Session Index 仍依現有 ADR 只存 agentId／custom fingerprint。</li>
+        <li><strong>Windows auth/login：</strong>terminal login 需另有 platform-aware launch contract；現有 POSIX <code>-c</code>／<code>env</code>／quote builder 不可只替換 command。至少要驗證預設 <code>cmd.exe</code> 與支援的 custom shell。</li>
+        <li><strong>custom 安全：</strong><code>trustedAgentId === null</code> 時完全跳過 resolver；既有 raw-command SHA-256 fingerprint 不變。</li>
+        <li><strong>缺少或過舊：</strong>回 stable typed prerequisite error，列出各 runtime 的 rejected reason、實際版本與最低需求，而不是 generic command-not-found。</li>
+        <li><strong>冷啟動 timeout：</strong><code>npm exec</code> 首次下載不能與既有 15 秒 ACP initialize timeout 混成同一階段；需有 cold-start budget、stage diagnostics 與慢 proxy／離線測試。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="validation" class="panel" role="tabpanel" aria-labelledby="tab-validation" aria-hidden="true" tabindex="0">
+    <div class="section">
+      <h2>十一、必須新增的紅綠測試</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>層級</th><th>案例</th><th>應證明</th></tr></thead>
+        <tbody>
+          <tr><td>Descriptor contract</td><td>Pi／Claude／Codex Verified＋Latest</td><td>每個 preset 有唯一 package/bin、Verified exact runtime contract 與 Latest compatibility policy；不解析既有 shell 字串。</td></tr>
+          <tr><td>Pure resolver</td><td>Bun、Deno、Node 都完整且相容</td><td>依 Issue 固定優先序選 Bun；結果包含絕對 launcher、runtime version 與 exact adapter spec。</td></tr>
+          <tr><td>Pure resolver</td><td>無 Bun、有 Deno＋Node</td><td>依最新 acceptance 選 Deno；此前必須有該 adapter 的 Windows Deno initialize→session→prompt compatibility proof。</td></tr>
+          <tr><td>Pure resolver</td><td>只存在 Node＋npm</td><td>Pi／Claude／Codex 以絕對 <code>npm.cmd</code> 產生 exact pinned <code>npm exec</code> command。</td></tr>
+          <tr><td>Candidate fallback</td><td>Bun 存在但過舊／缺 bunx；Deno 或 Node 相容</td><td>記錄 Bun rejected reason 並繼續下一順位；不讓不可用的高順位 runtime 阻斷 fallback。</td></tr>
+          <tr><td>Candidate completeness</td><td>有 <code>node.exe</code> 但缺 <code>npm.cmd</code></td><td>Node candidate 不完整；繼續其他順位，全部失敗時回聚合 prerequisite。</td></tr>
+          <tr><td>Latest policy</td><td><code>@latest</code> 提高 engine requirement</td><td>不可沿用 Verified min-runtime；依核准 policy 查 metadata 或回明確 package compatibility error。</td></tr>
+          <tr><td>Version gate</td><td>所有候選都存在但版本不相容</td><td>回聚合 typed too-old prerequisite，顯示各 candidate detected／required version。</td></tr>
+          <tr><td>Pure resolver</td><td>三者皆無</td><td>回 typed prerequisite error，列出 Bun／Deno／Node 安裝選項，不建立 process。</td></tr>
+          <tr><td>Custom guard</td><td>custom command＋任何 runtime inventory</td><td>字串逐字不變、fingerprint 不變、不可 prewarm。</td></tr>
+          <tr><td>Trusted executable probe</td><td>Windows PATH/PATHEXT、含空白路徑與 workspace 同名 launcher</td><td>只選 App PATH 的絕對 <code>bunx.CMD</code>／<code>deno.EXE</code>／<code>npm.CMD</code>；忽略 workspace shadow，且不把 path/command 寫入敏感 log。</td></tr>
+          <tr><td>Router</td><td>同 preset/cwd 的 concurrent prepare/new</td><td>只建一個 effective sub；identity 仍是原 curated preset/mode，process route 使用相同 resolution。</td></tr>
+          <tr><td>Windows terminal auth</td><td>預設 cmd.exe、env 值含空白／特殊字元、absolute launcher path 含空白；另覆蓋支援的 custom shell</td><td>使用 platform-correct args、env 與 quoting，完成 terminal login；不得再送 <code>cmd.exe -c 'env …'</code>。</td></tr>
+          <tr><td>Cold package launch</td><td>空 cache、慢 proxy、離線、package fetch error</td><td>不被 15 秒 generic init timeout 誤分類；stage error 可採取行動，kill/listener cleanup 後可 retry。</td></tr>
+          <tr><td>Layered ACP</td><td>Node-only runtime stub＋fake adapter</td><td>spawn → initialize → session/new → prompt；failure 後 retry 無 listener/process 殘留。</td></tr>
+          <tr><td>Windows packaged</td><td>官方 build，分別覆蓋 Bun-only、Deno+Node、Node＋npm-only、全缺與 auth-required</td><td>只在完整相容 candidates 間套固定優先序、不彈 console；三個 presets 完成 session/prompt；terminal login 可執行，錯誤能區分 runtime/version/fetch/auth/provider。</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="section">
+      <h2>十二、本輪實跑結果</h2>
+      <div class="card-grid">
+        <article class="card"><span class="badge fail">RED</span><h3>Node-only curated resolver harness</h3><p>3/3 presets 皆因第一 token 為 <code>bunx</code> 而不可執行，exit 1。</p></article>
+        <article class="card"><span class="badge pass">PASS</span><h3>Rust agent_process</h3><p><strong>19 passed／1 ignored</strong>。包含 Windows PATHEXT、cwd-first、missing command retry、fake ACP roundtrip 與 redaction。</p></article>
+        <article class="card"><span class="badge pass">PASS</span><h3>Frontend ACP scope</h3><p><strong>6 files／291 tests passed</strong>。既有 router、connection、store、auth、panel、preset contracts 維持綠燈。</p></article>
+        <article class="card"><span class="badge pass">PASS</span><h3>Adapter probes</h3><p>Pi／Claude／Codex pinned versions皆以 Node <code>npx/npm exec</code> 完成 ACP initialize；Bun 與 macOS Deno probes 亦成功。</p></article>
+      </div>
+      <div class="callout ok"><strong>解讀：</strong>舊修復本身沒有回歸；新的 FAIL 是需求與架構覆蓋缺口，而不是 dc5c89d 的實作壞掉。</div>
+    </div>
+
+    <div class="section">
+      <h2>十三、剩餘風險</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>風險</th><th>嚴重度</th><th>處理方式</th></tr></thead>
+        <tbody>
+          <tr><td>Trusted resolver 若沿用 cwd-first，workspace 可放置同名 launcher 影響 background prewarm</td><td><span class="badge fail">High</span></td><td>trusted runtime 只從 App PATH 解析絕對 executable；新增 malicious workspace shadow regression。</td></tr>
+          <tr><td>Issue 已要求 Deno 第二順位，但尚無 Windows session/prompt proof</td><td><span class="badge fail">High</span></td><td>successor plan 先跑 native Deno gate；失敗時要求 amendment，不得靜默改成 Node。</td></tr>
+          <tr><td><code>npm exec</code> cold download 被既有 15 秒總 initialize timeout kill 掉</td><td><span class="badge fail">High</span></td><td>分離 cold adapter startup budget／diagnostic stage，覆蓋空 cache、慢 proxy、離線與 retry。</td></tr>
+          <tr><td>高順位 runtime 存在但 launcher 不完整／版本過舊，可能阻斷其後可用 fallback</td><td><span class="badge fail">High</span></td><td>priority 只套在完整且相容 candidates；保留 rejected reasons 並繼續下一順位。</td></tr>
+          <tr><td>Latest 的 engine contract 會移動，不能沿用 Verified minimum</td><td><span class="badge partial">Medium</span></td><td>為 Latest 定義 metadata-query 或 best-effort policy；測 engine drift 與錯誤分類。</td></tr>
+          <tr><td>Windows terminal login 固定使用 POSIX <code>-c</code>／<code>env</code>／quote</td><td><span class="badge fail">High</span></td><td>新增 platform-aware terminal auth launch contract；共用 resolved adapter identity，但分開處理 cmd/PowerShell-compatible args、env 與 quoting。</td></tr>
+          <tr><td>Latest session 跨重啟會依目前 Settings 重新解析，無精確版本持久化</td><td><span class="badge partial">Medium</span></td><td>這是既有 Session Index contract 的獨立風險；本 Issue 不應暗自承諾 exact-version restore，若要改需另行 ADR/規格。</td></tr>
+          <tr><td>Issue body 與 local plan 仍描述舊 scope，後續 agent 可能誤判已完成</td><td><span class="badge fail">High</span></td><td>實作前先更新 Issue body／新增 approved successor plan，明確標記舊 plan 被 7/18 evidence supersede。</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="section">
+      <h2>十四、建議 triage</h2>
+      <div class="callout warn"><strong>現在：</strong><code>needs-triage</code>。Issue 已有精準 native evidence，且 runtime 優先序已由最新 comment 固定為 <code>Bun → Deno → Node</code>；尚需正式核准的是 structured Verified/Latest metadata、完整且相容 candidate fallback、trusted PATH-only absolute launcher、version gate、cold-start timeout、Windows terminal-auth shell contract 與跨層 ownership。<br><strong>核准後：</strong>先完成 Windows Deno compatibility gate，更新 Issue body與 successor plan，再轉 <code>ready-for-agent</code>。本分析未修改 GitHub labels/body。</div>
+      <p>若 v0.0.3 的目標包含「Windows 使用預裝 Node 即可啟動 AgentZone」，Issue #15 是 release blocker；目前 v0.0.3 commit 尚無任何 Agent runtime resolver 變更。</p>
+    </div>
+  </section>
+
+  <section id="review" class="panel" role="tabpanel" aria-labelledby="tab-review" aria-hidden="true" tabindex="0">
+    <div class="section">
+      <h2>十五、分析品質與人工回饋</h2>
+      <p class="caption">以下為分析者自評，非產品測試分數；可調整滑桿並匯出 JSON 回饋。</p>
+      <div class="score-grid">
+        <div class="score"><b>5 / 5</b><span>Root-cause confidence：native evidence＋source chain 一致</span></div>
+        <div class="score"><b>4 / 5</b><span>Reproduction：有 deterministic red loop，缺正式 resolver seam</span></div>
+        <div class="score"><b>3 / 5</b><span>Windows coverage：有 v0.0.2 實機 inventory，無新 resolver native run</span></div>
+        <div class="score"><b>4 / 5</b><span>Next-step readiness：根因清楚；security、version、timeout scope 待正式計畫</span></div>
+      </div>
+      <div class="review-box">
+        <div class="review-row"><label for="score-complete"><strong>完整性</strong><br><small>是否涵蓋症狀、根因、資料流、相容性與驗收？</small></label><input id="score-complete" type="range" min="1" max="5" value="5"></div>
+        <div class="review-row"><label for="score-action"><strong>可執行性</strong><br><small>是否足以產生 successor plan？</small></label><input id="score-action" type="range" min="1" max="5" value="4"></div>
+        <div class="review-row"><label for="score-risk"><strong>風險覆蓋</strong><br><small>是否遺漏 runtime、identity、auth 或 Windows 風險？</small></label><input id="score-risk" type="range" min="1" max="5" value="4"></div>
+        <label for="review-notes"><strong>審閱意見</strong></label>
+        <textarea id="review-notes" placeholder="例如：Node fallback 必須進 v0.0.3；請先完成 Windows Deno gate；補 workspace launcher shadow 測試…"></textarea>
+        <label style="display:flex;gap:.55rem;align-items:center;margin-top:.8rem"><input id="approved" type="checkbox"> 我同意以此分析建立新的 Issue #15 implementation plan</label>
+        <div class="actions">
+          <button class="btn primary" id="copy-feedback">Copy as JSON</button>
+          <button class="btn" id="copy-prompt">Copy follow-up prompt</button>
+          <button class="btn" onclick="window.print()">Print / PDF</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Evidence sources：GitHub Issue #15 與 2026-07-18 comment、commit <code>dc5c89d</code>、Yuzora source、npm package metadata/tarballs、Node/Bun/Deno ACP initialize probes。產品程式碼未修改；本檔僅為分析 artifact。
+  </footer>
+</main>
+<script>
+const tabs = [...document.querySelectorAll('.tab')];
+const panels = [...document.querySelectorAll('.panel')];
+function showTab(id) {
+  tabs.forEach(tab => {
+    const active = tab.dataset.tab === id;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  panels.forEach(panel => {
+    const active = panel.id === id;
+    panel.classList.toggle('active', active);
+    panel.setAttribute('aria-hidden', String(!active));
+  });
+  history.replaceState(null, '', '#' + id);
+}
+tabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => showTab(tab.dataset.tab));
+  tab.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    showTab(tabs[nextIndex].dataset.tab);
+    tabs[nextIndex].focus();
+  });
+});
+const initial = location.hash.slice(1);
+if (panels.some(panel => panel.id === initial)) showTab(initial);
+
+function reviewPayload() {
+  const notes = document.getElementById('review-notes').value.trim();
+  return {
+    artifact: 'issue-15-windows-acp-runtime-analysis-2026-07-19.html',
+    reviewed_at: new Date().toISOString(),
+    scores: {
+      completeness: Number(document.getElementById('score-complete').value),
+      actionability: Number(document.getElementById('score-action').value),
+      risk_coverage: Number(document.getElementById('score-risk').value)
+    },
+    comments: notes ? [{ section: 'Issue #15 analysis', note: notes, severity: 'review' }] : [],
+    approved: document.getElementById('approved').checked,
+    next_prompt: '依照此分析與 review JSON，更新 Issue #15 規格並建立 successor implementation plan；不要直接實作。'
+  };
+}
+async function copyText(text, button) {
+  let copied = false;
+  try {
+    if (location.protocol !== 'file:' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    }
+  } catch {
+    // file:// pages may expose Clipboard API but reject writes.
+  }
+  if (!copied) {
+    const fallback = document.createElement('textarea');
+    fallback.value = text;
+    fallback.setAttribute('readonly', '');
+    fallback.style.position = 'fixed';
+    fallback.style.opacity = '0';
+    document.body.appendChild(fallback);
+    fallback.select();
+    copied = document.execCommand('copy');
+    fallback.remove();
+  }
+  const original = button.textContent;
+  button.textContent = copied ? 'Copied' : 'Copy failed';
+  setTimeout(() => { button.textContent = original; }, 1400);
+}
+document.getElementById('copy-feedback').addEventListener('click', event => {
+  copyText(JSON.stringify(reviewPayload(), null, 2), event.currentTarget);
+});
+document.getElementById('copy-prompt').addEventListener('click', event => {
+  const payload = reviewPayload();
+  const prompt = `請依 docs/html/issue-15-windows-acp-runtime-analysis-2026-07-19.html 建立 Issue #15 successor plan。\n\nReview:\n${JSON.stringify(payload, null, 2)}`;
+  copyText(prompt, event.currentTarget);
+});
+</script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -28,6 +29,14 @@ pub enum PtyEvent {
     Exit { code: Option<i32> },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PtyActivity {
+    Idle,
+    Busy,
+    Unknown,
+}
+
 struct PtySessionShared {
     info: Mutex<PtySessionInfo>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
@@ -48,6 +57,43 @@ pub struct PtyManager {
 }
 
 pub struct PtyState(pub Arc<PtyManager>);
+
+fn shell_spawn_cwd(workspace: &str) -> Cow<'_, str> {
+    let Some(path) = workspace.strip_prefix(r"\\?\") else {
+        return Cow::Borrowed(workspace);
+    };
+    if path
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"UNC\"))
+    {
+        return Cow::Owned(format!(r"\\{}", &path[4..]));
+    }
+
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+    {
+        Cow::Borrowed(path)
+    } else {
+        // Other namespaces (for example Volume GUID paths) have no safe
+        // non-verbatim equivalent, so keep their operational form intact.
+        Cow::Borrowed(workspace)
+    }
+}
+
+#[cfg(unix)]
+fn classify_pty_activity(
+    shell_pid: u32,
+    foreground_process_group: Option<libc::pid_t>,
+) -> PtyActivity {
+    match foreground_process_group {
+        Some(process_group) if process_group == shell_pid as libc::pid_t => PtyActivity::Idle,
+        Some(_) => PtyActivity::Busy,
+        None => PtyActivity::Unknown,
+    }
+}
 
 impl PtyManager {
     pub fn new(_app: tauri::AppHandle) -> Self {
@@ -122,7 +168,8 @@ impl PtyManager {
             let mut cmd = CommandBuilder::new(&shell_path);
             cmd.env("SHELL", &shell_path);
             cmd.env("TERM", "xterm-256color");
-            cmd.cwd(workspace);
+            let shell_cwd = shell_spawn_cwd(workspace);
+            cmd.cwd(shell_cwd.as_ref());
             #[cfg(unix)]
             cmd.arg("-l");
             // User-configured shell args are appended after the login flag so
@@ -240,6 +287,38 @@ impl PtyManager {
         info.cols = cols;
         info.rows = rows;
         Ok(())
+    }
+
+    pub fn activity(&self, session_id: &str) -> PtyActivity {
+        let shared = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|entry| match entry {
+                PtySessionEntry::Ready(shared) => Some(shared.clone()),
+                PtySessionEntry::Reserved(_) => None,
+            });
+        let Some(shared) = shared else {
+            return PtyActivity::Unknown;
+        };
+
+        #[cfg(unix)]
+        {
+            let foreground_process_group = shared
+                .master
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|master| master.process_group_leader());
+            classify_pty_activity(shared.pid, foreground_process_group)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = shared;
+            PtyActivity::Unknown
+        }
     }
 
     pub fn close(&self, session_id: &str) -> Result<(), String> {
@@ -669,6 +748,17 @@ pub async fn pty_resize(
 }
 
 #[tauri::command]
+pub async fn pty_activity(
+    state: tauri::State<'_, PtyState>,
+    session_id: String,
+) -> Result<PtyActivity, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.activity(&session_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn pty_close(
     state: tauri::State<'_, PtyState>,
     session_id: String,
@@ -700,6 +790,14 @@ mod tests {
 
     fn test_manager() -> Arc<PtyManager> {
         Arc::new(PtyManager::with_parts())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activity_uses_the_shell_foreground_process_group() {
+        assert_eq!(classify_pty_activity(42, Some(42)), PtyActivity::Idle);
+        assert_eq!(classify_pty_activity(42, Some(84)), PtyActivity::Busy);
+        assert_eq!(classify_pty_activity(42, None), PtyActivity::Unknown);
     }
 
     fn retained_test_session(session_id: &str) -> Arc<PtySessionShared> {
@@ -773,6 +871,34 @@ mod tests {
         f()
     }
 
+    #[test]
+    fn shell_spawn_cwd_hides_windows_verbatim_drive_prefix() {
+        assert_eq!(
+            shell_spawn_cwd(r"\\?\D:\Projects\xxxx").as_ref(),
+            r"D:\Projects\xxxx"
+        );
+    }
+
+    #[test]
+    fn shell_spawn_cwd_converts_windows_verbatim_unc_prefix() {
+        assert_eq!(
+            shell_spawn_cwd(r"\\?\UNC\server\share\project").as_ref(),
+            r"\\server\share\project"
+        );
+    }
+
+    #[test]
+    fn shell_spawn_cwd_preserves_normal_and_unknown_namespace_paths() {
+        assert_eq!(
+            shell_spawn_cwd(r"D:\Projects\xxxx").as_ref(),
+            r"D:\Projects\xxxx"
+        );
+        assert_eq!(
+            shell_spawn_cwd(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\project").as_ref(),
+            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\project"
+        );
+    }
+
     const CWD_FRAME_BEGIN: &str = "__YUZORA_CWD_BEGIN__";
     const CWD_FRAME_END: &str = "__YUZORA_CWD_END__";
 
@@ -836,10 +962,7 @@ mod tests {
 
     #[cfg(windows)]
     fn normalized_windows_text(value: &str) -> String {
-        value
-            .replace("\\\\?\\", "")
-            .replace('\r', "")
-            .to_lowercase()
+        value.replace('\r', "").to_lowercase()
     }
 
     #[cfg(windows)]
@@ -849,12 +972,18 @@ mod tests {
         shell_args: &[String],
     ) {
         let (_root, workspace) = special_character_workspace();
-        let expected = normalized_windows_text(&workspace.to_string_lossy());
+        let workspace = workspace.canonicalize().unwrap();
+        let workspace = workspace.to_string_lossy().into_owned();
+        assert!(
+            workspace.starts_with(r"\\?\"),
+            "test setup did not produce a verbatim workspace path: {workspace:?}"
+        );
+        let expected = normalized_windows_text(shell_spawn_cwd(&workspace).as_ref());
         let mgr = test_manager();
         let (on_event, events) = capture_events();
 
         mgr.open(
-            workspace.to_str().unwrap(),
+            &workspace,
             session_id,
             Some(shell.to_str().unwrap()),
             Some(shell_args),

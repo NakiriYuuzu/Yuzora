@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yuzora Open Issues 多 Agent 分析報告 · 2026-07-20</title>
+<style>
+:root {
+    --font-display: Copernicus, "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+    --font-sans: StyreneB, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    --color-bg: #faf9f5;
+    --color-surface: #efe9de;
+    --color-surface-soft: #f5f0e8;
+    --color-surface-dark: #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-text: #141413;
+    --color-text-secondary: #6c6a64;
+    --color-border: #e6dfd8;
+    --color-accent: #cc785c;
+    --color-accent-active: #a9583e;
+    --color-accent-light: #f5f0e8;
+    --color-on-accent: #ffffff;
+    --color-on-dark: #faf9f5;
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error: #c64545;
+    --color-info: #5db8a6;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(20,20,19,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+.container { max-width: 980px; margin: 0 auto; }
+header { margin-bottom: 2rem; }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); font-weight: 600; }
+header h1 { font-size: 1.9rem; margin: 0.25rem 0; }
+header .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: 4px; padding: 0.05em 0.35em; }
+pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--color-surface-dark); color: var(--color-on-dark); border-radius: var(--radius-md); padding: 1rem; overflow-x: auto; line-height: 1.55; }
+pre code { background: none; border: none; color: inherit; padding: 0; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 2rem; }
+.tldr h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-accent); margin-bottom: 0.5rem; }
+.tldr p { margin-bottom: 0.5rem; }
+.tldr p:last-child { margin-bottom: 0; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1.1rem 1.25rem; }
+.metric-card .value { font-size: 1.9rem; font-weight: 700; }
+.metric-card .label { font-size: 0.8rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.tabs { display: flex; gap: 0; border-bottom: 2px solid var(--color-border); margin-bottom: 1.5rem; flex-wrap: wrap; }
+.tab { padding: 0.75rem 1.1rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; font-family: var(--font-sans); }
+.tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.tab:hover { color: var(--color-text); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+section { margin-bottom: 2rem; }
+section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+section h3 { font-size: 1.05rem; margin: 1rem 0 0.5rem; }
+
+.chart-container { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; }
+.chart-container h3 { font-size: 0.9rem; margin: 0 0 1rem; color: var(--color-text-secondary); }
+.chart-caption { font-size: 0.82rem; color: var(--color-text-secondary); margin-top: 0.5rem; }
+
+details { margin-bottom: 0.9rem; }
+details summary { cursor: pointer; font-weight: 600; padding: 0.75rem 0.9rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.92rem; }
+details[open] summary { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+details .details-body { padding: 1rem 1.1rem; border: 1px solid var(--color-border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); background: #fdfcf9; font-size: 0.9rem; }
+.details-body p { margin-bottom: 0.6rem; }
+.details-body ul { margin: 0.25rem 0 0.75rem 1.25rem; }
+.details-body li { margin-bottom: 0.3rem; }
+.field-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-accent); font-weight: 700; display: block; margin-top: 0.75rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th { text-align: left; padding: 0.6rem 0.7rem; border-bottom: 2px solid var(--color-border); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); }
+td { padding: 0.6rem 0.7rem; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+
+.badge { display: inline-block; font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.55rem; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; vertical-align: middle; }
+.b-p1 { background: #f7e3dd; color: #a9583e; border-color: #e5c2b6; }
+.b-p2 { background: #f5edd8; color: #8a6a10; border-color: #e6d5a8; }
+.b-p3 { background: #e9e6df; color: #6c6a64; border-color: #d8d3c8; }
+.b-agent { background: #ddeee1; color: #2e6b3f; border-color: #bcdcc4; }
+.b-human { background: #dcebe8; color: #256b5e; border-color: #b8d8d3; }
+.b-info { background: #f5edd8; color: #8a6a10; border-color: #e6d5a8; }
+.b-fixed { background: #ddeee1; color: #2e6b3f; border-color: #bcdcc4; }
+.b-wt { background: #e3e7f2; color: #3d5386; border-color: #c4cde4; }
+.b-open { background: #f7e3dd; color: #a9583e; border-color: #e5c2b6; }
+.b-neutral { background: var(--color-surface); color: var(--color-text-secondary); border-color: var(--color-border); }
+
+.cluster-card { background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1.1rem; margin-bottom: 0.75rem; font-size: 0.9rem; }
+.cluster-card strong { display: block; margin-bottom: 0.25rem; }
+
+.track { border-left: 3px solid var(--color-accent); padding: 0.2rem 0 0.2rem 1.1rem; margin-bottom: 1.4rem; }
+.track h3 { margin-top: 0; }
+.track p, .track ul { font-size: 0.9rem; }
+.track ul { margin: 0.35rem 0 0.5rem 1.2rem; }
+
+.scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.9rem; margin-bottom: 1.5rem; }
+.scorecard { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.9rem 1rem; font-size: 0.85rem; }
+.scorecard .score { font-size: 1.3rem; font-weight: 700; color: var(--color-accent-active); }
+.scorecard .crit { color: var(--color-text-secondary); font-size: 0.78rem; margin-top: 0.25rem; }
+
+.actions { display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.6rem 1.25rem; border-radius: var(--radius-md); border: 2px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.9rem; font-weight: 600; font-family: var(--font-sans); }
+.btn:hover { border-color: var(--color-accent); }
+.note { font-size: 0.82rem; color: var(--color-text-secondary); }
+
+@media print { .tabs, .actions, .btn { display: none; } .tab-content { display: block !important; } details { break-inside: avoid; } }
+@media (max-width: 768px) { body { padding: 1rem; } .metrics { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">多 Agent 分析報告 · Ultracode Workflow</div>
+        <h1>Yuzora Open Issues 全面分析（14 issues）</h1>
+        <p class="meta">NakiriYuuzu/Yuzora · 2026-07-20 · 30 個 Opus agents（14 分析＋13 adversarial 覆核＋1 綜合＋#17 補跑，其中一個分析 agent 失敗後另行補跑）· 約 172 萬 subagent tokens · 全程唯讀（未動 git、未動 issue）</p>
+    </header>
+
+    <div class="tldr">
+        <h3>TL;DR</h3>
+        <p><strong>14 個 open issue 中，真正需要新寫程式的只有 4 個</strong>（#11 LSP 安裝、#15 ACP runtime fallback、#21 關閉守門、#22 process-tree 資源統計）。其餘 10 個：<strong>6 個修法其實已存在</strong>——#16、#23 在目前未 commit 的 working tree；#10、#17、#19、#20 已 commit 進 main（<code>229f959</code>、<code>52f149a</code>、<code>c4d23fc</code>）——只缺 Windows 實機驗收；#30→#24 是 updater epic 的人工 OTA 發布驗收；#9 需先在 Windows 實機取 profile 再對症；#14 缺回報者的錯誤資訊（needs-info）。</p>
+        <p>主軸幾乎全是 <strong>Windows 平台缺陷</strong>（14 個中 12 個與 Windows 有關），反映 macOS 開發、Windows 首驗的落差。結構性風險：<strong>CI 的 <code>cargo test</code> 只在 macOS 跑</strong>，多個 Windows 修復的 <code>#[cfg(windows)]</code> 測試永遠不被 CI 執行，建議另開 follow-up 補 Windows test job。</p>
+    </div>
+
+    <div class="metrics">
+        <div class="metric-card"><div class="value">14</div><div class="label">Open issues 全數分析</div></div>
+        <div class="metric-card"><div class="value">4</div><div class="label">需新寫程式（ready-for-agent）</div></div>
+        <div class="metric-card"><div class="value">6</div><div class="label">修法已存在、待實機驗收</div></div>
+        <div class="metric-card"><div class="value">13/13</div><div class="label">分析通過獨立 adversarial 覆核</div></div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab(event,'overview')">總覽</button>
+        <button class="tab" onclick="showTab(event,'issues')">逐 Issue 詳析</button>
+        <button class="tab" onclick="showTab(event,'plan')">執行計畫</button>
+        <button class="tab" onclick="showTab(event,'method')">方法與覆核</button>
+    </div>
+
+    <!-- ============ 總覽 ============ -->
+    <div id="overview" class="tab-content active">
+        <div class="chart-container">
+            <h3>Issue 狀態組成（14 個）</h3>
+            <svg viewBox="0 0 700 96" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;">
+                <rect x="0"   y="10" width="300" height="34" rx="6" fill="#5db872"/>
+                <rect x="306" y="10" width="200" height="34" rx="6" fill="#cc785c"/>
+                <rect x="512" y="10" width="100" height="34" rx="6" fill="#5db8a6"/>
+                <rect x="618" y="10" width="50"  height="34" rx="6" fill="#d4a017"/>
+                <rect x="674" y="10" width="26"  height="34" rx="6" fill="#8e8b82"/>
+                <text x="150" y="32" font-size="13" fill="#fff" text-anchor="middle" font-weight="700">已修待驗收 6</text>
+                <text x="406" y="32" font-size="13" fill="#fff" text-anchor="middle" font-weight="700">需新程式 4</text>
+                <text x="562" y="32" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">發布驗收 2</text>
+                <text x="643" y="32" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">查 1</text>
+                <text x="687" y="32" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">1</text>
+                <text x="0"   y="72" font-size="11" fill="#6c6a64">已修待驗收：#10 #16 #17 #19 #20 #23</text>
+                <text x="306" y="72" font-size="11" fill="#6c6a64">需新程式：#11 #15 #21 #22</text>
+                <text x="0"   y="90" font-size="11" fill="#6c6a64">發布驗收：#30 #24　·　調查（先 profile）：#9　·　needs-info：#14</text>
+            </svg>
+            <p class="chart-caption">重點：一半以上的 open issue 不需要再寫程式——瓶頸在 Windows 實機驗收與人工發布流程，不在開發。</p>
+        </div>
+
+        <section>
+            <h2>優先處理順序（覆核後）</h2>
+            <table>
+                <thead><tr><th>順位</th><th>Issue</th><th>Priority</th><th>Triage 建議</th><th>狀態</th><th>一句話</th></tr></thead>
+                <tbody>
+                    <tr><td>1</td><td>#16 Terminal 不在專案資料夾</td><td><span class="badge b-p1">P1</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-wt">working tree 已修</span></td><td><code>shell_spawn_cwd</code> 去 verbatim 前綴已寫好，Windows 實機驗收後即可 commit 收尾</td></tr>
+                    <tr><td>2</td><td>#11 LSP 一鍵安裝失敗</td><td><span class="badge b-p1">P1</span></td><td><span class="badge b-agent">ready-for-agent</span></td><td><span class="badge b-open">未處理</span></td><td>npm 走 <code>cmd.exe /C</code> 包裝，命中 TS/Python 兩大預設 server，槓桿最高的程式修復</td></tr>
+                    <tr><td>3</td><td>#15 ACP 無法建 session</td><td><span class="badge b-p1">P1</span></td><td><span class="badge b-agent">ready-for-agent</span></td><td><span class="badge b-open">未處理</span></td><td>runtime resolver bun→deno→node，是 Windows 上 AgentZone 完全不可用的解方</td></tr>
+                    <tr><td>4</td><td>#21 Alt+F4 未提示未儲存</td><td><span class="badge b-p1">P1</span></td><td><span class="badge b-agent">ready-for-agent</span></td><td><span class="badge b-open">未處理</span></td><td>資料遺失風險；基礎設施齊備，只差接進 <code>onCloseRequested</code></td></tr>
+                    <tr><td>5</td><td>#9 安裝版嚴重卡頓</td><td><span class="badge b-p1">P1</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-open">需先 profile</span></td><td>三個假說已排序（backdrop-filter／FileTree 重掛／全 repo git status），勿無 profile 盲改</td></tr>
+                    <tr><td>6</td><td>#30 v0.0.2→v0.0.3 真實 OTA</td><td><span class="badge b-p1">P1</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-open">待人工發布</span></td><td>程式面全就緒；推 v0.0.3 tag→核 draft→發布→三平台實測，通過即可連帶關 #24</td></tr>
+                    <tr><td>7</td><td>#22 系統佔用漏算子行程</td><td><span class="badge b-p2">P2</span></td><td><span class="badge b-agent">ready-for-agent</span></td><td><span class="badge b-open">未處理</span></td><td>process-tree 聚合；同時是 #9 精準量測的軟前置</td></tr>
+                    <tr><td>8</td><td>#23 IME 未跟隨 Pi 輸入框</td><td><span class="badge b-p2">P2</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-wt">working tree 已修</span></td><td><code>terminalImePositioning.ts</code> backport 已接進兩種終端機，22 tests 綠，待 Windows IME 實測</td></tr>
+                    <tr><td>9</td><td>#20 切換專案 terminals 遺失</td><td><span class="badge b-p2">P2</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-fixed">c4d23fc 已修</span></td><td>破壞性 TerminalBridge 已移除；剩 DoD 的 sentinel／scrollback 實機證據</td></tr>
+                    <tr><td>10</td><td>#19 殘留 conhost.exe</td><td><span class="badge b-p2">P2</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-fixed">c4d23fc 已修</span></td><td>ClosePseudoConsole 回收已落地；與 #20 同一次 Windows session 驗完</td></tr>
+                    <tr><td>11</td><td>#24 [Spec] 版本同步與更新</td><td><span class="badge b-p2">P2</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-fixed">實作已落地</span></td><td>子任務 #25–#29 全關；等 #30 通過即結案</td></tr>
+                    <tr><td>12</td><td>#14 PostgreSQL 連不上</td><td><span class="badge b-p2">P2</span></td><td><span class="badge b-info">needs-info</span></td><td><span class="badge b-open">缺 repro</span></td><td>無錯誤碼無環境資訊；關鍵隔離實驗是「表單測試連線 vs 儲存後重連（Credential Manager）」</td></tr>
+                    <tr><td>13</td><td>#17 UI 洩漏 <code>\\?\</code> 前綴</td><td><span class="badge b-p3">P3</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-fixed">52f149a 已修</span></td><td><code>workspacePathForDisplay</code> 已接進所有顯示面；復驗後關閉</td></tr>
+                    <tr><td>14</td><td>#10 背景 Git 彈 CMD 視窗</td><td><span class="badge b-p3">P3</span></td><td><span class="badge b-human">ready-for-human</span></td><td><span class="badge b-fixed">229f959 已修</span></td><td>CREATE_NO_WINDOW 已加、實機 PASS；人工確認關閉即可</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>根因分群（8 群）</h2>
+            <div class="cluster-card"><strong>1. Updater／Release／版本同步 — #24、#30</strong>同一 epic。程式面（updateStore、release.yml guard/build/finalize、MSI-only metadata）已全數 commit；剩 v0.0.3 tag 推送與三平台人工 OTA。注意：v0.0.3 版本 bump（f5c0480）目前只在本地、尚未推上 origin/main。#30 通過才可關 #24。</div>
+            <div class="cluster-card"><strong>2. Windows verbatim <code>\\?\</code> 路徑 — #16、#17</strong>共同根因：<code>fs_service.rs</code> 的 <code>canonicalize_workspace</code> 回傳 verbatim 路徑。目前策略是「保留 canonical 當索引 key、在各邊界治標」：#17 顯示層已由 52f149a 的 <code>workspacePathForDisplay</code> 修好；#16 的 <code>shell_spawn_cwd</code> 修法在 working tree。治本（fs_service 端 dunce 去前綴）會牽動 workspace_path_index／lsp／git／agentRouter 的 canonical key 與 >260 字元長路徑支援，成本高於治標，不建議現在做。</div>
+            <div class="cluster-card"><strong>3. Terminal PTY 生命週期／ConPTY 回收 — #19、#20</strong>同一修復 commit <code>c4d23fc</code>：#20 靠移除破壞性 TerminalBridge＋所有 workspace layer 保留掛載；#19 靠 <code>release_pty_handles</code> drop master 觸發 ClosePseudoConsole。兩者應在同一次 Windows session 用同一組 PID／sentinel／scrollback／conhost 觀測一次驗完。殘留疑慮：程式碼自標 <code>[SPIKE 驗證]</code>，Job Object KILL_ON_JOB_CLOSE 才是 robust 方案但未驗證。</div>
+            <div class="cluster-card"><strong>4. Terminal IME — #23</strong>xterm 6.0.0 stable 對「隱藏硬體游標 TUI」的已知缺陷（上游 PR #5759/#5761 未進 stable）；working tree 的 <code>terminalImePositioning.ts</code> 為完整 backport。開放假說：若實機仍錯位，用 <code>PI_HARDWARE_CURSOR=1</code> 區分是 xterm 舊座標還是 WebView2 對隱藏游標的限制。</div>
+            <div class="cluster-card"><strong>5. Windows 子行程啟動／node CLI 調用 — #10、#11、#15</strong>共用 process spawn seam。#10（CREATE_NO_WINDOW）已修，可作 <code>configure_background_process</code> 正確範式；#11 與 #15 高度同題——Windows 下 node 生態 CLI 的正確調用（npm 需 <code>cmd.exe /C</code>、bunx 需 fallback 到 <code>npx -y</code>），可共用調查與 CVE-2024-24576 參數轉義設計。順帶：<code>process_service.rs:127</code> 與 <code>agent_terminal.rs:75</code> 仍用 <code>configure_new_group</code>（無 CREATE_NO_WINDOW），值得另開 follow-up。</div>
+            <div class="cluster-card"><strong>6. 資源量測與效能 — #22、#9</strong>#22 的 process-tree 聚合是精準 profile #9 的量測前置（in-app perf chip 目前只算 parent PID，會低估負載）。#9 的三個假說：H1 常駐 backdrop-filter（固定成本、最可能一擊見效）、H2 FileTree <code>key={treeRevision}</code> 整棵重掛、H3 每個 fs 事件全 repo <code>git status -uall</code>。</div>
+            <div class="cluster-card"><strong>7. 資料安全／關閉守門 — #21</strong>獨立子系統。<code>onCloseRequested</code> 目前刻意不攔截（有測試斷言 preventDefault 未被呼叫）；confirm dialog、saveDirtyTab、mixed-EOL blocked 判斷全都現成，只差接線。acceptance 提到的 draft recovery 目前完全不存在，應另立 spec。</div>
+            <div class="cluster-card"><strong>8. 資料庫連線 — #14（needs-info）</strong>連線、錯誤分類、去敏、keyring 皆已實作且有測試。四個假說已排序，最具 Windows 專屬性的是 H1：Windows Credential Manager 寫入／取回失敗。無 repro 前不動 code。</div>
+        </section>
+    </div>
+
+    <!-- ============ 逐 Issue 詳析 ============ -->
+    <div id="issues" class="tab-content">
+        <section>
+            <h2>逐 Issue 詳析（依優先序）</h2>
+            <p class="note">每份分析由一個 Opus agent 深入 codebase 產出，再由另一個獨立 Opus agent 親自重讀引用的 file:line 與 git diff 做 adversarial 覆核（#17 為補跑、僅自我覆核）。點開展開完整內容。</p>
+
+            <details open>
+                <summary>#16 [Windows] Terminal 啟動後不在目前專案資料夾 <span class="badge b-p1">P1</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-wt">working tree 已修</span> <span class="badge b-neutral">effort S</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因</span>
+                    <p>workspace 路徑經 <code>std::fs::canonicalize</code>（fs_service.rs:39-45）後帶 Windows verbatim <code>\\?\</code> 前綴，一路存進 workspaceStore、傳到 <code>pty_open</code>（pty_service.rs:148-152）直接當 shell cwd。cmd.exe 視為 UNC 印出「UNC paths are not supported, Defaulting to Windows directory」切到 C:\Windows；PowerShell 落到 profile home。issue 原推測的「shell profile 再次切目錄」並非主因。</p>
+                    <span class="field-label">Working tree 狀態</span>
+                    <p>已含針對性修法：pty_service.rs 新增 <code>shell_spawn_cwd()</code>（53-76 行，strip drive 前綴、UNC 轉回雙反斜線、其他 namespace 原樣保留），並附 3 個平台無關單測＋2 個 <code>#[cfg(windows)]</code> 整合測試（fixture 含空白／中文／#／% 的「專案 空間 #100%」）。判 likely-fixed 而非確定，因 Windows 端測試不在 CI 執行。</p>
+                    <span class="field-label">建議</span>
+                    <p>維持治標方向（治本牽動 canonical key 索引，見分群 2）。Windows 實機以 gui-acceptance 驗 PowerShell／cmd／自訂 shell 皆從 workspace root 啟動後，經使用者授權拆成獨立 commit。建議讓 ci.yml 的 Rust tests 也在 windows-latest 跑，否則此修復無自動守門。</p>
+                    <span class="field-label">風險與待決</span>
+                    <p>Volume GUID 等罕見 namespace 仍可能被 shell 拒絕；<code>PtySessionInfo.workspace</code> 仍存 verbatim 原值（僅 metadata）。待決：是否升級為 fs_service 治本以同時解 #17（覆核與 #17 分析都建議：不要，維持治標）。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#11 [Windows] LSP 一鍵安裝失敗 <span class="badge b-p1">P1</span> <span class="badge b-agent">ready-for-agent</span> <span class="badge b-open">未處理</span> <span class="badge b-neutral">effort M</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因（強預測，issue 未附 log）</span>
+                    <p>npm 路由（vtsls＝TS 預設、pyright＝Python 預設、typescript-language-server）必失敗：<code>lsp_download.rs:839</code> 用 <code>which("npm")</code>，而 Windows 候選名把裸名 <code>npm</code> 排最前（framing.rs:142-152）、可執行判定只是 <code>is_file()</code>（framing.rs:186-189）——Node.js 安裝目錄同時放了無副檔名的 npm（Unix sh 腳本）與 npm.cmd，於是解析到非 PE 的 sh shim，<code>Command::new(裸npm).spawn()</code> 以 ERROR_BAD_EXE_FORMAT 失敗。正確範式（<code>cmd.exe /C</code> 包裝）已存在於 <code>process_service.rs::shell_command</code>，只是沒被 LSP 路徑重用。binary 路由（rust-analyzer 等，純下載寫檔）應可成功；pip 路由風險次要（Windows Store python alias stub）。</p>
+                    <span class="field-label">建議修法</span>
+                    <ul>
+                        <li>execute_plan 的 Npm 分支在 Windows 以 ComSpec＋<code>/C</code> 包裝，注意 CVE-2024-24576 參數轉義（raw_arg 或嚴謹引號），保留 timeout／kill_tree／去敏 stderr。</li>
+                        <li>修 <code>candidate_names_for</code>：Windows 優先 <code>.cmd</code>/<code>.exe</code> 而非裸名。</li>
+                        <li>命令組裝是吃 <code>windows: bool</code> 的純函式，可在 macOS/Linux CI 直接單測守門，不需 Windows 機器。</li>
+                        <li>次要強化：<code>detect_python</code> 增列 <code>py -3</code>、過濾 WindowsApps Store alias。</li>
+                    </ul>
+                    <span class="field-label">覆核勘誤</span>
+                    <p>覆核者指出「CreateProcessW 無法執行 .cmd」的括號主張不精確（Rust 給完整路徑其實可 spawn 批次檔，CVE-2024-24576 正因此存在），但標準安裝下 which 根本輪不到 npm.cmd、主根因不受影響。clippy 是 exact baseline，改動後記得同步 <code>.github/clippy-baseline.json</code>。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#15 [Windows] AgentZone ACP 無法建立可用 session <span class="badge b-p1">P1</span> <span class="badge b-agent">ready-for-agent</span> <span class="badge b-open">未處理</span> <span class="badge b-neutral">effort L</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因（功能缺失，非 bug）</span>
+                    <p>curated presets 硬編碼 <code>bunx ...</code>（agentPresets.ts:27/33/39）；Rust preflight 只驗第一個 token <code>bunx</code> 是否在 PATH（agent_process.rs:588-613），找不到即回錯，從不嘗試已存在的 node/npx。只裝 Node 的 Windows 上 AgentZone 因此完全不可用。全 codebase 無任何 runtime fallback 實作。</p>
+                    <span class="field-label">建議實作（四層）</span>
+                    <ul>
+                        <li><strong>Runtime 探測</strong>：Rust 端以與 <code>agent_spawn</code> 相同的登入 shell 環境（env_path.rs）探測 bun/deno/node，新 IPC command 暴露——探測環境必須等同 spawn 環境。</li>
+                        <li><strong>指令模型</strong>：presets 改為 <code>{package, version}</code> spec＋<code>resolveRuntimeCommand</code>，優先級 bun→deno→node；node 走 <code>npx -y &lt;pkg&gt;@&lt;ver&gt;</code>；custom command 一律原樣穿透。</li>
+                        <li><strong>Prerequisite UI</strong>：三者皆無時顯示可行動提示。</li>
+                        <li><strong>測試</strong>：resolver 四情境單測＋spawn 流程 gui-acceptance 實機驗收。</li>
+                    </ul>
+                    <span class="field-label">最大風險</span>
+                    <p>Deno 分支相容性未證實——pi-acp／claude-agent-acp／codex-acp 是否能在 Deno 跑是未知數，先實測、不相容就 gate 掉，確保 node 分支先可用。改 preset 表示法會牽動 custom command SHA-256 fingerprint replay（agentStore），需回歸測試。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#21 [Windows] Alt+F4 關閉未提示未儲存變更 <span class="badge b-p1">P1</span> <span class="badge b-agent">ready-for-agent</span> <span class="badge b-open">未處理</span> <span class="badge b-neutral">effort M</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因</span>
+                    <p>AppShell.tsx:207-230 的 <code>onCloseRequested</code> 只做 pty／dev-server 清理，從不呼叫 <code>event.preventDefault()</code>、不檢查 dirty——且這是現行刻意設計（appShell.test.tsx:450-472 明確斷言 preventDefault 未被呼叫）。Rust 端 RunEvent 無法顯示 React 模態，攔截必須在 JS 層。mixed-EOL 被 blocked 的文件（saveDocument.ts 的 <code>{kind:"blocked"}</code>）在 Alt+F4 後直接消失。全 codebase 無任何 draft／autosave 機制。</p>
+                    <span class="field-label">建議修法</span>
+                    <p>從 workspaceActions 抽出 <code>collectDirtyPaths()</code>；onCloseRequested 改 async：preventDefault → 無 dirty 直接清理＋<code>destroy()</code>；有 dirty 走 <code>requestUnsavedDecision</code>（cancel 不關；save 逐一 <code>saveDirtyTab</code>，任一非 saved 即中止退出；discard 或全存成功才 destroy）。改寫既有測試為四情境；補 en/zh-TW 文案。draft recovery 另立 spec，本 issue 先交付 close-guard。</p>
+                    <span class="field-label">風險</span>
+                    <p>攔截處理不當會讓視窗關不掉（所有分支的最終路徑要明確）；destroy() 迴避遞迴觸發；需確認 macOS ⌘Q 是否也走 onCloseRequested（acceptance 要求一致）。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#9 [Windows] 安裝版操作嚴重卡頓 <span class="badge b-p1">P1</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-open">需先 profile</span> <span class="badge b-neutral">effort L</span></summary>
+                <div class="details-body">
+                    <span class="field-label">假說（以 code 佐證排序，未證實）</span>
+                    <ul>
+                        <li><strong>H1 固定成本</strong>：常駐 chrome（StatusBar、ProjectNavPanel）的 always-on <code>backdrop-blur-[20px]</code>。macOS 幾乎免費，Windows WebView2 上 backdrop-filter 會對後方區域反覆重繪，正對應「開 app／切 zone 都卡」的全域鈍感。全專案約 15 處使用。</li>
+                        <li><strong>H2 隨規模放大</strong>：每個 fs watcher batch 讓 FileTree 以 <code>key={treeRevision}</code> 整棵卸載重掛＋重新 listDir，丟棄所有展開快取。</li>
+                        <li><strong>H3 隨規模放大</strong>：同一 fs 事件同時觸發全 repo <code>git status --untracked-files=all</code> 子行程；Windows 行程建立成本高，與 H2 同 batch 疊加。</li>
+                    </ul>
+                    <p>已排除：ConPTY 全量 refresh 只在 test、lspManager 事件驅動、PerfBridge 每 2s 且失焦跳過。</p>
+                    <span class="field-label">建議</span>
+                    <p><strong>先量測後修，勿盲改</strong>：Windows 實機開 WebView2 DevTools Performance＋Paint flashing，大／小 workspace 各錄一份區分固定 vs 規模成本；量測時避開 in-app perf chip（受 #22 影響低估）。對症：H1 → Windows 條件式降級毛玻璃（最低風險、最可能一擊見效）；H2 → 去掉整棵重掛改增量；H3 → pathspec 化／加長 debounce／忽略 build 產物目錄。最後補「一個 fs batch 只跑一次 status、不整棵重掛」的回歸 assertion。</p>
+                    <span class="field-label">向回報者要的資料</span>
+                    <p>硬體規格與 Windows 版本；workspace 規模；空 workspace 是否也卡（強指向 H1）；哪個功能區最嚴重。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#30 [Updater 6/6] 驗證 v0.0.2→v0.0.3 真實 OTA <span class="badge b-p1">P1</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-open">待人工發布</span> <span class="badge b-neutral">effort L</span></summary>
+                <div class="details-body">
+                    <span class="field-label">現況</span>
+                    <p>程式面全就緒：tauri.conf version=0.0.3、CHANGELOG [0.0.3]、updateStore 兩階段下載安裝、release.yml guard／簽章 build／MSI-only finalizer。缺口：無 v0.0.3 tag、無 draft Release、三平台實機 OTA 未跑。<strong>覆核補充：v0.0.3 版本 bump（f5c0480）目前只在本地、領先 origin/main 一個 commit</strong>——連 bump 本身都還沒推上去（可直接對 f5c0480 打 tag，非阻斷）。</p>
+                    <span class="field-label">驗收步驟</span>
+                    <p>推 f5c0480＋v0.0.3 tag（需使用者授權與 CI secrets）→ guard/build/finalize 三 job 綠 → 人工核 draft 的 latest.json（version=0.0.3、signed、Windows MSI-only、無 -nsis key）→ 發布為 Latest → 三平台以 v0.0.2 客戶端實測「發現→下載→驗簽→安裝→relaunch 後顯示 v0.0.3」→ 證據回填 #24。</p>
+                    <span class="field-label">主要風險</span>
+                    <p>macOS leg：APPLE_* notarization secrets 仍為註解，DMG 未 notarize，Gatekeeper 可能擋 OTA 後首次啟動（minisign 驗簽是另一關）。Linux 需確認 latest.json 指向 AppImage。tag 一推即公開觸發正式流程，draft 階段務必人工檢查完再 publish。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#22 系統佔用只統計 parent process <span class="badge b-p2">P2</span> <span class="badge b-agent">ready-for-agent</span> <span class="badge b-open">未處理</span> <span class="badge b-neutral">effort M</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因</span>
+                    <p><code>perf_service.rs:26-37</code> 的 <code>sample()</code> 只刷新自身 PID（<code>ProcessesToUpdate::Some(&[pid])</code>），從不走訪 process tree。Terminal shell、ACP node wrapper、Pi agent、dev server 全是 Yuzora 的 descendants（各 spawn 路徑已逐一確認），卻不在統計內——macOS 實測 parent 約 102MiB vs 全樹約 370MiB。i18n 文案甚至直白寫「主程序 CPU · 記憶體」。</p>
+                    <span class="field-label">建議修法</span>
+                    <p>sample 改 <code>ProcessesToUpdate::All</code>＋parent→children 鄰接表 BFS 去重聚合（進階替代：以 PtyManager／AgentManager／ProcessManager 掌握的 pid 為種子做 subtree 聚合，較精確但接線成本高）。CPU 語意需拍板：維持「每核 100% 加總可 &gt;100%」或除以核心數正規化——影響 StatusBar 呈現與 i18n。測試用 <code>sh -c 'sleep 30 & sleep 30 & wait'</code> 造祖孫 fixture。</p>
+                    <span class="field-label">風險</span>
+                    <p>每 2s 全量列舉行程的成本（有失焦跳過節流可緩解）；新 descendant 首輪 CPU 讀 0 屬預期；re-parenting 邊界（中間層死亡→孫行程脫離統計）建議註明為已知限制。此項同時是 #9 精準量測的前置。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#23 [Windows] IME composition 未跟隨 Pi 輸入框 <span class="badge b-p2">P2</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-wt">working tree 已修</span> <span class="badge b-neutral">effort S</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因</span>
+                    <p>只有 Pi 觸發：Pi 0.80.7 把硬體游標放在 zero-width CURSOR_MARKER 並預設隱藏；xterm 6.0.0 stable 在此類高動態 TUI 開始 composition 時，隱藏的 helper textarea 停在過期座標，WebView2 的 IME 候選窗即以舊座標定位。上游修正（xterm PR #5759/#5761）未進 stable，working tree 的 <code>terminalImePositioning.ts</code> 是以公開 API 的完整 backport（compositionstart capture 監聽＋resize/scroll 刷新＋off-viewport 守衛），已接進本機與 SSH 兩種終端機，3 檔 22 tests 全綠。</p>
+                    <span class="field-label">剩餘工作</span>
+                    <p>Windows 實機以中文／注音 IME 跑 Pi 驗證（transcript 成長、scroll、resize、split pane），並記錄 Windows／IME 版本回填 issue。若仍錯位：以 <code>PI_HARDWARE_CURSOR=1</code> 重試——正常則本修正對症；仍錯位則是 WebView2 對隱藏游標的限制，需走 upstream #5839 路線。</p>
+                    <span class="field-label">風險</span>
+                    <p>關鍵前提「capture 監聽先於 xterm target-phase 監聽」jsdom 已驗、實機 WebView2 未驗（規範上應成立）。同批 diff 夾帶多項無關變更，建議拆獨立 commit。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#20 切換專案後 terminals 遺失 <span class="badge b-p2">P2</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-fixed">c4d23fc 已修</span> <span class="badge b-neutral">effort S</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因與修復</span>
+                    <p>舊架構的 TerminalBridge cleanup 會在 workspace 切換時對離開的 workspace 關 PTY＋清 runtime state。修復 <code>c4d23fc</code>（已為 HEAD 祖先）整個移除該破壞性 bridge（檔案已不存在、零引用），改由 TerminalDrawer 對所有有 panes 的 workspace 保留掛載（非當前以 hidden/aria-hidden/inert 呈現）；<code>ptyCloseWorkspace</code> 現在只在 app shutdown 呼叫。附真實 App composition 回歸測試。Windows 實機 A→B→A core 情境已 PASS。</p>
+                    <span class="field-label">剩餘工作</span>
+                    <p>補 DoD 要求的實機證據：shell PID／session sentinel／scrollback／背景期間輸出的延續（留言明列尚未覆蓋三項）。建議與 #19 同一次 Windows session 驗完。另需留意 app shutdown 時背景 workspace 的 PTY 依賴 <code>Drop::kill_all</code> 清理，與 #19 的 conhost 觀測重疊。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#19 [Windows] 關閉 Terminal 殘留 conhost.exe <span class="badge b-p2">P2</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-fixed">c4d23fc 已修</span> <span class="badge b-neutral">effort M</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因與修復</span>
+                    <p>conhost 的 parent 是建立 pseudoconsole 的 Yuzora 主行程，而非 shell——舊路徑 <code>taskkill /PID &lt;shell&gt; /T /F</code> 永遠殺不到它。修復 <code>c4d23fc</code>：<code>release_pty_handles</code>（pty_service.rs:376-385）把 master 從 mutex 取出 drop，portable-pty 於 drop 時呼叫 ClosePseudoConsole 回收 conhost；close／close_workspace／kill_all 三路徑都經此。issue 回報是基於修復前的 0.0.1 草稿建置（521729a）。</p>
+                    <span class="field-label">剩餘工作與疑慮</span>
+                    <p>在真實 Windows 跑既有 <code>#[ignore]</code> 測試（<code>windows_close_reaps_shell_and_conhost_without_accumulation</code>、<code>windows_kill_all_reaps_*</code>，需 <code>-- --ignored</code>）＋GUI 覆驗不累積。程式碼自標 <code>[SPIKE 驗證]</code>：ClosePseudoConsole 時序是否可靠未定，若覆驗仍見殘留才實作 Job Object KILL_ON_JOB_CLOSE。這些測試 CI 永遠不跑（cargo test 只在 macOS），是退化盲區。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#24 [Spec] 設定版本同步與應用程式更新 <span class="badge b-p2">P2</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-fixed">實作已落地</span> <span class="badge b-neutral">effort S</span></summary>
+                <div class="details-body">
+                    <span class="field-label">現況</span>
+                    <p>六個子任務中 #25–#29 全 CLOSED、實作已 commit 並逐項驗證：版本單一權威來源＋guard scripts、runtime 版本顯示、10-state updateStore、背景一次檢查、兩階段下載安裝、dirty 文件阻擋（role=alert）、下載進度 a11y、簽章 draft／MSI-only／最小 plugin 權限、en/zh-TW i18n。落差趨近於零。</p>
+                    <span class="field-label">剩餘工作</span>
+                    <p>唯一未結的是 #30 的三平台人工 OTA smoke；通過後即可關閉本 epic。待決：#24 要等 #30 通過才關，還是現在視 spec 交付完成先關、由 #30 獨立追蹤驗收。收尾時勿把目前 dirty working tree 的無關變更混入。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#14 [Windows] PostgreSQL 連線無法建立 <span class="badge b-p2">P2</span> <span class="badge b-info">needs-info</span> <span class="badge b-open">缺 repro</span> <span class="badge b-neutral">effort M</span></summary>
+                <div class="details-body">
+                    <span class="field-label">現況</span>
+                    <p>issue 未附任何錯誤碼／訊息／環境，是刻意保留診斷欄位的 tracking issue。程式面（tokio-postgres 連線、<code>pg_err_detail</code> 逐層還原真因、dnsFailed/tlsFailed/connectionTimedOut/connectionFailed 分類含 Windows <code>os error 11001</code>、密碼／userinfo 去敏＋測試、keyring 憑證庫）皆已實作。</p>
+                    <span class="field-label">假說排序</span>
+                    <ul>
+                        <li><strong>H1（最具 Windows 專屬性）</strong>：Windows Credential Manager 寫入／取回失敗（keyring windows-native 後端、generation 對不上或 CredRead 失敗）。</li>
+                        <li>H2：localhost 先解析 ::1（tokio-postgres 會遍歷位址 fallback，機率中等）。</li>
+                        <li>H3：SSL／trustCert 組合（表單預設皆 false，需使用者主動改）。</li>
+                        <li>H4：純環境因素（server 未 listen／防火牆）。</li>
+                    </ul>
+                    <span class="field-label">關鍵隔離實驗（向回報者要）</span>
+                    <p>「表單測試連線」（密碼直接來自表單）vs「儲存並連線／重連」（走 Credential Manager）——前者成功後者失敗即鎖定 H1。另要：去敏後的 UI error code、host 寫法（localhost/127.0.0.1/::1）、SSL 勾選、psql 是否能連。<strong>無 repro 前不動 code</strong>（DB integration CI 只在 Linux 跑，誤修無守門）。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#17 [Windows] Workspace UI 洩漏 \\?\ 前綴 <span class="badge b-p3">P3</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-fixed">52f149a 已修</span> <span class="badge b-neutral">effort S</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因與修復（本 issue 為 workflow 失敗後補跑分析）</span>
+                    <p>與 #16 同源：<code>canonicalize_workspace</code> 回傳 verbatim 路徑，被存進 workspaceStore 直接渲染。<strong>顯示層洩漏已由 commit <code>52f149a</code>（2026-07-15，HEAD 祖先）修復</strong>：paths.ts 新增 <code>workspacePathForDisplay</code>（strip <code>\\?\</code>、UNC 還原）與 <code>workspacePathBasename</code>，接進 ProjectNavPanel header、TabBar tooltip、WorkspaceRail tile、AgentZonePanel、SshPanel 等全部使用者可見面；identity／dedup 仍用 <code>canonicalPathKey</code>。附 Windows drive/UNC/空白/中文測試。issue 回報時測的是修復前的 0.0.1 建置。</p>
+                    <span class="field-label">剩餘工作</span>
+                    <p>Windows 現行 build 以含空白＋中文的 workspace 復驗 header／recent／tab／tooltip 均無前綴、UNC 未被破壞，通過即以「fixed in version」關閉。</p>
+                    <span class="field-label">殘留風險與待決</span>
+                    <p>治標模型下，未來新增顯示面若忘記呼叫 <code>workspacePathForDisplay</code> 會再洩漏（無 lint 強制）——可考慮防回歸約定測試。working tree 新檔 projectPresentation.ts 已正確走 <code>workspacePathBasename</code>，不回歸。治本（dunce）不建議：牽動 canonical key 索引與 &gt;260 字元長路徑支援。</p>
+                </div>
+            </details>
+
+            <details>
+                <summary>#10 [Windows] 背景 Git 指令彈出 CMD 視窗 <span class="badge b-p3">P3</span> <span class="badge b-human">ready-for-human</span> <span class="badge b-fixed">229f959 已修</span> <span class="badge b-neutral">effort S</span></summary>
+                <div class="details-body">
+                    <span class="field-label">根因與修復</span>
+                    <p><code>run_git</code> 原用 <code>configure_new_group</code>（只帶 CREATE_NEW_PROCESS_GROUP、缺 CREATE_NO_WINDOW），console subsystem 的 git.exe 每次 spawn 都配新 console。修復 <code>229f959</code>（HEAD 祖先）改用 <code>configure_background_process</code>（兩個 flag 都帶），保留 process-group timeout 清理語意，附 flag 斷言測試。Owner 已於 2026-07-18 在 Windows v0.0.2 實機驗證 PASS（status/log/diff）。</p>
+                    <span class="field-label">剩餘工作</span>
+                    <p>人工確認後關閉即可（可選：補 stage/unstage 一輪實測）。順帶評估 <code>process_service.rs:127</code> 與 <code>agent_terminal.rs:75</code> 仍用 configure_new_group 是否另開 follow-up。</p>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <!-- ============ 執行計畫 ============ -->
+    <div id="plan" class="tab-content">
+        <section>
+            <h2>建議執行計畫（四軌並行＋一項前置）</h2>
+
+            <div class="track">
+                <h3>前置｜Working tree 拆分（需使用者授權才 commit）</h3>
+                <p>目前 26 個未 commit 變更混雜三個獨立主題，建議拆成三組原子 commit，讓 #16、#23 可獨立追蹤／revert：</p>
+                <ul>
+                    <li><strong>(a)</strong> 專案編輯／workspace rail／recent workspaces（ProjectEditorPopover、projectPresentation、WorkspaceRail、ProjectNavPanel、recentWorkspaces、contextMenu*、i18n、測試）</li>
+                    <li><strong>(b)</strong> 終端機 IME 定位 = #23（terminalImePositioning.ts＋Terminal/SshTerminalSession＋測試）</li>
+                    <li><strong>(c)</strong> pty verbatim cwd = #16（pty_service.rs <code>shell_spawn_cwd</code>＋測試）</li>
+                </ul>
+            </div>
+
+            <div class="track">
+                <h3>軌 A｜可平行派工的程式修復（子系統互斥）</h3>
+                <ul>
+                    <li><strong>#11</strong>：npm 走 <code>cmd.exe /C</code>＋candidate_names_for 優先 .cmd/.exe；純函式命令組裝可在 macOS CI 單測守門。一次修好 vtsls＋pyright。</li>
+                    <li><strong>#21</strong>：collectDirtyPaths helper＋async onCloseRequested 接 confirm dialog；jsdom 可測。</li>
+                    <li><strong>#22</strong>：process-tree 聚合＋CPU 正規化決策＋多層 fixture 測試；同時是 #9 量測前置，宜優先。</li>
+                </ul>
+            </div>
+
+            <div class="track">
+                <h3>軌 B｜較大 feature</h3>
+                <ul>
+                    <li><strong>#15</strong>：ACP runtime resolver（bun→deno→node）＋prerequisite UI。與 #11 同屬「Windows node CLI 調用」，可接續其調查；Deno 分支先實測相容性，不相容就 gate 掉，先保 node（<code>npx -y</code>）分支可用。</li>
+                </ul>
+            </div>
+
+            <div class="track">
+                <h3>軌 C｜人工／Windows 實機驗證（agent 在 macOS 無法代勞）</h3>
+                <ul>
+                    <li><strong>#16、#23</strong>（working tree 已修）：先跑既有單測（macOS 已綠），Windows 實機以 gui-acceptance 驗 cwd 落點與 CJK IME 跟隨，通過後拆 commit 落地。</li>
+                    <li><strong>#19、#20</strong>（c4d23fc 已修）：同一 Windows PTY session 一次驗完 session 保存（PID/sentinel/scrollback/背景輸出）與 conhost 回收不累積；可跑 <code>#[ignore]</code> 的 windows_close_reaps_* 測試。</li>
+                    <li><strong>#30 → #24</strong>：推 f5c0480＋v0.0.3 tag → 核 draft latest.json → 發布 → 三平台 OTA 實測 → 關 #30 再關 #24。注意 macOS notarization 未啟用的 Gatekeeper 風險。</li>
+                    <li><strong>#17</strong>（52f149a 已修）：含空白＋中文 workspace 復驗各顯示面無 <code>\\?\</code>，關閉。</li>
+                    <li><strong>#10</strong>（229f959 已修＋實機 PASS）：確認關閉；評估 process_service／agent_terminal 的 configure_new_group follow-up。</li>
+                </ul>
+            </div>
+
+            <div class="track">
+                <h3>軌 D｜調查與資訊補齊</h3>
+                <ul>
+                    <li><strong>#9</strong>：Windows 實機 WebView2 DevTools profile（大／小 workspace 各一份、Paint flashing 看 backdrop-filter 熱區），再對症下藥。勿無 profile 盲改。</li>
+                    <li><strong>#14</strong>：向回報者取去敏 error code＋「in-form 測試連線 vs 儲存後重連」隔離結果＋host/SSL 設定；無 repro 前不動 code。</li>
+                </ul>
+            </div>
+
+            <div class="track">
+                <h3>跨 issue｜CI 守門缺口（建議另開 follow-up issue）</h3>
+                <p>ci.yml 的 <code>cargo test</code> 僅在 macOS 跑、Windows 只 <code>cargo check</code>——#16/#19 的 <code>#[cfg(windows)]</code> 測試在 CI 永遠只編譯不執行，這些 Windows 修復日後退化無人察覺。建議加 windows-latest 的 Rust test job，或至少文件化手動 gate。</p>
+            </div>
+        </section>
+
+        <section>
+            <h2>Triage label 指令（供你核准後自行執行）</h2>
+            <p class="note">依覆核後的 triage 建議產生。本次分析全程未動 GitHub issue——以下指令由你決定是否執行。</p>
+            <pre id="triage-cmds"><code>gh issue edit 24 --repo NakiriYuuzu/Yuzora --remove-label ready-for-agent --add-label ready-for-human
+gh issue edit 22 --repo NakiriYuuzu/Yuzora --add-label ready-for-agent
+gh issue edit 21 --repo NakiriYuuzu/Yuzora --add-label ready-for-agent
+gh issue edit 20 --repo NakiriYuuzu/Yuzora --remove-label ready-for-agent --add-label ready-for-human
+gh issue edit 19 --repo NakiriYuuzu/Yuzora --add-label ready-for-human
+gh issue edit 17 --repo NakiriYuuzu/Yuzora --add-label ready-for-human
+gh issue edit 16 --repo NakiriYuuzu/Yuzora --add-label ready-for-human
+gh issue edit 15 --repo NakiriYuuzu/Yuzora --add-label ready-for-agent
+gh issue edit 14 --repo NakiriYuuzu/Yuzora --add-label needs-info
+gh issue edit 11 --repo NakiriYuuzu/Yuzora --add-label ready-for-agent
+gh issue edit 10 --repo NakiriYuuzu/Yuzora --add-label ready-for-human
+gh issue edit 9 --repo NakiriYuuzu/Yuzora --add-label ready-for-human</code></pre>
+            <button class="btn" onclick="copyEl('triage-cmds', this)">複製指令</button>
+        </section>
+    </div>
+
+    <!-- ============ 方法與覆核 ============ -->
+    <div id="method" class="tab-content">
+        <section>
+            <h2>分析方法</h2>
+            <p style="font-size:0.92rem;">Workflow 三階段（全部 Opus）：<strong>Analyze</strong>——每個 issue 一個 agent，讀完整 issue（含留言）→ 深入 codebase 引 file:line 佐證 → 比對未 commit working tree 是否已處理；<strong>Verify</strong>——每份分析交給獨立 adversarial reviewer，親自重讀引用的檔案與 git diff 設法推翻；<strong>Synthesize</strong>——技術主管視角做跨 issue 分群、優先序與執行計畫。#17 的分析 agent 因 StructuredOutput 重試上限失敗，另以單一 Opus agent 補跑（含逐項 self-verification，但<strong>未經獨立覆核</strong>，採信程度應略低於其他 13 份）。全程唯讀：未執行任何 git 寫入、未建 worktree、未修改任何 repo 檔案與 GitHub issue。</p>
+        </section>
+
+        <section>
+            <h2>覆核結果</h2>
+            <p style="font-size:0.92rem;">13/13 份分析被判定 <strong>sound</strong>（無不存在的檔案、無不成立的根因、無錯誤的 workingTreeStatus）。覆核共提出 15 條非致命勘誤，全數為行號漂移或措辭精確度問題，重要的三條已整併進本報告：</p>
+            <ul style="font-size:0.9rem; margin-left:1.25rem;">
+                <li><strong>#30</strong>：v0.0.3 版本 bump（f5c0480）只在本地、尚未推上 origin/main——缺口比「尚未推 tag」更早一步（非阻斷，可直接對該 commit 打 tag）。</li>
+                <li><strong>#11</strong>：「CreateProcessW 無法執行 .cmd」的括號主張不精確（Rust 給完整路徑可 spawn 批次檔），但標準安裝下 which 解析到的是非 PE 的裸 npm shim，主根因不變。</li>
+                <li><strong>#20</strong>：triage 由原標的 ready-for-agent 修正為 ready-for-human（程式已修完，剩實機驗收）。</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>品質記分卡（自評）</h2>
+            <div class="scorecards">
+                <div class="scorecard"><div class="score">5/5</div><strong>Completeness</strong><div class="crit">14/14 open issues 全數分析；workflow 失敗的 #17 已補跑</div></div>
+                <div class="scorecard"><div class="score">5/5</div><strong>Evidence</strong><div class="crit">每個根因附 file:line；working tree 判定附 diff 證據；修復 commit 經 merge-base 驗證</div></div>
+                <div class="scorecard"><div class="score">4/5</div><strong>Verification</strong><div class="crit">13 份經獨立 adversarial 覆核；#17 僅 self-verification</div></div>
+                <div class="scorecard"><div class="score">4/5</div><strong>Actionability</strong><div class="crit">每 issue 有具體修法／驗收步驟；#9/#14 受限於缺 profile／repro，僅能給調查路徑</div></div>
+                <div class="scorecard"><div class="score">4/5</div><strong>Risk Coverage</strong><div class="crit">含 CVE-2024-24576、Gatekeeper、ClosePseudoConsole 時序、canonical key 取捨等；Windows 端多數風險無法在 macOS 實證</div></div>
+            </div>
+            <p class="note">已知限制：所有「likely-fixed／已修待驗」判定都止於 code 與 diff 層——Windows 實機行為未經本次驗證；#9 假說排序未經 profile 證實；#11 根因屬強預測（issue 未附 log）。</p>
+        </section>
+
+        <section>
+            <h2>回饋</h2>
+            <p class="note">審完後可把意見序列化貼回 Claude Code 繼續迭代。</p>
+            <div style="display:flex; flex-direction:column; gap:0.5rem; max-width:640px;">
+                <label style="font-size:0.85rem;">整體評語／需修正的段落：</label>
+                <textarea id="fb-comment" rows="3" style="font-family:var(--font-sans); font-size:0.88rem; padding:0.6rem; border:1px solid var(--color-border); border-radius:var(--radius-md); background:#fff;"></textarea>
+                <label style="font-size:0.85rem;"><input type="checkbox" id="fb-approve"> 我同意報告中的 triage 建議與執行計畫</label>
+            </div>
+            <div class="actions">
+                <button class="btn" onclick="copyFeedback(this)">Copy as JSON（回饋）</button>
+                <button class="btn" onclick="window.print()">Print / PDF</button>
+            </div>
+        </section>
+    </div>
+</div>
+
+<script>
+function showTab(ev, id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    ev.target.classList.add('active');
+}
+function copyEl(id, btn) {
+    navigator.clipboard.writeText(document.getElementById(id).textContent.trim());
+    const t = btn.textContent; btn.textContent = '已複製！';
+    setTimeout(() => btn.textContent = t, 1500);
+}
+function copyFeedback(btn) {
+    const payload = {
+        artifact: 'issues-analysis-report-2026-07-20.html',
+        reviewed_at: new Date().toISOString(),
+        approved: document.getElementById('fb-approve').checked,
+        comments: document.getElementById('fb-comment').value,
+        next_prompt: '依上述回饋修訂 Yuzora issues 分析報告，或依核准的執行計畫開始派工。'
+    };
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    const t = btn.textContent; btn.textContent = '已複製！';
+    setTimeout(() => btn.textContent = t, 1500);
+}
+</script>
+</body>
+</html>

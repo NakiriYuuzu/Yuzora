@@ -2,6 +2,8 @@
 
 Issues and PRDs for this repo live in GitHub Issues under `NakiriYuuzu/Yuzora`. Use the `gh` CLI or the connected GitHub tools for operations.
 
+Implementation lifecycle（Issue → Branch → Commit → Pull Request → Merge）見 [`pull-request-workflow.md`](pull-request-workflow.md)；Release、Updater 與 Pages 操作見 [`../operations.md`](../operations.md)。
+
 ## Conventions
 
 - Create a new issue only when no existing issue represents the work.
