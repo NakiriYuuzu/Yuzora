@@ -1,0 +1,11 @@
+{
+  "name": "yuzora-pi-acp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Yuzora built-in ACP adapter for the pi coding agent (drives pi via its in-process SDK; see .yuuzu/specs/pi-sdk-adapter-migration.html)",
+  "scripts": {
+    "build": "bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs && bun build src/session-host.ts --target=node --format=esm --outfile=dist/session-host.mjs",
+    "check": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.json"
+  }
+}

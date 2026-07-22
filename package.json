@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "bun run typecheck && vite build",
+    "build:adapter": "cd adapters/yuzora-pi-acp && bun run build",
+    "check:adapter": "cd adapters/yuzora-pi-acp && bun run check",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
