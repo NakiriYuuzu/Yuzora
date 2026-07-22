@@ -87,6 +87,14 @@ jobs:
           workspaces: src-tauri
           key: ci-${{ matrix.cache-key }}
 
+      # tauri.conf.json 的 bundle.resources 指向 adapters/yuzora-pi-acp/dist
+      #（gitignored build 產物）——Tauri build script 解析設定時要求路徑存在，
+      # 所以任何 cargo 編譯前都要先產出 adapter dist（zero-dep bun build）。
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build builtin pi adapter (bundle resource)
+        run: bun run build:adapter
+
       - name: Compile all targets with locked dependencies
         working-directory: src-tauri
         run: cargo check --locked --all-targets
@@ -146,6 +154,12 @@ jobs:
         with:
           workspaces: src-tauri
           key: database-integration-linux-x86-64
+
+      # 同 rust-compile：cargo 編譯前先產出 tauri.conf 引用的 adapter dist。
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build builtin pi adapter (bundle resource)
+        run: bun run build:adapter
 
       - name: Start PostgreSQL and MSSQL fixtures
         run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait
