@@ -5,7 +5,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import i18n from "@/lib/i18n"
-import { useContextMenuStore } from "@/state/contextMenuStore"
+import { contextMenuHandler, useContextMenuStore } from "@/state/contextMenuStore"
 import { useTerminalStore } from "@/state/terminalStore"
 import { useWorkbenchLayoutStore, workbenchLayoutInitialState } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -137,14 +137,22 @@ function renderDrawer({
   visible = true,
   height = 800,
   mainSurfaceMinHeight = 44,
+  includeAppShellContextMenu = false,
 }: {
   visible?: boolean
   height?: number
   mainSurfaceMinHeight?: number
+  includeAppShellContextMenu?: boolean
 } = {}) {
   const containerRef = createRef<HTMLDivElement>()
   const view = render(
-    <div ref={containerRef} data-testid="terminal-test-stack">
+    <div
+      ref={containerRef}
+      data-testid="terminal-test-stack"
+      onContextMenu={
+        includeAppShellContextMenu ? contextMenuHandler({ kind: "general" }) : undefined
+      }
+    >
       <TerminalDrawer
         visible={visible}
         containerRef={containerRef}
@@ -546,7 +554,7 @@ describe("TerminalDrawer sessions", () => {
 
   it("suppresses the terminal viewport context menu without opening Yuzora actions", () => {
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
-    renderDrawer()
+    renderDrawer({ includeAppShellContextMenu: true })
     fireEvent.click(screen.getByTitle("New terminal"))
 
     const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement

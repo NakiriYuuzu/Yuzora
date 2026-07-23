@@ -136,7 +136,7 @@ export function TerminalSection() {
           <SettingsTextInput
             label={t("customExecutableLabel")}
             value={settings.customProfile.shell}
-            placeholder="C:\Program Files\PowerShell\7\pwsh.exe"
+            placeholder={"C:\\Program Files\\PowerShell\\7\\pwsh.exe"}
             onChange={(shell) => updateCustomProfile({ shell })}
           />
           <label className="flex flex-col gap-[6px]">
