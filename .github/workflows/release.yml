@@ -103,9 +103,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify tag and product versions
-        env:
-          GITHUB_REF_NAME: ${{ steps.release.outputs.tag_name }}
-        run: bun run check:version
+        run: >-
+          GITHUB_REF_NAME="${{ steps.release.outputs.tag_name }}"
+          bun run check:version
 
       - name: Verify user-facing release notes
         run: bun scripts/release-notes.ts "${{ steps.release.outputs.tag_name }}"

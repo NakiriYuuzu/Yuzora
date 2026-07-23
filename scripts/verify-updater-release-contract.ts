@@ -85,6 +85,17 @@ assert(
   "guard must check out the exact successful main CI SHA"
 )
 
+const versionGuard = guardSteps
+  .map((step, index) => record(step, `guard.steps[${index}]`))
+  .find((step) => step.name === "Verify tag and product versions")
+assert(versionGuard, "guard must verify the release tag against product versions")
+assert(
+  typeof versionGuard.run === "string" &&
+    versionGuard.run.includes('GITHUB_REF_NAME="${{ steps.release.outputs.tag_name }}"') &&
+    versionGuard.run.includes("bun run check:version"),
+  "version guard must pass the resolved tag directly to the version check"
+)
+
 const signingGuard = guardSteps
   .map((step, index) => record(step, `guard.steps[${index}]`))
   .find((step) => step.name === "Validate updater signing inputs")
@@ -258,6 +269,51 @@ assert(
 )
 assert(confirmPublication, "automated publish must confirm GitHub publication state")
 
+const ciWorkflow = record(
+  Bun.YAML.parse(await Bun.file(".github/workflows/ci.yml").text()),
+  "CI workflow"
+)
+const ciJobs = record(ciWorkflow.jobs, "CI jobs")
+const releaseCandidate = record(ciJobs["release-candidate"], "CI release candidate")
+assert(
+  typeof releaseCandidate.if === "string" &&
+    releaseCandidate.if.includes("github.event_name == 'pull_request'") &&
+    releaseCandidate.if.includes("startsWith(github.head_ref, 'release/')"),
+  "release candidate installers must only build for release pull requests"
+)
+const candidateStrategy = record(releaseCandidate.strategy, "release candidate strategy")
+const candidateMatrix = record(candidateStrategy.matrix, "release candidate matrix")
+assert(Array.isArray(candidateMatrix.include), "release candidate matrix include is required")
+const candidateRows = candidateMatrix.include.map((row, index) =>
+  record(row, `release candidate matrix row ${index}`)
+)
+for (const os of ["macos-latest", "windows-latest", "ubuntu-22.04"]) {
+  assert(
+    candidateRows.some((row) => row.os === os),
+    `release candidate matrix must include ${os}`
+  )
+}
+const candidateSteps = releaseCandidate.steps
+assert(Array.isArray(candidateSteps), "release candidate steps are required")
+const candidateBuild = candidateSteps
+  .map((step, index) => record(step, `release candidate step ${index}`))
+  .find((step) => step.name === "Build unsigned release candidate")
+const candidateUpload = candidateSteps
+  .map((step, index) => record(step, `release candidate step ${index}`))
+  .find((step) => step.name === "Upload release candidate")
+assert(candidateBuild, "release PRs must build runnable candidate installers")
+assert(
+  typeof candidateBuild.run === "string" &&
+    candidateBuild.run.includes("bun tauri build --ci --no-sign") &&
+    candidateBuild.run.includes('"createUpdaterArtifacts":false'),
+  "release candidates must not create signed updater or Release artifacts"
+)
+assert(candidateUpload, "release PRs must upload candidate installers for user validation")
+assert(
+  candidateUpload.uses === "actions/upload-artifact@v4",
+  "release candidates must use GitHub Actions artifacts"
+)
+
 console.log(
-  "Updater release contract verified: PR-gated auto tag, signed assets, MSI-only OTA, automated publish"
+  "Updater release contract verified: user-tested PR candidates, auto tag, signed assets, MSI-only OTA, automated publish"
 )

@@ -118,6 +118,91 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
 
+  # Release PRs must provide runnable installers before merge so the user can
+  # complete platform validation. These are Actions artifacts only: no tag,
+  # GitHub Release, updater signature, or publication happens from a PR.
+  release-candidate:
+    name: Release candidate (${{ matrix.label }})
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS universal
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            build-args: --target universal-apple-darwin
+            artifact-name: yuzora-release-candidate-macos-universal
+            artifact-path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            label: Windows x86-64
+            rust-targets: ""
+            build-args: ""
+            artifact-name: yuzora-release-candidate-windows-x86-64
+            artifact-path: |
+              src-tauri/target/release/bundle/nsis/*setup.exe
+              src-tauri/target/release/bundle/msi/*.msi
+          - os: ubuntu-22.04
+            label: Linux x86-64
+            rust-targets: ""
+            build-args: ""
+            artifact-name: yuzora-release-candidate-linux-x86-64
+            artifact-path: |
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/rpm/*.rpm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-candidate-${{ runner.os }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build unsigned release candidate
+        shell: bash
+        run: >-
+          bun tauri build --ci --no-sign
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          ${{ matrix.build-args }}
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
+          retention-days: 14
+
   database-integration:
     name: Real database integration (Linux x86-64)
     runs-on: ubuntu-22.04
