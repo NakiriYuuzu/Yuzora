@@ -934,6 +934,7 @@ export function TerminalDrawer({
         <div
           aria-hidden={!expanded}
           inert={!expanded}
+          onContextMenuCapture={(event) => event.preventDefault()}
           className="yzs overflow-y-auto font-mono"
           style={{
             height: expanded ? geometry.contentHeight : 0,

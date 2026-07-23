@@ -289,10 +289,10 @@ fn detect_windows_terminal_profiles() -> Vec<TerminalProfile> {
             kind: TerminalProfileKind::Wsl,
             cwd_strategy: TerminalCwdStrategy::Wsl,
         });
-        if let Ok(output) = std::process::Command::new(&wsl)
-            .args(["--list", "--quiet"])
-            .output()
-        {
+        let mut command = std::process::Command::new(&wsl);
+        command.args(["--list", "--quiet"]);
+        process_kill::configure_hidden_process(&mut command);
+        if let Ok(output) = command.output() {
             if output.status.success() {
                 for distro in decode_wsl_list_output(&output.stdout) {
                     profiles.push(TerminalProfile {
@@ -1173,6 +1173,17 @@ mod tests {
         assert_eq!(
             decode_wsl_list_output(&utf16),
             vec!["Ubuntu".to_string(), "Debian".to_string()]
+        );
+    }
+
+    #[test]
+    fn windows_wsl_profile_probe_suppresses_its_console_window() {
+        let source = include_str!("pty_service.rs");
+        let hidden_configuration =
+            ["process_kill::configure_hidden_process", "(&mut command);"].concat();
+        assert!(
+            source.contains(&hidden_configuration),
+            "the Windows wsl.exe profile probe must not create a visible console window"
         );
     }
 

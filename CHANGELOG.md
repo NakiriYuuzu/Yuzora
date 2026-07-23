@@ -17,6 +17,7 @@
 ### 修正
 
 - 關閉應用程式時會主動結束 Terminal、Agent、LSP、Git、SSH 與預覽服務的背景程序，降低 Windows 關閉後仍有程序殘留的情況。
+- Windows 的背景程序與 WSL profile 探測不再彈出額外的命令列視窗。
 
 ### 已知限制
 

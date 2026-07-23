@@ -12,13 +12,8 @@ const WINDOWS_CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(any(windows, test))]
-const fn windows_creation_flags(hide_window: bool) -> u32 {
-    WINDOWS_CREATE_NEW_PROCESS_GROUP
-        | if hide_window {
-            WINDOWS_CREATE_NO_WINDOW
-        } else {
-            0
-        }
+const fn windows_creation_flags() -> u32 {
+    WINDOWS_CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_NO_WINDOW
 }
 
 #[cfg(any(windows, test))]
@@ -47,7 +42,7 @@ pub fn configure_new_group(cmd: &mut Command) {
 pub fn configure_new_group(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
 
-    cmd.creation_flags(windows_creation_flags(false));
+    cmd.creation_flags(windows_creation_flags());
     // [SPIKE 驗證] The plan calls for assigning the child to a Windows Job
     // Object with KILL_ON_JOB_CLOSE. std::process::Command has no portable hook
     // to retain that Job handle here; the exact windows crate features and
@@ -66,7 +61,7 @@ pub fn configure_background_process(cmd: &mut Command) {
 pub fn configure_background_process(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
 
-    cmd.creation_flags(windows_creation_flags(true));
+    cmd.creation_flags(windows_creation_flags());
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -247,13 +242,9 @@ mod tests {
 
     #[test]
     fn windows_background_flags() {
-        let background = super::windows_creation_flags(true);
+        let background = super::windows_creation_flags();
         assert_eq!(background & 0x0000_0200, 0x0000_0200);
         assert_eq!(background & 0x0800_0000, 0x0800_0000);
-
-        let grouped = super::windows_creation_flags(false);
-        assert_eq!(grouped & 0x0000_0200, 0x0000_0200);
-        assert_eq!(grouped & 0x0800_0000, 0);
     }
 
     #[test]

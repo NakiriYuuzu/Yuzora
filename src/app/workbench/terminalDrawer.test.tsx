@@ -549,9 +549,15 @@ describe("TerminalDrawer sessions", () => {
     renderDrawer()
     fireEvent.click(screen.getByTitle("New terminal"))
 
+    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const contentEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    expect(content.dispatchEvent(contentEvent)).toBe(false)
+    expect(contentEvent.defaultPrevented).toBe(true)
+
     const pane = useTerminalStore.getState().layouts["/workspace"].panes[0]
-    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
-    screen.getByTestId(`terminal-pane-${pane.paneId}`).dispatchEvent(event)
+    const paneEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    expect(screen.getByTestId(`terminal-pane-${pane.paneId}`).dispatchEvent(paneEvent)).toBe(false)
+    expect(paneEvent.defaultPrevented).toBe(true)
 
     expect(useContextMenuStore.getState().request).toBeNull()
   })
