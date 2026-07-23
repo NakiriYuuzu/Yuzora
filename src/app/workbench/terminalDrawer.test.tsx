@@ -554,6 +554,20 @@ describe("TerminalDrawer sessions", () => {
     expect(content.dispatchEvent(contentEvent)).toBe(false)
     expect(contentEvent.defaultPrevented).toBe(true)
 
+    const terminal = screen.getByTestId(/terminal-session-/)
+    let tuiSawDefaultPrevented: boolean | undefined
+    terminal.addEventListener(
+      "contextmenu",
+      (event) => {
+        tuiSawDefaultPrevented = event.defaultPrevented
+      },
+      { once: true },
+    )
+    const tuiEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    expect(terminal.dispatchEvent(tuiEvent)).toBe(false)
+    expect(tuiSawDefaultPrevented).toBe(false)
+    expect(tuiEvent.defaultPrevented).toBe(true)
+
     const pane = useTerminalStore.getState().layouts["/workspace"].panes[0]
     const paneEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
     expect(screen.getByTestId(`terminal-pane-${pane.paneId}`).dispatchEvent(paneEvent)).toBe(false)
