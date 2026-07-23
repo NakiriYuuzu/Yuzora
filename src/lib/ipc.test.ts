@@ -475,6 +475,7 @@ it("ptyOpen forwards args, wires channel, and returns session info", async () =>
             sessionId: string
             shell: string | null
             shellArgs: string[] | undefined
+            cwdStrategy: "native" | "wsl"
             cols: number
             rows: number
             onEvent: { onmessage: (event: PtyEvent) => void }
@@ -483,13 +484,14 @@ it("ptyOpen forwards args, wires channel, and returns session info", async () =>
         expect(p.sessionId).toBe("pty-1")
         expect(p.shell).toBeNull()
         expect(p.shellArgs).toEqual(["-c", "echo ok"])
+        expect(p.cwdStrategy).toBe("native")
         expect(p.cols).toBe(120)
         expect(p.rows).toBe(32)
         p.onEvent.onmessage({ type: "output", data: "ready\n" })
         return { sessionId: "pty-1", workspace: "/w", shell: "/bin/zsh", cols: 120, rows: 32 }
     })
     const events: PtyEvent[] = []
-    const info = await ptyOpen("/w", "pty-1", null, ["-c", "echo ok"], 120, 32, (event) =>
+    const info = await ptyOpen("/w", "pty-1", null, ["-c", "echo ok"], "native", 120, 32, (event) =>
         events.push(event)
     )
     expect(events).toEqual([{ type: "output", data: "ready\n" }])

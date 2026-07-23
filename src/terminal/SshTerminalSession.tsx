@@ -3,9 +3,10 @@ import { listen } from "@tauri-apps/api/event"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 
+import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import { sshOpenShell, sshResize, sshWrite } from "@/lib/ipc"
 import type { SshDataEvent, SshExitEvent } from "@/lib/types"
-import { installTerminalImePositioning } from "./terminalImePositioning"
+import { installTerminalImeHandling } from "./terminalImeHandling"
 import { buildXtermTheme } from "./xtermTheme"
 
 export interface SshTerminalSessionProps {
@@ -60,6 +61,7 @@ function terminalSize(term: Terminal): { cols: number; rows: number } {
  * sshStore, so switching modes/hosts keeps the remote session alive.
  */
 export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSessionProps) {
+    const imeAnchorMode = loadTerminalSettings().imeAnchorMode
     const containerRef = useRef<HTMLDivElement | null>(null)
     const termRef = useRef<Terminal | null>(null)
     const lastSizeRef = useRef({ cols: defaultCols, rows: defaultRows })
@@ -94,14 +96,17 @@ export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSes
         termRef.current = term
         term.loadAddon(fitAddon)
         term.open(container)
-        const imePositioning = installTerminalImePositioning(term)
         safeFit(fitAddon)
         lastSizeRef.current = terminalSize(term)
 
-        const dataDisposable = term.onData((data) => {
-            if (disposed) return
-            void sshWrite(sessionId, data).catch(() => undefined)
-        })
+        const imeHandling = installTerminalImeHandling(
+            term,
+            (data) => {
+                if (disposed) return
+                void sshWrite(sessionId, data).catch(() => undefined)
+            },
+            { anchorMode: imeAnchorMode }
+        )
 
         const unlistenPromises = [
             listen<SshDataEvent>("ssh://data", (e) => {
@@ -157,14 +162,13 @@ export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSes
             disposed = true
             themeObserver.disconnect()
             resizeObserver.disconnect()
-            dataDisposable.dispose()
-            imePositioning.dispose()
+            imeHandling.dispose()
             for (const p of unlistenPromises) void p.then((fn) => fn()).catch(() => undefined)
             fitAddon.dispose()
             term.dispose()
             termRef.current = null
         }
-    }, [sessionId])
+    }, [imeAnchorMode, sessionId])
 
     useEffect(() => {
         if (!active || !termRef.current) return

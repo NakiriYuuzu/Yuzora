@@ -15,6 +15,7 @@ interface TerminalSessionMockProps {
   workspace: string
   shell: string | null
   shellArgs?: string[]
+  imeAnchorMode?: "cursor" | "tui"
   active: boolean
   visible?: boolean
   onExit?: (code: number | null) => void
@@ -37,6 +38,7 @@ vi.mock("@/terminal/TerminalSession", () => ({
         data-workspace={props.workspace}
         data-shell={props.shell ?? ""}
         data-shell-args={props.shellArgs?.join("|") ?? ""}
+        data-ime-anchor={props.imeAnchorMode ?? "cursor"}
         data-active={String(props.active)}
         data-visible={String(props.visible ?? true)}
       >
@@ -596,6 +598,69 @@ describe("TerminalDrawer sessions", () => {
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")[0]).toMatchObject({
       shellArgs: ["-c", "echo-ok"],
     })
+  })
+
+  it("opens a detected WSL distro profile with structured argv and snapshots TUI IME mode", async () => {
+    localStorage.setItem(
+      "yuzora:terminal-settings",
+      JSON.stringify({
+        defaultProfile: {
+          id: "system",
+          name: "System default",
+          shell: "",
+          args: [],
+          kind: "system",
+          cwdStrategy: "native",
+        },
+        customProfile: {
+          id: "custom",
+          name: "Custom",
+          shell: "",
+          args: [],
+          kind: "custom",
+          cwdStrategy: "native",
+        },
+        imeAnchorMode: "tui",
+      }),
+    )
+    mockIPC((cmd) => {
+      if (cmd === "pty_list_profiles") {
+        return [
+          {
+            id: "wsl:Ubuntu",
+            name: "WSL: Ubuntu",
+            shell: "C:\\Windows\\System32\\wsl.exe",
+            args: ["--distribution", "Ubuntu"],
+            kind: "wsl",
+            cwdStrategy: "wsl",
+          },
+        ]
+      }
+      return undefined
+    })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    renderDrawer()
+
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByRole("button", { name: "New terminal with profile" }), {
+        button: 0,
+        ctrlKey: false,
+      })
+    })
+    const menu = await screen.findByRole("menu")
+    await act(async () => {
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "WSL: Ubuntu" }))
+    })
+
+    expect(screen.getByTestId(/terminal-session-/)).toHaveAttribute(
+      "data-shell",
+      "C:\\Windows\\System32\\wsl.exe",
+    )
+    expect(screen.getByTestId(/terminal-session-/)).toHaveAttribute(
+      "data-shell-args",
+      "--distribution|Ubuntu",
+    )
+    expect(screen.getByTestId(/terminal-session-/)).toHaveAttribute("data-ime-anchor", "tui")
   })
 
   it("closes the active PTY through the shared command and returns to the empty state", async () => {

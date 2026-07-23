@@ -161,6 +161,16 @@ export type PtyEvent =
     | { type: "output"; data: string }
     | { type: "exit"; code: number | null }
 export type PtyActivity = "idle" | "busy" | "unknown"
+export type TerminalProfileKind = "system" | "cmd" | "powershell" | "wsl" | "custom"
+export type TerminalCwdStrategy = "native" | "wsl"
+export interface TerminalProfile {
+    id: string
+    name: string
+    shell: string
+    args: string[]
+    kind: TerminalProfileKind
+    cwdStrategy: TerminalCwdStrategy
+}
 export interface DevServerCandidate {
     scriptName: string
     command: string

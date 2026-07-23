@@ -14,6 +14,10 @@ export function showsNativeTrafficLights(): boolean {
     return isTauri() && /Mac/.test(navigator.userAgent)
 }
 
+export function isWindowsPlatform(): boolean {
+    return /Windows/.test(navigator.userAgent)
+}
+
 /**
  * 內建 pi adapter（yuzora-pi-acp，隨 app 打包於 resources）的 spawn 指令。
  * P5 的 pi runtime 選擇器據此提供 builtin 選項；bundle 外（dev server、測試）

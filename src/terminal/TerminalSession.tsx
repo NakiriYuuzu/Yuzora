@@ -4,8 +4,9 @@ import { Terminal } from "@xterm/xterm"
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 
 import { ptyClose, ptyOpen, ptyResize, ptyWrite } from "../lib/ipc"
-import type { PtyEvent } from "../lib/types"
-import { installTerminalImePositioning } from "./terminalImePositioning"
+import type { PtyEvent, TerminalCwdStrategy } from "../lib/types"
+import { installTerminalImeHandling } from "./terminalImeHandling"
+import type { TerminalImeAnchorMode } from "./terminalImePositioning"
 import { registerTerminalView } from "./terminalViewRegistry"
 import { buildXtermTheme } from "./xtermTheme"
 
@@ -14,6 +15,8 @@ export interface TerminalSessionProps {
     sessionId: string
     shell?: string | null
     shellArgs?: string[]
+    cwdStrategy?: TerminalCwdStrategy
+    imeAnchorMode?: TerminalImeAnchorMode
     active: boolean
     visible?: boolean
     onExit?: (code: number | null) => void
@@ -64,6 +67,8 @@ export function TerminalSession({
     sessionId,
     shell = null,
     shellArgs,
+    cwdStrategy = "native",
+    imeAnchorMode = "cursor",
     active,
     visible = true,
     onExit,
@@ -78,7 +83,6 @@ export function TerminalSession({
     const themeObserverRef = useRef<MutationObserver | null>(null)
     const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const titleDisposableRef = useRef<{ dispose: () => void } | null>(null)
-    const imePositioningRef = useRef<{ dispose: () => void } | null>(null)
     const capturedPasteWritesRef = useRef<Promise<void>[] | null>(null)
     const unregisterViewRef = useRef<(() => void) | null>(null)
     const openedRef = useRef(false)
@@ -120,7 +124,6 @@ export function TerminalSession({
                 observerRef.current?.disconnect()
                 dataDisposableRef.current?.dispose()
                 titleDisposableRef.current?.dispose()
-                imePositioningRef.current?.dispose()
                 unregisterViewRef.current?.()
                 fitRef.current?.dispose()
                 termRef.current?.dispose()
@@ -128,7 +131,6 @@ export function TerminalSession({
                 observerRef.current = null
                 dataDisposableRef.current = null
                 titleDisposableRef.current = null
-                imePositioningRef.current = null
                 capturedPasteWritesRef.current = null
                 unregisterViewRef.current = null
                 fitRef.current = null
@@ -173,7 +175,6 @@ export function TerminalSession({
 
         term.loadAddon(fitAddon)
         term.open(container)
-        imePositioningRef.current = installTerminalImePositioning(term)
         const terminalView = {
             hasSelection: () => term.hasSelection(),
             getSelection: () => term.getSelection(),
@@ -232,14 +233,17 @@ export function TerminalSession({
         if (visibleRef.current) safeFit(fitAddon)
         lastSizeRef.current = terminalSize(term)
 
-        const dataDisposable = term.onData((data) => {
-            if (disposedRef.current) return
-            const write = ptyWrite(sessionId, data)
-            const captured = capturedPasteWritesRef.current
-            if (captured) captured.push(write)
-            else void write.catch(() => undefined)
-        })
-        dataDisposableRef.current = dataDisposable
+        dataDisposableRef.current = installTerminalImeHandling(
+            term,
+            (data) => {
+                if (disposedRef.current) return
+                const write = ptyWrite(sessionId, data)
+                const captured = capturedPasteWritesRef.current
+                if (captured) captured.push(write)
+                else void write.catch(() => undefined)
+            },
+            { anchorMode: imeAnchorMode }
+        )
 
         const handleEvent = (event: PtyEvent) => {
             if (disposedRef.current) return
@@ -259,6 +263,7 @@ export function TerminalSession({
             sessionId,
             shell ?? null,
             shellArgs,
+            cwdStrategy,
             lastSizeRef.current.cols,
             lastSizeRef.current.rows,
             handleEvent
@@ -304,7 +309,7 @@ export function TerminalSession({
         themeObserverRef.current = themeObserver
 
         return scheduleCleanup
-    }, [sessionId, shell, shellArgs, workspace])
+    }, [cwdStrategy, imeAnchorMode, sessionId, shell, shellArgs, workspace])
 
     useEffect(() => {
         const term = termRef.current

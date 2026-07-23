@@ -5,6 +5,7 @@ import type { ContextMenuCommandOutcome } from "@/app/workbench/contextMenuModel
 import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import i18n from "@/lib/i18n"
 import { ptyActivity, ptyClose } from "@/lib/ipc"
+import type { TerminalProfile } from "@/lib/types"
 import {
   MAX_VISIBLE_TERMINAL_PANES,
   terminalDisplayTitle,
@@ -23,11 +24,6 @@ export type TerminalSessionMetaWithArgs = TerminalSessionMeta & { shellArgs?: st
 
 const completed = (): ContextMenuCommandOutcome => "completed"
 const cancelled = (): ContextMenuCommandOutcome => "cancelled"
-
-function parseShellArgs(value: string): string[] | undefined {
-  const args = value.trim().split(/\s+/).filter(Boolean)
-  return args.length > 0 ? args : undefined
-}
 
 export function terminalTargetExists(target: TerminalCommandTarget): boolean {
   const state = useTerminalStore.getState()
@@ -49,10 +45,15 @@ export function terminalPaneTargetExists(target: TerminalCommandTarget): boolean
     ) ?? false
 }
 
-export function createTerminalSessionMeta(workspace: string): TerminalSessionMetaWithArgs {
+export function createTerminalSessionMeta(
+  workspace: string,
+  profile?: TerminalProfile,
+): TerminalSessionMetaWithArgs {
   const terminalSettings = loadTerminalSettings()
-  const shell = terminalSettings.shellPath.trim()
-  const shellArgs = parseShellArgs(terminalSettings.shellArgs)
+  const selectedProfile = profile ?? terminalSettings.defaultProfile
+  const shell = selectedProfile.shell.trim()
+  const configuredArgs = selectedProfile.args
+  const shellArgs = configuredArgs.length > 0 ? [...configuredArgs] : undefined
   const sessionId =
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -66,6 +67,9 @@ export function createTerminalSessionMeta(workspace: string): TerminalSessionMet
     workspace,
     shell,
     shellArgs,
+    profileName: selectedProfile?.name,
+    cwdStrategy: selectedProfile.cwdStrategy,
+    imeAnchorMode: terminalSettings.imeAnchorMode === "tui" ? "tui" : "cursor",
     cols: 80,
     rows: 24,
   }
@@ -107,7 +111,8 @@ export function clearTerminalBuffer(target: TerminalCommandTarget): ContextMenuC
 }
 
 export function splitTerminal(
-  target: TerminalCommandTarget
+  target: TerminalCommandTarget,
+  profile?: TerminalProfile,
 ): ContextMenuCommandOutcome {
   if (!terminalPaneTargetExists(target)) return cancelled()
   const state = useTerminalStore.getState()
@@ -118,7 +123,7 @@ export function splitTerminal(
   state.splitFrom(
     target.workspacePath,
     target.paneId!,
-    createTerminalSessionMeta(target.workspacePath)
+    createTerminalSessionMeta(target.workspacePath, profile)
   )
   return completed()
 }

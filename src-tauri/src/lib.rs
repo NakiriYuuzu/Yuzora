@@ -300,6 +300,7 @@ pub fn run() {
             lsp_service::lsp_config_clear_stale,
             lsp_service::lsp_set_trace,
             lsp_download::lsp_install_server,
+            pty_service::pty_list_profiles,
             pty_service::pty_open,
             pty_service::pty_write,
             pty_service::pty_resize,

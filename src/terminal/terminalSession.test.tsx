@@ -155,6 +155,7 @@ beforeEach(() => {
             sessionId: string,
             shell: string | null,
             _shellArgs: string[] | undefined,
+            _cwdStrategy: "native" | "wsl",
             cols: number,
             rows: number,
             onEvent: (event: PtyEvent) => void
@@ -202,6 +203,7 @@ describe("TerminalSession", () => {
             "pty-1",
             null,
             undefined,
+            "native",
             100,
             30,
             expect.any(Function)
@@ -210,7 +212,10 @@ describe("TerminalSession", () => {
         expect(xtermMock.state.terminals[0].options.fontSize).toBe(12)
         expect(xtermMock.state.terminals[0].open).toHaveBeenCalled()
         expect(xtermMock.state.fits[0].fit).toHaveBeenCalled()
-        expect(imeMock.install).toHaveBeenCalledWith(xtermMock.state.terminals[0])
+        expect(imeMock.install).toHaveBeenCalledWith(
+            xtermMock.state.terminals[0],
+            { anchorMode: "cursor" }
+        )
     })
 
     it("wires terminal input to ptyWrite and pty output to term.write", async () => {
@@ -419,6 +424,7 @@ describe("TerminalSession", () => {
                 _sessionId: string,
                 _shell: string | null,
                 _shellArgs: string[] | undefined,
+                _cwdStrategy: "native" | "wsl",
                 _cols: number,
                 _rows: number,
                 onEvent: (event: PtyEvent) => void
@@ -488,6 +494,7 @@ describe("TerminalSession", () => {
             "pty-7",
             "/bin/sh",
             ["-c", "echo ok"],
+            "native",
             100,
             30,
             expect.any(Function)

@@ -1,4 +1,6 @@
 import { create } from "zustand"
+import type { TerminalCwdStrategy } from "@/lib/types"
+import type { TerminalImeAnchorMode } from "@/terminal/terminalImePositioning"
 
 export type TerminalLaunchStatus = "opening" | "running" | "failed"
 
@@ -10,6 +12,10 @@ export interface TerminalSessionMeta {
     launchStatus: TerminalLaunchStatus
     workspace: string
     shell: string
+    shellArgs?: string[]
+    profileName?: string
+    cwdStrategy?: TerminalCwdStrategy
+    imeAnchorMode?: TerminalImeAnchorMode
     cols: number
     rows: number
 }

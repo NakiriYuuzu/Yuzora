@@ -113,7 +113,10 @@ describe("SshTerminalSession shell-open guard", () => {
         await Promise.resolve()
         expect(ipcMock.sshOpenShell).toHaveBeenCalledTimes(1)
         expect(ipcMock.sshOpenShell).toHaveBeenCalledWith("ssh-strict", 80, 24)
-        expect(imeMock.install).toHaveBeenCalledWith(xtermMock.state.terminals[0])
+        expect(imeMock.install).toHaveBeenCalledWith(
+            xtermMock.state.terminals[0],
+            { anchorMode: "cursor" }
+        )
     })
 
     it("does not reopen the shell when a live session remounts", async () => {

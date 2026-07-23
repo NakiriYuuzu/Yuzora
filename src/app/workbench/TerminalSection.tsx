@@ -1,8 +1,16 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 
+import { isWindowsPlatform } from "@/lib/platform"
+import type { TerminalProfile } from "@/lib/types"
 import { useWorkbenchLayoutStore } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import {
+  EMPTY_CUSTOM_TERMINAL_PROFILE,
+  availableTerminalProfiles,
+  terminalProfileDisplayName,
+} from "@/terminal/terminalProfiles"
+import { useTerminalProfiles } from "@/terminal/useTerminalProfiles"
 
 import { Segmented, SettingCard, SettingsTextInput } from "./settingsPrimitives"
 import {
@@ -15,6 +23,7 @@ import {
 export function TerminalSection() {
   const { t } = useTranslation("terminal")
   const [settings, setSettings] = useState(loadTerminalSettings)
+  const discoveredProfiles = useTerminalProfiles()
   const workspacePath = useWorkspaceStore((state) => state.workspacePath)
   const terminalRatioScope = useWorkbenchLayoutStore((state) => state.terminalRatioScope)
   const setTerminalRatioScope = useWorkbenchLayoutStore((state) => state.setTerminalRatioScope)
@@ -23,6 +32,35 @@ export function TerminalSection() {
     const next = { ...settings, ...patch }
     setSettings(next)
     writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, next)
+  }
+  const selectProfile = (profile: TerminalProfile) => {
+    update({ defaultProfile: profile })
+  }
+  const updateCustomProfile = (patch: Partial<TerminalProfile>) => {
+    const customProfile = {
+      ...settings.customProfile,
+      ...patch,
+      id: "custom",
+      name: t("customProfileName"),
+      kind: "custom" as const,
+    }
+    update({
+      customProfile,
+      ...(settings.defaultProfile.id === "custom"
+        ? { defaultProfile: customProfile }
+        : {}),
+    })
+  }
+  const selectableProfiles = availableTerminalProfiles(
+    discoveredProfiles,
+    settings.defaultProfile,
+    settings.customProfile,
+  )
+  if (!selectableProfiles.some((profile) => profile.id === "custom")) {
+    selectableProfiles.push({
+      ...EMPTY_CUSTOM_TERMINAL_PROFILE,
+      name: t("customProfileName"),
+    })
   }
 
   return (
@@ -51,20 +89,85 @@ export function TerminalSection() {
         sub={t("shellDescription")}
       >
         <div className="flex flex-col gap-[12px]">
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[11.5px] font-medium text-(--ink-2)">
+              {t("defaultProfileLabel")}
+            </span>
+            <select
+              aria-label={t("defaultProfileLabel")}
+              value={settings.defaultProfile.id}
+              onChange={(event) => {
+                const profile = selectableProfiles.find(
+                  (candidate) => candidate.id === event.currentTarget.value,
+                )
+                if (profile) selectProfile(profile)
+              }}
+              className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none focus:border-(--yz-accent)"
+            >
+              {selectableProfiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {terminalProfileDisplayName(profile)}
+                </option>
+              ))}
+            </select>
+          </label>
           <SettingsTextInput
-            label="Shell path override"
-            value={settings.shellPath}
-            placeholder="/opt/homebrew/bin/fish"
-            onChange={(shellPath) => update({ shellPath })}
+            label={t("customExecutableLabel")}
+            value={settings.customProfile.shell}
+            placeholder="C:\Program Files\PowerShell\7\pwsh.exe"
+            onChange={(shell) => updateCustomProfile({ shell })}
           />
-          <SettingsTextInput
-            label="Default shell args"
-            value={settings.shellArgs}
-            placeholder="-l"
-            onChange={(shellArgs) => update({ shellArgs })}
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[11.5px] font-medium text-(--ink-2)">
+              {t("customArgsLabel")}
+            </span>
+            <textarea
+              aria-label={t("customArgsLabel")}
+              rows={3}
+              value={settings.customProfile.args.join("\n")}
+              placeholder={"-NoLogo\n-NoProfile"}
+              onChange={(event) => {
+                const args = event.currentTarget.value
+                  .split("\n")
+                  .map((arg) => arg.trim())
+                  .filter(Boolean)
+                updateCustomProfile({ args })
+              }}
+              className="resize-y rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] py-[7px] font-mono text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent)"
+            />
+            <span className="text-[10.5px] text-(--ink-3)">{t("customArgsHint")}</span>
+          </label>
+          <Segmented
+            label={t("customCwdStrategyLabel")}
+            options={[
+              { id: "native", label: t("customCwdNative") },
+              { id: "wsl", label: t("customCwdWsl") },
+            ]}
+            value={settings.customProfile.cwdStrategy}
+            onChange={(cwdStrategy) => {
+              if (cwdStrategy === "native" || cwdStrategy === "wsl") {
+                updateCustomProfile({ cwdStrategy })
+              }
+            }}
           />
         </div>
       </SettingCard>
+
+      {isWindowsPlatform() && (
+        <SettingCard label={t("imeLabel")} sub={t("imeDescription")}>
+          <Segmented
+            label={t("imeLabel")}
+            options={[
+              { id: "cursor", label: t("imeCursorAnchor") },
+              { id: "tui", label: t("imeTuiAnchor") },
+            ]}
+            value={settings.imeAnchorMode}
+            onChange={(mode) => {
+              if (mode === "cursor" || mode === "tui") update({ imeAnchorMode: mode })
+            }}
+          />
+        </SettingCard>
+      )}
     </div>
   )
 }

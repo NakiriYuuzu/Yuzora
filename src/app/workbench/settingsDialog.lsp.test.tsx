@@ -8,6 +8,7 @@ import {
   SettingsDialog,
   TERMINAL_SETTINGS_STORAGE_KEY,
 } from "@/app/workbench/SettingsDialog"
+import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import { FORMAT_ON_SAVE_STORAGE_KEY } from "@/editor/EditorPane"
 import type { LspConfig, LspServerInfo } from "@/lib/types"
 import { useLspStore } from "@/state/lspStore"
@@ -706,19 +707,26 @@ describe("SettingsDialog terminal and preview sections", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument()
   })
 
-  it("persists terminal shell override and default args", () => {
+  it("persists a custom terminal executable and structured args", () => {
     renderDialog({ initialSection: "terminal" })
 
-    fireEvent.change(screen.getByLabelText("Shell path override"), {
+    fireEvent.change(screen.getByRole("combobox", { name: "Default profile" }), {
+      target: { value: "custom" },
+    })
+    fireEvent.change(screen.getByLabelText("Custom executable"), {
       target: { value: "/opt/homebrew/bin/fish" },
     })
-    fireEvent.change(screen.getByLabelText("Default shell args"), {
-      target: { value: "-l --private" },
+    fireEvent.change(screen.getByLabelText("Custom arguments"), {
+      target: { value: "-l\n--private" },
     })
 
-    expect(localStorage.getItem(TERMINAL_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ shellPath: "/opt/homebrew/bin/fish", shellArgs: "-l --private" })
-    )
+    expect(loadTerminalSettings()).toMatchObject({
+      defaultProfile: {
+        id: "custom",
+        shell: "/opt/homebrew/bin/fish",
+        args: ["-l", "--private"],
+      },
+    })
   })
 
   it("persists Terminal size scope separately and seeds the active workspace ratio", () => {
