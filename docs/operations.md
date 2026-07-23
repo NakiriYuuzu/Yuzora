@@ -1,7 +1,7 @@
 # Yuzora 部署與發布運維手冊
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> 最後查證：2026-07-19。
+> 最後查證：2026-07-23。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 本文件不得保存 private key、密碼、token、憑證內容或離線備份位置。敏感資料只存放於核准的 secret store。
@@ -25,11 +25,12 @@ Issue 與 PR 的完整工作流程見 [`docs/agents/pull-request-workflow.md`](a
 ## 2. 變更控制原則
 
 - 非平凡變更先建立或更新 GitHub Issue，確認問題、範圍與 acceptance criteria。
-- 實作在獨立 branch 完成，透過 PR 進入 `main`。
-- 不直接在 `main` 實作或製作 release commit。
-- Release 的版本、Changelog、lockfile 與 workflow contract 變更也必須經過 PR。
-- Tag 只能指向已合併、且該 exact commit 的 required CI 全部成功的 `main` commit。
-- 不得在同一個 push 同時推送尚未驗證的 `main` commit 與 release tag。
+- 所有 repository 變更都在獨立 branch 完成，且只能透過 PR 進入 `main`；文件、workflow 與 release commit 也不例外。
+- 不直接在 `main` 實作、補 commit、建立 release tag 或手動發布 Release。
+- Release PR 必須使用 `Closes #<issue>`／`Fixes #<issue>` 連結本次完整交付的 Issues；只完成部分範圍時才使用 `Refs`。
+- Release 的版本、Changelog、lockfile 與 workflow contract 必須在同一個 PR 接受 review 與 required CI。
+- PR merge 後，Release workflow 只接受該 exact `main` push CI 成功的 commit，並自動建立 tag、建置、驗證與 Publish。
+- Tag 只能由 Release workflow 建立，且只能指向已合併、required CI 全部成功的 immutable `main` commit。
 - 已發布的 version、tag 與 artifacts 視為不可變；修正已發布版本時建立新的 patch version。
 
 ### 預期的 GitHub 保護設定
@@ -58,11 +59,11 @@ Required CI checks：
 
 ## 3. 三條 GitHub Actions workflow
 
-| Workflow | 檔案 | 觸發 | 職責 |
-|---|---|---|---|
-| CI | `.github/workflows/ci.yml` | push 至 `main`；pull request | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration |
-| Release | `.github/workflows/release.yml` | push tag `v*` | Release guard、三平台建置、updater artifact signing、draft Release、固定檔名別名、`latest.json` finalization |
-| Pages | `.github/workflows/deploy-pages.yml` | `main` 上 `site/**` 變更；手動 dispatch | 將 `site/` 部署到 GitHub Pages |
+| Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                 |
+| -------- | ------------------------------------ | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration               |
+| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；自動建立 tag、三平台建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
+| Pages    | `.github/workflows/deploy-pages.yml` | `main` 上 `site/**` 變更；手動 dispatch | 將 `site/` 部署到 GitHub Pages                                                                                                                       |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
 
@@ -145,7 +146,7 @@ bun run check:updater-release
 
 - 三份 product version 與 tag contract 一致。
 - `CHANGELOG.md` 存在對應版本且內容非空。
-- Updater signing、stable endpoint、draft Release、MSI-only Windows OTA 與 metadata finalizer contract 完整。
+- Updater signing、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
 
 ### 對齊 CI 的本機檢查
 
@@ -187,124 +188,36 @@ docker compose -f tests/database/docker-compose.yml --profile mssql down -v
 - Required CI checks 全部成功。
 - Review conversation 全部處理完成。
 - Release／updater 敏感檔案已有合適 reviewer。
-- Merge 後再次確認 `main` 上該 exact commit 的 CI，而不是只依賴較早 commit 的綠燈。
+- PR body 對本次完整交付的 Issues 使用 `Closes`／`Fixes`，讓 merge 自動關閉 Issues；未完成的 Issue 只能使用 `Refs`。
+- Merge 後由 Release workflow 等待並查證 `main` 上該 exact commit 的 push CI；PR CI 綠燈本身不會直接發布。
 
 ---
 
-## 6. 建立 Release tag
+## 6. PR merge 後自動建立 Release
 
-只有版本 PR 已 merge，且準備加 tag 的 exact `origin/main` commit 已通過完整 CI 後才能建立 tag。不要憑肉眼看到較早的綠燈，就重新讀取一個可能已前進的 `origin/main` 並直接發布。
+Release tag 不由本機或 maintainer 手動建立。完整入口是 release PR：
 
-以下流程先以 fail-fast 模式抓取遠端、鎖定 immutable SHA，再向 GitHub 查證該 SHA 的 `main` push CI 已完成且成功：
+1. Release PR 包含版本、lockfile、Changelog 與必要的 workflow／contract 修改。
+2. PR required CI 成功並完成 review 後 merge 至 `main`。
+3. `main` push 觸發完整 CI；Release workflow 透過 `workflow_run` 接收完成事件。
+4. Guard 只接受 `event=push`、`head_branch=main`、`conclusion=success`，並 checkout `workflow_run.head_sha`，確保驗證與發布的是同一個 immutable commit。
+5. Guard 從該 commit 的 `package.json` 解析 stable version，執行版本、release notes 與 updater contract checks。
+6. 若版本 tag 不存在，workflow 建立 annotated `vX.Y.Z` tag 並精確指向該成功 CI SHA；接著開始建置。
+7. 若相同版本已 Published，workflow 安全略過，不會因後續一般 PR 重複發布。
 
-```bash
-set -euo pipefail
+這個設計讓 PR 成為唯一 repository 變更入口，同時避免「PR CI 綠燈但尚未進入 `main`」就對外發布。CI、tag、Release 與 Issue 關閉的關係如下：
 
-VERSION=X.Y.Z
-REPOSITORY=NakiriYuuzu/Yuzora
-
-if [[ ! "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  echo "VERSION must be a stable SemVer such as 0.0.3" >&2
-  exit 1
-fi
-
-git fetch --prune --tags origin
-VERIFIED_SHA="$(git rev-parse origin/main)"
-
-CI_SUCCESS_COUNT="$(
-  gh run list \
-    --repo "${REPOSITORY}" \
-    --workflow CI \
-    --commit "${VERIFIED_SHA}" \
-    --limit 20 \
-    --json headSha,event,status,conclusion \
-  | jq --arg sha "${VERIFIED_SHA}" '
-      [.[] | select(
-        .headSha == $sha
-        and .event == "push"
-        and .status == "completed"
-        and .conclusion == "success"
-      )]
-      | length
-    '
-)"
-
-if [ "${CI_SUCCESS_COUNT}" -lt 1 ]; then
-  echo "no successful main CI run found for ${VERIFIED_SHA}" >&2
-  exit 1
-fi
-
-PACKAGE_VERSION="$(git show "${VERIFIED_SHA}:package.json" | jq -er '.version')"
-TAURI_VERSION="$(git show "${VERIFIED_SHA}:src-tauri/tauri.conf.json" | jq -er '.version')"
-CARGO_VERSION="$(
-  git show "${VERIFIED_SHA}:src-tauri/Cargo.toml" \
-  | awk '
-      $0 == "[package]" { in_package = 1; next }
-      in_package && /^\[/ { in_package = 0 }
-      in_package && /^version = "/ {
-        value = $0
-        sub(/^version = "/, "", value)
-        sub(/"$/, "", value)
-        version = value
-      }
-      END {
-        if (version == "") exit 1
-        print version
-      }
-    '
-)"
-CHANGELOG_TEXT="$(git show "${VERIFIED_SHA}:CHANGELOG.md")"
-
-if [ "${PACKAGE_VERSION}" != "${VERSION}" ] \
-  || [ "${TAURI_VERSION}" != "${VERSION}" ] \
-  || [ "${CARGO_VERSION}" != "${VERSION}" ]; then
-  printf 'version mismatch: requested=%s package=%s tauri=%s cargo=%s\n' \
-    "${VERSION}" "${PACKAGE_VERSION}" "${TAURI_VERSION}" "${CARGO_VERSION}" >&2
-  exit 1
-fi
-
-RELEASE_NOTES="$(
-  awk -v heading="## [${VERSION}]" '
-    index($0, heading) == 1 { in_section = 1; next }
-    in_section && /^## \[/ { exit }
-    in_section { print }
-  ' <<<"${CHANGELOG_TEXT}"
-)"
-if ! grep -q '[^[:space:]]' <<<"${RELEASE_NOTES}"; then
-  echo "CHANGELOG.md has no non-empty section for ${VERSION}" >&2
-  exit 1
-fi
-
-if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
-  echo "tag v${VERSION} already exists" >&2
-  exit 1
-fi
-
-if gh release view "v${VERSION}" --repo "${REPOSITORY}" >/dev/null 2>&1; then
-  echo "Release v${VERSION} already exists" >&2
-  exit 1
-fi
-
-REMOTE_MAIN_SHA="$(
-  gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha'
-)"
-if [ "${REMOTE_MAIN_SHA}" != "${VERIFIED_SHA}" ]; then
-  echo "main advanced to ${REMOTE_MAIN_SHA}; restart release verification" >&2
-  exit 1
-fi
-
-git tag -a "v${VERSION}" "${VERIFIED_SHA}" -m "Yuzora v${VERSION}"
-git push origin "v${VERSION}"
+```text
+Issue ──Closes──> Release PR ──merge──> main push CI
+                                           │ success
+                                           ▼
+                                  auto tag / build / verify
+                                           │ all gates pass
+                                           ▼
+                                      auto Publish
 ```
 
-執行前必須由操作者確認：
-
-- `VERIFIED_SHA` 是預定發布的 exact `main` commit，而不是另一個 branch 的成功 run。
-- 該 commit 內三份版本與 `CHANGELOG.md` 正確。
-- GitHub Actions signing secret 名稱存在。
-- 本機沒有把其他 branch 或未驗證 commit 一併 push。
-
-流程會在建立 local tag 前再次查詢 GitHub 的 `main` SHA；若已前進就中止並要求重跑。遠端 branch 與 tag 建立之間沒有原子 compare-and-create，因此若 `main` 在最後檢查後才前進，tag 仍只會指向已通過 CI 的 immutable `VERIFIED_SHA`，不會靜默改發新 tip；maintainer 再判斷新 commit 是否必須納入本次 Release。Tag push 是唯一 Release workflow 觸發點，不要使用同一個 push 同時推送 `main` 與 tag。
+若 upgrade 前已存在同版本的 draft Release，Guard 會進入銜接模式：不重建、不覆寫既有 artifacts，只在後續 automated publish gate 完整驗證資產與 updater metadata 後移除 draft 狀態。驗證不完整時 workflow 失敗，Release 保持 draft。
 
 ---
 
@@ -314,10 +227,13 @@ git push origin "v${VERSION}"
 
 在任何平台建置前驗證：
 
-1. `TAURI_SIGNING_PRIVATE_KEY` 與 password secret 非空。
-2. Tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致。
-3. `CHANGELOG.md` 有該版本 release notes。
-4. Updater release contract 完整。
+1. 上游事件是成功完成的 `main` push CI，而不是 pull request 或其他 branch。
+2. Checkout SHA 與成功 CI 的 `workflow_run.head_sha` 完全一致。
+3. `TAURI_SIGNING_PRIVATE_KEY` 與 password secret 非空。
+4. 解析出的 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致。
+5. `CHANGELOG.md` 有該版本 release notes。
+6. Updater release contract 完整。
+7. 新版本自動建立 annotated tag；已發布版本則安全略過。
 
 Guard 失敗時所有 build 都不會執行。
 
@@ -329,17 +245,17 @@ Guard 失敗時所有 build 都不會執行。
 - Windows x64：產生 NSIS `.exe`、`.msi` 與 updater signatures。
 - Linux x86-64：產生 `.AppImage`、`.deb`、`.rpm` 與 updater signatures。
 
-所有平台上傳至同一個 **draft** Release，名稱為 `Yuzora vX.Y.Z`。
+所有平台上傳至同一個**暫態 draft** Release，名稱為 `Yuzora vX.Y.Z`。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列。
 
 ### 7.3 固定檔名別名
 
 供產品頁 `releases/latest/download/...` 使用：
 
-| 平台 | 固定檔名 |
-|---|---|
-| macOS | `Yuzora-macos-universal.dmg` |
-| Windows | `Yuzora-windows-x64-setup.exe`、`Yuzora-windows-x64.msi` |
-| Linux | `Yuzora-linux-x86_64.AppImage`、`Yuzora-linux-amd64.deb`、`Yuzora-linux-x86_64.rpm` |
+| 平台    | 固定檔名                                                                            |
+| ------- | ----------------------------------------------------------------------------------- |
+| macOS   | `Yuzora-macos-universal.dmg`                                                        |
+| Windows | `Yuzora-windows-x64-setup.exe`、`Yuzora-windows-x64.msi`                            |
+| Linux   | `Yuzora-linux-x86_64.AppImage`、`Yuzora-linux-amd64.deb`、`Yuzora-linux-x86_64.rpm` |
 
 固定檔名如有變更，必須在同一個 PR 更新所有實際 consumer：
 
@@ -362,84 +278,44 @@ Guard 失敗時所有 build 都不會執行。
 
 Finalizer 未成功時不得 Publish。
 
+### 7.5 Automated publish gate
+
+`publish-release` 只在下列其中一條路徑成立時執行：
+
+- 新版本的三平台 build 與 metadata finalizer 全部成功。
+- 既有同版本 draft 的銜接模式啟用，且 build／finalizer 正確略過。
+
+Publish 前 workflow 自動驗證：
+
+- Release 仍是 draft、不是 prerelease，且 release body 非空。
+- 六個固定檔名別名與 `latest.json` 齊全。
+- `latest.json.version` 與 tag 相同，notes 非空。
+- `darwin-aarch64`、`darwin-x86_64`、`linux-x86_64`、`windows-x86_64` 都有非空 URL 與 signature。
+- 不含 Windows NSIS updater key，且 Windows OTA URL 使用 `.msi`。
+
+全部成功後執行 `gh release edit --draft=false --prerelease=false --latest`，並再次查證 `publishedAt`。任一條件失敗時 workflow 結束為失敗，Release 保持 draft，不會出現部分成功卻永久等待人工 Publish 的正常路徑。
+
 ---
 
-## 8. Draft Release 人工驗收
+## 8. 自動發布與人工平台驗收
 
-### Workflow 與內容
+Release workflow 的 automated publish gate 是 blocking gate；三平台 build、固定別名、updater signatures、metadata completeness 或 MSI-only contract 任一失敗都不會 Publish。正常成功路徑不需要 maintainer 再按一次 Publish。
 
-- `Tag / version consistency` 成功。
-- 三個平台 build 全部成功。
-- `Finalize updater metadata` 成功。
-- Release 維持 draft，未被意外標為 prerelease。
-- Release body 與 `CHANGELOG.md` 對應版本一致且非空。
+CI 無法取代互動式 OS 驗收。Release Published 後仍應儘快在支援平台進行：
 
-### Assets
+- macOS DMG 掛載、安裝與首次啟動。
+- Windows NSIS／MSI 安裝；OTA 預期路徑以 MSI 為準。
+- Linux 主要格式啟動。
+- 從上一個 stable 版本執行 updater smoke test。
+- 確認 release notes 已揭露尚未啟用 macOS／Windows OS code signing 的警告。
 
-- 六個固定檔名別名齊全。
-- 三平台 versioned installers 齊全。
-- Updater artifacts 對應的 `.sig` 齊全。
-- `latest.json` 存在。
-- Updater metadata 至少包含 `darwin-aarch64`、`darwin-x86_64`、`linux-x86_64`、`windows-x86_64` 四個支援目標。
-- Windows 仍保留 NSIS／MSI 手動安裝檔，但 OTA metadata 只使用 MSI。
-
-可先列出 draft：
-
-```bash
-VERSION=X.Y.Z
-gh release view "v${VERSION}" \
-  --repo NakiriYuuzu/Yuzora \
-  --json tagName,name,isDraft,isPrerelease,body,assets \
-  --jq '{tagName,name,isDraft,isPrerelease,body,assets:[.assets[].name]}'
-```
-
-如需檢查 draft `latest.json`，下載至臨時目錄後確認：
-
-```bash
-set -euo pipefail
-
-VERSION=X.Y.Z
-TMP_DIR="$(mktemp -d)"
-gh release download "v${VERSION}" \
-  --repo NakiriYuuzu/Yuzora \
-  --pattern latest.json \
-  --dir "${TMP_DIR}"
-
-jq '{version,notes,platforms:(.platforms|keys)}' "${TMP_DIR}/latest.json"
-
-for key in darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64; do
-  if ! jq -e --arg key "${key}" '
-    .platforms[$key] != null
-    and (.platforms[$key].url | type == "string" and length > 0)
-    and (.platforms[$key].signature | type == "string" and length > 0)
-  ' "${TMP_DIR}/latest.json" >/dev/null; then
-    echo "latest.json is missing a valid ${key} updater entry" >&2
-    exit 1
-  fi
-done
-```
-
-目前 finalizer 會驗證 metadata 中已存在的 entries，並強制 `windows-x86_64` 存在；它尚未強制 macOS／Linux platform completeness。因此上述四個 key 是 Publish 前的人工 blocking gate，直到 script contract 在另案中補強為止。
-
-檢查完成後移除臨時目錄。不得把下載的 signing metadata 或其他暫存檔提交進 repository。
-
-### 安裝抽驗
-
-Publish 前至少確認：
-
-- macOS DMG 可掛載並安裝。
-- Windows NSIS 與 MSI 可啟動安裝；OTA 預期路徑以 MSI 為準。
-- Linux 主要下載格式可啟動。
-- 未啟用 OS code signing 的警告已列入 release notes。
-- 若本版改動 updater contract，使用隔離測試環境驗證，不以 production 使用者作為首次測試者。
-
-所有條件通過後才由 maintainer 人工 Publish。
+若人工驗收發現 regression，不覆寫已發布 tag 或 artifacts；立即建立 incident Issue，必要時隱藏受影響 Release，並透過新的 patch release PR 修正。平台驗收結果、Release URL、測試平台與診斷證據回填 release Issue。
 
 ---
 
 ## 9. Publish 後驗證
 
-Publish 後 `releases/latest` 會立即指向新版本，產品頁固定下載連結與 App updater endpoint 同時開始對外生效。
+Automated publish gate 成功後，`releases/latest` 會立即指向新版本，產品頁固定下載連結與 App updater endpoint 同時開始對外生效。
 
 ### GitHub Release 與 updater metadata
 
@@ -495,18 +371,20 @@ curl -fsSL \
 
 ## 10. 失敗與復原
 
-| 狀況 | 處理原則 |
-|---|---|
-| Guard 失敗 | 不進行 build。修正 release PR／版本／Changelog／secret contract 後重新走完整流程。只有尚未 Publish、未被消費且經 maintainer 明確確認的錯誤 tag，才可進行受控清理。 |
-| 單一平台失敗 | 其他平台可保留。只 re-run failed job；先檢查 draft 是否已存在該平台固定別名，避免同名 asset 重傳造成 HTTP 422。 |
-| Finalizer 失敗 | 不得 Publish。檢查 `latest.json`、Windows MSI metadata、缺少的 artifact 或 `.sig`。 |
-| 固定別名缺漏 | 檢查 `Upload fixed-name alias assets` log、artifact path pattern 與 draft 中是否已有同名 asset。 |
-| Publish 前反悔 | Draft 不會成為 `releases/latest`。由 maintainer 決定保留供調查或受控移除；同時處理已建立但不再使用的 tag。 |
-| 已 Publish 後發現問題 | 不覆寫 artifacts、不重用 tag/version。先建立 incident Issue、評估是否暫時隱藏錯誤 Release，再發布新的 patch version 作為永久修正。 |
-| Updater key 疑似外洩 | 立即停止 Release、限制 secret 存取並啟動供應鏈安全事件。不得直接換 public key；既有安裝只信任內嵌 key，輪替需要獨立遷移設計。 |
-| Updater key 遺失 | 從核准的加密備份復原並稽核存取。若無可用 private key，既有安裝的信任鏈可能無法延續，必須升級為 release incident。 |
-| Pages 部署失敗 | 確認 Pages source 為 GitHub Actions、artifact path 只指向 `site/`，並檢查 deploy job log。 |
-| Pages 發布錯誤內容 | 透過正常 PR 回復 `site/**` 至已知正常版本，再讓 Pages workflow 重新部署；不直接改寫遠端 branch 歷史。 |
+| 狀況                        | 處理原則                                                                                                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main` CI 失敗              | Release workflow 不會建立 tag 或建置。以新的修復 PR 讓 `main` 恢復綠燈。                                                                                              |
+| Guard 失敗                  | 不進行 build。修正版本／Changelog／secret／workflow contract，且修正本身也必須走 PR。只有尚未 Publish、未被消費且經 maintainer 明確確認的錯誤 tag，才可進行受控清理。 |
+| 單一平台失敗                | 其他平台可保留。只 re-run failed job；先檢查 draft 是否已存在該平台固定別名，避免同名 asset 重傳造成 HTTP 422。                                                       |
+| Finalizer 失敗              | 不得 Publish。檢查 `latest.json`、Windows MSI metadata、缺少的 artifact 或 `.sig`。                                                                                   |
+| 固定別名缺漏                | 檢查 `Upload fixed-name alias assets` log、artifact path pattern 與 draft 中是否已有同名 asset。                                                                      |
+| Automated publish gate 失敗 | Release 保持 draft。以 PR 修正 contract 或 workflow；不得手動略過 gate Publish。                                                                                      |
+| 發布前需緊急停止            | 在 `Publish verified release` 執行前取消 workflow。Draft 不會成為 `releases/latest`；後續 tag／draft 清理仍需 maintainer 明確授權與事件記錄。                         |
+| 已 Publish 後發現問題       | 不覆寫 artifacts、不重用 tag/version。先建立 incident Issue、評估是否暫時隱藏錯誤 Release，再發布新的 patch version 作為永久修正。                                    |
+| Updater key 疑似外洩        | 立即停止 Release、限制 secret 存取並啟動供應鏈安全事件。不得直接換 public key；既有安裝只信任內嵌 key，輪替需要獨立遷移設計。                                         |
+| Updater key 遺失            | 從核准的加密備份復原並稽核存取。若無可用 private key，既有安裝的信任鏈可能無法延續，必須升級為 release incident。                                                     |
+| Pages 部署失敗              | 確認 Pages source 為 GitHub Actions、artifact path 只指向 `site/`，並檢查 deploy job log。                                                                            |
+| Pages 發布錯誤內容          | 透過正常 PR 回復 `site/**` 至已知正常版本，再讓 Pages workflow 重新部署；不直接改寫遠端 branch 歷史。                                                                 |
 
 任何 destructive cleanup、tag 刪除、Release 隱藏或 secret rotation 都需要 maintainer 明確授權與事件記錄。
 
