@@ -1,25 +1,43 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
 
+# A release PR merge can only publish once its exact main push CI succeeds.
+# Serialize runs so two main commits cannot race to claim the same version tag.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-main
   cancel-in-progress: false
 
 jobs:
   guard:
-    name: Tag / version consistency
+    name: Main CI / version consistency
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      should_build: ${{ steps.release.outputs.should_build }}
+      should_publish_existing: ${{ steps.release.outputs.should_publish_existing }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
       - name: Validate updater signing inputs
         shell: bash
         env:
@@ -34,31 +52,111 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required"
             exit 1
           fi
+
+      - name: Resolve release target
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          if [ "$CHECKED_OUT_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::checked out $CHECKED_OUT_SHA instead of successful main CI SHA $SOURCE_SHA"
+            exit 1
+          fi
+
+          VERSION="$(jq -er '.version' package.json)"
+          TAG_NAME="v${VERSION}"
+          SHOULD_BUILD=false
+          SHOULD_PUBLISH_EXISTING=false
+
+          git fetch --force --tags origin
+          if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG_NAME}")"
+            if RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft 2>/dev/null)"; then
+              if [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ]; then
+                SHOULD_PUBLISH_EXISTING=true
+                echo "Found draft ${TAG_NAME} at ${TAG_SHA}; verify and publish it after this guard."
+              else
+                echo "${TAG_NAME} is already published; this main commit does not create another release."
+              fi
+            elif [ "$TAG_SHA" = "$SOURCE_SHA" ]; then
+              SHOULD_BUILD=true
+              echo "Found ${TAG_NAME} at this exact main CI SHA without a Release; resume its build."
+            else
+              echo "::error::${TAG_NAME} exists at ${TAG_SHA} but has no GitHub Release"
+              exit 1
+            fi
+          else
+            SHOULD_BUILD=true
+            echo "No ${TAG_NAME} exists; create it from successful main CI SHA ${SOURCE_SHA}."
+          fi
+
+          {
+            echo "source_sha=${SOURCE_SHA}"
+            echo "tag_name=${TAG_NAME}"
+            echo "should_build=${SHOULD_BUILD}"
+            echo "should_publish_existing=${SHOULD_PUBLISH_EXISTING}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Verify tag and product versions
+        env:
+          GITHUB_REF_NAME: ${{ steps.release.outputs.tag_name }}
         run: bun run check:version
+
       - name: Verify user-facing release notes
-        run: bun scripts/release-notes.ts "$GITHUB_REF_NAME"
+        run: bun scripts/release-notes.ts "${{ steps.release.outputs.tag_name }}"
+
       - name: Verify updater release contract
         run: bun run check:updater-release
 
+      - name: Create release tag from verified main commit
+        if: steps.release.outputs.should_build == 'true'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG_NAME}")"
+            if [ "$TAG_SHA" != "$SOURCE_SHA" ]; then
+              echo "::error::${TAG_NAME} moved to ${TAG_SHA}; expected ${SOURCE_SHA}"
+              exit 1
+            fi
+            exit 0
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$TAG_NAME" "$SOURCE_SHA" -m "Yuzora ${TAG_NAME}"
+          git push origin "refs/tags/${TAG_NAME}"
+
   build:
     needs: guard
+    if: needs.guard.outputs.should_build == 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos-latest
-            args: '--target universal-apple-darwin'
-            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+            args: "--target universal-apple-darwin"
+            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
           - platform: ubuntu-22.04
-            args: ''
-            rust-targets: ''
+            args: ""
+            rust-targets: ""
           - platform: windows-latest
-            args: ''
-            rust-targets: ''
+            args: ""
+            rust-targets: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.source_sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -86,7 +184,7 @@ jobs:
         id: release-notes
         shell: bash
         run: |
-          bun scripts/release-notes.ts "$GITHUB_REF_NAME" release-notes.md
+          bun scripts/release-notes.ts "${{ needs.guard.outputs.tag_name }}" release-notes.md
           {
             echo 'body<<YUZORA_RELEASE_NOTES'
             cat release-notes.md
@@ -107,9 +205,11 @@ jobs:
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Yuzora ${{ github.ref_name }}'
+          tagName: ${{ needs.guard.outputs.tag_name }}
+          releaseName: "Yuzora ${{ needs.guard.outputs.tag_name }}"
           releaseBody: ${{ steps.release-notes.outputs.body }}
+          # Matrix jobs share a draft while assets are incomplete. The publish
+          # job removes draft status only after every platform and metadata gate.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
@@ -119,7 +219,7 @@ jobs:
 
       # 產品頁「直接下載」用的固定檔名別名（方案 A）：
       # tauri-action 的產物檔名含版本號，這裡把主要安裝檔以不變的檔名
-      # 再上傳一份到同一個 draft release，讓
+      # 再上傳一份到同一個暫態 draft release，讓
       # releases/latest/download/<固定檔名> 永久有效。
       # 檔名若要變更，須同步修改 site/index.html 的下載連結。
       - name: Upload fixed-name alias assets
@@ -150,19 +250,23 @@ jobs:
 
   finalize-updater-metadata:
     name: Finalize updater metadata
-    needs: build
+    needs: [guard, build]
+    if: needs.guard.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.source_sha }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - name: Download generated updater metadata
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
         run: |
           mkdir -p updater-release
-          gh release download "$GITHUB_REF_NAME" --pattern latest.json --dir updater-release
+          gh release download "$TAG_NAME" --pattern latest.json --dir updater-release
       - name: Enforce MSI-only Windows updater metadata
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -170,4 +274,118 @@ jobs:
       - name: Replace generated updater metadata
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" updater-release/latest.json --clobber
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: gh release upload "$TAG_NAME" updater-release/latest.json --clobber
+
+  publish-release:
+    name: Publish verified release
+    needs: [guard, build, finalize-updater-metadata]
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      (
+        (
+          needs.guard.outputs.should_build == 'true' &&
+          needs.build.result == 'success' &&
+          needs.finalize-updater-metadata.result == 'success'
+        ) ||
+        (
+          needs.guard.outputs.should_publish_existing == 'true' &&
+          needs.build.result == 'skipped' &&
+          needs.finalize-updater-metadata.result == 'skipped'
+        )
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify release assets and updater metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          RELEASE_JSON="$(gh release view "$TAG_NAME" \
+            --json isDraft,isPrerelease,body,assets)"
+
+          if [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" != "true" ]; then
+            echo "::error::${TAG_NAME} must be draft before automated publication"
+            exit 1
+          fi
+          if [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" != "false" ]; then
+            echo "::error::${TAG_NAME} must not be a prerelease"
+            exit 1
+          fi
+          if ! jq -e '.body | type == "string" and test("[^[:space:]]")' \
+            <<<"$RELEASE_JSON" >/dev/null; then
+            echo "::error::${TAG_NAME} release notes are empty"
+            exit 1
+          fi
+
+          ASSET_NAMES="$(jq -r '.assets[].name' <<<"$RELEASE_JSON")"
+          for expected in \
+            Yuzora-macos-universal.dmg \
+            Yuzora-windows-x64-setup.exe \
+            Yuzora-windows-x64.msi \
+            Yuzora-linux-x86_64.AppImage \
+            Yuzora-linux-amd64.deb \
+            Yuzora-linux-x86_64.rpm \
+            latest.json; do
+            if ! grep -Fxq "$expected" <<<"$ASSET_NAMES"; then
+              echo "::error::${TAG_NAME} is missing ${expected}"
+              exit 1
+            fi
+          done
+
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -f "$TMP_DIR/latest.json"; rmdir "$TMP_DIR"' EXIT
+          gh release download "$TAG_NAME" --pattern latest.json --dir "$TMP_DIR"
+
+          if [ "$(jq -r '.version' "$TMP_DIR/latest.json")" != "${TAG_NAME#v}" ]; then
+            echo "::error::latest.json version does not match ${TAG_NAME}"
+            exit 1
+          fi
+          if ! jq -e '.notes | type == "string" and test("[^[:space:]]")' \
+            "$TMP_DIR/latest.json" >/dev/null; then
+            echo "::error::latest.json notes are empty"
+            exit 1
+          fi
+
+          for key in darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64; do
+            if ! jq -e --arg key "$key" '
+              .platforms[$key] != null
+              and (.platforms[$key].url | type == "string" and length > 0)
+              and (.platforms[$key].signature | type == "string" and length > 0)
+            ' "$TMP_DIR/latest.json" >/dev/null; then
+              echo "::error::latest.json is missing a valid ${key} updater entry"
+              exit 1
+            fi
+          done
+
+          if jq -e '.platforms | keys[] | select(test("windows-.*-nsis"))' \
+            "$TMP_DIR/latest.json" >/dev/null; then
+            echo "::error::latest.json still contains a Windows NSIS updater entry"
+            exit 1
+          fi
+          if ! jq -e '
+            .platforms["windows-x86_64"].url
+            | endswith(".msi")
+          ' "$TMP_DIR/latest.json" >/dev/null; then
+            echo "::error::Windows updater metadata must use MSI"
+            exit 1
+          fi
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false --prerelease=false --latest
+
+      - name: Confirm publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: |
+          gh release view "$TAG_NAME" \
+            --json isDraft,isPrerelease,publishedAt \
+            --jq 'select(.isDraft == false and .isPrerelease == false and .publishedAt != null)'

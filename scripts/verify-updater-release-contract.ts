@@ -34,16 +34,56 @@ const workflow = record(
   Bun.YAML.parse(await Bun.file(".github/workflows/release.yml").text()),
   "release workflow"
 )
+const workflowTriggers = record(workflow.on, "release workflow triggers")
+const workflowRunTrigger = record(workflowTriggers.workflow_run, "workflow_run trigger")
+assert(
+  Array.isArray(workflowRunTrigger.workflows) &&
+    workflowRunTrigger.workflows.length === 1 &&
+    workflowRunTrigger.workflows[0] === "CI",
+  "release must follow the successful main CI workflow"
+)
+assert(
+  Array.isArray(workflowRunTrigger.types) &&
+    workflowRunTrigger.types.length === 1 &&
+    workflowRunTrigger.types[0] === "completed",
+  "release must wait for CI completion"
+)
+assert(
+  Array.isArray(workflowRunTrigger.branches) &&
+    workflowRunTrigger.branches.length === 1 &&
+    workflowRunTrigger.branches[0] === "main",
+  "release workflow_run must only follow the main branch"
+)
 const jobs = record(workflow.jobs, "jobs")
 const guard = record(jobs.guard, "jobs.guard")
 const build = record(jobs.build, "jobs.build")
 const finalize = record(jobs["finalize-updater-metadata"], "jobs.finalize-updater-metadata")
+const publish = record(jobs["publish-release"], "jobs.publish-release")
 const guardSteps = guard.steps
 const buildSteps = build.steps
 const finalizeSteps = finalize.steps
+const publishSteps = publish.steps
 assert(Array.isArray(guardSteps), "guard steps are required")
 assert(Array.isArray(buildSteps), "build steps are required")
 assert(Array.isArray(finalizeSteps), "updater metadata finalizer steps are required")
+assert(Array.isArray(publishSteps), "automated release publish steps are required")
+assert(
+  typeof guard.if === "string" &&
+    guard.if.includes("workflow_run.conclusion == 'success'") &&
+    guard.if.includes("workflow_run.event == 'push'") &&
+    guard.if.includes("workflow_run.head_branch == 'main'"),
+  "release guard must only accept a successful main push CI run"
+)
+
+const guardCheckout = guardSteps
+  .map((step, index) => record(step, `guard.steps[${index}]`))
+  .find((step) => step.uses === "actions/checkout@v4")
+assert(guardCheckout, "guard must check out the verified main CI commit")
+const guardCheckoutInputs = record(guardCheckout.with, "guard checkout inputs")
+assert(
+  guardCheckoutInputs.ref === "${{ github.event.workflow_run.head_sha }}",
+  "guard must check out the exact successful main CI SHA"
+)
 
 const signingGuard = guardSteps
   .map((step, index) => record(step, `guard.steps[${index}]`))
@@ -65,8 +105,37 @@ const releaseNotesGuard = guardSteps
   .find((step) => step.name === "Verify user-facing release notes")
 assert(releaseNotesGuard, "guard must require release notes for the tagged version")
 assert(
-  releaseNotesGuard.run === 'bun scripts/release-notes.ts "$GITHUB_REF_NAME"',
+  releaseNotesGuard.run === 'bun scripts/release-notes.ts "${{ steps.release.outputs.tag_name }}"',
   "guard must validate the tagged CHANGELOG.md section"
+)
+
+const resolveRelease = guardSteps
+  .map((step, index) => record(step, `guard.steps[${index}]`))
+  .find((step) => step.name === "Resolve release target")
+assert(resolveRelease, "guard must resolve the version tag from the verified main commit")
+assert(resolveRelease.id === "release", "release target step id must be release")
+assert(
+  typeof resolveRelease.run === "string" &&
+    resolveRelease.run.includes("VERSION=\"$(jq -er '.version' package.json)\"") &&
+    resolveRelease.run.includes("SHOULD_PUBLISH_EXISTING=true"),
+  "release target must derive the tag and resume a validated existing draft"
+)
+
+const createTag = guardSteps
+  .map((step, index) => record(step, `guard.steps[${index}]`))
+  .find((step) => step.name === "Create release tag from verified main commit")
+assert(createTag, "guard must automatically create the release tag")
+assert(
+  typeof createTag.run === "string" &&
+    createTag.run.includes('git tag -a "$TAG_NAME" "$SOURCE_SHA"') &&
+    createTag.run.includes('git push origin "refs/tags/${TAG_NAME}"'),
+  "release tag must point to and push the exact successful main CI SHA"
+)
+
+assert(build.needs === "guard", "release build must wait for the main CI/version guard")
+assert(
+  typeof build.if === "string" && build.if.includes("needs.guard.outputs.should_build == 'true'"),
+  "release build must only run for a new verified version"
 )
 
 const strategy = record(build.strategy, "build.strategy")
@@ -102,7 +171,7 @@ assert(releaseNotesStep.id === "release-notes", "release notes step id must be r
 assert(
   typeof releaseNotesStep.run === "string" &&
     releaseNotesStep.run.includes(
-      'bun scripts/release-notes.ts "$GITHUB_REF_NAME" release-notes.md'
+      'bun scripts/release-notes.ts "${{ needs.guard.outputs.tag_name }}" release-notes.md'
     ) &&
     releaseNotesStep.run.includes("$GITHUB_OUTPUT"),
   "release notes step must expose the tagged CHANGELOG.md section"
@@ -123,12 +192,24 @@ assert(
   actionInputs.releaseBody === "${{ steps.release-notes.outputs.body }}",
   "GitHub Release and latest.json notes must use the tagged CHANGELOG.md section"
 )
+assert(
+  actionInputs.tagName === "${{ needs.guard.outputs.tag_name }}",
+  "tauri-action must build the tag resolved from the verified main CI commit"
+)
 assert(actionInputs.updaterJsonPreferNsis === false, "Windows updater metadata must prefer MSI")
-assert(actionInputs.releaseDraft === true, "release must remain draft")
+assert(
+  actionInputs.releaseDraft === true,
+  "matrix builds must use a transient draft until every automated gate passes"
+)
 assert(actionInputs.prerelease === false, "stable release must not be a prerelease")
 assert(actionInputs.tauriScript === "bun tauri", "release build must use the workspace Tauri CLI")
 
-assert(finalize.needs === "build", "updater metadata must be finalized after every platform build")
+assert(
+  Array.isArray(finalize.needs) &&
+    finalize.needs.includes("guard") &&
+    finalize.needs.includes("build"),
+  "updater metadata must be finalized after every platform build"
+)
 const normalizedFinalizeSteps = finalizeSteps.map((step, index) =>
   record(step, `finalize.steps[${index}]`)
 )
@@ -149,4 +230,34 @@ assert(
   "release must upload finalized latest.json with clobber"
 )
 
-console.log("Updater release contract verified: signed draft, stable latest.json, MSI-only OTA")
+const normalizedPublishSteps = publishSteps.map((step, index) =>
+  record(step, `publish.steps[${index}]`)
+)
+const verifyPublish = normalizedPublishSteps.find(
+  (step) => step.name === "Verify release assets and updater metadata"
+)
+const publishRelease = normalizedPublishSteps.find(
+  (step) => step.name === "Publish verified release"
+)
+const confirmPublication = normalizedPublishSteps.find(
+  (step) => step.name === "Confirm publication"
+)
+assert(verifyPublish, "automated publish must verify release assets and updater metadata")
+assert(
+  typeof verifyPublish.run === "string" &&
+    verifyPublish.run.includes("darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64") &&
+    verifyPublish.run.includes('endswith(".msi")'),
+  "automated publish must require every updater platform and MSI-only Windows OTA"
+)
+assert(publishRelease, "verified releases must be published automatically")
+assert(
+  typeof publishRelease.run === "string" &&
+    publishRelease.run.includes('gh release edit "$TAG_NAME"') &&
+    publishRelease.run.includes("--draft=false"),
+  "automated publish must remove draft status"
+)
+assert(confirmPublication, "automated publish must confirm GitHub publication state")
+
+console.log(
+  "Updater release contract verified: PR-gated auto tag, signed assets, MSI-only OTA, automated publish"
+)
