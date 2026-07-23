@@ -2,6 +2,25 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.4] - 2026-07-23
+
+### 新增
+
+- Windows 可在 Terminal 設定中選擇命令提示字元、Windows PowerShell、PowerShell 7、WSL 預設環境或已安裝的 WSL 發行版。
+- 新增 Terminal profile 下拉選單；建立終端機時可以臨時改用其他 profile，不會改變預設設定。
+- 自訂 Terminal profile 可分別設定執行檔、每行一個啟動參數，以及原生 Windows 或 WSL 工作目錄策略。
+
+### 改善
+
+- 改善 Windows 中文輸入法在 Terminal 中遺失、重複送出或組字位置不正確的問題。
+- Windows 可切換游標跟隨或固定 TUI 輸入框模式，讓全螢幕終端程式中的中文組字位置保持可見。
+- 從 WSL 網路路徑開啟工作區時，會使用相符的發行版與 Linux 工作目錄啟動 Terminal。
+
+### 已知限制
+
+- macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現安全提示。
+- Windows 中文輸入法候選視窗仍可能受輸入法與 WebView2 版本影響；遇到定位不穩定時，可在 Terminal 設定改用 TUI 輸入框。
+
 ## [0.0.3] - 2026-07-22
 
 ### 新增
