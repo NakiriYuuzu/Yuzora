@@ -790,7 +790,6 @@ mod tests {
         let workspace = workspace.to_str().unwrap();
         mgr.start(workspace, "sh -c 'sleep 5'", None, on_output.clone())
             .unwrap();
-        #[cfg(unix)]
         let pid = mgr.debug_pid(workspace).unwrap();
 
         let err = mgr
@@ -900,6 +899,7 @@ mod tests {
         let workspace = workspace.to_str().unwrap();
         mgr.start(workspace, "sh -c 'sleep 5'", Some(3000), on_output)
             .unwrap();
+        #[cfg(unix)]
         let pid = mgr.debug_pid(workspace).unwrap();
 
         mgr.kill_all();
