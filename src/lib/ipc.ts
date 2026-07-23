@@ -27,6 +27,8 @@ import type {
     PtyActivity,
     PtyEvent,
     PtySessionInfo,
+    TerminalProfile,
+    TerminalCwdStrategy,
     DevServerDetect,
     DevServerInfo,
     DbTable,
@@ -274,13 +276,27 @@ export function ptyOpen(
     sessionId: string,
     shell: string | null,
     shellArgs: string[] | undefined,
+    cwdStrategy: TerminalCwdStrategy,
     cols: number,
     rows: number,
     onEvent: (e: PtyEvent) => void
 ): Promise<PtySessionInfo> {
     const ch = new Channel<PtyEvent>()
     ch.onmessage = onEvent
-    return invoke("pty_open", { workspace, sessionId, shell, shellArgs, cols, rows, onEvent: ch })
+    return invoke("pty_open", {
+        workspace,
+        sessionId,
+        shell,
+        shellArgs,
+        cwdStrategy,
+        cols,
+        rows,
+        onEvent: ch
+    })
+}
+
+export function ptyListProfiles(): Promise<TerminalProfile[]> {
+    return invoke("pty_list_profiles")
 }
 
 export function ptyWrite(sessionId: string, data: string): Promise<void> {

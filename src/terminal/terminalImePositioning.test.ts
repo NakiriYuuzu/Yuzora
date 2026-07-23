@@ -142,4 +142,41 @@ describe("installTerminalImePositioning", () => {
         expect(textarea.style.left).toBe("41px")
         expect(textarea.style.top).toBe("42px")
     })
+
+    it("anchors TUI composition to a visible overlay instead of the parked buffer cursor", () => {
+        const { terminal, textarea, activeBuffer, resize, scroll } = createTerminal()
+        const installed = installTerminalImePositioning(terminal, { anchorMode: "tui" })
+
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }))
+        textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "ㄋㄧ" }))
+
+        const overlay = terminal.element?.querySelector<HTMLElement>("[data-yuzora-ime-overlay]")
+        expect(overlay).not.toBeNull()
+        expect(overlay).toHaveTextContent("ㄋㄧ")
+        expect(overlay).toHaveStyle({ display: "block" })
+        expect(textarea.style.left).toBe("8px")
+        expect(textarea.style.top).toBe("452px")
+        expect(textarea.style.zIndex).toBe("5")
+
+        textarea.style.left = "777px"
+        textarea.style.top = "778px"
+        activeBuffer.cursorX = 70
+        activeBuffer.cursorY = 1
+        resize.emit({ cols: 80, rows: 24 })
+        expect(textarea.style.left).toBe("8px")
+        expect(textarea.style.top).toBe("452px")
+
+        textarea.style.left = "779px"
+        textarea.style.top = "780px"
+        scroll.emit(1)
+        expect(textarea.style.left).toBe("8px")
+        expect(textarea.style.top).toBe("452px")
+        expect(overlay).toHaveStyle({ display: "block" })
+
+        textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "你" }))
+        expect(overlay?.style.display).toBe("none")
+
+        installed.dispose()
+        expect(terminal.element?.querySelector("[data-yuzora-ime-overlay]")).toBeNull()
+    })
 })

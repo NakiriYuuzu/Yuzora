@@ -22,6 +22,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { logUserAction } from "@/features/logs/userAction"
 import { showActionError } from "@/lib/actionFeedback"
+import type { TerminalProfile } from "@/lib/types"
+import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import {
   MAX_TERMINAL_PANE_SPLIT_RATIO,
@@ -39,6 +41,11 @@ import {
   splitTerminal,
   type TerminalSessionMetaWithArgs,
 } from "@/terminal/terminalCommands"
+import {
+  availableTerminalProfiles,
+  terminalProfileDisplayName,
+} from "@/terminal/terminalProfiles"
+import { useTerminalProfiles } from "@/terminal/useTerminalProfiles"
 
 const ACTIVE_GAP = 10
 const TERMINAL_CONTENT_MIN_HEIGHT = 140
@@ -232,6 +239,7 @@ export function TerminalDrawer({
   const [transientPaneRatio, setTransientPaneRatio] = useState<TransientPaneRatio | null>(null)
   const [resizing, setResizing] = useState(false)
   const [geometryTransitionSuppressed, setGeometryTransitionSuppressed] = useState(false)
+  const discoveredProfiles = useTerminalProfiles()
   const dragRef = useRef<DragState | null>(null)
   const paneDragRef = useRef<PaneDragState | null>(null)
   const paneGridRef = useRef<HTMLDivElement | null>(null)
@@ -361,12 +369,14 @@ export function TerminalDrawer({
     if (!expanded) setExpanded(true)
   }
 
-  const openSession = () => {
+  const openSession = (profile?: TerminalProfile) => {
     if (!workspacePath) return
     expandForTerminalAction()
-    const meta = createTerminalSessionMeta(workspacePath)
+    const meta = createTerminalSessionMeta(workspacePath, profile)
     addSession(workspacePath, meta)
-    void logUserAction("terminal_new", "Open a new terminal")
+    void logUserAction("terminal_new", "Open a new terminal", {
+      profileId: profile?.id ?? terminalSettings.defaultProfile.id,
+    })
   }
 
   const splitSession = () => {
@@ -395,6 +405,13 @@ export function TerminalDrawer({
       await showActionError(t("contextMenu.cmCloseTerminal", { ns: "menus" }), error)
     }
   }
+
+  const terminalSettings = loadTerminalSettings()
+  const selectableProfiles = availableTerminalProfiles(
+    discoveredProfiles,
+    terminalSettings.defaultProfile,
+    terminalSettings.customProfile,
+  )
 
   const selectTerminalTab = (sessionId: string) => {
     if (!workspacePath) return
@@ -852,15 +869,48 @@ export function TerminalDrawer({
                 <path d="M13 4v16" />
               </svg>
             </button>
-            <button
-              type="button"
-              title={t("terminalDrawer.newTerminalTitle", { ns: "menus" })}
-              disabled={!canCreateSession}
-              onClick={openSession}
-              className={toolButtonClass}
+            <div
+              role="group"
+              aria-label={t("terminalDrawer.newTerminalTitle", { ns: "menus" })}
+              className="flex items-center rounded-[7px]"
             >
-              <Plus className="size-[13px]" aria-hidden="true" />
-            </button>
+              <button
+                type="button"
+                title={t("terminalDrawer.newTerminalTitle", { ns: "menus" })}
+                disabled={!canCreateSession}
+                onClick={() => openSession()}
+                className={toolButtonClass}
+              >
+                <Plus className="size-[13px]" aria-hidden="true" />
+              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    title={t("terminalDrawer.selectProfileTitle", { ns: "menus" })}
+                    aria-label={t("terminalDrawer.selectProfileTitle", { ns: "menus" })}
+                    disabled={!canCreateSession}
+                    className={toolButtonClass}
+                  >
+                    <ChevronDown className="size-[13px]" aria-hidden="true" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-[240px]">
+                  {selectableProfiles.map((profile) => (
+                    <DropdownMenuItem key={profile.id} onSelect={() => openSession(profile)}>
+                      <span className="min-w-0 flex-1 truncate">
+                        {terminalProfileDisplayName(profile)}
+                      </span>
+                      {profile.id === terminalSettings.defaultProfile.id && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {t("terminalDrawer.defaultProfile", { ns: "menus" })}
+                        </span>
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             <button
               type="button"
               aria-expanded={expanded}
@@ -972,6 +1022,8 @@ export function TerminalDrawer({
                           sessionId={session.sessionId}
                           shell={session.shell || null}
                           shellArgs={shellArgs}
+                          cwdStrategy={session.cwdStrategy}
+                          imeAnchorMode={session.imeAnchorMode}
                           active={active}
                           visible={sessionVisible}
                           onExit={() => removeSession(paneWorkspace, session.sessionId)}

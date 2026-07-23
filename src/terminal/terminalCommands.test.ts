@@ -16,8 +16,24 @@ import {
 } from "./terminalCommands"
 import { registerTerminalView, type TerminalViewHandle } from "./terminalViewRegistry"
 
+const terminalSettingsMock = vi.hoisted(() => ({
+  value: {
+    shellPath: "",
+    shellArgs: "",
+    defaultProfile: {
+      id: "system",
+      name: "System default",
+      shell: "",
+      args: [] as string[],
+      kind: "system",
+      cwdStrategy: "native",
+    },
+    imeAnchorMode: "cursor" as "cursor" | "tui",
+  },
+}))
+
 vi.mock("@/app/workbench/settingsStorage", () => ({
-  loadTerminalSettings: () => ({ shellPath: "", shellArgs: "" }),
+  loadTerminalSettings: () => terminalSettingsMock.value,
 }))
 
 const target: TerminalCommandTarget = {
@@ -70,6 +86,19 @@ function registerView(overrides: Partial<TerminalViewHandle> = {}): TerminalView
 beforeEach(() => {
   clearMocks()
   useTerminalStore.getState().reset()
+  terminalSettingsMock.value = {
+    shellPath: "",
+    shellArgs: "",
+    defaultProfile: {
+      id: "system",
+      name: "System default",
+      shell: "",
+      args: [],
+      kind: "system",
+      cwdStrategy: "native",
+    },
+    imeAnchorMode: "cursor",
+  }
 })
 
 afterEach(() => {
@@ -104,6 +133,48 @@ describe("terminalCommands", () => {
     expect(first.title).toBe("Terminal 1")
     expect(second.title).toBe("Terminal 2")
     expect(second.launchStatus).toBe("opening")
+  })
+
+  it("snapshots the selected profile argv and IME anchor into a new session", () => {
+    terminalSettingsMock.value = {
+      shellPath: "legacy.exe",
+      shellArgs: "--legacy",
+      defaultProfile: {
+        id: "powershell-7",
+        name: "PowerShell 7",
+        shell: "pwsh.exe",
+        args: ["-NoExit", "-Command", "Write-Output 'hello world'"],
+        kind: "powershell",
+        cwdStrategy: "native",
+      },
+      imeAnchorMode: "tui",
+    }
+
+    expect(createTerminalSessionMeta(target.workspacePath)).toMatchObject({
+      shell: "pwsh.exe",
+      shellArgs: ["-NoExit", "-Command", "Write-Output 'hello world'"],
+      imeAnchorMode: "tui",
+      profileName: "PowerShell 7",
+    })
+  })
+
+  it("allows New Terminal to override the default profile without changing settings", () => {
+    expect(
+      createTerminalSessionMeta(target.workspacePath, {
+        id: "wsl:Ubuntu",
+        name: "WSL: Ubuntu",
+        shell: "wsl.exe",
+        args: ["--distribution", "Ubuntu"],
+        kind: "wsl",
+        cwdStrategy: "wsl",
+      }),
+    ).toMatchObject({
+      shell: "wsl.exe",
+      shellArgs: ["--distribution", "Ubuntu"],
+      cwdStrategy: "wsl",
+      imeAnchorMode: "cursor",
+      profileName: "WSL: Ubuntu",
+    })
   })
 
   it("copies selection, pastes through xterm, and clears the xterm buffer", async () => {

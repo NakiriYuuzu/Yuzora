@@ -129,6 +129,7 @@ beforeEach(() => {
       sessionId: string,
       shell: string | null,
       _shellArgs: string[] | undefined,
+      _cwdStrategy: "native" | "wsl",
       cols: number,
       rows: number,
       onEvent: (event: PtyEvent) => void
@@ -180,6 +181,7 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
       firstSession.sessionId,
       firstSession.shell,
       undefined,
+      "native",
       80,
       24,
       expect.any(Function)

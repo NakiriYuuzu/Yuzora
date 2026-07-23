@@ -149,6 +149,8 @@
     "splitRightTitle": "向右分割",
     "splitLimitTitle": "最多只能同時顯示兩個終端機",
     "newTerminalTitle": "新增終端機",
+    "selectProfileTitle": "使用 Profile 新增終端機",
+    "defaultProfile": "預設",
     "closeTabAriaLabel": "關閉 {{title}}",
     "renameInputAriaLabel": "重新命名 {{title}}",
     "spawnFailedTitle": "終端機啟動失敗",

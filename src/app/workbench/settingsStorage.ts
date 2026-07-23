@@ -5,6 +5,12 @@ import {
   type AgentId, type AgentPreset,
 } from "@/lib/agentPresets"
 import { cachedBuiltinPiAdapterCommand } from "@/lib/platform"
+import type { TerminalProfile, TerminalProfileKind } from "@/lib/types"
+import {
+  EMPTY_CUSTOM_TERMINAL_PROFILE,
+  SYSTEM_TERMINAL_PROFILE,
+} from "@/terminal/terminalProfiles"
+import type { TerminalImeAnchorMode } from "@/terminal/terminalImePositioning"
 
 export { AGENT_PRESETS, DEFAULT_AGENT_COMMAND, agentPresetForCommand }
 export type { AgentId, AgentPreset }
@@ -26,8 +32,9 @@ export interface AppearanceSettings {
 }
 
 export interface TerminalSettings {
-  shellPath: string
-  shellArgs: string
+  defaultProfile: TerminalProfile
+  customProfile: TerminalProfile
+  imeAnchorMode: TerminalImeAnchorMode
 }
 
 export interface PreviewSettings {
@@ -46,11 +53,6 @@ export interface AgentSettings {
 export interface AgentPresetCommandSettings {
   mode: AgentCommandMode
   customCommand: string
-}
-
-const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
-  shellPath: "",
-  shellArgs: "",
 }
 
 const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
@@ -96,7 +98,71 @@ export function writeJsonSetting<T extends object>(key: string, value: T): void 
 }
 
 export function loadTerminalSettings(): TerminalSettings {
-  return readJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, DEFAULT_TERMINAL_SETTINGS)
+  type StoredTerminalSettings = Partial<TerminalSettings> & {
+    shellPath?: unknown
+    shellArgs?: unknown
+  }
+  const stored = readJsonSetting<StoredTerminalSettings>(TERMINAL_SETTINGS_STORAGE_KEY, {})
+  const legacyShell = typeof stored.shellPath === "string" ? stored.shellPath.trim() : ""
+  const legacyArgs = typeof stored.shellArgs === "string"
+    ? stored.shellArgs.trim().split(/\s+/).filter(Boolean)
+    : []
+  const hasLegacyProfile = legacyShell.length > 0 || legacyArgs.length > 0
+  const legacyProfile: TerminalProfile = {
+    ...EMPTY_CUSTOM_TERMINAL_PROFILE,
+    shell: legacyShell,
+    args: legacyArgs,
+  }
+  const customProfile = normalizeTerminalProfile(
+    stored.customProfile,
+    hasLegacyProfile ? legacyProfile : EMPTY_CUSTOM_TERMINAL_PROFILE,
+    "custom",
+  )
+  const defaultProfile = normalizeTerminalProfile(
+    stored.defaultProfile,
+    hasLegacyProfile ? legacyProfile : SYSTEM_TERMINAL_PROFILE,
+  )
+
+  return {
+    defaultProfile,
+    customProfile,
+    imeAnchorMode: stored.imeAnchorMode === "tui" ? "tui" : "cursor",
+  }
+}
+
+const TERMINAL_PROFILE_KINDS: TerminalProfileKind[] = [
+  "system",
+  "cmd",
+  "powershell",
+  "wsl",
+  "custom",
+]
+
+function normalizeTerminalProfile(
+  value: unknown,
+  fallback: TerminalProfile,
+  forcedKind?: TerminalProfileKind,
+): TerminalProfile {
+  if (!value || typeof value !== "object") return { ...fallback, args: [...fallback.args] }
+  const profile = value as Partial<TerminalProfile>
+  if (
+    typeof profile.id !== "string"
+    || typeof profile.name !== "string"
+    || typeof profile.shell !== "string"
+    || !Array.isArray(profile.args)
+    || !profile.args.every((arg) => typeof arg === "string")
+    || !TERMINAL_PROFILE_KINDS.includes(profile.kind as TerminalProfileKind)
+  ) {
+    return { ...fallback, args: [...fallback.args] }
+  }
+  return {
+    id: forcedKind === "custom" ? "custom" : profile.id,
+    name: profile.name,
+    shell: profile.shell.trim(),
+    args: [...profile.args],
+    kind: forcedKind ?? profile.kind!,
+    cwdStrategy: profile.cwdStrategy === "wsl" ? "wsl" : "native",
+  }
 }
 
 export function loadPreviewSettings(): PreviewSettings {

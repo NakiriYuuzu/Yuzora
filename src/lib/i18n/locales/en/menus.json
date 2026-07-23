@@ -149,6 +149,8 @@
     "splitRightTitle": "Split right",
     "splitLimitTitle": "A maximum of two terminals can be visible",
     "newTerminalTitle": "New terminal",
+    "selectProfileTitle": "New terminal with profile",
+    "defaultProfile": "default",
     "closeTabAriaLabel": "Close {{title}}",
     "renameInputAriaLabel": "Rename {{title}}",
     "spawnFailedTitle": "Terminal failed to start",

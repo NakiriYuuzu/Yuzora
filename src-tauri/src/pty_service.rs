@@ -37,6 +37,32 @@ pub enum PtyActivity {
     Unknown,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalProfile {
+    pub id: String,
+    pub name: String,
+    pub shell: String,
+    pub args: Vec<String>,
+    pub kind: TerminalProfileKind,
+    pub cwd_strategy: TerminalCwdStrategy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalProfileKind {
+    Cmd,
+    Powershell,
+    Wsl,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalCwdStrategy {
+    Native,
+    Wsl,
+}
+
 struct PtySessionShared {
     info: Mutex<PtySessionInfo>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
@@ -81,6 +107,212 @@ fn shell_spawn_cwd(workspace: &str) -> Cow<'_, str> {
         // non-verbatim equivalent, so keep their operational form intact.
         Cow::Borrowed(workspace)
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ShellSpawnPlan {
+    cwd: String,
+    args: Vec<String>,
+}
+
+fn is_wsl_shell(shell: &std::path::Path) -> bool {
+    shell
+        .to_string_lossy()
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("wsl") || name.eq_ignore_ascii_case("wsl.exe")
+        })
+}
+
+fn wsl_requested_distro(args: &[String]) -> Option<&str> {
+    args.windows(2).find_map(|pair| {
+        (pair[0] == "--distribution" || pair[0] == "-d").then_some(pair[1].as_str())
+    })
+}
+
+fn wsl_unc_target(workspace: &str) -> Option<(String, String)> {
+    let normalized = shell_spawn_cwd(workspace);
+    let path = normalized.strip_prefix(r"\\")?;
+    let mut segments = path.split(['\\', '/']);
+    let server = segments.next()?;
+    if !server.eq_ignore_ascii_case("wsl.localhost") && !server.eq_ignore_ascii_case("wsl$") {
+        return None;
+    }
+    let distro = segments.next()?.trim();
+    if distro.is_empty() {
+        return None;
+    }
+    let remainder = segments
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let linux_cwd = if remainder.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", remainder.join("/"))
+    };
+    Some((distro.to_string(), linux_cwd))
+}
+
+fn shell_spawn_plan(
+    workspace: &str,
+    cwd_strategy: TerminalCwdStrategy,
+    configured_args: Option<&[String]>,
+) -> Result<ShellSpawnPlan, String> {
+    let mut args = configured_args.unwrap_or_default().to_vec();
+    if cwd_strategy != TerminalCwdStrategy::Wsl {
+        return Ok(ShellSpawnPlan {
+            cwd: shell_spawn_cwd(workspace).into_owned(),
+            args,
+        });
+    }
+
+    let Some((workspace_distro, linux_cwd)) = wsl_unc_target(workspace) else {
+        return Ok(ShellSpawnPlan {
+            cwd: shell_spawn_cwd(workspace).into_owned(),
+            args,
+        });
+    };
+
+    if args
+        .iter()
+        .any(|arg| arg == "--exec" || arg == "-e" || arg == "--")
+    {
+        return Err(
+            "WSL UNC workspaces cannot combine automatic --cd with a custom exec command"
+                .to_string(),
+        );
+    }
+    if let Some(profile_distro) = wsl_requested_distro(&args) {
+        if !profile_distro.eq_ignore_ascii_case(&workspace_distro) {
+            return Err(format!(
+                "WSL profile distro {profile_distro:?} does not match workspace distro {workspace_distro:?}"
+            ));
+        }
+    } else {
+        args.splice(
+            0..0,
+            ["--distribution".to_string(), workspace_distro.clone()],
+        );
+    }
+    args.extend(["--cd".to_string(), linux_cwd]);
+
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("resolve host cwd for WSL workspace failed: {error}"))?
+        .to_string_lossy()
+        .into_owned();
+    Ok(ShellSpawnPlan { cwd, args })
+}
+
+#[cfg(any(windows, test))]
+fn decode_wsl_list_output(bytes: &[u8]) -> Vec<String> {
+    let looks_utf16le =
+        bytes.starts_with(&[0xff, 0xfe]) || bytes.chunks_exact(2).take(32).any(|pair| pair[1] == 0);
+    let text = if looks_utf16le {
+        let start = usize::from(bytes.starts_with(&[0xff, 0xfe])) * 2;
+        let units = bytes[start..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+
+    text.lines()
+        .map(|line| line.trim_matches(['\u{feff}', '\0', ' ', '\t', '\r']))
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[cfg(windows)]
+fn detect_windows_terminal_profiles() -> Vec<TerminalProfile> {
+    let mut profiles = Vec::new();
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let cmd = std::env::var_os("ComSpec")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| system_root.join(r"System32\cmd.exe"));
+    profiles.push(TerminalProfile {
+        id: "cmd".to_string(),
+        name: "Command Prompt".to_string(),
+        shell: cmd.to_string_lossy().into_owned(),
+        args: Vec::new(),
+        kind: TerminalProfileKind::Cmd,
+        cwd_strategy: TerminalCwdStrategy::Native,
+    });
+
+    let windows_powershell = system_root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if windows_powershell.is_file() {
+        profiles.push(TerminalProfile {
+            id: "windows-powershell".to_string(),
+            name: "Windows PowerShell".to_string(),
+            shell: windows_powershell.to_string_lossy().into_owned(),
+            args: vec!["-NoLogo".to_string()],
+            kind: TerminalProfileKind::Powershell,
+            cwd_strategy: TerminalCwdStrategy::Native,
+        });
+    }
+
+    let pwsh = std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .map(|program_files| program_files.join(r"PowerShell\7\pwsh.exe"))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|directory| directory.join("pwsh.exe"))
+                    .find(|path| path.is_file())
+            })
+        });
+    if let Some(pwsh) = pwsh {
+        profiles.push(TerminalProfile {
+            id: "powershell-7".to_string(),
+            name: "PowerShell 7".to_string(),
+            shell: pwsh.to_string_lossy().into_owned(),
+            args: vec!["-NoLogo".to_string()],
+            kind: TerminalProfileKind::Powershell,
+            cwd_strategy: TerminalCwdStrategy::Native,
+        });
+    }
+
+    let wsl = system_root.join(r"System32\wsl.exe");
+    if wsl.is_file() {
+        let wsl_shell = wsl.to_string_lossy().into_owned();
+        profiles.push(TerminalProfile {
+            id: "wsl".to_string(),
+            name: "WSL (default distro)".to_string(),
+            shell: wsl_shell.clone(),
+            args: Vec::new(),
+            kind: TerminalProfileKind::Wsl,
+            cwd_strategy: TerminalCwdStrategy::Wsl,
+        });
+        if let Ok(output) = std::process::Command::new(&wsl)
+            .args(["--list", "--quiet"])
+            .output()
+        {
+            if output.status.success() {
+                for distro in decode_wsl_list_output(&output.stdout) {
+                    profiles.push(TerminalProfile {
+                        id: format!("wsl:{distro}"),
+                        name: format!("WSL: {distro}"),
+                        shell: wsl_shell.clone(),
+                        args: vec!["--distribution".to_string(), distro],
+                        kind: TerminalProfileKind::Wsl,
+                        cwd_strategy: TerminalCwdStrategy::Wsl,
+                    });
+                }
+            }
+        }
+    }
+    profiles
+}
+
+#[cfg(not(windows))]
+fn detect_windows_terminal_profiles() -> Vec<TerminalProfile> {
+    Vec::new()
 }
 
 #[cfg(unix)]
@@ -131,6 +363,23 @@ impl PtyManager {
         rows: u16,
         on_event: OnEvent,
     ) -> Result<PtySessionInfo, String> {
+        self.open_with_cwd_strategy(
+            workspace, session_id, shell, shell_args, None, cols, rows, on_event,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_with_cwd_strategy(
+        self: &Arc<Self>,
+        workspace: &str,
+        session_id: &str,
+        shell: Option<&str>,
+        shell_args: Option<&[String]>,
+        cwd_strategy: Option<TerminalCwdStrategy>,
+        cols: u16,
+        rows: u16,
+        on_event: OnEvent,
+    ) -> Result<PtySessionInfo, String> {
         let shell_path = resolve_shell(shell);
         let shell_string = shell_path.to_string_lossy().into_owned();
         let session_key = session_id.to_string();
@@ -165,19 +414,25 @@ impl PtyManager {
                 .master
                 .take_writer()
                 .map_err(|e| format!("take pty writer failed: {e}"))?;
+            let cwd_strategy = cwd_strategy.unwrap_or_else(|| {
+                if is_wsl_shell(&shell_path) {
+                    TerminalCwdStrategy::Wsl
+                } else {
+                    TerminalCwdStrategy::Native
+                }
+            });
+            let spawn_plan = shell_spawn_plan(workspace, cwd_strategy, shell_args)?;
             let mut cmd = CommandBuilder::new(&shell_path);
+            #[cfg(unix)]
             cmd.env("SHELL", &shell_path);
             cmd.env("TERM", "xterm-256color");
-            let shell_cwd = shell_spawn_cwd(workspace);
-            cmd.cwd(shell_cwd.as_ref());
+            cmd.cwd(&spawn_plan.cwd);
             #[cfg(unix)]
             cmd.arg("-l");
             // User-configured shell args are appended after the login flag so
             // G1 login-shell behavior remains intact while still honoring A11.
-            if let Some(shell_args) = shell_args {
-                for arg in shell_args {
-                    cmd.arg(arg);
-                }
+            for arg in &spawn_plan.args {
+                cmd.arg(arg);
             }
             let child = pair
                 .slave
@@ -691,6 +946,13 @@ fn default_shell() -> PathBuf {
 }
 
 #[tauri::command]
+pub async fn pty_list_profiles() -> Result<Vec<TerminalProfile>, String> {
+    tauri::async_runtime::spawn_blocking(detect_windows_terminal_profiles)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn pty_open(
     state: tauri::State<'_, PtyState>,
@@ -698,6 +960,7 @@ pub async fn pty_open(
     session_id: String,
     shell: Option<String>,
     shell_args: Option<Vec<String>>,
+    cwd_strategy: Option<TerminalCwdStrategy>,
     cols: u16,
     rows: u16,
     on_event: tauri::ipc::Channel<PtyEvent>,
@@ -708,11 +971,12 @@ pub async fn pty_open(
         let on_event: OnEvent = Arc::new(move |event| {
             let _ = channel.send(event);
         });
-        manager.open(
+        manager.open_with_cwd_strategy(
             &workspace,
             &session_id,
             shell.as_deref(),
             shell_args.as_deref(),
+            cwd_strategy,
             cols,
             rows,
             on_event,
@@ -897,6 +1161,71 @@ mod tests {
             shell_spawn_cwd(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\project").as_ref(),
             r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\project"
         );
+    }
+
+    #[test]
+    fn decodes_utf16le_wsl_distro_output_without_nul_characters() {
+        let utf16 = "Ubuntu\r\nDebian\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            decode_wsl_list_output(&utf16),
+            vec!["Ubuntu".to_string(), "Debian".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_wsl_unc_workspace_into_distro_and_linux_cwd() {
+        assert_eq!(
+            wsl_unc_target(r"\\wsl.localhost\Ubuntu\home\yuuzu\專案"),
+            Some(("Ubuntu".to_string(), "/home/yuuzu/專案".to_string()))
+        );
+        assert_eq!(
+            wsl_unc_target(r"\\wsl$\Debian\home\yuuzu"),
+            Some(("Debian".to_string(), "/home/yuuzu".to_string()))
+        );
+        assert_eq!(wsl_unc_target(r"C:\Users\yuuzu\project"), None);
+    }
+
+    #[test]
+    fn wsl_unc_spawn_plan_injects_matching_distro_and_linux_cwd() {
+        let plan = shell_spawn_plan(
+            r"\\wsl.localhost\Ubuntu\home\yuuzu\project",
+            TerminalCwdStrategy::Wsl,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.args,
+            vec!["--distribution", "Ubuntu", "--cd", "/home/yuuzu/project"]
+        );
+
+        let selected = vec!["--distribution".to_string(), "Ubuntu".to_string()];
+        let plan = shell_spawn_plan(
+            r"\\wsl$\Ubuntu\home\yuuzu",
+            TerminalCwdStrategy::Wsl,
+            Some(&selected),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.args,
+            vec!["--distribution", "Ubuntu", "--cd", "/home/yuuzu"]
+        );
+    }
+
+    #[test]
+    fn wsl_unc_spawn_plan_rejects_a_profile_for_another_distro() {
+        let selected = vec!["--distribution".to_string(), "Debian".to_string()];
+        let error = shell_spawn_plan(
+            r"\\wsl.localhost\Ubuntu\home\yuuzu",
+            TerminalCwdStrategy::Wsl,
+            Some(&selected),
+        )
+        .unwrap_err();
+        assert!(error.contains("Debian"));
+        assert!(error.contains("Ubuntu"));
     }
 
     const CWD_FRAME_BEGIN: &str = "__YUZORA_CWD_BEGIN__";

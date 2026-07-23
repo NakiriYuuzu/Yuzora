@@ -5,8 +5,10 @@ import { setCachedBuiltinPiAdapterCommandForTests } from "@/lib/platform"
 import {
   AGENT_SETTINGS_STORAGE_KEY,
   APPEARANCE_SETTINGS_STORAGE_KEY,
+  TERMINAL_SETTINGS_STORAGE_KEY,
   loadAgentSettings,
   loadAppearanceSettings,
+  loadTerminalSettings,
   resolveAgentCommandRoute,
   saveAppearanceSettings,
   writeJsonSetting,
@@ -61,6 +63,89 @@ describe("appearance settings", () => {
       saveAppearanceSettings({ theme })
       expect(loadAppearanceSettings()).toEqual({ theme })
     }
+  })
+})
+
+describe("terminal settings", () => {
+  it("uses a structured system-default profile and cursor IME anchor by default", () => {
+    expect(loadTerminalSettings()).toMatchObject({
+      defaultProfile: {
+        id: "system",
+        name: "System default",
+        shell: "",
+        args: [],
+        kind: "system",
+        cwdStrategy: "native",
+      },
+      customProfile: {
+        id: "custom",
+        shell: "",
+        args: [],
+        kind: "custom",
+        cwdStrategy: "native",
+      },
+      imeAnchorMode: "cursor",
+    })
+  })
+
+  it("migrates the legacy shell path and whitespace args into a custom profile", () => {
+    localStorage.setItem(
+      TERMINAL_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        shellPath: " C:\\Program Files\\PowerShell\\7\\pwsh.exe ",
+        shellArgs: "-NoLogo -NoProfile",
+      }),
+    )
+
+    expect(loadTerminalSettings()).toMatchObject({
+      defaultProfile: {
+        id: "custom",
+        shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        args: ["-NoLogo", "-NoProfile"],
+        kind: "custom",
+        cwdStrategy: "native",
+      },
+      customProfile: {
+        id: "custom",
+        shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        args: ["-NoLogo", "-NoProfile"],
+        kind: "custom",
+        cwdStrategy: "native",
+      },
+      imeAnchorMode: "cursor",
+    })
+  })
+
+  it("preserves structured argv entries containing spaces and validates the IME anchor", () => {
+    writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, {
+      defaultProfile: {
+        id: "powershell-7",
+        name: "PowerShell 7",
+        shell: "pwsh.exe",
+        args: ["-NoExit", "-Command", "Write-Output 'hello world'"],
+        kind: "powershell",
+        cwdStrategy: "native",
+      },
+      customProfile: {
+        id: "custom",
+        name: "Custom",
+        shell: "",
+        args: [],
+        kind: "custom",
+        cwdStrategy: "native",
+      },
+      imeAnchorMode: "tui",
+    })
+
+    expect(loadTerminalSettings()).toMatchObject({
+      defaultProfile: {
+        args: ["-NoExit", "-Command", "Write-Output 'hello world'"],
+      },
+      imeAnchorMode: "tui",
+    })
+
+    writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { imeAnchorMode: "floating" })
+    expect(loadTerminalSettings().imeAnchorMode).toBe("cursor")
   })
 })
 
