@@ -207,7 +207,7 @@ export interface LogRecord {
 }
 
 // --- Git log (T2 IPC contract; all outputs camelCase) ---
-export type LogRefKind = "head" | "local" | "remote" | "tag"
+type LogRefKind = "head" | "local" | "remote" | "tag"
 export interface LogRef { name: string; kind: LogRefKind }
 export interface LogCommit {
     hash: string
@@ -278,12 +278,10 @@ declare const dbOpaqueId: unique symbol
 
 /** IDs are deliberately content-independent. A host/path/database tuple is a
  * target address, never the identity of a saved profile or live operation. */
-export type DbOpaqueId<Kind extends string> = string & {
+type DbOpaqueId<Kind extends string> = string & {
     readonly [dbOpaqueId]: Kind
 }
 export type DbDescriptorId = DbOpaqueId<"descriptor">
-/** Product terminology uses profile and descriptor for the same saved entity. */
-export type DbProfileId = DbDescriptorId
 export type DbConnectionId = DbOpaqueId<"connection">
 export type DbConnectionGeneration = DbOpaqueId<"connectionGeneration">
 export type DbQueryRunId = DbOpaqueId<"queryRun">
@@ -349,13 +347,13 @@ export type DbProfileErrorCode =
     | "sqlitePathInvalid"
     | "sqliteOpenFailed"
     | "invalidRequest"
-export interface DbProfileError {
+interface DbProfileError {
     code: DbProfileErrorCode
     message: string
     /** Sanitized engine diagnostics, present for connection failures. */
     error?: DbError | null
 }
-export interface DbCredentialInput { password: string }
+interface DbCredentialInput { password: string }
 export interface DbProfileCreateRequest {
     name: string
     target: DbProfileTarget
@@ -367,13 +365,13 @@ export interface DbProfileUpdateRequest {
     target: DbProfileTarget
     replacementCredential: DbCredentialInput | null
 }
-export type DbProfileRecoveryKind =
+type DbProfileRecoveryKind =
     | "pendingCreate"
     | "pendingReplace"
     | "cleanupOld"
     | "pendingForget"
     | "pendingRemoveCredential"
-export type DbProfileRecoveryAction = "resume" | "abort" | "retryCleanup"
+type DbProfileRecoveryAction = "resume" | "abort" | "retryCleanup"
 export interface DbProfileRecoveryRow {
     operationId: string
     descriptorId: DbDescriptorId
@@ -398,7 +396,7 @@ export interface DbConnectionIdentity {
     connectionId: DbConnectionId
     connectionGeneration: DbConnectionGeneration
 }
-export type DbLiveEngine = DbKind
+type DbLiveEngine = DbKind
 export interface DbLiveConnection extends DbConnectionIdentity { engine: DbLiveEngine }
 export type DbSaveAndConnectOutcome =
     | {
@@ -455,9 +453,9 @@ export function formatDbValue(value: DbValue): string | null {
     }
 }
 
-export type DbRetryability = "retryable" | "notRetryable" | "unknown"
-export type DbErrorEngine = DbKind | "yuzora"
-export interface DbErrorPosition {
+type DbRetryability = "retryable" | "notRetryable" | "unknown"
+type DbErrorEngine = DbKind | "yuzora"
+interface DbErrorPosition {
     offset: number | null
     line: number | null
     column: number | null
@@ -512,7 +510,7 @@ export type DbQueryResult =
     | { kind: "execute"; affectedRows: string | null; effectOutcome: DbEffectOutcome }
 
 export interface DbQueryRunOwner extends DbConnectionIdentity { queryRunId: DbQueryRunId }
-export interface DbStatementExecutionOwner extends DbQueryRunOwner {
+interface DbStatementExecutionOwner extends DbQueryRunOwner {
     statementExecutionId: DbStatementExecutionId
 }
 export interface DbResultSessionOwner extends DbStatementExecutionOwner {
@@ -524,7 +522,7 @@ export interface DbResultSession {
     columns: string[]
     initialPage: DbResultPage
 }
-export type DbStatementExecutionResult =
+type DbStatementExecutionResult =
     | {
           kind: "rows"
           resultSession: DbResultSession | null
@@ -546,16 +544,16 @@ export interface DbStatementExecution {
     effectOutcome: DbEffectOutcome
     result: DbStatementExecutionResult
 }
-export type DbNonEmptyArray<T> = readonly [T, ...T[]]
+type DbNonEmptyArray<T> = readonly [T, ...T[]]
 export interface DbQueryRun extends DbQueryRunOwner {
     statements: DbNonEmptyArray<DbStatementExecution>
     transactionMayBeOpen: boolean
     connectionTerminated: boolean
 }
 
-export type DbQueryRunMode = "primary" | "script"
-export type DbTransactionBoundary = "none" | "begin" | "commit" | "rollback"
-export interface DbQueryRunStatement {
+type DbQueryRunMode = "primary" | "script"
+type DbTransactionBoundary = "none" | "begin" | "commit" | "rollback"
+interface DbQueryRunStatement {
     sql: string
     transactionBoundary: DbTransactionBoundary
 }
@@ -567,8 +565,8 @@ export interface DbQueryRunRequest extends DbConnectionIdentity {
 export interface DbQueryCancelResult {
     outcome: "cancelled" | "cancelledConnectionTerminated" | "alreadyRequested"
 }
-export type DbResultPageDirection = "previous" | "next"
-export type DbResultSessionLifecycle =
+type DbResultPageDirection = "previous" | "next"
+type DbResultSessionLifecycle =
     | "streaming"
     | "complete"
     | "released"

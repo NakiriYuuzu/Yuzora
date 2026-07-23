@@ -1,6 +1,6 @@
 import type { TranscriptEntry } from "@/agent/acpTypes"
 
-export interface FileChangeStat {
+interface FileChangeStat {
     path: string
     added: number
     removed: number

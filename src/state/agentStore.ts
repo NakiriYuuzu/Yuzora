@@ -39,10 +39,10 @@ import { useUiStore } from "@/state/uiStore"
 
 export type AgentTone = "idle" | "run" | "done" | "wait" | "fail"
 export type AgentConnectionState = "idle" | "connecting" | "ready" | "error"
-export type StopBadgeKind = "refusal" | "truncated"
-export type PermissionResolver = (optionId: string) => void
+type StopBadgeKind = "refusal" | "truncated"
+type PermissionResolver = (optionId: string) => void
 
-export interface StopBadge {
+interface StopBadge {
     kind: StopBadgeKind
     label: string
     stopReason: StopReason
@@ -96,7 +96,7 @@ export interface SessionState {
     ephemeral?: boolean
 }
 
-export interface PendingSessionConfigRequest {
+interface PendingSessionConfigRequest {
     token: number
     configId: string
     value: SessionConfigValue
@@ -1746,7 +1746,7 @@ function nextActiveSessionForCwd(
 
 // P10-B：切到 workspace B 時，A 的 active session 不應被沿用。回傳目前
 // activeSessionId 僅在其 cwd 與傳入的 cwd 相符時才視為有效，否則回傳 null。
-export function selectActiveSessionForCwd(
+function selectActiveSessionForCwd(
     state: Pick<AgentStoreState, "activeSessionId" | "sessions">,
     cwd: string
 ): string | null {

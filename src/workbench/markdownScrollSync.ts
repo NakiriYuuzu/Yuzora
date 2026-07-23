@@ -8,7 +8,7 @@ interface AnchorBounds {
     endOffset?: number
 }
 
-export type ScrollSyncDriver = "editor" | "preview"
+type ScrollSyncDriver = "editor" | "preview"
 
 interface ScrollSubscription {
     subscribeScroll: (listener: () => void) => () => void

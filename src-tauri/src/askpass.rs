@@ -16,6 +16,7 @@ pub struct AskpassRequest {
 }
 
 /// prompt 前綴/子字串 → kind 分類。
+#[cfg(unix)]
 fn classify(prompt: &str) -> &'static str {
     if prompt.starts_with("Username") {
         "username"
@@ -31,6 +32,7 @@ fn classify(prompt: &str) -> &'static str {
 }
 
 /// 快取 key＝prompt 去尾端 `: ` 後全文（保留多行前綴內容）。
+#[cfg(unix)]
 fn cache_key(prompt: &str) -> String {
     prompt.strip_suffix(": ").unwrap_or(prompt).to_string()
 }

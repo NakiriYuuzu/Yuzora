@@ -10,7 +10,7 @@ import type { GitStatus } from "@/lib/types"
 
 // §5 gitBadge colours (dc.html L3207-3208). Untracked shows "?" and conflicted
 // "!" (git-convention chars; §5 has no dedicated entry for either).
-export const BADGE_COLORS: Record<string, { fg: string; bg: string }> = {
+const BADGE_COLORS: Record<string, { fg: string; bg: string }> = {
     M: { fg: "#2456cc", bg: "var(--blue-soft)" },
     A: { fg: "#178a63", bg: "var(--mint-soft)" },
     D: { fg: "#c2293f", bg: "var(--danger-soft)" },

@@ -2,7 +2,7 @@ import { create } from "zustand"
 import type { TerminalCwdStrategy } from "@/lib/types"
 import type { TerminalImeAnchorMode } from "@/terminal/terminalImePositioning"
 
-export type TerminalLaunchStatus = "opening" | "running" | "failed"
+type TerminalLaunchStatus = "opening" | "running" | "failed"
 
 export interface TerminalSessionMeta {
     sessionId: string
@@ -20,7 +20,7 @@ export interface TerminalSessionMeta {
     rows: number
 }
 
-export interface TerminalPane {
+interface TerminalPane {
     paneId: string
     sessionId: string
 }
@@ -55,7 +55,7 @@ interface TerminalState {
 }
 
 export const MAX_VISIBLE_TERMINAL_PANES = 2
-export const DEFAULT_TERMINAL_PANE_SPLIT_RATIO = 0.5
+const DEFAULT_TERMINAL_PANE_SPLIT_RATIO = 0.5
 export const MIN_TERMINAL_PANE_SPLIT_RATIO = 0.2
 export const MAX_TERMINAL_PANE_SPLIT_RATIO = 0.8
 export const MAX_TERMINAL_TITLE_LENGTH = 128
@@ -83,7 +83,7 @@ function clampSplitRatio(ratio: number): number {
     )
 }
 
-export function normalizeTerminalTitle(value: string): string {
+function normalizeTerminalTitle(value: string): string {
     const singleLine = Array.from(value.replace(/[\r\n\u2028\u2029]+/g, " "))
         .filter((character) => {
             const codePoint = character.codePointAt(0) ?? 0

@@ -2,7 +2,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { create } from "zustand"
 
-export type UpdateStatus =
+type UpdateStatus =
   | "idle"
   | "checking"
   | "up-to-date"
@@ -27,7 +27,7 @@ interface UpdateState {
   reset: () => void
 }
 
-export const updateInitialState = {
+const updateInitialState = {
   status: "idle" as UpdateStatus,
   update: null as Update | null,
   backgroundCheckStarted: false,

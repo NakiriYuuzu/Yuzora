@@ -38,7 +38,7 @@ interface LspState {
     reset: () => void
 }
 
-export const lspInitialState = {
+const lspInitialState = {
     servers: {} as Record<string, LspServerInfo>,
     initialized: {} as Record<string, boolean>
 }

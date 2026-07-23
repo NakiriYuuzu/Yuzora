@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use crate::{logging, process_kill, pty_service};
+#[cfg(not(windows))]
+use crate::pty_service;
+use crate::{logging, process_kill};
 
 const POLL_MS: u64 = 50;
 const TAIL_LINES: usize = 80;
@@ -764,6 +766,7 @@ mod tests {
             DevServerStatus::Running { port: Some(1234) }
         )));
 
+        #[cfg(unix)]
         let pid = mgr
             .debug_pid(std::env::current_dir().unwrap().to_str().unwrap())
             .unwrap();
@@ -787,6 +790,7 @@ mod tests {
         let workspace = workspace.to_str().unwrap();
         mgr.start(workspace, "sh -c 'sleep 5'", None, on_output.clone())
             .unwrap();
+        #[cfg(unix)]
         let pid = mgr.debug_pid(workspace).unwrap();
 
         let err = mgr

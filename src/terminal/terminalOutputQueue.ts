@@ -1,4 +1,4 @@
-export const TERMINAL_OUTPUT_BUFFER_LIMIT = 256 * 1024
+const TERMINAL_OUTPUT_BUFFER_LIMIT = 256 * 1024
 export const TERMINAL_OUTPUT_TRUNCATED_NOTICE =
   "\u001b[0m\r\n[Yuzora: hidden terminal output was truncated]\r\n"
 

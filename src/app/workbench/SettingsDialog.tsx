@@ -54,17 +54,9 @@ export {
   TERMINAL_SETTINGS_STORAGE_KEY,
   PREVIEW_SETTINGS_STORAGE_KEY,
   AGENT_SETTINGS_STORAGE_KEY,
-  DEFAULT_AGENT_COMMAND,
-  loadTerminalSettings,
   loadPreviewSettings,
-  loadAgentSettings,
-  resolveAgentCommand,
 } from "./settingsStorage"
 export type {
-  AgentPreset,
-  TerminalSettings,
-  PreviewSettings,
-  AgentSettings,
   ThemePreference,
 } from "./settingsStorage"
 

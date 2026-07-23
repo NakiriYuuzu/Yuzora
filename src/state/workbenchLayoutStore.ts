@@ -3,7 +3,7 @@ import { create } from "zustand"
 export const WORKBENCH_LAYOUT_STORAGE_KEY = "yuzora.workbench.layout.v1"
 export const WORKBENCH_LAYOUT_VERSION = 1
 
-export type TerminalRatioScope = "global" | "workspace"
+type TerminalRatioScope = "global" | "workspace"
 
 export interface WorkbenchLayout {
   version: number

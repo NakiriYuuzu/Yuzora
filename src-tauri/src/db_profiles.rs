@@ -5,7 +5,7 @@
 //! coordinated through a write-ahead `PendingOperation` ledger.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -353,7 +353,7 @@ impl FileProfileRepository {
 
     #[cfg(unix)]
     fn sync_parent(parent: &Path) -> Result<(), ProfileRepositoryError> {
-        let directory = OpenOptions::new()
+        let directory = std::fs::OpenOptions::new()
             .read(true)
             .open(parent)
             .map_err(|error| Self::map_io(&error, ProfileRepositoryErrorKind::ParentSyncFailed))?;

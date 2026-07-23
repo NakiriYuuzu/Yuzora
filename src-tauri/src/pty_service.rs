@@ -1513,6 +1513,7 @@ mod tests {
                 |event| matches!(event, PtyEvent::Output { data } if data.contains("hi"))
             )));
 
+        #[cfg(unix)]
         let pid = mgr.debug_pid("s1").unwrap();
         mgr.close("s1").unwrap();
         assert!(mgr.sessions_for("ws-a").is_empty());
@@ -1522,6 +1523,7 @@ mod tests {
         let (on_event2, _events2) = capture_events();
         mgr.open("ws-a", "s2", Some("/bin/sh"), None, 80, 24, on_event2)
             .unwrap();
+        #[cfg(unix)]
         let pid2 = mgr.debug_pid("s2").unwrap();
         mgr.close_workspace("ws-a").unwrap();
         assert!(mgr.sessions_for("ws-a").is_empty());
@@ -1565,6 +1567,7 @@ mod tests {
         let (on_event, _events) = capture_events();
         mgr.open("ws-a", "s1", Some("/bin/sh"), None, 80, 24, on_event)
             .unwrap();
+        #[cfg(unix)]
         let pid = mgr.debug_pid("s1").unwrap();
         mgr.kill_all();
         assert!(mgr.sessions_for("ws-a").is_empty());

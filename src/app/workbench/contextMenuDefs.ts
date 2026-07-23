@@ -51,17 +51,14 @@ import {
 } from "@/workbench/git/gitChangeSelection"
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
 
-export type ContextMenuItem = ContextMenuCommandDefinition
-export type ContextMenuEntry = ContextMenuCommandDefinition | "separator"
-
-export interface ResolvedContextMenuItem {
+interface ResolvedContextMenuItem {
   type: "command"
   command: ContextMenuCommandDefinition
   label: string
   availability: ContextMenuAvailability
 }
 
-export interface ResolvedContextMenuSeparator {
+interface ResolvedContextMenuSeparator {
   type: "separator"
 }
 

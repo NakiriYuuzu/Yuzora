@@ -112,7 +112,7 @@ export function databaseErrorSelectionForEditor(
 }
 
 /** UTF-16 offsets into the original editor buffer (the same offsets used by JS slice/CodeMirror). */
-export type DatabaseSqlTransactionBoundary = "none" | "begin" | "commit" | "rollback"
+type DatabaseSqlTransactionBoundary = "none" | "begin" | "commit" | "rollback"
 
 export interface DatabaseSqlUnit {
     sql: string
@@ -121,7 +121,7 @@ export interface DatabaseSqlUnit {
     transactionBoundary: DatabaseSqlTransactionBoundary
 }
 
-export type DatabaseSqlParseErrorCode =
+type DatabaseSqlParseErrorCode =
     | "unterminated-string"
     | "unterminated-identifier"
     | "unterminated-comment"
@@ -133,7 +133,7 @@ export type DatabaseSqlParseErrorCode =
     | "unbalanced-parenthesis"
     | "unexpected-closing-parenthesis"
 
-export interface DatabaseSqlParseError {
+interface DatabaseSqlParseError {
     code: DatabaseSqlParseErrorCode
     message: string
     position: number
@@ -647,7 +647,7 @@ export function splitDatabaseSql(
     return { ok: true, units }
 }
 
-export interface DatabaseSqlEditorSelection {
+interface DatabaseSqlEditorSelection {
     from: number
     to: number
 }
@@ -660,7 +660,7 @@ export type DatabaseSqlTargetRequest =
       }
     | { kind: "all" }
 
-export type DatabaseSqlTargetErrorCode =
+type DatabaseSqlTargetErrorCode =
     | DatabaseSqlParseErrorCode
     | "noExecutableStatement"
     | "noCurrentStatement"

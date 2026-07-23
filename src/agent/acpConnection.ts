@@ -233,8 +233,8 @@ export interface SessionMeta {
     cwd: string
 }
 
-export const ACP_AUTH_REQUIRED_ERROR_CODE = -32000
-export const ACP_INVALID_PARAMS_ERROR_CODE = -32602
+const ACP_AUTH_REQUIRED_ERROR_CODE = -32000
+const ACP_INVALID_PARAMS_ERROR_CODE = -32602
 
 export interface AgentAuthMethod {
     id: string
@@ -289,7 +289,7 @@ export function isAgentAuthRequiredError(value: unknown): value is AgentAuthRequ
         )
 }
 
-export interface NewSessionResult {
+interface NewSessionResult {
     sessionId: string
     startupInfo: string | null
     agentVersion?: string
@@ -301,7 +301,7 @@ export interface NewSessionResult {
     customCommandFingerprint?: string
 }
 
-export interface LoadSessionResult {
+interface LoadSessionResult {
     startupInfo: string | null
     agentVersion?: string
     agentName?: string

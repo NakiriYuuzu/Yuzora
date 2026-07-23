@@ -6,7 +6,7 @@ import { workspacePathBasename } from "../lib/paths"
 // path-keyed tab model without ever being mistaken for a real file. Only one
 // preview tab exists app-wide (see openPreviewTab).
 export const PREVIEW_TAB_PATH = "yuzora://preview"
-export const PREVIEW_TAB_NAME = "Preview"
+const PREVIEW_TAB_NAME = "Preview"
 
 export interface TabInfo {
     path: string
@@ -25,7 +25,7 @@ export interface EditorGroup {
     activePath: string | null
 }
 
-export interface PendingReveal {
+interface PendingReveal {
     path: string
     line: number
     // Whether revealing should also steal editor focus. Omitted (undefined) means

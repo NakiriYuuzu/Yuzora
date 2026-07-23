@@ -197,6 +197,7 @@ pub fn sha256_matches(bytes: &[u8], expected_hex: &str) -> bool {
 // ---- command / path assembly (pure) ----
 
 /// macOS Gatekeeper quarantine removal, as (program, args).
+#[cfg(any(target_os = "macos", test))]
 pub fn quarantine_command(path: &str) -> (&'static str, Vec<String>) {
     (
         "xattr",

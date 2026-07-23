@@ -1,22 +1,22 @@
-export interface GeneralContextMenuRequest {
+interface GeneralContextMenuRequest {
   kind: "general"
 }
 
-export interface RailContextMenuRequest {
+interface RailContextMenuRequest {
   kind: "rail"
 }
 
-export interface RecentWorkspaceContextMenuRequest {
+interface RecentWorkspaceContextMenuRequest {
   kind: "recentWorkspace"
   path: string
 }
 
-export interface ExplorerContextMenuRequest {
+interface ExplorerContextMenuRequest {
   kind: "explorer"
   workspacePath: string | null
 }
 
-export interface FileContextMenuRequest {
+interface FileContextMenuRequest {
   kind: "file"
   workspacePath: string
   path: string
@@ -24,32 +24,32 @@ export interface FileContextMenuRequest {
   sourceGroupIndex: number
 }
 
-export interface TabContextMenuRequest {
+interface TabContextMenuRequest {
   kind: "tab"
   workspacePath: string | null
   path: string
   groupIndex: number
 }
 
-export interface EditorContextMenuRequest {
+interface EditorContextMenuRequest {
   kind: "editor"
   workspacePath: string | null
   path: string
   groupIndex: number
 }
 
-export interface TerminalTabContextMenuRequest {
+interface TerminalTabContextMenuRequest {
   kind: "terminalTab"
   workspacePath: string
   sessionId: string
 }
 
-export interface AgentSessionContextMenuRequest {
+interface AgentSessionContextMenuRequest {
   kind: "agentSession"
   sessionId: string
 }
 
-export interface GitContextMenuRequest {
+interface GitContextMenuRequest {
   kind: "git"
   repositoryRoot: string | null
 }
@@ -63,31 +63,31 @@ export interface GitChangeTarget {
   origPath: string | null
 }
 
-export interface GitChangeContextMenuRequest {
+interface GitChangeContextMenuRequest {
   kind: "gitChange"
   repositoryRoot: string
   clicked: GitChangeTarget
   selected: readonly GitChangeTarget[]
 }
 
-export interface StatusContextMenuRequest {
+interface StatusContextMenuRequest {
   kind: "status"
   repositoryRoot: string | null
 }
 
-export interface SshHostContextMenuRequest {
+interface SshHostContextMenuRequest {
   kind: "sshhost"
   hostId: string
   address: string
 }
 
-export interface DbConnectionContextMenuRequest {
+interface DbConnectionContextMenuRequest {
   kind: "dbconn"
   descriptorId: string
   address: string
 }
 
-export interface PreviewContextMenuRequest {
+interface PreviewContextMenuRequest {
   kind: "preview"
   workspacePath: string
   url: string | null

@@ -2,7 +2,7 @@ import { useEffect, useRef, type CSSProperties, type ReactNode } from "react"
 
 import { composerSuggestionOptionId } from "@/app/panels/agentComposerSuggestions"
 
-export type ComposerSuggestionPopupStatus = "ready" | "loading" | "error"
+type ComposerSuggestionPopupStatus = "ready" | "loading" | "error"
 
 export interface ComposerSuggestionItem<T> {
   key: string

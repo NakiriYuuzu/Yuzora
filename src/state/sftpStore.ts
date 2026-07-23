@@ -14,7 +14,7 @@ import { useSshStore } from "./sshStore"
 // Which pane of the SSH panel is showing. cmOpenSftp flips this to "sftp" so the
 // context-menu entry lands the user on the browser; the SSH terminal tab stays
 // the default.
-export type SshPanelTab = "ssh" | "sftp"
+type SshPanelTab = "ssh" | "sftp"
 
 export interface RemotePaneState {
     cwd: string
@@ -23,7 +23,7 @@ export interface RemotePaneState {
     error: string | null
 }
 
-export type TransferDirection = "upload" | "download"
+type TransferDirection = "upload" | "download"
 
 export interface TransferState {
     hostId: string

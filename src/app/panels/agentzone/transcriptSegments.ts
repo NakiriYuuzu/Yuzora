@@ -10,7 +10,7 @@ export type TranscriptSegment =
 
 const ACTIVITY_KINDS = new Set<BlockEntry["kind"]>(["tool", "thought"])
 
-export function isActivityEntry(entry: TranscriptEntry): entry is BlockEntry {
+function isActivityEntry(entry: TranscriptEntry): entry is BlockEntry {
   return "kind" in entry && ACTIVITY_KINDS.has(entry.kind)
 }
 

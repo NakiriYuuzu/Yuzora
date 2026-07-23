@@ -6,14 +6,14 @@ import type { AuthorEntry, CommitDetail, LogCommit } from "../lib/types"
 // Page size for the commit list. One request loads this many commits; loadMore
 // appends another page. 200 matches the design's "load a healthy window, page on
 // scroll" intent without overwhelming the graph layout.
-export const LOG_PAGE_SIZE = 200
+const LOG_PAGE_SIZE = 200
 
 // Commit-detail cache cap. A simple bounded map (not a strict LRU): once full we
 // drop the oldest-inserted entry. Detail payloads are cheap and re-fetchable, so
 // eviction accuracy doesn't matter — only unbounded growth does.
 export const DETAIL_CACHE_LIMIT = 50
 
-export interface LogFilters {
+interface LogFilters {
     query: string
     author: string | null
     since: string | null
@@ -42,7 +42,7 @@ interface GitLogState {
     reset: () => void
 }
 
-export const initialGitLogState = {
+const initialGitLogState = {
     commits: [] as LogCommit[],
     hasMore: false,
     loading: false,

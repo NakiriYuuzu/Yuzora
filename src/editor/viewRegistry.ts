@@ -1,6 +1,6 @@
 import type { EditorView } from "@codemirror/view"
 
-export type FormatterState = "checking" | "available" | "unsupported"
+type FormatterState = "checking" | "available" | "unsupported"
 
 export interface EditorViewMetadata {
     groupIndex: number

@@ -23,7 +23,7 @@ export const PINNED_AGENT_COMMAND_FIXTURES: Record<AgentId, Record<string, unkno
     }]
 }
 
-export interface FakeAcpMessage {
+interface FakeAcpMessage {
     jsonrpc?: "2.0"
     id?: JsonRpcId
     method?: string

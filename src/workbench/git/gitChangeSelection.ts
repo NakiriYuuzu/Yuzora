@@ -3,7 +3,7 @@ import type { GitFileEntry, GitStatus } from "@/lib/types"
 
 import { badgeChar } from "./fileRows"
 
-export type GitChangeClassification = "tracked" | "added" | "untracked" | "conflicted"
+type GitChangeClassification = "tracked" | "added" | "untracked" | "conflicted"
 
 export interface GitChangeKey {
     path: string
@@ -86,7 +86,7 @@ export function sameGitChange(a: GitChangeKey | null, b: GitChangeKey | null): b
 }
 
 /** Exact command snapshot equality; deliberately stricter than selection identity. */
-export function sameGitChangeSnapshot(a: GitChangeKey, b: GitChangeKey): boolean {
+function sameGitChangeSnapshot(a: GitChangeKey, b: GitChangeKey): boolean {
     return sameGitChange(a, b)
         && a.classification === b.classification
         && a.stagedStatus === b.stagedStatus

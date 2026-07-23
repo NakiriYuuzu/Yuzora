@@ -1,9 +1,13 @@
 use std::io;
 use std::process::{Child, Command};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 const TERM_GRACE: Duration = Duration::from_millis(300);
+#[cfg(unix)]
 const EXIT_POLL: Duration = Duration::from_secs(3);
+#[cfg(unix)]
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[cfg(any(windows, test))]
@@ -238,6 +242,7 @@ fn wait_for_process_group_exit(pgid: GroupId) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     #[test]
@@ -254,6 +259,7 @@ mod tests {
         assert_eq!(hidden & 0x0000_0200, 0);
     }
 
+    #[cfg(unix)]
     fn read_pid(path: &std::path::Path) -> u32 {
         std::fs::read_to_string(path)
             .expect("pid file exists")

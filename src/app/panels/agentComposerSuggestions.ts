@@ -1,8 +1,8 @@
 import type { SlashCommand } from "@/agent/acpConnection"
 
-export type ComposerSuggestionKind = "slash" | "skill" | "file"
+type ComposerSuggestionKind = "slash" | "skill" | "file"
 
-export interface ComposerSuggestionRange {
+interface ComposerSuggestionRange {
   start: number
   end: number
 }
