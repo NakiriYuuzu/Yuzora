@@ -1,8 +1,13 @@
-import { useState } from "react"
 import { useTranslation } from "react-i18next"
 
+import {
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
+  type TerminalSettings,
+} from "@/app/workbench/settingsStorage"
 import { isWindowsPlatform } from "@/lib/platform"
 import type { TerminalProfile } from "@/lib/types"
+import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { useWorkbenchLayoutStore } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import {
@@ -13,25 +18,17 @@ import {
 import { useTerminalProfiles } from "@/terminal/useTerminalProfiles"
 
 import { Segmented, SettingCard, SettingsTextInput } from "./settingsPrimitives"
-import {
-  TERMINAL_SETTINGS_STORAGE_KEY,
-  loadTerminalSettings,
-  writeJsonSetting,
-  type TerminalSettings,
-} from "./settingsStorage"
-
 export function TerminalSection() {
   const { t } = useTranslation("terminal")
-  const [settings, setSettings] = useState(loadTerminalSettings)
+  const settings = useTerminalSettingsStore()
+  const updateSettings = useTerminalSettingsStore((state) => state.update)
   const discoveredProfiles = useTerminalProfiles()
   const workspacePath = useWorkspaceStore((state) => state.workspacePath)
   const terminalRatioScope = useWorkbenchLayoutStore((state) => state.terminalRatioScope)
   const setTerminalRatioScope = useWorkbenchLayoutStore((state) => state.setTerminalRatioScope)
 
   const update = (patch: Partial<TerminalSettings>) => {
-    const next = { ...settings, ...patch }
-    setSettings(next)
-    writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, next)
+    updateSettings(patch)
   }
   const selectProfile = (profile: TerminalProfile) => {
     update({ defaultProfile: profile })
@@ -82,6 +79,31 @@ export function TerminalSection() {
             }
           }}
         />
+      </SettingCard>
+
+      <SettingCard
+        label={t("fontSizeLabel")}
+        sub={t("fontSizeDescription")}
+      >
+        <label className="flex items-center gap-[10px]">
+          <input
+            id="terminal-font-size"
+            type="range"
+            min={MIN_TERMINAL_FONT_SIZE}
+            max={MAX_TERMINAL_FONT_SIZE}
+            step={1}
+            value={settings.fontSize}
+            aria-label={t("fontSizeLabel")}
+            onChange={(event) => update({ fontSize: Number(event.currentTarget.value) })}
+            className="min-w-0 flex-1 accent-(--yz-accent)"
+          />
+          <output
+            htmlFor="terminal-font-size"
+            className="min-w-[42px] text-right font-mono text-[11.5px] text-(--ink-2)"
+          >
+            {t("fontSizeValue", { size: settings.fontSize })}
+          </output>
+        </label>
       </SettingCard>
 
       <SettingCard

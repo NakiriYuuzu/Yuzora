@@ -147,6 +147,14 @@ describe("terminal settings", () => {
     writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { imeAnchorMode: "floating" })
     expect(loadTerminalSettings().imeAnchorMode).toBe("cursor")
   })
+
+  it("normalizes terminal font size into the supported range", () => {
+    writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { fontSize: 99 })
+    expect(loadTerminalSettings().fontSize).toBe(32)
+
+    writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { fontSize: "large" })
+    expect(loadTerminalSettings().fontSize).toBe(12)
+  })
 })
 
 // P5：pi 雙 runtime——builtin（bundle 內 adapter）預設、community 一鍵回退。

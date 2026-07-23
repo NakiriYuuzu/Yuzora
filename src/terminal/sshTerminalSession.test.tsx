@@ -1,5 +1,5 @@
 import React from "react"
-import { render, waitFor } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // Regression coverage for the SSH shell-open review finding: openedShells used
@@ -79,6 +79,7 @@ vi.mock("./terminalImePositioning", () => ({
 }))
 
 import { SshTerminalSession } from "./SshTerminalSession"
+import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 
 class ResizeObserverStub {
     observe = vi.fn()
@@ -94,6 +95,7 @@ beforeEach(() => {
     ipcMock.sshOpenShell.mockResolvedValue(undefined)
     ipcMock.sshWrite.mockResolvedValue(undefined)
     ipcMock.sshResize.mockResolvedValue(undefined)
+    useTerminalSettingsStore.setState({ fontSize: 12, imeAnchorMode: "cursor" })
 })
 
 afterEach(() => {
@@ -158,5 +160,17 @@ describe("SshTerminalSession shell-open guard", () => {
         unmount()
 
         expect(imeMock.state.disposables[0].dispose).toHaveBeenCalledTimes(1)
+    })
+
+    it("updates font size live and suppresses the native context menu", async () => {
+        render(<SshTerminalSession sessionId="ssh-font" active />)
+        await waitFor(() => expect(ipcMock.sshOpenShell).toHaveBeenCalledTimes(1))
+        const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+
+        screen.getByTestId("ssh-terminal-session-ssh-font").dispatchEvent(event)
+        expect(event.defaultPrevented).toBe(true)
+
+        useTerminalSettingsStore.getState().update({ fontSize: 17 })
+        await waitFor(() => expect(xtermMock.state.terminals[0].options.fontSize).toBe(17))
     })
 })

@@ -344,6 +344,16 @@ pub fn run() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 use tauri::Manager;
+                app.state::<pty_service::PtyState>().0.kill_all();
+                app.state::<process_service::ProcessState>().0.kill_all();
+                app.state::<agent_process::AgentProcessState>().0.kill_all();
+                app.state::<agent_terminal::AgentTerminalState>()
+                    .0
+                    .kill_all();
+                app.state::<lsp_service::LspState>().0.stop_all();
+                git_service::kill_all_processes();
+                app.state::<ssh_service::SshState>().0.kill_all();
+                app.state::<preview_server::PreviewServerState>().stop_all();
                 if !database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     let database_profiles = app
                         .state::<db_profiles::DatabaseProfileState>()
@@ -361,14 +371,6 @@ pub fn run() {
                         }
                     }
                 }
-                app.state::<pty_service::PtyState>().0.kill_all();
-                app.state::<process_service::ProcessState>().0.kill_all();
-                app.state::<agent_process::AgentProcessState>().0.kill_all();
-                app.state::<agent_terminal::AgentTerminalState>()
-                    .0
-                    .kill_all();
-                app.state::<ssh_service::SshState>().0.kill_all();
-                app.state::<preview_server::PreviewServerState>().stop_all();
             }
         })
 }
@@ -380,6 +382,14 @@ mod command_inventory_tests {
         let source = include_str!("lib.rs");
         for required in [
             "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
+            "app.state::<pty_service::PtyState>().0.kill_all()",
+            "app.state::<process_service::ProcessState>().0.kill_all()",
+            "app.state::<agent_process::AgentProcessState>().0.kill_all()",
+            "app.state::<agent_terminal::AgentTerminalState>()",
+            "app.state::<lsp_service::LspState>().0.stop_all()",
+            "git_service::kill_all_processes()",
+            "app.state::<ssh_service::SshState>().0.kill_all()",
+            "app.state::<preview_server::PreviewServerState>().stop_all()",
             "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
             "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
             "recv_timeout(DATABASE_SHUTDOWN_THREAD_TIMEOUT)",
@@ -389,6 +399,17 @@ mod command_inventory_tests {
                 "missing bounded app-exit database shutdown seam: {required}"
             );
         }
+        let run_source = source.split("#[cfg(test)]").next().unwrap();
+        let child_cleanup = run_source
+            .find("app.state::<pty_service::PtyState>().0.kill_all()")
+            .unwrap();
+        let database_shutdown = run_source
+            .rfind("shutdown_database_runtime_on_dedicated_thread(database_profiles)")
+            .unwrap();
+        assert!(
+            child_cleanup < database_shutdown,
+            "background child cleanup must start before bounded database shutdown"
+        );
     }
 
     #[test]

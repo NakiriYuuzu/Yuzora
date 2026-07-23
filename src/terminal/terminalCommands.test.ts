@@ -1,20 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import { terminalDisplayTitle, useTerminalStore } from "@/state/terminalStore"
 import {
   beginRenameTerminal,
-  clearTerminalBuffer,
   closeTerminal,
-  copyTerminalSelection,
   createTerminalSessionMeta,
-  pasteTerminalClipboard,
   splitTerminal,
   terminalPaneTargetExists,
   terminalTargetExists,
   type TerminalCommandTarget,
 } from "./terminalCommands"
-import { registerTerminalView, type TerminalViewHandle } from "./terminalViewRegistry"
 
 const terminalSettingsMock = vi.hoisted(() => ({
   value: {
@@ -42,8 +38,6 @@ const target: TerminalCommandTarget = {
   sessionId: "session-clicked",
 }
 
-let unregisterView: (() => void) | null = null
-
 function seedTarget(activePaneId: string | null = target.paneId ?? null): void {
   useTerminalStore.setState({
     sessions: {
@@ -70,19 +64,6 @@ function seedTarget(activePaneId: string | null = target.paneId ?? null): void {
   })
 }
 
-function registerView(overrides: Partial<TerminalViewHandle> = {}): TerminalViewHandle {
-  const view: TerminalViewHandle = {
-    hasSelection: vi.fn(() => true),
-    getSelection: vi.fn(() => "selected output"),
-    isReady: vi.fn(() => true),
-    paste: vi.fn(async () => undefined),
-    clear: vi.fn(),
-    ...overrides,
-  }
-  unregisterView = registerTerminalView(target.sessionId, view)
-  return view
-}
-
 beforeEach(() => {
   clearMocks()
   useTerminalStore.getState().reset()
@@ -99,11 +80,6 @@ beforeEach(() => {
     },
     imeAnchorMode: "cursor",
   }
-})
-
-afterEach(() => {
-  unregisterView?.()
-  unregisterView = null
 })
 
 describe("terminalCommands", () => {
@@ -175,41 +151,6 @@ describe("terminalCommands", () => {
       imeAnchorMode: "cursor",
       profileName: "WSL: Ubuntu",
     })
-  })
-
-  it("copies selection, pastes through xterm, and clears the xterm buffer", async () => {
-    seedTarget()
-    const view = registerView()
-    const calls: Array<{ cmd: string; args: unknown }> = []
-    mockIPC((cmd, args) => {
-      calls.push({ cmd, args })
-      if (cmd === "plugin:clipboard-manager|read_text") return "clipboard text"
-      return undefined
-    })
-
-    expect(await copyTerminalSelection(target)).toBe("completed")
-    expect(calls.find((call) => call.cmd === "plugin:clipboard-manager|write_text")?.args)
-      .toEqual({ text: "selected output" })
-
-    expect(await pasteTerminalClipboard(target)).toBe("completed")
-    expect(view.paste).toHaveBeenCalledWith("clipboard text")
-
-    expect(clearTerminalBuffer(target)).toBe("completed")
-    expect(view.clear).toHaveBeenCalledTimes(1)
-  })
-
-  it("cancels before reading the clipboard when the target PTY is not ready", async () => {
-    seedTarget("unrelated-active-pane")
-    const view = registerView({ isReady: vi.fn(() => false) })
-    const calls: string[] = []
-    mockIPC((cmd) => {
-      calls.push(cmd)
-      return "clipboard"
-    })
-
-    expect(await pasteTerminalClipboard(target)).toBe("cancelled")
-    expect(calls).not.toContain("plugin:clipboard-manager|read_text")
-    expect(view.paste).not.toHaveBeenCalled()
   })
 
   it("splits only from a visible pane and always appends a focused right tab", () => {

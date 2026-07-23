@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { type AgentConnection } from "../agent/acpConnection"
 import { createAgentRouter } from "../agent/agentRouter"
-import { loadAgentSettings, resolvePrewarmAgentId } from "../app/workbench/settingsStorage"
+import { loadAgentSettings } from "../app/workbench/settingsStorage"
 import { agentKill, agentList, agentSetTrace } from "../lib/ipc"
 import { firstAbsolutePath } from "../lib/paths"
 import { initBuiltinPiAdapterCommand } from "../lib/platform"
@@ -10,8 +10,6 @@ import { useAgentStore } from "../state/agentStore"
 import { normalizeWorkspacePath } from "../state/recentWorkspaces"
 import { loadSessionIndex } from "../state/sessionIndexStorage"
 import { useWorkspaceStore } from "../state/workspaceStore"
-
-const IDLE_PREPARE_TIMEOUT_MS = 2_000
 
 // Headless bridge wiring the ACP connection lifecycle to app-level agent state.
 export function AgentBridge() {
@@ -24,8 +22,8 @@ export function AgentBridge() {
     useEffect(() => {
         let cancelled = false
         void (async () => {
-            // builtin pi adapter 的 command cache 必須先於任何 command 路由
-            //（prewarm／session/new）ready——resolveAgentCommandRoute 是同步的。
+            // builtin pi adapter 的 command cache 必須先於任何 session/new
+            // ready——resolveAgentCommandRoute 是同步的。
             await Promise.all([
                 agentSetTrace(loadAgentSettings().traceEnabled).catch(() => undefined),
                 initBuiltinPiAdapterCommand().catch(() => undefined)
@@ -48,7 +46,6 @@ export function AgentBridge() {
         if (!cwd) return
         const generation = ++workspaceGenerationRef.current
         let cancelled = false
-        let cancelIdle = () => {}
         const isCurrent = () => !cancelled && workspaceGenerationRef.current === generation
 
         void (async () => {
@@ -60,53 +57,20 @@ export function AgentBridge() {
             if (!isCurrent()) return
             hydrateSessionIndexForWorkspace(cwd)
             useAgentStore.getState().markWorkspaceHydrated(cwd)
-            if (!isCurrent()) return
-
-            cancelIdle = scheduleIdleWork(() => {
-                if (!isCurrent()) return
-                const agentId = resolvePrewarmAgentId()
-                if (!agentId || !connection.prepare) return
-                // Interactive paths never await this promise. A failed prewarm is
-                // diagnostic-only; explicit session/new reuses the connection and
-                // can retry initialization normally.
-                void connection.prepare(cwd, agentId).catch(() => {
-                    if (isCurrent()) warnSanitizedPrepareFailure()
-                })
-            })
         })()
 
         return () => {
             cancelled = true
-            cancelIdle()
             if (workspaceGenerationRef.current === generation) {
                 workspaceGenerationRef.current += 1
             }
-            // Router + connection both enforce the no-owner gate, so cleanup only
-            // tears down a prepared-only sub. In-flight prepare is awaited by that
-            // gate and then disposed if it still has no session owner.
+            // AgentZone may have started an interactive prepare for this workspace.
+            // Tear down only a prepared-only child; owned sessions remain intact.
             void connection.disposePrepared?.(cwd).catch(() => undefined)
         }
     }, [workspacePath, connection, startupTraceSettled])
 
     return null
-}
-
-function scheduleIdleWork(run: () => void): () => void {
-    if (typeof globalThis.requestIdleCallback === "function") {
-        const id = globalThis.requestIdleCallback(
-            () => run(),
-            { timeout: IDLE_PREPARE_TIMEOUT_MS }
-        )
-        return () => globalThis.cancelIdleCallback?.(id)
-    }
-    const id = globalThis.setTimeout(run, 0)
-    return () => globalThis.clearTimeout(id)
-}
-
-function warnSanitizedPrepareFailure(): void {
-    // Never forward the thrown value: ACP errors may contain raw commands,
-    // filesystem paths, environment values, or stderr secrets.
-    console.warn("ACP background prepare failed", { event: "acp_prepare_failed" })
 }
 
 function createStoreBackedConnection(): AgentConnection {

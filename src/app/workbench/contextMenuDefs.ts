@@ -12,7 +12,6 @@ import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useSshStore } from "@/state/sshStore"
-import { MAX_VISIBLE_TERMINAL_PANES, useTerminalStore } from "@/state/terminalStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import {
   copyPreviewUrl,
@@ -29,15 +28,9 @@ import {
 } from "@/preview/previewCommands"
 import {
   beginRenameTerminal,
-  clearTerminalBuffer,
   closeTerminal,
-  copyTerminalSelection,
-  pasteTerminalClipboard,
-  splitTerminal,
-  terminalPaneTargetExists,
   terminalTargetExists,
 } from "@/terminal/terminalCommands"
-import { getTerminalView } from "@/terminal/terminalViewRegistry"
 import {
   CONTEXT_MENU_CANCELLED,
   CONTEXT_MENU_COMPLETED,
@@ -86,8 +79,6 @@ const DISABLED_CONNECTING = "contextMenu.disabled.connecting"
 const DISABLED_AUTHENTICATION_PENDING = "contextMenu.disabled.authenticationPending"
 const DISABLED_DB_CONNECTING = "contextMenu.disabled.dbConnecting"
 const DISABLED_DB_ALREADY_OPEN = "contextMenu.disabled.dbAlreadyOpen"
-const DISABLED_TERMINAL_UNAVAILABLE = "contextMenu.disabled.terminalUnavailable"
-const DISABLED_TERMINAL_PANE_LIMIT = "contextMenu.disabled.terminalPaneLimit"
 const DISABLED_NO_PENDING_RESPONSE = "contextMenu.disabled.noPendingResponse"
 const DISABLED_NO_BACK_HISTORY = "contextMenu.disabled.noBackHistory"
 const DISABLED_NO_FORWARD_HISTORY = "contextMenu.disabled.noForwardHistory"
@@ -165,28 +156,6 @@ function rightSplitAvailability(groupIndex: number): ContextMenuAvailability {
   if (!groups[groupIndex]) return disabled(DISABLED_TARGET)
   return groups.length >= 2 && groupIndex >= groups.length - 1
     ? disabled(DISABLED_TWO_GROUP_LIMIT)
-    : available()
-}
-
-function terminalViewAvailability(
-  request: ContextMenuRequestFor<"terminal">,
-  selectionRequired = false
-): ContextMenuAvailability {
-  if (!terminalTargetExists(request)) return disabled(DISABLED_TARGET)
-  const view = getTerminalView(request.sessionId)
-  if (!view) return disabled(DISABLED_TERMINAL_UNAVAILABLE)
-  return selectionRequired && !view.hasSelection()
-    ? disabled(DISABLED_NO_SELECTION)
-    : available()
-}
-
-function terminalSplitAvailability(
-  request: ContextMenuRequestFor<"terminal">
-): ContextMenuAvailability {
-  if (!terminalPaneTargetExists(request)) return disabled(DISABLED_TARGET)
-  const panes = useTerminalStore.getState().layouts[request.workspacePath]?.panes ?? []
-  return panes.length >= MAX_VISIBLE_TERMINAL_PANES
-    ? disabled(DISABLED_TERMINAL_PANE_LIMIT)
     : available()
 }
 
@@ -501,34 +470,6 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       executor: legacy("cmFormatDoc"),
     }),
     item<"editor">("cmCmdPalette", { availability: available, danger: false, executor: legacy("cmCmdPalette") }),
-  ],
-  terminal: [
-    item<"terminal">("cmCopySel", {
-      availability: (request) => terminalViewAvailability(request, true),
-      danger: false,
-      executor: copyTerminalSelection,
-    }),
-    item<"terminal">("cmPaste", {
-      availability: terminalViewAvailability,
-      danger: false,
-      executor: pasteTerminalClipboard,
-    }),
-    "separator",
-    item<"terminal">("cmSplitTermRight", {
-      availability: terminalSplitAvailability,
-      danger: false,
-      executor: splitTerminal,
-    }),
-    item<"terminal">("cmClear", {
-      availability: terminalViewAvailability,
-      danger: false,
-      executor: clearTerminalBuffer,
-    }),
-    item<"terminal">("cmCloseTerminal", {
-      availability: (request) => terminalTargetExists(request) ? available() : disabled(DISABLED_TARGET),
-      danger: true,
-      executor: closeTerminal,
-    }),
   ],
   terminalTab: [
     item<"terminalTab">("cmRenameTerminal", {

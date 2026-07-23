@@ -5,9 +5,10 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 
 import { ptyClose, ptyOpen, ptyResize, ptyWrite } from "../lib/ipc"
 import type { PtyEvent, TerminalCwdStrategy } from "../lib/types"
+import { useTerminalSettingsStore } from "../state/terminalSettingsStore"
 import { installTerminalImeHandling } from "./terminalImeHandling"
 import type { TerminalImeAnchorMode } from "./terminalImePositioning"
-import { registerTerminalView } from "./terminalViewRegistry"
+import { TerminalOutputQueue } from "./terminalOutputQueue"
 import { buildXtermTheme } from "./xtermTheme"
 
 export interface TerminalSessionProps {
@@ -57,9 +58,9 @@ function terminalSize(term: Terminal): { cols: number; rows: number } {
     }
 }
 
-function writeExitNotice(term: Terminal, code: number | null): void {
+function exitNotice(code: number | null): string {
     const suffix = code === null ? "" : ` ${code}`
-    term.write(`\r\n[Exited${suffix}]\r\n`)
+    return `\r\n[Exited${suffix}]\r\n`
 }
 
 export function TerminalSession({
@@ -76,6 +77,7 @@ export function TerminalSession({
     onReady,
     onOpenError
 }: TerminalSessionProps) {
+    const fontSize = useTerminalSettingsStore((state) => state.fontSize)
     const containerRef = useRef<HTMLDivElement | null>(null)
     const termRef = useRef<Terminal | null>(null)
     const fitRef = useRef<FitAddon | null>(null)
@@ -83,8 +85,7 @@ export function TerminalSession({
     const themeObserverRef = useRef<MutationObserver | null>(null)
     const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const titleDisposableRef = useRef<{ dispose: () => void } | null>(null)
-    const capturedPasteWritesRef = useRef<Promise<void>[] | null>(null)
-    const unregisterViewRef = useRef<(() => void) | null>(null)
+    const outputQueueRef = useRef<TerminalOutputQueue | null>(null)
     const openedRef = useRef(false)
     const disposedRef = useRef(false)
     const openPromiseRef = useRef<Promise<unknown> | null>(null)
@@ -98,10 +99,12 @@ export function TerminalSession({
     const onOpenErrorRef = useRef(onOpenError)
     const visibleRef = useRef(visible)
     const previousVisibleRef = useRef(visible)
+    const fontSizeRef = useRef(fontSize)
     const [exitCode, setExitCode] = useState<number | null | undefined>(undefined)
 
     useLayoutEffect(() => {
         visibleRef.current = visible
+        outputQueueRef.current?.setVisible(visible)
     }, [visible])
 
     useEffect(() => {
@@ -124,15 +127,14 @@ export function TerminalSession({
                 observerRef.current?.disconnect()
                 dataDisposableRef.current?.dispose()
                 titleDisposableRef.current?.dispose()
-                unregisterViewRef.current?.()
+                outputQueueRef.current?.dispose()
                 fitRef.current?.dispose()
                 termRef.current?.dispose()
                 themeObserverRef.current = null
                 observerRef.current = null
                 dataDisposableRef.current = null
                 titleDisposableRef.current = null
-                capturedPasteWritesRef.current = null
-                unregisterViewRef.current = null
+                outputQueueRef.current = null
                 fitRef.current = null
                 termRef.current = null
                 openedRef.current = false
@@ -161,7 +163,7 @@ export function TerminalSession({
             rows: defaultRows,
             cursorBlink: true,
             fontFamily: "\"SFMono-Regular\", \"Cascadia Code\", \"JetBrains Mono\", Menlo, Consolas, monospace",
-            fontSize: 12,
+            fontSize: fontSizeRef.current,
             scrollback: 4000,
             theme: buildXtermTheme(currentMode())
         })
@@ -175,31 +177,10 @@ export function TerminalSession({
 
         term.loadAddon(fitAddon)
         term.open(container)
-        const terminalView = {
-            hasSelection: () => term.hasSelection(),
-            getSelection: () => term.getSelection(),
-            isReady: () => openReadyRef.current && !disposedRef.current,
-            paste: async (text: string) => {
-                const pendingOpen = openPromiseRef.current
-                if (pendingOpen) await pendingOpen
-                if (!openReadyRef.current || disposedRef.current) {
-                    throw new Error("Terminal session is not ready")
-                }
-                const writes: Promise<void>[] = []
-                capturedPasteWritesRef.current = writes
-                try {
-                    // Keep xterm's bracketed-paste transformation, but capture the
-                    // resulting PTY write promise so the command can observe failure.
-                    term.paste(text)
-                } finally {
-                    capturedPasteWritesRef.current = null
-                }
-                if (writes.length === 0) throw new Error("Terminal paste produced no input")
-                await Promise.all(writes)
-            },
-            clear: () => term.clear()
-        }
-        unregisterViewRef.current = registerTerminalView(sessionId, terminalView)
+        outputQueueRef.current = new TerminalOutputQueue(
+            (data, onProcessed) => term.write(data, onProcessed),
+            visibleRef.current
+        )
         term.attachCustomKeyEventHandler((event) => {
             if (
                 event.type !== "keydown"
@@ -216,11 +197,15 @@ export function TerminalSession({
             }
             if (key === "v") {
                 event.preventDefault()
-                if (!terminalView.isReady()) return false
+                if (!openReadyRef.current || disposedRef.current) return false
                 void readText()
                     .then((text) => {
-                        if (text.length === 0 || !terminalView.isReady()) return undefined
-                        return terminalView.paste(text)
+                        if (
+                            text.length === 0
+                            || !openReadyRef.current
+                            || disposedRef.current
+                        ) return
+                        term.paste(text)
                     })
                     .catch(() => undefined)
                 return false
@@ -237,10 +222,7 @@ export function TerminalSession({
             term,
             (data) => {
                 if (disposedRef.current) return
-                const write = ptyWrite(sessionId, data)
-                const captured = capturedPasteWritesRef.current
-                if (captured) captured.push(write)
-                else void write.catch(() => undefined)
+                void ptyWrite(sessionId, data).catch(() => undefined)
             },
             { anchorMode: imeAnchorMode }
         )
@@ -248,11 +230,11 @@ export function TerminalSession({
         const handleEvent = (event: PtyEvent) => {
             if (disposedRef.current) return
             if (event.type === "output") {
-                term.write(event.data)
+                outputQueueRef.current?.push(event.data)
                 return
             }
 
-            writeExitNotice(term, event.code)
+            outputQueueRef.current?.push(exitNotice(event.code))
             setExitCode(event.code)
             onExitRef.current?.(event.code)
         }
@@ -279,7 +261,7 @@ export function TerminalSession({
             .catch((error) => {
                 if (disposedRef.current) return
                 const message = error instanceof Error ? error.message : String(error)
-                term.write(`\r\n[Failed to open terminal: ${message}]\r\n`)
+                outputQueueRef.current?.push(`\r\n[Failed to open terminal: ${message}]\r\n`)
                 onOpenErrorRef.current?.(message)
             })
             .finally(() => {
@@ -312,6 +294,25 @@ export function TerminalSession({
     }, [cwdStrategy, imeAnchorMode, sessionId, shell, shellArgs, workspace])
 
     useEffect(() => {
+        fontSizeRef.current = fontSize
+        const term = termRef.current
+        const fitAddon = fitRef.current
+        if (!term || !fitAddon || disposedRef.current) return
+        if (term.options.fontSize === fontSize) return
+        term.options.fontSize = fontSize
+        if (!visibleRef.current) return
+        safeFit(fitAddon)
+        const next = terminalSize(term)
+        if (
+            openReadyRef.current
+            && (next.cols !== lastSizeRef.current.cols || next.rows !== lastSizeRef.current.rows)
+        ) {
+            lastSizeRef.current = next
+            void ptyResize(sessionId, next.cols, next.rows).catch(() => undefined)
+        }
+    }, [fontSize, sessionId])
+
+    useEffect(() => {
         const term = termRef.current
         const fitAddon = fitRef.current
         const becameVisible = visible && !previousVisibleRef.current
@@ -336,6 +337,7 @@ export function TerminalSession({
             className="relative h-full min-h-0 w-full overflow-hidden bg-(--term-bg) text-(--term-fg)"
             data-testid={`terminal-session-${sessionId}`}
             data-visible={String(visible)}
+            onContextMenu={(event) => event.preventDefault()}
         >
             <div ref={containerRef} className="h-full min-h-0 w-full" />
             {exitCode !== undefined ? (

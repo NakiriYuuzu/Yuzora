@@ -35,6 +35,7 @@ export interface TerminalSettings {
   defaultProfile: TerminalProfile
   customProfile: TerminalProfile
   imeAnchorMode: TerminalImeAnchorMode
+  fontSize: number
 }
 
 export interface PreviewSettings {
@@ -127,7 +128,22 @@ export function loadTerminalSettings(): TerminalSettings {
     defaultProfile,
     customProfile,
     imeAnchorMode: stored.imeAnchorMode === "tui" ? "tui" : "cursor",
+    fontSize: normalizeTerminalFontSize(stored.fontSize),
   }
+}
+
+export const MIN_TERMINAL_FONT_SIZE = 8
+export const MAX_TERMINAL_FONT_SIZE = 32
+export const DEFAULT_TERMINAL_FONT_SIZE = 12
+
+export function normalizeTerminalFontSize(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_TERMINAL_FONT_SIZE
+  }
+  return Math.min(
+    MAX_TERMINAL_FONT_SIZE,
+    Math.max(MIN_TERMINAL_FONT_SIZE, Math.round(value)),
+  )
 }
 
 const TERMINAL_PROFILE_KINDS: TerminalProfileKind[] = [

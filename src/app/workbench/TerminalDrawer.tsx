@@ -998,16 +998,6 @@ export function TerminalDrawer({
                         data-testid={pane ? `terminal-pane-${pane.paneId}` : undefined}
                         data-session-id={sessionId}
                         onClick={pane ? () => selectPane(paneWorkspace, pane.paneId) : undefined}
-                        onContextMenu={
-                          pane
-                            ? contextMenuHandler({
-                                kind: "terminal",
-                                workspacePath: paneWorkspace,
-                                paneId: pane.paneId,
-                                sessionId,
-                              })
-                            : undefined
-                        }
                         className={`min-h-0 min-w-0 overflow-hidden ${
                           active ? "ring-1 ring-inset ring-(--term-blue)" : ""
                         }`}

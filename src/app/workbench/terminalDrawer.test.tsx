@@ -544,20 +544,16 @@ describe("TerminalDrawer sessions", () => {
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")).toHaveLength(1)
   })
 
-  it("opens a terminal menu only from the clicked pane with a stable target snapshot", () => {
+  it("suppresses the terminal viewport context menu without opening Yuzora actions", () => {
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
     renderDrawer()
     fireEvent.click(screen.getByTitle("New terminal"))
 
     const pane = useTerminalStore.getState().layouts["/workspace"].panes[0]
-    fireEvent.contextMenu(screen.getByTestId(`terminal-pane-${pane.paneId}`))
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    screen.getByTestId(`terminal-pane-${pane.paneId}`).dispatchEvent(event)
 
-    expect(useContextMenuStore.getState().request).toEqual({
-      kind: "terminal",
-      workspacePath: "/workspace",
-      paneId: pane.paneId,
-      sessionId: pane.sessionId,
-    })
+    expect(useContextMenuStore.getState().request).toBeNull()
   })
 
   it("removes the fake Dock toolbar action", () => {

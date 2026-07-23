@@ -249,16 +249,8 @@ impl LspManager {
         // the watcher — otherwise a long-lived server would never self-exit and the
         // process + watch_loop thread would leak permanently.
         if shared.stopped.load(Ordering::SeqCst) {
-            {
-                let mut guard = shared.child.lock().unwrap();
-                if let Some(child) = guard.as_mut() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-            }
-            let mut i = shared.info.lock().unwrap();
-            i.status = LspProcessStatus::Stopped;
-            return i.clone();
+            Self::stop_shared(&shared);
+            return shared.info.lock().unwrap().clone();
         }
 
         // Workers hold a Weak, not a strong Arc, so the manager's Drop (F-R4-2) can
@@ -332,12 +324,35 @@ impl LspManager {
     fn stop_server(&self, key: &(String, String)) {
         let shared = self.servers.lock().unwrap().remove(key);
         if let Some(shared) = shared {
-            shared.stopped.store(true, Ordering::SeqCst);
-            if let Some(child) = shared.child.lock().unwrap().as_mut() {
-                let _ = child.kill();
-            }
-            shared.info.lock().unwrap().status = LspProcessStatus::Stopped;
+            Self::stop_shared(&shared);
         }
+    }
+
+    pub fn stop_all(&self) {
+        let servers: Vec<Arc<ServerShared>> = self
+            .servers
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, shared)| shared)
+            .collect();
+        for shared in servers {
+            Self::stop_shared(&shared);
+        }
+    }
+
+    fn stop_shared(shared: &Arc<ServerShared>) {
+        shared.stopped.store(true, Ordering::SeqCst);
+        shared.stdin.lock().unwrap().take();
+        if let Some(mut child) = shared.child.lock().unwrap().take() {
+            match child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {
+                    let _ = crate::process_kill::kill_tree(&mut child);
+                }
+            }
+        }
+        shared.info.lock().unwrap().status = LspProcessStatus::Stopped;
     }
 
     pub fn status(&self, workspace: &str) -> Vec<LspServerInfo> {
@@ -357,7 +372,7 @@ impl LspManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        crate::process_kill::configure_hidden_process(&mut cmd);
+        crate::process_kill::configure_background_process(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
         shared.pid.store(child.id(), Ordering::SeqCst);
 
@@ -489,14 +504,7 @@ impl LspManager {
             // it and end the watch_loop — else a healthy respawned server never
             // self-exits and its process + reader/stderr/watch threads leak.
             if shared.stopped.load(Ordering::SeqCst) {
-                {
-                    let mut guard = shared.child.lock().unwrap();
-                    if let Some(child) = guard.as_mut() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                }
-                shared.info.lock().unwrap().status = LspProcessStatus::Stopped;
+                Self::stop_shared(&shared);
                 return;
             }
         }
@@ -635,16 +643,12 @@ impl Drop for LspManager {
     /// while servers run. A SIGKILL/force-quit of the app itself cannot run any
     /// destructor and leaking there is a known, unavoidable limit.
     fn drop(&mut self) {
-        if let Ok(map) = self.servers.lock() {
-            for shared in map.values() {
-                shared.stopped.store(true, Ordering::SeqCst);
-                if let Ok(mut guard) = shared.child.lock() {
-                    if let Some(child) = guard.as_mut() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                }
-            }
+        let servers = match self.servers.lock() {
+            Ok(mut map) => map.drain().map(|(_, shared)| shared).collect::<Vec<_>>(),
+            Err(_) => return,
+        };
+        for shared in servers {
+            Self::stop_shared(&shared);
         }
     }
 }
@@ -949,6 +953,52 @@ mod tests {
             poll_until(Duration::from_secs(3), || !pid_alive(pid)),
             "process {pid} still alive after stop"
         );
+    }
+
+    #[test]
+    fn stop_all_kills_every_workspace_process_and_clears_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_a = tmp.path().join("a");
+        let workspace_b = tmp.path().join("b");
+        std::fs::create_dir_all(&workspace_a).unwrap();
+        std::fs::create_dir_all(&workspace_b).unwrap();
+        let (mgr, _cap) = test_manager(tmp.path().to_path_buf(), 5);
+        mgr.start(
+            workspace_a.to_str().unwrap(),
+            "python",
+            resolved("sleep", &["30"]),
+            noop_on_message(),
+        );
+        mgr.start(
+            workspace_b.to_str().unwrap(),
+            "rust",
+            resolved("sleep", &["30"]),
+            noop_on_message(),
+        );
+        assert!(poll_until(Duration::from_secs(3), || {
+            mgr.debug_pid(workspace_a.to_str().unwrap(), "python")
+                .is_some()
+                && mgr
+                    .debug_pid(workspace_b.to_str().unwrap(), "rust")
+                    .is_some()
+        }));
+        let pids = [
+            mgr.debug_pid(workspace_a.to_str().unwrap(), "python")
+                .unwrap(),
+            mgr.debug_pid(workspace_b.to_str().unwrap(), "rust")
+                .unwrap(),
+        ];
+
+        mgr.stop_all();
+
+        assert!(mgr.status(workspace_a.to_str().unwrap()).is_empty());
+        assert!(mgr.status(workspace_b.to_str().unwrap()).is_empty());
+        for pid in pids {
+            assert!(
+                poll_until(Duration::from_secs(3), || !pid_alive(pid)),
+                "process {pid} still alive after stop_all"
+            );
+        }
     }
 
     #[test]

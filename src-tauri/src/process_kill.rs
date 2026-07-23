@@ -146,10 +146,10 @@ pub fn kill_tree_pid(pid: u32) -> io::Result<()> {
 pub fn kill_tree_pid(pid: u32) -> io::Result<()> {
     // [SPIKE 驗證] Terminating a process tree by pid on Windows should resolve
     // the Job Object for that pid, or use a verified platform fallback.
-    Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status()
-        .map(|_| ())
+    let mut command = Command::new("taskkill");
+    command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    configure_hidden_process(&mut command);
+    command.status().map(|_| ())
 }
 
 #[cfg(not(any(unix, windows)))]

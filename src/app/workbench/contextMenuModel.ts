@@ -38,13 +38,6 @@ export interface EditorContextMenuRequest {
   groupIndex: number
 }
 
-export interface TerminalContextMenuRequest {
-  kind: "terminal"
-  workspacePath: string
-  paneId: string
-  sessionId: string
-}
-
 export interface TerminalTabContextMenuRequest {
   kind: "terminalTab"
   workspacePath: string
@@ -109,7 +102,6 @@ export type ContextMenuRequest =
   | FileContextMenuRequest
   | TabContextMenuRequest
   | EditorContextMenuRequest
-  | TerminalContextMenuRequest
   | TerminalTabContextMenuRequest
   | AgentSessionContextMenuRequest
   | GitContextMenuRequest

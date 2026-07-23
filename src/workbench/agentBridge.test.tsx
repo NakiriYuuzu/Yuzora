@@ -14,17 +14,14 @@ import { AgentBridge } from "./AgentBridge"
 type IpcCall = [string, unknown]
 let idleCallbacks = new Map<number, IdleRequestCallback>()
 let nextIdleId = 1
-let idleOptions: IdleRequestOptions[] = []
 
 function installIdleQueue(): void {
     idleCallbacks = new Map()
     nextIdleId = 1
-    idleOptions = []
     Object.defineProperty(globalThis, "requestIdleCallback", {
-        value: (callback: IdleRequestCallback, options?: IdleRequestOptions) => {
+        value: (callback: IdleRequestCallback) => {
             const id = nextIdleId++
             idleCallbacks.set(id, callback)
-            idleOptions.push(options ?? {})
             return id
         },
         configurable: true,
@@ -35,14 +32,6 @@ function installIdleQueue(): void {
         configurable: true,
         writable: true
     })
-}
-
-function flushNextIdle(): void {
-    const next = idleCallbacks.entries().next().value as [number, IdleRequestCallback] | undefined
-    if (!next) throw new Error("No idle callback is queued")
-    const [id, callback] = next
-    idleCallbacks.delete(id)
-    callback({ didTimeout: false, timeRemaining: () => 50 })
 }
 
 function deferred<T = void>() {
@@ -451,17 +440,7 @@ it("waits for persisted ACP trace sync before exposing the first spawn path", as
     expect(order.indexOf("agent_set_trace:done")).toBeLessThan(order.indexOf("agent_spawn"))
 })
 
-it("queues trusted Latest prepare only after recovery and Session Index hydration, without session/new", async () => {
-    localStorage.setItem(AGENT_SETTINGS_STORAGE_KEY, JSON.stringify({
-        preset: "claude",
-        command: "",
-        traceEnabled: true,
-        presetCommands: {
-            pi: { mode: "latest", customCommand: "" },
-            claude: { mode: "latest", customCommand: "" },
-            codex: { mode: "latest", customCommand: "" }
-        }
-    }))
+it("hydrates recovery state without spawning a background ACP process", async () => {
     upsertSessionIndexEntry({
         sessionId: "restored-a",
         cwd: "/ws-a",
@@ -469,31 +448,12 @@ it("queues trusted Latest prepare only after recovery and Session Index hydratio
         lastActiveAt: 1
     })
     const recovery = deferred<string[]>()
-    const agentId = "agent-idle-prepare"
-    const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
-    const order: string[] = []
     const spawns: unknown[] = []
     mockIPC((cmd, payload) => {
-        if (cmd === "agent_set_trace") {
-            order.push("trace")
-            return undefined
-        }
-        if (cmd === "agent_list") {
-            order.push("recovery:start")
-            return recovery.promise.then((ids) => {
-                order.push("recovery:done")
-                return ids
-            })
-        }
+        if (cmd === "agent_list") return recovery.promise
         if (cmd === "agent_spawn") {
-            order.push("spawn")
             spawns.push(payload)
-            return agentId
-        }
-        if (cmd === "agent_write") {
-            const message = JSON.parse((payload as { chunk: string }).chunk.trim()) as { method?: string }
-            order.push(message.method ?? "write")
-            return fake.write((payload as { chunk: string }).chunk)
+            return "unexpected-background-agent"
         }
         if (cmd === "agent_kill") return undefined
         return undefined
@@ -501,127 +461,13 @@ it("queues trusted Latest prepare only after recovery and Session Index hydratio
 
     render(<AgentBridge />)
     await vi.waitFor(() => expect(useAgentStore.getState().connection).not.toBeNull())
-    expect(idleCallbacks.size).toBe(0)
     expect(useAgentStore.getState().sessions.has("restored-a")).toBe(false)
 
     recovery.resolve([])
     await vi.waitFor(() => expect(useAgentStore.getState().sessions.get("restored-a")?.restored).toBe(true))
-    await vi.waitFor(() => expect(idleCallbacks.size).toBe(1))
-    expect(idleOptions).toEqual([{ timeout: 2_000 }])
+    await Promise.resolve()
     expect(spawns).toEqual([])
-
-    flushNextIdle()
-    await vi.waitFor(() => expect(spawns).toEqual([{
-        command: "bunx @agentclientprotocol/claude-agent-acp@latest",
-        cwd: "/ws-a"
-    }]))
-    await vi.waitFor(() => expect(fake.messages.some((message) => message.method === "initialize")).toBe(true))
-    expect(fake.messages.some((message) => message.method === "session/new")).toBe(false)
-    expect(order.indexOf("trace")).toBeLessThan(order.indexOf("recovery:start"))
-    expect(order.indexOf("recovery:done")).toBeLessThan(order.indexOf("spawn"))
-})
-
-it("uses a non-blocking timeout fallback when requestIdleCallback is unavailable", async () => {
-    Reflect.deleteProperty(globalThis, "requestIdleCallback")
-    Reflect.deleteProperty(globalThis, "cancelIdleCallback")
-    const agentId = "agent-timeout-prepare"
-    const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
-    const spawns: unknown[] = []
-    mockIPC((cmd, payload) => {
-        if (cmd === "agent_list") return []
-        if (cmd === "agent_spawn") {
-            spawns.push(payload)
-            return agentId
-        }
-        if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
-        if (cmd === "agent_kill") return undefined
-        return undefined
-    }, { shouldMockEvents: true })
-
-    render(<AgentBridge />)
-
-    await vi.waitFor(() => expect(spawns).toEqual([{
-        command: "bunx pi-acp@latest",
-        cwd: "/ws-a"
-    }]))
-    expect(fake.messages.some((message) => message.method === "session/new")).toBe(false)
-})
-
-it("keeps prepare failure out of UI state, logs only a sanitized diagnostic, and allows explicit retry", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const agentId = "agent-retry"
-    const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
-    let spawnCount = 0
-    mockIPC((cmd, payload) => {
-        if (cmd === "agent_list") return []
-        if (cmd === "agent_spawn") {
-            spawnCount += 1
-            if (spawnCount === 1) throw new Error("secret-token /Users/private custom-command")
-            return agentId
-        }
-        if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
-        if (cmd === "agent_stderr_tail") return ["another secret"]
-        if (cmd === "agent_kill") return undefined
-        return undefined
-    }, { shouldMockEvents: true })
-
-    render(<AgentBridge />)
-    await vi.waitFor(() => expect(idleCallbacks.size).toBe(1))
-    flushNextIdle()
-
-    await vi.waitFor(() => expect(warn).toHaveBeenCalled())
-    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/secret-token|Users\/private|custom-command|another secret/)
-    expect(useAgentStore.getState()).toMatchObject({
-        connectionState: "ready",
-        connectionError: null
-    })
-
-    await expect(useAgentStore.getState().newSession("/ws-a", "pi")).resolves.toBe("fake-session")
-    expect(spawnCount).toBe(2)
-})
-
-it("disposes an old workspace prepare that completes after the workspace generation changes", async () => {
-    const agentId = "agent-stale-prepare"
-    let initializeId: string | number | null | undefined
-    const kills: unknown[] = []
-    mockIPC(async (cmd, payload) => {
-        if (cmd === "agent_list") return []
-        if (cmd === "agent_spawn") return agentId
-        if (cmd === "agent_kill") {
-            kills.push(payload)
-            return undefined
-        }
-        if (cmd !== "agent_write") return undefined
-        const message = JSON.parse((payload as { chunk: string }).chunk.trim()) as {
-            id?: string | number | null
-            method?: string
-        }
-        if (message.method === "initialize") initializeId = message.id
-        return undefined
-    }, { shouldMockEvents: true })
-
-    const { rerender } = render(<AgentBridge />)
-    await vi.waitFor(() => expect(idleCallbacks.size).toBe(1))
-    flushNextIdle()
-    await vi.waitFor(() => expect(initializeId).toBeDefined())
-
-    useWorkspaceStore.setState({ workspacePath: "/ws-b" })
-    rerender(<AgentBridge />)
-    await emit("agent://stdout", {
-        id: agentId,
-        line: JSON.stringify({
-            jsonrpc: "2.0",
-            id: initializeId,
-            result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] }
-        })
-    })
-
-    await vi.waitFor(() => expect(kills).toContainEqual({
-        id: agentId,
-        reason: "prepared_dispose"
-    }))
-    expect(useAgentStore.getState().activeSessionId).toBeNull()
-    expect(useAgentStore.getState().connectionError).toBeNull()
+    expect(idleCallbacks.size).toBe(0)
 })
 
 it("Phase 4: Session Index survives a simulated restart and continueSession replays history, then resumes chatting", async () => {

@@ -3,9 +3,9 @@ import { listen } from "@tauri-apps/api/event"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 
-import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import { sshOpenShell, sshResize, sshWrite } from "@/lib/ipc"
 import type { SshDataEvent, SshExitEvent } from "@/lib/types"
+import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { installTerminalImeHandling } from "./terminalImeHandling"
 import { buildXtermTheme } from "./xtermTheme"
 
@@ -61,9 +61,12 @@ function terminalSize(term: Terminal): { cols: number; rows: number } {
  * sshStore, so switching modes/hosts keeps the remote session alive.
  */
 export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSessionProps) {
-    const imeAnchorMode = loadTerminalSettings().imeAnchorMode
+    const imeAnchorMode = useTerminalSettingsStore((state) => state.imeAnchorMode)
+    const fontSize = useTerminalSettingsStore((state) => state.fontSize)
     const containerRef = useRef<HTMLDivElement | null>(null)
     const termRef = useRef<Terminal | null>(null)
+    const fitRef = useRef<FitAddon | null>(null)
+    const initialFontSizeRef = useRef(fontSize)
     const lastSizeRef = useRef({ cols: defaultCols, rows: defaultRows })
     const onExitRef = useRef(onExit)
     const activeRef = useRef(active)
@@ -88,12 +91,13 @@ export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSes
             cursorBlink: true,
             fontFamily:
                 "\"SFMono-Regular\", \"Cascadia Code\", \"JetBrains Mono\", Menlo, Consolas, monospace",
-            fontSize: 12,
+            fontSize: initialFontSizeRef.current,
             scrollback: 4000,
             theme: buildXtermTheme(currentMode())
         })
         const fitAddon = new FitAddon()
         termRef.current = term
+        fitRef.current = fitAddon
         term.loadAddon(fitAddon)
         term.open(container)
         safeFit(fitAddon)
@@ -167,8 +171,23 @@ export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSes
             fitAddon.dispose()
             term.dispose()
             termRef.current = null
+            fitRef.current = null
         }
     }, [imeAnchorMode, sessionId])
+
+    useEffect(() => {
+        const term = termRef.current
+        const fitAddon = fitRef.current
+        if (!term || !fitAddon) return
+        if (term.options.fontSize === fontSize) return
+        term.options.fontSize = fontSize
+        if (!activeRef.current) return
+        safeFit(fitAddon)
+        const next = terminalSize(term)
+        if (next.cols === lastSizeRef.current.cols && next.rows === lastSizeRef.current.rows) return
+        lastSizeRef.current = next
+        void sshResize(sessionId, next.cols, next.rows).catch(() => undefined)
+    }, [fontSize, sessionId])
 
     useEffect(() => {
         if (!active || !termRef.current) return
@@ -179,6 +198,7 @@ export function SshTerminalSession({ sessionId, active, onExit }: SshTerminalSes
         <div
             className="relative h-full min-h-0 w-full overflow-hidden bg-(--term-bg) text-(--term-fg)"
             data-testid={`ssh-terminal-session-${sessionId}`}
+            onContextMenu={(event) => event.preventDefault()}
         >
             <div ref={containerRef} className="h-full min-h-0 w-full" />
             {exited ? (

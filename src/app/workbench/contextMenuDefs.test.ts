@@ -14,7 +14,6 @@ import { registerView, unregisterView, updateViewMetadata } from "@/editor/viewR
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useAgentStore, type SessionState } from "@/state/agentStore"
 import { useTerminalStore } from "@/state/terminalStore"
-import { registerTerminalView } from "@/terminal/terminalViewRegistry"
 import { initialGitState, useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
 import { useDbStore } from "@/state/dbStore"
@@ -34,7 +33,6 @@ const FINAL_KINDS: ContextMenuKind[] = [
   "file",
   "tab",
   "editor",
-  "terminal",
   "terminalTab",
   "agentSession",
   "git",
@@ -402,85 +400,6 @@ describe("CONTEXT_MENU_DEFS", () => {
     expect(byId().has("cmFormatDoc")).toBe(false)
     unregisterView(path, view)
     view.destroy()
-  })
-
-  it("terminal availability follows the clicked pane, xterm selection and pane cap", async () => {
-    const request: ContextMenuRequest = {
-      kind: "terminal",
-      workspacePath: "/w",
-      paneId: "pane-clicked",
-      sessionId: "session-clicked",
-    }
-    useTerminalStore.setState({
-      sessions: {
-        "session-clicked": {
-          sessionId: "session-clicked",
-          title: "Terminal 1",
-          launchStatus: "running",
-          workspace: "/w",
-          shell: "",
-          cols: 80,
-          rows: 24,
-        },
-      },
-      layouts: {
-        "/w": {
-          tabIds: ["session-clicked"],
-          panes: [{ paneId: "pane-clicked", sessionId: "session-clicked" }],
-          activePaneId: "unrelated-active-pane",
-          splitRatio: 0.5,
-          nextTerminalNumber: 2,
-          renamingSessionId: null,
-        },
-      },
-    })
-    let selected = false
-    const unregister = registerTerminalView("session-clicked", {
-      hasSelection: () => selected,
-      getSelection: () => "output",
-      paste: () => undefined,
-      clear: () => undefined,
-    })
-    const byId = () => new Map(resolveContextMenuEntries(request).flatMap(
-      (entry) => entry.type === "command" ? [[entry.command.id, entry]] : []
-    ))
-
-    expect(byId().get("cmCopySel")?.availability).toMatchObject({
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.noSelection",
-    })
-    expect(byId().get("cmPaste")?.availability.enabled).toBe(true)
-    expect(byId().get("cmClear")?.availability.enabled).toBe(true)
-    expect(byId().get("cmCloseTerminal")?.availability.enabled).toBe(true)
-    expect(byId().get("cmSplitTermRight")?.availability.enabled).toBe(true)
-    expect(byId().has("cmDockTerm")).toBe(false)
-    expect(byId().has("cmKill")).toBe(false)
-
-    selected = true
-    expect(byId().get("cmCopySel")?.availability.enabled).toBe(true)
-
-    useTerminalStore.getState().splitFrom(
-      "/w",
-      "pane-clicked",
-      {
-        sessionId: "session-2",
-        title: "Terminal 2",
-        launchStatus: "opening",
-        workspace: "/w",
-        shell: "",
-        cols: 80,
-        rows: 24,
-      }
-    )
-    expect(byId().get("cmSplitTermRight")?.availability).toMatchObject({
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.terminalPaneLimit",
-    })
-    expect(commandFor(request, "cmClear")?.label(request)).toBe("Clear buffer")
-    expect(commandFor(request, "cmSplitTermDown")).toBeNull()
-    await i18n.changeLanguage("zh-TW")
-    expect(commandFor(request, "cmCloseTerminal")?.label(request)).toBe("關閉終端機")
-    unregister()
   })
 
   it("terminal tab menu exposes only rename and close for the exact tab", async () => {
@@ -1305,7 +1224,6 @@ describe("CONTEXT_MENU_DEFS", () => {
       { kind: "file", workspacePath: "/w", path: "/w/a.ts", isDirectory: false, sourceGroupIndex: 0 },
       { kind: "tab", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
       { kind: "editor", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
-      { kind: "terminal", workspacePath: "/w", paneId: "pane", sessionId: "session" },
       { kind: "terminalTab", workspacePath: "/w", sessionId: "session" },
       { kind: "agentSession", sessionId: "missing-session" },
       { kind: "git", repositoryRoot: "/w" },

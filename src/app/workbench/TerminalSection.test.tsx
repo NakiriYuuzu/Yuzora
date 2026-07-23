@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 
+import { reloadTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { loadTerminalSettings } from "./settingsStorage"
 import { TerminalSection } from "./TerminalSection"
 
@@ -42,6 +43,7 @@ function installLocalStorage(): void {
 beforeEach(() => {
   installLocalStorage()
   localStorage.clear()
+  reloadTerminalSettingsStore()
   Object.defineProperty(navigator, "userAgent", {
     configurable: true,
     value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -97,5 +99,16 @@ describe("TerminalSection profiles", () => {
       },
       imeAnchorMode: "tui",
     })
+  })
+
+  it("persists terminal font size changes for live terminal subscribers", () => {
+    render(<TerminalSection />)
+
+    fireEvent.change(screen.getByRole("slider", { name: "Terminal text size" }), {
+      target: { value: "18" },
+    })
+
+    expect(loadTerminalSettings().fontSize).toBe(18)
+    expect(screen.getByText("18 px")).toBeInTheDocument()
   })
 })
