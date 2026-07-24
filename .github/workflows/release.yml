@@ -251,7 +251,19 @@ jobs:
   finalize-updater-metadata:
     name: Finalize updater metadata
     needs: [guard, build]
-    if: needs.guard.outputs.should_build == 'true'
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      (
+        (
+          needs.guard.outputs.should_build == 'true' &&
+          needs.build.result == 'success'
+        ) ||
+        (
+          needs.guard.outputs.should_publish_existing == 'true' &&
+          needs.build.result == 'skipped'
+        )
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -284,19 +296,20 @@ jobs:
     if: >-
       always() &&
       needs.guard.result == 'success' &&
+      needs.finalize-updater-metadata.result == 'success' &&
       (
         (
           needs.guard.outputs.should_build == 'true' &&
-          needs.build.result == 'success' &&
-          needs.finalize-updater-metadata.result == 'success'
+          needs.build.result == 'success'
         ) ||
         (
           needs.guard.outputs.should_publish_existing == 'true' &&
-          needs.build.result == 'skipped' &&
-          needs.finalize-updater-metadata.result == 'skipped'
+          needs.build.result == 'skipped'
         )
       )
     runs-on: ubuntu-latest
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Verify release assets and updater metadata
         shell: bash
