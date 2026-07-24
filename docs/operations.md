@@ -1,7 +1,7 @@
 # Yuzora 部署與發布運維手冊
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> 最後查證：2026-07-23。
+> 最後查證：2026-07-24。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 本文件不得保存 private key、密碼、token、憑證內容或離線備份位置。敏感資料只存放於核准的 secret store。
@@ -312,6 +312,7 @@ Guard 失敗時所有 build 都不會執行。
 
 所有 build 成功後，`finalize-updater-metadata` job：
 
+- 使用 Guard 解析出的 `tag_name` 查找 draft Release；不得依賴 `workflow_run` 的 `GITHUB_REF_NAME`，其值是 `main` 而不是 release tag。
 - 下載 draft 中的 `latest.json`。
 - 驗證 metadata version 與 notes。
 - 移除 Windows NSIS updater entries。
