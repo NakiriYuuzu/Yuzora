@@ -260,7 +260,7 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
                                                    auto Publish
 ```
 
-若 upgrade 前已存在同版本的 draft Release，Guard 會進入銜接模式：不重建、不覆寫既有 artifacts，只在後續 automated publish gate 完整驗證資產與 updater metadata 後移除 draft 狀態。驗證不完整時 workflow 失敗，Release 保持 draft。
+若 upgrade 前已存在同版本的 draft Release，Guard 會進入銜接模式：不重建、不覆寫既有 binary artifacts，但會重新執行 deterministic metadata finalizer 並只覆蓋 `latest.json`；後續 automated publish gate 完整驗證資產與 updater metadata 後才移除 draft 狀態。驗證不完整時 workflow 失敗，Release 保持 draft。
 
 ---
 
@@ -310,7 +310,7 @@ Guard 失敗時所有 build 都不會執行。
 
 ### 7.4 Finalize updater metadata
 
-所有 build 成功後，`finalize-updater-metadata` job：
+所有 build 成功後，或既有同版本 draft 進入銜接模式時，`finalize-updater-metadata` job：
 
 - 使用 Guard 解析出的 `tag_name` 查找 draft Release；不得依賴 `workflow_run` 的 `GITHUB_REF_NAME`，其值是 `main` 而不是 release tag。
 - 下載 draft 中的 `latest.json`。
@@ -327,7 +327,7 @@ Finalizer 未成功時不得 Publish。
 `publish-release` 只在下列其中一條路徑成立時執行：
 
 - 新版本的三平台 build 與 metadata finalizer 全部成功。
-- 既有同版本 draft 的銜接模式啟用，且 build／finalizer 正確略過。
+- 既有同版本 draft 的銜接模式啟用、build 正確略過，且 metadata finalizer 成功。
 
 Publish 前 workflow 自動驗證：
 

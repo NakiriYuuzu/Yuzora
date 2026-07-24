@@ -221,6 +221,15 @@ assert(
     finalize.needs.includes("build"),
   "updater metadata must be finalized after every platform build"
 )
+assert(
+  typeof finalize.if === "string" &&
+    finalize.if.includes("always()") &&
+    finalize.if.includes("needs.guard.outputs.should_build == 'true'") &&
+    finalize.if.includes("needs.build.result == 'success'") &&
+    finalize.if.includes("needs.guard.outputs.should_publish_existing == 'true'") &&
+    finalize.if.includes("needs.build.result == 'skipped'"),
+  "updater metadata finalizer must support new builds and existing-draft continuation"
+)
 const normalizedFinalizeSteps = finalizeSteps.map((step, index) =>
   record(step, `finalize.steps[${index}]`)
 )
@@ -248,6 +257,18 @@ assert(
 
 const normalizedPublishSteps = publishSteps.map((step, index) =>
   record(step, `publish.steps[${index}]`)
+)
+assert(
+  typeof publish.if === "string" &&
+    publish.if.includes("needs.finalize-updater-metadata.result == 'success'") &&
+    publish.if.includes("needs.guard.outputs.should_publish_existing == 'true'") &&
+    publish.if.includes("needs.build.result == 'skipped'"),
+  "automated publish must require finalized metadata for existing drafts"
+)
+const publishEnv = record(publish.env, "automated publish env")
+assert(
+  publishEnv.GH_REPO === "${{ github.repository }}",
+  "automated publish must bind gh commands to the workflow repository"
 )
 const verifyPublish = normalizedPublishSteps.find(
   (step) => step.name === "Verify release assets and updater metadata"
