@@ -235,6 +235,11 @@ assert(
   sanitizeStep.run === "bun scripts/finalize-updater-metadata.ts updater-release/latest.json",
   "release must run the checked-in updater metadata finalizer"
 )
+const sanitizeEnv = record(sanitizeStep.env, "updater metadata finalizer env")
+assert(
+  sanitizeEnv.GITHUB_REF_NAME === "${{ needs.guard.outputs.tag_name }}",
+  "updater metadata finalizer must receive the tag resolved by the guard"
+)
 assert(replaceStep, "release must replace the generated updater metadata")
 assert(
   typeof replaceStep.run === "string" && replaceStep.run.includes("--clobber"),
