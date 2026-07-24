@@ -28,10 +28,12 @@ mod plan;
 // Preserve the historical `lsp_download::{BinaryServer, UnpackKind, InstallRoute}`
 // paths; the execution layer below consumes the rest of the pure plan layer via
 // `use plan::…`.
+#[cfg(target_os = "macos")]
+use plan::quarantine_command;
 use plan::{
     asset_url, binary_command, binary_dest, binary_temp, build_plan, canonical_key, npm_bin_path,
-    npm_install_args, npm_prefix, pip_install_args, quarantine_command, resolve_active, route_for,
-    sha256_hex, sha256_matches, unpack_kind, venv_args, venv_bin_path, venv_dir, Plan,
+    npm_install_args, npm_prefix, pip_install_args, resolve_active, route_for, sha256_hex,
+    sha256_matches, unpack_kind, venv_args, venv_bin_path, venv_dir, Plan,
 };
 pub use plan::{BinaryServer, InstallRoute, UnpackKind};
 

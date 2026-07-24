@@ -10,7 +10,7 @@ interface PerfState {
     reset: () => void
 }
 
-export const perfInitialState = {
+const perfInitialState = {
     snapshot: null as PerfSnapshot | null
 }
 

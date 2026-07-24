@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react"
+import type { CSSProperties } from "react"
 import { useTranslation } from "react-i18next"
 
 import type { BlockEntry, TranscriptAction } from "@/agent/acpTypes"
@@ -83,41 +83,6 @@ export function parseToolBlockMeta(meta?: string): ToolBlockMeta {
   } catch { return {} }
 }
 
-export function ToolBlock({ entry }: { entry: BlockEntry }) {
-  const { t } = useTranslation("panels")
-  const [open, setOpen] = useState(false)
-  const meta = parseToolBlockMeta(entry.meta)
-  const style = meta.status === "failed" ? THREAD_KIND_STYLE.error : THREAD_KIND_STYLE.tool
-  const [title, ...rest] = entry.text.split("\n")
-  const body = rest.join("\n")
-  const preview = body.length > 50 ? `${body.slice(0, 50)}…` : body
-  return (
-    <div style={{ display: "flex" }}>
-      <div style={{ flex: 1, minWidth: 0, borderRadius: 12, background: style.bg, border: `1px solid ${style.bd}`, display: "flex", flexDirection: "column" }}>
-        <button type="button" aria-label={t("agentZonePanel.toolToggle")} aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-          style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "transparent", border: 0, cursor: "pointer", textAlign: "left", minWidth: 0 }}>
-          <span aria-hidden="true" style={{ width: 3, alignSelf: "stretch", borderRadius: 3, background: style.accent, flex: "0 0 auto" }} />
-          <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 500, color: style.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {title}{preview ? ` · ${preview}` : ""}
-          </span>
-          {meta.status && <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)", flex: "0 0 auto" }}>{meta.status}</span>}
-        </button>
-        {open && (
-          <div style={{ padding: "0 12px 12px 25px", display: "flex", flexDirection: "column", gap: 8 }}>
-            {body && <pre style={toolPreStyle}>{body}</pre>}
-            {meta.rawInput && <ToolDetail label={t("agentZonePanel.toolInput")} value={meta.rawInput} />}
-            {meta.rawOutput && <ToolDetail label={t("agentZonePanel.toolOutput")} value={meta.rawOutput} />}
-            {meta.locations && meta.locations.length > 0 && (
-              <ToolDetail label={t("agentZonePanel.toolLocations")}
-                value={meta.locations.map((l) => (l.line != null ? `${l.path}:${l.line}` : l.path))} />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 export const toolPreStyle: CSSProperties = { margin: 0, fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.5, color: "var(--ink-2)", whiteSpace: "pre-wrap", wordBreak: "break-word" }
 export function ToolDetail({ label, value }: { label: string; value: unknown }) {
   return (

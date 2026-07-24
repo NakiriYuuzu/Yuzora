@@ -1,5 +1,5 @@
 import {
-  AGENT_PRESETS, DEFAULT_AGENT_COMMAND, DEFAULT_AGENT_ID, agentPresetForCommand,
+  AGENT_PRESETS, DEFAULT_AGENT_COMMAND, DEFAULT_AGENT_ID,
   resolveCuratedAgentCommand,
   type AgentCommandIdentity, type AgentCommandMode, type AgentCommandResolution,
   type AgentId, type AgentPreset,
@@ -12,7 +12,7 @@ import {
 } from "@/terminal/terminalProfiles"
 import type { TerminalImeAnchorMode } from "@/terminal/terminalImePositioning"
 
-export { AGENT_PRESETS, DEFAULT_AGENT_COMMAND, agentPresetForCommand }
+export { AGENT_PRESETS, DEFAULT_AGENT_COMMAND }
 export type { AgentId, AgentPreset }
 
 /** P5：pi 的 runtime 選擇——builtin（bundle 內 yuzora-pi-acp）為預設，community
@@ -35,6 +35,7 @@ export interface TerminalSettings {
   defaultProfile: TerminalProfile
   customProfile: TerminalProfile
   imeAnchorMode: TerminalImeAnchorMode
+  fontSize: number
 }
 
 export interface PreviewSettings {
@@ -50,7 +51,7 @@ export interface AgentSettings {
   piRuntime: PiRuntime
 }
 
-export interface AgentPresetCommandSettings {
+interface AgentPresetCommandSettings {
   mode: AgentCommandMode
   customCommand: string
 }
@@ -78,7 +79,7 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   piRuntime: "builtin",
 }
 
-export function readJsonSetting<T extends object>(key: string, fallback: T): T {
+function readJsonSetting<T extends object>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key)
     if (!raw) return fallback
@@ -127,7 +128,22 @@ export function loadTerminalSettings(): TerminalSettings {
     defaultProfile,
     customProfile,
     imeAnchorMode: stored.imeAnchorMode === "tui" ? "tui" : "cursor",
+    fontSize: normalizeTerminalFontSize(stored.fontSize),
   }
+}
+
+export const MIN_TERMINAL_FONT_SIZE = 8
+export const MAX_TERMINAL_FONT_SIZE = 32
+const DEFAULT_TERMINAL_FONT_SIZE = 12
+
+export function normalizeTerminalFontSize(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_TERMINAL_FONT_SIZE
+  }
+  return Math.min(
+    MAX_TERMINAL_FONT_SIZE,
+    Math.max(MIN_TERMINAL_FONT_SIZE, Math.round(value)),
+  )
 }
 
 const TERMINAL_PROFILE_KINDS: TerminalProfileKind[] = [

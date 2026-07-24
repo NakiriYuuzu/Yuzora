@@ -2,7 +2,7 @@ import { create } from "zustand"
 
 export type UnsavedDecision = "save" | "discard" | "cancel"
 
-export interface UnsavedDecisionRequest {
+interface UnsavedDecisionRequest {
     title: string
     description: string
     // Label for the save-and-continue button — "Save" for a single tab close,

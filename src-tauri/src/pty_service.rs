@@ -289,10 +289,10 @@ fn detect_windows_terminal_profiles() -> Vec<TerminalProfile> {
             kind: TerminalProfileKind::Wsl,
             cwd_strategy: TerminalCwdStrategy::Wsl,
         });
-        if let Ok(output) = std::process::Command::new(&wsl)
-            .args(["--list", "--quiet"])
-            .output()
-        {
+        let mut command = std::process::Command::new(&wsl);
+        command.args(["--list", "--quiet"]);
+        process_kill::configure_hidden_process(&mut command);
+        if let Ok(output) = command.output() {
             if output.status.success() {
                 for distro in decode_wsl_list_output(&output.stdout) {
                     profiles.push(TerminalProfile {
@@ -1177,6 +1177,17 @@ mod tests {
     }
 
     #[test]
+    fn windows_wsl_profile_probe_suppresses_its_console_window() {
+        let source = include_str!("pty_service.rs");
+        let hidden_configuration =
+            ["process_kill::configure_hidden_process", "(&mut command);"].concat();
+        assert!(
+            source.contains(&hidden_configuration),
+            "the Windows wsl.exe profile probe must not create a visible console window"
+        );
+    }
+
+    #[test]
     fn parses_wsl_unc_workspace_into_distro_and_linux_cwd() {
         assert_eq!(
             wsl_unc_target(r"\\wsl.localhost\Ubuntu\home\yuuzu\專案"),
@@ -1502,6 +1513,7 @@ mod tests {
                 |event| matches!(event, PtyEvent::Output { data } if data.contains("hi"))
             )));
 
+        #[cfg(unix)]
         let pid = mgr.debug_pid("s1").unwrap();
         mgr.close("s1").unwrap();
         assert!(mgr.sessions_for("ws-a").is_empty());
@@ -1511,6 +1523,7 @@ mod tests {
         let (on_event2, _events2) = capture_events();
         mgr.open("ws-a", "s2", Some("/bin/sh"), None, 80, 24, on_event2)
             .unwrap();
+        #[cfg(unix)]
         let pid2 = mgr.debug_pid("s2").unwrap();
         mgr.close_workspace("ws-a").unwrap();
         assert!(mgr.sessions_for("ws-a").is_empty());
@@ -1554,6 +1567,7 @@ mod tests {
         let (on_event, _events) = capture_events();
         mgr.open("ws-a", "s1", Some("/bin/sh"), None, 80, 24, on_event)
             .unwrap();
+        #[cfg(unix)]
         let pid = mgr.debug_pid("s1").unwrap();
         mgr.kill_all();
         assert!(mgr.sessions_for("ws-a").is_empty());

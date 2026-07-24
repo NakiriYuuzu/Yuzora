@@ -1,6 +1,8 @@
 // M2 Task 4: git_service core (detection + run_git + git_status command)
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 pub struct GitServiceState(pub std::sync::Mutex<Option<RepoHandle>>);
@@ -33,6 +35,51 @@ pub struct GitStatusDto {
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct GitProcessRegistry {
+    active: Mutex<HashSet<u32>>,
+}
+
+impl GitProcessRegistry {
+    fn register(&self, pid: u32) {
+        if let Ok(mut active) = self.active.lock() {
+            active.insert(pid);
+        }
+    }
+
+    fn unregister(&self, pid: u32) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&pid);
+        }
+    }
+
+    fn drain(&self) -> Vec<u32> {
+        match self.active.lock() {
+            Ok(mut active) => active.drain().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+static ACTIVE_GIT_PROCESSES: LazyLock<GitProcessRegistry> =
+    LazyLock::new(GitProcessRegistry::default);
+
+struct ActiveGitProcessGuard {
+    pid: u32,
+}
+
+impl Drop for ActiveGitProcessGuard {
+    fn drop(&mut self) {
+        ACTIVE_GIT_PROCESSES.unregister(self.pid);
+    }
+}
+
+pub fn kill_all_processes() {
+    for pid in ACTIVE_GIT_PROCESSES.drain() {
+        let _ = crate::process_kill::kill_tree_pid(pid);
+    }
+}
 
 /// 純函式核心：偵測 git 環境。commands 是薄包裝。
 pub fn detect_environment(path: &Path) -> GitEnvironment {
@@ -101,6 +148,8 @@ pub fn run_git(
         .stderr(Stdio::piped());
     crate::process_kill::configure_background_process(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("git spawn failed: {e}"))?;
+    let active_process = ActiveGitProcessGuard { pid: child.id() };
+    ACTIVE_GIT_PROCESSES.register(active_process.pid);
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
     let out_thread = std::thread::spawn(move || {

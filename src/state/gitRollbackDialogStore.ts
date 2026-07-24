@@ -2,7 +2,7 @@ import { create } from "zustand"
 
 import type { GitChangeKey } from "@/workbench/git/gitChangeSelection"
 
-export interface GitRollbackDialogRequest {
+interface GitRollbackDialogRequest {
     repositoryRoot: string
     targets: GitChangeKey[]
 }

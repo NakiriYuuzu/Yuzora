@@ -13,7 +13,7 @@ export const RECENT_WORKSPACE_PRESENTATIONS_STORAGE_KEY =
 export const MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY =
     "yuzora.workspace.move-opened-to-top.v1"
 
-export const RECENT_WORKSPACE_COLOR_IDS = [
+const RECENT_WORKSPACE_COLOR_IDS = [
     "lime",
     "dusk",
     "sunrise",

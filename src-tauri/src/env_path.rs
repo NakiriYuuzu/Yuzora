@@ -186,9 +186,9 @@ fn log_path_fix(level: &str, message: &str, entries: Option<usize>) {
 pub fn fix_gui_path() {}
 
 /// ENV 傾印區段的 marker（與 probe 指令裡的字面值一致）。
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 const ENV_START: &str = "__YZ_ENV_S__";
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 const ENV_END: &str = "__YZ_ENV_E__";
 
 /// 從輸出裡切出第一組 `start` … `end` 之間的內容。rc 檔可能在 marker 前後印雜訊，

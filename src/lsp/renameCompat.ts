@@ -17,11 +17,11 @@ export interface TextEdit {
 }
 // documentChanges entries carry a (possibly null) document version, unlike the
 // bare uri->edits map in `changes`.
-export interface OptionalVersionedTextDocumentIdentifier {
+interface OptionalVersionedTextDocumentIdentifier {
     uri: string
     version: number | null
 }
-export interface TextDocumentEdit {
+interface TextDocumentEdit {
     textDocument: OptionalVersionedTextDocumentIdentifier
     edits: TextEdit[]
 }

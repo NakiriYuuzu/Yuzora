@@ -1,9 +1,13 @@
 use std::io;
 use std::process::{Child, Command};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 const TERM_GRACE: Duration = Duration::from_millis(300);
+#[cfg(unix)]
 const EXIT_POLL: Duration = Duration::from_secs(3);
+#[cfg(unix)]
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[cfg(any(windows, test))]
@@ -12,13 +16,8 @@ const WINDOWS_CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(any(windows, test))]
-const fn windows_creation_flags(hide_window: bool) -> u32 {
-    WINDOWS_CREATE_NEW_PROCESS_GROUP
-        | if hide_window {
-            WINDOWS_CREATE_NO_WINDOW
-        } else {
-            0
-        }
+const fn windows_creation_flags() -> u32 {
+    WINDOWS_CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_NO_WINDOW
 }
 
 #[cfg(any(windows, test))]
@@ -47,7 +46,7 @@ pub fn configure_new_group(cmd: &mut Command) {
 pub fn configure_new_group(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
 
-    cmd.creation_flags(windows_creation_flags(false));
+    cmd.creation_flags(windows_creation_flags());
     // [SPIKE 驗證] The plan calls for assigning the child to a Windows Job
     // Object with KILL_ON_JOB_CLOSE. std::process::Command has no portable hook
     // to retain that Job handle here; the exact windows crate features and
@@ -66,7 +65,7 @@ pub fn configure_background_process(cmd: &mut Command) {
 pub fn configure_background_process(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
 
-    cmd.creation_flags(windows_creation_flags(true));
+    cmd.creation_flags(windows_creation_flags());
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -146,10 +145,10 @@ pub fn kill_tree_pid(pid: u32) -> io::Result<()> {
 pub fn kill_tree_pid(pid: u32) -> io::Result<()> {
     // [SPIKE 驗證] Terminating a process tree by pid on Windows should resolve
     // the Job Object for that pid, or use a verified platform fallback.
-    Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status()
-        .map(|_| ())
+    let mut command = Command::new("taskkill");
+    command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    configure_hidden_process(&mut command);
+    command.status().map(|_| ())
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -243,17 +242,14 @@ fn wait_for_process_group_exit(pgid: GroupId) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     #[test]
     fn windows_background_flags() {
-        let background = super::windows_creation_flags(true);
+        let background = super::windows_creation_flags();
         assert_eq!(background & 0x0000_0200, 0x0000_0200);
         assert_eq!(background & 0x0800_0000, 0x0800_0000);
-
-        let grouped = super::windows_creation_flags(false);
-        assert_eq!(grouped & 0x0000_0200, 0x0000_0200);
-        assert_eq!(grouped & 0x0800_0000, 0);
     }
 
     #[test]
@@ -263,6 +259,7 @@ mod tests {
         assert_eq!(hidden & 0x0000_0200, 0);
     }
 
+    #[cfg(unix)]
     fn read_pid(path: &std::path::Path) -> u32 {
         std::fs::read_to_string(path)
             .expect("pid file exists")

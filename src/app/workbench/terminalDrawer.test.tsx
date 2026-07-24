@@ -5,7 +5,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import i18n from "@/lib/i18n"
-import { useContextMenuStore } from "@/state/contextMenuStore"
+import { contextMenuHandler, useContextMenuStore } from "@/state/contextMenuStore"
 import { useTerminalStore } from "@/state/terminalStore"
 import { useWorkbenchLayoutStore, workbenchLayoutInitialState } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -137,14 +137,22 @@ function renderDrawer({
   visible = true,
   height = 800,
   mainSurfaceMinHeight = 44,
+  includeAppShellContextMenu = false,
 }: {
   visible?: boolean
   height?: number
   mainSurfaceMinHeight?: number
+  includeAppShellContextMenu?: boolean
 } = {}) {
   const containerRef = createRef<HTMLDivElement>()
   const view = render(
-    <div ref={containerRef} data-testid="terminal-test-stack">
+    <div
+      ref={containerRef}
+      data-testid="terminal-test-stack"
+      onContextMenu={
+        includeAppShellContextMenu ? contextMenuHandler({ kind: "general" }) : undefined
+      }
+    >
       <TerminalDrawer
         visible={visible}
         containerRef={containerRef}
@@ -544,20 +552,36 @@ describe("TerminalDrawer sessions", () => {
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")).toHaveLength(1)
   })
 
-  it("opens a terminal menu only from the clicked pane with a stable target snapshot", () => {
+  it("suppresses the terminal viewport context menu without opening Yuzora actions", () => {
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
-    renderDrawer()
+    renderDrawer({ includeAppShellContextMenu: true })
     fireEvent.click(screen.getByTitle("New terminal"))
 
-    const pane = useTerminalStore.getState().layouts["/workspace"].panes[0]
-    fireEvent.contextMenu(screen.getByTestId(`terminal-pane-${pane.paneId}`))
+    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const contentEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    expect(content.dispatchEvent(contentEvent)).toBe(false)
+    expect(contentEvent.defaultPrevented).toBe(true)
 
-    expect(useContextMenuStore.getState().request).toEqual({
-      kind: "terminal",
-      workspacePath: "/workspace",
-      paneId: pane.paneId,
-      sessionId: pane.sessionId,
-    })
+    const terminal = screen.getByTestId(/terminal-session-/)
+    let tuiSawDefaultPrevented: boolean | undefined
+    terminal.addEventListener(
+      "contextmenu",
+      (event) => {
+        tuiSawDefaultPrevented = event.defaultPrevented
+      },
+      { once: true },
+    )
+    const tuiEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    expect(terminal.dispatchEvent(tuiEvent)).toBe(false)
+    expect(tuiSawDefaultPrevented).toBe(false)
+    expect(tuiEvent.defaultPrevented).toBe(true)
+
+    const pane = useTerminalStore.getState().layouts["/workspace"].panes[0]
+    const paneEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    expect(screen.getByTestId(`terminal-pane-${pane.paneId}`).dispatchEvent(paneEvent)).toBe(false)
+    expect(paneEvent.defaultPrevented).toBe(true)
+
+    expect(useContextMenuStore.getState().request).toBeNull()
   })
 
   it("removes the fake Dock toolbar action", () => {

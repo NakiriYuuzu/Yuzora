@@ -41,7 +41,7 @@ import { useSshStore } from "./sshStore"
 import { useUiStore } from "./uiStore"
 import { useWorkspaceStore, type TabInfo } from "./workspaceStore"
 
-export type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contextMenuModel"
+export type { ContextMenuRequest } from "@/app/workbench/contextMenuModel"
 
 interface ContextMenuState {
     request: ContextMenuRequest | null

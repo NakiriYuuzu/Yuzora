@@ -934,6 +934,10 @@ export function TerminalDrawer({
         <div
           aria-hidden={!expanded}
           inert={!expanded}
+          onContextMenu={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
           className="yzs overflow-y-auto font-mono"
           style={{
             height: expanded ? geometry.contentHeight : 0,
@@ -998,16 +1002,6 @@ export function TerminalDrawer({
                         data-testid={pane ? `terminal-pane-${pane.paneId}` : undefined}
                         data-session-id={sessionId}
                         onClick={pane ? () => selectPane(paneWorkspace, pane.paneId) : undefined}
-                        onContextMenu={
-                          pane
-                            ? contextMenuHandler({
-                                kind: "terminal",
-                                workspacePath: paneWorkspace,
-                                paneId: pane.paneId,
-                                sessionId,
-                              })
-                            : undefined
-                        }
                         className={`min-h-0 min-w-0 overflow-hidden ${
                           active ? "ring-1 ring-inset ring-(--term-blue)" : ""
                         }`}

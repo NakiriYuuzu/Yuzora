@@ -62,8 +62,6 @@ import type {
     DbTable
 } from "@/lib/types"
 
-export type { DbOperationalErrorCode } from "@/lib/types"
-
 /** A live handle projected from one opaque saved descriptor. `targetKey` remains
  * display/legacy-history compatibility data only; descriptorId is the sole
  * profile identity and connId is reassigned on every reopen. */
@@ -148,21 +146,21 @@ export type DbOperationCounters = Record<DbOperationSlot, number>
 
 /** Session state keyed by descriptor id, mirroring sshStore. Survives a
  *  disconnect (marked `disconnected`, not removed) so the row keeps its badge. */
-export interface DbSessionState {
+interface DbSessionState {
     descriptorId: string
     connId: string | null
     status: DbSessionStatus
     error: DbProfileUiErrorCode | null
 }
 
-export interface DbReconnectRequest {
+interface DbReconnectRequest {
     descriptorId: string
     /** Monotonic trigger so requesting the same descriptor twice still reopens
      *  a fresh dialog instance. */
     token: number
 }
 
-export type DbOpenSavedResult =
+type DbOpenSavedResult =
     | { outcome: "completed" }
     | { outcome: "cancelled" }
     | { outcome: "error"; error: unknown }
@@ -185,7 +183,7 @@ export interface DbStatementResultPageState {
     sortBaseRows: DbValue[][]
 }
 
-export type DbQueryRunGroupStatus = "running" | "cancelling" | "settled"
+type DbQueryRunGroupStatus = "running" | "cancelling" | "settled"
 
 export interface DbQueryRunGroup {
     owner: DbQueryRunOwner
@@ -1240,7 +1238,7 @@ function completeLegacyHistoryMigration(): DbProfileUiErrorCode | null {
     }
 }
 
-export const dbInitialState = {
+const dbInitialState = {
     connections: [] as DbConnection[],
     activeDescriptorId: null as string | null,
     activeConnId: null as string | null,

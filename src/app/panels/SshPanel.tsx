@@ -387,9 +387,6 @@ function SftpBrowser({ hostId }: { hostId: string }) {
       document.body.style.userSelect = ""
       document.body.style.cursor = ""
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers read the
-    // live drag through dragRef; a drag is a single press-hold interaction, so
-    // hostId/actions cannot change mid-drag.
   }, [dragInProgress])
 
   // Load the remote home directory the first time the browser mounts for a host.

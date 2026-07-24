@@ -1,5 +1,4 @@
 import { confirm } from "@tauri-apps/plugin-dialog"
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 
 import type { ContextMenuCommandOutcome } from "@/app/workbench/contextMenuModel"
 import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
@@ -12,7 +11,6 @@ import {
   useTerminalStore,
   type TerminalSessionMeta,
 } from "@/state/terminalStore"
-import { getTerminalView } from "@/terminal/terminalViewRegistry"
 
 export interface TerminalCommandTarget {
   workspacePath: string
@@ -73,41 +71,6 @@ export function createTerminalSessionMeta(
     cols: 80,
     rows: 24,
   }
-}
-
-export async function copyTerminalSelection(
-  target: TerminalCommandTarget
-): Promise<ContextMenuCommandOutcome> {
-  if (!terminalTargetExists(target)) return cancelled()
-  const view = getTerminalView(target.sessionId)
-  if (!view?.hasSelection()) return cancelled()
-  await writeText(view.getSelection())
-  return completed()
-}
-
-export async function pasteTerminalClipboard(
-  target: TerminalCommandTarget
-): Promise<ContextMenuCommandOutcome> {
-  if (!terminalTargetExists(target)) return cancelled()
-  const view = getTerminalView(target.sessionId)
-  if (!view || view.isReady?.() === false) return cancelled()
-  const text = await readText()
-  if (text.length === 0) return cancelled()
-  if (
-    !terminalTargetExists(target)
-    || getTerminalView(target.sessionId) !== view
-    || view.isReady?.() === false
-  ) return cancelled()
-  await view.paste(text)
-  return completed()
-}
-
-export function clearTerminalBuffer(target: TerminalCommandTarget): ContextMenuCommandOutcome {
-  if (!terminalTargetExists(target)) return cancelled()
-  const view = getTerminalView(target.sessionId)
-  if (!view) return cancelled()
-  view.clear()
-  return completed()
 }
 
 export function splitTerminal(

@@ -26,7 +26,7 @@ const terminalMocks = vi.hoisted(() => {
     onData = vi.fn(() => ({ dispose: vi.fn() }))
     onTitleChange = vi.fn(() => ({ dispose: vi.fn() }))
     attachCustomKeyEventHandler = vi.fn()
-    write = vi.fn()
+    write = vi.fn((_data: string, onProcessed?: () => void) => onProcessed?.())
     focus = vi.fn()
     hasSelection = vi.fn(() => false)
     getSelection = vi.fn(() => "")
@@ -210,7 +210,10 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
       data: "background output\n",
     })
   })
-  expect(firstXterm.write).toHaveBeenCalledWith("background output\n")
+  expect(firstXterm.write).not.toHaveBeenCalledWith(
+    "background output\n",
+    expect.any(Function)
+  )
 
   await new Promise((resolve) => window.setTimeout(resolve, 0))
   expect(terminalMocks.ptyCloseWorkspace).not.toHaveBeenCalled()
@@ -241,6 +244,12 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
   expect(firstTerminal).toBeVisible()
   expect(firstTerminal.parentElement?.parentElement).not.toHaveAttribute("hidden")
   expect(secondTerminal).not.toBeVisible()
+  await waitFor(() => {
+    expect(firstXterm.write).toHaveBeenCalledWith(
+      "background output\n",
+      expect.any(Function)
+    )
+  })
   expect(useTerminalStore.getState().sessionsForWorkspace(secondWorkspace)).toEqual([
     secondSession,
   ])

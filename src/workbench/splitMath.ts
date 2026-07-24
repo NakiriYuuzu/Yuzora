@@ -3,8 +3,8 @@
 // stay with each view.
 
 export const NARROW_BREAKPOINT = 640
-export const MIN_PANE_SIZE = 160
-export const DIVIDER_SIZE = 6
+const MIN_PANE_SIZE = 160
+const DIVIDER_SIZE = 6
 
 export type Orientation = "row" | "column"
 

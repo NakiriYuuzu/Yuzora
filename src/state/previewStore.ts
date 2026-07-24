@@ -2,7 +2,7 @@ import { create } from "zustand"
 
 import type { DevServerInfo } from "../lib/types"
 
-export type ResponsiveFrame = "full" | "mobile"
+type ResponsiveFrame = "full" | "mobile"
 
 export interface PreviewNavState {
     url: string | null

@@ -23,7 +23,7 @@ export function isWindowsPlatform(): boolean {
  * P5 的 pi runtime 選擇器據此提供 builtin 選項；bundle 外（dev server、測試）
  * 或 resource 缺失時回 null，呼叫端退回 community runtime。
  */
-export async function builtinPiAdapterCommand(): Promise<string | null> {
+async function builtinPiAdapterCommand(): Promise<string | null> {
     if (!isTauri()) return null
     try {
         const path = await resolveResource("adapters/yuzora-pi-acp/index.mjs")
