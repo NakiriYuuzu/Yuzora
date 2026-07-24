@@ -312,7 +312,7 @@ Guard 失敗時所有 build 都不會執行。
 
 所有 build 成功後，或既有同版本 draft 進入銜接模式時，`finalize-updater-metadata` job：
 
-- 使用 Guard 解析出的 `tag_name` 查找 draft Release；不得依賴 `workflow_run` 的 `GITHUB_REF_NAME`，其值是 `main` 而不是 release tag。
+- 使用 Guard 解析出的 `tag_name`，透過非保留的 `YUZORA_RELEASE_TAG` 環境變數查找 draft Release；不得依賴或嘗試覆寫 `workflow_run` 的 `GITHUB_REF_NAME`，其值是 `main` 而不是 release tag。
 - 下載 draft 中的 `latest.json`。
 - 驗證 metadata version 與 notes。
 - 移除 Windows NSIS updater entries。

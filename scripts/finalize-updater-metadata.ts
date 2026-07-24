@@ -108,12 +108,12 @@ async function fetchReleaseAssetNames(repository: string, tag: string, token: st
 if (import.meta.main) {
   const metadataPath = process.argv[2]
   const repository = process.env.GITHUB_REPOSITORY
-  const tag = process.env.GITHUB_REF_NAME
+  const tag = process.env.YUZORA_RELEASE_TAG
   const token = process.env.GITHUB_TOKEN
 
   assert(metadataPath, "usage: bun scripts/finalize-updater-metadata.ts <latest.json>")
   assert(repository, "GITHUB_REPOSITORY is required")
-  assert(tag, "GITHUB_REF_NAME is required")
+  assert(tag, "YUZORA_RELEASE_TAG is required")
   assert(token, "GITHUB_TOKEN is required")
 
   const expectedVersion = tag.startsWith("v") ? tag.slice(1) : tag
