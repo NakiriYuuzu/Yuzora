@@ -282,7 +282,7 @@ jobs:
       - name: Enforce MSI-only Windows updater metadata
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REF_NAME: ${{ needs.guard.outputs.tag_name }}
+          YUZORA_RELEASE_TAG: ${{ needs.guard.outputs.tag_name }}
         run: bun scripts/finalize-updater-metadata.ts updater-release/latest.json
       - name: Replace generated updater metadata
         env:

@@ -246,7 +246,7 @@ assert(
 )
 const sanitizeEnv = record(sanitizeStep.env, "updater metadata finalizer env")
 assert(
-  sanitizeEnv.GITHUB_REF_NAME === "${{ needs.guard.outputs.tag_name }}",
+  sanitizeEnv.YUZORA_RELEASE_TAG === "${{ needs.guard.outputs.tag_name }}",
   "updater metadata finalizer must receive the tag resolved by the guard"
 )
 assert(replaceStep, "release must replace the generated updater metadata")
