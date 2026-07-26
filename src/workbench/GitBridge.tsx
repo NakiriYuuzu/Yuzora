@@ -1,6 +1,7 @@
 import { useEffect } from "react"
 import { listen } from "@tauri-apps/api/event"
 
+import type { ExternalChangePayload, GitStateChangedPayload } from "../lib/types"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useGitStore } from "../state/gitStore"
 
@@ -20,13 +21,18 @@ export function GitBridge() {
             void useGitStore.getState().refresh()
             void useGitStore.getState().checkRemote()
         }
-        const unlistenState = listen("git:state-changed", () => {
+        const unlistenState = listen<GitStateChangedPayload>("git:state-changed", (e) => {
+            // #57 T3：事件帶 workspaceRoot——切換 gap 內舊 workspace 的 .git
+            // watcher 仍可能開火，比對 live workspacePath 後才處理（讀事件當下
+            // 的值而非 closure 快照，比照 LspBridge 防串場）。
+            if (e.payload.workspaceRoot !== useWorkspaceStore.getState().workspacePath) return
             // .git 變動可能改到 refs/HEAD（branch/checkout/commit）：同時重載 branches，
             // 否則 ahead/behind 與 current branch 會滯後。
             void useGitStore.getState().refresh()
             void useGitStore.getState().loadBranches()
         })
-        const unlistenFs = listen("fs:external-change", () => {
+        const unlistenFs = listen<ExternalChangePayload>("fs:external-change", (e) => {
+            if (e.payload.workspaceRoot !== useWorkspaceStore.getState().workspacePath) return
             void useGitStore.getState().refresh()
         })
         window.addEventListener("focus", onFocus)

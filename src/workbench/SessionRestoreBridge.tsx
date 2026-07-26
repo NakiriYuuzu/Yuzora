@@ -1,11 +1,14 @@
 import { useEffect, useRef } from "react"
 
 import { getDocument } from "@/editor/documentRegistry"
+import { allowWorkspaceAssetScope } from "@/lib/ipc"
 import { dismissSplash } from "@/lib/splash"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
+import { isImagePath } from "@/workbench/ImageView"
 import {
     clearWorkspaceSession,
     loadWorkspaceSession,
+    markWorkspaceSessionActive,
     saveWorkspaceSession
 } from "@/state/workspaceSession"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
@@ -48,9 +51,24 @@ export function SessionRestoreBridge() {
         })
         void (async () => {
             try {
-                await openWorkspaceAtPath(session.workspacePath)
+                // restoreSessionTabs: false — 冷啟還原由下面的迴圈逐檔驗證
+                // （getDocument 失敗＝檔案已消失，靜默略過）後才開分頁；
+                // workspaceActions 的 map 還原不做驗證，必須關掉以免失效
+                // 檔案的分頁被搶先開出來（#60 T4c）。
+                await openWorkspaceAtPath(session.workspacePath, { restoreSessionTabs: false })
                 if (cancelled || workspaceOpens > 1) return
                 const ws = useWorkspaceStore.getState()
+                // T4 覆核修正（NB-1 回歸）：冷啟還原的圖片分頁同樣不得與 asset
+                // scope grant 競速——openWorkspaceAtPath 已 fire-and-forget 發過
+                // grant，這裡對 canonical 路徑再等一趟 idempotent µs 級 command，
+                // 確保 ImageView 的 <img> 請求不會 403 進永久 loadError。失敗
+                // 靜默：圖片分頁屆時顯示載入錯誤。
+                if (session.tabs.some(isImagePath)) {
+                    await allowWorkspaceAssetScope(
+                        ws.workspacePath ?? session.workspacePath
+                    ).catch(() => {})
+                    if (cancelled || workspaceOpens > 1) return
+                }
                 const opened: string[] = []
                 for (const path of session.tabs) {
                     try {
@@ -85,16 +103,25 @@ export function SessionRestoreBridge() {
         }
     }, [])
 
-    // Save effect: mirror the first group's real-file tabs into localStorage on
-    // every relevant workspace-store change, once the restore gate is open.
+    // Save effect: mirror the first group's real-file tabs into the current
+    // workspace's session entry on every relevant workspace-store change, once
+    // the restore gate is open.
     useEffect(() => {
         return useWorkspaceStore.subscribe((state, prev) => {
             if (!restoredRef.current) return
-            if (state.workspacePath === prev.workspacePath && state.groups[0] === prev.groups[0]) {
-                return
-            }
             const workspacePath = state.workspacePath
             if (!workspacePath) return
+            if (workspacePath !== prev.workspacePath) {
+                // Workspace switch: the store passes through an empty-groups
+                // state here (setWorkspace resets groups before workspaceActions
+                // restores the target's tabs), so persisting the entry now would
+                // clobber the saved tabs we're about to restore. Only advance
+                // the last-workspace pointer for the next cold-start restore;
+                // the restored/edited tabs re-save via later group changes.
+                markWorkspaceSessionActive(workspacePath)
+                return
+            }
+            if (state.groups[0] === prev.groups[0]) return
             const group = state.groups[0]
             const tabs = group.tabs
                 .filter((tab) => tab.path !== PREVIEW_TAB_PATH)

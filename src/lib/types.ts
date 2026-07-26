@@ -139,7 +139,21 @@ export type GitEnvironment =
     | { status: "ready"; root: string; version: string }
 export interface BranchInfo { name: string; upstream: string | null; ahead: number; behind: number; isCurrent: boolean }
 export interface BranchList { local: BranchInfo[]; remote: string[] }
+// #57 T3：冷開 workspace 的 git 首載單趟快照——environment 非 ready 時
+// status/branches 為 null（Rust 端 Option 序列化為 null）。ready 落地後
+// status/branches 快照失敗時同樣為 null、錯誤放 snapshotError：前端仍要落
+// environment＋清舊快照＋記 lastError，不得殘留前一個 workspace 的 git 狀態。
+export interface GitBootstrapResult {
+    environment: GitEnvironment
+    status: GitStatus | null
+    branches: BranchList | null
+    snapshotError?: string | null
+}
 export type RemoteProbe = "yes" | "no" | "unknown"
+// #57 T3：watcher 事件 payload 帶 workspace 標識；listener 比對 live
+// workspacePath 後才處理，杜絕切換 gap 內舊 workspace 事件串場（比照 LspBridge）。
+export interface ExternalChangePayload { workspaceRoot: string; paths: string[] }
+export interface GitStateChangedPayload { workspaceRoot: string }
 export type GradedText =
     | { kind: "full"; content: string }
     | { kind: "limited"; content: string }

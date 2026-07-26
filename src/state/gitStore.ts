@@ -1,8 +1,8 @@
 import { create } from "zustand"
 
 import {
+    gitBootstrap,
     gitBranches,
-    gitDetect,
     gitFetch,
     gitRemoteProbe,
     gitStatus
@@ -94,10 +94,76 @@ function loadRemoteCheck(): RemoteCheckConfig {
     return DEFAULT_REMOTE_CHECK
 }
 
+// #58 T4a：per-workspace git 快照（stale-while-revalidate）。切回已開過的
+// workspace 時先 hydrate 上次離開時的面板內容（零空白），背景 bootstrap 完成
+// 後覆蓋收斂。設計上不信任快照的正確性——只用它消除空白等待（spec Phase 3.1）。
+interface GitSnapshot {
+    environment: Extract<GitEnvironment, { status: "ready" }>
+    status: GitStatus | null
+    branches: BranchList | null
+    at: number
+}
+
+// 快照以 detect 的 workspacePath 為 key（非 repo root：detect 進場時只有
+// workspacePath 可查；同 repo 多 workspace 子目錄各自成桶，內容等價無害）。
+// 模組級而非 store state：快照是快取不是 UI 狀態，不觸發訂閱者重渲染。
+export const GIT_SNAPSHOT_LRU_LIMIT = 8
+const snapshots = new Map<string, GitSnapshot>()
+
+// 目前面板內容所屬的快照 key——只在「store 的 environment 真正換血」時跟著換
+// （hydrate 或 bootstrap 落地），不在 detect 進場時搶先換：detect(B) 在飛期間
+// 舊 workspace A 的 guarded refresh 仍可能落地，那筆更新屬於 A 的快照。
+let liveSnapshotKey: string | null = null
+
+// Map 的迭代序＝插入序；delete+set 把 key 提到最尾端（most-recent），逐出時
+// 刪最前端（least-recent）。
+function writeSnapshot(key: string, snap: GitSnapshot): void {
+    snapshots.delete(key)
+    snapshots.set(key, snap)
+    while (snapshots.size > GIT_SNAPSHOT_LRU_LIMIT) {
+        const oldest = snapshots.keys().next().value
+        if (oldest === undefined) break
+        snapshots.delete(oldest)
+    }
+}
+
+// 讀取即 touch recency：剛切回的 workspace 不該是下一個被逐出的。
+function readSnapshot(key: string): GitSnapshot | null {
+    const snap = snapshots.get(key)
+    if (!snap) return null
+    snapshots.delete(key)
+    snapshots.set(key, snap)
+    return snap
+}
+
+// refresh/loadBranches 的 guarded set 落地後同步回寫快照，讓「切走前最後一次
+// 刷新」成為下次 hydrate 的內容。stale resolve 已被 root guard 丟棄、不會走到
+// 這裡，所以 liveSnapshotKey 與 store 內容必然同屬一個 workspace。
+function syncLiveSnapshot(state: Pick<GitState, "environment" | "status" | "branches">): void {
+    if (!liveSnapshotKey) return
+    if (state.environment?.status !== "ready") return
+    writeSnapshot(liveSnapshotKey, {
+        environment: state.environment,
+        status: state.status,
+        branches: state.branches,
+        at: Date.now()
+    })
+}
+
+// 測試用：快照與 live key／in-flight 旗標是模組級狀態，逐測清空避免串場。
+export function clearGitSnapshots(): void {
+    snapshots.clear()
+    liveSnapshotKey = null
+    detectInFlight = false
+    refreshAfterDetect = false
+}
+
 interface GitState {
     environment: GitEnvironment | null
     status: GitStatus | null
     branches: BranchList | null
+    // hydrate 後、背景 bootstrap 落地前為 true——僅標記概念（本輪不加 UI 指示）。
+    snapshotStale: boolean
     busy: string | null
     lastError: string | null
     remoteIncoming: RemoteProbe
@@ -120,6 +186,7 @@ export const initialGitState = {
     environment: null,
     status: null,
     branches: null,
+    snapshotStale: false,
     busy: null,
     lastError: null,
     remoteIncoming: "unknown" as RemoteProbe,
@@ -146,6 +213,29 @@ let inflight: Promise<void> | null = null
 // the debounce). The current fetch runs one more time on completion so a change
 // that landed mid-flight isn't lost. Bounded: reset before the single rerun.
 let pendingRerun = false
+// git_detect async 化（#55 T1）後兩個 detect 可真併發、resolve 順序不保證：快速
+// 切換 workspace 時舊 workspace 的慢結果可能晚到。以單調序號丟棄過期 resolve /
+// reject，避免 stale environment 覆蓋新 workspace（Rust 端 git_detect 亦有同款
+// generation guard 保護 repo state 與 watcher，兩端各自守自己的 state）。
+let detectSeq = 0
+// #58 覆核修正：detect 在飛（bootstrap 尚未落地）期間，Rust 端 repo state 可能
+// 仍指向前一個 workspace（detect_commit_and_watch 要到 blocking task 執行才
+// commit RepoHandle/.git watcher）。此窗口內 git_status_cmd／git_branches 會以
+// 「舊 repo」回應，而 readyRoot guard 兩端比的都是「前端 env root」——hydrate
+// 已把 env 換成新 workspace 時，跨 repo 的回應會被放行、還經 syncLiveSnapshot
+// 寫進新 workspace 的快照（反向亦然：env 未 hydrate 停在舊 root、Rust 已切到
+// 新 repo）。窗口內一律抑制 refresh／refreshQuiet／loadBranches 的發起與落地；
+// 被抑制的 refresh 記一筆，bootstrap 落地後補跑一次收斂（fs 變更不漏）。
+let detectInFlight = false
+let refreshAfterDetect = false
+
+// ready environment 的 root，否則 null。status/branches 的 stale-resolve 丟棄
+// 用：只看 `status === "ready"` 擋不住 ready→ready 的 workspace 切換（A 的慢
+// resolve 晚到時新 workspace B 也是 ready），要比對「發起當下」與「resolve 當
+// 下」的 root 是否同一個 repo——與 detectSeq 同款語意，各守一條路。
+function readyRoot(env: GitEnvironment | null | undefined): string | null {
+    return env?.status === "ready" ? env.root : null
+}
 
 export const useGitStore = create<GitState>()((set, get) => ({
     ...initialGitState,
@@ -158,21 +248,75 @@ export const useGitStore = create<GitState>()((set, get) => ({
     },
 
     detect: async (workspacePath) => {
-        try {
-            const environment = await gitDetect(workspacePath)
-            // 切換 workspace 時清掉舊 repo 殘留（notARepo/missing 不再 refresh，否則舊
-            // status/branches/remote 狀態會殘存誤導 UI）。ready 分支下方隨即重載。
+        const seq = ++detectSeq
+        // bootstrap 落地前 Rust 端 repo state 歸屬不明（見 detectInFlight 註解）：
+        // 抑制期開始。只有「仍是最新」的 detect 會在落地時解除。
+        detectInFlight = true
+        // #58 T4a：有快照先 hydrate——面板立即顯示上次離開時的內容（標記 stale），
+        // 消除切回時的空白窗；背景 bootstrap 完成後以真值覆蓋。此時我們是最新的
+        // detect（seq 剛取），同步 set 不會與更新的 detect 競態。
+        const snapshot = readSnapshot(workspacePath)
+        if (snapshot) {
             set({
-                environment,
-                status: null,
-                branches: null,
+                environment: snapshot.environment,
+                status: snapshot.status,
+                branches: snapshot.branches,
+                snapshotStale: true,
                 remoteIncoming: "unknown",
                 remotePaused: false
             })
+            // environment 已換血成快照的 → live key 跟著換：hydrate 期間 watcher/
+            // focus refresh 落地的更新要寫進「這個」workspace 的快照。
+            liveSnapshotKey = workspacePath
+        }
+        try {
+            // #57 T3：首載一趟 bootstrap 回齊 environment＋status＋branches——
+            // 消除 detect→status/branches 的兩趟 IPC waterfall，也不吃 refresh 的
+            // 300ms debounce（那只留給 watcher/focus 觸發的後續刷新）。
+            const { environment, status, branches, snapshotError } = await gitBootstrap(workspacePath)
+            // 過期 resolve（更新的 detect 已進場）→ 整段丟棄，不觸碰 store，
+            // 抑制旗標歸更新的 detect 管。
+            if (seq !== detectSeq) return
+            detectInFlight = false
+            // 一次 set 換血：notARepo/missing 帶回 null 清掉舊 repo 殘留；ready
+            // 直接帶回首載快照，無「先清空再重抓」的空白窗。ready 但快照失敗
+            // （snapshotError）時 status/branches 同樣以 null 換血——environment
+            // 必須落地：Rust 端 RepoHandle/.git watcher 已切到新 repo，若殘留舊
+            // workspace 的 environment/status，後續 refresh 會以舊 ready 閘放行、
+            // 把新 repo 的 status 填進舊 root 標頭底下（跨 workspace 混血）。
+            set({
+                environment,
+                status,
+                branches,
+                snapshotStale: false,
+                remoteIncoming: "unknown",
+                remotePaused: false,
+                // 與舊流程「detect 成功、refresh 失敗」同語意：只記 lastError，
+                // 後續 watcher/focus refresh 會自行收斂。
+                ...(snapshotError ? { lastError: snapshotError } : {})
+            })
+            // #58 T4a：bootstrap 真值落地 → 播種/覆蓋快照。非 ready（notARepo/
+            // missing）則失效舊快照：這個 workspace 已不是 repo，下次切回不得
+            // hydrate 舊 repo 殘影（沿用「非 repo 不殘留」語意）。
             if (environment.status === "ready") {
-                await Promise.all([get().refresh(), get().loadBranches()])
+                liveSnapshotKey = workspacePath
+                writeSnapshot(workspacePath, { environment, status, branches, at: Date.now() })
+            } else {
+                liveSnapshotKey = null
+                snapshots.delete(workspacePath)
+            }
+            // 抑制期內被擋下的 refresh 補跑一次：bootstrap 快照可能在該 fs 變更
+            // 之前取樣，不補跑會漏掉窗口內落地的變更（debounce 照常吸震）。
+            const rerunSuppressed = refreshAfterDetect
+            refreshAfterDetect = false
+            if (rerunSuppressed && environment.status === "ready") {
+                void get().refresh()
             }
         } catch (e) {
+            // 過期 reject 同樣丟棄——舊 workspace 的失敗不得在新 workspace 上冒 lastError。
+            if (seq !== detectSeq) return
+            detectInFlight = false
+            refreshAfterDetect = false
             set({ lastError: String(e) })
         }
     },
@@ -182,6 +326,12 @@ export const useGitStore = create<GitState>()((set, get) => ({
         // non-repo workspace) must not touch git or write lastError (background
         // noise rule, m2).
         if (get().environment?.status !== "ready") return Promise.resolve()
+        // detect 在飛期間 Rust 端 repo state 歸屬不明（可能仍是前一個 repo）：
+        // 不發起 fetch，記一筆待 bootstrap 落地後補跑（見 detectInFlight 註解）。
+        if (detectInFlight) {
+            refreshAfterDetect = true
+            return Promise.resolve()
+        }
         if (inflight) {
             // Within the debounce window (timer still pending) calls just coalesce;
             // once the fetch is actually running, remember to run once more so a
@@ -198,7 +348,11 @@ export const useGitStore = create<GitState>()((set, get) => ({
                 // running the fetch then would write lastError — the very background
                 // noise m2 removes (F2). Abandon the fetch and drop any pending rerun
                 // so no stale flag lingers.
-                if (get().environment?.status !== "ready") {
+                const rootAtFetch = readyRoot(get().environment)
+                // detect 在飛（debounce 窗口內開始了 workspace 切換）同樣放棄本次
+                // fetch——Rust 端可能回「另一個 repo」的 status；記一筆待補跑。
+                if (rootAtFetch === null || detectInFlight) {
+                    if (detectInFlight) refreshAfterDetect = true
                     pendingRerun = false
                     inflight = null
                     resolve()
@@ -210,12 +364,21 @@ export const useGitStore = create<GitState>()((set, get) => ({
                     // non-ready while the fetch is in flight (detect() switching to
                     // a non-repo workspace clears status and does not refresh), so a
                     // stale resolve would re-fill the just-cleared status. Discard it
-                    // (F-1).
-                    if (get().environment?.status === "ready") set({ status })
+                    // (F-1). ready→ready 切換同樣要擋：A 的慢 status 晚到時 B 也是
+                    // ready，比對 root 才能丟棄跨 repo 的 stale resolve（#57 覆核）。
+                    // detectInFlight 落地閘：resolve 期間切換開始的話，這筆 status
+                    // 的 repo 歸屬不明（root guard 對 Rust state 時序盲視）→ 丟棄，
+                    // bootstrap 落地後自帶新快照收斂。
+                    if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
+                        set({ status })
+                        syncLiveSnapshot(get())
+                    }
                 } catch (e) {
                     // Same guard for a stale rejection — a failure from the old
                     // workspace must not surface lastError noise on the new one (F-1).
-                    if (get().environment?.status === "ready") set({ lastError: String(e) })
+                    if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
+                        set({ lastError: String(e) })
+                    }
                 } finally {
                     inflight = null
                     resolve()
@@ -240,16 +403,39 @@ export const useGitStore = create<GitState>()((set, get) => ({
     // attribution (a foreground refresh in the same window would otherwise route
     // the failure into lastError, breaking the background silence rule).
     refreshQuiet: async (paths) => {
+        // detect 在飛期間跳過（Rust 端 repo 歸屬不明；bootstrap 落地自帶新
+        // status，背景 autofetch 下一輪再補）。
+        if (detectInFlight) return
+        // stale-resolve 丟棄（#57 覆核）：背景 autofetch 的 status 若跨越了
+        // workspace 切換才 resolve，不得蓋掉新 workspace 的快照（refresh 同款
+        // root 比對；錯誤照舊往上拋給 checkRemote 設 remotePaused）。
+        const rootAtFetch = readyRoot(get().environment)
         const status = await gitStatus(paths)
-        set({ status })
+        if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
+            set({ status })
+            syncLiveSnapshot(get())
+        }
     },
 
     loadBranches: async () => {
+        // detect 在飛期間跳過（Rust 端 repo 歸屬不明；bootstrap 落地自帶
+        // branches 首載快照，不需要這一趟）。
+        if (detectInFlight) return
+        // stale-resolve 丟棄（#57 覆核）：git:state-changed 觸發的 loadBranches
+        // 可能在 workspace 切換（detect 的 bootstrap 快照已落地）之後才 resolve，
+        // 舊 workspace 的 branches 不得蓋掉新 workspace 的首載快照；stale 的
+        // reject 同樣不得在新 workspace 冒 lastError（refresh F-1 同款語意）。
+        const rootAtFetch = readyRoot(get().environment)
         try {
             const branches = await gitBranches()
-            set({ branches })
+            if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
+                set({ branches })
+                syncLiveSnapshot(get())
+            }
         } catch (e) {
-            set({ lastError: String(e) })
+            if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
+                set({ lastError: String(e) })
+            }
         }
     },
 

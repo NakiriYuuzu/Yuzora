@@ -133,9 +133,13 @@ pub fn run() {
                 )
                 .build(),
         )
-        .manage(watcher::WatcherState(std::sync::Mutex::new(None)))
-        .manage(git_service::GitServiceState(std::sync::Mutex::new(None)))
-        .manage(git_watch::GitWatchState(std::sync::Mutex::new(None)))
+        .manage(watcher::WatcherState::default())
+        .manage(git_service::GitServiceState(std::sync::Arc::new(
+            std::sync::Mutex::new(None),
+        )))
+        .manage(git_watch::GitWatchState(std::sync::Arc::new(
+            std::sync::Mutex::new(None),
+        )))
         .manage(search_service::SearchState(std::sync::Arc::new(
             std::sync::atomic::AtomicU64::new(0),
         )))
@@ -267,6 +271,7 @@ pub fn run() {
             preview_webview::preview_forward,
             preview_webview::preview_reload,
             git_service::git_detect,
+            git_service::git_bootstrap,
             git_service::git_status_cmd,
             git_service::git_stage,
             git_service::git_unstage,

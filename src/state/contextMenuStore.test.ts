@@ -15,6 +15,7 @@ import type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contex
 import { useAgentStore, type SessionState } from "@/state/agentStore"
 import { useDbStore } from "@/state/dbStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
+import { useFileTreeStore } from "@/state/fileTreeStore"
 import { useGitStore } from "@/state/gitStore"
 import { usePreviewStore } from "@/state/previewStore"
 import { useSftpStore } from "@/state/sftpStore"
@@ -141,6 +142,7 @@ beforeEach(() => {
     vi.clearAllMocks()
     useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useDiffModalStore.setState({ open: false, source: null, activeIndex: 0, mode: "unified" })
+    useFileTreeStore.setState({ trees: {}, preciseRevision: null })
     useSvgPreviewStore.getState().reset()
     useUiStore.setState(uiInitialState)
     useWorkspaceStore.setState({
@@ -1584,5 +1586,118 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         expect(useSvgPreviewStore.getState().isOpen("/w/new.svg")).toBe(true)
         expect(useSvgPreviewStore.getState().closedPaths["/w/new.svg"]).toBeUndefined()
         promptSpy.mockRestore()
+    })
+})
+
+// #59 T4b：context-menu 檔案操作改走 fileTreeStore 精準失效——只 re-list 受影響
+// 且已快取的目錄（invalidatePaths 內部仍 bump treeRevision，前面的 PROB-5 測試
+// 已覆蓋該相容行為）。
+describe("runContextMenuAction — 檔案操作精準失效 (#59 T4b)", () => {
+    function mockFsAndListDir(fakeFs: () => Record<string, unknown[]>) {
+        const listCalls: string[] = []
+        mockIPC((cmd, args) => {
+            if (cmd === "list_dir") {
+                const path = (args as { path: string }).path
+                listCalls.push(path)
+                return fakeFs()[path] ?? []
+            }
+            if (cmd.startsWith("fs_")) return null
+            if (cmd === "plugin:dialog|message") return "Ok"
+            return cmd === "log_event" ? null : undefined
+        })
+        return listCalls
+    }
+
+    it("cmNewFile：成功後 re-list root 並反映新檔（不動其他快取目錄）", async () => {
+        const fakeFs: Record<string, unknown[]> = {
+            "/w": [
+                { name: "src", path: "/w/src", isDir: true },
+                { name: "new.ts", path: "/w/new.ts", isDir: false }
+            ]
+        }
+        const listCalls = mockFsAndListDir(() => fakeFs)
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            groups: [{ tabs: [], activePath: null }],
+            activeGroupIndex: 0,
+            treeRevision: 0
+        })
+        useFileTreeStore.setState({
+            trees: {
+                "/w": {
+                    rootNodes: [{ name: "src", path: "/w/src", isDir: true }],
+                    childrenByDir: { "/w/src": [] },
+                    expandedDirs: new Set(["/w/src"]),
+                    scrollTop: 0
+                }
+            }
+        })
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("new.ts")
+
+        await runLegacyContextMenuAction("explorer", "cmNewFile", {})
+        expect(listCalls).toEqual(["/w"])
+        expect(useFileTreeStore.getState().trees["/w"]?.rootNodes).toEqual(fakeFs["/w"])
+        expect(useFileTreeStore.getState().trees["/w"]?.expandedDirs.has("/w/src")).toBe(true)
+        promptSpy.mockRestore()
+    })
+
+    it("cmRename：re-list 檔案所在目錄並反映新名稱", async () => {
+        const fakeFs: Record<string, unknown[]> = {
+            "/w/src": [{ name: "renamed.ts", path: "/w/src/renamed.ts", isDir: false }]
+        }
+        const listCalls = mockFsAndListDir(() => fakeFs)
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+        useFileTreeStore.setState({
+            trees: {
+                "/w": {
+                    rootNodes: [{ name: "src", path: "/w/src", isDir: true }],
+                    childrenByDir: {
+                        "/w/src": [{ name: "old.ts", path: "/w/src/old.ts", isDir: false }]
+                    },
+                    expandedDirs: new Set(["/w/src"]),
+                    scrollTop: 0
+                }
+            }
+        })
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("renamed.ts")
+
+        await runLegacyContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
+        expect(listCalls).toEqual(["/w/src"])
+        expect(useFileTreeStore.getState().trees["/w"]?.childrenByDir["/w/src"]).toEqual(
+            fakeFs["/w/src"]
+        )
+        promptSpy.mockRestore()
+    })
+
+    it("cmDelete 資料夾：re-list parent 並 prune 被刪子樹的快取與展開旗標", async () => {
+        const fakeFs: Record<string, unknown[]> = { "/w": [] }
+        const listCalls = mockFsAndListDir(() => fakeFs)
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            groups: [{ tabs: [], activePath: null }],
+            activeGroupIndex: 0,
+            treeRevision: 0
+        })
+        useFileTreeStore.setState({
+            trees: {
+                "/w": {
+                    rootNodes: [{ name: "src", path: "/w/src", isDir: true }],
+                    childrenByDir: {
+                        "/w/src": [{ name: "nested", path: "/w/src/nested", isDir: true }],
+                        "/w/src/nested": []
+                    },
+                    expandedDirs: new Set(["/w/src", "/w/src/nested"]),
+                    scrollTop: 0
+                }
+            }
+        })
+
+        await runLegacyContextMenuAction("file", "cmDelete", { path: "/w/src", isDir: true })
+        expect(listCalls).toEqual(["/w"])
+        const tree = useFileTreeStore.getState().trees["/w"]
+        expect(tree?.rootNodes).toEqual([])
+        expect(tree?.childrenByDir["/w/src"]).toBeUndefined()
+        expect(tree?.childrenByDir["/w/src/nested"]).toBeUndefined()
+        expect(tree?.expandedDirs.size).toBe(0)
     })
 })
