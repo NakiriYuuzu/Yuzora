@@ -4,6 +4,8 @@ import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 
 import { AppShell } from "@/app/AppShell"
 import { APPEARANCE_SETTINGS_STORAGE_KEY } from "@/app/workbench/settingsStorage"
+import type { SaveDirtyTabOutcome } from "@/editor/saveDocument"
+import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import {
   MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY,
@@ -43,6 +45,15 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 
 vi.mock("@/features/logs/userAction", () => ({
   logUserAction: vi.fn(async () => undefined),
+}))
+
+const saveMocks = vi.hoisted(() => ({
+  saveDirtyTab: vi.fn(async () => ({ kind: "saved" }) as SaveDirtyTabOutcome),
+}))
+
+vi.mock("@/editor/saveDocument", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/editor/saveDocument")>()),
+  saveDirtyTab: saveMocks.saveDirtyTab,
 }))
 
 const MAC_UA =
@@ -89,6 +100,8 @@ describe("AppShell", () => {
     useUiStore.setState(uiInitialState)
     useUpdateStore.getState().reset()
     updaterMocks.check.mockResolvedValue(null)
+    saveMocks.saveDirtyTab.mockReset().mockResolvedValue({ kind: "saved" })
+    useConfirmDialogStore.setState({ pending: null })
     useWorkspaceStore.setState({
       workspacePath: null,
       groups: [{ tabs: [], activePath: null }],
@@ -468,6 +481,137 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(calls).toContain("pty_close_workspace")
       expect(calls).toContain("dev_server_stop_workspace")
+    })
+  })
+
+  // issue #21：Alt+F4 / 標題列關閉鈕走 WINDOW_CLOSE_REQUESTED，handler 會被
+  // @tauri-apps/api await，preventDefault() 會取消 destroy。Yuzora 不保留草稿，
+  // 因此這是未儲存內容的最後一道關卡。
+  describe("關閉視窗時的未儲存攔截", () => {
+    const openCloseRequest = () => {
+      ;(globalThis as { isTauri?: boolean }).isTauri = true
+      mockWindows("main")
+      const calls: Array<{ cmd: string; payload: unknown }> = []
+      mockIPC((cmd, payload) => {
+        calls.push({ cmd, payload })
+        if (cmd === "list_dir") return []
+        // The dirty tab below makes EditorPane actually load the document.
+        if (cmd === "open_file") return { kind: "full", content: "", size: 0, lineEnding: "lf" }
+        return null
+      })
+      useWorkspaceStore.setState({
+        workspacePath: "/workspace",
+        activeGroupIndex: 0,
+        groups: [
+          {
+            activePath: "/workspace/a.ts",
+            tabs: [
+              { path: "/workspace/a.ts", name: "a.ts", dirty: true, externallyModified: false },
+            ],
+          },
+        ],
+        pendingReveal: null,
+      })
+      return { calls, names: () => calls.map((c) => c.cmd) }
+    }
+
+    const fireCloseRequest = async () => {
+      await waitFor(() => expect(windowMocks.onCloseRequested).toHaveBeenCalled())
+      const preventDefault = vi.fn()
+      const closing = windowMocks.closeHandlers[0]({ preventDefault })
+      await waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+      return { preventDefault, closing }
+    }
+
+    it("選取消：preventDefault 阻止關閉，dirty 分頁與子行程都維持原狀", async () => {
+      const { names } = openCloseRequest()
+      render(<AppShell />)
+
+      const { preventDefault, closing } = await fireCloseRequest()
+      useConfirmDialogStore.getState().respond("cancel")
+      await closing
+
+      expect(preventDefault).toHaveBeenCalled()
+      expect(names()).not.toContain("pty_close_workspace")
+      expect(names()).not.toContain("dev_server_stop_workspace")
+      expect(saveMocks.saveDirtyTab).not.toHaveBeenCalled()
+      expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
+    })
+
+    it("選不儲存：放行關閉並清理 PTY 與 dev server", async () => {
+      const { names } = openCloseRequest()
+      render(<AppShell />)
+
+      const { preventDefault, closing } = await fireCloseRequest()
+      useConfirmDialogStore.getState().respond("discard")
+      await closing
+
+      expect(preventDefault).not.toHaveBeenCalled()
+      expect(saveMocks.saveDirtyTab).not.toHaveBeenCalled()
+      expect(names()).toContain("pty_close_workspace")
+      expect(names()).toContain("dev_server_stop_workspace")
+    })
+
+    it("選儲存且成功：存完才放行關閉", async () => {
+      const { names } = openCloseRequest()
+      render(<AppShell />)
+
+      const { preventDefault, closing } = await fireCloseRequest()
+      useConfirmDialogStore.getState().respond("save")
+      await closing
+
+      expect(preventDefault).not.toHaveBeenCalled()
+      expect(saveMocks.saveDirtyTab).toHaveBeenCalledWith("/workspace/a.ts")
+      expect(names()).toContain("pty_close_workspace")
+    })
+
+    // issue #21 的原始情境：mixed-EOL 檔案被儲存檢查擋下。存檔失敗卻照樣關閉
+    // 等於永久丟掉使用者內容。
+    it("選儲存但存檔失敗：preventDefault，app 保持開啟", async () => {
+      const { names } = openCloseRequest()
+      saveMocks.saveDirtyTab.mockResolvedValue({ kind: "blocked", reason: "mixed" })
+      render(<AppShell />)
+
+      const { preventDefault, closing } = await fireCloseRequest()
+      useConfirmDialogStore.getState().respond("save")
+      await closing
+
+      expect(preventDefault).toHaveBeenCalled()
+      expect(names()).not.toContain("pty_close_workspace")
+      expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
+    })
+
+    // guard 一旦 reject 而沒被接住，wrapper 的 await 會炸掉：既不 preventDefault
+    // 也不 destroy，視窗會變成按了沒反應、沒對話框也沒錯誤。fail-safe 是「當成
+    // 取消」——寧可關不掉也不能靜默丟內容。
+    it("dirty gate 自己爆炸時 fail-safe 成取消，不會靜默關窗", async () => {
+      const { names } = openCloseRequest()
+      saveMocks.saveDirtyTab.mockRejectedValue(new Error("boom"))
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+      try {
+        render(<AppShell />)
+
+        const { preventDefault, closing } = await fireCloseRequest()
+        useConfirmDialogStore.getState().respond("save")
+        await closing
+
+        expect(preventDefault).toHaveBeenCalled()
+        expect(names()).not.toContain("pty_close_workspace")
+        expect(warn).toHaveBeenCalledWith("unsaved-changes guard failed:", expect.any(Error))
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it("尚未開啟工作區時仍註冊關閉攔截", async () => {
+      ;(globalThis as { isTauri?: boolean }).isTauri = true
+      mockWindows("main")
+      mockIPC(() => {})
+
+      render(<AppShell />)
+
+      await waitFor(() => expect(windowMocks.onCloseRequested).toHaveBeenCalled())
     })
   })
 

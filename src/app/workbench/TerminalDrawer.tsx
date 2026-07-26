@@ -39,6 +39,8 @@ import {
   closeTerminal,
   createTerminalSessionMeta,
   splitTerminal,
+  terminalTabLimitError,
+  terminalTabLimitReached,
   type TerminalSessionMetaWithArgs,
 } from "@/terminal/terminalCommands"
 import {
@@ -371,6 +373,13 @@ export function TerminalDrawer({
 
   const openSession = (profile?: TerminalProfile) => {
     if (!workspacePath) return
+    if (terminalTabLimitReached()) {
+      void showActionError(
+        t("terminalDrawer.newTerminalTitle", { ns: "menus" }),
+        terminalTabLimitError(),
+      )
+      return
+    }
     expandForTerminalAction()
     const meta = createTerminalSessionMeta(workspacePath, profile)
     addSession(workspacePath, meta)
@@ -381,6 +390,13 @@ export function TerminalDrawer({
 
   const splitSession = () => {
     if (!workspacePath || !activePane || panes.length >= MAX_VISIBLE_TERMINAL_PANES) return
+    if (terminalTabLimitReached()) {
+      void showActionError(
+        t("terminalDrawer.splitRightTitle", { ns: "menus" }),
+        terminalTabLimitError(),
+      )
+      return
+    }
     expandForTerminalAction()
     const outcome = splitTerminal({
       workspacePath,

@@ -1,5 +1,5 @@
 import { invoke } from "@/lib/ipc"
-import type { LogRecord } from "@/lib/types"
+import type { LogExportResult, LogRecord } from "@/lib/types"
 
 export interface LogQueryFilters {
   since?: string
@@ -19,8 +19,13 @@ export function logSources(): Promise<string[]> {
   return invoke("log_sources")
 }
 
-export function logExport(dest: string, sanitize: boolean): Promise<string> {
+export function logExport(dest: string, sanitize: boolean): Promise<LogExportResult> {
   return invoke("log_export", { dest, sanitize })
+}
+
+// Copy rows goes through the same Rust redaction as Export bundle (issue #41).
+export function logSanitizeLines(lines: string[]): Promise<string[]> {
+  return invoke("log_sanitize_lines", { lines })
 }
 
 export function getLogLevel(): Promise<string> {

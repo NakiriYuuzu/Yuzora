@@ -39,7 +39,8 @@ vi.mock("@/features/logs/logQuery", () => ({
     logMocks.logQueryCalls.push({ filters })
     return logMocks.queryResult
   },
-  logExport: vi.fn(async () => "/tmp/yuzora-logs.zip"),
+  logExport: vi.fn(async () => ({ path: "/tmp/yuzora-logs.zip", summary: null })),
+  logSanitizeLines: vi.fn(async (lines: string[]) => lines),
   getLogLevel: async () => "info",
   setLogLevel: vi.fn(async () => undefined),
 }))

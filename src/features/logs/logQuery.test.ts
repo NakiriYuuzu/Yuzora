@@ -1,14 +1,15 @@
 import { afterEach, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
-import { logQuery, logSources, logExport, getLogLevel, setLogLevel } from "./logQuery"
+import { logQuery, logSources, logExport, logSanitizeLines, getLogLevel, setLogLevel } from "./logQuery"
 import type { LogQueryFilters } from "./logQuery"
-import type { LogRecord } from "@/lib/types"
+import type { LogRecord, SanitizeSummary } from "@/lib/types"
 
 afterEach(() => clearMocks())
 
 const sampleRecord: LogRecord = {
     timestamp: "2026-07-07T00:00:00Z",
+    run_id: "20260707T000000Z-0000000a",
     level: "info",
     kind: "user_action",
     source: "ui",
@@ -16,6 +17,15 @@ const sampleRecord: LogRecord = {
     event: "click",
     message: "clicked button",
     metadata: {}
+}
+
+const sampleSummary: SanitizeSummary = {
+    paths: 3,
+    hosts: 2,
+    usernames: 1,
+    fingerprints: 1,
+    secrets: 4,
+    unparseable_lines: 2
 }
 
 it("logQuery forwards a fully populated filters object and returns the records", async () => {
@@ -97,21 +107,27 @@ it("logSources rejects when invoke rejects", async () => {
     await expect(logSources()).rejects.toThrow("log_sources boom")
 })
 
-it("logExport forwards dest and sanitize:true and returns the export path", async () => {
+it("logExport forwards dest and sanitize:true and returns the path with the sanitize summary", async () => {
     mockIPC((cmd, payload) => {
         expect(cmd).toBe("log_export")
         expect(payload).toEqual({ dest: "/tmp/log.jsonl", sanitize: true })
-        return "/tmp/log.jsonl"
+        return { path: "/tmp/log.jsonl", summary: sampleSummary }
     })
-    expect(await logExport("/tmp/log.jsonl", true)).toBe("/tmp/log.jsonl")
+    expect(await logExport("/tmp/log.jsonl", true)).toEqual({
+        path: "/tmp/log.jsonl",
+        summary: sampleSummary
+    })
 })
 
-it("logExport forwards sanitize:false", async () => {
+it("logExport forwards sanitize:false and reports no summary", async () => {
     mockIPC((_cmd, payload) => {
         expect(payload).toEqual({ dest: "/tmp/log.jsonl", sanitize: false })
-        return "/tmp/log.jsonl"
+        return { path: "/tmp/log.jsonl", summary: null }
     })
-    await logExport("/tmp/log.jsonl", false)
+    expect(await logExport("/tmp/log.jsonl", false)).toEqual({
+        path: "/tmp/log.jsonl",
+        summary: null
+    })
 })
 
 it("logExport rejects when invoke rejects", async () => {
@@ -119,6 +135,25 @@ it("logExport rejects when invoke rejects", async () => {
         throw new Error("log_export boom")
     })
     await expect(logExport("/tmp/log.jsonl", true)).rejects.toThrow("log_export boom")
+})
+
+it("logSanitizeLines forwards the raw lines and returns the redacted ones", async () => {
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("log_sanitize_lines")
+        expect(payload).toEqual({ lines: ['{"message":"/Users/me/ws"}', "not json"] })
+        return ['{"message":"<path:abcd1234>/ws"}', '{"redacted":"unparseable-log-line","bytes":8}']
+    })
+    expect(await logSanitizeLines(['{"message":"/Users/me/ws"}', "not json"])).toEqual([
+        '{"message":"<path:abcd1234>/ws"}',
+        '{"redacted":"unparseable-log-line","bytes":8}'
+    ])
+})
+
+it("logSanitizeLines rejects when invoke rejects", async () => {
+    mockIPC(() => {
+        throw new Error("log_sanitize_lines boom")
+    })
+    await expect(logSanitizeLines(["{}"])).rejects.toThrow("log_sanitize_lines boom")
 })
 
 it("getLogLevel calls get_log_level", async () => {

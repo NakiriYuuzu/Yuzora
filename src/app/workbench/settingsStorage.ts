@@ -16,7 +16,8 @@ export { AGENT_PRESETS, DEFAULT_AGENT_COMMAND }
 export type { AgentId, AgentPreset }
 
 /** P5：pi 的 runtime 選擇——builtin（bundle 內 yuzora-pi-acp）為預設，community
- *（bunx pi-acp@latest）保留為一鍵 rollback。只影響 pi preset 的 latest mode。 */
+ *（bunx pi-acp，#37 起為釘選版本）保留為一鍵 rollback。只影響 pi preset 的
+ * latest mode。 */
 export type PiRuntime = "builtin" | "community"
 
 export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"

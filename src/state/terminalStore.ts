@@ -55,6 +55,20 @@ interface TerminalState {
 }
 
 export const MAX_VISIBLE_TERMINAL_PANES = 2
+/**
+ * Total tabs across **all** workspaces. `MAX_VISIBLE_TERMINAL_PANES` only
+ * limits how many panes render side by side; this caps how many live PTYs the
+ * app can accumulate in total (issue #39).
+ *
+ * Counted globally rather than per workspace because every tab costs a shell
+ * process, a reader thread, an output pump thread and an xterm instance
+ * regardless of which workspace owns it — a per-workspace cap left 10
+ * workspaces free to hold 320 live PTYs. The spec suggested 32, which was
+ * written against the per-workspace reading; 64 keeps the same order of
+ * magnitude of resources while leaving multi-workspace use (AC 5 requires 10+
+ * sessions across several workspaces) comfortably inside the budget.
+ */
+export const MAX_TERMINAL_TABS = 64
 const DEFAULT_TERMINAL_PANE_SPLIT_RATIO = 0.5
 export const MIN_TERMINAL_PANE_SPLIT_RATIO = 0.2
 export const MAX_TERMINAL_PANE_SPLIT_RATIO = 0.8
@@ -63,6 +77,10 @@ export const MAX_TERMINAL_TITLE_LENGTH = 128
 export const terminalInitialState = {
     sessions: {} as Record<string, TerminalSessionMeta>,
     layouts: {} as Record<string, TerminalWorkspaceLayout>
+}
+
+function totalTabCount(layouts: Record<string, TerminalWorkspaceLayout>): number {
+    return Object.values(layouts).reduce((total, layout) => total + layout.tabIds.length, 0)
 }
 
 function emptyLayout(): TerminalWorkspaceLayout {
@@ -108,6 +126,7 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
         set((state) => {
             if (meta.workspace !== workspace || state.sessions[meta.sessionId]) return state
             const layout = state.layouts[workspace] ?? emptyLayout()
+            if (totalTabCount(state.layouts) >= MAX_TERMINAL_TABS) return state
             const nextPaneId = paneId ?? meta.sessionId
             let panes: TerminalPane[]
             let activePaneId: string
@@ -285,6 +304,7 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
                 || !layout.panes.some((pane) => pane.paneId === paneId)
                 || meta.workspace !== workspace
                 || state.sessions[meta.sessionId]
+                || totalTabCount(state.layouts) >= MAX_TERMINAL_TABS
             ) return state
             const nextPaneId = meta.sessionId
             return {

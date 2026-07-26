@@ -6,7 +6,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import i18n from "@/lib/i18n"
 import { contextMenuHandler, useContextMenuStore } from "@/state/contextMenuStore"
-import { useTerminalStore } from "@/state/terminalStore"
+import { MAX_TERMINAL_TABS, useTerminalStore } from "@/state/terminalStore"
 import { useWorkbenchLayoutStore, workbenchLayoutInitialState } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -1029,5 +1029,37 @@ describe("TerminalDrawer sessions", () => {
     expect(screen.queryByRole("tab", { name: "Terminal 1" })).toBeNull()
     expect(commands).not.toContain("pty_activity")
     expect(commands).not.toContain("plugin:dialog|message")
+  })
+})
+
+describe("TerminalDrawer tab limit", () => {
+  it("reports an explicit error instead of silently dropping New terminal at the tab limit", async () => {
+    const dialogs: string[] = []
+    mockIPC((cmd, payload) => {
+      if (cmd === "plugin:dialog|message") {
+        dialogs.push(JSON.stringify(payload))
+        return "Ok"
+      }
+      return undefined
+    })
+    const workspace = "/workspace/limit"
+    useWorkspaceStore.setState({ workspacePath: workspace })
+    renderDrawer()
+
+    for (let index = 0; index < MAX_TERMINAL_TABS; index += 1) {
+      fireEvent.click(screen.getByTitle("New terminal"))
+    }
+    expect(useTerminalStore.getState().layouts[workspace].tabIds).toHaveLength(
+      MAX_TERMINAL_TABS,
+    )
+    expect(dialogs).toEqual([])
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    await waitFor(() => expect(dialogs).toHaveLength(1))
+    expect(dialogs[0]).toContain(String(MAX_TERMINAL_TABS))
+    expect(useTerminalStore.getState().layouts[workspace].tabIds).toHaveLength(
+      MAX_TERMINAL_TABS,
+    )
   })
 })

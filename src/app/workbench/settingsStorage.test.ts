@@ -184,11 +184,11 @@ describe("pi runtime route", () => {
   })
 
   it("cache 未就緒（null）或 piRuntime=community 時退回社群 command", () => {
-    expect(resolveAgentCommandRoute("pi").command).toBe("bunx pi-acp@latest")
+    expect(resolveAgentCommandRoute("pi").command).toBe("bunx pi-acp@0.0.32")
 
     setCachedBuiltinPiAdapterCommandForTests('node "/App/adapter.mjs"')
     writeJsonSetting(AGENT_SETTINGS_STORAGE_KEY, { piRuntime: "community" })
-    expect(resolveAgentCommandRoute("pi").command).toBe("bunx pi-acp@latest")
+    expect(resolveAgentCommandRoute("pi").command).toBe("bunx pi-acp@0.0.32")
   })
 
   it("custom mode 與其他 preset 不受 runtime 選擇影響", () => {
@@ -199,6 +199,6 @@ describe("pi runtime route", () => {
     const route = resolveAgentCommandRoute("pi")
     expect(route.command).toBe("my-pi --flag")
     expect(route.trustedAgentId).toBeNull()
-    expect(resolveAgentCommandRoute("claude").command).toBe("bunx @agentclientprotocol/claude-agent-acp@latest")
+    expect(resolveAgentCommandRoute("claude").command).toBe("bunx @agentclientprotocol/claude-agent-acp@0.62.0")
   })
 })

@@ -149,13 +149,59 @@ export function StatusBar() {
       ? (devServer.status.port ?? devServer.port)
       : null;
 
-  // F1 perf chip: main process cpu/memory. cpuPercent is sysinfo's raw value;
+  // F1 perf chip：主要數字是 app 本體 + 所有 Yuzora-owned 子行程的總和（#22），
+  // title 再拆出「App 本體 / 子行程數」。cpuPercent is sysinfo's raw value;
   // memory shows decimal MB to line up with Activity Monitor. Hidden until the
   // first poll produces a snapshot.
   const perf = usePerfStore((s) => s.snapshot);
+  // #40 §3.5：採樣失敗是有界的滾動視窗狀態（見 perfStore），恢復後會自行過期。
+  const perfOutcomes = usePerfStore((s) => s.outcomes);
+  const perfLastError = usePerfStore((s) => s.lastError);
+  const perfFailures = perfOutcomes.filter((outcome) => outcome === "failed").length;
+  // `Ok(None)`（後端有回應但沒有資料）與 reject 一樣是「這次沒量到」，只是路徑
+  // 不同。兩者都必須讓 chip 帶警示，否則 chip 會無聲消失、log 同時寫下「全 0、
+  // 失敗 0 次」——與「真的用 0 bytes 且一切正常」無法區分。
+  const perfEmpty = perfOutcomes.filter((outcome) => outcome === "empty").length;
+  const perfUnhealthy = perfFailures + perfEmpty;
+  const perfSkipped = perfOutcomes.filter(
+    (outcome) => outcome === "skipped_no_focus",
+  ).length;
   const perfText = perf
     ? `${Math.round(perf.cpuPercent)}% · ${Math.round(perf.memoryBytes / 1_000_000)}MB`
     : null;
+  // 優先序：數值本身仍以最新快照為準（每次 poll 都更新），異常只**附加**一個
+  // 標記而不取代它。快照還沒有時才單獨顯示異常——否則採樣一直失敗就會退回舊行為
+  // （chip 隱藏），失敗又變回看不見。
+  const perfChipText =
+    perfText !== null
+      ? perfUnhealthy > 0
+        ? `${perfText} ⚠`
+        : perfText
+      : perfUnhealthy > 0
+        ? t("statusBar.perfUnavailable")
+        : null;
+  const perfTitle = perf
+    ? t("statusBar.perfTitle", {
+        appCpu: Math.round(perf.appCpuPercent),
+        appMemory: Math.round(perf.appMemoryBytes / 1_000_000),
+        descendants: perf.descendantCount,
+        webviewMemory: Math.round(perf.webviewMemoryBytes / 1_000_000),
+        webviews: perf.webviewCount,
+        toolsMemory: Math.round(perf.managedToolsMemoryBytes / 1_000_000),
+        tools: perf.managedToolsCount,
+      })
+    : undefined;
+  const perfSamplingTitle =
+    perfUnhealthy > 0
+      ? t("statusBar.perfSamplingFailed", {
+          failures: perfFailures,
+          empty: perfEmpty,
+          attempts: perfOutcomes.length,
+          skipped: perfSkipped,
+          error: perfLastError ?? "—",
+        })
+      : undefined;
+  const perfFullTitle = [perfTitle, perfSamplingTitle].filter(Boolean).join("\n") || undefined;
   const lineEndingLabel = lineEnding
     ? t(`statusBar.lineEnding.${lineEnding}`)
     : null;
@@ -270,12 +316,15 @@ export function StatusBar() {
 
       <div className="flex-1" />
 
-      {perfText && (
+      {perfChipText && (
         <span
-          title={t("statusBar.perfTitle")}
+          title={perfFullTitle}
+          data-testid="status-perf-chip"
+          data-perf-sampling-failures={perfFailures}
+          data-perf-sampling-empty={perfEmpty}
           className="rounded-[6px] px-[6px] text-(--ink-3)"
         >
-          {perfText}
+          {perfChipText}
         </span>
       )}
 

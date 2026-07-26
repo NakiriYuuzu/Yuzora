@@ -495,9 +495,7 @@ fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
         let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
-        let mut cmd = Command::new(shell);
-        cmd.args(["/C", command]);
-        cmd
+        process_kill::windows_shell_command(shell.as_os_str(), command)
     }
     #[cfg(not(windows))]
     {

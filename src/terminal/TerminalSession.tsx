@@ -8,7 +8,11 @@ import type { PtyEvent, TerminalCwdStrategy } from "../lib/types"
 import { useTerminalSettingsStore } from "../state/terminalSettingsStore"
 import { installTerminalImeHandling } from "./terminalImeHandling"
 import type { TerminalImeAnchorMode } from "./terminalImePositioning"
-import { TerminalOutputQueue } from "./terminalOutputQueue"
+import {
+    TerminalOutputQueue,
+    registerTerminalOutputQueue,
+    unregisterTerminalOutputQueue
+} from "./terminalOutputQueue"
 import { buildXtermTheme } from "./xtermTheme"
 
 export interface TerminalSessionProps {
@@ -86,6 +90,7 @@ export function TerminalSession({
     const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const titleDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const outputQueueRef = useRef<TerminalOutputQueue | null>(null)
+    const lastOutputSeqRef = useRef<number | null>(null)
     const openedRef = useRef(false)
     const disposedRef = useRef(false)
     const openPromiseRef = useRef<Promise<unknown> | null>(null)
@@ -127,6 +132,7 @@ export function TerminalSession({
                 observerRef.current?.disconnect()
                 dataDisposableRef.current?.dispose()
                 titleDisposableRef.current?.dispose()
+                unregisterTerminalOutputQueue(sessionId)
                 outputQueueRef.current?.dispose()
                 fitRef.current?.dispose()
                 termRef.current?.dispose()
@@ -181,6 +187,9 @@ export function TerminalSession({
             (data, onProcessed) => term.write(data, onProcessed),
             visibleRef.current
         )
+        // Expose the queue's metrics for the lifetime of the pty session; the
+        // ref itself is unreachable from outside this component (#40 §3.4).
+        registerTerminalOutputQueue(sessionId, outputQueueRef.current)
         term.attachCustomKeyEventHandler((event) => {
             if (
                 event.type !== "keydown"
@@ -230,6 +239,19 @@ export function TerminalSession({
         const handleEvent = (event: PtyEvent) => {
             if (disposedRef.current) return
             if (event.type === "output") {
+                // `seq` is contiguous per session, so a jump means whole events
+                // never made it across the channel.
+                const previousSeq = lastOutputSeqRef.current
+                lastOutputSeqRef.current = event.seq
+                const missedEvents = previousSeq === null ? 0 : event.seq - previousSeq - 1
+                // Loss is reported to the queue as numbers, not marker text:
+                // the queue coalesces them into one marker per flush, which
+                // survives ring-buffer eviction under a storm without letting a
+                // hidden session accumulate marker text.
+                outputQueueRef.current?.noteBackendLoss(
+                    event.truncated ? event.droppedBytes : 0,
+                    missedEvents
+                )
                 outputQueueRef.current?.push(event.data)
                 return
             }

@@ -1,11 +1,10 @@
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { clearAll } from "@/editor/documentRegistry"
-import { saveDirtyTab } from "@/editor/saveDocument"
 import { logUserAction } from "@/features/logs/userAction"
 import i18n from "@/lib/i18n"
 import { allowWorkspaceAssetScope, openWorkspace, startWatch } from "@/lib/ipc"
-import { useConfirmDialogStore } from "@/state/confirmDialogStore"
+import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -22,29 +21,12 @@ async function openWorkspaceAtPathWithOutcome(path: string): Promise<boolean> {
     // Restore-on-launch runs with no workspace and no tabs open (SessionRestore
     // only fires when workspacePath is null), so there are never dirty tabs then
     // and this is naturally skipped — no modal on auto-restore.
-    const dirtyPaths = [
-        ...new Set(
-            useWorkspaceStore
-                .getState()
-                .groups.flatMap((g) => g.tabs)
-                .filter((tab) => tab.kind !== "preview" && tab.dirty)
-                .map((tab) => tab.path)
-        )
-    ]
-    if (dirtyPaths.length > 0) {
-        const decision = await useConfirmDialogStore.getState().requestUnsavedDecision({
-            title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
-            description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
-            saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
-        })
-        if (decision === "cancel") return false
-        if (decision === "save") {
-            for (const dirtyPath of dirtyPaths) {
-                const outcome = await saveDirtyTab(dirtyPath)
-                if (outcome.kind !== "saved") return false
-            }
-        }
-    }
+    const proceed = await confirmDiscardingUnsaved({
+        title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
+        description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
+        saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
+    })
+    if (!proceed) return false
 
     const canonical = await openWorkspace(path)
     clearAll()

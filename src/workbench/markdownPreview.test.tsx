@@ -357,22 +357,30 @@ test("synthetic offsets 證明 editor／preview scroll events 雙向接線（非
     const geometry = installSyntheticPreviewGeometry()
     const flushFrame = installAnimationFrameQueue()
     const editor = syncView("# one\n\nparagraph\n\n## end")
+    const subscribeEditorScroll = vi.spyOn(editor.view.scrollDOM, "addEventListener")
     vi.mocked(getView).mockReturnValue(editor.view)
     mockResult = { kind: "full", content: "# one\n\nparagraph\n\n## end", size: 31, lineEnding: "lf" }
 
     try {
         render(<MarkdownPreview path="/w/sync.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
+        // Coordinator setup waits on async getDocument(); observe its scroll
+        // subscription before dispatching events so an empty rAF flush cannot hide it.
+        await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
+            "scroll",
+            expect.any(Function),
+            { passive: true }
+        ))
 
         editor.setViewportLine(3)
         fireEvent.scroll(editor.view.scrollDOM)
         flushFrame()
-        expect(preview.scrollTop).toBe(300)
+        await waitFor(() => expect(preview.scrollTop).toBe(300))
 
         preview.scrollTop = 600
         fireEvent.scroll(preview)
         flushFrame()
-        expect(editor.view.scrollDOM.scrollTop).toBe(60)
+        await waitFor(() => expect(editor.view.scrollDOM.scrollTop).toBe(60))
         expect(editor.view.state.selection).toBe(editor.selection)
     } finally {
         geometry.restore()
@@ -427,15 +435,21 @@ test("late EditorView attach succeeds, and unmount removes scroll sync without g
         const rendered = render(<MarkdownPreview path="/w/late.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         const editor = syncView(source)
+        const subscribeEditorScroll = vi.spyOn(editor.view.scrollDOM, "addEventListener")
         vi.mocked(getView).mockReturnValue(editor.view)
 
         await act(async () => {
             await vi.advanceTimersByTimeAsync(450)
         })
+        await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
+            "scroll",
+            expect.any(Function),
+            { passive: true }
+        ))
         editor.setViewportLine(3)
         fireEvent.scroll(editor.view.scrollDOM)
         flushFrame()
-        expect(preview.scrollTop).toBe(300)
+        await waitFor(() => expect(preview.scrollTop).toBe(300))
 
         rendered.unmount()
         preview.scrollTop = 0
@@ -461,12 +475,18 @@ test("preview ResizeObserver and image load rebuild live offsets at the current 
     })
     const source = "# one\n\n![diagram](image.png)\n\n## end"
     const editor = syncView(source)
+    const subscribeEditorScroll = vi.spyOn(editor.view.scrollDOM, "addEventListener")
     vi.mocked(getView).mockReturnValue(editor.view)
     mockResult = { kind: "full", content: source, size: source.length, lineEnding: "lf" }
 
     try {
         render(<MarkdownPreview path="/w/reflow.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
+        await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
+            "scroll",
+            expect.any(Function),
+            { passive: true }
+        ))
         const image = screen.getByRole("img", { name: "diagram" })
         preview.scrollTop = 300
         fireEvent.scroll(preview)
@@ -495,12 +515,18 @@ test("document fonts ready and loadingdone rebuild live offsets at the current s
     })
     const source = "# one\n\nparagraph\n\n## end"
     const editor = syncView(source)
+    const subscribeEditorScroll = vi.spyOn(editor.view.scrollDOM, "addEventListener")
     vi.mocked(getView).mockReturnValue(editor.view)
     mockResult = { kind: "full", content: source, size: source.length, lineEnding: "lf" }
 
     try {
         render(<MarkdownPreview path="/w/font-reflow.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
+        await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
+            "scroll",
+            expect.any(Function),
+            { passive: true }
+        ))
         preview.scrollTop = 300
         fireEvent.scroll(preview)
         flushFrame()

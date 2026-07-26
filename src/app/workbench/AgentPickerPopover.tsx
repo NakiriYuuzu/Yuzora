@@ -38,6 +38,7 @@ export function AgentPickerPopover({
 }) {
   const { t } = useTranslation("workbench")
   const newSession = useAgentStore((s) => s.newSession)
+  const retryCooldownUntil = useAgentStore((s) => s.retryCooldownUntil)
   const authRequired = useAgentStore((s) => s.authRequired)
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -51,6 +52,7 @@ export function AgentPickerPopover({
   ))
 
   function pickPreset(agentId: AgentId) {
+    if (Date.now() < retryCooldownUntil(cwd, agentId)) return
     void newSession(cwd, agentId).catch(() => undefined)
     onClose()
   }
@@ -59,6 +61,7 @@ export function AgentPickerPopover({
     const command = customValue.trim()
     if (!command) return
     saveCustomAgentCommand(command)
+    if (Date.now() < retryCooldownUntil(cwd)) return
     void newSession(cwd).catch(() => undefined)
     onClose()
   }

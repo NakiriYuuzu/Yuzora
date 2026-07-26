@@ -244,7 +244,9 @@
     "ariaLabel": "Status bar",
     "noFileOpen": "No file open",
     "devPort": "Dev {{port}}",
-    "perfTitle": "Main process CPU · memory",
+    "perfTitle": "App + managed child processes — App {{appCpu}}% · {{appMemory}}MB / {{descendants}} child processes ({{webviews}} WebView renderer/GPU {{webviewMemory}}MB, {{tools}} managed tools {{toolsMemory}}MB)",
+    "perfUnavailable": "perf n/a ⚠",
+    "perfSamplingFailed": "Perf sampling: {{failures}} failed, {{empty}} returned no data out of the last {{attempts}} polls ({{skipped}} skipped while unfocused). Last error: {{error}}",
     "saveAction": "Save file",
     "mixedSaveError": "Choose LF or CRLF in the status bar before saving this mixed line-ending file.",
     "lineEnding": {
@@ -277,7 +279,7 @@
       },
       "logs": {
         "label": "Logs",
-        "sub": "Debug, user_action, audit events"
+        "sub": "Debug, user_action, audit, app_lifecycle events"
       },
       "terminal": {
         "label": "Terminal",
@@ -331,6 +333,10 @@
     "installingUpdate": "Installing update…",
     "installFailed": "Couldn't install the update",
     "retryInstall": "Retry installation",
+    "logsSanitizeKept": "Kept: file names, host class, ports, timestamps, and hashes you can correlate within this bundle",
+    "logsSanitizeRemoved": "Removed: full paths, hosts and IPs, accounts, SSH fingerprints, and credentials",
+    "logsSanitizeCounts": "Redacted — paths {{paths}} · hosts {{hosts}} · accounts {{usernames}} · fingerprints {{fingerprints}} · credentials {{secrets}} · unreadable lines {{unparseableLines}}",
+    "logsRawModeWarning": "Raw mode: Export bundle and Copy keep full paths, hosts, accounts, SSH fingerprints, and credentials. Don't attach a raw bundle to a public issue.",
     "theme": "Theme",
     "themeLight": "Light",
     "themeDark": "Dark",
@@ -357,12 +363,12 @@
       "modeCustom": "Custom",
       "commandLabel": "Command",
       "updateAvailable": "ACP update available: v{{currentVersion}} → v{{latestVersion}}",
-      "updateRestartHint": "Restart the agent to use the latest version",
+      "updateRestartHint": "The pinned version changes with the next Yuzora update",
       "traceLabel": "ACP trace",
       "traceSub": "Write raw ACP JSON-RPC lines to the debug log (up to 500 characters)",
       "piRuntimeLabel": "Pi runtime",
       "piRuntimeBuiltin": "Built-in (bundled with Yuzora)",
-      "piRuntimeCommunity": "Community (bunx pi-acp@latest)",
+      "piRuntimeCommunity": "Community (bunx pi-acp, pinned version)",
       "piRuntimeSub": "Built-in ships with the app and supports interactive questions. Switch to Community to roll back with one click; existing chats can be resumed on either runtime."
     }
   }

@@ -158,9 +158,24 @@ export interface PtySessionInfo {
     rows: number
 }
 export type PtyEvent =
-    | { type: "output"; data: string }
+    // `seq` is a monotonic per-session counter and `droppedBytes` reports what
+    // the Rust pending cap discarded since the previous output event.
+    | {
+        type: "output"
+        data: string
+        seq: number
+        droppedBytes: number
+        truncated: boolean
+    }
     | { type: "exit"; code: number | null }
 export type PtyActivity = "idle" | "busy" | "unknown"
+// Per-session PTY output telemetry (issue #39 AC 6). Byte counts are UTF-8 and
+// match the `TerminalOutputQueue` getters, which report the same unit.
+export interface PtyOutputMetrics {
+    outputBytes: number
+    queueDepth: number
+    droppedBytes: number
+}
 export type TerminalProfileKind = "system" | "cmd" | "powershell" | "wsl" | "custom"
 export type TerminalCwdStrategy = "native" | "wsl"
 export interface TerminalProfile {
@@ -197,6 +212,9 @@ export interface AskpassRequest { id: number; prompt: string; kind: AskpassKind 
 // --- Runtime logs (M5 Task 15; Rust serde field names are snake_case) ---
 export interface LogRecord {
     timestamp: string
+    // 本筆 record 所屬的 app run（issue #40）。null = #40 之前寫下的歷史資料，
+    // 無法歸屬到任何一次執行。Rust 端由 LogSink 統一補上，呼叫端不設定。
+    run_id: string | null
     level: string
     kind: string
     source: string
@@ -204,6 +222,21 @@ export interface LogRecord {
     event: string
     message: string
     metadata: unknown
+}
+
+// Export-time redaction summary (issue #41): counts of what sanitize removed.
+export interface SanitizeSummary {
+    paths: number
+    hosts: number
+    usernames: number
+    fingerprints: number
+    secrets: number
+    unparseable_lines: number
+}
+
+export interface LogExportResult {
+    path: string
+    summary: SanitizeSummary | null
 }
 
 // --- Git log (T2 IPC contract; all outputs camelCase) ---
@@ -618,6 +651,24 @@ export interface SftpProgressEvent {
 }
 
 // --- Performance monitor (F1; Rust serde outputs camelCase) ---
-// The app's own main process. cpuPercent is sysinfo's raw value (can exceed 100
-// on multi-core machines); memoryBytes is resident bytes.
-export interface PerfSnapshot { cpuPercent: number; memoryBytes: number }
+// cpuPercent/memoryBytes 是 app 本體加上所有 Yuzora-owned descendants（ACP
+// wrapper、Pi/Claude agent、terminal shell、LSP server…）的總和；appCpuPercent/
+// appMemoryBytes 只有 host process 自己，descendantCount 是被計入的子孫數。
+// CPU 沿用 sysinfo 語意：單一 process 的值是相對於「一顆核心」的百分比（可超過
+// 100），總量為各成員該值的算術和，未除以核心數。memoryBytes 為 resident bytes。
+// webview*／managedTools* 是 #40 的分類明細：前者是 WebView renderer/GPU helper，
+// 後者是 #22 定義的 Yuzora-owned descendants 扣掉 webview 那組（含分類不到的）。
+// 不變式：app + webview + managedTools == 總量，分類失敗不會讓總量失真。
+export interface PerfSnapshot {
+    cpuPercent: number
+    memoryBytes: number
+    appCpuPercent: number
+    appMemoryBytes: number
+    descendantCount: number
+    webviewCpuPercent: number
+    webviewMemoryBytes: number
+    webviewCount: number
+    managedToolsCpuPercent: number
+    managedToolsMemoryBytes: number
+    managedToolsCount: number
+}

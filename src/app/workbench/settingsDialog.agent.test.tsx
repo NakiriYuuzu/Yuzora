@@ -81,7 +81,7 @@ describe("SettingsDialog agent section", () => {
     expect(preset).toHaveValue("pi")
     expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("latest")
     expect(screen.queryByRole("option", { name: "Verified" })).not.toBeInTheDocument()
-    expect(command).toHaveValue("bunx pi-acp@latest")
+    expect(command).toHaveValue("bunx pi-acp@0.0.32")
     expect(command).toBeDisabled()
 
     fireEvent.change(preset, { target: { value: "custom" } })
@@ -109,19 +109,19 @@ describe("SettingsDialog agent section", () => {
     fireEvent.change(preset, { target: { value: "claude" } })
     const mode = screen.getByRole("combobox", { name: "Command mode" })
     expect(mode).toHaveValue("latest")
-    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@latest")
+    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@0.62.0")
     expect(command).toBeDisabled()
 
     fireEvent.change(preset, { target: { value: "codex" } })
     expect(mode).toHaveValue("latest")
-    expect(command).toHaveValue("bunx @agentclientprotocol/codex-acp@latest")
+    expect(command).toHaveValue("bunx @agentclientprotocol/codex-acp@1.1.7")
     fireEvent.change(mode, { target: { value: "custom" } })
     expect(command).toBeEnabled()
     fireEvent.change(command, { target: { value: "uvx wrapped-codex" } })
 
     fireEvent.change(preset, { target: { value: "claude" } })
     expect(mode).toHaveValue("latest")
-    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@latest")
+    expect(command).toHaveValue("bunx @agentclientprotocol/claude-agent-acp@0.62.0")
     fireEvent.change(preset, { target: { value: "codex" } })
     expect(mode).toHaveValue("custom")
     expect(command).toHaveValue("uvx wrapped-codex")
@@ -145,7 +145,10 @@ describe("SettingsDialog agent section", () => {
       expect(screen.getByLabelText("Command")).toHaveValue('node "/App/adapters/yuzora-pi-acp/index.mjs"')
 
       fireEvent.change(runtime, { target: { value: "community" } })
-      expect(screen.getByLabelText("Command")).toHaveValue("bunx pi-acp@latest")
+      expect(screen.getByLabelText("Command")).toHaveValue("bunx pi-acp@0.0.32")
+      // #37 S6：選項文字不得再宣稱 @latest——同畫面的 Command 欄位是釘選版本
+      expect(runtime).not.toHaveTextContent("@latest")
+      expect(runtime).toHaveTextContent("Community (bunx pi-acp, pinned version)")
       expect(JSON.parse(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY) ?? "{}")).toMatchObject({
         piRuntime: "community",
       })
@@ -194,7 +197,7 @@ describe("SettingsDialog agent section", () => {
 
     expect(screen.getByRole("combobox", { name: "Agent preset" })).toHaveValue("codex")
     expect(screen.getByRole("combobox", { name: "Command mode" })).toHaveValue("latest")
-    expect(screen.getByLabelText("Command")).toHaveValue("bunx @agentclientprotocol/codex-acp@latest")
+    expect(screen.getByLabelText("Command")).toHaveValue("bunx @agentclientprotocol/codex-acp@1.1.7")
     expect(screen.getByRole("switch", { name: "ACP trace" })).toBeChecked()
   })
 
@@ -219,7 +222,11 @@ describe("SettingsDialog agent section", () => {
     renderDialog()
 
     expect(await screen.findByRole("status")).toHaveTextContent("ACP update available: v0.0.31 → v0.0.32")
-    expect(screen.getByRole("status")).toHaveTextContent("Restart the agent to use the latest version")
+    // #37 S7：版本已釘選，重啟 agent 不會換版——提示必須說的是「下次 Yuzora 更新」
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The pinned version changes with the next Yuzora update"
+    )
+    expect(screen.getByRole("status")).not.toHaveTextContent("Restart the agent")
   })
 
   it("does not claim an ACP update when the version is current or unknown", async () => {

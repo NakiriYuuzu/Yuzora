@@ -6,6 +6,7 @@ import i18n from "@/lib/i18n"
 import { ptyActivity, ptyClose } from "@/lib/ipc"
 import type { TerminalProfile } from "@/lib/types"
 import {
+  MAX_TERMINAL_TABS,
   MAX_VISIBLE_TERMINAL_PANES,
   terminalDisplayTitle,
   useTerminalStore,
@@ -41,6 +42,26 @@ export function terminalPaneTargetExists(target: TerminalCommandTarget): boolean
     ?.panes.some(
       (pane) => pane.paneId === target.paneId && pane.sessionId === target.sessionId
     ) ?? false
+}
+
+/**
+ * True once the app holds `MAX_TERMINAL_TABS` tabs in total, across every
+ * workspace. Callers check this so the limit surfaces as an explicit error
+ * instead of a silent no-op store update (issue #39).
+ */
+export function terminalTabLimitReached(): boolean {
+  const layouts = useTerminalStore.getState().layouts
+  const total = Object.values(layouts).reduce(
+    (sum, layout) => sum + layout.tabIds.length,
+    0
+  )
+  return total >= MAX_TERMINAL_TABS
+}
+
+export function terminalTabLimitError(): Error {
+  return new Error(
+    i18n.t("tabLimitReached", { ns: "terminal", limit: MAX_TERMINAL_TABS })
+  )
 }
 
 export function createTerminalSessionMeta(
@@ -83,6 +104,7 @@ export function splitTerminal(
     (state.layouts[target.workspacePath]?.panes.length ?? 0)
     >= MAX_VISIBLE_TERMINAL_PANES
   ) return cancelled()
+  if (terminalTabLimitReached()) return cancelled()
   state.splitFrom(
     target.workspacePath,
     target.paneId!,

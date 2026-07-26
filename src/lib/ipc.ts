@@ -26,6 +26,7 @@ import type {
     LspConfig,
     PtyActivity,
     PtyEvent,
+    PtyOutputMetrics,
     PtySessionInfo,
     TerminalProfile,
     TerminalCwdStrategy,
@@ -309,6 +310,10 @@ export function ptyResize(sessionId: string, cols: number, rows: number): Promis
 
 export function ptyActivity(sessionId: string): Promise<PtyActivity> {
     return invoke("pty_activity", { sessionId })
+}
+
+export function ptyOutputMetrics(sessionId: string): Promise<PtyOutputMetrics | null> {
+    return invoke("pty_output_metrics", { sessionId })
 }
 
 export function ptyClose(sessionId: string): Promise<void> {

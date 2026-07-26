@@ -12,11 +12,11 @@ import { Button } from "@/components/ui/button"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 
 /**
- * Shared "unsaved changes" confirmation modal driven by confirmDialogStore. Both
- * the TabBar close flow and the workspace-switch flow await
- * requestUnsavedDecision(); this host resolves that promise from the button the
- * user presses. Escape / overlay dismiss (onOpenChange → false) counts as
- * "cancel".
+ * Shared "unsaved changes" confirmation modal driven by confirmDialogStore. The
+ * TabBar close flow, the workspace-switch flow and the window-close guard
+ * (issue #21) all await requestUnsavedDecision(); this host resolves that
+ * promise from the button the user presses. Escape / overlay dismiss
+ * (onOpenChange → false) counts as "cancel".
  */
 export function ConfirmDialogHost() {
     const { t } = useTranslation("menus")

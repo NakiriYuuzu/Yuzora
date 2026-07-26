@@ -14,7 +14,12 @@ import type {
     StopReason,
     UsageInfo
 } from "@/agent/acpConnection"
-import { isAgentAuthRequiredError, reduceSessionUpdate } from "@/agent/acpConnection"
+import {
+    isAgentAuthRequiredError,
+    isAgentColdStartCancelledError,
+    reduceSessionUpdate
+} from "@/agent/acpConnection"
+import { AgentRetryCooldownError } from "@/agent/agentRouter"
 import { newEntryId, type BlockEntry, type TranscriptAction, type TranscriptEntry } from "@/agent/acpTypes"
 import { rememberAgentVersion } from "@/agent/agentVersions"
 import {
@@ -24,6 +29,7 @@ import {
     resolveAgentCommandRoute
 } from "@/app/workbench/settingsStorage"
 import type { AgentCommandIdentity, AgentId, AgentPreset } from "@/lib/agentPresets"
+import { showActionError } from "@/lib/actionFeedback"
 import i18n from "@/lib/i18n"
 import { isAbsolutePath } from "@/lib/paths"
 import { normalizeWorkspacePath } from "@/state/recentWorkspaces"
@@ -35,12 +41,22 @@ import {
     type SessionIndexEntry
 } from "@/state/sessionIndexStorage"
 import { useTerminalStore, type TerminalSessionMeta } from "@/state/terminalStore"
+import { terminalTabLimitError, terminalTabLimitReached } from "@/terminal/terminalCommands"
 import { useUiStore } from "@/state/uiStore"
 
 export type AgentTone = "idle" | "run" | "done" | "wait" | "fail"
 export type AgentConnectionState = "idle" | "connecting" | "ready" | "error"
 type StopBadgeKind = "refusal" | "truncated"
 type PermissionResolver = (optionId: string) => void
+
+// #37 S3：使用者主動取消冷啟動下載不是連線失敗——不留紅色錯誤 banner（更不該
+// 顯示未翻譯的原始英文訊息），只回到 idle 等下一次動作。
+const COLD_START_CANCELLED_STATE = {
+    connectionState: "idle" as AgentConnectionState,
+    connectionError: null,
+    connectionErrorKind: null,
+    connectionErrorAgentId: null
+}
 
 interface StopBadge {
     kind: StopBadgeKind
@@ -151,6 +167,13 @@ export interface AgentStoreState {
     activeSessionId: string | null
     connectionState: AgentConnectionState
     connectionError: string | null
+    connectionErrorKind: "retry-cooldown" | null
+    // The agent attempted when connectionState turned "error". Retry cooldown is
+    // keyed per (command, cwd) in the router, so the banner must query — and the
+    // Retry button must respawn — that same route instead of the current default.
+    // Cleared wherever the error kind is cleared; a stale value would point
+    // the next error's lookup at the wrong agent.
+    connectionErrorAgentId: AgentId | null
     connection: AgentConnection | null
     authRequired: AuthRequiredState | null
     pendingNewSession: boolean
@@ -161,6 +184,7 @@ export interface AgentStoreState {
     renamingSessionId: string | null
     confirmRemoveRequest: ConfirmRemoveSessionRequest | null
     setConnection: (connection: AgentConnection | null) => void
+    retryCooldownUntil: (cwd: string, agentId?: AgentId) => number
     newSession: (cwd: string, agentId?: AgentId) => Promise<string>
     markWorkspaceHydrated: (cwd: string) => void
     activateDraftWorkspace: (cwd: string) => void
@@ -240,6 +264,8 @@ export const agentInitialState = {
     activeSessionId: null as string | null,
     connectionState: "idle" as AgentConnectionState,
     connectionError: null as string | null,
+    connectionErrorKind: null as "retry-cooldown" | null,
+    connectionErrorAgentId: null as AgentId | null,
     connection: null as AgentConnection | null,
     authRequired: null as AuthRequiredState | null,
     pendingNewSession: false,
@@ -270,8 +296,13 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
             connection,
             connectionState: connection ? "ready" : "idle",
             connectionError: null,
+            connectionErrorKind: null,
+            connectionErrorAgentId: null,
             authRequired: null
         }),
+
+        retryCooldownUntil: (cwd, agentId) =>
+            get().connection?.retryCooldownUntil?.(cwd, agentId) ?? 0,
 
         markWorkspaceHydrated: (cwd) => {
             requireAbsoluteCwd(cwd)
@@ -371,6 +402,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                             activeSessionId: sessionId,
                             connectionState: "ready",
                             connectionError: null,
+                            connectionErrorKind: null,
+                            connectionErrorAgentId: null,
                             authRequired: null
                         }
                     })
@@ -390,11 +423,19 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                     if (draftWorkspaceGeneration === generation
                         && draftWorkspaceCwd === normalizedCwd
                         && !visibleSessionForCwd(get(), cwd)) {
+                        if (isAgentColdStartCancelledError(error)) {
+                            set(COLD_START_CANCELLED_STATE)
+                            throw error
+                        }
                         const err = error instanceof Error ? error : new Error(String(error))
                         const authRequired = authRequiredFromError(error, cwd, null, agentId)
                         set({
                             connectionState: "error",
                             connectionError: err.message,
+                            connectionErrorKind: error instanceof AgentRetryCooldownError
+                                ? "retry-cooldown"
+                                : null,
+                            connectionErrorAgentId: agentId,
                             ...(authRequired ? { authRequired } : {})
                         })
                     }
@@ -418,7 +459,13 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
             const pendingDraft = pendingDraftKey
                 ? draftSessionInFlight.get(pendingDraftKey)
                 : undefined
-            set({ connectionState: "connecting", connectionError: null, pendingNewSession: true })
+            set({
+                connectionState: "connecting",
+                connectionError: null,
+                connectionErrorKind: null,
+                connectionErrorAgentId: null,
+                pendingNewSession: true
+            })
             try {
                 // An explicit New arriving while the matching auto-draft is
                 // still creating claims that same protocol session/new. The
@@ -430,6 +477,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         activeSessionId: claimedSessionId,
                         connectionState: "ready",
                         connectionError: null,
+                        connectionErrorKind: null,
+                        connectionErrorAgentId: null,
                         authRequired: null,
                         pendingNewSession: false
                     })
@@ -474,6 +523,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         activeSessionId: sessionId,
                         connectionState: "ready",
                         connectionError: null,
+                        connectionErrorKind: null,
+                        connectionErrorAgentId: null,
                         authRequired: null,
                         pendingNewSession: false
                     }
@@ -487,11 +538,19 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 removeSessionIndexEntry(sessionId)
                 return sessionId
             } catch (error) {
+                if (isAgentColdStartCancelledError(error)) {
+                    set({ ...COLD_START_CANCELLED_STATE, pendingNewSession: false })
+                    throw error
+                }
                 const err = error instanceof Error ? error : new Error(String(error))
                 const authRequired = authRequiredFromError(error, cwd, null, agentId ?? null)
                 set({
                     connectionState: "error",
                     connectionError: err.message,
+                    connectionErrorKind: error instanceof AgentRetryCooldownError
+                        ? "retry-cooldown"
+                        : null,
+                    connectionErrorAgentId: agentId ?? null,
                     pendingNewSession: false,
                     ...(authRequired ? { authRequired } : {})
                 })
@@ -510,6 +569,16 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 authRequired.agentId,
                 authRequired.agentCommand
             )
+            // Without this the tab cap makes addSession a no-op while the
+            // drawer still opens, leaving the user with no login terminal and
+            // no explanation.
+            if (terminalTabLimitReached()) {
+                void showActionError(
+                    i18n.t("agentZonePanel.openTerminalLogin", { ns: "panels" }),
+                    terminalTabLimitError()
+                )
+                return
+            }
             useTerminalStore.getState().addSession(authRequired.cwd, meta)
             if (!useUiStore.getState().terminalOpen) {
                 useUiStore.getState().toggleTerminal()
@@ -524,7 +593,12 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
 
         loadSessions: async (cwd) => {
             const connection = requireConnection(get())
-            set({ connectionState: "connecting", connectionError: null })
+            set({
+                connectionState: "connecting",
+                connectionError: null,
+                connectionErrorKind: null,
+                connectionErrorAgentId: null
+            })
             try {
                 const metas = await connection.listSessions(cwd)
                 set((state) => {
@@ -533,11 +607,22 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         if (droppedSessionIds.has(meta.id)) continue
                         sessions.set(meta.id, ensureSession(sessions, meta.id, sessionPatchFromMeta(meta)))
                     }
-                    return { sessions, connectionState: "ready", connectionError: null }
+                    return {
+                        sessions,
+                        connectionState: "ready",
+                        connectionError: null,
+                        connectionErrorKind: null,
+                        connectionErrorAgentId: null
+                    }
                 })
             } catch (error) {
                 const err = error instanceof Error ? error : new Error(String(error))
-                set({ connectionState: "error", connectionError: err.message })
+                set({
+                    connectionState: "error",
+                    connectionError: err.message,
+                    connectionErrorKind: null,
+                    connectionErrorAgentId: null
+                })
                 throw error
             }
         },
@@ -551,7 +636,12 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
             const wasImplicitCreate = !sessionId
             let implicitPreset = wasImplicitCreate ? defaultAgentPreset() : undefined
             const existingPreset = sessionId ? get().sessions.get(sessionId)?.agentId : undefined
-            set({ connectionState: "connecting", connectionError: null })
+            set({
+                connectionState: "connecting",
+                connectionError: null,
+                connectionErrorKind: null,
+                connectionErrorAgentId: null
+            })
             let implicitBanner: string | null = null
             let implicitAgentVersion: string | undefined
             let implicitAgentName: string | undefined
@@ -622,6 +712,12 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 syncSessionIndex(activeSessionId, get().sessions.get(activeSessionId))
                 return stopReason
             } catch (error) {
+                // #37 S3：取消冷啟動只可能發生在隱式建立階段（此時還沒有 sessionId），
+                // 不是連線失敗，也不該讓 session 進 fail 狀態。
+                if (!sessionId && isAgentColdStartCancelledError(error)) {
+                    set(COLD_START_CANCELLED_STATE)
+                    throw error
+                }
                 const err = error instanceof Error ? error : new Error(String(error))
                 const attemptedAgentId: AgentId | null =
                     existingPreset && existingPreset !== "custom" ? existingPreset : null
@@ -631,6 +727,10 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         return {
                             connectionState: "error",
                             connectionError: err.message,
+                            connectionErrorKind: error instanceof AgentRetryCooldownError
+                                ? "retry-cooldown"
+                                : null,
+                            connectionErrorAgentId: attemptedAgentId,
                             ...(authRequired ? { authRequired } : {})
                         }
                     }
@@ -645,6 +745,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                             pendingElicitations,
                             connectionState: "error",
                             connectionError: err.message,
+                            connectionErrorKind: null,
+                            connectionErrorAgentId: attemptedAgentId,
                             ...(authRequired ? { authRequired } : {})
                         }
                     }
@@ -656,6 +758,8 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                         pendingElicitations,
                         connectionState: "error",
                         connectionError: err.message,
+                        connectionErrorKind: null,
+                        connectionErrorAgentId: attemptedAgentId,
                         ...(authRequired ? { authRequired } : {})
                     }
                 })
@@ -670,13 +774,21 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
             const connection = get().connection
             if (!connection) {
                 const error = new Error("Agent connection is not available")
-                set({ connectionError: error.message })
+                set({
+                    connectionError: error.message,
+                    connectionErrorKind: null,
+                    connectionErrorAgentId: null
+                })
                 throw error
             }
             try {
                 await connection.cancel(sessionId)
             } catch (error) {
-                set({ connectionError: error instanceof Error ? error.message : String(error) })
+                set({
+                    connectionError: error instanceof Error ? error.message : String(error),
+                    connectionErrorKind: null,
+                    connectionErrorAgentId: null
+                })
                 throw error
             }
             set((state) => {
@@ -686,14 +798,35 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 const pendingElicitations = new Map(state.pendingElicitations)
                 pendingElicitations.delete(sessionId)
                 const current = sessions.get(sessionId)
-                if (!current) return { pendingPermissions, pendingElicitations, connectionError: null }
+                if (!current) {
+                    return {
+                        pendingPermissions,
+                        pendingElicitations,
+                        connectionError: null,
+                        connectionErrorKind: null,
+                        connectionErrorAgentId: null
+                    }
+                }
                 // The turn may have completed naturally while cancel was in flight.
                 // Preserve that terminal state instead of overwriting it as cancelled.
                 if ((target.pendingTurn || target.running) && !current.pendingTurn && !current.running) {
-                    return { pendingPermissions, pendingElicitations, connectionError: null }
+                    return {
+                        pendingPermissions,
+                        pendingElicitations,
+                        connectionError: null,
+                        connectionErrorKind: null,
+                        connectionErrorAgentId: null
+                    }
                 }
                 sessions.set(sessionId, applyStopReason(current, "cancelled"))
-                return { sessions, pendingPermissions, pendingElicitations, connectionError: null }
+                return {
+                    sessions,
+                    pendingPermissions,
+                    pendingElicitations,
+                    connectionError: null,
+                    connectionErrorKind: null,
+                    connectionErrorAgentId: null
+                }
             })
             return get().sessions.has(sessionId)
         },
@@ -1178,7 +1311,13 @@ export function createAgentStore(options: CreateAgentStoreOptions = {}) {
                 // restored 語意，讓 continueSession 走既有 replay／降級路徑，而不是
                 // 誤以為它還是活著的 live session。
                 sessions.set(sessionId, { ...failSession(ensureSession(sessions, sessionId), error), restored: true })
-                return { sessions, connectionState: "error", connectionError: error.message }
+                return {
+                    sessions,
+                    connectionState: "error",
+                    connectionError: error.message,
+                    connectionErrorKind: null,
+                    connectionErrorAgentId: null
+                }
             })
         },
 

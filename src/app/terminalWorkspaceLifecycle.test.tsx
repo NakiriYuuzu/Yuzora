@@ -208,6 +208,9 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
     terminalMocks.state.eventHandlers.get(firstSession.sessionId)?.({
       type: "output",
       data: "background output\n",
+      seq: 0,
+      droppedBytes: 0,
+      truncated: false,
     })
   })
   expect(firstXterm.write).not.toHaveBeenCalledWith(
