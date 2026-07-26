@@ -63,6 +63,26 @@ describe("dismissSplash", () => {
         expect(document.getElementById("yz-splash")).toBeNull()
     })
 
+    it("測試環境被拆掉後，fallback timer 不得再去碰全域 document", () => {
+        vi.useFakeTimers()
+        insertSplash()
+
+        dismissSplash()
+
+        // 重現 CI 上的 splash flake：vitest 跑完一個測試檔就會拆掉 jsdom 環境，
+        // 但 dismissSplash 排的 fallback timer（FADE_MS + 150）沒有取消路徑、
+        // 而且 jsdom 永遠不觸發 transitionend，所以它一定會在之後觸發。屆時全域
+        // `document` 已不存在，裸參照會拋 ReferenceError；vitest 把它記成
+        // Unhandled Error 並讓整個 run exit 1——即使每一個測試都通過。
+        const realDocument = globalThis.document
+        Reflect.deleteProperty(globalThis, "document")
+        try {
+            expect(() => vi.runAllTimers()).not.toThrow()
+        } finally {
+            ;(globalThis as { document?: Document }).document = realDocument
+        }
+    })
+
     it("prefers-reduced-motion 時跳過動畫立即移除", () => {
         const matchMediaSpy = vi.spyOn(window, "matchMedia").mockImplementation(
             (query: string) =>
