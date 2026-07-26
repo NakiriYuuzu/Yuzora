@@ -267,6 +267,10 @@
     "rowCount_other": "{{count}} rows",
     "truncated": "truncated to first {{count}}"
   },
+  "editorPane": {
+    "loadError": "Could not open this file",
+    "loadErrorDescription": "“{{path}}” could not be read — it may have been moved or deleted. Close the tab, or reopen it once the file is back"
+  },
   "specialFileView": {
     "tooLarge": "File is too large ({{size}}) — not loaded in the editor",
     "binary": "Binary file — cannot open in the text editor",

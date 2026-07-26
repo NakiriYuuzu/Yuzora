@@ -1,11 +1,11 @@
 import { ChevronDown, ChevronRight, GitCompareArrows } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef } from "react"
 import { useTranslation } from "react-i18next"
-import { listDir } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
 import { FileIcon } from "../lib/fileIcons"
 import type { FileNode } from "../lib/types"
 import { contextMenuHandler } from "../state/contextMenuStore"
+import { useFileTreeStore } from "../state/fileTreeStore"
 import { changedPathSet, useGitStore } from "../state/gitStore"
 import { useUiStore } from "../state/uiStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -17,10 +17,17 @@ function relativePath(path: string, root: string | null) {
     return path
 }
 
-function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
+// Controlled node (#59 T4b): expansion + children live in fileTreeStore's
+// per-workspace bucket instead of component state, so they survive workspace
+// switches and precise invalidations never remount the tree.
+function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: number }) {
     const { t } = useTranslation("menus")
-    const [expanded, setExpanded] = useState(false)
-    const [children, setChildren] = useState<FileNode[] | null>(null)
+    const expanded = useFileTreeStore(
+        (s) => node.isDir && (s.trees[root]?.expandedDirs.has(node.path) ?? false)
+    )
+    const children = useFileTreeStore((s) =>
+        node.isDir ? s.trees[root]?.childrenByDir[node.path] ?? null : null
+    )
     const openTab = useWorkspaceStore((s) => s.openTab)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const sourceGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
@@ -37,10 +44,9 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
     const rel = relativePath(node.path, repoRoot)
     const isChanged = useGitStore((s) => !node.isDir && changedPathSet(s.status).has(rel))
 
-    async function onClick() {
+    function onClick() {
         if (node.isDir) {
-            if (!expanded && children === null) setChildren(await listDir(node.path))
-            setExpanded(!expanded)
+            void useFileTreeStore.getState().toggleDir(root, node.path)
         } else {
             openTab(node.path)
             void logUserAction("open_file", `open ${node.path}`)
@@ -116,7 +122,7 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
             {node.isDir && expanded && children !== null && (
                 <ul>
                     {children.map((child) => (
-                        <TreeNode key={child.path} node={child} depth={depth + 1} />
+                        <TreeNode key={child.path} node={child} root={root} depth={depth + 1} />
                     ))}
                 </ul>
             )}
@@ -126,22 +132,51 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
 
 export function FileTree() {
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-    // A context-menu file op (new/rename/delete) bumps treeRevision: re-list the
-    // roots and remount the subtree (keyed below) so cached children of expanded
-    // folders are dropped and re-fetched, reflecting the change at any depth.
+    // treeRevision stays the shared invalidation authority (context-menu ops,
+    // explorer "Refresh", external changes, AgentZone mention index) but no
+    // longer remounts the tree: a bump either was already applied precisely by
+    // fileTreeStore (marker consumed → skip) or triggers a background
+    // revalidate that diff-applies without dropping expansion state.
     const treeRevision = useWorkspaceStore((s) => s.treeRevision)
-    const [roots, setRoots] = useState<FileNode[]>([])
+    const rootNodes = useFileTreeStore((s) =>
+        workspacePath ? s.trees[workspacePath]?.rootNodes ?? null : null
+    )
+    const listRef = useRef<HTMLUListElement | null>(null)
+    const prevRootRef = useRef<string | null>(null)
 
     useEffect(() => {
-        if (workspacePath) void listDir(workspacePath).then(setRoots)
+        if (!workspacePath) {
+            prevRootRef.current = null
+            return
+        }
+        const switched = prevRootRef.current !== workspacePath
+        prevRootRef.current = workspacePath
+        const fileTree = useFileTreeStore.getState()
+        // A workspace switch always revalidates (hydrate happens synchronously
+        // from the store bucket; this refresh runs in the background).
+        if (!switched && fileTree.consumePreciseRevision(workspacePath, treeRevision)) return
+        void fileTree.ensureTree(workspacePath)
     }, [workspacePath, treeRevision])
+
+    // Persist/restore the nav scroller offset per workspace. The scroll
+    // container is FileTree's parent (FilesNavContent's overflow-y-auto div).
+    useEffect(() => {
+        if (!workspacePath) return
+        const scroller = listRef.current?.parentElement
+        if (!scroller) return
+        scroller.scrollTop = useFileTreeStore.getState().trees[workspacePath]?.scrollTop ?? 0
+        const onScroll = () =>
+            useFileTreeStore.getState().setScrollTop(workspacePath, scroller.scrollTop)
+        scroller.addEventListener("scroll", onScroll, { passive: true })
+        return () => scroller.removeEventListener("scroll", onScroll)
+    }, [workspacePath])
 
     if (!workspacePath) return null
 
     return (
-        <ul key={treeRevision} className="flex flex-col gap-[1px]">
-            {roots.map((node) => (
-                <TreeNode key={node.path} node={node} depth={0} />
+        <ul ref={listRef} className="flex flex-col gap-[1px]">
+            {(rootNodes ?? []).map((node) => (
+                <TreeNode key={node.path} node={node} root={workspacePath} depth={0} />
             ))}
         </ul>
     )

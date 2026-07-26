@@ -3,10 +3,12 @@ import { act, cleanup, render, waitFor } from "@testing-library/react"
 import indexHtml from "../../index.html?raw"
 
 import { getDocument } from "@/editor/documentRegistry"
+import { allowWorkspaceAssetScope } from "@/lib/ipc"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { SessionRestoreBridge } from "@/workbench/SessionRestoreBridge"
 import {
   loadWorkspaceSession,
+  loadWorkspaceSessionEntry,
   saveWorkspaceSession,
   type WorkspaceSession
 } from "@/state/workspaceSession"
@@ -19,6 +21,12 @@ vi.mock("@/lib/workspaceActions", () => ({
 
 vi.mock("@/editor/documentRegistry", () => ({
   getDocument: vi.fn()
+}))
+
+// The bridge awaits the asset-scope grant before opening restored image tabs
+// (NB-1). Only allowWorkspaceAssetScope is consumed from the ipc surface here.
+vi.mock("@/lib/ipc", () => ({
+  allowWorkspaceAssetScope: vi.fn()
 }))
 
 function installLocalStorage(): void {
@@ -62,6 +70,7 @@ beforeEach(() => {
   })
   vi.mocked(openWorkspaceAtPath).mockReset()
   vi.mocked(getDocument).mockReset().mockResolvedValue({} as never)
+  vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -190,7 +199,9 @@ describe("SessionRestoreBridge 還原", () => {
 
     await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
     expect(activePath()).toBe("/ws/a.ts")
-    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws")
+    // 冷啟路徑自帶逐檔驗證還原，須關掉 workspaceActions 的 map 還原以免
+    // 失效檔案的分頁被搶先開出來（#60 T4c）。
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws", { restoreSessionTabs: false })
   })
 
   it("沒有 session 時完全不動（不呼叫 openWorkspaceAtPath）", async () => {
@@ -219,6 +230,45 @@ describe("SessionRestoreBridge 還原", () => {
 
     await waitFor(() => expect(loadWorkspaceSession()).toBeNull())
     expect(tabPaths()).toEqual([])
+  })
+
+  // T4 覆核修正（NB-1 回歸）：圖片分頁走 asset protocol，grant 未落地前開出
+  // ImageView 會 403 進永久 loadError。冷啟還原含圖片分頁時必須先等 grant。
+  it("冷啟還原含圖片分頁時，先等 asset scope grant 落地才開分頁", async () => {
+    saveWorkspaceSession({
+      workspacePath: "/ws",
+      tabs: ["/ws/pic.png", "/ws/a.ts"],
+      activePath: "/ws/pic.png"
+    })
+    mockOpenResolves()
+    let releaseGrant!: () => void
+    vi.mocked(allowWorkspaceAssetScope).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseGrant = () => resolve()
+        })
+    )
+
+    render(<SessionRestoreBridge />)
+
+    await waitFor(() => expect(allowWorkspaceAssetScope).toHaveBeenCalledWith("/ws"))
+    // grant 未落地：不得先開出任何分頁（ImageView 一 mount 就發 <img> 請求）。
+    expect(tabPaths()).toEqual([])
+
+    releaseGrant()
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/pic.png", "/ws/a.ts"]))
+    expect(activePath()).toBe("/ws/pic.png")
+  })
+
+  it("冷啟還原純文字分頁時不等 grant（不引入多餘序列化）", async () => {
+    saveWorkspaceSession(SESSION)
+    mockOpenResolves()
+    vi.mocked(allowWorkspaceAssetScope).mockImplementation(() => new Promise<void>(() => {}))
+
+    render(<SessionRestoreBridge />)
+
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
+    expect(allowWorkspaceAssetScope).not.toHaveBeenCalled()
   })
 
   it("還原時單一失效檔案靜默略過", async () => {
@@ -278,6 +328,54 @@ describe("SessionRestoreBridge ref gate", () => {
     await waitFor(() =>
       expect(loadWorkspaceSession()?.tabs).toEqual(["/ws/a.ts", "/ws/b.ts", "/ws/c.ts"])
     )
+  })
+
+  it("workspace 切換過場（groups 清空）不得覆寫目標 workspace 的 entry，只推進 last 指標", async () => {
+    saveWorkspaceSession({
+      workspacePath: "/other",
+      tabs: ["/other/x.ts"],
+      activePath: "/other/x.ts"
+    })
+    saveWorkspaceSession(SESSION) // last = /ws（冷啟還原目標）
+    mockOpenResolves()
+
+    render(<SessionRestoreBridge />)
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
+
+    // 模擬 workspaceActions 切換到 /other：setWorkspace 讓 store 過場為空 groups。
+    act(() => useWorkspaceStore.getState().setWorkspace("/other"))
+
+    // /other 的 entry 必須毫髮無傷（workspaceActions 隨後靠它還原 tabs）。
+    expect(loadWorkspaceSessionEntry("/other")).toEqual({
+      tabs: ["/other/x.ts"],
+      activePath: "/other/x.ts"
+    })
+    // last 指標推進：下次冷啟還原 /other。
+    expect(loadWorkspaceSession()?.workspacePath).toBe("/other")
+  })
+
+  it("切換後的分頁變動寫入新 workspace 的 entry，舊 workspace entry 不動", async () => {
+    saveWorkspaceSession(SESSION)
+    mockOpenResolves()
+
+    render(<SessionRestoreBridge />)
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
+
+    act(() => {
+      useWorkspaceStore.getState().setWorkspace("/other")
+      useWorkspaceStore.getState().openTab("/other/y.ts")
+    })
+
+    await waitFor(() =>
+      expect(loadWorkspaceSessionEntry("/other")).toEqual({
+        tabs: ["/other/y.ts"],
+        activePath: "/other/y.ts"
+      })
+    )
+    expect(loadWorkspaceSessionEntry("/ws")).toEqual({
+      tabs: ["/ws/a.ts", "/ws/b.ts"],
+      activePath: "/ws/a.ts"
+    })
   })
 
   it("存檔時過濾 pseudo preview 分頁", async () => {

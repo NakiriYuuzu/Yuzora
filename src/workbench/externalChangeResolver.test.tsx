@@ -26,7 +26,9 @@ vi.mock("@/features/logs/userAction", () => ({
 
 // Capture the fs:external-change listener callback so tests can inject events,
 // mirroring the pattern in askpassHost.test.tsx.
-let capturedFsListener: (e: { payload: string[] }) => void = () => {}
+let capturedFsListener: (e: {
+    payload: { workspaceRoot: string; paths: string[] }
+}) => void = () => {}
 vi.mock("@tauri-apps/api/event", () => ({
     listen: vi.fn(async (_e: string, cb: unknown) => {
         capturedFsListener = cb as typeof capturedFsListener
@@ -309,13 +311,32 @@ describe("ExternalChangeResolver", () => {
     it("fs:external-change for this path shows the re-changed hint", async () => {
         mountMainView("mine")
         vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useWorkspaceStore.setState({ workspacePath: "/w" })
         useWorkspaceStore.getState().openTab(PATH)
         useWorkspaceStore.getState().markExternallyModified(PATH, true)
         useUiStore.getState().openResolver(PATH)
         render(<ExternalChangeResolver />)
         await screen.findByRole("button", { name: "解決並存檔" })
         vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk2", size: 5, lineEnding: "lf" })
-        capturedFsListener({ payload: [PATH] })
+        capturedFsListener({ payload: { workspaceRoot: "/w", paths: [PATH] } })
         expect(await screen.findByText("磁碟版已再次變更")).toBeInTheDocument()
+    })
+
+    // #57 T3 AC4：resolver 開著時，舊 workspace watcher 的殘留事件（root 不符）
+    // 不得觸發 rebuild——不重讀磁碟、不顯示再次變更提示。
+    it("fs:external-change from a stale workspace root is dropped (#57 T3)", async () => {
+        mountMainView("mine")
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().markExternallyModified(PATH, true)
+        useUiStore.getState().openResolver(PATH)
+        render(<ExternalChangeResolver />)
+        await screen.findByRole("button", { name: "解決並存檔" })
+        expect(ipc.openFile).toHaveBeenCalledTimes(1)
+        capturedFsListener({ payload: { workspaceRoot: "/old", paths: [PATH] } })
+        // 事件被丟棄：不重讀磁碟，也不冒出提示。
+        expect(ipc.openFile).toHaveBeenCalledTimes(1)
+        expect(screen.queryByText("磁碟版已再次變更")).not.toBeInTheDocument()
     })
 })

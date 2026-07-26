@@ -267,6 +267,10 @@
     "rowCount_other": "{{count}} 筆",
     "truncated": "僅顯示前 {{count}} 筆"
   },
+  "editorPane": {
+    "loadError": "無法開啟檔案",
+    "loadErrorDescription": "「{{path}}」讀取失敗，檔案可能已被移動或刪除；可關閉分頁，或待檔案復原後重新開啟"
+  },
   "specialFileView": {
     "tooLarge": "檔案過大（{{size}}），不載入編輯器",
     "binary": "二進位檔案，無法以文字編輯器開啟",

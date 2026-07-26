@@ -7,6 +7,7 @@ import {
     listDir,
     workspacePathIndex,
     gitDetect,
+    gitBootstrap,
     gitStatus,
     gitStage,
     gitUnstage,
@@ -174,6 +175,23 @@ it("gitDetect forwards path and returns environment", async () => {
     })
     const env = await gitDetect("/w")
     expect(env).toEqual({ status: "ready", root: "/w", version: "2.40.0" })
+})
+
+// #57 T3：git 面板首載單趟完成——bootstrap 一次回齊 environment＋status＋branches
+// （Ready 落地後快照失敗時 status/branches 為 null、錯誤走 snapshotError）。
+it("gitBootstrap forwards path and returns the one-trip snapshot", async () => {
+    mockIPC((cmd, payload) => {
+        expect(cmd).toBe("git_bootstrap")
+        expect((payload as { path: string }).path).toBe("/w")
+        return { environment: { status: "notARepo" }, status: null, branches: null, snapshotError: null }
+    })
+    const result = await gitBootstrap("/w")
+    expect(result).toEqual({
+        environment: { status: "notARepo" },
+        status: null,
+        branches: null,
+        snapshotError: null
+    })
 })
 
 it("gitStatus forwards pathspec and returns status", async () => {

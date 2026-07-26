@@ -11,7 +11,7 @@ use crate::file_content::{
 };
 use crate::git_service::{git_err, run_git, GitServiceState};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -763,19 +763,14 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
 
 // ── commands（薄包裝）────────────────────────────────────────────────────
 
-/// 取當前 repo root（比照 git_service 的 repo_root，因該函式私有故本地重實作）。
-fn repo_root(state: &tauri::State<'_, GitServiceState>) -> Result<PathBuf, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(guard
-        .as_ref()
-        .ok_or_else(|| "no repository detected".to_string())?
-        .root
-        .clone())
-}
+// T1（#55）：同步 command 在 main thread 執行、git 子行程凍住 UI event loop
+// → 全部 async ＋ 走 git_service::run_blocking（spawn_blocking）。repo root 取用
+// `git_service::repo_root` 且一律在 blocking closure 內呼叫——repo state 鎖可能
+// 被長時操作（push/pull 至多 120s）持有，async body 直接 lock 會 park tokio worker。
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn git_log_page(
+pub async fn git_log_page(
     state: tauri::State<'_, GitServiceState>,
     skip: u32,
     limit: u32,
@@ -784,40 +779,59 @@ pub fn git_log_page(
     since: Option<String>,
     until: Option<String>,
 ) -> Result<LogPage, String> {
-    let root = repo_root(&state)?;
-    log_page(
-        &root,
-        skip,
-        limit,
-        query.as_deref(),
-        author.as_deref(),
-        since.as_deref(),
-        until.as_deref(),
-    )
+    let shared = state.0.clone();
+    crate::git_service::run_blocking(move || {
+        let root = crate::git_service::repo_root(&shared)?;
+        log_page(
+            &root,
+            skip,
+            limit,
+            query.as_deref(),
+            author.as_deref(),
+            since.as_deref(),
+            until.as_deref(),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_commit_detail(
+pub async fn git_commit_detail(
     state: tauri::State<'_, GitServiceState>,
     hash: String,
 ) -> Result<CommitDetail, String> {
-    commit_detail(&repo_root(&state)?, &hash)
+    let shared = state.0.clone();
+    crate::git_service::run_blocking(move || {
+        let root = crate::git_service::repo_root(&shared)?;
+        commit_detail(&root, &hash)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_log_authors(
+pub async fn git_log_authors(
     state: tauri::State<'_, GitServiceState>,
 ) -> Result<Vec<AuthorEntry>, String> {
-    log_authors(&repo_root(&state)?)
+    let shared = state.0.clone();
+    crate::git_service::run_blocking(move || {
+        let root = crate::git_service::repo_root(&shared)?;
+        log_authors(&root)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_file_at_rev(
+pub async fn git_file_at_rev(
     state: tauri::State<'_, GitServiceState>,
     rev: String,
     path: String,
 ) -> Result<FileAtRevResult, String> {
-    file_at_rev(&repo_root(&state)?, &rev, &path)
+    let shared = state.0.clone();
+    crate::git_service::run_blocking(move || {
+        let root = crate::git_service::repo_root(&shared)?;
+        file_at_rev(&root, &rev, &path)
+    })
+    .await
 }
 
 #[cfg(test)]

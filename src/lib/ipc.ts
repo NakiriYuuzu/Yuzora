@@ -13,6 +13,7 @@ import type {
     WorkspacePathIndexResult,
     OpenFileResult,
     GitEnvironment,
+    GitBootstrapResult,
     GitStatus,
     BranchList,
     RemoteProbe,
@@ -146,6 +147,13 @@ export function startWatch(path: string): Promise<void> {
 
 export function gitDetect(path: string): Promise<GitEnvironment> {
     return invoke("git_detect", { path })
+}
+
+// #57 T3：冷開 workspace 的 git 首載——一趟完成 detect→(status‖branches)，
+// 消除 detect 先行寫 State、status/branches 才能發的結構性 waterfall。
+// 細粒度 gitStatus/gitBranches 保留給後續 refresh。
+export function gitBootstrap(path: string): Promise<GitBootstrapResult> {
+    return invoke("git_bootstrap", { path })
 }
 
 export function gitStatus(pathspec?: string[]): Promise<GitStatus> {

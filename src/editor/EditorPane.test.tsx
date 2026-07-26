@@ -217,6 +217,30 @@ describe("EditorPane", () => {
         expect(saveFile).not.toHaveBeenCalled()
     })
 
+    // T4 覆核修正：workspace 切換還原不驗證檔案存在性，getDocument 對已刪檔案
+    // reject 是常態可達路徑——必須以錯誤狀態呈現，不能留下無聲空白 pane＋
+    // unhandled rejection。
+    it("shows a load-error empty state when getDocument rejects (deleted file)", async () => {
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: PATH,
+                tabs: [{ path: PATH, name: "a.ts", dirty: false, externallyModified: false }]
+            }]
+        })
+        getDocument.mockRejectedValue(new Error("failed to open file: No such file"))
+
+        const { getByTestId, getByText } = render(<EditorPane path={PATH} groupIndex={0} />)
+
+        await waitFor(() => expect(getByTestId("editor-pane-load-error")).toBeInTheDocument())
+        // Localized surface (test locale pinned to en) with the offending path.
+        getByText("Could not open this file")
+        getByText(/\/w\/a\.ts/)
+        // No editor view was created for the failed load.
+        expect(registerView).not.toHaveBeenCalled()
+    })
+
     it("right-click focuses and targets the clicked pane group", async () => {
         useWorkspaceStore.setState({
             workspacePath: "/w",

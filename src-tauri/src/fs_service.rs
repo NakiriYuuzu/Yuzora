@@ -44,6 +44,21 @@ pub fn canonicalize_workspace(path: &str) -> Result<String, String> {
     Ok(p.to_string_lossy().into_owned())
 }
 
+/// T2（#56）：Tauri 2 同步 command 在 main thread 執行，整檔讀寫／base64 編碼
+/// 會凍住 UI event loop → command 一律 async ＋ 把 blocking 工作丟進
+/// `tauri::async_runtime::spawn_blocking`（tokio 缺 `rt` feature，不可用
+/// `tokio::task::spawn_blocking`）。`open_workspace`／`list_dir` 依 spec 維持
+/// sync（µs 級 canonicalize／lazy 單層列目錄）。
+async fn run_blocking<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|e| format!("fs blocking task failed: {e}"))?
+}
+
 #[tauri::command]
 pub fn open_workspace(path: String) -> Result<String, String> {
     canonicalize_workspace(&path)
@@ -211,13 +226,13 @@ pub fn write_file(path: &str, content: &str) -> Result<u64, String> {
 }
 
 #[tauri::command]
-pub fn open_file(path: String) -> Result<OpenFileResult, String> {
-    classify_and_read(Path::new(&path))
+pub async fn open_file(path: String) -> Result<OpenFileResult, String> {
+    run_blocking(move || classify_and_read(Path::new(&path))).await
 }
 
 #[tauri::command]
-pub fn save_file(path: String, content: String) -> Result<u64, String> {
-    write_file(&path, &content)
+pub async fn save_file(path: String, content: String) -> Result<u64, String> {
+    run_blocking(move || write_file(&path, &content)).await
 }
 
 // 純字面（不碰檔案系統）正規化：吃掉 "." 、對 ".." 做 pop。因為新建/改名的目標
@@ -282,9 +297,11 @@ fn resolve_in_workspace(workspace: &str, path: &str) -> Result<PathBuf, String> 
     Ok(target)
 }
 
-#[tauri::command]
-pub fn fs_create_file(workspace: String, path: String) -> Result<(), String> {
-    let target = resolve_in_workspace(&workspace, &path)?;
+// 以下四個 workspace 檔案操作：sync 核心（可直接單元測試、行為與 async 化前
+// 完全一致）＋ thin async command wrapper（spawn_blocking 移出 main thread）。
+
+pub fn create_file_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
+    let target = resolve_in_workspace(workspace, path)?;
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create parent dir failed: {e}"))?;
     }
@@ -303,9 +320,8 @@ pub fn fs_create_file(workspace: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn fs_create_dir(workspace: String, path: String) -> Result<(), String> {
-    let target = resolve_in_workspace(&workspace, &path)?;
+pub fn create_dir_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
+    let target = resolve_in_workspace(workspace, path)?;
     if target.exists() {
         return Err(format!("directory already exists: {}", target.display()));
     }
@@ -313,10 +329,9 @@ pub fn fs_create_dir(workspace: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn fs_rename(workspace: String, from: String, to: String) -> Result<(), String> {
-    let src = resolve_in_workspace(&workspace, &from)?;
-    let dst = resolve_in_workspace(&workspace, &to)?;
+pub fn rename_in_workspace(workspace: &str, from: &str, to: &str) -> Result<(), String> {
+    let src = resolve_in_workspace(workspace, from)?;
+    let dst = resolve_in_workspace(workspace, to)?;
     if !src.exists() {
         return Err(format!("source does not exist: {}", src.display()));
     }
@@ -327,9 +342,8 @@ pub fn fs_rename(workspace: String, from: String, to: String) -> Result<(), Stri
     Ok(())
 }
 
-#[tauri::command]
-pub fn fs_delete(workspace: String, path: String) -> Result<(), String> {
-    let target = resolve_in_workspace(&workspace, &path)?;
+pub fn delete_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
+    let target = resolve_in_workspace(workspace, path)?;
     // symlink_metadata：symlink 一律當檔案處理（remove_file 只砍連結、不遞迴刪
     // 連結目標）。
     let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("stat failed: {e}"))?;
@@ -341,7 +355,27 @@ pub fn fs_delete(workspace: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize)]
+#[tauri::command]
+pub async fn fs_create_file(workspace: String, path: String) -> Result<(), String> {
+    run_blocking(move || create_file_in_workspace(&workspace, &path)).await
+}
+
+#[tauri::command]
+pub async fn fs_create_dir(workspace: String, path: String) -> Result<(), String> {
+    run_blocking(move || create_dir_in_workspace(&workspace, &path)).await
+}
+
+#[tauri::command]
+pub async fn fs_rename(workspace: String, from: String, to: String) -> Result<(), String> {
+    run_blocking(move || rename_in_workspace(&workspace, &from, &to)).await
+}
+
+#[tauri::command]
+pub async fn fs_delete(workspace: String, path: String) -> Result<(), String> {
+    run_blocking(move || delete_in_workspace(&workspace, &path)).await
+}
+
+#[derive(Serialize, Debug)]
 pub struct FileBase64 {
     pub data: String,
     pub size: u64,
@@ -351,10 +385,9 @@ pub struct FileBase64 {
 /// caller enforces the mime whitelist by extension; this side enforces only
 /// the size ceiling so an oversized pick fails with a structured error
 /// instead of ballooning the IPC payload.
-#[tauri::command]
-pub fn read_file_base64(path: String, max_bytes: u64) -> Result<FileBase64, String> {
+pub fn read_base64_file(path: &str, max_bytes: u64) -> Result<FileBase64, String> {
     use base64::Engine;
-    let meta = std::fs::metadata(&path).map_err(|e| format!("stat failed: {e}"))?;
+    let meta = std::fs::metadata(path).map_err(|e| format!("stat failed: {e}"))?;
     if !meta.is_file() {
         return Err(format!("not a regular file: {path}"));
     }
@@ -364,11 +397,16 @@ pub fn read_file_base64(path: String, max_bytes: u64) -> Result<FileBase64, Stri
             meta.len()
         ));
     }
-    let bytes = std::fs::read(&path).map_err(|e| format!("read failed: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("read failed: {e}"))?;
     Ok(FileBase64 {
         data: base64::engine::general_purpose::STANDARD.encode(&bytes),
         size: bytes.len() as u64,
     })
+}
+
+#[tauri::command]
+pub async fn read_file_base64(path: String, max_bytes: u64) -> Result<FileBase64, String> {
+    run_blocking(move || read_base64_file(&path, max_bytes)).await
 }
 
 #[cfg(test)]
@@ -554,11 +592,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let w = ws(&tmp);
         let target = under(&w, "nested/deep/a.txt");
-        fs_create_file(w.clone(), target.clone()).unwrap();
+        create_file_in_workspace(&w, &target).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "");
         // 已存在 → 錯誤，且內容不被覆蓋。
         fs::write(&target, "keep").unwrap();
-        assert!(fs_create_file(w.clone(), target.clone()).is_err());
+        assert!(create_file_in_workspace(&w, &target).is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
     }
 
@@ -567,9 +605,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let w = ws(&tmp);
         let target = under(&w, "newdir");
-        fs_create_dir(w.clone(), target.clone()).unwrap();
+        create_dir_in_workspace(&w, &target).unwrap();
         assert!(Path::new(&target).is_dir());
-        assert!(fs_create_dir(w.clone(), target.clone()).is_err());
+        assert!(create_dir_in_workspace(&w, &target).is_err());
     }
 
     #[test]
@@ -579,13 +617,13 @@ mod tests {
         let from = under(&w, "old.txt");
         let to = under(&w, "new.txt");
         fs::write(&from, "body").unwrap();
-        fs_rename(w.clone(), from.clone(), to.clone()).unwrap();
+        rename_in_workspace(&w, &from, &to).unwrap();
         assert!(!Path::new(&from).exists());
         assert_eq!(fs::read_to_string(&to).unwrap(), "body");
         // to 已存在 → 錯誤。
         let from2 = under(&w, "other.txt");
         fs::write(&from2, "x").unwrap();
-        assert!(fs_rename(w.clone(), from2.clone(), to.clone()).is_err());
+        assert!(rename_in_workspace(&w, &from2, &to).is_err());
         assert!(Path::new(&from2).exists());
     }
 
@@ -595,13 +633,13 @@ mod tests {
         let w = ws(&tmp);
         let file = under(&w, "f.txt");
         fs::write(&file, "x").unwrap();
-        fs_delete(w.clone(), file.clone()).unwrap();
+        delete_in_workspace(&w, &file).unwrap();
         assert!(!Path::new(&file).exists());
 
         let dir = under(&w, "d");
         fs::create_dir_all(format!("{dir}/sub")).unwrap();
         fs::write(format!("{dir}/sub/inner.txt"), "y").unwrap();
-        fs_delete(w.clone(), dir.clone()).unwrap();
+        delete_in_workspace(&w, &dir).unwrap();
         assert!(!Path::new(&dir).exists());
     }
 
@@ -610,10 +648,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let w = ws(&tmp);
         let escape = under(&w, "../escaped.txt");
-        assert!(fs_create_file(w.clone(), escape.clone()).is_err());
-        assert!(fs_create_dir(w.clone(), escape.clone()).is_err());
-        assert!(fs_delete(w.clone(), escape.clone()).is_err());
-        assert!(fs_rename(w.clone(), under(&w, "a.txt"), escape.clone()).is_err());
+        assert!(create_file_in_workspace(&w, &escape).is_err());
+        assert!(create_dir_in_workspace(&w, &escape).is_err());
+        assert!(delete_in_workspace(&w, &escape).is_err());
+        assert!(rename_in_workspace(&w, &under(&w, "a.txt"), &escape).is_err());
         // 目標檔案未被建立在 workspace 之外。
         assert!(!Path::new(&fs::canonicalize(&tmp).unwrap())
             .parent()
@@ -626,7 +664,7 @@ mod tests {
     fn fs_commands_reject_workspace_root_itself() {
         let tmp = tempfile::tempdir().unwrap();
         let w = ws(&tmp);
-        assert!(fs_delete(w.clone(), w.clone()).is_err());
+        assert!(delete_in_workspace(&w, &w).is_err());
         assert!(Path::new(&w).is_dir());
     }
 
@@ -647,8 +685,8 @@ mod tests {
 
         // 透過 symlink 建立檔案 / 目錄：擋，且外部不出現該項目。
         let through_file = under(&w, "link/evil.txt");
-        assert!(fs_create_file(w.clone(), through_file.clone()).is_err());
-        assert!(fs_create_dir(w.clone(), under(&w, "link/evildir")).is_err());
+        assert!(create_file_in_workspace(&w, &through_file).is_err());
+        assert!(create_dir_in_workspace(&w, &under(&w, "link/evildir")).is_err());
         assert!(!outside_root.join("evil.txt").exists());
         assert!(!outside_root.join("evildir").exists());
 
@@ -656,22 +694,48 @@ mod tests {
         // 且不是因為來源不存在才失敗——檔案仍在外部原地。
         let outside_file = outside_root.join("real.txt");
         fs::write(&outside_file, "keep").unwrap();
-        assert!(fs_delete(w.clone(), under(&w, "link/real.txt")).is_err());
-        assert!(fs_rename(
-            w.clone(),
-            under(&w, "link/real.txt"),
-            under(&w, "moved.txt")
-        )
-        .is_err());
+        assert!(delete_in_workspace(&w, &under(&w, "link/real.txt")).is_err());
+        assert!(
+            rename_in_workspace(&w, &under(&w, "link/real.txt"), &under(&w, "moved.txt")).is_err()
+        );
         assert!(outside_file.exists());
         assert_eq!(fs::read_to_string(&outside_file).unwrap(), "keep");
 
         // rename-to 穿越 symlink 也擋，來源留在 workspace 內。
         let src = under(&w, "src.txt");
         fs::write(&src, "body").unwrap();
-        assert!(fs_rename(w.clone(), src.clone(), through_file.clone()).is_err());
+        assert!(rename_in_workspace(&w, &src, &through_file).is_err());
         assert!(Path::new(&src).exists());
         assert!(!outside_root.join("evil.txt").exists());
+    }
+
+    // T2（#56）：read_file_base64 async 化後的可測核心——行為與 async 化前一致。
+    #[test]
+    fn read_base64_file_encodes_within_limit() {
+        use base64::Engine;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("img.bin");
+        fs::write(&p, b"hello").unwrap();
+        let out = read_base64_file(p.to_str().unwrap(), 10).unwrap();
+        assert_eq!(out.size, 5);
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&out.data)
+                .unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn read_base64_file_rejects_oversize_and_non_regular_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("big.bin");
+        fs::write(&p, b"123456").unwrap();
+        let err = read_base64_file(p.to_str().unwrap(), 5).unwrap_err();
+        assert!(err.contains("file too large"), "got: {err}");
+        // 目錄不是 regular file → 結構化錯誤而非讀取失敗。
+        let err = read_base64_file(tmp.path().to_str().unwrap(), 100).unwrap_err();
+        assert!(err.contains("not a regular file"), "got: {err}");
     }
 
     #[test]

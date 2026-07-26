@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { EditorState, StateEffect } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
+import { FileX2 } from "lucide-react"
+import { useTranslation } from "react-i18next"
 import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
 import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
@@ -23,6 +25,8 @@ import {
 } from "../lsp/lspManager"
 import type { ManagedClient } from "../lsp/lspManager"
 import { contextMenuHandler } from "../state/contextMenuStore"
+import { EmptyState } from "@/app/workbench/EmptyState"
+import { workspacePathForDisplay } from "@/lib/paths"
 import { serializeDocumentLineEndings } from "./lineEndings"
 import { showDocumentSaveError, showMixedLineEndingSaveError } from "./saveDocument"
 import "./editor.css"
@@ -60,12 +64,17 @@ async function applyFormatOnSave(
 }
 
 export function EditorPane({ path, groupIndex }: { path: string; groupIndex: number }) {
+    const { t } = useTranslation("panels")
     const containerRef = useRef<HTMLDivElement>(null)
     const viewRef = useRef<EditorView | null>(null)
     // The ManagedClient (with capabilities) for this pane's file, set once the
     // async LSP mount resolves. Needed by save for flush + format-on-save gating.
     const managedRef = useRef<ManagedClient | null>(null)
     const [result, setResult] = useState<OpenFileResult | null>(null)
+    // T4 覆核修正：getDocument 失敗（檔案已刪／不可讀——workspace 切換還原不驗
+    // 證存在性，此路徑常態可達）時的錯誤兜底。沒有它，分頁是永久空白 pane＋
+    // unhandled rejection。documentRegistry 不快取失敗，關閉重開分頁即重試。
+    const [loadError, setLoadError] = useState(false)
     const markDirty = useWorkspaceStore((s) => s.markDirty)
     const markExternallyModified = useWorkspaceStore((s) => s.markExternallyModified)
     const hydrateLineEnding = useWorkspaceStore((s) => s.hydrateLineEnding)
@@ -238,6 +247,11 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
                     }
                 }
             })()
+        }).catch(() => {
+            // openFile rejected (file deleted/moved/unreadable) — or, defensively,
+            // the mount body above threw. Surface the error state instead of a
+            // silent blank pane + unhandled rejection.
+            if (!disposed) setLoadError(true)
         })
         return () => {
             disposed = true
@@ -280,6 +294,22 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
         })
     }, [minimapEnabled])
 
+    if (loadError) {
+        return (
+            <div
+                data-testid="editor-pane-load-error"
+                className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
+            >
+                <EmptyState
+                    icon={FileX2}
+                    title={t("editorPane.loadError")}
+                    description={t("editorPane.loadErrorDescription", {
+                        path: workspacePathForDisplay(path)
+                    })}
+                />
+            </div>
+        )
+    }
     if (result && (result.kind === "tooLarge" || result.kind === "binary")) {
         return <SpecialFileView path={path} result={result} />
     }
