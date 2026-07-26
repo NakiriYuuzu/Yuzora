@@ -31,12 +31,25 @@ export function createTauriTransport(workspace: string, language: string): Trans
     // still await `info` — multiple handlers all fire.
     info.catch(() => {})
 
+    // Ordering guarantee (#56 review fix): lsp_send / lsp_start are async
+    // commands since T2 — each invoke runs on its own blocking-pool task, so
+    // two in-flight sends could reach the server's stdin out of order (the
+    // Rust-side mutex only prevents interleaving, not reordering). LSP requires
+    // client messages in order — an out-of-order didChange silently corrupts
+    // the server's document state. Serialize per transport: every send waits
+    // for the previous one (and for lspStart, so initialize can't overtake
+    // server startup) to settle before invoking.
+    let sendChain: Promise<unknown> = info.catch(() => {})
+
     const transport: Transport = {
         send(message: string) {
-            // Swallow send failures: once the server process is gone every send
-            // would otherwise raise an unhandled rejection storm. Status surfaces
+            // Swallow send failures per link: once the server process is gone
+            // every send would otherwise raise an unhandled rejection storm —
+            // and a stuck chain would drop all later messages. Status surfaces
             // separately via lsp:server-status (W7).
-            void lspSend(workspace, language, message).catch(() => {})
+            sendChain = sendChain
+                .then(() => lspSend(workspace, language, message))
+                .catch(() => {})
         },
         subscribe(handler: (value: string) => void) {
             handlers.add(handler)

@@ -5,7 +5,11 @@ use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use std::path::Path;
 use std::time::Duration;
 
-pub struct GitWatchState(pub std::sync::Mutex<Option<Debouncer<notify::RecommendedWatcher>>>);
+pub type GitWatcher = Debouncer<notify::RecommendedWatcher>;
+
+/// 內層以 `Arc` 共享：`git_detect` 的 State 落地整段移進 blocking thread
+///（closure 是 `'static`，靠 clone Arc 帶進去；理由見 `git_service::commit_detect_result`）。
+pub struct GitWatchState(pub std::sync::Arc<std::sync::Mutex<Option<GitWatcher>>>);
 
 /// 監看 `<root>/.git`（NonRecursive）＋ `<root>/.git/refs`（Recursive，若存在）。
 /// 500ms debounce；任何事件直接 on_change()（.git 內就是我們要的，不過濾）。

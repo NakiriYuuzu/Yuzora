@@ -5,6 +5,7 @@ import { EditorView } from "@codemirror/view"
 import { acceptChunk, getChunks, unifiedMergeView } from "@codemirror/merge"
 
 import { openFile, saveFile } from "../lib/ipc"
+import type { ExternalChangePayload } from "../lib/types"
 import { workspacePathForDisplay } from "../lib/paths"
 import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
@@ -116,8 +117,11 @@ function ResolverBody({ path }: { path: string }) {
     // patching the original in place) keeps the user's accept/reject progress
     // while guaranteeing a consistent diff against the new disk content.
     useEffect(() => {
-        const unlisten = listen<string[]>("fs:external-change", (e) => {
-            if (!e.payload.includes(path)) return
+        const unlisten = listen<ExternalChangePayload>("fs:external-change", (e) => {
+            // #57 T3：先比對 live workspacePath，舊 workspace watcher 的殘留
+            // 事件不得觸發 rebuild（防串場）。
+            if (e.payload.workspaceRoot !== useWorkspaceStore.getState().workspacePath) return
+            if (!e.payload.paths.includes(path)) return
             void openFile(path)
                 .then((disk) => {
                     setRechanged(true)

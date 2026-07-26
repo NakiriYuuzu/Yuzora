@@ -34,6 +34,7 @@ import { usePreviewStore } from "./previewStore"
 import { useSvgPreviewStore } from "./svgPreviewStore"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
 import { useDiffModalStore, type WorktreeDiffFile } from "./diffModalStore"
+import { useFileTreeStore } from "./fileTreeStore"
 import { useGitStore } from "./gitStore"
 import { savedConnectionAddress, useDbStore } from "./dbStore"
 import { useSftpStore } from "./sftpStore"
@@ -261,8 +262,10 @@ async function closeAllTabsWithConfirm(groupIndex: number): Promise<ContextMenuC
 // Name input reuses the imperative window.prompt (mirroring this module's
 // imperative confirm() usage) — the repo has no in-app text-input dialog
 // primitive. Every op validates the workspace boundary in Rust; failures are
-// surfaced through a dialog message rather than swallowed. On success we bump
-// treeRevision (FileTree doesn't subscribe to the fs watcher for its own ops).
+// surfaced through a dialog message rather than swallowed. On success we run a
+// precise file-tree invalidation (#59 T4b: re-list only the affected cached
+// dirs; it also bumps treeRevision for mention-index consumers — FileTree
+// doesn't subscribe to the fs watcher for its own ops).
 function joinName(dir: string, name: string): string {
     return `${dir.replace(/\/+$/, "")}/${name}`
 }
@@ -279,11 +282,11 @@ async function createEntry(kind: "file" | "folder", workspace: string): Promise<
     try {
         if (kind === "file") {
             await fsCreateFile(workspace, target)
-            useWorkspaceStore.getState().refreshTree()
+            await useFileTreeStore.getState().invalidatePaths(workspace, [target])
             useWorkspaceStore.getState().openTab(target)
         } else {
             await fsCreateDir(workspace, target)
-            useWorkspaceStore.getState().refreshTree()
+            await useFileTreeStore.getState().invalidatePaths(workspace, [target])
         }
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
@@ -345,7 +348,9 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
             if (svgWasClosed && svgPreview.isOpen(newPath)) svgPreview.toggle(newPath)
         }
         useWorkspaceStore.getState().updateTabPath(path, target)
-        useWorkspaceStore.getState().refreshTree()
+        // 舊、新路徑一起失效：同層 re-list 反映改名；資料夾改名時 relist 的
+        // prune 會丟掉舊路徑底下的快取子樹（新路徑首次展開時重新 list）。
+        await useFileTreeStore.getState().invalidatePaths(workspace, [path, target])
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
         await message(String(e), {
@@ -385,7 +390,7 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
                 useSvgPreviewStore.getState().forget(p)
             }
         }
-        useWorkspaceStore.getState().refreshTree()
+        await useFileTreeStore.getState().invalidatePaths(workspace, [path])
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
         await message(String(e), {

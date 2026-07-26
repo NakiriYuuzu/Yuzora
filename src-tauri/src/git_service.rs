@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-pub struct GitServiceState(pub std::sync::Mutex<Option<RepoHandle>>);
+/// 內層以 `Arc` 共享：async command 需把「持鎖比對 + mutation」整段移進
+/// `spawn_blocking`（std MutexGuard 不可跨 `.await`），closure 是 `'static`，
+/// 靠 clone Arc 帶進 blocking thread（見 `with_requested_repo_blocking`）。
+pub struct GitServiceState(pub std::sync::Arc<std::sync::Mutex<Option<RepoHandle>>>);
 
 #[derive(Clone)]
 pub struct RepoHandle {
@@ -249,53 +252,238 @@ pub fn status_of(root: &Path, pathspec: Option<Vec<String>>) -> Result<GitStatus
     })
 }
 
-#[tauri::command]
-pub fn git_detect(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, GitServiceState>,
-    watch_state: tauri::State<'_, crate::git_watch::GitWatchState>,
-    path: String,
-) -> Result<GitEnvironment, String> {
-    use tauri::Emitter;
-    let env = detect_environment(Path::new(&path));
+/// T1（#55）：Tauri 2 同步 command 在 main thread 執行，git 子行程會凍住 UI
+/// event loop → command 一律 async ＋ 把 blocking 工作丟進
+/// `tauri::async_runtime::spawn_blocking`（tokio 缺 `rt` feature，不可用
+/// `tokio::task::spawn_blocking`）。模式：先 lock、clone 出 root、drop guard，
+/// 再 move 進 closure。
+pub(crate) async fn run_blocking<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|e| format!("git blocking task failed: {e}"))?
+}
+
+/// git_detect 併發 guard（review fix）：async 化後兩個 git_detect 可真併發、
+/// 完成順序不保證（sync 時代 main thread FIFO 保證 last-requested-wins）。
+/// 每次 detect 進場遞增取得 generation，落地前比對——只有最新 generation 的
+/// 結果可寫入，晚到的舊結果直接丟棄，杜絕快速切換 workspace 時 stale root /
+/// watcher 覆蓋新 workspace（last-completed-wins 競態）。
+static DETECT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// git_detect 結果落地：stale guard ＋ root/watcher 成對原子寫入。
+///
+/// - `counter` 目前值 ≠ 本次 `generation` → 已有更新的 detect 進場，本結果
+///   過期、不落地（回傳 `Ok(false)`；watcher 隨 drop 即停）。
+/// - root 與 watcher 兩個 Mutex 的寫入都發生在同一段 repo guard 內：全 crate
+///   僅此處同時持兩鎖、鎖序固定 repo → watch，無死鎖之虞；杜絕兩個併發 detect
+///   在「寫 root」與「寫 watcher」之間交錯出 root=A、watcher=B 的錯配。
+fn commit_detect_result(
+    generation: u64,
+    counter: &std::sync::atomic::AtomicU64,
+    repo_state: &Mutex<Option<RepoHandle>>,
+    watch_state: &Mutex<Option<crate::git_watch::GitWatcher>>,
+    env: &GitEnvironment,
+    watcher: Option<crate::git_watch::GitWatcher>,
+) -> Result<bool, String> {
+    use std::sync::atomic::Ordering;
+    let mut repo_guard = repo_state.lock().map_err(|e| e.to_string())?;
+    if counter.load(Ordering::SeqCst) != generation {
+        return Ok(false);
+    }
     match env {
-        GitEnvironment::Ready { ref root, .. } => {
-            *state.0.lock().map_err(|e| e.to_string())? = Some(RepoHandle {
+        GitEnvironment::Ready { root, .. } => {
+            *repo_guard = Some(RepoHandle {
                 root: PathBuf::from(root),
             });
             // Ready → 啟動 .git watcher；舊 debouncer 被替換即 drop 停止。
-            let git_dir = PathBuf::from(root).join(".git");
-            let watcher = crate::git_watch::build_git_watcher(&git_dir, move || {
-                let _ = app.emit("git:state-changed", ());
-            })?;
-            *watch_state.0.lock().map_err(|e| e.to_string())? = Some(watcher);
+            *watch_state.lock().map_err(|e| e.to_string())? = watcher;
         }
         GitEnvironment::NotARepo | GitEnvironment::Missing { .. } => {
             // Clear the authority as well as the watcher. Leaving the previous
             // RepoHandle alive would let an in-flight request for that old root
             // pass root validation after the UI switched to a non-repository.
-            *state.0.lock().map_err(|e| e.to_string())? = None;
+            *repo_guard = None;
             // 非 repo / 無 git → 清空 watch state（drop 即停）。
-            *watch_state.0.lock().map_err(|e| e.to_string())? = None;
+            *watch_state.lock().map_err(|e| e.to_string())? = None;
         }
     }
+    Ok(true)
+}
+
+/// `git:state-changed` 事件 payload（#57 T3）：帶上 detect 當時的 workspace
+/// 路徑，前端 listener 比對 live workspacePath 後才處理——切換 gap 內舊
+/// workspace 的 .git watcher 殘留事件不得刷新新 workspace 的面板。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStateChangedEvent {
+    pub workspace_root: String,
+}
+
+/// detect → watcher 建立 → State 落地的共用核心（`git_detect`／`git_bootstrap`）。
+/// 整段必須在 blocking thread 執行：git 子行程與 watcher 建立本來就 blocking；
+/// repo state 鎖也可能被長時操作持有（見 `with_requested_repo_blocking`，
+/// push/pull 至多 120s），在 async body 直接 lock 會 park 共用的 tokio worker
+/// ——鎖等待一律留在 blocking thread。
+fn detect_commit_and_watch(
+    app: tauri::AppHandle,
+    repo_shared: &std::sync::Arc<Mutex<Option<RepoHandle>>>,
+    watch_shared: &std::sync::Arc<Mutex<Option<crate::git_watch::GitWatcher>>>,
+    generation: u64,
+    workspace_path: &str,
+) -> Result<GitEnvironment, String> {
+    use tauri::Emitter;
+    let env = detect_environment(Path::new(workspace_path));
+    let watcher = if let GitEnvironment::Ready { ref root, .. } = env {
+        let git_dir = PathBuf::from(root).join(".git");
+        let event_root = workspace_path.to_string();
+        Some(crate::git_watch::build_git_watcher(&git_dir, move || {
+            let _ = app.emit(
+                "git:state-changed",
+                GitStateChangedEvent {
+                    workspace_root: event_root.clone(),
+                },
+            );
+        })?)
+    } else {
+        None
+    };
+    commit_detect_result(
+        generation,
+        &DETECT_GENERATION,
+        repo_shared,
+        watch_shared,
+        &env,
+        watcher,
+    )?;
+    // stale 時不落地但仍回傳偵測結果；前端 gitStore.detect 以同款序號
+    // guard 丟棄過期 resolve（兩端各自守自己的 state）。
     Ok(env)
 }
 
 #[tauri::command]
-pub fn git_status_cmd(
+pub async fn git_detect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GitServiceState>,
+    watch_state: tauri::State<'_, crate::git_watch::GitWatchState>,
+    path: String,
+) -> Result<GitEnvironment, String> {
+    use std::sync::atomic::Ordering;
+    let generation = DETECT_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let repo_shared = state.0.clone();
+    let watch_shared = watch_state.0.clone();
+    run_blocking(move || {
+        detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)
+    })
+    .await
+}
+
+/// T3（#57）：冷開 workspace 的 git 首載單趟快照。environment 非 Ready 時
+/// status/branches 為 None（前端收到 null）。Ready 落地後快照失敗時同樣為
+/// None，錯誤放 `snapshot_error`（見 `bootstrap_dto`）。
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBootstrapDto {
+    pub environment: GitEnvironment,
+    pub status: Option<GitStatusDto>,
+    pub branches: Option<BranchList>,
+    pub snapshot_error: Option<String>,
+}
+
+/// Ready 快照結果 → DTO（#57 覆核修正）。快照失敗**不整趟回 Err**：detect
+/// 已把 RepoHandle 與 .git watcher 落在新 repo，此時回 Err 的話前端只會記
+/// lastError、store 仍殘留前一個 workspace 的 environment/status/branches——
+/// 後續 watcher/focus refresh 以舊 environment 的 ready 閘放行、卻從 Rust
+/// state 讀到新 repo 的 status，把新資料填進舊 root 標頭底下（跨 workspace
+/// 混血）。改回 partial DTO：environment 照常落地、status/branches 為 None、
+/// 錯誤放 snapshot_error，前端據此換血＋記 lastError——等同舊流程「detect
+/// 成功、refresh 失敗」的語意。
+fn bootstrap_dto(
+    environment: GitEnvironment,
+    snapshot: Result<(GitStatusDto, BranchList), String>,
+) -> GitBootstrapDto {
+    match snapshot {
+        Ok((status, branches)) => GitBootstrapDto {
+            environment,
+            status: Some(status),
+            branches: Some(branches),
+            snapshot_error: None,
+        },
+        Err(e) => GitBootstrapDto {
+            environment,
+            status: None,
+            branches: None,
+            snapshot_error: Some(e),
+        },
+    }
+}
+
+/// Ready 後的首載快照：status 與 branches 各自丟進 blocking pool 真併發、
+/// join 後一次回齊——消除「detect 先行寫 State、status/branches 才能發」的
+/// 兩趟 IPC waterfall（#57 T3）。
+async fn bootstrap_ready_snapshot(root: PathBuf) -> Result<(GitStatusDto, BranchList), String> {
+    let status_root = root.clone();
+    let status_task = tauri::async_runtime::spawn_blocking(move || status_of(&status_root, None));
+    let branches_task = tauri::async_runtime::spawn_blocking(move || branches(&root));
+    let status = status_task
+        .await
+        .map_err(|e| format!("git blocking task failed: {e}"))??;
+    let branch_list = branches_task
+        .await
+        .map_err(|e| format!("git blocking task failed: {e}"))??;
+    Ok((status, branch_list))
+}
+
+/// 冷開 workspace 的 git 面板首載（#57 T3）：detect →（Ready 時）寫入
+/// RepoHandle state、建 .git watcher，再併發跑 status‖branches 後一次回齊。
+/// 細粒度 `git_status_cmd`／`git_branches` 保留給後續 refresh。Ready 落地後
+/// status/branches 失敗（timeout、repo 中途被刪）→ 仍回 Ok：environment
+/// 照常落地、快照為 None、錯誤放 `snapshot_error`（見 `bootstrap_dto`，
+/// 與舊流程「detect 成功、refresh 失敗」同語意）。
+#[tauri::command]
+pub async fn git_bootstrap(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GitServiceState>,
+    watch_state: tauri::State<'_, crate::git_watch::GitWatchState>,
+    path: String,
+) -> Result<GitBootstrapDto, String> {
+    use std::sync::atomic::Ordering;
+    let generation = DETECT_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let repo_shared = state.0.clone();
+    let watch_shared = watch_state.0.clone();
+    let env = run_blocking(move || {
+        detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)
+    })
+    .await?;
+    let root = match &env {
+        GitEnvironment::Ready { root, .. } => PathBuf::from(root),
+        GitEnvironment::NotARepo | GitEnvironment::Missing { .. } => {
+            return Ok(GitBootstrapDto {
+                environment: env,
+                status: None,
+                branches: None,
+                snapshot_error: None,
+            })
+        }
+    };
+    let snapshot = bootstrap_ready_snapshot(root).await;
+    Ok(bootstrap_dto(env, snapshot))
+}
+
+#[tauri::command]
+pub async fn git_status_cmd(
     state: tauri::State<'_, GitServiceState>,
     pathspec: Option<Vec<String>>,
 ) -> Result<GitStatusDto, String> {
-    let root = {
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard
-            .as_ref()
-            .ok_or_else(|| "no repository detected".to_string())?
-            .root
-            .clone()
-    };
-    status_of(&root, pathspec)
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        status_of(&root, pathspec)
+    })
+    .await
 }
 
 // ── M2 Task 6: git 操作 commands（stage/commit/branch/remote/diff/conflict）────
@@ -929,9 +1117,13 @@ pub fn remote_probe(root: &Path, env: &[(String, String)]) -> Result<String, Str
     Ok(if remote_sha == local_sha { "no" } else { "yes" }.to_string())
 }
 
-/// commands 共用：取當前 repo root。
-fn repo_root(state: &tauri::State<'_, GitServiceState>) -> Result<PathBuf, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
+/// commands 共用：取當前 repo root。**只在 blocking closure 內呼叫**——repo
+/// state 鎖可能被長時操作持有（`with_requested_repo_blocking` 的 push/pull 至多
+/// 120s），在 async command body 直接 lock 會 park 共用的 tokio worker。
+pub(crate) fn repo_root(
+    shared: &std::sync::Arc<Mutex<Option<RepoHandle>>>,
+) -> Result<PathBuf, String> {
+    let guard = shared.lock().map_err(|e| e.to_string())?;
     Ok(guard
         .as_ref()
         .ok_or_else(|| "no repository detected".to_string())?
@@ -968,86 +1160,136 @@ fn with_requested_repo<T>(
     operation(&canonical_active)
 }
 
-#[tauri::command]
-pub fn git_stage(
-    state: tauri::State<'_, GitServiceState>,
-    repository_root: String,
-    paths: Vec<String>,
-) -> Result<(), String> {
-    with_requested_repo(state.inner(), &repository_root, |root| stage(root, &paths))
+/// `with_requested_repo` 的 async 包裝：整段（含持鎖比對）移進 blocking thread，
+/// 保留「compare + mutation 相對 `git_detect` 切換 repo 原子」的語意——鎖不跨
+/// `.await`，而是連同 mutation 一起在 blocking closure 內持有。
+async fn with_requested_repo_blocking<T>(
+    state: &GitServiceState,
+    requested_root: String,
+    operation: impl FnOnce(&Path) -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    let shared = state.0.clone();
+    run_blocking(move || with_requested_repo(&GitServiceState(shared), &requested_root, operation))
+        .await
 }
 
 #[tauri::command]
-pub fn git_unstage(
+pub async fn git_stage(
     state: tauri::State<'_, GitServiceState>,
     repository_root: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    with_requested_repo(state.inner(), &repository_root, |root| {
+    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
+        stage(root, &paths)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_unstage(
+    state: tauri::State<'_, GitServiceState>,
+    repository_root: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
         unstage(root, &paths)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn git_discard(
+pub async fn git_discard(
     state: tauri::State<'_, GitServiceState>,
     repository_root: String,
     paths: Vec<String>,
     untracked: Vec<String>,
 ) -> Result<(), String> {
-    with_requested_repo(state.inner(), &repository_root, |root| {
+    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
         discard(root, &paths, &untracked)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn git_rollback_paths(
+pub async fn git_rollback_paths(
     state: tauri::State<'_, GitServiceState>,
     repository_root: String,
     targets: Vec<GitRollbackTarget>,
     delete_untracked_or_added: bool,
 ) -> Result<GitRollbackResult, String> {
-    with_requested_repo(state.inner(), &repository_root, |root| {
+    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
         rollback_paths(root, &targets, delete_untracked_or_added)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn git_commit_cmd(
+pub async fn git_commit_cmd(
     state: tauri::State<'_, GitServiceState>,
     message: String,
 ) -> Result<(), String> {
-    commit(&repo_root(&state)?, &message)
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        commit(&root, &message)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_branches(state: tauri::State<'_, GitServiceState>) -> Result<BranchList, String> {
-    branches(&repo_root(&state)?)
+pub async fn git_branches(state: tauri::State<'_, GitServiceState>) -> Result<BranchList, String> {
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        branches(&root)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_create_branch(
+pub async fn git_create_branch(
     state: tauri::State<'_, GitServiceState>,
     name: String,
 ) -> Result<(), String> {
-    create_branch(&repo_root(&state)?, &name)
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        create_branch(&root, &name)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_checkout(state: tauri::State<'_, GitServiceState>, name: String) -> Result<(), String> {
-    checkout(&repo_root(&state)?, &name)
+pub async fn git_checkout(
+    state: tauri::State<'_, GitServiceState>,
+    name: String,
+) -> Result<(), String> {
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        checkout(&root, &name)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_cherry_pick(
+pub async fn git_cherry_pick(
     state: tauri::State<'_, GitServiceState>,
     hash: String,
 ) -> Result<(), String> {
-    cherry_pick(&repo_root(&state)?, &hash)
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        cherry_pick(&root, &hash)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_fetch_cmd(
+pub async fn git_fetch_cmd(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     background: bool,
@@ -1055,16 +1297,22 @@ pub fn git_fetch_cmd(
 ) -> Result<(), String> {
     let env = askpass.env_for(background);
     if let Some(requested_root) = repository_root {
-        with_requested_repo(state.inner(), &requested_root, |root| {
+        with_requested_repo_blocking(state.inner(), requested_root, move |root| {
             run_ok(root, &["fetch"], REMOTE_TIMEOUT, &env).map(|_| ())
         })
+        .await
     } else {
-        run_ok(&repo_root(&state)?, &["fetch"], REMOTE_TIMEOUT, &env).map(|_| ())
+        let shared = state.0.clone();
+        run_blocking(move || {
+            let root = repo_root(&shared)?;
+            run_ok(&root, &["fetch"], REMOTE_TIMEOUT, &env).map(|_| ())
+        })
+        .await
     }
 }
 
 #[tauri::command]
-pub fn git_pull_cmd(
+pub async fn git_pull_cmd(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     repository_root: Option<String>,
@@ -1073,63 +1321,94 @@ pub fn git_pull_cmd(
     let mut env = askpass.env_for(false);
     env.extend(editor_true());
     if let Some(requested_root) = repository_root {
-        with_requested_repo(state.inner(), &requested_root, |root| {
+        with_requested_repo_blocking(state.inner(), requested_root, move |root| {
             run_ok(root, &["pull"], REMOTE_TIMEOUT, &env).map(|_| ())
         })
+        .await
     } else {
-        run_ok(&repo_root(&state)?, &["pull"], REMOTE_TIMEOUT, &env).map(|_| ())
+        let shared = state.0.clone();
+        run_blocking(move || {
+            let root = repo_root(&shared)?;
+            run_ok(&root, &["pull"], REMOTE_TIMEOUT, &env).map(|_| ())
+        })
+        .await
     }
 }
 
 #[tauri::command]
-pub fn git_push_cmd(
+pub async fn git_push_cmd(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     repository_root: Option<String>,
 ) -> Result<(), String> {
     let env = askpass.env_for(false);
     if let Some(requested_root) = repository_root {
-        with_requested_repo(state.inner(), &requested_root, |root| {
+        with_requested_repo_blocking(state.inner(), requested_root, move |root| {
             run_ok(root, &["push"], REMOTE_TIMEOUT, &env).map(|_| ())
         })
+        .await
     } else {
-        run_ok(&repo_root(&state)?, &["push"], REMOTE_TIMEOUT, &env).map(|_| ())
+        let shared = state.0.clone();
+        run_blocking(move || {
+            let root = repo_root(&shared)?;
+            run_ok(&root, &["push"], REMOTE_TIMEOUT, &env).map(|_| ())
+        })
+        .await
     }
 }
 
 #[tauri::command]
-pub fn git_remote_probe(
+pub async fn git_remote_probe(
     state: tauri::State<'_, GitServiceState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
 ) -> Result<String, String> {
-    let root = repo_root(&state)?;
+    let shared = state.0.clone();
     let env = askpass.env_for(true);
-    remote_probe(&root, &env)
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        remote_probe(&root, &env)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_diff_content(
+pub async fn git_diff_content(
     state: tauri::State<'_, GitServiceState>,
     path: String,
     staged: bool,
 ) -> Result<DiffContent, String> {
-    diff_content(&repo_root(&state)?, &path, staged)
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        diff_content(&root, &path, staged)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_conflict_abort(
+pub async fn git_conflict_abort(
     state: tauri::State<'_, GitServiceState>,
     op: String,
 ) -> Result<(), String> {
-    conflict_abort(&repo_root(&state)?, &op)
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        conflict_abort(&root, &op)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_conflict_continue(
+pub async fn git_conflict_continue(
     state: tauri::State<'_, GitServiceState>,
     op: String,
 ) -> Result<(), String> {
-    conflict_continue(&repo_root(&state)?, &op)
+    let shared = state.0.clone();
+    run_blocking(move || {
+        let root = repo_root(&shared)?;
+        conflict_continue(&root, &op)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1224,6 +1503,92 @@ mod tests {
             detect_environment(tmp.path()),
             GitEnvironment::NotARepo
         ));
+    }
+
+    /// #57 T3：Ready 首載快照——status 與 branches 兩個 blocking task 併發
+    /// join 後一次回齊（fixture repo 上驗證兩者內容都是真的）。
+    #[test]
+    fn bootstrap_ready_snapshot_joins_status_and_branches() {
+        let tmp = tempfile::tempdir().unwrap();
+        test_repo::init(tmp.path());
+        test_repo::write_and_commit(tmp.path(), "a.txt", "hi", "init");
+        std::fs::write(tmp.path().join("b.txt"), "new").unwrap();
+        let (status, branch_list) =
+            tauri::async_runtime::block_on(bootstrap_ready_snapshot(tmp.path().to_path_buf()))
+                .unwrap();
+        assert!(
+            status.parsed.untracked.iter().any(|p| p == "b.txt"),
+            "untracked: {:?}",
+            status.parsed.untracked
+        );
+        assert!(
+            branch_list
+                .local
+                .iter()
+                .any(|b| b.name == "main" && b.is_current),
+            "local branches: {:?}",
+            branch_list
+                .local
+                .iter()
+                .map(|b| &b.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// #57 T3：bootstrap 快照對 status/branches 失敗回 Err；`bootstrap_dto`
+    /// 再把它映成 partial DTO（不整趟 Err，見下一個測試）。
+    #[test]
+    fn bootstrap_ready_snapshot_fails_whole_on_a_non_repo_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result =
+            tauri::async_runtime::block_on(bootstrap_ready_snapshot(tmp.path().to_path_buf()));
+        assert!(result.is_err());
+    }
+
+    /// #57 覆核修正：Ready 落地後快照失敗 → partial DTO（environment 照常、
+    /// status/branches 為 null、錯誤放 snapshotError）——不整趟 Err，否則前端
+    /// 殘留前一個 workspace 的 git 狀態、與 Rust 端已切換的 RepoHandle 形成
+    /// 跨 workspace 混血顯示。
+    #[test]
+    fn bootstrap_dto_keeps_environment_and_carries_snapshot_error_on_failure() {
+        let dto = bootstrap_dto(
+            GitEnvironment::Ready {
+                root: "/w".to_string(),
+                version: "2.50.1".to_string(),
+            },
+            Err("git status timed out".to_string()),
+        );
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["environment"]["status"], "ready");
+        assert!(v["status"].is_null());
+        assert!(v["branches"].is_null());
+        assert_eq!(v["snapshotError"], "git status timed out");
+    }
+
+    /// #57 T3：DTO 契約——camelCase、非 Ready 時 status/branches 序列化為 null。
+    #[test]
+    fn git_bootstrap_dto_serializes_camel_case_with_nullable_snapshot() {
+        let dto = GitBootstrapDto {
+            environment: GitEnvironment::NotARepo,
+            status: None,
+            branches: None,
+            snapshot_error: None,
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["environment"]["status"], "notARepo");
+        assert!(v["status"].is_null());
+        assert!(v["branches"].is_null());
+        assert!(v["snapshotError"].is_null());
+    }
+
+    /// #57 T3：git:state-changed 事件 payload 帶 workspaceRoot（前端過濾契約）。
+    #[test]
+    fn git_state_changed_event_carries_workspace_root() {
+        let v = serde_json::to_value(GitStateChangedEvent {
+            workspace_root: "/w".to_string(),
+        })
+        .unwrap();
+        assert_eq!(v["workspaceRoot"], "/w");
     }
 
     #[test]
@@ -1349,9 +1714,11 @@ mod tests {
         test_repo::init(repo_b.path());
         std::fs::write(repo_a.path().join("same.txt"), "a\n").unwrap();
         std::fs::write(repo_b.path().join("same.txt"), "b\n").unwrap();
-        let state = GitServiceState(std::sync::Mutex::new(Some(RepoHandle {
-            root: repo_b.path().to_path_buf(),
-        })));
+        let state = GitServiceState(std::sync::Arc::new(std::sync::Mutex::new(Some(
+            RepoHandle {
+                root: repo_b.path().to_path_buf(),
+            },
+        ))));
 
         let error = with_requested_repo(&state, repo_a.path().to_str().unwrap(), |root| {
             stage(root, &["same.txt".into()])
@@ -2055,5 +2422,198 @@ mod tests {
         test_repo::init(r);
         test_repo::write_and_commit(r, "a.txt", "1", "c1");
         assert_eq!(remote_probe(r, &[]).unwrap(), "unknown");
+    }
+
+    /// T1（#55）AC1 守衛：Tauri 2 同步 command 在 main thread 執行（perf 分析既證），
+    /// git 子行程會凍住 UI event loop。此測試以原始碼守護 git_service.rs 與 git_log.rs
+    /// 內每個 `#[tauri::command]` 都宣告為 `pub async fn`（async command 由 async runtime
+    /// 排程、不佔 main thread）。字面守衛只擋「改回同步 fn」的退化，不證明 closure 內容。
+    #[test]
+    fn git_commands_are_declared_async_off_the_main_thread() {
+        for (name, source) in [
+            ("git_service.rs", include_str!("git_service.rs")),
+            ("git_log.rs", include_str!("git_log.rs")),
+        ] {
+            let lines: Vec<&str> = source.lines().collect();
+            let mut command_count = 0usize;
+            for (index, line) in lines.iter().enumerate() {
+                if !line.trim_start().starts_with("#[tauri::command") {
+                    continue;
+                }
+                let declaration = lines[index..]
+                    .iter()
+                    .find(|candidate| candidate.contains("fn "))
+                    .unwrap_or_else(|| {
+                        panic!("{name}: command attribute at line {index} has no fn declaration")
+                    });
+                assert!(
+                    declaration.contains("pub async fn"),
+                    "{name}: Tauri command must be `pub async fn` to stay off the main thread, got: {declaration}"
+                );
+                command_count += 1;
+            }
+            assert!(
+                command_count >= 4,
+                "{name}: expected to find Tauri commands, found {command_count}"
+            );
+        }
+    }
+
+    /// T1（#55）AC2：async 化後 git 讀寫可能真並發。寫操作（stage/commit）與 status 讀
+    /// 併發執行必須不 panic、讀不失敗（status 走 GIT_OPTIONAL_LOCKS=0，不取鎖）、
+    /// 寫入結果一致（index.lock 由 git 自身互斥）。
+    #[test]
+    fn concurrent_status_reads_during_stage_and_commit_writes_stay_consistent() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        test_repo::init(&root);
+        test_repo::write_and_commit(&root, "base.txt", "base\n", "base");
+
+        let writer_done = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut readers = Vec::new();
+        for _ in 0..2 {
+            let reader_root = root.clone();
+            let done = writer_done.clone();
+            let start = barrier.clone();
+            readers.push(std::thread::spawn(move || {
+                start.wait();
+                let mut reads = 0u32;
+                loop {
+                    let dto = status_of(&reader_root, None)
+                        .expect("concurrent status read must not fail during writes");
+                    assert!(!dto.parsed.head_oid.is_empty());
+                    reads += 1;
+                    if done.load(Ordering::Acquire) {
+                        break;
+                    }
+                }
+                reads
+            }));
+        }
+
+        barrier.wait();
+        for i in 0..4 {
+            let name = format!("f{i}.txt");
+            std::fs::write(root.join(&name), format!("{i}\n")).unwrap();
+            stage(&root, &[name]).expect("stage must succeed while status reads run");
+            commit(&root, &format!("c{i}")).expect("commit must succeed while status reads run");
+        }
+        writer_done.store(true, Ordering::Release);
+        for reader in readers {
+            let reads = reader.join().expect("reader thread must not panic");
+            assert!(reads > 0, "reader should have completed at least one read");
+        }
+
+        // 結果一致：工作樹乾淨、5 個 commit（base + 4）。
+        let dto = status_of(&root, None).unwrap();
+        assert!(dto.parsed.staged.is_empty());
+        assert!(dto.parsed.unstaged.is_empty());
+        assert!(dto.parsed.untracked.is_empty());
+        let out = run_git(
+            &root,
+            &["rev-list", "--count", "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "5");
+    }
+
+    /// review fix（#55 T1 競態）：async 化後兩個 git_detect 完成順序可反轉——
+    /// 舊 workspace 的慢結果晚到時，不得覆蓋已落地的新 workspace root/watcher
+    ///（generation guard），且 root 與 watcher 必須成對（單一 guard 段內寫入）。
+    #[test]
+    fn stale_detect_result_does_not_overwrite_newer_root_or_watcher() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let repo_old = tempfile::tempdir().unwrap();
+        let repo_new = tempfile::tempdir().unwrap();
+        test_repo::init(repo_old.path());
+        test_repo::init(repo_new.path());
+
+        let counter = AtomicU64::new(0);
+        let repo_state: Mutex<Option<RepoHandle>> = Mutex::new(None);
+        let watch_state: Mutex<Option<crate::git_watch::GitWatcher>> = Mutex::new(None);
+
+        // 請求順序：先 detect(old)、後 detect(new)——generation 依進場順序遞增。
+        let gen_old = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let gen_new = counter.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // 完成順序反轉：new（快）先落地。
+        let env_new = GitEnvironment::Ready {
+            root: repo_new.path().to_string_lossy().into_owned(),
+            version: "git version 2.50.1".into(),
+        };
+        let watcher_new =
+            crate::git_watch::build_git_watcher(&repo_new.path().join(".git"), || {}).unwrap();
+        assert!(commit_detect_result(
+            gen_new,
+            &counter,
+            &repo_state,
+            &watch_state,
+            &env_new,
+            Some(watcher_new),
+        )
+        .unwrap());
+        assert!(watch_state.lock().unwrap().is_some());
+
+        // old（慢）晚到：即使結果是 NotARepo（會清空 state）也必須被丟棄——
+        // root 與 watcher 都留在 new 上。
+        let applied = commit_detect_result(
+            gen_old,
+            &counter,
+            &repo_state,
+            &watch_state,
+            &GitEnvironment::NotARepo,
+            None,
+        )
+        .unwrap();
+        assert!(!applied, "stale detect result must be discarded");
+        assert_eq!(
+            repo_state.lock().unwrap().as_ref().unwrap().root,
+            repo_new.path(),
+            "stale detect must not overwrite the newer repo root"
+        );
+        assert!(
+            watch_state.lock().unwrap().is_some(),
+            "stale detect must not tear down the newer watcher"
+        );
+
+        // 晚到的 Ready 結果同樣被丟棄（last-completed-wins 競態的另一半）。
+        let env_old = GitEnvironment::Ready {
+            root: repo_old.path().to_string_lossy().into_owned(),
+            version: "git version 2.50.1".into(),
+        };
+        assert!(!commit_detect_result(
+            gen_old,
+            &counter,
+            &repo_state,
+            &watch_state,
+            &env_old,
+            None,
+        )
+        .unwrap());
+        assert_eq!(
+            repo_state.lock().unwrap().as_ref().unwrap().root,
+            repo_new.path()
+        );
+
+        // 最新 generation 的 NotARepo 才可清空（原行為保留）。
+        let gen_clear = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(commit_detect_result(
+            gen_clear,
+            &counter,
+            &repo_state,
+            &watch_state,
+            &GitEnvironment::NotARepo,
+            None,
+        )
+        .unwrap());
+        assert!(repo_state.lock().unwrap().is_none());
+        assert!(watch_state.lock().unwrap().is_none());
     }
 }

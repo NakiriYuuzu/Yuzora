@@ -107,13 +107,19 @@ describe("cherry-pick conflict flow", () => {
             remoteCheck: { mode: "off", intervalSec: 180 }
         })
         useWorkspaceStore.setState({
-            workspacePath: null,
+            workspacePath: "/w",
             groups: [{ tabs: [], activePath: null }],
             activeGroupIndex: 0
         })
 
         mocks.invoke.mockImplementation(async (cmd) => {
             switch (cmd) {
+                case "git_bootstrap":
+                    return {
+                        environment: { status: "ready", root: "/w", version: "2.50.1" },
+                        status: makeStatus(),
+                        branches: { local: [], remote: [] }
+                    }
                 case "git_log_page":
                     return { commits: [makeCommit(0)], hasMore: false } satisfies LogPage
                 case "git_log_authors":
@@ -170,7 +176,8 @@ describe("cherry-pick conflict flow", () => {
         const onGitStateChanged = mocks.listeners.get("git:state-changed")
         expect(onGitStateChanged).toBeDefined()
         act(() => {
-            onGitStateChanged?.({})
+            // #57 T3：事件帶 workspaceRoot，GitBridge 比對 live workspacePath。
+            onGitStateChanged?.({ payload: { workspaceRoot: "/w" } })
         })
         await waitFor(() => expect(invokeCalls("git_status_cmd").length).toBeGreaterThan(0))
 
