@@ -30,5 +30,6 @@
   "profileWslDefault": "WSL (default distro)",
   "profileWslDistro": "WSL: {{distro}}",
   "noSessions": "No terminal sessions yet",
-  "emptyDescription": "Open a new terminal to run commands here."
+  "emptyDescription": "Open a new terminal to run commands here.",
+  "tabLimitReached": "Yuzora already has {{limit}} terminal tabs open across all workspaces, which is the maximum. Close a tab in any workspace before opening another."
 }

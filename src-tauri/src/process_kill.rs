@@ -25,6 +25,28 @@ const fn windows_hidden_creation_flags() -> u32 {
     WINDOWS_CREATE_NO_WINDOW
 }
 
+#[cfg(any(windows, test))]
+fn windows_shell_raw_args(command: &str) -> [std::ffi::OsString; 2] {
+    [
+        std::ffi::OsString::from("/C"),
+        std::ffi::OsString::from(format!("\"{command}\"")),
+    ]
+}
+
+/// Windows: hand the whole command line to cmd.exe verbatim.
+/// `Command::args` applies MSVC-style argv escaping (`"` -> `\"`), which
+/// cmd.exe's parser does not understand. `raw_arg` bypasses that escaping (#35).
+#[cfg(windows)]
+pub fn windows_shell_command(shell: &std::ffi::OsStr, command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let [flags, command] = windows_shell_raw_args(command);
+    let mut cmd = Command::new(shell);
+    cmd.raw_arg(flags);
+    cmd.raw_arg(command);
+    cmd
+}
+
 #[cfg(unix)]
 type GroupId = libc::pid_t;
 
@@ -257,6 +279,84 @@ mod tests {
         let hidden = super::windows_hidden_creation_flags();
         assert_eq!(hidden & 0x0800_0000, 0x0800_0000);
         assert_eq!(hidden & 0x0000_0200, 0);
+    }
+
+    #[test]
+    fn windows_shell_raw_args_preserve_nested_quotes() {
+        let command = r#"node "E:\Applications\Yuzora 測試\adapters\probe.mjs""#;
+        let raw_args = super::windows_shell_raw_args(command);
+        assert_eq!(
+            raw_args.len(),
+            2,
+            "分隔必須靠兩次 raw_arg，不可併成一個 arg（#35）"
+        );
+        assert_eq!(raw_args[0], std::ffi::OsStr::new("/C"));
+        assert_eq!(raw_args[1], std::ffi::OsStr::new(&format!("\"{command}\"")));
+        assert!(!raw_args[1].to_string_lossy().contains(r#"\""#));
+    }
+
+    #[test]
+    fn windows_shell_callers_use_the_shared_launcher() {
+        for (name, source) in [
+            ("agent_process.rs", include_str!("agent_process.rs")),
+            ("process_service.rs", include_str!("process_service.rs")),
+        ] {
+            assert!(
+                !source.contains(r#"args(["/C""#),
+                "{name} 又出現未經 raw_arg 的 cmd.exe launcher（#35）"
+            );
+            assert!(
+                source.contains("windows_shell_command("),
+                "{name} 必須走共用的 windows_shell_command（#35）"
+            );
+        }
+    }
+
+    /// #35：`windows_shell_command` 必須拆成**兩次** raw arg，靠 std 在 arg 之間
+    /// 補的空格分隔 `/C` 與被引號包住的 command。併成一次
+    /// （`format!("{flags}{command}")`）會產出 `/C"node …"`，cmd.exe 會把
+    /// `/C"node` 當成無法辨識的開關。純函式測試觀察不到這件事——它只檢查
+    /// `windows_shell_raw_args` 的回傳值，從不建構 `Command`；而
+    /// `windows_shell_command` 是 `#[cfg(windows)]`，在 macOS 根本不編譯。
+    /// needle 用 `concat!` 拼接，否則這支測試自己的原始碼會被算進去。
+    #[test]
+    fn windows_shell_command_splits_flags_and_command_into_two_raw_args() {
+        let source = include_str!("process_kill.rs");
+        let needle = concat!("cmd.raw", "_arg(");
+        assert_eq!(
+            source.matches(needle).count(),
+            2,
+            "windows_shell_command 必須恰好呼叫兩次 raw_arg（#35）"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires Node.js and must run natively on Windows to exercise cmd.exe quoting"]
+    fn windows_shell_command_runs_quoted_node_script() {
+        const PROBE_OUTPUT: &str = "YUZORA_WINDOWS_CMD_QUOTING_OK";
+
+        let temp = tempfile::Builder::new()
+            .prefix("yuzora 測試 cmd ")
+            .tempdir()
+            .unwrap();
+        let probe = temp.path().join("probe.mjs");
+        std::fs::write(&probe, format!("console.log(\"{PROBE_OUTPUT}\");\n")).unwrap();
+        assert!(probe.to_string_lossy().contains(' '));
+        assert!(probe.to_string_lossy().contains("測試"));
+
+        let command = format!(r#"node "{}""#, probe.display());
+        let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        let output = super::windows_shell_command(shell.as_os_str(), &command)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "cmd.exe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), PROBE_OUTPUT);
     }
 
     #[cfg(unix)]

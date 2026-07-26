@@ -33,6 +33,7 @@ import {
     ptyOpen,
     ptyWrite,
     ptyResize,
+    ptyOutputMetrics,
     ptyClose,
     ptyCloseWorkspace,
     devServerDetect,
@@ -487,14 +488,16 @@ it("ptyOpen forwards args, wires channel, and returns session info", async () =>
         expect(p.cwdStrategy).toBe("native")
         expect(p.cols).toBe(120)
         expect(p.rows).toBe(32)
-        p.onEvent.onmessage({ type: "output", data: "ready\n" })
+        p.onEvent.onmessage({ type: "output", data: "ready\n", seq: 0, droppedBytes: 0, truncated: false })
         return { sessionId: "pty-1", workspace: "/w", shell: "/bin/zsh", cols: 120, rows: 32 }
     })
     const events: PtyEvent[] = []
     const info = await ptyOpen("/w", "pty-1", null, ["-c", "echo ok"], "native", 120, 32, (event) =>
         events.push(event)
     )
-    expect(events).toEqual([{ type: "output", data: "ready\n" }])
+    expect(events).toEqual([
+        { type: "output", data: "ready\n", seq: 0, droppedBytes: 0, truncated: false }
+    ])
     expect(info.sessionId).toBe("pty-1")
 })
 
@@ -503,6 +506,17 @@ it("ptyWrite forwards session id and data", async () => {
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
     await ptyWrite("pty-1", "pwd\n")
     expect(seen[0]).toEqual(["pty_write", { sessionId: "pty-1", data: "pwd\n" }])
+})
+
+it("ptyOutputMetrics forwards session id and returns the camelCase snapshot", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => {
+        seen.push([cmd, payload])
+        return { outputBytes: 4096, queueDepth: 128, droppedBytes: 32 }
+    })
+    const metrics = await ptyOutputMetrics("pty-1")
+    expect(seen[0]).toEqual(["pty_output_metrics", { sessionId: "pty-1" }])
+    expect(metrics).toEqual({ outputBytes: 4096, queueDepth: 128, droppedBytes: 32 })
 })
 
 it("ptyResize forwards dimensions", async () => {
@@ -592,7 +606,7 @@ it("narrows pty and dev-server discriminated unions", () => {
         return status.status
     }
 
-    expect(ptyText({ type: "output", data: "ok" })).toBe("ok")
+    expect(ptyText({ type: "output", data: "ok", seq: 3, droppedBytes: 0, truncated: false })).toBe("ok")
     expect(ptyText({ type: "exit", code: null })).toBe("none")
     expect(serverText({ status: "running", port: 5173 })).toBe("5173")
     expect(serverText({ status: "failed", reason: "missing script" })).toBe("missing script")

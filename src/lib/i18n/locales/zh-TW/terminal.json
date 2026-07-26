@@ -30,5 +30,6 @@
   "profileWslDefault": "WSL（預設發行版）",
   "profileWslDistro": "WSL：{{distro}}",
   "noSessions": "尚無終端機工作階段",
-  "emptyDescription": "開啟新的終端機，在這裡執行指令。"
+  "emptyDescription": "開啟新的終端機，在這裡執行指令。",
+  "tabLimitReached": "Yuzora 在所有工作區合計已開啟 {{limit}} 個終端機分頁，已達上限。請先在任一工作區關閉一個分頁，再開新的。"
 }

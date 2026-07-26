@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod } from "@/agent/acpConnection"
 import { AGENT_SETTINGS_STORAGE_KEY } from "@/app/workbench/settingsStorage"
-import { useTerminalStore } from "@/state/terminalStore"
+import { MAX_TERMINAL_TABS, useTerminalStore } from "@/state/terminalStore"
+import { useUiStore } from "@/state/uiStore"
 import { createAgentStore, __test_terminalLoginShellCommand as build } from "./agentStore"
 
 // The Bun-hosted test runtime injects an empty `localStorage` global with no
@@ -36,7 +38,7 @@ describe("terminal login command honors the selected preset", () => {
         localStorage.setItem(AGENT_SETTINGS_STORAGE_KEY,
             JSON.stringify({ preset: "claude", command: "", traceEnabled: false }))
         const cmd = build({ id: "l", name: "Login", type: "terminal", args: ["--login"], env: {} })
-        expect(cmd).toContain("@agentclientprotocol/claude-agent-acp@latest")
+        expect(cmd).toContain("@agentclientprotocol/claude-agent-acp@0.62.0")
     })
 
     it("uses the picker-selected agent's login command, not the global preset (F1)", async () => {
@@ -69,7 +71,7 @@ describe("terminal login command honors the selected preset", () => {
             { shellArgs?: string[] }
         >
         const added = sessions.at(-1)
-        expect(added?.shellArgs?.[1]).toContain("@agentclientprotocol/codex-acp@latest")
+        expect(added?.shellArgs?.[1]).toContain("@agentclientprotocol/codex-acp@1.1.7")
         expect(added?.shellArgs?.[1]).not.toContain("claude-agent-acp")
     })
 
@@ -85,7 +87,7 @@ describe("terminal login command honors the selected preset", () => {
 
         const cmd = build({ id: "l", name: "Login", type: "terminal", args: ["--login"], env: {} })
 
-        expect(cmd).toContain("@agentclientprotocol/claude-agent-acp@latest")
+        expect(cmd).toContain("@agentclientprotocol/claude-agent-acp@0.62.0")
     })
 
     it("uses a curated preset's untrusted Custom command for that explicit login attempt", async () => {
@@ -122,4 +124,64 @@ describe("terminal login command honors the selected preset", () => {
         expect(sessions.at(-1)?.shellArgs?.[1]).toContain("uvx wrapped-codex --login")
         expect(store.getState().authRequired?.agentIdentity?.trustedAgentId).toBeNull()
     })
+})
+
+describe("terminal login respects the terminal tab limit", () => {
+  beforeEach(() => {
+    clearMocks()
+    installLocalStorage()
+    localStorage.clear()
+    useTerminalStore.getState().reset()
+    useUiStore.setState({ terminalOpen: false })
+  })
+
+  it("reports an error instead of opening an empty drawer when the workspace is full", async () => {
+    const dialogs: string[] = []
+    mockIPC((cmd, payload) => {
+      if (cmd === "plugin:dialog|message") {
+        dialogs.push(JSON.stringify(payload))
+        return "Ok"
+      }
+      return undefined
+    })
+    const authMethod: AgentAuthMethod = {
+      id: "codex_terminal_login",
+      name: "Login",
+      type: "terminal",
+      args: ["--login"],
+      env: {}
+    }
+    const connection: AgentConnection = {
+      newSession: vi.fn(async () => {
+        throw new AgentAuthRequiredError({ authMethods: [authMethod], cwd: "/ws", sessionId: null })
+      }),
+      loadSession: vi.fn(async () => {}),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(),
+      cancel: vi.fn()
+    }
+    const store = createAgentStore({ connection })
+    await store.getState().newSession("/ws", "codex").catch(() => undefined)
+
+    for (let index = 0; index < MAX_TERMINAL_TABS; index += 1) {
+      useTerminalStore.getState().addSession("/ws", {
+        sessionId: `filler-${index}`,
+        title: `Terminal ${index + 1}`,
+        launchStatus: "running",
+        workspace: "/ws",
+        shell: "",
+        cols: 80,
+        rows: 24
+      })
+    }
+    const before = Object.keys(useTerminalStore.getState().sessions).length
+
+    store.getState().beginTerminalLogin()
+
+    await vi.waitFor(() => expect(dialogs).toHaveLength(1))
+    expect(dialogs[0]).toContain(String(MAX_TERMINAL_TABS))
+    expect(Object.keys(useTerminalStore.getState().sessions)).toHaveLength(before)
+    // The drawer must not be opened onto a login terminal that never appeared.
+    expect(useUiStore.getState().terminalOpen).toBe(false)
+  })
 })

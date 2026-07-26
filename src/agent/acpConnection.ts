@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event"
 import type { AgentCommandIdentity, AgentId } from "@/lib/agentPresets"
+import { DEFAULT_AGENT_COMMAND } from "@/lib/agentPresets"
 import { invoke } from "@/lib/ipc"
 import {
     ClientSideConnection,
@@ -235,6 +236,12 @@ export interface SessionMeta {
 
 const ACP_AUTH_REQUIRED_ERROR_CODE = -32000
 const ACP_INVALID_PARAMS_ERROR_CODE = -32602
+const AGENT_KILL_TIMEOUT_MS = 5_000
+// #37：bunx／npx 首次執行時會先從 registry 下載 adapter，這段時間內 adapter
+// 還沒開始講 ACP。給它獨立的冷啟動視窗，別讓下載時間吃掉 protocol handshake
+// 的短 timeout。
+const BOOTSTRAP_TIMEOUT_MS = 120_000
+const INITIALIZE_TIMEOUT_MS = 15_000
 
 export interface AgentAuthMethod {
     id: string
@@ -289,6 +296,16 @@ export function isAgentAuthRequiredError(value: unknown): value is AgentAuthRequ
         )
 }
 
+export type SessionNewFailureKind = "auth-required" | "transport" | "protocol"
+
+export function classifySessionNewFailure(
+    error: unknown,
+    disconnected = false
+): SessionNewFailureKind {
+    if (isAgentAuthRequiredError(error)) return "auth-required"
+    return disconnected ? "transport" : "protocol"
+}
+
 interface NewSessionResult {
     sessionId: string
     startupInfo: string | null
@@ -331,6 +348,9 @@ export interface AgentConnection {
         value: SessionConfigValue
     ): Promise<SessionConfigOption[]>
     disposePrepared?(cwd?: string): Promise<boolean>
+    disposeOwnerless?(reason: string): Promise<boolean>
+    pendingTeardown?(): Promise<void> | undefined
+    retryCooldownUntil?(cwd: string, agentId?: AgentId): number
     processId?(): string | undefined
     // Ensures a connection for cwd (spawning if needed) and reports whether the
     // agent declared the loadSession capability at initialize time. Used by the
@@ -395,7 +415,211 @@ export interface AcpClientRuntimeDeps {
 
 export interface AcpConnectionDeps extends AcpClientRuntimeDeps {
     command?: string | (() => string)
+    /** 第一個 stdout byte → initialize 回應的上限（ACP protocol handshake）。 */
     initializeTimeoutMs?: number
+    /** agent_spawn → 第一個 stdout byte 的上限（#37 冷啟動下載視窗）。 */
+    bootstrapTimeoutMs?: number
+}
+
+/** 進行中的冷啟動（bunx／npx 首次下載 adapter）；UI 據此顯示進度與取消。 */
+export interface AgentColdStart {
+    processId: string
+    /** 白名單化的 runtime 名（見 resolveCommandRuntime）；未知一律 "other"。 */
+    runtime: string
+    /** 這條連線的 workspace cwd。取消是 per-route 的，UI 據此分辨是哪一條。 */
+    cwd: string
+    startedAt: number
+    /** 已按下取消、agent_kill 仍在飛：按鈕 disabled，記錄不得先被移除。 */
+    cancelling: boolean
+}
+
+interface ColdStartRecord {
+    entry: AgentColdStart
+    kill: () => Promise<void>
+    cancelling?: Promise<void>
+    released: boolean
+}
+
+const coldStarts = new Map<string, ColdStartRecord>()
+const coldStartListeners = new Set<() => void>()
+let coldStartSnapshot: AgentColdStart[] = []
+
+function publishColdStarts(): void {
+    coldStartSnapshot = [...coldStarts.values()].map((item) => item.entry)
+    for (const listener of [...coldStartListeners]) listener()
+}
+
+export function subscribeAgentColdStarts(listener: () => void): () => void {
+    coldStartListeners.add(listener)
+    return () => {
+        coldStartListeners.delete(listener)
+    }
+}
+
+/** useSyncExternalStore 相容：同一批狀態回傳同一個陣列實體。 */
+export function agentColdStarts(): AgentColdStart[] {
+    return coldStartSnapshot
+}
+
+/**
+ * 使用者取消單一條冷啟動下載（per-route：只收掉這個 processId，不動其他同時在
+ * bootstrap 的連線）。kill 必須 await（Rust 的 kill_tree 已含 bounded wait），
+ * 且這筆記錄要留到 kill 回報後才移除，否則畫面已回復時 npm／node／cmd 的子孫
+ * 行程可能還活著。
+ */
+export async function cancelAgentColdStart(processId: string): Promise<void> {
+    const record = coldStarts.get(processId)
+    if (!record) return
+    if (record.cancelling) return record.cancelling
+    const cancelling = record.kill().finally(() => {
+        record.cancelling = undefined
+        if (record.released) coldStarts.delete(processId)
+        publishColdStarts()
+    })
+    record.cancelling = cancelling
+    record.entry = { ...record.entry, cancelling: true }
+    publishColdStarts()
+    await cancelling
+}
+
+function registerColdStart(entry: AgentColdStart, kill: () => Promise<void>): void {
+    coldStarts.set(entry.processId, { entry, kill, released: false })
+    publishColdStarts()
+}
+
+function releaseColdStart(processId: string): void {
+    const record = coldStarts.get(processId)
+    if (!record) return
+    // 取消中：kill 尚未回報前不得讓 banner 消失（子孫行程可能還在收）
+    if (record.cancelling) {
+        record.released = true
+        return
+    }
+    coldStarts.delete(processId)
+    publishColdStarts()
+}
+
+// #37：spawn 指令的 runtime 判定與 telemetry 都以 resolveCommandRuntime 為準。
+// 指令可能帶 `KEY=value` env 前綴（本專案的 pi 憑證正是 env-var 制）、含空白的
+// 引號路徑、`cmd /c` 之類的 wrapper，或 `bun x`／`pnpm dlx` 這種雙 token 形式；
+// 弱 tokenizer 會同時造成「secret 寫進 log」與「真的會下載的指令拿不到冷啟動
+// 視窗」。對齊 Rust 端 agent_process.rs 的 command_first_token（跳過 env 前綴、
+// 完整 command 不入 log）。
+const REGISTRY_RUNTIMES = new Set(["bunx", "npx"])
+/** 雙 token 形式：`bun x`／`pnpm dlx`／`yarn dlx` 一樣會從 registry 取套件。 */
+const REGISTRY_SUBCOMMANDS: Record<string, string> = { bun: "x", pnpm: "dlx", yarn: "dlx" }
+/** wrapper：真正的 runtime 在 `/c`／`-c` 之後（Windows 與 shell 包裝）。 */
+const WRAPPER_RUNTIMES = new Set(["cmd", "sh", "bash", "zsh", "pwsh", "powershell"])
+const WRAPPER_FLAGS = new Set(["/c", "-c", "-command"])
+/** telemetry 白名單。不在此列的 token 一律回報 "other"，絕不原樣寫進 log。 */
+const KNOWN_RUNTIMES = new Set([
+    "bunx", "npx", "bun", "npm", "pnpm", "yarn", "node", "deno",
+    "cmd", "sh", "bash", "zsh", "pwsh", "powershell"
+])
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+
+interface CommandRuntime {
+    /** 白名單化的 runtime 名；未知一律 "other"。 */
+    runtime: string
+    /** 會從 package registry 下載，需要冷啟動視窗。 */
+    registry: boolean
+}
+
+const UNKNOWN_RUNTIME: CommandRuntime = { runtime: "other", registry: false }
+
+/** 感知引號的切詞：`"C:\Program Files\nodejs\npx.cmd"` 必須是單一 token。 */
+function tokenizeCommand(command: string): string[] {
+    const tokens: string[] = []
+    let current = ""
+    let quote: string | undefined
+    let open = false
+    for (const char of command) {
+        if (quote) {
+            if (char === quote) quote = undefined
+            else current += char
+            continue
+        }
+        if (char === '"' || char === "'") {
+            quote = char
+            open = true
+            continue
+        }
+        if (/\s/.test(char)) {
+            if (open) tokens.push(current)
+            current = ""
+            open = false
+            continue
+        }
+        current += char
+        open = true
+    }
+    if (open) tokens.push(current)
+    return tokens
+}
+
+function binaryName(token: string): string {
+    const base = token.split(/[\\/]/).pop() ?? ""
+    return base.toLowerCase().replace(/\.(cmd|exe|bat|ps1)$/, "")
+}
+
+function resolveCommandRuntime(command: string): CommandRuntime {
+    let tokens = tokenizeCommand(command)
+    // wrapper 最多拆兩層（`cmd /c sh -c npx …`）；再深就不猜了
+    for (let depth = 0; depth < 3; depth += 1) {
+        const start = tokens.findIndex((token) => !ENV_ASSIGNMENT.test(token))
+        if (start < 0) return UNKNOWN_RUNTIME
+        tokens = tokens.slice(start)
+        const name = binaryName(tokens[0] ?? "")
+        if (WRAPPER_RUNTIMES.has(name)) {
+            const flag = tokens.findIndex(
+                (token, index) => index > 0 && WRAPPER_FLAGS.has(token.toLowerCase())
+            )
+            if (flag < 0) return { runtime: name, registry: false }
+            const inner = tokens.slice(flag + 1)
+            // `sh -c "npx -y …"`：整串指令會被引號收成單一 token
+            tokens = inner.length === 1 ? tokenizeCommand(inner[0] ?? "") : inner
+            continue
+        }
+        const runtime = KNOWN_RUNTIMES.has(name) ? name : "other"
+        if (REGISTRY_RUNTIMES.has(name)) return { runtime, registry: true }
+        const subcommand = REGISTRY_SUBCOMMANDS[name]
+        if (subcommand !== undefined && subcommand === tokens[1]?.toLowerCase()) {
+            return { runtime, registry: true }
+        }
+        // `deno run -A npm:pi-acp@0.0.32`：npm: specifier 才會下載
+        if (name === "deno" && tokens.some((token) => token.startsWith("npm:"))) {
+            return { runtime, registry: true }
+        }
+        return { runtime, registry: false }
+    }
+    return UNKNOWN_RUNTIME
+}
+
+function usesRegistryRuntime(command: string): boolean {
+    return resolveCommandRuntime(command).registry
+}
+
+type StartupPhase = "connected" | "cold_start_timeout" | "init_timeout" | "bootstrap_cancelled" | "failed"
+
+interface StartupTiming {
+    bootstrapMs?: number
+    initializeMs?: number
+}
+
+// #37 duration telemetry。只送白名單化的 runtime 名與兩段耗時——完整 command 可能
+// 帶 env 前綴的憑證、registry 認證或私有 package 路徑，一律不入 log（token 同理）。
+function logStartupTiming(phase: StartupPhase, command: string, timing: StartupTiming): void {
+    void invoke("log_event", {
+        event: {
+            level: phase === "connected" ? "info" : "warn",
+            kind: "debug",
+            source: "acp",
+            workspace_path: null,
+            event: `agent_startup_${phase}`,
+            message: `ACP agent startup: ${phase}`,
+            metadata: { runtime: resolveCommandRuntime(command).runtime, ...timing }
+        }
+    }).catch(() => undefined)
 }
 
 export function reduceSessionUpdate(
@@ -724,6 +948,8 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
     let initialization: Promise<ClientSideConnection> | undefined
     let stdoutController: ReadableStreamDefaultController<Uint8Array> | undefined
     let disconnectedError: Error | undefined
+    let disconnectedProcessId: string | undefined
+    let pendingTeardown: Promise<void> | undefined
     let authMethods: AgentAuthMethod[] = []
     let agentVersion: string | undefined
     let agentName: string | undefined
@@ -764,6 +990,7 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
     let teardownActiveListeners: (() => void) | undefined
 
     const markDisconnected = (error: Error) => {
+        if (agentProcessId) disconnectedProcessId = agentProcessId
         disconnectedError = error
         rejectInFlightRequests(error)
         configRequests.clear()
@@ -786,11 +1013,25 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         }
     }
 
+    const beginTeardown = (processId: string, reason: string): Promise<void> => {
+        const teardown = withTeardownTimeout(
+            invoke("agent_kill", { id: processId, reason }),
+            AGENT_KILL_TIMEOUT_MS
+        ).catch((error) => {
+            console.warn(`ACP agent teardown failed (${reason})`, error)
+        })
+        pendingTeardown = teardown
+        void teardown.finally(() => {
+            if (pendingTeardown === teardown) pendingTeardown = undefined
+        })
+        return teardown
+    }
+
     const ensureConnection = (cwd: string) => {
         if (agent) return Promise.resolve(agent)
         if (initialization) return initialization
         disconnectedError = undefined
-        initialization = withTimeout(startConnection(cwd), deps.initializeTimeoutMs ?? 15_000)
+        initialization = startConnection(cwd)
             .then((connection) => {
                 agent = connection
                 disconnectedError = undefined
@@ -798,22 +1039,54 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             })
             .catch(async (error) => {
                 initialization = undefined
-                const processId = agentProcessId
+                const processId = agentProcessId ?? disconnectedProcessId
                 agentProcessId = undefined
+                if (disconnectedProcessId === processId) disconnectedProcessId = undefined
+                // 使用者取消冷啟動時 agent_kill 已在取消路徑被 await，不再收屍一次
+                if (isAgentColdStartCancelledError(error)) throw error
                 // best-effort：kill 前先撈 stderr 尾段，供 timeout 診斷用
                 const tail = processId
                     ? await invoke<string[]>("agent_stderr_tail", { id: processId }).catch(() => [] as string[])
                     : []
-                const timedOut = isInitializeTimeoutError(error)
+                const timeoutStage = startupTimeoutStage(error)
                 if (processId) {
-                    void invoke("agent_kill", {
-                        id: processId,
-                        reason: timedOut ? "init_timeout" : "init_failed"
-                    }).catch(() => {})
+                    await beginTeardown(
+                        processId,
+                        timeoutStage ?? "init_failed"
+                    )
                 }
-                throw timedOut ? initializeTimeoutError(error, tail) : error
+                throw timeoutStage ? startupTimeoutError(error, tail) : error
             })
         return initialization
+    }
+
+    const disposeOwnerless = async (reason: string): Promise<boolean> => {
+        if (sessionRegistry.size > 0 || pendingSessionOwners > 0) return false
+        if (pendingTeardown) {
+            await pendingTeardown
+            return true
+        }
+        if (initialization) {
+            try {
+                await initialization
+            } catch {
+                if (pendingTeardown) await pendingTeardown
+                return false
+            }
+        }
+        if (sessionRegistry.size > 0 || pendingSessionOwners > 0) return false
+        if (pendingTeardown) {
+            await pendingTeardown
+            return true
+        }
+        const processId = agentProcessId ?? disconnectedProcessId
+        if (!processId) return false
+        if (agentProcessId === processId) {
+            markDisconnected(new Error("ACP ownerless connection disposed"))
+        }
+        if (disconnectedProcessId === processId) disconnectedProcessId = undefined
+        await beginTeardown(processId, reason)
+        return true
     }
 
     // 每次連線的狀態（process id、stdout controller、listener）都是連線自持的
@@ -859,8 +1132,19 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             }
         }
 
+        // #37：bootstrap 階段的終點信號。adapter 一開始講 ACP，第一個 stdout byte
+        // 就會到；bunx／npm 的安裝進度走 stderr，不會誤觸這裡。
+        let settleFirstStdout: ((error?: Error) => void) | undefined
+        const firstStdout = new Promise<void>((resolve, reject) => {
+            settleFirstStdout = (error) => (error ? reject(error) : resolve())
+        })
+        // 沒走冷啟動路徑時沒有人 await 它——先掛 no-op handler，避免 exit 時變成
+        // unhandled rejection。
+        firstStdout.catch(() => {})
+
         const unlistenStdout = await listen<{ id: string; line: string }>("agent://stdout", (event) => {
             if (!processId || event.payload.id !== processId) return
+            settleFirstStdout?.()
             try {
                 ownController?.enqueue(encoder.encode(`${event.payload.line}\n`))
             } catch {
@@ -870,6 +1154,9 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         const unlistenExit = await listen<{ id: string; code: number | null; stderrTail?: string[] }>("agent://exit", (event) => {
             if (!processId || event.payload.id !== processId) return
             const exitError = agentExitedEarlyError(event.payload.code, event.payload.stderrTail ?? [])
+            // bootstrap 階段就 exit（如 offline 時 bunx 安裝失敗）：立刻失敗，
+            // 不必等滿冷啟動視窗
+            settleFirstStdout?.(exitError)
             teardownListeners()
             if (agentProcessId === processId) {
                 markDisconnected(exitError)
@@ -898,19 +1185,20 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             }
         }
 
+        const timing: StartupTiming = {}
+        let spawnCommand = ""
         try {
             const command = typeof deps.command === "function" ? deps.command() : deps.command
-            processId = await invoke<string>("agent_spawn", {
-                command: await resolveAgentSpawnCommand(command ?? "bunx pi-acp@latest"),
-                cwd
-            })
+            spawnCommand = await resolveAgentSpawnCommand(command ?? DEFAULT_AGENT_COMMAND)
+            const spawnedAt = Date.now()
+            processId = await invoke<string>("agent_spawn", { command: spawnCommand, cwd })
             agentProcessId = processId
             teardownActiveListeners = teardownListeners
             authMethods = []
             agentVersion = undefined
             agentName = undefined
             agentCapabilities = { loadSession: false, promptImage: false }
-            const initializeResult = await trackAgentRequest(() => connection.initialize({
+            const initializing = trackAgentRequest(() => connection.initialize({
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: true, writeTextFile: true },
@@ -921,6 +1209,50 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
                     elicitation: { form: {} }
                 }
             }))
+            // bootstrap 階段若先失敗，錯誤由下方的 race 回報；這裡只避免 unhandled rejection。
+            initializing.catch(() => {})
+
+            // 只有「會從 registry 下載 package」的 runtime 需要冷啟動視窗；本機既有的
+            // adapter（node <path>、內建 pi adapter）維持單一短 timeout，hang 住時
+            // 仍在 initialize timeout 內失敗。
+            if (usesRegistryRuntime(spawnCommand)) {
+                const bootstrapProcessId = processId
+                registerColdStart({
+                    processId: bootstrapProcessId,
+                    runtime: resolveCommandRuntime(spawnCommand).runtime,
+                    cwd,
+                    startedAt: spawnedAt,
+                    cancelling: false
+                }, async () => {
+                    settleFirstStdout?.(coldStartCancelledError())
+                    await invoke("agent_kill", {
+                        id: bootstrapProcessId,
+                        reason: "bootstrap_cancelled"
+                    }).catch(() => undefined)
+                })
+                try {
+                    await Promise.race([
+                        withTimeout(
+                            firstStdout,
+                            deps.bootstrapTimeoutMs ?? BOOTSTRAP_TIMEOUT_MS,
+                            "cold start"
+                        ),
+                        initializing.then(() => undefined)
+                    ])
+                } finally {
+                    releaseColdStart(bootstrapProcessId)
+                }
+                timing.bootstrapMs = Date.now() - spawnedAt
+            }
+
+            const handshakeAt = Date.now()
+            const initializeResult = await withTimeout(
+                initializing,
+                deps.initializeTimeoutMs ?? INITIALIZE_TIMEOUT_MS,
+                "initialize"
+            )
+            timing.initializeMs = Date.now() - handshakeAt
+            logStartupTiming("connected", spawnCommand, timing)
             authMethods = normalizeAuthMethods(asRecord(initializeResult).authMethods)
             agentCapabilities = normalizeAgentCapabilities(asRecord(initializeResult).agentCapabilities)
             const implementation = asRecord(asRecord(initializeResult).agentInfo)
@@ -929,6 +1261,7 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             agentName = firstString(implementation.name)?.trim() || undefined
             return connection
         } catch (error) {
+            logStartupTiming(startupFailurePhase(error), spawnCommand, timing)
             teardownListeners()
             releaseOwnStream()
             throw error
@@ -942,6 +1275,7 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
         // agentId 在單一連線實作被忽略；Phase 2 router 才會據此選 agent。
         async newSession(cwd, _agentId) {
             pendingSessionOwners += 1
+            let failureKind: SessionNewFailureKind | undefined
             try {
                 const connection = await ensureConnection(cwd)
                 const result = await trackAuthRequired(
@@ -962,8 +1296,14 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
                         normalizeSessionConfigOptions(asRecord(result).configOptions)
                     )
                 }
+            } catch (error) {
+                failureKind = classifySessionNewFailure(error, disconnectedError !== undefined)
+                throw error
             } finally {
                 pendingSessionOwners -= 1
+                if (failureKind && failureKind !== "auth-required") {
+                    void disposeOwnerless("session_new_failed").catch(() => false)
+                }
             }
         },
         async loadSession(id, cwd) {
@@ -1042,21 +1382,10 @@ export function createAcpConnection(deps: AcpConnectionDeps = {}): AgentConnecti
             }
         },
         async disposePrepared() {
-            if (sessionRegistry.size > 0 || pendingSessionOwners > 0) return false
-            if (initialization) {
-                try {
-                    await initialization
-                } catch {
-                    return false
-                }
-            }
-            if (sessionRegistry.size > 0 || pendingSessionOwners > 0) return false
-            const processId = agentProcessId
-            if (!processId) return false
-            markDisconnected(new Error("ACP prepared connection disposed"))
-            await invoke("agent_kill", { id: processId, reason: "prepared_dispose" }).catch(() => {})
-            return true
+            return disposeOwnerless("prepared_dispose")
         },
+        disposeOwnerless,
+        pendingTeardown: () => pendingTeardown,
         processId: () => agentProcessId,
         async supportsLoadSession(cwd) {
             await ensureConnection(cwd)
@@ -1403,12 +1732,22 @@ function isSessionInfoNotification(value: AnyMessage): value is AnyMessage & {
     return update.sessionUpdate === "session_info_update"
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, stage = "initialize"): Promise<T> {
     let timeout: ReturnType<typeof setTimeout> | undefined
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error(`ACP initialize timed out after ${ms}ms`)), ms)
+        timeout = setTimeout(() => reject(new Error(`ACP ${stage} timed out after ${ms}ms`)), ms)
     })
     return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timeout) clearTimeout(timeout)
+    })
+}
+
+function withTeardownTimeout(promise: Promise<unknown>, ms: number): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`ACP agent teardown timed out after ${ms}ms`)), ms)
+    })
+    return Promise.race([promise, timeoutPromise]).then(() => undefined).finally(() => {
         if (timeout) clearTimeout(timeout)
     })
 }
@@ -1549,11 +1888,33 @@ function agentExitedEarlyError(code: number | null, stderrTail: string[] = []): 
     return new Error(summary ? `${base} —— ${summary}` : base)
 }
 
-function isInitializeTimeoutError(error: unknown): boolean {
-    return error instanceof Error && error.message.includes("ACP initialize timed out")
+// #37：兩段啟動的錯誤分類。cold_start_timeout＝下載／安裝階段逾時（第一個 stdout
+// byte 都沒到），init_timeout＝adapter 已開口但 ACP handshake 沒完成。
+function startupTimeoutStage(error: unknown): "cold_start_timeout" | "init_timeout" | null {
+    if (!(error instanceof Error)) return null
+    if (error.message.includes("ACP cold start timed out")) return "cold_start_timeout"
+    if (error.message.includes("ACP initialize timed out")) return "init_timeout"
+    return null
 }
 
-function initializeTimeoutError(error: unknown, stderrTail: string[]): Error {
+function coldStartCancelledError(): Error {
+    return new Error("ACP cold start cancelled")
+}
+
+/**
+ * 使用者主動取消冷啟動下載。這不是連線失敗：不進 #38 的 retry backoff，UI 也不
+ * 顯示紅色錯誤 banner（見 agentRouter／agentStore）。
+ */
+export function isAgentColdStartCancelledError(error: unknown): boolean {
+    return error instanceof Error && error.message === "ACP cold start cancelled"
+}
+
+function startupFailurePhase(error: unknown): StartupPhase {
+    if (isAgentColdStartCancelledError(error)) return "bootstrap_cancelled"
+    return startupTimeoutStage(error) ?? "failed"
+}
+
+function startupTimeoutError(error: unknown, stderrTail: string[]): Error {
     const base = error instanceof Error ? error.message : String(error)
     const summary = summarizeStderrTail(stderrTail)
     const hint = "see Settings → Logs (source: acp)"

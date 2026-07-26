@@ -133,7 +133,12 @@ vi.mock("../lib/ipc", () => ({
 }))
 
 import { TerminalSession } from "./TerminalSession"
+import { terminalOutputLossNotice, terminalOutputMetrics } from "./terminalOutputQueue"
 import { useTerminalSettingsStore } from "../state/terminalSettingsStore"
+
+function outputEvent(data: string, seq = 0, droppedBytes = 0): PtyEvent {
+    return { type: "output", data, seq, droppedBytes, truncated: droppedBytes > 0 }
+}
 
 type ResizeObserverMock = {
     observe: ReturnType<typeof vi.fn>
@@ -226,11 +231,105 @@ describe("TerminalSession", () => {
         xtermMock.state.terminals[0].emitData("pwd\n")
         expect(ipcMock.ptyWrite).toHaveBeenCalledWith("pty-2", "pwd\n")
 
-        ipcMock.onEvent?.({ type: "output", data: "ready\n" })
+        ipcMock.onEvent?.(outputEvent("ready\n"))
         await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith(
             "ready\n",
             expect.any(Function)
         ))
+    })
+
+    it("marks output the backend pending cap dropped", async () => {
+        render(<TerminalSession workspace="/w" sessionId="pty-dropped" active={false} />)
+
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        ipcMock.onEvent?.(outputEvent("tail\n", 4, 4096))
+
+        await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith(
+            `${terminalOutputLossNotice(4096, 0)}tail\n`,
+            expect.any(Function)
+        ))
+    })
+
+    it("does not mark output when the backend reports no drop", async () => {
+        render(<TerminalSession workspace="/w" sessionId="pty-nodrop" active={false} />)
+
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        ipcMock.onEvent?.(outputEvent("clean\n", 1))
+
+        await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith(
+            "clean\n",
+            expect.any(Function)
+        ))
+    })
+
+    it("marks whole output events lost when the backend sequence skips", async () => {
+        render(<TerminalSession workspace="/w" sessionId="pty-gap" active={false} />)
+
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        ipcMock.onEvent?.(outputEvent("first\n", 0))
+        await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith(
+            "first\n",
+            expect.any(Function)
+        ))
+
+        // seq jumps 0 -> 3, so events 1 and 2 never arrived.
+        ipcMock.onEvent?.(outputEvent("fourth\n", 3))
+        await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith(
+            `${terminalOutputLossNotice(0, 2)}fourth\n`,
+            expect.any(Function)
+        ))
+    })
+
+    it("does not report a gap for contiguous sequence numbers", async () => {
+        render(<TerminalSession workspace="/w" sessionId="pty-contiguous" active={false} />)
+
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        ipcMock.onEvent?.(outputEvent("a\n", 7))
+        ipcMock.onEvent?.(outputEvent("b\n", 8))
+
+        await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledWith(
+            "a\nb\n",
+            expect.any(Function)
+        ))
+    })
+
+    it("keeps both markers visible when a storm-sized event arrives", async () => {
+        render(<TerminalSession workspace="/w" sessionId="pty-storm" active={false} />)
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+
+        ipcMock.onEvent?.(outputEvent("seed\n", 0))
+        await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalled())
+        xtermMock.state.terminals[0].write.mockClear()
+
+        // A full backend batch that overflows the frontend ring buffer, with a
+        // sequence gap on top: both markers must survive the eviction.
+        const payload = "z".repeat(1024 * 1024)
+        ipcMock.onEvent?.(outputEvent(payload, 3, 4096))
+
+        await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalled())
+        const written = xtermMock.state.terminals[0].write.mock.calls
+            .map((call) => call[0] as string)
+            .join("")
+        expect(written).toContain(terminalOutputLossNotice(4096, 2))
+        expect(written.endsWith("z".repeat(64))).toBe(true)
+    })
+
+    it("publishes queue metrics for the session through the registry", async () => {
+        expect(terminalOutputMetrics("pty-metrics")).toBeNull()
+
+        const { unmount } = render(
+            <TerminalSession workspace="/w" sessionId="pty-metrics" active={false} />
+        )
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+
+        expect(terminalOutputMetrics("pty-metrics")).not.toBeNull()
+        ipcMock.onEvent?.(outputEvent("hello\n", 0))
+        await waitFor(() =>
+            expect(terminalOutputMetrics("pty-metrics")?.flushCount).toBeGreaterThan(0)
+        )
+
+        unmount()
+        await waitFor(() => expect(terminalOutputMetrics("pty-metrics")).toBeNull())
     })
 
     it("reports OSC title, ready, and spawn failure lifecycle without owning title policy", async () => {
@@ -290,7 +389,7 @@ describe("TerminalSession", () => {
         xtermMock.state.fitDimensions = { cols: 140, rows: 40 }
         resizeObservers[0].trigger()
         expect(ipcMock.ptyResize).not.toHaveBeenCalled()
-        ipcMock.onEvent?.({ type: "output", data: "hidden output\n" })
+        ipcMock.onEvent?.(outputEvent("hidden output\n"))
         expect(term.write).not.toHaveBeenCalled()
 
         rerender(
@@ -448,7 +547,7 @@ describe("TerminalSession", () => {
         await waitFor(() => expect(ipcMock.ptyClose).toHaveBeenCalledTimes(2))
         expect(ipcMock.ptyClose).toHaveBeenLastCalledWith("pty-6")
 
-        ipcMock.onEvent?.({ type: "output", data: "late\n" })
+        ipcMock.onEvent?.(outputEvent("late\n"))
         expect(xtermMock.state.terminals[0].write).not.toHaveBeenCalled()
     })
 

@@ -27,6 +27,8 @@ pub mod preview_webview;
 pub mod process_kill;
 pub mod process_service;
 pub mod pty_service;
+pub mod run_context;
+pub mod run_summary;
 pub mod search_service;
 pub mod ssh_service;
 pub mod watcher;
@@ -115,7 +117,16 @@ pub fn run() {
     env_path::fix_gui_path();
     // 啟動期清理一次；其後由共享 sink 在每日首筆寫入時觸發
     logging::cleanup_global();
+    // #40：本次 run 的錨點記錄，同時判定上一次執行是否 unclean。
+    //
+    // 這**不是**該 run 的第一筆——`env_path::fix_gui_path()` 在它之前就寫了
+    // `path_fix`／`env_import`。分組不受影響（靠 run_id 而非位置），`started_at`
+    // 取的是該 run 最早一筆的 timestamp、因此反而更準。放在這裡的真正理由是：
+    // 要在 tauri::Builder 起來、各子系統開始寫 log 之前完成，讓 app_start 落在
+    // 該 run 的開頭附近而不是散在中間。
+    logging::record_app_start();
     let database_shutdown_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let graceful_exit_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -235,6 +246,7 @@ pub fn run() {
             logging::log_query,
             logging::log_sources,
             logging::log_export,
+            logging::log_sanitize_lines,
             logging::get_log_level,
             logging::set_log_level,
             watcher::start_watch,
@@ -305,6 +317,7 @@ pub fn run() {
             pty_service::pty_write,
             pty_service::pty_resize,
             pty_service::pty_activity,
+            pty_service::pty_output_metrics,
             pty_service::pty_close,
             pty_service::pty_close_workspace,
             dev_server_detect::dev_server_detect,
@@ -344,6 +357,13 @@ pub fn run() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 use tauri::Manager;
+                // #40：graceful_exit 掛在**既有的** app-exit 清理分支上，因此它的
+                // 存活性等同於子行程清理——後者是已經在用的路徑（macOS ⌘Q 走
+                // RunEvent::Exit 而非 ExitRequested，這個 match 兩者都收）。同一次
+                // 結束可能先後收到兩個事件，用 swap 保證只寫一筆。
+                if !graceful_exit_recorded.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    logging::record_graceful_exit();
+                }
                 app.state::<pty_service::PtyState>().0.kill_all();
                 app.state::<process_service::ProcessState>().0.kill_all();
                 app.state::<agent_process::AgentProcessState>().0.kill_all();
@@ -371,6 +391,11 @@ pub fn run() {
                         }
                     }
                 }
+                // #40：清理**全部跑完**才把 run marker 標成 clean。上面任何一步
+                // hang 到使用者強制結束，marker 就會維持 clean:false，下次啟動
+                // 才報得出 previous_run_unclean——那正是 AppHangB1 這類「關閉時
+                // 卡住」情境最需要的訊號。
+                logging::mark_run_clean();
             }
         })
 }
@@ -393,6 +418,12 @@ mod command_inventory_tests {
             "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
             "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
             "recv_timeout(DATABASE_SHUTDOWN_THREAD_TIMEOUT)",
+            // #40：graceful_exit 必須留在這條真的會被觸發的 exit 分支上（單獨的
+            // ExitRequested 分支在 macOS ⌘Q 下不會發生，那是死碼）。
+            "graceful_exit_recorded.swap(true, std::sync::atomic::Ordering::AcqRel)",
+            "logging::record_graceful_exit()",
+            "logging::mark_run_clean()",
+            "logging::record_app_start()",
         ] {
             assert!(
                 source.contains(required),
@@ -409,6 +440,26 @@ mod command_inventory_tests {
         assert!(
             child_cleanup < database_shutdown,
             "background child cleanup must start before bounded database shutdown"
+        );
+        // graceful_exit 先寫再清理：後面任何一步 hang 或 panic 都不該讓「這次有
+        // 正常走到 exit handler」的證據消失。
+        let graceful_exit = run_source.find("logging::record_graceful_exit()").unwrap();
+        assert!(
+            graceful_exit < child_cleanup,
+            "graceful_exit must be recorded before the cleanup steps that can hang"
+        );
+        // 反過來，run marker 必須**最後**才標成 clean：提早標記會讓「關閉時卡住
+        // → 被強制結束」永遠誤判為正常收尾，而那正是 AppHangB1 的典型情境。
+        let mark_clean = run_source.find("logging::mark_run_clean()").unwrap();
+        assert!(
+            mark_clean > database_shutdown,
+            "run marker must be flipped to clean only after every shutdown step completed"
+        );
+        // app_start 必須在 tauri::Builder 之前（daily file 內該 run 的第一筆）。
+        let app_start = run_source.find("logging::record_app_start()").unwrap();
+        assert!(
+            app_start < run_source.find("tauri::Builder::default()").unwrap(),
+            "app_start must be recorded before the app builder starts writing other events"
         );
     }
 

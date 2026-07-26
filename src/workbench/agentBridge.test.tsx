@@ -129,7 +129,7 @@ it("wires agent stdout through the ACP connection and updates the agent store", 
     })
     expect(ipcCalls).toContainEqual([
         "agent_spawn",
-        { command: "bunx pi-acp@latest", cwd: "/ws-a" },
+        { command: "bunx pi-acp@0.0.32", cwd: "/ws-a" },
     ])
 })
 

@@ -1,11 +1,28 @@
 import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 import { open as openImageFileDialog } from "@tauri-apps/plugin-dialog"
 
 import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
 import { ComposerSuggestionPopup } from "@/app/panels/ComposerSuggestionPopup"
-import { AgentAuthRequiredError, type AgentConnection, type AgentAuthMethod, type PromptBlock } from "@/agent/acpConnection"
+import {
+  AgentAuthRequiredError,
+  agentColdStarts,
+  cancelAgentColdStart,
+  createAcpConnection,
+  type AgentConnection,
+  type AgentAuthMethod,
+  type PromptBlock,
+} from "@/agent/acpConnection"
+import {
+  BUILTIN_NODE_MISSING_MESSAGE,
+  DENO_UNSUPPORTED_RUNTIME_MESSAGE,
+  NO_AGENT_RUNTIME_MESSAGE,
+  clearAgentRuntimePrerequisite,
+  resolveAgentSpawnCommand,
+} from "@/agent/agentRuntime"
+import { setCachedBuiltinPiAdapterCommandForTests } from "@/lib/platform"
 import type { BlockEntry, MsgEntry } from "@/agent/acpTypes"
 import { workspaceMentionIndex } from "@/agent/workspaceMentionIndex"
 import i18n from "@/lib/i18n"
@@ -35,6 +52,7 @@ const originalAgentActions = {
   cancel: useAgentStore.getState().cancel,
   respondPermission: useAgentStore.getState().respondPermission,
   newSession: useAgentStore.getState().newSession,
+  retryCooldownUntil: useAgentStore.getState().retryCooldownUntil,
   setSessionConfigOption: useAgentStore.getState().setSessionConfigOption,
 }
 
@@ -56,6 +74,7 @@ afterEach(() => {
     pendingReveal: null,
   })
   if (typeof localStorage.clear === "function") localStorage.clear()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.clearAllMocks()
   if (originalScrollIntoView) {
@@ -370,7 +389,7 @@ describe("AgentZonePanel", () => {
       expect.objectContaining({
         title: "Launch pi in the terminal",
         workspace: "/workspace",
-        shellArgs: ["-c", "bunx pi-acp@latest --terminal-login"],
+        shellArgs: ["-c", "bunx pi-acp@0.0.32 --terminal-login"],
       })
     )
     expect(useUiStore.getState().terminalOpen).toBe(true)
@@ -409,6 +428,121 @@ describe("AgentZonePanel", () => {
     await waitFor(() => {
       expect(connection.newSession).toHaveBeenCalledWith("/workspace")
     })
+  })
+
+  it("keeps cooldown and Retry on the explicitly picked agent route that failed", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const newSession = vi.fn()
+      .mockRejectedValueOnce(new Error("codex session/new failed"))
+      .mockResolvedValueOnce({ sessionId: "codex-retry", startupInfo: null })
+    const retryCooldownUntil = vi.fn((_cwd: string, agentId?: string) =>
+      agentId === "codex" ? 12_500 : 0
+    )
+    const connection: AgentConnection = {
+      newSession,
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+      retryCooldownUntil,
+    }
+    useAgentStore.getState().setConnection(connection)
+
+    await expect(
+      useAgentStore.getState().newSession("/workspace", "codex")
+    ).rejects.toThrow("codex session/new failed")
+    expect(useAgentStore.getState().connectionErrorAgentId).toBe("codex")
+
+    render(<AgentZonePanel />)
+
+    expect(retryCooldownUntil).toHaveBeenCalledWith("/workspace", "codex")
+    expect(screen.getByRole("button", {
+      name: pt("agentZonePanel.retryCooldown", { seconds: 3 }),
+    })).toBeDisabled()
+
+    act(() => vi.advanceTimersByTime(2_500))
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.retry") }))
+
+    expect(newSession).toHaveBeenNthCalledWith(2, "/workspace", "codex")
+  })
+
+  it("advances the retry countdown and stops ticking when cooldown reaches zero", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const newSession = vi.fn(async () => ({ sessionId: "should-not-spawn", startupInfo: null }))
+    const retryCooldownUntil = vi.fn(() => 12_500)
+    const connection: AgentConnection = {
+      newSession,
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    }
+    useAgentStore.getState().setConnection(connection)
+    useAgentStore.setState({
+      connectionState: "error",
+      connectionError: "session/new failed",
+      retryCooldownUntil,
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByRole("button", {
+      name: pt("agentZonePanel.retryCooldown", { seconds: 3 }),
+    })).toBeDisabled()
+
+    act(() => vi.advanceTimersByTime(2_500))
+    expect(screen.getByRole("button", {
+      name: pt("agentZonePanel.retry"),
+    })).toBeEnabled()
+    const readsAtDeadline = retryCooldownUntil.mock.calls.length
+
+    act(() => vi.advanceTimersByTime(1_000))
+    expect(retryCooldownUntil).toHaveBeenCalledTimes(readsAtDeadline)
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it("guards retry at click time even when the rendered button is enabled", () => {
+    let now = 13_000
+    vi.spyOn(Date, "now").mockImplementation(() => now)
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    const newSession = vi.fn(async () => "guarded")
+    const retryCooldownUntil = vi.fn(() => 12_500)
+    useAgentStore.setState({
+      connectionState: "error",
+      connectionError: "session/new failed",
+      newSession,
+      retryCooldownUntil,
+    })
+
+    render(<AgentZonePanel />)
+    const retry = screen.getByRole("button", { name: pt("agentZonePanel.retry") })
+    expect(retry).toBeEnabled()
+
+    now = 10_000
+    fireEvent.click(retry)
+    expect(newSession).not.toHaveBeenCalled()
+
+    now = 13_000
+    fireEvent.click(retry)
+    expect(newSession).toHaveBeenCalledExactlyOnceWith("/workspace")
+  })
+
+  it("localizes AgentRetryCooldownError instead of displaying its raw epoch message", () => {
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    useAgentStore.setState({
+      connectionState: "error",
+      connectionError: "Agent retry is cooling down until 1753459200000",
+      connectionErrorKind: "retry-cooldown",
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText(pt("agentZonePanel.retryCooldownError"))).toBeInTheDocument()
+    expect(screen.queryByText(/1753459200000/)).not.toBeInTheDocument()
   })
 
   it("does not show the connection-error banner when auth is required instead", () => {
@@ -2409,5 +2543,372 @@ describe("AgentZonePanel", () => {
 
     expect(screen.getByText(pt("agentZonePanel.emptyTitle"))).toBeInTheDocument()
     expect(screen.queryByText(session().title)).not.toBeInTheDocument()
+  })
+})
+
+// #37：冷啟動（bunx／npx 首次下載 adapter）期間的可見狀態與取消入口。這裡刻意
+// 驅動真實的 ACP 連線層而非替身——banner 的資料來源就是連線層的冷啟動註冊表。
+describe("AgentZonePanel cold start banner (#37)", () => {
+  afterEach(() => {
+    clearMocks()
+  })
+
+  it("shows the download notice and cancels the cold start with an awaited kill", async () => {
+    const agentId = "agent-panel-cold-start"
+    const kills: unknown[] = []
+    mockIPC((cmd, payload) => {
+      if (cmd === "agent_spawn") return agentId
+      if (cmd === "agent_write") return undefined
+      if (cmd === "agent_stderr_tail") return []
+      if (cmd === "agent_kill") {
+        kills.push(payload)
+        return undefined
+      }
+      return undefined
+    }, { shouldMockEvents: true })
+
+    const connection = createAcpConnection({
+      command: "bunx pi-acp@0.0.32",
+      bootstrapTimeoutMs: 120_000,
+      initializeTimeoutMs: 15_000,
+    })
+    const pending = connection.newSession("/workspace")
+    pending.catch(() => undefined)
+    await waitFor(() => {
+      expect(agentColdStarts()).toHaveLength(1)
+    })
+
+    render(<AgentZonePanel />)
+
+    expect(screen.getByText(pt("agentZonePanel.coldStartTitle"))).toBeInTheDocument()
+    expect(screen.getByText(pt("agentZonePanel.coldStartDescription"))).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.coldStartCancel") }))
+      await waitFor(() => {
+        expect(kills).toEqual([{ id: agentId, reason: "bootstrap_cancelled" }])
+      })
+    })
+
+    await expect(pending).rejects.toThrow(/cold start cancelled/)
+    await waitFor(() => {
+      expect(screen.queryByText(pt("agentZonePanel.coldStartTitle"))).not.toBeInTheDocument()
+    })
+  })
+
+  // S2：agent_kill 仍在飛時畫面不得回復——否則使用者馬上再點一個 agent，會與還沒
+  // 收乾淨的 npm/node 子孫行程重疊。
+  it("keeps the banner and disables the button until agent_kill settles", async () => {
+    const agentId = "agent-panel-cancel-pending"
+    let resolveKill!: () => void
+    const kill = new Promise<void>((resolve) => {
+      resolveKill = resolve
+    })
+    mockIPC((cmd) => {
+      if (cmd === "agent_spawn") return agentId
+      if (cmd === "agent_write") return undefined
+      if (cmd === "agent_stderr_tail") return []
+      if (cmd === "agent_kill") return kill
+      return undefined
+    }, { shouldMockEvents: true })
+
+    const connection = createAcpConnection({
+      command: "bunx pi-acp@0.0.32",
+      bootstrapTimeoutMs: 120_000,
+      initializeTimeoutMs: 15_000,
+    })
+    const pending = connection.newSession("/workspace")
+    pending.catch(() => undefined)
+    await waitFor(() => {
+      expect(agentColdStarts()).toHaveLength(1)
+    })
+
+    render(<AgentZonePanel />)
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.coldStartCancel") }))
+
+    // 連線層的 race 已 reject，但 kill 還沒回報：banner 必須還在、按鈕 disabled
+    await expect(pending).rejects.toThrow(/cold start cancelled/)
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: pt("agentZonePanel.coldStartCancelling") })).toBeDisabled()
+    })
+    expect(screen.getByText(pt("agentZonePanel.coldStartTitle"))).toBeInTheDocument()
+
+    await act(async () => {
+      resolveKill()
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(screen.queryByText(pt("agentZonePanel.coldStartTitle"))).not.toBeInTheDocument()
+    })
+  })
+
+  // S1：兩條連線同時 bootstrap 時，一顆全域取消鈕會把兩條都殺掉。每條各自一列、
+  // 各自一顆取消鈕，按下去只收自己那條。
+  it("cancels only the cold start whose button was pressed", async () => {
+    const kills: unknown[] = []
+    const spawned: string[] = []
+    mockIPC((cmd, payload) => {
+      if (cmd === "agent_spawn") {
+        const id = `agent-panel-multi-${spawned.length + 1}`
+        spawned.push(id)
+        return id
+      }
+      if (cmd === "agent_write") return undefined
+      if (cmd === "agent_stderr_tail") return []
+      if (cmd === "agent_kill") {
+        kills.push(payload)
+        return undefined
+      }
+      return undefined
+    }, { shouldMockEvents: true })
+
+    const options = { bootstrapTimeoutMs: 120_000, initializeTimeoutMs: 15_000 }
+    const first = createAcpConnection({ command: "bunx pi-acp@0.0.32", ...options })
+    const second = createAcpConnection({ command: "bunx codex-acp@0.0.1", ...options })
+    const firstPending = first.newSession("/workspace-a")
+    firstPending.catch(() => undefined)
+    await waitFor(() => {
+      expect(agentColdStarts()).toHaveLength(1)
+    })
+    const secondPending = second.newSession("/workspace-b")
+    secondPending.catch(() => undefined)
+    await waitFor(() => {
+      expect(agentColdStarts()).toHaveLength(2)
+    })
+
+    render(<AgentZonePanel />)
+
+    const banners = screen.getAllByText(pt("agentZonePanel.coldStartTitle"))
+    expect(banners).toHaveLength(2)
+    expect(screen.getByText("bunx · /workspace-a")).toBeInTheDocument()
+    expect(screen.getByText("bunx · /workspace-b")).toBeInTheDocument()
+
+    const [firstCancel] = screen.getAllByRole("button", { name: pt("agentZonePanel.coldStartCancel") })
+    await act(async () => {
+      fireEvent.click(firstCancel!)
+      await waitFor(() => {
+        expect(kills).toEqual([{ id: "agent-panel-multi-1", reason: "bootstrap_cancelled" }])
+      })
+    })
+
+    await expect(firstPending).rejects.toThrow(/cold start cancelled/)
+    await waitFor(() => {
+      expect(screen.getAllByText(pt("agentZonePanel.coldStartTitle"))).toHaveLength(1)
+    })
+    expect(screen.getByText("bunx · /workspace-b")).toBeInTheDocument()
+    expect(kills).toEqual([{ id: "agent-panel-multi-1", reason: "bootstrap_cancelled" }])
+
+    await cancelAgentColdStart("agent-panel-multi-2")
+    await expect(secondPending).rejects.toThrow(/cold start cancelled/)
+  })
+})
+
+// #15：runtime prerequisite UI。刻意驅動真實的 ACP 連線層（不塞替身 state）——
+// 要證明的不只是「banner 會依 state 渲染」，而是「spawn 流程真的會走到那條路徑」：
+// newSession → ensureConnection → resolveAgentSpawnCommand → 登記 prerequisite。
+describe("AgentZonePanel runtime prerequisite banner (#15)", () => {
+  afterEach(() => {
+    clearAgentRuntimePrerequisite()
+    setCachedBuiltinPiAdapterCommandForTests(null)
+    clearMocks()
+  })
+
+  function mockRuntimes(runtimes: Record<string, boolean>) {
+    const spawns: unknown[] = []
+    mockIPC((cmd, payload) => {
+      if (cmd === "agent_detect_runtimes") return runtimes
+      if (cmd === "agent_spawn") {
+        spawns.push(payload)
+        return "agent-prereq"
+      }
+      if (cmd === "agent_stderr_tail") return []
+      return undefined
+    }, { shouldMockEvents: true })
+    return spawns
+  }
+
+  it("lists Bun, Deno and Node detection instead of spawning when no runtime exists", async () => {
+    const spawns = mockRuntimes({ bunx: false, deno: false, node: false, npx: false })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+
+    const connection = createAcpConnection({
+      command: "bunx pi-acp@0.0.32",
+      initializeTimeoutMs: 1_000,
+    })
+    await expect(connection.newSession("/workspace")).rejects.toThrow(NO_AGENT_RUNTIME_MESSAGE)
+    // 第 4 條的重點：prerequisite 是在 spawn *之前* 擋下的。
+    expect(spawns).toEqual([])
+
+    render(<AgentZonePanel />)
+
+    const banner = screen.getByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") })
+    expect(within(banner).getByRole("heading", {
+      name: pt("agentZonePanel.runtimePrerequisiteTitle"),
+    })).toBeInTheDocument()
+    expect(within(banner).getByText(pt("agentZonePanel.runtimePrerequisiteNoRuntime"))).toBeInTheDocument()
+
+    const runtimes = within(banner).getByRole("list", {
+      name: pt("agentZonePanel.runtimePrerequisiteRuntimes"),
+    })
+    const rows = within(runtimes).getAllByRole("listitem")
+    expect(rows.map((row) => row.textContent)).toEqual([
+      `✗Bun${pt("agentZonePanel.runtimePrerequisiteStatusMissing")}${pt("agentZonePanel.runtimePrerequisiteInstall", { runtime: "Bun" })}`,
+      `✗Deno${pt("agentZonePanel.runtimePrerequisiteStatusMissing")}${pt("agentZonePanel.runtimePrerequisiteInstall", { runtime: "Deno" })}`,
+      `✗Node.js${pt("agentZonePanel.runtimePrerequisiteStatusMissing")}${pt("agentZonePanel.runtimePrerequisiteInstall", { runtime: "Node.js" })}`,
+    ])
+    expect(within(runtimes).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
+      "https://bun.sh",
+      "https://deno.com",
+      "https://nodejs.org",
+    ])
+    // 專屬面板取代泛用錯誤 banner，不是疊在它上面。
+    expect(screen.queryByText(pt("agentZonePanel.connectionErrorTitle"))).not.toBeInTheDocument()
+  })
+
+  it("marks an installed but unsupported Deno rather than claiming nothing is installed", async () => {
+    mockRuntimes({ bunx: false, deno: true, node: false, npx: false })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+
+    const connection = createAcpConnection({
+      command: "bunx pi-acp@0.0.32",
+      initializeTimeoutMs: 1_000,
+    })
+    await expect(connection.newSession("/workspace"))
+      .rejects.toThrow(DENO_UNSUPPORTED_RUNTIME_MESSAGE)
+
+    render(<AgentZonePanel />)
+
+    const banner = screen.getByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") })
+    expect(within(banner).getByText(pt("agentZonePanel.runtimePrerequisiteDenoUnsupported"))).toBeInTheDocument()
+    const rows = within(banner).getAllByRole("listitem")
+    expect(rows[1]!.textContent).toContain(pt("agentZonePanel.runtimePrerequisiteStatusUnsupported"))
+    expect(rows[1]!.textContent).toContain("⚠")
+    expect(rows[0]!.textContent).toContain(pt("agentZonePanel.runtimePrerequisiteStatusMissing"))
+  })
+
+  it("retries through the store and clears the banner once a runtime appears", async () => {
+    let runtimes: Record<string, boolean> = { bunx: false, deno: false, node: false, npx: false }
+    mockIPC((cmd) => {
+      if (cmd === "agent_detect_runtimes") return runtimes
+      return undefined
+    }, { shouldMockEvents: true })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+
+    const newSession = vi.fn(async (cwd: string) => {
+      const command = await resolveAgentSpawnCommand("bunx pi-acp@0.0.32")
+      return { sessionId: `s-${command.split(" ")[0]}-${cwd}`, startupInfo: null }
+    })
+    useAgentStore.getState().setConnection({
+      newSession,
+      loadSession: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+    } as unknown as AgentConnection)
+
+    await expect(useAgentStore.getState().newSession("/workspace")).rejects.toThrow()
+    render(<AgentZonePanel />)
+    expect(screen.getByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") }))
+      .toBeInTheDocument()
+
+    runtimes = { bunx: false, deno: false, node: true, npx: true }
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.retry") }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") }))
+        .not.toBeInTheDocument()
+    })
+    expect(newSession).toHaveBeenCalledTimes(2)
+    expect(useAgentStore.getState().activeSessionId).toBe("s-npx-/workspace")
+  })
+  // 必修 2：installed／noNpx／noNode 三種狀態與 builtin-node-missing 的整條描述
+  // 先前零覆蓋——reviewer 把 glyph 與 i18n key 改壞四處，全套測試仍全綠。
+  it("says npx is the missing half instead of claiming Node.js is absent", async () => {
+    mockRuntimes({ bunx: false, deno: false, node: true, npx: false })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+
+    const connection = createAcpConnection({
+      command: "bunx pi-acp@0.0.32",
+      initializeTimeoutMs: 1_000,
+    })
+    await expect(connection.newSession("/workspace")).rejects.toThrow(NO_AGENT_RUNTIME_MESSAGE)
+
+    render(<AgentZonePanel />)
+
+    const banner = screen.getByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") })
+    const rows = within(banner).getAllByRole("listitem")
+    expect(rows[2]!.textContent).toBe(
+      `⚠Node.js${pt("agentZonePanel.runtimePrerequisiteStatusNoNpx")}`
+    )
+    // 必修 4：半安裝的 runtime 不再叫使用者去裝一個他已經有的東西。
+    expect(within(rows[2]!).queryByRole("link")).not.toBeInTheDocument()
+    expect(within(banner).getAllByRole("link").map((link) => link.getAttribute("href")))
+      .toEqual(["https://bun.sh", "https://deno.com"])
+  })
+
+  it("renders the bundled-adapter reason without contradicting the Node.js row", async () => {
+    const builtin = 'node "/Applications/Yuzora.app/adapters/yuzora-pi-acp/index.mjs"'
+    setCachedBuiltinPiAdapterCommandForTests(builtin)
+    // 必修 5 的關鍵組合：npx 在 PATH 上但 node 執行檔不在（Windows 可發生）。
+    // builtin 的觸發條件看 node，Node.js 那一列也必須看 node，兩者不得互相打臉。
+    mockRuntimes({ bunx: true, deno: false, node: false, npx: true })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+
+    const connection = createAcpConnection({ command: builtin, initializeTimeoutMs: 1_000 })
+    await expect(connection.newSession("/workspace"))
+      .rejects.toThrow(BUILTIN_NODE_MISSING_MESSAGE)
+
+    render(<AgentZonePanel />)
+
+    const banner = screen.getByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") })
+    expect(within(banner).getByText(pt("agentZonePanel.runtimePrerequisiteBuiltinNode")))
+      .toBeInTheDocument()
+    const rows = within(banner).getAllByRole("listitem")
+    expect(rows.map((row) => row.textContent)).toEqual([
+      `✓Bun${pt("agentZonePanel.runtimePrerequisiteStatusInstalled")}`,
+      `✗Deno${pt("agentZonePanel.runtimePrerequisiteStatusMissing")}${pt("agentZonePanel.runtimePrerequisiteInstall", { runtime: "Deno" })}`,
+      `⚠Node.js${pt("agentZonePanel.runtimePrerequisiteStatusNoNode")}`,
+    ])
+    // 已安裝的 Bun 不得同時被標 ✓ 又被叫去安裝。
+    expect(within(rows[0]!).queryByRole("link")).not.toBeInTheDocument()
+  })
+
+  // Blocking：prerequisite 殘留會把之後真正的連線錯誤蓋掉。走 reviewer 的完整
+  // 情境——curated 缺 runtime 失敗 → 使用者改成打錯字的 custom 指令 → Retry。
+  it("lets a real connection error replace the banner after switching to a custom command", async () => {
+    let command = "bunx pi-acp@0.0.32"
+    const preflightError = "'foo-acp' was not found on the app PATH"
+    mockIPC((cmd) => {
+      if (cmd === "agent_detect_runtimes") {
+        return { bunx: false, deno: false, node: false, npx: false }
+      }
+      if (cmd === "agent_spawn") throw new Error(preflightError)
+      if (cmd === "agent_stderr_tail") return []
+      return undefined
+    }, { shouldMockEvents: true })
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+
+    const connection = createAcpConnection({
+      command: () => command,
+      initializeTimeoutMs: 1_000,
+    })
+    useAgentStore.getState().setConnection(connection)
+
+    await expect(useAgentStore.getState().newSession("/workspace")).rejects.toThrow()
+    render(<AgentZonePanel />)
+    expect(screen.getByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") }))
+      .toBeInTheDocument()
+
+    // 使用者到 Settings 改成 Custom command，但打錯字。
+    command = "foo-acp"
+    fireEvent.click(screen.getByRole("button", { name: pt("agentZonePanel.retry") }))
+
+    await waitFor(() => {
+      expect(screen.getByText(preflightError)).toBeInTheDocument()
+    })
+    // 真正的錯誤必須取代 prerequisite，而不是被它蓋住。
+    expect(screen.queryByRole("alert", { name: pt("agentZonePanel.runtimePrerequisiteTitle") }))
+      .not.toBeInTheDocument()
+    expect(screen.getByText(pt("agentZonePanel.connectionErrorTitle"))).toBeInTheDocument()
   })
 })

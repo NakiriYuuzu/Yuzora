@@ -7,7 +7,7 @@ import { initialGitState, useGitStore } from "@/state/gitStore";
 import { useWorkspaceStore } from "@/state/workspaceStore";
 import { useLspStore } from "@/state/lspStore";
 import { usePreviewStore } from "@/state/previewStore";
-import { usePerfStore } from "@/state/perfStore";
+import { SAMPLING_WINDOW, usePerfStore } from "@/state/perfStore";
 import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
 import type { DocumentLineEnding, GitStatus, LspServerInfo } from "@/lib/types";
@@ -414,14 +414,196 @@ describe("StatusBar", () => {
     expect(useContextMenuStore.getState().request?.kind).toBe("status");
   });
 
-  it("有 perf snapshot 時顯示 mono chip（cpu% · MB）並註明主程序", () => {
-    usePerfStore.getState().setSnapshot({ cpuPercent: 12, memoryBytes: 184_000_000 });
+  it("有 perf snapshot 時顯示總量 chip（cpu% · MB），title 拆出 App 本體與子行程數", () => {
+    usePerfStore.getState().setSnapshot({
+      cpuPercent: 12,
+      memoryBytes: 370_000_000,
+      appCpuPercent: 4,
+      appMemoryBytes: 102_000_000,
+      descendantCount: 3,
+      webviewCpuPercent: 0,
+      webviewMemoryBytes: 0,
+      webviewCount: 0,
+      managedToolsCpuPercent: 0,
+      managedToolsMemoryBytes: 0,
+      managedToolsCount: 0,
+    });
 
     render(<StatusBar />);
 
-    const chip = screen.getByText("12% · 184MB");
+    // 主要數字是 app + descendants 的總量，不是 app 本體（#22）。
+    const chip = screen.getByText("12% · 370MB");
     expect(chip).toBeInTheDocument();
-    expect(chip.getAttribute("title")).toContain("Main process");
+    const title = chip.getAttribute("title");
+    // scope label：tooltip 必須說明這是「App + 子行程」的總量。issue #22 的預期
+    // 結果第二句要求 UI 標示統計範圍，退回「主程序」語意就是回歸。
+    expect(title).toContain("App + managed child processes");
+    expect(title).not.toContain("Main process");
+    expect(title).toContain("App 4% · 102MB");
+    expect(title).toContain("3 child processes");
+  });
+
+  it("沒有子行程時 title 顯示 0 個且總量等於 App 本體", () => {
+    usePerfStore.getState().setSnapshot({
+      cpuPercent: 4,
+      memoryBytes: 102_000_000,
+      appCpuPercent: 4,
+      appMemoryBytes: 102_000_000,
+      descendantCount: 0,
+      webviewCpuPercent: 0,
+      webviewMemoryBytes: 0,
+      webviewCount: 0,
+      managedToolsCpuPercent: 0,
+      managedToolsMemoryBytes: 0,
+      managedToolsCount: 0,
+    });
+
+    render(<StatusBar />);
+
+    const chip = screen.getByText("4% · 102MB");
+    expect(chip.getAttribute("title")).toContain("0 child processes");
+  });
+
+  // --- issue #40 §3.3 / §3.5 ---------------------------------------------
+
+  it("title 拆出 WebView renderer/GPU 與受管理工具的分類小計", () => {
+    usePerfStore.getState().setSnapshot({
+      cpuPercent: 12,
+      memoryBytes: 592_000_000,
+      appCpuPercent: 4,
+      appMemoryBytes: 50_000_000,
+      descendantCount: 7,
+      webviewCpuPercent: 6,
+      webviewMemoryBytes: 542_000_000,
+      webviewCount: 6,
+      managedToolsCpuPercent: 2,
+      managedToolsMemoryBytes: 0,
+      managedToolsCount: 1,
+    });
+
+    render(<StatusBar />);
+
+    const title = screen.getByTestId("status-perf-chip").getAttribute("title");
+    // 原症狀（issue #40）：6 個 WebView descendants 合計約 542 MB，而 host 只有 49 MB。
+    expect(title).toContain("6 WebView renderer/GPU 542MB");
+    expect(title).toContain("1 managed tools 0MB");
+  });
+
+  it("採樣失敗時 chip 帶警示標記，且仍顯示最新的數值", () => {
+    usePerfStore.getState().setSnapshot({
+      cpuPercent: 12,
+      memoryBytes: 370_000_000,
+      appCpuPercent: 4,
+      appMemoryBytes: 102_000_000,
+      descendantCount: 3,
+      webviewCpuPercent: 0,
+      webviewMemoryBytes: 0,
+      webviewCount: 0,
+      managedToolsCpuPercent: 8,
+      managedToolsMemoryBytes: 268_000_000,
+      managedToolsCount: 3,
+    });
+    usePerfStore.getState().recordOutcome("failed", "perf_snapshot boom");
+
+    render(<StatusBar />);
+
+    const chip = screen.getByTestId("status-perf-chip");
+    // 優先序：失敗只是**附加**標記，不取代每次 poll 都會更新的數值。
+    expect(chip.textContent).toBe("12% · 370MB ⚠");
+    const title = chip.getAttribute("title");
+    expect(title).toContain("App + managed child processes");
+    expect(title).toContain("1 failed, 0 returned no data out of the last 1 polls");
+    expect(title).toContain("perf_snapshot boom");
+  });
+
+  it("還沒有快照但採樣一直失敗時，chip 仍要出現（否則失敗又變回看不見）", () => {
+    usePerfStore.getState().recordOutcome("failed", "perf_snapshot boom");
+
+    render(<StatusBar />);
+
+    const chip = screen.getByTestId("status-perf-chip");
+    expect(chip.textContent).toContain("perf n/a");
+    expect(chip.getAttribute("title")).toContain("Perf sampling:");
+  });
+
+  it("採樣恢復後警示標記消失", () => {
+    usePerfStore.getState().recordOutcome("failed", "boom");
+    usePerfStore.getState().setSnapshot({
+      cpuPercent: 12,
+      memoryBytes: 370_000_000,
+      appCpuPercent: 4,
+      appMemoryBytes: 102_000_000,
+      descendantCount: 3,
+      webviewCpuPercent: 0,
+      webviewMemoryBytes: 0,
+      webviewCount: 0,
+      managedToolsCpuPercent: 8,
+      managedToolsMemoryBytes: 268_000_000,
+      managedToolsCount: 3,
+    });
+    for (let index = 0; index < SAMPLING_WINDOW; index += 1) {
+      usePerfStore.getState().recordOutcome("ok");
+    }
+
+    render(<StatusBar />);
+
+    const chip = screen.getByTestId("status-perf-chip");
+    expect(chip.textContent).toBe("12% · 370MB");
+    expect(chip.getAttribute("title")).not.toContain("Perf sampling:");
+  });
+
+  it("只是失焦跳過（沒有失敗）不會被當成錯誤顯示", () => {
+    usePerfStore.getState().recordOutcome("skipped_no_focus");
+
+    render(<StatusBar />);
+
+    expect(screen.queryByTestId("status-perf-chip")).not.toBeInTheDocument();
+  });
+
+  // `Ok(None)`（後端有回應但沒有資料）與 reject 一樣是「這次沒量到」，只是走另
+  // 一條路徑。Major 3 的整個要點就是它不可以靜默，而**使用者實際看到的就是這個
+  // chip**——所以防護必須釘在這一層，不能只釘在 store 與落盤層。
+  it("empty（Ok(None)）也要讓 chip 帶警示，且不抹掉最後一次成功的快照", () => {
+    usePerfStore.getState().setSnapshot({
+      cpuPercent: 12,
+      memoryBytes: 370_000_000,
+      appCpuPercent: 4,
+      appMemoryBytes: 102_000_000,
+      descendantCount: 3,
+      webviewCpuPercent: 0,
+      webviewMemoryBytes: 0,
+      webviewCount: 0,
+      managedToolsCpuPercent: 8,
+      managedToolsMemoryBytes: 268_000_000,
+      managedToolsCount: 3,
+    });
+    usePerfStore.getState().recordOutcome("empty");
+
+    render(<StatusBar />);
+
+    const chip = screen.getByTestId("status-perf-chip");
+    // 一次 reject 都沒有，但仍必須有 ⚠——否則「後端回 null」就靜默了。
+    expect(chip.textContent).toBe("12% · 370MB ⚠");
+    expect(chip.getAttribute("data-perf-sampling-failures")).toBe("0");
+    expect(chip.getAttribute("data-perf-sampling-empty")).toBe("1");
+    const title = chip.getAttribute("title");
+    expect(title).toContain("0 failed, 1 returned no data out of the last 1 polls");
+  });
+
+  it("從未成功且一直回 empty 時，chip 顯示 perf n/a ⚠ 而不是整個消失", () => {
+    for (let index = 0; index < 5; index += 1) {
+      usePerfStore.getState().recordOutcome("empty");
+    }
+
+    render(<StatusBar />);
+
+    const chip = screen.getByTestId("status-perf-chip");
+    expect(chip.textContent).toContain("perf n/a");
+    expect(chip.textContent).toContain("⚠");
+    expect(chip.getAttribute("data-perf-sampling-empty")).toBe("5");
+    expect(chip.getAttribute("title")).toContain(
+      "0 failed, 5 returned no data out of the last 5 polls",
+    );
   });
 
   it("perf snapshot 為 null 時不顯示 chip", () => {

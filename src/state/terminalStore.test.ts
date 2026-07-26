@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
 import {
+    MAX_TERMINAL_TABS,
     MAX_TERMINAL_TITLE_LENGTH,
     terminalDisplayTitle,
     terminalInitialState,
@@ -62,6 +63,35 @@ describe("useTerminalStore", () => {
             { paneId: "pane-a", sessionId: third.sessionId }
         ])
         expect(state.sessionsForWorkspace("/ws/a")).toEqual([first, second, third])
+    })
+
+    it("stops adding tabs at MAX_TERMINAL_TABS across all workspaces", () => {
+        const store = useTerminalStore.getState()
+        // Half the budget in each workspace: a per-workspace cap would never
+        // fire here and would leave every extra workspace free to add 64 more.
+        const half = MAX_TERMINAL_TABS / 2
+        for (let index = 0; index < half; index += 1) {
+            store.addSession("/ws/a", session(`term-a-${index}`, "/ws/a"), "pane-a")
+        }
+        for (let index = 0; index < half; index += 1) {
+            store.addSession("/ws/b", session(`term-b-${index}`, "/ws/b"), "pane-b")
+        }
+        expect(useTerminalStore.getState().layouts["/ws/a"].tabIds).toHaveLength(half)
+        expect(useTerminalStore.getState().layouts["/ws/b"].tabIds).toHaveLength(half)
+
+        const overflow = session("term-overflow", "/ws/a")
+        store.addSession("/ws/a", overflow)
+        store.splitFrom("/ws/a", "pane-a", session("term-split", "/ws/a"))
+        // A previously untouched workspace gets no fresh budget either.
+        store.addSession("/ws/c", session("term-c", "/ws/c"))
+
+        const state = useTerminalStore.getState()
+        expect(state.layouts["/ws/a"].tabIds).toHaveLength(half)
+        expect(state.layouts["/ws/b"].tabIds).toHaveLength(half)
+        expect(state.layouts["/ws/c"]).toBeUndefined()
+        expect(state.sessions[overflow.sessionId]).toBeUndefined()
+        expect(state.sessions["term-split"]).toBeUndefined()
+        expect(state.sessions["term-c"]).toBeUndefined()
     })
 
     it("splits once to the right and rejects a third visible pane", () => {

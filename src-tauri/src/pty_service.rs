@@ -1,16 +1,38 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use crate::{logging, process_kill};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
-pub type OnEvent = Arc<dyn Fn(PtyEvent) + Send + Sync>;
+pub type OnEvent = Arc<dyn Fn(PtyEvent) -> Result<(), String> + Send + Sync>;
 type LogFn = Box<dyn Fn(logging::LogEvent) + Send + Sync>;
 static NEXT_RESERVATION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Batching is strictly time-first: at most one output event per interval, no
+/// matter how much the shell produced. A size threshold that could flush early
+/// would silently cap the event rate at `threshold / interval` instead (32 KiB
+/// per 16 ms is only ~2 MiB/s, which `yes` exceeds by two orders of magnitude),
+/// so the window would never participate and the pending cap below would never
+/// fill. Roughly one 60 Hz frame.
+const PTY_OUTPUT_BATCH_INTERVAL: Duration = Duration::from_millis(16);
+/// Hard ceiling on the bytes a single session may hold between flushes.
+/// Overflow drops the oldest bytes and reports them through `dropped_bytes`;
+/// with a time-first window this is what actually bounds an output storm,
+/// because tauri's own channel queue is unbounded and never applies backpressure.
+///
+/// Deliberately equal to `TERMINAL_OUTPUT_BUFFER_LIMIT` in
+/// `src/terminal/terminalOutputQueue.ts`. A larger value here would ship JSON
+/// across the IPC boundary that the frontend ring buffer discards on arrival,
+/// and would leave the two `droppedBytes` counters measuring different
+/// thresholds. Because they are equal, the two counters are comparable: the
+/// Rust one counts what never left the backend, the frontend one what the
+/// renderer could not keep up with, and they may be added.
+const PTY_OUTPUT_PENDING_CAP: usize = 256 * 1024;
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,11 +44,28 @@ pub struct PtySessionInfo {
     pub rows: u16,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+// `rename_all` only renames the variant tags; struct-variant fields need
+// `rename_all_fields`, without which `dropped_bytes` reaches the frontend
+// under its snake_case name. See the wire-format assertion in the tests.
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
 pub enum PtyEvent {
-    Output { data: String },
-    Exit { code: Option<i32> },
+    Output {
+        data: String,
+        /// Monotonic per-session counter so the frontend can detect gaps.
+        seq: u64,
+        /// Bytes the pending cap discarded since the previous output event.
+        dropped_bytes: u64,
+        /// Mirrors `dropped_bytes > 0`; the frontend renders a marker for it.
+        truncated: bool,
+    },
+    Exit {
+        code: Option<i32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -69,7 +108,44 @@ struct PtySessionShared {
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     stopped: AtomicBool,
     wait_started: AtomicBool,
+    counters: Arc<PtyOutputCounters>,
     pid: u32,
+}
+
+/// Live output counters owned by a session and updated by its output pump.
+#[derive(Debug, Default)]
+pub struct PtyOutputCounters {
+    output_bytes: AtomicU64,
+    queue_depth: AtomicU64,
+    dropped_bytes: AtomicU64,
+}
+
+impl PtyOutputCounters {
+    fn snapshot(&self) -> PtyOutputMetrics {
+        PtyOutputMetrics {
+            output_bytes: self.output_bytes.load(Ordering::Relaxed),
+            queue_depth: self.queue_depth.load(Ordering::Relaxed),
+            dropped_bytes: self.dropped_bytes.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Read-only per-session output telemetry (issue #39 AC 6), exposed to the app
+/// through the `pty_output_metrics` command.
+///
+/// Byte counts are UTF-8 bytes and line up with the frontend
+/// `TerminalOutputQueue` getters (`pendingBytes` / `hiddenBytes` /
+/// `droppedBytes` / `lastFlushLatencyMs` / `flushCount`), which count the same
+/// unit. Extend this shape rather than introducing a second one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyOutputMetrics {
+    /// Cumulative bytes handed to the frontend channel.
+    pub output_bytes: u64,
+    /// Bytes currently buffered and waiting for the next flush.
+    pub queue_depth: u64,
+    /// Cumulative bytes discarded by the pending cap.
+    pub dropped_bytes: u64,
 }
 
 enum PtySessionEntry {
@@ -455,6 +531,7 @@ impl PtyManager {
                 master: Mutex::new(Some(pair.master)),
                 stopped: AtomicBool::new(false),
                 wait_started: AtomicBool::new(false),
+                counters: Arc::new(PtyOutputCounters::default()),
                 pid,
             });
 
@@ -654,6 +731,20 @@ impl PtyManager {
             .collect()
     }
 
+    /// Read-only output telemetry for one session (issue #39 AC 6); returns
+    /// `None` for unknown or still-reserved sessions. Reachable from the app
+    /// through the `pty_output_metrics` command.
+    pub fn output_metrics(&self, session_id: &str) -> Option<PtyOutputMetrics> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|entry| match entry {
+                PtySessionEntry::Ready(shared) => Some(shared.counters.snapshot()),
+                PtySessionEntry::Reserved(_) => None,
+            })
+    }
+
     fn remove_reservation(&self, session_id: &str, reservation_id: u64) {
         let mut map = self.sessions.lock().unwrap();
         if matches!(
@@ -699,15 +790,32 @@ impl PtyManager {
         mut child: Box<dyn portable_pty::Child + Send + Sync>,
         on_event: OnEvent,
     ) {
+        let sink = Arc::new(OutputSink::new(on_event));
+        let mut pump = OutputPump::start(
+            sink.clone(),
+            shared.counters.clone(),
+            PTY_OUTPUT_PENDING_CAP,
+            PTY_OUTPUT_BATCH_INTERVAL,
+        );
         let mut chunker = Utf8Chunker::default();
         let mut buf = [0u8; 8192];
+        let mut sink_closure_logged = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     if let Some(data) = chunker.push(&buf[..n]) {
-                        if !data.is_empty() {
-                            on_event(PtyEvent::Output { data });
+                        if !data.is_empty() && !sink.is_closed() {
+                            pump.push(data);
+                        }
+                    }
+                    // Keep draining the PTY once the channel is gone so the
+                    // shell never blocks on a full pipe, but stop forwarding.
+                    if sink.is_closed() && !sink_closure_logged {
+                        sink_closure_logged = true;
+                        if let Some(manager) = manager.upgrade() {
+                            let info = shared.info.lock().unwrap().clone();
+                            manager.log_channel_closed(&info, shared.pid);
                         }
                     }
                 }
@@ -726,10 +834,12 @@ impl PtyManager {
         let code = child.wait().ok().map(|status| status.exit_code() as i32);
         if let Some(data) = chunker.finish_lossy() {
             if !data.is_empty() {
-                on_event(PtyEvent::Output { data });
+                pump.push(data);
             }
         }
-        on_event(PtyEvent::Exit { code });
+        // Joining the pump before Exit keeps the final output ahead of it.
+        pump.finish();
+        sink.send(PtyEvent::Exit { code });
 
         if let Some(manager) = manager.upgrade() {
             let mut map = manager.sessions.lock().unwrap();
@@ -797,6 +907,26 @@ impl PtyManager {
         });
     }
 
+    fn log_channel_closed(&self, info: &PtySessionInfo, pid: u32) {
+        (self.log)(logging::LogEvent {
+            level: "warn".into(),
+            kind: "debug".into(),
+            source: "pty".into(),
+            workspace_path: Some(info.workspace.clone()),
+            event: "pty_channel_closed".into(),
+            message: format!(
+                "pty session {} output channel closed; stopped forwarding output",
+                info.session_id
+            ),
+            metadata: serde_json::json!({
+                "sessionId": info.session_id,
+                "workspace": info.workspace,
+                "shell": info.shell,
+                "pid": pid,
+            }),
+        });
+    }
+
     fn log_exit(&self, info: &PtySessionInfo, pid: u32, code: Option<i32>, stopped: bool) {
         (self.log)(logging::LogEvent {
             level: "info".into(),
@@ -820,6 +950,261 @@ impl PtyManager {
 impl Drop for PtyManager {
     fn drop(&mut self) {
         self.kill_all();
+    }
+}
+
+/// Bounded accumulator that turns a stream of PTY reads into batched
+/// `PtyEvent::Output` payloads. Pure and synchronous so the batching, cap and
+/// sequence rules can be tested without threads.
+struct OutputBuffer {
+    chunks: VecDeque<String>,
+    pending_bytes: usize,
+    dropped_bytes: u64,
+    next_seq: u64,
+    cap: usize,
+}
+
+impl OutputBuffer {
+    fn new(cap: usize) -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            pending_bytes: 0,
+            dropped_bytes: 0,
+            next_seq: 0,
+            cap,
+        }
+    }
+
+    fn push(&mut self, data: String) {
+        if data.is_empty() {
+            return;
+        }
+        self.pending_bytes += data.len();
+        self.chunks.push_back(data);
+        while self.pending_bytes > self.cap {
+            if self.chunks.len() > 1 {
+                let Some(oldest) = self.chunks.pop_front() else {
+                    break;
+                };
+                self.pending_bytes -= oldest.len();
+                self.dropped_bytes += oldest.len() as u64;
+                continue;
+            }
+            // A single read larger than the cap keeps its newest tail, matching
+            // the frontend hidden-buffer rule.
+            let Some(only) = self.chunks.front_mut() else {
+                break;
+            };
+            let mut split = self.pending_bytes - self.cap;
+            while split < only.len() && !only.is_char_boundary(split) {
+                split += 1;
+            }
+            only.drain(..split);
+            self.pending_bytes -= split;
+            self.dropped_bytes += split as u64;
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
+    fn take(&mut self) -> Option<PtyEvent> {
+        if self.chunks.is_empty() {
+            return None;
+        }
+        let data = self.chunks.drain(..).collect::<String>();
+        self.pending_bytes = 0;
+        let dropped_bytes = std::mem::take(&mut self.dropped_bytes);
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        Some(PtyEvent::Output {
+            data,
+            seq,
+            dropped_bytes,
+            truncated: dropped_bytes > 0,
+        })
+    }
+}
+
+/// Wraps the IPC callback so a closed frontend channel stops event delivery
+/// instead of silently swallowing every later send.
+struct OutputSink {
+    on_event: OnEvent,
+    closed: AtomicBool,
+}
+
+impl OutputSink {
+    fn new(on_event: OnEvent) -> Self {
+        Self {
+            on_event,
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    fn send(&self, event: PtyEvent) -> bool {
+        if self.closed.load(Ordering::SeqCst) {
+            return false;
+        }
+        match (self.on_event)(event) {
+            Ok(()) => true,
+            Err(_) => {
+                self.closed.store(true, Ordering::SeqCst);
+                false
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+}
+
+struct PumpState {
+    buffer: OutputBuffer,
+    finished: bool,
+}
+
+struct PumpShared {
+    state: Mutex<PumpState>,
+    ready: Condvar,
+    sink: Arc<OutputSink>,
+    counters: Arc<PtyOutputCounters>,
+    interval: Duration,
+}
+
+/// Owns the flusher thread that drains an `OutputBuffer` on the size/time
+/// thresholds. The reader thread only pushes; ordering with the final `Exit`
+/// event is guaranteed by `finish()` joining the flusher first.
+struct OutputPump {
+    shared: Arc<PumpShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl OutputPump {
+    fn start(
+        sink: Arc<OutputSink>,
+        counters: Arc<PtyOutputCounters>,
+        cap: usize,
+        interval: Duration,
+    ) -> Self {
+        let shared = Arc::new(PumpShared {
+            state: Mutex::new(PumpState {
+                buffer: OutputBuffer::new(cap),
+                finished: false,
+            }),
+            ready: Condvar::new(),
+            sink,
+            counters,
+            interval,
+        });
+        let worker = shared.clone();
+        let thread = std::thread::spawn(move || Self::run(&worker));
+        Self {
+            shared,
+            thread: Some(thread),
+        }
+    }
+
+    fn push(&self, data: String) {
+        let was_empty = {
+            // A poisoned mutex means the pump thread died. Recovering the guard
+            // instead of unwrapping keeps the reader thread alive so the
+            // session still reaches `child.wait()`, its `Exit` event and the
+            // session-map removal rather than leaking a zombie child.
+            let mut state = match self.shared.state.lock() {
+                Ok(state) => state,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let was_empty = state.buffer.is_empty();
+            state.buffer.push(data);
+            self.shared
+                .counters
+                .queue_depth
+                .store(state.buffer.pending_bytes as u64, Ordering::Relaxed);
+            was_empty
+        };
+        // The pump only blocks indefinitely while the buffer is empty; inside
+        // an open window it wakes on its own deadline. Notifying on every push
+        // would cost a futex wake per 8 KiB read (~9.5k/s per storming session)
+        // for a pump that just recomputes its deadline and sleeps again.
+        if was_empty {
+            self.shared.ready.notify_one();
+        }
+    }
+
+    fn finish(&mut self) {
+        {
+            // Reached from `Drop` as well, including while unwinding from a
+            // panic. A poisoned mutex means the pump thread already died, and
+            // panicking here would turn that into a process-wide abort, so the
+            // guard is recovered instead of unwrapped.
+            let mut state = match self.shared.state.lock() {
+                Ok(state) => state,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            state.finished = true;
+        }
+        self.shared.ready.notify_all();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+
+    fn run(shared: &Arc<PumpShared>) {
+        // The window is measured from the previous flush, not from the moment
+        // the buffer became non-empty. That gives a leading-edge flush: an idle
+        // session echoing a keystroke sends immediately instead of paying a
+        // full window on every interaction round trip.
+        let mut next_flush_due = Instant::now();
+        let mut state = shared.state.lock().unwrap();
+        loop {
+            while state.buffer.is_empty() && !state.finished {
+                state = shared.ready.wait(state).unwrap();
+            }
+            if state.buffer.is_empty() {
+                return;
+            }
+            // Time-first: at most one event per interval regardless of volume.
+            // Output that arrives while the window is open accumulates into the
+            // same event and, past the cap, is dropped rather than queued.
+            while !state.finished {
+                let remaining = next_flush_due.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                state = shared.ready.wait_timeout(state, remaining).unwrap().0;
+            }
+            let Some(event) = state.buffer.take() else {
+                return;
+            };
+            next_flush_due = Instant::now() + shared.interval;
+            if let PtyEvent::Output {
+                data,
+                dropped_bytes,
+                ..
+            } = &event
+            {
+                shared
+                    .counters
+                    .output_bytes
+                    .fetch_add(data.len() as u64, Ordering::Relaxed);
+                shared
+                    .counters
+                    .dropped_bytes
+                    .fetch_add(*dropped_bytes, Ordering::Relaxed);
+            }
+            shared.counters.queue_depth.store(0, Ordering::Relaxed);
+            drop(state);
+            shared.sink.send(event);
+            state = shared.state.lock().unwrap();
+        }
+    }
+}
+
+impl Drop for OutputPump {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -968,9 +1353,10 @@ pub async fn pty_open(
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let channel = on_event;
-        let on_event: OnEvent = Arc::new(move |event| {
-            let _ = channel.send(event);
-        });
+        // A send failure means the frontend channel is gone; surfacing the
+        // error lets the reader stop pushing into a black hole.
+        let on_event: OnEvent =
+            Arc::new(move |event| channel.send(event).map_err(|error| error.to_string()));
         manager.open_with_cwd_strategy(
             &workspace,
             &session_id,
@@ -1018,6 +1404,17 @@ pub async fn pty_activity(
 ) -> Result<PtyActivity, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || manager.activity(&session_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pty_output_metrics(
+    state: tauri::State<'_, PtyState>,
+    session_id: String,
+) -> Result<Option<PtyOutputMetrics>, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.output_metrics(&session_id))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1081,6 +1478,7 @@ mod tests {
             // Model the reader thread having reached child.wait(): close must
             // release PTY resources without trying to kill the synthetic pid.
             wait_started: AtomicBool::new(true),
+            counters: Arc::new(PtyOutputCounters::default()),
             pid: 0,
         });
         drop(pair.slave);
@@ -1120,7 +1518,10 @@ mod tests {
     fn capture_events() -> (OnEvent, Arc<Mutex<Vec<PtyEvent>>>) {
         let events: Arc<Mutex<Vec<PtyEvent>>> = Default::default();
         let e2 = events.clone();
-        let on_event: OnEvent = Arc::new(move |event| e2.lock().unwrap().push(event));
+        let on_event: OnEvent = Arc::new(move |event| {
+            e2.lock().unwrap().push(event);
+            Ok(())
+        });
         (on_event, events)
     }
 
@@ -1248,7 +1649,7 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(|event| match event {
-                PtyEvent::Output { data } => Some(data.as_str()),
+                PtyEvent::Output { data, .. } => Some(data.as_str()),
                 PtyEvent::Exit { .. } => None,
             })
             .collect::<String>();
@@ -1510,7 +1911,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(
-                |event| matches!(event, PtyEvent::Output { data } if data.contains("hi"))
+                |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("hi"))
             )));
 
         #[cfg(unix)]
@@ -1595,13 +1996,15 @@ mod tests {
         assert!(duplicate.is_err());
 
         mgr.write("s1", "echo still-here\n").unwrap();
-        assert!(poll_until(Duration::from_secs(3), || events
+        assert!(poll_until(Duration::from_secs(3), || {
+            events
             .lock()
             .unwrap()
             .iter()
             .any(
-                |event| matches!(event, PtyEvent::Output { data } if data.contains("still-here"))
-            )));
+                |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("still-here"))
+            )
+        }));
         let sessions = mgr.sessions_for("ws-a");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].cols, 80);
@@ -1656,7 +2059,7 @@ mod tests {
         let events = events.lock().unwrap();
         let output_index = events
             .iter()
-            .position(|event| matches!(event, PtyEvent::Output { data } if data.contains("hi")))
+            .position(|event| matches!(event, PtyEvent::Output { data, .. } if data.contains("hi")))
             .expect("output containing hi");
         let exit_index = events
             .iter()
@@ -1681,13 +2084,15 @@ mod tests {
         )
         .unwrap();
 
-        assert!(poll_until(Duration::from_secs(5), || events
+        assert!(poll_until(Duration::from_secs(5), || {
+            events
             .lock()
             .unwrap()
             .iter()
             .any(
-                |event| matches!(event, PtyEvent::Output { data } if data.contains("shell-args-ok"))
-            )));
+                |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("shell-args-ok"))
+            )
+        }));
         assert!(poll_until(Duration::from_secs(5), || events
             .lock()
             .unwrap()
@@ -1742,7 +2147,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    PtyEvent::Output { data }
+                    PtyEvent::Output { data, .. }
                         if data.contains("__YUZORA_TERM__xterm-256color__END__")
                 ))),
             "spawned shell did not receive TERM=xterm-256color: {:?}",
@@ -1768,6 +2173,490 @@ mod tests {
         assert_eq!(chunker.push(&first), Some("a\u{fffd}".to_string()));
         assert_eq!(chunker.push(&euro[2..]), Some("€".to_string()));
         assert_eq!(chunker.finish_lossy(), None);
+    }
+
+    fn output_event(data: &str) -> PtyEvent {
+        PtyEvent::Output {
+            data: data.to_string(),
+            seq: 0,
+            dropped_bytes: 0,
+            truncated: false,
+        }
+    }
+
+    fn output_text(events: &[PtyEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                PtyEvent::Output { data, .. } => Some(data.as_str()),
+                PtyEvent::Exit { .. } => None,
+            })
+            .collect()
+    }
+
+    fn test_pump(
+        on_event: OnEvent,
+        counters: Arc<PtyOutputCounters>,
+        cap: usize,
+        interval: Duration,
+    ) -> OutputPump {
+        OutputPump::start(Arc::new(OutputSink::new(on_event)), counters, cap, interval)
+    }
+
+    /// Consumes the leading-edge flush so the following pushes land inside a
+    /// window. Returns once the warm-up event has been observed.
+    fn consume_leading_edge(pump: &OutputPump, events: &Arc<Mutex<Vec<PtyEvent>>>) {
+        pump.push("warmup".to_string());
+        assert!(
+            poll_until(Duration::from_secs(2), || !events
+                .lock()
+                .unwrap()
+                .is_empty()),
+            "leading-edge flush never arrived"
+        );
+    }
+
+    #[test]
+    fn pty_event_wire_format_matches_the_typescript_contract() {
+        // Wire contract produced by the mandated attributes on the enum
+        // (`#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "type")]`):
+        //  - variant tags are camelCased: `Output` -> "output", `Exit` -> "exit"
+        //  - `rename_all_fields` camelCases struct-variant fields, so
+        //    `dropped_bytes` -> `droppedBytes` on the wire. Without it serde
+        //    only renames the variant tags and the frontend reads `undefined`.
+        // `src/lib/types.ts` PtyEvent must consume these exact keys.
+        assert_eq!(
+            serde_json::to_string(&PtyEvent::Output {
+                data: "hi".to_string(),
+                seq: 7,
+                dropped_bytes: 4096,
+                truncated: true,
+            })
+            .unwrap(),
+            r#"{"type":"output","data":"hi","seq":7,"droppedBytes":4096,"truncated":true}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&PtyEvent::Exit { code: Some(3) }).unwrap(),
+            r#"{"type":"exit","code":3}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&PtyEvent::Exit { code: None }).unwrap(),
+            r#"{"type":"exit","code":null}"#
+        );
+    }
+
+    #[test]
+    fn pending_cap_stays_aligned_with_the_frontend_ring_buffer() {
+        // Same source-parsing guard style as `command_inventory_tests`: the two
+        // caps must stay equal or the backend ships JSON the frontend discards
+        // on arrival, and the two `droppedBytes` counters stop being comparable.
+        let queue_source = include_str!("../../src/terminal/terminalOutputQueue.ts");
+        assert!(
+            queue_source.contains("const TERMINAL_OUTPUT_BUFFER_LIMIT = 256 * 1024"),
+            "TERMINAL_OUTPUT_BUFFER_LIMIT changed; PTY_OUTPUT_PENDING_CAP must match it"
+        );
+        assert_eq!(PTY_OUTPUT_PENDING_CAP, 256 * 1024);
+    }
+
+    #[test]
+    fn pushing_into_a_poisoned_pump_does_not_panic_the_reader() {
+        // If `push` unwrapped a poisoned lock the reader would unwind and skip
+        // `child.wait()`, the `Exit` event and the session-map removal, leaking
+        // the child process.
+        let (on_event, _events) = capture_events();
+        let mut pump = test_pump(
+            on_event,
+            Arc::new(PtyOutputCounters::default()),
+            PTY_OUTPUT_PENDING_CAP,
+            PTY_OUTPUT_BATCH_INTERVAL,
+        );
+
+        let shared = pump.shared.clone();
+        let poisoner = std::thread::spawn(move || {
+            let _guard = shared.state.lock().unwrap();
+            panic!("simulated pump-thread panic while holding the state lock");
+        });
+        assert!(poisoner.join().is_err());
+        assert!(pump.shared.state.is_poisoned());
+
+        pump.push("output after the pump died".to_string());
+        pump.finish();
+    }
+
+    #[test]
+    fn output_buffer_batches_pushes_and_numbers_events_monotonically() {
+        let mut buffer = OutputBuffer::new(PTY_OUTPUT_PENDING_CAP);
+        assert!(buffer.is_empty());
+
+        buffer.push("one".to_string());
+        buffer.push("two".to_string());
+        assert_eq!(
+            buffer.take(),
+            Some(PtyEvent::Output {
+                data: "onetwo".to_string(),
+                seq: 0,
+                dropped_bytes: 0,
+                truncated: false,
+            })
+        );
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.take(), None);
+
+        buffer.push("three".to_string());
+        assert_eq!(
+            buffer.take(),
+            Some(PtyEvent::Output {
+                data: "three".to_string(),
+                seq: 1,
+                dropped_bytes: 0,
+                truncated: false,
+            })
+        );
+    }
+
+    #[test]
+    fn output_buffer_drops_the_oldest_bytes_beyond_the_pending_cap() {
+        let mut buffer = OutputBuffer::new(8);
+        buffer.push("abcd".to_string());
+        buffer.push("efgh".to_string());
+        buffer.push("ijkl".to_string());
+
+        assert_eq!(buffer.pending_bytes, 8);
+        assert_eq!(
+            buffer.take(),
+            Some(PtyEvent::Output {
+                data: "efghijkl".to_string(),
+                seq: 0,
+                dropped_bytes: 4,
+                truncated: true,
+            })
+        );
+
+        // The dropped counter resets with each emitted event.
+        buffer.push("mn".to_string());
+        assert_eq!(
+            buffer.take(),
+            Some(PtyEvent::Output {
+                data: "mn".to_string(),
+                seq: 1,
+                dropped_bytes: 0,
+                truncated: false,
+            })
+        );
+    }
+
+    #[test]
+    fn output_buffer_keeps_a_char_boundary_tail_for_one_oversized_chunk() {
+        let mut buffer = OutputBuffer::new(4);
+        // 7 bytes: "aa" + a 3-byte "€" + "bb"; trimming 3 bytes would land
+        // inside the euro sign, so the split must advance to byte 5.
+        buffer.push("aa€bb".to_string());
+
+        assert_eq!(
+            buffer.take(),
+            Some(PtyEvent::Output {
+                data: "bb".to_string(),
+                seq: 0,
+                dropped_bytes: 5,
+                truncated: true,
+            })
+        );
+    }
+
+    #[test]
+    fn output_sink_stops_delivering_once_the_channel_reports_failure() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let observed = calls.clone();
+        let on_event: OnEvent = Arc::new(move |_| {
+            if observed.fetch_add(1, Ordering::SeqCst) >= 1 {
+                return Err("channel closed".to_string());
+            }
+            Ok(())
+        });
+        let sink = OutputSink::new(on_event);
+
+        assert!(sink.send(output_event("first")));
+        assert!(!sink.is_closed());
+        assert!(!sink.send(output_event("second")));
+        assert!(sink.is_closed());
+        assert!(!sink.send(output_event("third")));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a closed channel must not be handed any further events"
+        );
+    }
+
+    #[test]
+    fn output_pump_collapses_an_output_storm_into_few_events() {
+        let (on_event, events) = capture_events();
+        let counters = Arc::new(PtyOutputCounters::default());
+        let mut pump = test_pump(
+            on_event,
+            counters.clone(),
+            PTY_OUTPUT_PENDING_CAP,
+            PTY_OUTPUT_BATCH_INTERVAL,
+        );
+
+        let pushes = 2000usize;
+        let mut expected = String::new();
+        for index in 0..pushes {
+            let chunk = format!("{index:05}");
+            expected.push_str(&chunk);
+            pump.push(chunk);
+        }
+        pump.finish();
+
+        let events = events.lock().unwrap();
+        assert_eq!(
+            output_text(&events),
+            expected,
+            "batching must not lose or reorder output"
+        );
+        assert!(
+            events.len() < pushes / 10,
+            "expected batching to collapse {pushes} writes, got {} events",
+            events.len()
+        );
+        let metrics = counters.snapshot();
+        assert_eq!(metrics.output_bytes, expected.len() as u64);
+        assert_eq!(metrics.queue_depth, 0);
+        assert_eq!(metrics.dropped_bytes, 0);
+    }
+
+    #[test]
+    fn output_pump_flushes_the_first_write_without_waiting_for_the_window() {
+        let (on_event, events) = capture_events();
+        // A 30s window: only a leading-edge flush can produce an event here.
+        // Without it every keystroke echo would pay a full window.
+        let mut pump = test_pump(
+            on_event,
+            Arc::new(PtyOutputCounters::default()),
+            PTY_OUTPUT_PENDING_CAP,
+            Duration::from_secs(30),
+        );
+
+        pump.push("$".to_string());
+
+        assert!(
+            poll_until(Duration::from_secs(2), || !events
+                .lock()
+                .unwrap()
+                .is_empty()),
+            "an idle session must echo without waiting for the batch window"
+        );
+        pump.finish();
+    }
+
+    #[test]
+    fn output_pump_holds_later_writes_for_the_rest_of_the_window() {
+        let (on_event, events) = capture_events();
+        let mut pump = test_pump(
+            on_event,
+            Arc::new(PtyOutputCounters::default()),
+            PTY_OUTPUT_PENDING_CAP,
+            Duration::from_secs(2),
+        );
+        consume_leading_edge(&pump, &events);
+
+        // Far more than any plausible size threshold, so this also pins that
+        // volume alone never triggers an early flush: a size trigger is what
+        // silently caps the event rate at threshold/interval and keeps the
+        // pending cap from ever being reached.
+        let chunk = "x".repeat(128);
+        let bursts = 2048usize;
+        for _ in 0..bursts {
+            pump.push(chunk.clone());
+        }
+        // Far longer than the flusher needs to wake up, far shorter than the
+        // window, so an unbatched implementation would already have emitted.
+        std::thread::sleep(Duration::from_millis(150));
+        let observed = events.lock().unwrap().len();
+        assert_eq!(
+            observed,
+            1,
+            "{} bytes inside an open window must still be one batch, got {observed} events",
+            chunk.len() * bursts
+        );
+
+        pump.finish();
+
+        let events = events.lock().unwrap();
+        assert_eq!(
+            output_text(&events).len(),
+            "warmup".len() + chunk.len() * bursts,
+            "no output may be lost while the window is open"
+        );
+        assert_eq!(
+            events.len(),
+            2,
+            "every windowed write belongs to one batch: {} events",
+            events.len()
+        );
+    }
+
+    #[test]
+    fn output_pump_flushes_once_the_window_closes_without_being_finished() {
+        let (on_event, events) = capture_events();
+        let mut pump = test_pump(
+            on_event,
+            Arc::new(PtyOutputCounters::default()),
+            PTY_OUTPUT_PENDING_CAP,
+            PTY_OUTPUT_BATCH_INTERVAL,
+        );
+        consume_leading_edge(&pump, &events);
+
+        pump.push("prompt$ ".to_string());
+
+        assert!(
+            poll_until(Duration::from_secs(2), || events.lock().unwrap().len() >= 2),
+            "output must leave the buffer when the window closes, not only on finish"
+        );
+        pump.finish();
+    }
+
+    #[test]
+    fn output_pump_drops_the_oldest_bytes_when_a_storm_outruns_the_window() {
+        let (on_event, events) = capture_events();
+        let counters = Arc::new(PtyOutputCounters::default());
+        // A window this long guarantees every burst write below lands in the
+        // same batch, so the cap — not the flush cadence — decides the volume.
+        let cap = 1024usize;
+        let mut pump = test_pump(on_event, counters.clone(), cap, Duration::from_secs(2));
+        consume_leading_edge(&pump, &events);
+
+        // 128 divides the cap evenly, so the retained tail is exactly the cap
+        // rather than the largest whole number of chunks that fits under it.
+        let chunk = "x".repeat(128);
+        let bursts = 100usize;
+        for _ in 0..bursts {
+            pump.push(chunk.clone());
+        }
+        pump.finish();
+
+        let burst_bytes = (chunk.len() * bursts) as u64;
+        let metrics = counters.snapshot();
+        assert_eq!(
+            metrics.dropped_bytes,
+            burst_bytes - cap as u64,
+            "the pending cap must discard everything past {cap} bytes"
+        );
+        let events = events.lock().unwrap();
+        let burst = events.last().expect("a burst event");
+        match burst {
+            PtyEvent::Output {
+                data,
+                dropped_bytes,
+                truncated,
+                ..
+            } => {
+                assert_eq!(data.len(), cap, "a flush may never exceed the pending cap");
+                assert_eq!(
+                    *dropped_bytes + data.len() as u64,
+                    burst_bytes,
+                    "every burst byte must be either delivered or accounted as dropped"
+                );
+                assert!(truncated, "a capped batch must be marked truncated");
+            }
+            PtyEvent::Exit { .. } => panic!("expected an output event"),
+        }
+    }
+
+    #[test]
+    fn dropping_a_pump_whose_thread_panicked_does_not_panic_again() {
+        // A pump thread that dies while holding the lock poisons it. If Drop
+        // unwrapped that lock, dropping the pump during unwinding would panic
+        // while panicking and abort the whole app instead of losing one PTY.
+        let (on_event, _events) = capture_events();
+        let mut pump = test_pump(
+            on_event,
+            Arc::new(PtyOutputCounters::default()),
+            PTY_OUTPUT_PENDING_CAP,
+            PTY_OUTPUT_BATCH_INTERVAL,
+        );
+
+        let shared = pump.shared.clone();
+        let poisoner = std::thread::spawn(move || {
+            let _guard = shared.state.lock().unwrap();
+            panic!("simulated pump-thread panic while holding the state lock");
+        });
+        assert!(poisoner.join().is_err());
+        assert!(
+            pump.shared.state.is_poisoned(),
+            "test precondition: the state mutex must be poisoned"
+        );
+
+        // Both the explicit call and the implicit Drop must survive the poison.
+        pump.finish();
+        drop(pump);
+    }
+
+    #[test]
+    fn pty_output_events_carry_monotonic_sequence_numbers_and_metrics() {
+        let mgr = test_manager();
+        let (on_event, events) = capture_events();
+        mgr.open("ws-a", "seq", Some("/bin/sh"), None, 80, 24, on_event)
+            .unwrap();
+        // Separate writes so the batch window closes between them and the
+        // session must produce more than one numbered output event.
+        for marker in ["seq-one", "seq-two"] {
+            mgr.write("seq", &format!("echo {marker}\n")).unwrap();
+            assert!(
+                poll_until(Duration::from_secs(5), || {
+                    events.lock().unwrap().iter().any(
+                    |event| matches!(event, PtyEvent::Output { data, .. } if data.contains(marker))
+                )
+                }),
+                "shell never echoed {marker}"
+            );
+        }
+        mgr.close("seq").unwrap();
+
+        let events = events.lock().unwrap();
+        let sequence = events
+            .iter()
+            .filter_map(|event| match event {
+                PtyEvent::Output { seq, .. } => Some(*seq),
+                PtyEvent::Exit { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            sequence.len() >= 2,
+            "expected several output events, got {sequence:?}"
+        );
+        assert_eq!(
+            sequence,
+            (0..sequence.len() as u64).collect::<Vec<_>>(),
+            "output events must be numbered contiguously from zero"
+        );
+    }
+
+    #[test]
+    fn output_metrics_are_none_for_unknown_sessions_and_track_forwarded_bytes() {
+        let mgr = test_manager();
+        assert_eq!(mgr.output_metrics("missing"), None);
+
+        let (on_event, events) = capture_events();
+        mgr.open("ws-a", "metrics", Some("/bin/sh"), None, 80, 24, on_event)
+            .unwrap();
+        mgr.write("metrics", "echo metrics-probe\n").unwrap();
+        assert!(poll_until(Duration::from_secs(5), || {
+            events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(
+                |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("metrics-probe"))
+            )
+        }));
+
+        let metrics = mgr.output_metrics("metrics").expect("open session metrics");
+        assert!(
+            metrics.output_bytes > 0,
+            "forwarded bytes must be counted: {metrics:?}"
+        );
+        assert_eq!(metrics.dropped_bytes, 0);
+        mgr.close("metrics").unwrap();
     }
 
     #[test]

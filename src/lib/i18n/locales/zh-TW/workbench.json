@@ -244,7 +244,9 @@
     "ariaLabel": "狀態列",
     "noFileOpen": "未開啟檔案",
     "devPort": "Dev {{port}}",
-    "perfTitle": "主程序 CPU · 記憶體",
+    "perfTitle": "App 本體與受管理子行程總和 — App 本體 {{appCpu}}% · {{appMemory}}MB ／ 受管理子行程 {{descendants}} 個（WebView renderer/GPU {{webviews}} 個 {{webviewMemory}}MB、受管理工具 {{tools}} 個 {{toolsMemory}}MB）",
+    "perfUnavailable": "perf 無資料 ⚠",
+    "perfSamplingFailed": "最近 {{attempts}} 次採樣中有 {{failures}} 次失敗、{{empty}} 次沒有資料（另有 {{skipped}} 次因視窗失焦略過）。最後錯誤：{{error}}",
     "saveAction": "儲存檔案",
     "mixedSaveError": "此檔案包含混合換行格式，請先從狀態列選擇 LF 或 CRLF 再儲存。",
     "lineEnding": {
@@ -277,7 +279,7 @@
       },
       "logs": {
         "label": "Logs",
-        "sub": "Debug、user_action、audit 事件"
+        "sub": "Debug、user_action、audit、app_lifecycle 事件"
       },
       "terminal": {
         "label": "終端機",
@@ -331,6 +333,10 @@
     "installingUpdate": "正在安裝更新…",
     "installFailed": "無法安裝更新",
     "retryInstall": "重試安裝",
+    "logsSanitizeKept": "保留：檔名、host 類別、port、時間戳，以及可在本份 bundle 內互相關聯的 hash",
+    "logsSanitizeRemoved": "移除：完整路徑、host 與 IP、帳號、SSH fingerprint、憑證",
+    "logsSanitizeCounts": "已遮蔽——路徑 {{paths}} · host {{hosts}} · 帳號 {{usernames}} · fingerprint {{fingerprints}} · 憑證 {{secrets}} · 無法解析的行 {{unparseableLines}}",
+    "logsRawModeWarning": "Raw 模式：Export bundle 與 Copy 會保留完整路徑、host、帳號、SSH fingerprint 與憑證。請勿把 raw bundle 附到公開 issue。",
     "theme": "主題",
     "themeLight": "淺色",
     "themeDark": "深色",
@@ -357,12 +363,12 @@
       "modeCustom": "自訂",
       "commandLabel": "Command",
       "updateAvailable": "ACP 更新可用：v{{currentVersion}} → v{{latestVersion}}",
-      "updateRestartHint": "重新啟動 Agent 後將使用最新版",
+      "updateRestartHint": "釘選版本將於下次 Yuzora 更新時採用",
       "traceLabel": "ACP trace",
       "traceSub": "將 ACP JSON-RPC 原始行寫入 debug log（最多 500 字）",
       "piRuntimeLabel": "Pi 執行環境",
       "piRuntimeBuiltin": "內建（隨 Yuzora 出貨）",
-      "piRuntimeCommunity": "社群（bunx pi-acp@latest）",
+      "piRuntimeCommunity": "社群（bunx pi-acp，釘選版本）",
       "piRuntimeSub": "內建版隨 app 出貨並支援互動問答；一鍵切回社群版即可回退，既有對話兩種執行環境都能續聊。"
     }
   }

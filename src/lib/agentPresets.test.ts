@@ -8,8 +8,9 @@ import {
   writeJsonSetting,
 } from "@/app/workbench/settingsStorage"
 import {
-  AGENT_PRESETS, AGENT_VISUALS, CUSTOM_AGENT_VISUAL, agentDisplayName,
-  agentPresetForCommand, commandForAgent, commandForPreset,
+  AGENT_PRESETS, AGENT_VISUALS, CUSTOM_AGENT_VISUAL, DEFAULT_AGENT_COMMAND,
+  PINNED_ADAPTER_VERSIONS, agentDisplayName, agentPresetForCommand,
+  commandForAgent, commandForPreset, pinnedAdapterCommand,
   resolveCuratedAgentCommand, resolveRuntimeCommand,
 } from "./agentPresets"
 
@@ -35,19 +36,38 @@ describe("agentPresets", () => {
     localStorage.clear()
   })
 
-  it("exposes pi, claude, codex in display order with latest defaults", () => {
+  it("exposes pi, claude, codex in display order with release-pinned defaults", () => {
     expect(AGENT_PRESETS.map((a) => a.id)).toEqual(["pi", "claude", "codex"])
-    expect(commandForAgent("pi")).toBe("bunx pi-acp@latest")
-    expect(commandForAgent("claude")).toBe("bunx @agentclientprotocol/claude-agent-acp@latest")
-    expect(commandForAgent("codex")).toBe("bunx @agentclientprotocol/codex-acp@latest")
-    expect(AGENT_PRESETS.every((agent) => agent.latestCommand.endsWith("@latest"))).toBe(true)
+    expect(commandForAgent("pi")).toBe("bunx pi-acp@0.0.32")
+    expect(commandForAgent("claude")).toBe("bunx @agentclientprotocol/claude-agent-acp@0.62.0")
+    expect(commandForAgent("codex")).toBe("bunx @agentclientprotocol/codex-acp@1.1.7")
+  })
+
+  // #37 AC 第 1 條：release build 必須用可重現、可稽核的 adapter 版本——curated
+  // preset 不得在 runtime 解析 npm dist-tag。
+  it("never spawns a curated preset through the @latest dist-tag", () => {
+    for (const agent of AGENT_PRESETS) {
+      expect(agent.latestCommand).not.toContain("@latest")
+      expect(agent.latestCommand).toContain(`@${PINNED_ADAPTER_VERSIONS[agent.id]}`)
+    }
+  })
+
+  // 版本升級：釘選常數是唯一權威來源，preset command 與 spawn fallback 都由它
+  // 組出；升級後舊版本的指令字串不再被認成 curated preset。
+  it("derives every curated command from PINNED_ADAPTER_VERSIONS", () => {
+    for (const agent of AGENT_PRESETS) {
+      expect(agent.latestCommand).toBe(pinnedAdapterCommand(agent.id))
+    }
+    expect(DEFAULT_AGENT_COMMAND).toBe(pinnedAdapterCommand("pi"))
+    expect(agentPresetForCommand(pinnedAdapterCommand("claude"))).toBe("claude")
+    expect(agentPresetForCommand("bunx @agentclientprotocol/claude-agent-acp@0.61.0")).toBe("custom")
   })
 
   it("resolves trusted latest and untrusted custom modes", () => {
     expect(resolveCuratedAgentCommand("codex", "latest")).toEqual({
       selectedPreset: "codex",
       commandMode: "latest",
-      command: "bunx @agentclientprotocol/codex-acp@latest",
+      command: "bunx @agentclientprotocol/codex-acp@1.1.7",
       trustedAgentId: "codex",
     })
     expect(resolveCuratedAgentCommand("codex", "custom", "uvx wrapped-codex")).toEqual({
@@ -79,13 +99,13 @@ describe("agentPresets", () => {
   })
 
   it("resolves preset → command, custom → the custom text (empty custom falls back to pi)", () => {
-    expect(commandForPreset("claude", "ignored")).toBe("bunx @agentclientprotocol/claude-agent-acp@latest")
+    expect(commandForPreset("claude", "ignored")).toBe("bunx @agentclientprotocol/claude-agent-acp@0.62.0")
     expect(commandForPreset("custom", "uvx my-acp")).toBe("uvx my-acp")
-    expect(commandForPreset("custom", "  ")).toBe("bunx pi-acp@latest")
+    expect(commandForPreset("custom", "  ")).toBe("bunx pi-acp@0.0.32")
   })
 
   it("reverse-maps built-in latest commands for labelling; removed pins and unknown commands are custom", () => {
-    expect(agentPresetForCommand("bunx @agentclientprotocol/codex-acp@latest")).toBe("codex")
+    expect(agentPresetForCommand("bunx @agentclientprotocol/codex-acp@1.1.7")).toBe("codex")
     expect(agentPresetForCommand("bunx pi-acp@0.0.31")).toBe("custom")
     expect(agentPresetForCommand("uvx something-unknown")).toBe("custom")
   })
@@ -193,12 +213,31 @@ describe("resolveRuntimeCommand (#15 runtime fallback)", () => {
   })
 
   it("does not fall back to deno (unverified adapter compatibility)", () => {
-    // bun 缺席、deno 存在但 npx 缺席：deno 順位刻意跳過 → unavailable。
+    // bun 缺席、deno 存在但 npx 缺席：deno 順位仍刻意跳過——不得產生 deno 指令。
+    // #15 起結果從含糊的 unavailable 收斂為顯性的 unsupported-runtime：斷言變嚴
+    //（多驗 kind 與 runtime 標籤），「不 fallback 到 deno」的意圖不變。
+    const resolution = resolveRuntimeCommand("bunx pi-acp@latest", {
+      bunx: false, deno: true, node: false, npx: false,
+    })
+    expect(resolution).toEqual({
+      kind: "unsupported-runtime",
+      command: "bunx pi-acp@latest",
+      runtime: "deno",
+    })
+    expect(resolution.command).not.toContain("deno")
+  })
+
+  it("keeps npx ahead of the deno notice when both are present", () => {
+    // deno 存在不得攔截既有的 node fallback——優先級仍是 bun → node。
     expect(
       resolveRuntimeCommand("bunx pi-acp@latest", {
-        bunx: false, deno: true, node: false, npx: false,
+        bunx: false, deno: true, node: true, npx: true,
       }),
-    ).toEqual({ kind: "unavailable", command: "bunx pi-acp@latest" })
+    ).toEqual({
+      kind: "fallback",
+      command: "npx -y pi-acp@latest",
+      runtime: "node",
+    })
   })
 
   it("passes non-bunx commands through untouched regardless of runtimes", () => {

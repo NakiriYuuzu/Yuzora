@@ -18,6 +18,7 @@ import {
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
 } from "react"
 import { useTranslation } from "react-i18next"
@@ -80,6 +81,17 @@ import type {
   SessionConfigSelectOption,
   SlashCommand,
 } from "@/agent/acpConnection"
+import {
+  agentColdStarts,
+  cancelAgentColdStart,
+  subscribeAgentColdStarts,
+  type AgentColdStart,
+} from "@/agent/acpConnection"
+import {
+  agentRuntimePrerequisite,
+  subscribeAgentRuntimePrerequisite,
+  type AgentRuntimePrerequisite,
+} from "@/agent/agentRuntime"
 import {
   AGENT_VISUALS,
   CUSTOM_AGENT_VISUAL,
@@ -206,6 +218,20 @@ export function AgentZonePanel() {
   const draftWorkspaceHydrated = useAgentStore((s) => draftCwd
     ? s.hydratedWorkspaceCwds.has(normalizeWorkspacePath(draftCwd))
     : false)
+  // #37：冷啟動（bunx／npx 首次下載 adapter）期間的可見狀態與取消入口。連線層是
+  // 全域單例，這裡直接訂閱它，不經 store——冷啟動不屬於任何一個 session 的狀態。
+  const coldStarts = useSyncExternalStore(
+    subscribeAgentColdStarts,
+    agentColdStarts,
+    agentColdStarts
+  )
+  // #15：runtime prerequisite 由連線層在 spawn 前登記（resolveAgentSpawnCommand），
+  // 與冷啟動同樣是「不屬於任何 session」的全域狀態，因此同樣直接訂閱連線層。
+  const runtimePrerequisite = useSyncExternalStore(
+    subscribeAgentRuntimePrerequisite,
+    agentRuntimePrerequisite,
+    agentRuntimePrerequisite
+  )
   const showConnectionError = !authRequired
     && (connectionState === "error" || connectionError !== null)
   // cwd 防呆：沒有絕對路徑的 workspace／session cwd 時顯示引導，避免以相對路徑 spawn。
@@ -264,7 +290,12 @@ export function AgentZonePanel() {
       className="yz-modein flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-1) bg-(--paper-0) shadow-(--shadow-lg)"
     >
       {authRequired && <AuthRequiredBanner />}
-      {showConnectionError && <ConnectionErrorBanner />}
+      {coldStarts.map((coldStart) => (
+        <ColdStartBanner key={coldStart.processId} coldStart={coldStart} />
+      ))}
+      {runtimePrerequisite
+        ? <RuntimePrerequisiteBanner prerequisite={runtimePrerequisite} />
+        : showConnectionError && <ConnectionErrorBanner />}
       {showWorkspaceGuide && <WorkspaceGuideBanner />}
       {pendingNewSession ? (
         <ConnectingState />
@@ -309,21 +340,89 @@ function AuthRequiredBanner() {
   )
 }
 
-function ConnectionErrorBanner() {
+// #37 S1／S2：每條 bootstrap 各自一列——取消只收掉自己那條（processId 為身分），
+// 且記錄要留到 agent_kill 回報後才消失，取消中期間按鈕維持 disabled。
+function ColdStartBanner({ coldStart }: { coldStart: AgentColdStart }) {
   const { t } = useTranslation("panels")
-  const connectionError = useAgentStore((s) => s.connectionError)
+
+  return (
+    <div className="flex shrink-0 items-center gap-[10px] border-b border-(--line-1) bg-(--paper-1) px-[14px] py-[10px] text-(--ink-2)">
+      <Bot className="size-[15px] shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[12.5px] font-semibold">{t("agentZonePanel.coldStartTitle")}</div>
+        <div className="truncate text-[11px] text-(--ink-3)">
+          {t("agentZonePanel.coldStartDescription")}
+        </div>
+        <div className="truncate text-[11px] text-(--ink-4)">
+          {`${coldStart.runtime} · ${coldStart.cwd}`}
+        </div>
+      </div>
+      <button
+        type="button"
+        disabled={coldStart.cancelling}
+        onClick={() => void cancelAgentColdStart(coldStart.processId).catch(() => undefined)}
+        className="flex h-[28px] shrink-0 items-center rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[11px] text-[11.5px] font-semibold text-(--ink-2) disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {coldStart.cancelling
+          ? t("agentZonePanel.coldStartCancelling")
+          : t("agentZonePanel.coldStartCancel")}
+      </button>
+    </div>
+  )
+}
+
+// 失敗後的重試入口（連線錯誤 banner 與 #15 的 runtime prerequisite banner 共用）：
+// cooldown 是 per (command, cwd) 的，倒數顯示與點擊當下的守門必須讀同一條路由。
+function useAgentRetry() {
+  const connectionErrorAgentId = useAgentStore((s) => s.connectionErrorAgentId)
+  const retryCooldownUntilFor = useAgentStore((s) => s.retryCooldownUntil)
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const session = useAgentStore((s) =>
     activeSessionId ? (s.sessions.get(activeSessionId) ?? null) : null
   )
   const newSession = useAgentStore((s) => s.newSession)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const cwd = firstAbsolutePath(workspacePath, session?.cwd)
+  // Cooldown is keyed per (command, cwd): the banner and Retry must both read
+  // the route of the agent that actually failed, not the current default.
+  const failedAgentId = connectionErrorAgentId ?? undefined
+  const retryCooldownUntil = cwd ? retryCooldownUntilFor(cwd, failedAgentId) : 0
+  const [clock, setClock] = useState(() => Date.now())
+  const cooldownSeconds = Math.max(0, Math.ceil((retryCooldownUntil - clock) / 1_000))
+
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined
+    const updateClock = () => {
+      const current = Date.now()
+      setClock(current)
+      if (interval && current >= retryCooldownUntil) {
+        clearInterval(interval)
+        interval = undefined
+      }
+    }
+    updateClock()
+    if (retryCooldownUntil <= Date.now()) return
+    interval = setInterval(updateClock, 250)
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [retryCooldownUntil])
 
   function retry() {
-    const cwd = firstAbsolutePath(workspacePath, session?.cwd)
     if (!cwd) return
-    void newSession(cwd).catch(() => undefined)
+    if (Date.now() < retryCooldownUntilFor(cwd, failedAgentId)) return
+    // 省略 agentId 時維持單參數呼叫，與 store 的 custom-command 路徑一致。
+    void (failedAgentId ? newSession(cwd, failedAgentId) : newSession(cwd)).catch(() => undefined)
   }
+
+  return { cooldownSeconds, retry }
+}
+
+function ConnectionErrorBanner() {
+  const { t } = useTranslation("panels")
+  const connectionError = useAgentStore((s) => s.connectionError)
+  const connectionErrorKind = useAgentStore((s) => s.connectionErrorKind)
+  const { cooldownSeconds, retry } = useAgentRetry()
 
   return (
     <div className="flex shrink-0 items-center gap-[10px] border-b border-[rgba(226,59,84,0.3)] bg-(--danger-soft) px-[14px] py-[10px] text-[#b51f38]">
@@ -331,16 +430,140 @@ function ConnectionErrorBanner() {
       <div className="min-w-0 flex-1">
         <div className="text-[12.5px] font-semibold">{t("agentZonePanel.connectionErrorTitle")}</div>
         <div className="truncate text-[11px] text-[#b51f38]/80">
-          {connectionError ?? t("agentZonePanel.unknownError")}
+          {connectionErrorKind === "retry-cooldown"
+            ? t("agentZonePanel.retryCooldownError")
+            : (connectionError ?? t("agentZonePanel.unknownError"))}
         </div>
       </div>
       <button
         type="button"
         onClick={retry}
-        className="flex h-[28px] shrink-0 items-center rounded-[8px] bg-[#b51f38] px-[11px] text-[11.5px] font-semibold text-white shadow-(--shadow-xs)"
+        disabled={cooldownSeconds > 0}
+        className="flex h-[28px] shrink-0 items-center rounded-[8px] bg-[#b51f38] px-[11px] text-[11.5px] font-semibold text-white shadow-(--shadow-xs) disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {t("agentZonePanel.retry")}
+        {cooldownSeconds > 0
+          ? t("agentZonePanel.retryCooldown", { seconds: cooldownSeconds })
+          : t("agentZonePanel.retry")}
       </button>
+    </div>
+  )
+}
+
+// #15：Bun／Deno／Node.js 三者的偵測結果。Deno 一律是 ⚠——偵測得到但 ACP adapter
+// 尚未通過 Deno 相容性驗證（見 resolveRuntimeCommand 的 unsupported-runtime）。
+// Node.js 一列背後有兩個探測（node 與 npx）：只有兩者都在才算 ✓，缺哪一個就講明
+// 缺哪一個——單看 npx 會讓 builtin adapter 的 `!runtimes.node` 觸發條件與這一列
+// 互相矛盾（{node:false, npx:true} 會一邊說「找不到 Node.js」一邊標 ✓）。
+const RUNTIME_INSTALL_URLS = {
+  bun: "https://bun.sh",
+  deno: "https://deno.com",
+  node: "https://nodejs.org",
+} as const
+
+function nodeRowStatus(runtimes: AgentRuntimePrerequisite["runtimes"]) {
+  if (runtimes.node && runtimes.npx) return "installed" as const
+  if (runtimes.node) return "noNpx" as const
+  if (runtimes.npx) return "noNode" as const
+  return "missing" as const
+}
+
+function runtimePrerequisiteRows(runtimes: AgentRuntimePrerequisite["runtimes"]) {
+  return [
+    {
+      key: "bun" as const,
+      label: "Bun",
+      status: runtimes.bunx ? ("installed" as const) : ("missing" as const),
+    },
+    {
+      key: "deno" as const,
+      label: "Deno",
+      status: runtimes.deno ? ("unsupported" as const) : ("missing" as const),
+    },
+    {
+      key: "node" as const,
+      label: "Node.js",
+      status: nodeRowStatus(runtimes),
+    },
+  ]
+}
+
+const RUNTIME_STATUS_GLYPH = {
+  installed: "✓",
+  missing: "✗",
+  unsupported: "⚠",
+  noNpx: "⚠",
+  noNode: "⚠",
+} as const
+
+const RUNTIME_STATUS_KEY = {
+  installed: "agentZonePanel.runtimePrerequisiteStatusInstalled",
+  missing: "agentZonePanel.runtimePrerequisiteStatusMissing",
+  unsupported: "agentZonePanel.runtimePrerequisiteStatusUnsupported",
+  noNpx: "agentZonePanel.runtimePrerequisiteStatusNoNpx",
+  noNode: "agentZonePanel.runtimePrerequisiteStatusNoNode",
+} as const
+
+const RUNTIME_PREREQUISITE_DESCRIPTION_KEY = {
+  "no-runtime": "agentZonePanel.runtimePrerequisiteNoRuntime",
+  "deno-unsupported": "agentZonePanel.runtimePrerequisiteDenoUnsupported",
+  "builtin-node-missing": "agentZonePanel.runtimePrerequisiteBuiltinNode",
+} as const
+
+// #15 第 5 條：三者皆無（或只有未支援的 Deno、或內建 adapter 缺 node）時，spawn 前
+// 就顯示的專屬提示——不是泛用連線錯誤 banner，而是逐一列出 runtime 偵測結果與
+// 安裝指引。資料來源是連線層在擋下 spawn 當下記錄的實際偵測結果。
+function RuntimePrerequisiteBanner({ prerequisite }: { prerequisite: AgentRuntimePrerequisite }) {
+  const { t } = useTranslation("panels")
+  const { cooldownSeconds, retry } = useAgentRetry()
+
+  return (
+    <div
+      role="alert"
+      aria-label={t("agentZonePanel.runtimePrerequisiteTitle")}
+      className="flex shrink-0 flex-col gap-[8px] border-b border-[rgba(226,59,84,0.3)] bg-(--danger-soft) px-[14px] py-[10px] text-[#b51f38]"
+    >
+      <div className="flex items-start gap-[10px]">
+        <Bot className="mt-[2px] size-[15px] shrink-0" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[12.5px] font-semibold">
+            {t("agentZonePanel.runtimePrerequisiteTitle")}
+          </h2>
+          <p className="text-[11px] text-[#b51f38]/80">
+            {t(RUNTIME_PREREQUISITE_DESCRIPTION_KEY[prerequisite.reason])}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={retry}
+          disabled={cooldownSeconds > 0}
+          className="flex h-[28px] shrink-0 items-center rounded-[8px] bg-[#b51f38] px-[11px] text-[11.5px] font-semibold text-white shadow-(--shadow-xs) disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {cooldownSeconds > 0
+            ? t("agentZonePanel.retryCooldown", { seconds: cooldownSeconds })
+            : t("agentZonePanel.retry")}
+        </button>
+      </div>
+      <ul aria-label={t("agentZonePanel.runtimePrerequisiteRuntimes")} className="flex flex-col gap-[4px]">
+        {runtimePrerequisiteRows(prerequisite.runtimes).map((row) => (
+          <li key={row.key} className="flex items-center gap-[8px] text-[11px]">
+            <span aria-hidden="true">{RUNTIME_STATUS_GLYPH[row.status]}</span>
+            <span className="font-semibold">{row.label}</span>
+            <span className="text-[#b51f38]/80">{t(RUNTIME_STATUS_KEY[row.status])}</span>
+            {/* 只有「完全沒偵測到」才給安裝連結——已經裝了（含只缺 npx／只缺
+                node 的半安裝）還叫人去安裝，正是這個面板要避免的含糊建議。 */}
+            {row.status === "missing" && (
+              <a
+                href={RUNTIME_INSTALL_URLS[row.key]}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                {t("agentZonePanel.runtimePrerequisiteInstall", { runtime: row.label })}
+              </a>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

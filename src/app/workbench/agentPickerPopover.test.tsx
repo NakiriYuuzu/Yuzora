@@ -8,6 +8,7 @@ import { useAgentStore } from "@/state/agentStore"
 
 const originalAgentActions = {
   newSession: useAgentStore.getState().newSession,
+  retryCooldownUntil: useAgentStore.getState().retryCooldownUntil,
 }
 const originalAuthRequired = useAgentStore.getState().authRequired
 
@@ -72,7 +73,7 @@ describe("AgentPickerPopover", () => {
     render(<AgentPickerPopover cwd="/ws" onClose={() => {}} />)
 
     expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("Pi")
-    expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("bunx pi-acp@latest")
+    expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("bunx pi-acp@0.0.32")
     expect(screen.getByTestId("agent-picker-card-claude")).toHaveTextContent("Claude")
     expect(screen.getByTestId("agent-picker-card-codex")).toHaveTextContent("Codex")
     expect(screen.getByTestId("agent-picker-card-custom")).toHaveTextContent("Custom command…")
@@ -83,7 +84,7 @@ describe("AgentPickerPopover", () => {
       AGENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
         preset: "pi",
-        command: "bunx pi-acp@latest",
+        command: "bunx pi-acp@0.0.32",
         traceEnabled: false,
         presetCommands: {
           pi: { mode: "latest", customCommand: "" },
@@ -95,9 +96,9 @@ describe("AgentPickerPopover", () => {
 
     render(<AgentPickerPopover cwd="/ws" onClose={() => {}} />)
 
-    expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("bunx pi-acp@latest")
+    expect(screen.getByTestId("agent-picker-card-pi")).toHaveTextContent("bunx pi-acp@0.0.32")
     expect(screen.getByTestId("agent-picker-card-claude")).toHaveTextContent("uvx wrapped-claude")
-    expect(screen.getByTestId("agent-picker-card-codex")).toHaveTextContent("codex-acp@latest")
+    expect(screen.getByTestId("agent-picker-card-codex")).toHaveTextContent("codex-acp@1.1.7")
   })
 
   it("highlights the global preset by default", () => {
@@ -162,6 +163,51 @@ describe("AgentPickerPopover", () => {
 
     expect(newSession).toHaveBeenCalledWith("/ws", "claude")
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it("blocks only the agent card whose workspace route is cooling down", () => {
+    vi.spyOn(Date, "now").mockReturnValue(10_000)
+    const newSession = vi.fn(async () => "s1")
+    const retryCooldownUntil = vi.fn((_cwd: string, agentId?: string) =>
+      agentId === "codex" ? 12_000 : 0
+    )
+    useAgentStore.setState({ newSession, retryCooldownUntil })
+    const onClose = vi.fn()
+
+    render(<AgentPickerPopover cwd="/ws" onClose={onClose} />)
+    fireEvent.click(screen.getByTestId("agent-picker-card-codex"))
+
+    expect(retryCooldownUntil).toHaveBeenCalledWith("/ws", "codex")
+    expect(newSession).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("agent-picker-card-claude"))
+    expect(newSession).toHaveBeenCalledExactlyOnceWith("/ws", "claude")
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("saves the custom command but blocks the session while the default route is cooling down", () => {
+    vi.spyOn(Date, "now").mockReturnValue(10_000)
+    const newSession = vi.fn(async () => "s1")
+    // The agentId-omitted custom-command path resolves to the default route.
+    const retryCooldownUntil = vi.fn((_cwd: string, agentId?: string) =>
+      agentId === undefined ? 12_000 : 0
+    )
+    useAgentStore.setState({ newSession, retryCooldownUntil })
+    const onClose = vi.fn()
+
+    render(<AgentPickerPopover cwd="/ws" onClose={onClose} />)
+    fireEvent.click(screen.getByTestId("agent-picker-card-custom").querySelector("button")!)
+    fireEvent.change(screen.getByTestId("agent-picker-custom-input"), { target: { value: "uvx my-acp" } })
+    fireEvent.click(screen.getByTestId("agent-picker-custom-confirm"))
+
+    expect(retryCooldownUntil).toHaveBeenCalledWith("/ws")
+    expect(JSON.parse(localStorage.getItem(AGENT_SETTINGS_STORAGE_KEY) ?? "{}")).toMatchObject({
+      preset: "custom",
+      command: "uvx my-acp",
+    })
+    expect(newSession).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it("Escape closes the popover when the custom card is not expanded", () => {

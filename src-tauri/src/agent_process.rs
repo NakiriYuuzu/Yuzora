@@ -441,9 +441,7 @@ impl Drop for AgentManager {
 fn shell_command(shell: &std::path::Path, command: &str) -> Command {
     #[cfg(windows)]
     {
-        let mut cmd = Command::new(shell);
-        cmd.args(["/C", command]);
-        cmd
+        process_kill::windows_shell_command(shell.as_os_str(), command)
     }
     #[cfg(not(windows))]
     {

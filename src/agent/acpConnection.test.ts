@@ -5,6 +5,9 @@ import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 
 import {
+    agentColdStarts,
+    cancelAgentColdStart,
+    subscribeAgentColdStarts,
     createAcpClientRuntime,
     createAcpConnection,
     isAgentAuthRequiredError,
@@ -866,6 +869,7 @@ describe("terminal callbacks", () => {
 describe("createAcpConnection", () => {
     it("normalizes session/new auth-required errors with initialize auth methods", async () => {
         const agentId = "agent-auth"
+        const kills: unknown[] = []
         const fake = createAuthRequiredFakeAcpAgentBridge(
             (line) => emit("agent://stdout", { id: agentId, line }),
             "session/new"
@@ -874,7 +878,10 @@ describe("createAcpConnection", () => {
         mockIPC((cmd, payload) => {
             if (cmd === "agent_spawn") return agentId
             if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
-            if (cmd === "agent_kill") return undefined
+            if (cmd === "agent_kill") {
+                kills.push(payload)
+                return undefined
+            }
             return undefined
         }, { shouldMockEvents: true })
 
@@ -902,6 +909,119 @@ describe("createAcpConnection", () => {
             args: ["--terminal-login"],
             env: {}
         }])
+        expect(kills).toEqual([])
+    })
+
+    it("starts an awaited ownerless teardown after session/new protocol failure", async () => {
+        const agentId = "agent-session-new-failure"
+        const calls: Array<[string, unknown]> = []
+        let buffer = ""
+        let resolveKill!: () => void
+        const kill = new Promise<void>((resolve) => {
+            resolveKill = resolve
+        })
+
+        mockIPC(async (cmd, payload) => {
+            calls.push([cmd, payload])
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_kill") return kill
+            if (cmd !== "agent_write") return undefined
+
+            buffer += (payload as { chunk: string }).chunk
+            const lines = buffer.split("\n")
+            buffer = lines.pop() ?? ""
+            for (const line of lines) {
+                if (!line.trim()) continue
+                const message = JSON.parse(line) as {
+                    id?: string | number | null
+                    method?: string
+                }
+                const response = message.method === "initialize"
+                    ? {
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] }
+                    }
+                    : {
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        error: { code: -32603, message: "session/new exploded" }
+                    }
+                await emit("agent://stdout", { id: agentId, line: JSON.stringify(response) })
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "failing-session-new-agent",
+            initializeTimeoutMs: 1_000
+        })
+
+        await expect(connection.newSession("/w")).rejects.toThrow("session/new exploded")
+        await vi.waitFor(() => {
+            expect(calls).toContainEqual([
+                "agent_kill",
+                { id: agentId, reason: "session_new_failed" }
+            ])
+        })
+
+        const teardown = connection.pendingTeardown?.()
+        expect(teardown).toBeDefined()
+        let teardownSettled = false
+        void teardown?.then(() => {
+            teardownSettled = true
+        })
+        await Promise.resolve()
+        expect(teardownSettled).toBe(false)
+
+        resolveKill()
+        await expect(teardown).resolves.toBeUndefined()
+    })
+
+    it("retains a disconnected process id long enough to teardown a session/new transport failure", async () => {
+        const agentId = "agent-session-new-transport-failure"
+        const kills: unknown[] = []
+
+        mockIPC(async (cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_kill") {
+                kills.push(payload)
+                return undefined
+            }
+            if (cmd !== "agent_write") return undefined
+
+            const message = JSON.parse((payload as { chunk: string }).chunk.trim()) as {
+                id?: string | number | null
+                method?: string
+            }
+            if (message.method === "initialize") {
+                await emit("agent://stdout", {
+                    id: agentId,
+                    line: JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] }
+                    })
+                })
+                return undefined
+            }
+            throw new Error("Cannot call write after a stream was destroyed")
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "broken-stream-agent",
+            initializeTimeoutMs: 1_000
+        })
+
+        await expect(connection.newSession("/w")).rejects.toThrow(
+            "Cannot call write after a stream was destroyed"
+        )
+        await vi.waitFor(() => {
+            expect(kills).toContainEqual({
+                id: agentId,
+                reason: "session_new_failed"
+            })
+        })
     })
 
     it("normalizes prompt auth-required errors with the session id", async () => {
@@ -1305,7 +1425,7 @@ describe("createAcpConnection", () => {
         const connection = createAcpConnection({ initializeTimeoutMs: 1_000 })
         await connection.prepare?.("/w")
 
-        expect(spawns).toEqual([{ command: "bunx pi-acp@latest", cwd: "/w" }])
+        expect(spawns).toEqual([{ command: "bunx pi-acp@0.0.32", cwd: "/w" }])
         expect(fake.messages.filter((message) => message.method === "initialize")).toHaveLength(1)
         expect(fake.messages.find((message) => message.method === "initialize")?.params)
             .toMatchObject({ clientCapabilities: { session: { configOptions: { boolean: {} } } } })
@@ -1902,6 +2022,44 @@ describe("createAcpConnection", () => {
         )
     })
 
+    it("awaits init failure teardown before allowing the attempt to settle", async () => {
+        const agentId = "agent-init-failure-kill-delay"
+        let resolveKill!: () => void
+        const kill = new Promise<void>((resolve) => {
+            resolveKill = resolve
+        })
+        const kills: unknown[] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") throw new Error("initialize transport failed")
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") {
+                kills.push(payload)
+                return kill
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: "broken-agent",
+            initializeTimeoutMs: 60_000
+        })
+        const attempt = connection.newSession("/w")
+        let settled = false
+        void attempt.finally(() => {
+            settled = true
+        }).catch(() => undefined)
+
+        await vi.waitFor(() => {
+            expect(kills).toContainEqual({ id: agentId, reason: "init_failed" })
+        })
+        await Promise.resolve()
+        expect(settled).toBe(false)
+
+        resolveKill()
+        await expect(attempt).rejects.toThrow("initialize transport failed")
+    })
+
     it("surfaces an EPIPE agent crash from the exit stderr tail", async () => {
         const agentId = "agent-epipe"
         const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
@@ -1984,6 +2142,590 @@ describe("createAcpConnection", () => {
             .map((entry) => entry.text)
         expect(agentTexts.some((text) => text.includes("Ready"))).toBe(true)
         expect(agentTexts.some((text) => text.includes("ReadyReady"))).toBe(false)
+    })
+})
+
+// #37：bunx／npx 首次執行會先從 registry 下載 adapter，這段時間 adapter 還沒開始
+// 講 ACP。bootstrap（spawn → 第一個 stdout byte）與 initialize（第一個 stdout byte
+// → handshake 完成）各自計時，冷啟動才不會被 15 秒的 protocol timeout 誤殺。
+describe("#37 cold start (bootstrap) vs initialize timeouts", () => {
+    const PINNED_COMMAND = "bunx pi-acp@0.0.32"
+
+    // adapter 存活但還沒回應 initialize 時會先送出的通知（interceptor 直接消化，
+    // 不會誤觸 SDK 的 request 對應）——用來模擬「第一個 stdout byte 已到達」。
+    const aliveNotification = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+            sessionId: "fake-session",
+            update: {
+                sessionUpdate: "session_info_update",
+                _meta: { piAcp: { queueDepth: 0, running: false } }
+            }
+        }
+    })
+
+    // 冷啟動視窗確實有開、且在第一個 stdout byte 到達當下就關上（不是「整段啟動都
+    // 沒有冷啟動視窗」）。只斷言 happy path 分不出 cache hit 與回退實作，所以這裡
+    // 觀察註冊表的開關，並驗證關窗後仍有完整的 15 秒 initialize 預算。
+    it("cache hit：冷啟動視窗開後在第一個 stdout 立刻關上，initialize 另計短視窗", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-cache-hit"
+            const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+            let installed = false
+            const buffered: string[] = []
+            mockIPC((cmd, payload) => {
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") {
+                    const { chunk } = payload as { chunk: string }
+                    if (!installed) {
+                        buffered.push(chunk)
+                        return undefined
+                    }
+                    return fake.write(chunk)
+                }
+                if (cmd === "agent_stderr_tail") return []
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const observed: { runtime: string; cwd: string }[] = []
+            const unsubscribe = subscribeAgentColdStarts(() => {
+                for (const entry of agentColdStarts()) {
+                    observed.push({ runtime: entry.runtime, cwd: entry.cwd })
+                }
+            })
+            const connection = createAcpConnection({
+                command: PINNED_COMMAND,
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+            let settled = false
+            void session.then(() => { settled = true }, () => { settled = true })
+
+            // cache hit＝package 已在本機，adapter 幾乎立刻開口
+            await vi.advanceTimersByTimeAsync(100)
+            expect(observed).toEqual([{ runtime: "bunx", cwd: "/w" }])
+            installed = true
+            for (const chunk of buffered.splice(0)) await fake.write(chunk)
+            await vi.advanceTimersByTimeAsync(0)
+            unsubscribe()
+
+            await expect(session).resolves.toMatchObject({ sessionId: "fake-session" })
+            expect(settled).toBe(true)
+            // 冷啟動視窗已關（下載段的 120 秒計時器不得殘留）
+            expect(agentColdStarts()).toEqual([])
+            expect(vi.getTimerCount()).toBe(0)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("cache miss：安裝拖過 15 秒，第一個 stdout 在冷啟動視窗內到達仍成功", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-cache-miss"
+            const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+            const buffered: string[] = []
+            let installed = false
+            mockIPC((cmd, payload) => {
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") {
+                    const { chunk } = payload as { chunk: string }
+                    // bunx 還在安裝 package：adapter 尚未啟動，沒有人回應
+                    if (!installed) {
+                        buffered.push(chunk)
+                        return undefined
+                    }
+                    return fake.write(chunk)
+                }
+                if (cmd === "agent_stderr_tail") return ["npm warn exec installing pi-acp"]
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({
+                command: PINNED_COMMAND,
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+
+            // 舊行為會在這裡就 init_timeout；冷啟動視窗內只有 stderr 進度，不算逾時
+            await vi.advanceTimersByTimeAsync(60_000)
+            expect(agentColdStarts()).toMatchObject([{ processId: agentId, runtime: "bunx" }])
+
+            installed = true
+            for (const chunk of buffered.splice(0)) await fake.write(chunk)
+            await vi.advanceTimersByTimeAsync(0)
+
+            await expect(session).resolves.toMatchObject({ sessionId: "fake-session" })
+            expect(agentColdStarts()).toEqual([])
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    // exit 必須直接把 bootstrap 階段結掉（settleFirstStdout(exitError)）。只斷言
+    // 「有 reject」分不出這條路徑——初始化請求本來就會被 markDisconnected 拒絕；
+    // 真正的差別在冷啟動的 120 秒計時器有沒有被收掉。
+    it("offline：bunx 安裝失敗而提早 exit 時立刻失敗，冷啟動視窗與計時器一併收掉", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-offline"
+            mockIPC((cmd) => {
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return []
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({
+                command: PINNED_COMMAND,
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+            await vi.advanceTimersByTimeAsync(1_000)
+            // 安裝仍在進行：冷啟動視窗開著（此時 120 秒計時器已武裝）
+            expect(agentColdStarts()).toMatchObject([{ processId: agentId, runtime: "bunx", cwd: "/w" }])
+
+            const rejection = expect(session).rejects.toThrow(/agent 行程已結束（exit code 1）/)
+            await emit("agent://exit", {
+                id: agentId,
+                code: 1,
+                stderrTail: ["npm error code ENOTFOUND", "npm error network request failed"]
+            })
+            // 只推進 1 毫秒：失敗必須來自 exit，而不是 120 秒的冷啟動逾時
+            await vi.advanceTimersByTimeAsync(1)
+            await rejection
+            await vi.advanceTimersByTimeAsync(0)
+            expect(agentColdStarts()).toEqual([])
+            // exit 沒有結掉 bootstrap 的話，這個 120 秒計時器會殘留到視窗用盡
+            expect(vi.getTimerCount()).toBe(0)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("下載逾時：冷啟動視窗用盡時以 cold_start_timeout 分類並收屍", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-cold-timeout"
+            const calls: Array<[string, unknown]> = []
+            mockIPC((cmd, payload) => {
+                calls.push([cmd, payload])
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return ["npm warn exec installing pi-acp"]
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({
+                command: PINNED_COMMAND,
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+            const assertion = expect(session).rejects.toThrow(/ACP cold start timed out after 120000ms/)
+            await vi.advanceTimersByTimeAsync(120_000)
+            await assertion
+
+            const killIndex = calls.findIndex(([cmd]) => cmd === "agent_kill")
+            const tailIndex = calls.findIndex(([cmd]) => cmd === "agent_stderr_tail")
+            expect(tailIndex).toBeGreaterThanOrEqual(0)
+            expect(killIndex).toBeGreaterThan(tailIndex)
+            expect(calls[killIndex]?.[1]).toEqual({ id: agentId, reason: "cold_start_timeout" })
+            expect(agentColdStarts()).toEqual([])
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    // 關鍵行為：initialize 的 15 秒是從**第一個 stdout byte**才開始算，不是從 spawn。
+    // 只斷言錯誤訊息與 kill reason 的話，舊實作（單一 15 秒視窗）也會全綠——所以這裡
+    // 逐點卡住時間軸：t=60s 尚未 reject（舊實作早在 15s 就死）、t=74.9s 仍未 reject、
+    // t=75s 才 reject。
+    it("initialize 逾時：短視窗在第一個 stdout byte 後才重新開始計時", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-handshake-timeout"
+            const calls: Array<[string, unknown]> = []
+            mockIPC((cmd, payload) => {
+                calls.push([cmd, payload])
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return []
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({
+                command: PINNED_COMMAND,
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+            let settled = false
+            void session.then(() => { settled = true }, () => { settled = true })
+
+            // 安裝耗掉 60 秒（遠超 initialize 視窗），期間不得 reject
+            await vi.advanceTimersByTimeAsync(60_000)
+            expect(settled).toBe(false)
+            // adapter 開始講話（第一個 stdout byte），但 initialize 沒有回應
+            await emit("agent://stdout", { id: agentId, line: aliveNotification })
+
+            // 第一個 byte 之後的 14.9 秒仍在 handshake 視窗內
+            await vi.advanceTimersByTimeAsync(14_900)
+            expect(settled).toBe(false)
+
+            const assertion = expect(session).rejects.toThrow(/ACP initialize timed out after 15000ms/)
+            await vi.advanceTimersByTimeAsync(100)
+            await assertion
+
+            const killIndex = calls.findIndex(([cmd]) => cmd === "agent_kill")
+            expect(calls[killIndex]?.[1]).toEqual({ id: agentId, reason: "init_timeout" })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("使用者可取消冷啟動下載，agent_kill 以 bootstrap_cancelled 被 await", async () => {
+        const agentId = "agent-cancel"
+        const kills: unknown[] = []
+        let resolveKill!: () => void
+        const kill = new Promise<void>((resolve) => {
+            resolveKill = resolve
+        })
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return undefined
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") {
+                kills.push(payload)
+                return kill
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: PINNED_COMMAND,
+            bootstrapTimeoutMs: 120_000,
+            initializeTimeoutMs: 15_000
+        })
+        const session = connection.newSession("/w")
+        session.catch(() => undefined)
+        await vi.waitFor(() => {
+            expect(agentColdStarts()).toHaveLength(1)
+        })
+
+        let cancelled = false
+        const cancelling = cancelAgentColdStart(agentId).then(() => {
+            cancelled = true
+        })
+        await vi.waitFor(() => {
+            expect(kills).toEqual([{ id: agentId, reason: "bootstrap_cancelled" }])
+        })
+        // kill_tree 尚未回報前不得先宣告取消完成（否則 npm/node 子孫可能還活著）
+        await Promise.resolve()
+        expect(cancelled).toBe(false)
+
+        resolveKill()
+        await cancelling
+        expect(cancelled).toBe(true)
+        await expect(withTestTimeout(session, 200)).rejects.toThrow(/cold start cancelled/)
+        // 取消路徑已 await 過 kill，不再重複收屍
+        expect(kills).toEqual([{ id: agentId, reason: "bootstrap_cancelled" }])
+        expect(agentColdStarts()).toEqual([])
+    })
+
+    // S1：coldStarts 是 module-global，取消必須只收掉按下去的那一條。
+    it("取消只收掉指定的那條冷啟動，同時進行的另一條不受影響", async () => {
+        const kills: unknown[] = []
+        const spawned: string[] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") {
+                const id = `agent-multi-${spawned.length + 1}`
+                spawned.push(id)
+                return id
+            }
+            if (cmd === "agent_write") return undefined
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") {
+                kills.push(payload)
+                return undefined
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const options = { bootstrapTimeoutMs: 120_000, initializeTimeoutMs: 15_000 }
+        const first = createAcpConnection({ command: PINNED_COMMAND, ...options })
+        const second = createAcpConnection({ command: "bunx codex-acp@0.0.1", ...options })
+        const firstSession = first.newSession("/w-a")
+        firstSession.catch(() => undefined)
+        await vi.waitFor(() => {
+            expect(agentColdStarts()).toHaveLength(1)
+        })
+        const secondSession = second.newSession("/w-b")
+        secondSession.catch(() => undefined)
+        await vi.waitFor(() => {
+            expect(agentColdStarts()).toHaveLength(2)
+        })
+
+        await cancelAgentColdStart("agent-multi-1")
+
+        expect(kills).toEqual([{ id: "agent-multi-1", reason: "bootstrap_cancelled" }])
+        await expect(withTestTimeout(firstSession, 200)).rejects.toThrow(/cold start cancelled/)
+        expect(agentColdStarts()).toMatchObject([{ processId: "agent-multi-2", cwd: "/w-b" }])
+
+        await cancelAgentColdStart("agent-multi-2")
+        await expect(withTestTimeout(secondSession, 200)).rejects.toThrow(/cold start cancelled/)
+    })
+
+    // S2：agent_kill 還在飛時 banner 不得消失。冷啟動記錄要一路撐到 kill 回報，
+    // 期間以 cancelling 旗標讓按鈕 disabled。
+    it("取消中：冷啟動記錄與 cancelling 旗標維持到 agent_kill 回報後才消失", async () => {
+        const agentId = "agent-cancel-order"
+        const order: string[] = []
+        let resolveKill!: () => void
+        const kill = new Promise<void>((resolve) => {
+            resolveKill = resolve
+        })
+        mockIPC((cmd) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return undefined
+            if (cmd === "agent_stderr_tail") return []
+            if (cmd === "agent_kill") {
+                order.push("kill-invoked")
+                return kill
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: PINNED_COMMAND,
+            bootstrapTimeoutMs: 120_000,
+            initializeTimeoutMs: 15_000
+        })
+        const session = connection.newSession("/w")
+        session.catch(() => undefined)
+        await vi.waitFor(() => {
+            expect(agentColdStarts()).toHaveLength(1)
+        })
+
+        const cancelling = cancelAgentColdStart(agentId)
+        await vi.waitFor(() => {
+            expect(order).toEqual(["kill-invoked"])
+        })
+        // 連線層自己的 race 早就 reject 了，但 banner 仍必須在
+        await expect(withTestTimeout(session, 200)).rejects.toThrow(/cold start cancelled/)
+        expect(agentColdStarts()).toMatchObject([{ processId: agentId, cancelling: true }])
+
+        order.push("kill-resolved")
+        resolveKill()
+        await cancelling
+        order.push("banner-cleared")
+        expect(agentColdStarts()).toEqual([])
+        expect(order).toEqual(["kill-invoked", "kill-resolved", "banner-cleared"])
+    })
+
+    it("啟動 telemetry 記錄兩段耗時，且不含未去敏的 command", async () => {
+        const agentId = "agent-telemetry"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        const logs: unknown[] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            if (cmd === "log_event") {
+                logs.push(payload)
+                return undefined
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command: PINNED_COMMAND,
+            bootstrapTimeoutMs: 120_000,
+            initializeTimeoutMs: 15_000
+        })
+        await expect(withTestTimeout(connection.newSession("/w"), 200))
+            .resolves.toMatchObject({ sessionId: "fake-session" })
+        await vi.waitFor(() => {
+            expect(logs).toHaveLength(1)
+        })
+
+        expect(logs[0]).toMatchObject({
+            event: {
+                source: "acp",
+                event: "agent_startup_connected",
+                metadata: { runtime: "bunx" }
+            }
+        })
+        const metadata = (logs[0] as { event: { metadata: Record<string, unknown> } }).event.metadata
+        expect(typeof metadata.bootstrapMs).toBe("number")
+        expect(typeof metadata.initializeMs).toBe("number")
+        // AC 第 6 條：完整 command（含套件與版本）不得落入 log
+        expect(JSON.stringify(logs[0])).not.toContain("pi-acp")
+    })
+
+    // B1：custom command 可能以 `KEY=value` 前綴帶憑證（本專案的 pi 憑證正是 env-var
+    // 制）。runtime 欄位必須是白名單輸出，未知 token 一律 "other"，否則 telemetry
+    // 會把 secret 原樣寫進 log。
+    const SECRET = "sk-live-abc123XYZ"
+    it.each([
+        [`YUUZU_API_KEY=${SECRET} bunx pi-acp@0.0.32`, "bunx"],
+        [`GEOSENSE_API_KEY=${SECRET} /opt/tools/pi-launcher --token=${SECRET}`, "other"],
+        [`'/opt/weird path/${SECRET}-agent' --serve`, "other"]
+    ])("telemetry 的 runtime 是白名單輸出，secret 不入 log：%s → %s", async (command, runtime) => {
+        const agentId = "agent-secret"
+        const fake = createFakeAcpAgentBridge((line) => emit("agent://stdout", { id: agentId, line }))
+        const logs: unknown[] = []
+        mockIPC((cmd, payload) => {
+            if (cmd === "agent_spawn") return agentId
+            if (cmd === "agent_write") return fake.write((payload as { chunk: string }).chunk)
+            if (cmd === "agent_kill") return undefined
+            if (cmd === "log_event") {
+                logs.push(payload)
+                return undefined
+            }
+            return undefined
+        }, { shouldMockEvents: true })
+
+        const connection = createAcpConnection({
+            command,
+            bootstrapTimeoutMs: 120_000,
+            initializeTimeoutMs: 15_000
+        })
+        await expect(withTestTimeout(connection.newSession("/w"), 500))
+            .resolves.toMatchObject({ sessionId: "fake-session" })
+        await vi.waitFor(() => {
+            expect(logs).toHaveLength(1)
+        })
+
+        const payload = JSON.stringify(logs[0])
+        expect(payload).not.toContain(SECRET)
+        // runtime 會被 lowercase 正規化——大小寫不同的殘留同樣算洩漏
+        expect(payload.toLowerCase()).not.toContain(SECRET.toLowerCase())
+        expect(payload).not.toContain("YUUZU_API_KEY")
+        expect(payload).not.toContain("GEOSENSE_API_KEY")
+        expect(payload).not.toContain("pi-launcher")
+        expect(payload).not.toContain("pi-acp")
+        expect(logs[0]).toMatchObject({ event: { metadata: { runtime } } })
+    })
+
+    // S4：這些形式全都真的會從 registry 下載，全都需要冷啟動視窗。弱 tokenizer 會把
+    // 它們判成本機 runtime（`bun`／`pnpm`／`cmd`／甚至引號路徑切出來的 `Program`），
+    // 於是仍在 15 秒陣亡——#37 的原缺陷對它們完全沒修好。
+    it.each([
+        ["bun x pi-acp@0.0.32", "bun"],
+        ["pnpm dlx pi-acp@0.0.32", "pnpm"],
+        ["yarn dlx pi-acp@0.0.32", "yarn"],
+        ["deno run -A npm:pi-acp@0.0.32", "deno"],
+        ["cmd /c npx -y pi-acp@0.0.32", "npx"],
+        ['"C:\\Program Files\\nodejs\\npx.cmd" -y pi-acp@0.0.32', "npx"],
+        [`YUUZU_API_KEY=${SECRET} bunx pi-acp@0.0.32`, "bunx"]
+    ])("registry runtime 判定涵蓋 %s（runtime=%s）", async (command, runtime) => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-form"
+            mockIPC((cmd) => {
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return []
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({
+                command,
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+            let settled = false
+            void session.then(() => { settled = true }, () => { settled = true })
+
+            // 下載仍在進行：短 initialize 視窗過了也不得陣亡
+            await vi.advanceTimersByTimeAsync(20_000)
+            expect(settled).toBe(false)
+            expect(agentColdStarts()).toMatchObject([{ processId: agentId, runtime }])
+
+            await cancelAgentColdStart(agentId)
+            await expect(session).rejects.toThrow(/cold start cancelled/)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    // 反向守門：wrapper／deno 的解析不得把本機指令誤判成 registry 下載。
+    it.each([
+        ["deno run -A ./adapter.ts", "deno"],
+        ["cmd /c node adapter.mjs", "node"]
+    ])("非 registry 形式維持單一短視窗 %s（runtime=%s）", async (command, runtime) => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-local-form"
+            const logs: unknown[] = []
+            mockIPC((cmd, payload) => {
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return []
+                if (cmd === "agent_kill") return undefined
+                if (cmd === "log_event") {
+                    logs.push(payload)
+                    return undefined
+                }
+                return undefined
+            }, { shouldMockEvents: true })
+
+            const connection = createAcpConnection({
+                command,
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+            const assertion = expect(session).rejects.toThrow(/ACP initialize timed out after 15000ms/)
+            await vi.advanceTimersByTimeAsync(15_000)
+            await assertion
+            expect(agentColdStarts()).toEqual([])
+            expect(logs[0]).toMatchObject({ event: { metadata: { runtime } } })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("本機 adapter（非 registry runtime）維持單一短 initialize 視窗", async () => {
+        vi.useFakeTimers()
+        try {
+            const agentId = "agent-local-adapter"
+            mockIPC((cmd) => {
+                if (cmd === "agent_spawn") return agentId
+                if (cmd === "agent_write") return undefined
+                if (cmd === "agent_stderr_tail") return []
+                if (cmd === "agent_kill") return undefined
+                return undefined
+            }, { shouldMockEvents: true })
+
+            // 內建 pi adapter／自訂 wrapper 不會下載 package，hang 住時不該讓使用者
+            // 等滿冷啟動視窗
+            const connection = createAcpConnection({
+                command: 'node "/Applications/Yuzora.app/adapter.mjs"',
+                bootstrapTimeoutMs: 120_000,
+                initializeTimeoutMs: 15_000
+            })
+            const session = connection.newSession("/w")
+            const assertion = expect(session).rejects.toThrow(/ACP initialize timed out after 15000ms/)
+            await vi.advanceTimersByTimeAsync(15_000)
+            await assertion
+            expect(agentColdStarts()).toEqual([])
+        } finally {
+            vi.useRealTimers()
+        }
     })
 })
 

@@ -20,8 +20,10 @@ import { StatusBar } from "@/app/workbench/StatusBar"
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import { WorkspaceRail } from "@/app/workbench/WorkspaceRail"
 import { logUserAction } from "@/features/logs/userAction"
+import i18n from "@/lib/i18n"
 import { devServerStopWorkspace, ptyCloseWorkspace } from "@/lib/ipc"
 import { showsNativeTrafficLights } from "@/lib/platform"
+import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { useUpdateStore } from "@/state/updateStore"
 import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
@@ -71,7 +73,6 @@ export function AppShell() {
     s.groups.some((g) => g.tabs.some((t) => t.path === PREVIEW_TAB_PATH))
   )
   const togglePreviewTab = useWorkspaceStore((s) => s.togglePreviewTab)
-  const currentWorkspace = useWorkspaceStore((s) => s.workspacePath)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [theme, setTheme] = useState<ThemePreference>(() => loadAppearanceSettings().theme)
@@ -204,15 +205,58 @@ export function AppShell() {
     setPaletteOpen(true)
   }, [paletteOpenRequest])
 
+  // Window close (Alt+F4 / the title-bar close button). The handler is awaited
+  // by @tauri-apps/api's onCloseRequested wrapper and preventDefault() cancels
+  // the destroy, so this is where unsaved work gets its last chance — Yuzora
+  // keeps no drafts (issue #21).
+  //
+  // This covers window close only. macOS ⌘Q (and Dock → Quit) goes through
+  // NSApp.terminate:, and tao registers no applicationShouldTerminate: — the
+  // only delegate method that can cancel a termination — so nothing in the
+  // stack ever sees it: tao only hooks applicationWillTerminate:, which lands
+  // on RunEvent::Exit, never RunEvent::ExitRequested. There is no frontend or
+  // Rust hook that can intercept ⌘Q today; see tauri-apps/tauri#9198 (open)
+  // and #12978. Don't add a "⌘Q guard" without first checking those.
+  //
+  // Registered once (no workspace / dirty state in the deps) because Tauri only
+  // prevents the native close while a JS listener is attached: re-binding on
+  // every workspace switch would open a window where Alt+F4 bypasses the guard
+  // entirely. Both the workspace and the dirty set are read from the store at
+  // close time instead.
   useEffect(() => {
-    if (!isTauri() || !currentWorkspace) return
+    if (!isTauri()) return
     let disposed = false
     let unlisten: (() => void) | null = null
 
     void getCurrentWindow()
-      .onCloseRequested(() => {
-        void ptyCloseWorkspace(currentWorkspace)
-        void devServerStopWorkspace(currentWorkspace)
+      .onCloseRequested(async (event) => {
+        // A rejection here must never escape: the wrapper awaits this handler,
+        // so a throw would skip both preventDefault() and destroy() — the
+        // window would silently stop closing with no dialog and no error.
+        // Erring toward "cancel the close" keeps the buffers alive.
+        const proceed = await confirmDiscardingUnsaved({
+          title: i18n.t("unsavedDialog.exitTitle", { ns: "menus" }),
+          description: i18n.t("unsavedDialog.exitDescription", { ns: "menus" }),
+          saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" }),
+        }).catch((err) => {
+          console.warn("unsaved-changes guard failed:", err)
+          return false
+        })
+        if (!proceed) {
+          event.preventDefault()
+          return
+        }
+        const workspace = useWorkspaceStore.getState().workspacePath
+        if (!workspace) return
+        // Awaited (not fire-and-forget) so cleanup completes before destroy;
+        // rejections are logged rather than swallowed — a leaked pty/conhost
+        // (issue #19) is otherwise invisible — but must not escape either.
+        await ptyCloseWorkspace(workspace).catch((err) => {
+          console.warn("pty_close_workspace on window close failed:", err)
+        })
+        await devServerStopWorkspace(workspace).catch((err) => {
+          console.warn("dev_server_stop_workspace on window close failed:", err)
+        })
       })
       .then((nextUnlisten) => {
         if (disposed) {
@@ -227,7 +271,7 @@ export function AppShell() {
       disposed = true
       if (unlisten) unlisten()
     }
-  }, [currentWorkspace])
+  }, [])
 
   const handleModeChange = (next: Mode) => {
     setMode(next)

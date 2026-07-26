@@ -1,13 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
-import { terminalDisplayTitle, useTerminalStore } from "@/state/terminalStore"
+import {
+  MAX_TERMINAL_TABS,
+  terminalDisplayTitle,
+  useTerminalStore,
+} from "@/state/terminalStore"
 import {
   beginRenameTerminal,
   closeTerminal,
   createTerminalSessionMeta,
   splitTerminal,
   terminalPaneTargetExists,
+  terminalTabLimitError,
+  terminalTabLimitReached,
   terminalTargetExists,
   type TerminalCommandTarget,
 } from "./terminalCommands"
@@ -98,6 +104,40 @@ describe("terminalCommands", () => {
     const hidden = { ...target, paneId: undefined, sessionId: target.sessionId }
     expect(terminalTargetExists(hidden)).toBe(true)
     expect(terminalPaneTargetExists(hidden)).toBe(false)
+  })
+
+  it("counts the tab limit across every workspace, not per workspace", () => {
+    seedTarget()
+    expect(terminalTabLimitReached()).toBe(false)
+
+    // Split the budget over two workspaces so neither one alone is full: a
+    // per-workspace cap would let this through and keep allocating PTYs.
+    const store = useTerminalStore.getState()
+    const other = "/workspace-b"
+    for (let index = 1; index < MAX_TERMINAL_TABS; index += 1) {
+      const workspace = index % 2 === 0 ? target.workspacePath : other
+      store.addSession(workspace, {
+        sessionId: `filler-${index}`,
+        title: `Terminal ${index + 1}`,
+        launchStatus: "running",
+        workspace,
+        shell: "",
+        cols: 80,
+        rows: 24,
+      })
+    }
+
+    const layouts = useTerminalStore.getState().layouts
+    const perWorkspace = Object.values(layouts).map((layout) => layout.tabIds.length)
+    expect(Math.max(...perWorkspace)).toBeLessThan(MAX_TERMINAL_TABS)
+    expect(perWorkspace.reduce((a, b) => a + b, 0)).toBe(MAX_TERMINAL_TABS)
+
+    expect(terminalTabLimitReached()).toBe(true)
+    expect(splitTerminal(target)).toBe("cancelled")
+    expect(useTerminalStore.getState().layouts[target.workspacePath].tabIds).toHaveLength(
+      layouts[target.workspacePath].tabIds.length
+    )
+    expect(terminalTabLimitError().message).toContain(String(MAX_TERMINAL_TABS))
   })
 
   it("allocates monotonic default names instead of reusing closed tab positions", () => {

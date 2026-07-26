@@ -124,6 +124,8 @@
     "closeTabDescription": "\"{{name}}\" has unsaved changes. Save before closing?",
     "switchWorkspaceTitle": "Unsaved changes",
     "switchWorkspaceDescription": "Some open files have unsaved changes. Save before switching workspace?",
+    "exitTitle": "Unsaved changes",
+    "exitDescription": "Some open files have unsaved changes. Yuzora does not keep drafts, so anything unsaved is lost once the window closes. Save before closing?",
     "save": "Save",
     "saveAll": "Save all",
     "discard": "Discard",

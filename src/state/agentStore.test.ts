@@ -8,7 +8,11 @@ import {
     type SessionConfigOption,
     type StopReason
 } from "@/agent/acpConnection"
-import { createAgentRouter, fingerprintAgentCommand } from "@/agent/agentRouter"
+import {
+    AgentRetryCooldownError,
+    createAgentRouter,
+    fingerprintAgentCommand
+} from "@/agent/agentRouter"
 import type { BlockEntry, TranscriptEntry } from "@/agent/acpTypes"
 import { AGENT_VERSION_STORAGE_KEY, loadAgentVersions } from "@/agent/agentVersions"
 import {
@@ -146,6 +150,108 @@ describe("createAgentStore tone transitions", () => {
         expect(store.getState().authRequired).toBeNull()
         expect(store.getState().activeSessionId).toBe("s-after-login")
         expect(store.getState().connectionState).toBe("ready")
+    })
+
+    it("delegates failed draft cleanup to the router and keeps cooldown keyed by workspace", async () => {
+        const disposeA = vi.fn(async () => true)
+        const router = createAgentRouter({ now: () => 0 }, (_command, cwd) => {
+            const fake = fakeConnection().connection
+            if (cwd === "/ws-a") {
+                fake.newSession = vi.fn(async () => {
+                    throw new Error("session/new transport failed")
+                })
+                fake.disposeOwnerless = disposeA
+            } else {
+                fake.newSession = vi.fn(async () => ({
+                    sessionId: "workspace-b-session",
+                    startupInfo: null
+                }))
+            }
+            return fake
+        })
+        const store = createAgentStore({ connection: router })
+        store.getState().activateDraftWorkspace("/ws-a")
+
+        await expect(
+            store.getState().ensureDraftSession("/ws-a", "pi")
+        ).rejects.toThrow("session/new transport failed")
+
+        expect(disposeA).toHaveBeenCalledExactlyOnceWith("session_new_failed")
+        expect(router.disposeOwnerless).toBeUndefined()
+        expect(store.getState().retryCooldownUntil("/ws-a", "pi")).toBe(1_000)
+        expect(store.getState().retryCooldownUntil("/ws-b", "pi")).toBe(0)
+        expect(store.getState().connectionState).toBe("error")
+
+        await expect(store.getState().newSession("/ws-b", "pi")).resolves.toBe(
+            "workspace-b-session"
+        )
+
+        expect(store.getState().retryCooldownUntil("/ws-a", "pi")).toBe(1_000)
+        expect(store.getState().retryCooldownUntil("/ws-b", "pi")).toBe(0)
+    })
+
+    it("marks router cooldown errors for localized display without rewriting the raw cause", async () => {
+        const fake = fakeConnection()
+        vi.mocked(fake.connection.newSession).mockRejectedValueOnce(
+            new AgentRetryCooldownError(4_000)
+        )
+        const store = createAgentStore({ connection: fake.connection })
+
+        await expect(store.getState().newSession("/w", "pi")).rejects.toMatchObject({
+            nextAllowedAt: 4_000
+        })
+
+        expect(store.getState().connectionErrorKind).toBe("retry-cooldown")
+        expect(store.getState().connectionError).toBe(
+            "Agent retry is cooling down until 4000"
+        )
+    })
+
+    it("remembers which agent failed session/new and clears it once a session succeeds", async () => {
+        const fake = fakeConnection()
+        vi.mocked(fake.connection.newSession).mockRejectedValueOnce(
+            new AgentRetryCooldownError(4_000)
+        )
+        const store = createAgentStore({ connection: fake.connection })
+
+        await expect(store.getState().newSession("/w", "codex")).rejects.toMatchObject({
+            nextAllowedAt: 4_000
+        })
+
+        expect(store.getState().connectionErrorAgentId).toBe("codex")
+
+        await store.getState().newSession("/w", "pi")
+
+        expect(store.getState().connectionErrorAgentId).toBeNull()
+    })
+
+    it("remembers the draft's agent when its session/new fails", async () => {
+        const fake = fakeConnection()
+        vi.mocked(fake.connection.newSession).mockRejectedValue(
+            new Error("session/new transport failed")
+        )
+        const store = createAgentStore({ connection: fake.connection })
+        store.getState().activateDraftWorkspace("/ws")
+
+        await expect(store.getState().ensureDraftSession("/ws", "codex")).rejects.toThrow(
+            "session/new transport failed"
+        )
+
+        expect(store.getState().connectionErrorAgentId).toBe("codex")
+    })
+
+    it("remembers the conversation's agent when a prompt fails", async () => {
+        const fake = fakeConnection()
+        const store = createAgentStore({ connection: fake.connection })
+
+        await store.getState().newSession("/ws", "codex")
+        fake.rejectPrompt(new Error("ACP agent exited"))
+
+        await expect(store.getState().sendPrompt("/ws", "Continue")).rejects.toThrow(
+            "ACP agent exited"
+        )
+
+        expect(store.getState().connectionErrorAgentId).toBe("codex")
     })
 
     it("retries login with the originally attempted agent, not the default", async () => {
@@ -319,6 +425,27 @@ describe("createAgentStore tone transitions", () => {
         expect(store.getState().connectionState).toBe("error")
         expect(store.getState().connectionError).toBe("ACP initialize timed out after 60000ms")
         expect(store.getState().activeSessionId).toBeNull()
+    })
+
+    // #37 S3：主動取消冷啟動下載不是連線失敗——不得留下紅色錯誤 banner，更不得
+    // 顯示未翻譯的原始英文訊息。
+    it("treats a cancelled cold start as idle instead of a connection error", async () => {
+        const cancelled = new Error("ACP cold start cancelled")
+        const fake = fakeConnection()
+        vi.mocked(fake.connection.newSession).mockRejectedValue(cancelled)
+        const store = createAgentStore({ connection: fake.connection })
+
+        await expect(store.getState().newSession("/w")).rejects.toThrow("ACP cold start cancelled")
+        expect(store.getState().connectionState).toBe("idle")
+        expect(store.getState().connectionError).toBeNull()
+        expect(store.getState().connectionErrorAgentId).toBeNull()
+        expect(store.getState().pendingNewSession).toBe(false)
+
+        await expect(store.getState().sendPrompt("/w", "Hello")).rejects.toThrow(
+            "ACP cold start cancelled"
+        )
+        expect(store.getState().connectionState).toBe("idle")
+        expect(store.getState().connectionError).toBeNull()
     })
 
     it("clears connectionError as soon as the next attempt starts, before it resolves", async () => {
@@ -1579,10 +1706,10 @@ describe("Phase P2: one visible ephemeral draft", () => {
         await expect(store.getState().newSession("/ws", "codex")).resolves.toBe("explicit-codex")
 
         await vi.waitFor(() => {
-            expect(stubs.get("bunx pi-acp@latest")?.disposePrepared).toHaveBeenCalledWith("/ws")
+            expect(stubs.get("bunx pi-acp@0.0.32")?.disposePrepared).toHaveBeenCalledWith("/ws")
         })
-        expect(stubs.get("bunx pi-acp@latest")?.dropSession).toHaveBeenCalledWith("draft-pi")
-        expect(stubs.get("bunx @agentclientprotocol/codex-acp@latest")?.disposePrepared).not.toHaveBeenCalled()
+        expect(stubs.get("bunx pi-acp@0.0.32")?.dropSession).toHaveBeenCalledWith("draft-pi")
+        expect(stubs.get("bunx @agentclientprotocol/codex-acp@1.1.7")?.disposePrepared).not.toHaveBeenCalled()
         expect([...store.getState().sessions.keys()]).toEqual(["explicit-codex"])
         expect(store.getState().sessions.get("explicit-codex")?.ephemeral).toBe(true)
     })
@@ -2151,7 +2278,7 @@ describe("Phase 4: continueSession", () => {
 
         await store.getState().continueSession("restored-codex")
 
-        expect(spawnedCommands).toEqual(["bunx @agentclientprotocol/codex-acp@latest"])
+        expect(spawnedCommands).toEqual(["bunx @agentclientprotocol/codex-acp@1.1.7"])
         expect(store.getState().sessions.get("restored-codex")?.restored).toBe(false)
     })
 })
