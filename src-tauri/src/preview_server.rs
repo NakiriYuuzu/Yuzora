@@ -208,7 +208,7 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_serve(
     dir: String,
     state: tauri::State<'_, PreviewServerState>,
@@ -216,7 +216,7 @@ pub fn preview_serve(
     state.serve(&dir)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_stop_all(state: tauri::State<'_, PreviewServerState>) -> Result<(), String> {
     state.stop_all();
     Ok(())

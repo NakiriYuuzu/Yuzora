@@ -59,12 +59,12 @@ where
         .map_err(|e| format!("fs blocking task failed: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_workspace(path: String) -> Result<String, String> {
     canonicalize_workspace(&path)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_dir(path: String) -> Result<Vec<FileNode>, String> {
     list_dir_entries(Path::new(&path))
 }

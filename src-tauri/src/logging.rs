@@ -1944,7 +1944,7 @@ pub async fn log_export(dest: String, sanitize: bool) -> Result<LogExportResult,
 }
 
 /// Copy rows 走的 redaction 出口——與 export 共用 redact_line，語意一致。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn log_sanitize_lines(lines: Vec<String>) -> Result<Vec<String>, String> {
     let redactor = Redactor::new();
     Ok(lines
@@ -1953,7 +1953,7 @@ pub fn log_sanitize_lines(lines: Vec<String>) -> Result<Vec<String>, String> {
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn log_event(event: LogEvent) -> Result<(), String> {
     // 值收斂：Logs pane 的篩選是固定清單，未知值永遠篩不出來 → 直接拒絕
     if !VALID_LEVELS.contains(&event.level.as_str()) {
@@ -1966,12 +1966,12 @@ pub fn log_event(event: LogEvent) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_log_level() -> String {
     read_log_level_from(&log_config_path())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_log_level(level: String) -> Result<(), String> {
     if !VALID_LEVELS.contains(&level.as_str()) {
         return Err(format!("invalid log level: {level}"));
