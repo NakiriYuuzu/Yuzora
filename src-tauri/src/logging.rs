@@ -959,7 +959,7 @@ fn scrub_by_key(value: &str, key: &str, redactor: &Redactor) -> Option<String> {
         bump(&redactor.counters.usernames);
         return Some(format!("<user:{}>", redactor.hash8(value)));
     }
-    if PATH_KEYS.contains(&key) && absolute_path_prefix(value).is_some() {
+    if PATH_KEYS.contains(&key) && path_start_prefix(value).is_some() {
         return Some(replace_path_span(value, redactor));
     }
     None
@@ -1165,12 +1165,40 @@ fn secret_assignment_span(rest: &str, prev: Option<char>) -> Option<(usize, usiz
     if value_len == 0 {
         return None;
     }
-    // `:` 也是散文的標點（`merge feat/secret: hotfix for prod outage`），值不像
-    // 憑證就不動；`=` 是明確的賦值，一律遮蔽。
-    if separator == b':' && !looks_like_secret_value(&rest[cursor..cursor + value_len]) {
-        return None;
+    // `=` 是明確的賦值，一律遮蔽。`:` 同時是散文的標點，需要再分辨：
+    if separator == b':' {
+        let value = &rest[cursor..cursor + value_len];
+        // 純數字一律視為計數（`tokens: 1523` 這種 usage 統計），任何欄位名都不遮。
+        if value.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // 值形狀的啟發式只套用在**散文也會用到的欄位名**上。`password: hunter`
+        // 的 key 已經被認出是憑證欄位，卻因為值「短且全小寫」而被放走——輸出仍
+        // 標示為「已去識別化」，密碼卻是原文（P1）。明確的憑證欄位一律遮，值再
+        // 普通也一樣：漏遮的代價遠大於多遮一個字。
+        if secret_key_is_prose_ambiguous(&rest[..key_len]) && !looks_like_secret_value(value) {
+            return None;
+        }
     }
     Some((cursor, value_len))
+}
+
+/// 散文也會用到的秘密欄位詞。`merge feat/secret: hotfix for prod outage` 的
+/// `secret` 是分支名的一部分，不是欄位名——只有這一類才保留「值不像憑證就放過」
+/// 的判斷。`password`／`credential`／`api_key` 等在實務上不會出現在散文裡。
+const PROSE_AMBIGUOUS_SECRET_PARTS: [&str; 1] = ["secret"];
+
+/// key 名是否**只**因為散文常用詞而被判為秘密欄位。只要命中任何一個明確的憑證
+/// 詞（`db_password` 命中 `password`），就不算模稜兩可，值形狀不再有否決權。
+fn secret_key_is_prose_ambiguous(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower == "pwd" {
+        return false;
+    }
+    SECRET_KEY_PARTS
+        .iter()
+        .filter(|part| lower.contains(*part))
+        .all(|part| PROSE_AMBIGUOUS_SECRET_PARTS.contains(part))
 }
 
 /// 純數字（`tokens: 42` 這類計數）與純小寫單字不算憑證；其餘（混大小寫／含數字
@@ -1564,10 +1592,19 @@ fn url_scheme_len(rest: &str, prev: Option<char>) -> Option<usize> {
     rest[len..].starts_with("://").then_some(len + 3)
 }
 
-// --- scrubber：絕對路徑 ------------------------------------------------------
+// --- scrubber：路徑起點 ------------------------------------------------------
 
-/// 絕對路徑前綴長度：verbatim UNC / verbatim drive / UNC / drive letter / POSIX。
-fn absolute_path_prefix(rest: &str) -> Option<usize> {
+/// 路徑起點前綴長度：verbatim UNC / verbatim drive / UNC / drive letter / POSIX，
+/// 外加 home-relative 的 `~/`。
+///
+/// **`~/` 這一條是必要的，不是方便性**：`redact_line` 會先跑 `sanitize_line` 把
+/// home 前綴換成 `~`，之後才進 scrubber。若這裡只認絕對路徑，家目錄底下的東西
+/// 就會整個逸出——包括 `PATH_KEYS` 欄位（`workspace_path`／`cwd`／`command`…）
+/// 因為守門條件失敗而**完全不進 scrubber**，以及訊息內文裡的 `~/Clients/Acme/…`。
+/// 兩者都會原封留在標示為「已去識別化」的輸出中，而路徑遮蔽計數還回報 0。
+///
+/// 只認 `~/` 與 `~\`（長度 2），不認裸 `~`——後者是散文常見字元（`~5 分鐘`）。
+fn path_start_prefix(rest: &str) -> Option<usize> {
     if rest.starts_with(r"\\?\UNC\") {
         return Some(8);
     }
@@ -1584,6 +1621,9 @@ fn absolute_path_prefix(rest: &str) -> Option<usize> {
         && matches!(bytes[2], b'\\' | b'/')
     {
         return Some(3);
+    }
+    if rest.starts_with("~/") || rest.starts_with(r"~\") {
+        return Some(2);
     }
     if bytes.first() == Some(&b'/') {
         return Some(1);
@@ -1653,7 +1693,7 @@ fn scrub_paths(input: &str, redactor: &Redactor) -> String {
         // `file:///Users/…`：`//` 中間那個 `/` 不是路徑起點，往後挪一格才會與裸路徑
         // 得到同一個 hash。
         let boundary = is_path_boundary(prev) && !(prev == Some('/') && rest.starts_with("//"));
-        if let Some(prefix) = absolute_path_prefix(rest).filter(|_| boundary) {
+        if let Some(prefix) = path_start_prefix(rest).filter(|_| boundary) {
             let mut end = prefix;
             while end < rest.len() {
                 let ch = rest[end..].chars().next().unwrap_or('\u{0}');
@@ -2075,7 +2115,14 @@ mod tests {
         let mut content = String::new();
         use std::io::Read;
         entry.read_to_string(&mut content).unwrap();
-        assert!(content.contains("~/workspace"));
+        // home 前綴換成 `~` 之後**還要**進 path scrubber。原本這裡斷言
+        // `content.contains("~/workspace")`，等於把「home-relative 路徑整段逸出」
+        // 這個洩漏鎖成預期行為（P1）；現在改成斷言它確實被 hash 掉。
+        assert!(
+            !content.contains("~/workspace"),
+            "home-relative 路徑未經 scrubber：{content}"
+        );
+        assert!(content.contains("<path:"), "應產生 path hash：{content}");
         assert!(content.contains(&format!("owned by {username}")));
         assert!(!content.contains(&home_text));
     }
@@ -2813,6 +2860,93 @@ mod tests {
         let got = redacted_message("merge feat/secret: hotfix for prod outage", &redactor);
 
         assert_eq!(got, "merge feat/secret: hotfix for prod outage");
+    }
+
+    /// P1：明確的憑證欄位不能因為「值短且全小寫」而被放走。修正前 `password: hunter`
+    /// 的 key 已被認出是憑證欄位，卻被值形狀啟發式否決，原文留在標示為「已去識別化」
+    /// 的輸出裡。
+    #[test]
+    fn redact_line_redacts_explicit_credential_fields_whatever_the_value_looks_like() {
+        let redactor = redactor();
+
+        for (line, secret) in [
+            ("db login password: hunter", "hunter"),
+            ("connect passwd: swordfish", "swordfish"),
+            ("header api_key: abcdef", "abcdef"),
+            ("cfg credential: letmein", "letmein"),
+            ("pwd: opensesame", "opensesame"),
+        ] {
+            let got = redacted_message(line, &redactor);
+            assert!(!got.contains(secret), "{secret} 仍外洩：{got}");
+            assert!(got.contains("<redacted>"), "{line} 應被遮蔽：{got}");
+        }
+    }
+
+    /// 上一條的反向護欄：usage 統計這類純數字值，任何欄位名都不能遮掉，否則
+    /// `tokens: 1523` 這種診斷資訊會消失。
+    #[test]
+    fn redact_line_keeps_numeric_counters_after_a_colon() {
+        let redactor = redactor();
+
+        let got = redacted_message("usage tokens: 1523 total_tokens: 4096", &redactor);
+
+        assert_eq!(got, "usage tokens: 1523 total_tokens: 4096");
+    }
+
+    /// P1：`redact_line` 會先把 home 前綴換成 `~` 才進 scrubber。修正前 scrubber
+    /// 只認絕對路徑，家目錄底下的目錄名（專案／客戶代號）因此原封輸出，而且路徑
+    /// 遮蔽計數還回報 0。
+    #[test]
+    fn redact_line_scrubs_home_relative_paths_in_messages() {
+        let redactor = redactor();
+
+        let got = redacted_message(
+            "opened ~/Clients/AcmeCorp/secret-project/main.rs",
+            &redactor,
+        );
+
+        assert!(!got.contains("AcmeCorp"), "客戶目錄名仍外洩：{got}");
+        assert!(!got.contains("secret-project"), "專案目錄名仍外洩：{got}");
+        assert!(got.contains("<path:"), "應產生 path hash：{got}");
+        // 與絕對路徑一致：basename 保留（診斷需要檔名），目錄段才 hash。
+        assert!(got.contains("main.rs"), "檔名不該被吃掉：{got}");
+        assert!(
+            redactor.counters.paths.get() > 0,
+            "路徑遮蔽計數必須反映這次遮蔽"
+        );
+    }
+
+    /// 同一個洞的欄位版：`PATH_KEYS` 的守門條件是「值看起來像路徑起點」，`~/` 不被
+    /// 認得時整個欄位**完全不進 scrubber**。#40 之後 `workspace_path` 每筆 user
+    /// action 都帶真實值，這條路徑因此變成日常會踩到的。
+    #[test]
+    fn redact_line_scrubs_home_relative_path_fields() {
+        let redactor = redactor();
+        let line = r#"{"timestamp":"t","level":"info","kind":"user_action","source":"ui","workspace_path":"~/Clients/AcmeCorp/secret-project","event":"e","message":"m","metadata":{}}"#;
+
+        let got = redact_line(line, &redactor);
+
+        assert!(!got.contains("AcmeCorp"), "中間目錄名仍外洩：{got}");
+        assert!(got.contains("<path:"), "應產生 path hash：{got}");
+        // basename 仍保留，與絕對路徑的既有行為一致（`<path:hash>/basename`，見
+        // `replace_single_path`；UI 的說明也是「保留檔名」）。對 `workspace_path`
+        // 這種值本身就是目錄的欄位，basename 等於專案名——**要不要連它一起遮是
+        // 獨立的產品決策**，不在本次修正範圍內，這裡明確釘住現況以免日後誤以為
+        // 已經處理過。
+        assert!(
+            got.contains("/secret-project"),
+            "basename 的現況應維持不變：{got}"
+        );
+    }
+
+    /// 裸 `~` 是散文字元（`~5 分鐘`），不能被當成路徑起點。
+    #[test]
+    fn redact_line_leaves_a_bare_tilde_alone() {
+        let redactor = redactor();
+
+        let got = redacted_message("retry in ~5 minutes ~ done", &redactor);
+
+        assert_eq!(got, "retry in ~5 minutes ~ done");
     }
 
     /// AC 4：JSON escaped Windows path 與 nested metadata（含陣列）都要覆蓋。
