@@ -182,7 +182,7 @@ pub fn run_search(
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_workspace(
     state: tauri::State<SearchState>,
     root: String,

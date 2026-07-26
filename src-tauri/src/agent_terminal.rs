@@ -342,7 +342,7 @@ pub async fn agent_terminal_create(
     .map_err(|err| err.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_terminal_output(
     state: tauri::State<'_, AgentTerminalState>,
     id: String,

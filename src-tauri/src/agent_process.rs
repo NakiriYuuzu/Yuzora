@@ -773,7 +773,7 @@ pub async fn agent_kill(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_stderr_tail(
     state: tauri::State<'_, AgentProcessState>,
     id: String,
@@ -781,12 +781,12 @@ pub fn agent_stderr_tail(
     state.0.stderr_tail(&id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_list(state: tauri::State<'_, AgentProcessState>, cwd: String) -> Vec<String> {
     state.0.list(&cwd)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_set_trace(
     state: tauri::State<'_, AgentProcessState>,
     enabled: bool,
@@ -794,7 +794,7 @@ pub fn agent_set_trace(
     state.0.set_trace(enabled)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_detect_runtimes() -> AgentRuntimeAvailability {
     detect_runtimes()
 }

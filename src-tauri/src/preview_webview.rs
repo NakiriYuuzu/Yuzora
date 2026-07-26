@@ -7,6 +7,12 @@
 // The child webview is a native layer that paints above every DOM overlay, so the
 // front-end hides it (`preview_set_visible(false)`) whenever any modal/popover is
 // open (see the overlay gate) and closes it when the preview panel unmounts.
+//
+// Commands here deliberately stay synchronous (main thread) while the rest of the
+// app moved to `(async)`: the native webview ops must land on the main thread
+// anyway, and main-thread execution serializes rapid-fire `preview_set_bounds` /
+// `preview_set_visible` in invoke order — on the async runtime two bounds updates
+// could apply out of order and leave the overlay misplaced.
 
 use std::sync::Mutex;
 

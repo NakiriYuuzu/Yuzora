@@ -302,7 +302,7 @@ mod unix_impl {
         }
     }
 
-    #[tauri::command]
+    #[tauri::command(async)]
     pub fn askpass_respond(
         state: tauri::State<'_, AskpassState>,
         id: u64,
@@ -350,7 +350,7 @@ mod windows_impl {
         }
     }
 
-    #[tauri::command]
+    #[tauri::command(async)]
     pub fn askpass_respond(
         _state: tauri::State<'_, AskpassState>,
         _id: u64,

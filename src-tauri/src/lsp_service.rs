@@ -793,7 +793,7 @@ pub async fn lsp_send(
     run_blocking(move || manager.send(&workspace, &language, message)).await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_stop_workspace(
     state: tauri::State<'_, LspState>,
     workspace: String,
@@ -802,7 +802,7 @@ pub fn lsp_stop_workspace(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_status(
     state: tauri::State<'_, LspState>,
     workspace: String,
@@ -810,12 +810,12 @@ pub fn lsp_status(
     Ok(state.0.status(&workspace))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_config_get() -> Result<lsp_config::LspConfig, String> {
     Ok(lsp_config::load_from(&lsp_config::config_path()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_config_set_server(
     state: tauri::State<'_, LspState>,
     workspace: Option<String>,
@@ -848,14 +848,14 @@ fn apply_set_server(
     ws_canonical
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_config_stale() -> Result<Vec<String>, String> {
     Ok(lsp_config::stale_workspaces(&lsp_config::load_from(
         &lsp_config::config_path(),
     )))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_config_clear_stale(workspace: String) -> Result<lsp_config::LspConfig, String> {
     let path = lsp_config::config_path();
     let mut cfg = lsp_config::load_from(&path);
@@ -864,7 +864,7 @@ pub fn lsp_config_clear_stale(workspace: String) -> Result<lsp_config::LspConfig
     Ok(cfg)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lsp_set_trace(state: tauri::State<'_, LspState>, enabled: bool) -> Result<(), String> {
     state.0.set_trace(enabled)
 }

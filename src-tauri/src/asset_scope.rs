@@ -6,7 +6,7 @@ use tauri::Manager;
 /// `asset:` scheme until the user actually opens a workspace, and grants are
 /// only ever whole opened-workspace trees (plan constraint C4). Grants
 /// accumulate for the app session; there is no revoke path (plan Q1).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn allow_workspace_asset_scope(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let canonical =
         std::fs::canonicalize(&path).map_err(|e| format!("canonicalize {path}: {e}"))?;
