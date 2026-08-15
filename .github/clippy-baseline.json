@@ -1,176 +1,43 @@
 [
   {
-    "code": "clippy::await_holding_lock",
-    "file": "src/db_profiles.rs",
-    "line": 2912,
-    "message": "this `MutexGuard` is held across an await point",
-    "count": 1
-  },
-  {
-    "code": "clippy::await_holding_lock",
-    "file": "src/db_profiles.rs",
-    "line": 2918,
-    "message": "this `MutexGuard` is held across an await point",
-    "count": 1
-  },
-  {
-    "code": "clippy::drop_non_drop",
-    "file": "src/db_service.rs",
-    "line": 5089,
-    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
-    "count": 2
-  },
-  {
-    "code": "clippy::drop_non_drop",
-    "file": "src/db_service.rs",
-    "line": 5126,
-    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
-    "count": 2
-  },
-  {
-    "code": "clippy::drop_non_drop",
-    "file": "src/db_service.rs",
-    "line": 5191,
-    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
-    "count": 2
-  },
-  {
-    "code": "clippy::drop_non_drop",
-    "file": "src/db_service.rs",
-    "line": 5222,
-    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
-    "count": 2
-  },
-  {
-    "code": "clippy::drop_non_drop",
-    "file": "src/db_service.rs",
-    "line": 5250,
-    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
-    "count": 2
-  },
-  {
-    "code": "clippy::drop_non_drop",
-    "file": "src/db_service.rs",
-    "line": 5265,
-    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
-    "count": 2
-  },
-  {
-    "code": "clippy::drop_non_drop",
-    "file": "src/db_service.rs",
-    "line": 5278,
-    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
-    "count": 2
-  },
-  {
-    "code": "clippy::field_reassign_with_default",
-    "file": "src/db_profiles.rs",
-    "line": 3612,
-    "message": "field assignment outside of initializer for an instance created with Default::default()",
-    "count": 1
-  },
-  {
-    "code": "clippy::field_reassign_with_default",
-    "file": "src/db_profiles.rs",
-    "line": 3625,
-    "message": "field assignment outside of initializer for an instance created with Default::default()",
-    "count": 1
-  },
-  {
-    "code": "clippy::large_enum_variant",
-    "file": "src/db_service.rs",
-    "line": 4134,
-    "message": "large size difference between variants",
-    "count": 2
-  },
-  {
-    "code": "clippy::len_without_is_empty",
-    "file": "src/db_service.rs",
-    "line": 650,
-    "message": "struct `NonEmptyVec` has a public `len` method, but no `is_empty` method",
-    "count": 2
-  },
-  {
-    "code": "clippy::needless_bool",
-    "file": "src/db_result_session.rs",
-    "line": 516,
-    "message": "this if-then-else expression returns a bool literal",
+    "code": "clippy::redundant_closure",
+    "file": "src/askpass.rs",
+    "line": 341,
+    "message": "redundant closure",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1327,
+    "line": 148,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1335,
+    "line": 195,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1368,
+    "line": 370,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1382,
+    "line": 1657,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1434,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 1543,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 1569,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 1575,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 1611,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 1645,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 1687,
+    "line": 1666,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
@@ -184,547 +51,890 @@
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1884,
+    "line": 1738,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1918,
+    "line": 1771,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 1947,
+    "line": 1785,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::useless_conversion",
+    "file": "src/db_profiles.rs",
+    "line": 1831,
+    "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 1842,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::useless_conversion",
+    "file": "src/db_profiles.rs",
+    "line": 1927,
+    "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 1956,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 2096,
+    "line": 1982,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 2159,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2169,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2189,
+    "line": 1988,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 2201,
+    "line": 2024,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 2257,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2322,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2416,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2465,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2475,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2500,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2510,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2520,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_profiles.rs",
-    "line": 2715,
+    "line": 2058,
     "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2100,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2143,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2297,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::useless_conversion",
+    "file": "src/db_profiles.rs",
+    "line": 2321,
+    "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2331,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2360,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2509,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2573,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2583,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2603,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2615,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2674,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2739,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2834,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2846,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2895,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2905,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2930,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2940,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 2950,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 3068,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_profiles.rs",
+    "line": 3156,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 1
+  },
+  {
+    "code": "clippy::await_holding_lock",
+    "file": "src/db_profiles.rs",
+    "line": 3353,
+    "message": "this `MutexGuard` is held across an await point",
+    "count": 1
+  },
+  {
+    "code": "clippy::await_holding_lock",
+    "file": "src/db_profiles.rs",
+    "line": 3359,
+    "message": "this `MutexGuard` is held across an await point",
     "count": 1
   },
   {
     "code": "clippy::result_large_err",
     "file": "src/db_profiles.rs",
-    "line": 3296,
+    "line": 3739,
     "message": "the `Err`-variant returned from this closure is very large",
     "count": 1
   },
   {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 931,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
+    "code": "clippy::field_reassign_with_default",
+    "file": "src/db_profiles.rs",
+    "line": 4056,
+    "message": "field assignment outside of initializer for an instance created with Default::default()",
+    "count": 1
   },
   {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 960,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 1012,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 1119,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 1277,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 1293,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 1459,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2007,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2040,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2289,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2409,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2422,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2473,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2520,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2542,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2560,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2694,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2719,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2955,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 2994,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 3056,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 3173,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 3242,
-    "message": "the `Err`-variant returned from this closure is very large",
+    "code": "clippy::field_reassign_with_default",
+    "file": "src/db_profiles.rs",
+    "line": 4069,
+    "message": "field assignment outside of initializer for an instance created with Default::default()",
     "count": 1
   },
   {
     "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 3362,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 3412,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 3534,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 3758,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4481,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4547,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4563,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4569,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4593,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4964,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4986,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 4992,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5014,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5039,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5107,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5154,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5178,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5308,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5333,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5439,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5479,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5539,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5585,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5611,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5929,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 5939,
-    "message": "the `Err`-variant returned from this closure is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 6400,
-    "message": "the `Err`-variant returned from this function is very large",
-    "count": 2
-  },
-  {
-    "code": "clippy::result_large_err",
-    "file": "src/db_service.rs",
-    "line": 6541,
+    "file": "src/db_query_worker.rs",
+    "line": 553,
     "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::too_many_arguments",
-    "file": "src/db_service.rs",
-    "line": 1780,
+    "file": "src/db_query_worker.rs",
+    "line": 577,
     "message": "this function has too many arguments (8/7)",
     "count": 2
   },
   {
-    "code": "clippy::too_many_arguments",
+    "code": "clippy::result_large_err",
+    "file": "src/db_query_worker.rs",
+    "line": 865,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_query_worker.rs",
+    "line": 884,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::useless_vec",
+    "file": "src/db_query_worker.rs",
+    "line": 990,
+    "message": "useless use of `vec!`",
+    "count": 1
+  },
+  {
+    "code": "clippy::assertions_on_constants",
+    "file": "src/db_query_worker.rs",
+    "line": 1137,
+    "message": "this assertion has a constant value",
+    "count": 1
+  },
+  {
+    "code": "clippy::needless_bool",
+    "file": "src/db_result_session.rs",
+    "line": 659,
+    "message": "this if-then-else expression returns a bool literal",
+    "count": 2
+  },
+  {
+    "code": "clippy::len_without_is_empty",
     "file": "src/db_service.rs",
-    "line": 4149,
-    "message": "this function has too many arguments (11/7)",
+    "line": 820,
+    "message": "struct `NonEmptyVec` has a public `len` method, but no `is_empty` method",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1126,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1161,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1182,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1201,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1230,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1282,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1389,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1547,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1563,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 1729,
+    "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::too_many_arguments",
     "file": "src/db_service.rs",
-    "line": 4746,
-    "message": "this function has too many arguments (11/7)",
-    "count": 2
-  },
-  {
-    "code": "clippy::too_many_arguments",
-    "file": "src/db_service.rs",
-    "line": 4893,
+    "line": 2071,
     "message": "this function has too many arguments (9/7)",
     "count": 2
   },
   {
     "code": "clippy::too_many_arguments",
     "file": "src/db_service.rs",
-    "line": 5361,
-    "message": "this function has too many arguments (9/7)",
+    "line": 2140,
+    "message": "this function has too many arguments (8/7)",
     "count": 2
   },
   {
-    "code": "clippy::useless_conversion",
-    "file": "src/db_profiles.rs",
-    "line": 1423,
-    "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 2251,
+    "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
-    "code": "clippy::useless_conversion",
-    "file": "src/db_profiles.rs",
-    "line": 1514,
-    "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 2284,
+    "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
-    "code": "clippy::useless_conversion",
-    "file": "src/db_profiles.rs",
-    "line": 1908,
-    "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 2534,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 2654,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 2667,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 2718,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::large_enum_variant",
+    "file": "src/db_service.rs",
+    "line": 2730,
+    "message": "large size difference between variants",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3317,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3339,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3357,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3507,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3532,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3770,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3809,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3871,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 3959,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4020,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 1
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4138,
+    "message": "the `Err`-variant returned from this function is very large",
     "count": 2
   },
   {
     "code": "clippy::while_let_loop",
     "file": "src/db_service.rs",
-    "line": 5353,
+    "line": 4290,
     "message": "this loop could be written as a `while let` loop",
+    "count": 2
+  },
+  {
+    "code": "clippy::if_same_then_else",
+    "file": "src/db_service.rs",
+    "line": 4366,
+    "message": "this `if` has identical blocks",
+    "count": 2
+  },
+  {
+    "code": "clippy::too_many_arguments",
+    "file": "src/db_service.rs",
+    "line": 4504,
+    "message": "this function has too many arguments (11/7)",
+    "count": 2
+  },
+  {
+    "code": "clippy::too_many_arguments",
+    "file": "src/db_service.rs",
+    "line": 4587,
+    "message": "this function has too many arguments (9/7)",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4658,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4680,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4713,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::drop_non_drop",
+    "file": "src/db_service.rs",
+    "line": 4763,
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4781,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::drop_non_drop",
+    "file": "src/db_service.rs",
+    "line": 4800,
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4828,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 4852,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::drop_non_drop",
+    "file": "src/db_service.rs",
+    "line": 4865,
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "count": 2
+  },
+  {
+    "code": "clippy::drop_non_drop",
+    "file": "src/db_service.rs",
+    "line": 4896,
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "count": 2
+  },
+  {
+    "code": "clippy::drop_non_drop",
+    "file": "src/db_service.rs",
+    "line": 4924,
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "count": 2
+  },
+  {
+    "code": "clippy::drop_non_drop",
+    "file": "src/db_service.rs",
+    "line": 4939,
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "count": 2
+  },
+  {
+    "code": "clippy::drop_non_drop",
+    "file": "src/db_service.rs",
+    "line": 4952,
+    "message": "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes",
+    "count": 2
+  },
+  {
+    "code": "clippy::too_many_arguments",
+    "file": "src/db_service.rs",
+    "line": 5028,
+    "message": "this function has too many arguments (13/7)",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 5090,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 5106,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 5164,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 5243,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::too_many_arguments",
+    "file": "src/db_service.rs",
+    "line": 5341,
+    "message": "this function has too many arguments (11/7)",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 5593,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 5603,
+    "message": "the `Err`-variant returned from this closure is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 6086,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::result_large_err",
+    "file": "src/db_service.rs",
+    "line": 6227,
+    "message": "the `Err`-variant returned from this function is very large",
+    "count": 2
+  },
+  {
+    "code": "clippy::bool_assert_comparison",
+    "file": "src/fs_service.rs",
+    "line": 517,
+    "message": "used `assert_eq!` with a literal bool",
+    "count": 1
+  },
+  {
+    "code": "clippy::bool_assert_comparison",
+    "file": "src/fs_service.rs",
+    "line": 518,
+    "message": "used `assert_eq!` with a literal bool",
+    "count": 1
+  },
+  {
+    "code": "clippy::bool_assert_comparison",
+    "file": "src/fs_service.rs",
+    "line": 519,
+    "message": "used `assert_eq!` with a literal bool",
+    "count": 1
+  },
+  {
+    "code": "clippy::redundant_closure",
+    "file": "src/git_log.rs",
+    "line": 45,
+    "message": "redundant closure",
+    "count": 2
+  },
+  {
+    "code": "clippy::needless_return",
+    "file": "src/git_service.rs",
+    "line": 1602,
+    "message": "unneeded `return` statement",
+    "count": 2
+  },
+  {
+    "code": "clippy::manual_repeat_n",
+    "file": "src/herdr_service.rs",
+    "line": 5579,
+    "message": "this `repeat().take()` can be written more concisely",
+    "count": 1
+  },
+  {
+    "code": "clippy::manual_repeat_n",
+    "file": "src/herdr_service.rs",
+    "line": 5958,
+    "message": "this `repeat().take()` can be written more concisely",
+    "count": 1
+  },
+  {
+    "code": "clippy::bool_comparison",
+    "file": "src/path_capability.rs",
+    "line": 137,
+    "message": "equality checks against false can be replaced by a negation",
+    "count": 2
+  },
+  {
+    "code": "clippy::new_without_default",
+    "file": "src/path_capability.rs",
+    "line": 670,
+    "message": "you should consider adding a `Default` implementation for `WorkspacePathRegistry`",
+    "count": 2
+  },
+  {
+    "code": "clippy::new_without_default",
+    "file": "src/path_capability.rs",
+    "line": 728,
+    "message": "you should consider adding a `Default` implementation for `WorkspacePathState`",
+    "count": 2
+  },
+  {
+    "code": "clippy::new_without_default",
+    "file": "src/path_capability.rs",
+    "line": 761,
+    "message": "you should consider adding a `Default` implementation for `SelectedPathRegistry`",
+    "count": 2
+  },
+  {
+    "code": "clippy::new_without_default",
+    "file": "src/path_capability.rs",
+    "line": 835,
+    "message": "you should consider adding a `Default` implementation for `DownloadDestinationRegistry`",
+    "count": 2
+  },
+  {
+    "code": "clippy::new_without_default",
+    "file": "src/path_capability.rs",
+    "line": 900,
+    "message": "you should consider adding a `Default` implementation for `SelectedPathState`",
+    "count": 2
+  },
+  {
+    "code": "clippy::new_without_default",
+    "file": "src/path_capability.rs",
+    "line": 926,
+    "message": "you should consider adding a `Default` implementation for `DownloadDestinationState`",
+    "count": 2
+  },
+  {
+    "code": "clippy::new_without_default",
+    "file": "src/path_capability.rs",
+    "line": 1007,
+    "message": "you should consider adding a `Default` implementation for `TransferDestSet`",
+    "count": 2
+  },
+  {
+    "code": "clippy::assertions_on_constants",
+    "file": "src/path_capability.rs",
+    "line": 1787,
+    "message": "this assertion has a constant value",
+    "count": 1
+  },
+  {
+    "code": "clippy::suspicious_open_options",
+    "file": "src/ssh_service.rs",
+    "line": 373,
+    "message": "file opened with `create`, but `truncate` behavior not defined",
+    "count": 2
+  },
+  {
+    "code": "clippy::too_many_arguments",
+    "file": "src/ssh_service.rs",
+    "line": 1427,
+    "message": "this function has too many arguments (9/7)",
+    "count": 2
+  },
+  {
+    "code": "clippy::collapsible_if",
+    "file": "src/ssh_service.rs",
+    "line": 1511,
+    "message": "this `if` statement can be collapsed",
+    "count": 2
+  },
+  {
+    "code": "clippy::too_many_arguments",
+    "file": "src/ssh_service.rs",
+    "line": 1966,
+    "message": "this function has too many arguments (9/7)",
+    "count": 2
+  },
+  {
+    "code": "clippy::needless_borrow",
+    "file": "src/ssh_service.rs",
+    "line": 2761,
+    "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+    "count": 1
+  },
+  {
+    "code": "clippy::manual_contains",
+    "file": "src/ssh_service.rs",
+    "line": 2775,
+    "message": "using `contains()` instead of `iter().any()` is more efficient",
+    "count": 1
+  },
+  {
+    "code": "clippy::match_like_matches_macro",
+    "file": "src/workspace_trust.rs",
+    "line": 673,
+    "message": "match expression looks like `matches!` macro",
+    "count": 2
+  },
+  {
+    "code": "clippy::suspicious_open_options",
+    "file": "src/workspace_trust.rs",
+    "line": 872,
+    "message": "file opened with `create`, but `truncate` behavior not defined",
     "count": 2
   }
 ]

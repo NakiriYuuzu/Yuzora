@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "roots": [
+    "@vscode/l10n",
+    "@vtsls/language-server",
+    "@vtsls/language-service",
+    "@vtsls/vscode-fuzzy",
+    "jsonc-parser",
+    "lru-cache",
+    "semver",
+    "typescript",
+    "vscode-jsonrpc",
+    "vscode-languageserver",
+    "vscode-languageserver-protocol",
+    "vscode-languageserver-textdocument",
+    "vscode-languageserver-types",
+    "vscode-uri",
+    "yallist"
+  ],
+  "fileCount": 733,
+  "treeSha256": "1ae6003b6ea8bb5a972c4be79218c46dcc5e683a87086040ef13eda0469cb2f0"
+}

@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event"
 import type { ExternalChangePayload, GitStateChangedPayload } from "../lib/types"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useGitStore } from "../state/gitStore"
+import { useUiStore } from "../state/uiStore"
+import { useDiffModalStore } from "../state/diffModalStore"
 
 export function GitBridge() {
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
@@ -11,6 +13,8 @@ export function GitBridge() {
 
     // effect A: detect git environment whenever the workspace changes.
     useEffect(() => {
+        useUiStore.getState().resetGitRepositoryUi()
+        useDiffModalStore.getState().close()
         if (!workspacePath) return
         void useGitStore.getState().detect(workspacePath)
     }, [workspacePath])

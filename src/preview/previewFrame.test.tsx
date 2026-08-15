@@ -33,4 +33,23 @@ describe("PreviewFrame", () => {
 
         expect(screen.getByTitle("Live preview")).not.toBe(first)
     })
+
+    it("keeps the trusted localhost sandbox for dev-server mode", () => {
+        render(<PreviewFrame url="http://localhost:5173" reloadNonce={0} mode="dev-server" />)
+        expect(screen.getByTitle("Live preview")).toHaveAttribute(
+            "sandbox",
+            "allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
+        )
+    })
+
+    it("drops allow-same-origin and extra flags for static preview mode", () => {
+        render(
+            <PreviewFrame
+                url="http://127.0.0.1:4599/token/index.html"
+                reloadNonce={0}
+                mode="static"
+            />
+        )
+        expect(screen.getByTitle("Live preview")).toHaveAttribute("sandbox", "allow-scripts")
+    })
 })

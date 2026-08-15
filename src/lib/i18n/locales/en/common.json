@@ -1,5 +1,9 @@
 {
   "language": {
     "system": "Follow system"
+  },
+  "dialog": {
+    "resize": "Resize dialog",
+    "resetSize": "Reset dialog size to 80% of the app window"
   }
 }

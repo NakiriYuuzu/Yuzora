@@ -112,3 +112,23 @@ describe("TerminalSection profiles", () => {
     expect(screen.getByText("18 px")).toBeInTheDocument()
   })
 })
+
+  it("hides WSL mapping outside Windows and keeps a neutral executable placeholder", async () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+    })
+    render(<TerminalSection />)
+
+    expect(screen.queryByRole("radio", { name: "WSL mapping" })).toBeNull()
+    expect(screen.getByRole("textbox", { name: "Custom executable" })).toHaveAttribute(
+      "placeholder",
+      "Path to executable",
+    )
+    expect(screen.queryByPlaceholderText(/Program Files/)).toBeNull()
+  })
+
+  it("shows WSL mapping on Windows", async () => {
+    render(<TerminalSection />)
+    expect(screen.getByRole("radio", { name: "WSL mapping" })).toBeInTheDocument()
+  })

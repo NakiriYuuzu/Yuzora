@@ -9,9 +9,20 @@
 use crate::file_content::{
     analyze_byte_content, ByteContent, FILE_ANALYSIS_BYTES, FULL_FEATURE_MAX_BYTES, HARD_CAP_BYTES,
 };
-use crate::git_service::{git_err, run_git, GitServiceState};
-use serde::Serialize;
+use crate::git_oid::{
+    is_full_oid, is_hex_oid_prefix as is_hex_oid_prefix_len, resolve_commit_oid,
+    resolve_commit_oid_optional, GitOid,
+};
+use crate::git_service::{
+    git_err, run_git, run_git_with_stdin, validate_relative_components,
+    with_requested_repo_blocking, GitServiceState,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -20,6 +31,18 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOG_LIMIT: u32 = 500;
 /// git_log_authors 去重後回傳的作者數上限。
 const MAX_AUTHORS: usize = 50;
+/// Opaque cursor schema version. Bump when the JSON shape changes.
+const LOG_CURSOR_VERSION: u8 = 2;
+/// Reject oversized cursor payloads (DoS / malformed client input).
+const MAX_CURSOR_BYTES: usize = 256 * 1024;
+/// Hard cap on tip hashes encoded in a cursor.
+const MAX_CURSOR_TIPS: usize = 10_000;
+/// Minimum hex length accepted by the hash-prefix query arm.
+const MIN_OID_PREFIX_LEN: usize = 4;
+/// Max cursor offset Git accepts as `--skip` (signed 32-bit integer).
+const MAX_CURSOR_OFFSET: u32 = i32::MAX as u32;
+/// Per-process secret for opaque cursor MAC. Restarts invalidate all cursors.
+static CURSOR_SECRET: LazyLock<[u8; 32]> = LazyLock::new(|| rand::random::<[u8; 32]>());
 
 /// --format 欄位分隔（unit separator）：避免 subject 內容含分隔字元衝突。
 const FIELD_SEP: char = '\x1f';
@@ -86,6 +109,22 @@ pub struct LogCommit {
 pub struct LogPage {
     pub commits: Vec<LogCommit>,
     pub has_more: bool,
+    /// Opaque cursor for the next page. `None` when there is no further page.
+    /// Encodes a fixed tip snapshot + offset so ref movement cannot shift pages.
+    pub next_cursor: Option<String>,
+}
+
+/// Signed cursor payload. Clients must treat the wire token as opaque; tips and
+/// offsets are never accepted unless the process-local MAC verifies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LogCursorPayload {
+    v: u8,
+    /// Canonical repository root fingerprint bound at issuance.
+    root: String,
+    /// Fingerprint of filters/query used when the cursor was issued.
+    fp: String,
+    tips: Vec<String>,
+    offset: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -220,8 +259,8 @@ fn classify_ref(full: &str) -> Option<LogRef> {
 
 /// 解析 git log 自訂 --format 的輸出（欄位以 FIELD_SEP、記錄以 RECORD_SEP 分隔）。
 ///
-/// 欄位順序須與 log_format() 對齊：hash, short_hash, subject, author_name,
-/// author_email, timestamp, parents(空白分隔), decoration。
+/// Production log_page no longer uses this delimiter parser for identity fields.
+/// Kept for unit coverage of the historical format only.
 pub fn parse_log_records(raw: &str) -> Vec<LogCommit> {
     let mut commits = Vec::new();
     for record in raw.split(RECORD_SEP) {
@@ -268,49 +307,323 @@ pub fn parse_numstat_line(line: &str) -> Option<(u32, u32, bool, String)> {
 
 // ── core（吃 &Path，spawn git）────────────────────────────────────────────
 
-/// log 的自訂 --format（欄位與 parse_log_records 對齊）。
-fn log_format() -> String {
-    // %H %h %s %an %ae %at %P %D
+/// Snapshot eligible graph tips once (first page) and reuse them for later pages.
+///
+/// Includes local/remote branches + tags + detached HEAD. Mechanism refs
+/// (stash/notes/original/pull/wip/rewritten/replace/bisect) are never listed by
+/// the for-each-ref prefixes below, matching ALL_REFS_ARGS exclusions. Tips are
+/// full object IDs, deduped and sorted for a stable cursor encoding.
+fn snapshot_tips(root: &Path) -> Result<Vec<String>, String> {
+    let mut tips: BTreeSet<String> = BTreeSet::new();
+
+    let out = run_git_no_replace(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )?;
+    if out.code != 0 {
+        return Err(git_err("for-each-ref", &out.stderr));
+    }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let oid = line.trim();
+        if oid.is_empty() {
+            continue;
+        }
+        if !is_full_oid(oid) {
+            return Err("git for-each-ref returned a non-OID tip".to_string());
+        }
+        tips.insert(oid.to_string());
+    }
+
+    // Detached HEAD (and the current tip when attached) must be included so the
+    // graph never drops the active commit when it is not also a named ref tip.
+    if let Some(head) = resolve_commit_oid_optional(root, "HEAD")? {
+        tips.insert(head.into_string());
+    }
+
+    Ok(tips.into_iter().collect())
+}
+
+/// Hex-only OID prefix for the hash query arm (never branch names / HEAD / ~).
+fn is_hex_oid_prefix(value: &str) -> bool {
+    is_hex_oid_prefix_len(value, MIN_OID_PREFIX_LEN)
+}
+
+fn root_fingerprint(root: &Path) -> String {
+    root.canonicalize()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| root.to_string_lossy().into_owned())
+}
+
+/// Normalize optional textual filters: trim; empty / whitespace-only → None.
+/// Applied before both fingerprinting and execution so `None`, `Some("")`, and
+/// `Some("  ")` share one canonical semantics.
+fn normalize_filter(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Fingerprint of already-normalized filters. Callers must pass values through
+/// `normalize_filter` first so empty and absent stay equivalent.
+fn filters_fingerprint(
+    query: Option<&str>,
+    author: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> String {
     format!(
-        "%H{f}%h{f}%s{f}%an{f}%ae{f}%at{f}%P{f}%D{r}",
-        f = FIELD_SEP,
-        r = RECORD_SEP
+        "{}\0{}\0{}\0{}",
+        query.unwrap_or(""),
+        author.unwrap_or(""),
+        since.unwrap_or(""),
+        until.unwrap_or("")
     )
 }
 
-/// 一頁 commit 歷史（涵蓋所有 branch，見 ALL_REFS_ARGS）。
+fn mac_cursor_payload(payload: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(CURSOR_SECRET.as_slice());
+    hasher.update([0u8]);
+    hasher.update(payload.as_bytes());
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn ct_eq_hex(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut v = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        v |= x ^ y;
+    }
+    v == 0
+}
+
+fn encode_cursor(
+    root_fp: &str,
+    filters_fp: &str,
+    tips: &[String],
+    offset: u32,
+) -> Result<Option<String>, String> {
+    if tips.is_empty() {
+        return Ok(None);
+    }
+    if offset > MAX_CURSOR_OFFSET {
+        return Err("git log cursor offset is out of range".to_string());
+    }
+    let payload = LogCursorPayload {
+        v: LOG_CURSOR_VERSION,
+        root: root_fp.to_string(),
+        fp: filters_fp.to_string(),
+        tips: tips.to_vec(),
+        offset,
+    };
+    let raw = serde_json::to_string(&payload)
+        .map_err(|e| format!("git log could not encode cursor: {e}"))?;
+    if raw.len() > MAX_CURSOR_BYTES {
+        return Err("git log cursor exceeds size limit".to_string());
+    }
+    let body = URL_SAFE_NO_PAD.encode(raw.as_bytes());
+    let tag = mac_cursor_payload(&body);
+    let token = format!("{body}.{tag}");
+    if token.len() > MAX_CURSOR_BYTES {
+        return Err("git log cursor exceeds size limit".to_string());
+    }
+    Ok(Some(token))
+}
+
+fn decode_cursor(raw: &str, root_fp: &str, filters_fp: &str) -> Result<(Vec<String>, u32), String> {
+    if raw.len() > MAX_CURSOR_BYTES {
+        return Err("git log cursor exceeds size limit".to_string());
+    }
+    let (body, tag) = raw
+        .split_once('.')
+        .ok_or_else(|| "git log cursor is malformed".to_string())?;
+    let expected = mac_cursor_payload(body);
+    if !ct_eq_hex(tag, &expected) {
+        return Err("git log cursor is invalid or tampered".to_string());
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(body.as_bytes())
+        .map_err(|_| "git log cursor is malformed".to_string())?;
+    let cursor: LogCursorPayload =
+        serde_json::from_slice(&bytes).map_err(|_| "git log cursor is malformed".to_string())?;
+    if cursor.v != LOG_CURSOR_VERSION {
+        return Err(format!(
+            "git log cursor version {} is unsupported",
+            cursor.v
+        ));
+    }
+    if cursor.tips.len() > MAX_CURSOR_TIPS {
+        return Err("git log cursor tip count exceeds limit".to_string());
+    }
+    if cursor.tips.is_empty() {
+        return Err("git log cursor has no tips".to_string());
+    }
+    for tip in &cursor.tips {
+        if !is_full_oid(tip) {
+            return Err("git log cursor contains a non-OID tip".to_string());
+        }
+    }
+    if cursor.root != root_fp {
+        return Err("git log cursor does not match repository".to_string());
+    }
+    if cursor.fp != filters_fp {
+        return Err("git log cursor does not match filters".to_string());
+    }
+    if cursor.offset > MAX_CURSOR_OFFSET {
+        return Err("git log cursor offset is out of range".to_string());
+    }
+    Ok((cursor.tips, cursor.offset))
+}
+
+fn no_replace_env() -> Vec<(String, String)> {
+    vec![("GIT_NO_REPLACE_OBJECTS".to_string(), "1".to_string())]
+}
+
+fn run_git_no_replace(root: &Path, args: &[&str]) -> Result<crate::git_service::GitOutput, String> {
+    run_git(root, args, DEFAULT_TIMEOUT, &no_replace_env())
+}
+
+fn is_reachable_from_tips(root: &Path, commit: &str, tips: &[String]) -> Result<bool, String> {
+    for tip in tips {
+        if tip == commit {
+            return Ok(true);
+        }
+        // exit 0 ⇒ commit is an ancestor of tip (or equal).
+        let out = run_git_no_replace(root, &["merge-base", "--is-ancestor", commit, tip])?;
+        if out.code == 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn page_from_slice(
+    commits: Vec<LogCommit>,
+    has_more: bool,
+    root_fp: &str,
+    filters_fp: &str,
+    tips: &[String],
+    offset: u32,
+) -> Result<LogPage, String> {
+    if offset > MAX_CURSOR_OFFSET {
+        return Err("git log cursor offset is out of range".to_string());
+    }
+    if has_more && commits.is_empty() {
+        return Err("git log cursor offset is out of range".to_string());
+    }
+    // Bound next offset so every emitted cursor is consumable by Git `--skip`.
+    let next_offset = match offset.checked_add(commits.len() as u32) {
+        Some(n) if n <= MAX_CURSOR_OFFSET => n,
+        Some(_) | None if has_more => {
+            return Err("git log cursor offset is out of range".to_string());
+        }
+        Some(n) => n,
+        None => return Err("git log cursor offset is out of range".to_string()),
+    };
+    if has_more && next_offset <= offset {
+        return Err("git log cursor failed to progress".to_string());
+    }
+    let next_cursor = if has_more {
+        encode_cursor(root_fp, filters_fp, tips, next_offset)?
+    } else {
+        None
+    };
+    Ok(LogPage {
+        commits,
+        has_more,
+        next_cursor,
+    })
+}
+
+/// Canonical date-order rank for fixed tips (child-before-parent).
+fn date_order_rank(
+    root: &Path,
+    tips: &[String],
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    let fmt = "%H";
+    let format_arg = format!("--format={fmt}");
+    let mut args: Vec<&str> = vec!["log", &format_arg, "--date-order"];
+    for tip in tips {
+        args.push(tip.as_str());
+    }
+    let out = run_git_no_replace(root, &args)?;
+    if out.code != 0 {
+        let stderr = out.stderr.to_lowercase();
+        if stderr.contains("does not have any commits") || stderr.contains("bad default revision") {
+            return Ok(std::collections::HashMap::new());
+        }
+        return Err(git_err("log", &out.stderr));
+    }
+    let mut rank = std::collections::HashMap::new();
+    for (i, line) in String::from_utf8_lossy(&out.stdout).lines().enumerate() {
+        let hash = line.trim();
+        if hash.is_empty() {
+            continue;
+        }
+        if !is_full_oid(hash) {
+            return Err("git log returned a non-OID hash while ranking commits".to_string());
+        }
+        rank.entry(hash.to_string()).or_insert(i);
+    }
+    Ok(rank)
+}
+
+/// 一頁 commit 歷史，以固定 tip 快照分頁（opaque signed cursor），避免 refs 移動造成 skip 漏頁。
 ///
-/// 無 query：`git log --all --skip N --max-count M+1`（多取 1 判 has_more）＋自訂
-/// --format ＋ `--decorate=full`（見 run_log）。分頁順序用預設（reverse chronological /
-/// commit graph 序），穩定。可選 author（精確作者，`--author=^<name> <` 錨定 name＋email
-/// 定界符避免子字串誤匹配）、since/until（`--since`/`--until`）。
+/// `cursor = None`：快照 heads/remotes/tags + HEAD，回第一頁。
+/// `cursor = Some(...)`：沿用快照 tip 集合與 offset，ref 增刪改不得改變已開 cursor 的流。
 ///
-/// query（OR 語意，成本 = 多趟 git log）：query 同時比對
-///   (a) commit message（`--grep`, `-i`）
-///   (b) 作者（`--author`, `-i`，子字串）
-///   (c) hash 前綴（`git rev-parse --verify <q>^{commit}`）
-/// 做法：先各自跑一趟「全量」git log（不 skip、不 max-count，僅套 author/since/until
-/// 過濾），把三個結果集合按 hash 去重、依 timestamp 降冪（tie 用原始出現序穩定）合併，
-/// 最後才對合併集做 skip/limit＋has_more。取捨：query 存在時分頁對「合併後」一致（先合併
-/// 再切頁），代價是每頁都重算整個聯集——commit 數大時較貴，但契約正確且簡單；Log tab 的
-/// query 場景資料量有界，可接受。
+/// 無 query：`git log --date-order --skip N --max-count M+1 <fixed-tips>`。
+/// query（OR）：message / author / hex-hash-prefix 三集合在固定 tips 上聯集後，
+/// 依固定 tip 的 date-order 排序再切頁。
 pub fn log_page(
     root: &Path,
-    skip: u32,
+    cursor: Option<&str>,
     limit: u32,
     query: Option<&str>,
     author: Option<&str>,
     since: Option<&str>,
     until: Option<&str>,
 ) -> Result<LogPage, String> {
-    let limit = limit.clamp(0, MAX_LOG_LIMIT);
-    let fmt = log_format();
-    let format_arg = format!("--format={fmt}");
+    if limit == 0 {
+        return Err("git log limit must be greater than zero".to_string());
+    }
+    let limit = limit.min(MAX_LOG_LIMIT);
+    // Normalize optional textual filters before fingerprint AND execution so
+    // None / "" / whitespace share one canonical semantics.
+    let query = normalize_filter(query);
+    let author = normalize_filter(author);
+    let since = normalize_filter(since);
+    let until = normalize_filter(until);
+    let root_fp = root_fingerprint(root);
+    let filters_fp = filters_fingerprint(query, author, since, until);
+
+    let (tips, offset) = match cursor {
+        None => (snapshot_tips(root)?, 0u32),
+        Some(raw) => decode_cursor(raw, &root_fp, &filters_fp)?,
+    };
+    if offset > MAX_CURSOR_OFFSET {
+        return Err("git log cursor offset is out of range".to_string());
+    }
+
+    if tips.is_empty() {
+        return Ok(LogPage {
+            commits: Vec::new(),
+            has_more: false,
+            next_cursor: None,
+        });
+    }
 
     // 共用的過濾 flag（author 精確 / since / until）。
-    // git --author 是對 ident 字串 "Name <email>" 的 regex。精確作者＝把傳入值錨定到
-    // name 開頭並要求其後緊接 " <"（email 定界符），避免子字串誤匹配（如 "Al" 命中
-    // "Alice"）。傳入值為 User 下拉的 name 欄。
     let author_arg = author.map(|a| format!("--author=^{} <", regex_escape(a)));
     let since_arg = since.map(|s| format!("--since={s}"));
     let until_arg = until.map(|u| format!("--until={u}"));
@@ -327,56 +640,95 @@ pub fn log_page(
 
     match query.map(str::trim).filter(|q| !q.is_empty()) {
         None => {
-            // 無 query：直接 git log 分頁（多取 1 判 has_more）。
-            let skip_arg = format!("--skip={skip}");
+            let skip_arg = format!("--skip={offset}");
             let max_arg = format!("--max-count={}", limit.saturating_add(1));
-            let mut args: Vec<&str> = vec!["log", &format_arg, &skip_arg, &max_arg];
-            args.extend(ALL_REFS_ARGS);
+            let mut args: Vec<&str> = vec!["log", "--date-order", &skip_arg, &max_arg];
             args.extend(filters.iter().copied());
-            let commits = run_log(root, &args)?;
-            Ok(paginate_fetched(commits, limit as usize))
+            for tip in &tips {
+                args.push(tip.as_str());
+            }
+            let fetched = run_log(root, &args)?;
+            let has_more = fetched.len() > limit as usize;
+            let mut commits = fetched;
+            commits.truncate(limit as usize);
+            page_from_slice(commits, has_more, &root_fp, &filters_fp, &tips, offset)
         }
         Some(q) => {
-            // query：聯集三個結果集，去重、排序，再切頁。
+            // query：在固定 tips 上聯集 message/author/hex-hash，再依 date-order rank 排序。
             let mut merged: Vec<LogCommit> = Vec::new();
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
             let grep_arg = format!("--grep={q}");
-            let qauthor_arg = format!("--author={q}");
-            // (a) message、(b) author 各一趟全量 log（套用共用 filters）。
-            for extra in [grep_arg.as_str(), qauthor_arg.as_str()] {
-                let mut args: Vec<&str> = vec!["log", &format_arg, "-i", extra];
-                args.extend(ALL_REFS_ARGS);
+            // Message arm always runs (AND with common filters).
+            {
+                let mut args: Vec<&str> = vec!["log", "--date-order", "-i", grep_arg.as_str()];
                 args.extend(filters.iter().copied());
+                for tip in &tips {
+                    args.push(tip.as_str());
+                }
                 for c in run_log(root, &args)? {
                     if seen.insert(c.hash.clone()) {
                         merged.push(c);
                     }
                 }
             }
-            // (c) hash 前綴：rev-parse --verify <q>^{commit}，成功則取該 commit。
-            if let Some(full) = resolve_commit_prefix(root, q)? {
-                if seen.insert(full.clone()) {
-                    let mut args: Vec<&str> = vec!["log", &format_arg, "-1", full.as_str()];
-                    args.extend(filters.iter().copied());
-                    // filters 可能讓該 commit 不符（如 author 不符）→ 空結果，尊重過濾。
-                    for c in run_log(root, &args)? {
+            // Author-query arm: only when no exact author filter is set.
+            // Combining `--author=query` with `--author=^filter` would OR the two
+            // and silently drop the exact-filter contract.
+            if author.is_none() {
+                let qauthor_arg = format!("--author={q}");
+                let mut args: Vec<&str> = vec!["log", "--date-order", "-i", qauthor_arg.as_str()];
+                args.extend(filters.iter().copied());
+                for tip in &tips {
+                    args.push(tip.as_str());
+                }
+                for c in run_log(root, &args)? {
+                    if seen.insert(c.hash.clone()) {
                         merged.push(c);
                     }
                 }
             }
+            // Hash arm: only pure hex OID prefixes, never branch/HEAD/ancestry syntax.
+            if is_hex_oid_prefix(q) {
+                if let Some(full) = resolve_commit_oid_optional(root, q)? {
+                    let full = full.into_string();
+                    if is_reachable_from_tips(root, &full, &tips)? && seen.insert(full.clone()) {
+                        // Exact commit only (`--no-walk`); never walk to a matching ancestor.
+                        let mut args: Vec<&str> = vec!["log", "--no-walk", full.as_str()];
+                        args.extend(filters.iter().copied());
+                        for c in run_log(root, &args)? {
+                            if c.hash == full {
+                                merged.push(c);
+                            }
+                        }
+                    }
+                }
+            }
 
-            // timestamp 降冪；tie 保持插入序（sort_by_key 為 stable sort）。
-            merged.sort_by_key(|c| std::cmp::Reverse(c.timestamp));
+            let rank = date_order_rank(root, &tips)?;
+            merged.sort_by(|a, b| {
+                let ra = rank.get(&a.hash).copied().unwrap_or(usize::MAX);
+                let rb = rank.get(&b.hash).copied().unwrap_or(usize::MAX);
+                ra.cmp(&rb)
+                    .then_with(|| b.timestamp.cmp(&a.timestamp))
+                    .then_with(|| a.hash.cmp(&b.hash))
+            });
 
             let total = merged.len();
-            let start = (skip as usize).min(total);
+            if (offset as usize) > total {
+                return Err("git log cursor offset is out of range".to_string());
+            }
+            let start = offset as usize;
             let end = start.saturating_add(limit as usize).min(total);
             let has_more = end < total;
-            Ok(LogPage {
-                commits: merged[start..end].to_vec(),
+            page_from_slice(
+                merged[start..end].to_vec(),
                 has_more,
-            })
+                &root_fp,
+                &filters_fp,
+                &tips,
+                offset,
+            )
         }
     }
 }
@@ -384,62 +736,285 @@ pub fn log_page(
 /// 跑一趟 git log 並解析。統一注入 `--decorate=full`：%D 才會給 full ref path
 /// （refs/heads/、refs/remotes/、refs/tags/），供 parse_decoration 無歧義分類。
 /// 呼叫端傳入的 args 應以 "log" 開頭，此處在其後插入 --decorate=full。
+/// Always disables replace objects so fixed-snapshot pagination cannot be warped
+/// by `refs/replace` introduced after the cursor was issued.
 fn run_log(root: &Path, args: &[&str]) -> Result<Vec<LogCommit>, String> {
+    let oids = collect_log_oids(root, args)?;
+    hydrate_commits(root, &oids)
+}
+
+fn collect_log_oids(root: &Path, args: &[&str]) -> Result<Vec<GitOid>, String> {
     let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
     if let Some((first, rest)) = args.split_first() {
         full_args.push(first);
-        full_args.push("--decorate=full");
+        full_args.push("--format=%H");
         full_args.extend_from_slice(rest);
     } else {
         full_args.extend_from_slice(args);
     }
-    let out = run_git(root, &full_args, DEFAULT_TIMEOUT, &[])?;
+    let out = run_git_no_replace(root, &full_args)?;
     if out.code != 0 {
-        // 空 repo（無任何 commit）：git log 退非零並在 stderr 提示
-        // "does not have any commits yet" → 視為空清單，不報錯。
         let stderr = out.stderr.to_lowercase();
         if stderr.contains("does not have any commits") || stderr.contains("bad default revision") {
             return Ok(Vec::new());
         }
         return Err(git_err("log", &out.stderr));
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(parse_log_records(&text))
+    let mut oids = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let hash = line.trim();
+        if hash.is_empty() {
+            continue;
+        }
+        oids.push(GitOid::parse(hash)?);
+    }
+    Ok(oids)
 }
 
-/// 從「多取 1」的結果切出本頁＋has_more。
-fn paginate_fetched(mut commits: Vec<LogCommit>, limit: usize) -> LogPage {
-    let has_more = commits.len() > limit;
-    commits.truncate(limit);
-    LogPage { commits, has_more }
+struct CommitMeta {
+    subject: String,
+    body: String,
+    author_name: String,
+    author_email: String,
+    timestamp: i64,
+    parents: Vec<String>,
 }
 
-/// `git rev-parse --verify <q>^{commit}` → 成功回完整 hash；否則 None。
-fn resolve_commit_prefix(root: &Path, q: &str) -> Result<Option<String>, String> {
-    let spec = format!("{q}^{{commit}}");
-    // `--end-of-options`（git ≥2.24）確保 spec 一律當 revision 而非 option——q 若以 `-`
-    // 開頭（如 `--output=...`）在無此屏障時會被 git 當 flag 解析（rev option 注入）。
-    let out = run_git(
+fn hydrate_commits(root: &Path, oids: &[GitOid]) -> Result<Vec<LogCommit>, String> {
+    if oids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let decorations = ref_decoration_map(root)?;
+    let objects = cat_file_commits(root, oids)?;
+    let mut commits = Vec::with_capacity(oids.len());
+    for oid in oids {
+        let raw = objects
+            .get(oid.as_str())
+            .ok_or_else(|| format!("git log missing commit object {}", oid.as_str()))?;
+        let meta = parse_commit_object(raw)?;
+        commits.push(LogCommit {
+            hash: oid.as_str().to_string(),
+            short_hash: oid.short().to_string(),
+            subject: meta.subject,
+            author_name: meta.author_name,
+            author_email: meta.author_email,
+            timestamp: meta.timestamp,
+            parents: meta.parents,
+            refs: decorations.get(oid.as_str()).cloned().unwrap_or_default(),
+        });
+    }
+    Ok(commits)
+}
+
+fn ref_decoration_map(
+    root: &Path,
+) -> Result<std::collections::HashMap<String, Vec<LogRef>>, String> {
+    let out = run_git_no_replace(
         root,
         &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-            &spec,
+            "for-each-ref",
+            "--format=%(objectname)%00%(*objectname)%00%(refname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
         ],
-        DEFAULT_TIMEOUT,
-        &[],
     )?;
     if out.code != 0 {
-        return Ok(None);
+        return Err(git_err("for-each-ref", &out.stderr));
     }
-    let hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if hash.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(hash))
+    let mut map: std::collections::HashMap<String, Vec<LogRef>> = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\0');
+        let objectname = parts
+            .next()
+            .ok_or_else(|| "git for-each-ref returned a malformed record".to_string())?;
+        let peeled = parts.next().unwrap_or("");
+        let refname = parts
+            .next()
+            .ok_or_else(|| "git for-each-ref returned a malformed record".to_string())?;
+        let tip = if peeled.is_empty() {
+            objectname
+        } else {
+            peeled
+        };
+        if !is_full_oid(tip) {
+            return Err("git for-each-ref returned a non-OID decoration target".to_string());
+        }
+        if let Some(parsed) = classify_ref(refname) {
+            map.entry(tip.to_ascii_lowercase())
+                .or_default()
+                .push(parsed);
+        }
     }
+    if let Some(head) = resolve_commit_oid_optional(root, "HEAD")? {
+        let refs = map.entry(head.as_str().to_string()).or_default();
+        if !refs.iter().any(|r| r.kind == "head") {
+            refs.insert(
+                0,
+                LogRef {
+                    name: "HEAD".to_string(),
+                    kind: "head".to_string(),
+                },
+            );
+        }
+    }
+    Ok(map)
+}
+
+fn cat_file_commits(
+    root: &Path,
+    oids: &[GitOid],
+) -> Result<std::collections::HashMap<String, Vec<u8>>, String> {
+    if oids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut stdin = Vec::new();
+    for oid in oids {
+        stdin.extend_from_slice(oid.as_str().as_bytes());
+        stdin.push(b'\n');
+    }
+    let out = run_git_with_stdin(
+        root,
+        &["cat-file", "--batch"],
+        DEFAULT_TIMEOUT,
+        &no_replace_env(),
+        &stdin,
+    )?;
+    if out.code != 0 {
+        return Err(git_err("cat-file", &out.stderr));
+    }
+    parse_cat_file_batch(&out.stdout, oids)
+}
+
+fn parse_cat_file_batch(
+    stdout: &[u8],
+    oids: &[GitOid],
+) -> Result<std::collections::HashMap<String, Vec<u8>>, String> {
+    let mut pos = 0usize;
+    let mut result = std::collections::HashMap::new();
+    for oid in oids {
+        let nl = stdout[pos..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .ok_or_else(|| "git cat-file: truncated batch header".to_string())?;
+        let line = std::str::from_utf8(&stdout[pos..pos + nl])
+            .map_err(|_| "git cat-file: non-utf8 batch header".to_string())?;
+        pos += nl + 1;
+        if line.ends_with(" missing") {
+            return Err(format!("git log missing commit object {}", oid.as_str()));
+        }
+        let mut parts = line.split(' ');
+        let reported = parts
+            .next()
+            .ok_or_else(|| "git cat-file: malformed batch header".to_string())?;
+        let kind = parts
+            .next()
+            .ok_or_else(|| "git cat-file: malformed batch header".to_string())?;
+        let size_text = parts
+            .next()
+            .ok_or_else(|| "git cat-file: malformed batch header".to_string())?;
+        if parts.next().is_some() {
+            return Err("git cat-file: malformed batch header".to_string());
+        }
+        if reported != oid.as_str() {
+            return Err("git cat-file: oid mismatch".to_string());
+        }
+        if kind != "commit" {
+            return Err(format!("git cat-file: expected commit, got {kind}"));
+        }
+        let size: usize = size_text
+            .parse()
+            .map_err(|_| "git cat-file: invalid object size".to_string())?;
+        if pos + size > stdout.len() {
+            return Err("git cat-file: truncated object".to_string());
+        }
+        let content = stdout[pos..pos + size].to_vec();
+        pos += size;
+        if pos >= stdout.len() || stdout[pos] != b'\n' {
+            return Err("git cat-file: missing record terminator".to_string());
+        }
+        pos += 1;
+        result.insert(oid.as_str().to_string(), content);
+    }
+    if pos != stdout.len() {
+        return Err("git cat-file: unexpected trailing bytes".to_string());
+    }
+    Ok(result)
+}
+
+fn parse_commit_object(raw: &[u8]) -> Result<CommitMeta, String> {
+    let text = String::from_utf8_lossy(raw);
+    let (header, message) = text
+        .split_once("\n\n")
+        .ok_or_else(|| "git commit object missing header/message separator".to_string())?;
+    let mut headers: Vec<String> = Vec::new();
+    for line in header.split('\n') {
+        if let Some(rest) = line.strip_prefix(' ') {
+            let last = headers
+                .last_mut()
+                .ok_or_else(|| "git commit object has a dangling continuation line".to_string())?;
+            last.push('\n');
+            last.push_str(rest);
+            continue;
+        }
+        headers.push(line.to_string());
+    }
+    let mut parents = Vec::new();
+    let mut author_line = None;
+    for header_line in &headers {
+        if let Some(parent) = header_line.strip_prefix("parent ") {
+            let parent = parent.trim();
+            if !is_full_oid(parent) {
+                return Err("git commit object has a malformed parent".to_string());
+            }
+            parents.push(parent.to_ascii_lowercase());
+        } else if let Some(author) = header_line.strip_prefix("author ") {
+            author_line = Some(author.to_string());
+        }
+    }
+    let author_line = author_line.ok_or_else(|| "git commit object missing author".to_string())?;
+    let (author_name, author_email, timestamp) = parse_ident_line(&author_line)?;
+    let message = message.trim_end_matches(['\n', '\r']);
+    let (subject, body) = match message.split_once('\n') {
+        None => (message.to_string(), String::new()),
+        Some((subject, rest)) => {
+            let body = rest.strip_prefix('\n').unwrap_or(rest);
+            (
+                subject.to_string(),
+                body.trim_end_matches(['\n', '\r']).to_string(),
+            )
+        }
+    };
+    Ok(CommitMeta {
+        subject,
+        body,
+        author_name,
+        author_email,
+        timestamp,
+        parents,
+    })
+}
+
+fn parse_ident_line(line: &str) -> Result<(String, String, i64), String> {
+    let lt = line
+        .rfind('<')
+        .ok_or_else(|| "git commit object author is missing an email".to_string())?;
+    let gt = line[lt..]
+        .find('>')
+        .map(|idx| lt + idx)
+        .ok_or_else(|| "git commit object author is missing an email terminator".to_string())?;
+    let name = line[..lt].trim().to_string();
+    let email = line[lt + 1..gt].to_string();
+    let timestamp = line[gt + 1..]
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| "git commit object author is missing a timestamp".to_string())?
+        .parse::<i64>()
+        .map_err(|_| "git commit object author has a malformed timestamp".to_string())?;
+    Ok((name, email, timestamp))
 }
 
 /// 轉義 regex 特殊字元（git --author 是 regex）供精確錨定 `^...$`。
@@ -472,33 +1047,19 @@ fn regex_escape(s: &str) -> String {
 ///
 /// `--format=`（空）讓 show 不印 header，`-z` 下輸出即純 diff 資料（無前導分隔）。
 pub fn commit_detail(root: &Path, hash: &str) -> Result<CommitDetail, String> {
-    // header：subject \x1f an \x1f ae \x1f at \x1f parents \x1f body。
-    // body（%b）刻意放最後一欄＋splitn 限制切割數：body 內容若含 \x1f 也不會位移
-    // 前面的固定欄位（subject 是單行、%an/%ae 為 git ident 不含控制字元、%at/%P 為
-    // git 生成，唯一可能含任意 bytes 的是 body）。
-    let fmt = format!("%s{f}%an{f}%ae{f}%at{f}%P{f}%b", f = FIELD_SEP);
-    let format_arg = format!("--format={fmt}");
-    let head = run_git(
-        root,
-        &["show", "-s", &format_arg, hash],
-        DEFAULT_TIMEOUT,
-        &[],
-    )?;
-    if head.code != 0 {
-        return Err(git_err("show", &head.stderr));
-    }
-    let head_text = String::from_utf8_lossy(&head.stdout);
-    let head_text = head_text.trim_end_matches(['\n', '\r']);
-    let hfields: Vec<&str> = head_text.splitn(6, FIELD_SEP).collect();
-    if hfields.len() < 6 {
-        return Err(format!("git show: malformed header for {hash}"));
-    }
-    let subject = hfields[0].to_string();
-    let author_name = hfields[1].to_string();
-    let author_email = hfields[2].to_string();
-    let timestamp: i64 = hfields[3].trim().parse().unwrap_or(0);
-    let parents: Vec<String> = hfields[4].split_whitespace().map(String::from).collect();
-    let body = hfields[5].trim_end_matches(['\n', '\r']).to_string();
+    let oid = resolve_commit_oid(root, hash)?;
+    let objects = cat_file_commits(root, std::slice::from_ref(&oid))?;
+    let raw = objects
+        .get(oid.as_str())
+        .ok_or_else(|| format!("git show: missing commit object {}", oid.as_str()))?;
+    let meta = parse_commit_object(raw)?;
+    let subject = meta.subject;
+    let author_name = meta.author_name;
+    let author_email = meta.author_email;
+    let timestamp = meta.timestamp;
+    let parents = meta.parents;
+    let body = meta.body;
+    let oid_s = oid.as_str();
 
     // name-status（拿 status＋rename old_path），first-parent。
     let name_status = run_git(
@@ -510,7 +1071,8 @@ pub fn commit_detail(root: &Path, hash: &str) -> Result<CommitDetail, String> {
             "--name-status",
             "--find-renames",
             "-z",
-            hash,
+            "--end-of-options",
+            oid_s,
         ],
         DEFAULT_TIMEOUT,
         &[],
@@ -529,7 +1091,8 @@ pub fn commit_detail(root: &Path, hash: &str) -> Result<CommitDetail, String> {
             "--numstat",
             "--find-renames",
             "-z",
-            hash,
+            "--end-of-options",
+            oid_s,
         ],
         DEFAULT_TIMEOUT,
         &[],
@@ -737,16 +1300,21 @@ fn grade_object_bytes(bytes: &[u8]) -> FileAtRevResult {
 
 /// 讀某 rev 下某檔的內容（`git show <rev>:<path>`），套用 file_content 的防護。
 ///
-/// path 以 `--` 前的 `<rev>:<path>` 形式傳入 git（pathspec 內建於 revision syntax，
-/// 不會被當成 option）；此外仍在 rev 與 path 之間做基本防呆。該 rev 無此檔（或 rev
-/// 不存在）→ FileAtRevResult::Missing（不 panic、不當錯誤）。
+/// Missing 僅在「revision 可解析且 path 在該 tree 中確實不存在」時回傳。
+/// invalid/missing revision、損壞物件、permission/show 失敗等一律 Err，讓前端 retry。
+///
+/// Path validation is lexical only — historical object reads must not depend on
+/// the current worktree (e.g. a directory replaced by an external symlink).
 pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult, String> {
-    // `git show <rev>:<path>`：<rev>:<path> 是 git 物件語法，path 不會被解讀為 option。
-    // 為保險，用 `--` 隔開位置參數（雖然 show 的 <object> 不吃 pathspec，`--` 無害且明確）。
-    // `--` 只保護其後的參數；spec 本身仍可能被當 option（rev 以 `-` 開頭，如
-    // `--output=/tmp/pwn` → 任意檔案寫入原語）。`--end-of-options`（git ≥2.24）把 spec
-    // 一律鎖為 revision 位置參數，堵住這個注入。
-    let spec = format!("{rev}:{path}");
+    validate_relative_components(path, "file-at-rev")?;
+
+    let full = resolve_commit_oid(root, rev)?.into_string();
+
+    if !path_exists_at_rev(root, &full, path)? {
+        return Ok(FileAtRevResult::Missing);
+    }
+
+    let spec = format!("{full}:{path}");
     let out = run_git(
         root,
         &["show", "--end-of-options", &spec, "--"],
@@ -754,37 +1322,72 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
         &[],
     )?;
     if out.code != 0 {
-        // rev 或 path 不存在（"exists on disk, but not in ..."／"does not exist"／
-        // "unknown revision" 等）→ Missing。
-        return Ok(FileAtRevResult::Missing);
+        return Err(git_err("show", &out.stderr));
     }
     Ok(grade_object_bytes(&out.stdout))
+}
+
+/// Exact path existence at `commit` via NUL-delimited `ls-tree` + literal pathspec.
+/// Returns Ok(false) only when the path is verified absent; other failures are Err.
+fn path_exists_at_rev(root: &Path, commit: &str, path: &str) -> Result<bool, String> {
+    let out = run_git(
+        root,
+        &[
+            "ls-tree",
+            "-z",
+            "--full-name",
+            "--end-of-options",
+            commit,
+            "--",
+            path,
+        ],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    if out.code != 0 {
+        return Err(git_err("ls-tree", &out.stderr));
+    }
+    if out.stdout.is_empty() {
+        return Ok(false);
+    }
+    // Records: "<mode> <type> <object>\t<path>\0"
+    for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let tab = record
+            .iter()
+            .position(|b| *b == b'\t')
+            .ok_or_else(|| "git ls-tree returned a malformed record".to_string())?;
+        let returned = &record[tab + 1..];
+        if returned == path.as_bytes() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ── commands（薄包裝）────────────────────────────────────────────────────
 
 // T1（#55）：同步 command 在 main thread 執行、git 子行程凍住 UI event loop
 // → 全部 async ＋ 走 git_service::run_blocking（spawn_blocking）。repo root 取用
-// `git_service::repo_root` 且一律在 blocking closure 內呼叫——repo state 鎖可能
+// `with_requested_repo_blocking` 且一律在 blocking closure 內呼叫——repo state 鎖可能
 // 被長時操作（push/pull 至多 120s）持有，async body 直接 lock 會 park tokio worker。
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn git_log_page(
     state: tauri::State<'_, GitServiceState>,
-    skip: u32,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    cursor: Option<String>,
     limit: u32,
     query: Option<String>,
     author: Option<String>,
     since: Option<String>,
     until: Option<String>,
 ) -> Result<LogPage, String> {
-    let shared = state.0.clone();
-    crate::git_service::run_blocking(move || {
-        let root = crate::git_service::repo_root(&shared)?;
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         log_page(
-            &root,
-            skip,
+            root,
+            cursor.as_deref(),
             limit,
             query.as_deref(),
             author.as_deref(),
@@ -798,12 +1401,12 @@ pub async fn git_log_page(
 #[tauri::command]
 pub async fn git_commit_detail(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     hash: String,
 ) -> Result<CommitDetail, String> {
-    let shared = state.0.clone();
-    crate::git_service::run_blocking(move || {
-        let root = crate::git_service::repo_root(&shared)?;
-        commit_detail(&root, &hash)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        commit_detail(root, &hash)
     })
     .await
 }
@@ -811,25 +1414,22 @@ pub async fn git_commit_detail(
 #[tauri::command]
 pub async fn git_log_authors(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
 ) -> Result<Vec<AuthorEntry>, String> {
-    let shared = state.0.clone();
-    crate::git_service::run_blocking(move || {
-        let root = crate::git_service::repo_root(&shared)?;
-        log_authors(&root)
-    })
-    .await
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, log_authors).await
 }
 
 #[tauri::command]
 pub async fn git_file_at_rev(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     rev: String,
     path: String,
 ) -> Result<FileAtRevResult, String> {
-    let shared = state.0.clone();
-    crate::git_service::run_blocking(move || {
-        let root = crate::git_service::repo_root(&shared)?;
-        file_at_rev(&root, &rev, &path)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        file_at_rev(root, &rev, &path)
     })
     .await
 }
@@ -976,16 +1576,80 @@ mod tests {
     fn log_page_paginates_with_has_more() {
         let repo = linear_repo(3);
         let r = repo.path();
-        let p1 = log_page(r, 0, 2, None, None, None, None).unwrap();
+        let p1 = log_page(r, None, 2, None, None, None, None).unwrap();
         assert_eq!(p1.commits.len(), 2);
         assert!(p1.has_more);
+        let cursor = p1
+            .next_cursor
+            .clone()
+            .expect("page 1 should yield a cursor");
         // 預設 reverse chronological：c3, c2 先
         assert_eq!(p1.commits[0].subject, "c3");
         assert_eq!(p1.commits[1].subject, "c2");
-        let p2 = log_page(r, 2, 2, None, None, None, None).unwrap();
+        let p2 = log_page(r, Some(cursor.as_str()), 2, None, None, None, None).unwrap();
         assert_eq!(p2.commits.len(), 1);
         assert!(!p2.has_more);
+        assert!(p2.next_cursor.is_none());
         assert_eq!(p2.commits[0].subject, "c1");
+    }
+
+    #[test]
+    fn log_page_cursor_ignores_ref_moves_between_pages() {
+        // Page 1 freezes tips. Creating a new tip after page 1 must not insert
+        // into page 2 of the old cursor, and must not drop the original page-2 row.
+        let repo = linear_repo(3);
+        let r = repo.path();
+        let p1 = log_page(r, None, 2, None, None, None, None).unwrap();
+        let cursor = p1.next_cursor.clone().unwrap();
+        let page1_hashes: Vec<_> = p1.commits.iter().map(|c| c.hash.clone()).collect();
+
+        // Move refs: new branch tip + commit on main after the snapshot.
+        run_git(r, &["branch", "extra", "HEAD~1"], T, &iso()).unwrap();
+        test_repo::write_and_commit(r, "f.txt", "later\n", "later tip");
+
+        let p2 = log_page(r, Some(cursor.as_str()), 2, None, None, None, None).unwrap();
+        assert_eq!(p2.commits.len(), 1);
+        assert_eq!(p2.commits[0].subject, "c1");
+        // The later tip is absent from the frozen cursor stream.
+        assert!(!p2.commits.iter().any(|c| c.subject == "later tip"));
+        // No overlap with page 1.
+        assert!(!page1_hashes.contains(&p2.commits[0].hash));
+
+        // A fresh first page includes the later tip.
+        let fresh = log_page(r, None, 10, None, None, None, None).unwrap();
+        assert!(fresh.commits.iter().any(|c| c.subject == "later tip"));
+    }
+
+    #[test]
+    fn log_page_rejects_malformed_and_oversized_cursors() {
+        let repo = linear_repo(1);
+        let r = repo.path();
+        assert!(log_page(r, Some("{not-json"), 10, None, None, None, None).is_err());
+        assert!(log_page(
+            r,
+            Some(r#"{"v":99,"tips":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"offset":0}"#),
+            10,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+        assert!(log_page(
+            r,
+            Some(r#"{"v":1,"tips":["not-an-oid"],"offset":0}"#),
+            10,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+        let huge = format!(
+            r#"{{"v":1,"tips":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"offset":0,"pad":"{}"}}"#,
+            "x".repeat(MAX_CURSOR_BYTES)
+        );
+        assert!(log_page(r, Some(huge.as_str()), 10, None, None, None, None).is_err());
     }
 
     #[test]
@@ -1007,7 +1671,7 @@ mod tests {
             &editor_iso(),
         )
         .unwrap();
-        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let page = log_page(r, None, 10, None, None, None, None).unwrap();
         // merge commit 為 HEAD，2 parents
         let merge = &page.commits[0];
         assert_eq!(merge.subject, "merge side");
@@ -1027,7 +1691,7 @@ mod tests {
         test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
         run_git(r, &["branch", "second"], T, &iso()).unwrap();
         run_git(r, &["tag", "v1"], T, &iso()).unwrap();
-        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let page = log_page(r, None, 10, None, None, None, None).unwrap();
         let head = &page.commits[0];
         let kinds: std::collections::HashSet<&str> =
             head.refs.iter().map(|x| x.kind.as_str()).collect();
@@ -1052,7 +1716,7 @@ mod tests {
         run_git(r, &["switch", "main"], T, &iso()).unwrap();
         test_repo::write_and_commit(r, "m.txt", "main\n", "main tip");
 
-        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let page = log_page(r, None, 10, None, None, None, None).unwrap();
         let subjects: Vec<&str> = page.commits.iter().map(|c| c.subject.as_str()).collect();
         assert_eq!(page.commits.len(), 3, "subjects: {subjects:?}");
         assert!(subjects.contains(&"side only"));
@@ -1069,7 +1733,7 @@ mod tests {
             .any(|x| x.kind == "local" && x.name == "side"));
 
         // query 也涵蓋其他 branch。
-        let hit = log_page(r, 0, 10, Some("side only"), None, None, None).unwrap();
+        let hit = log_page(r, None, 10, Some("side only"), None, None, None).unwrap();
         assert_eq!(hit.commits.len(), 1);
         assert_eq!(hit.commits[0].subject, "side only");
     }
@@ -1084,7 +1748,7 @@ mod tests {
         std::fs::write(r.join("f.txt"), "dirty\n").unwrap();
         run_git(r, &["stash"], T, &iso()).unwrap();
 
-        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let page = log_page(r, None, 10, None, None, None, None).unwrap();
         assert_eq!(
             page.commits.len(),
             1,
@@ -1103,7 +1767,7 @@ mod tests {
         test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
         run_git(r, &["notes", "add", "-m", "a note"], T, &iso()).unwrap();
 
-        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let page = log_page(r, None, 10, None, None, None, None).unwrap();
         assert_eq!(
             page.commits.len(),
             1,
@@ -1129,7 +1793,7 @@ mod tests {
         run_git(r, &["branch", "backup"], T, &env).unwrap();
         run_git(r, &["commit", "--allow-empty", "-m", "tip"], T, &env).unwrap();
 
-        let page = log_page(r, 0, 10, None, None, None, None).unwrap();
+        let page = log_page(r, None, 10, None, None, None, None).unwrap();
         let subjects: Vec<&str> = page.commits.iter().map(|c| c.subject.as_str()).collect();
         assert_eq!(subjects, vec!["tip", "base"]);
     }
@@ -1162,23 +1826,23 @@ mod tests {
         test_repo::write_and_commit(r, "c.txt", "3\n", "another commit");
 
         // message 命中："alpha"
-        let by_msg = log_page(r, 0, 50, Some("alpha"), None, None, None).unwrap();
+        let by_msg = log_page(r, None, 50, Some("alpha"), None, None, None).unwrap();
         assert_eq!(by_msg.commits.len(), 1);
         assert_eq!(by_msg.commits[0].subject, "add feature alpha");
 
         // author 命中："Zoe"
-        let by_author = log_page(r, 0, 50, Some("Zoe"), None, None, None).unwrap();
+        let by_author = log_page(r, None, 50, Some("Zoe"), None, None, None).unwrap();
         assert_eq!(by_author.commits.len(), 1);
         assert_eq!(by_author.commits[0].author_name, "Zoe");
 
         // hash 前綴命中：取某 commit 的短 hash 前綴。
         let full = &by_msg.commits[0].hash;
         let prefix = &full[..7];
-        let by_hash = log_page(r, 0, 50, Some(prefix), None, None, None).unwrap();
+        let by_hash = log_page(r, None, 50, Some(prefix), None, None, None).unwrap();
         assert!(by_hash.commits.iter().any(|c| &c.hash == full));
 
         // no match → 空。
-        let none = log_page(r, 0, 50, Some("zzz-nomatch-zzz"), None, None, None).unwrap();
+        let none = log_page(r, None, 50, Some("zzz-nomatch-zzz"), None, None, None).unwrap();
         assert!(none.commits.is_empty());
         assert!(!none.has_more);
     }
@@ -1207,7 +1871,7 @@ mod tests {
         )
         .unwrap();
         // author "Alice" 精確 → 只 1 筆
-        let page = log_page(r, 0, 50, None, Some("Alice"), None, None).unwrap();
+        let page = log_page(r, None, 50, None, Some("Alice"), None, None).unwrap();
         assert_eq!(page.commits.len(), 1);
         assert_eq!(page.commits[0].author_name, "Alice");
     }
@@ -1216,7 +1880,7 @@ mod tests {
     fn log_page_empty_repo_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
         test_repo::init(tmp.path()); // init 但無 commit
-        let page = log_page(tmp.path(), 0, 10, None, None, None, None).unwrap();
+        let page = log_page(tmp.path(), None, 10, None, None, None, None).unwrap();
         assert!(page.commits.is_empty());
         assert!(!page.has_more);
     }
@@ -1225,7 +1889,7 @@ mod tests {
     fn log_page_limit_clamped() {
         let repo = linear_repo(2);
         // limit 超上限 → clamp 到 MAX_LOG_LIMIT，不報錯
-        let page = log_page(repo.path(), 0, 99999, None, None, None, None).unwrap();
+        let page = log_page(repo.path(), None, 99999, None, None, None, None).unwrap();
         assert_eq!(page.commits.len(), 2);
         assert!(!page.has_more);
     }
@@ -1351,6 +2015,93 @@ mod tests {
         assert_eq!(detail.total_deletions, 0);
     }
 
+    #[test]
+    fn log_page_subject_with_field_and_record_separators_is_not_forged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
+        let real = head_hash(r);
+        let forged = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let subject = format!(
+            "evil{f}{forged}{f}x{f}Eve{f}e@x{f}1{f}{f}{r}{forged}{f}aaaaaaa{f}forged subject{f}Eve{f}e@x{f}1{f}{f}",
+            f = FIELD_SEP,
+            r = RECORD_SEP
+        );
+        std::fs::write(r.join("f.txt"), "next\n").unwrap();
+        run_git(r, &["add", "f.txt"], T, &iso()).unwrap();
+        run_git(r, &["commit", "-m", &subject], T, &iso()).unwrap();
+
+        let page = log_page(r, None, 10, None, None, None, None).unwrap();
+        assert_eq!(
+            page.commits.len(),
+            2,
+            "subjects: {:?}",
+            page.commits.iter().map(|c| &c.subject).collect::<Vec<_>>()
+        );
+        assert!(!page.commits.iter().any(|c| c.hash == forged));
+        let injected = page
+            .commits
+            .iter()
+            .find(|c| c.hash != real)
+            .expect("new commit");
+        assert_eq!(injected.subject, subject);
+        assert_eq!(injected.author_name, "t");
+        assert_eq!(injected.author_email, "t@t");
+        assert_ne!(injected.hash, forged);
+        assert!(is_full_oid(&injected.hash));
+
+        let detail = commit_detail(r, &injected.hash).unwrap();
+        assert_eq!(detail.subject, subject);
+        assert_eq!(detail.author_name, "t");
+    }
+
+    #[test]
+    fn commit_detail_rejects_output_option_before_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "f.txt", "x\n", "c1");
+        let sink = tmp.path().join("pwned");
+        let inject = format!("--output={}", sink.display());
+        let err = commit_detail(r, &inject).unwrap_err();
+        assert!(
+            err.contains("option-like"),
+            "expected option rejection, got {err}"
+        );
+        assert!(
+            !sink.exists(),
+            "commit hash option injection must not write a file"
+        );
+        let err = file_at_rev(r, &inject, "f.txt").unwrap_err();
+        assert!(
+            err.contains("option-like"),
+            "expected option rejection, got {err}"
+        );
+        assert!(
+            !sink.exists(),
+            "file_at_rev option injection must not write a file"
+        );
+    }
+
+    #[test]
+    fn parse_commit_object_keeps_control_characters_in_subject() {
+        let raw = format!(
+            "tree {:0<40}\nparent {:0<40}\nauthor Ann <a@x> 1700000000 +0000\ncommitter Ann <a@x> 1700000000 +0000\n\nsubj{f}mid{r}end\n\nbody\n",
+            "b", "c", f = FIELD_SEP, r = RECORD_SEP
+        );
+        let meta = parse_commit_object(raw.as_bytes()).unwrap();
+        assert_eq!(
+            meta.subject,
+            format!("subj{f}mid{r}end", f = FIELD_SEP, r = RECORD_SEP)
+        );
+        assert_eq!(meta.body, "body");
+        assert_eq!(meta.author_name, "Ann");
+        assert_eq!(meta.author_email, "a@x");
+        assert_eq!(meta.timestamp, 1_700_000_000);
+        assert_eq!(meta.parents.len(), 1);
+    }
+
     // ── file_at_rev ─────────────────────────────────────────────────
 
     #[test]
@@ -1384,11 +2135,8 @@ mod tests {
             file_at_rev(r, "HEAD", "nope.txt").unwrap(),
             FileAtRevResult::Missing
         );
-        // 不存在的 rev → Missing（不 panic）
-        assert_eq!(
-            file_at_rev(r, "deadbeef", "f.txt").unwrap(),
-            FileAtRevResult::Missing
-        );
+        // 不存在的 rev → Err（不是 Missing）
+        assert!(file_at_rev(r, "deadbeef", "f.txt").is_err());
     }
 
     #[test]
@@ -1439,20 +2187,301 @@ mod tests {
     fn file_at_rev_rev_option_injection_blocked() {
         // rev 以 option 樣態（如 `--output=<file>`）不得被 git show 當成 flag——否則
         // `git show --output=/tmp/pwn` 會把輸出寫進任意路徑（任意檔案寫入原語）。
-        // --end-of-options 屏障下 spec 一律當 revision → Missing，且不產生該檔（F4 回歸）。
+        // --end-of-options + resolve-first 路徑下 → Err，且不產生該檔（F4 回歸）。
         let tmp = tempfile::tempdir().unwrap();
         let r = tmp.path();
         test_repo::init(r);
         test_repo::write_and_commit(r, "f.txt", "x\n", "c1");
         let sink = tmp.path().join("pwned");
         let inject = format!("--output={}", sink.display());
-        assert_eq!(
-            file_at_rev(r, &inject, "f.txt").unwrap(),
-            FileAtRevResult::Missing
-        );
+        assert!(file_at_rev(r, &inject, "f.txt").is_err());
         assert!(!sink.exists(), "rev option injection must not write a file");
     }
 
+    #[test]
+    fn log_page_rejects_limit_zero() {
+        let repo = linear_repo(1);
+        assert!(log_page(repo.path(), None, 0, None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn log_page_rejects_forged_and_cross_root_cursors() {
+        let repo = linear_repo(2);
+        let r = repo.path();
+        let p1 = log_page(r, None, 1, None, None, None, None).unwrap();
+        let cursor = p1.next_cursor.clone().unwrap();
+
+        // Unsigned JSON tip payload must not be accepted.
+        let forged = r#"{"v":2,"root":"x","fp":"","tips":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"offset":0}"#;
+        assert!(log_page(r, Some(forged), 10, None, None, None, None).is_err());
+
+        // Tampered body with broken MAC.
+        let mut parts = cursor.split('.').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 2);
+        parts[1] = "00";
+        let bad_mac = format!("{}.{}", parts[0], parts[1]);
+        assert!(log_page(r, Some(bad_mac.as_str()), 10, None, None, None, None).is_err());
+
+        // Cursor from repo A is invalid on repo B.
+        let other = linear_repo(2);
+        assert!(log_page(
+            other.path(),
+            Some(cursor.as_str()),
+            10,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err());
+
+        // Filter fingerprint mismatch.
+        assert!(log_page(r, Some(cursor.as_str()), 10, Some("nope"), None, None, None).is_err());
+    }
+
+    #[test]
+    fn log_page_ignores_replace_refs_between_pages() {
+        let repo = linear_repo(4);
+        let r = repo.path();
+        let p1 = log_page(r, None, 2, None, None, None, None).unwrap();
+        let cursor = p1.next_cursor.clone().unwrap();
+        let expected_page2_subject = "c2"; // after c4,c3 page
+
+        // Replace c2 with c1 content via refs/replace — must not warp frozen stream.
+        let c2 = p1.commits.iter().find(|c| c.subject == "c3"); // just need a real hash
+        let _ = c2;
+        let hashes: Vec<String> = {
+            let page = log_page(r, None, 10, None, None, None, None).unwrap();
+            page.commits.iter().map(|c| c.hash.clone()).collect()
+        };
+        // hashes[0]=c4, [1]=c3, [2]=c2, [3]=c1
+        let c2_hash = &hashes[2];
+        let c1_hash = &hashes[3];
+        // refs/replace/<old> -> <new>
+        run_git(
+            r,
+            &["update-ref", &format!("refs/replace/{c2_hash}"), c1_hash],
+            T,
+            &iso(),
+        )
+        .unwrap();
+
+        let p2 = log_page(r, Some(cursor.as_str()), 2, None, None, None, None).unwrap();
+        assert!(
+            p2.commits
+                .iter()
+                .any(|c| c.subject == expected_page2_subject),
+            "frozen stream must keep c2, got {:?}",
+            p2.commits
+                .iter()
+                .map(|c| c.subject.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(!p2.commits.is_empty());
+    }
+
+    #[test]
+    fn log_page_hash_query_only_hex_prefix_and_exact_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        // Two commits; second has different author so filters can exclude the target.
+        test_repo::write_and_commit(r, "f.txt", "one\n", "alpha");
+        let first = head_hash(r);
+        std::fs::write(r.join("f.txt"), "two\n").unwrap();
+        run_git(r, &["add", "f.txt"], T, &iso()).unwrap();
+        run_git(
+            r,
+            &[
+                "-c",
+                "user.name=Bob",
+                "-c",
+                "user.email=bob@x",
+                "commit",
+                "-m",
+                "beta",
+            ],
+            T,
+            &iso(),
+        )
+        .unwrap();
+        let second = head_hash(r);
+
+        // Branch / HEAD / ancestry expressions must not activate the hash arm.
+        // Message/author arms also won't match these strings → empty result.
+        assert!(log_page(r, None, 50, Some("HEAD"), None, None, None)
+            .unwrap()
+            .commits
+            .is_empty());
+        assert!(log_page(r, None, 50, Some("main"), None, None, None)
+            .unwrap()
+            .commits
+            .is_empty());
+        assert!(log_page(r, None, 50, Some("HEAD~1"), None, None, None)
+            .unwrap()
+            .commits
+            .is_empty());
+
+        // Exact hex prefix hits the commit.
+        let prefix = &second[..8];
+        let hit = log_page(r, None, 50, Some(prefix), None, None, None).unwrap();
+        assert_eq!(hit.commits.len(), 1);
+        assert_eq!(hit.commits[0].hash, second);
+
+        // Author filter excludes target; matching ancestor must not be returned.
+        let filtered = log_page(r, None, 50, Some(prefix), Some("t"), None, None).unwrap();
+        assert!(
+            filtered.commits.is_empty(),
+            "must not walk to ancestor; got {:?}",
+            filtered.commits
+        );
+        // Control: first commit hash with matching author works.
+        let first_prefix = &first[..8];
+        let first_hit = log_page(r, None, 50, Some(first_prefix), Some("t"), None, None).unwrap();
+        assert_eq!(first_hit.commits.len(), 1);
+        assert_eq!(first_hit.commits[0].hash, first);
+    }
+
+    #[test]
+    fn log_page_query_preserves_child_before_parent_with_skewed_timestamps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        // Parent commit with a *newer* author date than the child (skew).
+        std::fs::write(r.join("f.txt"), "parent\n").unwrap();
+        run_git(r, &["add", "f.txt"], T, &iso()).unwrap();
+        let mut env_parent = iso();
+        env_parent.push((
+            "GIT_AUTHOR_DATE".to_string(),
+            "2020-01-02T00:00:00 +0000".to_string(),
+        ));
+        env_parent.push((
+            "GIT_COMMITTER_DATE".to_string(),
+            "2020-01-02T00:00:00 +0000".to_string(),
+        ));
+        run_git(r, &["commit", "-m", "shared-parent"], T, &env_parent).unwrap();
+
+        std::fs::write(r.join("f.txt"), "child\n").unwrap();
+        run_git(r, &["add", "f.txt"], T, &iso()).unwrap();
+        let mut env_child = iso();
+        env_child.push((
+            "GIT_AUTHOR_DATE".to_string(),
+            "2020-01-01T00:00:00 +0000".to_string(),
+        ));
+        env_child.push((
+            "GIT_COMMITTER_DATE".to_string(),
+            "2020-01-01T00:00:00 +0000".to_string(),
+        ));
+        run_git(r, &["commit", "-m", "shared-child"], T, &env_child).unwrap();
+
+        let page = log_page(r, None, 50, Some("shared"), None, None, None).unwrap();
+        assert_eq!(page.commits.len(), 2);
+        assert_eq!(page.commits[0].subject, "shared-child");
+        assert_eq!(page.commits[1].subject, "shared-parent");
+        // Child is first even though its timestamp is older.
+        assert!(page.commits[0].timestamp < page.commits[1].timestamp);
+    }
+
+    #[test]
+    fn log_page_normalizes_empty_and_whitespace_filters_for_cursor() {
+        let repo = linear_repo(2);
+        let r = repo.path();
+        // First page with no author filter.
+        let p1 = log_page(r, None, 1, None, None, None, None).unwrap();
+        let cursor = p1.next_cursor.clone().expect("page 1 should have more");
+
+        // Empty / whitespace author is canonicalized to None → same cursor accepted.
+        let p2_empty = log_page(r, Some(cursor.as_str()), 1, None, Some(""), None, None).unwrap();
+        assert_eq!(p2_empty.commits.len(), 1);
+        let p2_ws = log_page(r, Some(cursor.as_str()), 1, None, Some("  \t"), None, None).unwrap();
+        assert_eq!(p2_ws.commits.len(), 1);
+        // Explicit None still works.
+        let p2_none = log_page(r, Some(cursor.as_str()), 1, None, None, None, None).unwrap();
+        assert_eq!(p2_none.commits.len(), 1);
+
+        // A real author filter remains a distinct fingerprint.
+        assert!(
+            log_page(r, Some(cursor.as_str()), 1, None, Some("Alice"), None, None).is_err(),
+            "non-empty author must not reuse a no-author cursor"
+        );
+
+        // Whitespace query on first page is treated as no query (full history).
+        let full = log_page(r, None, 10, Some("   "), None, None, None).unwrap();
+        assert_eq!(full.commits.len(), 2);
+    }
+
+    #[test]
+    fn log_page_rejects_offset_above_i32_max() {
+        // encode_cursor must refuse offsets Git cannot consume as --skip.
+        let tips = vec!["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()];
+        assert!(encode_cursor("root", "", &tips, MAX_CURSOR_OFFSET.saturating_add(1)).is_err());
+        assert!(encode_cursor("root", "", &tips, (i32::MAX as u32) + 1).is_err());
+        // MAX itself is still encodable.
+        assert!(encode_cursor("root", "", &tips, MAX_CURSOR_OFFSET).is_ok());
+
+        // decode_cursor must also reject oversize offsets even if MAC is valid.
+        let oversize = LogCursorPayload {
+            v: LOG_CURSOR_VERSION,
+            root: "root".to_string(),
+            fp: String::new(),
+            tips: tips.clone(),
+            offset: (i32::MAX as u32) + 1,
+        };
+        let raw = serde_json::to_string(&oversize).unwrap();
+        let body = URL_SAFE_NO_PAD.encode(raw.as_bytes());
+        let tag = mac_cursor_payload(&body);
+        let token = format!("{body}.{tag}");
+        assert!(decode_cursor(&token, "root", "").is_err());
+    }
+
+    #[test]
+    fn file_at_rev_literal_special_filenames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        let mut lit_env = iso();
+        lit_env.push(("GIT_LITERAL_PATHSPECS".to_string(), "1".to_string()));
+        for name in [":(literal)kept.txt", "star*.txt", "q?.txt"] {
+            std::fs::write(r.join(name), format!("content-{name}\n")).unwrap();
+            // Force literal pathspecs so `:(literal)…` / `*` / `?` are filenames.
+            run_git(r, &["add", "--", name], T, &lit_env).unwrap();
+        }
+        run_git(r, &["commit", "-m", "special names"], T, &iso()).unwrap();
+        for name in [":(literal)kept.txt", "star*.txt", "q?.txt"] {
+            match file_at_rev(r, "HEAD", name).unwrap() {
+                FileAtRevResult::Full { content } => {
+                    assert_eq!(content, format!("content-{name}\n"));
+                }
+                other => panic!("expected Full for {name}, got {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_at_rev_ignores_worktree_symlink_for_historical_path() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        std::fs::create_dir_all(r.join("dir")).unwrap();
+        std::fs::write(r.join("dir/f.txt"), "historical\n").unwrap();
+        run_git(r, &["add", "dir/f.txt"], T, &iso()).unwrap();
+        run_git(r, &["commit", "-m", "c1"], T, &iso()).unwrap();
+
+        // Replace dir with an external symlink — filesystem validator would reject.
+        std::fs::remove_dir_all(r.join("dir")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "nope\n").unwrap();
+        symlink(outside.path(), r.join("dir")).unwrap();
+
+        match file_at_rev(r, "HEAD", "dir/f.txt").unwrap() {
+            FileAtRevResult::Full { content } => assert_eq!(content, "historical\n"),
+            other => panic!("expected historical content, got {other:?}"),
+        }
+    }
+
+    // ── log_authors ─────────────────────────────────────────────────
     // ── log_authors ─────────────────────────────────────────────────
 
     #[test]

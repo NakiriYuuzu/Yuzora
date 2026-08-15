@@ -22,7 +22,7 @@ function makeBootstrap(root = "/w"): GitBootstrapResult {
     return {
         environment: { status: "ready", root, version: "2.50.1" },
         status: makeStatus(),
-        branches: { local: [], remote: [] }
+        branches: { local: [], remote: [], tags: [] }
     }
 }
 
@@ -42,10 +42,10 @@ vi.mock("../lib/ipc", () => ({
             conflicted: [],
             inProgress: null
         },
-        branches: { local: [], remote: [] }
+        branches: { local: [], remote: [], tags: [] }
     })),
     gitStatus: vi.fn(async () => makeStatus()),
-    gitBranches: vi.fn(async () => ({ local: [], remote: [] })),
+    gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     gitRemoteProbe: vi.fn(async () => "yes"),
     gitFetch: vi.fn(async () => undefined)
 }))
@@ -110,6 +110,17 @@ describe("gitStore", () => {
         await vi.advanceTimersByTimeAsync(400)
         expect(ipc.gitStatus).not.toHaveBeenCalled()
         expect(useGitStore.getState().lastError).toBe(null)
+    })
+
+    it("successful refresh clears a previous error", async () => {
+        const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            lastError: "old failure"
+        })
+        void useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(400)
+        expect(useGitStore.getState().lastError).toBeNull()
     })
 
     it("refresh reruns once when called during an in-flight fetch (m3)", async () => {
@@ -212,6 +223,33 @@ describe("gitStore", () => {
         expect(useGitStore.getState().lastError).toBe(null)
     })
 
+    it("uncached detect clears the previous repository immediately and blocks runOp", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({
+            environment: { status: "ready", root: "/a", version: "2.50.1" },
+            status: makeStatus(),
+            branches: { local: [], remote: [], tags: [] },
+            commitMessage: "draft"
+        })
+        let release: (result: GitBootstrapResult) => void = () => {}
+        ;(ipc.gitBootstrap as ReturnType<typeof vi.fn>).mockImplementationOnce(
+            () => new Promise((resolve) => { release = resolve })
+        )
+        const pending = useGitStore.getState().detect("/b")
+        expect(useGitStore.getState()).toMatchObject({
+            environment: null,
+            status: null,
+            branches: null,
+            commitMessage: ""
+        })
+        const operation = vi.fn(async () => undefined)
+        expect(await useGitStore.getState().runOp("stage", operation)).toBe(false)
+        expect(operation).not.toHaveBeenCalled()
+        release(makeBootstrap("/b"))
+        await pending
+    })
+
     // #57 T3 AC1/AC2：detect 一趟 bootstrap 回齊 environment＋status＋branches，
     // 不再走 gitStatus/gitBranches 的 waterfall，首載也不吃 300ms debounce——
     // 全程不撥 fake timers，resolve 即填滿。
@@ -225,7 +263,7 @@ describe("gitStore", () => {
             version: "2.50.1"
         })
         expect(useGitStore.getState().status).not.toBe(null)
-        expect(useGitStore.getState().branches).toEqual({ local: [], remote: [] })
+        expect(useGitStore.getState().branches).toEqual({ local: [], remote: [], tags: [] })
         // 單趟完成：細粒度 command 留給後續 refresh，首載一律不碰。
         expect(ipc.gitStatus).not.toHaveBeenCalled()
         expect(ipc.gitBranches).not.toHaveBeenCalled()
@@ -242,7 +280,7 @@ describe("gitStore", () => {
         useGitStore.setState({
             environment: { status: "ready", root: "/old", version: "2.50.1" },
             status: makeStatus(),
-            branches: { local: [], remote: [] }
+            branches: { local: [], remote: [], tags: [] }
         })
         ;(ipc.gitBootstrap as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
             environment: { status: "ready", root: "/new", version: "2.50.1" },
@@ -315,16 +353,18 @@ describe("gitStore", () => {
                 new Promise((res) => {
                     release = () =>
                         res({
-                            local: [{ name: "a-branch", upstream: null, ahead: 0, behind: 0, isCurrent: true }],
-                            remote: []
+                            local: [{ name: "a-branch", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+                            remote: [],
+                            tags: []
                         })
                 })
         )
         const pending = useGitStore.getState().loadBranches()
         // detect(B) 的 bootstrap 快照落地。
         const bBranches = {
-            local: [{ name: "b-branch", upstream: null, ahead: 0, behind: 0, isCurrent: true }],
-            remote: []
+            local: [{ name: "b-branch", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+            remote: [],
+            tags: []
         }
         useGitStore.setState({
             environment: { status: "ready", root: "/b", version: "2.50.1" },
@@ -411,6 +451,7 @@ describe("gitStore", () => {
 
     it("runOp rejects concurrent ops and clears busy after failure", async () => {
         const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         const slow = useGitStore.getState().runOp("push", () => new Promise((r) => setTimeout(r, 1000)))
         expect(await useGitStore.getState().runOp("pull", async () => {})).toBe(false)
         await vi.advanceTimersByTimeAsync(1500)
@@ -424,6 +465,7 @@ describe("gitStore", () => {
     it("checkRemote probe mode sets remoteIncoming; failure pauses silently", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         useGitStore.getState().setRemoteCheck({ mode: "probe", intervalSec: 180 })
         await useGitStore.getState().checkRemote()
         expect(useGitStore.getState().remoteIncoming).toBe("yes")
@@ -436,10 +478,11 @@ describe("gitStore", () => {
     it("checkRemote autofetch pauses silently when background gitStatus fails", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         useGitStore.getState().setRemoteCheck({ mode: "autofetch", intervalSec: 60 })
         ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("status boom"))
         await useGitStore.getState().checkRemote()
-        expect(ipc.gitFetch).toHaveBeenCalledWith(true)
+        expect(ipc.gitFetch).toHaveBeenCalledWith("/w", true)
         expect(useGitStore.getState().remotePaused).toBe(true)
         expect(useGitStore.getState().lastError).toBe(null)
     })
@@ -450,7 +493,7 @@ describe("gitStore", () => {
         // 先塞入舊 repo 殘留（模擬前一個 workspace）。
         useGitStore.setState({
             status: makeStatus(),
-            branches: { local: [{ name: "main", upstream: null, ahead: 0, behind: 0, isCurrent: true }], remote: [] },
+            branches: { local: [{ name: "main", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }], remote: [], tags: [] },
             remoteIncoming: "yes",
             remotePaused: true
         })
@@ -469,6 +512,7 @@ describe("gitStore", () => {
     it("checkRemote is a no-op while busy (no probe/fetch)", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         useGitStore.getState().setRemoteCheck({ mode: "probe", intervalSec: 180 })
         useGitStore.setState({ busy: "push" })
         await useGitStore.getState().checkRemote()
@@ -479,6 +523,7 @@ describe("gitStore", () => {
     it("checkRemote is a no-op while remotePaused (no probe/fetch)", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         useGitStore.getState().setRemoteCheck({ mode: "autofetch", intervalSec: 60 })
         useGitStore.setState({ remotePaused: true })
         await useGitStore.getState().checkRemote()
@@ -488,6 +533,7 @@ describe("gitStore", () => {
 
     it("setRemoteCheck persists to localStorage", async () => {
         const { useGitStore, REMOTE_CHECK_STORAGE_KEY } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         useGitStore.getState().setRemoteCheck({ mode: "autofetch", intervalSec: 60 })
         expect(JSON.parse(localStorage.getItem(REMOTE_CHECK_STORAGE_KEY)!)).toEqual({ mode: "autofetch", intervalSec: 60 })
     })
@@ -562,6 +608,7 @@ describe("gitStore", () => {
         // runOp awaits its internal debounced refresh(), so drive the fake
         // timers forward while the op is in flight (same pattern as the
         // concurrent-op test above).
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         const opDone = useGitStore.getState().runOp("pull", async () => {})
         await vi.advanceTimersByTimeAsync(400)
         expect(await opDone).toBe(true)
@@ -574,6 +621,7 @@ describe("gitStore", () => {
 
     it("runOp records cherry-pick with the mapped console label", async () => {
         const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         const opDone = useGitStore.getState().runOp("cherry-pick", async () => {})
         await vi.advanceTimersByTimeAsync(400)
         expect(await opDone).toBe(true)
@@ -592,7 +640,7 @@ describe("gitStore", () => {
     describe("workspace snapshots (#58 T4a)", () => {
         function makeBranches(name: string) {
             return {
-                local: [{ name, upstream: null, ahead: 0, behind: 0, isCurrent: true }],
+                local: [{ name, upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
                 remote: []
             }
         }
@@ -712,7 +760,7 @@ describe("gitStore", () => {
                 () => new Promise(() => {})
             )
             void useGitStore.getState().detect("/p")
-            expect(useGitStore.getState().environment).toEqual({ status: "notARepo" })
+            expect(useGitStore.getState().environment).toBeNull()
             expect(useGitStore.getState().status).toBe(null)
             expect(useGitStore.getState().snapshotStale).toBe(false)
         })
@@ -732,11 +780,7 @@ describe("gitStore", () => {
                 () => new Promise(() => {})
             )
             void useGitStore.getState().detect("/w1")
-            expect(useGitStore.getState().environment).toEqual({
-                status: "ready",
-                root: "/w9",
-                version: "2.50.1"
-            })
+            expect(useGitStore.getState().environment).toBeNull()
             expect(useGitStore.getState().snapshotStale).toBe(false)
             // 切回 /w2（掛住）→ 仍在 LRU 內，正常 hydrate。
             ;(ipc.gitBootstrap as ReturnType<typeof vi.fn>).mockImplementationOnce(
@@ -782,11 +826,7 @@ describe("gitStore", () => {
                 () => new Promise(() => {})
             )
             void useGitStore.getState().detect("/w2")
-            expect(useGitStore.getState().environment).toEqual({
-                status: "ready",
-                root: "/w1",
-                version: "2.50.1"
-            })
+            expect(useGitStore.getState().environment).toBeNull()
         })
 
         // #58 覆核修正：hydrate 後、bootstrap 落地前，Rust 端 repo state 可能仍
@@ -945,17 +985,66 @@ describe("gitStore", () => {
                 () => new Promise(() => {})
             )
             void useGitStore.getState().detect("/old")
-            expect(useGitStore.getState().environment).toEqual({
-                status: "ready",
-                root: "/new",
-                version: "2.50.1"
-            })
+            expect(useGitStore.getState().environment).toBeNull()
             expect(useGitStore.getState().snapshotStale).toBe(false)
         })
     })
 
+    it("runOp afterMutationBeforeRefresh runs once after success and before refresh", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const order: string[] = []
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+            order.push("refresh")
+            return makeStatus()
+        })
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        const hook = vi.fn(() => { order.push("hook") })
+        const fn = vi.fn(async () => { order.push("fn") })
+        const opDone = useGitStore.getState().runOp("stage", fn, {
+            afterMutationBeforeRefresh: hook
+        })
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(hook).toHaveBeenCalledTimes(1)
+        expect(order).toEqual(["fn", "hook", "refresh"])
+    })
+
+    it("runOp does not call afterMutationBeforeRefresh on busy rejection or fn failure", async () => {
+        const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        const hook = vi.fn()
+        const slow = useGitStore.getState().runOp("push", () => new Promise((r) => setTimeout(r, 1000)))
+        expect(await useGitStore.getState().runOp("pull", async () => {}, {
+            afterMutationBeforeRefresh: hook
+        })).toBe(false)
+        expect(hook).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(1500)
+        expect(await slow).toBe(true)
+        expect(await useGitStore.getState().runOp("fail", async () => {
+            throw new Error("boom")
+        }, { afterMutationBeforeRefresh: hook })).toBe(false)
+        expect(hook).not.toHaveBeenCalled()
+    })
+
+    it("runOp does not call afterMutationBeforeRefresh after root invalidation", async () => {
+        const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        const hook = vi.fn()
+        let release: () => void = () => {}
+        const opDone = useGitStore.getState().runOp("stage", () => new Promise<void>((resolve) => {
+            release = resolve
+        }), { afterMutationBeforeRefresh: hook })
+        useGitStore.setState({ environment: { status: "ready", root: "/other", version: "2.50.1" } })
+        release()
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(hook).not.toHaveBeenCalled()
+    })
+
     it("runOp records an err console entry with the error message on failure", async () => {
         const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
         const ok = await useGitStore.getState().runOp("push", async () => {
             throw new Error("remote rejected")
         })
@@ -965,5 +1054,546 @@ describe("gitStore", () => {
         expect(log[0].cmd).toBe("git push")
         expect(log[0].tone).toBe("err")
         expect(log[0].out[0]).toContain("remote rejected")
+    })
+
+    it("discards a pre-mutation refresh and runOp waits for the current-epoch publish", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const pre = {
+            ...makeStatus(),
+            unstaged: [{ path: "mm.ts", origPath: null, status: "M" }],
+            staged: []
+        }
+        const stale = { ...pre, branch: "stale-pre" }
+        const post = {
+            ...makeStatus(),
+            staged: [{ path: "mm.ts", origPath: null, status: "M" }],
+            unstaged: []
+        }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: pre
+        })
+        let releaseOld: (status: GitStatus) => void = () => {}
+        const order: string[] = []
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce(() => new Promise((res) => {
+                order.push("old-request")
+                releaseOld = (status) => {
+                    order.push("old-resolve")
+                    res(status)
+                }
+            }))
+            .mockImplementation(async () => {
+                order.push("new-request")
+                return post
+            })
+        void useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        expect(order).toEqual(["old-request"])
+
+        const hook = vi.fn(() => { order.push("hook") })
+        const opDone = useGitStore.getState().runOp("stage", async () => { order.push("fn") }, {
+            afterMutationBeforeRefresh: hook
+        })
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(order).toEqual(["old-request", "fn", "hook"])
+        expect(useGitStore.getState().status).toBe(pre)
+
+        releaseOld(stale)
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(useGitStore.getState().status).toBe(pre)
+        expect(useGitStore.getState().status?.branch).not.toBe("stale-pre")
+        expect(order).toEqual(["old-request", "fn", "hook", "old-resolve"])
+
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(order).toEqual(["old-request", "fn", "hook", "old-resolve", "new-request"])
+        expect(useGitStore.getState().status).toEqual(post)
+    })
+
+    it("discards a pre-mutation loadBranches and keeps the post-checkout snapshot", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const pre = {
+            local: [{ name: "main", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+            remote: [] as string[],
+            tags: [] as { name: string; date: string }[]
+        }
+        const stale = {
+            local: [{ name: "main", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+            remote: [],
+            tags: [{ name: "stale-pre", date: "2020-01-01T00:00:00Z" }]
+        }
+        const post = {
+            local: [
+                { name: "dev", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false },
+                { name: "main", upstream: null, ahead: 0, behind: 0, isCurrent: false, gone: false }
+            ],
+            remote: [],
+            tags: [{ name: "v2", date: "2026-08-01T12:00:00Z" }]
+        }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            branches: pre
+        })
+        let releaseOld: (list: typeof stale) => void = () => {}
+        ;(ipc.gitBranches as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce(() => new Promise((res) => {
+                releaseOld = (list) => res(list)
+            }))
+            .mockImplementation(async () => post)
+        const pendingOld = useGitStore.getState().loadBranches()
+        const opDone = useGitStore.getState().runOp("checkout", async () => {})
+        await Promise.resolve()
+        await Promise.resolve()
+        releaseOld(stale)
+        await pendingOld
+        expect(useGitStore.getState().branches?.tags.some((tag) => tag.name === "stale-pre")).toBe(false)
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(useGitStore.getState().branches).toEqual(post)
+    })
+
+    it("discards an older same-epoch loadBranches after a newer request already resolved", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const fromA = {
+            local: [{ name: "from-a", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+            remote: [] as string[],
+            tags: [{ name: "tag-a", date: "2020-01-01T00:00:00Z" }]
+        }
+        const fromB = {
+            local: [{ name: "from-b", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+            remote: [],
+            tags: [{ name: "tag-b", date: "2026-08-01T12:00:00Z" }]
+        }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            branches: { local: [], remote: [], tags: [] }
+        })
+        let releaseA: (list: typeof fromA) => void = () => {}
+        let releaseB: (list: typeof fromB) => void = () => {}
+        ;(ipc.gitBranches as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce(() => new Promise((res) => {
+                releaseA = (list) => res(list)
+            }))
+            .mockImplementationOnce(() => new Promise((res) => {
+                releaseB = (list) => res(list)
+            }))
+        const pendingA = useGitStore.getState().loadBranches()
+        const pendingB = useGitStore.getState().loadBranches()
+        releaseB(fromB)
+        await pendingB
+        expect(useGitStore.getState().branches).toEqual(fromB)
+        releaseA(fromA)
+        await pendingA
+        expect(useGitStore.getState().branches).toEqual(fromB)
+        expect(useGitStore.getState().branches?.local[0]?.name).toBe("from-b")
+    })
+
+    it("refreshQuiet sampled before mutation cannot be last writer", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const pre = { ...makeStatus(), branch: "pre" }
+        const quietStale = { ...makeStatus(), branch: "quiet-stale" }
+        const post = { ...makeStatus(), branch: "post" }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: pre
+        })
+        let releaseQuiet: (status: GitStatus) => void = () => {}
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce(() => new Promise((res) => {
+                releaseQuiet = (status) => res(status)
+            }))
+            .mockImplementation(async () => post)
+        const quietDone = useGitStore.getState().refreshQuiet()
+        const opDone = useGitStore.getState().runOp("stage", async () => {})
+        await Promise.resolve()
+        await Promise.resolve()
+        releaseQuiet(quietStale)
+        await quietDone
+        expect(useGitStore.getState().status?.branch).not.toBe("quiet-stale")
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(useGitStore.getState().status).toEqual(post)
+    })
+
+    it("mutation failure does not bump epoch so a pre-existing refresh may publish", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const live = { ...makeStatus(), branch: "from-refresh" }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: makeStatus()
+        })
+        let release: () => void = () => {}
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockImplementationOnce(
+            () => new Promise((res) => { release = () => res(live) })
+        )
+        void useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        const hook = vi.fn()
+        expect(await useGitStore.getState().runOp("stage", async () => {
+            throw new Error("nope")
+        }, { afterMutationBeforeRefresh: hook })).toBe(false)
+        expect(hook).not.toHaveBeenCalled()
+        release()
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(useGitStore.getState().status).toEqual(live)
+    })
+
+    it("busy rejection does not invalidate an unrelated refresh", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const live = { ...makeStatus(), branch: "unrelated" }
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        let releaseSlow: () => void = () => {}
+        let releaseStatus: () => void = () => {}
+        const slow = useGitStore.getState().runOp("push", () => new Promise<void>((resolve) => {
+            releaseSlow = resolve
+        }))
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockImplementationOnce(
+            () => new Promise((res) => { releaseStatus = () => res(live) })
+        )
+        void useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        expect(await useGitStore.getState().runOp("pull", async () => {}, {
+            afterMutationBeforeRefresh: vi.fn()
+        })).toBe(false)
+        releaseStatus()
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(useGitStore.getState().status).toEqual(live)
+        releaseSlow()
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await slow).toBe(true)
+    })
+
+    it("landed detect discards a same-root status sampled before bootstrap", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const stale = { ...makeStatus(), branch: "pre-detect" }
+        const boot = { ...makeStatus(), branch: "from-bootstrap" }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: makeStatus()
+        })
+        let releaseStatus: () => void = () => {}
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockImplementationOnce(
+            () => new Promise((res) => { releaseStatus = () => res(stale) })
+        )
+        void useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        ;(ipc.gitBootstrap as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: boot,
+            branches: { local: [], remote: [], tags: [] }
+        })
+        await useGitStore.getState().detect("/w")
+        expect(useGitStore.getState().status).toEqual(boot)
+        releaseStatus()
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(useGitStore.getState().status).toEqual(boot)
+        expect(useGitStore.getState().status?.branch).toBe("from-bootstrap")
+    })
+
+    it("landed detect discards a same-root loadBranches sampled before bootstrap", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const stale = {
+            local: [{ name: "pre-detect", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+            remote: [] as string[],
+            tags: [] as { name: string; date: string }[]
+        }
+        const boot = {
+            local: [{ name: "from-bootstrap", upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],
+            remote: [],
+            tags: []
+        }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            branches: { local: [], remote: [], tags: [] }
+        })
+        let releaseBranches: (list: typeof stale) => void = () => {}
+        ;(ipc.gitBranches as ReturnType<typeof vi.fn>).mockImplementationOnce(
+            () => new Promise((res) => { releaseBranches = (list) => res(list) })
+        )
+        const pending = useGitStore.getState().loadBranches()
+        ;(ipc.gitBootstrap as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: makeStatus(),
+            branches: boot
+        })
+        await useGitStore.getState().detect("/w")
+        expect(useGitStore.getState().branches).toEqual(boot)
+        releaseBranches(stale)
+        await pending
+        expect(useGitStore.getState().branches).toEqual(boot)
+    })
+
+    it("pending rerun uses full status when runOp coalesces onto a path-scoped fetch", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const pre = { ...makeStatus(), branch: "pre", unstaged: [{ path: "old.ts", origPath: null, status: "M" }] }
+        const stale = { ...pre, branch: "stale-path" }
+        const post = { ...makeStatus(), branch: "full-post", staged: [{ path: "old.ts", origPath: null, status: "M" }] }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: pre
+        })
+        let releaseOld: (status: GitStatus) => void = () => {}
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce((_root: string, pathspec?: string[]) => new Promise((res) => {
+                expect(pathspec).toEqual(["old.ts"])
+                releaseOld = (status) => res(status)
+            }))
+            .mockImplementation(async (_root: string, pathspec?: string[]) => {
+                expect(pathspec).toBeUndefined()
+                return post
+            })
+        void useGitStore.getState().refresh(["old.ts"])
+        await vi.advanceTimersByTimeAsync(300)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(1)
+
+        const opDone = useGitStore.getState().runOp("stage", async () => {})
+        await Promise.resolve()
+        await Promise.resolve()
+        releaseOld(stale)
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(useGitStore.getState().status?.branch).not.toBe("stale-path")
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(2)
+        expect(ipc.gitStatus).toHaveBeenLastCalledWith("/w", undefined)
+        expect(useGitStore.getState().status).toEqual(post)
+    })
+
+    it("pending path-scoped refreshes merge and dedupe; a full request dominates", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        let releaseFirst: () => void = () => {}
+        const seen: Array<string[] | undefined> = []
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce((_root: string, pathspec?: string[]) => new Promise((res) => {
+                seen.push(pathspec)
+                releaseFirst = () => res(makeStatus())
+            }))
+            .mockImplementation(async (_root: string, pathspec?: string[]) => {
+                seen.push(pathspec)
+                return makeStatus()
+            })
+        void useGitStore.getState().refresh(["hold.ts"])
+        await vi.advanceTimersByTimeAsync(300)
+        void useGitStore.getState().refresh(["a.ts"])
+        void useGitStore.getState().refresh(["b.ts", "a.ts"])
+        releaseFirst()
+        await Promise.resolve()
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(300)
+        expect(seen[0]).toEqual(["hold.ts"])
+        expect(seen[1]?.slice().sort()).toEqual(["a.ts", "b.ts"])
+
+        let releaseSecond: () => void = () => {}
+        seen.length = 0
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce((_root: string, pathspec?: string[]) => new Promise((res) => {
+                seen.push(pathspec)
+                releaseSecond = () => res(makeStatus())
+            }))
+            .mockImplementation(async (_root: string, pathspec?: string[]) => {
+                seen.push(pathspec)
+                return makeStatus()
+            })
+        void useGitStore.getState().refresh(["old.ts"])
+        await vi.advanceTimersByTimeAsync(300)
+        void useGitStore.getState().refresh(["a.ts"])
+        void useGitStore.getState().refresh()
+        releaseSecond()
+        await Promise.resolve()
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(300)
+        expect(seen[0]).toEqual(["old.ts"])
+        expect(seen[1]).toBeUndefined()
+    })
+
+    it("debounce-window coalescing widens path scope and does not narrow a full request", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        void useGitStore.getState().refresh(["a.ts"])
+        void useGitStore.getState().refresh(["b.ts"])
+        await vi.advanceTimersByTimeAsync(400)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(1)
+        expect((ipc.gitStatus as ReturnType<typeof vi.fn>).mock.calls[0][1]?.slice().sort()).toEqual(["a.ts", "b.ts"])
+
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockClear()
+        void useGitStore.getState().refresh(["c.ts"])
+        void useGitStore.getState().refresh()
+        void useGitStore.getState().refresh(["d.ts"])
+        await vi.advanceTimersByTimeAsync(400)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(1)
+        expect((ipc.gitStatus as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBeUndefined()
+    })
+
+    it("a quiet failure that becomes stale before checkRemote catch does not pause remote", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: makeStatus()
+        })
+        useGitStore.getState().setRemoteCheck({ mode: "autofetch", intervalSec: 60 })
+        let rejectQuiet: (error: Error) => void = () => {}
+        let releaseFn: () => void = () => {}
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockImplementationOnce(
+            () => new Promise((_res, rej) => { rejectQuiet = (error) => rej(error) })
+        )
+        const checkDone = useGitStore.getState().checkRemote()
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(ipc.gitFetch).toHaveBeenCalledWith("/w", true)
+        const opDone = useGitStore.getState().runOp("stage", () => new Promise<void>((resolve) => {
+            releaseFn = resolve
+        }))
+        rejectQuiet(new Error("quiet boom"))
+        releaseFn()
+        await Promise.resolve()
+        await Promise.resolve()
+        await checkDone
+        expect(useGitStore.getState().remotePaused).toBe(false)
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await opDone).toBe(true)
+        expect(useGitStore.getState().remotePaused).toBe(false)
+    })
+
+    it("clearGitSnapshots settles a scheduled refresh before debounce and isolates the next flight", async () => {
+        const { useGitStore, clearGitSnapshots } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const after = { ...makeStatus(), branch: "after-clear" }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: makeStatus()
+        })
+        const oldDone = useGitStore.getState().refresh()
+        let oldSettled = false
+        void oldDone.then(() => { oldSettled = true })
+        clearGitSnapshots()
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        await Promise.resolve()
+        expect(oldSettled).toBe(true)
+        expect(ipc.gitStatus).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(400)
+        expect(ipc.gitStatus).not.toHaveBeenCalled()
+
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce(after)
+        const newDone = useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(400)
+        await newDone
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(1)
+        expect(useGitStore.getState().status).toEqual(after)
+    })
+
+    it("clearGitSnapshots settles an active refresh; stale IPC cannot own the next flight", async () => {
+        const { useGitStore, clearGitSnapshots } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const pre = { ...makeStatus(), branch: "pre" }
+        const stale = { ...makeStatus(), branch: "stale-old" }
+        const next = { ...makeStatus(), branch: "new-flight" }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: pre
+        })
+        let releaseOld: (status: GitStatus) => void = () => {}
+        let releaseNew: (status: GitStatus) => void = () => {}
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce(() => new Promise((res) => {
+                releaseOld = (status) => res(status)
+            }))
+            .mockImplementationOnce(() => new Promise((res) => {
+                releaseNew = (status) => res(status)
+            }))
+        const oldDone = useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(1)
+        let oldSettled = false
+        void oldDone.then(() => { oldSettled = true })
+        clearGitSnapshots()
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: pre
+        })
+        await Promise.resolve()
+        expect(oldSettled).toBe(true)
+
+        const newDone = useGitStore.getState().refresh()
+        let newSettled = false
+        void newDone.then(() => { newSettled = true })
+        await vi.advanceTimersByTimeAsync(300)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(2)
+        expect(newSettled).toBe(false)
+
+        releaseOld(stale)
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(useGitStore.getState().status).toEqual(pre)
+        expect(useGitStore.getState().lastError).toBe(null)
+        expect(newSettled).toBe(false)
+
+        releaseNew(next)
+        await Promise.resolve()
+        await Promise.resolve()
+        await newDone
+        expect(newSettled).toBe(true)
+        expect(useGitStore.getState().status).toEqual(next)
+        expect(useGitStore.getState().lastError).toBe(null)
+    })
+
+    it("clearGitSnapshots isolates a late IPC rejection from the next flight", async () => {
+        const { useGitStore, clearGitSnapshots } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        const pre = { ...makeStatus(), branch: "pre-reject" }
+        const next = { ...makeStatus(), branch: "after-reject" }
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: pre
+        })
+        let rejectOld: (error: Error) => void = () => {}
+        let releaseNew: (status: GitStatus) => void = () => {}
+        ;(ipc.gitStatus as ReturnType<typeof vi.fn>)
+            .mockImplementationOnce(() => new Promise((_res, rej) => {
+                rejectOld = (error) => rej(error)
+            }))
+            .mockImplementationOnce(() => new Promise((res) => {
+                releaseNew = (status) => res(status)
+            }))
+        const oldDone = useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        clearGitSnapshots()
+        useGitStore.setState({
+            environment: { status: "ready", root: "/w", version: "2.50.1" },
+            status: pre
+        })
+        await oldDone
+        const newDone = useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        rejectOld(new Error("late reject"))
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(useGitStore.getState().status).toEqual(pre)
+        expect(useGitStore.getState().lastError).toBe(null)
+        releaseNew(next)
+        await Promise.resolve()
+        await Promise.resolve()
+        await newDone
+        expect(useGitStore.getState().status).toEqual(next)
+        expect(useGitStore.getState().lastError).toBe(null)
     })
 })

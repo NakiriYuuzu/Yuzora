@@ -1,8 +1,18 @@
 import { create } from "zustand"
 
+import { previewRevoke } from "../lib/ipc"
 import type { DevServerInfo } from "../lib/types"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "./workspaceStore"
 
 type ResponsiveFrame = "full" | "mobile"
+
+export type PreviewFrameMode = "static" | "dev-server"
+
+export interface StaticPreviewSession {
+    workspace: string
+    token: string
+    url: string
+}
 
 export interface PreviewNavState {
     url: string | null
@@ -58,6 +68,9 @@ interface PreviewState {
     settleNativeRequest: (token: number) => boolean
     reload: (workspace: string) => void
     setFrame: (workspace: string, frame: ResponsiveFrame) => void
+    staticPreview: StaticPreviewSession | null
+    openStaticPreview: (workspace: string, session: { token: string; url: string }) => boolean
+    revokeStaticPreview: () => void
     reset: () => void
 }
 
@@ -70,7 +83,8 @@ export const previewInitialState = {
     nativeNavigationSyncToken: 0,
     nativeSession: null as PreviewNativeSession | null,
     nativeRequestToken: 0,
-    nativeRequest: null as PreviewNativeRequest | null
+    nativeRequest: null as PreviewNativeRequest | null,
+    staticPreview: null as StaticPreviewSession | null
 }
 
 // P3: the navigate choke point now admits any http/https URL — external https is
@@ -89,6 +103,24 @@ function isAllowedPreviewUrl(rawUrl: string): boolean {
 // everything else (external https) goes to the child webview. 127.0.0.1 is what
 // the P3 static file server binds, so right-clicked HTML previews stay on the
 // iframe path too.
+export function previewFrameModeFor(
+    url: string | null,
+    session: StaticPreviewSession | null
+): PreviewFrameMode {
+    if (!url || !session) return "dev-server"
+    try {
+        const target = new URL(url)
+        const sessionUrl = new URL(session.url)
+        if (target.origin !== sessionUrl.origin) return "dev-server"
+        const prefix = `/${session.token}/`
+        return target.pathname === `/${session.token}` || target.pathname.startsWith(prefix)
+            ? "static"
+            : "dev-server"
+    } catch {
+        return "dev-server"
+    }
+}
+
 export function isLocalPreviewUrl(rawUrl: string | null): boolean {
     if (!rawUrl) return false
     try {
@@ -370,5 +402,50 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
             }
         }),
 
-    reset: () => set(previewInitialState)
+    openStaticPreview: (workspace, session) => {
+        const previous = get().staticPreview
+        set({
+            staticPreview: {
+                workspace,
+                token: session.token,
+                url: session.url
+            }
+        })
+        const opened = get().navigate(workspace, session.url)
+        if (previous && previous.token !== session.token) {
+            void previewRevoke(previous.token).catch(() => undefined)
+        }
+        return opened
+    },
+
+    revokeStaticPreview: () => {
+        const session = get().staticPreview
+        if (!session) return
+        set({ staticPreview: null })
+        void previewRevoke(session.token).catch(() => undefined)
+    },
+
+    reset: () => {
+        const session = get().staticPreview
+        set(previewInitialState)
+        if (session) {
+            void previewRevoke(session.token).catch(() => undefined)
+        }
+    }
 }))
+
+function previewTabIsOpen(groups: { tabs: { path: string; kind?: string }[] }[]): boolean {
+    return groups.some((group) =>
+        group.tabs.some((tab) => tab.kind === "preview" || tab.path === PREVIEW_TAB_PATH)
+    )
+}
+
+useWorkspaceStore.subscribe((state, previous) => {
+    if (state.workspacePath !== previous.workspacePath) {
+        usePreviewStore.getState().revokeStaticPreview()
+        return
+    }
+    if (previewTabIsOpen(previous.groups) && !previewTabIsOpen(state.groups)) {
+        usePreviewStore.getState().revokeStaticPreview()
+    }
+})

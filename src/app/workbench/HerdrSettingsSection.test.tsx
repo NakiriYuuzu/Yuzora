@@ -1,0 +1,52 @@
+import { render, screen, waitFor } from "@testing-library/react"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+const ipc = vi.hoisted(() => ({
+  get: vi.fn(),
+  set: vi.fn()
+}))
+
+vi.mock("@/lib/herdrIpc", () => ({
+  herdrBinarySourceGet: ipc.get,
+  herdrBinarySourceSet: ipc.set
+}))
+
+import { HerdrSettingsSection } from "./HerdrSettingsSection"
+
+beforeEach(() => {
+  ipc.get.mockReset().mockResolvedValue({
+    configured: "default",
+    active: "global",
+    resolved: "global",
+    available: true,
+    path: "/Users/me/.local/bin/herdr",
+    version: "0.8.0",
+    protocol: 19,
+    configuredAvailable: false,
+    configuredPath: null,
+    configuredReason: "This build does not include a managed Herdr binary",
+    configuredVersion: null,
+    configuredProtocol: null,
+    configurationError: null,
+    restartRequired: true
+  })
+  ipc.set.mockReset()
+})
+
+describe("HerdrSettingsSection", () => {
+  it("separates active and configured-target diagnostics", async () => {
+    render(<HerdrSettingsSection />)
+
+    const global = await screen.findByRole("button", { name: /Global|全域/ })
+    const managed = screen.getByRole("button", { name: /Default|預設/ })
+    expect(global).toHaveAttribute("aria-pressed", "false")
+    expect(managed).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByText("/Users/me/.local/bin/herdr")).toBeInTheDocument()
+    expect(screen.getByText("0.8.0")).toBeInTheDocument()
+    expect(screen.getByText("19")).toBeInTheDocument()
+    expect(
+      screen.getAllByText(/does not include a managed Herdr binary|尚未內建 managed Herdr binary/)
+    ).not.toHaveLength(0)
+    await waitFor(() => expect(ipc.get).toHaveBeenCalledTimes(1))
+  })
+})

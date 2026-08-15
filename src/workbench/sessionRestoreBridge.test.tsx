@@ -6,13 +6,18 @@ import { getDocument } from "@/editor/documentRegistry"
 import { allowWorkspaceAssetScope } from "@/lib/ipc"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { SessionRestoreBridge } from "@/workbench/SessionRestoreBridge"
+import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
 import {
+  WORKSPACE_SESSION_STORAGE_KEY,
   loadWorkspaceSession,
   loadWorkspaceSessionEntry,
   saveWorkspaceSession,
   type WorkspaceSession
 } from "@/state/workspaceSession"
-import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
+import {
+  PREVIEW_TAB_PATH,
+  useWorkspaceStore
+} from "@/state/workspaceStore"
 
 vi.mock("@/lib/workspaceActions", () => ({
   openWorkspaceAtPath: vi.fn(),
@@ -56,6 +61,7 @@ const activePath = () => useWorkspaceStore.getState().groups[0].activePath
 function mockOpenResolves() {
   vi.mocked(openWorkspaceAtPath).mockImplementation(async (path: string) => {
     useWorkspaceStore.getState().setWorkspace(path)
+    return true
   })
 }
 
@@ -122,10 +128,10 @@ describe("SessionRestoreBridge splash 退場", () => {
     let resolveOpen!: () => void
     vi.mocked(openWorkspaceAtPath).mockImplementation(
       (path: string) =>
-        new Promise<void>((resolve) => {
+        new Promise<boolean>((resolve) => {
           resolveOpen = () => {
             useWorkspaceStore.getState().setWorkspace(path)
-            resolve()
+            resolve(true)
           }
         })
     )
@@ -296,11 +302,11 @@ describe("SessionRestoreBridge ref gate", () => {
     let resolveOpen: (() => void) | undefined
     vi.mocked(openWorkspaceAtPath).mockImplementation(
       (path: string) =>
-        new Promise<void>((res) => {
+        new Promise<boolean>((res) => {
           // setWorkspace resets groups to empty and fires the save subscription
           // while the restore is still mid-flight (gate must be closed).
           useWorkspaceStore.getState().setWorkspace(path)
-          resolveOpen = () => res()
+          resolveOpen = () => res(true)
         })
     )
 
@@ -391,5 +397,92 @@ describe("SessionRestoreBridge ref gate", () => {
     // pseudo-path may be persisted.
     expect(loadWorkspaceSession()?.tabs).toEqual(["/ws/a.ts", "/ws/b.ts"])
     expect(loadWorkspaceSession()?.activePath).toBeNull()
+  })
+
+  it("persists reordered group-0 file tabs and still excludes Herdr pages", async () => {
+    saveWorkspaceSession(SESSION)
+    mockOpenResolves()
+
+    render(<SessionRestoreBridge />)
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
+
+    useWorkspaceStore.getState().openHerdrTerminalPage({
+      herdrSessionId: "default",
+      terminalId: "term-1",
+      title: "Herdr",
+      herdrTabId: "tab-1",
+      herdrWorkspaceId: "ws-1"
+    })
+    useWorkspaceStore.getState().reorderTab(0, "/ws/a.ts", 1)
+
+    await waitFor(() => expect(loadWorkspaceSession()?.tabs).toEqual(["/ws/b.ts", "/ws/a.ts"]))
+    expect(loadWorkspaceSession()?.tabs.some((path) => path.startsWith("yuzora://"))).toBe(false)
+  })
+
+  it("cold restore never opens a markdown preview synthetic tab", async () => {
+    const previewPath = markdownPreviewPath("/ws/notes.md")
+    localStorage.setItem(
+      WORKSPACE_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        lastWorkspacePath: "/ws",
+        workspaces: {
+          "/ws": {
+            tabs: ["/ws/a.ts", previewPath, "/ws/notes.md"],
+            activePath: previewPath
+          }
+        }
+      })
+    )
+    mockOpenResolves()
+
+    render(<SessionRestoreBridge />)
+
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/notes.md"]))
+    // Saved active was synthetic, so restore does not keep that path. The last
+    // real file opened during restore becomes active instead.
+    expect(activePath()).toBe("/ws/notes.md")
+    expect(activePath()).not.toBe(previewPath)
+    expect(getDocument).not.toHaveBeenCalledWith(previewPath)
+    expect(
+      useWorkspaceStore.getState().groups.some((group) =>
+        group.tabs.some((tab) => tab.kind === "markdown-preview" || tab.path === previewPath)
+      )
+    ).toBe(false)
+  })
+
+  it("save filters markdown preview tabs and a synthetic active path", async () => {
+    saveWorkspaceSession(SESSION)
+    mockOpenResolves()
+
+    render(<SessionRestoreBridge />)
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
+
+    const previewPath = markdownPreviewPath("/ws/notes.md")
+    useWorkspaceStore.setState({
+      workspacePath: "/ws",
+      activeGroupIndex: 0,
+      groups: [{
+        activePath: previewPath,
+        tabs: [
+          { path: "/ws/a.ts", name: "a.ts", dirty: false, externallyModified: false },
+          { path: "/ws/notes.md", name: "notes.md", dirty: false, externallyModified: false },
+          {
+            path: previewPath,
+            name: "Preview",
+            dirty: false,
+            externallyModified: false,
+            kind: "markdown-preview",
+            sourcePath: "/ws/notes.md"
+          }
+        ]
+      }]
+    })
+
+    await waitFor(() => {
+      expect(loadWorkspaceSession()?.tabs).toEqual(["/ws/a.ts", "/ws/notes.md"])
+    })
+    expect(loadWorkspaceSession()?.activePath).toBeNull()
+    expect(loadWorkspaceSession()?.tabs.some((path) => path.startsWith("yuzora://"))).toBe(false)
   })
 })

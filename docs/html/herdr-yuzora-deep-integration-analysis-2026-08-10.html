@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Herdr × Yuzora 深度綁定可行性分析</title>
+<style>
+:root {
+  --bg: #f7f4ed;
+  --paper: #fffdf8;
+  --paper-2: #f0eadf;
+  --ink: #172133;
+  --muted: #667085;
+  --line: #ddd5c8;
+  --accent: #315f8c;
+  --accent-2: #8b5e3c;
+  --good: #24724a;
+  --warn: #9a6700;
+  --bad: #b42318;
+  --info: #175cd3;
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+  --serif: Charter, "Iowan Old Style", "Noto Serif TC", Georgia, serif;
+  --shadow: 0 18px 50px rgba(35, 42, 55, 0.08);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.68;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+code { font-family: var(--mono); font-size: 0.9em; background: rgba(49,95,140,.08); padding: .08rem .3rem; border-radius: 4px; }
+.container { width: min(1120px, calc(100% - 32px)); margin: 28px auto 64px; }
+.hero {
+  background: linear-gradient(135deg, #172133 0%, #284868 62%, #315f8c 100%);
+  color: #fff;
+  border-radius: 20px;
+  padding: 38px 40px;
+  box-shadow: var(--shadow);
+  position: relative;
+  overflow: hidden;
+}
+.hero::after {
+  content: "";
+  position: absolute;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  right: -110px;
+  top: -150px;
+  border: 1px solid rgba(255,255,255,.16);
+  box-shadow: 0 0 0 42px rgba(255,255,255,.04), 0 0 0 86px rgba(255,255,255,.025);
+}
+.eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; opacity: .75; font-weight: 700; }
+h1, h2, h3 { font-family: var(--serif); line-height: 1.25; }
+h1 { font-size: clamp(34px, 5vw, 58px); margin: 8px 0 12px; font-weight: 600; letter-spacing: -.035em; }
+.hero p { max-width: 820px; margin: 0; color: rgba(255,255,255,.86); font-size: 16px; }
+.hero-meta { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 700; }
+.hero .pill { background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.16); }
+.grid { display: grid; gap: 16px; }
+.metrics { grid-template-columns: repeat(4, minmax(0,1fr)); margin: 18px 0; }
+.metric { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: 0 8px 24px rgba(35,42,55,.04); }
+.metric strong { display: block; font-family: var(--serif); font-size: 27px; line-height: 1.1; }
+.metric span { display: block; color: var(--muted); font-size: 12px; margin-top: 5px; }
+.good { color: var(--good); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+.card { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 24px 26px; margin-top: 16px; box-shadow: 0 8px 26px rgba(35,42,55,.035); }
+.card h2 { font-size: 28px; margin: 0 0 12px; letter-spacing: -.02em; }
+.card h3 { font-size: 20px; margin: 22px 0 8px; }
+.card p { margin: 8px 0; }
+.tldr { border-left: 5px solid var(--good); }
+.callout { border-radius: 10px; padding: 13px 15px; margin: 12px 0; border-left: 4px solid; }
+.callout.good { background: #e9f5ee; border-color: var(--good); color: #174b33; }
+.callout.warn { background: #fff4d6; border-color: var(--warn); color: #674600; }
+.callout.bad { background: #fdecea; border-color: var(--bad); color: #7a271a; }
+.callout.info { background: #eaf2ff; border-color: var(--info); color: #123d7a; }
+.toc { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.toc a { text-decoration: none; background: var(--paper); border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; font-size: 12px; font-weight: 700; color: var(--ink); }
+.diagram { display: grid; grid-template-columns: 1fr auto 1.25fr auto 1fr; align-items: stretch; gap: 10px; margin: 18px 0; }
+.node { border: 1px solid var(--line); background: var(--paper-2); border-radius: 12px; padding: 16px; }
+.node strong { display: block; margin-bottom: 6px; }
+.node small { color: var(--muted); }
+.arrow { display: grid; place-items: center; color: var(--accent); font-size: 26px; }
+.owner-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+ul, ol { padding-left: 22px; }
+li { margin: 5px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th { text-align: left; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; padding: 10px 11px; border-bottom: 2px solid var(--line); }
+td { vertical-align: top; padding: 11px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+.status { white-space: nowrap; font-weight: 800; }
+.status.yes { color: var(--good); }
+.status.partial { color: var(--warn); }
+.status.no { color: var(--bad); }
+.timeline { display: grid; gap: 12px; margin-top: 14px; }
+.phase { display: grid; grid-template-columns: 92px 1fr; gap: 16px; border: 1px solid var(--line); background: var(--paper-2); border-radius: 12px; padding: 15px; }
+.phase-tag { font-family: var(--mono); font-size: 12px; font-weight: 800; color: var(--accent); }
+.phase strong { display: block; margin-bottom: 4px; }
+.risk { display: grid; grid-template-columns: 160px 1fr; gap: 16px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.risk:last-child { border-bottom: 0; }
+.risk > strong { font-size: 13px; }
+.source-list li { margin-bottom: 9px; }
+.evidence { font-family: var(--mono); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+footer { margin-top: 24px; color: var(--muted); font-size: 12px; text-align: center; }
+@media (max-width: 860px) {
+  .metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .diagram { grid-template-columns: 1fr; }
+  .arrow { transform: rotate(90deg); }
+  .owner-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .container { width: min(100% - 20px, 1120px); margin-top: 10px; }
+  .hero { padding: 28px 22px; border-radius: 14px; }
+  .metrics { grid-template-columns: 1fr; }
+  .card { padding: 20px; }
+  .phase, .risk { grid-template-columns: 1fr; gap: 5px; }
+  table { font-size: 12px; }
+}
+@media print {
+  body { background: white; }
+  .container { width: 100%; margin: 0; }
+  .hero, .card, .metric { box-shadow: none; }
+  .toc { display: none; }
+  a { color: inherit; }
+}
+</style>
+</head>
+<body>
+<main class="container">
+  <section class="card" style="border:2px solid var(--bad);background:#fff1ef;margin-top:0;margin-bottom:16px">
+    <h2 style="color:var(--bad)">此版本已被產品方向澄清取代</h2>
+    <p>本報告原先假設 Yuzora 仍是 IDE，且 AgentZone 的 ACP rich transcript 必須保留。使用者已於 2026-08-10 澄清：下一版 Yuzora 將轉型為 ADE，Herdr 的目標就是完全取代 AgentZone。因此本報告的「不取代 AgentZone」結論不再適用；請改讀 <a href="herdr-replaces-agentzone-ade-architecture-2026-08-10.html"><strong>Herdr 取代 AgentZone：ADE 架構重估</strong></a>。其餘 Herdr socket、terminal stream、protocol 與安全證據仍可沿用。</p>
+  </section>
+  <header class="hero">
+    <div class="eyebrow">Yuzora architecture study · Herdr 0.8.0</div>
+    <h1>Herdr 能否深度綁定 Yuzora？</h1>
+    <p>結論不是單純的「能／不能」，而是：<strong>可以深度整合成 Yuzora 的持久化 Terminal／TUI Agent runtime；不適合取代 Yuzora 現有 ACP AgentZone，也不應把 Herdr 直接嵌成 Rust library。</strong></p>
+    <div class="hero-meta">
+      <span class="pill">研究日期 2026-08-10</span>
+      <span class="pill">Installed Herdr 0.8.0 · protocol 19; analyzed source checkout · protocol 20</span>
+      <span class="pill">Apache-2.0</span>
+      <span class="pill">分析模式：官方原始碼＋官方文件＋Yuzora 本地程式碼</span>
+    </div>
+  </header>
+
+  <div class="grid metrics">
+    <div class="metric"><strong class="good">GO</strong><span>Sidecar／socket control-plane 整合</span></div>
+    <div class="metric"><strong class="good">高</strong><span>Terminal、Agent 狀態、Workspace/Pane 控制可行性</span></div>
+    <div class="metric"><strong class="warn">中高</strong><span>生產級整合成本與跨平台複雜度</span></div>
+    <div class="metric"><strong class="bad">NO-GO</strong><span>取代 ACP AgentZone／in-process library embedding</span></div>
+  </div>
+
+  <nav class="toc" aria-label="目錄">
+    <a href="#verdict">核心判斷</a>
+    <a href="#definition">何謂深度綁定</a>
+    <a href="#evidence">技術證據</a>
+    <a href="#fit">能力矩陣</a>
+    <a href="#conflicts">重疊與衝突</a>
+    <a href="#architecture">建議架構</a>
+    <a href="#roadmap">分階段路線</a>
+    <a href="#risks">風險</a>
+    <a href="#gates">Go / No-Go 門檻</a>
+    <a href="#sources">來源</a>
+  </nav>
+
+  <section id="verdict" class="card tldr">
+    <h2>核心判斷</h2>
+    <p><strong>Herdr 與 Yuzora 的產品能力高度互補，但執行模型不同。</strong>Herdr 強項是「server 擁有真實 PTY、跨 client detach 後持續執行、辨識 TUI coding agents、提供 workspace/tab/pane/agent socket API」；Yuzora 強項是「桌面 GUI、Editor/LSP/Git/DB/SSH/SFTP、結構化 ACP transcript、permission/elicitation、diff 與檔案 buffer 協調」。</p>
+    <div class="callout good"><strong>最值得做的深度綁定：</strong>讓 Herdr 成為 Yuzora 的 <em>persistent terminal and terminal-agent runtime</em>，由 Yuzora 提供 GUI 控制、狀態彙整、選定 pane 的 xterm 呈現，以及安全的 typed IPC。</div>
+    <div class="callout bad"><strong>不應做：</strong>把 Herdr 當成 Yuzora ACP session manager，或讓 Herdr 取代 AgentZone。Herdr 只看 terminal/pane lifecycle，沒有 ACP 的結構化訊息、tool call、permission、form elicitation、open-buffer edit 協調。</div>
+    <p><strong>一句話決策：</strong><span class="status yes">接受「雙 runtime、單工作台」</span>；拒絕「單一 runtime 全盤接管」。</p>
+  </section>
+
+  <section id="definition" class="card">
+    <h2>「深度綁定」應拆成三種層級</h2>
+    <table>
+      <thead><tr><th>層級</th><th>內容</th><th>判斷</th></tr></thead>
+      <tbody>
+        <tr><td><strong>A. UI Link</strong></td><td>顯示 Herdr 是否運行、列出 workspaces/agents、點擊後開啟 Herdr TUI。</td><td><span class="status yes">容易，但不算深</span></td></tr>
+        <tr><td><strong>B. Control-plane Binding</strong></td><td>Yuzora 維護 <code>session.snapshot</code> cache、訂閱事件、建立／聚焦／分割 pane、prompt/wait agent，並在 xterm 中 attach Herdr terminal stream。</td><td><span class="status yes">推薦目標</span></td></tr>
+        <tr><td><strong>C. Runtime Replacement</strong></td><td>Herdr 接管 Yuzora 現有 ACP sessions、Editor terminal、AgentZone transcript、Git/SSH/workspace 全部生命週期。</td><td><span class="status no">不推薦／局部不可行</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="evidence" class="card">
+    <h2>為何技術上能深度整合</h2>
+    <h3>1. Herdr 已提供真正的外部 client surface</h3>
+    <ul>
+      <li><code>session.snapshot</code> 一次回傳 version/protocol、workspace、tab、pane、layout、agent；外部 client 之後可用事件更新本地 cache。</li>
+      <li>Socket API 是 local Unix domain socket／Windows named pipe 上的 newline-delimited JSON，適合由 Tauri Rust backend 建立長連線。</li>
+      <li>事件包含 workspace/tab/pane/layout、agent detection/status、scroll、worktree lifecycle；不必靠輪詢畫面。</li>
+      <li>後續實作核對發現：本機已安裝 <code>herdr 0.8.0</code> 的 <code>herdr api schema --json</code> 回報 <code>protocol: 19</code>；本報告分析的較新 source checkout/schema 則是 <code>protocol: 20</code>。因此版本 gate 必須以實際選定 binary 的 schema/artifact 為權威，不能把 source checkout 的 protocol 值套到已安裝 binary。</li>
+    </ul>
+    <p class="evidence">Herdr: docs/.../socket-api.mdx:6-16, 36-46, 93-127, 637-678, 780-922；docs/next/api/herdr-api.schema.json</p>
+
+    <h3>2. Herdr 已提供第三方 GUI 可用的 Terminal stream bridge</h3>
+    <ul>
+      <li><code>herdr terminal session observe &lt;target&gt;</code> 以 NDJSON 輸出 base64 ANSI <code>terminal.frame</code>。</li>
+      <li><code>herdr terminal session control &lt;target&gt;</code> 除了輸出 frame，也接受 <code>terminal.input</code>、<code>terminal.resize</code>、<code>terminal.scroll</code>、<code>terminal.release</code>。</li>
+      <li>只有一個 writable controller；多個 observer 可並存。這恰好能對應 Yuzora「預設唯讀、使用者明確取得控制權」的安全 UX。</li>
+    </ul>
+    <p class="evidence">Herdr: docs/.../persistence-remote.mdx:103-152；src/client/mod.rs:930-1184；src/protocol/wire.rs:420-434</p>
+
+    <h3>3. Yuzora 已有可重用的 xterm 與 Bridge 架構</h3>
+    <ul>
+      <li><code>TerminalSession</code> 已封裝 xterm、resize、input、theme、IME、output queue；主要需要把後端從固定 <code>pty*</code> IPC 抽成 backend interface。</li>
+      <li><code>App.tsx</code> 已採 <code>*Bridge</code> headless sibling 模式；新增 <code>HerdrBridge</code> 與既有架構一致，不必污染 <code>AppShell</code>。</li>
+      <li>Workspace rail 已能按 workspace 彙整 ACP agent counts；可新增獨立的 Herdr status projection，而不必重寫 rail。</li>
+    </ul>
+    <p class="evidence">Yuzora: src/terminal/TerminalSession.tsx:70-340；src/App.tsx:1-31；src/workbench/AgentBridge.tsx:15-103；src/app/workbench/WorkspaceRail.tsx:45-177</p>
+
+    <h3>4. 安全邊界足以支撐本機整合</h3>
+    <ul>
+      <li>Herdr 的 Unix socket 檔案權限強制為 owner-only <code>0600</code>。</li>
+      <li>但 socket API 等同完整 terminal control；Yuzora 必須只在 Rust backend 暴露 allowlisted typed commands，不可讓 webview 任意透傳 method/params。</li>
+    </ul>
+    <p class="evidence">Herdr: src/server/socket_paths.rs:11-74；src/api/server.rs:27-135</p>
+  </section>
+
+  <section id="fit" class="card">
+    <h2>整合能力矩陣</h2>
+    <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>能力</th><th>可行性</th><th>建議</th><th>關鍵限制</th></tr></thead>
+      <tbody>
+        <tr><td>顯示 Herdr workspaces/tabs/panes/agents</td><td><span class="status yes">高</span></td><td><code>session.snapshot</code>＋events</td><td>需處理 protocol mismatch 與 reconnect resnapshot</td></tr>
+        <tr><td>在 Yuzora xterm 顯示 Herdr pane</td><td><span class="status yes">高</span></td><td>spawn <code>terminal session observe/control</code></td><td>frame sequence、full frame、controller ownership</td></tr>
+        <tr><td>建立／聚焦／分割／移動 pane</td><td><span class="status yes">高</span></td><td>Rust typed socket client</td><td>UI 不宜直接暴露全部 raw API</td></tr>
+        <tr><td>顯示 agent working/blocked/done/idle</td><td><span class="status yes">高</span></td><td>Herdr state projection 到 rail/nav</td><td>不可與 ACP tone 混成同一來源</td></tr>
+        <tr><td>從 Yuzora prompt/wait Herdr TUI agent</td><td><span class="status yes">高</span></td><td><code>agent.prompt</code>／<code>agent.wait</code></td><td><code>prompt --wait</code> 是 lifecycle wait，不是 turn ID 保證</td></tr>
+        <tr><td>Herdr persistent terminal 取代 Yuzora local PTY</td><td><span class="status partial">中高</span></td><td>先新增「Persistent Terminal」類型，不立即取代</td><td>Yuzora 關閉時只能 release connector，不可 close server pane</td></tr>
+        <tr><td>完整鏡像 Herdr 任意 BSP layout</td><td><span class="status partial">中</span></td><td>延後；先做 selected-pane viewer</td><td>Yuzora terminal store 目前最多兩個可見 pane</td></tr>
+        <tr><td>Herdr 接管現有 ACP AgentZone session</td><td><span class="status no">低／不合理</span></td><td>保持 ACP 獨立</td><td>Herdr lifecycle 綁 pane；ACP adapter 是 stdio RPC process，不是 TUI pane</td></tr>
+        <tr><td>把 Herdr transcript 轉成 ACP rich transcript</td><td><span class="status no">低</span></td><td>不要做螢幕 scraping 模擬 ACP</td><td>缺 tool/permission/diff/elicitation 的結構化語意</td></tr>
+        <tr><td>Herdr plugin 直接嵌 Yuzora native GUI</td><td><span class="status no">目前不行</span></td><td>Yuzora 主動連 socket</td><td>Herdr plugin v1 不含 native non-terminal UI</td></tr>
+        <tr><td>透明整合 remote Herdr</td><td><span class="status partial">中</span></td><td>後期專案；先提供「在 SSH terminal 開啟」</td><td>公開 remote flow 主要是整個 TUI attach，不是任意 remote socket client</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section id="conflicts" class="card">
+    <h2>真正的架構衝突</h2>
+    <h3>衝突一：Agent ownership</h3>
+    <p>Yuzora 的 ACP adapter 由 Rust <code>agent_process</code> 以 pipe stdio 管理；Yuzora 直接取得 structured ACP updates。Herdr 則必須擁有 PTY pane 才能辨識／控制 agent。兩者不能同時擁有同一個 process 的 stdio/PTY。</p>
+    <div class="callout bad"><strong>硬證據：</strong>Yuzora 內建 Pi adapter 以 <code>mode: "rpc"</code> 綁 Pi extensions；Herdr 0.8.0 明確修正「Pi RPC、JSON、print processes 不再宣告 TUI pane lifecycle」，本機 Herdr Pi extension 也以 <code>ctx.mode !== "tui"</code> 直接退出。因此，現有 ACP sessions 不會、也不應自動成為 Herdr panes。</div>
+    <p class="evidence">Yuzora: adapters/yuzora-pi-acp/src/session-host.ts:1019-1052；Herdr: CHANGELOG.md:58；~/.pi/agent/extensions/herdr-agent-state.ts:228-230</p>
+
+    <h3>衝突二：Terminal layout model</h3>
+    <p>Herdr 是 arbitrary BSP tree，可跨 tab/workspace 移動 live pane；Yuzora 的 <code>TerminalWorkspaceLayout</code> 是「tab list＋最多兩個 visible panes＋單一 split ratio」。若要求 1:1 呈現 Herdr layout，等於重寫 TerminalStore/Drawer。</p>
+    <p class="evidence">Yuzora: src/state/terminalStore.ts:23-75, 122-417；Herdr: docs/.../socket-api.mdx:130-401</p>
+
+    <h3>衝突三：App exit semantics</h3>
+    <p>Yuzora 現在在 app exit 對 local PTY、process、ACP adapter、agent terminal、SSH 等執行 <code>kill_all()</code>；Herdr 的價值正是 Yuzora 關閉後 process 仍存活。Herdr connector 必須是獨立 manager，只關閉 observer/controller 子行程與 socket，不可停止 Herdr server 或 pane。</p>
+    <p class="evidence">Yuzora: src-tauri/src/lib.rs:366-395；Herdr: docs/.../concepts.mdx:65-77；docs/.../session-state.mdx:19-29</p>
+
+    <h3>衝突四：Workspace identity</h3>
+    <p>Yuzora 以 canonical path 為核心且同時只開一個 active workspace；Herdr workspace 有自己的 ID、tab/pane tree，也可能是 worktree checkout。不可只用 label 對應。應建立 <code>HerdrWorkspaceBinding</code>，至少保存 Herdr session、workspace ID、identity cwd、checkout path 與 Yuzora canonical path。</p>
+  </section>
+
+  <section id="architecture" class="card">
+    <h2>建議架構：Herdr 作為 Sidecar Runtime，不進 React、不進 ACP</h2>
+    <div class="diagram" aria-label="建議架構圖">
+      <div class="node"><strong>Yuzora React</strong><small>Herdr view/store、rail badges、pane picker、xterm renderer；只呼叫 typed IPC。</small></div>
+      <div class="arrow">→</div>
+      <div class="node"><strong>Tauri Rust · HerdrService</strong><small>binary discovery、protocol gate、snapshot cache、event subscription、terminal connector process、reconnect、allowlist/security。</small></div>
+      <div class="arrow">→</div>
+      <div class="node"><strong>Herdr Server</strong><small>擁有 PTYs、workspaces/tabs/panes、TUI agents、persistence、remote/worktree runtime。</small></div>
+    </div>
+
+    <div class="grid owner-grid">
+      <div class="node">
+        <strong>Yuzora 保持擁有</strong>
+        <ul>
+          <li>ACP AgentZone sessions 與 structured transcript</li>
+          <li>Editor buffers、LSP、diff、permission/elicitation</li>
+          <li>Git panel 與 unsaved guard</li>
+          <li>Database、SSH/SFTP、Preview</li>
+          <li>使用者可見的整合設定與安全確認</li>
+        </ul>
+      </div>
+      <div class="node">
+        <strong>Herdr 擁有</strong>
+        <ul>
+          <li>Persistent PTY process lifetime</li>
+          <li>TUI agent detection 與 lifecycle rollup</li>
+          <li>Herdr workspace/tab/pane topology</li>
+          <li>Detach/reattach、native agent session restore</li>
+          <li>Herdr worktree provenance 與 optional remote runtime</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>建議新增的最小 domain objects</h3>
+    <ul>
+      <li><code>HerdrConnectionState</code>：binary path、client/server version、protocol、socket、status、last error。</li>
+      <li><code>HerdrRuntimeSnapshot</code>：以官方 snapshot 為來源，不把 Herdr 資料硬塞進現有 <code>agentStore</code>／<code>terminalStore</code>。</li>
+      <li><code>HerdrPaneAttachment</code>：target、mode(observer/controller)、seq、size、ownership conflict、connector process id。</li>
+      <li><code>HerdrWorkspaceBinding</code>：Herdr session/workspace ↔ canonical path/worktree checkout。</li>
+    </ul>
+    <div class="callout info"><strong>關鍵設計原則：</strong>先用 adapter/interface 讓 <code>TerminalSession</code> 支援 local PTY 與 Herdr stream 兩種 backend；不要一開始把兩個 store 合併成一個巨型通用模型。</div>
+
+    <h3>Binary distribution：第一版連外部 Herdr，成熟後才考慮 bundle</h3>
+    <p>建議 POC/P1 只連使用者明確選定、已安裝的 Herdr binary，顯示 absolute path、version、protocol 與 server compatibility。這能避免 Yuzora bundled Herdr 與使用者既有 Herdr server／session 發生版本或 socket namespace 衝突。若後續要求 one-click experience，再評估 bundled sidecar，並使用獨立 config/session namespace、固定相容版本、Apache NOTICE 與明確 updater ownership。</p>
+  </section>
+
+  <section id="roadmap" class="card">
+    <h2>建議分階段路線</h2>
+    <div class="timeline">
+      <div class="phase"><div class="phase-tag">POC · 3–5d</div><div><strong>證明可連、可看、可重連</strong>偵測指定 Herdr binary；做 version/protocol gate；抓一次 snapshot；訂閱 agent/pane/layout events；以 observer 在 xterm 顯示一個 pane。完全不做 mutation。</div></div>
+      <div class="phase"><div class="phase-tag">P1 · 1–2w</div><div><strong>第一個可用版本</strong>新增 Herdr nav/view、workspace/agent badges、selected-pane viewer、controller ownership UX、input/resize/release、斷線 resnapshot、connector shutdown。仍不碰 ACP。</div></div>
+      <div class="phase"><div class="phase-tag">P2 · 2–4w</div><div><strong>真正的 control plane</strong>create/focus/rename/split/move/close pane、agent prompt/wait/read、Persistent Terminal 建立流程、workspace canonical-path binding、明確 destructive confirmations。</div></div>
+      <div class="phase"><div class="phase-tag">P3 · later</div><div><strong>Worktree 與 remote</strong>先做 worktree list/open/create；remove 必須整合 Yuzora open-workspace/unsaved/git guards。Remote 初期只提供 Herdr TUI in SSH terminal；透明 remote API proxy 另立專案。</div></div>
+    </div>
+    <p><strong>估算解讀：</strong>若目標只是「在 Yuzora 看與控制現有 Herdr panes」，約 2–3 週可達 production beta；若要完整 workspace/worktree/remote 與跨平台 hardened，應預留 5–9 週，且 Windows named pipe、controller ownership、server upgrade/reconnect 會是主要成本。</p>
+  </section>
+
+  <section id="risks" class="card">
+    <h2>風險與緩解</h2>
+    <div class="risk"><strong class="bad">Protocol drift</strong><div>Raw API 雖有 schema，但 client/server protocol mismatch 會直接失敗。啟動先 <code>ping</code>，只接受測試過的 protocol 範圍；未知欄位忽略；升級／live handoff 後自動 reconnect＋resnapshot。</div></div>
+    <div class="risk"><strong class="bad">Controller takeover</strong><div>一個 terminal 只能有一個 writable controller。Yuzora 不可自動 <code>--takeover</code>；衝突時降級為 observer，顯示「取得控制權」按鈕與風險說明。</div></div>
+    <div class="risk"><strong class="bad">Secret exposure</strong><div>Terminal frames、pane reads、history 可能含 token、prompt、路徑。預設不持久化 frame／scrollback、不寫一般 log；diagnostic 僅記 metadata。Herdr 自己也因同一風險把 pane history 預設關閉。</div></div>
+    <div class="risk"><strong class="warn">Plugin trust</strong><div>Herdr plugin 是以使用者權限執行的普通程式碼，無 sandbox。Yuzora 初期不要提供 marketplace 一鍵安裝；若未來提供，必須顯示 source/ref/build/runtime commands 並要求明確確認。</div></div>
+    <div class="risk"><strong class="warn">Binary trust/update</strong><div>從 PATH 執行可能命中非預期 binary。設定中顯示 absolute path/version/channel；記住使用者批准的 binary identity。若 bundle sidecar，需處理 Apache NOTICE、多平台 artifacts、Herdr 自身 updater 與 Yuzora updater 的責任分界。</div></div>
+    <div class="risk"><strong class="warn">Duplicate workspace truth</strong><div>Yuzora 與 Herdr 都有 workspace/tab 概念。Herdr focus 不應無條件切 Yuzora workspace；只有已建立 canonical binding 且通過 unsaved guard 時才同步。</div></div>
+    <div class="risk"><strong class="warn">Worktree mutation</strong><div>Herdr 可直接建立／移除 Git worktree，而 Yuzora Git/Editor 可能仍使用該 checkout。第一版只讀；第二版 create/open；remove/force 最後做，且永不自動。</div></div>
+    <div class="risk"><strong class="warn">Source availability</strong><div>Apache-2.0 允許 fork/bundle，但「能 fork」不等於「應 fork」。直接依賴 Herdr internal Rust modules 會綁死其 app state、protocol、PTY/render internals，維護成本高於 sidecar。</div></div>
+  </section>
+
+  <section id="gates" class="card">
+    <h2>Go / No-Go 決策門檻</h2>
+    <h3>Go：符合以下條件就值得立項</h3>
+    <ol>
+      <li>接受 Herdr 與 ACP 是兩條並存 runtime，而不是把所有 agent 統一成一種 session。</li>
+      <li>第一階段聚焦 local Herdr；remote/worktree mutation 延後。</li>
+      <li>Rust backend 掌握 socket與process bridge，React 不直接連 filesystem socket。</li>
+      <li>預設 observer，不搶 controller；所有 destructive action 有明確確認。</li>
+      <li>Herdr server/panes 在 Yuzora 關閉時繼續存活，Yuzora 只 release 自己的 attachment。</li>
+    </ol>
+    <h3>No-Go：若需求是以下任一項，應停止或重寫目標</h3>
+    <ul>
+      <li>要求 Herdr 無損取代 AgentZone 的 ACP rich transcript 與 permission/edit integration。</li>
+      <li>要求同一個 ACP adapter process 同時由 Yuzora pipe stdio 與 Herdr PTY 擁有。</li>
+      <li>第一版就要求 1:1 複製 Herdr 全部 BSP layout、remote、plugin、worktree mutation。</li>
+      <li>要求把 Herdr 直接編譯成 Yuzora 內部 library 並跟隨其 private APIs。</li>
+    </ul>
+    <div class="callout good"><strong>最終建議：</strong>立項，但專案名稱應是「Herdr Persistent Runtime Integration」，不是「Herdr replaces Yuzora Agent/Terminal architecture」。</div>
+  </section>
+
+  <section id="sources" class="card">
+    <h2>主要來源與可追溯證據</h2>
+    <ul class="source-list">
+      <li><a href="https://github.com/herdrdev/herdr">Herdr official repository</a> — README、Apache-2.0、server/client/agent-native 定位。</li>
+      <li><a href="https://github.com/herdrdev/herdr/releases/tag/v0.8.0">Herdr v0.8.0 release notes</a> — Apache-2.0 relicensing、Pi RPC/JSON/print lifecycle 修正、restore/agent improvements。</li>
+      <li><a href="https://herdr.dev/docs/socket-api/">Herdr Socket API</a> — snapshot、methods、events、transport、protocol stability。</li>
+      <li><a href="https://herdr.dev/docs/persistence-remote/">Persistence and remote access</a> — direct attach、terminal session observe/control。</li>
+      <li><a href="https://herdr.dev/docs/integrations/">Integrations</a> — lifecycle authority、session identity、Pi integration。</li>
+      <li><a href="https://herdr.dev/docs/plugins/">Plugins</a> — executable plugin model、trust boundary、v1 UI 限制。</li>
+      <li><a href="https://herdr.dev/docs/session-state/">Session state and restore</a> — live persistence、cold restart、history、native restore、handoff。</li>
+      <li>Herdr source at commit <code>bbd7c2094a44fcbcc4a3a3aedef236c4d697d793</code>：<code>src/api/server.rs</code>、<code>src/server/socket_paths.rs</code>、<code>src/client/mod.rs</code>、<code>src/protocol/wire.rs</code>。</li>
+      <li>Yuzora local evidence：<code>src/workbench/AgentBridge.tsx</code>、<code>src/agent/acpConnection.ts</code>、<code>adapters/yuzora-pi-acp/src/session-host.ts</code>、<code>src/terminal/TerminalSession.tsx</code>、<code>src/state/terminalStore.ts</code>、<code>src-tauri/src/lib.rs</code>。</li>
+    </ul>
+    <div class="callout info"><strong>研究限制與勘誤：</strong>未控制 live Herdr session，也未執行 browser/E2E。後續實作確認本機 binary 與分析 source checkout 並非同一 protocol artifact：installed 0.8.0 為 protocol 19，source checkout 為 protocol 20；實作已改以 selected binary schema 為唯一版本權威。Codebase-memory MCP 因設定指向不存在的 Linux 路徑而無法啟動，因此本次依 protocol 要求先嘗試後，改用 <code>rg</code>/<code>read</code> 完成探索。</div>
+  </section>
+
+  <footer>Yuzora · Herdr 深度綁定可行性分析 · 2026-08-10 · 僅分析，未修改產品程式碼，未執行 Git 寫入。</footer>
+</main>
+</body>
+</html>

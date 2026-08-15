@@ -90,52 +90,19 @@ pub fn canonical_key(workspace: Option<&str>) -> Option<String> {
 
 // ---- binary route: asset URL / unpack / dest (pure) ----
 
-/// Official GitHub release download URL for a binary server on (os, arch), where
-/// os is `std::env::consts::OS` and arch is `std::env::consts::ARCH`. Err for an
-/// unsupported platform.
+pub fn binary_language_id(server: BinaryServer) -> (&'static str, &'static str) {
+    match server {
+        BinaryServer::RustAnalyzer => ("rust", "rust-analyzer"),
+        BinaryServer::Marksman => ("markdown", "marksman"),
+        BinaryServer::MarkdownOxide => ("markdown", "markdown-oxide"),
+    }
+}
+
+/// Official GitHub release download URL for a binary server on (os, arch), bound
+/// to the reviewed catalog. Missing identity / unsupported platform is Err.
 pub fn asset_url(server: BinaryServer, os: &str, arch: &str) -> Result<String, String> {
-    let unsupported = || format!("unsupported platform {os}/{arch} for {server:?}");
-    let url = match server {
-        BinaryServer::RustAnalyzer => {
-            let base = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29";
-            let asset = match (os, arch) {
-                ("macos", "aarch64") => "rust-analyzer-aarch64-apple-darwin.gz",
-                ("macos", "x86_64") => "rust-analyzer-x86_64-apple-darwin.gz",
-                ("linux", "aarch64") => "rust-analyzer-aarch64-unknown-linux-gnu.gz",
-                ("linux", "x86_64") => "rust-analyzer-x86_64-unknown-linux-gnu.gz",
-                ("windows", "aarch64") => "rust-analyzer-aarch64-pc-windows-msvc.zip",
-                ("windows", "x86_64") => "rust-analyzer-x86_64-pc-windows-msvc.zip",
-                _ => return Err(unsupported()),
-            };
-            format!("{base}/{asset}")
-        }
-        BinaryServer::Marksman => {
-            let base = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08";
-            // macOS ships a single universal binary (no arch split).
-            let asset = match (os, arch) {
-                ("macos", _) => "marksman-macos",
-                ("linux", "aarch64") => "marksman-linux-arm64",
-                ("linux", "x86_64") => "marksman-linux-x64",
-                ("windows", _) => "marksman.exe",
-                _ => return Err(unsupported()),
-            };
-            format!("{base}/{asset}")
-        }
-        BinaryServer::MarkdownOxide => {
-            let ver = "v0.25.12";
-            let base = "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12";
-            let asset = match (os, arch) {
-                ("macos", "aarch64") => format!("markdown-oxide-{ver}-aarch64-apple-darwin"),
-                ("macos", "x86_64") => format!("markdown-oxide-{ver}-x86_64-apple-darwin"),
-                ("linux", "aarch64") => format!("markdown-oxide-{ver}-aarch64-unknown-linux-gnu"),
-                ("linux", "x86_64") => format!("markdown-oxide-{ver}-x86_64-unknown-linux-gnu"),
-                ("windows", "x86_64") => format!("markdown-oxide-{ver}-x86_64-pc-windows-gnu.exe"),
-                _ => return Err(unsupported()),
-            };
-            format!("{base}/{asset}")
-        }
-    };
-    Ok(url)
+    let (language, server_id) = binary_language_id(server);
+    super::catalog::require_binary(language, server_id, os, arch).map(|identity| identity.url)
 }
 
 /// Post-download unpack step for a server on an os. rust-analyzer ships `.gz`
@@ -182,6 +149,7 @@ pub fn binary_temp(dest: &Path) -> PathBuf {
 
 // ---- integrity (pure) ----
 
+#[cfg(test)]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes)
@@ -190,6 +158,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+#[cfg(test)]
 pub fn sha256_matches(bytes: &[u8], expected_hex: &str) -> bool {
     sha256_hex(bytes).eq_ignore_ascii_case(expected_hex)
 }
@@ -209,28 +178,38 @@ pub fn quarantine_command(path: &str) -> (&'static str, Vec<String>) {
     )
 }
 
-pub fn npm_prefix(base: &Path) -> PathBuf {
-    base.join("npm")
+pub fn npm_prefix(base: &Path, server_id: &str) -> PathBuf {
+    base.join("npm").join(server_id)
 }
 
-pub fn npm_install_args(prefix: &Path, packages: &[&str]) -> Vec<String> {
-    let mut args = vec![
-        "install".to_string(),
+/// Immutable npm install: `npm ci` against a reviewed lockfile. Lifecycle
+/// scripts stay disabled unless the catalog records an explicit exception.
+pub fn npm_ci_args(prefix: &Path, allow_scripts: bool) -> Vec<String> {
+    let mut args = vec!["ci".to_string()];
+    if !allow_scripts {
+        args.push("--ignore-scripts".to_string());
+    }
+    args.extend([
+        "--no-audit".to_string(),
+        "--no-fund".to_string(),
+        "--omit=optional".to_string(),
         "--prefix".to_string(),
         prefix.to_string_lossy().into_owned(),
-    ];
-    args.extend(packages.iter().map(|p| p.to_string()));
+    ]);
     args
 }
 
-pub fn npm_bin_path(base: &Path, bin: &str, windows: bool) -> PathBuf {
-    let dir = npm_prefix(base).join("node_modules").join(".bin");
+pub fn npm_bin_in_prefix(prefix: &Path, bin: &str, windows: bool) -> PathBuf {
+    let dir = prefix.join("node_modules").join(".bin");
     if windows {
-        // npm shims land as `.cmd` on Windows (matches lsp_service which()).
         dir.join(format!("{bin}.cmd"))
     } else {
         dir.join(bin)
     }
+}
+
+pub fn npm_bin_path(base: &Path, server_id: &str, bin: &str, windows: bool) -> PathBuf {
+    npm_bin_in_prefix(&npm_prefix(base, server_id), bin, windows)
 }
 
 pub fn venv_dir(base: &Path) -> PathBuf {
@@ -245,8 +224,7 @@ pub fn venv_args(venv_dir: &Path) -> Vec<String> {
     ]
 }
 
-pub fn venv_bin_path(base: &Path, name: &str, windows: bool) -> PathBuf {
-    let venv = venv_dir(base);
+pub fn venv_binary(venv: &Path, name: &str, windows: bool) -> PathBuf {
     if windows {
         venv.join("Scripts").join(format!("{name}.exe"))
     } else {
@@ -254,8 +232,22 @@ pub fn venv_bin_path(base: &Path, name: &str, windows: bool) -> PathBuf {
     }
 }
 
-pub fn pip_install_args(package: &str) -> Vec<String> {
-    vec!["install".to_string(), package.to_string()]
+#[cfg(test)]
+pub fn venv_bin_path(base: &Path, name: &str, windows: bool) -> PathBuf {
+    venv_binary(&venv_dir(base), name, windows)
+}
+
+/// Immutable pip install: exact hashed requirements, binary wheels only.
+pub fn pip_install_args(requirements: &Path) -> Vec<String> {
+    vec![
+        "install".to_string(),
+        "--isolated".to_string(),
+        "--require-hashes".to_string(),
+        "--only-binary=:all:".to_string(),
+        "--disable-pip-version-check".to_string(),
+        "-r".to_string(),
+        requirements.to_string_lossy().into_owned(),
+    ]
 }
 
 // ---- resolved plan + missing-tool branches (pure) ----
@@ -565,19 +557,19 @@ mod tests {
     #[test]
     fn npm_prefix_and_bin_path_match_service_layout() {
         let base = PathBuf::from("/home/u/.yuzora/servers");
-        assert_eq!(npm_prefix(&base), base.join("npm"));
-        // Matches lsp_service::server_bin_dirs_from's npm landing spot.
+        assert_eq!(npm_prefix(&base, "vtsls"), base.join("npm").join("vtsls"));
         assert_eq!(
-            npm_bin_path(&base, "vtsls", false),
+            npm_bin_path(&base, "vtsls", "vtsls", false),
             base.join("npm")
+                .join("vtsls")
                 .join("node_modules")
                 .join(".bin")
                 .join("vtsls")
         );
-        // Windows npm shims land as `.cmd`.
         assert_eq!(
-            npm_bin_path(&base, "vtsls", true),
+            npm_bin_path(&base, "vtsls", "vtsls", true),
             base.join("npm")
+                .join("vtsls")
                 .join("node_modules")
                 .join(".bin")
                 .join("vtsls.cmd")
@@ -585,18 +577,28 @@ mod tests {
     }
 
     #[test]
-    fn npm_install_args_shape() {
-        let prefix = PathBuf::from("/home/u/.yuzora/servers/npm");
-        assert_eq!(
-            npm_install_args(&prefix, &["typescript-language-server", "typescript"]),
-            vec![
-                "install".to_string(),
-                "--prefix".to_string(),
-                prefix.to_string_lossy().into_owned(),
-                "typescript-language-server".to_string(),
-                "typescript".to_string(),
-            ]
+    fn npm_ci_args_are_immutable_and_disable_scripts_by_default() {
+        let prefix = PathBuf::from("/home/u/.yuzora/servers/npm/vtsls");
+        let args = npm_ci_args(&prefix, false);
+        assert_eq!(args[0], "ci");
+        assert!(args.contains(&"--ignore-scripts".to_string()));
+        assert!(args.contains(&"--no-audit".to_string()));
+        assert!(args.contains(&"--no-fund".to_string()));
+        assert!(args.contains(&"--omit=optional".to_string()));
+        assert!(args.contains(&"--prefix".to_string()));
+        assert!(args.contains(&prefix.to_string_lossy().into_owned()));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "install" || a.contains('@') || a.contains("latest")),
+            "npm argv must not float packages: {args:?}"
         );
+        let exception = npm_ci_args(&prefix, true);
+        assert!(
+            !exception.contains(&"--ignore-scripts".to_string()),
+            "cataloged script exception must be explicit"
+        );
+        assert!(exception.contains(&"--no-audit".to_string()));
     }
 
     // ---- venv + pip command + bin path (macOS bin vs Windows Scripts) ----
@@ -633,10 +635,20 @@ mod tests {
     }
 
     #[test]
-    fn pip_install_args_shape() {
-        assert_eq!(
-            pip_install_args("python-lsp-server"),
-            vec!["install".to_string(), "python-lsp-server".to_string()]
+    fn pip_install_args_are_immutable_and_require_hashes() {
+        let requirements = PathBuf::from("/tmp/pylsp-requirements.txt");
+        let args = pip_install_args(&requirements);
+        assert_eq!(args[0], "install");
+        assert!(args.contains(&"--require-hashes".to_string()));
+        assert!(args.contains(&"--only-binary=:all:".to_string()));
+        assert!(args.contains(&"--isolated".to_string()));
+        assert!(args.contains(&"-r".to_string()));
+        assert!(args.contains(&requirements.to_string_lossy().into_owned()));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "python-lsp-server" || a.contains("latest")),
+            "pip argv must not float packages: {args:?}"
         );
     }
 

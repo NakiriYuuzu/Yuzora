@@ -33,7 +33,7 @@ export function ProjectEditorPopover() {
         event.preventDefault()
         event.stopPropagation()
       }}
-      className="fixed left-[74px] top-[60px] z-[66] flex w-[250px] flex-col overflow-hidden rounded-[14px] border border-(--line-2) bg-(--frost-light) shadow-(--shadow-xl)"
+className="fixed left-[82px] top-[60px] z-[66] flex w-[250px] flex-col overflow-hidden rounded-[14px] border border-(--line-2) bg-(--frost-light) shadow-(--shadow-xl)"
       style={{
         backdropFilter: "var(--blur-frost)",
         WebkitBackdropFilter: "var(--blur-frost)",

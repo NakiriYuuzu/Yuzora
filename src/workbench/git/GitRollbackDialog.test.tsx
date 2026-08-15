@@ -30,7 +30,7 @@ const { gitRollbackPaths, gitStatus } = ipcMocks
 vi.mock("@/lib/ipc", () => ({
     gitRollbackPaths: ipcMocks.gitRollbackPaths,
     gitStatus: ipcMocks.gitStatus,
-    gitBranches: vi.fn(async () => ({ local: [], remote: [] })),
+    gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50.1" })),
     gitFetch: vi.fn(async () => undefined),
     gitRemoteProbe: vi.fn(async () => "no")
@@ -196,6 +196,41 @@ describe("GitRollbackDialog", () => {
         expect(gitRollbackPaths).not.toHaveBeenCalled()
     })
 
+    it("matches dirty Windows drive/verbatim descendant tabs for Git-relative untracked dirs", async () => {
+        const status = makeStatus({ untracked: ["scratch/"] })
+        const windowsRoot = String.raw`C:\Work\Repo`
+        refreshedStatus = status
+        useGitStore.setState({
+            environment: {
+                status: "ready",
+                root: windowsRoot,
+                version: "2.50.1"
+            },
+            status
+        })
+        useWorkspaceStore.setState({
+            workspacePath: windowsRoot,
+            groups: [{
+                tabs: [{
+                    path: String.raw`\\?\C:\Work\Repo\scratch\sub\dirty.ts`,
+                    name: "dirty.ts",
+                    dirty: true,
+                    externallyModified: false
+                }],
+                activePath: String.raw`\\?\C:\Work\Repo\scratch\sub\dirty.ts`
+            }]
+        })
+        render(<GitRollbackDialog />)
+        useGitRollbackDialogStore.getState().request({
+            repositoryRoot: windowsRoot,
+            targets: gitChangeRows(status)
+        })
+
+        expect(await screen.findByText("Save or close unsaved content first.")).toBeInTheDocument()
+        expect(screen.getByRole("button", { name: "Rollback" })).toBeDisabled()
+        expect(gitRollbackPaths).not.toHaveBeenCalled()
+    })
+
     it("closes clean descendant tabs if a backend reports a deleted directory path", async () => {
         const status = makeStatus({ untracked: ["scratch/"] })
         useWorkspaceStore.setState({
@@ -262,11 +297,41 @@ describe("GitRollbackDialog", () => {
             environment: { status: "ready", root: "/other", version: "2.50.1" },
             status
         }))
+        // Pre-action: Confirm must be disabled when live root ≠ pending root,
+        // even if the target snapshot still matches by path.
+        expect(confirm).toBeDisabled()
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "The selected changes are out of date. Open the menu again."
+        )
+
+        // Force the click through to prove the handler also rejects.
+        confirm.removeAttribute("disabled")
         fireEvent.click(confirm)
 
         expect(await screen.findByRole("alert")).toHaveTextContent(
             "The selected changes are out of date. Open the menu again."
         )
+        expect(gitRollbackPaths).not.toHaveBeenCalled()
+    })
+
+    it("disables Confirm when switching to another ready repo with an identical target snapshot", async () => {
+        const status = makeStatus({ untracked: ["same-name.ts"] })
+        openRollback(status)
+        const confirm = await screen.findByRole("button", { name: "Rollback" })
+        expect(confirm).toBeEnabled()
+
+        act(() => useGitStore.setState({
+            environment: { status: "ready", root: "/b", version: "2.50.1" },
+            status, // identical target snapshot under a different root
+            snapshotStale: false,
+            busy: null
+        }))
+
+        expect(confirm).toBeDisabled()
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "The selected changes are out of date. Open the menu again."
+        )
+        fireEvent.click(confirm)
         expect(gitRollbackPaths).not.toHaveBeenCalled()
     })
 

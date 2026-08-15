@@ -10,7 +10,8 @@ import {
 const wtFile = (path: string, staged = false): WorktreeDiffFile => ({
     path,
     status: "M",
-    staged
+    staged,
+    origPath: null
 })
 
 const cf = (path: string, over: Partial<CommitFileChange> = {}): CommitFileChange => ({
@@ -25,29 +26,33 @@ const cf = (path: string, over: Partial<CommitFileChange> = {}): CommitFileChang
 
 describe("diffModalStore", () => {
     beforeEach(() => {
-        // Reset to a known closed state (mode default unified).
+        // Reset to the product default; sticky-mode tests override it explicitly.
         useDiffModalStore.setState({
             open: false,
             source: null,
             activeIndex: 0,
-            mode: "unified"
+            mode: "split"
         })
     })
 
-    it("openWorktree opens with the file list and selects activePath", () => {
+    it("defaults to split mode", () => {
+        expect(useDiffModalStore.getState().mode).toBe("split")
+    })
+
+    it("openWorktree opens with the repository-bound file list and selects activePath", () => {
         useDiffModalStore
             .getState()
-            .openWorktree([wtFile("a.ts"), wtFile("b.ts"), wtFile("c.ts")], "b.ts")
+            .openWorktree("/w", [wtFile("a.ts"), wtFile("b.ts"), wtFile("c.ts")], "b.ts")
         const s = useDiffModalStore.getState()
         expect(s.open).toBe(true)
-        expect(s.source?.type).toBe("worktree")
+        expect(s.source).toMatchObject({ type: "worktree", repositoryRoot: "/w" })
         expect(s.activeIndex).toBe(1)
     })
 
     it("openWorktree defaults to index 0 when activePath is absent or unknown", () => {
-        useDiffModalStore.getState().openWorktree([wtFile("a.ts")], "missing.ts")
+        useDiffModalStore.getState().openWorktree("/w", [wtFile("a.ts")], "missing.ts")
         expect(useDiffModalStore.getState().activeIndex).toBe(0)
-        useDiffModalStore.getState().openWorktree([wtFile("a.ts")])
+        useDiffModalStore.getState().openWorktree("/w", [wtFile("a.ts")])
         expect(useDiffModalStore.getState().activeIndex).toBe(0)
     })
 
@@ -57,18 +62,19 @@ describe("diffModalStore", () => {
         // side so the sidebar CHANGED row lands on the unstaged one.
         const files = [wtFile("mm.ts", true), wtFile("mm.ts", false)]
         // string → first matching row (staged, index 0).
-        useDiffModalStore.getState().openWorktree(files, "mm.ts")
+        useDiffModalStore.getState().openWorktree("/w", files, "mm.ts")
         expect(useDiffModalStore.getState().activeIndex).toBe(0)
         // object pinning the unstaged side → index 1.
-        useDiffModalStore.getState().openWorktree(files, { path: "mm.ts", staged: false })
+        useDiffModalStore.getState().openWorktree("/w", files, { path: "mm.ts", staged: false })
         expect(useDiffModalStore.getState().activeIndex).toBe(1)
         // object pinning the staged side → index 0.
-        useDiffModalStore.getState().openWorktree(files, { path: "mm.ts", staged: true })
+        useDiffModalStore.getState().openWorktree("/w", files, { path: "mm.ts", staged: true })
         expect(useDiffModalStore.getState().activeIndex).toBe(0)
     })
 
     it("openCommit opens with the commit source and given activeIndex", () => {
         useDiffModalStore.getState().openCommit(
+            "/w",
             {
                 hash: "h".repeat(40),
                 shortHash: "hhhhhhh",
@@ -85,7 +91,7 @@ describe("diffModalStore", () => {
     })
 
     it("openCommit defaults activeIndex to 0", () => {
-        useDiffModalStore.getState().openCommit({
+        useDiffModalStore.getState().openCommit("/w", {
             hash: "h".repeat(40),
             shortHash: "hhhhhhh",
             subject: "s",
@@ -113,7 +119,7 @@ describe("diffModalStore", () => {
     })
 
     it("setActive updates the active index", () => {
-        useDiffModalStore.getState().openWorktree([wtFile("a.ts"), wtFile("b.ts")])
+        useDiffModalStore.getState().openWorktree("/w", [wtFile("a.ts"), wtFile("b.ts")])
         useDiffModalStore.getState().setActive(1)
         expect(useDiffModalStore.getState().activeIndex).toBe(1)
     })
@@ -125,7 +131,7 @@ describe("diffModalStore", () => {
 
     it("close clears source but keeps the mode preference sticky", () => {
         useDiffModalStore.getState().setMode("split")
-        useDiffModalStore.getState().openWorktree([wtFile("a.ts")])
+        useDiffModalStore.getState().openWorktree("/w", [wtFile("a.ts")])
         useDiffModalStore.getState().close()
         const s = useDiffModalStore.getState()
         expect(s.open).toBe(false)

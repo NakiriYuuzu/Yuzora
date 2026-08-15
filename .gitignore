@@ -9,6 +9,8 @@ docs/operation.md
 .playwright-mcp/
 .playwright-cli/
 .firecrawl/
+.pi/
+.pi-subagents/
 output/
 tsconfig.tsbuildinfo
 node_modules/

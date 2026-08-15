@@ -1,4 +1,3 @@
-import { confirm, message } from "@tauri-apps/plugin-dialog"
 import { revealItemInDir } from "@tauri-apps/plugin-opener"
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 import type { EditorView } from "@codemirror/view"
@@ -14,11 +13,19 @@ import {
     type ContextMenuRunOutcome
 } from "@/app/workbench/contextMenuModel"
 import i18n from "@/lib/i18n"
-import { workspacePathBasename } from "@/lib/paths"
+import {
+    isSameOrDescendantPath,
+    nativePathJoin,
+    rebasePath,
+    relativePathWithin,
+    workspacePathBasename,
+} from "@/lib/paths"
 import { dropDocument, renameDocument } from "../editor/documentRegistry"
 import { getView, getViewEntry, type RegisteredEditorView } from "../editor/viewRegistry"
 import { logUserAction } from "@/features/logs/userAction"
 import { showActionError } from "@/lib/actionFeedback"
+import { requestAppConfirmation, showAppMessage } from "@/state/appDialogStore"
+import { requestTextInputDialog } from "@/state/textInputDialogStore"
 import {
     fsCreateDir,
     fsCreateFile,
@@ -27,9 +34,10 @@ import {
     gitFetch,
     gitPull,
     gitPush,
-    previewServe
+    previewCreate,
+    previewRevoke
 } from "../lib/ipc"
-import { useMarkdownPreviewStore } from "../workbench/MarkdownPreview"
+import { isFileTab, isMarkdownPreviewTab } from "../lib/markdownPreviewTab"
 import { usePreviewStore } from "./previewStore"
 import { useSvgPreviewStore } from "./svgPreviewStore"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
@@ -116,9 +124,7 @@ function currentGitRepositoryMatches(repositoryRoot: string | null): boolean {
 function relativeToRepoRoot(activePath: string): string | null {
     const environment = useGitStore.getState().environment
     if (environment?.status !== "ready") return null
-    const root = environment.root
-    if (!activePath.startsWith(root + "/")) return null
-    return activePath.slice(root.length + 1)
+    return relativePathWithin(environment.root, activePath)
 }
 
 // The active editor file (as a repo-relative path) + flattened worktree file
@@ -146,10 +152,8 @@ export function worktreeCompareTarget(path: string): { files: WorktreeDiffFile[]
 // opened at a subdirectory). Falls back to the absolute path when it isn't
 // under the workspace (e.g. no workspace open yet).
 function relativeToWorkspace(absPath: string, workspacePath: string | null): string {
-    if (workspacePath && absPath.startsWith(workspacePath + "/")) {
-        return absPath.slice(workspacePath.length + 1)
-    }
-    return absPath
+    if (!workspacePath) return absPath
+    return relativePathWithin(workspacePath, absPath) ?? absPath
 }
 
 function selectedText(view: EditorView): string {
@@ -194,8 +198,7 @@ function editorTarget(
 // Cleanup that mirrors TabBar's onClose for a single non-preview tab (minus
 // the store-level closeTab mutation itself, which the caller does in bulk).
 function dropTabSideEffects(tab: TabInfo): void {
-    dropDocument(tab.path)
-    useMarkdownPreviewStore.getState().close(tab.path)
+    if (isFileTab(tab)) dropDocument(tab.path)
     // Reopening an SVG returns to the default-open preview state (its store
     // records explicit closes, so dropping the flag restores the default).
     useSvgPreviewStore.getState().forget(tab.path)
@@ -207,16 +210,25 @@ function dropTabSideEffects(tab: TabInfo): void {
 async function closeTabWithConfirm(groupIndex: number, path: string): Promise<ContextMenuCommandOutcome> {
     const group = useWorkspaceStore.getState().groups[groupIndex]
     const tab = group?.tabs.find((t) => t.path === path)
-    if (!tab) return CONTEXT_MENU_CANCELLED
+    if (!tab || tab.kind === "herdr-terminal") return CONTEXT_MENU_CANCELLED
     if (tab.kind === "preview") {
         useWorkspaceStore.getState().closePreviewTab()
         return CONTEXT_MENU_COMPLETED
     }
+    if (isMarkdownPreviewTab(tab)) {
+        useWorkspaceStore.getState().closeMarkdownPreviewTab(groupIndex, path)
+        return CONTEXT_MENU_COMPLETED
+    }
     if (tab.dirty) {
-        const ok = await confirm(i18n.t("contextMenu.confirm.closeDirtyTab", {
-            ns: "menus",
-            name: workspacePathBasename(tab.path)
-        }))
+        const ok = await requestAppConfirmation({
+            title: i18n.t("contextMenu.confirm.closeDirtyTitle", { ns: "menus" }),
+            description: i18n.t("contextMenu.confirm.closeDirtyTab", {
+                ns: "menus",
+                name: workspacePathBasename(tab.path)
+            }),
+            kind: "warning",
+            destructive: true
+        })
         if (!ok) return CONTEXT_MENU_CANCELLED
     }
     useWorkspaceStore.getState().closeTab(groupIndex, path)
@@ -230,15 +242,24 @@ async function closeTabWithConfirm(groupIndex: number, path: string): Promise<Co
 async function closeOtherTabsWithConfirm(groupIndex: number, keepPath: string): Promise<ContextMenuCommandOutcome> {
     const group = useWorkspaceStore.getState().groups[groupIndex]
     if (!group) return CONTEXT_MENU_CANCELLED
-    const toClose = group.tabs.filter((t) => t.path !== keepPath)
+    // Generic file-tab batch actions must never silently remove runtime-backed
+    // Herdr pages. Those require their explicit destructive Herdr close flow.
+    const toClose = group.tabs.filter(
+        (tab) => tab.path !== keepPath && tab.kind !== "herdr-terminal"
+    )
     if (toClose.length === 0) return CONTEXT_MENU_CANCELLED
-    if (toClose.some((t) => t.kind !== "preview" && t.dirty)) {
-        const ok = await confirm(i18n.t("contextMenu.confirm.closeDirtyBatch", { ns: "menus" }))
+    if (toClose.some((t) => isFileTab(t) && t.dirty)) {
+        const ok = await requestAppConfirmation({
+            title: i18n.t("contextMenu.confirm.closeDirtyTitle", { ns: "menus" }),
+            description: i18n.t("contextMenu.confirm.closeDirtyBatch", { ns: "menus" }),
+            kind: "warning",
+            destructive: true
+        })
         if (!ok) return CONTEXT_MENU_CANCELLED
     }
-    useWorkspaceStore.getState().closeOtherTabs(groupIndex, keepPath)
+    useWorkspaceStore.getState().closeTabsByPath(toClose.map((tab) => tab.path))
     for (const t of toClose) {
-        if (t.kind !== "preview") dropTabSideEffects(t)
+        if (isFileTab(t)) dropTabSideEffects(t)
     }
     return CONTEXT_MENU_COMPLETED
 }
@@ -246,37 +267,46 @@ async function closeOtherTabsWithConfirm(groupIndex: number, keepPath: string): 
 async function closeAllTabsWithConfirm(groupIndex: number): Promise<ContextMenuCommandOutcome> {
     const group = useWorkspaceStore.getState().groups[groupIndex]
     if (!group || group.tabs.length === 0) return CONTEXT_MENU_CANCELLED
-    if (group.tabs.some((t) => t.kind !== "preview" && t.dirty)) {
-        const ok = await confirm(i18n.t("contextMenu.confirm.closeDirtyBatch", { ns: "menus" }))
+    const tabs = group.tabs.filter((tab) => tab.kind !== "herdr-terminal")
+    if (tabs.length === 0) return CONTEXT_MENU_CANCELLED
+    if (tabs.some((t) => isFileTab(t) && t.dirty)) {
+        const ok = await requestAppConfirmation({
+            title: i18n.t("contextMenu.confirm.closeDirtyTitle", { ns: "menus" }),
+            description: i18n.t("contextMenu.confirm.closeDirtyBatch", { ns: "menus" }),
+            kind: "warning",
+            destructive: true
+        })
         if (!ok) return CONTEXT_MENU_CANCELLED
     }
-    const tabs = group.tabs
-    useWorkspaceStore.getState().closeAllTabs(groupIndex)
+    useWorkspaceStore.getState().closeTabsByPath(tabs.map((tab) => tab.path))
     for (const t of tabs) {
-        if (t.kind !== "preview") dropTabSideEffects(t)
+        if (isFileTab(t)) dropTabSideEffects(t)
     }
     return CONTEXT_MENU_COMPLETED
 }
 
 // --- explorer/file: filesystem operations (PROB-5 後波) ---
-// Name input reuses the imperative window.prompt (mirroring this module's
-// imperative confirm() usage) — the repo has no in-app text-input dialog
-// primitive. Every op validates the workspace boundary in Rust; failures are
+// Every op validates the workspace boundary in Rust; failures are
 // surfaced through a dialog message rather than swallowed. On success we run a
 // precise file-tree invalidation (#59 T4b: re-list only the affected cached
 // dirs; it also bumps treeRevision for mention-index consumers — FileTree
 // doesn't subscribe to the fs watcher for its own ops).
 function joinName(dir: string, name: string): string {
-    return `${dir.replace(/\/+$/, "")}/${name}`
+    return nativePathJoin(dir, name)
 }
 
 async function createEntry(kind: "file" | "folder", workspace: string): Promise<ContextMenuCommandOutcome> {
     const ws = useWorkspaceStore.getState()
     if (ws.workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
-    const name = window.prompt(i18n.t(
+    const prompt = i18n.t(
         kind === "file" ? "contextMenu.prompt.newFile" : "contextMenu.prompt.newFolder",
         { ns: "menus" }
-    ))?.trim()
+    )
+    const name = await requestTextInputDialog({
+        title: prompt,
+        label: i18n.t("textInputDialog.nameLabel", { ns: "menus" }),
+        confirmLabel: i18n.t("textInputDialog.create", { ns: "menus" })
+    })
     if (!name) return CONTEXT_MENU_CANCELLED
     const target = joinName(workspace, name)
     try {
@@ -290,8 +320,9 @@ async function createEntry(kind: "file" | "folder", workspace: string): Promise<
         }
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), {
+        await showAppMessage({
             title: i18n.t("contextMenu.actionErrorTitle.create", { ns: "menus" }),
+            description: String(e),
             kind: "error"
         })
         return CONTEXT_MENU_CANCELLED
@@ -305,8 +336,8 @@ function affectedTabPaths(target: string): string[] {
     const paths = new Set<string>()
     for (const g of useWorkspaceStore.getState().groups) {
         for (const t of g.tabs) {
-            if (t.kind === "preview") continue
-            if (t.path === target || t.path.startsWith(target + "/")) paths.add(t.path)
+            if (!isFileTab(t)) continue
+            if (isSameOrDescendantPath(target, t.path)) paths.add(t.path)
         }
     }
     return [...paths]
@@ -315,10 +346,12 @@ function affectedTabPaths(target: string): string[] {
 async function renameEntry(path: string, workspace: string): Promise<ContextMenuCommandOutcome> {
     if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
     const currentName = workspacePathBasename(path)
-    const name = window.prompt(
-        i18n.t("contextMenu.prompt.rename", { ns: "menus" }),
-        currentName
-    )?.trim()
+    const name = await requestTextInputDialog({
+        title: i18n.t("contextMenu.prompt.rename", { ns: "menus" }),
+        label: i18n.t("textInputDialog.nameLabel", { ns: "menus" }),
+        initialValue: currentName,
+        confirmLabel: i18n.t("textInputDialog.rename", { ns: "menus" })
+    })
     if (!name || name === currentName) return CONTEXT_MENU_CANCELLED
     const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
     const target = path.slice(0, slash + 1) + name
@@ -326,22 +359,18 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
         await fsRename(workspace, path, target)
         // Re-point every open tab + its editor state from the old path to the new
         // one, so a later save lands on the renamed file instead of recreating the
-        // old path (Finding 3). Move the registry entry (snapshotting the live
-        // buffer so unsaved edits survive) and the markdown-preview toggle BEFORE
-        // updateTabPath triggers the EditorPane remount at the new key.
-        const preview = useMarkdownPreviewStore.getState()
+        // old path (Finding 3). Move the document-registry entry (snapshotting the
+        // live buffer so unsaved edits survive) before updateTabPath remounts
+        // EditorPane. Linked markdown-preview tabs are store-owned adjacent-group
+        // tabs; updateTabPath rebases their sourcePath/identity in the same pass.
         const svgPreview = useSvgPreviewStore.getState()
         for (const oldPath of affectedTabPaths(path)) {
-            const newPath = oldPath === path ? target : target + oldPath.slice(path.length)
+            const newPath = rebasePath(path, target, oldPath)
+            if (!newPath) continue
             renameDocument(oldPath, newPath, getView(oldPath)?.state.doc.toString())
-            if (preview.isOpen(oldPath)) {
-                preview.close(oldPath)
-                if (!preview.isOpen(newPath)) preview.toggle(newPath)
-            }
             // SVG previews default open, so the *closed* flag is what follows
-            // the rename (mirror image of the markdown migration above).
-            // Forget the old path unconditionally: after a double-toggle the
-            // store holds a false-valued flag (isOpen already true) that would
+            // the rename. Forget the old path unconditionally: after a double-toggle
+            // the store holds a false-valued flag (isOpen already true) that would
             // otherwise linger on the stale path until a workspace switch.
             const svgWasClosed = !svgPreview.isOpen(oldPath)
             svgPreview.forget(oldPath)
@@ -353,8 +382,9 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
         await useFileTreeStore.getState().invalidatePaths(workspace, [path, target])
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), {
+        await showAppMessage({
             title: i18n.t("contextMenu.actionErrorTitle.rename", { ns: "menus" }),
+            description: String(e),
             kind: "error"
         })
         return CONTEXT_MENU_CANCELLED
@@ -371,9 +401,11 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
         isDir ? "contextMenu.confirm.deleteFolder" : "contextMenu.confirm.deleteFile",
         { ns: "menus", name }
     )
-    const ok = await confirm(text, {
+    const ok = await requestAppConfirmation({
         title: i18n.t("contextMenu.confirm.deleteTitle", { ns: "menus" }),
-        kind: "warning"
+        description: text,
+        kind: "warning",
+        destructive: true
     })
     if (!ok) return CONTEXT_MENU_CANCELLED
     try {
@@ -386,44 +418,50 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
             useWorkspaceStore.getState().closeTabsByPath(affected)
             for (const p of affected) {
                 dropDocument(p)
-                useMarkdownPreviewStore.getState().close(p)
                 useSvgPreviewStore.getState().forget(p)
             }
         }
         await useFileTreeStore.getState().invalidatePaths(workspace, [path])
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), {
+        await showAppMessage({
             title: i18n.t("contextMenu.actionErrorTitle.delete", { ns: "menus" }),
+            description: String(e),
             kind: "error"
         })
         return CONTEXT_MENU_CANCELLED
     }
 }
 
-// cmOpenInBrowser (P3): serve the HTML file's own directory over a local http
-// origin (so relative css/js/module specifiers resolve) and open that URL in the
-// singleton preview tab. Same dir reuses one server/port on the Rust side.
+// cmOpenInBrowser (P3): create a revocable per-document static preview session
+// and open that isolated URL in the singleton preview tab.
 async function openInBrowser(path: string, workspace: string): Promise<ContextMenuCommandOutcome> {
     if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
-    // Split on either separator so Windows paths (C:\dir\file.html) serve the
-    // right directory and produce a valid URL basename.
-    const sep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
-    const dir = sep > 0 ? path.slice(0, sep) : workspace
-    const fileName = sep >= 0 ? path.slice(sep + 1) : path
     try {
-        const port = await previewServe(dir)
-        const url = `http://127.0.0.1:${port}/${encodeURIComponent(fileName)}`
+        const session = await previewCreate(path)
+        if (useWorkspaceStore.getState().workspacePath !== workspace) {
+            void previewRevoke(session.token).catch(() => undefined)
+            return CONTEXT_MENU_CANCELLED
+        }
         useWorkspaceStore.getState().openPreviewTab()
-        usePreviewStore.getState().navigate(workspace, url)
+        usePreviewStore.getState().openStaticPreview(workspace, session)
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
-        await message(String(e), {
+        await showAppMessage({
             title: i18n.t("contextMenu.actionErrorTitle.preview", { ns: "menus" }),
+            description: staticPreviewErrorMessage(e),
             kind: "error"
         })
         return CONTEXT_MENU_CANCELLED
     }
+}
+
+function staticPreviewErrorMessage(error: unknown): string {
+    const raw = String(error)
+    if (raw.includes("preview-graph-too-large")) {
+        return i18n.t("staticCreateTooLarge", { ns: "preview" })
+    }
+    return i18n.t("staticCreateFailed", { ns: "preview" })
 }
 
 // Target-specific legacy adapter for commands that still share existing domain
@@ -436,8 +474,10 @@ export async function executeLegacyContextMenuAction(
         if (!editorTarget(request)) return CONTEXT_MENU_CANCELLED
         const target = worktreeCompareTarget(request.path)
         if (!target) return CONTEXT_MENU_CANCELLED
+        const environment = useGitStore.getState().environment
+        if (environment?.status !== "ready") return CONTEXT_MENU_CANCELLED
         useUiStore.getState().setMode("git")
-        useDiffModalStore.getState().openWorktree(target.files, target.activePath)
+        useDiffModalStore.getState().openWorktree(environment.root, target.files, target.activePath)
         return CONTEXT_MENU_COMPLETED
     }
 
@@ -528,7 +568,7 @@ export async function executeLegacyContextMenuAction(
         if (!request.repositoryRoot) return CONTEXT_MENU_CANCELLED
         return (await useGitStore.getState().runOp(
             "fetch",
-            () => gitFetch(false, request.repositoryRoot!)
+            () => gitFetch(request.repositoryRoot!, false)
         ))
             ? CONTEXT_MENU_COMPLETED
             : CONTEXT_MENU_CANCELLED

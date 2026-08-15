@@ -1,0 +1,224 @@
+{
+  "catalogVersion": "1",
+  "reviewedAt": "2026-08-15T00:00:00Z",
+  "source": "Reviewed immutable identities. Digests come from GitHub release asset digest, npm registry integrity/lockfile, or PyPI wheel sha256 — never from installer-computed bytes.",
+  "servers": [
+    {
+      "language": "rust",
+      "serverId": "rust-analyzer",
+      "kind": "binary",
+      "version": "2026-06-29",
+      "bin": "rust-analyzer",
+      "platforms": {
+        "macos/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-apple-darwin.gz",
+          "sha256": "f50878b806fe5b2a792e3d93a7142f17c2eb6affc6dd158b7b35e1a45cfadef5",
+          "unpack": "gz",
+          "executable": "rust-analyzer"
+        },
+        "macos/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-apple-darwin.gz",
+          "sha256": "77111cbbed692d5b865cb9469c9b78250dd099353dabdbdfd7bfb4f567f7538e",
+          "unpack": "gz",
+          "executable": "rust-analyzer"
+        },
+        "linux/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-unknown-linux-gnu.gz",
+          "sha256": "609af2b89ad5f2eea88060b0907e0f684c65a9cfc05539a6270072265bb98994",
+          "unpack": "gz",
+          "executable": "rust-analyzer"
+        },
+        "linux/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-unknown-linux-gnu.gz",
+          "sha256": "e278cbae972df49cbcead8851aea47478478fc5ef686e2c6a35b44911e3926cf",
+          "unpack": "gz",
+          "executable": "rust-analyzer"
+        },
+        "windows/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-pc-windows-msvc.zip",
+          "sha256": "887fd4d17a90f45dfb55b78c9f2e75deb56e0074312992a2b9442a44bb2013aa",
+          "unpack": "zip",
+          "executable": "rust-analyzer.exe"
+        },
+        "windows/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-pc-windows-msvc.zip",
+          "sha256": "7313385a329988c987cff4e2a7bb859d70ae6c228d705095b1015b822ffb670d",
+          "unpack": "zip",
+          "executable": "rust-analyzer.exe"
+        }
+      }
+    },
+    {
+      "language": "markdown",
+      "serverId": "marksman",
+      "kind": "binary",
+      "version": "2026-02-08",
+      "bin": "marksman",
+      "platforms": {
+        "macos/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos",
+          "sha256": "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b",
+          "unpack": "bare",
+          "executable": "marksman"
+        },
+        "macos/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos",
+          "sha256": "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b",
+          "unpack": "bare",
+          "executable": "marksman"
+        },
+        "linux/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-arm64",
+          "sha256": "db8e124527f7f8048e3e6c91821b9c52ef173d92c01e47d221bf1337afd962fb",
+          "unpack": "bare",
+          "executable": "marksman"
+        },
+        "linux/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-x64",
+          "sha256": "be5098e8213219269c47fc0d916a66fa31ce0602ec967475c722260aabf26087",
+          "unpack": "bare",
+          "executable": "marksman"
+        },
+        "windows/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman.exe",
+          "sha256": "a6d05beb08ebe41b0a9f09c98a438540421436fa5531424c22e0bb1d22529705",
+          "unpack": "bare",
+          "executable": "marksman.exe"
+        },
+        "windows/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman.exe",
+          "sha256": "a6d05beb08ebe41b0a9f09c98a438540421436fa5531424c22e0bb1d22529705",
+          "unpack": "bare",
+          "executable": "marksman.exe"
+        }
+      }
+    },
+    {
+      "language": "markdown",
+      "serverId": "markdown-oxide",
+      "kind": "binary",
+      "version": "v0.25.12",
+      "bin": "markdown-oxide",
+      "platforms": {
+        "macos/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-aarch64-apple-darwin",
+          "sha256": "2a79532a969ecc73f911961774db3b5448b3373861d7f0f8ccaa2a7e4fd01e99",
+          "unpack": "bare",
+          "executable": "markdown-oxide"
+        },
+        "macos/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-x86_64-apple-darwin",
+          "sha256": "e1b329489d5932951948cdbcc6bb02713bd7f9544be5efcad4a7e975a3452221",
+          "unpack": "bare",
+          "executable": "markdown-oxide"
+        },
+        "linux/aarch64": {
+          "status": "supported",
+          "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-aarch64-unknown-linux-gnu",
+          "sha256": "bf3b9a7c9db54ccf3b0709f8b7cfb274dc95fcceb2350c0c18fae9750c54aed5",
+          "unpack": "bare",
+          "executable": "markdown-oxide"
+        },
+        "linux/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-x86_64-unknown-linux-gnu",
+          "sha256": "7d85204680efd2e5a2bb2d4bb139a71ac4c4df89ad87c4eb3d87783d1bc4f54e",
+          "unpack": "bare",
+          "executable": "markdown-oxide"
+        },
+        "windows/x86_64": {
+          "status": "supported",
+          "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-x86_64-pc-windows-gnu.exe",
+          "sha256": "1dcc307623fb509bfcc055478774ae1cd7e87d452ccdfad8183f8ee270cd711e",
+          "unpack": "bare",
+          "executable": "markdown-oxide.exe"
+        },
+        "windows/aarch64": {
+          "status": "unavailable",
+          "reason": "no official windows/aarch64 release asset"
+        }
+      }
+    },
+    {
+      "language": "typescript",
+      "serverId": "vtsls",
+      "kind": "npm",
+      "version": "0.3.0",
+      "bin": "vtsls",
+      "packages": [{ "name": "@vtsls/language-server", "version": "0.3.0" }],
+      "packageDir": "npm/vtsls",
+      "contentManifest": "npm/vtsls/content-manifest.json",
+      "launchTarget": "@vtsls/language-server/bin/vtsls.js",
+      "allowScripts": false,
+      "platforms": {
+        "*": { "status": "supported" }
+      }
+    },
+    {
+      "language": "typescript",
+      "serverId": "typescript-language-server",
+      "kind": "npm",
+      "version": "5.3.0",
+      "bin": "typescript-language-server",
+      "packages": [
+        { "name": "typescript-language-server", "version": "5.3.0" },
+        { "name": "typescript", "version": "5.9.3" }
+      ],
+      "packageDir": "npm/typescript-language-server",
+      "contentManifest": "npm/typescript-language-server/content-manifest.json",
+      "launchTarget": "typescript-language-server/lib/cli.mjs",
+      "allowScripts": false,
+      "platforms": {
+        "*": { "status": "supported" }
+      }
+    },
+    {
+      "language": "python",
+      "serverId": "pyright",
+      "kind": "npm",
+      "version": "1.1.413",
+      "bin": "pyright-langserver",
+      "packages": [{ "name": "pyright", "version": "1.1.413" }],
+      "packageDir": "npm/pyright",
+      "contentManifest": "npm/pyright/content-manifest.json",
+      "launchTarget": "pyright/langserver.index.js",
+      "allowScripts": false,
+      "platforms": {
+        "*": { "status": "supported" }
+      }
+    },
+    {
+      "language": "python",
+      "serverId": "pylsp",
+      "kind": "pip",
+      "version": "1.15.0",
+      "bin": "pylsp",
+      "package": "python-lsp-server",
+      "requirementsFile": "pip/pylsp/requirements.txt",
+      "contentManifest": "pip/pylsp/content-manifest.json",
+      "launchTarget": "pylsp",
+      "onlyBinary": true,
+      "allowSource": false,
+      "platforms": {
+        "*": {
+          "status": "unavailable",
+          "reason": "managed pylsp pip route unavailable: complete reviewed dependency content manifests are pending"
+        }
+      }
+    }
+  ]
+}

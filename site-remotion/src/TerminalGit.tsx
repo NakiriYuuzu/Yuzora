@@ -310,7 +310,7 @@ export const TerminalGit: React.FC<{ lang: Lang }> = ({ lang }) => {
         </svg>
         <span style={{ fontSize: 12, fontWeight: 600, color: t.termFg }}>{c.terminal}</span>
         <span style={{ fontFamily: fonts.mono, fontSize: 10, color: t.termFg2 }}>
-          ~/App/Tauri/yuzora
+          workspace/yuzora
         </span>
         <div style={{ flex: 1 }} />
         {["⊞", "⊟", "+", "×"].map((s, i) => (

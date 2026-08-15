@@ -3,6 +3,9 @@ name: gui-acceptance
 description: 對 yuzora app 執行實機 GUI 驗收／復驗——用 computer-use MCP 建立可控的 app、驅動 GUI 驗收 checklist、留存證據截圖並記錄結果。適用於 milestone 驗收、缺陷修復後復驗、watcher/tab/dialog 等 WebView 行為驗證（jsdom 測不到的部分）。
 ---
 
+> **Scope: macOS only.** This checklist uses `.app`, LaunchServices, Finder-style dialogs, AppleScript, and `screencapture`. Windows/Linux acceptance requires a separate platform-specific workflow.
+
+
 # yuzora GUI 驗收
 
 用 computer-use MCP 實機操作 yuzora，執行 milestone 驗收 checklist。全程程序於 2026-07-02 M1 驗收（round 1 手動＋round 2 computer-use，8/8 PASS）實測驗證。

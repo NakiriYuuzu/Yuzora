@@ -2,7 +2,9 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach } from "vitest";
 
 import i18n from "@/lib/i18n";
+import { useAppDialogStore } from "@/state/appDialogStore";
 import { previewInitialState, usePreviewStore } from "@/state/previewStore";
+import { useTextInputDialogStore } from "@/state/textInputDialogStore";
 import { terminalInitialState, useTerminalStore } from "@/state/terminalStore";
 import { uiInitialState, useUiStore } from "@/state/uiStore";
 
@@ -50,6 +52,17 @@ afterEach(() => document.documentElement.classList.remove("dark"));
 
 // zustand stores persist across the module graph, so mode / Git selection /
 // resolver state set in one test leaks into the next. Reset to initial state.
+afterEach(() => {
+  const pending = useAppDialogStore.getState().pending;
+  if (pending?.type === "confirm") pending.resolve(false);
+  if (pending?.type === "message") pending.resolve();
+  useAppDialogStore.setState({ pending: null });
+});
+afterEach(() => {
+  const pending = useTextInputDialogStore.getState().pending;
+  pending?.resolve(null);
+  useTextInputDialogStore.setState({ pending: null });
+});
 afterEach(() => useUiStore.setState(uiInitialState));
 afterEach(() => useTerminalStore.setState(terminalInitialState));
 afterEach(() => usePreviewStore.setState(previewInitialState));

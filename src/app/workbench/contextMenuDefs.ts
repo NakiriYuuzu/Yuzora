@@ -1,14 +1,24 @@
-import { writeText } from "@tauri-apps/plugin-clipboard-manager"
-
 import i18n from "@/lib/i18n"
 import { getViewEntry } from "@/editor/viewRegistry"
-import { canonicalPathKey, isAbsolutePath } from "@/lib/paths"
+import {
+  herdrPaneClose,
+  herdrPaneRename,
+  herdrPaneSplit,
+  herdrPaneSwap,
+  herdrPaneZoom,
+  herdrTabCreate,
+  herdrWorkspaceClose,
+  herdrWorkspaceRename
+} from "@/lib/herdrIpc"
+import { canonicalPathKey } from "@/lib/paths"
+import { requestAppConfirmation } from "@/state/appDialogStore"
+import { requestTextInputDialog } from "@/state/textInputDialogStore"
 import { gitStage, gitUnstage } from "@/lib/ipc"
 import { pickWorkspace } from "@/lib/workspaceActions"
-import { useAgentStore } from "@/state/agentStore"
 import { dbProfileUiErrorCode, useDbStore } from "@/state/dbStore"
 import { useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
+import { useHerdrStore } from "@/state/herdrStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useSshStore } from "@/state/sshStore"
@@ -45,11 +55,19 @@ import { executeLegacyContextMenuAction, worktreeCompareTarget } from "@/state/c
 import {
   exactGitChanges,
   gitChangeRows,
+  isConflictChange,
+  isStageableChange,
+  isUnstageableChange,
   uniquePaths,
   type GitChangeKey,
   type GitChangeRow,
 } from "@/workbench/git/gitChangeSelection"
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
+import {
+  closeHerdrTabIdempotently,
+  openCreatedHerdrTabAndRequestName,
+  renameHerdrTabWithDialog
+} from "@/lib/herdrTabActions"
 
 interface ResolvedContextMenuItem {
   type: "command"
@@ -76,9 +94,11 @@ const DISABLED_CONNECTING = "contextMenu.disabled.connecting"
 const DISABLED_AUTHENTICATION_PENDING = "contextMenu.disabled.authenticationPending"
 const DISABLED_DB_CONNECTING = "contextMenu.disabled.dbConnecting"
 const DISABLED_DB_ALREADY_OPEN = "contextMenu.disabled.dbAlreadyOpen"
-const DISABLED_NO_PENDING_RESPONSE = "contextMenu.disabled.noPendingResponse"
 const DISABLED_NO_BACK_HISTORY = "contextMenu.disabled.noBackHistory"
 const DISABLED_NO_FORWARD_HISTORY = "contextMenu.disabled.noForwardHistory"
+const DISABLED_HERDR_UNAVAILABLE = "contextMenu.disabled.herdrUnavailable"
+const DISABLED_HERDR_METHOD = "contextMenu.disabled.herdrMethodUnavailable"
+const DISABLED_HERDR_NO_FOCUS = "contextMenu.disabled.herdrNoFocusedPane"
 
 const available = (): ContextMenuAvailability => ({ visible: true, enabled: true })
 const hidden = (): ContextMenuAvailability => ({ visible: false, enabled: false })
@@ -161,7 +181,7 @@ function gitAvailability(request: ContextMenuRequestFor<"git"> | ContextMenuRequ
   if (state.environment?.status !== "ready" || state.environment.root !== request.repositoryRoot) {
     return disabled(DISABLED_NOT_REPOSITORY)
   }
-  if (state.busy) return disabled(DISABLED_GIT_BUSY)
+  if (state.busy || state.snapshotStale) return disabled(DISABLED_GIT_BUSY)
   return available()
 }
 
@@ -201,6 +221,51 @@ function previewUrlAvailability(
   return previewTargetHasUrl(request) ? available() : disabled(DISABLED_TARGET)
 }
 
+function herdrSessionRuntime(sessionName: string) {
+  const state = useHerdrStore.getState()
+  const session =
+    state.sessions.find((item) => item.name === sessionName) ??
+    (sessionName === "live"
+      ? state.sessions.find((item) => item.default) ?? state.sessions[0]
+      : null)
+  const resolvedName = session?.name ?? sessionName
+  const runtime = state.runtimesBySession[resolvedName]
+  const capabilities =
+    runtime?.capabilities ??
+    (state.selectedSessionName === resolvedName ? state.capabilities : null)
+  return { session, capabilities }
+}
+
+function herdrMethodAvailability(
+  sessionName: string,
+  flag:
+    | "workspaceRename"
+    | "workspaceClose"
+    | "tabCreate"
+    | "tabRename"
+    | "tabClose"
+    | "paneRename"
+    | "paneSplit"
+    | "paneZoom"
+    | "paneSwap"
+    | "paneClose",
+  method: string
+): ContextMenuAvailability {
+  const { session, capabilities: caps } = herdrSessionRuntime(sessionName)
+  if (!session?.running || !caps?.server.running) {
+    return disabled(DISABLED_HERDR_UNAVAILABLE)
+  }
+  const flagOk = caps.api[flag] === true
+  const methods = caps.api.methods ?? []
+  const methodOk = flagOk && (methods.length === 0 || methods.includes(method))
+  return methodOk ? available() : disabled(DISABLED_HERDR_METHOD)
+}
+
+async function afterHerdrMutation(sessionName: string): Promise<void> {
+  useHerdrStore.getState().bumpTopologyRevision()
+  await useHerdrStore.getState().refreshSnapshot(sessionName).catch(() => undefined)
+}
+
 function gitChangeKeys(request: ContextMenuRequestFor<"gitChange">): GitChangeKey[] {
   return request.selected.map((target) => ({ ...target }))
 }
@@ -213,28 +278,12 @@ function latestGitChangeRows(request: ContextMenuRequestFor<"gitChange">): GitCh
   return gitChangeRows(state.status)
 }
 
-function exactApplicableGitChanges(
-  request: ContextMenuRequestFor<"gitChange">,
-  applies: (row: GitChangeRow) => boolean
-): GitChangeRow[] {
-  const rows = latestGitChangeRows(request)
-  if (!rows) return []
-  return exactGitChanges(gitChangeKeys(request), rows).filter(applies)
-}
-
-function gitChangeAvailability(
-  request: ContextMenuRequestFor<"gitChange">,
-  applies: (row: GitChangeRow) => boolean,
-  requireAll = false
-): ContextMenuAvailability {
-  const rows = latestGitChangeRows(request)
-  if (!rows) return hidden()
-  const exact = exactGitChanges(gitChangeKeys(request), rows)
-  const applicable = exact.filter(applies)
-  if (applicable.length === 0 || (requireAll && exact.length !== request.selected.length)) {
-    return hidden()
+function gitChangeBusyAvailability(): ContextMenuAvailability {
+  const state = useGitStore.getState()
+  if (state.snapshotStale || state.environment?.status !== "ready") {
+    return disabled(DISABLED_GIT_BUSY)
   }
-  const busy = useGitStore.getState().busy
+  const busy = state.busy
   return busy
     ? disabled(String(i18n.t("contextMenu.disabled.gitBusyOperation", {
         ns: "menus",
@@ -243,24 +292,48 @@ function gitChangeAvailability(
     : available()
 }
 
+function gitChangeAvailability(
+  request: ContextMenuRequestFor<"gitChange">,
+  applies: (row: GitChangeKey) => boolean,
+  requireAll = false
+): ContextMenuAvailability {
+  const rows = latestGitChangeRows(request)
+  if (!rows) return hidden()
+  const captured = gitChangeKeys(request)
+  const capturedApplicable = captured.filter(applies)
+  if (capturedApplicable.length === 0) return hidden()
+  if (requireAll && capturedApplicable.length !== captured.length) return hidden()
+  if (exactGitChanges(requireAll ? captured : capturedApplicable, rows).length !== (requireAll ? captured.length : capturedApplicable.length)) {
+    return hidden()
+  }
+  return gitChangeBusyAvailability()
+}
+
 async function runGitChangeStageOperation(
   request: ContextMenuRequestFor<"gitChange">,
   staged: boolean
 ): Promise<"completed" | "cancelled"> {
-  const applicable = exactApplicableGitChanges(request, (row) => row.staged !== staged)
-  const paths = uniquePaths(applicable)
+  const applies = staged ? isStageableChange : isUnstageableChange
+  const capturedApplicable = gitChangeKeys(request).filter(applies)
+  const rows = latestGitChangeRows(request)
+  if (!rows || capturedApplicable.length === 0) return CONTEXT_MENU_CANCELLED
+  const exact = exactGitChanges(capturedApplicable, rows)
+  if (exact.length !== capturedApplicable.length) return CONTEXT_MENU_CANCELLED
+  const paths = uniquePaths(exact)
   if (paths.length === 0) return CONTEXT_MENU_CANCELLED
-  const ok = await useGitStore.getState().runOp(staged ? "stage" : "unstage", () =>
-    staged
+  const movedSides = Object.fromEntries(paths.map((path) => [path, staged]))
+  const ok = await useGitStore.getState().runOp(
+    staged ? "stage" : "unstage",
+    () => staged
       ? gitStage(request.repositoryRoot, paths)
-      : gitUnstage(request.repositoryRoot, paths)
+      : gitUnstage(request.repositoryRoot, paths),
+    {
+      afterMutationBeforeRefresh: () => {
+        useUiStore.getState().applyGitChangeMovedSides(movedSides)
+      }
+    }
   )
-  if (!ok) return CONTEXT_MENU_CANCELLED
-  useUiStore.getState().reconcileGitChangeSelection(
-    gitChangeRows(useGitStore.getState().status),
-    Object.fromEntries(paths.map((path) => [path, staged]))
-  )
-  return CONTEXT_MENU_COMPLETED
+  return ok ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
 }
 
 export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
@@ -406,7 +479,14 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
     "separator",
     item<"tab">("cmCopyRel", {
-      availability: (request) => tabExists(request) ? available() : disabled(DISABLED_TARGET),
+      availability: (request) => {
+        if (!tabExists(request)) return disabled(DISABLED_TARGET)
+        const tab = useWorkspaceStore.getState().groups[request.groupIndex]?.tabs.find(
+          (candidate) => candidate.path === request.path
+        )
+        if (tab?.kind === "preview" || tab?.kind === "markdown-preview") return hidden()
+        return available()
+      },
       danger: false,
       executor: legacy("cmCopyRel"),
     }),
@@ -416,7 +496,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
         const tab = useWorkspaceStore.getState().groups[request.groupIndex]?.tabs.find(
           (candidate) => candidate.path === request.path
         )
-        if (tab?.kind === "preview") return hidden()
+        if (tab?.kind === "preview" || tab?.kind === "markdown-preview") return hidden()
         return rightSplitAvailability(request.groupIndex)
       },
       danger: false,
@@ -485,69 +565,6 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       executor: closeTerminal,
     }),
   ],
-  agentSession: [
-    item<"agentSession">("cmContinueSession", {
-      availability: (request) => useAgentStore.getState().sessions.has(request.sessionId)
-        ? available() : disabled(DISABLED_TARGET),
-      danger: false,
-      executor: async (request) => {
-        if (!useAgentStore.getState().sessions.has(request.sessionId)) return CONTEXT_MENU_CANCELLED
-        await useAgentStore.getState().continueSession(request.sessionId)
-        return CONTEXT_MENU_COMPLETED
-      },
-    }),
-    item<"agentSession">("cmCancelResponse", {
-      availability: (request) => {
-        const session = useAgentStore.getState().sessions.get(request.sessionId)
-        if (!session) return disabled(DISABLED_TARGET)
-        return session.pendingTurn === true ? available() : disabled(DISABLED_NO_PENDING_RESPONSE)
-      },
-      danger: false,
-      executor: async (request) => {
-        if (!useAgentStore.getState().sessions.has(request.sessionId)) return CONTEXT_MENU_CANCELLED
-        return (await useAgentStore.getState().cancel(request.sessionId))
-          ? CONTEXT_MENU_COMPLETED
-          : CONTEXT_MENU_CANCELLED
-      },
-    }),
-    item<"agentSession">("cmRenameSession", {
-      availability: (request) => useAgentStore.getState().sessions.has(request.sessionId)
-        ? available() : disabled(DISABLED_TARGET),
-      danger: false,
-      executor: (request) => {
-        if (!useAgentStore.getState().sessions.has(request.sessionId)) return CONTEXT_MENU_CANCELLED
-        useAgentStore.getState().beginRenameSession(request.sessionId)
-        return CONTEXT_MENU_COMPLETED
-      },
-    }),
-    "separator",
-    item<"agentSession">("cmCopyWorkingDirectory", {
-      availability: (request) => isAbsolutePath(
-        useAgentStore.getState().sessions.get(request.sessionId)?.cwd
-      ) ? available() : hidden(),
-      danger: false,
-      executor: async (request) => {
-        const cwd = useAgentStore.getState().sessions.get(request.sessionId)?.cwd
-        if (!isAbsolutePath(cwd)) return CONTEXT_MENU_CANCELLED
-        await writeText(cwd)
-        return CONTEXT_MENU_COMPLETED
-      },
-    }),
-    "separator",
-    item<"agentSession">("cmRemoveSession", {
-      availability: (request) => useAgentStore.getState().sessions.has(request.sessionId)
-        ? available() : disabled(DISABLED_TARGET),
-      danger: true,
-      executor: async (request) => {
-        const confirmed = await useAgentStore.getState().requestRemoveSessionConfirm(request.sessionId)
-        if (!confirmed) return CONTEXT_MENU_CANCELLED
-        if (!useAgentStore.getState().sessions.has(request.sessionId)) return CONTEXT_MENU_CANCELLED
-        return (await useAgentStore.getState().removeSession(request.sessionId))
-          ? CONTEXT_MENU_COMPLETED
-          : CONTEXT_MENU_CANCELLED
-      },
-    }),
-  ],
   git: [
     item<"git">("cmCopyHash", {
       availability: (request) => gitTargetMatches(request) && useGitStore.getState().status?.headOid ? available() : hidden(),
@@ -566,24 +583,24 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
   ],
   gitChange: [
     item<"gitChange">("cmStageSelected", {
-      availability: (request) => gitChangeAvailability(request, (row) => !row.staged),
+      availability: (request) => gitChangeAvailability(request, isStageableChange),
       danger: false,
       executor: (request) => runGitChangeStageOperation(request, true),
     }),
     item<"gitChange">("cmUnstageSelected", {
-      availability: (request) => gitChangeAvailability(request, (row) => row.staged),
+      availability: (request) => gitChangeAvailability(request, isUnstageableChange),
       danger: false,
       executor: (request) => runGitChangeStageOperation(request, false),
     }),
     "separator",
     item<"gitChange">("cmRollbackSelected", {
-      availability: (request) => gitChangeAvailability(request, () => true, true),
+      availability: (request) => gitChangeAvailability(request, (row) => !isConflictChange(row), true),
       danger: true,
       executor: async (request) => {
         const rows = latestGitChangeRows(request)
         if (!rows) return CONTEXT_MENU_CANCELLED
         const targets = gitChangeKeys(request)
-        if (exactGitChanges(targets, rows).length !== targets.length) {
+        if (targets.some(isConflictChange) || exactGitChanges(targets, rows).length !== targets.length) {
           return CONTEXT_MENU_CANCELLED
         }
         const confirmed = await useGitRollbackDialogStore.getState().request({
@@ -733,6 +750,284 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       availability: (request) => previewTargetHasRunningServer(request) ? available() : hidden(),
       danger: true,
       executor: stopPreviewDevServer,
+    }),
+  ],
+  herdrSpace: [
+    item<"herdrSpace">("cmHerdrRenameSpace", {
+      availability: (request) =>
+        herdrMethodAvailability(request.sessionName, "workspaceRename", "workspace.rename"),
+      danger: false,
+      executor: async (request) => {
+        const label = await requestTextInputDialog({
+          title: i18n.t("contextMenu.prompt.rename", { ns: "menus" }),
+          label: i18n.t("textInputDialog.nameLabel", { ns: "menus" }),
+          initialValue: request.label ?? "",
+          confirmLabel: i18n.t("textInputDialog.rename", { ns: "menus" })
+        })
+        if (!label || label === (request.label ?? "")) return CONTEXT_MENU_CANCELLED
+        await herdrWorkspaceRename({
+          sessionName: request.sessionName,
+          workspaceId: request.workspaceId,
+          label
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrSpace">("cmHerdrNewTab", {
+      availability: (request) =>
+        herdrMethodAvailability(request.sessionName, "tabCreate", "tab.create"),
+      danger: false,
+      executor: async (request) => {
+        const created = await herdrTabCreate({
+          sessionName: request.sessionName,
+          workspaceId: request.workspaceId,
+          focus: true
+        })
+        await openCreatedHerdrTabAndRequestName({
+          sessionName: request.sessionName,
+          workspaceId: request.workspaceId,
+          terminalId: created.terminalId,
+          title: created.title,
+          paneId: created.paneId,
+          tabId: created.tabId
+        })
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrSpace">("cmHerdrCloseSpace", {
+      availability: (request) =>
+        herdrMethodAvailability(request.sessionName, "workspaceClose", "workspace.close"),
+      danger: true,
+      executor: async (request) => {
+        const ok = await requestAppConfirmation({
+          title: i18n.t("contextMenu.confirm.closeHerdrSpaceTitle", { ns: "menus" }),
+          description: i18n.t("contextMenu.confirm.closeHerdrSpace", {
+            ns: "menus",
+            name: request.label ?? request.workspaceId
+          }),
+          kind: "warning",
+          destructive: true
+        })
+        if (!ok) return CONTEXT_MENU_CANCELLED
+        await herdrWorkspaceClose({
+          sessionName: request.sessionName,
+          workspaceId: request.workspaceId
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+  ],
+  herdrTab: [
+    item<"herdrTab">("cmHerdrNewTab", {
+      availability: (request) =>
+        herdrMethodAvailability(request.sessionName, "tabCreate", "tab.create"),
+      danger: false,
+      executor: async (request) => {
+        const created = await herdrTabCreate({
+          sessionName: request.sessionName,
+          workspaceId: request.workspaceId ?? undefined,
+          focus: true
+        })
+        await openCreatedHerdrTabAndRequestName({
+          sessionName: request.sessionName,
+          workspaceId: request.workspaceId ?? null,
+          terminalId: created.terminalId,
+          title: created.title,
+          paneId: created.paneId,
+          tabId: created.tabId
+        })
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrTab">("cmHerdrRenameTab", {
+      availability: (request) =>
+        request.tabId
+          ? herdrMethodAvailability(request.sessionName, "tabRename", "tab.rename")
+          : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => {
+        if (!request.tabId) return CONTEXT_MENU_CANCELLED
+        const renamed = await renameHerdrTabWithDialog({
+          sessionName: request.sessionName,
+          tabId: request.tabId,
+          currentLabel: request.label ?? request.tabId,
+          pagePath: request.pagePath
+        })
+        return renamed ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
+      },
+    }),
+    item<"herdrTab">("cmHerdrCloseTab", {
+      availability: (request) =>
+        request.tabId
+          ? herdrMethodAvailability(request.sessionName, "tabClose", "tab.close")
+          : disabled(DISABLED_TARGET),
+      danger: true,
+      executor: async (request) => {
+        if (!request.tabId) return CONTEXT_MENU_CANCELLED
+        const ok = await requestAppConfirmation({
+          title: i18n.t("contextMenu.confirm.closeHerdrTabTitle", { ns: "menus" }),
+          description: i18n.t("contextMenu.confirm.closeHerdrTab", {
+            ns: "menus",
+            name: request.label ?? request.tabId
+          }),
+          kind: "warning",
+          destructive: true
+        })
+        if (!ok) return CONTEXT_MENU_CANCELLED
+        await closeHerdrTabIdempotently(request.sessionName, request.tabId)
+        if (request.pagePath) {
+          useWorkspaceStore.getState().closeTabsByPath([request.pagePath])
+        }
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+  ],
+  herdrPane: [
+    item<"herdrPane">("cmHerdrRenamePane", {
+      availability: (request) =>
+        request.paneId
+          ? herdrMethodAvailability(request.sessionName, "paneRename", "pane.rename")
+          : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => {
+        if (!request.paneId) return CONTEXT_MENU_CANCELLED
+        const label = await requestTextInputDialog({
+          title: i18n.t("contextMenu.prompt.rename", { ns: "menus" }),
+          label: i18n.t("textInputDialog.nameLabel", { ns: "menus" }),
+          initialValue: request.label ?? "",
+          confirmLabel: i18n.t("textInputDialog.rename", { ns: "menus" })
+        })
+        if (!label || label === (request.label ?? "")) return CONTEXT_MENU_CANCELLED
+        await herdrPaneRename({
+          sessionName: request.sessionName,
+          paneId: request.paneId,
+          label
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrPane">("cmHerdrClearPaneName", {
+      availability: (request) => {
+        if (!request.paneId || !request.label) return hidden()
+        return herdrMethodAvailability(request.sessionName, "paneRename", "pane.rename")
+      },
+      danger: false,
+      executor: async (request) => {
+        if (!request.paneId) return CONTEXT_MENU_CANCELLED
+        await herdrPaneRename({
+          sessionName: request.sessionName,
+          paneId: request.paneId,
+          label: null
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrPane">("cmHerdrSplitRight", {
+      availability: (request) =>
+        request.paneId
+          ? herdrMethodAvailability(request.sessionName, "paneSplit", "pane.split")
+          : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => {
+        if (!request.paneId) return CONTEXT_MENU_CANCELLED
+        await herdrPaneSplit({
+          sessionName: request.sessionName,
+          direction: "right",
+          targetPaneId: request.paneId,
+          workspaceId: request.workspaceId,
+          focus: true
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrPane">("cmHerdrSplitDown", {
+      availability: (request) =>
+        request.paneId
+          ? herdrMethodAvailability(request.sessionName, "paneSplit", "pane.split")
+          : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => {
+        if (!request.paneId) return CONTEXT_MENU_CANCELLED
+        await herdrPaneSplit({
+          sessionName: request.sessionName,
+          direction: "down",
+          targetPaneId: request.paneId,
+          workspaceId: request.workspaceId,
+          focus: true
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrPane">("cmHerdrZoomPane", {
+      availability: (request) =>
+        request.paneId
+          ? herdrMethodAvailability(request.sessionName, "paneZoom", "pane.zoom")
+          : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => {
+        if (!request.paneId) return CONTEXT_MENU_CANCELLED
+        await herdrPaneZoom({
+          sessionName: request.sessionName,
+          paneId: request.paneId,
+          mode: "toggle"
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrPane">("cmHerdrSwapPane", {
+      availability: (request) => {
+        if (!request.paneId) return disabled(DISABLED_TARGET)
+        if (!request.focusedPaneId || request.focusedPaneId === request.paneId) {
+          return disabled(DISABLED_HERDR_NO_FOCUS)
+        }
+        return herdrMethodAvailability(request.sessionName, "paneSwap", "pane.swap")
+      },
+      danger: false,
+      executor: async (request) => {
+        if (!request.paneId || !request.focusedPaneId) return CONTEXT_MENU_CANCELLED
+        if (request.focusedPaneId === request.paneId) return CONTEXT_MENU_CANCELLED
+        await herdrPaneSwap({
+          sessionName: request.sessionName,
+          sourcePaneId: request.paneId,
+          targetPaneId: request.focusedPaneId
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    item<"herdrPane">("cmHerdrClosePane", {
+      availability: (request) =>
+        request.paneId
+          ? herdrMethodAvailability(request.sessionName, "paneClose", "pane.close")
+          : disabled(DISABLED_TARGET),
+      danger: true,
+      executor: async (request) => {
+        if (!request.paneId) return CONTEXT_MENU_CANCELLED
+        const ok = await requestAppConfirmation({
+          title: i18n.t("contextMenu.confirm.closeHerdrPaneTitle", { ns: "menus" }),
+          description: i18n.t("contextMenu.confirm.closeHerdrPane", {
+            ns: "menus",
+            name: request.label ?? request.paneId
+          }),
+          kind: "warning",
+          destructive: true
+        })
+        if (!ok) return CONTEXT_MENU_CANCELLED
+        await herdrPaneClose({
+          sessionName: request.sessionName,
+          paneId: request.paneId
+        })
+        await afterHerdrMutation(request.sessionName)
+        return CONTEXT_MENU_COMPLETED
+      },
     }),
   ],
 }

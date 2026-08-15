@@ -1,5 +1,8 @@
-import { useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { useTranslation } from "react-i18next"
+
+import { Button } from "@/components/ui/button"
 
 import type { LogCommit, LogRef } from "@/lib/types"
 import { computeGraphLayout } from "@/workbench/git/graphLayout"
@@ -94,28 +97,28 @@ interface LayoutRow extends GraphRow {
 // §2 L778-797 — the SVG graph for the currently-windowed rows only. Only the
 // visible slice of nodes/segments is drawn inside the tall spacer at absolute
 // positions derived from each row's index.
-function GraphSvg({
+const GraphSvg = memo(function GraphSvg({
     rows,
     startIndex,
-    endIndex,
-    totalHeight
+    endIndex
 }: {
     rows: LayoutRow[]
     startIndex: number
     endIndex: number
-    totalHeight: number
 }) {
+    const windowHeight = Math.max(0, (endIndex - startIndex) * ROW_HEIGHT)
     return (
         <svg
             width={GRAPH_WIDTH}
-            height={totalHeight}
+            height={windowHeight}
             fill="none"
-            className="pointer-events-none absolute left-0 top-0"
+            data-testid="log-graph-svg"
+            className="pointer-events-none absolute left-0"
+            style={{ top: startIndex * ROW_HEIGHT }}
             aria-hidden="true"
         >
             {rows.slice(startIndex, endIndex).map((row, i) => {
-                const index = startIndex + i
-                const rowTop = index * ROW_HEIGHT
+                const rowTop = i * ROW_HEIGHT
                 const cy = rowTop + ROW_HEIGHT / 2
                 const nodeColor = LANE_COLORS[row.colorIdx % LANE_COLORS.length]
                 const hasRefs = row.refs > 0
@@ -165,9 +168,9 @@ function GraphSvg({
             })}
         </svg>
     )
-}
+})
 
-function CommitRow({
+const CommitRow = memo(function CommitRow({
     commit,
     top,
     selected,
@@ -176,7 +179,7 @@ function CommitRow({
     commit: LogCommit
     top: number
     selected: boolean
-    onSelect: () => void
+    onSelect: (hash: string) => void
 }) {
     const chips = refsToChips(commit.refs)
     return (
@@ -184,8 +187,14 @@ function CommitRow({
             role="button"
             tabIndex={0}
             aria-pressed={selected}
-            onClick={onSelect}
-            className="absolute left-0 flex h-[32px] w-full cursor-pointer items-stretch"
+            onClick={() => onSelect(commit.hash)}
+            onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault()
+                    onSelect(commit.hash)
+                }
+            }}
+            className="absolute left-0 flex h-[32px] w-full cursor-pointer items-stretch outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--yz-accent)"
             style={{ top }}
         >
             <span className="w-[72px] shrink-0" aria-hidden="true" />
@@ -219,7 +228,7 @@ function CommitRow({
             </span>
         </div>
     )
-}
+})
 
 /**
  * Virtualized graph + commit list (§2 L762-815). Owns its own scroll container
@@ -233,19 +242,35 @@ export function LogGraph({
     onSelect,
     hasMore,
     loadingMore,
-    onLoadMore
+    loadMoreError,
+    onLoadMore,
+    onRetryLoadMore
 }: {
     commits: LogCommit[]
     selectedHash: string | null
     onSelect: (hash: string) => void
     hasMore: boolean
     loadingMore: boolean
+    loadMoreError?: string | null
     onLoadMore: () => void
+    onRetryLoadMore?: () => void
 }) {
     const { t } = useTranslation("menus")
     const scrollRef = useRef<HTMLDivElement | null>(null)
-    const [scrollTop, setScrollTop] = useState(0)
-    const [viewportHeight, setViewportHeight] = useState(0)
+    const rafRef = useRef<number | null>(null)
+    const pendingScrollRef = useRef<{ scrollTop: number; viewportHeight: number } | null>(null)
+    const onSelectRef = useRef(onSelect)
+    useEffect(() => {
+        onSelectRef.current = onSelect
+    }, [onSelect])
+    const selectHash = useCallback((hash: string) => {
+        onSelectRef.current(hash)
+    }, [])
+    const [viewState, setViewState] = useState({
+        startIndex: 0,
+        endIndex: Math.ceil(600 / ROW_HEIGHT) + OVERSCAN,
+        viewportHeight: 0
+    })
 
     // Lane layout over the whole loaded list. Pure + memoised on the commit
     // identity list so it only recomputes when commits actually change.
@@ -265,20 +290,69 @@ export function LogGraph({
     const total = commits.length
     const totalHeight = total * ROW_HEIGHT
 
-    // Visible window: clamp [scrollTop, scrollTop+viewport] to row indices, pad
-    // with overscan. viewportHeight starts at 0 (pre-measure) so we fall back to
-    // rendering a reasonable first screen from the top.
-    const effectiveViewport = viewportHeight || 600
-    const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-    const endIndex = Math.min(
-        total,
-        Math.ceil((scrollTop + effectiveViewport) / ROW_HEIGHT) + OVERSCAN
-    )
+    function deriveWindow(scrollTop: number, viewportHeight: number, count: number) {
+        const effectiveViewport = viewportHeight || 600
+        return {
+            startIndex: Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN),
+            endIndex: Math.min(
+                count,
+                Math.ceil((scrollTop + effectiveViewport) / ROW_HEIGHT) + OVERSCAN
+            ),
+            viewportHeight
+        }
+    }
+
+    function commitWindow(scrollTop: number, viewportHeight: number, count = total) {
+        const next = deriveWindow(scrollTop, viewportHeight, count)
+        setViewState((prev) => (
+            prev.startIndex === next.startIndex
+            && prev.endIndex === next.endIndex
+            && prev.viewportHeight === next.viewportHeight
+                ? prev
+                : next
+        ))
+    }
+
+    useEffect(() => {
+        const el = scrollRef.current
+        if (!el) return
+        const schedule = () => {
+            pendingScrollRef.current = { scrollTop: el.scrollTop, viewportHeight: el.clientHeight }
+            if (rafRef.current == null) {
+                rafRef.current = requestAnimationFrame(() => {
+                    rafRef.current = null
+                    const pending = pendingScrollRef.current
+                    if (!pending) return
+                    commitWindow(pending.scrollTop, pending.viewportHeight, commits.length)
+                })
+            }
+        }
+        schedule()
+        const observer = new ResizeObserver(() => schedule())
+        observer.observe(el)
+        return () => {
+            observer.disconnect()
+            if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+            rafRef.current = null
+        }
+        // Re-bind when the loaded list length changes so append/reload remeasure.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [commits.length])
+
+    const startIndex = Math.min(viewState.startIndex, Math.max(0, total))
+    const endIndex = Math.min(total, Math.max(startIndex, viewState.endIndex))
 
     function onScroll(e: React.UIEvent<HTMLDivElement>) {
         const el = e.currentTarget
-        setScrollTop(el.scrollTop)
-        setViewportHeight(el.clientHeight)
+        pendingScrollRef.current = { scrollTop: el.scrollTop, viewportHeight: el.clientHeight }
+        if (rafRef.current == null) {
+            rafRef.current = requestAnimationFrame(() => {
+                rafRef.current = null
+                const pending = pendingScrollRef.current
+                if (!pending) return
+                commitWindow(pending.scrollTop, pending.viewportHeight)
+            })
+        }
         // Infinite scroll: near the bottom, pull the next page.
         if (
             hasMore &&
@@ -301,18 +375,20 @@ export function LogGraph({
                 </span>
             </div>
 
-            <div
-                ref={scrollRef}
-                data-testid="log-scroll"
-                onScroll={onScroll}
-                className="yzs min-h-0 flex-1 overflow-auto"
+            <ScrollArea
+                className="min-h-0 flex-1"
+                orientation="both"
+                viewportRef={scrollRef}
+                viewportProps={{
+                    "data-testid": "log-scroll",
+                    onScroll,
+                }}
             >
                 <div className="relative" style={{ height: totalHeight, minHeight: totalHeight }}>
                     <GraphSvg
                         rows={rows}
                         startIndex={startIndex}
                         endIndex={endIndex}
-                        totalHeight={totalHeight}
                     />
                     {commits.slice(startIndex, endIndex).map((commit, i) => {
                         const index = startIndex + i
@@ -322,12 +398,32 @@ export function LogGraph({
                                 commit={commit}
                                 top={index * ROW_HEIGHT}
                                 selected={commit.hash === selectedHash}
-                                onSelect={() => onSelect(commit.hash)}
+                                onSelect={selectHash}
                             />
                         )
                     })}
                 </div>
-            </div>
+            </ScrollArea>
+            {loadMoreError && (
+                <div
+                    data-testid="log-load-more-error"
+                    className="flex shrink-0 items-center gap-[8px] border-t border-(--line-1) px-[12px] py-[7px]"
+                >
+                    <span role="alert" className="min-w-0 flex-1 truncate text-[11px] text-(--ink-2)">
+                        {t("logTab.loadMoreFailed", { message: loadMoreError })}
+                    </span>
+                    {onRetryLoadMore && (
+                        <Button
+                            type="button"
+                            size="xs"
+                            onClick={onRetryLoadMore}
+                            className="shrink-0 rounded-[7px] border border-(--line-1) bg-(--yz-solid) px-[9px] py-[3px] text-[11px] font-semibold text-(--ink-1) shadow-(--shadow-xs) hover:bg-(--paper-1)"
+                        >
+                            {t("logTab.retry")}
+                        </Button>
+                    )}
+                </div>
+            )}
         </div>
     )
 }

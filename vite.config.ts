@@ -7,7 +7,7 @@ import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -19,13 +19,20 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
+    // WKWebView on macOS 26 repeatedly reloads the Tauri dev document when
+    // Vite's HMR client is present, so React never gets past the static splash.
+    // Scope the workaround to Tauri's dedicated mode: standalone `bun run dev`
+    // and TAURI_DEV_HOST keep their normal HMR behavior.
+    hmr:
+      mode === "tauri" && process.platform === "darwin" && !host
+        ? false
+        : host
+          ? {
+              protocol: "ws",
+              host,
+              port: 1421,
+            }
+          : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
@@ -34,7 +41,7 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_"],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+"@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   test: {
@@ -43,4 +50,4 @@ export default defineConfig({
     globals: true,
     exclude: ["**/node_modules/**", "**/.superpowers/**"],
   },
-});
+}));

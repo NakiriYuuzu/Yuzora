@@ -23,6 +23,12 @@ function DropdownMenuTrigger({
   )
 }
 
+function DropdownMenuGroup({
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Group>) {
+  return <DropdownMenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />
+}
+
 function DropdownMenuContent({
   className,
   align = "start",
@@ -131,6 +137,7 @@ function DropdownMenuLabel({
 export {
   DropdownMenu,
   DropdownMenuTrigger,
+  DropdownMenuGroup,
   DropdownMenuContent,
   DropdownMenuLabel,
   DropdownMenuItem,

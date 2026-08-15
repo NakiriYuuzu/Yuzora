@@ -1,19 +1,23 @@
 import { Channel, invoke } from "@tauri-apps/api/core"
 
 // Re-exported so feature modules that carry their own domain logic around a
-// command (agent/ACP protocol handlers, the log-event envelope builder) can
+// command (the log-event envelope builder) can
 // reach the IPC boundary through this module instead of importing the Tauri
 // core directly. `@tauri-apps/api/core` should be imported only here and in
 // `platform.ts` (which owns `isTauri`).
 export { invoke }
 
-import type { AgentId, AgentRuntimeAvailability } from "./agentPresets"
 import type {
     FileNode,
+    WorkspaceOpenResult,
     WorkspacePathIndexResult,
     OpenFileResult,
     GitEnvironment,
     GitBootstrapResult,
+    WorkspaceTrustStatus,
+    WorkspaceTrustChallenge,
+    WorkspaceExecutionChallenge,
+    TrustedWorkspace,
     GitStatus,
     BranchList,
     RemoteProbe,
@@ -41,6 +45,8 @@ import type {
     DbLegacyProfileImportRequest,
     DbProfileCreateRequest,
     DbProfileUpdateRequest,
+    DbPostgresTransportChallenge,
+    DbPostgresTransportChallengeRequest,
     DbProfileRecoveryRequest,
     DbSaveAndConnectOutcome,
     DbTestConnectionRequest,
@@ -56,7 +62,9 @@ import type {
     DbResultPage,
     SshAuthInput,
     SshConnectResult,
+    SftpDownloadDest,
     SftpListing,
+    SftpUploadSource,
     PerfSnapshot
 } from "./types"
 
@@ -87,12 +95,8 @@ export interface GitRollbackResult {
     deleted: string[]
 }
 
-export interface AgentLatestVersion {
-    agentId: AgentId
-    version: string
-}
 
-export function openWorkspace(path: string): Promise<string> {
+export function openWorkspace(path: string): Promise<WorkspaceOpenResult> {
     return invoke("open_workspace", { path })
 }
 
@@ -106,6 +110,10 @@ export function workspacePathIndex(workspace: string): Promise<WorkspacePathInde
 
 export function openFile(path: string): Promise<OpenFileResult> {
     return invoke("open_file", { path })
+}
+
+export function isOpenableFile(path: string): Promise<boolean> {
+    return invoke("is_openable_file", { path })
 }
 
 export function allowWorkspaceAssetScope(path: string): Promise<void> {
@@ -156,8 +164,35 @@ export function gitBootstrap(path: string): Promise<GitBootstrapResult> {
     return invoke("git_bootstrap", { path })
 }
 
-export function gitStatus(pathspec?: string[]): Promise<GitStatus> {
-    return invoke("git_status_cmd", { pathspec: pathspec ?? null })
+export function workspaceTrustStatus(path: string): Promise<WorkspaceTrustStatus> {
+    return invoke("workspace_trust_status", { path })
+}
+
+export function workspaceTrustList(): Promise<TrustedWorkspace[]> {
+    return invoke("workspace_trust_list")
+}
+
+export function workspaceTrustChallenge(path: string): Promise<WorkspaceTrustChallenge> {
+    return invoke("workspace_trust_challenge", { path })
+}
+
+export function workspaceTrustExecutionChallenge(
+    path: string,
+    command: string
+): Promise<WorkspaceExecutionChallenge> {
+    return invoke("workspace_trust_execution_challenge", { path, command })
+}
+
+export function workspaceTrustGrant(challengeId: string): Promise<WorkspaceTrustStatus> {
+    return invoke("workspace_trust_grant", { challengeId })
+}
+
+export function workspaceTrustRevoke(canonicalPath: string): Promise<TrustedWorkspace[]> {
+    return invoke("workspace_trust_revoke", { canonicalPath })
+}
+
+export function gitStatus(repositoryRoot: string, pathspec?: string[]): Promise<GitStatus> {
+    return invoke("git_status_cmd", { repositoryRoot, pathspec: pathspec ?? null })
 }
 
 export function gitStage(repositoryRoot: string, paths: string[]): Promise<void> {
@@ -184,55 +219,65 @@ export function gitRollbackPaths(
     return invoke("git_rollback_paths", { repositoryRoot, targets, deleteUntrackedOrAdded })
 }
 
-export function gitCommit(message: string): Promise<void> {
-    return invoke("git_commit_cmd", { message })
+export function gitCommit(repositoryRoot: string, message: string): Promise<void> {
+    return invoke("git_commit_cmd", { repositoryRoot, message })
 }
 
-export function gitBranches(): Promise<BranchList> {
-    return invoke("git_branches")
+export function gitBranches(repositoryRoot: string): Promise<BranchList> {
+    return invoke("git_branches", { repositoryRoot })
 }
 
-export function gitCreateBranch(name: string): Promise<void> {
-    return invoke("git_create_branch", { name })
+export function gitCreateBranch(
+    repositoryRoot: string,
+    name: string,
+    startPoint?: string
+): Promise<void> {
+    return invoke("git_create_branch", { repositoryRoot, name, startPoint: startPoint ?? null })
 }
 
-export function gitCheckout(name: string): Promise<void> {
-    return invoke("git_checkout", { name })
+export function gitCheckout(repositoryRoot: string, name: string): Promise<void> {
+    return invoke("git_checkout", { repositoryRoot, name })
 }
 
-export function gitCherryPick(hash: string): Promise<void> {
-    return invoke("git_cherry_pick", { hash })
+export function gitCheckoutDetached(repositoryRoot: string, rev: string): Promise<void> {
+    return invoke("git_checkout_detached", { repositoryRoot, rev })
 }
 
-export function gitFetch(background: boolean, repositoryRoot?: string): Promise<void> {
-    return invoke("git_fetch_cmd", {
-        background,
-        ...(repositoryRoot ? { repositoryRoot } : {})
-    })
+export function gitCherryPick(repositoryRoot: string, hash: string): Promise<void> {
+    return invoke("git_cherry_pick", { repositoryRoot, hash })
 }
 
-export function gitPull(repositoryRoot?: string): Promise<void> {
-    return invoke("git_pull_cmd", repositoryRoot ? { repositoryRoot } : undefined)
+export function gitFetch(repositoryRoot: string, background: boolean): Promise<void> {
+    return invoke("git_fetch_cmd", { repositoryRoot, background })
 }
 
-export function gitPush(repositoryRoot?: string): Promise<void> {
-    return invoke("git_push_cmd", repositoryRoot ? { repositoryRoot } : undefined)
+export function gitPull(repositoryRoot: string): Promise<void> {
+    return invoke("git_pull_cmd", { repositoryRoot })
 }
 
-export function gitRemoteProbe(): Promise<RemoteProbe> {
-    return invoke("git_remote_probe")
+export function gitPush(repositoryRoot: string): Promise<void> {
+    return invoke("git_push_cmd", { repositoryRoot })
 }
 
-export function gitDiffContent(path: string, staged: boolean): Promise<DiffContent> {
-    return invoke("git_diff_content", { path, staged })
+export function gitRemoteProbe(repositoryRoot: string): Promise<RemoteProbe> {
+    return invoke("git_remote_probe", { repositoryRoot })
 }
 
-export function gitConflictAbort(op: string): Promise<void> {
-    return invoke("git_conflict_abort", { op })
+export function gitDiffContent(
+    repositoryRoot: string,
+    path: string,
+    staged: boolean,
+    origPath?: string | null
+): Promise<DiffContent> {
+    return invoke("git_diff_content", { repositoryRoot, path, staged, origPath: origPath ?? null })
 }
 
-export function gitConflictContinue(op: string): Promise<void> {
-    return invoke("git_conflict_continue", { op })
+export function gitConflictAbort(repositoryRoot: string, op: string): Promise<void> {
+    return invoke("git_conflict_abort", { repositoryRoot, op })
+}
+
+export function gitConflictContinue(repositoryRoot: string, op: string): Promise<void> {
+    return invoke("git_conflict_continue", { repositoryRoot, op })
 }
 
 export function askpassRespond(id: number, response: string | null): Promise<void> {
@@ -240,7 +285,8 @@ export function askpassRespond(id: number, response: string | null): Promise<voi
 }
 
 export function gitLogPage(
-    skip: number,
+    repositoryRoot: string,
+    cursor: string | null,
     limit: number,
     query?: string | null,
     author?: string | null,
@@ -248,7 +294,8 @@ export function gitLogPage(
     until?: string | null
 ): Promise<LogPage> {
     return invoke("git_log_page", {
-        skip,
+        repositoryRoot,
+        cursor,
         limit,
         query: query ?? null,
         author: author ?? null,
@@ -257,16 +304,20 @@ export function gitLogPage(
     })
 }
 
-export function gitCommitDetail(hash: string): Promise<CommitDetail> {
-    return invoke("git_commit_detail", { hash })
+export function gitCommitDetail(repositoryRoot: string, hash: string): Promise<CommitDetail> {
+    return invoke("git_commit_detail", { repositoryRoot, hash })
 }
 
-export function gitLogAuthors(): Promise<AuthorEntry[]> {
-    return invoke("git_log_authors")
+export function gitLogAuthors(repositoryRoot: string): Promise<AuthorEntry[]> {
+    return invoke("git_log_authors", { repositoryRoot })
 }
 
-export function gitFileAtRev(rev: string, path: string): Promise<FileAtRevResult> {
-    return invoke("git_file_at_rev", { rev, path })
+export function gitFileAtRev(
+    repositoryRoot: string,
+    rev: string,
+    path: string
+): Promise<FileAtRevResult> {
+    return invoke("git_file_at_rev", { repositoryRoot, rev, path })
 }
 
 export function searchWorkspace(
@@ -340,11 +391,12 @@ export function devServerStart(
     workspace: string,
     command: string,
     port: number | null,
-    onOutput: (line: string) => void
+    onOutput: (line: string) => void,
+    challengeId: string
 ): Promise<DevServerInfo> {
     const ch = new Channel<string>()
     ch.onmessage = onOutput
-    return invoke("dev_server_start", { workspace, command, port, onOutput: ch })
+    return invoke("dev_server_start", { workspace, command, port, challengeId, onOutput: ch })
 }
 
 export function devServerStop(workspace: string): Promise<void> {
@@ -408,9 +460,6 @@ export function lspSetTrace(enabled: boolean): Promise<void> {
     return invoke("lsp_set_trace", { enabled })
 }
 
-export function agentSetTrace(enabled: boolean): Promise<void> {
-    return invoke("agent_set_trace", { enabled })
-}
 
 export function lspInstallServer(
     workspace: string | null,
@@ -419,17 +468,8 @@ export function lspInstallServer(
     return invoke("lsp_install_server", { workspace, language })
 }
 
-export function agentList(cwd: string): Promise<string[]> {
-    return invoke("agent_list", { cwd })
-}
 
-export function agentDetectRuntimes(): Promise<AgentRuntimeAvailability> {
-    return invoke("agent_detect_runtimes")
-}
 
-export function agentLatestVersions(): Promise<AgentLatestVersion[]> {
-    return invoke("agent_latest_versions")
-}
 
 export function dbListTables(identity: DbConnectionIdentity): Promise<DbTable[]> {
     return invoke("db_list_tables", { identity })
@@ -490,6 +530,12 @@ export function dbTestConnection(request: DbTestConnectionRequest): Promise<DbTe
     return invoke("db_test_connection", { request })
 }
 
+export function dbPostgresTransportChallenge(
+    request: DbPostgresTransportChallengeRequest
+): Promise<DbPostgresTransportChallenge> {
+    return invoke("db_postgres_transport_challenge", { request })
+}
+
 export function dbQueryRun(request: DbQueryRunRequest): Promise<DbQueryRun> {
     return invoke("db_query_run", { request })
 }
@@ -514,13 +560,7 @@ export function dbResultSessionRelease(owner: DbResultSessionOwner): Promise<DbR
     return invoke("db_result_session_release", { owner })
 }
 
-export function agentKill(id: string, reason?: string): Promise<void> {
-    return invoke("agent_kill", { id, reason: reason ?? null })
-}
 
-export function agentStderrTail(id: string): Promise<string[]> {
-    return invoke("agent_stderr_tail", { id })
-}
 
 export function sshConnect(
     host: string,
@@ -529,6 +569,15 @@ export function sshConnect(
     auth: SshAuthInput
 ): Promise<SshConnectResult> {
     return invoke("ssh_connect", { host, port, user, auth })
+}
+
+export function sshHostKeyRespond(
+    challengeId: string,
+    accept: boolean,
+    endpoint: string,
+    fingerprint: string
+): Promise<void> {
+    return invoke("ssh_host_key_respond", { challengeId, accept, endpoint, fingerprint })
 }
 
 export function sshOpenShell(sessionId: string, cols: number, rows: number): Promise<void> {
@@ -564,31 +613,60 @@ export function sftpRemove(sessionId: string, path: string, isDir: boolean): Pro
     return invoke("sftp_remove", { sessionId, path, isDir })
 }
 
+export interface SftpSelectedPathGrant {
+    id: string
+    leaf: string
+}
+
+export function sftpPickSelectedPath(): Promise<SftpSelectedPathGrant[]> {
+    return invoke("sftp_pick_selected_path")
+}
+
+export function sftpPickDownloadDestination(
+    suggestedLeaf: string
+): Promise<SftpSelectedPathGrant | null> {
+    return invoke("sftp_pick_download_destination", { suggestedLeaf })
+}
+
 export function sftpUpload(
     sessionId: string,
     transferId: string,
-    localPath: string,
+    source: SftpUploadSource,
     remoteDir: string
 ): Promise<void> {
-    return invoke("sftp_upload", { sessionId, transferId, localPath, remoteDir })
+    return invoke("sftp_upload", { sessionId, transferId, source, remoteDir })
 }
 
 export function sftpDownload(
     sessionId: string,
     transferId: string,
     remotePath: string,
-    localPath: string
+    dest: SftpDownloadDest
 ): Promise<void> {
-    return invoke("sftp_download", { sessionId, transferId, remotePath, localPath })
+    return invoke("sftp_download", {
+        sessionId,
+        transferId,
+        remotePath,
+        destinationCapabilityId: dest.capabilityId
+    })
 }
 
 export function perfSnapshot(): Promise<PerfSnapshot | null> {
     return invoke("perf_snapshot")
 }
 
-// --- Preview (P3): local static server + external-URL child webview ---
-export function previewServe(dir: string): Promise<number> {
-    return invoke("preview_serve", { dir })
+// --- Preview (P3): isolated static session + external-URL child webview ---
+export type PreviewSession = {
+    token: string
+    url: string
+}
+
+export function previewCreate(path: string): Promise<PreviewSession> {
+    return invoke("preview_create", { path })
+}
+
+export function previewRevoke(token: string): Promise<void> {
+    return invoke("preview_revoke", { token })
 }
 
 export function previewStopAll(): Promise<void> {

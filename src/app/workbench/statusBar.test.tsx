@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StatusBar } from "@/app/workbench/StatusBar";
 import { useContextMenuStore } from "@/state/contextMenuStore";
 import { initialGitState, useGitStore } from "@/state/gitStore";
+import { markdownPreviewPath } from "@/lib/markdownPreviewTab";
 import { useWorkspaceStore } from "@/state/workspaceStore";
 import { useLspStore } from "@/state/lspStore";
 import { usePreviewStore } from "@/state/previewStore";
@@ -748,5 +749,27 @@ describe("StatusBar", () => {
     render(<StatusBar />);
 
     expect(screen.queryByText("1")).not.toBeInTheDocument();
+  });
+
+  it("active markdown preview tab does not read the synthetic path as a file", () => {
+    const previewPath = markdownPreviewPath("/w/readme.md");
+    useWorkspaceStore.setState({
+      workspacePath: "/w",
+      groups: [{
+        activePath: previewPath,
+        tabs: [{
+          path: previewPath,
+          name: "Preview",
+          dirty: false,
+          externallyModified: false,
+          kind: "markdown-preview",
+          sourcePath: "/w/readme.md",
+        }],
+      }],
+      activeGroupIndex: 0,
+    });
+    vi.mocked(getDocument).mockClear();
+    render(<StatusBar />);
+    expect(getDocument).not.toHaveBeenCalled();
   });
 });

@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh::client::{self, Handle};
 use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKey};
@@ -11,10 +12,11 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::logging;
+use crate::path_capability::{self, PathCapabilityError, SafeLeafName, SafeRelativePath};
 
 // russh's connect() has no built-in dial timeout; wrap it so a black-holed host
 // fails fast instead of hanging the connect command indefinitely.
@@ -78,9 +80,34 @@ fn default_known_hosts_path() -> PathBuf {
         .join("known_hosts.json")
 }
 
+const HOST_KEY_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(60);
+const HOST_KEY_PROMPT_EVENT: &str = "ssh://host-key-prompt";
+const HOST_KEY_LOCK_FILE_NAME: &str = "known_hosts.lock";
+
 /// Stable known-hosts map key for a host endpoint.
+///
+/// Hostnames are lowercased and stripped of a trailing dot. IPv6 literals are
+/// always wrapped in brackets so `::1:22` cannot be confused with host `::1`
+/// on port 22. The port is always included, including the SSH default 22.
+fn canonical_endpoint(host: &str, port: u16) -> String {
+    let host = host.trim();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    if host.parse::<Ipv6Addr>().is_ok() || host.contains(':') {
+        format!("[{}]:{port}", host.to_ascii_lowercase())
+    } else if host.parse::<Ipv4Addr>().is_ok() {
+        format!("{host}:{port}")
+    } else {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        format!("{host}:{port}")
+    }
+}
+
+#[cfg(test)]
 fn host_port_key(host: &str, port: u16) -> String {
-    format!("{host}:{port}")
+    canonical_endpoint(host, port)
 }
 
 /// Read the pinned known-hosts store from `path`. A missing file is a legitimate
@@ -107,16 +134,16 @@ fn parse_known_hosts(content: &str) -> Result<BTreeMap<String, String>, String> 
 }
 
 /// Serialize the known-hosts store deterministically (BTreeMap → sorted keys).
-fn serialize_known_hosts(hosts: &BTreeMap<String, String>) -> String {
-    serde_json::to_string_pretty(hosts).unwrap_or_else(|_| "{}".to_string())
+fn serialize_known_hosts(hosts: &BTreeMap<String, String>) -> Result<String, String> {
+    serde_json::to_string_pretty(hosts).map_err(|e| format!("無法序列化 known_hosts：{e}"))
 }
 
 /// TOFU decision for a presented host key given what (if anything) is pinned.
 #[derive(Debug, PartialEq, Eq)]
 enum HostKeyDecision {
-    /// Endpoint not seen before — trust and remember it.
+    /// Endpoint not seen before — pause for an explicit, durable accept.
     New,
-    /// Presented key matches the pinned fingerprint — trust.
+    /// Presented key matches the pinned fingerprint — trust silently.
     Match,
     /// Presented key differs from the pinned fingerprint — reject (a re-keyed
     /// server or a MITM); the handshake is aborted before any credential.
@@ -131,20 +158,15 @@ fn decide_host_key(pinned: Option<&str>, presented: &str) -> HostKeyDecision {
     }
 }
 
-/// The full host-key verdict, folding the store's read result into the TOFU
-/// decision. Pure over `read`, so the fail-closed / trust / reject branches are
-/// unit-tested without a live handshake.
+/// The full host-key verdict, folding the store's read result into match /
+/// changed / new. Pure over `read`, so the fail-closed branches are unit-tested
+/// without a live handshake. A `New` result does *not* pin anything.
 #[derive(Debug, PartialEq, Eq)]
 enum HostKeyEval {
-    /// Trust the key. `persist` carries the updated store to write back when a
-    /// new key was just pinned; `None` on a match (nothing to write).
-    Accept {
-        known: bool,
-        persist: Option<BTreeMap<String, String>>,
-    },
-    /// Abort the handshake. `corrupt` holds the reason when the store was
-    /// unreadable/damaged (fail-closed); `None` for a changed (re-keyed) host.
-    Reject { corrupt: Option<String> },
+    Match,
+    New,
+    Changed { previous: String },
+    Corrupt { reason: String },
 }
 
 fn evaluate_host_key(
@@ -152,40 +174,393 @@ fn evaluate_host_key(
     endpoint: &str,
     presented: &str,
 ) -> HostKeyEval {
-    let mut hosts = match read {
+    let hosts = match read {
         Ok(hosts) => hosts,
         // A corrupt store must never be read as "nothing pinned": fail closed so
         // a changed/hostile key is not silently accepted and re-pinned.
-        Err(reason) => {
-            return HostKeyEval::Reject {
-                corrupt: Some(reason),
-            }
-        }
+        Err(reason) => return HostKeyEval::Corrupt { reason },
     };
     match decide_host_key(hosts.get(endpoint).map(String::as_str), presented) {
-        HostKeyDecision::Changed => HostKeyEval::Reject { corrupt: None },
-        HostKeyDecision::Match => HostKeyEval::Accept {
-            known: true,
-            persist: None,
+        HostKeyDecision::Changed => HostKeyEval::Changed {
+            previous: hosts.get(endpoint).cloned().unwrap_or_default(),
         },
-        HostKeyDecision::New => {
-            hosts.insert(endpoint.to_string(), presented.to_string());
-            HostKeyEval::Accept {
-                known: false,
-                persist: Some(hosts),
-            }
+        HostKeyDecision::Match => HostKeyEval::Match,
+        HostKeyDecision::New => HostKeyEval::New,
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistFailPoint {
+    Lock,
+    Write,
+    Fsync,
+    Rename,
+    ParentSync,
+    Unlock,
+}
+
+trait HostKeyPersistIo: Send + Sync {
+    fn create_dir_all(&self, path: &Path) -> std::io::Result<()>;
+    fn lock_file(&self, file: &std::fs::File) -> std::io::Result<()>;
+    fn unlock_file(&self, file: &std::fs::File) -> std::io::Result<()>;
+    fn create_temp(&self, parent: &Path, contents: &[u8]) -> std::io::Result<PathBuf>;
+    fn set_restrictive_permissions(&self, path: &Path) -> std::io::Result<()>;
+    fn sync_file(&self, path: &Path) -> std::io::Result<()>;
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    fn sync_dir(&self, path: &Path) -> std::io::Result<()>;
+}
+
+struct StdHostKeyIo;
+
+impl HostKeyPersistIo for StdHostKeyIo {
+    fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(path)
+    }
+
+    fn lock_file(&self, file: &std::fs::File) -> std::io::Result<()> {
+        lock_known_hosts_file(file)
+    }
+
+    fn unlock_file(&self, file: &std::fs::File) -> std::io::Result<()> {
+        unlock_known_hosts_file(file)
+    }
+
+    fn create_temp(&self, parent: &Path, contents: &[u8]) -> std::io::Result<PathBuf> {
+        use std::io::Write;
+        let tmp = parent.join(format!(".known_hosts-{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(contents)?;
+        file.flush()?;
+        Ok(tmp)
+    }
+
+    fn set_restrictive_permissions(&self, path: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+        }
+        Ok(())
+    }
+
+    fn sync_file(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::File::open(path)?.sync_all()
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::fs::File::open(path)?.sync_all()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Ok(())
         }
     }
 }
 
-/// Best-effort write of the known-hosts store (creating the parent dir). A
-/// failure only means the key isn't remembered next time; it never aborts the
-/// current, already-trusted connection.
-fn persist_known_hosts(path: &Path, hosts: &BTreeMap<String, String>) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+#[cfg(test)]
+struct FaultyHostKeyIo {
+    inner: StdHostKeyIo,
+    fail: Mutex<Option<PersistFailPoint>>,
+}
+
+#[cfg(test)]
+impl FaultyHostKeyIo {
+    fn new(point: PersistFailPoint) -> Self {
+        Self {
+            inner: StdHostKeyIo,
+            fail: Mutex::new(Some(point)),
+        }
     }
-    let _ = std::fs::write(path, serialize_known_hosts(hosts));
+
+    fn fail_if(&self, point: PersistFailPoint) -> std::io::Result<()> {
+        let mut slot = self.fail.lock().unwrap();
+        if *slot == Some(point) {
+            *slot = None;
+            return Err(std::io::Error::other(format!(
+                "injected known_hosts failure: {point:?}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl HostKeyPersistIo for FaultyHostKeyIo {
+    fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_dir_all(path)
+    }
+
+    fn lock_file(&self, file: &std::fs::File) -> std::io::Result<()> {
+        self.fail_if(PersistFailPoint::Lock)?;
+        self.inner.lock_file(file)
+    }
+
+    fn unlock_file(&self, file: &std::fs::File) -> std::io::Result<()> {
+        self.fail_if(PersistFailPoint::Unlock)?;
+        self.inner.unlock_file(file)
+    }
+
+    fn create_temp(&self, parent: &Path, contents: &[u8]) -> std::io::Result<PathBuf> {
+        self.fail_if(PersistFailPoint::Write)?;
+        self.inner.create_temp(parent, contents)
+    }
+
+    fn set_restrictive_permissions(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.set_restrictive_permissions(path)
+    }
+
+    fn sync_file(&self, path: &Path) -> std::io::Result<()> {
+        self.fail_if(PersistFailPoint::Fsync)?;
+        self.inner.sync_file(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.fail_if(PersistFailPoint::Rename)?;
+        self.inner.rename(from, to)
+    }
+
+    fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
+        self.fail_if(PersistFailPoint::ParentSync)?;
+        self.inner.sync_dir(path)
+    }
+}
+
+struct KnownHostsFileLock {
+    file: std::fs::File,
+    locked: bool,
+}
+
+impl KnownHostsFileLock {
+    fn release(mut self, io: &dyn HostKeyPersistIo) -> Result<(), String> {
+        io.unlock_file(&self.file)
+            .map_err(|e| format!("無法解除 known_hosts 鎖定：{e}"))?;
+        self.locked = false;
+        Ok(())
+    }
+}
+
+impl Drop for KnownHostsFileLock {
+    fn drop(&mut self) {
+        if self.locked {
+            let _ = unlock_known_hosts_file(&self.file);
+        }
+    }
+}
+
+fn acquire_known_hosts_file_lock(
+    store_path: &Path,
+    io: &dyn HostKeyPersistIo,
+) -> Result<KnownHostsFileLock, String> {
+    let parent = store_path
+        .parent()
+        .ok_or_else(|| "known_hosts 路徑沒有父目錄".to_string())?;
+    io.create_dir_all(parent)
+        .map_err(|e| format!("無法建立 known_hosts 目錄：{e}"))?;
+    let lock_path = parent.join(HOST_KEY_LOCK_FILE_NAME);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| format!("無法開啟 known_hosts 鎖定檔：{e}"))?;
+    io.lock_file(&file)
+        .map_err(|e| format!("無法鎖定 known_hosts：{e}"))?;
+    Ok(KnownHostsFileLock { file, locked: true })
+}
+
+#[cfg(unix)]
+fn lock_known_hosts_file(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+fn unlock_known_hosts_file(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct HostKeyOverlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    h_event: *mut core::ffi::c_void,
+}
+
+#[cfg(windows)]
+fn host_key_overlapped() -> HostKeyOverlapped {
+    HostKeyOverlapped {
+        internal: 0,
+        internal_high: 0,
+        offset: 0,
+        offset_high: 0,
+        h_event: std::ptr::null_mut(),
+    }
+}
+
+#[cfg(windows)]
+fn lock_known_hosts_file(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    extern "system" {
+        fn LockFileEx(
+            file: *mut core::ffi::c_void,
+            flags: u32,
+            reserved: u32,
+            bytes_to_lock_low: u32,
+            bytes_to_lock_high: u32,
+            overlapped: *mut HostKeyOverlapped,
+        ) -> i32;
+    }
+    const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x0000_0002;
+    let mut overlapped = host_key_overlapped();
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn unlock_known_hosts_file(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    extern "system" {
+        fn UnlockFileEx(
+            file: *mut core::ffi::c_void,
+            reserved: u32,
+            bytes_to_unlock_low: u32,
+            bytes_to_unlock_high: u32,
+            overlapped: *mut HostKeyOverlapped,
+        ) -> i32;
+    }
+    let mut overlapped = host_key_overlapped();
+    let ok = unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut overlapped) };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn lock_known_hosts_file(_file: &std::fs::File) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "cross-process known_hosts lock is unavailable",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn unlock_known_hosts_file(_file: &std::fs::File) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "cross-process known_hosts unlock is unavailable",
+    ))
+}
+
+/// Atomic known-hosts write: same-directory temp, 0600, flush/sync, rename,
+/// parent sync. Any step failing is an error; the caller must fail closed.
+fn persist_known_hosts(
+    path: &Path,
+    hosts: &BTreeMap<String, String>,
+    io: &dyn HostKeyPersistIo,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "known_hosts 路徑沒有父目錄".to_string())?;
+    io.create_dir_all(parent)
+        .map_err(|e| format!("無法建立 known_hosts 目錄：{e}"))?;
+    let body = serialize_known_hosts(hosts)?;
+    let tmp = io
+        .create_temp(parent, body.as_bytes())
+        .map_err(|e| format!("無法寫入 known_hosts 暫存檔：{e}"))?;
+    let persist_result = (|| {
+        io.set_restrictive_permissions(&tmp)
+            .map_err(|e| format!("無法設定 known_hosts 權限：{e}"))?;
+        io.sync_file(&tmp)
+            .map_err(|e| format!("無法同步 known_hosts 暫存檔：{e}"))?;
+        io.rename(&tmp, path)
+            .map_err(|e| format!("無法寫入 known_hosts：{e}"))?;
+        io.sync_dir(parent)
+            .map_err(|e| format!("無法同步 known_hosts 目錄：{e}"))?;
+        Ok(())
+    })();
+    if persist_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    persist_result
+}
+
+/// Read-merge-write a newly accepted pin while holding both the controller-local
+/// mutex and a separate OS-visible lock file. The lock covers load through parent
+/// directory sync and is never taken on the JSON inode that atomic rename replaces.
+fn persist_accepted_pin(
+    path: &Path,
+    persist_lock: &Mutex<()>,
+    endpoint: &str,
+    fingerprint: &str,
+    io: &dyn HostKeyPersistIo,
+) -> Result<(), String> {
+    let _guard = persist_lock
+        .lock()
+        .map_err(|_| "known_hosts 寫入鎖已損壞".to_string())?;
+    let file_lock = acquire_known_hosts_file_lock(path, io)?;
+    let transaction = (|| {
+        let mut hosts = read_known_hosts(path)?;
+        if let Some(existing) = hosts.get(endpoint) {
+            if existing != fingerprint {
+                return Err(format!(
+                    "主機 {endpoint} 已釘選不同的 fingerprint，拒絕覆寫"
+                ));
+            }
+            return Ok(());
+        }
+        hosts.insert(endpoint.to_string(), fingerprint.to_string());
+        persist_known_hosts(path, &hosts, io)
+    })();
+    let release = file_lock.release(io);
+    match (transaction, release) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(release_error)) => Err(format!("{error}; {release_error}")),
+    }
 }
 
 /// What `check_server_key` recorded for the surrounding `connect` to act on.
@@ -195,23 +570,211 @@ struct CheckOutcome {
     /// The key matched a previously-pinned entry (vs. first contact).
     known: bool,
     /// The key changed from the pinned fingerprint and was rejected.
-    rejected: bool,
+    changed: bool,
+    previous_fingerprint: Option<String>,
+    /// First-use challenge was rejected, cancelled, or timed out.
+    challenge_denied: bool,
+    /// Durable pin write failed after the user accepted — fail closed.
+    persist_failed: Option<String>,
     /// The known-hosts store was corrupt; the handshake was failed closed. Holds
     /// the parse/read reason so `connect` can surface a repair hint.
     corrupt: Option<String>,
 }
 
-/// TOFU handler with known-hosts pinning. First contact with an endpoint trusts
-/// and persists the key; a later matching key is trusted; a later *changed* key
-/// is REJECTED here — russh aborts the handshake with `UnknownKey` before any
-/// authentication packet, so no password/passphrase is ever sent to an
-/// unverified server. Residual gap: a first-seen key is still trusted without an
-/// interactive pre-auth confirmation (see the SSH TOFU report).
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum SshHostKeyPrompt {
+    New {
+        challenge_id: String,
+        host: String,
+        port: u16,
+        endpoint: String,
+        algorithm: String,
+        fingerprint: String,
+    },
+    Changed {
+        host: String,
+        port: u16,
+        endpoint: String,
+        algorithm: String,
+        fingerprint: String,
+        previous_fingerprint: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostKeyAnswer {
+    Accept,
+    Reject,
+}
+
+struct PendingHostKeyChallenge {
+    #[allow(dead_code)]
+    connection_id: String,
+    endpoint: String,
+    #[allow(dead_code)]
+    algorithm: String,
+    fingerprint: String,
+    expires_at: Instant,
+    tx: oneshot::Sender<HostKeyAnswer>,
+}
+
+type HostKeyEmit = Arc<dyn Fn(SshHostKeyPrompt) + Send + Sync>;
+
+struct HostKeyController {
+    path: PathBuf,
+    persist_lock: Mutex<()>,
+    pending: Mutex<HashMap<String, PendingHostKeyChallenge>>,
+    emit: HostKeyEmit,
+    challenge_timeout: Duration,
+    persist_io: Arc<dyn HostKeyPersistIo>,
+}
+
+impl HostKeyController {
+    #[cfg(test)]
+    fn new(path: PathBuf, emit: HostKeyEmit, challenge_timeout: Duration) -> Arc<Self> {
+        Self::with_io(path, emit, challenge_timeout, Arc::new(StdHostKeyIo))
+    }
+
+    fn with_io(
+        path: PathBuf,
+        emit: HostKeyEmit,
+        challenge_timeout: Duration,
+        persist_io: Arc<dyn HostKeyPersistIo>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            path,
+            persist_lock: Mutex::new(()),
+            pending: Mutex::new(HashMap::new()),
+            emit,
+            challenge_timeout,
+            persist_io,
+        })
+    }
+
+    fn emit(&self, prompt: SshHostKeyPrompt) {
+        (self.emit)(prompt);
+    }
+
+    fn persist_pin(&self, endpoint: &str, fingerprint: &str) -> Result<(), String> {
+        persist_accepted_pin(
+            &self.path,
+            &self.persist_lock,
+            endpoint,
+            fingerprint,
+            self.persist_io.as_ref(),
+        )
+    }
+
+    fn take_pending(&self, challenge_id: &str) -> Option<PendingHostKeyChallenge> {
+        self.pending.lock().unwrap().remove(challenge_id)
+    }
+
+    fn reject_all_pending(&self) {
+        let pending: Vec<PendingHostKeyChallenge> = {
+            let mut map = self.pending.lock().unwrap();
+            map.drain().map(|(_, challenge)| challenge).collect()
+        };
+        for challenge in pending {
+            let _ = challenge.tx.send(HostKeyAnswer::Reject);
+        }
+    }
+
+    fn respond(
+        &self,
+        challenge_id: &str,
+        accept: bool,
+        endpoint: &str,
+        fingerprint: &str,
+    ) -> Result<(), String> {
+        let pending = self
+            .take_pending(challenge_id)
+            .ok_or_else(|| "主機金鑰確認已失效、過期或重複送出".to_string())?;
+        if Instant::now() > pending.expires_at {
+            let _ = pending.tx.send(HostKeyAnswer::Reject);
+            return Err("主機金鑰確認已過期".into());
+        }
+        if pending.endpoint != endpoint || pending.fingerprint != fingerprint {
+            let _ = pending.tx.send(HostKeyAnswer::Reject);
+            return Err("主機金鑰確認與連線不符".into());
+        }
+        let answer = if accept {
+            HostKeyAnswer::Accept
+        } else {
+            HostKeyAnswer::Reject
+        };
+        pending
+            .tx
+            .send(answer)
+            .map_err(|_| "主機金鑰確認已結束".to_string())
+    }
+
+    async fn challenge_and_wait(
+        &self,
+        connection_id: &str,
+        host: &str,
+        port: u16,
+        endpoint: &str,
+        algorithm: &str,
+        fingerprint: &str,
+    ) -> bool {
+        let challenge_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.pending.lock().unwrap();
+            pending.insert(
+                challenge_id.clone(),
+                PendingHostKeyChallenge {
+                    connection_id: connection_id.to_string(),
+                    endpoint: endpoint.to_string(),
+                    algorithm: algorithm.to_string(),
+                    fingerprint: fingerprint.to_string(),
+                    expires_at: Instant::now() + self.challenge_timeout,
+                    tx,
+                },
+            );
+        }
+        self.emit(SshHostKeyPrompt::New {
+            challenge_id: challenge_id.clone(),
+            host: host.to_string(),
+            port,
+            endpoint: endpoint.to_string(),
+            algorithm: algorithm.to_string(),
+            fingerprint: fingerprint.to_string(),
+        });
+        let decision = tokio::time::timeout(self.challenge_timeout, rx).await;
+        match decision {
+            Ok(Ok(HostKeyAnswer::Accept)) => true,
+            _ => {
+                self.take_pending(&challenge_id);
+                false
+            }
+        }
+    }
+}
+
+/// Host-key handler with known-hosts pinning. A matching pinned key is trusted
+/// silently. A changed key is REJECTED here — russh aborts the handshake with
+/// `UnknownKey` before any authentication packet. A first-seen key opens a
+/// single-use, connection-bound challenge; authentication does not start until
+/// the pin is durably stored.
 struct Client {
     host: String,
     port: u16,
-    known_hosts_path: PathBuf,
+    connection_id: String,
+    host_keys: Arc<HostKeyController>,
     outcome: Arc<Mutex<CheckOutcome>>,
+    challenge_pending: Arc<AtomicBool>,
+    challenge_notify: Arc<Notify>,
+    auth_probe: Option<Arc<Mutex<Vec<&'static str>>>>,
+}
+
+impl Client {
+    fn note(&self, stage: &'static str) {
+        if let Some(probe) = &self.auth_probe {
+            probe.lock().unwrap().push(stage);
+        }
+    }
 }
 
 impl client::Handler for Client {
@@ -222,26 +785,73 @@ impl client::Handler for Client {
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
         let fp = fingerprint_sha256(server_public_key);
-        let key = host_port_key(&self.host, self.port);
+        let algorithm = server_public_key.algorithm().to_string();
+        let endpoint = canonical_endpoint(&self.host, self.port);
 
-        match evaluate_host_key(read_known_hosts(&self.known_hosts_path), &key, &fp) {
-            HostKeyEval::Reject { corrupt } => {
+        match evaluate_host_key(read_known_hosts(&self.host_keys.path), &endpoint, &fp) {
+            HostKeyEval::Corrupt { reason } => {
                 let mut outcome = self.outcome.lock().unwrap();
                 outcome.fingerprint = Some(fp);
-                match corrupt {
-                    Some(reason) => outcome.corrupt = Some(reason),
-                    None => outcome.rejected = true,
-                }
+                outcome.corrupt = Some(reason);
                 Ok(false)
             }
-            HostKeyEval::Accept { known, persist } => {
-                if let Some(hosts) = persist {
-                    persist_known_hosts(&self.known_hosts_path, &hosts);
-                }
+            HostKeyEval::Changed { previous } => {
+                self.host_keys.emit(SshHostKeyPrompt::Changed {
+                    host: self.host.clone(),
+                    port: self.port,
+                    endpoint: endpoint.clone(),
+                    algorithm,
+                    fingerprint: fp.clone(),
+                    previous_fingerprint: previous.clone(),
+                });
                 let mut outcome = self.outcome.lock().unwrap();
                 outcome.fingerprint = Some(fp);
-                outcome.known = known;
+                outcome.previous_fingerprint = Some(previous);
+                outcome.changed = true;
+                Ok(false)
+            }
+            HostKeyEval::Match => {
+                let mut outcome = self.outcome.lock().unwrap();
+                outcome.fingerprint = Some(fp);
+                outcome.known = true;
                 Ok(true)
+            }
+            HostKeyEval::New => {
+                self.note("host_key_challenge");
+                self.challenge_pending.store(true, Ordering::SeqCst);
+                self.challenge_notify.notify_one();
+                let accepted = self
+                    .host_keys
+                    .challenge_and_wait(
+                        &self.connection_id,
+                        &self.host,
+                        self.port,
+                        &endpoint,
+                        &algorithm,
+                        &fp,
+                    )
+                    .await;
+                if !accepted {
+                    let mut outcome = self.outcome.lock().unwrap();
+                    outcome.fingerprint = Some(fp);
+                    outcome.challenge_denied = true;
+                    return Ok(false);
+                }
+                match self.host_keys.persist_pin(&endpoint, &fp) {
+                    Ok(()) => {
+                        self.note("host_key_pinned");
+                        let mut outcome = self.outcome.lock().unwrap();
+                        outcome.fingerprint = Some(fp);
+                        outcome.known = false;
+                        Ok(true)
+                    }
+                    Err(reason) => {
+                        let mut outcome = self.outcome.lock().unwrap();
+                        outcome.fingerprint = Some(fp);
+                        outcome.persist_failed = Some(reason);
+                        Ok(false)
+                    }
+                }
             }
         }
     }
@@ -272,7 +882,48 @@ pub struct SftpEntry {
     pub path: String,
     pub is_dir: bool,
     pub is_symlink: bool,
+    pub name_safe: bool,
     pub size: u64,
+}
+
+/// Tagged upload source: workspace files are opened through the pinned
+/// workspace root; picker/OS-drop files consume a backend-issued capability.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SftpUploadSource {
+    Workspace {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        #[serde(rename = "relativePath")]
+        relative_path: String,
+    },
+    Selected {
+        #[serde(rename = "capabilityId")]
+        capability_id: String,
+    },
+}
+
+fn open_sftp_upload_source(
+    selected: &path_capability::SelectedPathRegistry,
+    workspaces: &path_capability::WorkspacePathRegistry,
+    trust: &crate::workspace_trust::WorkspaceTrustState,
+    source: SftpUploadSource,
+) -> Result<path_capability::OpenedFile, String> {
+    match source {
+        SftpUploadSource::Workspace {
+            workspace_id,
+            relative_path,
+        } => {
+            let canonical_root = workspaces.canonical_root(&workspace_id)?;
+            trust.require_trusted(&canonical_root)?;
+            workspaces
+                .open_file(&workspace_id, &relative_path)
+                .map_err(String::from)
+        }
+        SftpUploadSource::Selected { capability_id } => {
+            selected.take(&capability_id).map_err(String::from)
+        }
+    }
 }
 
 /// A directory listing plus the canonical cwd it was read from — the front-end
@@ -305,6 +956,24 @@ const SFTP_PROGRESS_STEP: u64 = 256 * 1024;
 
 /// POSIX-join a remote directory with a leaf name (SFTP is always `/`-separated,
 /// regardless of the local platform). Pure, so the path math is unit-tested.
+fn reject_unsafe_remote_leaf(path: &str) -> Result<(), String> {
+    let mut saw_name = false;
+    for (index, name) in path.split('/').enumerate() {
+        if name.is_empty() {
+            if index == 0 {
+                continue;
+            }
+            return Err(PathCapabilityError::UnsafeLeaf.into());
+        }
+        SafeLeafName::parse(name)?;
+        saw_name = true;
+    }
+    if !saw_name {
+        return Err(PathCapabilityError::UnsafeLeaf.into());
+    }
+    Ok(())
+}
+
 fn remote_join(dir: &str, name: &str) -> String {
     if dir.is_empty() || dir == "/" {
         format!("/{name}")
@@ -338,14 +1007,25 @@ fn sort_sftp_entries(entries: &mut [SftpEntry]) {
 pub struct SshManager {
     sessions: Mutex<HashMap<String, SessionEntry>>,
     log: LogFn,
-    known_hosts_path: PathBuf,
+    transfer_dests: path_capability::TransferDestSet,
+    host_keys: Arc<HostKeyController>,
+    auth_probe: Option<Arc<Mutex<Vec<&'static str>>>>,
 }
 
 pub struct SshState(pub Arc<SshManager>);
 
 impl SshManager {
-    pub fn new(_app: AppHandle) -> Self {
-        Self::with_log(Box::new(logging::write_global))
+    pub fn new(app: AppHandle) -> Self {
+        let emit_app = app.clone();
+        Self::with_parts(
+            Box::new(logging::write_global),
+            default_known_hosts_path(),
+            Arc::new(move |prompt| {
+                let _ = emit_app.emit(HOST_KEY_PROMPT_EVENT, prompt);
+            }),
+            HOST_KEY_CHALLENGE_TIMEOUT,
+            Arc::new(StdHostKeyIo),
+        )
     }
 
     #[cfg(test)]
@@ -353,11 +1033,81 @@ impl SshManager {
         Self::with_log(Box::new(|_| {}))
     }
 
+    #[cfg(test)]
     fn with_log(log: LogFn) -> Self {
+        Self::with_parts(
+            log,
+            default_known_hosts_path(),
+            Arc::new(|_| {}),
+            HOST_KEY_CHALLENGE_TIMEOUT,
+            Arc::new(StdHostKeyIo),
+        )
+    }
+
+    fn with_parts(
+        log: LogFn,
+        known_hosts_path: PathBuf,
+        emit: HostKeyEmit,
+        challenge_timeout: Duration,
+        persist_io: Arc<dyn HostKeyPersistIo>,
+    ) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             log,
-            known_hosts_path: default_known_hosts_path(),
+            host_keys: HostKeyController::with_io(
+                known_hosts_path,
+                emit,
+                challenge_timeout,
+                persist_io,
+            ),
+            transfer_dests: path_capability::TransferDestSet::new(),
+            auth_probe: None,
+        }
+    }
+
+    fn respond_host_key(
+        &self,
+        challenge_id: &str,
+        accept: bool,
+        endpoint: &str,
+        fingerprint: &str,
+    ) -> Result<(), String> {
+        self.host_keys
+            .respond(challenge_id, accept, endpoint, fingerprint)
+    }
+
+    fn host_key_failure_message(
+        host: &str,
+        port: u16,
+        outcome: &CheckOutcome,
+        transport: &russh::Error,
+    ) -> String {
+        let endpoint = canonical_endpoint(host, port);
+        if let Some(reason) = &outcome.corrupt {
+            format!(
+                "known_hosts 檔案損毀，連線已中止（{reason}）；請修復或重設 ~/.yuzora/known_hosts.json 後再試"
+            )
+        } else if outcome.changed {
+            let previous = outcome
+                .previous_fingerprint
+                .as_deref()
+                .unwrap_or("（未知）");
+            let presented = outcome.fingerprint.as_deref().unwrap_or("（未知）");
+            format!(
+                "主機金鑰驗證失敗：{endpoint} 的 fingerprint 已變更。已記錄：{previous}；目前：{presented}。連線已中止（伺服器金鑰可能已更換，或遭到中間人攻擊）"
+            )
+        } else if let Some(reason) = &outcome.persist_failed {
+            format!("無法保存主機金鑰，連線已中止（{reason}）")
+        } else if outcome.challenge_denied {
+            format!("使用者拒絕或逾時未確認主機金鑰，連線已中止（{endpoint}）")
+        } else {
+            format!("無法連線到 {endpoint}：{transport}")
+        }
+    }
+
+    fn note_auth(&self, stage: &'static str) {
+        if let Some(probe) = &self.auth_probe {
+            probe.lock().unwrap().push(stage);
         }
     }
 
@@ -370,45 +1120,79 @@ impl SshManager {
     ) -> Result<SshConnectResult, String> {
         let config = Arc::new(client::Config::default());
         let outcome = Arc::new(Mutex::new(CheckOutcome::default()));
+        let challenge_pending = Arc::new(AtomicBool::new(false));
+        let challenge_notify = Arc::new(Notify::new());
+        let connection_id = uuid::Uuid::new_v4().to_string();
         let handler = Client {
             host: host.clone(),
             port,
-            known_hosts_path: self.known_hosts_path.clone(),
+            connection_id,
+            host_keys: self.host_keys.clone(),
             outcome: outcome.clone(),
+            challenge_pending: challenge_pending.clone(),
+            challenge_notify: challenge_notify.clone(),
+            auth_probe: self.auth_probe.clone(),
         };
 
         let connect_fut = client::connect(config, (host.clone(), port), handler);
-        let mut session = match tokio::time::timeout(CONNECT_TIMEOUT, connect_fut).await {
-            Err(_) => {
-                let msg = format!(
-                    "連線逾時：{host}:{port} 在 {} 秒內沒有回應",
-                    CONNECT_TIMEOUT.as_secs()
-                );
-                self.log_connect_failure(&host, port, &user, &msg);
-                return Err(msg);
+        tokio::pin!(connect_fut);
+        let connect_deadline = tokio::time::sleep(CONNECT_TIMEOUT);
+        tokio::pin!(connect_deadline);
+        let mut challenge_deadline =
+            std::pin::pin!(tokio::time::sleep(self.host_keys.challenge_timeout));
+        let mut challenge_armed = false;
+
+        let mut session = loop {
+            tokio::select! {
+                biased;
+                result = &mut connect_fut => {
+                    break match result {
+                        Err(e) => {
+                            // A rejected host key aborts the handshake with `UnknownKey`
+                            // before any credential is sent — surface it as a distinct,
+                            // actionable warning rather than a generic transport error.
+                            let outcome = outcome.lock().unwrap();
+                            let msg = Self::host_key_failure_message(&host, port, &outcome, &e);
+                            self.log_connect_failure(&host, port, &user, &msg);
+                            return Err(msg);
+                        }
+                        Ok(session) => session,
+                    };
+                }
+                _ = challenge_notify.notified(), if !challenge_armed => {
+                    challenge_armed = true;
+                    challenge_deadline.as_mut().reset(
+                        tokio::time::Instant::now() + self.host_keys.challenge_timeout,
+                    );
+                }
+                _ = &mut connect_deadline, if !challenge_armed => {
+                    if challenge_pending.load(Ordering::SeqCst) {
+                        challenge_armed = true;
+                        challenge_deadline.as_mut().reset(
+                            tokio::time::Instant::now() + self.host_keys.challenge_timeout,
+                        );
+                        continue;
+                    }
+                    let msg = format!(
+                        "連線逾時：{} 在 {} 秒內沒有回應",
+                        canonical_endpoint(&host, port),
+                        CONNECT_TIMEOUT.as_secs()
+                    );
+                    self.log_connect_failure(&host, port, &user, &msg);
+                    return Err(msg);
+                }
+                _ = &mut challenge_deadline, if challenge_armed => {
+                    let msg = format!(
+                        "使用者拒絕或逾時未確認主機金鑰，連線已中止（{}）",
+                        canonical_endpoint(&host, port)
+                    );
+                    self.log_connect_failure(&host, port, &user, &msg);
+                    return Err(msg);
+                }
             }
-            Ok(Err(e)) => {
-                // A rejected host key aborts the handshake with `UnknownKey`
-                // before any credential is sent — surface it as a distinct,
-                // actionable warning rather than a generic transport error.
-                let outcome = outcome.lock().unwrap();
-                let msg = if let Some(reason) = &outcome.corrupt {
-                    format!(
-                        "known_hosts 檔案損毀，連線已中止（{reason}）；請修復或重設 ~/.yuzora/known_hosts.json 後再試"
-                    )
-                } else if outcome.rejected {
-                    format!(
-                        "主機金鑰驗證失敗：{host}:{port} 的 fingerprint 與已記錄的不符，連線已中止（伺服器金鑰可能已更換，或遭到中間人攻擊）"
-                    )
-                } else {
-                    format!("無法連線到 {host}:{port}：{e}")
-                };
-                self.log_connect_failure(&host, port, &user, &msg);
-                return Err(msg);
-            }
-            Ok(Ok(session)) => session,
         };
 
+        self.note_auth("authenticate");
         let authenticated = match auth {
             SshAuth::Password { password } => session
                 .authenticate_password(user.clone(), password)
@@ -594,11 +1378,14 @@ impl SshManager {
         let mut entries: Vec<SftpEntry> = read
             .map(|entry| {
                 let ft = entry.file_type();
+                let name = entry.file_name();
+                let name_safe = path_capability::is_safe_leaf_name(&name);
                 SftpEntry {
-                    name: entry.file_name(),
+                    name,
                     path: entry.path(),
                     is_dir: ft.is_dir(),
                     is_symlink: ft.is_symlink(),
+                    name_safe,
                     size: entry.metadata().size.unwrap_or(0),
                 }
             })
@@ -608,6 +1395,7 @@ impl SshManager {
     }
 
     async fn sftp_mkdir(&self, session_id: &str, path: &str) -> Result<(), String> {
+        reject_unsafe_remote_leaf(path)?;
         let sftp = self.ensure_sftp(session_id).await?;
         sftp.create_dir(path.to_string())
             .await
@@ -615,6 +1403,8 @@ impl SshManager {
     }
 
     async fn sftp_rename(&self, session_id: &str, from: &str, to: &str) -> Result<(), String> {
+        reject_unsafe_remote_leaf(from)?;
+        reject_unsafe_remote_leaf(to)?;
         let sftp = self.ensure_sftp(session_id).await?;
         sftp.rename(from.to_string(), to.to_string())
             .await
@@ -637,35 +1427,47 @@ impl SshManager {
     async fn sftp_upload(
         &self,
         app: &AppHandle,
+        selected: &path_capability::SelectedPathRegistry,
+        workspaces: &path_capability::WorkspacePathRegistry,
+        trust: &crate::workspace_trust::WorkspaceTrustState,
         session_id: &str,
         transfer_id: &str,
-        local_path: &str,
+        source: SftpUploadSource,
         remote_dir: &str,
     ) -> Result<(), String> {
+        if !path_capability::is_safe_transfer_id(transfer_id) {
+            return Err(PathCapabilityError::UnsafeLeaf.into());
+        }
+        reject_unsafe_remote_leaf(remote_dir)?;
+        let leaf = match &source {
+            SftpUploadSource::Workspace { relative_path, .. } => {
+                SafeRelativePath::parse(relative_path)?
+                    .leaf()
+                    .as_str()
+                    .to_string()
+            }
+            SftpUploadSource::Selected { capability_id } => selected.peek_leaf(capability_id)?,
+        };
+        let leaf = SafeLeafName::parse(&leaf)?;
+        let remote_path = remote_join(remote_dir, leaf.as_str());
+        let _slot = self
+            .transfer_dests
+            .acquire(path_capability::remote_dest_key(session_id, &remote_path))?;
+        let opened = open_sftp_upload_source(selected, workspaces, trust, source)?;
         let sftp = self.ensure_sftp(session_id).await?;
-        let name = std::path::Path::new(local_path)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("無法解析本地檔名：{local_path}"))?;
-        let remote_path = remote_join(remote_dir, &name);
         // Stream into a temp sibling and rename into place, so an interrupted
         // upload never leaves a half-written file at (or clobbers) the target.
-        let temp_path = remote_join(remote_dir, &temp_transfer_name(&name, transfer_id));
+        let temp_path = remote_join(remote_dir, &temp_transfer_name(leaf.as_str(), transfer_id));
 
-        let total = tokio::fs::metadata(local_path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-        let mut local = tokio::fs::File::open(local_path)
-            .await
-            .map_err(|e| format!("無法開啟本地檔案 {local_path}：{e}"))?;
+        let total = opened.len;
+        let mut local = tokio::fs::File::from_std(opened.file);
         let mut remote = sftp
             .open_with_flags(
                 temp_path.clone(),
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
             )
             .await
-            .map_err(|e| format!("無法建立遠端暫存檔 {temp_path}：{e}"))?;
+            .map_err(|_| "sftp-remote-open-failed".to_string())?;
 
         let mut buf = vec![0u8; SFTP_CHUNK];
         let mut transferred = 0u64;
@@ -677,14 +1479,14 @@ impl SshManager {
                 let n = local
                     .read(&mut buf)
                     .await
-                    .map_err(|e| format!("讀取本地檔案失敗：{e}"))?;
+                    .map_err(|_| "sftp-read-failed".to_string())?;
                 if n == 0 {
                     break;
                 }
                 remote
                     .write_all(&buf[..n])
                     .await
-                    .map_err(|e| format!("寫入遠端檔案失敗：{e}"))?;
+                    .map_err(|_| "sftp-write-failed".to_string())?;
                 transferred += n as u64;
                 if transferred - last_emit >= SFTP_PROGRESS_STEP {
                     last_emit = transferred;
@@ -694,7 +1496,7 @@ impl SshManager {
             remote
                 .shutdown()
                 .await
-                .map_err(|e| format!("關閉遠端暫存檔失敗：{e}"))
+                .map_err(|_| "sftp-write-failed".to_string())
         }
         .await;
 
@@ -707,14 +1509,14 @@ impl SshManager {
         // SFTP rename does not overwrite; drop an existing target first, then
         // promote the fully-written temp into place.
         if sftp.try_exists(remote_path.clone()).await.unwrap_or(false) {
-            if let Err(e) = sftp.remove_file(remote_path.clone()).await {
+            if sftp.remove_file(remote_path.clone()).await.is_err() {
                 let _ = sftp.remove_file(temp_path.clone()).await;
-                return Err(format!("無法覆寫遠端檔案 {remote_path}：{e}"));
+                return Err("sftp-promote-failed".into());
             }
         }
-        if let Err(e) = sftp.rename(temp_path.clone(), remote_path.clone()).await {
+        if let Err(_e) = sftp.rename(temp_path.clone(), remote_path.clone()).await {
             let _ = sftp.remove_file(temp_path.clone()).await;
-            return Err(format!("無法將暫存檔移動到 {remote_path}：{e}"));
+            return Err("sftp-promote-failed".into());
         }
 
         self.emit_progress(app, session_id, transfer_id, transferred, total, true);
@@ -727,8 +1529,15 @@ impl SshManager {
         session_id: &str,
         transfer_id: &str,
         remote_path: &str,
-        local_path: &str,
+        destination_capability_id: &str,
+        destinations: &path_capability::DownloadDestinationRegistry,
     ) -> Result<(), String> {
+        if !path_capability::is_safe_transfer_id(transfer_id) {
+            return Err(PathCapabilityError::UnsafeLeaf.into());
+        }
+        reject_unsafe_remote_leaf(remote_path)?;
+        let mut scratch = destinations.take_scratch(destination_capability_id, transfer_id)?;
+        let _slot = self.transfer_dests.acquire(scratch.dest_key())?;
         let sftp = self.ensure_sftp(session_id).await?;
         let total = sftp
             .metadata(remote_path.to_string())
@@ -736,26 +1545,15 @@ impl SshManager {
             .ok()
             .and_then(|m| m.size)
             .unwrap_or(0);
-        let mut remote = sftp
-            .open(remote_path.to_string())
-            .await
-            .map_err(|e| format!("無法開啟遠端檔案 {remote_path}：{e}"))?;
-
-        // Write into a temp sibling and atomically rename into place, so a partial
-        // download never truncates or clobbers an existing local file.
-        let dest = std::path::Path::new(local_path);
-        let file_name = dest
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("無法解析本地檔名：{local_path}"))?;
-        let temp_name = temp_transfer_name(&file_name, transfer_id);
-        let temp_local = match dest.parent() {
-            Some(parent) => parent.join(&temp_name),
-            None => PathBuf::from(&temp_name),
+        let mut remote = match sftp.open(remote_path.to_string()).await {
+            Ok(file) => file,
+            Err(_) => {
+                scratch.discard();
+                return Err("sftp-remote-open-failed".into());
+            }
         };
-        let mut out = tokio::fs::File::create(&temp_local)
-            .await
-            .map_err(|e| format!("無法建立本地暫存檔 {}：{e}", temp_local.display()))?;
+
+        let mut out = tokio::fs::File::from_std(scratch.take_file());
 
         let mut buf = vec![0u8; SFTP_CHUNK];
         let mut transferred = 0u64;
@@ -767,34 +1565,33 @@ impl SshManager {
                 let n = remote
                     .read(&mut buf)
                     .await
-                    .map_err(|e| format!("讀取遠端檔案失敗：{e}"))?;
+                    .map_err(|_| "sftp-read-failed".to_string())?;
                 if n == 0 {
                     break;
                 }
                 out.write_all(&buf[..n])
                     .await
-                    .map_err(|e| format!("寫入本地檔案失敗：{e}"))?;
+                    .map_err(|_| "sftp-write-failed".to_string())?;
                 transferred += n as u64;
                 if transferred - last_emit >= SFTP_PROGRESS_STEP {
                     last_emit = transferred;
                     self.emit_progress(app, session_id, transfer_id, transferred, total, false);
                 }
             }
-            out.flush()
+            out.sync_all()
                 .await
-                .map_err(|e| format!("關閉本地暫存檔失敗：{e}"))
+                .map_err(|_| "sftp-write-failed".to_string())
         }
         .await;
 
         // Close the temp file so the rename sees a released handle on every platform.
         drop(out);
         if let Err(e) = copy {
-            let _ = tokio::fs::remove_file(&temp_local).await;
+            scratch.discard();
             return Err(e);
         }
-        if let Err(e) = tokio::fs::rename(&temp_local, dest).await {
-            let _ = tokio::fs::remove_file(&temp_local).await;
-            return Err(format!("無法將暫存檔移動到 {local_path}：{e}"));
+        if scratch.promote().is_err() {
+            return Err("sftp-promote-failed".into());
         }
 
         self.emit_progress(app, session_id, transfer_id, transferred, total, true);
@@ -860,7 +1657,9 @@ impl SshManager {
     pub fn kill_all(&self) {
         // Dropping every entry drops its Handle (closing the transport) and its
         // shell sender (ending the shell task). Called on app exit.
+        self.host_keys.reject_all_pending();
         self.sessions.lock().unwrap().clear();
+        self.transfer_dests.clear();
     }
 
     fn get_handle(&self, session_id: &str) -> Result<Arc<AsyncMutex<Handle<Client>>>, String> {
@@ -910,8 +1709,8 @@ impl SshManager {
                 "host": host,
                 "port": port,
                 "user": user,
-                // TOFU: fingerprint verified against the known-hosts store; a
-                // changed key would have been rejected before authentication.
+                // Host key verified against the known-hosts store; a changed
+                // or unaccepted first-use key is rejected before authentication.
                 "fingerprint": fingerprint,
                 "knownHost": known_host,
             }),
@@ -1074,6 +1873,19 @@ pub async fn ssh_connect(
 }
 
 #[tauri::command]
+pub fn ssh_host_key_respond(
+    state: tauri::State<'_, SshState>,
+    challenge_id: String,
+    accept: bool,
+    endpoint: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    state
+        .0
+        .respond_host_key(&challenge_id, accept, &endpoint, &fingerprint)
+}
+
+#[tauri::command]
 pub async fn ssh_open_shell(
     app: AppHandle,
     state: tauri::State<'_, SshState>,
@@ -1154,14 +1966,26 @@ pub async fn sftp_remove(
 pub async fn sftp_upload(
     app: AppHandle,
     state: tauri::State<'_, SshState>,
+    selected: tauri::State<'_, path_capability::SelectedPathState>,
+    workspaces: tauri::State<'_, path_capability::WorkspacePathState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     session_id: String,
     transfer_id: String,
-    local_path: String,
+    source: SftpUploadSource,
     remote_dir: String,
 ) -> Result<(), String> {
     state
         .0
-        .sftp_upload(&app, &session_id, &transfer_id, &local_path, &remote_dir)
+        .sftp_upload(
+            &app,
+            &selected.0,
+            &workspaces.0,
+            &trust,
+            &session_id,
+            &transfer_id,
+            source,
+            &remote_dir,
+        )
         .await
 }
 
@@ -1169,14 +1993,22 @@ pub async fn sftp_upload(
 pub async fn sftp_download(
     app: AppHandle,
     state: tauri::State<'_, SshState>,
+    destinations: tauri::State<'_, path_capability::DownloadDestinationState>,
     session_id: String,
     transfer_id: String,
     remote_path: String,
-    local_path: String,
+    destination_capability_id: String,
 ) -> Result<(), String> {
     state
         .0
-        .sftp_download(&app, &session_id, &transfer_id, &remote_path, &local_path)
+        .sftp_download(
+            &app,
+            &session_id,
+            &transfer_id,
+            &remote_path,
+            &destination_capability_id,
+            &destinations.0,
+        )
         .await
 }
 
@@ -1287,13 +2119,18 @@ mod tests {
 
     #[test]
     fn host_port_key_formats_endpoint() {
+        assert_eq!(canonical_endpoint("example.com", 22), "example.com:22");
+        assert_eq!(canonical_endpoint("10.0.0.5", 2222), "10.0.0.5:2222");
+        assert_eq!(canonical_endpoint("::1", 22), "[::1]:22");
+        assert_eq!(canonical_endpoint("[::1]", 2222), "[::1]:2222");
+        assert_eq!(canonical_endpoint("2001:db8::1", 22), "[2001:db8::1]:22");
+        assert_eq!(canonical_endpoint("Example.COM.", 22), "example.com:22");
         assert_eq!(host_port_key("example.com", 22), "example.com:22");
-        assert_eq!(host_port_key("10.0.0.5", 2222), "10.0.0.5:2222");
     }
 
     #[test]
-    fn first_contact_is_new_and_trusted() {
-        // Nothing pinned for this endpoint yet → trust-on-first-use.
+    fn first_contact_is_new_and_not_silently_trusted() {
+        // Nothing pinned for this endpoint yet → explicit first-use challenge.
         assert_eq!(
             decide_host_key(None, SAMPLE_FINGERPRINT),
             HostKeyDecision::New
@@ -1338,35 +2175,28 @@ mod tests {
 
     #[test]
     fn evaluate_host_key_covers_new_match_changed_and_corrupt() {
-        let endpoint = host_port_key("example.com", 22);
+        let endpoint = canonical_endpoint("example.com", 22);
 
-        // First contact pins the presented key and asks to persist it.
-        match evaluate_host_key(Ok(BTreeMap::new()), &endpoint, SAMPLE_FINGERPRINT) {
-            HostKeyEval::Accept {
-                known: false,
-                persist: Some(map),
-            } => assert_eq!(
-                map.get(&endpoint).map(String::as_str),
-                Some(SAMPLE_FINGERPRINT)
-            ),
-            other => panic!("expected first-contact accept, got {other:?}"),
-        }
+        // First contact is a challenge — nothing is pinned yet.
+        assert_eq!(
+            evaluate_host_key(Ok(BTreeMap::new()), &endpoint, SAMPLE_FINGERPRINT),
+            HostKeyEval::New
+        );
 
         // A matching pinned key is trusted with nothing to write back.
         let mut pinned = BTreeMap::new();
         pinned.insert(endpoint.clone(), SAMPLE_FINGERPRINT.to_string());
         assert_eq!(
             evaluate_host_key(Ok(pinned.clone()), &endpoint, SAMPLE_FINGERPRINT),
-            HostKeyEval::Accept {
-                known: true,
-                persist: None,
-            }
+            HostKeyEval::Match
         );
 
-        // A changed key is rejected (not corrupt).
+        // A changed key is rejected (not treated as first-use).
         assert_eq!(
             evaluate_host_key(Ok(pinned), &endpoint, "SHA256:some-other-key"),
-            HostKeyEval::Reject { corrupt: None }
+            HostKeyEval::Changed {
+                previous: SAMPLE_FINGERPRINT.to_string(),
+            }
         );
     }
 
@@ -1379,10 +2209,10 @@ mod tests {
         std::fs::write(&path, "}{ definitely not json").unwrap();
         match evaluate_host_key(
             read_known_hosts(&path),
-            &host_port_key("example.com", 22),
+            &canonical_endpoint("example.com", 22),
             SAMPLE_FINGERPRINT,
         ) {
-            HostKeyEval::Reject { corrupt } => assert!(corrupt.is_some()),
+            HostKeyEval::Corrupt { reason } => assert!(!reason.is_empty()),
             other => panic!("corrupt store must fail closed, got {other:?}"),
         }
     }
@@ -1405,7 +2235,7 @@ mod tests {
         let mut hosts = BTreeMap::new();
         hosts.insert("example.com:22".to_string(), SAMPLE_FINGERPRINT.to_string());
         hosts.insert("10.0.0.5:2222".to_string(), "SHA256:other-host".to_string());
-        let restored = parse_known_hosts(&serialize_known_hosts(&hosts)).unwrap();
+        let restored = parse_known_hosts(&serialize_known_hosts(&hosts).unwrap()).unwrap();
         assert_eq!(restored, hosts);
     }
 
@@ -1415,12 +2245,729 @@ mod tests {
         let path = tmp.path().join("nested").join("known_hosts.json");
         let mut hosts = BTreeMap::new();
         hosts.insert(
-            host_port_key("example.com", 22),
+            canonical_endpoint("example.com", 22),
             SAMPLE_FINGERPRINT.to_string(),
         );
-        persist_known_hosts(&path, &hosts);
+        persist_known_hosts(&path, &hosts, &StdHostKeyIo).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(parse_known_hosts(&content).unwrap(), hosts);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    fn test_manager(
+        path: PathBuf,
+        timeout: Duration,
+        persist_io: Arc<dyn HostKeyPersistIo>,
+    ) -> (SshManager, Arc<Mutex<Vec<SshHostKeyPrompt>>>) {
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let sink = prompts.clone();
+        let mut manager = SshManager::with_parts(
+            Box::new(|_| {}),
+            path,
+            Arc::new(move |prompt| sink.lock().unwrap().push(prompt)),
+            timeout,
+            persist_io,
+        );
+        manager.auth_probe = Some(Arc::new(Mutex::new(Vec::new())));
+        (manager, prompts)
+    }
+
+    async fn pending_challenge_id(controller: &HostKeyController) -> String {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(id) = controller.pending.lock().unwrap().keys().next().cloned() {
+                return id;
+            }
+            if Instant::now() > deadline {
+                panic!("timed out waiting for a pending host-key challenge");
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn spawn_challenge(
+        controller: Arc<HostKeyController>,
+        connection_id: &str,
+        host: &str,
+        port: u16,
+        endpoint: &str,
+        fingerprint: &str,
+    ) -> tokio::task::JoinHandle<bool> {
+        let connection_id = connection_id.to_string();
+        let host = host.to_string();
+        let endpoint = endpoint.to_string();
+        let fingerprint = fingerprint.to_string();
+        tokio::spawn(async move {
+            controller
+                .challenge_and_wait(
+                    &connection_id,
+                    &host,
+                    port,
+                    &endpoint,
+                    "ssh-ed25519",
+                    &fingerprint,
+                )
+                .await
+        })
+    }
+
+    #[test]
+    fn unseen_key_is_a_challenge_not_an_accept() {
+        let eval = evaluate_host_key(
+            Ok(BTreeMap::new()),
+            &canonical_endpoint("example.com", 22),
+            SAMPLE_FINGERPRINT,
+        );
+        assert_eq!(eval, HostKeyEval::New);
+    }
+
+    #[tokio::test]
+    async fn accept_persists_then_match_permits_without_another_challenge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let controller =
+            HostKeyController::new(path.clone(), Arc::new(|_| {}), Duration::from_secs(2));
+        let endpoint = canonical_endpoint("example.com", 22);
+        let wait = spawn_challenge(
+            controller.clone(),
+            "conn-1",
+            "example.com",
+            22,
+            &endpoint,
+            SAMPLE_FINGERPRINT,
+        );
+        let challenge_id = pending_challenge_id(&controller).await;
+        controller
+            .respond(&challenge_id, true, &endpoint, SAMPLE_FINGERPRINT)
+            .unwrap();
+        assert!(wait.await.unwrap());
+        controller
+            .persist_pin(&endpoint, SAMPLE_FINGERPRINT)
+            .unwrap();
+        assert_eq!(
+            evaluate_host_key(read_known_hosts(&path), &endpoint, SAMPLE_FINGERPRINT),
+            HostKeyEval::Match
+        );
+        let stored = read_known_hosts(&path).unwrap();
+        assert_eq!(
+            stored.get(&endpoint).map(String::as_str),
+            Some(SAMPLE_FINGERPRINT)
+        );
+    }
+
+    #[tokio::test]
+    async fn reject_timeout_stale_and_replay_deny() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let controller =
+            HostKeyController::new(path.clone(), Arc::new(|_| {}), Duration::from_millis(40));
+        let endpoint = canonical_endpoint("example.com", 22);
+
+        let reject_wait = spawn_challenge(
+            controller.clone(),
+            "conn-reject",
+            "example.com",
+            22,
+            &endpoint,
+            SAMPLE_FINGERPRINT,
+        );
+        let reject_id = pending_challenge_id(&controller).await;
+        controller
+            .respond(&reject_id, false, &endpoint, SAMPLE_FINGERPRINT)
+            .unwrap();
+        assert!(!reject_wait.await.unwrap());
+        assert!(read_known_hosts(&path).unwrap().is_empty());
+        assert!(controller
+            .respond(&reject_id, true, &endpoint, SAMPLE_FINGERPRINT)
+            .is_err());
+
+        let timeout_wait = controller.challenge_and_wait(
+            "conn-timeout",
+            "example.com",
+            22,
+            &endpoint,
+            "ssh-ed25519",
+            SAMPLE_FINGERPRINT,
+        );
+        assert!(!timeout_wait.await);
+        assert!(controller.pending.lock().unwrap().is_empty());
+
+        let stale =
+            HostKeyController::new(path.clone(), Arc::new(|_| {}), Duration::from_millis(1));
+        let (tx, _rx) = oneshot::channel();
+        stale.pending.lock().unwrap().insert(
+            "stale-id".into(),
+            PendingHostKeyChallenge {
+                connection_id: "conn-stale".into(),
+                endpoint: endpoint.clone(),
+                algorithm: "ssh-ed25519".into(),
+                fingerprint: SAMPLE_FINGERPRINT.into(),
+                expires_at: Instant::now() - Duration::from_secs(1),
+                tx,
+            },
+        );
+        assert!(stale
+            .respond("stale-id", true, &endpoint, SAMPLE_FINGERPRINT)
+            .is_err());
+        assert!(stale.pending.lock().unwrap().is_empty());
+
+        let mismatch = HostKeyController::new(path, Arc::new(|_| {}), Duration::from_secs(2));
+        let mismatch_wait = spawn_challenge(
+            mismatch.clone(),
+            "conn-mismatch",
+            "example.com",
+            22,
+            &endpoint,
+            SAMPLE_FINGERPRINT,
+        );
+        let mismatch_id = pending_challenge_id(&mismatch).await;
+        assert!(mismatch
+            .respond(
+                &mismatch_id,
+                true,
+                &canonical_endpoint("other.example", 22),
+                SAMPLE_FINGERPRINT
+            )
+            .is_err());
+        assert!(!mismatch_wait.await.unwrap());
+    }
+
+    struct CoordinatedHostKeyIo {
+        before_lock: Box<dyn Fn() + Send + Sync>,
+        inner: StdHostKeyIo,
+    }
+
+    impl CoordinatedHostKeyIo {
+        fn new(before_lock: impl Fn() + Send + Sync + 'static) -> Self {
+            Self {
+                before_lock: Box::new(before_lock),
+                inner: StdHostKeyIo,
+            }
+        }
+    }
+
+    impl HostKeyPersistIo for CoordinatedHostKeyIo {
+        fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
+            self.inner.create_dir_all(path)
+        }
+
+        fn lock_file(&self, file: &std::fs::File) -> std::io::Result<()> {
+            (self.before_lock)();
+            self.inner.lock_file(file)
+        }
+
+        fn unlock_file(&self, file: &std::fs::File) -> std::io::Result<()> {
+            self.inner.unlock_file(file)
+        }
+
+        fn create_temp(&self, parent: &Path, contents: &[u8]) -> std::io::Result<PathBuf> {
+            self.inner.create_temp(parent, contents)
+        }
+
+        fn set_restrictive_permissions(&self, path: &Path) -> std::io::Result<()> {
+            self.inner.set_restrictive_permissions(path)
+        }
+
+        fn sync_file(&self, path: &Path) -> std::io::Result<()> {
+            self.inner.sync_file(path)
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            self.inner.rename(from, to)
+        }
+
+        fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
+            self.inner.sync_dir(path)
+        }
+    }
+
+    #[test]
+    fn concurrent_independent_controllers_preserve_both_pins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_a = Arc::clone(&barrier);
+        let barrier_b = Arc::clone(&barrier);
+        let controller_a = HostKeyController::with_io(
+            path.clone(),
+            Arc::new(|_| {}),
+            Duration::from_secs(2),
+            Arc::new(CoordinatedHostKeyIo::new(move || {
+                barrier_a.wait();
+            })),
+        );
+        let controller_b = HostKeyController::with_io(
+            path.clone(),
+            Arc::new(|_| {}),
+            Duration::from_secs(2),
+            Arc::new(CoordinatedHostKeyIo::new(move || {
+                barrier_b.wait();
+            })),
+        );
+        let a = std::thread::spawn(move || {
+            controller_a.persist_pin(&canonical_endpoint("a.example.com", 22), "SHA256:aaa")
+        });
+        let b = std::thread::spawn(move || {
+            controller_b.persist_pin(&canonical_endpoint("b.example.com", 2222), "SHA256:bbb")
+        });
+        a.join().unwrap().unwrap();
+        b.join().unwrap().unwrap();
+        let hosts = read_known_hosts(&path).unwrap();
+        assert_eq!(
+            hosts
+                .get(&canonical_endpoint("a.example.com", 22))
+                .map(String::as_str),
+            Some("SHA256:aaa")
+        );
+        assert_eq!(
+            hosts
+                .get(&canonical_endpoint("b.example.com", 2222))
+                .map(String::as_str),
+            Some("SHA256:bbb")
+        );
+    }
+
+    #[test]
+    fn stale_independent_controller_cannot_erase_completed_pin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let resume_rx = Arc::new(Mutex::new(resume_rx));
+        let resume_for_hook = Arc::clone(&resume_rx);
+        let stale = HostKeyController::with_io(
+            path.clone(),
+            Arc::new(|_| {}),
+            Duration::from_secs(2),
+            Arc::new(CoordinatedHostKeyIo::new(move || {
+                entered_tx.send(()).unwrap();
+                resume_for_hook.lock().unwrap().recv().unwrap();
+            })),
+        );
+        let completed =
+            HostKeyController::new(path.clone(), Arc::new(|_| {}), Duration::from_secs(2));
+
+        let stale_writer = std::thread::spawn(move || {
+            stale.persist_pin(&canonical_endpoint("stale.example.com", 22), "SHA256:stale")
+        });
+        entered_rx.recv().unwrap();
+        completed
+            .persist_pin(
+                &canonical_endpoint("completed.example.com", 22),
+                "SHA256:completed",
+            )
+            .unwrap();
+        resume_tx.send(()).unwrap();
+        stale_writer.join().unwrap().unwrap();
+
+        let hosts = read_known_hosts(&path).unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(
+            hosts
+                .get(&canonical_endpoint("completed.example.com", 22))
+                .map(String::as_str),
+            Some("SHA256:completed")
+        );
+        assert_eq!(
+            hosts
+                .get(&canonical_endpoint("stale.example.com", 22))
+                .map(String::as_str),
+            Some("SHA256:stale")
+        );
+    }
+
+    #[test]
+    fn injected_lock_write_fsync_rename_parent_sync_and_unlock_failures_deny() {
+        let tmp = tempfile::tempdir().unwrap();
+        for point in [
+            PersistFailPoint::Lock,
+            PersistFailPoint::Write,
+            PersistFailPoint::Fsync,
+            PersistFailPoint::Rename,
+            PersistFailPoint::ParentSync,
+            PersistFailPoint::Unlock,
+        ] {
+            let path = tmp.path().join(format!("known_hosts-{point:?}.json"));
+            let lock = Mutex::new(());
+            let io = FaultyHostKeyIo::new(point);
+            let err = persist_accepted_pin(
+                &path,
+                &lock,
+                &canonical_endpoint("example.com", 22),
+                SAMPLE_FINGERPRINT,
+                &io,
+            )
+            .unwrap_err();
+            assert!(err.contains("injected") || err.contains("無法"), "{err}");
+            if matches!(
+                point,
+                PersistFailPoint::Lock
+                    | PersistFailPoint::Write
+                    | PersistFailPoint::Fsync
+                    | PersistFailPoint::Rename
+            ) {
+                assert!(!path.exists(), "pre-rename failure must not leave a pin");
+            }
+        }
+    }
+
+    #[test]
+    fn persist_failure_does_not_leave_a_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let lock = Mutex::new(());
+        let io = FaultyHostKeyIo::new(PersistFailPoint::Rename);
+        assert!(persist_accepted_pin(
+            &path,
+            &lock,
+            &canonical_endpoint("example.com", 22),
+            SAMPLE_FINGERPRINT,
+            &io,
+        )
+        .is_err());
+        assert_eq!(
+            evaluate_host_key(
+                read_known_hosts(&path),
+                &canonical_endpoint("example.com", 22),
+                SAMPLE_FINGERPRINT
+            ),
+            HostKeyEval::New
+        );
+    }
+
+    async fn spawn_test_ssh_server(
+        host_key: russh::keys::PrivateKey,
+        auth_calls: Arc<Mutex<Vec<String>>>,
+    ) -> u16 {
+        use russh::server::{self, Auth, Server as _};
+
+        struct TestServer {
+            auth_calls: Arc<Mutex<Vec<String>>>,
+        }
+        struct TestHandler {
+            auth_calls: Arc<Mutex<Vec<String>>>,
+        }
+        impl server::Server for TestServer {
+            type Handler = TestHandler;
+            fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
+                TestHandler {
+                    auth_calls: self.auth_calls.clone(),
+                }
+            }
+        }
+        impl server::Handler for TestHandler {
+            type Error = russh::Error;
+            async fn auth_password(
+                &mut self,
+                user: &str,
+                _password: &str,
+            ) -> Result<Auth, Self::Error> {
+                self.auth_calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("password:{user}"));
+                Ok(Auth::Accept)
+            }
+            async fn auth_publickey(
+                &mut self,
+                user: &str,
+                _key: &russh::keys::PublicKey,
+            ) -> Result<Auth, Self::Error> {
+                self.auth_calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("publickey:{user}"));
+                Ok(Auth::Accept)
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = russh::server::Config {
+            keys: vec![host_key],
+            auth_rejection_time: Duration::from_millis(0),
+            auth_rejection_time_initial: Some(Duration::from_millis(0)),
+            inactivity_timeout: Some(Duration::from_secs(5)),
+            ..Default::default()
+        };
+        let mut server = TestServer { auth_calls };
+        tokio::spawn(async move {
+            let _ = server.run_on_socket(Arc::new(config), &listener).await;
+        });
+        port
+    }
+
+    const TEST_HOST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDUGvy/dQi6qt6SkwsGTu3EcAiTFB8VrntPMcvXnOxZoQAAAJDwjSfa8I0n
+2gAAAAtzc2gtZWQyNTUxOQAAACDUGvy/dQi6qt6SkwsGTu3EcAiTFB8VrntPMcvXnOxZoQ
+AAAECo3jCqAAIhzabgFbjTlGTuA6Cminb+DrfcNAIxPjNV/dQa/L91CLqq3pKTCwZO7cRw
+CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
+-----END OPENSSH PRIVATE KEY-----";
+    const TEST_HOST_FINGERPRINT: &str = "SHA256:pMXX/KzhB+iSQDQYHa283nwklPkTkwlDERt7V0AGdEE";
+
+    fn spawn_connect(
+        manager: Arc<SshManager>,
+        host: &str,
+        port: u16,
+        user: &str,
+    ) -> tokio::task::JoinHandle<Result<SshConnectResult, String>> {
+        let host = host.to_string();
+        let user = user.to_string();
+        tokio::spawn(async move {
+            manager
+                .connect(
+                    host,
+                    port,
+                    user,
+                    SshAuth::Password {
+                        password: "secret".into(),
+                    },
+                )
+                .await
+        })
+    }
+
+    async fn wait_for_new_prompt(prompts: &Arc<Mutex<Vec<SshHostKeyPrompt>>>) -> SshHostKeyPrompt {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(prompt) = prompts
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|prompt| match prompt {
+                    SshHostKeyPrompt::New { .. } => Some(prompt.clone()),
+                    _ => None,
+                })
+            {
+                return prompt;
+            }
+            if Instant::now() > deadline {
+                panic!("timed out waiting for first-use host-key prompt");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn unseen_key_blocks_before_auth_and_accept_persists() {
+        let host_key = russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).unwrap();
+        assert_eq!(
+            fingerprint_sha256(&host_key.public_key()),
+            TEST_HOST_FINGERPRINT
+        );
+        let auth_calls = Arc::new(Mutex::new(Vec::new()));
+        let port = spawn_test_ssh_server(host_key, auth_calls.clone()).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let (manager, prompts) =
+            test_manager(path.clone(), Duration::from_secs(5), Arc::new(StdHostKeyIo));
+        let probe = manager.auth_probe.clone().unwrap();
+        let manager = Arc::new(manager);
+        let connect = spawn_connect(manager.clone(), "127.0.0.1", port, "alice");
+        let prompt = wait_for_new_prompt(&prompts).await;
+        assert!(auth_calls.lock().unwrap().is_empty());
+        assert!(!probe
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|stage| *stage == "authenticate"));
+        let SshHostKeyPrompt::New {
+            challenge_id,
+            endpoint,
+            algorithm,
+            fingerprint,
+            ..
+        } = prompt
+        else {
+            panic!("expected new-key prompt");
+        };
+        assert_eq!(algorithm, "ssh-ed25519");
+        assert_eq!(fingerprint, TEST_HOST_FINGERPRINT);
+        manager
+            .respond_host_key(&challenge_id, true, &endpoint, &fingerprint)
+            .unwrap();
+        let result = connect.await.unwrap().unwrap();
+        assert_eq!(result.fingerprint, TEST_HOST_FINGERPRINT);
+        assert!(!result.known_host);
+        assert_eq!(
+            auth_calls.lock().unwrap().as_slice(),
+            ["password:alice".to_string()]
+        );
+        let stages = probe.lock().unwrap().clone();
+        let challenge_at = stages
+            .iter()
+            .position(|s| *s == "host_key_challenge")
+            .unwrap();
+        let pinned_at = stages.iter().position(|s| *s == "host_key_pinned").unwrap();
+        let auth_at = stages.iter().position(|s| *s == "authenticate").unwrap();
+        assert!(
+            challenge_at < pinned_at && pinned_at < auth_at,
+            "{stages:?}"
+        );
+        assert_eq!(
+            read_known_hosts(&path)
+                .unwrap()
+                .get(&canonical_endpoint("127.0.0.1", port))
+                .map(String::as_str),
+            Some(TEST_HOST_FINGERPRINT)
+        );
+
+        let (manager2, prompts2) =
+            test_manager(path, Duration::from_secs(5), Arc::new(StdHostKeyIo));
+        let again = manager2
+            .connect(
+                "127.0.0.1".into(),
+                port,
+                "alice".into(),
+                SshAuth::Password {
+                    password: "secret".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(again.known_host);
+        assert!(prompts2.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reject_and_timeout_never_run_auth() {
+        let host_key = russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).unwrap();
+        let auth_calls = Arc::new(Mutex::new(Vec::new()));
+        let port = spawn_test_ssh_server(host_key, auth_calls.clone()).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let (manager, prompts) =
+            test_manager(path.clone(), Duration::from_secs(5), Arc::new(StdHostKeyIo));
+        let manager = Arc::new(manager);
+        let connect = spawn_connect(manager.clone(), "127.0.0.1", port, "alice");
+        let prompt = wait_for_new_prompt(&prompts).await;
+        let SshHostKeyPrompt::New {
+            challenge_id,
+            endpoint,
+            fingerprint,
+            ..
+        } = prompt
+        else {
+            panic!("expected new-key prompt");
+        };
+        manager
+            .respond_host_key(&challenge_id, false, &endpoint, &fingerprint)
+            .unwrap();
+        let err = connect.await.unwrap().unwrap_err();
+        assert!(err.contains("拒絕") || err.contains("逾時"), "{err}");
+        assert!(auth_calls.lock().unwrap().is_empty());
+        assert!(read_known_hosts(&path).unwrap().is_empty());
+
+        let (timeout_mgr, _) = test_manager(
+            path.clone(),
+            Duration::from_millis(40),
+            Arc::new(StdHostKeyIo),
+        );
+        let err = timeout_mgr
+            .connect(
+                "127.0.0.1".into(),
+                port,
+                "alice".into(),
+                SshAuth::Password {
+                    password: "secret".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("拒絕") || err.contains("逾時"), "{err}");
+        assert!(auth_calls.lock().unwrap().is_empty());
+        assert!(read_known_hosts(&path).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn changed_key_denies_without_accept_and_shows_both_fingerprints() {
+        let host_key = russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).unwrap();
+        let auth_calls = Arc::new(Mutex::new(Vec::new()));
+        let port = spawn_test_ssh_server(host_key, auth_calls.clone()).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("known_hosts.json");
+        let mut pinned = BTreeMap::new();
+        pinned.insert(
+            canonical_endpoint("127.0.0.1", port),
+            "SHA256:previously-pinned-key".into(),
+        );
+        persist_known_hosts(&path, &pinned, &StdHostKeyIo).unwrap();
+        let (manager, prompts) = test_manager(path, Duration::from_secs(5), Arc::new(StdHostKeyIo));
+        let err = manager
+            .connect(
+                "127.0.0.1".into(),
+                port,
+                "alice".into(),
+                SshAuth::Password {
+                    password: "secret".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("SHA256:previously-pinned-key"), "{err}");
+        assert!(err.contains(TEST_HOST_FINGERPRINT), "{err}");
+        assert!(auth_calls.lock().unwrap().is_empty());
+        let emitted = prompts.lock().unwrap().clone();
+        match emitted.as_slice() {
+            [SshHostKeyPrompt::Changed {
+                previous_fingerprint,
+                fingerprint,
+                ..
+            }] => {
+                assert_eq!(previous_fingerprint, "SHA256:previously-pinned-key");
+                assert_eq!(fingerprint, TEST_HOST_FINGERPRINT);
+            }
+            other => panic!("expected changed prompt, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_lock_persist_and_unlock_failures_during_accept_deny_auth() {
+        let host_key = russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).unwrap();
+        let auth_calls = Arc::new(Mutex::new(Vec::new()));
+        let port = spawn_test_ssh_server(host_key, auth_calls.clone()).await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        for point in [
+            PersistFailPoint::Lock,
+            PersistFailPoint::Rename,
+            PersistFailPoint::ParentSync,
+            PersistFailPoint::Unlock,
+        ] {
+            let path = tmp.path().join(format!("known_hosts-{point:?}.json"));
+            let (manager, prompts) = test_manager(
+                path.clone(),
+                Duration::from_secs(5),
+                Arc::new(FaultyHostKeyIo::new(point)),
+            );
+            let manager = Arc::new(manager);
+            let connect = spawn_connect(manager.clone(), "127.0.0.1", port, "alice");
+            let prompt = wait_for_new_prompt(&prompts).await;
+            let SshHostKeyPrompt::New {
+                challenge_id,
+                endpoint,
+                fingerprint,
+                ..
+            } = prompt
+            else {
+                panic!("expected new-key prompt");
+            };
+            manager
+                .respond_host_key(&challenge_id, true, &endpoint, &fingerprint)
+                .unwrap();
+            let err = connect.await.unwrap().unwrap_err();
+            assert!(err.contains("無法保存"), "{point:?}: {err}");
+            assert!(auth_calls.lock().unwrap().is_empty());
+            if matches!(point, PersistFailPoint::Lock | PersistFailPoint::Rename) {
+                assert!(read_known_hosts(&path).unwrap().is_empty());
+            }
+        }
     }
 
     #[test]
@@ -1438,8 +2985,227 @@ mod tests {
             path: format!("/{name}"),
             is_dir,
             is_symlink: false,
+            name_safe: path_capability::is_safe_leaf_name(name),
             size: 0,
         }
+    }
+
+    #[test]
+    fn upload_source_deserializes_tagged_workspace_and_selected() {
+        let workspace: SftpUploadSource = serde_json::from_str(
+            r#"{"kind":"workspace","workspaceId":"ws-opaque","relativePath":"src/a.txt"}"#,
+        )
+        .unwrap();
+        match workspace {
+            SftpUploadSource::Workspace {
+                workspace_id,
+                relative_path,
+            } => {
+                assert_eq!(workspace_id, "ws-opaque");
+                assert_eq!(relative_path, "src/a.txt");
+            }
+            _ => panic!("expected workspace source"),
+        }
+        assert!(serde_json::from_str::<SftpUploadSource>(
+            r#"{"kind":"workspace","workspaceRoot":"/forged","relativePath":"secret.txt"}"#
+        )
+        .is_err());
+        let selected: SftpUploadSource =
+            serde_json::from_str(r#"{"kind":"selected","capabilityId":"sel-1"}"#).unwrap();
+        match selected {
+            SftpUploadSource::Selected { capability_id } => assert_eq!(capability_id, "sel-1"),
+            _ => panic!("expected selected source"),
+        }
+    }
+
+    #[test]
+    fn workspace_upload_source_rejects_forged_capability_id() {
+        let selected = path_capability::SelectedPathRegistry::new();
+        let workspaces = path_capability::WorkspacePathRegistry::new();
+        let trust_dir = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            trust_dir.path().join("workspace-trust.json"),
+        );
+
+        let error = open_sftp_upload_source(
+            &selected,
+            &workspaces,
+            &trust,
+            SftpUploadSource::Workspace {
+                workspace_id: "ws-forged".into(),
+                relative_path: "secret.txt".into(),
+            },
+        )
+        .err()
+        .expect("forged workspace capability must fail");
+
+        assert_eq!(
+            error,
+            PathCapabilityError::WorkspaceCapabilityMissing.as_code()
+        );
+    }
+
+    #[test]
+    fn workspace_upload_source_rejects_untrusted_workspace_before_file_open() {
+        let workspace = tempfile::tempdir().unwrap();
+        let selected = path_capability::SelectedPathRegistry::new();
+        let workspaces = path_capability::WorkspacePathRegistry::new();
+        let workspace_id = workspaces.activate(workspace.path()).unwrap();
+        let trust_dir = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            trust_dir.path().join("workspace-trust.json"),
+        );
+
+        let error = open_sftp_upload_source(
+            &selected,
+            &workspaces,
+            &trust,
+            SftpUploadSource::Workspace {
+                workspace_id,
+                relative_path: "missing.txt".into(),
+            },
+        )
+        .err()
+        .expect("untrusted workspace must fail before file open");
+
+        assert!(error.contains("untrustedWorkspace"), "{error}");
+    }
+
+    #[test]
+    fn workspace_upload_source_accepts_trusted_exact_identity() {
+        use std::io::Read as _;
+
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("report.txt"), "trusted").unwrap();
+        let selected = path_capability::SelectedPathRegistry::new();
+        let workspaces = path_capability::WorkspacePathRegistry::new();
+        let workspace_id = workspaces.activate(workspace.path()).unwrap();
+        let trust_dir = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            trust_dir.path().join("workspace-trust.json"),
+        );
+        trust.0.grant_for_tests(workspace.path().to_str().unwrap());
+
+        let mut opened = open_sftp_upload_source(
+            &selected,
+            &workspaces,
+            &trust,
+            SftpUploadSource::Workspace {
+                workspace_id,
+                relative_path: "report.txt".into(),
+            },
+        )
+        .unwrap();
+        let mut content = String::new();
+        opened.file.read_to_string(&mut content).unwrap();
+
+        assert_eq!(content, "trusted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_upload_source_rejects_replaced_trusted_directory() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace = parent.path().join("workspace");
+        let retired = parent.path().join("retired");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("report.txt"), "old").unwrap();
+        let selected = path_capability::SelectedPathRegistry::new();
+        let workspaces = path_capability::WorkspacePathRegistry::new();
+        let workspace_id = workspaces.activate(&workspace).unwrap();
+        let trust_dir = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            trust_dir.path().join("workspace-trust.json"),
+        );
+        trust.0.grant_for_tests(workspace.to_str().unwrap());
+        std::fs::rename(&workspace, &retired).unwrap();
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("report.txt"), "replacement").unwrap();
+
+        let error = open_sftp_upload_source(
+            &selected,
+            &workspaces,
+            &trust,
+            SftpUploadSource::Workspace {
+                workspace_id,
+                relative_path: "report.txt".into(),
+            },
+        )
+        .err()
+        .expect("replaced workspace identity must fail");
+
+        assert!(error.contains("identityMismatch"), "{error}");
+    }
+
+    #[test]
+    fn selected_upload_source_does_not_require_workspace_trust() {
+        use std::io::Read as _;
+
+        let selected_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(selected_file.path(), "selected").unwrap();
+        let selected = path_capability::SelectedPathRegistry::new();
+        let capability_id = selected
+            .grant(selected_file.path().to_str().unwrap())
+            .unwrap();
+        let workspaces = path_capability::WorkspacePathRegistry::new();
+        let trust_dir = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            trust_dir.path().join("workspace-trust.json"),
+        );
+
+        let mut opened = open_sftp_upload_source(
+            &selected,
+            &workspaces,
+            &trust,
+            SftpUploadSource::Selected { capability_id },
+        )
+        .unwrap();
+        let mut content = String::new();
+        opened.file.read_to_string(&mut content).unwrap();
+
+        assert_eq!(content, "selected");
+    }
+
+    #[test]
+    fn remote_leaf_rejects_hostile_names_before_any_io() {
+        for path in [
+            "/home/u/../.ssh/config",
+            "/home/u/foo\\bar",
+            "/home/u/C:foo",
+            "/home/u/",
+        ] {
+            assert_eq!(
+                reject_unsafe_remote_leaf(path).unwrap_err(),
+                PathCapabilityError::UnsafeLeaf.as_code()
+            );
+        }
+        assert!(reject_unsafe_remote_leaf("/home/u/report.pdf").is_ok());
+    }
+
+    #[test]
+    fn download_dest_rejects_hostile_leaf_before_any_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        for leaf in ["../.ssh/config", "foo\\bar", "C:foo", "//server/share/a"] {
+            let err = path_capability::DestScratch::create(tmp.path(), leaf, "xfer-1")
+                .err()
+                .expect("hostile download leaf must fail");
+            assert_eq!(err, PathCapabilityError::UnsafeLeaf);
+        }
+        assert!(tmp.path().read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn same_destination_transfers_are_rejected() {
+        let set = path_capability::TransferDestSet::new();
+        let first = set.acquire("remote:s1:/home/u/a.txt".into()).unwrap();
+        assert_eq!(
+            set.acquire("remote:s1:/home/u/a.txt".into())
+                .err()
+                .expect("same dest must be busy"),
+            PathCapabilityError::DestinationBusy
+        );
+        drop(first);
+        assert!(set.acquire("remote:s1:/home/u/a.txt".into()).is_ok());
     }
 
     #[test]

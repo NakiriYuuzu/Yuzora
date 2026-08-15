@@ -9,6 +9,19 @@ export interface DiffCounts {
     deleted: number
 }
 
+/** Skip the O(n*m) LCS when the DP table would exceed this many cells. */
+export const LINE_DIFF_CELL_LIMIT = 200_000
+
+function countLines(text: string): number {
+    if (text === "") return 0
+    let count = 1
+    for (let i = 0; i < text.length; i++) {
+        if (text.charCodeAt(i) === 10) count++
+    }
+    if (text.charCodeAt(text.length - 1) === 10) count--
+    return count
+}
+
 function toLines(text: string): string[] {
     if (text === "") return []
     const lines = text.split("\n")
@@ -36,7 +49,17 @@ function lcsLength(a: string[], b: string[]): number {
     return prev[m]
 }
 
-export function lineDiffCounts(original: string, modified: string): DiffCounts {
+function exceedsCellLimit(countA: number, countB: number): boolean {
+    if (countA === 0 || countB === 0) return false
+    return countA > Math.floor(LINE_DIFF_CELL_LIMIT / countB)
+}
+
+export function lineDiffCounts(original: string, modified: string): DiffCounts | null {
+    const countA = countLines(original)
+    const countB = countLines(modified)
+    if (countA === 0) return { added: countB, deleted: 0 }
+    if (countB === 0) return { added: 0, deleted: countA }
+    if (exceedsCellLimit(countA, countB)) return null
     const a = toLines(original)
     const b = toLines(modified)
     const common = lcsLength(a, b)

@@ -181,11 +181,19 @@ describe("sftpStore transfers", () => {
         connectHost("/home/u")
         mockUpload.mockResolvedValueOnce(undefined)
         mockList.mockResolvedValueOnce(listing("/home/u", []))
-        await useSftpStore.getState().upload(HOST, "/local/report.pdf")
+        await useSftpStore.getState().upload(HOST, {
+            kind: "workspace",
+            workspaceId: "ws-opaque",
+            relativePath: "report.pdf"
+        })
 
         const call = mockUpload.mock.calls[0]
         expect(call[0]).toBe("sess-1")
-        expect(call[2]).toBe("/local/report.pdf")
+        expect(call[2]).toEqual({
+            kind: "workspace",
+            workspaceId: "ws-opaque",
+            relativePath: "report.pdf"
+        })
         expect(call[3]).toBe("/home/u")
         const transferId = call[1]
         const tr = useSftpStore.getState().transfers[transferId]
@@ -199,7 +207,11 @@ describe("sftpStore transfers", () => {
     it("upload marks the transfer failed when the backend rejects", async () => {
         connectHost("/home/u")
         mockUpload.mockRejectedValueOnce("寫入遠端檔案失敗：boom")
-        await useSftpStore.getState().upload(HOST, "/local/f.bin")
+        await useSftpStore.getState().upload(HOST, {
+            kind: "selected",
+            capabilityId: "sel-1",
+            name: "f.bin"
+        })
         const tr = Object.values(useSftpStore.getState().transfers)[0]
         expect(tr.error).toContain("寫入遠端檔案失敗")
         expect(tr.done).toBe(true)
@@ -208,9 +220,17 @@ describe("sftpStore transfers", () => {
     it("download registers a transfer and calls sftp_download with the picked local path", async () => {
         connectHost("/home/u")
         mockDownload.mockResolvedValueOnce(undefined)
-        await useSftpStore.getState().download(HOST, file("data.csv"), "/local/data.csv")
+        await useSftpStore.getState().download(HOST, file("data.csv"), {
+            capabilityId: "download-1",
+            leaf: "data.csv"
+        })
         const call = mockDownload.mock.calls[0]
-        expect(call).toEqual(["sess-1", expect.any(String), "/home/u/data.csv", "/local/data.csv"])
+        expect(call).toEqual([
+            "sess-1",
+            expect.any(String),
+            "/home/u/data.csv",
+            { capabilityId: "download-1", leaf: "data.csv" }
+        ])
         const tr = Object.values(useSftpStore.getState().transfers)[0]
         expect(tr.direction).toBe("download")
         expect(tr.done).toBe(true)

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "roots": [
+    "typescript",
+    "typescript-language-server"
+  ],
+  "fileCount": 137,
+  "treeSha256": "e36b137e9ad1bed30ee0f0e126ce8f032eee633553bb48b567fac9125bdef811"
+}

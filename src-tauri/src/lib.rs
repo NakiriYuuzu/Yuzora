@@ -1,11 +1,9 @@
-pub mod agent_process;
-pub mod agent_terminal;
-pub mod agent_versions;
 pub mod askpass;
 pub mod asset_scope;
 pub mod db_connection_actor;
 pub mod db_credentials;
 pub mod db_profiles;
+pub mod db_query_worker;
 pub mod db_result_session;
 pub mod db_service;
 pub mod dev_server_detect;
@@ -13,15 +11,20 @@ pub mod env_path;
 pub mod file_content;
 pub mod fs_service;
 pub mod git_log;
+pub mod git_oid;
 pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
+mod herdr_limits;
+pub mod herdr_service;
 pub mod logging;
 pub mod lsp_adapters;
 pub mod lsp_config;
 pub mod lsp_download;
 pub mod lsp_service;
+pub mod path_capability;
 pub mod perf_service;
+pub mod preview_resource_policy;
 pub mod preview_server;
 pub mod preview_webview;
 pub mod process_kill;
@@ -33,6 +36,7 @@ pub mod search_service;
 pub mod ssh_service;
 pub mod watcher;
 pub mod workspace_path_index;
+pub mod workspace_trust;
 
 const DATABASE_SHUTDOWN_THREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
@@ -128,6 +132,7 @@ pub fn run() {
     let database_shutdown_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let graceful_exit_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     tauri::Builder::default()
+        .on_webview_event(preview_webview::forward_preview_file_drop)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
@@ -148,6 +153,7 @@ pub fn run() {
         .manage(git_service::GitServiceState(std::sync::Arc::new(
             std::sync::Mutex::new(None),
         )))
+        .manage(workspace_trust::WorkspaceTrustState::production())
         .manage(git_watch::GitWatchState(std::sync::Arc::new(
             std::sync::Mutex::new(None),
         )))
@@ -159,12 +165,12 @@ pub fn run() {
         .manage(perf_service::PerfState(std::sync::Mutex::new(
             sysinfo::System::new(),
         )))
-        .manage(preview_server::PreviewServerState(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )))
+        .manage(preview_server::PreviewServerState::new())
         .manage(preview_webview::PreviewWebviewState(std::sync::Mutex::new(
             None,
         )))
+        .manage(path_capability::WorkspacePathState::new())
+        .manage(path_capability::DownloadDestinationState::new())
         .setup(|app| {
             use tauri::{Emitter, Manager};
             #[cfg(desktop)]
@@ -184,7 +190,7 @@ pub fn run() {
                 result_sessions,
             ));
             // Windows stub / bind 失敗回 Err → 降級：manage AskpassState(None)，四個 remote
-            // command 經 env_for 取空 env（git 仍可用系統 credential helper）。務必 manage，
+            // command 經 begin_operation 取空 env（git 仍可用系統 credential helper）。務必 manage，
             // 否則 State<AskpassState> 取用時 panic。
             match askpass::AskpassServer::start(move |req| {
                 let _ = handle.emit("git:askpass-request", req);
@@ -206,15 +212,15 @@ pub fn run() {
             app.manage(process_service::ProcessState(std::sync::Arc::new(
                 process_service::ProcessManager::new(app.handle().clone()),
             )));
-            app.manage(agent_process::AgentProcessState(std::sync::Arc::new(
-                agent_process::AgentManager::new(),
-            )));
-            app.manage(agent_terminal::AgentTerminalState(std::sync::Arc::new(
-                agent_terminal::AgentTerminalManager::new(),
-            )));
             app.manage(ssh_service::SshState(std::sync::Arc::new(
                 ssh_service::SshManager::new(app.handle().clone()),
             )));
+            app.manage(path_capability::SelectedPathState::new());
+            let herdr_manager = std::sync::Arc::new(herdr_service::HerdrManager::new());
+            let herdr_config_dir = app.path().app_data_dir()?.join("herdr");
+            let herdr_resource_dir = app.path().resource_dir().ok();
+            herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir);
+            app.manage(herdr_service::HerdrState(herdr_manager));
             // The main window starts hidden (tauri.conf `visible: false`) so the
             // native chrome never flashes the OS theme before the persisted
             // preference applies; the frontend shows it on its first themed
@@ -240,6 +246,7 @@ pub fn run() {
             fs_service::open_workspace,
             fs_service::list_dir,
             fs_service::open_file,
+            fs_service::is_openable_file,
             fs_service::save_file,
             fs_service::fs_create_file,
             fs_service::fs_create_dir,
@@ -272,8 +279,10 @@ pub fn run() {
             db_profiles::db_profile_open,
             db_profiles::db_profile_disconnect,
             db_profiles::db_test_connection,
+            db_profiles::db_postgres_transport_challenge,
             perf_service::perf_snapshot,
-            preview_server::preview_serve,
+            preview_server::preview_create,
+            preview_server::preview_revoke,
             preview_server::preview_stop_all,
             preview_webview::preview_open_url,
             preview_webview::preview_set_bounds,
@@ -282,6 +291,12 @@ pub fn run() {
             preview_webview::preview_back,
             preview_webview::preview_forward,
             preview_webview::preview_reload,
+            workspace_trust::workspace_trust_status,
+            workspace_trust::workspace_trust_list,
+            workspace_trust::workspace_trust_challenge,
+            workspace_trust::workspace_trust_execution_challenge,
+            workspace_trust::workspace_trust_grant,
+            workspace_trust::workspace_trust_revoke,
             git_service::git_detect,
             git_service::git_bootstrap,
             git_service::git_status_cmd,
@@ -293,6 +308,7 @@ pub fn run() {
             git_service::git_branches,
             git_service::git_create_branch,
             git_service::git_checkout,
+            git_service::git_checkout_detached,
             git_service::git_cherry_pick,
             git_service::git_fetch_cmd,
             git_service::git_pull_cmd,
@@ -329,20 +345,8 @@ pub fn run() {
             process_service::dev_server_start,
             process_service::dev_server_stop,
             process_service::dev_server_stop_workspace,
-            agent_process::agent_spawn,
-            agent_process::agent_write,
-            agent_process::agent_kill,
-            agent_process::agent_list,
-            agent_process::agent_set_trace,
-            agent_process::agent_stderr_tail,
-            agent_process::agent_detect_runtimes,
-            agent_versions::agent_latest_versions,
-            agent_terminal::agent_terminal_create,
-            agent_terminal::agent_terminal_output,
-            agent_terminal::agent_terminal_wait_for_exit,
-            agent_terminal::agent_terminal_kill,
-            agent_terminal::agent_terminal_release,
             ssh_service::ssh_connect,
+            ssh_service::ssh_host_key_respond,
             ssh_service::ssh_open_shell,
             ssh_service::ssh_write,
             ssh_service::ssh_resize,
@@ -352,7 +356,42 @@ pub fn run() {
             ssh_service::sftp_rename,
             ssh_service::sftp_remove,
             ssh_service::sftp_upload,
-            ssh_service::sftp_download
+            ssh_service::sftp_download,
+            path_capability::sftp_pick_selected_path,
+            path_capability::sftp_pick_download_destination,
+            herdr_service::herdr_sessions,
+            herdr_service::herdr_capabilities,
+            herdr_service::herdr_snapshot,
+            herdr_service::herdr_terminal_open,
+            herdr_service::herdr_terminal_input,
+            herdr_service::herdr_terminal_resize,
+            herdr_service::herdr_terminal_scroll,
+            herdr_service::herdr_terminal_release,
+            herdr_service::herdr_terminal_create,
+            herdr_service::herdr_workspace_focus,
+            herdr_service::herdr_workspace_create,
+            herdr_service::herdr_workspace_rename,
+            herdr_service::herdr_workspace_close,
+            herdr_service::herdr_worktree_list,
+            herdr_service::herdr_tab_create,
+            herdr_service::herdr_tab_focus,
+            herdr_service::herdr_tab_rename,
+            herdr_service::herdr_tab_close,
+            herdr_service::herdr_tab_move,
+            herdr_service::herdr_pane_focus,
+            herdr_service::herdr_pane_rename,
+            herdr_service::herdr_pane_split,
+            herdr_service::herdr_pane_zoom,
+            herdr_service::herdr_pane_swap,
+            herdr_service::herdr_pane_close,
+            herdr_service::herdr_layout_export,
+            herdr_service::herdr_layout_set_split_ratio,
+            herdr_service::herdr_binary_source_get,
+            herdr_service::herdr_binary_source_set,
+            herdr_service::herdr_agent_get,
+            herdr_service::herdr_agent_read,
+            herdr_service::herdr_events_subscribe,
+            herdr_service::herdr_events_release
         ])
         .build(tauri::generate_context!())
         .expect("error while running yuzora application")
@@ -371,13 +410,18 @@ pub fn run() {
                 }
                 app.state::<pty_service::PtyState>().0.kill_all();
                 app.state::<process_service::ProcessState>().0.kill_all();
-                app.state::<agent_process::AgentProcessState>().0.kill_all();
-                app.state::<agent_terminal::AgentTerminalState>()
-                    .0
-                    .kill_all();
                 app.state::<lsp_service::LspState>().0.stop_all();
                 git_service::kill_all_processes();
                 app.state::<ssh_service::SshState>().0.kill_all();
+                app.state::<path_capability::SelectedPathState>().clear();
+                app.state::<path_capability::WorkspacePathState>().clear();
+                app.state::<path_capability::DownloadDestinationState>()
+                    .clear();
+                // Only Yuzora-owned Herdr connector children — never stop the
+                // Herdr server or kill panes.
+                app.state::<herdr_service::HerdrState>()
+                    .0
+                    .release_all_connectors();
                 app.state::<preview_server::PreviewServerState>().stop_all();
                 if !database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     let database_profiles = app
@@ -414,11 +458,12 @@ mod command_inventory_tests {
             "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
             "app.state::<pty_service::PtyState>().0.kill_all()",
             "app.state::<process_service::ProcessState>().0.kill_all()",
-            "app.state::<agent_process::AgentProcessState>().0.kill_all()",
-            "app.state::<agent_terminal::AgentTerminalState>()",
             "app.state::<lsp_service::LspState>().0.stop_all()",
             "git_service::kill_all_processes()",
             "app.state::<ssh_service::SshState>().0.kill_all()",
+            "app.state::<path_capability::SelectedPathState>().clear()",
+            "app.state::<herdr_service::HerdrState>()",
+            "release_all_connectors()",
             "app.state::<preview_server::PreviewServerState>().stop_all()",
             "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
             "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
@@ -466,6 +511,55 @@ mod command_inventory_tests {
             app_start < run_source.find("tauri::Builder::default()").unwrap(),
             "app_start must be recorded before the app builder starts writing other events"
         );
+    }
+
+    #[test]
+    fn herdr_native_interaction_commands_are_registered() {
+        let inventory_source = include_str!("lib.rs");
+        for cmd in [
+            "herdr_service::herdr_workspace_rename",
+            "herdr_service::herdr_workspace_close",
+            "herdr_service::herdr_worktree_list",
+            "herdr_service::herdr_tab_create",
+            "herdr_service::herdr_tab_focus",
+            "herdr_service::herdr_tab_rename",
+            "herdr_service::herdr_tab_close",
+            "herdr_service::herdr_tab_move",
+            "herdr_service::herdr_pane_focus",
+            "herdr_service::herdr_pane_rename",
+            "herdr_service::herdr_pane_split",
+            "herdr_service::herdr_pane_zoom",
+            "herdr_service::herdr_pane_swap",
+            "herdr_service::herdr_pane_close",
+            "herdr_service::herdr_layout_export",
+            "herdr_service::herdr_layout_set_split_ratio",
+            "herdr_service::herdr_binary_source_get",
+            "herdr_service::herdr_binary_source_set",
+            "herdr_service::herdr_agent_get",
+            "herdr_service::herdr_agent_read",
+            "herdr_service::herdr_events_subscribe",
+            "herdr_service::herdr_events_release",
+        ] {
+            assert!(
+                inventory_source.contains(cmd),
+                "missing Herdr native interaction command: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_branch_v2_commands_are_registered() {
+        let inventory_source = include_str!("lib.rs");
+        for command in [
+            "git_service::git_create_branch,",
+            "git_service::git_checkout,",
+            "git_service::git_checkout_detached,",
+        ] {
+            assert!(
+                inventory_source.lines().any(|line| line.trim() == command),
+                "missing Git Branches v2 command registration: {command}"
+            );
+        }
     }
 
     #[test]

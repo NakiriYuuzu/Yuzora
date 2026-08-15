@@ -181,6 +181,72 @@ describe("workspaceSession per-workspace entries (v2)", () => {
     })
 })
 
+describe("workspaceSession file-only persistence", () => {
+    it("save filters preview and Herdr pseudo paths from a mixed tab set", () => {
+        saveWorkspaceSession({
+            workspacePath: "/ws",
+            tabs: [
+                "/ws/a.ts",
+                "yuzora://preview",
+                "yuzora://markdown-preview/%2Fws%2Fnotes.md",
+                "yuzora://herdr/live/term-1",
+                "/ws/b.ts"
+            ],
+            activePath: "yuzora://herdr/live/term-1"
+        })
+        expect(loadWorkspaceSession()).toEqual({
+            workspacePath: "/ws",
+            tabs: ["/ws/a.ts", "/ws/b.ts"],
+            activePath: null
+        })
+    })
+
+    it("load sanitizes stale Herdr/preview paths already on disk", () => {
+        localStorage.setItem(
+            WORKSPACE_SESSION_STORAGE_KEY,
+            JSON.stringify({
+                version: 2,
+                lastWorkspacePath: "/ws",
+                workspaces: {
+                    "/ws": {
+                        tabs: [
+                            "/ws/a.ts",
+                            "yuzora://preview",
+                            "yuzora://markdown-preview/%2Fws%2Fnotes.md",
+                            "yuzora://herdr/live/term-9",
+                            "/ws/c.ts"
+                        ],
+                        activePath: "yuzora://markdown-preview/%2Fws%2Fnotes.md"
+                    }
+                }
+            })
+        )
+        expect(loadWorkspaceSession()).toEqual({
+            workspacePath: "/ws",
+            tabs: ["/ws/a.ts", "/ws/c.ts"],
+            activePath: null
+        })
+        expect(loadWorkspaceSessionEntry("/ws")).toEqual({
+            tabs: ["/ws/a.ts", "/ws/c.ts"],
+            activePath: null
+        })
+    })
+
+    it("round-trips mixed file+preview+Herdr input as files only", () => {
+        saveWorkspaceSession({
+            workspacePath: "/ws",
+            tabs: ["/ws/file.ts", "yuzora://preview", "yuzora://herdr/live/t1"],
+            activePath: "/ws/file.ts"
+        })
+        const loaded = loadWorkspaceSession()
+        expect(loaded?.tabs).toEqual(["/ws/file.ts"])
+        expect(loaded?.activePath).toBe("/ws/file.ts")
+        // Re-save the loaded session must not reintroduce pseudo paths.
+        saveWorkspaceSession(loaded!)
+        expect(loadWorkspaceSession()?.tabs).toEqual(["/ws/file.ts"])
+    })
+})
+
 describe("workspaceSession v1 migration", () => {
     it("reads a legacy v1 session", () => {
         localStorage.setItem(WORKSPACE_SESSION_V1_STORAGE_KEY, JSON.stringify(SESSION))
@@ -240,7 +306,10 @@ describe("openWorkspaceAtPath per-workspace tab 還原 (A→B→A)", () => {
             pendingReveal: null
         })
         // Canonicalization is identity here so session keys match the input path.
-        vi.mocked(openWorkspace).mockReset().mockImplementation(async (p: string) => p)
+        vi.mocked(openWorkspace).mockReset().mockImplementation(async (p: string) => ({
+            canonicalPath: p,
+            capabilityId: `ws-${p}`
+        }))
         vi.mocked(startWatch).mockReset().mockResolvedValue(undefined)
         vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
     })

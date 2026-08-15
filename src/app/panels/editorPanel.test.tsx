@@ -29,13 +29,14 @@ afterEach(() => {
   useWorkspaceStore.setState({ workspacePath: null })
 })
 
-// Files is AppShell's default mode. The project header and terminal drawer
-// are siblings of EditorPanel (not children of it), so these render
-// AppShell directly rather than EditorPanel in isolation — that's the only
-// way to exercise the full "Files mode entry state" surface this task adds.
+// ADE is AppShell's default mode; Files is second. The project header and
+// terminal drawer are siblings of EditorPanel (not children of it), so these
+// render AppShell directly rather than EditorPanel in isolation — that's the
+// only way to exercise the full "Files mode entry state" surface this task adds.
 describe("Files mode entry states", () => {
   it("renders the project header and file tree empty state", () => {
     render(<AppShell />)
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }))
 
     const nav = screen.getByLabelText("Project navigation")
     expect(within(nav).getByText("Yuzora")).toBeInTheDocument()
@@ -48,20 +49,21 @@ describe("Files mode entry states", () => {
     expect(screen.getByText("Open a project to start editing")).toBeInTheDocument()
   })
 
-  it("toggles the preview dock from the tab bar", () => {
+  it("opens Browser from the tab add menu and closes it from its tab", async () => {
     render(<AppShell />)
 
-    const toggle = screen.getByRole("button", { name: "Toggle preview" })
     expect(screen.queryByText(i18n.t("emptyTitle", { ns: "preview" }))).not.toBeInTheDocument()
-    expect(toggle).toHaveAttribute("aria-pressed", "false")
+    expect(screen.queryByRole("button", { name: "Toggle preview" })).toBeNull()
 
-    fireEvent.click(toggle)
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Add tab" }), {
+      button: 0,
+      ctrlKey: false
+    })
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Browser" }))
     expect(screen.getByText(i18n.t("emptyTitle", { ns: "preview" }))).toBeInTheDocument()
-    expect(toggle).toHaveAttribute("aria-pressed", "true")
 
-    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole("button", { name: "Close Preview" }))
     expect(screen.queryByText(i18n.t("emptyTitle", { ns: "preview" }))).not.toBeInTheDocument()
-    expect(toggle).toHaveAttribute("aria-pressed", "false")
   })
 
   it("terminal panel starts fully hidden; the rail switch shows/hides it, the drawer's own header expands/collapses its content", () => {
@@ -102,10 +104,10 @@ describe("Files mode entry states", () => {
     const projectNav = screen.getByLabelText("Project navigation")
     expect(mainSurface.style.minHeight).toBe("44px")
 
-    for (const mode of ["Git", "Database", "SSH", "AgentZone", "Files"]) {
+    for (const mode of ["Git", "Database", "SSH", "Files"]) {
       fireEvent.click(within(projectNav).getByRole("tab", { name: mode }))
       expect(screen.getByTestId("main-surface")).toBe(mainSurface)
-      expect(mainSurface.style.minHeight).toBe(mode === "AgentZone" ? "280px" : "44px")
+      expect(mainSurface.style.minHeight).toBe("44px")
     }
 
     expect(screen.getByText("Open a project to start editing")).toBe(editorState)

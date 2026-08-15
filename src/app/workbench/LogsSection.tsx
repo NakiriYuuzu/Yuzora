@@ -11,6 +11,7 @@ import { groupRowsByRun, shortRunId, UNKNOWN_RUN } from "@/features/logs/runGrou
 import type { LogRecord, SanitizeSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { SettingCard, SettingsTextInput } from "./settingsPrimitives"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 // 必須與 Rust 的 logging::VALID_KINDS 一致，否則新 kind 的 record 永遠篩不出來。
 const LOG_KIND_OPTIONS = ["debug", "user_action", "audit", "app_lifecycle"]
@@ -458,7 +459,11 @@ export function LogsSection({
             })}
           </div>
         )}
-        <div className="flex flex-col gap-[7px] overflow-x-auto">
+        <ScrollArea
+          orientation="horizontal"
+          className="w-full"
+          contentClassName="flex flex-col gap-[7px]"
+        >
           {visibleRows.length === 0 && !loading && (
             <div className="rounded-[8px] bg-(--yz-sunk) px-[10px] py-[12px] text-[11.5px] text-(--ink-3)">
               沒有符合 filters 的 logs。
@@ -493,14 +498,16 @@ export function LogsSection({
                   <span className="truncate">{row.message}</span>
                 </button>
                 {isExpanded && (
-                  <pre className="overflow-x-auto border-t border-(--line-1) px-[10px] py-[9px] font-mono text-[10.5px] leading-[1.5] whitespace-pre-wrap text-(--ink-2)">
-                    {metadataJson(row.metadata)}
-                  </pre>
+                  <ScrollArea orientation="horizontal" className="border-t border-(--line-1)" focusable>
+                    <pre className="px-[10px] py-[9px] font-mono text-[10.5px] leading-[1.5] whitespace-pre-wrap text-(--ink-2)">
+                      {metadataJson(row.metadata)}
+                    </pre>
+                  </ScrollArea>
                 )}
               </div>
             )
           })}
-        </div>
+        </ScrollArea>
       </SettingCard>
     </div>
   )

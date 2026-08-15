@@ -13,6 +13,7 @@ import { ensureClient } from "../lsp/lspManager"
 import { requestDocumentSymbols, requestWorkspaceSymbols } from "../lsp/symbols"
 import { getDocument } from "../editor/documentRegistry"
 import i18n from "../lib/i18n"
+import { markdownPreviewPath } from "../lib/markdownPreviewTab"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
 const managed = {
@@ -28,7 +29,10 @@ beforeEach(() => {
     vi.mocked(getDocument).mockResolvedValue({ result: { kind: "full", content: "", size: 0, lineEnding: "lf" } })
     useWorkspaceStore.setState({
         workspacePath: "/ws",
-        groups: [{ tabs: [], activePath: "/ws/a.ts" }],
+        groups: [{
+            tabs: [{ path: "/ws/a.ts", name: "a.ts", dirty: false, externallyModified: false }],
+            activePath: "/ws/a.ts"
+        }],
         activeGroupIndex: 0,
         pendingReveal: null
     })
@@ -205,6 +209,63 @@ it("gates out a non-full file (tooLarge): no client spin-up, no request, empty l
     expect(ensureClient).not.toHaveBeenCalled()
     expect(requestDocumentSymbols).not.toHaveBeenCalled()
     expect(screen.queryByRole("option")).not.toBeInTheDocument()
+})
+
+it("does not treat an active markdown preview tab as a file for document/LSP lookup", async () => {
+    const previewPath = markdownPreviewPath("/ws/readme.md")
+    useWorkspaceStore.setState({
+        workspacePath: "/ws",
+        groups: [{
+            activePath: previewPath,
+            tabs: [{
+                path: previewPath,
+                name: "Preview",
+                dirty: false,
+                externallyModified: false,
+                kind: "markdown-preview",
+                sourcePath: "/ws/readme.md"
+            }]
+        }],
+        activeGroupIndex: 0
+    })
+
+    render(<SymbolPicker open onOpenChange={() => {}} mode="document" />)
+    await flush()
+
+    expect(getDocument).not.toHaveBeenCalled()
+    expect(ensureClient).not.toHaveBeenCalled()
+    expect(requestDocumentSymbols).not.toHaveBeenCalled()
+})
+
+it("workspace mode also skips LSP when the active tab is a markdown preview", async () => {
+    vi.useFakeTimers()
+    const previewPath = markdownPreviewPath("/ws/readme.md")
+    useWorkspaceStore.setState({
+        workspacePath: "/ws",
+        groups: [{
+            activePath: previewPath,
+            tabs: [{
+                path: previewPath,
+                name: "Preview",
+                dirty: false,
+                externallyModified: false,
+                kind: "markdown-preview",
+                sourcePath: "/ws/readme.md"
+            }]
+        }],
+        activeGroupIndex: 0
+    })
+
+    render(<SymbolPicker open onOpenChange={() => {}} mode="workspace" />)
+    const input = () => screen.getByPlaceholderText(i18n.t("workspaceSymbolsPlaceholder", { ns: "lsp" }))
+    await act(async () => {
+        fireEvent.change(input(), { target: { value: "Foo" } })
+        vi.advanceTimersByTime(300)
+        for (let i = 0; i < 6; i++) await Promise.resolve()
+    })
+
+    expect(getDocument).not.toHaveBeenCalled()
+    expect(ensureClient).not.toHaveBeenCalled()
 })
 
 it("workspace mode waits for the initialize handshake before deciding there is no provider (cold start)", async () => {

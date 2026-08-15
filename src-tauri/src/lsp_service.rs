@@ -26,7 +26,7 @@ use crate::{logging, lsp_adapters, lsp_config};
 mod framing;
 // Preserve the historical `lsp_service::{frame, parse_frames, which}` paths that
 // the manager, lsp_download, and env_path all reference.
-pub use framing::{frame, parse_frames, which};
+pub use framing::{frame, parse_frames, which, which_toolchain};
 
 const MAX_RESTARTS: u32 = 3;
 const POLL_MS: u64 = 50;
@@ -76,7 +76,6 @@ pub struct ResolvedServer {
     server_id: String,
     command: String,
     args: Vec<String>,
-    install_hint: String,
 }
 
 struct ServerShared {
@@ -156,24 +155,23 @@ impl LspManager {
 
         // Spike trap #1: resolve to an absolute path or report Missing (no spawn).
         // Resolved before reserving so a Missing result never touches the map.
-        let path = match which(&resolved.command) {
-            Some(p) => p,
-            None => {
-                return LspServerInfo {
-                    workspace: workspace.to_string(),
-                    language: language.to_string(),
-                    server_id: resolved.server_id,
-                    command: resolved.command,
-                    path: None,
-                    status: LspProcessStatus::Missing {
-                        install_hint: resolved.install_hint,
-                    },
-                    last_startup_log: None,
-                    last_error: None,
-                    restart_count: 0,
-                };
-            }
-        };
+        let path =
+            match resolve_managed_launch_path(language, &resolved.server_id, &resolved.command) {
+                Ok(p) => p,
+                Err(install_hint) => {
+                    return LspServerInfo {
+                        workspace: workspace.to_string(),
+                        language: language.to_string(),
+                        server_id: resolved.server_id,
+                        command: resolved.command,
+                        path: None,
+                        status: LspProcessStatus::Missing { install_hint },
+                        last_startup_log: None,
+                        last_error: None,
+                        restart_count: 0,
+                    };
+                }
+            };
 
         let info = LspServerInfo {
             workspace: workspace.to_string(),
@@ -366,9 +364,16 @@ impl LspManager {
     }
 
     fn spawn_child(self: &Arc<Self>, shared: &Arc<ServerShared>) -> Result<(), String> {
-        let mut cmd = std::process::Command::new(&shared.path);
-        cmd.args(&shared.resolved.args)
-            .current_dir(&shared.workspace)
+        crate::lsp_download::verify_managed_install(
+            &shared.language,
+            &shared.resolved.server_id,
+            &shared.path,
+        )?;
+        let mut cmd = managed_lsp_command(&shared.path, &shared.resolved.args);
+        cmd.current_dir(&shared.workspace)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .env("PYTHONNOUSERSITE", "1")
+            .env("PYTHONSAFEPATH", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -653,6 +658,19 @@ impl Drop for LspManager {
     }
 }
 
+fn managed_lsp_command(path: &str, args: &[String]) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        if path.to_ascii_lowercase().ends_with(".cmd") {
+            let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+            return crate::process_kill::windows_batch_command(shell.as_os_str(), path, args);
+        }
+    }
+    let mut command = std::process::Command::new(path);
+    command.args(args);
+    command
+}
+
 fn stderr_loop(shared: Arc<ServerShared>, stderr: std::process::ChildStderr) {
     let reader = BufReader::new(stderr);
     let mut kept: Vec<String> = Vec::new();
@@ -669,6 +687,21 @@ fn stderr_loop(shared: Arc<ServerShared>, stderr: std::process::ChildStderr) {
 }
 
 // ---- tauri commands (thin: resolve config/adapter, bridge Channel) ----------
+
+fn reinstall_hint(base: &str, error: &str) -> String {
+    format!("{base}（完整性驗證失敗，請重新安裝：{error}）")
+}
+
+fn resolve_managed_launch_path(
+    language: &str,
+    server_id: &str,
+    command: &str,
+) -> Result<String, String> {
+    let path = which(command).ok_or_else(|| format!("找不到 {command}，請先安裝"))?;
+    crate::lsp_download::verify_managed_install(language, server_id, &path)
+        .map_err(|error| reinstall_hint(&format!("找不到可用的 {command}"), &error))?;
+    Ok(path)
+}
 
 fn detect_server_info_from(
     cfg: &lsp_config::LspConfig,
@@ -692,13 +725,24 @@ fn detect_server_info_from(
         .ok_or_else(|| format!("no LSP adapter for language {language}"))?;
     let adapter = lsp_adapters::adapter(language, &server_id)
         .ok_or_else(|| format!("unknown server {server_id} for {language}"))?;
-    let path = resolve_command(adapter.command);
-    let status = if path.is_some() {
-        LspProcessStatus::Stopped
-    } else {
-        LspProcessStatus::Missing {
-            install_hint: adapter.install_hint.to_string(),
+    let (path, status) = match resolve_command(adapter.command) {
+        Some(path) => {
+            match crate::lsp_download::verify_managed_install(language, &server_id, &path) {
+                Ok(()) => (Some(path), LspProcessStatus::Stopped),
+                Err(error) => (
+                    None,
+                    LspProcessStatus::Missing {
+                        install_hint: reinstall_hint(adapter.install_hint, &error),
+                    },
+                ),
+            }
         }
+        None => (
+            None,
+            LspProcessStatus::Missing {
+                install_hint: adapter.install_hint.to_string(),
+            },
+        ),
     };
 
     Ok(LspServerInfo {
@@ -771,7 +815,6 @@ pub async fn lsp_start(
             server_id: id,
             command: adapter.command.to_string(),
             args: adapter.args.iter().map(|s| s.to_string()).collect(),
-            install_hint: adapter.install_hint.to_string(),
         };
         let channel = on_message;
         let on_message: OnMessage = Arc::new(move |body| {
@@ -896,7 +939,6 @@ mod tests {
             server_id: "test".into(),
             command: command.into(),
             args: args.iter().map(|s| s.to_string()).collect(),
-            install_hint: "install it".into(),
         }
     }
 
@@ -1250,7 +1292,47 @@ mod tests {
     // --- config set-server fallback ---
 
     #[test]
-    fn detect_installed_but_not_started_returns_stopped_with_path() {
+    fn detect_tampered_managed_npm_install_requests_reinstall() {
+        let mut cfg = lsp_config::LspConfig::default();
+        cfg.defaults
+            .insert("typescript".into(), "typescript-language-server".into());
+        let tmp = tempfile::tempdir().unwrap();
+        let installed = tmp.path().join("typescript-language-server");
+        std::fs::write(&installed, b"shim").unwrap();
+        let catalog = crate::lsp_download::catalog::embedded_catalog().unwrap();
+        let identity = crate::lsp_download::catalog::resolve_identity(
+            catalog,
+            "typescript",
+            "typescript-language-server",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("catalog identity");
+        crate::lsp_download::catalog::write_provenance(
+            catalog,
+            "typescript",
+            "typescript-language-server",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            &installed,
+            &identity,
+        )
+        .unwrap();
+        let installed_s = installed.to_string_lossy().into_owned();
+
+        let info = detect_server_info_from(&cfg, None, "typescript", None, {
+            let installed_s = installed_s.clone();
+            move |command| (command == "typescript-language-server").then(|| installed_s.clone())
+        })
+        .unwrap();
+
+        assert_eq!(info.server_id, "typescript-language-server");
+        assert_eq!(info.path, None);
+        assert!(matches!(info.status, LspProcessStatus::Missing { .. }));
+    }
+
+    #[test]
+    fn detect_unverified_managed_binary_requests_reinstall() {
         let mut cfg = lsp_config::LspConfig::default();
         cfg.defaults
             .insert("typescript".into(), "typescript-language-server".into());
@@ -1261,25 +1343,31 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(info.server_id, "typescript-language-server");
-        assert_eq!(
-            info.path.as_deref(),
-            Some("/managed/typescript-language-server")
-        );
-        assert!(matches!(info.status, LspProcessStatus::Stopped));
+        assert!(info.path.is_none());
+        assert!(matches!(
+            info.status,
+            LspProcessStatus::Missing { ref install_hint }
+                if install_hint.contains("完整性驗證失敗") && install_hint.contains("請重新安裝")
+        ));
     }
 
     #[test]
-    fn detect_uses_workspace_override_and_reports_missing_without_spawning() {
+    fn detect_refuses_existing_managed_pylsp_when_catalog_route_is_unavailable() {
         let mut cfg = lsp_config::LspConfig::default();
         cfg.defaults.insert("python".into(), "pyright".into());
         cfg.workspaces.insert(
             "/workspace".into(),
             std::collections::BTreeMap::from([("python".into(), "pylsp".into())]),
         );
+        let tmp = tempfile::tempdir().unwrap();
+        let installed = tmp.path().join("pylsp");
+        std::fs::write(&installed, b"existing managed pip launcher").unwrap();
+        let installed = installed.to_string_lossy().into_owned();
 
-        let info =
-            detect_server_info_from(&cfg, Some("/workspace"), "python", None, |_| None).unwrap();
+        let info = detect_server_info_from(&cfg, Some("/workspace"), "python", None, |command| {
+            (command == "pylsp").then(|| installed.clone())
+        })
+        .unwrap();
 
         assert_eq!(info.workspace, "/workspace");
         assert_eq!(info.server_id, "pylsp");
@@ -1287,7 +1375,7 @@ mod tests {
         assert!(matches!(
             info.status,
             LspProcessStatus::Missing { ref install_hint }
-                if install_hint == "pip install python-lsp-server"
+                if install_hint.contains("complete reviewed dependency content manifests")
         ));
     }
 

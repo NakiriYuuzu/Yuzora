@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next"
 import { getVersion } from "@tauri-apps/api/app"
 import changelogMarkdown from "../../../CHANGELOG.md?raw"
 import {
-  Bot,
   Check,
   Code,
   Droplet,
@@ -14,6 +13,7 @@ import {
   Server,
   Shield,
   TerminalSquare,
+  Bot,
   X,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
@@ -28,8 +28,10 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  dialogMinSize,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   getLanguagePreference,
   setLanguagePreference,
@@ -40,11 +42,12 @@ import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useUpdateStore } from "@/state/updateStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
 import { SettingCard, Segmented, ToggleRow } from "./settingsPrimitives"
+import { HerdrSettingsSection } from "@/app/workbench/HerdrSettingsSection"
 import { GitSection } from "./GitSection"
 import { TerminalSection } from "./TerminalSection"
 import { PreviewSection } from "./PreviewSection"
-import { AgentSection } from "./AgentSection"
 import { LogsSection } from "./LogsSection"
 import { LspSection } from "./LspSection"
 
@@ -53,7 +56,6 @@ import { LspSection } from "./LspSection"
 export {
   TERMINAL_SETTINGS_STORAGE_KEY,
   PREVIEW_SETTINGS_STORAGE_KEY,
-  AGENT_SETTINGS_STORAGE_KEY,
   loadPreviewSettings,
 } from "./settingsStorage"
 export type {
@@ -61,6 +63,7 @@ export type {
 } from "./settingsStorage"
 
 import type { ThemePreference } from "./settingsStorage"
+import type { TrustedWorkspace } from "@/lib/types"
 
 interface SettingsDialogProps {
   open: boolean
@@ -111,10 +114,10 @@ type SectionId =
   | "safety"
   | "git"
   | "lsp"
-  | "agent"
   | "logs"
   | "terminal"
   | "preview"
+  | "herdr"
   | "about"
 
 // Design reference settings nav (§ settingsNav): three panes with icon rows.
@@ -125,9 +128,9 @@ const SECTIONS: { id: SectionId; icon: LucideIcon }[] = [
   { id: "appearance", icon: Droplet },
   { id: "editor", icon: Code },
   { id: "lsp", icon: Server },
-  { id: "agent", icon: Bot },
   { id: "logs", icon: FileText },
   { id: "terminal", icon: TerminalSquare },
+  { id: "herdr", icon: Bot },
   { id: "preview", icon: MonitorPlay },
   { id: "safety", icon: Shield },
   { id: "git", icon: GitBranch },
@@ -191,6 +194,9 @@ export function SettingsDialog({
   const hasDirtyDocuments = useWorkspaceStore((s) =>
     s.groups.some((group) => group.tabs.some((tab) => tab.dirty))
   )
+  const trustedWorkspaces = useWorkspaceTrustStore((s) => s.trustedWorkspaces)
+  const refreshTrustList = useWorkspaceTrustStore((s) => s.refreshList)
+  const revokeWorkspace = useWorkspaceTrustStore((s) => s.revokeWorkspace)
 
   useEffect(() => {
     if (!open) return
@@ -254,8 +260,10 @@ export function SettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        resizeId="settings"
+        minSize={dialogMinSize(520, 320)}
         showCloseButton={false}
-        className="yz-diffin flex h-[556px] max-h-[86vh] w-[720px] max-w-[92vw] flex-col gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 [backdrop-filter:var(--blur-frost)] sm:max-w-[92vw]"
+        className="yz-diffin flex min-h-0 flex-col gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 [backdrop-filter:var(--blur-frost)]"
       >
         <div className="flex shrink-0 items-center gap-[11px] border-b border-(--line-1) px-[20px] py-[15px]">
           <span
@@ -281,31 +289,43 @@ export function SettingsDialog({
         </div>
 
         <div className="flex min-h-0 flex-1">
-          <aside className="flex w-[198px] shrink-0 flex-col border-r border-(--line-1) bg-(--yz-panel) px-[11px] py-[14px]">
-            {SECTIONS.map(({ id, icon: Icon }) => {
-              const isActive = id === section
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  aria-pressed={isActive}
-                  onClick={() => selectSection(id)}
-                  className={cn(
-                    "flex h-[37px] shrink-0 items-center gap-[9px] rounded-[9px] px-[11px] text-[13px] tracking-[-0.01em] transition-all duration-[130ms] ease-(--ease-out)",
-                    isActive
-                      ? "bg-(--yz-solid) font-semibold text-(--ink-0) shadow-(--shadow-xs)"
-                      : "font-medium text-(--ink-2) hover:bg-(--yz-hover)"
-                  )}
-                >
-                  <span className="flex size-[22px] shrink-0 items-center justify-center">
-                    <Icon className="size-[15px]" aria-hidden="true" />
-                  </span>
-                  <span className="min-w-0 flex-1 text-left">{tw(`settings.sections.${id}.label`)}</span>
-                </button>
-              )
-            })}
-            <div className="flex-1" />
-            <div className="flex items-center gap-[7px] px-[10px] py-[8px]">
+          <aside
+            data-testid="settings-sidebar"
+            className="flex w-[198px] min-h-0 shrink-0 flex-col border-r border-(--line-1) bg-(--yz-panel)"
+          >
+            <ScrollArea
+              data-testid="settings-sidebar-scroll"
+              className="min-h-0 flex-1"
+              viewportClassName="px-[11px] pt-[14px] pb-[8px]"
+              contentClassName="flex flex-col gap-0"
+            >
+              {SECTIONS.map(({ id, icon: Icon }) => {
+                const isActive = id === section
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-pressed={isActive}
+                    onClick={() => selectSection(id)}
+                    className={cn(
+                      "flex h-[37px] w-full shrink-0 items-center gap-[9px] rounded-[9px] px-[11px] text-[13px] tracking-[-0.01em] transition-all duration-[130ms] ease-(--ease-out)",
+                      isActive
+                        ? "bg-(--yz-solid) font-semibold text-(--ink-0) shadow-(--shadow-xs)"
+                        : "font-medium text-(--ink-2) hover:bg-(--yz-hover)"
+                    )}
+                  >
+                    <span className="flex size-[22px] shrink-0 items-center justify-center">
+                      <Icon className="size-[15px]" aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 flex-1 text-left">{tw(`settings.sections.${id}.label`)}</span>
+                  </button>
+                )
+              })}
+            </ScrollArea>
+            <div
+              data-testid="settings-sidebar-footer"
+              className="flex shrink-0 items-center gap-[7px] border-t border-(--line-1) px-[21px] py-[10px]"
+            >
               <span
                 aria-hidden="true"
                 className="size-[6px] shrink-0 rounded-full bg-(--yz-accent)"
@@ -318,7 +338,7 @@ export function SettingsDialog({
             </div>
           </aside>
 
-          <div className="yzs min-w-0 flex-1 overflow-auto px-[26px] pt-[22px] pb-[26px]">
+          <ScrollArea className="min-w-0 flex-1" viewportClassName="px-[26px] pt-[22px] pb-[26px]" focusable>
             <h3 className="font-serif text-[17px] leading-[1.1] font-semibold text-(--ink-0)">
               {tw(`settings.sections.${active.id}.label`)}
             </h3>
@@ -429,32 +449,28 @@ export function SettingsDialog({
             )}
 
             {section === "safety" && (
-              <div className="flex flex-col">
-                <ToggleRow
-                  label={tw("settings.reconcileExternalChanges")}
-                  sub={tw("settings.reconcileExternalChangesSub")}
-                  checked={reconcile}
-                  onCheckedChange={setReconcile}
-                />
-                <ToggleRow
-                  label={tw("settings.confirmDestructiveGitActions")}
-                  sub={tw("settings.confirmDestructiveGitActionsSub")}
-                  locked
-                  checked={confirmGit}
-                  onCheckedChange={setConfirmGit}
-                />
-              </div>
+              <SafetySettingsSection
+                reconcile={reconcile}
+                onReconcileChange={setReconcile}
+                confirmGit={confirmGit}
+                onConfirmGitChange={setConfirmGit}
+                open={open}
+                trustedWorkspaces={trustedWorkspaces}
+                onRefreshTrustList={refreshTrustList}
+                onRevokeWorkspace={revokeWorkspace}
+              />
             )}
 
             {section === "lsp" && <LspSection targetLanguage={targetLanguage} />}
 
-            {section === "agent" && <AgentSection />}
 
             {section === "logs" && (
               <LogsSection initialSource={settingsLogSource ?? undefined} openNonce={openNonce} />
             )}
 
             {section === "terminal" && <TerminalSection />}
+
+            {section === "herdr" && <HerdrSettingsSection />}
 
             {section === "preview" && <PreviewSection />}
 
@@ -575,11 +591,15 @@ export function SettingsDialog({
                 </SettingCard>
               </div>
             )}
-          </div>
+          </ScrollArea>
         </div>
       </DialogContent>
       <Dialog open={installConfirmationOpen} onOpenChange={setInstallConfirmationOpen}>
-        <DialogContent showCloseButton={false} className="sm:max-w-[440px]">
+<DialogContent
+          resizeId="settings-install"
+          showCloseButton={false}
+          className="flex min-h-0 flex-col"
+        >
           <DialogHeader>
             <DialogTitle>{tw("settings.installConfirmTitle")}</DialogTitle>
             <DialogDescription>{tw("settings.installConfirmDescription")}</DialogDescription>
@@ -600,5 +620,94 @@ export function SettingsDialog({
         </DialogContent>
       </Dialog>
     </Dialog>
+  )
+}
+
+function SafetySettingsSection({
+  reconcile,
+  onReconcileChange,
+  confirmGit,
+  onConfirmGitChange,
+  open,
+  trustedWorkspaces,
+  onRefreshTrustList,
+  onRevokeWorkspace,
+}: {
+  reconcile: boolean
+  onReconcileChange: (value: boolean) => void
+  confirmGit: boolean
+  onConfirmGitChange: (value: boolean) => void
+  open: boolean
+  trustedWorkspaces: TrustedWorkspace[]
+  onRefreshTrustList: () => Promise<TrustedWorkspace[]>
+  onRevokeWorkspace: (canonicalPath: string) => Promise<TrustedWorkspace[]>
+}) {
+  const { t: tw } = useTranslation("workbench")
+
+  useEffect(() => {
+    if (!open) return
+    void onRefreshTrustList().catch(() => {
+      // List errors stay in the trust store.
+    })
+  }, [open, onRefreshTrustList])
+
+  return (
+    <div className="flex flex-col gap-[14px]">
+      <ToggleRow
+        label={tw("settings.reconcileExternalChanges")}
+        sub={tw("settings.reconcileExternalChangesSub")}
+        checked={reconcile}
+        onCheckedChange={onReconcileChange}
+      />
+      <ToggleRow
+        label={tw("settings.confirmDestructiveGitActions")}
+        sub={tw("settings.confirmDestructiveGitActionsSub")}
+        locked
+        checked={confirmGit}
+        onCheckedChange={onConfirmGitChange}
+      />
+      <SettingCard
+        label={tw("settings.trustedWorkspaces")}
+        sub={tw("settings.trustedWorkspacesSub")}
+      >
+        {trustedWorkspaces.length === 0 ? (
+          <p className="text-[12px] text-(--ink-3)">{tw("settings.noTrustedWorkspaces")}</p>
+        ) : (
+          <ScrollArea className="max-h-[220px]">
+            <ul className="flex flex-col gap-[8px] pr-[4px]">
+              {trustedWorkspaces.map((workspace) => (
+                <li
+                  key={workspace.canonicalPath}
+                  className="flex items-start justify-between gap-[12px] rounded-[8px] border border-(--line-1) bg-(--yz-sunk) px-[10px] py-[8px]"
+                >
+                  <div className="min-w-0">
+                    <p className="break-all font-mono text-[12px] text-(--ink-1)">
+                      {workspace.canonicalPath}
+                    </p>
+                    <p className="mt-[2px] text-[11px] text-(--ink-3)">
+                      {tw("settings.trustedWorkspaceGrantedAt", {
+                        date: workspace.grantedAt,
+                      })}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-[26px] shrink-0 px-[8px] text-[11px]"
+                    aria-label={tw("settings.revokeWorkspaceNamed", {
+                      path: workspace.canonicalPath,
+                    })}
+                    onClick={() => void onRevokeWorkspace(workspace.canonicalPath)}
+                  >
+                    {tw("settings.revokeWorkspace")}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </ScrollArea>
+        )}
+      </SettingCard>
+    </div>
   )
 }

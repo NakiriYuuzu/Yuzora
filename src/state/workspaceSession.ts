@@ -3,12 +3,18 @@
 // cold-start restore (SessionRestoreBridge); the map lets workspaceActions
 // restore a workspace's tabs when switching back to it (#60 T4c, spec
 // docs/specs/workspace-switch-async-and-cache.md §Phase 3.3). Only genuine
-// file paths are stored; pseudo-tabs (the singleton preview tab) are filtered
-// out before persisting. The legacy v1 single-session format is migrated on
-// read; the first write persists v2 and removes the v1 key.
+// file paths are stored; pseudo-tabs (preview + Herdr terminal pages) are
+// filtered out before persisting and again on load. The legacy v1
+// single-session format is migrated on read; the first write persists v2 and
+// removes the v1 key.
+
+import { isHerdrPagePath } from "../lib/herdrPages"
 
 export const WORKSPACE_SESSION_V1_STORAGE_KEY = "yuzora.workspace.session.v1"
 export const WORKSPACE_SESSION_STORAGE_KEY = "yuzora.workspace.session.v2"
+
+// Keep this local so session storage never depends on the workspace store module.
+const PREVIEW_TAB_PATH = "yuzora://preview"
 
 // LRU cap on tracked workspaces; the least recently saved entry is evicted
 // first. Entries are tab-path lists only (no buffers), so this is generous.
@@ -65,19 +71,54 @@ function emptyFile(): WorkspaceSessionFileV2 {
     return { version: 2, lastWorkspacePath: null, workspaces: {} }
 }
 
+/** Only real file paths are restorable — drop preview / Herdr pseudo paths. */
+export function isPersistableSessionPath(path: string): boolean {
+    if (!path || path === PREVIEW_TAB_PATH) return false
+    if (isHerdrPagePath(path)) return false
+    // Defensive: any other yuzora:// pseudo scheme stays out of session storage.
+    if (path.startsWith("yuzora://")) return false
+    return true
+}
+
+export function sanitizeSessionPaths(
+    tabs: string[],
+    activePath: string | null
+): WorkspaceSessionEntry {
+    const cleaned = tabs.filter(isPersistableSessionPath)
+    const nextActive =
+        activePath && cleaned.includes(activePath) ? activePath : null
+    return { tabs: cleaned, activePath: nextActive }
+}
+
+function sanitizeEntry(entry: WorkspaceSessionEntry): WorkspaceSessionEntry {
+    return sanitizeSessionPaths(entry.tabs, entry.activePath)
+}
+
+function sanitizeFile(file: WorkspaceSessionFileV2): WorkspaceSessionFileV2 {
+    const workspaces: Record<string, WorkspaceSessionEntry> = {}
+    for (const [path, entry] of Object.entries(file.workspaces)) {
+        workspaces[path] = sanitizeEntry(entry)
+    }
+    return {
+        version: 2,
+        lastWorkspacePath: file.lastWorkspacePath,
+        workspaces
+    }
+}
+
 function readFile(): WorkspaceSessionFileV2 {
     try {
         const rawV2 = localStorage.getItem(WORKSPACE_SESSION_STORAGE_KEY)
         if (rawV2 !== null) {
             // A v2 store (even a corrupt one) wins over any lingering v1 key.
             const parsed: unknown = JSON.parse(rawV2)
-            return isV2File(parsed) ? parsed : emptyFile()
+            return isV2File(parsed) ? sanitizeFile(parsed) : emptyFile()
         }
         const rawV1 = localStorage.getItem(WORKSPACE_SESSION_V1_STORAGE_KEY)
         if (rawV1 !== null) {
             const parsed: unknown = JSON.parse(rawV1)
             if (isV1Session(parsed)) {
-                return {
+                return sanitizeFile({
                     version: 2,
                     lastWorkspacePath: parsed.workspacePath,
                     workspaces: {
@@ -86,7 +127,7 @@ function readFile(): WorkspaceSessionFileV2 {
                             activePath: parsed.activePath
                         }
                     }
-                }
+                })
             }
         }
     } catch {
@@ -125,10 +166,10 @@ export function saveWorkspaceSession(session: WorkspaceSession): void {
         const file = readFile()
         // Delete-then-set moves the key to the end of insertion order (LRU touch).
         delete file.workspaces[session.workspacePath]
-        file.workspaces[session.workspacePath] = {
-            tabs: session.tabs,
-            activePath: session.activePath
-        }
+        file.workspaces[session.workspacePath] = sanitizeSessionPaths(
+            session.tabs,
+            session.activePath
+        )
         file.lastWorkspacePath = session.workspacePath
         const keys = Object.keys(file.workspaces)
         while (keys.length > WORKSPACE_SESSION_MAX_WORKSPACES) {

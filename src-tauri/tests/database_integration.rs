@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::Connection as SqliteFixtureConnection;
+use yuzora_lib::db_result_session::DEFAULT_FIELD_BYTES;
 use yuzora_lib::db_service::integration_harness::{IntegrationConnection, IntegrationRuntime};
 use yuzora_lib::db_service::{
     DatabaseError, DatabaseErrorEngine, DatabaseObjectKind, DatabaseOperationalErrorCode, DbValue,
@@ -27,6 +28,14 @@ impl Engine {
             Self::Sqlite => "sqlite",
             Self::Postgres => "postgres",
             Self::Mssql => "mssql",
+        }
+    }
+}
+
+fn ensure_query_helper_bin() {
+    if std::env::var_os(yuzora_lib::db_query_worker::WORKER_BIN_ENV).is_none() {
+        if let Some(path) = option_env!("CARGO_BIN_EXE_yuzora") {
+            std::env::set_var(yuzora_lib::db_query_worker::WORKER_BIN_ENV, path);
         }
     }
 }
@@ -120,7 +129,7 @@ fn first_result_session(run: &QueryRun) -> ResultSession {
             result_session: session,
             ..
         } => session.clone(),
-        _ => panic!("expected a row-producing result session"),
+        other => panic!("expected a row-producing result session, got {other:?}"),
     }
 }
 
@@ -719,6 +728,7 @@ async fn assert_postgres_boundary(connection: &IntegrationConnection, row_count:
 }
 
 async fn run_postgres() {
+    ensure_query_helper_bin();
     const HOST: &str = "127.0.0.1";
     const PORT: u16 = 55432;
     const DATABASE: &str = "yuzora_p8";
@@ -1193,6 +1203,15 @@ async fn run_postgres() {
     )
     .await;
 
+    assert_hostile_field_recovers(
+        &connection,
+        Engine::Postgres,
+        &format!("SELECT repeat('x', {})", DEFAULT_FIELD_BYTES + 1),
+        "SELECT 1",
+        1,
+    )
+    .await;
+
     scenario(Engine::Postgres, "cancel-a-run-b");
     let cancel_id = QueryRunId("postgres-cancel-a".to_string());
     let cancel_connection = connection.clone();
@@ -1348,7 +1367,40 @@ fn first_affected_rows(run: &QueryRun) -> Option<&str> {
     }
 }
 
+async fn assert_hostile_field_recovers(
+    connection: &IntegrationConnection,
+    engine: Engine,
+    hostile_sql: &str,
+    recover_sql: &str,
+    recover_value: usize,
+) {
+    scenario(engine, "hostile-field-recovers");
+    let hostile = connection
+        .run_primary(format!("{}-hostile-field", engine.name()), hostile_sql)
+        .await
+        .expect("run hostile field query");
+    match &hostile.statements[0].result {
+        StatementExecutionResult::ResultLimitReached { result_session, .. } => {
+            assert!(result_session.initial_page.value_too_large);
+            assert!(result_session.initial_page.rows.is_empty());
+        }
+        other => panic!("expected valueTooLarge limit, got {other:?}"),
+    }
+    let recovered = connection
+        .run_primary(format!("{}-hostile-recover", engine.name()), recover_sql)
+        .await
+        .expect("run recovery query after hostile field");
+    let session = first_result_session(&recovered);
+    assert_integer_id(&session.initial_page.rows[0][0], recover_value);
+    assert!(!session.initial_page.value_too_large);
+    connection
+        .release_result(session.owner)
+        .await
+        .expect("release recovery result after hostile field");
+}
+
 async fn run_mssql() {
+    ensure_query_helper_bin();
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         panic!("engine=mssql scenario=requires-linux-x86_64");
     }
@@ -1925,6 +1977,18 @@ async fn run_mssql() {
     )
     .await;
 
+    assert_hostile_field_recovers(
+        &connection,
+        Engine::Mssql,
+        &format!(
+            "SELECT REPLICATE(CAST('x' AS varchar(max)), {})",
+            DEFAULT_FIELD_BYTES + 1
+        ),
+        "SELECT CAST(1 AS INT)",
+        1,
+    )
+    .await;
+
     scenario(Engine::Mssql, "close-reconnect-stale-owner");
     let stale = connection
         .run_primary(
@@ -2042,6 +2106,59 @@ async fn run_mssql() {
         .await
         .expect("release MSSQL Run B");
     assert!(reconnected.close().expect("close reconnected MSSQL").closed);
+}
+
+#[tokio::test]
+async fn sqlite_hostile_value_is_rejected_and_the_connection_recovers() {
+    let fixture_dir = tempfile::tempdir().expect("create SQLite hostile fixture directory");
+    let fixture_path = fixture_dir.path().join("hostile.sqlite");
+    {
+        let fixture = rusqlite::Connection::open(&fixture_path).expect("create hostile fixture");
+        fixture
+            .execute_batch("CREATE TABLE hostile(id INTEGER PRIMARY KEY, payload BLOB NOT NULL);")
+            .unwrap();
+        let oversized = vec![7u8; DEFAULT_FIELD_BYTES + 1];
+        fixture
+            .execute(
+                "INSERT INTO hostile(id, payload) VALUES (1, ?1), (2, x'01')",
+                [&oversized as &[u8]],
+            )
+            .unwrap();
+    }
+    let runtime = IntegrationRuntime::default();
+    let connection = runtime
+        .open_sqlite("sqlite-hostile", fixture_path.to_string_lossy())
+        .await
+        .expect("open hostile SQLite fixture");
+    let hostile = connection
+        .run_primary(
+            "sqlite-hostile-field",
+            "SELECT payload FROM hostile WHERE id = 1",
+        )
+        .await
+        .expect("run hostile SQLite query");
+    match &hostile.statements[0].result {
+        StatementExecutionResult::ResultLimitReached { result_session, .. } => {
+            assert!(result_session.initial_page.value_too_large);
+            assert!(result_session.initial_page.rows.is_empty());
+        }
+        other => panic!("expected valueTooLarge limit, got {other:?}"),
+    }
+    let recovered = connection
+        .run_primary(
+            "sqlite-hostile-recover",
+            "SELECT id FROM hostile WHERE id = 2",
+        )
+        .await
+        .expect("run recovery SQLite query");
+    let session = first_result_session(&recovered);
+    assert_integer_id(&session.initial_page.rows[0][0], 2);
+    assert!(!session.initial_page.value_too_large);
+    connection
+        .release_result(session.owner)
+        .await
+        .expect("release recovery result");
+    assert!(connection.close().expect("close hostile SQLite").closed);
 }
 
 #[tokio::test]

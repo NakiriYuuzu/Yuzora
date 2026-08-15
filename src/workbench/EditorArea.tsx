@@ -3,13 +3,14 @@ import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import { EmptyState } from "@/app/workbench/EmptyState"
+import { HerdrTerminalPage } from "@/app/panels/HerdrTerminalPage"
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
+import { isMarkdownPreviewTab, previewTabSourcePath } from "../lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { EditorPane } from "../editor/EditorPane"
 import { documentGeneration } from "../editor/documentRegistry"
 import { TabBar } from "./TabBar"
-import { isMarkdownPath } from "./MarkdownPreview"
-import { MarkdownSplitView } from "./MarkdownSplitView"
+import { MarkdownPreview } from "./MarkdownPreview"
 import { ImageView, isImagePath } from "./ImageView"
 import { SvgSplitView, isSvgPath } from "./SvgSplitView"
 
@@ -21,6 +22,7 @@ const ACTION_ACTIVE_CLASS = "bg-(--yz-accent)/16 text-(--yz-accent-ink)"
 export function EditorArea() {
     const { t } = useTranslation("menus")
     const groups = useWorkspaceStore((s) => s.groups)
+    const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
     const splitRight = useWorkspaceStore((s) => s.splitRight)
     const closeSplit = useWorkspaceStore((s) => s.closeSplit)
     const setActiveGroup = useWorkspaceStore((s) => s.setActiveGroup)
@@ -29,9 +31,16 @@ export function EditorArea() {
         <div className="editor-groups flex min-h-0 min-w-0 flex-1">
             {groups.map((group, i) => {
                 const last = i === groups.length - 1
+                const activeTab = group.tabs.find((tab) => tab.path === group.activePath)
+                const herdrTabs = group.tabs.filter(
+                    (tab) =>
+                        tab.kind === "herdr-terminal" &&
+                        tab.herdrSessionId &&
+                        tab.terminalId
+                )
                 return (
                     <div
-                        key={i}
+                        key={group.id ?? `legacy-group-${i}`}
                         onMouseDown={() => setActiveGroup(i)}
                         className={
                             "editor-group flex min-h-0 min-w-0 flex-1 flex-col" +
@@ -77,39 +86,92 @@ export function EditorArea() {
                                 </div>
                             )}
                         </div>
-                        {group.activePath === PREVIEW_TAB_PATH ? (
-                            <PreviewPanel />
-                        ) : group.activePath ? (
-                            isMarkdownPath(group.activePath) ? (
-                                <MarkdownSplitView
-                                    key={`${group.activePath}:${documentGeneration(group.activePath)}`}
-                                    path={group.activePath}
-                                    groupIndex={i}
-                                />
-                            ) : isSvgPath(group.activePath) ? (
-                                <SvgSplitView
-                                    key={`${group.activePath}:${documentGeneration(group.activePath)}`}
-                                    path={group.activePath}
-                                    groupIndex={i}
-                                />
-                            ) : isImagePath(group.activePath) ? (
-                                <ImageView key={group.activePath} path={group.activePath} />
-                            ) : (
-                                <EditorPane
-                                    key={`${group.activePath}:${documentGeneration(group.activePath)}`}
-                                    path={group.activePath}
-                                    groupIndex={i}
-                                />
-                            )
-                        ) : (
-                            <div className="empty-editor flex min-h-0 min-w-0 flex-1 items-center justify-center">
-                                <EmptyState
-                                    icon={FileCode2}
-                                    title={t("editorArea.emptyTitle")}
-                                    description={t("editorArea.emptyDescription")}
-                                />
-                            </div>
-                        )}
+                        <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+                            {herdrTabs.map((tab) => {
+                                const tabVisible = tab.path === group.activePath
+                                return (
+                                    <div
+                                        key={tab.path}
+                                        className={cn(
+                                            "absolute inset-0 min-h-0 min-w-0 transition-opacity duration-75 ease-out",
+                                            tabVisible
+                                                ? "opacity-100 pointer-events-auto"
+                                                : "opacity-0 pointer-events-none"
+                                        )}
+                                        aria-hidden={!tabVisible}
+                                        data-testid={`herdr-page-layer-${tab.path}`}
+                                    >
+                                        <HerdrTerminalPage
+                                            herdrSessionId={tab.herdrSessionId!}
+                                            terminalId={tab.terminalId!}
+                                            paneId={tab.paneId}
+                                            herdrTabId={tab.herdrTabId}
+                                            title={tab.name}
+                                            pagePath={tab.path}
+                                            active={tabVisible && i === activeGroupIndex}
+                                            visible={tabVisible}
+                                        />
+                                    </div>
+                                )
+                            })}
+                            {activeTab?.kind !== "herdr-terminal" && (
+                                <div className="absolute inset-0 flex min-h-0 min-w-0">
+                                    {(() => {
+                                        if (
+                                            group.activePath === PREVIEW_TAB_PATH ||
+                                            activeTab?.kind === "preview"
+                                        ) {
+                                            return <PreviewPanel />
+                                        }
+                                        if (activeTab && isMarkdownPreviewTab(activeTab)) {
+                                            const sourcePath = previewTabSourcePath(activeTab)
+                                            if (!sourcePath) return null
+                                            return (
+                                                <MarkdownPreview
+                                                    key={activeTab.path}
+                                                    sourcePath={sourcePath}
+                                                />
+                                            )
+                                        }
+                                        if (!group.activePath) {
+                                            return (
+                                                <div className="empty-editor flex min-h-0 min-w-0 flex-1 items-center justify-center">
+                                                    <EmptyState
+                                                        icon={FileCode2}
+                                                        title={t("editorArea.emptyTitle")}
+                                                        description={t("editorArea.emptyDescription")}
+                                                    />
+                                                </div>
+                                            )
+                                        }
+                                        if (isSvgPath(group.activePath)) {
+                                            return (
+                                                <SvgSplitView
+                                                    key={`${group.activePath}:${documentGeneration(group.activePath)}`}
+                                                    path={group.activePath}
+                                                    groupIndex={i}
+                                                />
+                                            )
+                                        }
+                                        if (isImagePath(group.activePath)) {
+                                            return (
+                                                <ImageView
+                                                    key={group.activePath}
+                                                    path={group.activePath}
+                                                />
+                                            )
+                                        }
+                                        return (
+                                            <EditorPane
+                                                key={`${group.activePath}:${documentGeneration(group.activePath)}`}
+                                                path={group.activePath}
+                                                groupIndex={i}
+                                            />
+                                        )
+                                    })()}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )
             })}

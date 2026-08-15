@@ -4,15 +4,15 @@
 
 # Yuzora
 
-**把 agent、遠端與資料，收進同一張桌面。**
+**讓 agent 開發，直接運轉在 HERDR。**
 
-<samp>整合 ACP agent、SSH、資料庫與 terminal 的桌面開發工作台</samp>
+<samp>融合 Agent Development Environment 與 HERDR runtime 的開源桌面環境</samp>
 
 <br />
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.1-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.8-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -21,15 +21,15 @@
 <br />
 <br />
 
-<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora 產品導覽動畫：AgentZone、SSH 與資料庫、terminal 與 git" />
+<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora 產品導覽：ADE 與 HERDR Spaces、Agents、終端頁面、SSH、資料庫、terminal 與 git" />
 
 </div>
 
 <br />
 
-> 編輯器、agent、遠端連線、資料庫、terminal——開發時真正會開著的東西，
-> Yuzora 把它們放進同一個工作台，共用同一份 workspace 脈絡，**不用再開四個視窗**。
-> 以 Tauri 打造：輕量啟動、在地執行，你的憑證與程式碼不離開你的機器。
+> Yuzora 是以 HERDR 作為執行與終端 runtime 的 **Agent Development Environment（ADE）**。
+> Spaces、named Sessions、Attention 與 Agents 投影在同一個桌面表面；編輯器、git、SSH/SFTP、
+> 資料庫與本機 terminal 仍可並用。以 Tauri 打造，預設在地執行。
 
 <br />
 
@@ -39,18 +39,18 @@
 <tr>
 <td valign="middle" width="38%">
 
-<sub><samp>01 · AGENTZONE</samp></sub>
+<sub><samp>01 · ADE × HERDR</samp></sub>
 
-### ACP agent 並肩工作
+### 從 Space 到 agent 終端
 
-透過 Agent Client Protocol 接上 Claude Code、Codex 等 agent。agent 讀得到你正在看的 workspace，回覆、diff 與工具呼叫都在側欄即時呈現，權限逐項確認。
+Workspace rail 投影 HERDR Spaces；ADE sidebar 整理 named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放，Agent Inspector 維持唯讀。
 
-<code>ACP</code> <code>claude-code</code> <code>codex</code> <code>權限控管</code>
+<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code> <code>唯讀 Inspector</code>
 
 </td>
 <td valign="middle" width="62%">
 
-<img src="docs/readme/agentzone-zh.png" alt="AgentZone：agent 回覆、diff 與權限確認" />
+<img src="docs/readme/ade-herdr-zh.png" alt="Yuzora ADE：HERDR Spaces rail、named Sessions、agent 狀態、BSP 終端 panes 與唯讀 Agent Inspector" />
 
 </td>
 </tr>
@@ -85,14 +85,14 @@ SSH 連上遠端主機瀏覽與編輯檔案、SFTP 傳輸；資料庫面板直�
 
 ### 內建 terminal 與 git 工具
 
-xterm 驅動的 terminal drawer 就在編輯器下方；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
+xterm 驅動的本機 terminal drawer 就在編輯器下方；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
 
 <code>xterm + pty</code> <code>git log / cherry-pick</code> <code>log 查詢</code>
 
 </td>
 <td valign="middle" width="62%">
 
-<img src="docs/readme/terminal-git-zh.png" alt="terminal drawer 與 git 面板：log、diff、cherry-pick" />
+<img src="docs/readme/terminal-git-zh.png" alt="本機 terminal drawer 與 git 面板：log、diff、cherry-pick" />
 
 </td>
 </tr>
@@ -118,9 +118,11 @@ xterm 驅動的 terminal drawer 就在編輯器下方；git 面板看歷史、�
 |:--|:--|
 | 桌面框架 | [Tauri 2](https://tauri.app)（Rust） |
 | 前端 | React + TypeScript + Vite |
-| Agent 介接 | [Agent Client Protocol](https://agentclientprotocol.com)（`@agentclientprotocol/sdk`） |
-| Terminal | xterm.js + pty |
+| Agent runtime | HERDR public API ＋官方 terminal session connector |
+| Terminal | xterm.js ＋本機 pty ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
+
+關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會隱式終止 HERDR server、panes 或 agents。
 
 ## 開發
 
@@ -128,14 +130,16 @@ xterm 驅動的 terminal drawer 就在編輯器下方；git 面板看歷史、�
 bun install          # 安裝依賴
 bun run tauri:dev    # 啟動桌面 app（dev server :1420）
 bun run test         # vitest
-bun run build        # 前端建置（含 tsc）
-cd src-tauri && cargo check   # Rust 檢查
+bun run build        # 前端建置（含 typecheck）
+cd src-tauri
+cargo check          # Rust 檢查
 ```
 
 從原始碼建置安裝檔：
 
 ```bash
-bun install && bun run tauri:build
+bun install
+bun run tauri:build
 ```
 
 > README 與[官方網站](https://nakiriyuuzu.github.io/Yuzora/)中的產品動畫與截圖，
@@ -148,9 +152,9 @@ bun install && bun run tauri:build
 
 <div align="center">
 
-**把整個開發日常，收進一張桌面。**
+**ADE 與 HERDR，融合成一個工作面。**
 
-<samp>夕空下的開發工作台</samp>
+<samp>夕空下的 agent development environment</samp>
 
 <sub>
 

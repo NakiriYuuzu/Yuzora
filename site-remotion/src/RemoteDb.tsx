@@ -138,7 +138,7 @@ export const RemoteDb: React.FC<{ lang: Lang }> = ({ lang }) => {
               fontSize: 10,
             }}
           >
-            ⌘↵
+            ⌘↵ / Ctrl+Enter
           </span>
         </span>
       </div>

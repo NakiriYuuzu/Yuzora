@@ -47,6 +47,8 @@ import type {
     DbProfileRecoveryRow,
     DbSaveAndConnectOutcome,
     DbProfileTarget,
+    PostgresInsecureException,
+    PostgresTransportMode,
     DbQueryCancelResult,
     DbQueryRun,
     DbQueryRunId,
@@ -61,6 +63,7 @@ import type {
     DbError,
     DbTable
 } from "@/lib/types"
+import { migrateLegacyPostgresTransport } from "@/lib/types"
 
 /** A live handle projected from one opaque saved descriptor. `targetKey` remains
  * display/legacy-history compatibility data only; descriptorId is the sole
@@ -99,9 +102,13 @@ export interface SavedDbConnection {
     port?: number
     database?: string
     user?: string
-    /** PostgreSQL TLS. */
+    /** PostgreSQL typed transport. Legacy `ssl`/`trustCert` hydrate through migration. */
+    transportMode?: PostgresTransportMode
+    insecureException?: PostgresInsecureException | null
+    trustServerCertAcknowledged?: boolean
+    /** @deprecated Legacy persisted boolean; migrated to `transportMode`. */
     ssl?: boolean
-    /** MSSQL trust self-signed certificate. */
+    /** MSSQL trust self-signed certificate. Also a legacy PostgreSQL boolean. */
     trustCert?: boolean
 }
 
@@ -280,7 +287,10 @@ interface DbState {
     openOrReconnectSavedConnection: (descriptorId: string) => Promise<DbOpenSavedResult>
     /** Open (or focus) a database from a tagged descriptor; persists the
      *  non-secret descriptor for reconnect. */
-    openConfig: (config: DbOpenConfig) => Promise<DbSaveAndConnectOutcome>
+    openConfig: (
+        config: DbOpenConfig,
+        options?: { transportChallengeId?: string | null }
+    ) => Promise<DbSaveAndConnectOutcome>
     /** SQLite convenience wrapper over openConfig. */
     openConnection: (path: string) => Promise<DbSaveAndConnectOutcome>
     closeConnection: (connId: string) => Promise<void>
@@ -289,7 +299,11 @@ interface DbState {
     disconnect: (id: string) => Promise<boolean>
     /** Edit a saved descriptor in place (same id, recomputed fields). Live
      *  sessions are untouched — new settings apply on the next connect. */
-    updateSaved: (id: string, config: DbOpenConfig) => Promise<void>
+    updateSaved: (
+        id: string,
+        config: DbOpenConfig,
+        options?: { transportChallengeId?: string | null }
+    ) => Promise<void>
     /** Forget a saved descriptor (and close its live connection, if any). */
     removeSaved: (id: string) => Promise<void>
     removeCredential: (id: string) => Promise<void>
@@ -342,8 +356,7 @@ function profileTargetOf(config: DbOpenConfig): DbProfileTarget {
             port: config.port,
             database: config.database,
             user: config.user,
-            ssl: config.ssl,
-            trustCert: config.trustCert
+            ...migrateLegacyPostgresTransport(config)
         }
     }
     return {
@@ -372,14 +385,14 @@ function savedFromProfile(profile: DbProfileDescriptor): SavedDbConnection {
     }
     if (target.kind === "sqlite") return { ...base, path: target.path }
     if (target.kind === "postgres") {
+        const transport = migrateLegacyPostgresTransport(target)
         return {
             ...base,
             host: target.host,
             port: target.port,
             database: target.database,
             user: target.user,
-            ssl: target.ssl,
-            trustCert: target.trustCert
+            ...transport
         }
     }
     return {
@@ -416,8 +429,7 @@ function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null 
                   port: saved.port,
                   database: saved.database,
                   user: saved.user,
-                  ssl: saved.ssl ?? false,
-                  trustCert: saved.trustCert ?? false
+                  ...migrateLegacyPostgresTransport(saved)
               }
             : {
                   kind: "mssql",
@@ -485,8 +497,10 @@ function sanitizeSaved(s: SavedDbConnection): SavedDbConnection {
     out.database = s.database
     out.user = s.user
     if (s.kind === "postgres") {
-        out.ssl = s.ssl
-        out.trustCert = s.trustCert
+        const transport = migrateLegacyPostgresTransport(s)
+        out.transportMode = transport.transportMode
+        out.insecureException = transport.insecureException
+        out.trustServerCertAcknowledged = transport.trustServerCertAcknowledged
     }
     if (s.kind === "mssql") out.trustCert = s.trustCert
     return out
@@ -546,7 +560,11 @@ const DB_PROFILE_ERROR_CODES: ReadonlySet<string> = new Set<DbProfileErrorCode>(
     "sqlitePathUnreadable",
     "sqlitePathInvalid",
     "sqliteOpenFailed",
-    "invalidRequest"
+    "invalidRequest",
+    "postgresTransportRejected",
+    "postgresTransportChallengeExpired",
+    "postgresTransportChallengeMismatch",
+    "postgresTransportChallengeReplay"
 ])
 
 const DB_OPERATIONAL_ERROR_CODES: ReadonlySet<string> = new Set<DbOperationalErrorCode>([
@@ -560,7 +578,8 @@ const DB_OPERATIONAL_ERROR_CODES: ReadonlySet<string> = new Set<DbOperationalErr
     "sqlitePathNotFile",
     "sqlitePathUnreadable",
     "sqlitePathInvalid",
-    "sqliteOpenFailed"
+    "sqliteOpenFailed",
+    "postgresTransportRejected"
 ])
 
 const DB_ERROR_ENGINES = new Set(["sqlite", "postgres", "mssql", "yuzora"])
@@ -599,6 +618,13 @@ export function dbProfileNeedsCredentialPrompt(code: DbProfileUiErrorCode): bool
         code === "vaultMissing" ||
         code === "vaultCorrupt" ||
         code === "vaultDenied"
+}
+
+export function dbProfileNeedsTransportAcknowledgement(code: DbProfileUiErrorCode): boolean {
+    return code === "postgresTransportRejected"
+        || code === "postgresTransportChallengeExpired"
+        || code === "postgresTransportChallengeMismatch"
+        || code === "postgresTransportChallengeReplay"
 }
 
 function operationalErrorCode(
@@ -1066,7 +1092,7 @@ function legacyProjectionForStatement(
                 kind: "select",
                 columns: page.columns,
                 rows: page.rows,
-                truncated: page.resultLimitReached || page.hasNext,
+                truncated: page.resultLimitReached || page.valueTooLarge || page.hasNext,
                 affectedRows: statement.result.affectedRows,
                 effectOutcome: page.effectOutcome
             },
@@ -1660,6 +1686,8 @@ export const useDbStore = create<DbState>()((set, get) => {
             )) return { outcome: "cancelled" }
             const code = dbProfileUiErrorCode(error)
             const needsCredential = dbProfileNeedsCredentialPrompt(code)
+            const needsTransportAck = dbProfileNeedsTransportAcknowledgement(code)
+            const needsReconnectDialog = needsCredential || needsTransportAck
             set((current) => {
                 if (!operationStillCurrent(
                     current, descriptorId, configGeneration, "open", openToken
@@ -1677,10 +1705,10 @@ export const useDbStore = create<DbState>()((set, get) => {
                             error: code
                         }
                     },
-                    reconnectRequestToken: needsCredential
+                    reconnectRequestToken: needsReconnectDialog
                         ? current.reconnectRequestToken + 1
                         : current.reconnectRequestToken,
-                    reconnectRequest: needsCredential
+                    reconnectRequest: needsReconnectDialog
                         ? {
                               descriptorId,
                               token: current.reconnectRequestToken + 1
@@ -1688,14 +1716,14 @@ export const useDbStore = create<DbState>()((set, get) => {
                         : current.reconnectRequest
                 }
             })
-            // Opening the explicit credential dialog successfully handles these
-            // recoverable outcomes. Callers such as the context menu must not
-            // show a second generic action-error dialog on top of it.
-            return needsCredential ? { outcome: "completed" } : { outcome: "error", error }
+            // Opening the explicit credential/transport dialog successfully
+            // handles these recoverable outcomes. Callers such as the context
+            // menu must not show a second generic action-error dialog on top.
+            return needsReconnectDialog ? { outcome: "completed" } : { outcome: "error", error }
         }
     },
 
-    openConfig: async (config) => {
+    openConfig: async (config, options) => {
         const intentToken = beginUserIntent(null)
         const target = profileTargetOf(config)
         const credential = config.kind === "sqlite" ? null : { password: config.password }
@@ -1703,7 +1731,10 @@ export const useDbStore = create<DbState>()((set, get) => {
             const outcome = await dbProfileCreate({
                 name: profileName(target),
                 target,
-                credential
+                credential,
+                ...(options?.transportChallengeId
+                    ? { transportChallengeId: options.transportChallengeId }
+                    : {})
             })
             const descriptor = savedFromProfile(outcome.profile)
             if (outcome.outcome === "connected") {
@@ -1902,7 +1933,7 @@ export const useDbStore = create<DbState>()((set, get) => {
         return true
     },
 
-    updateSaved: async (id, config) => {
+    updateSaved: async (id, config, options) => {
         const previous = get().saved.find((profile) => profile.id === id)
         if (!previous) return
         const configGeneration = savedConfigGeneration(previous)
@@ -1923,7 +1954,10 @@ export const useDbStore = create<DbState>()((set, get) => {
                     descriptorId: id as DbDescriptorId,
                     name: profileName(profileTargetOf(config)),
                     target: profileTargetOf(config),
-                    replacementCredential
+                    replacementCredential,
+                    ...(options?.transportChallengeId
+                        ? { transportChallengeId: options.transportChallengeId }
+                        : {})
                 })
             )
             if (!operationStillCurrent(get(), id, configGeneration, "edit", editToken)) return

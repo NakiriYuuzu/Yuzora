@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Herdr 取代 AgentZone · Yuzora ADE 架構重估</title>
+<style>
+:root {
+  --bg:#f4f1ea; --paper:#fffdf8; --paper2:#ece7dc; --ink:#172033; --muted:#667085;
+  --line:#dcd4c6; --blue:#315f8c; --indigo:#493c8f; --green:#21734b; --amber:#936200;
+  --red:#b42318; --cyan:#087e8b; --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+  --sans:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC",sans-serif;
+  --serif:Charter,"Iowan Old Style","Noto Serif TC",Georgia,serif; --shadow:0 18px 48px rgba(30,38,55,.08);
+}
+*{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.68}
+a{color:var(--blue);text-underline-offset:3px} code{font-family:var(--mono);font-size:.9em;background:rgba(49,95,140,.08);padding:.07rem .3rem;border-radius:4px}
+.container{width:min(1140px,calc(100% - 32px));margin:28px auto 64px}.hero{position:relative;overflow:hidden;border-radius:22px;padding:42px;background:linear-gradient(135deg,#171d30 0%,#30265e 54%,#315f8c 100%);color:white;box-shadow:var(--shadow)}
+.hero:after{content:"ADE";position:absolute;right:-10px;bottom:-58px;font:800 180px/1 var(--serif);letter-spacing:-.08em;color:rgba(255,255,255,.055)}
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:800;opacity:.72}.hero h1{font:600 clamp(34px,5vw,60px)/1.12 var(--serif);letter-spacing:-.04em;margin:8px 0 14px;max-width:900px}.hero p{max-width:850px;margin:0;color:rgba(255,255,255,.85);font-size:16px}.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:19px}.pill{border:1px solid rgba(255,255,255,.17);background:rgba(255,255,255,.1);border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:18px 0}.metric,.card{background:var(--paper);border:1px solid var(--line);box-shadow:0 8px 28px rgba(35,42,55,.035)}.metric{border-radius:14px;padding:18px}.metric strong{display:block;font:600 28px/1.05 var(--serif)}.metric span{display:block;color:var(--muted);font-size:12px;margin-top:6px}.green{color:var(--green)}.amber{color:var(--amber)}.red{color:var(--red)}.blue{color:var(--blue)}
+.toc{display:flex;flex-wrap:wrap;gap:8px}.toc a{border:1px solid var(--line);background:var(--paper);border-radius:999px;padding:7px 11px;text-decoration:none;color:var(--ink);font-size:12px;font-weight:750}.card{border-radius:17px;padding:25px 27px;margin-top:16px}.card h2{font:600 29px/1.25 var(--serif);letter-spacing:-.025em;margin:0 0 12px}.card h3{font:600 20px/1.3 var(--serif);margin:23px 0 8px}.card p{margin:8px 0}.callout{border-left:4px solid;border-radius:10px;padding:13px 15px;margin:12px 0}.callout.good{border-color:var(--green);background:#e8f5ed;color:#174d33}.callout.warn{border-color:var(--amber);background:#fff3d2;color:#654300}.callout.bad{border-color:var(--red);background:#fdecea;color:#7a271a}.callout.info{border-color:var(--blue);background:#eaf2ff;color:#123d7a}
+.diagram{display:grid;grid-template-columns:1.1fr auto 1.2fr auto 1.1fr;gap:10px;align-items:stretch;margin:18px 0}.node{background:var(--paper2);border:1px solid var(--line);border-radius:12px;padding:16px}.node strong{display:block;margin-bottom:6px}.node small{color:var(--muted)}.arrow{display:grid;place-items:center;font-size:25px;color:var(--blue)}
+.layer-stack{display:grid;gap:10px;margin:16px 0}.layer{display:grid;grid-template-columns:145px 1fr;gap:14px;border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--paper2)}.layer-name{font-family:var(--mono);font-size:12px;font-weight:800;color:var(--indigo)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:10px 11px;border-bottom:2px solid var(--line)}td{vertical-align:top;padding:11px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}.yes{color:var(--green);font-weight:800}.partial{color:var(--amber);font-weight:800}.no{color:var(--red);font-weight:800}
+ul,ol{padding-left:22px}li{margin:5px 0}.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.map{display:grid;grid-template-columns:minmax(160px,.75fr) 35px minmax(260px,1.25fr);align-items:center;gap:8px;padding:11px 0;border-bottom:1px solid var(--line)}.map:last-child{border-bottom:0}.map .from{font-weight:750}.map .to{background:var(--paper2);border-radius:9px;padding:9px 11px}.map .arr{text-align:center;color:var(--blue);font-size:20px}.evidence{font-family:var(--mono);font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.timeline{display:grid;gap:11px;margin-top:14px}.phase{display:grid;grid-template-columns:105px 1fr;gap:15px;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--paper2)}.phase-tag{font-family:var(--mono);font-size:11px;font-weight:850;color:var(--indigo)}.phase strong{display:block;margin-bottom:4px}.risk{display:grid;grid-template-columns:170px 1fr;gap:16px;padding:13px 0;border-bottom:1px solid var(--line)}.risk:last-child{border-bottom:0}.risk>strong{font-size:13px}.sources li{margin-bottom:8px}footer{text-align:center;color:var(--muted);font-size:12px;margin-top:24px}
+@media(max-width:880px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.diagram{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}.grid2{grid-template-columns:1fr}}@media(max-width:600px){.container{width:calc(100% - 20px);margin-top:10px}.hero{padding:29px 22px;border-radius:15px}.metrics{grid-template-columns:1fr}.card{padding:20px}.layer,.phase,.risk{grid-template-columns:1fr;gap:5px}.map{grid-template-columns:1fr}.map .arr{transform:rotate(90deg)}}@media print{body{background:white}.container{width:100%;margin:0}.hero,.card,.metric{box-shadow:none}.toc{display:none}a{color:inherit}}
+</style>
+</head>
+<body>
+<main class="container">
+<header class="hero">
+  <div class="eyebrow">Corrected product premise · Yuzora next-generation architecture</div>
+  <h1>Herdr 完全取代 AgentZone：從 IDE 轉向 ADE 的架構重估</h1>
+  <p>前一份分析保守地把 ACP AgentZone 視為不可失去的既有核心；這個前提已被使用者明確否定。本文改以 <strong>ADE＝agent-first／agentic development environment</strong> 為假設：Agent 不再是 IDE 裡的一個 chat panel，而是整個系統的主要執行者；Editor、Git、Terminal、DB 與 SSH 轉為 Agent 的工作面、觀察面與驗收面。</p>
+  <div class="pills"><span class="pill">結論：可行，但屬產品級架構反轉</span><span class="pill">Herdr = Agent Runtime Kernel</span><span class="pill">Yuzora = ADE Control Plane + Visual Workbench</span><span class="pill">2026-08-10</span></div>
+</header>
+
+<div class="metrics">
+  <div class="metric"><strong class="green">GO</strong><span>完全取代 AgentZone 的方向</span></div>
+  <div class="metric"><strong class="red">Rewrite</strong><span>不是將 Herdr 塞進現有 panel</span></div>
+  <div class="metric"><strong class="amber">4 gaps</strong><span>Herdr 本身尚缺 ADE orchestration semantics</span></div>
+  <div class="metric"><strong class="blue">Kernel</strong><span>Herdr 應被視為 process/runtime kernel</span></div>
+</div>
+
+<nav class="toc" aria-label="目錄"><a href="#reversal">修正結論</a><a href="#final-nav">最終導覽決策</a><a href="#terminal-pages">Herdr Terminal Pages</a><a href="#product">ADE 產品模型</a><a href="#architecture">目標架構</a><a href="#replacement">AgentZone 對照</a><a href="#gaps">Herdr 缺口</a><a href="#modules">深模組</a><a href="#migration">遷移</a><a href="#upstream">Herdr upstream</a><a href="#risks">風險</a><a href="#decision">決策</a></nav>
+
+<section id="reversal" class="card">
+  <h2>修正後結論：前一份 No-Go 已失效</h2>
+  <p><strong>如果下一版 Yuzora 不再是 IDE，而是 ADE，那麼「保留 ACP AgentZone rich chat」就不應再是架構限制。</strong>原本被我視為損失的部分——chat transcript、ACP permission modal、session config chips——現在應重新判斷為「舊 IDE/assistant paradigm 的 UI」，不是必須保留的產品核心。</p>
+  <div class="callout good"><strong>新的結論：</strong>Herdr 完全取代 AgentZone 是可行且方向一致的。依最新澄清，不需要重畫整個 shell：保留現有 AppShell、rail、ProjectNavPanel、tab bar 與 editor group 視覺架構，將核心 page content 改為 Herdr terminal，並以 native React UI 投影 Herdr Spaces/Agents。</div>
+  <div class="callout warn"><strong>仍然成立的限制：</strong>Herdr 不是完整 ADE。它解決 PTY ownership、agent detection、persistence、workspace/tab/pane 與 terminal automation；Mission、Task、Run correlation、Artifact、Policy 與 Review semantics 仍要由 Yuzora 建立。</div>
+</section>
+
+<section id="final-nav" class="card">
+  <h2>最終導覽決策：ADE 取代 Files 的第一順位</h2>
+  <p>本文將使用者的最終想法解讀為：<strong>刪除舊 ACP AgentZone；以 Herdr-native ADE surface 取代它；並把這個新 surface 放到 Yuzora 五個主要 modes 的第一位，取代目前 Files 的預設位置。Files 不必消失，但降為第二順位的 artifact inspection surface。</strong></p>
+  <div class="callout good"><strong>評估：同意。</strong>這是從產品資訊架構上真正完成 IDE → ADE 轉型的必要動作。只把 Agent icon 從第五格搬到第一格不夠；<code>DEFAULT_MODE</code>、空白啟動頁、workspace rail、project sidebar 與中心 surface 都必須改以 Herdr runtime state 為入口。</div>
+
+  <h3>建議的新導覽順序</h3>
+  <table>
+    <thead><tr><th>順位</th><th>Surface</th><th>角色</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><strong>ADE / Agents</strong></td><td>預設首頁；Herdr Spaces、Agents、Attention、Run/Terminal。</td></tr>
+      <tr><td>2</td><td>Files</td><td>檢視或人工修改 Agent 產出的 artifacts。</td></tr>
+      <tr><td>3</td><td>Git</td><td>ChangeSet review、stage/rollback/accept。</td></tr>
+      <tr><td>4</td><td>Database</td><td>Agent 與人類共同查驗資料。</td></tr>
+      <tr><td>5</td><td>SSH</td><td>遠端執行與基礎設施工作面。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Herdr sidebar 的 Yuzora 對應</h3>
+  <p>Herdr expanded sidebar 本質上分成 <strong>Spaces</strong> 與 <strong>Agents</strong> 兩區。Yuzora 的 ADE nav 應直接採同一個 domain，而不是繼續使用 ACP session list：</p>
+  <ul>
+    <li><strong>Spaces / Projects：</strong>顯示 active Herdr session 中的全部 workspaces，維持順序、focus、worktree parent/child、branch、git status 與 rolled-up agent state。</li>
+    <li><strong>Agents：</strong>顯示全部 workspace/tab/pane 中的 agents，支援 grouped/priority、blocked/working/done/idle、focus、rename、prompt 與 terminal attach。</li>
+    <li><strong>Workspace rail：</strong>現有 Recent Workspace tiles 不再是 source of truth；改為 Herdr session/runtime indicator 或移除重複 project list。Recent history最多只保留 disconnected/offline 開啟用途。</li>
+    <li><strong>Main surface：</strong>點 Agent 開 Run/Terminal；點 Space 切換 Yuzora 的 active project context，Editor/Git/DB/SSH 隨之綁定該 cwd。</li>
+  </ul>
+
+  <h3>「直接兼容」的可行邊界</h3>
+  <table>
+    <thead><tr><th>Herdr sidebar 能力</th><th>Yuzora 相容性</th><th>說明</th></tr></thead>
+    <tbody>
+      <tr><td>全部 workspaces、tabs、panes、agents</td><td class="yes">可直接相容</td><td><code>session.snapshot</code> bootstrap＋workspace/tab/pane/agent events。</td></tr>
+      <tr><td>workspace ordering/focus/rename/close</td><td class="yes">可直接相容</td><td>使用公開 socket commands；Herdr 維持權威順序。</td></tr>
+      <tr><td>agent state rollup 與 attention</td><td class="yes">可直接相容</td><td>不要在 Yuzora 重新推測，直接投影 Herdr agent facts。</td></tr>
+      <tr><td>worktree hierarchy/provenance</td><td class="yes">可直接相容</td><td>workspace records＋<code>worktree.list</code>。</td></tr>
+      <tr><td>custom metadata token values</td><td class="yes">可直接相容</td><td>pane/workspace records 已暴露 tokens。</td></tr>
+      <tr><td>原生 sidebar rows/style/rows_by_agent 設定</td><td class="partial">部分相容</td><td>公開 API 暴露資料值，但未提供完整 Herdr UI config/style projection；Yuzora 應採自己的視覺系統。</td></tr>
+      <tr><td><code>agent.view.set</code> filter/sort</td><td class="partial">部分相容</td><td>可在 Yuzora 本地重現；若呼叫 set 會改變 native Herdr 全域 view，需明確選擇是否同步。</td></tr>
+      <tr><td>跨全部 named sessions 的合併視圖</td><td class="partial">需新建 namespace layer</td><td>一條 socket 對應一個 session；identity 必須是 <code>(sessionId, workspaceId)</code>，不可只用 <code>w1</code>。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn"><strong>重要限制：</strong>現有 Yuzora 只有一個全域 <code>workspacePath</code>，切換 workspace 會清空目前 document registry，再還原該 workspace 的 editor tabs。這不妨礙 sidebar 列出並監控所有 Herdr projects，但第一版仍只能讓 Editor/Git/DB/SSH 同時綁定一個 selected project。若要求多 project 同時並排，就必須另外重構約 100 個依賴 <code>workspacePath</code> 的前端檔案。</div>
+
+  <div class="callout warn"><strong>Focus 規則：</strong>外部 Herdr client 的 workspace focus 改變，不應預設強制切換 Yuzora Editor，否則會打斷人工 review 與觸發 unsaved guard。Yuzora 應同時顯示「Herdr runtime focus」與「Yuzora selected project」；可提供 opt-in follow-runtime-focus。</div>
+
+  <h3>直接移除舊 AgentZone 的工程判斷</h3>
+  <p><strong>產品上可以直接移除，不提供 legacy mode；工程上仍應先建立可編譯的替代 vertical slice，再刪除舊 modules。</strong>目前至少 22 個 production/test files 直接引用 <code>agentStore</code>/<code>useAgentStore</code>，WorkspaceRail badges、context menu、Settings、Bridge 與大量 AgentZone tests 都會被影響。合理順序是：</p>
+  <ol>
+    <li>先建立 <code>HerdrRuntime</code>、snapshot cache、ADE store 與最小 Spaces/Agents UI。</li>
+    <li>把 <code>DEFAULT_MODE</code> 改為 ADE，移除舊 AgentZone 的產品入口。</li>
+    <li>把 WorkspaceRail agent counts、context menu 與 command palette 改接 Herdr。</li>
+    <li>同一變更系列內刪除 ACP AgentZone、AgentBridge、agentStore、router/adapter 及舊 tests。</li>
+  </ol>
+  <p>這不是保留雙架構，而是避免在替代物尚未可啟動前把主分支切成不可編譯狀態。</p>
+</section>
+
+<section id="terminal-pages" class="card">
+  <h2>最終澄清：不嵌 Herdr TUI，只顯示目標 Terminal Page</h2>
+  <p>本文將最新想法解讀為：<strong>Yuzora 不顯示 Herdr 自己的 sidebar、tab bar 或完整 TUI；Herdr Spaces 與 Agents 改由 Yuzora sidebar 原生渲染；中心 page 則直接顯示被選 Herdr pane/agent 的 terminal frame。</strong>這個方案可行，而且比嵌入完整 Herdr TUI 更符合現有 Yuzora 設計。</p>
+
+  <div class="diagram">
+    <div class="node"><strong>Yuzora Sidebar</strong><small>React Spaces＋Agents；snapshot/events 驅動，不解析 terminal 畫面。</small></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>Unified Page Tabs</strong><small>File Page、Preview Page、Herdr Terminal Page 可並存；＋建立新 terminal page。</small></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>Herdr Headless Stream</strong><small><code>terminal session control/observe</code>，只串流指定 terminal，不含 Herdr chrome。</small></div>
+  </div>
+
+  <h3>Page model</h3>
+  <p>目前 <code>TabInfo</code> 只有 file/preview，應擴成 discriminated union，而不是讓 terminal 假裝成檔案路徑：</p>
+  <pre style="overflow:auto;background:#171d30;color:#f7f4ed;border-radius:12px;padding:14px"><code>type WorkbenchPage =
+  | { kind: "file"; id: string; path: string }
+  | { kind: "preview"; id: "preview" }
+  | {
+      kind: "herdr-terminal"
+      id: string
+      sessionId: string
+      terminalId: string
+      paneId: string
+      workspaceId: string
+    }</code></pre>
+  <p><code>terminalId</code> 應作為 live terminal identity：Herdr 的公開 <code>PaneInfo</code> 同時提供 <code>pane_id</code> 與 <code>terminal_id</code>；pane 跨 workspace move 時 public pane id 可能改變，但 running terminal identity 可維持。所有 identity 仍需加上 Herdr session namespace。</p>
+
+  <h3>使用者操作</h3>
+  <ul>
+    <li><strong>點 Agent：</strong>以該 agent 的 <code>terminal_id</code> 開啟或聚焦 Herdr Terminal Page。</li>
+    <li><strong>點 Space：</strong>切 selected workspace；可預設開啟該 Space 的 focused pane。</li>
+    <li><strong>按 ＋：</strong>在 selected Space 建立新的 Herdr tab/root pane，再開成 terminal page；下拉選單可增加 Launch Agent。</li>
+    <li><strong>打開檔案：</strong>沿用 Editor page，與 terminal pages 共用同一 tab bar/editor group。</li>
+    <li><strong>關閉 page：</strong>只送 <code>terminal.release</code>/關閉 connector，不關閉 Herdr pane 或 agent process。</li>
+    <li><strong>Terminate Pane：</strong>必須是獨立且明確的 destructive action，才呼叫 <code>pane.close</code>。</li>
+  </ul>
+
+  <h3>Terminal transport</h3>
+  <p>不要在 xterm 裡執行普通 <code>herdr</code> 指令，否則會再次顯示 Herdr TUI。應由 Rust 啟動 connector：</p>
+  <ul>
+    <li><code>herdr terminal session observe &lt;terminal-id&gt;</code>：read-only。</li>
+    <li><code>herdr terminal session control &lt;terminal-id&gt;</code>：可輸入。</li>
+    <li>stdout NDJSON：<code>terminal.frame</code>／<code>terminal.closed</code>。</li>
+    <li>stdin NDJSON：<code>terminal.input</code>、<code>terminal.resize</code>、<code>terminal.scroll</code>、<code>terminal.release</code>。</li>
+  </ul>
+  <p>現有 <code>TerminalSession.tsx</code> 的 xterm、FitAddon、IME、clipboard、theme 與 output queue 可保留；只需把 <code>ptyOpen/write/resize/close</code> 抽成 transport interface，再增加 <code>HerdrTerminalTransport</code>。</p>
+
+  <h3>可行性與限制</h3>
+  <table>
+    <thead><tr><th>項目</th><th>評估</th><th>條件</th></tr></thead>
+    <tbody>
+      <tr><td>只顯示指定 Herdr terminal、不顯示 TUI chrome</td><td class="yes">可行</td><td>使用 terminal session stream，不執行普通 Herdr TUI。</td></tr>
+      <tr><td>Terminal 與 file pages 共用 tabs</td><td class="yes">可行</td><td>將 path-keyed <code>TabInfo</code> 改為 typed page model。</td></tr>
+      <tr><td>＋建立新 terminal page</td><td class="yes">可行</td><td><code>tab.create</code> 或 agent start 後，使用回傳 root pane/terminal id。</td></tr>
+      <tr><td>多個 terminal pages</td><td class="yes">可行</td><td>只對 visible pages 維持 stream；hidden pages 依 Herdr events 更新狀態。</td></tr>
+      <tr><td>精確還原 Herdr BSP split layout</td><td class="partial">另一期</td><td>一 page 對一 terminal 最簡單；一 page 對整個 Herdr tab 需多 xterm＋layout renderer。</td></tr>
+      <tr><td>另一 client 已控制 terminal</td><td class="partial">需 UX</td><td>預設 observer，顯示 Take Control；不可自動 <code>--takeover</code>。</td></tr>
+      <tr><td>Kitty/inline graphics</td><td class="partial">有限</td><td>目前 terminal session connector 輸出 ANSI frame，忽略獨立 Graphics messages。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout good"><strong>確認：</strong>在「terminal 本體顯示於中心 page，但 Herdr 自己的 sidebar/tab chrome 不顯示」這個解讀下，技術上可行，並且能最大程度沿用 Yuzora 現有視覺架構。</div>
+</section>
+
+<section id="product" class="card">
+  <h2>IDE → ADE 的產品模型變化</h2>
+  <table>
+    <thead><tr><th>IDE / AgentZone 心智</th><th>ADE 心智</th></tr></thead>
+    <tbody>
+      <tr><td>使用者開檔案，偶爾問 Agent</td><td>使用者定義 Mission；Agent 執行，使用者監督、決策、驗收</td></tr>
+      <tr><td>Agent 是右側或中央 chat panel</td><td>Agent 是持續存在的 runtime actor，分布在 workspaces/worktrees/panes</td></tr>
+      <tr><td>Transcript 是主要資訊架構</td><td>Mission state、attention queue、agent fleet、artifacts、changes 是主要資訊架構</td></tr>
+      <tr><td>Terminal 是手動工具</td><td>Terminal/PTY 是 Agent 的 execution substrate</td></tr>
+      <tr><td>Editor 是中心</td><td>Editor 是 artifact inspection、manual intervention、review surface</td></tr>
+      <tr><td>Git panel 是使用者操作 Git</td><td>Git/worktree 是 Agent isolation、change review、accept/reject surface</td></tr>
+      <tr><td>Session 是 chat conversation</td><td>Run 是一個有 target、role、worktree、agent、state、artifacts 的執行實例</td></tr>
+    </tbody>
+  </table>
+  <div class="callout info"><strong>產品差異化：</strong>不要做「GUI 版 Herdr TUI」。Herdr 已經很會管理 terminals。Yuzora ADE 的價值應是把 terminals 上方的 Mission、Policy、Artifacts、Review、Workspace coordination 做成 Herdr 本身沒有的視覺語意層。</div>
+</section>
+
+<section id="architecture" class="card">
+  <h2>目標架構：Herdr 在下，Yuzora orchestration 在上</h2>
+  <div class="diagram">
+    <div class="node"><strong>Yuzora ADE Shell</strong><small>Missions、Agent Fleet、Attention、Artifacts、Change Review、Policy Decisions、Workspace/Worktree visualization。</small></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>Yuzora Runtime & Orchestrator</strong><small>Mission/Task/Run domain、Herdr adapter、correlation、durable state、policy gate、artifact/change index。</small></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>Herdr Runtime Kernel</strong><small>Persistent PTYs、workspaces/tabs/panes、TUI agents、lifecycle detection、terminal stream、remote/worktrees。</small></div>
+  </div>
+
+  <div class="layer-stack">
+    <div class="layer"><div class="layer-name">Experience Layer</div><div>React：Mission Board、Fleet、Attention Queue、Agent Canvas、Artifact/Change Review。完全取代 <code>AgentZonePanel</code>。</div></div>
+    <div class="layer"><div class="layer-name">ADE Domain</div><div>Rust/SQLite 或 Rust-owned persistence：<code>Mission</code>、<code>Task</code>、<code>AgentRun</code>、<code>DecisionRequest</code>、<code>Artifact</code>、<code>ChangeSet</code>、<code>WorkspaceBinding</code>。</div></div>
+    <div class="layer"><div class="layer-name">Runtime Adapter</div><div>單一深模組 <code>HerdrRuntime</code>：bootstrap、snapshot、events、terminal streams、agent dispatch、reconnect、protocol compatibility、ownership。</div></div>
+    <div class="layer"><div class="layer-name">Execution Kernel</div><div>Bundled/pinned Herdr server：PTY/process ownership、agent lifecycle、session restore、pane/worktree topology。</div></div>
+    <div class="layer"><div class="layer-name">Existing Workbench</div><div>Editor/LSP、Git、DB、SSH/SFTP、Preview 保留，但定位為 Agent 的工具與人類 review/intervention surfaces。</div></div>
+  </div>
+
+  <h3>這次 distribution 決策也要反轉</h3>
+  <p>若 Herdr 只是選配整合，外部 binary 足夠；但若它完全取代 AgentZone，<strong>Herdr 會變成必要 runtime dependency</strong>。Production 預設應 bundle 並 pin 測試過的 Herdr binary，使用 Yuzora 專屬 config/session namespace；同時保留「連接 system Herdr」作為 advanced mode。</p>
+  <ul>
+    <li><strong>推薦：</strong>bundled official Herdr binary＋Yuzora-owned namespace。</li>
+    <li><strong>Advanced：</strong>使用者指定 system Herdr binary/session。</li>
+    <li><strong>僅在必要時：</strong>維護小型 downstream fork，等待 upstream 接受關鍵接口。</li>
+    <li><strong>仍不推薦：</strong>直接把 Herdr private Rust modules 編進 Yuzora process。</li>
+  </ul>
+</section>
+
+<section id="replacement" class="card">
+  <h2>AgentZone 功能如何被 ADE surface 取代</h2>
+  <div class="map"><div class="from">Session Nav</div><div class="arr">→</div><div class="to"><strong>Agent Fleet / Runs</strong>：以 workspace、worktree、mission、role 分組的真實 Herdr agents/panes。</div></div>
+  <div class="map"><div class="from">Chat Transcript</div><div class="arr">→</div><div class="to"><strong>Run Timeline + Live Terminal</strong>：事件時間線、狀態、輸出摘要、terminal attach；不再假裝所有 agent 都是 chat。</div></div>
+  <div class="map"><div class="from">Composer</div><div class="arr">→</div><div class="to"><strong>Dispatch Bar</strong>：選 Mission/Task、target agent/role、worktree、launch profile，再用 <code>agent.prompt</code> 或 start+prompt。</div></div>
+  <div class="map"><div class="from">Permission / Elicitation</div><div class="arr">→</div><div class="to"><strong>Attention Queue</strong>：Herdr blocked state＋terminal preview＋「開啟並決策」；ADE policy engine 可管理自動允許／需人工。</div></div>
+  <div class="map"><div class="from">Sub-agent Cards</div><div class="arr">→</div><div class="to"><strong>Agent Topology</strong>：真實 pane/agent/run 關係，不再從 ACP tool rawInput 猜測 sub-agent。</div></div>
+  <div class="map"><div class="from">Diff Summary</div><div class="arr">→</div><div class="to"><strong>ChangeSet Review</strong>：以 worktree/git watcher 為權威，與 Agent transcript 解耦。</div></div>
+  <div class="map"><div class="from">Model / Effort Chips</div><div class="arr">→</div><div class="to"><strong>Launch Profile</strong>：agent kind、binary、native args、model、thinking、environment，建立 run 時決定。</div></div>
+  <div class="map"><div class="from">Usage / Cost</div><div class="arr">→</div><div class="to"><strong>Optional Telemetry</strong>：由 agent integration/OSC/metadata/plugin 回報；沒有就顯示 unknown，不阻塞核心。</div></div>
+  <div class="map"><div class="from">Session Restore</div><div class="arr">→</div><div class="to"><strong>Herdr Persistence</strong>：live server persistence＋native agent session restore；Yuzora 持久化 Mission/Run binding。</div></div>
+
+  <h3>對現有程式碼的直接含義</h3>
+  <p>以下 modules 將直接退出產品與核心路徑：<code>AgentZonePanel.tsx</code>、<code>AgentBridge.tsx</code>、<code>agentStore.ts</code>、<code>acpConnection.ts</code>、<code>agentRouter.ts</code>、<code>adapters/yuzora-pi-acp</code>。不建立 legacy/compatibility mode；只要求在同一變更系列內先落地最小可編譯的 Herdr vertical slice，再刪除舊引用，避免中途主分支不可啟動。</p>
+</section>
+
+<section id="gaps" class="card">
+  <h2>Herdr 尚缺的 ADE 關鍵語意</h2>
+  <h3>G1. 沒有 durable Mission / Task / Run model</h3>
+  <p>Herdr 有 workspace/tab/pane/agent，沒有「這個 agent 為哪個目標工作、成功條件、產出、決策、父子任務」。Yuzora 必須自己擁有這個 domain；不要把 Mission 假裝成 tab label 或 metadata token。</p>
+
+  <h3>G2. <code>agent.prompt --wait</code> 不追蹤 individual turn</h3>
+  <p>官方文件明確指出：若 agent 已在 working，當前 turn 完成就可能滿足 wait。對 ADE orchestrator，這代表不能把 Herdr wait 當可靠的 <code>RunCompleted(runId)</code>。短期只對 idle agent dispatch，並由 Yuzora 保存 correlation；中期應推動 Herdr 增加 turn/run correlation primitive。</p>
+  <p class="evidence">Herdr docs/agent-automation.mdx:72-80</p>
+
+  <h3>G3. Lifecycle detection 不是業務成功</h3>
+  <p><code>idle/done/blocked/working/unknown</code> 只能說 terminal agent 的 UI 狀態；不能表示 Task acceptance criteria 通過。Blocked screen detection 也刻意保守，新 prompt 可能 fallback 成 idle。Yuzora 的 Run state 必須區分 <code>runtimeState</code> 與 <code>outcome</code>。</p>
+  <p class="evidence">Herdr docs/agents.mdx:38-60；docs/agent-automation.mdx:76-80</p>
+
+  <h3>G4. Metadata 與 Agent View 不足以當 durable ADE state</h3>
+  <p>Herdr tokens 在 server restart 後不恢復；Agent View 也只維持到 clear/replace/plugin disable/server exit。因此 summary/model/role 可以投影到 Herdr metadata，但 durable truth 必須保存在 Yuzora。</p>
+  <p class="evidence">Herdr docs/socket-api.mdx:450-475, 734-778</p>
+
+  <div class="callout warn"><strong>核心判斷：</strong>這四個缺口不是反對 Herdr，而是清楚劃分深模組：Herdr 管 execution runtime；Yuzora 管 ADE semantics。這正是 Yuzora 仍有存在價值的地方。</div>
+</section>
+
+<section id="modules" class="card">
+  <h2>應建立的深模組與最小 Interface</h2>
+  <div class="grid2">
+    <div class="node"><strong><code>HerdrRuntime</code></strong><small>Interface 應維持小：<code>connect()</code>、<code>snapshot()</code>、<code>dispatch()</code>、<code>attach()</code>、<code>control()</code>、<code>subscribe()</code>、<code>shutdownClient()</code>。內部隱藏 protocol、socket、CLI connector、reconnect、seq、ownership 與版本。</small></div>
+    <div class="node"><strong><code>AdeOrchestrator</code></strong><small><code>createMission()</code>、<code>dispatchTask()</code>、<code>recordDecision()</code>、<code>completeRun()</code>。它不應暴露 Herdr pane IDs 給 UI 作為業務 identity。</small></div>
+    <div class="node"><strong><code>ArtifactIndex</code></strong><small>以 workspace/worktree watchers、Git status/diff、agent-reported paths 建立 artifacts 與 changes；取代 ACP transcript diff 作為權威。</small></div>
+    <div class="node"><strong><code>PolicyGate</code></strong><small>把 runtime blocked/terminal prompts、destructive action、worktree remove、external command 等統一成 ADE decision requests。</small></div>
+  </div>
+  <div class="callout info"><strong>Seam 原則：</strong>React 不學 Herdr protocol；Mission domain 不依賴 <code>w1:p2</code>；Herdr adapter 可被 fake runtime 替換做單元測試。這樣 Herdr upgrade/fork 不會污染整個 UI。</div>
+</section>
+
+<section id="migration" class="card">
+  <h2>安全遷移：Replace，不要 Layer Forever</h2>
+  <div class="timeline">
+    <div class="phase"><div class="phase-tag">M0 · Contract</div><div><strong>固定最小 Herdr vertical slice</strong>定義 runtime snapshot/cache、Space/Agent identity、selected project 與 terminal attachment contract；確認 protocol/turn-correlation 邊界。</div></div>
+    <div class="phase"><div class="phase-tag">M1 · Kernel</div><div><strong>Bundle Herdr＋建立 <code>HerdrRuntime</code></strong>Yuzora namespace、daemon lifecycle、snapshot/events、terminal observe/control、protocol gates、Windows/macOS/Linux packaging。</div></div>
+    <div class="phase"><div class="phase-tag">M2 · Replace Nav</div><div><strong>ADE 取代 Files 的第一順位</strong>Herdr Spaces＋Agents 取代 ACP session nav，<code>DEFAULT_MODE</code> 切為 ADE；Files 移到第二順位。</div></div>
+    <div class="phase"><div class="phase-tag">M3 · Remove ACP</div><div><strong>同一變更系列刪除舊 AgentZone</strong>移除 AgentBridge/agentStore/acpConnection/router/builtin adapter、WorkspaceRail 舊 badges、context-menu routes 與舊 tests，不提供 legacy mode。</div></div>
+    <div class="phase"><div class="phase-tag">M4 · ADE Domain</div><div><strong>Mission/Task/Run persistence</strong>加入 correlation、launch profiles、worktree binding、artifact/change index、policy decisions；所有新能力只建在 Herdr path。</div></div>
+    <div class="phase"><div class="phase-tag">M5 · Harden</div><div><strong>跨平台與 recovery</strong>驗證 daemon upgrade、snapshot reconciliation、named sessions、remote、ownership conflicts、external focus 與 cold restore。</div></div>
+  </div>
+  <p><strong>粗估：</strong>能取代 AgentZone 的本地 ADE alpha 約 6–10 週；包含 bundled runtime、跨平台、worktree orchestration、migration、hardened recovery 的 production release 約 12–20 週。這已是產品主版本重構，而不是 feature integration。</p>
+</section>
+
+<section id="upstream" class="card">
+  <h2>建議優先推動的 Herdr upstream 能力</h2>
+  <ol>
+    <li><strong>Correlated agent run/turn：</strong><code>agent.prompt</code> 回傳 run token；事件與 wait 可綁該 token，不被既有 active turn 誤滿足。</li>
+    <li><strong>Durable metadata namespace：</strong>可選擇在 restart/handoff 後恢復 Yuzora-owned role/run/mission references，或至少提供安全 replay hook。</li>
+    <li><strong>Stable headless terminal bridge contract：</strong>正式文件化 frame sequence、full resync、ownership conflict、reconnect 行為與跨版本承諾。</li>
+    <li><strong>Lifecycle integration coverage：</strong>讓主要 agent 以 hooks/plugins 提供可靠 working/blocked/idle，而不是只靠 screen manifest。</li>
+    <li><strong>Remote control-plane bridge：</strong>不只整個 TUI remote attach，也能安全代理 snapshot/events/terminal session 給第三方 desktop client。</li>
+  </ol>
+  <p>Herdr 已是 Apache-2.0。策略順序應是：先用公開 interface → 提 upstream PR → 必要時維護最小 downstream patch；避免長期 fork 整個 terminal runtime。</p>
+</section>
+
+<section id="risks" class="card">
+  <h2>產品級風險</h2>
+  <div class="risk"><strong class="red">變成 GUI Herdr</strong><div>若 Yuzora 只重畫 workspaces/panes/sidebar，就沒有產品護城河。必須把 Mission、Policy、Artifact、Review 做成第一級 domain。</div></div>
+  <div class="risk"><strong class="red">狀態誤判</strong><div>Herdr idle/done 不等於 task success。UI 與資料模型必須明確分離 runtime state、run outcome、acceptance state。</div></div>
+  <div class="risk"><strong class="red">Turn correlation</strong><div>在 Herdr 增加 correlated run 前，不可做無人值守的複雜 DAG 自動派工；只能對 idle target 做受控 dispatch，並保留人工 review。</div></div>
+  <div class="risk"><strong class="amber">Bundle lifecycle</strong><div>Yuzora 關閉不能殺 Herdr panes；更新不能讓舊 server/client protocol 卡死。需要 daemon ownership、live handoff/restart policy、namespace migration。</div></div>
+  <div class="risk"><strong class="amber">Windows maturity</strong><div>Herdr 0.8.0 的 native Windows 仍是 beta/preview；Yuzora 若承諾三平台同等 ADE，需納入 upstream readiness 與 fallback。</div></div>
+  <div class="risk"><strong class="amber">ACP capability loss</strong><div>usage/cost、structured permissions、image/config 等不再保證一致。這是有意識的產品取捨，必須以 ADE workflow 取代，而不是默默退化。</div></div>
+  <div class="risk"><strong class="amber">Replacement sequencing</strong><div>不保留 legacy mode，但仍必須先有可編譯的 Herdr vertical slice，再於同一變更系列移除舊 core；否則會出現無 Agent 首頁或主分支不可啟動的空窗。</div></div>
+</section>
+
+<section id="decision" class="card">
+  <h2>最終決策建議</h2>
+  <div class="callout good"><strong>GO：</strong>把 Herdr 定位為 Yuzora ADE 的必要 Agent Runtime Kernel，完整取代 AgentZone 的 process/session/lifecycle surface。</div>
+  <div class="callout good"><strong>GO：</strong>移除 chat-first information architecture，改為 Mission → Task → AgentRun → Attention/Artifact/Change/Decision。</div>
+  <div class="callout warn"><strong>CONDITION：</strong>Yuzora 必須自己建立 ADE orchestration domain；不能只依賴 Herdr workspace/pane metadata。</div>
+  <div class="callout warn"><strong>CONDITION：</strong>在 production autonomous orchestration 前，解決 correlated run/turn 與 lifecycle reliability。</div>
+  <div class="callout bad"><strong>NO：</strong>不要在既有 AgentZone 上疊 Herdr adapter，讓兩套 session model永久並存；那會是最昂貴、最淺的架構。</div>
+  <p><strong>新的產品敘述：</strong>Yuzora 不是「有 Agent 的 IDE」，而是「以 Herdr 為 execution kernel、以 Mission 與 Agent Fleet 為中心、由 Editor/Git/Terminal/DB/SSH 提供工作與驗收 surfaces 的 ADE」。</p>
+</section>
+
+<section class="card">
+  <h2>來源與研究限制</h2>
+  <ul class="sources">
+    <li><a href="https://github.com/herdrdev/herdr">Herdr official repository</a>，v0.8.0，Apache-2.0。</li>
+    <li><a href="https://herdr.dev/docs/socket-api/">Socket API</a>：snapshot/events/control/metadata/protocol。</li>
+    <li><a href="https://herdr.dev/docs/agent-automation/">Agent automation</a>：prompt/wait 與不追蹤 individual turns 的限制。</li>
+    <li><a href="https://herdr.dev/docs/agents/">Agents</a>：status authority、blocked detection、state rollups。</li>
+    <li><a href="https://herdr.dev/docs/session-state/">Session state</a>：persistence、restore、handoff。</li>
+    <li>Yuzora local code：<code>AgentZonePanel</code>、<code>AgentBridge</code>、<code>agentStore</code>、<code>acpConnection</code>、<code>agentRouter</code>、<code>TerminalSession</code>、<code>terminalStore</code>、<code>src-tauri/src/lib.rs</code>。</li>
+  </ul>
+  <p class="evidence">未操作 live Herdr session、未執行 browser/E2E、未修改產品程式碼。本文是依使用者修正後產品前提所做的架構重估。</p>
+</section>
+
+<footer>Yuzora ADE · Herdr 完全取代 AgentZone 架構重估 · 2026-08-10</footer>
+</main>
+</body>
+</html>

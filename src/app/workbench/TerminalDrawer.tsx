@@ -263,7 +263,9 @@ export function TerminalDrawer({
   const canCreateSession = Boolean(workspacePath)
   const canSplit = Boolean(workspacePath && activePane) && panes.length < MAX_VISIBLE_TERMINAL_PANES
   const paneRatio =
-    transientPaneRatio?.workspace === workspacePath && transientPaneRatio.paneKey === paneKey
+    transientPaneRatio !== null &&
+    transientPaneRatio.workspace === workspacePath &&
+    transientPaneRatio.paneKey === paneKey
       ? transientPaneRatio.ratio
       : (layout?.splitRatio ?? 0.5)
 
@@ -326,8 +328,11 @@ export function TerminalDrawer({
   useLayoutEffect(() => {
     const targetId = layout?.renamingSessionId ?? focusedSessionId
     if (!targetId) return
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
     tabRefs.current.get(targetId)?.scrollIntoView?.({
-      behavior: "smooth",
+      behavior: prefersReducedMotion ? "auto" : "smooth",
       block: "nearest",
       inline: "nearest",
     })
@@ -954,7 +959,8 @@ export function TerminalDrawer({
             event.preventDefault()
             event.stopPropagation()
           }}
-          className="yzs overflow-y-auto font-mono"
+          data-testid="terminal-drawer-content"
+          className="overflow-hidden font-mono"
           style={{
             height: expanded ? geometry.contentHeight : 0,
             opacity: expanded ? 1 : 0,

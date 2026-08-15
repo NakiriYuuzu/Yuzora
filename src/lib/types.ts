@@ -1,7 +1,10 @@
+export type FileNodeKind = "file" | "directory" | "symlink" | "other"
+
 export interface FileNode {
     name: string
     path: string
     isDir: boolean
+    kind?: FileNodeKind
 }
 
 export interface WorkspacePathIndexEntry {
@@ -134,11 +137,18 @@ export interface GitStatus {
     inProgress: string | null
 }
 export type GitEnvironment =
-    | { status: "missing"; reason: string }
+    | {
+          status: "missing"
+          reason: string
+          /** Stable machine code for UI localization. */
+          kind?: "notFound" | "unsupportedVersion"
+          minimumVersion?: string
+      }
     | { status: "notARepo" }
     | { status: "ready"; root: string; version: string }
-export interface BranchInfo { name: string; upstream: string | null; ahead: number; behind: number; isCurrent: boolean }
-export interface BranchList { local: BranchInfo[]; remote: string[] }
+export interface BranchInfo { name: string; upstream: string | null; ahead: number; behind: number; isCurrent: boolean; gone: boolean }
+export interface TagInfo { name: string; date: string }
+export interface BranchList { local: BranchInfo[]; remote: string[]; tags: TagInfo[] }
 // #57 T3：冷開 workspace 的 git 首載單趟快照——environment 非 ready 時
 // status/branches 為 null（Rust 端 Option 序列化為 null）。ready 落地後
 // status/branches 快照失敗時同樣為 null、錯誤放 snapshotError：前端仍要落
@@ -148,6 +158,36 @@ export interface GitBootstrapResult {
     status: GitStatus | null
     branches: BranchList | null
     snapshotError?: string | null
+}
+export type WorkspaceTrustStateKind = "trusted" | "untrusted" | "invalid"
+export interface WorkspaceTrustStatus {
+    state: WorkspaceTrustStateKind | string
+    canonicalPath?: string
+    fsIdentity?: string
+    challengeId?: string
+    repoPresent?: boolean
+    reason?: string
+}
+export interface WorkspaceTrustChallenge {
+    challengeId: string
+    canonicalPath: string
+    fsIdentity: string
+    repoPresent: boolean
+    expiresAt: number
+}
+export interface WorkspaceExecutionChallenge {
+    challengeId: string
+    canonicalPath: string
+    command: string
+    commandDigest: string
+    grantsTrust: boolean
+    trusted: boolean
+    expiresAt: number
+}
+export interface TrustedWorkspace {
+    canonicalPath: string
+    fsIdentity: string
+    grantedAt: string
 }
 export type RemoteProbe = "yes" | "no" | "unknown"
 // #57 T3：watcher 事件 payload 帶 workspace 標識；listener 比對 live
@@ -221,7 +261,17 @@ export interface DevServerInfo {
     status: DevServerStatus
 }
 export type AskpassKind = "username" | "password" | "passphrase" | "fingerprint" | "other"
-export interface AskpassRequest { id: number; prompt: string; kind: AskpassKind }
+export type AskpassOperation = "fetch" | "pull" | "push" | "probe"
+export interface AskpassRequest {
+    id: number
+    prompt: string
+    kind: AskpassKind
+    repositoryDisplay: string
+    repositoryCanonical: string
+    operation: AskpassOperation
+    remoteDisplay: string | null
+    background: boolean
+}
 
 // --- Runtime logs (M5 Task 15; Rust serde field names are snake_case) ---
 export interface LogRecord {
@@ -266,7 +316,12 @@ export interface LogCommit {
     parents: string[]
     refs: LogRef[]
 }
-export interface LogPage { commits: LogCommit[]; hasMore: boolean }
+export interface LogPage {
+    commits: LogCommit[]
+    hasMore: boolean
+    /** Opaque cursor for the next page; null when exhausted. */
+    nextCursor: string | null
+}
 export interface CommitFileChange {
     status: string
     path: string
@@ -296,21 +351,34 @@ export type FileAtRevResult =
 
 // --- Database (FEAT-1 SQLite + F2 network backends; Rust serde is camelCase) ---
 export type DbKind = "sqlite" | "postgres" | "mssql"
+export type PostgresTransportMode =
+    | "verifyFull"
+    | "encryptedTrustServerCert"
+    | "insecurePlaintext"
+export interface PostgresInsecureException {
+    host: string
+    port: number
+    user: string
+    database: string
+}
+export interface PostgresTransportFields {
+    transportMode: PostgresTransportMode
+    insecureException?: PostgresInsecureException | null
+    trustServerCertAcknowledged?: boolean
+}
 // Write-only connection input used behind the Rust profile/Test Connection
 // authority. No renderer-facing command can register this config directly;
 // passwords are sent in-flight only and are NEVER persisted anywhere.
 export type DbOpenConfig =
     | { kind: "sqlite"; path: string }
-    | {
+    | ({
           kind: "postgres"
           host: string
           port: number
           database: string
           user: string
           password: string
-          ssl: boolean
-          trustCert: boolean
-      }
+      } & PostgresTransportFields)
     | {
           kind: "mssql"
           host: string
@@ -339,15 +407,13 @@ export type DbResultSessionId = DbOpaqueId<"resultSession">
  * request contracts and can never appear in a returned descriptor. */
 export type DbProfileTarget =
     | { kind: "sqlite"; path: string }
-    | {
+    | ({
           kind: "postgres"
           host: string
           port: number
           database: string
           user: string
-          ssl: boolean
-          trustCert: boolean
-      }
+      } & PostgresTransportFields)
     | {
           kind: "mssql"
           host: string
@@ -356,6 +422,92 @@ export type DbProfileTarget =
           user: string
           trustCert: boolean
       }
+
+export const DEFAULT_POSTGRES_TRANSPORT_MODE: PostgresTransportMode = "verifyFull"
+
+export function postgresInsecureExceptionMatches(
+    exception: PostgresInsecureException | null | undefined,
+    host: string,
+    port: number,
+    user: string,
+    database: string
+): boolean {
+    return !!exception
+        && exception.port === port
+        && exception.host === host
+        && exception.user === user
+        && exception.database === database
+}
+
+export interface PostgresTransportIdentity {
+    transportMode: PostgresTransportMode
+    host: string
+    port: number
+    user: string
+    database: string
+}
+
+export function postgresTransportIdentityMatches(
+    left: PostgresTransportIdentity,
+    right: PostgresTransportIdentity
+): boolean {
+    return left.transportMode === right.transportMode
+        && left.host === right.host
+        && left.port === right.port
+        && left.user === right.user
+        && left.database === right.database
+}
+
+export function postgresTransportAcknowledged(
+    target: Extract<DbProfileTarget, { kind: "postgres" }>
+): boolean {
+    if (target.transportMode === "verifyFull") return true
+    if (target.transportMode === "encryptedTrustServerCert") {
+        return target.trustServerCertAcknowledged === true
+    }
+    return postgresInsecureExceptionMatches(
+        target.insecureException,
+        target.host,
+        target.port,
+        target.user,
+        target.database
+    )
+}
+
+export function migrateLegacyPostgresTransport(input: {
+    transportMode?: PostgresTransportMode
+    insecureException?: PostgresInsecureException | null
+    trustServerCertAcknowledged?: boolean
+    ssl?: boolean
+    trustCert?: boolean
+}): PostgresTransportFields {
+    if (input.transportMode) {
+        return {
+            transportMode: input.transportMode,
+            insecureException: input.insecureException ?? null,
+            trustServerCertAcknowledged: input.trustServerCertAcknowledged === true
+        }
+    }
+    if (input.ssl === false) {
+        return {
+            transportMode: "insecurePlaintext",
+            insecureException: null,
+            trustServerCertAcknowledged: false
+        }
+    }
+    if (input.ssl === true && input.trustCert === true) {
+        return {
+            transportMode: "encryptedTrustServerCert",
+            insecureException: null,
+            trustServerCertAcknowledged: true
+        }
+    }
+    return {
+        transportMode: DEFAULT_POSTGRES_TRANSPORT_MODE,
+        insecureException: null,
+        trustServerCertAcknowledged: false
+    }
+}
 
 export type DbCredentialState = "notRequired" | "stored" | "required" | "unavailable"
 export interface DbProfileDescriptor {
@@ -394,6 +546,10 @@ export type DbProfileErrorCode =
     | "sqlitePathInvalid"
     | "sqliteOpenFailed"
     | "invalidRequest"
+    | "postgresTransportRejected"
+    | "postgresTransportChallengeExpired"
+    | "postgresTransportChallengeMismatch"
+    | "postgresTransportChallengeReplay"
 interface DbProfileError {
     code: DbProfileErrorCode
     message: string
@@ -405,12 +561,30 @@ export interface DbProfileCreateRequest {
     name: string
     target: DbProfileTarget
     credential: DbCredentialInput | null
+    transportChallengeId?: string | null
 }
 export interface DbProfileUpdateRequest {
     descriptorId: DbDescriptorId
     name: string
     target: DbProfileTarget
     replacementCredential: DbCredentialInput | null
+    transportChallengeId?: string | null
+}
+export interface DbPostgresTransportChallengeRequest {
+    transportMode: PostgresTransportMode
+    host: string
+    port: number
+    user: string
+    database: string
+}
+export interface DbPostgresTransportChallenge {
+    challengeId: string
+    transportMode: PostgresTransportMode
+    host: string
+    port: number
+    user: string
+    database: string
+    expiresAt: number
 }
 type DbProfileRecoveryKind =
     | "pendingCreate"
@@ -458,7 +632,12 @@ export type DbSaveAndConnectOutcome =
       }
 
 export type DbTestConnectionRequest =
-    | { kind: "ephemeral"; target: DbProfileTarget; credential: DbCredentialInput | null }
+    | {
+          kind: "ephemeral"
+          target: DbProfileTarget
+          credential: DbCredentialInput | null
+          transportChallengeId?: string | null
+      }
     | { kind: "saved"; descriptorId: DbDescriptorId }
 export interface DbTestConnectionResult {
     elapsedMs: number
@@ -529,6 +708,7 @@ export type DbOperationalErrorCode =
     | "sqlitePathUnreadable"
     | "sqlitePathInvalid"
     | "sqliteOpenFailed"
+    | "postgresTransportRejected"
 
 /** Stable recovery code plus optional engine diagnostics. The backend omits
  * `error` when no engine evidence exists. */
@@ -633,6 +813,7 @@ export interface DbResultPage {
     effectOutcome: DbEffectOutcome
     lifecycle: DbResultSessionLifecycle
     resultLimitReached: boolean
+    valueTooLarge?: boolean
 }
 
 // --- SSH terminal (FEAT-2 MVP; Rust serde outputs camelCase) ---
@@ -645,16 +826,50 @@ export type SshAuthInput =
 export interface SshConnectResult { sessionId: string; fingerprint: string; knownHost?: boolean }
 export interface SshDataEvent { sessionId: string; chunk: string }
 export interface SshExitEvent { sessionId: string }
+export type SshHostKeyPrompt =
+    | {
+          kind: "new"
+          challengeId: string
+          host: string
+          port: number
+          endpoint: string
+          algorithm: string
+          fingerprint: string
+      }
+    | {
+          kind: "changed"
+          host: string
+          port: number
+          endpoint: string
+          algorithm: string
+          fingerprint: string
+          previousFingerprint: string
+      }
 
 // --- SFTP browsing + transfers (F5; Rust serde outputs camelCase) ---
+export type SftpUploadSource =
+    | { kind: "workspace"; workspaceId: string; relativePath: string }
+    | { kind: "selected"; capabilityId: string; name: string }
+
+export interface SftpDownloadDest {
+    capabilityId: string
+    leaf: string
+}
+
 export interface SftpEntry {
     name: string
     path: string
     isDir: boolean
     isSymlink: boolean
+    nameSafe?: boolean
     size: number
 }
 export interface SftpListing { cwd: string; entries: SftpEntry[] }
+
+export interface WorkspaceOpenResult {
+    canonicalPath: string
+    capabilityId: string
+}
 // Progress tick on `sftp://progress`, correlated by the front-end's transferId.
 export interface SftpProgressEvent {
     sessionId: string

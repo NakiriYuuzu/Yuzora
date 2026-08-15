@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Herdr Tab 切換穩定性修正｜Yuzora</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111315;
+      --panel: #191c20;
+      --panel-2: #20242a;
+      --line: #313740;
+      --text: #edf0f4;
+      --muted: #a6afb9;
+      --accent: #8bd5ca;
+      --good: #a6da95;
+      --warn: #eed49f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.65 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1080px, calc(100% - 36px)); margin: 0 auto; padding: 48px 0 72px; }
+    header, section {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel);
+      padding: 24px;
+      margin-bottom: 18px;
+    }
+    h1, h2, h3 { margin: 0; line-height: 1.25; }
+    h1 { font-size: clamp(28px, 4vw, 46px); letter-spacing: -0.035em; }
+    h2 { margin-bottom: 14px; font-size: 21px; }
+    h3 { margin-bottom: 6px; font-size: 16px; }
+    p { margin: 10px 0 0; }
+    code { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .eyebrow { margin-bottom: 10px; color: var(--accent); font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+    .lede { max-width: 78ch; color: var(--muted); font-size: 17px; }
+    .status { display: inline-flex; margin-top: 18px; border-radius: 999px; background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); padding: 6px 11px; font-weight: 700; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .card { border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); padding: 16px; }
+    .card p, li { color: var(--muted); }
+    ul { margin: 8px 0 0; padding-left: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--line); padding: 11px 10px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .pass { color: var(--good); font-weight: 700; }
+    .note { color: var(--warn); }
+    footer { color: var(--muted); text-align: center; font-size: 13px; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } header, section { padding: 19px; } }
+    @media print { :root { color-scheme: light; --bg:#fff; --panel:#fff; --panel-2:#f6f7f8; --line:#d8dde3; --text:#111; --muted:#4d5660; } main { width: 100%; padding: 0; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">Yuzora · Herdr Integration</div>
+      <h1>Herdr Tab 切換穩定性修正</h1>
+      <p class="lede">移除 Space 原生 tooltip，修正 Herdr full frame 誤報 hidden-output truncation，讓已開啟 terminal pages 持續掛載，並以 latest-intent + per-session serialization 保證反覆切換的最終焦點一致。</p>
+      <div class="status">已完成並通過自動化與 Orca 實機驗收</div>
+    </header>
+
+    <section>
+      <h2>修正摘要</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>Space disclosure</h3>
+          <p>移除 Space tile 的 native <code>title</code>，僅保留既有 HoverCard；keyboard focus 仍可顯示名稱、路徑、Session、Agent 與 terminal-tab 狀態。</p>
+        </article>
+        <article class="card">
+          <h3>Persistent terminal pages</h3>
+          <p><code>EditorArea</code> 同時保留所有已開啟 Herdr pages；inactive page 只切換 visibility、pointer events 與 aria 狀態，不再 unmount xterm／connector。</p>
+        </article>
+        <article class="card">
+          <h3>Authoritative full frames</h3>
+          <p><code>TerminalOutputQueue.replace()</code> 將 Herdr full frame 視為完整畫面快照，保留 ANSI prefix、繞過 incremental ring-buffer cap，避免建立／重開頁面時出現誤導性的截斷警告。</p>
+        </article>
+        <article class="card">
+          <h3>Latest intent wins</h3>
+          <p>已開啟 Tab 先即時切換本機畫面；TabBar intent token 阻止 stale completion rollback。Herdr mutation 依 named session serial 執行，避免舊 RPC 在新 RPC 後覆寫 runtime focus。</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>回歸測試</h2>
+      <table>
+        <thead><tr><th>驗證</th><th>結果</th></tr></thead>
+        <tbody>
+          <tr><td>Focused Vitest（6 files／78 tests）</td><td class="pass">PASS</td></tr>
+          <tr><td>Full Vitest（136 files／1875 tests）</td><td class="pass">PASS</td></tr>
+          <tr><td><code>bun run typecheck</code></td><td class="pass">PASS</td></tr>
+          <tr><td><code>bun run build</code></td><td class="pass">PASS</td></tr>
+          <tr><td>Scoped ESLint</td><td class="pass">0 errors／0 warnings</td></tr>
+          <tr><td>Rust unit tests</td><td class="pass">626 passed</td></tr>
+          <tr><td>Cargo check／fmt／exact clippy baseline</td><td class="pass">PASS／PASS／201 matched</td></tr>
+          <tr><td><code>git diff --check</code>／staged files</td><td class="pass">PASS／0</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Orca 桌面實機驗收</h2>
+      <ul>
+        <li>開啟 Tab 2 的雙 pane BSP surface，連續執行 <code>1 → 2 → 1 → 2 → 1 → 2</code>，每次均可切回。</li>
+        <li>切換前後三個 Herdr connector child PID 完全相同，證明一般切換沒有 release／dispose／reopen。</li>
+        <li>在 Tab 2 輸出 <code>YUZORA_SWITCH_SENTINEL</code>，切至 Tab 1 再返回後內容仍保留。</li>
+        <li>畫面與 accessibility tree 均未出現 <code>[Yuzora: hidden terminal output was truncated]</code>。</li>
+        <li>等待超過一輪 4 秒 snapshot polling 後，UI 與 Herdr 仍一致聚焦 <code>w1:t2 / w1:p3</code>。</li>
+        <li>Space keyboard focus 顯示 HoverCard：完整路徑、Session、Agent 狀態及 3 個 terminal tabs。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Final review</h2>
+      <p>本 tranche 唯一 final reviewer：<code>531326d9</code>。Reviewer 找到兩個 rapid-switch race：stale backend mutation 與 repeated same-target rollback；兩項均已修正並新增 regression coverage，修正後重新通過 full frontend suite、typecheck、build、ESLint 與實機驗收。</p>
+      <p class="note">完整 repo lint 仍會受到本機未追蹤 <code>src-gpui/target/**</code> artifacts 影響；本次產品 source 與變更範圍已以 scoped ESLint 驗證。</p>
+    </section>
+
+    <footer>2026-08-11 · Yuzora Herdr ADE integration</footer>
+  </main>
+</body>
+</html>

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 
 import { DashedActionButton } from "@/app/workbench/DashedActionButton"
 import { EmptyState } from "@/app/workbench/EmptyState"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { pickWorkspace } from "@/lib/workspaceActions"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -40,9 +41,9 @@ export function FilesNavContent() {
       onContextMenu={contextMenuHandler({ kind: "explorer", workspacePath })}
       className="flex h-full flex-col"
     >
-      <div className="flex-1 overflow-y-auto py-[4px]">
+      <ScrollArea className="min-h-0 flex-1" viewportClassName="py-[4px]">
         <FileTree />
-      </div>
+      </ScrollArea>
     </div>
   )
 }

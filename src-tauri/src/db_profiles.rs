@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -21,12 +21,362 @@ use crate::db_credentials::{
 use crate::db_result_session::ResultSessionState;
 use crate::db_service::{
     self, ConnectionGeneration, ConnectionId, CredentialInput, CredentialState, DbHandle,
-    DbOpenConfig, DbState, DescriptorId, LiveConnection, LiveDatabaseEngine, ProfileCreateRequest,
-    ProfileDescriptor, ProfileTarget, ProfileUpdateRequest, TestConnectionRequest,
-    TestConnectionResult,
+    DbOpenConfig, DbState, DescriptorId, LiveConnection, LiveDatabaseEngine,
+    PostgresInsecureException, PostgresTransportMode, ProfileCreateRequest, ProfileDescriptor,
+    ProfileTarget, ProfileUpdateRequest, TestConnectionRequest, TestConnectionResult,
 };
 
 const PROFILE_REPOSITORY_VERSION: u32 = 1;
+
+fn parse_profile_document(bytes: &[u8]) -> Result<ProfileDocument, ProfileRepositoryError> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| ProfileRepositoryError::new(ProfileRepositoryErrorKind::Corrupt))?;
+    migrate_legacy_postgres_targets(&mut value);
+    serde_json::from_value(value)
+        .map_err(|_| ProfileRepositoryError::new(ProfileRepositoryErrorKind::Corrupt))
+}
+
+fn migrate_legacy_postgres_targets(value: &mut serde_json::Value) {
+    if let Some(profiles) = value
+        .get_mut("profiles")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for profile in profiles {
+            if let Some(target) = profile.get_mut("target") {
+                migrate_legacy_postgres_target(target);
+            }
+        }
+    }
+    if let Some(operations) = value
+        .get_mut("pendingOperations")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for operation in operations {
+            if let Some(target) = operation
+                .get_mut("profile")
+                .and_then(|profile| profile.get_mut("target"))
+            {
+                migrate_legacy_postgres_target(target);
+            }
+            if let Some(target) = operation
+                .get_mut("replacement")
+                .and_then(|profile| profile.get_mut("target"))
+            {
+                migrate_legacy_postgres_target(target);
+            }
+        }
+    }
+}
+
+fn migrate_legacy_postgres_target(target: &mut serde_json::Value) {
+    let Some(object) = target.as_object_mut() else {
+        return;
+    };
+    if object.get("kind").and_then(serde_json::Value::as_str) != Some("postgres") {
+        return;
+    }
+    if object.contains_key("transportMode") {
+        object.remove("ssl");
+        object.remove("trustCert");
+        return;
+    }
+    let ssl = object.remove("ssl").and_then(|value| value.as_bool());
+    let trust_cert = object
+        .remove("trustCert")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let (mode, acknowledged_trust) = match ssl {
+        Some(false) => ("insecurePlaintext", false),
+        Some(true) if trust_cert => ("encryptedTrustServerCert", true),
+        _ => ("verifyFull", false),
+    };
+    object.insert(
+        "transportMode".to_string(),
+        serde_json::Value::String(mode.to_string()),
+    );
+    if acknowledged_trust {
+        object.insert(
+            "trustServerCertAcknowledged".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+}
+
+const TRANSPORT_CHALLENGE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresTransportChallengeDto {
+    pub challenge_id: String,
+    pub transport_mode: PostgresTransportMode,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresTransportChallengeRequest {
+    pub transport_mode: PostgresTransportMode,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+}
+
+struct TransportChallenge {
+    id: String,
+    mode: PostgresTransportMode,
+    host: String,
+    port: u16,
+    user: String,
+    database: String,
+    expires: Instant,
+}
+
+#[derive(Default)]
+struct PostgresTransportChallengeRegistry {
+    items: Mutex<HashMap<String, TransportChallenge>>,
+}
+
+impl PostgresTransportChallengeRegistry {
+    fn issue(
+        &self,
+        request: &PostgresTransportChallengeRequest,
+    ) -> Result<PostgresTransportChallengeDto, ProfileError> {
+        if matches!(request.transport_mode, PostgresTransportMode::VerifyFull) {
+            return Err(ProfileError::new(
+                ProfileErrorCode::InvalidRequest,
+                "verify-full transport does not require a challenge",
+            ));
+        }
+        if request.host.trim().is_empty()
+            || request.user.trim().is_empty()
+            || request.database.trim().is_empty()
+        {
+            return Err(ProfileError::new(
+                ProfileErrorCode::InvalidRequest,
+                "PostgreSQL transport challenge requires host, user, and database",
+            ));
+        }
+        self.sweep();
+        let challenge = TransportChallenge {
+            id: format!("pg-chal-{}", uuid::Uuid::new_v4()),
+            mode: request.transport_mode,
+            host: request.host.clone(),
+            port: request.port,
+            user: request.user.clone(),
+            database: request.database.clone(),
+            expires: Instant::now() + TRANSPORT_CHALLENGE_TTL,
+        };
+        let dto = PostgresTransportChallengeDto {
+            challenge_id: challenge.id.clone(),
+            transport_mode: challenge.mode,
+            host: challenge.host.clone(),
+            port: challenge.port,
+            user: challenge.user.clone(),
+            database: challenge.database.clone(),
+            expires_at: now_ms().saturating_add(TRANSPORT_CHALLENGE_TTL.as_millis() as u64),
+        };
+        self.items
+            .lock()
+            .map_err(|_| {
+                ProfileError::new(
+                    ProfileErrorCode::RepositoryUnavailable,
+                    "database profile storage is unavailable",
+                )
+            })?
+            .insert(challenge.id.clone(), challenge);
+        Ok(dto)
+    }
+
+    fn consume(&self, challenge_id: &str, target: &ProfileTarget) -> Result<(), ProfileError> {
+        let mut items = self.items.lock().map_err(|_| {
+            ProfileError::new(
+                ProfileErrorCode::RepositoryUnavailable,
+                "database profile storage is unavailable",
+            )
+        })?;
+        let Some(challenge) = items.remove(challenge_id) else {
+            return Err(ProfileError::new(
+                ProfileErrorCode::PostgresTransportChallengeReplay,
+                "PostgreSQL transport challenge was already used",
+            ));
+        };
+        if Instant::now() >= challenge.expires {
+            return Err(ProfileError::new(
+                ProfileErrorCode::PostgresTransportChallengeExpired,
+                "PostgreSQL transport challenge expired",
+            ));
+        }
+        if !challenge_matches_target(&challenge, target) {
+            return Err(ProfileError::new(
+                ProfileErrorCode::PostgresTransportChallengeMismatch,
+                "PostgreSQL transport challenge does not match the target",
+            ));
+        }
+        Ok(())
+    }
+
+    fn sweep(&self) {
+        if let Ok(mut items) = self.items.lock() {
+            let now = Instant::now();
+            items.retain(|_, challenge| now < challenge.expires);
+        }
+    }
+
+    #[cfg(test)]
+    fn expire_all(&self) {
+        if let Ok(mut items) = self.items.lock() {
+            let past = Instant::now() - Duration::from_secs(1);
+            for challenge in items.values_mut() {
+                challenge.expires = past;
+            }
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn challenge_matches_target(challenge: &TransportChallenge, target: &ProfileTarget) -> bool {
+    match target {
+        ProfileTarget::Postgres {
+            host,
+            port,
+            user,
+            database,
+            transport_mode,
+            ..
+        } => {
+            challenge.mode == *transport_mode
+                && challenge.host == *host
+                && challenge.port == *port
+                && challenge.user == *user
+                && challenge.database == *database
+        }
+        ProfileTarget::Sqlite { .. } | ProfileTarget::Mssql { .. } => false,
+    }
+}
+
+fn strip_postgres_attestation(target: ProfileTarget) -> ProfileTarget {
+    match target {
+        ProfileTarget::Postgres {
+            host,
+            port,
+            database,
+            user,
+            transport_mode,
+            ..
+        } => ProfileTarget::Postgres {
+            host,
+            port,
+            database,
+            user,
+            transport_mode,
+            insecure_exception: None,
+            trust_server_cert_acknowledged: false,
+        },
+        other => other,
+    }
+}
+
+fn same_postgres_identity(left: &ProfileTarget, right: &ProfileTarget) -> bool {
+    match (left, right) {
+        (
+            ProfileTarget::Postgres {
+                host: host_a,
+                port: port_a,
+                user: user_a,
+                database: database_a,
+                transport_mode: mode_a,
+                ..
+            },
+            ProfileTarget::Postgres {
+                host: host_b,
+                port: port_b,
+                user: user_b,
+                database: database_b,
+                transport_mode: mode_b,
+                ..
+            },
+        ) => {
+            host_a == host_b
+                && port_a == port_b
+                && user_a == user_b
+                && database_a == database_b
+                && mode_a == mode_b
+        }
+        _ => false,
+    }
+}
+
+fn apply_backend_postgres_authorization(target: ProfileTarget) -> ProfileTarget {
+    match target {
+        ProfileTarget::Postgres {
+            host,
+            port,
+            database,
+            user,
+            transport_mode,
+            ..
+        } => match transport_mode {
+            PostgresTransportMode::VerifyFull => ProfileTarget::Postgres {
+                host,
+                port,
+                database,
+                user,
+                transport_mode,
+                insecure_exception: None,
+                trust_server_cert_acknowledged: false,
+            },
+            PostgresTransportMode::InsecurePlaintext => {
+                let exception = PostgresInsecureException::new(
+                    host.clone(),
+                    port,
+                    user.clone(),
+                    database.clone(),
+                );
+                ProfileTarget::Postgres {
+                    host,
+                    port,
+                    database,
+                    user,
+                    transport_mode,
+                    insecure_exception: Some(exception),
+                    trust_server_cert_acknowledged: false,
+                }
+            }
+            PostgresTransportMode::EncryptedTrustServerCert => ProfileTarget::Postgres {
+                host,
+                port,
+                database,
+                user,
+                transport_mode,
+                insecure_exception: None,
+                trust_server_cert_acknowledged: true,
+            },
+        },
+        other => other,
+    }
+}
+
+fn authorize_postgres_target(target: &ProfileTarget) -> Result<(), ProfileError> {
+    if target.postgres_transport_authorized() {
+        Ok(())
+    } else {
+        Err(ProfileError::new(
+            ProfileErrorCode::PostgresTransportRejected,
+            "PostgreSQL transport requires an explicit acknowledged exception",
+        ))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -380,8 +730,7 @@ impl DatabaseProfileRepository for FileProfileRepository {
             }
             Err(error) => return Err(Self::map_io(&error, ProfileRepositoryErrorKind::ReadFailed)),
         };
-        let document: ProfileDocument = serde_json::from_slice(&bytes)
-            .map_err(|_| ProfileRepositoryError::new(ProfileRepositoryErrorKind::Corrupt))?;
+        let document = parse_profile_document(&bytes)?;
         document.validate()?;
         Ok(document)
     }
@@ -477,6 +826,14 @@ impl FakeProfileRepository {
     }
 
     #[cfg(test)]
+    fn seed_durable_bytes(&self, bytes: Vec<u8>) {
+        self.disk
+            .lock()
+            .expect("fake repository poisoned")
+            .durable_bytes = Some(bytes);
+    }
+
+    #[cfg(test)]
     fn durable_bytes(&self) -> Vec<u8> {
         self.disk
             .lock()
@@ -522,8 +879,7 @@ impl DatabaseProfileRepository for FakeProfileRepository {
         let Some(bytes) = disk.durable_bytes.as_ref() else {
             return Ok(ProfileDocument::default());
         };
-        let document: ProfileDocument = serde_json::from_slice(bytes)
-            .map_err(|_| ProfileRepositoryError::new(ProfileRepositoryErrorKind::Corrupt))?;
+        let document = parse_profile_document(bytes)?;
         document.validate()?;
         Ok(document)
     }
@@ -602,6 +958,10 @@ pub enum ProfileErrorCode {
     SqliteOpenFailed,
     StaleConnection,
     InvalidRequest,
+    PostgresTransportRejected,
+    PostgresTransportChallengeExpired,
+    PostgresTransportChallengeMismatch,
+    PostgresTransportChallengeReplay,
 }
 
 /// IPC-safe domain error. Filesystem and keyring details are discarded. A
@@ -1266,6 +1626,7 @@ pub struct DatabaseProfiles {
     repository: Arc<dyn DatabaseProfileRepository>,
     vault: Arc<dyn DatabaseCredentialStore>,
     closer: Arc<dyn DatabaseLifecycleCloser>,
+    challenges: PostgresTransportChallengeRegistry,
 }
 
 impl DatabaseProfiles {
@@ -1278,6 +1639,7 @@ impl DatabaseProfiles {
             repository,
             vault,
             closer,
+            challenges: PostgresTransportChallengeRegistry::default(),
         }
     }
 
@@ -1287,6 +1649,47 @@ impl DatabaseProfiles {
 
     fn is_network(target: &ProfileTarget) -> bool {
         !matches!(target, ProfileTarget::Sqlite { .. })
+    }
+
+    pub fn issue_transport_challenge(
+        &self,
+        request: PostgresTransportChallengeRequest,
+    ) -> Result<PostgresTransportChallengeDto, ProfileError> {
+        self.challenges.issue(&request)
+    }
+
+    fn authorize_incoming_postgres_target(
+        &self,
+        target: ProfileTarget,
+        challenge_id: Option<&str>,
+        existing: Option<&ProfileTarget>,
+    ) -> Result<ProfileTarget, ProfileError> {
+        let stripped = strip_postgres_attestation(target);
+        if stripped.postgres_transport_authorized() {
+            return Ok(stripped);
+        }
+        if let Some(existing) = existing {
+            if same_postgres_identity(existing, &stripped)
+                && existing.postgres_transport_authorized()
+            {
+                return Ok(existing.clone());
+            }
+        }
+        let Some(challenge_id) = challenge_id.filter(|id| !id.is_empty()) else {
+            return Err(ProfileError::new(
+                ProfileErrorCode::PostgresTransportRejected,
+                "PostgreSQL transport requires an explicit acknowledged exception",
+            ));
+        };
+        self.challenges.consume(challenge_id, &stripped)?;
+        let authorized = apply_backend_postgres_authorization(stripped);
+        authorize_postgres_target(&authorized)?;
+        Ok(authorized)
+    }
+
+    #[cfg(test)]
+    fn expire_transport_challenges(&self) {
+        self.challenges.expire_all();
     }
 
     fn recovery_row(operation: &PendingOperation) -> ProfileRecoveryRow {
@@ -1353,7 +1756,7 @@ impl DatabaseProfiles {
                 descriptor_id: profile.descriptor_id,
                 config_generation: profile.config_generation,
                 name: profile.name,
-                target: profile.target,
+                target: strip_postgres_attestation(profile.target),
                 credential_state,
                 active_credential_generation: None,
             });
@@ -1380,13 +1783,18 @@ impl DatabaseProfiles {
     }
 
     pub fn create(&self, request: ProfileCreateRequest) -> Result<ProfileDescriptor, ProfileError> {
+        let target = self.authorize_incoming_postgres_target(
+            request.target,
+            request.transport_challenge_id.as_deref(),
+            None,
+        )?;
         let mut document = self.repository.load()?;
         let descriptor_id = DescriptorId(Self::new_id("dbc"));
         let mut stored = StoredProfile {
             descriptor_id: descriptor_id.clone(),
             config_generation: 1,
             name: request.name,
-            target: request.target,
+            target,
             credential_state: CredentialState::NotRequired,
             active_credential_generation: None,
         };
@@ -1445,19 +1853,24 @@ impl DatabaseProfiles {
                 )
             })?;
         let current = document.profiles[index].clone();
+        let target = self.authorize_incoming_postgres_target(
+            request.target,
+            request.transport_challenge_id.as_deref(),
+            Some(&current.target),
+        )?;
         if request.replacement_credential.is_none() {
-            if Self::is_network(&current.target) != Self::is_network(&request.target) {
+            if Self::is_network(&current.target) != Self::is_network(&target) {
                 return Err(ProfileError::new(
                     ProfileErrorCode::InvalidRequest,
                     "changing credential mode requires a new profile",
                 ));
             }
-            if current.target != request.target {
+            if current.target != target {
                 Self::map_close(self.closer.cancel_and_close(&request.descriptor_id))?;
             }
             let mut updated = current;
             updated.name = request.name;
-            updated.target = request.target;
+            updated.target = target;
             if updated.target != document.profiles[index].target {
                 updated.config_generation =
                     updated.config_generation.checked_add(1).ok_or_else(|| {
@@ -1471,7 +1884,7 @@ impl DatabaseProfiles {
             self.repository.replace(&document)?;
             return Ok(updated.descriptor());
         }
-        if !Self::is_network(&request.target) {
+        if !Self::is_network(&target) {
             return Err(ProfileError::new(
                 ProfileErrorCode::InvalidRequest,
                 "SQLite profiles do not accept credentials",
@@ -1484,7 +1897,7 @@ impl DatabaseProfiles {
         let old_generation = current.active_credential_generation.clone();
         let mut replacement = current.clone();
         replacement.name = request.name;
-        replacement.target = request.target;
+        replacement.target = target;
         replacement.config_generation =
             replacement
                 .config_generation
@@ -2140,6 +2553,7 @@ impl DatabaseProfileState {
             Code::SqliteOpenFailed => ProfileErrorCode::SqliteOpenFailed,
             Code::StaleConnection => ProfileErrorCode::StaleConnection,
             Code::ConnectionFailed | Code::QueryFailed => ProfileErrorCode::ConnectionFailed,
+            Code::PostgresTransportRejected => ProfileErrorCode::PostgresTransportRejected,
         };
         ProfileError {
             code,
@@ -2199,6 +2613,7 @@ impl DatabaseProfileState {
         target: ProfileTarget,
         secret: Option<secrecy::SecretString>,
     ) -> Result<DbOpenConfig, ProfileError> {
+        authorize_postgres_target(&target)?;
         match target {
             ProfileTarget::Sqlite { path } => Ok(DbOpenConfig::Sqlite { path }),
             ProfileTarget::Postgres {
@@ -2206,8 +2621,9 @@ impl DatabaseProfileState {
                 port,
                 database,
                 user,
-                ssl,
-                trust_cert,
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
             } => {
                 let password = Self::required_secret(secret)?;
                 Ok(DbOpenConfig::Postgres {
@@ -2216,8 +2632,9 @@ impl DatabaseProfileState {
                     database,
                     user,
                     password,
-                    ssl,
-                    trust_cert,
+                    transport_mode,
+                    insecure_exception,
+                    trust_server_cert_acknowledged,
                 })
             }
             ProfileTarget::Mssql {
@@ -2408,7 +2825,20 @@ impl DatabaseProfileState {
         request: TestConnectionRequest,
     ) -> Result<TestConnectionResult, ProfileError> {
         let (target, secret) = match request {
-            TestConnectionRequest::Ephemeral { target, credential } => {
+            TestConnectionRequest::Ephemeral {
+                target,
+                credential,
+                transport_challenge_id,
+            } => {
+                let target = self
+                    .with_profiles(move |profiles| {
+                        profiles.authorize_incoming_postgres_target(
+                            target,
+                            transport_challenge_id.as_deref(),
+                            None,
+                        )
+                    })
+                    .await?;
                 (target, credential.map(|credential| credential.password))
             }
             TestConnectionRequest::Saved { descriptor_id } => {
@@ -2629,9 +3059,20 @@ pub async fn db_test_connection(
     state.test_connection(request).await
 }
 
+#[tauri::command]
+pub async fn db_postgres_transport_challenge(
+    state: tauri::State<'_, DatabaseProfileState>,
+    request: PostgresTransportChallengeRequest,
+) -> Result<PostgresTransportChallengeDto, ProfileError> {
+    state
+        .with_profiles(move |profiles| profiles.issue_transport_challenge(request))
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db_service::{PostgresInsecureException, PostgresTransportMode};
     use secrecy::{ExposeSecret, SecretString};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3007,6 +3448,7 @@ mod tests {
                     path: path.to_string_lossy().into_owned(),
                 },
                 credential: None,
+                transport_challenge_id: None,
             })
             .unwrap();
         (
@@ -3143,6 +3585,7 @@ mod tests {
                     path: replacement.path().to_string_lossy().into_owned(),
                 },
                 replacement_credential: None,
+                transport_challenge_id: None,
             })
             .await
             .unwrap();
@@ -3438,17 +3881,17 @@ mod tests {
     fn postgres_request(secret: &str) -> ProfileCreateRequest {
         ProfileCreateRequest {
             name: "Production".to_string(),
-            target: ProfileTarget::Postgres {
-                host: "db.internal".to_string(),
-                port: 5432,
-                database: "app".to_string(),
-                user: "alice".to_string(),
-                ssl: true,
-                trust_cert: false,
-            },
+            target: ProfileTarget::postgres(
+                "db.internal",
+                5432,
+                "app",
+                "alice",
+                PostgresTransportMode::VerifyFull,
+            ),
             credential: Some(CredentialInput {
                 password: SecretString::from(secret),
             }),
+            transport_challenge_id: None,
         }
     }
 
@@ -3474,14 +3917,13 @@ mod tests {
             descriptor_id: DescriptorId(id.to_string()),
             config_generation: 1,
             name: "Production".to_string(),
-            target: ProfileTarget::Postgres {
-                host: "db.internal".to_string(),
-                port: 5432,
-                database: "app".to_string(),
-                user: "alice".to_string(),
-                ssl: true,
-                trust_cert: false,
-            },
+            target: ProfileTarget::postgres(
+                "db.internal",
+                5432,
+                "app",
+                "alice",
+                PostgresTransportMode::VerifyFull,
+            ),
             credential_state,
             active_credential_generation: generation
                 .map(|generation| CredentialGeneration(generation.to_string())),
@@ -3523,6 +3965,7 @@ mod tests {
                     path: "/tmp/first.sqlite".to_string(),
                 },
                 credential: None,
+                transport_challenge_id: None,
             })
             .unwrap();
         assert_eq!(created.config_generation, 1);
@@ -3534,6 +3977,7 @@ mod tests {
                     path: "/tmp/second.sqlite".to_string(),
                 },
                 replacement_credential: None,
+                transport_challenge_id: None,
             })
             .unwrap();
         assert_eq!(updated.config_generation, 2);
@@ -3899,6 +4343,7 @@ mod tests {
                     path: sqlite_file.path().to_string_lossy().into_owned(),
                 },
                 credential: None,
+                transport_challenge_id: None,
             })
             .await
             .unwrap();
@@ -3960,6 +4405,7 @@ mod tests {
                         path: missing.to_string_lossy().into_owned(),
                     },
                     credential: None,
+                    transport_challenge_id: None,
                 })
                 .await
                 .unwrap_err()
@@ -4044,15 +4490,15 @@ mod tests {
             .update_profile(ProfileUpdateRequest {
                 descriptor_id: created.descriptor_id.clone(),
                 name: "Production moved".to_string(),
-                target: ProfileTarget::Postgres {
-                    host: "db-moved.internal".to_string(),
-                    port: 5432,
-                    database: "app".to_string(),
-                    user: "alice".to_string(),
-                    ssl: true,
-                    trust_cert: false,
-                },
+                target: ProfileTarget::postgres(
+                    "db-moved.internal",
+                    5432,
+                    "app",
+                    "alice",
+                    PostgresTransportMode::VerifyFull,
+                ),
                 replacement_credential: None,
+                transport_challenge_id: None,
             })
             .await
             .unwrap();
@@ -4085,15 +4531,15 @@ mod tests {
             .update(ProfileUpdateRequest {
                 descriptor_id: created.descriptor_id.clone(),
                 name: "Production moved".to_string(),
-                target: ProfileTarget::Postgres {
-                    host: "db-moved.internal".to_string(),
-                    port: 5432,
-                    database: "app".to_string(),
-                    user: "alice".to_string(),
-                    ssl: true,
-                    trust_cert: false,
-                },
+                target: ProfileTarget::postgres(
+                    "db-moved.internal",
+                    5432,
+                    "app",
+                    "alice",
+                    PostgresTransportMode::VerifyFull,
+                ),
                 replacement_credential: None,
+                transport_challenge_id: None,
             })
             .unwrap_err();
 
@@ -4312,17 +4758,17 @@ mod tests {
             .update(ProfileUpdateRequest {
                 descriptor_id: created.descriptor_id.clone(),
                 name: "Production v2".to_string(),
-                target: ProfileTarget::Postgres {
-                    host: "db-v2.internal".to_string(),
-                    port: 5432,
-                    database: "app".to_string(),
-                    user: "alice".to_string(),
-                    ssl: true,
-                    trust_cert: false,
-                },
+                target: ProfileTarget::postgres(
+                    "db-v2.internal",
+                    5432,
+                    "app",
+                    "alice",
+                    PostgresTransportMode::VerifyFull,
+                ),
                 replacement_credential: Some(CredentialInput {
                     password: SecretString::from("new-secret"),
                 }),
+                transport_challenge_id: None,
             })
             .unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::RepositoryUnavailable);
@@ -4411,17 +4857,17 @@ mod tests {
                 .update(ProfileUpdateRequest {
                     descriptor_id: created.descriptor_id.clone(),
                     name: "Production replacement".to_string(),
-                    target: ProfileTarget::Postgres {
-                        host: "replacement.internal".to_string(),
-                        port: 5432,
-                        database: "app".to_string(),
-                        user: "alice".to_string(),
-                        ssl: true,
-                        trust_cert: false,
-                    },
+                    target: ProfileTarget::postgres(
+                        "replacement.internal",
+                        5432,
+                        "app",
+                        "alice",
+                        PostgresTransportMode::VerifyFull,
+                    ),
                     replacement_credential: Some(CredentialInput {
                         password: SecretString::from("new-secret"),
                     }),
+                    transport_challenge_id: None,
                 })
                 .unwrap_err()
                 .code,
@@ -4528,17 +4974,17 @@ mod tests {
             .update(ProfileUpdateRequest {
                 descriptor_id: created.descriptor_id.clone(),
                 name: "Production v2".to_string(),
-                target: ProfileTarget::Postgres {
-                    host: "db-v2.internal".to_string(),
-                    port: 5432,
-                    database: "app".to_string(),
-                    user: "alice".to_string(),
-                    ssl: true,
-                    trust_cert: false,
-                },
+                target: ProfileTarget::postgres(
+                    "db-v2.internal",
+                    5432,
+                    "app",
+                    "alice",
+                    PostgresTransportMode::VerifyFull,
+                ),
                 replacement_credential: Some(CredentialInput {
                     password: SecretString::from("new-secret"),
                 }),
+                transport_challenge_id: None,
             })
             .unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::RepositoryUnavailable);
@@ -4610,17 +5056,17 @@ mod tests {
             .update(ProfileUpdateRequest {
                 descriptor_id: created.descriptor_id.clone(),
                 name: "Production v2".to_string(),
-                target: ProfileTarget::Postgres {
-                    host: "db-v2.internal".to_string(),
-                    port: 5432,
-                    database: "app".to_string(),
-                    user: "alice".to_string(),
-                    ssl: true,
-                    trust_cert: false,
-                },
+                target: ProfileTarget::postgres(
+                    "db-v2.internal",
+                    5432,
+                    "app",
+                    "alice",
+                    PostgresTransportMode::VerifyFull,
+                ),
                 replacement_credential: Some(CredentialInput {
                     password: SecretString::from("new-secret"),
                 }),
+                transport_challenge_id: None,
             })
             .unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::VaultDeleteFailed);
@@ -5044,6 +5490,67 @@ mod tests {
     }
 
     #[test]
+    fn legacy_import_strips_renderer_postgres_attestation_and_requires_fresh_challenge() {
+        let (profiles, _, _, _) = harness();
+        let target = ProfileTarget::postgres(
+            "db.example",
+            5432,
+            "app",
+            "alice",
+            PostgresTransportMode::InsecurePlaintext,
+        )
+        .with_insecure_exception(PostgresInsecureException::new(
+            "db.example",
+            5432,
+            "alice",
+            "app",
+        ));
+        let imported = profiles
+            .import_legacy(LegacyProfileImportRequest {
+                profiles: vec![ProfileDescriptor {
+                    descriptor_id: DescriptorId("legacy-attested".to_string()),
+                    config_generation: 1,
+                    name: "Legacy attested".to_string(),
+                    target,
+                    credential_state: CredentialState::Stored,
+                }],
+            })
+            .unwrap();
+        match &imported.profiles[0].target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+                ..
+            } => {
+                assert_eq!(*transport_mode, PostgresTransportMode::InsecurePlaintext);
+                assert!(insecure_exception.is_none());
+                assert!(!*trust_server_cert_acknowledged);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            profiles
+                .update(ProfileUpdateRequest {
+                    descriptor_id: DescriptorId("legacy-attested".to_string()),
+                    name: "Legacy attested".to_string(),
+                    target: ProfileTarget::postgres(
+                        "db.example",
+                        5432,
+                        "app",
+                        "alice",
+                        PostgresTransportMode::InsecurePlaintext,
+                    ),
+                    replacement_credential: None,
+                    transport_challenge_id: None,
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportRejected
+        );
+    }
+
+    #[test]
     fn errors_debug_and_repository_bytes_never_contain_secret_sentinel() {
         let (profiles, repository, vault, _) = harness();
         vault.fail_next(TestVaultOperation::Store, VaultErrorKind::WriteFailed);
@@ -5057,5 +5564,661 @@ mod tests {
         let secret = SecretString::from(SENTINEL);
         assert_eq!(secret.expose_secret(), SENTINEL);
         assert!(!format!("{secret:?}").contains(SENTINEL));
+    }
+
+    #[test]
+    fn new_postgres_profile_serializes_verify_full_by_default() {
+        let (profiles, repository, vault, _) = harness();
+        let created = profiles.create(postgres_request(SENTINEL)).unwrap();
+        match created.target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+                ..
+            } => {
+                assert_eq!(transport_mode, PostgresTransportMode::VerifyFull);
+                assert!(insecure_exception.is_none());
+                assert!(!trust_server_cert_acknowledged);
+            }
+            _ => panic!("expected postgres target"),
+        }
+        let persisted =
+            serde_json::from_slice::<serde_json::Value>(&repository.durable_bytes()).unwrap();
+        let target = &persisted["profiles"][0]["target"];
+        assert_eq!(target["transportMode"], "verifyFull");
+        assert!(target.get("ssl").is_none());
+        assert!(target.get("trustCert").is_none());
+        assert!(target.get("insecureException").is_none());
+        assert!(!String::from_utf8_lossy(&repository.durable_bytes()).contains(SENTINEL));
+        assert_eq!(vault.counts().0, 1);
+    }
+
+    #[test]
+    fn migrates_legacy_postgres_booleans_deterministically() {
+        let mut document = serde_json::json!({
+            "version": 1,
+            "profiles": [
+                {
+                    "descriptorId": "pg-verify",
+                    "configGeneration": 1,
+                    "name": "Verify",
+                    "target": {
+                        "kind": "postgres",
+                        "host": "db.example",
+                        "port": 5432,
+                        "database": "app",
+                        "user": "alice",
+                        "ssl": true,
+                        "trustCert": false
+                    },
+                    "credentialState": "required"
+                },
+                {
+                    "descriptorId": "pg-trust",
+                    "configGeneration": 1,
+                    "name": "Trust",
+                    "target": {
+                        "kind": "postgres",
+                        "host": "db.example",
+                        "port": 5432,
+                        "database": "app",
+                        "user": "bob",
+                        "ssl": true,
+                        "trustCert": true
+                    },
+                    "credentialState": "required"
+                },
+                {
+                    "descriptorId": "pg-plain",
+                    "configGeneration": 1,
+                    "name": "Plain",
+                    "target": {
+                        "kind": "postgres",
+                        "host": "db.example",
+                        "port": 5432,
+                        "database": "app",
+                        "user": "carol",
+                        "ssl": false,
+                        "trustCert": false
+                    },
+                    "credentialState": "required"
+                },
+                {
+                    "descriptorId": "pg-missing",
+                    "configGeneration": 1,
+                    "name": "Missing",
+                    "target": {
+                        "kind": "postgres",
+                        "host": "db.example",
+                        "port": 5432,
+                        "database": "app",
+                        "user": "dave"
+                    },
+                    "credentialState": "required"
+                },
+                {
+                    "descriptorId": "mssql-1",
+                    "configGeneration": 1,
+                    "name": "Mssql",
+                    "target": {
+                        "kind": "mssql",
+                        "host": "sql.example",
+                        "port": 1433,
+                        "database": "app",
+                        "user": "sa",
+                        "trustCert": true
+                    },
+                    "credentialState": "required"
+                },
+                {
+                    "descriptorId": "sqlite-1",
+                    "configGeneration": 1,
+                    "name": "Local",
+                    "target": { "kind": "sqlite", "path": "/tmp/local.sqlite" },
+                    "credentialState": "notRequired"
+                }
+            ],
+            "pendingOperations": []
+        });
+        migrate_legacy_postgres_targets(&mut document);
+        let parsed: ProfileDocument = serde_json::from_value(document).unwrap();
+        parsed.validate().unwrap();
+
+        let by_id = |id: &str| {
+            parsed
+                .profiles
+                .iter()
+                .find(|profile| profile.descriptor_id.0 == id)
+                .unwrap()
+        };
+        match &by_id("pg-verify").target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+                ..
+            } => {
+                assert_eq!(*transport_mode, PostgresTransportMode::VerifyFull);
+                assert!(insecure_exception.is_none());
+                assert!(!*trust_server_cert_acknowledged);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &by_id("pg-trust").target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+                ..
+            } => {
+                assert_eq!(
+                    *transport_mode,
+                    PostgresTransportMode::EncryptedTrustServerCert
+                );
+                assert!(insecure_exception.is_none());
+                assert!(*trust_server_cert_acknowledged);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &by_id("pg-plain").target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+                ..
+            } => {
+                assert_eq!(*transport_mode, PostgresTransportMode::InsecurePlaintext);
+                assert!(insecure_exception.is_none());
+                assert!(!*trust_server_cert_acknowledged);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &by_id("pg-missing").target {
+            ProfileTarget::Postgres { transport_mode, .. } => {
+                assert_eq!(*transport_mode, PostgresTransportMode::VerifyFull);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &by_id("mssql-1").target {
+            ProfileTarget::Mssql { trust_cert, .. } => assert!(*trust_cert),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            by_id("sqlite-1").target,
+            ProfileTarget::Sqlite { .. }
+        ));
+    }
+
+    #[test]
+    fn migrated_plaintext_cannot_save_test_or_connect_until_acknowledged() {
+        let repository = Arc::new(FakeProfileRepository::default());
+        let document = serde_json::json!({
+            "version": 1,
+            "profiles": [{
+                "descriptorId": "pg-plain",
+                "configGeneration": 1,
+                "name": "Plain",
+                "target": {
+                    "kind": "postgres",
+                    "host": "db.example",
+                    "port": 5432,
+                    "database": "app",
+                    "user": "alice",
+                    "ssl": false,
+                    "trustCert": false
+                },
+                "credentialState": "required"
+            }],
+            "pendingOperations": []
+        });
+        repository.seed_durable_bytes(serde_json::to_vec(&document).unwrap());
+
+        let vault = Arc::new(TestVault::default());
+        let closer = Arc::new(FakeLifecycleCloser::default());
+        let profiles = DatabaseProfiles::new(repository.clone(), vault, closer);
+        let loaded = profiles.load().unwrap();
+        match &loaded.profiles[0].target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                insecure_exception,
+                ..
+            } => {
+                assert_eq!(*transport_mode, PostgresTransportMode::InsecurePlaintext);
+                assert!(insecure_exception.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let descriptor_id = DescriptorId("pg-plain".to_string());
+        let unacked = ProfileTarget::postgres(
+            "db.example",
+            5432,
+            "app",
+            "alice",
+            PostgresTransportMode::InsecurePlaintext,
+        );
+        assert_eq!(
+            profiles
+                .update(ProfileUpdateRequest {
+                    descriptor_id: descriptor_id.clone(),
+                    name: "Plain".to_string(),
+                    target: unacked.clone(),
+                    replacement_credential: None,
+                    transport_challenge_id: None,
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportRejected
+        );
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "New plaintext".to_string(),
+                    target: unacked.clone(),
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: None,
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportRejected
+        );
+
+        let challenge_id = profiles
+            .issue_transport_challenge(PostgresTransportChallengeRequest {
+                transport_mode: PostgresTransportMode::InsecurePlaintext,
+                host: "db.example".into(),
+                port: 5432,
+                user: "alice".into(),
+                database: "app".into(),
+            })
+            .unwrap()
+            .challenge_id;
+        let updated = profiles
+            .update(ProfileUpdateRequest {
+                descriptor_id: descriptor_id.clone(),
+                name: "Plain".to_string(),
+                target: unacked.clone(),
+                replacement_credential: None,
+                transport_challenge_id: Some(challenge_id),
+            })
+            .unwrap();
+        match updated.target {
+            ProfileTarget::Postgres {
+                insecure_exception,
+                transport_mode,
+                ..
+            } => {
+                assert_eq!(transport_mode, PostgresTransportMode::InsecurePlaintext);
+                assert_eq!(
+                    insecure_exception,
+                    Some(PostgresInsecureException::new(
+                        "db.example",
+                        5432,
+                        "alice",
+                        "app",
+                    ))
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let revoked = ProfileTarget::postgres(
+            "db.example",
+            5432,
+            "app",
+            "alice",
+            PostgresTransportMode::VerifyFull,
+        );
+        let after_revoke = profiles
+            .update(ProfileUpdateRequest {
+                descriptor_id,
+                name: "Plain".to_string(),
+                target: revoked,
+                replacement_credential: None,
+                transport_challenge_id: None,
+            })
+            .unwrap();
+        match after_revoke.target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                insecure_exception,
+                ..
+            } => {
+                assert_eq!(transport_mode, PostgresTransportMode::VerifyFull);
+                assert!(insecure_exception.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let persisted = String::from_utf8(repository.durable_bytes()).unwrap();
+        assert!(!persisted.contains(SENTINEL));
+        assert!(persisted.contains("verifyFull"));
+    }
+
+    #[test]
+    fn save_and_test_reject_mismatched_plaintext_exception_and_unacked_trust_cert() {
+        let (profiles, repository, vault, _) = harness();
+        let mismatched = ProfileTarget::postgres(
+            "db.example",
+            5432,
+            "app",
+            "alice",
+            PostgresTransportMode::InsecurePlaintext,
+        )
+        .with_insecure_exception(PostgresInsecureException::new(
+            "other.example",
+            5432,
+            "alice",
+            "app",
+        ));
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Mismatch".to_string(),
+                    target: mismatched,
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: None,
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportRejected
+        );
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Trust".to_string(),
+                    target: ProfileTarget::postgres(
+                        "db.example",
+                        5432,
+                        "app",
+                        "alice",
+                        PostgresTransportMode::EncryptedTrustServerCert,
+                    ),
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: None,
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportRejected
+        );
+        let challenge_id = profiles
+            .issue_transport_challenge(PostgresTransportChallengeRequest {
+                transport_mode: PostgresTransportMode::EncryptedTrustServerCert,
+                host: "db.example".into(),
+                port: 5432,
+                user: "alice".into(),
+                database: "app".into(),
+            })
+            .unwrap()
+            .challenge_id;
+        let trusted = profiles
+            .create(ProfileCreateRequest {
+                name: "Trust".to_string(),
+                target: ProfileTarget::postgres(
+                    "db.example",
+                    5432,
+                    "app",
+                    "alice",
+                    PostgresTransportMode::EncryptedTrustServerCert,
+                ),
+                credential: Some(CredentialInput {
+                    password: SecretString::from(SENTINEL),
+                }),
+                transport_challenge_id: Some(challenge_id),
+            })
+            .unwrap();
+        match trusted.target {
+            ProfileTarget::Postgres {
+                transport_mode,
+                trust_server_cert_acknowledged,
+                ..
+            } => {
+                assert_eq!(
+                    transport_mode,
+                    PostgresTransportMode::EncryptedTrustServerCert
+                );
+                assert!(trust_server_cert_acknowledged);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(!String::from_utf8_lossy(&repository.durable_bytes()).contains(SENTINEL));
+        assert_eq!(vault.counts().0, 1);
+    }
+
+    fn plaintext_target() -> ProfileTarget {
+        ProfileTarget::postgres(
+            "db.example",
+            5432,
+            "app",
+            "alice",
+            PostgresTransportMode::InsecurePlaintext,
+        )
+    }
+
+    fn issue_plain(profiles: &DatabaseProfiles) -> String {
+        profiles
+            .issue_transport_challenge(PostgresTransportChallengeRequest {
+                transport_mode: PostgresTransportMode::InsecurePlaintext,
+                host: "db.example".into(),
+                port: 5432,
+                user: "alice".into(),
+                database: "app".into(),
+            })
+            .unwrap()
+            .challenge_id
+    }
+
+    #[test]
+    fn postgres_transport_bypass_without_challenge_is_rejected() {
+        let (profiles, _, _, _) = harness();
+        let attested = plaintext_target().with_insecure_exception(PostgresInsecureException::new(
+            "db.example",
+            5432,
+            "alice",
+            "app",
+        ));
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Bypass".to_string(),
+                    target: attested,
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: None,
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportRejected
+        );
+    }
+
+    #[test]
+    fn postgres_transport_stale_challenge_is_rejected() {
+        let (profiles, _, _, _) = harness();
+        let challenge_id = issue_plain(&profiles);
+        profiles.expire_transport_challenges();
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Stale".to_string(),
+                    target: plaintext_target(),
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: Some(challenge_id),
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportChallengeExpired
+        );
+    }
+
+    #[test]
+    fn postgres_transport_mismatched_challenge_is_rejected() {
+        let (profiles, _, _, _) = harness();
+        let challenge_id = issue_plain(&profiles);
+        let other = ProfileTarget::postgres(
+            "other.example",
+            5432,
+            "app",
+            "alice",
+            PostgresTransportMode::InsecurePlaintext,
+        );
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Mismatch host".to_string(),
+                    target: other,
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: Some(challenge_id),
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportChallengeMismatch
+        );
+    }
+
+    #[test]
+    fn postgres_transport_challenge_port_mismatch_is_rejected() {
+        let (profiles, _, _, _) = harness();
+        let challenge_id = issue_plain(&profiles);
+        let other_port = ProfileTarget::postgres(
+            "db.example",
+            5433,
+            "app",
+            "alice",
+            PostgresTransportMode::InsecurePlaintext,
+        );
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Mismatch port".to_string(),
+                    target: other_port,
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: Some(challenge_id),
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportChallengeMismatch
+        );
+    }
+
+    #[test]
+    fn persisted_plaintext_authorization_is_bound_to_exact_port() {
+        let (profiles, _, _, _) = harness();
+        let created = profiles
+            .create(ProfileCreateRequest {
+                name: "Plain".to_string(),
+                target: plaintext_target(),
+                credential: Some(CredentialInput {
+                    password: SecretString::from(SENTINEL),
+                }),
+                transport_challenge_id: Some(issue_plain(&profiles)),
+            })
+            .unwrap();
+        assert_eq!(
+            profiles
+                .update(ProfileUpdateRequest {
+                    descriptor_id: created.descriptor_id,
+                    name: "Plain new port".to_string(),
+                    target: ProfileTarget::postgres(
+                        "db.example",
+                        5433,
+                        "app",
+                        "alice",
+                        PostgresTransportMode::InsecurePlaintext,
+                    ),
+                    replacement_credential: None,
+                    transport_challenge_id: None,
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportRejected
+        );
+    }
+
+    #[test]
+    fn postgres_transport_challenge_cannot_be_replayed() {
+        let (profiles, _, _, _) = harness();
+        let challenge_id = issue_plain(&profiles);
+        profiles
+            .create(ProfileCreateRequest {
+                name: "Once".to_string(),
+                target: plaintext_target(),
+                credential: Some(CredentialInput {
+                    password: SecretString::from(SENTINEL),
+                }),
+                transport_challenge_id: Some(challenge_id.clone()),
+            })
+            .unwrap();
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Replay".to_string(),
+                    target: plaintext_target(),
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL),
+                    }),
+                    transport_challenge_id: Some(challenge_id),
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportChallengeReplay
+        );
+    }
+
+    #[test]
+    fn persisted_backend_exception_can_be_reused_for_the_same_target() {
+        let (profiles, _, _, _) = harness();
+        let challenge_id = issue_plain(&profiles);
+        let created = profiles
+            .create(ProfileCreateRequest {
+                name: "Saved".to_string(),
+                target: plaintext_target(),
+                credential: Some(CredentialInput {
+                    password: SecretString::from(SENTINEL),
+                }),
+                transport_challenge_id: Some(challenge_id),
+            })
+            .unwrap();
+        let updated = profiles
+            .update(ProfileUpdateRequest {
+                descriptor_id: created.descriptor_id,
+                name: "Saved again".to_string(),
+                target: plaintext_target(),
+                replacement_credential: None,
+                transport_challenge_id: None,
+            })
+            .unwrap();
+        match updated.target {
+            ProfileTarget::Postgres {
+                insecure_exception,
+                transport_mode,
+                ..
+            } => {
+                assert_eq!(transport_mode, PostgresTransportMode::InsecurePlaintext);
+                assert_eq!(
+                    insecure_exception,
+                    Some(PostgresInsecureException::new(
+                        "db.example",
+                        5432,
+                        "alice",
+                        "app",
+                    ))
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

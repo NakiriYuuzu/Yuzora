@@ -13,6 +13,15 @@ import type {
 } from "@/lib/types"
 import { resultPageKey, useDbStore } from "@/state/dbStore"
 
+const originalUserAgent = navigator.userAgent
+
+function setUserAgent(userAgent: string) {
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: userAgent,
+  })
+}
+
 vi.mock("@/lib/ipc", () => ({
   dbListTables: vi.fn(),
   dbQueryRun: vi.fn(),
@@ -169,6 +178,7 @@ function installLocalStorage(): void {
 }
 
 beforeEach(() => {
+  setUserAgent(originalUserAgent)
   installLocalStorage()
   localStorage.clear()
   useDbStore.getState().reset()
@@ -391,6 +401,21 @@ describe("DatabasePanel execution controls", () => {
         { sql: "SELECT 2;", transactionBoundary: "none" },
       ],
     })))
+  })
+
+  it("shows Cmd database shortcut badges on macOS and Ctrl badges on Windows", async () => {
+    await useDbStore.getState().openConnection("/a.db")
+
+    setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+    const { unmount } = render(<DatabasePanel />)
+    expect(screen.getByRole("button", { name: "Run selection or current statement" })).toHaveTextContent("⌘↵")
+    expect(screen.getByRole("button", { name: "Run all statements" })).toHaveTextContent("⇧⌘↵")
+    unmount()
+
+    setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    render(<DatabasePanel />)
+    expect(screen.getByRole("button", { name: "Run selection or current statement" })).toHaveTextContent("Ctrl+Enter")
+    expect(screen.getByRole("button", { name: "Run all statements" })).toHaveTextContent("Ctrl+Shift+Enter")
   })
 
   it("maps Mod-Enter to Primary Run and Mod-Shift-Enter to Run All", async () => {

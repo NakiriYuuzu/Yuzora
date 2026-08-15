@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>以 Herdr Skill 強化 Yuzora ADE｜評估與建議</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg:#101214; --panel:#181b1f; --panel2:#20242a; --line:#303640;
+      --text:#edf1f5; --muted:#aab2bd; --accent:#8bd5ca; --good:#a6da95;
+      --warn:#eed49f; --hot:#f5a97f; --violet:#c6a0f6;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { width:min(1120px,calc(100% - 36px)); margin:auto; padding:46px 0 72px; }
+    header,section { margin-bottom:18px; padding:24px; border:1px solid var(--line); border-radius:18px; background:var(--panel); }
+    h1,h2,h3 { margin:0; line-height:1.25; } h1 { font-size:clamp(29px,4vw,46px); letter-spacing:-.035em; }
+    h2 { margin-bottom:14px; font-size:21px; } h3 { margin-bottom:7px; font-size:16px; }
+    p { margin:9px 0 0; } code { color:var(--accent); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .eyebrow { margin-bottom:10px; color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+    .lede { max-width:82ch; color:var(--muted); font-size:17px; }
+    .verdict { display:inline-flex; margin-top:18px; padding:7px 12px; border-radius:999px; background:color-mix(in srgb,var(--good) 15%,transparent); color:var(--good); font-weight:750; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .grid3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .card { padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--panel2); }
+    .card p,.card li,li { color:var(--muted); }
+    ul,ol { margin:8px 0 0; padding-left:21px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:11px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
+    .p0 { color:var(--hot); font-weight:800; } .p1 { color:var(--warn); font-weight:800; } .p2 { color:var(--violet); font-weight:800; }
+    .recommended { border-color:color-mix(in srgb,var(--accent) 65%,var(--line)); box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 18%,transparent) inset; }
+    .flow { display:flex; flex-wrap:wrap; gap:8px; align-items:center; color:var(--muted); }
+    .node { padding:7px 10px; border:1px solid var(--line); border-radius:9px; background:var(--panel2); color:var(--text); }
+    .arrow { color:var(--accent); }
+    .note { color:var(--warn); }
+    footer { color:var(--muted); text-align:center; font-size:13px; }
+    @media(max-width:820px){.grid,.grid3{grid-template-columns:1fr}header,section{padding:19px}}
+    @media print{:root{color-scheme:light;--bg:#fff;--panel:#fff;--panel2:#f6f7f8;--line:#d7dce2;--text:#111;--muted:#4f5862}main{width:100%;padding:0}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Yuzora ADE · Herdr Skill Review</div>
+    <h1>從 Terminal Workbench 升級為 Agent Control Plane</h1>
+    <p class="lede">目前 Yuzora 已完成 Herdr named sessions、Spaces、Agents 投影、typed terminal pages、BSP panes、control/takeover、focus restore 與 destructive-action safety。對照 <code>$herdr</code> skill 後，下一個最大缺口不是更多 terminal chrome，而是 Agent automation、attention inbox、event stream、background Runs 與 artifact semantics。</p>
+    <div class="verdict">建議採「Agent Control Plane first」，再往 Mission／Task／Run 擴張</div>
+  </header>
+
+  <section>
+    <h2>Skill 能力與目前 ADE 落差</h2>
+    <table>
+      <thead><tr><th>Herdr Skill 能力</th><th>目前 Yuzora</th><th>建議</th></tr></thead>
+      <tbody>
+        <tr><td>Workspace／Tab／Pane topology</td><td>已原生整合，含 BSP、split、resize、focus、rename、close。</td><td>維持現有架構，不追求嵌入 Herdr TUI。</td></tr>
+        <tr><td><code>agent start/prompt/wait/get/read/send-keys</code></td><td>Agents 目前主要是狀態列與 terminal activation，沒有 typed automation surface。</td><td class="p0">建立 Agent Control API 與 Inspector。</td></tr>
+        <tr><td><code>idle/working/blocked/done/unknown</code> lifecycle</td><td>已有 status type 與顏色，但尚未呈現「需要處理」「背景完成未讀」「狀態不確定」的語意。</td><td class="p0">加入 Attention Inbox 與 seen/unseen 語意。</td></tr>
+        <tr><td><code>pane run/wait-output/read</code></td><td>可直接操作 terminal，但沒有 background command Run、match condition、timeout 與 durable result。</td><td class="p1">建立 Command Run typed page／card。</td></tr>
+        <tr><td><code>visible/recent/recent-unwrapped/detection</code></td><td>目前主要依 xterm stream；沒有 read-only snapshot source selector。</td><td class="p1">加入 Output Inspector 與 Artifact capture。</td></tr>
+        <tr><td><code>--no-focus</code>、explicit pane／agent targets</td><td>多數 mutation 已 explicit ID，但建立 terminal／agent 尚未形成完整的背景編排政策。</td><td class="p0">所有 background work 預設 no-focus；禁止依 global focused pane 推測 target。</td></tr>
+        <tr><td>Agent start availability、cwd 與 split heuristic</td><td>目前可新增 terminal，但不能驗證 shell 是否 available，也不能直接 start supported agent。</td><td class="p1">建立 Smart Spawn flow。</td></tr>
+        <tr><td>Notifications／worktree／integration</td><td>尚未形成 ADE notification center 與 worktree-aware Agent workflow。</td><td class="p2">事件與 Runs 穩定後再接。</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>三種演進方向</h2>
+    <div class="grid3">
+      <article class="card">
+        <h3>A. Terminal parity first</h3>
+        <p>把更多 Herdr commands 放進 context menu 與 command palette。</p>
+        <ul><li>最快交付</li><li>但容易成為另一層 TUI wrapper</li><li>缺少 ADE 的任務與結果語意</li></ul>
+      </article>
+      <article class="card recommended">
+        <h3>B. Agent Control Plane first（推薦）</h3>
+        <p>先接事件流、Agent prompt/wait/read、blocked/done inbox，再建立 durable Runs。</p>
+        <ul><li>直接補齊最大產品缺口</li><li>可沿用現有 terminal pages</li><li>為 Mission／Task／Artifact 建立可靠底座</li></ul>
+      </article>
+      <article class="card">
+        <h3>C. Mission model first</h3>
+        <p>先建立 Yuzora Mission／Task／Run domain，再向下綁 Herdr。</p>
+        <ul><li>產品敘事最完整</li><li>但 event 與 Agent automation 未穩定時容易做出假狀態</li><li>重工風險最高</li></ul>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>推薦 Roadmap</h2>
+    <div class="grid">
+      <article class="card">
+        <h3><span class="p0">P0</span> Event-driven Agent Inbox</h3>
+        <ul>
+          <li>實作 named-session-aware <code>events.subscribe</code> consumer，斷線後以 cursor／revision resync。</li>
+          <li>事件健康時停止 4 秒 polling；事件中斷時自動回退 bounded polling。</li>
+          <li>把 <code>blocked</code>、<code>done</code>、runtime error 聚合成「Needs attention」。</li>
+          <li>讀取 output 不應 mark seen；只有 focus Agent／Tab 才清除 done badge。</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3><span class="p0">P0</span> Agent Automation Contract</h3>
+        <ul>
+          <li>Rust typed wrappers：<code>agent get/prompt/wait/read/send-keys</code>。</li>
+          <li>以 named session env 路由；使用 public CLI，不重做 private protocol。</li>
+          <li>Agent command target 優先使用 explicit <code>paneId</code>；不可使用目前 frontend 的 terminal-based <code>agent.id</code>。</li>
+          <li>完整呈現 <code>agent_prompt_stalled</code>、blocked、timeout 與 unsupported capability。</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3><span class="p1">P1</span> Agent Inspector</h3>
+        <ul>
+          <li>Agents row 保留 terminal activation；另加 Inspector／context menu actions。</li>
+          <li>內容：狀態、Space、Tab、Pane、cwd、Prompt、Wait、Read、Esc、Ctrl+C、Focus。</li>
+          <li>Prompt 預設 <code>--wait</code>，完成於 idle／done／blocked；不自行猜測完成。</li>
+          <li>blocked 時顯示需使用者處理，而非當成失敗或完成。</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3><span class="p1">P1</span> Durable Runs</h3>
+        <ul>
+          <li>Agent Run：綁定 <code>agent prompt --wait</code>。</li>
+          <li>Command Run：綁定 <code>pane run + wait-output</code>。</li>
+          <li>保留 target IDs、started/settled timestamps、timeout、result source 與 artifact refs。</li>
+          <li>Run 是 Yuzora domain；不要把 terminal scrollback 偽裝成 conversation history。</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3><span class="p1">P1</span> Smart Spawn</h3>
+        <ul>
+          <li>先檢查 pane 是否為 available interactive shell，再允許 <code>agent start</code>。</li>
+          <li>依 pane geometry 選 right／down；保留 cwd；background 預設 <code>--no-focus</code>。</li>
+          <li>使用 shadcn Dialog／Command／Select 選 agent kind、唯一名稱與 native args。</li>
+          <li>建立、split、start 是分離步驟，失敗時不得留下虛假的 Agent row。</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3><span class="p2">P2</span> Output、Artifacts、Worktrees</h3>
+        <ul>
+          <li>Output Inspector 支援 visible／recent／recent-unwrapped／detection 與 ANSI。</li>
+          <li>alternate-screen 無法回讀時，明確要求 Agent 輸出 artifact file，再由 Yuzora 收錄。</li>
+          <li>Space 顯示 worktree metadata；Agent Spawn 可選既有 worktree context。</li>
+          <li>done／blocked 可觸發 Yuzora notification center 或 OS notification。</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>建議資料流</h2>
+    <div class="flow">
+      <span class="node">Herdr event / CLI</span><span class="arrow">→</span>
+      <span class="node">Rust typed automation + event service</span><span class="arrow">→</span>
+      <span class="node">snapshot/event reducer</span><span class="arrow">→</span>
+      <span class="node">Agent Inbox + Inspector</span><span class="arrow">→</span>
+      <span class="node">Yuzora Run</span><span class="arrow">→</span>
+      <span class="node">Artifact／Notification</span>
+    </div>
+    <p>現有 NDJSON API 繼續負責 snapshot、resource 與 layout；terminal connector 繼續負責即時 xterm；Agent／Pane automation 則以 installed Herdr public CLI 建立獨立 typed lane。三者不可混成一個巨型 transport。</p>
+  </section>
+
+  <section>
+    <h2>需要先修正的語意邊界</h2>
+    <ul>
+      <li><strong>Agent identity：</strong>目前 normalized <code>agent.id</code> 是 <code>terminalId ?? paneId</code>；Herdr skill 明確指出 Agent command 不接受 terminal ID。Automation DTO 應新增 explicit <code>commandTarget</code>，protocol-19 預設使用 pane ID。</li>
+      <li><strong>Focus ownership：</strong>Herdr global focused pane 可能由 TUI 或另一 client 改變。建議提供「Follow Herdr Focus」政策：冷啟動恢復一次；使用者本機操作後預設 pin local view，除非主動開啟 follow。</li>
+      <li><strong>Status：</strong><code>done</code> 不是另一種 idle 顏色，而是「背景工作完成、尚未看過」；<code>unknown</code> 也不能被當成完成。</li>
+      <li><strong>Read vs focus：</strong>讀 transcript 不 mark seen；點擊 Focus 才改變 runtime focus 與 done semantics。</li>
+      <li><strong>Stopped sessions：</strong>維持現行誠實顯示，Automation actions 全部 disabled，不偷偷 attach 或 start server。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>建議第一個實作 tranche</h2>
+    <p><strong>「Herdr Event Inbox + Agent Inspector Read-only」</strong>：先接事件流與 <code>agent get/read</code>，完整呈現 blocked/done/unknown、output sources 與 follow-focus policy；暫不提供 prompt/start。這一 tranche 風險最低，卻能驗證 identity、event recovery、seen semantics 與 UI information architecture，之後再開啟 mutation actions。</p>
+    <p class="note">不建議第一步直接做 Mission／Task，也不建議一次加入所有 Agent commands；先把事件與 read-only truth 做準確，才能避免 ADE 顯示「看似完整、實際與 runtime 漂移」的假狀態。</p>
+  </section>
+
+  <footer>2026-08-11 · Based on installed Yuzora integration and the local <code>$herdr</code> skill contract</footer>
+</main>
+</body>
+</html>

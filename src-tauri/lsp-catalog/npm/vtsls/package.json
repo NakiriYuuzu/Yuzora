@@ -1,0 +1,8 @@
+{
+  "name": "yuzora-managed-vtsls",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@vtsls/language-server": "0.3.0"
+  }
+}

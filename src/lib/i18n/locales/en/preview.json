@@ -10,10 +10,13 @@
   "settingsHint": "Set the dev server command and port in the Preview section of Settings.",
   "portOccupied": "Port already in use",
   "connectExisting": "Connect to existing server",
+  "connectExistingHint": "Connecting to an already-running localhost server does not execute repository code.",
   "alternatePort": "Alternate port",
   "startChangedPort": "Start on changed port",
   "retryDetect": "Detect again",
   "failedTitle": "Dev server failed to start",
   "retryStart": "Retry start",
-  "exitedTitle": "Dev server stopped"
+  "exitedTitle": "Dev server stopped",
+  "staticCreateFailed": "This file cannot be previewed.",
+  "staticCreateTooLarge": "This preview has too many files to open safely."
 }

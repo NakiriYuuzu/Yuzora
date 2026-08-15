@@ -1,27 +1,44 @@
-import { WebSocketTransport } from '@open-rpc/client-js'
+import {
+    WebSocketTransport,
+    type JSONRPCMessage,
+    type Transport,
+} from '@marimo-team/codemirror-languageserver'
 import { logIn, logOut } from './log'
 
-// @marimo-team/codemirror-languageserver drives its LanguageServerClient
-// through an @open-rpc/client-js Transport. Subclassing (rather than
-// monkey-patching) gives access to the protected parseData() helper so the
-// logged payload matches the actual wire JSON-RPC message.
-class LoggingWebSocketTransport extends WebSocketTransport {
-    async sendData(data: any, timeout: number | null = 5000) {
-        try {
-            logOut(undefined, this.parseData(data))
-        } catch {}
-        return super.sendData(data, timeout)
+// v2 owns its JSON-RPC transport contract, so wrap the package transport and
+// log parsed messages at that boundary instead of subclassing @open-rpc.
+class LoggingWebSocketTransport implements Transport {
+    private readonly transport: WebSocketTransport
+
+    constructor(uri: string) {
+        this.transport = new WebSocketTransport(uri)
+    }
+
+    connect() {
+        return this.transport.connect()
+    }
+
+    send(message: JSONRPCMessage) {
+        logOut(undefined, message)
+        this.transport.send(message)
+    }
+
+    onMessage(handler: (message: JSONRPCMessage) => void) {
+        return this.transport.onMessage((message) => {
+            logIn(undefined, message)
+            handler(message)
+        })
+    }
+
+    onClose(handler: (error: Error) => void) {
+        return this.transport.onClose(handler)
+    }
+
+    close() {
+        this.transport.close()
     }
 }
 
 export function loggingMarimoTransport(uri: string) {
-    const transport = new LoggingWebSocketTransport(uri)
-    transport.connection.addEventListener('message', (e: MessageEvent) => {
-        try {
-            logIn(undefined, JSON.parse(e.data))
-        } catch {
-            logIn(undefined, e.data)
-        }
-    })
-    return transport
+    return new LoggingWebSocketTransport(uri)
 }

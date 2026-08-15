@@ -24,6 +24,7 @@ import type {
   DbSort,
   DbStatementResultPageState,
 } from "@/state/dbStore"
+import { shortcutLabel } from "@/lib/platform"
 import { formatDbValue } from "@/lib/types"
 import type {
   DbEffectOutcome,
@@ -33,6 +34,7 @@ import type {
   DbStatementExecution,
   DbValue,
 } from "@/lib/types"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 /** Move the column at display position `from` to display position `to`. `order`
  *  maps display positions to original column indices; the returned array is a new
@@ -340,7 +342,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
             </span>
           </div>
         )}
-        <div ref={containerRef} className="h-[160px] overflow-auto" />
+        <div ref={containerRef} className="h-[160px] overflow-hidden" />
         <div className="flex h-[40px] shrink-0 items-center gap-[8px] border-t border-b border-(--line-1) px-[10px]">
           <button
             type="button"
@@ -351,7 +353,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
           >
             <Play className="size-[13px]" aria-hidden="true" />
             {t("databasePanel.run")}
-            <kbd className="rounded-[5px] bg-white/20 px-[5px] py-[1px] font-mono text-[10px]">⌘↵</kbd>
+            <kbd className="rounded-[5px] bg-white/20 px-[5px] py-[1px] font-mono text-[10px]">{shortcutLabel("mod-enter")}</kbd>
           </button>
           <button
             type="button"
@@ -362,7 +364,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
           >
             <ListStart className="size-[13px]" aria-hidden="true" />
             {t("databasePanel.runAll")}
-            <kbd className="rounded-[5px] bg-(--paper-2) px-[5px] py-[1px] font-mono text-[10px]">⇧⌘↵</kbd>
+            <kbd className="rounded-[5px] bg-(--paper-2) px-[5px] py-[1px] font-mono text-[10px]">{shortcutLabel("mod-shift-enter")}</kbd>
           </button>
           <button
             type="button"
@@ -385,7 +387,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-hidden">
         <QueryRunView
           running={running}
           group={runGroup}
@@ -483,10 +485,15 @@ function QueryRunView({
           {t("databasePanel.connectionTerminated")}
         </div>
       )}
+      <ScrollArea
+        className="shrink-0 border-b border-(--line-1) bg-(--paper-1)"
+        orientation="horizontal"
+        viewportClassName="px-[6px] pt-[5px]"
+      >
       <div
         role="tablist"
         aria-label={t("databasePanel.statementTabsAriaLabel")}
-        className="flex shrink-0 gap-[2px] overflow-x-auto border-b border-(--line-1) bg-(--paper-1) px-[6px] pt-[5px]"
+        className="flex gap-[2px]"
       >
         {run.statements.map((statement, statementPosition) => {
           const status = t(`databasePanel.statementStatus.${statementStatusKey(statement)}`)
@@ -537,6 +544,7 @@ function QueryRunView({
           )
         })}
       </div>
+      </ScrollArea>
       <div
         id={`db-statement-panel-${active.statementExecutionId}`}
         role="tabpanel"
@@ -856,7 +864,7 @@ function ResultTable({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-auto">
+      <ScrollArea className="min-h-0 flex-1" orientation="both">
         <table className="w-full border-collapse font-mono text-[12px]">
           <thead className="sticky top-0 bg-(--paper-1)">
             <tr>
@@ -933,7 +941,7 @@ function ResultTable({
             )}
           </tbody>
         </table>
-      </div>
+      </ScrollArea>
       <div className="flex shrink-0 items-center gap-[8px] border-t border-(--line-1) px-[10px] py-[5px] text-[11px] text-(--ink-3)">
         <span className="font-mono">
           {t("databasePanel.rowCount", { count: rows.length })}

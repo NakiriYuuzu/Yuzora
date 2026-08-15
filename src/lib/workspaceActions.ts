@@ -15,6 +15,11 @@ export interface OpenWorkspaceOptions {
     // （SessionRestoreBridge）自己帶逐檔存在性驗證再開分頁，傳 false 關掉
     // 這裡的還原，避免失效檔案的分頁被搶先開出來。
     restoreSessionTabs?: boolean
+    /**
+     * When true, skip the unsaved-documents dialog. Only for callers that have
+     * already completed an unsaved preflight in the same transaction.
+     */
+    skipUnsavedGuard?: boolean
 }
 
 /**
@@ -34,14 +39,17 @@ async function openWorkspaceAtPathWithOutcome(
     // Restore-on-launch runs with no workspace and no tabs open (SessionRestore
     // only fires when workspacePath is null), so there are never dirty tabs then
     // and this is naturally skipped — no modal on auto-restore.
-    const proceed = await confirmDiscardingUnsaved({
-        title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
-        description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
-        saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
-    })
-    if (!proceed) return false
+    if (!options?.skipUnsavedGuard) {
+        const proceed = await confirmDiscardingUnsaved({
+            title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
+            description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
+            saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
+        })
+        if (!proceed) return false
+    }
 
-    const canonical = await openWorkspace(path)
+    const opened = await openWorkspace(path)
+    const canonical = opened.canonicalPath
     // #60 T4c：切回曾開過的 workspace 要還原它的 tabs。entry 必須在
     // setWorkspace 之前讀出——SessionRestoreBridge 的存檔訂閱會對 store 轉場
     // 做出反應，先讀確保不受任何寫入競態影響。
@@ -49,7 +57,7 @@ async function openWorkspaceAtPathWithOutcome(
         options?.restoreSessionTabs === false ? null : loadWorkspaceSessionEntry(canonical)
     clearAll()
     const workspace = useWorkspaceStore.getState()
-    workspace.setWorkspace(canonical)
+    workspace.setWorkspace(canonical, opened.capabilityId)
     // #57 T3：setWorkspace 之後彼此無依賴，原則上並行 fire-and-forget——序列
     // await 只會人為拉長冷開時間（git bootstrap 由 GitBridge 對 workspacePath
     // 的 effect 並行觸發）。asset scope grant 失敗僅 warn、不阻斷開啟。
@@ -84,8 +92,8 @@ async function openWorkspaceAtPathWithOutcome(
 export async function openWorkspaceAtPath(
     path: string,
     options?: OpenWorkspaceOptions
-): Promise<void> {
-    await openWorkspaceAtPathWithOutcome(path, options)
+): Promise<boolean> {
+    return openWorkspaceAtPathWithOutcome(path, options)
 }
 
 /**

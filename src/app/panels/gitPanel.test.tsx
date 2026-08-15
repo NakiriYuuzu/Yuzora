@@ -27,8 +27,9 @@ vi.mock("@/lib/ipc", () => ({
     gitPull: vi.fn(async () => undefined),
     gitPush: vi.fn(async () => undefined),
     gitStatus: vi.fn(async () => makeStatus()),
-    gitBranches: vi.fn(async () => ({ local: [], remote: [] })),
+    gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     gitCheckout: vi.fn(async () => undefined),
+    gitCheckoutDetached: vi.fn(async () => undefined),
     gitCreateBranch: vi.fn(async () => undefined),
     gitStage: vi.fn(async () => undefined),
     gitUnstage: vi.fn(async () => undefined),
@@ -69,7 +70,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 const ipc = await import("@/lib/ipc")
 const { GitPanel } = await import("./GitPanel")
-const { useGitStore, initialGitState } = await import("@/state/gitStore")
+const { useGitStore, initialGitState, clearGitSnapshots } = await import("@/state/gitStore")
 const { useGitLogStore } = await import("@/state/gitLogStore")
 const { useUiStore, uiInitialState } = await import("@/state/uiStore")
 const { useDiffModalStore } = await import("@/state/diffModalStore")
@@ -78,6 +79,7 @@ const ready = { status: "ready", root: "/w", version: "2.50" } as const
 
 describe("GitPanel tab strip", () => {
     beforeEach(() => {
+        clearGitSnapshots()
         useGitStore.setState(initialGitState)
         useGitLogStore.getState().reset()
         useUiStore.setState(uiInitialState)
@@ -97,6 +99,13 @@ describe("GitPanel tab strip", () => {
         expect(screen.getByRole("button", { name: "Fetch" })).toBeInTheDocument()
         expect(screen.getByRole("button", { name: "Pull" })).toBeInTheDocument()
         expect(screen.getByRole("button", { name: "Push" })).toBeInTheDocument()
+    })
+
+    it("ready environment with a null status shows error/detecting instead of fake tabs", () => {
+        useGitStore.setState({ environment: ready, status: null, lastError: "status failed" })
+        render(<GitPanel />)
+        expect(screen.queryByRole("tab", { name: /Log/ })).not.toBeInTheDocument()
+        expect(screen.getByText("Git status unavailable")).toBeInTheDocument()
     })
 
     it("hides the action cluster when the repo is not ready", () => {
@@ -119,6 +128,62 @@ describe("GitPanel tab strip", () => {
         expect(screen.getByRole("button", { name: "Fetch" })).toBeDisabled()
         expect(screen.getByRole("button", { name: "Pull" })).toBeDisabled()
         expect(screen.getByRole("button", { name: "Push" })).toBeDisabled()
+    })
+
+    it("keeps the branch pill reachable while Git is busy so the popover can open", () => {
+        useGitStore.setState({ environment: ready, status: makeStatus(), busy: "pull" })
+        render(<GitPanel />)
+        const trigger = screen.getByRole("button", { name: "Branches" })
+        expect(trigger).toBeEnabled()
+        expect(trigger).toHaveAttribute("aria-busy", "true")
+        fireEvent.click(trigger)
+        expect(screen.getByPlaceholderText("Search this tab…")).toBeInTheDocument()
+    })
+
+    it("keeps the branch pill reachable when the snapshot is stale", () => {
+        useGitStore.setState({ environment: ready, status: makeStatus(), snapshotStale: true })
+        render(<GitPanel />)
+        const trigger = screen.getByRole("button", { name: "Branches" })
+        expect(trigger).toBeEnabled()
+        fireEvent.click(trigger)
+        expect(screen.getByPlaceholderText("Search this tab…")).toBeInTheDocument()
+    })
+
+    it("counts an MM path only once in the Local changes badge", () => {
+        useGitStore.setState({
+            environment: ready,
+            status: {
+                ...makeStatus(),
+                staged: [{ path: "mm.ts", origPath: null, status: "M" }],
+                unstaged: [{ path: "mm.ts", origPath: null, status: "M" }]
+            }
+        })
+        render(<GitPanel />)
+        expect(screen.getByRole("tab", { name: /Local changes/ })).toHaveTextContent("1")
+    })
+
+    it("keeps the Local changes count shrink-0 so the label can truncate", () => {
+        useGitStore.setState({
+            environment: ready,
+            status: {
+                ...makeStatus(),
+                unstaged: [{ path: "a.ts", origPath: null, status: "M" }]
+            }
+        })
+        render(<div style={{ width: 220 }}><GitPanel /></div>)
+        const toolbar = screen.getByTestId("git-panel-toolbar")
+        expect(toolbar.className).toMatch(/min-w-0/)
+        expect(toolbar.className).toMatch(/overflow-hidden/)
+        expect(toolbar.querySelector(":scope > div.min-w-0.flex-1:not([data-slot])")).toBeNull()
+        expect(toolbar.children).toHaveLength(2)
+        const count = screen.getByTestId("git-panel-local-count")
+        expect(count.className).toMatch(/shrink-0/)
+        expect(count.className).toMatch(/whitespace-nowrap/)
+        const label = screen.getByTestId("git-panel-local-label")
+        expect(label.className).toMatch(/min-w-0/)
+        expect(label.className).toMatch(/truncate/)
+        const local = screen.getByRole("tab", { name: /Local changes/ })
+        expect(local.className).toMatch(/min-w-0/)
     })
 
     it("renders the amber changed-count pill on the Local changes tab", () => {
@@ -277,7 +342,7 @@ describe("GitPanel tab strip", () => {
         let selecting: Promise<void> = Promise.resolve()
         await act(async () => {
             useGitLogStore.setState({ commits: [commit, commitB] })
-            selecting = useGitLogStore.getState().select(commitB.hash)
+selecting = useGitLogStore.getState().select("/w", commitB.hash)
         })
         // Window: detail null, loading true → Compare disabled.
         expect(useGitLogStore.getState().detail).toBe(null)

@@ -3,11 +3,17 @@ import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 import * as ipcModule from "./ipc"
 import {
     openFile,
+    isOpenableFile,
     saveFile,
     listDir,
     workspacePathIndex,
     gitDetect,
     gitBootstrap,
+    workspaceTrustStatus,
+    workspaceTrustExecutionChallenge,
+    workspaceTrustGrant,
+    workspaceTrustList,
+    workspaceTrustRevoke,
     gitStatus,
     gitStage,
     gitUnstage,
@@ -17,6 +23,7 @@ import {
     gitBranches,
     gitCreateBranch,
     gitCheckout,
+    gitCheckoutDetached,
     gitFetch,
     gitPull,
     gitPush,
@@ -52,8 +59,6 @@ import {
     lspConfigClearStale,
     lspSetTrace,
     lspInstallServer,
-    agentKill,
-    agentStderrTail,
     dbProfileList,
     dbProfileImportLegacy,
     dbProfileCreate,
@@ -64,13 +69,22 @@ import {
     dbProfileOpen,
     dbProfileDisconnect,
     dbTestConnection,
+    dbPostgresTransportChallenge,
     dbListTables,
     dbTableColumns,
     dbQueryRun,
     dbQueryCancel,
     dbResultPagePrevious,
     dbResultPageNext,
-    dbResultSessionRelease
+    dbResultSessionRelease,
+    previewCreate,
+    previewRevoke,
+    previewStopAll,
+    sftpPickSelectedPath,
+    sftpPickDownloadDestination,
+    sftpUpload,
+    sftpDownload,
+    sshHostKeyRespond
 } from "./ipc"
 import { languageFromPath, fileGradeOf, MAX_LINE_LEN_SYNTAX_OFF } from "./types"
 import type {
@@ -129,6 +143,15 @@ test("openFile 傳遞 path 並回傳分級結果", async () => {
     }
 })
 
+test("isOpenableFile probes a path without loading file contents", async () => {
+    mockIPC((cmd, args) => {
+        expect(cmd).toBe("is_openable_file")
+        expect(args).toEqual({ path: "/w/a.ts" })
+        return true
+    })
+    await expect(isOpenableFile("/w/a.ts")).resolves.toBe(true)
+})
+
 test("saveFile 回傳 mtime", async () => {
     mockIPC((cmd) => (cmd === "save_file" ? 1234 : undefined))
     expect(await saveFile("/w/a.ts", "x")).toBe(1234)
@@ -140,6 +163,73 @@ test("listDir 回傳節點", async () => {
     )
     const nodes = await listDir("/w")
     expect(nodes[0].isDir).toBe(true)
+})
+
+test("sshHostKeyRespond forwards the bound first-use decision", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => {
+        seen.push([cmd, payload])
+        return undefined
+    })
+    await sshHostKeyRespond("chal-1", true, "example.com:22", "SHA256:abc")
+    expect(seen).toEqual([
+        [
+            "ssh_host_key_respond",
+            {
+                challengeId: "chal-1",
+                accept: true,
+                endpoint: "example.com:22",
+                fingerprint: "SHA256:abc"
+            }
+        ]
+    ])
+})
+
+test("sftp upload/download send tagged source and dest dir + leaf", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => {
+        seen.push([cmd, payload])
+        if (cmd === "sftp_pick_selected_path") return [{ id: "sel-1", leaf: "picked.txt" }]
+        if (cmd === "sftp_pick_download_destination") return { id: "download-1", leaf: "a.txt" }
+        return undefined
+    })
+    await expect(sftpPickSelectedPath()).resolves.toEqual([{ id: "sel-1", leaf: "picked.txt" }])
+    await expect(sftpPickDownloadDestination("a.txt")).resolves.toEqual({
+        id: "download-1",
+        leaf: "a.txt"
+    })
+    await sftpUpload(
+        "sess-1",
+        "xfer-1",
+        { kind: "workspace", workspaceId: "ws-opaque", relativePath: "a.txt" },
+        "/home/u"
+    )
+    await sftpDownload("sess-1", "xfer-2", "/home/u/a.txt", {
+        capabilityId: "download-1",
+        leaf: "a.txt"
+    })
+    expect(seen).toEqual([
+        ["sftp_pick_selected_path", {}],
+        ["sftp_pick_download_destination", { suggestedLeaf: "a.txt" }],
+        [
+            "sftp_upload",
+            {
+                sessionId: "sess-1",
+                transferId: "xfer-1",
+                source: { kind: "workspace", workspaceId: "ws-opaque", relativePath: "a.txt" },
+                remoteDir: "/home/u"
+            }
+        ],
+        [
+            "sftp_download",
+            {
+                sessionId: "sess-1",
+                transferId: "xfer-2",
+                remotePath: "/home/u/a.txt",
+                destinationCapabilityId: "download-1"
+            }
+        ]
+    ])
 })
 
 test("workspacePathIndex uses a typed request/response without a search channel", async () => {
@@ -194,6 +284,51 @@ it("gitBootstrap forwards path and returns the one-trip snapshot", async () => {
     })
 })
 
+it("workspace trust commands forward challenge payloads", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => {
+        seen.push([cmd, payload])
+        if (cmd === "workspace_trust_status") {
+            return { state: "untrusted", challengeId: "c1", canonicalPath: "/w", repoPresent: true }
+        }
+        if (cmd === "workspace_trust_execution_challenge") {
+            return {
+                challengeId: "c2",
+                canonicalPath: "/w",
+                command: "bun run dev",
+                commandDigest: "abc",
+                grantsTrust: true,
+                trusted: false,
+                expiresAt: 1
+            }
+        }
+        if (cmd === "workspace_trust_list") {
+            return [{ canonicalPath: "/w", fsIdentity: "id", grantedAt: "2026-01-01T00:00:00Z" }]
+        }
+        if (cmd === "workspace_trust_revoke") {
+            return []
+        }
+        return { state: "trusted", canonicalPath: "/w" }
+    })
+    await expect(workspaceTrustStatus("/w")).resolves.toMatchObject({ state: "untrusted" })
+    await expect(workspaceTrustExecutionChallenge("/w", "bun run dev")).resolves.toMatchObject({
+        challengeId: "c2",
+        command: "bun run dev"
+    })
+    await expect(workspaceTrustGrant("c1")).resolves.toMatchObject({ state: "trusted" })
+    await expect(workspaceTrustList()).resolves.toEqual([
+        { canonicalPath: "/w", fsIdentity: "id", grantedAt: "2026-01-01T00:00:00Z" }
+    ])
+    await expect(workspaceTrustRevoke("/w")).resolves.toEqual([])
+    expect(seen).toEqual([
+        ["workspace_trust_status", { path: "/w" }],
+        ["workspace_trust_execution_challenge", { path: "/w", command: "bun run dev" }],
+        ["workspace_trust_grant", { challengeId: "c1" }],
+        ["workspace_trust_list", {}],
+        ["workspace_trust_revoke", { canonicalPath: "/w" }]
+    ])
+})
+
 it("gitStatus forwards pathspec and returns status", async () => {
     mockIPC((cmd, payload) => {
         expect(cmd).toBe("git_status_cmd")
@@ -203,7 +338,7 @@ it("gitStatus forwards pathspec and returns status", async () => {
             staged: [], unstaged: [], untracked: [], conflicted: [], inProgress: null
         }
     })
-    const s = await gitStatus(["src/a.ts"])
+    const s = await gitStatus("/w", ["src/a.ts"])
     expect(s.branch).toBe("main")
 })
 
@@ -216,7 +351,7 @@ it("gitStatus defaults pathspec to null", async () => {
             staged: [], unstaged: [], untracked: [], conflicted: [], inProgress: null
         }
     })
-    const s = await gitStatus()
+    const s = await gitStatus("/w")
     expect(s.branch).toBeNull()
 })
 
@@ -276,37 +411,53 @@ it("gitRollbackPaths forwards deduplicated status snapshots and explicit delete 
 it("gitCommit forwards message", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitCommit("wip")
-    expect(seen[0]).toEqual(["git_commit_cmd", { message: "wip" }])
+    await gitCommit("/w", "wip")
+    expect(seen[0]).toEqual(["git_commit_cmd", { repositoryRoot: "/w", message: "wip" }])
 })
 
 it("gitBranches returns branch list", async () => {
     mockIPC((cmd) => {
         expect(cmd).toBe("git_branches")
-        return { local: [], remote: [] }
+        return { local: [], remote: [], tags: [{ name: "v1", date: "2026-08-01T12:00:00Z" }] }
     })
-    const b = await gitBranches()
-    expect(b).toEqual({ local: [], remote: [] })
+    const b = await gitBranches("/w")
+    expect(b).toEqual({ local: [], remote: [], tags: [{ name: "v1", date: "2026-08-01T12:00:00Z" }] })
 })
 
-it("gitCreateBranch forwards name", async () => {
+it("gitCreateBranch forwards optional exact start point", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitCreateBranch("feat/x")
-    expect(seen[0]).toEqual(["git_create_branch", { name: "feat/x" }])
+    await gitCreateBranch("/w", "feat/x")
+    await gitCreateBranch("/w", "release/x", "origin/team/release/x")
+    expect(seen[0]).toEqual(["git_create_branch", { repositoryRoot: "/w", name: "feat/x", startPoint: null }])
+    expect(seen[1]).toEqual(["git_create_branch", {
+        repositoryRoot: "/w",
+        name: "release/x",
+        startPoint: "origin/team/release/x"
+    }])
 })
 
 it("gitCheckout forwards name", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitCheckout("main")
-    expect(seen[0]).toEqual(["git_checkout", { name: "main" }])
+    await gitCheckout("/w", "main")
+    expect(seen[0]).toEqual(["git_checkout", { repositoryRoot: "/w", name: "main" }])
+})
+
+it("gitCheckoutDetached forwards the exact revision to the explicit command", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    await gitCheckoutDetached("/w", "release/v1.0.0")
+    expect(seen[0]).toEqual([
+        "git_checkout_detached",
+        { repositoryRoot: "/w", rev: "release/v1.0.0" }
+    ])
 })
 
 it("gitFetch forwards background flag and optional repository authority", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitFetch(true, "/repo")
+    await gitFetch("/repo", true)
     expect(seen[0]).toEqual(["git_fetch_cmd", { background: true, repositoryRoot: "/repo" }])
 })
 
@@ -327,8 +478,8 @@ it("gitPush forwards optional repository authority", async () => {
 it("gitCherryPick forwards hash", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitCherryPick("deadbeef")
-    expect(seen[0]).toEqual(["git_cherry_pick", { hash: "deadbeef" }])
+    await gitCherryPick("/w", "deadbeef")
+    expect(seen[0]).toEqual(["git_cherry_pick", { repositoryRoot: "/w", hash: "deadbeef" }])
 })
 
 it("gitRemoteProbe returns probe result", async () => {
@@ -336,31 +487,31 @@ it("gitRemoteProbe returns probe result", async () => {
         expect(cmd).toBe("git_remote_probe")
         return "yes"
     })
-    expect(await gitRemoteProbe()).toBe("yes")
+    expect(await gitRemoteProbe("/w")).toBe("yes")
 })
 
 it("gitDiffContent forwards path and staged flag", async () => {
     mockIPC((cmd, payload) => {
         expect(cmd).toBe("git_diff_content")
-        expect(payload).toEqual({ path: "a.ts", staged: true })
+        expect(payload).toEqual({ repositoryRoot: "/w", path: "a.ts", staged: true, origPath: null })
         return { original: { kind: "binary" }, modified: { kind: "full", content: "x" } }
     })
-    const d = await gitDiffContent("a.ts", true)
+    const d = await gitDiffContent("/w", "a.ts", true)
     expect(d.modified.kind).toBe("full")
 })
 
 it("gitConflictAbort forwards op", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitConflictAbort("merge")
-    expect(seen[0]).toEqual(["git_conflict_abort", { op: "merge" }])
+    await gitConflictAbort("/w", "merge")
+    expect(seen[0]).toEqual(["git_conflict_abort", { repositoryRoot: "/w", op: "merge" }])
 })
 
 it("gitConflictContinue forwards op", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await gitConflictContinue("rebase")
-    expect(seen[0]).toEqual(["git_conflict_continue", { op: "rebase" }])
+    await gitConflictContinue("/w", "rebase")
+    expect(seen[0]).toEqual(["git_conflict_continue", { repositoryRoot: "/w", op: "rebase" }])
 })
 
 it("askpassRespond forwards id and response", async () => {
@@ -374,7 +525,8 @@ it("gitLogPage forwards paging + filter args and returns a page", async () => {
     mockIPC((cmd, payload) => {
         expect(cmd).toBe("git_log_page")
         expect(payload).toEqual({
-            skip: 200,
+            repositoryRoot: "/w",
+            cursor: "cursor-200",
             limit: 200,
             query: "fix",
             author: "Alice",
@@ -394,10 +546,11 @@ it("gitLogPage forwards paging + filter args and returns a page", async () => {
                     refs: [{ name: "main", kind: "local" }]
                 }
             ],
-            hasMore: true
+            hasMore: true,
+            nextCursor: "cursor-400"
         }
     })
-    const p = await gitLogPage(200, 200, "fix", "Alice")
+    const p = await gitLogPage("/w", "cursor-200", 200, "fix", "Alice")
     expect(p.hasMore).toBe(true)
     expect(p.commits[0].refs[0].kind).toBe("local")
 })
@@ -405,10 +558,10 @@ it("gitLogPage forwards paging + filter args and returns a page", async () => {
 it("gitLogPage defaults optional filters to null", async () => {
     mockIPC((cmd, payload) => {
         expect(cmd).toBe("git_log_page")
-        expect(payload).toEqual({ skip: 0, limit: 200, query: null, author: null, since: null, until: null })
-        return { commits: [], hasMore: false }
+        expect(payload).toEqual({ repositoryRoot: "/w", cursor: null, limit: 200, query: null, author: null, since: null, until: null })
+        return { commits: [], hasMore: false, nextCursor: null }
     })
-    const p = await gitLogPage(0, 200)
+    const p = await gitLogPage("/w", null, 200)
     expect(p.commits).toEqual([])
 })
 
@@ -423,7 +576,7 @@ it("gitCommitDetail forwards hash and returns detail", async () => {
             totalAdditions: 2, totalDeletions: 1
         }
     })
-    const d = await gitCommitDetail("deadbeef")
+    const d = await gitCommitDetail("/w", "deadbeef")
     expect(d.files[0].path).toBe("a.ts")
     expect(d.totalAdditions).toBe(2)
 })
@@ -433,17 +586,17 @@ it("gitLogAuthors returns author entries", async () => {
         expect(cmd).toBe("git_log_authors")
         return [{ name: "Alice", email: "a@x" }]
     })
-    const authors = await gitLogAuthors()
+    const authors = await gitLogAuthors("/w")
     expect(authors).toEqual([{ name: "Alice", email: "a@x" }])
 })
 
 it("gitFileAtRev forwards rev and path and returns tagged union", async () => {
     mockIPC((cmd, payload) => {
         expect(cmd).toBe("git_file_at_rev")
-        expect(payload).toEqual({ rev: "HEAD", path: "src/a.ts" })
+        expect(payload).toEqual({ repositoryRoot: "/w", rev: "HEAD", path: "src/a.ts" })
         return { kind: "full", content: "let a = 1" }
     })
-    const r = await gitFileAtRev("HEAD", "src/a.ts")
+    const r = await gitFileAtRev("/w", "HEAD", "src/a.ts")
     expect(r.kind).toBe("full")
     if (r.kind === "full") expect(r.content).toContain("a = 1")
 })
@@ -579,11 +732,13 @@ it("devServerStart forwards args, wires channel, and returns server info", async
             workspace: string
             command: string
             port: number | null
+            challengeId: string
             onOutput: { onmessage: (line: string) => void }
         }
         expect(p.workspace).toBe("/w")
         expect(p.command).toBe("bun run dev")
         expect(p.port).toBeNull()
+        expect(p.challengeId).toBe("challenge-1")
         p.onOutput.onmessage("Local: http://localhost:5173")
         return {
             workspace: "/w",
@@ -593,7 +748,7 @@ it("devServerStart forwards args, wires channel, and returns server info", async
         }
     })
     const lines: string[] = []
-    const info = await devServerStart("/w", "bun run dev", null, (line) => lines.push(line))
+    const info = await devServerStart("/w", "bun run dev", null, (line) => lines.push(line), "challenge-1")
     expect(lines).toEqual(["Local: http://localhost:5173"])
     expect(info.status.status).toBe("starting")
 })
@@ -757,24 +912,6 @@ it("lspInstallServer forwards null workspace for a global install", async () => 
     expect(seen[0]).toEqual(["lsp_install_server", { workspace: null, language: "python" }])
 })
 
-it("agentKill forwards id and reason, defaulting reason to null", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await agentKill("agent-1", "user_stop")
-    await agentKill("agent-2")
-    expect(seen[0]).toEqual(["agent_kill", { id: "agent-1", reason: "user_stop" }])
-    expect(seen[1]).toEqual(["agent_kill", { id: "agent-2", reason: null }])
-})
-
-it("agentStderrTail forwards id and returns the stderr tail", async () => {
-    mockIPC((cmd, payload) => {
-        expect(cmd).toBe("agent_stderr_tail")
-        expect((payload as { id: string }).id).toBe("agent-1")
-        return ["boom", "EPIPE"]
-    })
-    expect(await agentStderrTail("agent-1")).toEqual(["boom", "EPIPE"])
-})
-
 it("fileGradeOf returns veryLongLine for full content with an over-long line", () => {
     const result: OpenFileResult = { kind: "full", content: "", size: 0, lineEnding: "lf" }
     const content = "x".repeat(MAX_LINE_LEN_SYNTAX_OFF + 1)
@@ -826,8 +963,9 @@ describe("database v2 IPC contract seams", () => {
         port: 5432,
         database: "app",
         user: "alice",
-        ssl: true,
-        trustCert: false
+        transportMode: "verifyFull" as const,
+        insecureException: null,
+        trustServerCertAcknowledged: false
     }
     const profile: DbProfileDescriptor = {
         descriptorId,
@@ -914,9 +1052,10 @@ describe("database v2 IPC contract seams", () => {
             "sqlitePathNotFile",
             "sqlitePathUnreadable",
             "sqlitePathInvalid",
-            "sqliteOpenFailed"
+            "sqliteOpenFailed",
+            "postgresTransportRejected"
         ]
-        expect(codes).toHaveLength(11)
+        expect(codes).toHaveLength(12)
         expect(profile.configGeneration).toBe(4)
     })
 
@@ -1021,6 +1160,28 @@ describe("database v2 IPC contract seams", () => {
         expect(seen).toEqual([["db_test_connection", { request }]])
     })
 
+    it("forwards a PostgreSQL transport challenge request", async () => {
+        const seen: unknown[] = []
+        const request = {
+            transportMode: "insecurePlaintext" as const,
+            host: "db.internal",
+            port: 5432,
+            user: "alice",
+            database: "app"
+        }
+        const issued = {
+            challengeId: "pg-chal-1",
+            ...request,
+            expiresAt: 1_700_000_000_000
+        }
+        mockIPC((cmd, payload) => {
+            seen.push([cmd, payload])
+            if (cmd === "db_postgres_transport_challenge") return issued
+        })
+        await expect(dbPostgresTransportChallenge(request)).resolves.toEqual(issued)
+        expect(seen).toEqual([["db_postgres_transport_challenge", { request }]])
+    })
+
     it("exposes the exact profile wrapper inventory without credential readback", () => {
         const wrappers = Object.keys(ipcModule)
             .filter((name) => name.startsWith("dbProfile"))
@@ -1102,5 +1263,31 @@ describe("database v2 IPC contract seams", () => {
             ["db_result_page", { request: { owner: resultOwner, direction: "next" } }],
             ["db_result_session_release", { owner: resultOwner }]
         ])
+    })
+})
+
+describe("preview session ipc", () => {
+    afterEach(() => clearMocks())
+
+    it("forwards create/revoke/stop-all without a parent-directory serve contract", async () => {
+        const seen: unknown[] = []
+        mockIPC((cmd, payload) => {
+            seen.push([cmd, payload])
+            if (cmd === "preview_create") {
+                return { token: "ab".repeat(32), url: "http://127.0.0.1:4599/token/index.html" }
+            }
+        })
+        await expect(previewCreate("/w/site/index.html")).resolves.toEqual({
+            token: "ab".repeat(32),
+            url: "http://127.0.0.1:4599/token/index.html"
+        })
+        await previewRevoke("ab".repeat(32))
+        await previewStopAll()
+        expect(seen).toEqual([
+            ["preview_create", { path: "/w/site/index.html" }],
+            ["preview_revoke", { token: "ab".repeat(32) }],
+            ["preview_stop_all", {}]
+        ])
+        expect("previewServe" in ipcModule).toBe(false)
     })
 })

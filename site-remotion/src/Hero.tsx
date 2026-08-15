@@ -6,7 +6,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion";
-import { AgentZone } from "./AgentZone";
+import { AdeHerdr } from "./AdeHerdr";
 import { RemoteDb } from "./RemoteDb";
 import { TerminalGit } from "./TerminalGit";
 import { EASE, SPRING, fonts, t } from "./theme";
@@ -16,31 +16,31 @@ type Lang = "zh" | "en";
 
 const COPY: Record<Lang, Record<string, string>> = {
   zh: {
-    badge: "開源 · Tauri 打造",
-    tagline1: "把 agent、遠端與資料",
-    tagline2: "收進同一張桌面。",
-    s1kicker: "01 · AgentZone",
-    s1title: "ACP agent 並肩工作",
+    badge: "開源 ADE · HERDR-native",
+    tagline1: "讓 agent 開發",
+    tagline2: "直接運轉在 HERDR。",
+    s1kicker: "01 · ADE × HERDR",
+    s1title: "Spaces、Agents 與終端頁面",
     s2kicker: "02 · SSH ＆ 資料庫",
     s2title: "遠端即在地",
     s3kicker: "03 · Terminal ＆ Git",
     s3title: "除錯不離開工作台",
-    slogan: "把整個開發日常，收進一張桌面。",
-    slogan2: "夕空下的開發工作台",
+    slogan: "ADE 與 HERDR，融合成一個工作面。",
+    slogan2: "agent development under the evening sky",
     endNote: "macOS · Windows · Linux",
   },
   en: {
-    badge: "Open source · Built with Tauri",
-    tagline1: "Agents, remotes and data —",
-    tagline2: "all on one desk.",
-    s1kicker: "01 · AgentZone",
-    s1title: "Work alongside ACP agents",
+    badge: "Open-source ADE · HERDR-native",
+    tagline1: "Build with agents.",
+    tagline2: "Run on HERDR.",
+    s1kicker: "01 · ADE × HERDR",
+    s1title: "Spaces, agents and terminal pages",
     s2kicker: "02 · SSH & databases",
     s2title: "Remote feels local",
     s3kicker: "03 · Terminal & git",
     s3title: "Debug without leaving the bench",
-    slogan: "Your whole dev day, on one desk.",
-    slogan2: "a dev workbench under the evening sky",
+    slogan: "An ADE fused with the HERDR runtime.",
+    slogan2: "agent development under the evening sky",
     endNote: "macOS · Windows · Linux",
   },
 };
@@ -48,7 +48,7 @@ const COPY: Record<Lang, Record<string, string>> = {
 /* ---------- timeline（30fps，共 555 frames = 18.5s） ---------- */
 const T = {
   title: { start: 0, end: 90 },
-  s1: { start: 82, end: 212, inner: 120 }, // AgentZone 精華：diff + 權限確認
+  s1: { start: 82, end: 212, inner: 110 }, // ADE/HERDR 精華：BSP panes + Inspector
   s2: { start: 204, end: 334, inner: 70 }, // RemoteDb 精華：query + rows
   s3: { start: 326, end: 456, inner: 80 }, // TerminalGit 精華：log + cherry-pick
   end: { start: 448, end: 555 },
@@ -179,11 +179,11 @@ const TitleCard: React.FC<{ lang: Lang }> = ({ lang }) => {
           >
             {lang === "zh" ? (
               <>
-                收進<em style={{ fontStyle: "normal", color: t.accentInk }}>同一張桌面</em>。
+                直接運轉在 <em style={{ fontStyle: "normal", color: t.accentInk }}>HERDR</em>。
               </>
             ) : (
               <>
-                all on <em style={{ fontStyle: "normal", color: t.accentInk }}>one desk</em>.
+                Run on <em style={{ fontStyle: "normal", color: t.accentInk }}>HERDR</em>.
               </>
             )}
           </div>
@@ -369,7 +369,7 @@ export const Hero: React.FC<{ lang: Lang }> = ({ lang }) => {
           kicker={c.s1kicker}
           title={c.s1title}
         >
-          <AgentZone lang={lang} />
+          <AdeHerdr lang={lang} />
         </FeatureScene>
       </Sequence>
       <Sequence from={T.s2.start} durationInFrames={T.s2.end - T.s2.start}>

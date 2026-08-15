@@ -10,6 +10,9 @@
 
 use std::sync::Mutex;
 
+use crate::db_query_worker::NetworkCancelHandle;
+#[cfg(test)]
+use crate::db_query_worker::NetworkQueryWorker;
 use crate::db_service::{ConnectionIdentity, DbHandle, QueryRunOwner, ResultSessionOwner};
 
 fn owner_belongs_to(owner: &QueryRunOwner, connection: &ConnectionIdentity) -> bool {
@@ -516,7 +519,7 @@ pub struct ProductionConnectionActor {
     core: Mutex<ConnectionActor>,
     handle: DbHandle,
     sqlite_cancel: Option<SqliteCancelResource>,
-    postgres_cancel: Option<PostgresCancelResource>,
+    postgres_cancel: Option<NetworkCancelHandle>,
     mssql_cancel: Mutex<
         Option<(
             QueryRunOwner,
@@ -537,7 +540,7 @@ impl ProductionConnectionActor {
             DbHandle::Postgres(_) | DbHandle::Mssql(_) => None,
         };
         let postgres_cancel = match &handle {
-            DbHandle::Postgres(connection) => Some(connection.cancel_resource().clone()),
+            DbHandle::Postgres(connection) => Some(connection.worker().cancel_handle()),
             DbHandle::Sqlite(_) | DbHandle::Mssql(_) => None,
         };
         Self {
@@ -835,10 +838,23 @@ impl ProductionConnectionActor {
             }
             CancelRequest::DriverCancellationRequired(
                 DriverCancelPrimitive::PostgresCancelToken,
-            ) => match self.postgres_cancel.as_ref() {
-                Some(cancel) => cancel.cancel().await.map_err(|_| ActorError::CancelFailed),
-                None => Err(ActorError::CancelFailed),
-            },
+            ) => {
+                let written = match self.postgres_cancel.as_ref() {
+                    Some(cancel) => cancel
+                        .cancel_query()
+                        .await
+                        .map_err(|_| ActorError::CancelFailed),
+                    None => Err(ActorError::CancelFailed),
+                };
+                if let Ok(channel) = self.mssql_cancel.lock() {
+                    if let Some((active_owner, sender)) = channel.as_ref() {
+                        if active_owner == owner {
+                            let _ = sender.send(owner.clone());
+                        }
+                    }
+                }
+                written
+            }
             CancelRequest::ConnectionTerminationRequired => match self.mssql_cancel.lock() {
                 Ok(channel) => match channel.as_ref() {
                     Some((active_owner, sender)) if active_owner == owner => sender
@@ -910,12 +926,13 @@ impl ProductionConnectionActor {
                     postgres.abort_driver();
                     LifecycleDriverAction::PostgresTransportTermination
                 }
-                DbHandle::Mssql(_) => {
+                DbHandle::Mssql(worker) => {
                     // Unlike SQLite and PostgreSQL, tiberius exposes no
                     // out-of-band transport primitive. Wake the exact
                     // lexical worker through the already-installed owner
                     // channel so teardown also interrupts an initial page
                     // that has not installed its result continuation yet.
+                    worker.abort();
                     if let Some(owner) = state.exact_owner.as_ref() {
                         if let Ok(channel) = self.mssql_cancel.lock() {
                             if let Some((active_owner, sender)) = channel.as_ref() {
@@ -1782,7 +1799,7 @@ mod tests {
     fn mssql_lifecycle_wakes_the_exact_worker_before_result_continuation_install() {
         let actor = ProductionConnectionActor::new(
             connection("generation-7"),
-            DbHandle::Mssql(tokio::sync::Mutex::new(None)),
+            DbHandle::Mssql(NetworkQueryWorker::stub()),
         );
         let run_owner = owner("generation-7", "query-lifecycle");
         let lease = actor

@@ -1,6 +1,6 @@
 [package]
 name = "yuzora"
-version = "0.0.7"
+version = "0.0.8"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -26,7 +26,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 keyring = "4.1.4"
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.9.0"
@@ -53,7 +53,7 @@ russh = "0.62.2"
 russh-sftp = "2.3.0"
 # tauri bundles tokio; ssh_service needs select!/timeout which async_runtime
 # doesn't re-export, so name tokio directly (already resolved in the lock).
-tokio = { version = "1", features = ["macros", "time", "sync", "net"] }
+tokio = { version = "1", features = ["macros", "time", "sync", "net", "process", "io-util", "io-std", "rt"] }
 # perf_service samples only this process's cpu/memory; the `system` feature is
 # all it needs — drop disk/network/component/user to keep the build lean.
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
@@ -72,6 +72,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 tiny_http = "0.12.0"
+scraper = "0.23"
 tempfile = "3"
 tauri-plugin-window-state = "2.4.1"
 tauri-plugin-process = "2.3.1"

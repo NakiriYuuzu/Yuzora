@@ -1,7 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import MarkdownIt from "markdown-it"
 import DOMPurify from "dompurify"
-import { create } from "zustand"
 import { openUrl } from "@tauri-apps/plugin-opener"
 
 import { getDocument } from "../editor/documentRegistry"
@@ -16,6 +15,7 @@ import {
     writeEditorViewportTopLine
 } from "./markdownScrollSync"
 import type { ScrollSyncCoordinator, SourceAnchor } from "./markdownScrollSync"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 // A4 裁決：渲染器＝markdown-it，sanitizer＝DOMPurify。html:true 讓原始 HTML
 // 通過 markdown-it，交由 DOMPurify 白名單過濾（XSS 防護的唯一守門）。
@@ -211,29 +211,6 @@ export function isMarkdownPath(name: string): boolean {
     return ext === "md" || ext === "markdown"
 }
 
-// Preview 開關狀態（per path）。TabBar 與 editor group 內的 split view 共用。
-interface MarkdownPreviewState {
-    openPaths: Record<string, boolean>
-    toggle: (path: string) => void
-    close: (path: string) => void
-    reset: () => void
-    isOpen: (path: string) => boolean
-}
-
-export const useMarkdownPreviewStore = create<MarkdownPreviewState>((set, get) => ({
-    openPaths: {},
-    toggle: (path) =>
-        set((s) => ({ openPaths: { ...s.openPaths, [path]: !s.openPaths[path] } })),
-    close: (path) => set((s) => ({ openPaths: { ...s.openPaths, [path]: false } })),
-    reset: () => set({ openPaths: {} }),
-    isOpen: (path) => !!get().openPaths[path]
-}))
-
-// workspace 切換清空開關狀態，避免無界累積與跨專案殘留（W8）。
-useWorkspaceStore.subscribe((s, prev) => {
-    if (s.workspacePath !== prev.workspacePath) useMarkdownPreviewStore.getState().reset()
-})
-
 function bufferContent(path: string, result: OpenFileResult): string {
     // 優先讀 CodeMirror live doc（未存檔編輯），退回 registry 內容。
     const live = getView(path)?.state.doc.toString()
@@ -245,16 +222,14 @@ function bufferContent(path: string, result: OpenFileResult): string {
 }
 
 export const MarkdownPreview = memo(function MarkdownPreview({
-    path,
-    style
+    sourcePath
 }: {
-    path: string
-    style?: React.CSSProperties
+    sourcePath: string
 }) {
     const [result, setResult] = useState<OpenFileResult | null>(null)
     const [content, setContent] = useState("")
     const [loadError, setLoadError] = useState(false)
-    const close = useMarkdownPreviewStore((s) => s.close)
+    const closePreview = useWorkspaceStore((s) => s.closeMarkdownPreviewsForSource)
     // 上次讀取的 CM6 doc 參考（immutable，每 transaction 換新物件）：identity
     // 比對省去未變時對至多 10MB doc 的全量 toString（R4-3）。
     const lastDocRef = useRef<unknown>(null)
@@ -267,12 +242,12 @@ export const MarkdownPreview = memo(function MarkdownPreview({
     useEffect(() => {
         let disposed = false
         setLoadError(false)
-        void getDocument(path)
+        void getDocument(sourcePath)
             .then((entry) => {
                 if (disposed) return
                 setResult(entry.result)
-                lastDocRef.current = getView(path)?.state.doc ?? null
-                setContent(bufferContent(path, entry.result))
+                lastDocRef.current = getView(sourcePath)?.state.doc ?? null
+                setContent(bufferContent(sourcePath, entry.result))
             })
             // openFile reject（檔案被刪／權限）：改顯示錯誤態，避免永卡「載入中」
             // 與 unhandled rejection（R3-7）。
@@ -282,7 +257,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
         return () => {
             disposed = true
         }
-    }, [path])
+    }, [sourcePath])
 
     const grade = useMemo(() => (result ? fileGradeOf(result, content) : null), [result, content])
 
@@ -297,14 +272,14 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             // 重讀快取比對 kind，變動即 setResult（full→tooLarge 時同步停用渲染守衛
             // 並終止輪詢）。documentRegistry 無同步 peek／更新事件，故經 getDocument
             // 讀快取引用。
-            void getDocument(path)
+            void getDocument(sourcePath)
                 .then((entry) => {
                     if (entry.result.kind !== result.kind) {
                         setResult(entry.result)
                         return
                     }
                     // R4-3：doc identity 未變則跳過 toString（CM6 doc immutable）。
-                    const doc = getView(path)?.state.doc
+                    const doc = getView(sourcePath)?.state.doc
                     if (doc === undefined || doc === lastDocRef.current) return
                     lastDocRef.current = doc
                     const live = doc.toString()
@@ -316,7 +291,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
                 .catch(() => {})
         }, 400)
         return () => clearInterval(id)
-    }, [path, result?.kind])
+    }, [sourcePath, result?.kind])
 
     // preview 連結一律不得讓 webview 導航離開（會失去整個 editor 狀態）：攔截
     // anchor，http/https 改用系統瀏覽器外開，其他 scheme（含相對路徑）僅擋掉（W10）。
@@ -355,7 +330,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
 
         function attachCurrentView() {
             if (disposed) return
-            const view = getView(path)
+            const view = getView(sourcePath)
             if (view === attachedView && coordinatorRef.current) return
 
             detach()
@@ -450,7 +425,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             rebuildAnchorsRef.current = null
             pendingSourceLineRef.current = null
         }
-    }, [path, syncEnabled])
+    }, [sourcePath, syncEnabled])
 
     useEffect(() => {
         if (!syncEnabled) return
@@ -485,12 +460,18 @@ export const MarkdownPreview = memo(function MarkdownPreview({
         )
     } else {
         body = (
-            <div
-                ref={previewBodyRef}
-                data-testid="markdown-preview-body"
-                className="markdown-preview-body min-h-0 flex-1 overflow-y-auto px-[28px] py-[20px] text-[14px] leading-[1.7] text-(--ink-1)"
-                dangerouslySetInnerHTML={{ __html: html ?? "" }}
-            />
+            <ScrollArea
+                className="min-h-0 flex-1"
+                orientation="both"
+                focusable
+                viewportRef={previewBodyRef}
+                viewportClassName="markdown-preview-body px-[28px] py-[20px] text-[14px] leading-[1.7] text-(--ink-1)"
+                viewportProps={{
+                    "data-testid": "markdown-preview-body",
+                }}
+            >
+                <div dangerouslySetInnerHTML={{ __html: html ?? "" }} />
+            </ScrollArea>
         )
     }
 
@@ -499,8 +480,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             role="complementary"
             aria-label="Markdown preview"
             onClick={onPreviewClick}
-            style={style}
-            className="markdown-preview yzs flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--paper-0)"
+            className="markdown-preview flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-(--paper-0)"
         >
             <MarkdownPreviewProse />
             <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-(--line-1) px-[14px]">
@@ -512,7 +492,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
                     className="flex size-[22px] items-center justify-center rounded-[6px] text-(--ink-3) transition-colors hover:bg-(--paper-3) hover:text-(--ink-0)"
                     aria-label="Close preview"
                     title="關閉預覽"
-                    onClick={() => close(path)}
+                    onClick={() => closePreview(sourcePath)}
                 >
                     <svg
                         width="12"
@@ -555,7 +535,7 @@ function MarkdownPreviewProse() {
 .markdown-preview-body li{margin:.2em 0}
 .markdown-preview-body a{color:var(--yz-accent-ink);text-decoration:underline}
 .markdown-preview-body code{font-family:var(--font-mono,monospace);font-size:.88em;background:var(--paper-3);border-radius:4px;padding:.1em .35em}
-.markdown-preview-body pre{background:var(--paper-3);border-radius:8px;padding:12px 14px;overflow-x:auto;margin:.6em 0}
+.markdown-preview-body pre{background:var(--paper-3);border-radius:8px;padding:12px 14px;margin:.6em 0}
 .markdown-preview-body pre code{background:none;padding:0}
 .markdown-preview-body blockquote{border-left:3px solid var(--line-1);margin:.6em 0;padding:.1em 0 .1em 14px;color:var(--ink-3)}
 .markdown-preview-body table{border-collapse:collapse;margin:.6em 0}

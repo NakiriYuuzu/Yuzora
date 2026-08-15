@@ -4,7 +4,6 @@ import { isTauri } from "@/lib/platform"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
 import { type Mode } from "@/app/modes"
-import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
 import { DatabasePanel } from "@/app/panels/DatabasePanel"
 import { EditorPanel } from "@/app/panels/EditorPanel"
 import { GitPanel } from "@/app/panels/GitPanel"
@@ -28,7 +27,7 @@ import { useUpdateStore } from "@/state/updateStore"
 import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
-import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const DEFAULT_NAV_WIDTH = 266
 const MIN_NAV_WIDTH = 220
@@ -67,12 +66,6 @@ export function AppShell() {
   // into the same local-state update the rail button / ⌘K listener already do.
   const sidebarToggleRequest = useUiStore((s) => s.sidebarToggleRequest)
   const paletteOpenRequest = useUiStore((s) => s.paletteOpenRequest)
-  // Preview is a singleton tab now: the rail's active state = "a preview tab
-  // exists somewhere", and its toggle opens/focuses/closes that tab.
-  const previewTabExists = useWorkspaceStore((s) =>
-    s.groups.some((g) => g.tabs.some((t) => t.path === PREVIEW_TAB_PATH))
-  )
-  const togglePreviewTab = useWorkspaceStore((s) => s.togglePreviewTab)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [theme, setTheme] = useState<ThemePreference>(() => loadAppearanceSettings().theme)
@@ -288,7 +281,9 @@ export function AppShell() {
     void logUserAction("theme_change", `Switched to ${next} theme`, { theme: next })
   }
 
-  const mainSurfaceMinHeight = mode === "agent" ? 280 : 44
+  // ADE shares the editor surface (mixed file/preview/herdr-terminal pages);
+  // keep the shared 44px floor rather than the old AgentZone 280px card floor.
+  const mainSurfaceMinHeight = 44
 
   return (
     <div
@@ -316,8 +311,6 @@ export function AppShell() {
             setNavCollapsed((collapsed) => !collapsed)
           }}
           onOpenSettings={handleOpenSettings}
-          previewOpen={previewTabExists}
-          onTogglePreview={togglePreviewTab}
           terminalOpen={terminalOpen}
           onToggleTerminalDrawer={toggleTerminal}
         />
@@ -374,9 +367,10 @@ export function AppShell() {
               className="flex min-h-0 flex-1 flex-col gap-[10px]"
               style={{ minHeight: mainSurfaceMinHeight }}
             >
-              {/* EditorPanel stays mounted (CSS-hidden, not unmounted) across mode
-                  switches so unsaved edits and undo history survive leaving Files mode. */}
-              <div className={mode === "files" ? "contents" : "hidden"}>
+              {/* EditorPanel hosts mixed typed pages (file / preview / herdr-terminal).
+                  Stays mounted (CSS-hidden) across mode switches so unsaved edits,
+                  undo history, and open Herdr terminal pages survive leaving ADE/Files. */}
+              <div className={mode === "files" || mode === "ade" ? "contents" : "hidden"}>
                 <EditorPanel />
               </div>
               {mode === "git" && <GitPanel />}
@@ -386,7 +380,6 @@ export function AppShell() {
               <div className={mode === "ssh" ? "contents" : "hidden"}>
                 <SshPanel />
               </div>
-              {mode === "agent" && <AgentZonePanel />}
             </div>
 
             <TerminalDrawer

@@ -13,6 +13,8 @@
   "defaultProfileLabel": "Default profile",
   "customProfileName": "Custom",
   "customExecutableLabel": "Custom executable",
+  "customExecutablePlaceholder": "Path to executable",
+  "customArgsPlaceholder": "Optional arguments, one per line",
   "customArgsLabel": "Custom arguments",
   "customArgsHint": "Enter one argv value per line. Spaces inside a line stay in the same argument.",
   "customCwdStrategyLabel": "Working directory strategy",
@@ -31,5 +33,10 @@
   "profileWslDistro": "WSL: {{distro}}",
   "noSessions": "No terminal sessions yet",
   "emptyDescription": "Open a new terminal to run commands here.",
-  "tabLimitReached": "Yuzora already has {{limit}} terminal tabs open across all workspaces, which is the maximum. Close a tab in any workspace before opening another."
+  "tabLimitReached": "Yuzora already has {{limit}} terminal tabs open across all workspaces, which is the maximum. Close a tab in any workspace before opening another.",
+  "targetOpen": {
+    "action": "Open from terminal",
+    "noWorkspace": "Open a workspace before opening this link in Preview",
+    "previewRejected": "This link cannot be opened in Preview"
+  }
 }

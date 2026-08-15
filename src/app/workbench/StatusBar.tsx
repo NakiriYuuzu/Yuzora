@@ -5,7 +5,8 @@ import { ChevronUp, GitBranch } from "lucide-react";
 import { BranchPopover } from "@/workbench/git/BranchPopover";
 import { contextMenuHandler } from "@/state/contextMenuStore";
 import { changedPathSet, useGitStore } from "@/state/gitStore";
-import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore";
+import { isFileTab } from "@/lib/markdownPreviewTab";
+import { useWorkspaceStore } from "@/state/workspaceStore";
 import { useLspStore } from "@/state/lspStore";
 import { usePreviewStore } from "@/state/previewStore";
 import { usePerfStore } from "@/state/perfStore";
@@ -62,11 +63,11 @@ export function StatusBar() {
   const groups = useWorkspaceStore((s) => s.groups);
   const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex);
   const rawActivePath = groups[activeGroupIndex]?.activePath ?? null;
-  const activePath = rawActivePath === PREVIEW_TAB_PATH ? null : rawActivePath;
-  const activeTab = activePath
-    ? groups[activeGroupIndex]?.tabs.find((tab) => tab.path === activePath)
+  const activeTab = rawActivePath
+    ? groups[activeGroupIndex]?.tabs.find((tab) => tab.path === rawActivePath)
     : undefined;
-  const lineEnding = activeTab?.kind === "preview" ? undefined : activeTab?.lineEnding;
+  const activePath = activeTab && isFileTab(activeTab) ? activeTab.path : null;
+  const lineEnding = activePath ? activeTab?.lineEnding : undefined;
   const setLineEnding = useWorkspaceStore((s) => s.setLineEnding);
   const devServer = usePreviewStore((s) =>
     workspacePath ? s.devServerForWorkspace(workspacePath) : null
@@ -211,6 +212,8 @@ export function StatusBar() {
       type="button"
       title={branchName}
       disabled={!ready}
+      aria-expanded={ready ? branchOpen : undefined}
+      aria-haspopup={ready ? "dialog" : undefined}
       onClick={() => setBranchOpen((v) => !v)}
       className="flex h-[22px] items-center gap-[6px] rounded-[7px] px-[9px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)] disabled:cursor-default disabled:hover:bg-transparent"
     >
@@ -237,7 +240,7 @@ export function StatusBar() {
           ↓•
         </span>
       )}
-      <ChevronUp className="ml-[2px] size-[11px] text-(--ink-3)" aria-hidden="true" />
+      <ChevronUp className={`ml-[2px] size-[11px] text-(--ink-3) transition-transform ${branchOpen ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
   );
 

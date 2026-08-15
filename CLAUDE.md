@@ -2,9 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Yuzora：Tauri 2 + React 19 桌面開發工作台——ACP agents、SSH/SFTP、資料庫、終端機、git 面板共用同一個 workspace。GitHub：`NakiriYuuzu/Yuzora`。
+Yuzora：Tauri 2 + React 19 的 Agent Development Environment（ADE），融合 HERDR execution／terminal runtime；Spaces、named Sessions、Attention、Agents、編輯器、SSH/SFTP、資料庫、終端機與 git 共用同一個桌面工作面。GitHub：`NakiriYuuzu/Yuzora`。
 
 ## 指令
+
+以下 shell snippets 使用 Bash／Git Bash／WSL 語法。Windows PowerShell 請拆成多行，並用 `$env:NAME = ...` 設定環境變數。
 
 前端（bun）：
 
@@ -39,14 +41,14 @@ Release：推 `v*` tag 觸發 `release.yml`；tag 必須等於 `src-tauri/tauri.
 
 ## 架構
 
-**IPC 邊界**（理解全 app 的關鍵）：React 前端 ←→ `src/lib/ipc.ts`（各 domain 的 typed invoke wrappers）←→ 約 110 個 `#[tauri::command]`，統一註冊在 `src-tauri/src/lib.rs` 的 `generate_handler![]`；Rust 側一個 service 一個 module（`git_*`、`db_*`、`lsp_*`、`pty_service`、`ssh_service`⋯）。慣例：只有 `src/lib/ipc.ts` 與 `src/lib/platform.ts` 可以 import `@tauri-apps/api/core`（註解約定，lint 不強制）。
+**IPC 邊界**（理解全 app 的關鍵）：React 前端 ←→ `src/lib/ipc.ts`／`src/lib/herdrIpc.ts`（typed invoke wrappers）←→ `src-tauri/src/lib.rs` 統一註冊的 `#[tauri::command]`；Rust 側一個 service 一個 module（`herdr_service`、`git_*`、`db_*`、`lsp_*`、`pty_service`、`ssh_service`⋯）。HERDR snapshot、capabilities、layout 與 terminal connector 必須經現有 typed boundary，不直接繞過 service。
 
 **前端分層**：
 
-- `src/app/`＝外殼 chrome：`AppShell.tsx`（版面根）＋`workbench/`（rail、nav、SettingsDialog、CommandPalette、StatusBar）＋`panels/`（AgentZone／Editor／Git／Database／Ssh／Preview）。
-- `src/workbench/`＝功能表面與 glue：EditorArea、TabBar、各 SplitView，以及 **Bridge 模式**——`*Bridge`／`*Host` 無畫面元件在 `src/App.tsx` 以扁平兄弟節點掛載，把 Tauri 事件接進 stores；`AppShell` 保持純版面，跨 store 協調寫在 Bridge。
-- `src/state/`＝約 20 個 zustand stores（`agentStore`、`dbStore` 最大）；store 間直接 import，無事件匯流排。
-- 子系統：`src/agent/`（ACP client——`acpConnection` 包 `@agentclientprotocol/sdk`、`agentRouter` 以 command+cwd 多工共用子行程、`fakeAcpAgent` 測試假件）、`src/editor/`（CodeMirror 6；`documentRegistry`／`viewRegistry` 以路徑索引開啟中的 buffer，LSP 與 ACP 都靠它們）、`src/lsp/`（client 協定層，Rust `lsp_service` 負責 spawn／下載 server）、`src/terminal/`（xterm；本機 PTY＋SSH shell；SFTP 是 SSH 面板的子功能，見 `sftpStore`）、`src/preview/`（原生子 webview 疊在面板上，靠 tauri `unstable` multiwebview API）。
+- `src/app/`＝外殼 chrome：`AppShell.tsx`（版面根）＋`workbench/`（Spaces rail、ADE nav、SettingsDialog、CommandPalette、StatusBar）＋`panels/`（HerdrTerminal／Editor／Git／Database／Ssh／Preview）。
+- `src/workbench/`＝功能表面與 glue：EditorArea、TabBar、各 SplitView，以及 **Bridge 模式**——`HerdrBridge` 與其他 `*Bridge`／`*Host` 在 `src/App.tsx` 以扁平兄弟節點掛載，把 Tauri/runtime 事件接進 stores；`AppShell` 保持純版面，跨 store 協調寫在 Bridge。
+- `src/state/`＝zustand stores；HERDR runtime 狀態集中於獨立 typed `herdrStore`，並按 named Session 隔離 snapshot、capabilities 與連線狀態。
+- 子系統：`src-tauri/src/herdr_service.rs`＋`src/lib/herdrIpc.ts`／`herdrTypes.ts`（HERDR public API、capability/schema gating 與官方 terminal connector）、`src/editor/`（CodeMirror 6）、`src/lsp/`（client 協定層，Rust `lsp_service` 負責 spawn／下載 server）、`src/terminal/`（xterm；本機 PTY、SSH shell 與 HERDR terminal transport）、`src/preview/`（原生子 webview 疊在面板上，靠 tauri `unstable` multiwebview API）。
 - 路徑 alias：`@/` → `src/`。
 
 **i18n**：`src/lib/i18n/locales/{en,zh-TW}/<ns>.json`，`import.meta.glob` 自動註冊——新增 namespace 只要在兩個語系各放一個 JSON；UI 文字兩語系都要填。
@@ -54,8 +56,8 @@ Release：推 `v*` tag 觸發 `release.yml`；tag 必須等於 `src-tauri/tauri.
 ## 測試慣例
 
 - vitest + jsdom（`src/test/setup.ts`、globals on）；測試檔與原始碼同目錄、`.test.ts(x)` 後綴。
-- root `tests/`＝DB docker-compose 與 fixtures，root `fixtures/`＝fixture 產生器與可執行假 ACP agent——都不是單元測試。
-- jsdom 測不到的（watcher、tab 拖曳、dialog、視覺）→ 用 `gui-acceptance` skill 實機驗收。
+- root `tests/`＝DB docker-compose 與 integration fixtures；root `fixtures/`＝非單元測試所需的可執行／資料 fixtures。
+- jsdom 測不到的（watcher、tab 拖曳、dialog、HERDR terminal／Agent Inspector 視覺）→ 用 `gui-acceptance` 或已授權的 computer-use 實機驗收。
 - Rust 單元測試 inline；`lib.rs` 的 `command_inventory_tests` 會解析自身原始碼守護 shutdown 順序——改 `run()` 結構前先看它。
 
 ## CI 守門（`ci.yml`）

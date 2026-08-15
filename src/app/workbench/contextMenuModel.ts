@@ -44,10 +44,6 @@ interface TerminalTabContextMenuRequest {
   sessionId: string
 }
 
-interface AgentSessionContextMenuRequest {
-  kind: "agentSession"
-  sessionId: string
-}
 
 interface GitContextMenuRequest {
   kind: "git"
@@ -94,6 +90,35 @@ interface PreviewContextMenuRequest {
   serverAttempt: number
 }
 
+interface HerdrSpaceContextMenuRequest {
+  kind: "herdrSpace"
+  sessionName: string
+  workspaceId: string
+  label?: string | null
+  path?: string | null
+}
+
+interface HerdrTabContextMenuRequest {
+  kind: "herdrTab"
+  sessionName: string
+  tabId: string
+  workspaceId?: string | null
+  label?: string | null
+  pagePath?: string | null
+}
+
+interface HerdrPaneContextMenuRequest {
+  kind: "herdrPane"
+  sessionName: string
+  paneId: string
+  terminalId?: string | null
+  tabId?: string | null
+  workspaceId?: string | null
+  label?: string | null
+  pagePath?: string | null
+  focusedPaneId?: string | null
+}
+
 export type ContextMenuRequest =
   | GeneralContextMenuRequest
   | RailContextMenuRequest
@@ -103,13 +128,15 @@ export type ContextMenuRequest =
   | TabContextMenuRequest
   | EditorContextMenuRequest
   | TerminalTabContextMenuRequest
-  | AgentSessionContextMenuRequest
   | GitContextMenuRequest
   | GitChangeContextMenuRequest
   | StatusContextMenuRequest
   | SshHostContextMenuRequest
   | DbConnectionContextMenuRequest
   | PreviewContextMenuRequest
+  | HerdrSpaceContextMenuRequest
+  | HerdrTabContextMenuRequest
+  | HerdrPaneContextMenuRequest
 
 export type ContextMenuKind = ContextMenuRequest["kind"]
 export type ContextMenuRequestFor<K extends ContextMenuKind> = Extract<ContextMenuRequest, { kind: K }>

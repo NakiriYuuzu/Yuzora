@@ -10,6 +10,14 @@ use std::time::Duration;
 /// 靠 clone Arc 帶進 blocking thread（見 `with_requested_repo_blocking`）。
 pub struct GitServiceState(pub std::sync::Arc<std::sync::Mutex<Option<RepoHandle>>>);
 
+#[cfg(test)]
+static GIT_SPAWN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn git_spawn_count() -> u64 {
+    GIT_SPAWN_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 #[derive(Clone)]
 pub struct RepoHandle {
     pub root: PathBuf,
@@ -18,9 +26,21 @@ pub struct RepoHandle {
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase", tag = "status")]
 pub enum GitEnvironment {
-    Missing { reason: String },
+    /// `kind` is a stable machine code for UI localization.
+    /// - `notFound`: git binary missing/unusable
+    /// - `unsupportedVersion`: installed git below MIN_GIT_VERSION
+    Missing {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        minimum_version: Option<String>,
+    },
     NotARepo,
-    Ready { root: String, version: String },
+    Ready {
+        root: String,
+        version: String,
+    },
 }
 
 pub struct GitOutput {
@@ -91,6 +111,8 @@ pub fn detect_environment(path: &Path) -> GitEnvironment {
         Err(_) => {
             return GitEnvironment::Missing {
                 reason: "git binary not found or failed to spawn".to_string(),
+                kind: Some("notFound".to_string()),
+                minimum_version: None,
             }
         }
     };
@@ -98,11 +120,16 @@ pub fn detect_environment(path: &Path) -> GitEnvironment {
         .trim()
         .to_string();
     match parse_git_version(&version) {
-        Some((major, minor)) if (major, minor) >= (2, 11) => {}
+        Some((major, minor)) if (major, minor) >= MIN_GIT_VERSION => {}
         _ => {
             return GitEnvironment::Missing {
-                reason: format!("git version below 2.11 (porcelain v2 required): {version}"),
-            }
+                // Internal diagnostic only — UI must not render this raw string.
+                reason: format!(
+                    "git version below {MIN_GIT_VERSION_LABEL} (requires git switch and --end-of-options): {version}"
+                ),
+                kind: Some("unsupportedVersion".to_string()),
+                minimum_version: Some(MIN_GIT_VERSION_LABEL.to_string()),
+            };
         }
     }
 
@@ -120,7 +147,14 @@ pub fn detect_environment(path: &Path) -> GitEnvironment {
     }
 }
 
-fn parse_git_version(version: &str) -> Option<(u32, u32)> {
+/// Smallest Git version the app honestly supports.
+///
+/// Porcelain v2 needs ≥2.11, but checkout/create-branch use `git switch` (≥2.23)
+/// and log/file-at-rev use `--end-of-options` (≥2.24). The floor is therefore 2.24.
+pub const MIN_GIT_VERSION: (u32, u32) = (2, 24);
+pub const MIN_GIT_VERSION_LABEL: &str = "2.24";
+
+pub(crate) fn parse_git_version(version: &str) -> Option<(u32, u32)> {
     // e.g. "git version 2.50.1 (Apple Git-155)"
     let nums = version
         .split_whitespace()
@@ -137,6 +171,30 @@ pub fn run_git(
     timeout: Duration,
     extra_env: &[(String, String)],
 ) -> Result<GitOutput, String> {
+    run_git_inner(root, args, timeout, extra_env, None, None)
+}
+
+/// Same process policy as `run_git`, with caller-supplied stdin (for length-framed
+/// commands such as `git cat-file --batch`). Literal pathspecs stay forced.
+pub(crate) fn run_git_with_stdin(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+    extra_env: &[(String, String)],
+    stdin: &[u8],
+) -> Result<GitOutput, String> {
+    run_git_inner(root, args, timeout, extra_env, Some(stdin), None)
+}
+
+fn run_git_inner(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+    extra_env: &[(String, String)],
+    stdin_bytes: Option<&[u8]>,
+    on_spawn: Option<&dyn Fn(u32)>,
+) -> Result<GitOutput, String> {
+    use std::io::Write;
     use std::process::{Command, Stdio};
     let mut cmd = Command::new("git");
     cmd.arg("-C")
@@ -145,12 +203,30 @@ pub fn run_git(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("LC_ALL", "C")
-        .envs(extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdin(Stdio::null())
+        .envs(
+            extra_env
+                .iter()
+                .filter(|(key, _)| key != "GIT_LITERAL_PATHSPECS")
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
+        // Forced after extra_env so callers cannot disable literal pathspecs.
+        // Internal commands that genuinely need Git pathspec magic must add a
+        // narrowly named, reviewed escape hatch rather than weakening this default.
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .stdin(if stdin_bytes.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::process_kill::configure_background_process(&mut cmd);
+    #[cfg(test)]
+    GIT_SPAWN_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut child = cmd.spawn().map_err(|e| format!("git spawn failed: {e}"))?;
+    if let Some(hook) = on_spawn {
+        hook(child.id());
+    }
     let active_process = ActiveGitProcessGuard { pid: child.id() };
     ACTIVE_GIT_PROCESSES.register(active_process.pid);
     let mut stdout = child.stdout.take().unwrap();
@@ -167,6 +243,11 @@ pub fn run_git(
         let _ = stderr.read_to_string(&mut s);
         s
     });
+    if let Some(data) = stdin_bytes {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(data);
+        }
+    }
     let deadline = std::time::Instant::now() + timeout;
     let code = loop {
         match child.try_wait().map_err(|e| e.to_string())? {
@@ -368,6 +449,7 @@ fn detect_commit_and_watch(
 pub async fn git_detect(
     app: tauri::AppHandle,
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     watch_state: tauri::State<'_, crate::git_watch::GitWatchState>,
     path: String,
 ) -> Result<GitEnvironment, String> {
@@ -375,8 +457,14 @@ pub async fn git_detect(
     let generation = DETECT_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let repo_shared = state.0.clone();
     let watch_shared = watch_state.0.clone();
+    let trust = trust.inner().clone();
     run_blocking(move || {
-        detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)
+        let identity = trust.require_trusted(&path)?;
+        let env = detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)?;
+        if let GitEnvironment::Ready { root, .. } = &env {
+            trust.bind_session_git_root(&identity, root);
+        }
+        Ok(env)
     })
     .await
 }
@@ -447,6 +535,7 @@ async fn bootstrap_ready_snapshot(root: PathBuf) -> Result<(GitStatusDto, Branch
 pub async fn git_bootstrap(
     app: tauri::AppHandle,
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     watch_state: tauri::State<'_, crate::git_watch::GitWatchState>,
     path: String,
 ) -> Result<GitBootstrapDto, String> {
@@ -454,8 +543,14 @@ pub async fn git_bootstrap(
     let generation = DETECT_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let repo_shared = state.0.clone();
     let watch_shared = watch_state.0.clone();
+    let trust = trust.inner().clone();
     let env = run_blocking(move || {
-        detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)
+        let identity = trust.require_trusted(&path)?;
+        let env = detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)?;
+        if let GitEnvironment::Ready { root, .. } = &env {
+            trust.bind_session_git_root(&identity, root);
+        }
+        Ok(env)
     })
     .await?;
     let root = match &env {
@@ -476,12 +571,12 @@ pub async fn git_bootstrap(
 #[tauri::command]
 pub async fn git_status_cmd(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     pathspec: Option<Vec<String>>,
 ) -> Result<GitStatusDto, String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        status_of(&root, pathspec)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        status_of(root, pathspec)
     })
     .await
 }
@@ -498,6 +593,14 @@ pub struct BranchInfo {
     pub ahead: u32,
     pub behind: u32,
     pub is_current: bool,
+    pub gone: bool,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    pub name: String,
+    pub date: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -505,6 +608,7 @@ pub struct BranchInfo {
 pub struct BranchList {
     pub local: Vec<BranchInfo>,
     pub remote: Vec<String>,
+    pub tags: Vec<TagInfo>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -576,18 +680,213 @@ fn run_ok(
     Ok(out)
 }
 
+fn repository_display_name(root: &Path) -> String {
+    root.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned())
+}
+
+fn remote_identity_for_askpass(root: &Path) -> (Option<String>, Option<String>) {
+    let upstream = run_git(
+        root,
+        &["rev-parse", "--abbrev-ref", "@{upstream}"],
+        DEFAULT_TIMEOUT,
+        &[],
+    )
+    .ok()
+    .filter(|out| out.code == 0)
+    .and_then(|out| {
+        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        value
+            .split_once('/')
+            .map(|(remote, _)| remote.to_string())
+            .filter(|remote| !remote.is_empty())
+    });
+    let remote_name = upstream.or_else(|| {
+        run_git(root, &["remote"], DEFAULT_TIMEOUT, &[])
+            .ok()
+            .filter(|out| out.code == 0)
+            .and_then(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+    });
+    let Some(name) = remote_name else {
+        return (None, None);
+    };
+    let url = run_git(root, &["remote", "get-url", &name], DEFAULT_TIMEOUT, &[])
+        .ok()
+        .filter(|out| out.code == 0)
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|value| !value.is_empty());
+    let display = match &url {
+        Some(url) => Some(format!("{name} ({url})")),
+        None => Some(name),
+    };
+    let fingerprint = url.as_ref().map(|url| {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(url.as_bytes());
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        format!("sha256:{hex}")
+    });
+    (display, fingerprint)
+}
+
+fn begin_remote_askpass(
+    askpass: &crate::askpass::AskpassState,
+    root: &Path,
+    operation: crate::askpass::AskpassOperationKind,
+    background: bool,
+) -> crate::askpass::AskpassOperationGuard {
+    let (remote_display, remote_fingerprint) = remote_identity_for_askpass(root);
+    askpass.begin_operation(crate::askpass::AskpassOperationContext {
+        repository_display: repository_display_name(root),
+        repository_canonical: root.to_string_lossy().into_owned(),
+        remote_display,
+        remote_fingerprint,
+        operation,
+        background,
+    })
+}
+
+fn run_ok_with_askpass(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(String, String)],
+    op: &crate::askpass::AskpassOperationGuard,
+) -> Result<GitOutput, String> {
+    let out = run_git_inner(
+        root,
+        args,
+        timeout,
+        env,
+        None,
+        Some(&|pid| op.bind_root_pid(pid)),
+    )?;
+    if out.code != 0 {
+        return Err(git_err(args.first().unwrap_or(&""), &out.stderr));
+    }
+    Ok(out)
+}
+
+fn status_path_fingerprint(
+    parsed: &crate::git_status::ParsedStatus,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let push = |map: &mut std::collections::BTreeMap<String, String>, path: &str, token: String| {
+        map.entry(path.to_string())
+            .and_modify(|existing| {
+                existing.push('\u{1f}');
+                existing.push_str(&token);
+            })
+            .or_insert(token);
+    };
+    for entry in &parsed.staged {
+        push(
+            &mut out,
+            &entry.path,
+            format!(
+                "S:{}:{}",
+                entry.status,
+                entry.orig_path.as_deref().unwrap_or("")
+            ),
+        );
+    }
+    for entry in &parsed.unstaged {
+        push(
+            &mut out,
+            &entry.path,
+            format!(
+                "U:{}:{}",
+                entry.status,
+                entry.orig_path.as_deref().unwrap_or("")
+            ),
+        );
+    }
+    for path in &parsed.untracked {
+        push(&mut out, path, "?:".to_string());
+    }
+    for entry in &parsed.conflicted {
+        push(&mut out, &entry.path, format!("C:{}", entry.status));
+    }
+    out
+}
+
+fn mutated_status_paths(
+    before: &crate::git_status::ParsedStatus,
+    after: &crate::git_status::ParsedStatus,
+) -> HashSet<String> {
+    let before_fp = status_path_fingerprint(before);
+    let after_fp = status_path_fingerprint(after);
+    let mut mutated = HashSet::new();
+    for (path, signature) in &before_fp {
+        if after_fp.get(path) != Some(signature) {
+            mutated.insert(path.clone());
+        }
+    }
+    for (path, signature) in &after_fp {
+        if before_fp.get(path) != Some(signature) {
+            mutated.insert(path.clone());
+        }
+    }
+    mutated
+}
+
+fn ensure_literal_path_scope(
+    operation: &str,
+    requested: &[String],
+    before: &crate::git_status::ParsedStatus,
+    after: &crate::git_status::ParsedStatus,
+) -> Result<(), String> {
+    if before.head_oid != after.head_oid {
+        return Err(format!(
+            "git {operation} changed HEAD outside the requested path set"
+        ));
+    }
+    let allowed: HashSet<&str> = requested.iter().map(String::as_str).collect();
+    let extra: Vec<String> = mutated_status_paths(before, after)
+        .into_iter()
+        .filter(|path| !allowed.contains(path.as_str()))
+        .collect();
+    if extra.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "git {operation} changed paths outside the requested set: {}",
+        extra.join(", ")
+    ))
+}
+
+fn mutate_then_assert_literal_scope(
+    root: &Path,
+    operation: &str,
+    requested: &[String],
+    args: &[&str],
+) -> Result<(), String> {
+    let before = status_of(root, None)?;
+    run_ok(root, args, DEFAULT_TIMEOUT, &[])?;
+    let after = status_of(root, None)?;
+    ensure_literal_path_scope(operation, requested, &before.parsed, &after.parsed)
+}
+
 pub fn stage(root: &Path, paths: &[String]) -> Result<(), String> {
     let mut args: Vec<&str> = vec!["add", "--"];
     args.extend(paths.iter().map(String::as_str));
-    run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
-    Ok(())
+    mutate_then_assert_literal_scope(root, "add", paths, &args)
 }
 
 pub fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
     let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
     args.extend(paths.iter().map(String::as_str));
-    run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
-    Ok(())
+    mutate_then_assert_literal_scope(root, "restore", paths, &args)
 }
 
 /// tracked → restore --；untracked → clean -f --（前端已確認過 confirm）。
@@ -595,12 +894,12 @@ pub fn discard(root: &Path, paths: &[String], untracked: &[String]) -> Result<()
     if !paths.is_empty() {
         let mut args: Vec<&str> = vec!["restore", "--"];
         args.extend(paths.iter().map(String::as_str));
-        run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
+        mutate_then_assert_literal_scope(root, "restore", paths, &args)?;
     }
     if !untracked.is_empty() {
         let mut args: Vec<&str> = vec!["clean", "-f", "--"];
         args.extend(untracked.iter().map(String::as_str));
-        run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
+        mutate_then_assert_literal_scope(root, "clean", untracked, &args)?;
     }
     Ok(())
 }
@@ -619,17 +918,15 @@ enum GitRollbackPlan {
     },
 }
 
-/// Git pathspec 必須是 repo-relative，且現存檔案（或最近的現存 parent）不可經
-/// symlink 逃出 repo。此檢查也套用於由最新 status 取得的 rename origPath。
-fn validate_repo_relative_path(
-    root: &Path,
-    canonical_root: &Path,
-    value: &str,
-) -> Result<(), String> {
+/// Lexical repo-relative path check only (no filesystem resolve). Used by
+/// historical object reads that must not depend on the current worktree.
+pub(crate) fn validate_relative_components(value: &str, operation: &str) -> Result<(), String> {
     use std::path::Component;
 
     if value.is_empty() || value.contains('\0') {
-        return Err("git rollback rejected an empty or NUL-containing path".to_string());
+        return Err(format!(
+            "git {operation} rejected an empty or NUL-containing path"
+        ));
     }
     let relative = Path::new(value);
     if relative.is_absolute()
@@ -638,11 +935,22 @@ fn validate_repo_relative_path(
             .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(format!(
-            "git rollback rejected non-repo-relative path: {value}"
+            "git {operation} rejected non-repo-relative path: {value}"
         ));
     }
+    Ok(())
+}
 
-    let joined = root.join(relative);
+/// Mutation paths must resolve inside the repository, including a final symlink.
+/// This is intentionally stricter than diff reads, which read final symlinks with
+/// `read_link` and therefore never follow their target.
+pub(crate) fn validate_repo_relative_path(
+    root: &Path,
+    canonical_root: &Path,
+    value: &str,
+) -> Result<(), String> {
+    validate_relative_components(value, "rollback")?;
+    let joined = root.join(value);
     let mut existing = joined.as_path();
     while !existing.exists() {
         existing = existing.parent().ok_or_else(|| {
@@ -655,6 +963,38 @@ fn validate_repo_relative_path(
     if !canonical_existing.starts_with(canonical_root) {
         return Err(format!(
             "git rollback rejected path outside repository: {value}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_diff_relative_path(
+    root: &Path,
+    canonical_root: &Path,
+    value: &str,
+) -> Result<(), String> {
+    validate_relative_components(value, "diff")?;
+    let joined = root.join(value);
+    let boundary = if std::fs::symlink_metadata(&joined)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        joined.parent().unwrap_or(root)
+    } else {
+        let mut existing = joined.as_path();
+        while !existing.exists() {
+            existing = existing.parent().ok_or_else(|| {
+                format!("git diff could not resolve path inside repository: {value}")
+            })?;
+        }
+        existing
+    };
+    let canonical_boundary = boundary
+        .canonicalize()
+        .map_err(|error| format!("git diff could not resolve {value}: {error}"))?;
+    if !canonical_boundary.starts_with(canonical_root) {
+        return Err(format!(
+            "git diff rejected path outside repository: {value}"
         ));
     }
     Ok(())
@@ -807,6 +1147,7 @@ pub fn rollback_paths(
         deleted: Vec::new(),
     };
     let mut completed = Vec::new();
+    let mut previous = latest;
 
     for plan in plans {
         match plan {
@@ -820,6 +1161,19 @@ pub fn rollback_paths(
                 run_ok(root, &args, DEFAULT_TIMEOUT, &[]).map_err(|error| {
                     rollback_failure(&path, "restore tracked path", &completed, error)
                 })?;
+                let after = status_of(root, None).map_err(|error| {
+                    rollback_failure(&path, "verify restore scope", &completed, error)
+                })?;
+                ensure_literal_path_scope(
+                    "rollback",
+                    &restore_paths,
+                    &previous.parsed,
+                    &after.parsed,
+                )
+                .map_err(|error| {
+                    rollback_failure(&path, "verify restore scope", &completed, error)
+                })?;
+                previous = after;
                 completed.push(format!("restore:{path}"));
                 result.restored.push(path);
             }
@@ -833,6 +1187,19 @@ pub fn rollback_paths(
                 .map_err(|error| {
                     rollback_failure(&path, "unstage added path", &completed, error)
                 })?;
+                let after_unstage = status_of(root, None).map_err(|error| {
+                    rollback_failure(&path, "verify unstage scope", &completed, error)
+                })?;
+                ensure_literal_path_scope(
+                    "rollback",
+                    std::slice::from_ref(&path),
+                    &previous.parsed,
+                    &after_unstage.parsed,
+                )
+                .map_err(|error| {
+                    rollback_failure(&path, "verify unstage scope", &completed, error)
+                })?;
+                previous = after_unstage;
                 completed.push(format!("unstage-added:{path}"));
 
                 if delete_untracked_or_added {
@@ -845,6 +1212,19 @@ pub fn rollback_paths(
                     .map_err(|error| {
                         rollback_failure(&path, "delete added path", &completed, error)
                     })?;
+                    let after_clean = status_of(root, None).map_err(|error| {
+                        rollback_failure(&path, "verify delete scope", &completed, error)
+                    })?;
+                    ensure_literal_path_scope(
+                        "rollback",
+                        std::slice::from_ref(&path),
+                        &previous.parsed,
+                        &after_clean.parsed,
+                    )
+                    .map_err(|error| {
+                        rollback_failure(&path, "verify delete scope", &completed, error)
+                    })?;
+                    previous = after_clean;
                     completed.push(format!("clean-command:{path}"));
                     if std::fs::symlink_metadata(root.join(&path)).is_ok() {
                         return Err(rollback_failure(
@@ -872,6 +1252,19 @@ pub fn rollback_paths(
                     .map_err(|error| {
                         rollback_failure(&path, "delete untracked path", &completed, error)
                     })?;
+                    let after_clean = status_of(root, None).map_err(|error| {
+                        rollback_failure(&path, "verify delete scope", &completed, error)
+                    })?;
+                    ensure_literal_path_scope(
+                        "rollback",
+                        std::slice::from_ref(&path),
+                        &previous.parsed,
+                        &after_clean.parsed,
+                    )
+                    .map_err(|error| {
+                        rollback_failure(&path, "verify delete scope", &completed, error)
+                    })?;
+                    previous = after_clean;
                     completed.push(format!("clean-command:{path}"));
                     if std::fs::symlink_metadata(root.join(&path)).is_ok() {
                         return Err(rollback_failure(
@@ -899,13 +1292,33 @@ pub fn commit(root: &Path, message: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn parse_upstream_track(track: &str) -> (u32, u32, bool) {
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+    let mut gone = false;
+    for part in track
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(", ")
+    {
+        if let Some(n) = part.strip_prefix("ahead ") {
+            ahead = n.parse().unwrap_or(0);
+        } else if let Some(n) = part.strip_prefix("behind ") {
+            behind = n.parse().unwrap_or(0);
+        } else if part == "gone" {
+            gone = true;
+        }
+    }
+    (ahead, behind, gone)
+}
+
 pub fn branches(root: &Path) -> Result<BranchList, String> {
     let out = run_git(
         root,
         &[
             "for-each-ref",
             "refs/heads",
-            "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(upstream:track)",
+            "--format=%(HEAD)%00%(refname:lstrip=2)%00%(upstream:lstrip=2)%00%(upstream:track)",
         ],
         DEFAULT_TIMEOUT,
         &[],
@@ -919,20 +1332,7 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
         if f.len() < 4 {
             continue;
         }
-        let (mut ahead, mut behind) = (0u32, 0u32);
-        // %(upstream:track) 形如 "[ahead 2, behind 1]"、"[gone]" 或空字串
-        for part in f[3]
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .split(", ")
-        {
-            if let Some(n) = part.strip_prefix("ahead ") {
-                ahead = n.parse().unwrap_or(0)
-            }
-            if let Some(n) = part.strip_prefix("behind ") {
-                behind = n.parse().unwrap_or(0)
-            }
-        }
+        let (ahead, behind, gone) = parse_upstream_track(f[3]);
         local.push(BranchInfo {
             name: f[1].to_string(),
             upstream: if f[2].is_empty() {
@@ -943,11 +1343,16 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
             ahead,
             behind,
             is_current: f[0] == "*",
-        })
+            gone,
+        });
     }
     let remotes = run_git(
         root,
-        &["for-each-ref", "refs/remotes", "--format=%(refname:short)"],
+        &[
+            "for-each-ref",
+            "refs/remotes",
+            "--format=%(refname:lstrip=2)",
+        ],
         DEFAULT_TIMEOUT,
         &[],
     )?;
@@ -956,28 +1361,130 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
     }
     let remote = String::from_utf8_lossy(&remotes.stdout)
         .lines()
-        .filter(|l| !l.ends_with("/HEAD"))
+        .filter(|line| !line.ends_with("/HEAD"))
         .map(String::from)
         .collect();
-    Ok(BranchList { local, remote })
+
+    let tag_refs = run_git(
+        root,
+        &[
+            "for-each-ref",
+            "refs/tags",
+            "--format=%(refname:lstrip=2)%00%(creatordate:iso-strict)",
+        ],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    if tag_refs.code != 0 {
+        return Err(git_err("for-each-ref", &tag_refs.stderr));
+    }
+    let tags = String::from_utf8_lossy(&tag_refs.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, date) = line.split_once('\0')?;
+            Some(TagInfo {
+                name: name.to_string(),
+                date: date.to_string(),
+            })
+        })
+        .collect();
+
+    Ok(BranchList {
+        local,
+        remote,
+        tags,
+    })
 }
 
-pub fn create_branch(root: &Path, name: &str) -> Result<(), String> {
-    run_ok(root, &["switch", "-c", name], DEFAULT_TIMEOUT, &[])?;
+pub fn create_branch(root: &Path, name: &str, start_point: Option<&str>) -> Result<(), String> {
+    let mut args = vec!["switch", "-c", name];
+    let resolved = start_point
+        .map(|spec| {
+            let oid = crate::git_oid::resolve_commit_oid(root, spec)?;
+            let upstream = remote_tracking_start_ref(root, spec)?;
+            Ok::<_, String>((oid, upstream))
+        })
+        .transpose()?;
+    if let Some((oid, _)) = resolved.as_ref() {
+        args.extend(["--end-of-options", oid.as_str()]);
+    }
+    run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
+    if let Some((_, Some(upstream))) = resolved {
+        // Implicit upstream is product behavior for remote-tracking starts, but
+        // must not fail branch creation when the logical name is ambiguous or
+        // the remote is not configured.
+        let set_upstream = format!("--set-upstream-to={upstream}");
+        let _ = run_ok(
+            root,
+            &["branch", &set_upstream, "--end-of-options", name],
+            DEFAULT_TIMEOUT,
+            &[],
+        );
+    }
     Ok(())
 }
 
+fn remote_tracking_start_ref(root: &Path, spec: &str) -> Result<Option<String>, String> {
+    if crate::git_oid::looks_like_git_option(spec) {
+        return Ok(None);
+    }
+    let out = run_git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--symbolic-full-name",
+            "--end-of-options",
+            spec,
+        ],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    if out.code != 0 {
+        return Ok(None);
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let Some(logical) = name.strip_prefix("refs/remotes/") else {
+        return Ok(None);
+    };
+    if logical.is_empty()
+        || logical.contains('\0')
+        || crate::git_oid::looks_like_git_option(logical)
+    {
+        return Ok(None);
+    }
+    Ok(Some(logical.to_string()))
+}
+
 pub fn checkout(root: &Path, name: &str) -> Result<(), String> {
-    run_ok(root, &["switch", name], DEFAULT_TIMEOUT, &[])?;
+    run_ok(
+        root,
+        &["switch", "--no-guess", "--end-of-options", name],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    Ok(())
+}
+
+pub fn checkout_detached(root: &Path, rev: &str) -> Result<(), String> {
+    let oid = crate::git_oid::resolve_commit_oid(root, rev)?;
+    run_ok(
+        root,
+        &["switch", "--detach", "--end-of-options", oid.as_str()],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
     Ok(())
 }
 
 /// cherry-pick <hash>。GUI 無 TTY：GIT_EDITOR=true 防 sequencer editor 卡死（乾淨 pick
 /// 會沿用原訊息、通常不開 editor，但保險）。衝突留 CHERRY_PICK_HEAD → 前端接 ConflictBanner。
 pub fn cherry_pick(root: &Path, hash: &str) -> Result<(), String> {
+    let oid = crate::git_oid::resolve_commit_oid(root, hash)?;
     run_ok(
         root,
-        &["cherry-pick", hash],
+        &["cherry-pick", "--end-of-options", oid.as_str()],
         DEFAULT_TIMEOUT,
         &editor_true(),
     )?;
@@ -1013,18 +1520,30 @@ fn editor_true() -> Vec<(String, String)> {
     vec![("GIT_EDITOR".to_string(), "true".to_string())]
 }
 
-/// bytes 過分級：與 fs_service::classify_and_read 同標準，但輸入是 bytes 而非 path，
-/// 且回 GradedText（無 size 欄）以符 T9 types.ts DiffContent 契約。
+/// bytes 過分級：與 fs_service::classify_and_read / git_log::grade_object_bytes
+/// 同標準，但輸入是 bytes 而非 path，且回 GradedText（無 size 欄）以符 T9
+/// types.ts DiffContent 契約。UTF-16 BOM 走 encoding_rs 解碼，避免
+/// from_utf8_lossy 把可讀 worktree 檔案變成亂碼。
 fn grade_bytes(bytes: &[u8]) -> GradedText {
     if bytes.len() as u64 > crate::file_content::HARD_CAP_BYTES {
         return GradedText::TooLarge;
     }
     let sniff = &bytes[..bytes.len().min(crate::file_content::FILE_ANALYSIS_BYTES)];
-    if crate::file_content::analyze_byte_content(sniff) == crate::file_content::ByteContent::Binary
-    {
-        return GradedText::Binary;
-    }
-    let content = String::from_utf8_lossy(bytes).into_owned();
+    let content = match crate::file_content::analyze_byte_content(sniff) {
+        crate::file_content::ByteContent::Binary => return GradedText::Binary,
+        crate::file_content::ByteContent::Utf16Le | crate::file_content::ByteContent::Utf16Be => {
+            let codec = if crate::file_content::analyze_byte_content(&bytes[..bytes.len().min(2)])
+                == crate::file_content::ByteContent::Utf16Be
+            {
+                encoding_rs::UTF_16BE
+            } else {
+                encoding_rs::UTF_16LE
+            };
+            let (cow, _, _) = codec.decode(bytes);
+            cow.into_owned()
+        }
+        crate::file_content::ByteContent::Text => String::from_utf8_lossy(bytes).into_owned(),
+    };
     if bytes.len() as u64 > crate::file_content::FULL_FEATURE_MAX_BYTES {
         GradedText::Limited { content }
     } else {
@@ -1032,44 +1551,284 @@ fn grade_bytes(bytes: &[u8]) -> GradedText {
     }
 }
 
-/// `git show <rev>:<path>` 取物件 bytes。物件不存在（exit!=0）→ None（呼叫端當空內容處理）。
+/// Read an object when it exists. `git cat-file -e` distinguishes a normal
+/// missing side from operational `git show` failures, which must reach the UI.
 fn show_object(root: &Path, spec: &str) -> Result<Option<Vec<u8>>, String> {
-    let out = run_git(root, &["show", spec], DEFAULT_TIMEOUT, &[])?;
+    let exists = run_git(root, &["cat-file", "-e", spec], DEFAULT_TIMEOUT, &[])?;
+    if exists.code != 0 {
+        let stderr = exists.stderr.to_ascii_lowercase();
+        // Staged-added files commonly yield:
+        // "fatal: path 'x' exists on disk, but not in 'HEAD'"
+        let missing = stderr.contains("does not exist")
+            || stderr.contains("exists on disk, but not in")
+            || stderr.contains("not a valid object name")
+            || stderr.contains("invalid object name")
+            || stderr.contains("unknown revision")
+            || stderr.contains("bad revision")
+            || stderr.contains("bad object")
+            || stderr.contains("not in the index")
+            || stderr.contains("not at stage 0")
+            || stderr.contains("not at stage 1")
+            || stderr.contains("not at stage 2")
+            || stderr.contains("not at stage 3");
+        return if missing {
+            Ok(None)
+        } else {
+            Err(git_err("cat-file", &exists.stderr))
+        };
+    }
+    let out = run_git(
+        root,
+        &["show", "--end-of-options", spec],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
     if out.code != 0 {
-        return Ok(None);
+        return Err(git_err("show", &out.stderr));
     }
     Ok(Some(out.stdout))
 }
 
-/// 讀工作樹檔案 bytes；不存在（刪除）→ None。
-fn read_worktree(root: &Path, path: &str) -> Option<Vec<u8>> {
-    std::fs::read(root.join(path)).ok()
+/// Read worktree bytes without following symlinks. Git stores a symlink's link
+/// target as its blob content; reading the target would disclose outside files.
+///
+/// On Unix this walks components with `openat`/`O_NOFOLLOW` so a concurrent
+/// actor cannot TOCTOU-swap a validated path for an external symlink before the
+/// read. Non-Unix falls back to `symlink_metadata` + `read`/`read_link` and
+/// retains residual TOCTOU risk documented below.
+fn read_worktree(root: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
+    #[cfg(unix)]
+    {
+        return read_worktree_nofollow_unix(root, path);
+    }
+    #[cfg(not(unix))]
+    {
+        // Residual: validation and read remain separate on non-Unix platforms.
+        let full = root.join(path);
+        let metadata = match std::fs::symlink_metadata(&full) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("git diff could not inspect {path}: {error}")),
+        };
+        if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&full)
+                .map_err(|error| format!("git diff could not read symlink {path}: {error}"))?;
+            return Ok(Some(target.as_os_str().as_encoded_bytes().to_vec()));
+        }
+        std::fs::read(&full)
+            .map(Some)
+            .map_err(|error| format!("git diff could not read {path}: {error}"))
+    }
 }
 
-pub fn diff_content(root: &Path, path: &str, staged: bool) -> Result<DiffContent, String> {
+#[cfg(unix)]
+fn c_component_name(component: &std::ffi::OsStr, label: &str) -> Result<std::ffi::CString, String> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(component.as_bytes())
+        .map_err(|_| format!("git diff rejected path with interior NUL: {label}"))
+}
+
+/// Open an absolute directory by walking every component from `/` with
+/// `openat(O_DIRECTORY|O_NOFOLLOW)`. Never opens the full path in one shot, so a
+/// concurrent actor cannot substitute a symlink for a root path component after
+/// canonicalize and before the read.
+#[cfg(unix)]
+fn open_absolute_dir_nofollow(absolute: &Path) -> Result<std::os::fd::OwnedFd, String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    if !absolute.is_absolute() {
+        return Err(format!(
+            "git diff expected absolute repository root: {}",
+            absolute.display()
+        ));
+    }
+
+    let slash = CString::new("/").map_err(|_| "git diff could not open /".to_string())?;
+    let root_fd = unsafe {
+        libc::open(
+            slash.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if root_fd < 0 {
+        return Err(format!(
+            "git diff could not open /: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut current = unsafe { OwnedFd::from_raw_fd(root_fd) };
+
+    for component in absolute.components() {
+        match component {
+            std::path::Component::RootDir => continue,
+            std::path::Component::Normal(name) => {
+                let name_c = c_component_name(name, &absolute.display().to_string())?;
+                let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+                let fd = unsafe { libc::openat(current.as_raw_fd(), name_c.as_ptr(), flags) };
+                if fd < 0 {
+                    let err = std::io::Error::last_os_error();
+                    return Err(format!(
+                        "git diff rejected symlink path while opening repository root {}: {err}",
+                        absolute.display()
+                    ));
+                }
+                current = unsafe { OwnedFd::from_raw_fd(fd) };
+            }
+            _ => {
+                return Err(format!(
+                    "git diff rejected non-normal repository root component: {}",
+                    absolute.display()
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
+#[cfg(unix)]
+fn read_worktree_nofollow_unix(root: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    fn map_open_err(path: &str, err: std::io::Error) -> Result<Option<Vec<u8>>, String> {
+        match err.raw_os_error() {
+            Some(libc::ENOENT) => Ok(None),
+            // macOS often returns ENOTDIR for O_DIRECTORY|O_NOFOLLOW on a symlink.
+            Some(libc::ELOOP) | Some(libc::EPERM) | Some(libc::ENOTDIR) => Err(format!(
+                "git diff rejected symlink path while reading {path}: {err}"
+            )),
+            _ => Err(format!("git diff could not read {path}: {err}")),
+        }
+    }
+
+    // Canonicalize first so the absolute walk starts from a resolved path, then
+    // re-open every component with O_NOFOLLOW so post-canonicalize substitution
+    // of a root component cannot re-anchor the read outside the repository.
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("git could not resolve repository root: {error}"))?;
+    let mut current = open_absolute_dir_nofollow(&canonical_root)?;
+    let components: Vec<_> = Path::new(path).components().collect();
+    if components.is_empty() {
+        return Err("git diff rejected empty path".to_string());
+    }
+
+    for (index, component) in components.iter().enumerate() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(format!("git diff rejected non-repo-relative path: {path}"));
+        };
+        let name_c = c_component_name(name, path)?;
+        let is_final = index + 1 == components.len();
+
+        if !is_final {
+            let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+            let fd = unsafe { libc::openat(current.as_raw_fd(), name_c.as_ptr(), flags) };
+            if fd < 0 {
+                return map_open_err(path, std::io::Error::last_os_error());
+            }
+            current = unsafe { OwnedFd::from_raw_fd(fd) };
+            continue;
+        }
+
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::fstatat(
+                current.as_raw_fd(),
+                name_c.as_ptr(),
+                &mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if rc != 0 {
+            return map_open_err(path, std::io::Error::last_os_error());
+        }
+
+        if (st.st_mode & libc::S_IFMT) == libc::S_IFLNK {
+            let mut buf = vec![0u8; 4096];
+            let n = unsafe {
+                libc::readlinkat(
+                    current.as_raw_fd(),
+                    name_c.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_char,
+                    buf.len(),
+                )
+            };
+            if n < 0 {
+                return Err(format!(
+                    "git diff could not read symlink {path}: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            buf.truncate(n as usize);
+            return Ok(Some(buf));
+        }
+
+        let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+        let fd = unsafe { libc::openat(current.as_raw_fd(), name_c.as_ptr(), flags) };
+        if fd < 0 {
+            return map_open_err(path, std::io::Error::last_os_error());
+        }
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|error| format!("git diff could not read {path}: {error}"))?;
+        return Ok(Some(bytes));
+    }
+
+    Ok(None)
+}
+
+fn empty_text() -> GradedText {
+    GradedText::Full {
+        content: String::new(),
+    }
+}
+
+pub fn diff_content(
+    root: &Path,
+    path: &str,
+    staged: bool,
+    orig_path: Option<&str>,
+) -> Result<DiffContent, String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("git could not resolve repository root: {error}"))?;
+    validate_diff_relative_path(root, &canonical_root, path)?;
+    if let Some(value) = orig_path {
+        validate_diff_relative_path(root, &canonical_root, value)?;
+    }
+
     let (original, modified) = if staged {
-        // staged：original=show HEAD:<path>（新增檔 HEAD 無此檔→空）；modified=show :0:<path>（index）
-        let orig = show_object(root, &format!("HEAD:{path}"))?;
+        let head_path = orig_path.unwrap_or(path);
+        let orig = show_object(root, &format!("HEAD:{head_path}"))?;
         let modi = show_object(root, &format!(":0:{path}"))?;
         (
-            orig.map(|b| grade_bytes(&b)).unwrap_or(GradedText::Full {
-                content: String::new(),
-            }),
-            modi.map(|b| grade_bytes(&b)).unwrap_or(GradedText::Full {
-                content: String::new(),
-            }),
+            orig.map(|bytes| grade_bytes(&bytes))
+                .unwrap_or_else(empty_text),
+            modi.map(|bytes| grade_bytes(&bytes))
+                .unwrap_or_else(empty_text),
         )
     } else {
-        // unstaged：original=show :0:<path>（index；untracked 無→空）；modified=工作樹（刪除→空）
-        let orig = show_object(root, &format!(":0:{path}"))?;
-        let modi = read_worktree(root, path);
+        // Unmerged entries have no stage 0. Prefer stage 1 (merge base), then
+        // stage 2 (ours), then HEAD, then empty — never compare markers only
+        // against ours when a merge base exists.
+        let orig = match show_object(root, &format!(":0:{path}"))? {
+            some @ Some(_) => some,
+            None => match show_object(root, &format!(":1:{path}"))? {
+                some @ Some(_) => some,
+                None => match show_object(root, &format!(":2:{path}"))? {
+                    some @ Some(_) => some,
+                    None => show_object(root, &format!("HEAD:{path}"))?,
+                },
+            },
+        };
+        let modi = read_worktree(root, path)?;
         (
-            orig.map(|b| grade_bytes(&b)).unwrap_or(GradedText::Full {
-                content: String::new(),
-            }),
-            modi.map(|b| grade_bytes(&b)).unwrap_or(GradedText::Full {
-                content: String::new(),
-            }),
+            orig.map(|bytes| grade_bytes(&bytes))
+                .unwrap_or_else(empty_text),
+            modi.map(|bytes| grade_bytes(&bytes))
+                .unwrap_or_else(empty_text),
         )
     };
     Ok(DiffContent { original, modified })
@@ -1078,6 +1837,14 @@ pub fn diff_content(root: &Path, path: &str, staged: bool) -> Result<DiffContent
 /// remote_probe：無 upstream→"unknown"；本地=遠端→"no"；不等→"yes"；任何遠端存取失敗→"unknown"。
 /// askpass env 一律 background=1（背景鐵律）；timeout 30s。
 pub fn remote_probe(root: &Path, env: &[(String, String)]) -> Result<String, String> {
+    remote_probe_inner(root, env, None)
+}
+
+fn remote_probe_inner(
+    root: &Path,
+    env: &[(String, String)],
+    on_spawn: Option<&dyn Fn(u32)>,
+) -> Result<String, String> {
     let up = run_git(
         root,
         &["rev-parse", "--abbrev-ref", "@{upstream}"],
@@ -1097,11 +1864,13 @@ pub fn remote_probe(root: &Path, env: &[(String, String)]) -> Result<String, Str
         return Ok("unknown".to_string());
     }
     let local_sha = String::from_utf8_lossy(&local.stdout).trim().to_string();
-    let ls = run_git(
+    let ls = run_git_inner(
         root,
         &["ls-remote", &remote, &format!("refs/heads/{branch}")],
         DEFAULT_TIMEOUT,
         env,
+        None,
+        on_spawn,
     )?;
     if ls.code != 0 {
         return Ok("unknown".to_string());
@@ -1117,24 +1886,10 @@ pub fn remote_probe(root: &Path, env: &[(String, String)]) -> Result<String, Str
     Ok(if remote_sha == local_sha { "no" } else { "yes" }.to_string())
 }
 
-/// commands 共用：取當前 repo root。**只在 blocking closure 內呼叫**——repo
-/// state 鎖可能被長時操作持有（`with_requested_repo_blocking` 的 push/pull 至多
-/// 120s），在 async command body 直接 lock 會 park 共用的 tokio worker。
-pub(crate) fn repo_root(
-    shared: &std::sync::Arc<Mutex<Option<RepoHandle>>>,
-) -> Result<PathBuf, String> {
-    let guard = shared.lock().map_err(|e| e.to_string())?;
-    Ok(guard
-        .as_ref()
-        .ok_or_else(|| "no repository detected".to_string())?
-        .root
-        .clone())
-}
-
 /// Bind a mutating request to the repository snapshot the frontend acted on.
 /// The state lock stays held through `operation`, making compare + mutation
 /// atomic relative to `git_detect` switching the active repository.
-fn with_requested_repo<T>(
+pub(crate) fn with_requested_repo<T>(
     state: &GitServiceState,
     requested_root: &str,
     operation: impl FnOnce(&Path) -> Result<T, String>,
@@ -1163,8 +1918,9 @@ fn with_requested_repo<T>(
 /// `with_requested_repo` 的 async 包裝：整段（含持鎖比對）移進 blocking thread，
 /// 保留「compare + mutation 相對 `git_detect` 切換 repo 原子」的語意——鎖不跨
 /// `.await`，而是連同 mutation 一起在 blocking closure 內持有。
-async fn with_requested_repo_blocking<T>(
+pub(crate) async fn with_requested_repo_blocking<T>(
     state: &GitServiceState,
+    trust: &crate::workspace_trust::WorkspaceTrustState,
     requested_root: String,
     operation: impl FnOnce(&Path) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String>
@@ -1172,17 +1928,22 @@ where
     T: Send + 'static,
 {
     let shared = state.0.clone();
-    run_blocking(move || with_requested_repo(&GitServiceState(shared), &requested_root, operation))
-        .await
+    let trust = trust.clone();
+    run_blocking(move || {
+        trust.require_trusted_git(&requested_root)?;
+        with_requested_repo(&GitServiceState(shared), &requested_root, operation)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_stage(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         stage(root, &paths)
     })
     .await
@@ -1191,10 +1952,11 @@ pub async fn git_stage(
 #[tauri::command]
 pub async fn git_unstage(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         unstage(root, &paths)
     })
     .await
@@ -1203,11 +1965,12 @@ pub async fn git_unstage(
 #[tauri::command]
 pub async fn git_discard(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     paths: Vec<String>,
     untracked: Vec<String>,
 ) -> Result<(), String> {
-    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         discard(root, &paths, &untracked)
     })
     .await
@@ -1216,11 +1979,12 @@ pub async fn git_discard(
 #[tauri::command]
 pub async fn git_rollback_paths(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     targets: Vec<GitRollbackTarget>,
     delete_untracked_or_added: bool,
 ) -> Result<GitRollbackResult, String> {
-    with_requested_repo_blocking(state.inner(), repository_root, move |root| {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         rollback_paths(root, &targets, delete_untracked_or_added)
     })
     .await
@@ -1229,35 +1993,48 @@ pub async fn git_rollback_paths(
 #[tauri::command]
 pub async fn git_commit_cmd(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     message: String,
 ) -> Result<(), String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        commit(&root, &message)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        commit(root, &message)
     })
     .await
 }
 
 #[tauri::command]
-pub async fn git_branches(state: tauri::State<'_, GitServiceState>) -> Result<BranchList, String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        branches(&root)
-    })
-    .await
+pub async fn git_branches(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+) -> Result<BranchList, String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, branches).await
 }
 
 #[tauri::command]
 pub async fn git_create_branch(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     name: String,
+    start_point: Option<String>,
 ) -> Result<(), String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        create_branch(&root, &name)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        create_branch(root, &name, start_point.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkout_detached(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    rev: String,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        checkout_detached(root, &rev)
     })
     .await
 }
@@ -1265,12 +2042,12 @@ pub async fn git_create_branch(
 #[tauri::command]
 pub async fn git_checkout(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     name: String,
 ) -> Result<(), String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        checkout(&root, &name)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        checkout(root, &name)
     })
     .await
 }
@@ -1278,12 +2055,12 @@ pub async fn git_checkout(
 #[tauri::command]
 pub async fn git_cherry_pick(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     hash: String,
 ) -> Result<(), String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        cherry_pick(&root, &hash)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        cherry_pick(root, &hash)
     })
     .await
 }
@@ -1291,82 +2068,82 @@ pub async fn git_cherry_pick(
 #[tauri::command]
 pub async fn git_fetch_cmd(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     background: bool,
-    repository_root: Option<String>,
+    repository_root: String,
 ) -> Result<(), String> {
-    let env = askpass.env_for(background);
-    if let Some(requested_root) = repository_root {
-        with_requested_repo_blocking(state.inner(), requested_root, move |root| {
-            run_ok(root, &["fetch"], REMOTE_TIMEOUT, &env).map(|_| ())
-        })
-        .await
-    } else {
-        let shared = state.0.clone();
-        run_blocking(move || {
-            let root = repo_root(&shared)?;
-            run_ok(&root, &["fetch"], REMOTE_TIMEOUT, &env).map(|_| ())
-        })
-        .await
-    }
+    let askpass = askpass.inner().clone();
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        let op = begin_remote_askpass(
+            &askpass,
+            root,
+            crate::askpass::AskpassOperationKind::Fetch,
+            background,
+        );
+        run_ok_with_askpass(root, &["fetch"], REMOTE_TIMEOUT, op.env(), &op).map(|_| ())
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_pull_cmd(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
-    repository_root: Option<String>,
+    repository_root: String,
 ) -> Result<(), String> {
-    // pull 觸發的 merge commit 在無 TTY 下同樣需抑制 editor（見 conflict_continue 註）。
-    let mut env = askpass.env_for(false);
-    env.extend(editor_true());
-    if let Some(requested_root) = repository_root {
-        with_requested_repo_blocking(state.inner(), requested_root, move |root| {
-            run_ok(root, &["pull"], REMOTE_TIMEOUT, &env).map(|_| ())
-        })
-        .await
-    } else {
-        let shared = state.0.clone();
-        run_blocking(move || {
-            let root = repo_root(&shared)?;
-            run_ok(&root, &["pull"], REMOTE_TIMEOUT, &env).map(|_| ())
-        })
-        .await
-    }
+    let askpass = askpass.inner().clone();
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        let op = begin_remote_askpass(
+            &askpass,
+            root,
+            crate::askpass::AskpassOperationKind::Pull,
+            false,
+        );
+        let mut env = op.env().to_vec();
+        env.extend(editor_true());
+        run_ok_with_askpass(root, &["pull"], REMOTE_TIMEOUT, &env, &op).map(|_| ())
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_push_cmd(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
-    repository_root: Option<String>,
+    repository_root: String,
 ) -> Result<(), String> {
-    let env = askpass.env_for(false);
-    if let Some(requested_root) = repository_root {
-        with_requested_repo_blocking(state.inner(), requested_root, move |root| {
-            run_ok(root, &["push"], REMOTE_TIMEOUT, &env).map(|_| ())
-        })
-        .await
-    } else {
-        let shared = state.0.clone();
-        run_blocking(move || {
-            let root = repo_root(&shared)?;
-            run_ok(&root, &["push"], REMOTE_TIMEOUT, &env).map(|_| ())
-        })
-        .await
-    }
+    let askpass = askpass.inner().clone();
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        let op = begin_remote_askpass(
+            &askpass,
+            root,
+            crate::askpass::AskpassOperationKind::Push,
+            false,
+        );
+        run_ok_with_askpass(root, &["push"], REMOTE_TIMEOUT, op.env(), &op).map(|_| ())
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn git_remote_probe(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
+    repository_root: String,
 ) -> Result<String, String> {
-    let shared = state.0.clone();
-    let env = askpass.env_for(true);
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        remote_probe(&root, &env)
+    let askpass = askpass.inner().clone();
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        let op = begin_remote_askpass(
+            &askpass,
+            root,
+            crate::askpass::AskpassOperationKind::Probe,
+            true,
+        );
+        remote_probe_inner(root, op.env(), Some(&|pid| op.bind_root_pid(pid)))
     })
     .await
 }
@@ -1374,13 +2151,14 @@ pub async fn git_remote_probe(
 #[tauri::command]
 pub async fn git_diff_content(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     path: String,
     staged: bool,
+    orig_path: Option<String>,
 ) -> Result<DiffContent, String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        diff_content(&root, &path, staged)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        diff_content(root, &path, staged, orig_path.as_deref())
     })
     .await
 }
@@ -1388,12 +2166,12 @@ pub async fn git_diff_content(
 #[tauri::command]
 pub async fn git_conflict_abort(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     op: String,
 ) -> Result<(), String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        conflict_abort(&root, &op)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        conflict_abort(root, &op)
     })
     .await
 }
@@ -1401,12 +2179,12 @@ pub async fn git_conflict_abort(
 #[tauri::command]
 pub async fn git_conflict_continue(
     state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
     op: String,
 ) -> Result<(), String> {
-    let shared = state.0.clone();
-    run_blocking(move || {
-        let root = repo_root(&shared)?;
-        conflict_continue(&root, &op)
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        conflict_continue(root, &op)
     })
     .await
 }
@@ -1503,6 +2281,18 @@ mod tests {
             detect_environment(tmp.path()),
             GitEnvironment::NotARepo
         ));
+    }
+
+    #[test]
+    fn parse_git_version_accepts_2_24_and_apple_suffix() {
+        assert_eq!(parse_git_version("git version 2.24.0"), Some((2, 24)));
+        assert_eq!(
+            parse_git_version("git version 2.50.1 (Apple Git-155)"),
+            Some((2, 50))
+        );
+        assert_eq!(parse_git_version("git version 2.23.0"), Some((2, 23)));
+        assert!((2, 23) < MIN_GIT_VERSION);
+        assert!((2, 24) >= MIN_GIT_VERSION);
     }
 
     /// #57 T3：Ready 首載快照——status 與 branches 兩個 blocking task 併發
@@ -1776,6 +2566,100 @@ mod tests {
     }
 
     #[test]
+    fn stage_unstage_discard_rollback_treat_pathspec_magic_as_literal_filenames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "canary.txt", "base\n", "base");
+        test_repo::write_and_commit(r, "?", "old-q\n", "tracked question");
+        test_repo::write_and_commit(r, ":(exclude)", "old-ex\n", "tracked exclude");
+
+        let magic = [":(top)**", ":(glob)**", "*", "?", ":(exclude)"];
+        for name in [":(top)**", ":(glob)**", "*"] {
+            std::fs::write(r.join(name), format!("untracked-{name}\n")).unwrap();
+        }
+        std::fs::write(r.join("?"), "new-q\n").unwrap();
+        std::fs::write(r.join(":(exclude)"), "new-ex\n").unwrap();
+        std::fs::write(r.join("canary.txt"), "changed\n").unwrap();
+        std::fs::write(r.join("other.txt"), "other\n").unwrap();
+
+        stage(r, &[":(top)**".into()]).unwrap();
+        let after_stage = status_of(r, None).unwrap().parsed;
+        assert_eq!(
+            after_stage
+                .staged
+                .iter()
+                .map(|e| e.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![":(top)**"]
+        );
+        assert!(after_stage.untracked.iter().any(|p| p == ":(glob)**"));
+        assert!(after_stage.untracked.iter().any(|p| p == "*"));
+        assert!(after_stage.untracked.iter().any(|p| p == "other.txt"));
+        assert!(after_stage.unstaged.iter().any(|e| e.path == "canary.txt"));
+        assert!(after_stage.unstaged.iter().any(|e| e.path == "?"));
+
+        stage(r, &[":(glob)**".into(), "*".into()]).unwrap();
+        let after_second_stage = status_of(r, None).unwrap().parsed;
+        assert!(after_second_stage
+            .staged
+            .iter()
+            .any(|e| e.path == ":(glob)**"));
+        assert!(after_second_stage.staged.iter().any(|e| e.path == "*"));
+        assert!(after_second_stage
+            .unstaged
+            .iter()
+            .any(|e| e.path == "canary.txt"));
+        unstage(r, &[":(glob)**".into(), "*".into()]).unwrap();
+        let after_unstage = status_of(r, None).unwrap().parsed;
+        assert!(after_unstage.staged.iter().any(|e| e.path == ":(top)**"));
+        assert!(!after_unstage.staged.iter().any(|e| e.path == ":(glob)**"));
+        assert!(!after_unstage.staged.iter().any(|e| e.path == "*"));
+        assert!(after_unstage.untracked.iter().any(|p| p == ":(glob)**"));
+        assert!(after_unstage.untracked.iter().any(|p| p == "*"));
+        assert!(after_unstage
+            .unstaged
+            .iter()
+            .any(|e| e.path == "canary.txt"));
+
+        discard(r, &["?".into()], &[":(glob)**".into()]).unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("?")).unwrap(), "old-q\n");
+        assert!(!r.join(":(glob)**").exists());
+        assert_eq!(
+            std::fs::read_to_string(r.join("canary.txt")).unwrap(),
+            "changed\n"
+        );
+        assert!(r.join("other.txt").exists());
+        assert!(r.join("*").exists());
+
+        let latest = status_of(r, None).unwrap().parsed;
+        let exclude = latest
+            .unstaged
+            .iter()
+            .find(|e| e.path == ":(exclude)")
+            .expect(":(exclude) should still be dirty");
+        rollback_paths(
+            r,
+            &[rollback_target(
+                ":(exclude)",
+                tracked_classification(None, Some(exclude.status.as_str()), None),
+            )],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(r.join(":(exclude)")).unwrap(),
+            "old-ex\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(r.join("canary.txt")).unwrap(),
+            "changed\n"
+        );
+        assert!(r.join("other.txt").exists());
+        let _ = magic;
+    }
+
+    #[test]
     fn rollback_tracked_resets_staged_unstaged_and_partially_staged_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let r = tmp.path();
@@ -1989,7 +2873,7 @@ mod tests {
         let r = tmp.path();
         test_repo::init(r);
         test_repo::write_and_commit(r, "conflict.txt", "base\n", "base");
-        create_branch(r, "side").unwrap();
+        create_branch(r, "side", None).unwrap();
         test_repo::write_and_commit(r, "conflict.txt", "side\n", "side");
         checkout(r, "main").unwrap();
         test_repo::write_and_commit(r, "conflict.txt", "main\n", "main");
@@ -2157,12 +3041,360 @@ mod tests {
     }
 
     #[test]
+    fn parses_gone_and_divergence_from_authoritative_upstream_track() {
+        assert_eq!(parse_upstream_track("[gone]"), (0, 0, true));
+        assert_eq!(parse_upstream_track("[ahead 3, behind 2]"), (3, 2, false));
+        assert_eq!(parse_upstream_track(""), (0, 0, false));
+    }
+
+    #[test]
+    fn branches_marks_a_deleted_configured_upstream_as_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1", "c1");
+        let remote_path = r.to_string_lossy().to_string();
+        run_ok(
+            r,
+            &["remote", "add", "origin", remote_path.as_str()],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        run_ok(
+            r,
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        run_ok(
+            r,
+            &["branch", "--set-upstream-to=origin/main", "main"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        run_ok(
+            r,
+            &["update-ref", "-d", "refs/remotes/origin/main"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+
+        let list = branches(r).unwrap();
+        let main = list
+            .local
+            .iter()
+            .find(|branch| branch.name == "main")
+            .expect("main branch");
+        assert_eq!(main.upstream.as_deref(), Some("origin/main"));
+        assert!(main.gone);
+        assert_eq!((main.ahead, main.behind), (0, 0));
+    }
+
+    #[test]
+    fn branches_lists_annotated_and_lightweight_tag_creator_dates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        std::fs::write(r.join("a.txt"), "1").unwrap();
+        run_ok(r, &["add", "a.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        run_ok(
+            r,
+            &["commit", "-m", "c1"],
+            DEFAULT_TIMEOUT,
+            &[
+                ("GIT_AUTHOR_DATE".into(), "2024-01-01T12:00:00+00:00".into()),
+                (
+                    "GIT_COMMITTER_DATE".into(),
+                    "2024-01-01T12:00:00+00:00".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        run_ok(r, &["tag", "release/v1.0.0"], DEFAULT_TIMEOUT, &[]).unwrap();
+        run_ok(
+            r,
+            &["tag", "-a", "release/v2.0.0", "-m", "annotated"],
+            DEFAULT_TIMEOUT,
+            &[(
+                "GIT_COMMITTER_DATE".into(),
+                "2025-06-15T18:00:00+00:00".into(),
+            )],
+        )
+        .unwrap();
+        let list = branches(r).unwrap();
+        let light = list
+            .tags
+            .iter()
+            .find(|tag| tag.name == "release/v1.0.0")
+            .expect("lightweight tag DTO");
+        let annotated = list
+            .tags
+            .iter()
+            .find(|tag| tag.name == "release/v2.0.0")
+            .expect("annotated tag DTO");
+        assert!(
+            light.date.contains("2024-01-01"),
+            "lightweight date should come from commit creatordate, got {}",
+            light.date
+        );
+        assert!(
+            annotated.date.contains("2025-06-15"),
+            "annotated date should come from tagger creatordate, got {}",
+            annotated.date
+        );
+    }
+
+    #[test]
+    fn branches_emits_stable_logical_names_when_namespaces_collide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1", "c1");
+        create_branch(r, "origin/main", None).unwrap();
+        checkout(r, "main").unwrap();
+        run_ok(
+            r,
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        run_ok(r, &["tag", "origin/main"], DEFAULT_TIMEOUT, &[]).unwrap();
+        let list = branches(r).unwrap();
+        assert!(
+            list.local.iter().any(|branch| branch.name == "origin/main"),
+            "local logical name must stay origin/main, got {:?}",
+            list.local
+                .iter()
+                .map(|branch| branch.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            list.remote.iter().any(|name| name == "origin/main"),
+            "remote logical name must stay origin/main, got {:?}",
+            list.remote
+        );
+        assert!(
+            list.tags.iter().any(|tag| tag.name == "origin/main"),
+            "tag logical name must stay origin/main, got {:?}",
+            list.tags
+                .iter()
+                .map(|tag| tag.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        checkout_detached(r, "refs/tags/origin/main").unwrap();
+        assert!(status_of(r, None).unwrap().parsed.detached);
+        create_branch(r, "from-remote", Some("refs/remotes/origin/main")).unwrap();
+        assert!(branches(r)
+            .unwrap()
+            .local
+            .iter()
+            .any(|branch| branch.name == "from-remote" && branch.is_current));
+    }
+
+    #[test]
+    fn checkout_does_not_guess_remote_tracking_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1", "c1");
+        run_ok(
+            r,
+            &["update-ref", "refs/remotes/origin/topic", "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        let error = checkout(r, "topic").unwrap_err();
+        assert!(
+            !error.is_empty(),
+            "--no-guess must refuse DWIM checkout of a remote-only name"
+        );
+        assert!(!branches(r)
+            .unwrap()
+            .local
+            .iter()
+            .any(|branch| branch.name == "topic"));
+        create_branch(r, "topic", Some("refs/remotes/origin/topic")).unwrap();
+        assert!(branches(r)
+            .unwrap()
+            .local
+            .iter()
+            .any(|branch| branch.name == "topic" && branch.is_current));
+    }
+
+    #[test]
+    fn option_shaped_tag_is_switched_after_end_of_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1", "c1");
+        run_ok(
+            r,
+            &["update-ref", "refs/tags/-n", "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        run_ok(
+            r,
+            &["update-ref", "refs/tags/--help", "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        let listed = branches(r).unwrap();
+        assert!(listed.tags.iter().any(|tag| tag.name == "-n"));
+        assert!(listed.tags.iter().any(|tag| tag.name == "--help"));
+        create_branch(r, "from-opt", Some("refs/tags/-n")).unwrap();
+        assert!(branches(r)
+            .unwrap()
+            .local
+            .iter()
+            .any(|branch| branch.name == "from-opt" && branch.is_current));
+        checkout_detached(r, "refs/tags/--help").unwrap();
+        assert!(status_of(r, None).unwrap().parsed.detached);
+    }
+
+    #[test]
+    fn create_branch_uses_exact_start_point_and_detached_checkout_is_explicit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1", "c1");
+        run_ok(r, &["tag", "release/v1.0.0"], DEFAULT_TIMEOUT, &[]).unwrap();
+        create_branch(r, "release/1.0.0", Some("release/v1.0.0")).unwrap();
+        assert!(branches(r)
+            .unwrap()
+            .local
+            .iter()
+            .any(|branch| branch.name == "release/1.0.0" && branch.is_current));
+        checkout_detached(r, "release/v1.0.0").unwrap();
+        let status = status_of(r, None).unwrap();
+        assert!(status.parsed.detached);
+    }
+
+    #[test]
+    fn create_branch_from_remote_tracking_start_preserves_implicit_upstream() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1", "c1");
+        let start_oid = crate::git_oid::resolve_commit_oid(r, "HEAD").unwrap();
+        let remote_path = r.to_string_lossy().to_string();
+        run_ok(
+            r,
+            &["remote", "add", "origin", remote_path.as_str()],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        run_ok(
+            r,
+            &["update-ref", "refs/remotes/origin/topic", "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        create_branch(r, "topic", Some("origin/topic")).unwrap();
+        let list = branches(r).unwrap();
+        let topic = list
+            .local
+            .iter()
+            .find(|branch| branch.name == "topic")
+            .expect("created branch");
+        assert!(topic.is_current);
+        assert_eq!(topic.upstream.as_deref(), Some("origin/topic"));
+        let head = run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&head.stdout).trim(),
+            start_oid.as_str()
+        );
+
+        create_branch(r, "from-full", Some("refs/remotes/origin/topic")).unwrap();
+        let listed = branches(r).unwrap();
+        let from_full = listed
+            .local
+            .iter()
+            .find(|branch| branch.name == "from-full")
+            .expect("full-name branch");
+        assert_eq!(from_full.upstream.as_deref(), Some("origin/topic"));
+
+        run_ok(r, &["tag", "start-tag"], DEFAULT_TIMEOUT, &[]).unwrap();
+        create_branch(r, "from-tag", Some("start-tag")).unwrap();
+        let listed_after_tag = branches(r).unwrap();
+        let from_tag = listed_after_tag
+            .local
+            .iter()
+            .find(|branch| branch.name == "from-tag")
+            .expect("tag start branch");
+        assert!(from_tag.upstream.is_none());
+    }
+
+    #[test]
+    fn renderer_revisions_reject_option_like_payloads_before_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1", "c1");
+        let sink = tmp.path().join("pwned");
+        let inject = format!("--output={}", sink.display());
+        let detached_err = checkout_detached(r, &inject).unwrap_err();
+        assert!(
+            detached_err.contains("option-like"),
+            "checkout_detached: {detached_err}"
+        );
+        let pick_err = cherry_pick(r, &inject).unwrap_err();
+        assert!(pick_err.contains("option-like"), "cherry_pick: {pick_err}");
+        let branch_err = create_branch(r, "from-inject", Some(&inject)).unwrap_err();
+        assert!(
+            branch_err.contains("option-like"),
+            "create_branch: {branch_err}"
+        );
+        assert!(!sink.exists(), "option revision must not write a file");
+        assert!(
+            !status_of(r, None).unwrap().parsed.detached,
+            "rejected revision must not move HEAD"
+        );
+    }
+
+    #[test]
+    fn run_git_forces_literal_pathspecs_even_if_caller_tries_to_disable_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "canary.txt", "base\n", "base");
+        std::fs::write(r.join("*"), "star\n").unwrap();
+        std::fs::write(r.join("canary.txt"), "changed\n").unwrap();
+        let disable = vec![("GIT_LITERAL_PATHSPECS".to_string(), "0".to_string())];
+        let out = run_git(r, &["add", "--", "*"], DEFAULT_TIMEOUT, &disable).unwrap();
+        assert_eq!(out.code, 0, "git add *: {}", out.stderr);
+        let parsed = status_of(r, None).unwrap().parsed;
+        assert!(
+            parsed.staged.iter().any(|entry| entry.path == "*"),
+            "literal * should be staged, got {:?}",
+            parsed.staged
+        );
+        assert!(
+            parsed
+                .unstaged
+                .iter()
+                .any(|entry| entry.path == "canary.txt"),
+            "canary must remain unstaged when * is forced literal"
+        );
+    }
+
+    #[test]
     fn branches_lists_current_and_created() {
         let tmp = tempfile::tempdir().unwrap();
         let r = tmp.path();
         test_repo::init(r);
         test_repo::write_and_commit(r, "a.txt", "1", "c1");
-        create_branch(r, "feature/x").unwrap();
+        create_branch(r, "feature/x", None).unwrap();
         let b = branches(r).unwrap();
         let cur: Vec<_> = b.local.iter().filter(|x| x.is_current).collect();
         assert_eq!(cur[0].name, "feature/x");
@@ -2180,7 +3412,7 @@ mod tests {
         let r = tmp.path();
         test_repo::init(r);
         test_repo::write_and_commit(r, "a.txt", "base\n", "c1");
-        create_branch(r, "side").unwrap();
+        create_branch(r, "side", None).unwrap();
         test_repo::write_and_commit(r, "b.txt", "sidefile\n", "add b");
         let pick = run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[]).unwrap();
         let sha = String::from_utf8_lossy(&pick.stdout).trim().to_string();
@@ -2217,7 +3449,7 @@ mod tests {
         test_repo::init(r);
         test_repo::write_and_commit(r, "a.txt", "base\n", "c1");
 
-        create_branch(r, "side").unwrap();
+        create_branch(r, "side", None).unwrap();
         test_repo::write_and_commit(r, "a.txt", "same\n", "side same");
         let redundant = String::from_utf8_lossy(
             &run_git(r, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[])
@@ -2247,7 +3479,7 @@ mod tests {
         test_repo::init(r);
         test_repo::write_and_commit(r, "base.txt", "base\n", "base");
 
-        create_branch(r, "side").unwrap();
+        create_branch(r, "side", None).unwrap();
         test_repo::write_and_commit(r, "side.txt", "side\n", "side");
         checkout(r, "main").unwrap();
         test_repo::write_and_commit(r, "main.txt", "main\n", "main");
@@ -2283,7 +3515,7 @@ mod tests {
         let r = tmp.path();
         test_repo::init(r);
         test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
-        create_branch(r, "side").unwrap();
+        create_branch(r, "side", None).unwrap();
         test_repo::write_and_commit(r, "f.txt", "side\n", "c2");
         checkout(r, "main").unwrap();
         test_repo::write_and_commit(r, "f.txt", "main\n", "c3");
@@ -2305,7 +3537,7 @@ mod tests {
         let r = tmp.path();
         test_repo::init(r);
         test_repo::write_and_commit(r, "f.txt", "base\n", "c1");
-        create_branch(r, "side").unwrap();
+        create_branch(r, "side", None).unwrap();
         test_repo::write_and_commit(r, "f.txt", "side\n", "c2");
         checkout(r, "main").unwrap();
         test_repo::write_and_commit(r, "f.txt", "main\n", "c3");
@@ -2403,16 +3635,230 @@ mod tests {
         test_repo::init(r);
         test_repo::write_and_commit(r, "a.txt", "one\n", "c1");
         std::fs::write(r.join("a.txt"), "two\n").unwrap();
-        let d = diff_content(r, "a.txt", false).unwrap();
+        let d = diff_content(r, "a.txt", false, None).unwrap();
         assert!(matches!(&d.original, GradedText::Full { content } if content == "one\n"));
         assert!(matches!(&d.modified, GradedText::Full { content } if content == "two\n"));
         std::fs::write(r.join("new.txt"), "n\n").unwrap();
-        let d2 = diff_content(r, "new.txt", false).unwrap();
+        let d2 = diff_content(r, "new.txt", false, None).unwrap();
         assert!(matches!(&d2.original, GradedText::Full { content } if content.is_empty()));
         stage(r, &["a.txt".into()]).unwrap();
-        let d3 = diff_content(r, "a.txt", true).unwrap();
+        let d3 = diff_content(r, "a.txt", true, None).unwrap();
         assert!(matches!(&d3.original, GradedText::Full { content } if content == "one\n"));
         assert!(matches!(&d3.modified, GradedText::Full { content } if content == "two\n"));
+    }
+
+    fn assert_utf16_worktree_diff(big_endian: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        let mut utf16 = if big_endian {
+            vec![0xFE, 0xFF]
+        } else {
+            vec![0xFF, 0xFE]
+        };
+        for unit in "hello".encode_utf16() {
+            let bytes = if big_endian {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            };
+            utf16.extend_from_slice(&bytes);
+        }
+        std::fs::write(r.join("u.txt"), &utf16).unwrap();
+        let unstaged = diff_content(r, "u.txt", false, None).unwrap();
+        assert!(matches!(&unstaged.original, GradedText::Full { content } if content.is_empty()));
+        assert!(matches!(&unstaged.modified, GradedText::Full { content } if content == "hello"));
+
+        stage(r, &["u.txt".into()]).unwrap();
+        let staged = diff_content(r, "u.txt", true, None).unwrap();
+        assert!(matches!(&staged.original, GradedText::Full { content } if content.is_empty()));
+        assert!(matches!(&staged.modified, GradedText::Full { content } if content == "hello"));
+    }
+
+    #[test]
+    fn diff_content_rejects_non_relative_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        assert!(
+            matches!(diff_content(r, "../outside", false, None), Err(error) if error.contains("non-repo-relative"))
+        );
+        assert!(
+            matches!(diff_content(r, "/tmp/outside", false, None), Err(error) if error.contains("non-repo-relative"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn diff_content_reads_internal_symlink_target_text_without_following_it() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        std::fs::write(r.join("target.txt"), "secret contents").unwrap();
+        symlink("target.txt", r.join("link.txt")).unwrap();
+        let diff = diff_content(r, "link.txt", false, None).unwrap();
+        assert!(matches!(&diff.modified, GradedText::Full { content } if content == "target.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn diff_content_reads_external_symlink_target_text_without_following_it() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        let outside = tmp
+            .path()
+            .parent()
+            .unwrap()
+            .join("yuzora-diff-outside-secret");
+        std::fs::write(&outside, "secret").unwrap();
+        symlink(&outside, r.join("link.txt")).unwrap();
+        let diff = diff_content(r, "link.txt", false, None).unwrap();
+        assert!(
+            matches!(&diff.modified, GradedText::Full { content } if content == outside.as_os_str().to_string_lossy().as_ref())
+        );
+        std::fs::remove_file(outside).unwrap();
+    }
+
+    #[test]
+    fn diff_content_staged_rename_uses_orig_path_for_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "old.txt", "before\n", "c1");
+        std::fs::rename(r.join("old.txt"), r.join("new.txt")).unwrap();
+        run_ok(r, &["add", "-A"], DEFAULT_TIMEOUT, &[]).unwrap();
+        let diff = diff_content(r, "new.txt", true, Some("old.txt")).unwrap();
+        assert!(matches!(&diff.original, GradedText::Full { content } if content == "before\n"));
+        assert!(matches!(&diff.modified, GradedText::Full { content } if content == "before\n"));
+    }
+
+    #[test]
+    fn diff_content_staged_added_uses_empty_original() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        std::fs::write(r.join("new.txt"), "added\n").unwrap();
+        run_ok(r, &["add", "new.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        let diff = diff_content(r, "new.txt", true, None).unwrap();
+        assert!(matches!(&diff.original, GradedText::Full { content } if content.is_empty()));
+        assert!(matches!(&diff.modified, GradedText::Full { content } if content == "added\n"));
+    }
+
+    #[test]
+    fn diff_content_unmerged_prefers_stage1_merge_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "conflict.txt", "base\n", "base");
+        run_ok(r, &["checkout", "-b", "other"], DEFAULT_TIMEOUT, &[]).unwrap();
+        std::fs::write(r.join("conflict.txt"), "theirs\n").unwrap();
+        run_ok(r, &["commit", "-am", "theirs"], DEFAULT_TIMEOUT, &[]).unwrap();
+        run_ok(r, &["checkout", "main"], DEFAULT_TIMEOUT, &[]).unwrap();
+        std::fs::write(r.join("conflict.txt"), "ours\n").unwrap();
+        run_ok(r, &["commit", "-am", "ours"], DEFAULT_TIMEOUT, &[]).unwrap();
+        let merge = run_git(r, &["merge", "other"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_ne!(merge.code, 0);
+        // Stage 1 = base, stage 2 = ours — original must prefer stage 1.
+        let stage1 = run_git(r, &["show", ":1:conflict.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(stage1.code, 0);
+        assert_eq!(String::from_utf8_lossy(&stage1.stdout), "base\n");
+        let stage2 = run_git(r, &["show", ":2:conflict.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(stage2.code, 0);
+        assert_eq!(String::from_utf8_lossy(&stage2.stdout), "ours\n");
+        let diff = diff_content(r, "conflict.txt", false, None).unwrap();
+        assert!(matches!(&diff.original, GradedText::Full { content } if content == "base\n"));
+    }
+
+    #[test]
+    fn diff_content_unmerged_add_add_falls_back_to_ours() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "keep.txt", "keep\n", "base");
+        run_ok(r, &["checkout", "-b", "other"], DEFAULT_TIMEOUT, &[]).unwrap();
+        std::fs::write(r.join("both.txt"), "theirs\n").unwrap();
+        run_ok(r, &["add", "both.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        run_ok(r, &["commit", "-m", "theirs add"], DEFAULT_TIMEOUT, &[]).unwrap();
+        run_ok(r, &["checkout", "main"], DEFAULT_TIMEOUT, &[]).unwrap();
+        std::fs::write(r.join("both.txt"), "ours\n").unwrap();
+        run_ok(r, &["add", "both.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        run_ok(r, &["commit", "-m", "ours add"], DEFAULT_TIMEOUT, &[]).unwrap();
+        let merge = run_git(r, &["merge", "other"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_ne!(merge.code, 0);
+        // Add/add has no stage 1; fallback is stage 2 (ours).
+        let stage1 = run_git(r, &["show", ":1:both.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_ne!(stage1.code, 0);
+        let diff = diff_content(r, "both.txt", false, None).unwrap();
+        assert!(matches!(&diff.original, GradedText::Full { content } if content == "ours\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_worktree_rejects_intermediate_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "a\n", "c1");
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
+        std::fs::create_dir_all(r.join("sub")).unwrap();
+        // Intermediate symlink: sub/link -> outside, path sub/link/secret.txt.
+        symlink(outside.path(), r.join("sub/link")).unwrap();
+        let err = read_worktree(r, "sub/link/secret.txt").unwrap_err();
+        assert!(
+            err.contains("symlink") || err.contains("rejected"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_absolute_dir_nofollow_rejects_symlink_root_component() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize the temp base first so platform prefix symlinks (e.g.
+        // macOS /var → /private/var) are resolved; the intentional link is the
+        // only symlink component under test.
+        let base = tmp.path().canonicalize().unwrap();
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("secret.txt"), "secret\n").unwrap();
+        let link = base.join("link");
+        symlink(&real, &link).unwrap();
+        // Path contains a symlink component. Walking with O_NOFOLLOW must reject
+        // it rather than following into `real` (or any substituted target).
+        let err = open_absolute_dir_nofollow(&link).unwrap_err();
+        assert!(
+            err.contains("symlink") || err.contains("rejected"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_absolute_dir_nofollow_opens_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Caller always feeds a canonical path (see read_worktree_nofollow_unix).
+        let canonical = dir.canonicalize().unwrap();
+        let fd = open_absolute_dir_nofollow(&canonical).expect("real directory must open");
+        drop(fd);
+    }
+
+    #[test]
+    fn diff_content_utf16_le_worktree_decodes_to_text() {
+        assert_utf16_worktree_diff(false);
+    }
+
+    #[test]
+    fn diff_content_utf16_be_worktree_decodes_to_text() {
+        assert_utf16_worktree_diff(true);
     }
 
     #[test]
@@ -2616,4 +4062,167 @@ mod tests {
         assert!(repo_state.lock().unwrap().is_none());
         assert!(watch_state.lock().unwrap().is_none());
     }
+
+    #[test]
+    fn untrusted_workspace_never_spawns_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            tmp.path().join("workspace-trust.json"),
+        );
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        test_repo::init(&repo);
+        let path = repo.to_str().unwrap().to_string();
+        let before = git_spawn_count();
+        let error = trust.require_trusted(&path).unwrap_err();
+        assert!(
+            error.contains("untrustedWorkspace"),
+            "expected untrusted workspace, got {error}"
+        );
+        let detect_error = match detect_environment_if_trusted(&trust, &path) {
+            Ok(_) => panic!("expected detect to stay closed"),
+            Err(error) => error,
+        };
+        assert!(
+            detect_error.contains("untrustedWorkspace"),
+            "expected detect to stay closed, got {detect_error}"
+        );
+        assert_eq!(
+            git_spawn_count(),
+            before,
+            "untrusted detect must not spawn git"
+        );
+
+        let state = GitServiceState(std::sync::Arc::new(std::sync::Mutex::new(Some(
+            RepoHandle { root: repo.clone() },
+        ))));
+        let before = git_spawn_count();
+        let wrapper_error = tauri::async_runtime::block_on(with_requested_repo_blocking(
+            &state,
+            &trust,
+            path,
+            |_| Ok(()),
+        ))
+        .unwrap_err();
+        assert!(
+            wrapper_error.contains("untrustedWorkspace"),
+            "expected wrapper to stay closed, got {wrapper_error}"
+        );
+        assert_eq!(
+            git_spawn_count(),
+            before,
+            "untrusted git wrapper must not spawn git"
+        );
+    }
+
+    #[test]
+    fn trusted_workspace_can_detect_and_run_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = tmp.path().join("workspace-trust.json");
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(store_path);
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        test_repo::init(&repo);
+        let path = repo.to_str().unwrap();
+        trust.0.grant_for_tests(path);
+        let env = detect_environment_if_trusted(&trust, path).unwrap();
+        assert!(matches!(env, GitEnvironment::Ready { .. }));
+
+        let state = GitServiceState(std::sync::Arc::new(std::sync::Mutex::new(Some(
+            RepoHandle { root: repo.clone() },
+        ))));
+        tauri::async_runtime::block_on(with_requested_repo_blocking(
+            &state,
+            &trust,
+            path.to_string(),
+            |root| {
+                let output = run_git(
+                    root,
+                    &["rev-parse", "--is-inside-work-tree"],
+                    Duration::from_secs(5),
+                    &[],
+                )?;
+                assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "true");
+                Ok(())
+            },
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn remote_identity_for_askpass_uses_origin_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        test_repo::init(tmp.path());
+        test_repo::write_and_commit(tmp.path(), "a.txt", "1", "c1");
+        run_git(
+            tmp.path(),
+            &["remote", "add", "origin", "git@example.com:foo/bar.git"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        let (display, fingerprint) = remote_identity_for_askpass(tmp.path());
+        let display = display.expect("origin display");
+        assert!(display.contains("origin"), "{display}");
+        assert!(display.contains("git@example.com:foo/bar.git"), "{display}");
+        assert!(fingerprint.expect("url fingerprint").starts_with("sha256:"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_askpass_operations_get_distinct_tokens() {
+        let server = crate::askpass::AskpassServer::start(|_| {}).unwrap();
+        let state = crate::askpass::AskpassState(Some(server));
+        let tmp = tempfile::tempdir().unwrap();
+        test_repo::init(tmp.path());
+        let a = begin_remote_askpass(
+            &state,
+            tmp.path(),
+            crate::askpass::AskpassOperationKind::Fetch,
+            false,
+        );
+        let b = begin_remote_askpass(
+            &state,
+            tmp.path(),
+            crate::askpass::AskpassOperationKind::Push,
+            false,
+        );
+        let token_a = a
+            .env()
+            .iter()
+            .find(|(key, _)| key == "YUZORA_ASKPASS_TOKEN")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+        let token_b = b
+            .env()
+            .iter()
+            .find(|(key, _)| key == "YUZORA_ASKPASS_TOKEN")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+        let op_a = a
+            .env()
+            .iter()
+            .find(|(key, _)| key == "YUZORA_ASKPASS_OPERATION")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+        let op_b = b
+            .env()
+            .iter()
+            .find(|(key, _)| key == "YUZORA_ASKPASS_OPERATION")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+        assert_ne!(token_a, token_b);
+        assert_ne!(op_a, op_b);
+        assert!(!token_a.is_empty());
+        assert!(!token_b.is_empty());
+    }
+}
+
+#[cfg(test)]
+fn detect_environment_if_trusted(
+    trust: &crate::workspace_trust::WorkspaceTrustState,
+    path: &str,
+) -> Result<GitEnvironment, String> {
+    let _ = trust.require_trusted(path)?;
+    Ok(detect_environment(Path::new(path)))
 }

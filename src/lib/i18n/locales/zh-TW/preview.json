@@ -10,10 +10,13 @@
   "settingsHint": "請在 Settings 的 Preview 區塊設定 dev server command 與 port。",
   "portOccupied": "偵測到 port 已被使用",
   "connectExisting": "連接現有 server",
+  "connectExistingHint": "連線到已在執行的 localhost server 不會執行專案程式碼。",
   "alternatePort": "替代 port",
   "startChangedPort": "切換 port 後啟動",
   "retryDetect": "重新偵測",
   "failedTitle": "dev server 啟動失敗",
   "retryStart": "重試啟動",
-  "exitedTitle": "dev server 已停止"
+  "exitedTitle": "dev server 已停止",
+  "staticCreateFailed": "無法預覽這個檔案。",
+  "staticCreateTooLarge": "預覽檔案過多，無法安全開啟。"
 }

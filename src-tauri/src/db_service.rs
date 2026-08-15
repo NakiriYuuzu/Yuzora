@@ -23,7 +23,8 @@ use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 use tiberius::{AuthMethod, ColumnData, Config as MssqlConfig, FromSql, QueryItem};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex as AsyncMutex;
+use zeroize::Zeroize;
+
 use tokio_postgres::types::Type as PgType;
 use tokio_postgres::Row as PgRow;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -33,8 +34,13 @@ use crate::db_connection_actor::{
     ProductionConnectionActor, ResultContinuationAck, ResultContinuationCommand,
     ResultContinuationOutcome, TeardownReport,
 };
+use crate::db_query_worker::{
+    cancelled_error, read_request, worker_error, write_frame, NetworkQueryStart,
+    NetworkQueryWorker, NetworkRow, WorkerRequest, WorkerResponse,
+};
 use crate::db_result_session::{
-    NextPage, PushRowOutcome, ResultSessionState, SessionError, RESULT_PAGE_ROWS,
+    NextPage, PushRowOutcome, RemainingBudget, ResultLimitKind, ResultSessionState, SessionError,
+    DEFAULT_FIELD_BYTES, DEFAULT_ROW_BYTES, RESULT_PAGE_ROWS,
 };
 
 /// The MSSQL client type: tiberius over a tokio TcpStream via the compat shim.
@@ -45,18 +51,20 @@ pub(crate) type MssqlClient = tiberius::Client<Compat<TcpStream>>;
 /// future that must be polled to drive the socket; we spawn the latter and abort
 /// it on close.
 pub struct PgConn {
-    client: tokio_postgres::Client,
-    conn_task: tauri::async_runtime::JoinHandle<()>,
-    cancel: PostgresCancelResource,
+    worker: NetworkQueryWorker,
 }
 
 impl PgConn {
     pub(crate) fn abort_driver(&self) {
-        self.conn_task.abort();
+        self.worker.abort();
     }
 
-    pub(crate) fn cancel_resource(&self) -> &PostgresCancelResource {
-        &self.cancel
+    pub(crate) fn is_closed(&self) -> bool {
+        self.worker.is_closed()
+    }
+
+    pub(crate) fn worker(&self) -> &NetworkQueryWorker {
+        &self.worker
     }
 }
 
@@ -74,7 +82,7 @@ impl PgConn {
 pub enum DbHandle {
     Sqlite(Mutex<Connection>),
     Postgres(PgConn),
-    Mssql(AsyncMutex<Option<MssqlClient>>),
+    Mssql(NetworkQueryWorker),
 }
 
 /// connId → production actor. The actor, rather than a public Arc handle, owns
@@ -181,6 +189,49 @@ opaque_database_id!(QueryRunId);
 opaque_database_id!(StatementExecutionId);
 opaque_database_id!(ResultSessionId);
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PostgresTransportMode {
+    #[default]
+    VerifyFull,
+    EncryptedTrustServerCert,
+    InsecurePlaintext,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresInsecureException {
+    pub host: String,
+    #[serde(default)]
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+}
+
+impl PostgresInsecureException {
+    pub fn new(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        database: impl Into<String>,
+    ) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            user: user.into(),
+            database: database.into(),
+        }
+    }
+
+    pub fn matches(&self, host: &str, port: u16, user: &str, database: &str) -> bool {
+        self.port != 0
+            && self.port == port
+            && self.host == host
+            && self.user == user
+            && self.database == database
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(
     tag = "kind",
@@ -196,8 +247,12 @@ pub enum ProfileTarget {
         port: u16,
         database: String,
         user: String,
-        ssl: bool,
-        trust_cert: bool,
+        #[serde(default)]
+        transport_mode: PostgresTransportMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        insecure_exception: Option<PostgresInsecureException>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        trust_server_cert_acknowledged: bool,
     },
     Mssql {
         host: String,
@@ -206,6 +261,96 @@ pub enum ProfileTarget {
         user: String,
         trust_cert: bool,
     },
+}
+
+impl ProfileTarget {
+    pub fn postgres(
+        host: impl Into<String>,
+        port: u16,
+        database: impl Into<String>,
+        user: impl Into<String>,
+        transport_mode: PostgresTransportMode,
+    ) -> Self {
+        Self::Postgres {
+            host: host.into(),
+            port,
+            database: database.into(),
+            user: user.into(),
+            transport_mode,
+            insecure_exception: None,
+            trust_server_cert_acknowledged: false,
+        }
+    }
+
+    pub fn with_insecure_exception(mut self, exception: PostgresInsecureException) -> Self {
+        if let Self::Postgres {
+            transport_mode,
+            insecure_exception,
+            trust_server_cert_acknowledged,
+            ..
+        } = &mut self
+        {
+            *transport_mode = PostgresTransportMode::InsecurePlaintext;
+            *insecure_exception = Some(exception);
+            *trust_server_cert_acknowledged = false;
+        }
+        self
+    }
+
+    pub fn with_trust_server_cert_acknowledged(mut self) -> Self {
+        if let Self::Postgres {
+            transport_mode,
+            insecure_exception,
+            trust_server_cert_acknowledged,
+            ..
+        } = &mut self
+        {
+            *transport_mode = PostgresTransportMode::EncryptedTrustServerCert;
+            *insecure_exception = None;
+            *trust_server_cert_acknowledged = true;
+        }
+        self
+    }
+
+    pub fn postgres_transport_authorized(&self) -> bool {
+        match self {
+            Self::Postgres {
+                host,
+                port,
+                database,
+                user,
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+            } => postgres_transport_is_authorized(
+                *transport_mode,
+                host,
+                *port,
+                user,
+                database,
+                insecure_exception.as_ref(),
+                *trust_server_cert_acknowledged,
+            ),
+            Self::Sqlite { .. } | Self::Mssql { .. } => true,
+        }
+    }
+}
+
+pub fn postgres_transport_is_authorized(
+    transport_mode: PostgresTransportMode,
+    host: &str,
+    port: u16,
+    user: &str,
+    database: &str,
+    insecure_exception: Option<&PostgresInsecureException>,
+    trust_server_cert_acknowledged: bool,
+) -> bool {
+    match transport_mode {
+        PostgresTransportMode::VerifyFull => true,
+        PostgresTransportMode::EncryptedTrustServerCert => trust_server_cert_acknowledged,
+        PostgresTransportMode::InsecurePlaintext => insecure_exception
+            .is_some_and(|exception| exception.matches(host, port, user, database)),
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -246,6 +391,8 @@ pub struct ProfileCreateRequest {
     pub name: String,
     pub target: ProfileTarget,
     pub credential: Option<CredentialInput>,
+    #[serde(default)]
+    pub transport_challenge_id: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -255,6 +402,8 @@ pub struct ProfileUpdateRequest {
     pub name: String,
     pub target: ProfileTarget,
     pub replacement_credential: Option<CredentialInput>,
+    #[serde(default)]
+    pub transport_challenge_id: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -267,6 +416,8 @@ pub enum TestConnectionRequest {
     Ephemeral {
         target: ProfileTarget,
         credential: Option<CredentialInput>,
+        #[serde(default)]
+        transport_challenge_id: Option<String>,
     },
     Saved {
         descriptor_id: DescriptorId,
@@ -360,7 +511,7 @@ pub struct TableInfo {
     pub kind: DatabaseObjectKind,
 }
 
-#[derive(serde::Serialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct ColumnInfo {
     pub name: String,
     /// Declared column type (may be empty for untyped columns).
@@ -434,6 +585,7 @@ pub enum DatabaseOperationalErrorCode {
     SqlitePathUnreadable,
     SqlitePathInvalid,
     SqliteOpenFailed,
+    PostgresTransportRejected,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -464,6 +616,24 @@ impl DatabaseOperationalError {
             DatabaseOperationalErrorCode::ConnectionFailed,
             "database connection failed",
         )
+    }
+
+    fn postgres_transport_rejected() -> Self {
+        Self::new(
+            DatabaseOperationalErrorCode::PostgresTransportRejected,
+            "PostgreSQL transport requires an explicit acknowledged exception",
+        )
+        .with_database_error(DatabaseError {
+            engine: DatabaseErrorEngine::Yuzora,
+            message: "PostgreSQL transport requires an explicit acknowledged exception".to_string(),
+            code: Some("postgresTransportRejected".to_string()),
+            position: None,
+            detail: None,
+            hint: Some(
+                "Confirm the per-profile exception for this host, user, and database".to_string(),
+            ),
+            retryability: Retryability::NotRetryable,
+        })
     }
 }
 
@@ -742,6 +912,8 @@ pub struct ResultPage {
     pub lifecycle: ResultSessionLifecycle,
     #[serde(default)]
     pub result_limit_reached: bool,
+    #[serde(default)]
+    pub value_too_large: bool,
 }
 
 impl QueryRun {
@@ -835,9 +1007,12 @@ pub enum DbOpenConfig {
         database: String,
         user: String,
         password: SecretString,
-        ssl: bool,
         #[serde(default)]
-        trust_cert: bool,
+        transport_mode: PostgresTransportMode,
+        #[serde(default)]
+        insecure_exception: Option<PostgresInsecureException>,
+        #[serde(default)]
+        trust_server_cert_acknowledged: bool,
     },
     Mssql {
         host: String,
@@ -928,6 +1103,101 @@ fn sqlite_worker_error(message: &'static str) -> DatabaseError {
 /// One SQLite value → tagged, lossless wire value. Integers and floating-point
 /// values cross the JavaScript boundary as decimal strings; BLOB bytes use hex.
 /// SQLite TEXT with invalid UTF-8 is a hard decode error, never a lossy string.
+fn sqlite_raw_len(value: ValueRef<'_>) -> usize {
+    match value {
+        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => 0,
+        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => bytes.len(),
+    }
+}
+
+fn sqlite_retained_len(value: ValueRef<'_>) -> usize {
+    match value {
+        ValueRef::Null => 0,
+        ValueRef::Integer(_) | ValueRef::Real(_) => 32,
+        ValueRef::Text(bytes) => bytes.len(),
+        ValueRef::Blob(bytes) => bytes.len().saturating_mul(2),
+    }
+}
+
+fn convert_sqlite_row(
+    row: &rusqlite::Row<'_>,
+    column_count: usize,
+    budget: RemainingBudget,
+) -> Result<Result<Vec<DbValue>, ResultLimitKind>, DatabaseError> {
+    let mut values = Vec::with_capacity(column_count);
+    let mut row_used = values
+        .capacity()
+        .saturating_mul(std::mem::size_of::<DbValue>());
+    for index in 0..column_count {
+        let value_ref = row
+            .get_ref(index)
+            .map_err(|error| sqlite_database_error(&error))?;
+        let raw = sqlite_raw_len(value_ref);
+        if raw > budget.field {
+            return Ok(Err(ResultLimitKind::Field));
+        }
+        let retained = sqlite_retained_len(value_ref);
+        if row_used.saturating_add(retained) > budget.row {
+            return Ok(Err(ResultLimitKind::Row));
+        }
+        if row_used.saturating_add(retained) > budget.session {
+            return Ok(Err(ResultLimitKind::Session));
+        }
+        if row_used.saturating_add(retained) > budget.process {
+            return Ok(Err(ResultLimitKind::Process));
+        }
+        values.push(value_to_db_value(value_ref)?);
+        row_used = row_used.saturating_add(retained);
+    }
+    Ok(Ok(values))
+}
+
+fn sqlite_push_decoded_row(
+    conn: &Connection,
+    row: &rusqlite::Row<'_>,
+    column_count: usize,
+    sessions: &ResultSessionState,
+    session_owner: &ResultSessionOwner,
+) -> Result<PushRowOutcome, DatabaseError> {
+    let budget = sessions
+        .lock()
+        .map_err(result_session_database_error)?
+        .remaining_budget(session_owner)
+        .map_err(result_session_database_error)?;
+    match convert_sqlite_row(row, column_count, budget)? {
+        Ok(values) => sessions
+            .lock()
+            .map_err(result_session_database_error)?
+            .push_row(session_owner, values)
+            .map_err(result_session_database_error),
+        Err(kind) => apply_sqlite_limit(conn, sessions, session_owner, kind),
+    }
+}
+
+fn apply_sqlite_limit(
+    conn: &Connection,
+    sessions: &ResultSessionState,
+    session_owner: &ResultSessionOwner,
+    kind: ResultLimitKind,
+) -> Result<PushRowOutcome, DatabaseError> {
+    conn.get_interrupt_handle().interrupt();
+    let mut registry = sessions.lock().map_err(result_session_database_error)?;
+    match kind {
+        ResultLimitKind::Field | ResultLimitKind::Row => {
+            registry
+                .mark_value_too_large(session_owner)
+                .map_err(result_session_database_error)?;
+            Ok(PushRowOutcome::ValueTooLarge)
+        }
+        ResultLimitKind::Session | ResultLimitKind::Process => {
+            registry
+                .mark_result_limit_reached(session_owner)
+                .map_err(result_session_database_error)?;
+            Ok(PushRowOutcome::LimitReached)
+        }
+    }
+}
+
 fn value_to_db_value(v: ValueRef<'_>) -> Result<DbValue, DatabaseError> {
     match v {
         ValueRef::Null => Ok(DbValue::Null),
@@ -1759,6 +2029,22 @@ fn pg_timeout_failure() -> PgConnectFailure {
     }
 }
 
+fn pg_transport_policy_failure() -> PgConnectFailure {
+    PgConnectFailure {
+        error: DatabaseError {
+            engine: DatabaseErrorEngine::Yuzora,
+            message: "PostgreSQL transport requires an explicit acknowledged exception".to_string(),
+            code: Some("postgresTransportRejected".to_string()),
+            position: None,
+            detail: None,
+            hint: Some(
+                "Confirm the per-profile exception for this host, user, and database".to_string(),
+            ),
+            retryability: Retryability::NotRetryable,
+        },
+    }
+}
+
 fn pg_tls_configuration_failure(message: String, secret: &str) -> PgConnectFailure {
     PgConnectFailure {
         error: DatabaseError {
@@ -1777,16 +2063,34 @@ fn pg_connect_failure_database_error(failure: &PgConnectFailure) -> DatabaseErro
     failure.error.clone()
 }
 
+struct LivePg {
+    client: tokio_postgres::Client,
+    cancel: PostgresCancelResource,
+}
+
 async fn pg_open_with_timeout(
     host: String,
     port: u16,
     database: String,
     user: String,
     password: SecretString,
-    ssl: bool,
-    trust_cert: bool,
+    transport_mode: PostgresTransportMode,
+    insecure_exception: Option<PostgresInsecureException>,
+    trust_server_cert_acknowledged: bool,
     connect_timeout: Duration,
-) -> Result<DbHandle, PgConnectFailure> {
+) -> Result<LivePg, PgConnectFailure> {
+    if !postgres_transport_is_authorized(
+        transport_mode,
+        &host,
+        port,
+        &user,
+        &database,
+        insecure_exception.as_ref(),
+        trust_server_cert_acknowledged,
+    ) {
+        return Err(pg_transport_policy_failure());
+    }
+
     let mut cfg = tokio_postgres::Config::new();
     cfg.host(&host)
         .port(port)
@@ -1794,9 +2098,15 @@ async fn pg_open_with_timeout(
         .user(&user)
         .password(password.expose_secret());
 
-    // The Connection future's concrete type differs per TLS choice, but it is
+    // Password is attached only after the transport policy is accepted. The
+    // Connection future's concrete type differs per TLS choice, but it is
     // consumed (spawned) inside each branch so both yield the same (Client, task).
-    let (client, conn_task, cancel) = if ssl {
+    let use_tls = !matches!(transport_mode, PostgresTransportMode::InsecurePlaintext);
+    let trust_cert = matches!(
+        transport_mode,
+        PostgresTransportMode::EncryptedTrustServerCert
+    );
+    let connected = if use_tls {
         let tls = pg_tls(trust_cert)
             .map_err(|error| pg_tls_configuration_failure(error, password.expose_secret()))?;
         let (client, connection) = tokio::time::timeout(connect_timeout, cfg.connect(tls.clone()))
@@ -1804,12 +2114,12 @@ async fn pg_open_with_timeout(
             .map_err(|_| pg_timeout_failure())?
             .map_err(|error| pg_driver_connect_failure(error, password.expose_secret()))?;
         let cancel = PostgresCancelResource::rustls(&client, tls);
-        let task = tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             if let Err(e) = connection.await {
                 eprintln!("postgres connection error: {e}");
             }
         });
-        (client, task, cancel)
+        LivePg { client, cancel }
     } else {
         let (client, connection) =
             tokio::time::timeout(connect_timeout, cfg.connect(tokio_postgres::NoTls))
@@ -1817,18 +2127,14 @@ async fn pg_open_with_timeout(
                 .map_err(|_| pg_timeout_failure())?
                 .map_err(|error| pg_driver_connect_failure(error, password.expose_secret()))?;
         let cancel = PostgresCancelResource::no_tls(&client);
-        let task = tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             if let Err(e) = connection.await {
                 eprintln!("postgres connection error: {e}");
             }
         });
-        (client, task, cancel)
+        LivePg { client, cancel }
     };
-    Ok(DbHandle::Postgres(PgConn {
-        client,
-        conn_task,
-        cancel,
-    }))
+    Ok(connected)
 }
 
 async fn pg_open(
@@ -1837,17 +2143,19 @@ async fn pg_open(
     database: String,
     user: String,
     password: SecretString,
-    ssl: bool,
-    trust_cert: bool,
-) -> Result<DbHandle, PgConnectFailure> {
+    transport_mode: PostgresTransportMode,
+    insecure_exception: Option<PostgresInsecureException>,
+    trust_server_cert_acknowledged: bool,
+) -> Result<LivePg, PgConnectFailure> {
     pg_open_with_timeout(
         host,
         port,
         database,
         user,
         password,
-        ssl,
-        trust_cert,
+        transport_mode,
+        insecure_exception,
+        trust_server_cert_acknowledged,
         POSTGRES_CONNECT_TIMEOUT,
     )
     .await
@@ -1928,70 +2236,6 @@ async fn pg_table_columns(
             }
         })
         .collect())
-}
-
-#[cfg(test)]
-async fn pg_run_query(
-    client: &tokio_postgres::Client,
-    sql: &str,
-    max_rows: usize,
-) -> Result<QueryResult, DatabaseError> {
-    let stmt = client
-        .prepare(sql)
-        .await
-        .map_err(|error| postgres_database_error(&error))?;
-    // A statement with no result columns (INSERT/UPDATE/DDL) reports affected rows.
-    if stmt.columns().is_empty() {
-        let affected = client
-            .execute(&stmt, &[])
-            .await
-            .map_err(|error| postgres_database_error(&error))?;
-        return Ok(QueryResult::Execute {
-            affected_rows: Some(affected.to_string()),
-            effect_outcome: effect_outcome_from_completion(EngineCompletion::Unknown),
-        });
-    }
-    let columns: Vec<String> = stmt
-        .columns()
-        .iter()
-        .map(|c| c.name().to_string())
-        .collect();
-    let col_types: Vec<PgType> = stmt.columns().iter().map(|c| c.type_().clone()).collect();
-
-    // Stream rows so an unbounded SELECT stops at the cap instead of buffering the
-    // whole table (mirrors the SQLite path). An empty typed params list satisfies
-    // query_raw's BorrowToSql/ExactSizeIterator bounds.
-    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
-    let row_stream = client
-        .query_raw(&stmt, params)
-        .await
-        .map_err(|error| postgres_database_error(&error))?;
-    futures_util::pin_mut!(row_stream);
-    let mut out: Vec<Vec<DbValue>> = Vec::new();
-    let mut truncated = false;
-    while let Some(row) = row_stream
-        .try_next()
-        .await
-        .map_err(|error| postgres_database_error(&error))?
-    {
-        if out.len() >= max_rows {
-            truncated = true;
-            continue;
-        }
-        let mut vals = Vec::with_capacity(columns.len());
-        for (i, ty) in col_types.iter().enumerate() {
-            vals.push(pg_value_to_db_value(&row, i, ty)?);
-        }
-        out.push(vals);
-    }
-    let affected_rows = row_stream.rows_affected().map(|rows| rows.to_string());
-    Ok(QueryResult::Select {
-        columns,
-        rows: out,
-        truncated,
-        affected_rows,
-        effect_outcome: effect_outcome_from_completion(EngineCompletion::Unknown),
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2182,6 +2426,7 @@ fn mssql_database_error(error: &MssqlInternalError) -> DatabaseError {
     }
 }
 
+#[cfg(test)]
 fn classify_mssql_live_error(
     error: &MssqlInternalError,
     fallback_code: DatabaseOperationalErrorCode,
@@ -2482,6 +2727,558 @@ async fn mssql_run_query(
         .map_err(MssqlInternalError::Value)
 }
 
+enum LiveNetwork {
+    Postgres(LivePg),
+    Mssql(MssqlClient),
+}
+
+struct PgRawLen(usize);
+
+impl<'a> tokio_postgres::types::FromSql<'a> for PgRawLen {
+    fn from_sql(
+        _ty: &PgType,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Self(raw.len()))
+    }
+
+    fn from_sql_null(_ty: &PgType) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Self(0))
+    }
+
+    fn accepts(_ty: &PgType) -> bool {
+        true
+    }
+}
+
+fn mssql_raw_len(data: &ColumnData<'static>) -> usize {
+    match data {
+        ColumnData::String(Some(value)) => value.len(),
+        ColumnData::Binary(Some(value)) => value.len(),
+        ColumnData::Xml(Some(value)) => value.to_string().len(),
+        _ => 0,
+    }
+}
+
+fn helper_decode_limit(kind: ResultLimitKind) -> WorkerResponse {
+    match kind {
+        ResultLimitKind::Field | ResultLimitKind::Row => WorkerResponse::ValueTooLarge,
+        ResultLimitKind::Session | ResultLimitKind::Process => WorkerResponse::ValueTooLarge,
+    }
+}
+
+fn classify_helper_raw(raw_len: usize, row_used: usize) -> Option<ResultLimitKind> {
+    if raw_len > DEFAULT_FIELD_BYTES {
+        Some(ResultLimitKind::Field)
+    } else if row_used.saturating_add(raw_len) > DEFAULT_ROW_BYTES {
+        Some(ResultLimitKind::Row)
+    } else {
+        None
+    }
+}
+
+async fn helper_pg_query(
+    live: &LivePg,
+    sql: &str,
+    stdout: &mut tokio::io::Stdout,
+    stdin: &mut tokio::io::Stdin,
+) -> Result<(), DatabaseError> {
+    let statement = live
+        .client
+        .prepare(sql)
+        .await
+        .map_err(|error| postgres_database_error(&error))?;
+    if statement.columns().is_empty() {
+        let affected = live
+            .client
+            .execute(&statement, &[])
+            .await
+            .map_err(|error| postgres_database_error(&error))?;
+        return write_frame(
+            stdout,
+            &WorkerResponse::Execute {
+                affected_rows: Some(affected.to_string()),
+            },
+        )
+        .await;
+    }
+    let columns: Vec<String> = statement
+        .columns()
+        .iter()
+        .map(|column| column.name().to_string())
+        .collect();
+    let column_types: Vec<PgType> = statement
+        .columns()
+        .iter()
+        .map(|column| column.type_().clone())
+        .collect();
+    write_frame(stdout, &WorkerResponse::RowMeta { columns }).await?;
+    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+    let stream = tokio::select! {
+        biased;
+        request = read_request(stdin) => {
+            match request? {
+                WorkerRequest::CancelQuery | WorkerRequest::Close => {
+                    write_frame(stdout, &WorkerResponse::Cancelled).await?;
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        live.cancel.cancel(),
+                    )
+                    .await;
+                    return Ok(());
+                }
+                WorkerRequest::StopStreaming => {
+                    write_frame(
+                        stdout,
+                        &WorkerResponse::End {
+                            affected_rows: None,
+                        },
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(worker_error(
+                        "helperProtocol",
+                        "unexpected request before PostgreSQL query stream started",
+                    ));
+                }
+            }
+        }
+        stream = live.client.query_raw(&statement, params) => {
+            stream.map_err(|error| postgres_database_error(&error))?
+        }
+    };
+    let (row_tx, mut row_rx) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        futures_util::pin_mut!(stream);
+        loop {
+            match stream.try_next().await {
+                Ok(Some(row)) => {
+                    if row_tx.send(Ok(Some(row))).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = row_tx.send(Ok(None));
+                    break;
+                }
+                Err(error) => {
+                    let _ = row_tx.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+    let mut stop = false;
+    loop {
+        tokio::select! {
+            biased;
+            request = read_request(stdin) => {
+                match request? {
+                    WorkerRequest::StopStreaming => {
+                        let _ = live.cancel.cancel().await;
+                        stop = true;
+                    }
+                    WorkerRequest::CancelQuery => {
+                        write_frame(stdout, &WorkerResponse::Cancelled).await?;
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            live.cancel.cancel(),
+                        )
+                        .await;
+                        drop(row_rx);
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            reader,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    WorkerRequest::Close => {
+                        let _ = live.cancel.cancel().await;
+                        drop(row_rx);
+                        let _ = reader.await;
+                        return write_frame(stdout, &WorkerResponse::Closed).await;
+                    }
+                    _ => {}
+                }
+            }
+            next = row_rx.recv(), if !stop => {
+                match next {
+                    None => {
+                        return write_frame(
+                            stdout,
+                            &WorkerResponse::End {
+                                affected_rows: None,
+                            },
+                        )
+                        .await;
+                    }
+                    Some(Err(error)) => {
+                        return Err(postgres_database_error(&error));
+                    }
+                    Some(Ok(None)) => {
+                        return write_frame(
+                            stdout,
+                            &WorkerResponse::End {
+                                affected_rows: None,
+                            },
+                        )
+                        .await;
+                    }
+                    Some(Ok(Some(row))) => {
+                        if row.raw_size_bytes() > DEFAULT_ROW_BYTES {
+                            let _ = live.cancel.cancel().await;
+                            return write_frame(stdout, &WorkerResponse::ValueTooLarge).await;
+                        }
+                        let mut values = Vec::with_capacity(column_types.len());
+                        let mut row_used = 0;
+                        for (index, column_type) in column_types.iter().enumerate() {
+                            let raw = row
+                                .try_get::<_, Option<PgRawLen>>(index)
+                                .map_err(|error| {
+                                    value_decode_error(
+                                        DatabaseErrorEngine::Postgres,
+                                        format!("PostgreSQL column {index}"),
+                                        error.to_string(),
+                                    )
+                                })?
+                                .map_or(0, |value| value.0);
+                            if let Some(kind) = classify_helper_raw(raw, row_used) {
+                                let _ = live.cancel.cancel().await;
+                                return write_frame(stdout, &helper_decode_limit(kind)).await;
+                            }
+                            values.push(pg_value_to_db_value(&row, index, column_type)?);
+                            row_used = row_used.saturating_add(raw);
+                        }
+                        write_frame(stdout, &WorkerResponse::Row { values }).await?;
+                    }
+                }
+            }
+        }
+        if stop {
+            while row_rx.recv().await.is_some() {}
+            let _ = reader.await;
+            return write_frame(
+                stdout,
+                &WorkerResponse::End {
+                    affected_rows: None,
+                },
+            )
+            .await;
+        }
+    }
+}
+
+async fn helper_mssql_query(
+    client: &mut MssqlClient,
+    sql: &str,
+    stdout: &mut tokio::io::Stdout,
+    stdin: &mut tokio::io::Stdin,
+    terminate_on_cancel: &mut bool,
+) -> Result<(), DatabaseError> {
+    let mut stream = client
+        .simple_query(sql)
+        .await
+        .map_err(|error| mssql_database_error(&MssqlInternalError::Driver(error)))?;
+    let mut columns_sent = false;
+    let mut stop = false;
+    loop {
+        tokio::select! {
+            biased;
+            request = read_request(stdin) => {
+                match request? {
+                    WorkerRequest::CancelQuery => {
+                        *terminate_on_cancel = true;
+                        return write_frame(stdout, &WorkerResponse::Cancelled).await;
+                    }
+                    WorkerRequest::StopStreaming => {
+                        stop = true;
+                    }
+                    WorkerRequest::Close => {
+                        *terminate_on_cancel = true;
+                        return write_frame(stdout, &WorkerResponse::Closed).await;
+                    }
+                    _ => {}
+                }
+            }
+            item = stream.try_next() => {
+                let item = item.map_err(|error| {
+                    mssql_database_error(&MssqlInternalError::Driver(error))
+                })?;
+                let Some(item) = item else {
+                    return write_frame(
+                        stdout,
+                        &WorkerResponse::End {
+                            affected_rows: aggregate_mssql_affected_rows(stream.rows_affected())?,
+                        },
+                    )
+                    .await;
+                };
+                match item {
+                    QueryItem::Metadata(metadata) => {
+                        if !columns_sent {
+                            write_frame(
+                                stdout,
+                                &WorkerResponse::RowMeta {
+                                    columns: metadata
+                                        .columns()
+                                        .iter()
+                                        .map(|column| column.name().to_string())
+                                        .collect(),
+                                },
+                            )
+                            .await?;
+                            columns_sent = true;
+                        }
+                    }
+                    QueryItem::Row(row) => {
+                        if stop {
+                            continue;
+                        }
+                        let mut values = Vec::new();
+                        let mut row_used = 0;
+                        for cell in row.into_iter() {
+                            let raw = mssql_raw_len(&cell);
+                            if let Some(kind) = classify_helper_raw(raw, row_used) {
+                                return write_frame(stdout, &helper_decode_limit(kind)).await;
+                            }
+                            values.push(mssql_value_to_db_value(&cell)?);
+                            row_used = row_used.saturating_add(raw);
+                        }
+                        write_frame(stdout, &WorkerResponse::Row { values }).await?;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) async fn query_worker_loop() -> Result<(), DatabaseError> {
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let connect = read_request(&mut stdin).await?;
+    let mut engine = match connect {
+        WorkerRequest::ConnectPostgres {
+            host,
+            port,
+            database,
+            user,
+            mut password,
+            transport_mode,
+            insecure_exception,
+            trust_server_cert_acknowledged,
+        } => {
+            let secret = SecretString::from(password.clone());
+            password.zeroize();
+            match pg_open(
+                host,
+                port,
+                database,
+                user,
+                secret,
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+            )
+            .await
+            {
+                Ok(live) => {
+                    write_frame(
+                        &mut stdout,
+                        &WorkerResponse::Ready {
+                            engine: "postgres".into(),
+                        },
+                    )
+                    .await?;
+                    LiveNetwork::Postgres(live)
+                }
+                Err(failure) => {
+                    write_frame(
+                        &mut stdout,
+                        &WorkerResponse::Error {
+                            error: pg_connect_failure_database_error(&failure),
+                        },
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+        }
+        WorkerRequest::ConnectMssql {
+            host,
+            port,
+            database,
+            user,
+            mut password,
+            trust_cert,
+        } => {
+            let secret = SecretString::from(password.clone());
+            password.zeroize();
+            match mssql_connect(host, port, database, user, secret, trust_cert).await {
+                Ok(client) => {
+                    write_frame(
+                        &mut stdout,
+                        &WorkerResponse::Ready {
+                            engine: "mssql".into(),
+                        },
+                    )
+                    .await?;
+                    LiveNetwork::Mssql(client)
+                }
+                Err(error) => {
+                    write_frame(
+                        &mut stdout,
+                        &WorkerResponse::Error {
+                            error: mssql_database_error(&error),
+                        },
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+        }
+        _ => {
+            write_frame(
+                &mut stdout,
+                &WorkerResponse::Error {
+                    error: worker_error("helperProtocol", "helper expected a connect request"),
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let mut pending_cancel = false;
+    loop {
+        let request = match read_request(&mut stdin).await {
+            Ok(request) => request,
+            Err(_) => break,
+        };
+        match request {
+            WorkerRequest::Probe => {
+                let value = match &mut engine {
+                    LiveNetwork::Postgres(live) => live
+                        .client
+                        .query_one("SELECT version()", &[])
+                        .await
+                        .ok()
+                        .map(|row| row.get::<_, String>(0)),
+                    LiveNetwork::Mssql(client) => {
+                        match mssql_run_query(client, "SELECT @@VERSION", 1).await {
+                            Ok(QueryResult::Select { rows, .. }) => rows
+                                .first()
+                                .and_then(|row| row.first())
+                                .and_then(|value| match value {
+                                    DbValue::Text { value } => Some(value.clone()),
+                                    _ => None,
+                                }),
+                            _ => None,
+                        }
+                    }
+                };
+                write_frame(&mut stdout, &WorkerResponse::Version { value }).await?;
+            }
+            WorkerRequest::ListTables => {
+                let result = match &mut engine {
+                    LiveNetwork::Postgres(live) => pg_list_tables(&live.client).await,
+                    LiveNetwork::Mssql(client) => mssql_list_tables(client)
+                        .await
+                        .map_err(|error| mssql_database_error(&error)),
+                };
+                match result {
+                    Ok(tables) => {
+                        write_frame(&mut stdout, &WorkerResponse::Tables { tables }).await?;
+                    }
+                    Err(error) => {
+                        write_frame(&mut stdout, &WorkerResponse::Error { error }).await?;
+                    }
+                }
+            }
+            WorkerRequest::TableColumns {
+                catalog,
+                schema,
+                name,
+                object_kind,
+            } => {
+                let table = TableInfo {
+                    catalog,
+                    schema,
+                    name,
+                    kind: object_kind,
+                };
+                let result = match &mut engine {
+                    LiveNetwork::Postgres(live) => pg_table_columns(&live.client, &table).await,
+                    LiveNetwork::Mssql(client) => mssql_table_columns(client, &table)
+                        .await
+                        .map_err(|error| mssql_database_error(&error)),
+                };
+                match result {
+                    Ok(columns) => {
+                        write_frame(&mut stdout, &WorkerResponse::Columns { columns }).await?;
+                    }
+                    Err(error) => {
+                        write_frame(&mut stdout, &WorkerResponse::Error { error }).await?;
+                    }
+                }
+            }
+            WorkerRequest::Query { sql } => {
+                if pending_cancel {
+                    pending_cancel = false;
+                    write_frame(&mut stdout, &WorkerResponse::Cancelled).await?;
+                    continue;
+                }
+                let result = match &mut engine {
+                    LiveNetwork::Postgres(live) => {
+                        helper_pg_query(live, &sql, &mut stdout, &mut stdin).await
+                    }
+                    LiveNetwork::Mssql(client) => {
+                        let mut terminate = false;
+                        let result = helper_mssql_query(
+                            client,
+                            &sql,
+                            &mut stdout,
+                            &mut stdin,
+                            &mut terminate,
+                        )
+                        .await;
+                        if terminate {
+                            return result;
+                        }
+                        result
+                    }
+                };
+                if let Err(error) = result {
+                    write_frame(&mut stdout, &WorkerResponse::Error { error }).await?;
+                }
+            }
+            WorkerRequest::StopStreaming => {}
+            WorkerRequest::CancelQuery => {
+                pending_cancel = true;
+            }
+            WorkerRequest::Close => {
+                write_frame(&mut stdout, &WorkerResponse::Closed).await?;
+                break;
+            }
+            WorkerRequest::ConnectPostgres { .. } | WorkerRequest::ConnectMssql { .. } => {
+                write_frame(
+                    &mut stdout,
+                    &WorkerResponse::Error {
+                        error: worker_error(
+                            "helperProtocol",
+                            "helper connection is already established",
+                        ),
+                    },
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Registry + commands
 // ---------------------------------------------------------------------------
@@ -2639,27 +3436,42 @@ pub(crate) async fn open_unregistered(
             database,
             user,
             password,
-            ssl,
-            trust_cert,
+            transport_mode,
+            insecure_exception,
+            trust_server_cert_acknowledged,
         } => {
             let (lh, lu, ld) = (host.clone(), user.clone(), database.clone());
-            pg_open(host, port, database, user, password, ssl, trust_cert)
-                .await
-                .map_err(|failure| {
-                    let diagnostic = pg_connect_failure_database_error(&failure);
-                    let diagnostic_code = diagnostic.code.as_deref().unwrap_or("connectionFailed");
-                    crate::logging::write_global(crate::logging::connect_failure_event(
-                        "db",
-                        &lh,
-                        port,
-                        &lu,
-                        &format!(
-                            "database={ld}: code={diagnostic_code}: {}",
-                            diagnostic.message
-                        ),
-                    ));
+            let worker = NetworkQueryWorker::spawn_postgres(
+                host,
+                port,
+                database,
+                user,
+                password,
+                transport_mode,
+                insecure_exception,
+                trust_server_cert_acknowledged,
+            )
+            .await
+            .map_err(|error| {
+                let diagnostic = error;
+                let diagnostic_code = diagnostic.code.as_deref().unwrap_or("connectionFailed");
+                crate::logging::write_global(crate::logging::connect_failure_event(
+                    "db",
+                    &lh,
+                    port,
+                    &lu,
+                    &format!(
+                        "database={ld}: code={diagnostic_code}: {}",
+                        diagnostic.message
+                    ),
+                ));
+                if diagnostic_code == "postgresTransportRejected" {
+                    DatabaseOperationalError::postgres_transport_rejected()
+                } else {
                     DatabaseOperationalError::connection_failed().with_database_error(diagnostic)
-                })?
+                }
+            })?;
+            DbHandle::Postgres(PgConn { worker })
         }
         DbOpenConfig::Mssql {
             host,
@@ -2670,19 +3482,20 @@ pub(crate) async fn open_unregistered(
             trust_cert,
         } => {
             let (lh, lu, ld) = (host.clone(), user.clone(), database.clone());
-            let client = mssql_connect(host, port, database, user, password, trust_cert)
-                .await
-                .map_err(|_| {
-                    crate::logging::write_global(crate::logging::connect_failure_event(
-                        "db",
-                        &lh,
-                        port,
-                        &lu,
-                        &format!("database={ld}: database connection failed"),
-                    ));
-                    DatabaseOperationalError::connection_failed()
-                })?;
-            DbHandle::Mssql(AsyncMutex::new(Some(client)))
+            let worker =
+                NetworkQueryWorker::spawn_mssql(host, port, database, user, password, trust_cert)
+                    .await
+                    .map_err(|error| {
+                        crate::logging::write_global(crate::logging::connect_failure_event(
+                            "db",
+                            &lh,
+                            port,
+                            &lu,
+                            &format!("database={ld}: database connection failed"),
+                        ));
+                        DatabaseOperationalError::connection_failed().with_database_error(error)
+                    })?;
+            DbHandle::Mssql(worker)
         }
     };
     Ok(handle)
@@ -2754,7 +3567,9 @@ fn operation_failure(
     code: DatabaseOperationalErrorCode,
     message: &'static str,
 ) -> DatabaseOperationalError {
-    if matches!(actor.handle(), DbHandle::Postgres(postgres) if postgres.client.is_closed()) {
+    if matches!(actor.handle(), DbHandle::Postgres(postgres) if postgres.is_closed())
+        || matches!(actor.handle(), DbHandle::Mssql(worker) if worker.is_closed())
+    {
         DatabaseOperationalError::new(
             DatabaseOperationalErrorCode::ServerDisconnected,
             "database server disconnected",
@@ -3064,36 +3879,15 @@ pub(crate) async fn test_unregistered(
         })
         .await
         .map_err(|_| DatabaseOperationalError::connection_failed())?,
-        DbHandle::Postgres(postgres) => {
-            let result = postgres
-                .client
-                .query_one("SELECT version()", &[])
-                .await
-                .map(|row| row.get::<_, String>(0))
-                .map(Some)
-                .map_err(|_| DatabaseOperationalError::connection_failed());
-            postgres.conn_task.abort();
-            result
-        }
-        DbHandle::Mssql(client) => {
-            let mut client = client.lock().await;
-            let client = client
-                .as_mut()
-                .ok_or_else(DatabaseOperationalError::connection_failed)?;
-            match mssql_run_query(client, "SELECT @@VERSION", 1)
-                .await
-                .map_err(|_| DatabaseOperationalError::connection_failed())?
-            {
-                QueryResult::Select { rows, .. } => Ok(rows
-                    .first()
-                    .and_then(|row| row.first())
-                    .and_then(|value| match value {
-                        DbValue::Text { value } => Some(value.clone()),
-                        _ => None,
-                    })),
-                QueryResult::Execute { .. } => Ok(None),
-            }
-        }
+        DbHandle::Postgres(postgres) => postgres
+            .worker()
+            .probe_version()
+            .await
+            .map_err(|_| DatabaseOperationalError::connection_failed()),
+        DbHandle::Mssql(worker) => worker
+            .probe_version()
+            .await
+            .map_err(|_| DatabaseOperationalError::connection_failed()),
     }
 }
 
@@ -3122,7 +3916,7 @@ pub(crate) async fn list_tables_in_state(
                     error,
                 )
             }),
-        DbHandle::Postgres(pg) => pg_list_tables(&pg.client).await.map_err(|error| {
+        DbHandle::Postgres(pg) => pg.worker().list_tables().await.map_err(|error| {
             operation_failure_with_database_error(
                 &actor,
                 DatabaseOperationalErrorCode::MetadataFailed,
@@ -3130,22 +3924,14 @@ pub(crate) async fn list_tables_in_state(
                 error,
             )
         }),
-        DbHandle::Mssql(m) => {
-            let mut client = m.lock().await;
-            match client.as_mut() {
-                Some(client) => mssql_list_tables(client).await.map_err(|error| {
-                    classify_mssql_live_error(
-                        &error,
-                        DatabaseOperationalErrorCode::MetadataFailed,
-                        "database metadata request failed",
-                    )
-                }),
-                None => Err(DatabaseOperationalError::new(
-                    DatabaseOperationalErrorCode::ServerDisconnected,
-                    "database server disconnected",
-                )),
-            }
-        }
+        DbHandle::Mssql(worker) => worker.list_tables().await.map_err(|error| {
+            operation_failure_with_database_error(
+                &actor,
+                DatabaseOperationalErrorCode::MetadataFailed,
+                "database metadata request failed",
+                error,
+            )
+        }),
     };
     actor.settle_metadata(&lease).map_err(actor_error)?;
     result.map_err(|error| cleanup_server_disconnect(state, &identity, error))
@@ -3181,7 +3967,7 @@ pub(crate) async fn table_columns_in_state(
                     )
                 })
         }
-        DbHandle::Postgres(pg) => pg_table_columns(&pg.client, &table).await.map_err(|error| {
+        DbHandle::Postgres(pg) => pg.worker().table_columns(&table).await.map_err(|error| {
             operation_failure_with_database_error(
                 &actor,
                 DatabaseOperationalErrorCode::MetadataFailed,
@@ -3189,22 +3975,14 @@ pub(crate) async fn table_columns_in_state(
                 error,
             )
         }),
-        DbHandle::Mssql(m) => {
-            let mut client = m.lock().await;
-            match client.as_mut() {
-                Some(client) => mssql_table_columns(client, &table).await.map_err(|error| {
-                    classify_mssql_live_error(
-                        &error,
-                        DatabaseOperationalErrorCode::MetadataFailed,
-                        "database metadata request failed",
-                    )
-                }),
-                None => Err(DatabaseOperationalError::new(
-                    DatabaseOperationalErrorCode::ServerDisconnected,
-                    "database server disconnected",
-                )),
-            }
-        }
+        DbHandle::Mssql(worker) => worker.table_columns(&table).await.map_err(|error| {
+            operation_failure_with_database_error(
+                &actor,
+                DatabaseOperationalErrorCode::MetadataFailed,
+                "database metadata request failed",
+                error,
+            )
+        }),
     };
     actor.settle_metadata(&lease).map_err(actor_error)?;
     result.map_err(|error| cleanup_server_disconnect(state, &identity, error))
@@ -3250,29 +4028,27 @@ pub(crate) async fn query_in_state(
                     )
                 })
         }
-        DbHandle::Postgres(pg) => pg_run_query(&pg.client, &sql, cap).await.map_err(|error| {
-            operation_failure_with_database_error(
-                &actor,
-                DatabaseOperationalErrorCode::QueryFailed,
-                "database query failed",
-                error,
-            )
-        }),
-        DbHandle::Mssql(m) => {
-            let mut client = m.lock().await;
-            match client.as_mut() {
-                Some(client) => mssql_run_query(client, &sql, cap).await.map_err(|error| {
-                    classify_mssql_live_error(
-                        &error,
+        DbHandle::Postgres(pg) => network_run_capped_query(pg.worker(), &sql, cap)
+            .await
+            .map_err(|error| {
+                operation_failure_with_database_error(
+                    &actor,
+                    DatabaseOperationalErrorCode::QueryFailed,
+                    "database query failed",
+                    error,
+                )
+            }),
+        DbHandle::Mssql(worker) => {
+            network_run_capped_query(worker, &sql, cap)
+                .await
+                .map_err(|error| {
+                    operation_failure_with_database_error(
+                        &actor,
                         DatabaseOperationalErrorCode::QueryFailed,
                         "database query failed",
+                        error,
                     )
-                }),
-                None => Err(DatabaseOperationalError::new(
-                    DatabaseOperationalErrorCode::ServerDisconnected,
-                    "database server disconnected",
-                )),
-            }
+                })
         }
     };
     actor.settle_execution(&lease).map_err(actor_error)?;
@@ -3408,19 +4184,11 @@ fn sqlite_run_materialized_unit(
         .map_err(|error| sqlite_database_error(&error))?;
     let mut limit_reached = false;
     while let Some(row) = rows.next().map_err(|error| sqlite_database_error(&error))? {
-        let values = (0..column_count)
-            .map(|index| {
-                row.get_ref(index)
-                    .map_err(|error| sqlite_database_error(&error))
-                    .and_then(value_to_db_value)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let outcome = sessions
-            .lock()
-            .map_err(result_session_database_error)?
-            .push_row(&session_owner, values)
-            .map_err(result_session_database_error)?;
-        if outcome == PushRowOutcome::LimitReached {
+        let outcome = sqlite_push_decoded_row(conn, row, column_count, sessions, &session_owner)?;
+        if matches!(
+            outcome,
+            PushRowOutcome::LimitReached | PushRowOutcome::ValueTooLarge
+        ) {
             // SQLite is pull-driven. Interrupting and then leaving this lexical
             // Rows scope stops the current unit without executing another unit.
             conn.get_interrupt_handle().interrupt();
@@ -3467,107 +4235,168 @@ fn sqlite_run_materialized_unit(
     Ok((result, effect_outcome, limit_reached))
 }
 
+#[cfg(test)]
+async fn network_run_capped_query(
+    worker: &NetworkQueryWorker,
+    sql: &str,
+    max_rows: usize,
+) -> Result<QueryResult, DatabaseError> {
+    match worker.start_query(sql).await? {
+        NetworkQueryStart::Execute { affected_rows } => Ok(QueryResult::Execute {
+            affected_rows,
+            effect_outcome: EffectOutcome::Unknown,
+        }),
+        NetworkQueryStart::Rows { columns } => {
+            let mut rows = Vec::new();
+            let mut truncated = false;
+            loop {
+                match worker.next_row().await? {
+                    NetworkRow::Value(values) => {
+                        if rows.len() >= max_rows {
+                            truncated = true;
+                            let _ = worker.stop_streaming().await;
+                            drain_helper_stream(worker).await;
+                            break;
+                        }
+                        rows.push(values);
+                    }
+                    NetworkRow::End { affected_rows } => {
+                        return Ok(QueryResult::Select {
+                            columns,
+                            rows,
+                            truncated,
+                            affected_rows,
+                            effect_outcome: EffectOutcome::Unknown,
+                        });
+                    }
+                    NetworkRow::ValueTooLarge => {
+                        return Err(crate::db_query_worker::value_too_large_error())
+                    }
+                    NetworkRow::Cancelled => return Err(cancelled_error()),
+                }
+            }
+            Ok(QueryResult::Select {
+                columns,
+                rows,
+                truncated,
+                affected_rows: None,
+                effect_outcome: EffectOutcome::Unknown,
+            })
+        }
+    }
+}
+
+async fn drain_helper_stream(worker: &NetworkQueryWorker) {
+    loop {
+        match worker.next_row().await {
+            Ok(NetworkRow::Value(_)) => {}
+            Ok(NetworkRow::End { .. })
+            | Ok(NetworkRow::ValueTooLarge)
+            | Ok(NetworkRow::Cancelled)
+            | Err(_) => break,
+        }
+    }
+}
+
+async fn network_run_materialized_unit(
+    worker: &NetworkQueryWorker,
+    sql: &str,
+    sessions: &ResultSessionState,
+    session_owner: ResultSessionOwner,
+) -> Result<(StatementExecutionResult, EffectOutcome, bool), DatabaseError> {
+    match worker.start_query(sql).await? {
+        NetworkQueryStart::Execute { affected_rows } => Ok((
+            StatementExecutionResult::Execute { affected_rows },
+            EffectOutcome::Unknown,
+            false,
+        )),
+        NetworkQueryStart::Rows { columns } => {
+            sessions
+                .lock()
+                .map_err(result_session_database_error)?
+                .begin_session(session_owner.clone(), columns)
+                .map_err(result_session_database_error)?;
+            let mut session_guard = SessionAbortGuard::new(sessions.clone(), session_owner.clone());
+            let mut limit_reached = false;
+            let mut affected_rows = None;
+            loop {
+                match worker.next_row().await? {
+                    NetworkRow::Value(values) => {
+                        let outcome = sessions
+                            .lock()
+                            .map_err(result_session_database_error)?
+                            .push_row(&session_owner, values)
+                            .map_err(result_session_database_error)?;
+                        if matches!(
+                            outcome,
+                            PushRowOutcome::LimitReached | PushRowOutcome::ValueTooLarge
+                        ) {
+                            let _ = worker.stop_streaming().await;
+                            drain_helper_stream(worker).await;
+                            limit_reached = true;
+                            break;
+                        }
+                    }
+                    NetworkRow::End {
+                        affected_rows: done,
+                    } => {
+                        affected_rows = done;
+                        break;
+                    }
+                    NetworkRow::ValueTooLarge => {
+                        sessions
+                            .lock()
+                            .map_err(result_session_database_error)?
+                            .mark_value_too_large(&session_owner)
+                            .map_err(result_session_database_error)?;
+                        limit_reached = true;
+                        break;
+                    }
+                    NetworkRow::Cancelled => {
+                        return Ok((
+                            StatementExecutionResult::Cancelled {
+                                error: cancelled_error(),
+                            },
+                            EffectOutcome::Unknown,
+                            true,
+                        ));
+                    }
+                }
+            }
+            let effect_outcome = if limit_reached {
+                EffectOutcome::Unknown
+            } else {
+                EffectOutcome::Unknown
+            };
+            let result_session = sessions
+                .lock()
+                .map_err(result_session_database_error)?
+                .finish_session(&session_owner, effect_outcome)
+                .map_err(result_session_database_error)?;
+            session_guard.disarm();
+            let result = if limit_reached {
+                StatementExecutionResult::ResultLimitReached {
+                    result_session,
+                    affected_rows,
+                }
+            } else {
+                StatementExecutionResult::Rows {
+                    result_session: Some(result_session),
+                    affected_rows,
+                }
+            };
+            Ok((result, effect_outcome, limit_reached))
+        }
+    }
+}
+
 async fn pg_run_materialized_unit(
     connection: &PgConn,
     sql: &str,
     sessions: &ResultSessionState,
     session_owner: ResultSessionOwner,
 ) -> Result<(StatementExecutionResult, EffectOutcome, bool), DatabaseError> {
-    let statement = connection
-        .client
-        .prepare(sql)
-        .await
-        .map_err(|error| postgres_database_error(&error))?;
-    if statement.columns().is_empty() {
-        let affected = connection
-            .client
-            .execute(&statement, &[])
-            .await
-            .map_err(|error| postgres_database_error(&error))?;
-        return Ok((
-            StatementExecutionResult::Execute {
-                affected_rows: Some(affected.to_string()),
-            },
-            EffectOutcome::Unknown,
-            false,
-        ));
-    }
-
-    let columns: Vec<String> = statement
-        .columns()
-        .iter()
-        .map(|column| column.name().to_string())
-        .collect();
-    let column_types: Vec<PgType> = statement
-        .columns()
-        .iter()
-        .map(|column| column.type_().clone())
-        .collect();
-    sessions
-        .lock()
-        .map_err(result_session_database_error)?
-        .begin_session(session_owner.clone(), columns)
-        .map_err(result_session_database_error)?;
-    let mut session_guard = SessionAbortGuard::new(sessions.clone(), session_owner.clone());
-    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
-    let stream = connection
-        .client
-        .query_raw(&statement, params)
-        .await
-        .map_err(|error| postgres_database_error(&error))?;
-    futures_util::pin_mut!(stream);
-    let mut limit_reached = false;
-    loop {
-        let next = stream.try_next().await;
-        let row = match next {
-            Ok(Some(row)) => row,
-            Ok(None) => break,
-            Err(_) if limit_reached => break,
-            Err(error) => return Err(postgres_database_error(&error)),
-        };
-        if limit_reached {
-            continue;
-        }
-        let values = column_types
-            .iter()
-            .enumerate()
-            .map(|(index, column_type)| pg_value_to_db_value(&row, index, column_type))
-            .collect::<Result<Vec<_>, _>>()?;
-        if sessions
-            .lock()
-            .map_err(result_session_database_error)?
-            .push_row(&session_owner, values)
-            .map_err(result_session_database_error)?
-            == PushRowOutcome::LimitReached
-        {
-            limit_reached = true;
-            // A cache-limit cancel is internal, not a user Cancel flag. If the
-            // protocol request cannot be dispatched, keep draining/discarding
-            // this same stream to EOF so the connection still settles while
-            // preserving the already cached pages and limit outcome.
-            let _ = connection.cancel_resource().cancel().await;
-        }
-    }
-    let affected_rows = stream.rows_affected().map(|rows| rows.to_string());
-    let effect_outcome = EffectOutcome::Unknown;
-    let result_session = sessions
-        .lock()
-        .map_err(result_session_database_error)?
-        .finish_session(&session_owner, effect_outcome)
-        .map_err(result_session_database_error)?;
-    session_guard.disarm();
-    let result = if limit_reached {
-        StatementExecutionResult::ResultLimitReached {
-            result_session,
-            affected_rows,
-        }
-    } else {
-        StatementExecutionResult::Rows {
-            result_session: Some(result_session),
-            affected_rows,
-        }
-    };
-    Ok((result, effect_outcome, limit_reached))
+    network_run_materialized_unit(connection.worker(), sql, sessions, session_owner).await
 }
 
 struct P6UnitOutcome {
@@ -3612,23 +4441,22 @@ fn mssql_cancelled_connection_error() -> DatabaseError {
 }
 
 async fn mssql_run_materialized_unit(
-    client: &mut MssqlClient,
+    worker: &NetworkQueryWorker,
     sql: &str,
     sessions: &ResultSessionState,
     session_owner: ResultSessionOwner,
     run_owner: &QueryRunOwner,
     cancel_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>,
 ) -> Result<P6UnitOutcome, DatabaseError> {
-    // ad-hoc batch（ExecuteSqlBatch）而非 client.query 的 sp_executesql RPC：
-    // P6 unit 不帶參數，且 BEGIN/COMMIT 若在 sp_executesql 內執行，離開 sp 時
-    // trancount 改變會觸發 Msg 266，交易 script 無法跨語句成立。
-    let query = client.simple_query(sql);
+    let query = network_run_materialized_unit(worker, sql, sessions, session_owner);
     tokio::pin!(query);
-    let mut stream = loop {
+    loop {
         tokio::select! {
             request = cancel_rx.recv() => {
                 match request {
                     Some(request) if request == *run_owner => {
+                        let _ = worker.cancel_query().await;
+                        worker.abort();
                         return Ok(P6UnitOutcome {
                             result: StatementExecutionResult::Cancelled {
                                 error: mssql_cancelled_connection_error(),
@@ -3653,169 +4481,15 @@ async fn mssql_run_materialized_unit(
                 }
             }
             result = &mut query => {
-                break result.map_err(|error| {
-                    mssql_database_error(&MssqlInternalError::Driver(error))
-                })?;
+                let (result, effect_outcome, stop) = result?;
+                return Ok(P6UnitOutcome {
+                    result,
+                    effect_outcome,
+                    stop,
+                    connection_terminated: false,
+                });
             }
         }
-    };
-
-    let mut primary_result_index = None;
-    let mut columns: Option<Vec<String>> = None;
-    let mut session_guard: Option<SessionAbortGuard> = None;
-    let mut deferred_error: Option<DatabaseError> = None;
-    let mut limit_reached = false;
-    loop {
-        let item = tokio::select! {
-            request = cancel_rx.recv() => {
-                match request {
-                    Some(request) if request == *run_owner => {
-                        return Ok(P6UnitOutcome {
-                            result: StatementExecutionResult::Cancelled {
-                                error: mssql_cancelled_connection_error(),
-                            },
-                            effect_outcome: EffectOutcome::Unknown,
-                            stop: true,
-                            connection_terminated: true,
-                        });
-                    }
-                    Some(_) => continue,
-                    None => {
-                        return Err(DatabaseError {
-                            engine: DatabaseErrorEngine::Yuzora,
-                            message: "MSSQL cancellation channel closed unexpectedly".to_string(),
-                            code: Some("cancelChannelClosed".to_string()),
-                            position: None,
-                            detail: None,
-                            hint: None,
-                            retryability: Retryability::NotRetryable,
-                        });
-                    }
-                }
-            }
-            item = stream.try_next() => item.map_err(|error| {
-                mssql_database_error(&MssqlInternalError::Driver(error))
-            })?,
-        };
-        let Some(item) = item else { break };
-        match item {
-            QueryItem::Metadata(metadata) => {
-                let result_index = metadata.result_index();
-                if primary_result_index.is_some_and(|primary| primary != result_index) {
-                    deferred_error.get_or_insert_with(|| {
-                        mssql_result_shape_error(
-                            "P6 execution units must produce at most one result set",
-                        )
-                    });
-                    continue;
-                }
-                if primary_result_index.is_none() {
-                    primary_result_index = Some(result_index);
-                    let result_columns = metadata
-                        .columns()
-                        .iter()
-                        .map(|column| column.name().to_string())
-                        .collect::<Vec<_>>();
-                    let begin_result = sessions
-                        .lock()
-                        .map_err(result_session_database_error)?
-                        .begin_session(session_owner.clone(), result_columns.clone())
-                        .map_err(result_session_database_error);
-                    match begin_result {
-                        Ok(()) => {
-                            session_guard = Some(SessionAbortGuard::new(
-                                sessions.clone(),
-                                session_owner.clone(),
-                            ));
-                            columns = Some(result_columns);
-                        }
-                        Err(error) => {
-                            deferred_error.get_or_insert(error);
-                        }
-                    }
-                }
-            }
-            QueryItem::Row(row) => {
-                let Some(primary) = primary_result_index else {
-                    deferred_error.get_or_insert_with(|| {
-                        mssql_result_shape_error("MSSQL returned a row before result metadata")
-                    });
-                    continue;
-                };
-                if row.result_index() != primary {
-                    deferred_error.get_or_insert_with(|| {
-                        mssql_result_shape_error(
-                            "P6 execution units must not mix MSSQL result sets",
-                        )
-                    });
-                    continue;
-                }
-                if deferred_error.is_some() || limit_reached {
-                    continue;
-                }
-                let values = match row
-                    .into_iter()
-                    .map(|cell| mssql_value_to_db_value(&cell))
-                    .collect::<Result<Vec<_>, _>>()
-                {
-                    Ok(values) => values,
-                    Err(error) => {
-                        deferred_error.get_or_insert(error);
-                        continue;
-                    }
-                };
-                if sessions
-                    .lock()
-                    .map_err(result_session_database_error)?
-                    .push_row(&session_owner, values)
-                    .map_err(result_session_database_error)?
-                    == PushRowOutcome::LimitReached
-                {
-                    // Cache exhaustion is not a user cancellation. Keep this
-                    // borrowed stream alive and discard the remaining rows so
-                    // the MSSQL connection settles normally at EOF.
-                    limit_reached = true;
-                }
-            }
-        }
-    }
-
-    if let Some(error) = deferred_error {
-        return Err(error);
-    }
-    let affected_rows = aggregate_mssql_affected_rows(stream.rows_affected())?;
-    if columns.is_some() {
-        let result_session = sessions
-            .lock()
-            .map_err(result_session_database_error)?
-            .finish_session(&session_owner, EffectOutcome::Unknown)
-            .map_err(result_session_database_error)?;
-        if let Some(guard) = session_guard.as_mut() {
-            guard.disarm();
-        }
-        Ok(P6UnitOutcome {
-            result: if limit_reached {
-                StatementExecutionResult::ResultLimitReached {
-                    result_session,
-                    affected_rows,
-                }
-            } else {
-                StatementExecutionResult::Rows {
-                    result_session: Some(result_session),
-                    affected_rows,
-                }
-            },
-            effect_outcome: EffectOutcome::Unknown,
-            stop: limit_reached,
-            connection_terminated: false,
-        })
-    } else {
-        Ok(P6UnitOutcome {
-            result: StatementExecutionResult::Execute { affected_rows },
-            effect_outcome: EffectOutcome::Unknown,
-            stop: false,
-            connection_terminated: false,
-        })
     }
 }
 
@@ -3824,923 +4498,7 @@ enum PrimaryPageRead {
     Streaming,
     End,
     LimitReached,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MssqlPrimaryClientDisposition {
-    Reuse,
-    CloseNoReuse,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct MssqlPrimaryClientFinish<C> {
-    disposition: MssqlPrimaryClientDisposition,
-    client_to_close: Option<C>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct MssqlPrimaryExitPolicy {
-    drain_required: bool,
-    disposition: MssqlPrimaryClientDisposition,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MssqlPrimaryExit {
-    NormalEof,
-    Release,
-    Limit,
-    DeferredError,
-    UserCancel,
-    LifecycleTermination,
-    ChannelClosedWhileTerminating,
-    ChannelClosedUnexpectedly,
-    DriverFailure,
-}
-
-impl MssqlPrimaryExit {
-    fn policy(self) -> MssqlPrimaryExitPolicy {
-        match self {
-            Self::NormalEof | Self::Release | Self::Limit | Self::DeferredError => {
-                MssqlPrimaryExitPolicy {
-                    drain_required: true,
-                    disposition: MssqlPrimaryClientDisposition::Reuse,
-                }
-            }
-            Self::UserCancel
-            | Self::LifecycleTermination
-            | Self::ChannelClosedWhileTerminating
-            | Self::ChannelClosedUnexpectedly
-            | Self::DriverFailure => MssqlPrimaryExitPolicy {
-                drain_required: false,
-                disposition: MssqlPrimaryClientDisposition::CloseNoReuse,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MssqlPrimaryStateError {
-    ClientUnavailable,
-    ExitNotRequested,
-    DrainRequired,
-    ClientSlotOccupied,
-}
-
-/// Owns the client taken from `AsyncMutex<Option<MssqlClient>>` while a
-/// tiberius `QueryStream` borrows it in the worker's lexical scope. The generic
-/// parameter keeps the ownership policy deterministic and testable without a
-/// network connection.
-struct MssqlPrimaryClientState<C> {
-    client: Option<C>,
-    exit: Option<MssqlPrimaryExit>,
-    drained: bool,
-}
-
-impl<C> MssqlPrimaryClientState<C> {
-    fn take(slot: &mut Option<C>) -> Result<Self, MssqlPrimaryStateError> {
-        let client = slot
-            .take()
-            .ok_or(MssqlPrimaryStateError::ClientUnavailable)?;
-        Ok(Self {
-            client: Some(client),
-            exit: None,
-            drained: false,
-        })
-    }
-
-    fn request_exit(&mut self, exit: MssqlPrimaryExit) {
-        self.exit = Some(exit);
-    }
-
-    fn client_mut(&mut self) -> Result<&mut C, MssqlPrimaryStateError> {
-        self.client
-            .as_mut()
-            .ok_or(MssqlPrimaryStateError::ClientUnavailable)
-    }
-
-    fn mark_drained(&mut self) {
-        self.drained = true;
-    }
-
-    fn finish(
-        &mut self,
-        slot: &mut Option<C>,
-    ) -> Result<MssqlPrimaryClientFinish<C>, MssqlPrimaryStateError> {
-        let policy = self
-            .exit
-            .ok_or(MssqlPrimaryStateError::ExitNotRequested)?
-            .policy();
-        if policy.drain_required && !self.drained {
-            return Err(MssqlPrimaryStateError::DrainRequired);
-        }
-        let client = self
-            .client
-            .take()
-            .ok_or(MssqlPrimaryStateError::ClientUnavailable)?;
-        let client_to_close = match policy.disposition {
-            MssqlPrimaryClientDisposition::Reuse => {
-                if slot.is_some() {
-                    self.client = Some(client);
-                    return Err(MssqlPrimaryStateError::ClientSlotOccupied);
-                }
-                *slot = Some(client);
-                None
-            }
-            MssqlPrimaryClientDisposition::CloseNoReuse => Some(client),
-        };
-        Ok(MssqlPrimaryClientFinish {
-            disposition: policy.disposition,
-            client_to_close,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MssqlPrimaryPageProgress {
-    Continue,
-    Streaming,
-    Draining,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct MssqlPrimaryStreamTerminal {
-    exit: MssqlPrimaryExit,
-    affected_rows: Option<String>,
-    effect_outcome: EffectOutcome,
-    deferred_error: Option<DatabaseError>,
-    drained_items: usize,
-}
-
-/// Deterministic item-level policy shared by the real tiberius loop and the
-/// network-free fixture tests. It owns shape/error precedence and the
-/// 500-row-plus-one-lookahead boundary, but never owns a driver stream.
-struct MssqlPrimaryStreamState {
-    shape: MssqlDrainState,
-    page_cached_rows: usize,
-    exit: Option<MssqlPrimaryExit>,
-    drained_items: usize,
-    session_started: bool,
-}
-
-impl MssqlPrimaryStreamState {
-    fn new(cached_lookahead_rows: usize) -> Self {
-        Self {
-            shape: MssqlDrainState::default(),
-            page_cached_rows: cached_lookahead_rows,
-            exit: None,
-            drained_items: 0,
-            session_started: false,
-        }
-    }
-
-    fn begin_page(&mut self, cached_lookahead_rows: usize) {
-        self.page_cached_rows = cached_lookahead_rows;
-    }
-
-    fn defer_shape_error_if_present(&mut self) {
-        if self.shape.deferred_error.is_some() {
-            self.exit = Some(MssqlPrimaryExit::DeferredError);
-        }
-    }
-
-    fn defer_error(&mut self, error: DatabaseError) {
-        self.shape.defer_error(error);
-        self.exit = Some(MssqlPrimaryExit::DeferredError);
-    }
-
-    fn mark_session_started(&mut self) {
-        self.session_started = true;
-    }
-
-    fn observe_metadata(
-        &mut self,
-        result_index: usize,
-        columns: Vec<String>,
-    ) -> Option<Vec<String>> {
-        let first_result = self.shape.primary_result_index.is_none();
-        let session_columns = first_result.then(|| columns.clone());
-        self.shape.observe_metadata(result_index, columns);
-        self.defer_shape_error_if_present();
-        if self.exit == Some(MssqlPrimaryExit::DeferredError) {
-            None
-        } else {
-            session_columns
-        }
-    }
-
-    fn prepare_row(&mut self, result_index: usize, column_count: usize) -> MssqlRowAction {
-        let action = self
-            .shape
-            .prepare_row(result_index, column_count, usize::MAX);
-        self.defer_shape_error_if_present();
-        if self.exit.is_some() {
-            MssqlRowAction::DrainOnly
-        } else {
-            action
-        }
-    }
-
-    fn record_decoded_row(
-        &mut self,
-        decoded: Result<Vec<DbValue>, DatabaseError>,
-    ) -> Option<Vec<DbValue>> {
-        if self.exit.is_some() {
-            return None;
-        }
-        match decoded {
-            Ok(row) => Some(row),
-            Err(error) => {
-                self.shape.defer_error(error);
-                self.exit = Some(MssqlPrimaryExit::DeferredError);
-                None
-            }
-        }
-    }
-
-    fn record_push(&mut self, outcome: PushRowOutcome) -> MssqlPrimaryPageProgress {
-        match outcome {
-            PushRowOutcome::Stored if self.exit.is_none() => {
-                self.page_cached_rows += 1;
-            }
-            PushRowOutcome::LimitReached => {
-                if self.exit.is_none() {
-                    self.exit = Some(MssqlPrimaryExit::Limit);
-                }
-            }
-            PushRowOutcome::Stored => {}
-        }
-        self.page_progress()
-    }
-
-    fn page_progress(&self) -> MssqlPrimaryPageProgress {
-        if self.exit.is_some() {
-            MssqlPrimaryPageProgress::Draining
-        } else if self.page_cached_rows > RESULT_PAGE_ROWS {
-            MssqlPrimaryPageProgress::Streaming
-        } else {
-            MssqlPrimaryPageProgress::Continue
-        }
-    }
-
-    fn request_release(&mut self) {
-        if self.exit.is_none() {
-            self.exit = Some(MssqlPrimaryExit::Release);
-        }
-    }
-
-    fn record_drained_item(&mut self) {
-        self.drained_items += 1;
-    }
-
-    fn finish_eof(&mut self, counts: &[u64]) -> MssqlPrimaryStreamTerminal {
-        let affected_rows = match aggregate_mssql_affected_rows(counts) {
-            Ok(rows) => rows,
-            Err(error) => {
-                self.shape.defer_error(error);
-                None
-            }
-        };
-        self.defer_shape_error_if_present();
-        let deferred_error = self.shape.deferred_error.take();
-        let exit = if deferred_error.is_some() {
-            MssqlPrimaryExit::DeferredError
-        } else {
-            self.exit.unwrap_or(MssqlPrimaryExit::NormalEof)
-        };
-        MssqlPrimaryStreamTerminal {
-            exit,
-            affected_rows,
-            effect_outcome: EffectOutcome::Unknown,
-            deferred_error,
-            drained_items: self.drained_items,
-        }
-    }
-}
-
-/// Real-driver compile seam: the stream lifetime is tied to the mutable
-/// `MssqlClient` borrow and therefore cannot be stored beside that client.
-#[allow(dead_code)]
-async fn mssql_primary_query_stream_compile_seam<'a>(
-    state: &'a mut MssqlPrimaryClientState<MssqlClient>,
-    sql: &'a str,
-) -> Result<tiberius::QueryStream<'a>, tiberius::error::Error> {
-    state
-        .client_mut()
-        .expect("MSSQL primary worker owns its taken client")
-        .query(sql, &[])
-        .await
-}
-
-enum MssqlPrimaryCompletion {
-    None,
-    Initial(PrimaryInitialSender, Result<P6UnitOutcome, DatabaseError>),
-    Continuation(
-        tokio::sync::oneshot::Sender<ResultContinuationAck>,
-        ResultContinuationOutcome,
-    ),
-}
-
-struct MssqlPrimaryDriveResult {
-    exit: MssqlPrimaryExit,
-    drained: bool,
-    completion: MssqlPrimaryCompletion,
-}
-
-async fn mssql_drive_primary_stream(
-    client: &mut MssqlClient,
-    actor: &ProductionConnectionActor,
-    sessions: &ResultSessionState,
-    sql: &str,
-    run_owner: &QueryRunOwner,
-    session_owner: &ResultSessionOwner,
-    lease: &ExecutionLease,
-    continuation_sender: tokio::sync::mpsc::UnboundedSender<ResultContinuationCommand>,
-    continuation_receiver: tokio::sync::mpsc::UnboundedReceiver<ResultContinuationCommand>,
-    cancel_rx: tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>,
-    initial_sender: PrimaryInitialSender,
-) -> MssqlPrimaryDriveResult {
-    let mut continuation_sender = Some(continuation_sender);
-    let mut continuation_receiver = continuation_receiver;
-    let mut cancel_rx = cancel_rx;
-    let mut initial_sender = Some(initial_sender);
-    let mut initial_sent = false;
-    let mut pending_next: Option<tokio::sync::oneshot::Sender<ResultContinuationAck>> = None;
-    let mut pending_release: Option<tokio::sync::oneshot::Sender<ResultContinuationAck>> = None;
-    let mut next_page_index = 0usize;
-    let mut state = MssqlPrimaryStreamState::new(0);
-
-    let cancelled_completion = |sender: Option<PrimaryInitialSender>| match sender {
-        Some(sender) => MssqlPrimaryCompletion::Initial(
-            sender,
-            Ok(P6UnitOutcome {
-                result: StatementExecutionResult::Cancelled {
-                    error: mssql_cancelled_connection_error(),
-                },
-                effect_outcome: EffectOutcome::Unknown,
-                stop: true,
-                connection_terminated: true,
-            }),
-        ),
-        None => MssqlPrimaryCompletion::None,
-    };
-
-    let query = client.query(sql, &[]);
-    tokio::pin!(query);
-    let mut stream = loop {
-        tokio::select! {
-            request = cancel_rx.recv() => {
-                match request {
-                    Some(request) if request == *run_owner => {
-                        return MssqlPrimaryDriveResult {
-                            exit: MssqlPrimaryExit::UserCancel,
-                            drained: false,
-                            completion: cancelled_completion(initial_sender.take()),
-                        };
-                    }
-                    Some(_) => continue,
-                    None => {
-                        let terminating = actor.is_terminating();
-                        let error = DatabaseError {
-                            engine: DatabaseErrorEngine::Yuzora,
-                            message: "MSSQL cancellation channel closed unexpectedly".to_string(),
-                            code: Some("cancelChannelClosed".to_string()),
-                            position: None,
-                            detail: None,
-                            hint: None,
-                            retryability: Retryability::NotRetryable,
-                        };
-                        return MssqlPrimaryDriveResult {
-                            exit: if terminating {
-                                MssqlPrimaryExit::LifecycleTermination
-                            } else {
-                                MssqlPrimaryExit::ChannelClosedUnexpectedly
-                            },
-                            drained: false,
-                            completion: MssqlPrimaryCompletion::Initial(
-                                initial_sender.take().expect("initial completion is pending"),
-                                Err(error),
-                            ),
-                        };
-                    }
-                }
-            }
-            result = &mut query => {
-                match result {
-                    Ok(stream) => break stream,
-                    Err(error) => {
-                        let error = mssql_database_error(&MssqlInternalError::Driver(error));
-                        return MssqlPrimaryDriveResult {
-                            exit: MssqlPrimaryExit::DriverFailure,
-                            drained: false,
-                            completion: MssqlPrimaryCompletion::Initial(
-                                initial_sender.take().expect("initial completion is pending"),
-                                Ok(P6UnitOutcome {
-                                    result: StatementExecutionResult::Error { error },
-                                    effect_outcome: EffectOutcome::Unknown,
-                                    stop: true,
-                                    connection_terminated: true,
-                                }),
-                            ),
-                        };
-                    }
-                }
-            }
-        }
-    };
-
-    loop {
-        let item = tokio::select! {
-            request = cancel_rx.recv() => {
-                match request {
-                    Some(request) if request == *run_owner => {
-                        if state.session_started {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    EffectOutcome::Unknown,
-                                    ResultSessionLifecycle::Cancelled,
-                                );
-                            });
-                        }
-                        if let Some(respond_to) = pending_next.take() {
-                            let _ = respond_to.send(ResultContinuationAck {
-                                outcome: ResultContinuationOutcome::Cancelled,
-                            });
-                        }
-                        if let Some(respond_to) = pending_release.take() {
-                            let _ = respond_to.send(ResultContinuationAck {
-                                outcome: ResultContinuationOutcome::Cancelled,
-                            });
-                        }
-                        return MssqlPrimaryDriveResult {
-                            exit: MssqlPrimaryExit::UserCancel,
-                            drained: false,
-                            completion: cancelled_completion(initial_sender.take()),
-                        };
-                    }
-                    Some(_) => continue,
-                    None => {
-                        let terminating = actor.is_terminating();
-                        if state.session_started {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    EffectOutcome::Unknown,
-                                    ResultSessionLifecycle::Error,
-                                );
-                            });
-                        }
-                        return MssqlPrimaryDriveResult {
-                            exit: if terminating {
-                                MssqlPrimaryExit::LifecycleTermination
-                            } else {
-                                MssqlPrimaryExit::ChannelClosedUnexpectedly
-                            },
-                            drained: false,
-                            completion: MssqlPrimaryCompletion::None,
-                        };
-                    }
-                }
-            }
-            command = continuation_receiver.recv(), if initial_sent => {
-                match command {
-                    Some(ResultContinuationCommand::Cancel) => {
-                        if state.session_started {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    EffectOutcome::Unknown,
-                                    ResultSessionLifecycle::Cancelled,
-                                );
-                            });
-                        }
-                        return MssqlPrimaryDriveResult {
-                            exit: MssqlPrimaryExit::UserCancel,
-                            drained: false,
-                            completion: MssqlPrimaryCompletion::None,
-                        };
-                    }
-                    Some(ResultContinuationCommand::Release { respond_to }) => {
-                        if let Some(pending) = pending_next.take() {
-                            let _ = pending.send(ResultContinuationAck {
-                                outcome: ResultContinuationOutcome::Error,
-                            });
-                        }
-                        pending_release = Some(respond_to);
-                        state.request_release();
-                        continue;
-                    }
-                    Some(ResultContinuationCommand::Next { respond_to }) => {
-                        let _ = respond_to.send(ResultContinuationAck {
-                            outcome: ResultContinuationOutcome::Error,
-                        });
-                        continue;
-                    }
-                    None => {
-                        let terminating = actor.is_terminating();
-                        if state.session_started {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    EffectOutcome::Unknown,
-                                    ResultSessionLifecycle::Error,
-                                );
-                            });
-                        }
-                        return MssqlPrimaryDriveResult {
-                            exit: if terminating {
-                                MssqlPrimaryExit::ChannelClosedWhileTerminating
-                            } else {
-                                MssqlPrimaryExit::ChannelClosedUnexpectedly
-                            },
-                            drained: false,
-                            completion: MssqlPrimaryCompletion::None,
-                        };
-                    }
-                }
-            }
-            item = stream.try_next() => {
-                match item {
-                    Ok(item) => item,
-                    Err(error) => {
-                        let cancelled = actor.cancel_requested(lease).unwrap_or(false);
-                        let error = mssql_database_error(&MssqlInternalError::Driver(error));
-                        if state.session_started {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    EffectOutcome::Unknown,
-                                    if cancelled {
-                                        ResultSessionLifecycle::Cancelled
-                                    } else {
-                                        ResultSessionLifecycle::Error
-                                    },
-                                );
-                            });
-                        }
-                        let completion = if let Some(sender) = initial_sender.take() {
-                            MssqlPrimaryCompletion::Initial(
-                                sender,
-                                Ok(P6UnitOutcome {
-                                    result: if cancelled {
-                                        StatementExecutionResult::Cancelled { error }
-                                    } else {
-                                        StatementExecutionResult::Error { error }
-                                    },
-                                    effect_outcome: EffectOutcome::Unknown,
-                                    stop: true,
-                                    connection_terminated: true,
-                                }),
-                            )
-                        } else if let Some(sender) = pending_next.take().or_else(|| pending_release.take()) {
-                            MssqlPrimaryCompletion::Continuation(
-                                sender,
-                                if cancelled {
-                                    ResultContinuationOutcome::Cancelled
-                                } else {
-                                    ResultContinuationOutcome::Error
-                                },
-                            )
-                        } else {
-                            MssqlPrimaryCompletion::None
-                        };
-                        return MssqlPrimaryDriveResult {
-                            exit: if cancelled {
-                                MssqlPrimaryExit::UserCancel
-                            } else {
-                                MssqlPrimaryExit::DriverFailure
-                            },
-                            drained: false,
-                            completion,
-                        };
-                    }
-                }
-            }
-        };
-
-        let Some(item) = item else {
-            let terminal = state.finish_eof(stream.rows_affected());
-            let completion = if !state.session_started {
-                let result = match terminal.deferred_error {
-                    Some(error) => Err(error),
-                    None => Ok(P6UnitOutcome {
-                        result: StatementExecutionResult::Execute {
-                            affected_rows: terminal.affected_rows,
-                        },
-                        effect_outcome: terminal.effect_outcome,
-                        stop: false,
-                        connection_terminated: false,
-                    }),
-                };
-                MssqlPrimaryCompletion::Initial(
-                    initial_sender
-                        .take()
-                        .expect("initial completion is pending"),
-                    result,
-                )
-            } else {
-                match terminal.exit {
-                    MssqlPrimaryExit::Release => {
-                        let _ = sessions.lock().map(|mut sessions| {
-                            let _ = sessions
-                                .release_with_effect(session_owner, terminal.effect_outcome);
-                        });
-                    }
-                    MssqlPrimaryExit::DeferredError => {
-                        if initial_sent {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    terminal.effect_outcome,
-                                    ResultSessionLifecycle::Error,
-                                );
-                            });
-                        } else if let Ok(mut sessions) = sessions.lock() {
-                            let _ = sessions.discard(session_owner);
-                        }
-                    }
-                    _ => {
-                        let _ = sessions.lock().map(|mut sessions| {
-                            let _ = sessions.finish_session(session_owner, terminal.effect_outcome);
-                        });
-                    }
-                }
-
-                if !initial_sent {
-                    match terminal.deferred_error {
-                        Some(error) => MssqlPrimaryCompletion::Initial(
-                            initial_sender
-                                .take()
-                                .expect("initial completion is pending"),
-                            Err(error),
-                        ),
-                        None => {
-                            let result_session = sessions
-                                .lock()
-                                .map_err(result_session_database_error)
-                                .and_then(|sessions| {
-                                    sessions
-                                        .result_session(session_owner)
-                                        .map_err(result_session_database_error)
-                                });
-                            MssqlPrimaryCompletion::Initial(
-                                initial_sender
-                                    .take()
-                                    .expect("initial completion is pending"),
-                                result_session.map(|session| {
-                                    primary_rows_outcome(
-                                        session,
-                                        terminal.effect_outcome,
-                                        terminal.exit == MssqlPrimaryExit::Limit,
-                                        terminal.affected_rows,
-                                    )
-                                }),
-                            )
-                        }
-                    }
-                } else if let Some(sender) = pending_release.take() {
-                    MssqlPrimaryCompletion::Continuation(
-                        sender,
-                        if terminal.exit == MssqlPrimaryExit::Release {
-                            ResultContinuationOutcome::Released
-                        } else {
-                            ResultContinuationOutcome::Error
-                        },
-                    )
-                } else if let Some(sender) = pending_next.take() {
-                    MssqlPrimaryCompletion::Continuation(
-                        sender,
-                        match terminal.exit {
-                            MssqlPrimaryExit::Limit => ResultContinuationOutcome::LimitReached,
-                            MssqlPrimaryExit::DeferredError => ResultContinuationOutcome::Error,
-                            _ => ResultContinuationOutcome::End,
-                        },
-                    )
-                } else {
-                    MssqlPrimaryCompletion::None
-                }
-            };
-            return MssqlPrimaryDriveResult {
-                exit: terminal.exit,
-                drained: true,
-                completion,
-            };
-        };
-
-        if state.exit.is_some() {
-            state.record_drained_item();
-            continue;
-        }
-        match item {
-            QueryItem::Metadata(metadata) => {
-                if let Some(columns) = state.observe_metadata(
-                    metadata.result_index(),
-                    metadata
-                        .columns()
-                        .iter()
-                        .map(|column| column.name().to_string())
-                        .collect(),
-                ) {
-                    match sessions
-                        .lock()
-                        .map_err(result_session_database_error)
-                        .and_then(|mut sessions| {
-                            sessions
-                                .begin_session(session_owner.clone(), columns)
-                                .map_err(result_session_database_error)
-                        }) {
-                        Ok(()) => state.mark_session_started(),
-                        Err(error) => state.defer_error(error),
-                    }
-                }
-            }
-            QueryItem::Row(row) => {
-                if state.prepare_row(row.result_index(), row.columns().len())
-                    == MssqlRowAction::Decode
-                {
-                    let decoded = row
-                        .into_iter()
-                        .map(|cell| mssql_value_to_db_value(&cell))
-                        .collect::<Result<Vec<_>, _>>();
-                    if let Some(values) = state.record_decoded_row(decoded) {
-                        let outcome = sessions
-                            .lock()
-                            .map_err(result_session_database_error)
-                            .and_then(|mut sessions| {
-                                sessions
-                                    .push_row(session_owner, values)
-                                    .map_err(result_session_database_error)
-                            });
-                        match outcome {
-                            Ok(outcome) => {
-                                state.record_push(outcome);
-                            }
-                            Err(error) => state.defer_error(error),
-                        }
-                    }
-                } else {
-                    state.record_drained_item();
-                }
-            }
-        }
-
-        if state.page_progress() != MssqlPrimaryPageProgress::Streaming {
-            continue;
-        }
-        let ready = sessions
-            .lock()
-            .map_err(result_session_database_error)
-            .and_then(|mut sessions| {
-                sessions
-                    .mark_page_ready(session_owner, next_page_index)
-                    .map_err(result_session_database_error)?;
-                sessions
-                    .result_session(session_owner)
-                    .map_err(result_session_database_error)
-            });
-        if !initial_sent {
-            if let Err(error) = actor.install_result_continuation(
-                lease,
-                session_owner.clone(),
-                continuation_sender
-                    .take()
-                    .expect("MSSQL primary installs one continuation sender"),
-            ) {
-                if let Ok(mut sessions) = sessions.lock() {
-                    let _ = sessions.discard(session_owner);
-                }
-                return MssqlPrimaryDriveResult {
-                    exit: MssqlPrimaryExit::ChannelClosedUnexpectedly,
-                    drained: false,
-                    completion: MssqlPrimaryCompletion::Initial(
-                        initial_sender
-                            .take()
-                            .expect("initial completion is pending"),
-                        Err(continuation_database_error(error)),
-                    ),
-                };
-            }
-            match ready {
-                Ok(session) => {
-                    let send_result = initial_sender
-                        .take()
-                        .expect("initial completion is pending")
-                        .send(Ok(primary_rows_outcome(
-                            session,
-                            EffectOutcome::Unknown,
-                            false,
-                            None,
-                        )));
-                    if send_result.is_err() {
-                        if let Ok(mut sessions) = sessions.lock() {
-                            let _ = sessions.discard(session_owner);
-                        }
-                        return MssqlPrimaryDriveResult {
-                            exit: MssqlPrimaryExit::ChannelClosedUnexpectedly,
-                            drained: false,
-                            completion: MssqlPrimaryCompletion::None,
-                        };
-                    }
-                    initial_sent = true;
-                }
-                Err(error) => {
-                    return MssqlPrimaryDriveResult {
-                        exit: MssqlPrimaryExit::ChannelClosedUnexpectedly,
-                        drained: false,
-                        completion: MssqlPrimaryCompletion::Initial(
-                            initial_sender
-                                .take()
-                                .expect("initial completion is pending"),
-                            Err(error),
-                        ),
-                    };
-                }
-            }
-        } else if let Some(respond_to) = pending_next.take() {
-            let _ = respond_to.send(ResultContinuationAck {
-                outcome: if ready.is_ok() {
-                    ResultContinuationOutcome::PageReady
-                } else {
-                    ResultContinuationOutcome::Error
-                },
-            });
-        }
-        next_page_index += 1;
-
-        loop {
-            tokio::select! {
-                request = cancel_rx.recv() => {
-                    match request {
-                        Some(request) if request == *run_owner => {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    EffectOutcome::Unknown,
-                                    ResultSessionLifecycle::Cancelled,
-                                );
-                            });
-                            return MssqlPrimaryDriveResult {
-                                exit: MssqlPrimaryExit::UserCancel,
-                                drained: false,
-                                completion: MssqlPrimaryCompletion::None,
-                            };
-                        }
-                        Some(_) => continue,
-                        None => {
-                            return MssqlPrimaryDriveResult {
-                                exit: if actor.is_terminating() {
-                                    MssqlPrimaryExit::LifecycleTermination
-                                } else {
-                                    MssqlPrimaryExit::ChannelClosedUnexpectedly
-                                },
-                                drained: false,
-                                completion: MssqlPrimaryCompletion::None,
-                            };
-                        }
-                    }
-                }
-                command = continuation_receiver.recv() => {
-                    match command {
-                        Some(ResultContinuationCommand::Next { respond_to }) => {
-                            pending_next = Some(respond_to);
-                            state.begin_page(1);
-                            break;
-                        }
-                        Some(ResultContinuationCommand::Release { respond_to }) => {
-                            pending_release = Some(respond_to);
-                            state.request_release();
-                            break;
-                        }
-                        Some(ResultContinuationCommand::Cancel) => {
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    session_owner,
-                                    EffectOutcome::Unknown,
-                                    ResultSessionLifecycle::Cancelled,
-                                );
-                            });
-                            return MssqlPrimaryDriveResult {
-                                exit: MssqlPrimaryExit::UserCancel,
-                                drained: false,
-                                completion: MssqlPrimaryCompletion::None,
-                            };
-                        }
-                        None => {
-                            return MssqlPrimaryDriveResult {
-                                exit: if actor.is_terminating() {
-                                    MssqlPrimaryExit::ChannelClosedWhileTerminating
-                                } else {
-                                    MssqlPrimaryExit::ChannelClosedUnexpectedly
-                                },
-                                drained: false,
-                                completion: MssqlPrimaryCompletion::None,
-                            };
-                        }
-                    }
-                }
-            }
-        }
-    }
+    ValueTooLarge,
 }
 
 async fn mssql_run_primary_worker(
@@ -4756,91 +4514,27 @@ async fn mssql_run_primary_worker(
     cancel_rx: tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>,
     initial_sender: PrimaryInitialSender,
 ) {
-    let mut settlement_guard = Some(settlement_guard);
-    let DbHandle::Mssql(connection) = actor.handle() else {
+    let handle_actor = actor.clone();
+    let DbHandle::Mssql(worker) = handle_actor.handle() else {
         let _ = initial_sender.send(Err(continuation_database_error(ActorError::OwnerMismatch)));
         return;
     };
-    let mut client_state = {
-        let mut slot = connection.lock().await;
-        match MssqlPrimaryClientState::take(&mut slot) {
-            Ok(state) => state,
-            Err(_) => {
-                let _ = settle_primary_guard(&mut settlement_guard);
-                let _ = initial_sender.send(Ok(P6UnitOutcome {
-                    result: StatementExecutionResult::Error {
-                        error: DatabaseError {
-                            engine: DatabaseErrorEngine::Mssql,
-                            message: "database server disconnected".to_string(),
-                            code: Some("serverDisconnected".to_string()),
-                            position: None,
-                            detail: None,
-                            hint: None,
-                            retryability: Retryability::Retryable,
-                        },
-                    },
-                    effect_outcome: EffectOutcome::Unknown,
-                    stop: true,
-                    connection_terminated: true,
-                }));
-                return;
-            }
-        }
-    };
-
-    let drive = {
-        let client = client_state
-            .client_mut()
-            .expect("MSSQL primary worker owns its taken client");
-        mssql_drive_primary_stream(
-            client,
-            &actor,
-            &sessions,
-            &sql,
-            &run_owner,
-            &session_owner,
-            &lease,
-            continuation_sender,
-            continuation_receiver,
-            cancel_rx,
-            initial_sender,
-        )
-        .await
-    };
-
-    client_state.request_exit(drive.exit);
-    if drive.drained {
-        client_state.mark_drained();
-    }
-    let finish = {
-        let mut slot = connection.lock().await;
-        client_state.finish(&mut slot)
-    };
-    let mut terminated = false;
-    if let Ok(finish) = finish {
-        if finish.disposition == MssqlPrimaryClientDisposition::CloseNoReuse {
-            terminated = true;
-            if let Some(client) = finish.client_to_close {
-                let _ = client.close().await;
-            }
-        }
-    } else {
-        terminated = true;
-    }
-    if terminated {
-        let _ = actor.mark_connection_terminated(&lease);
-    }
-    let _ = settle_primary_guard(&mut settlement_guard);
-
-    match drive.completion {
-        MssqlPrimaryCompletion::None => {}
-        MssqlPrimaryCompletion::Initial(sender, result) => {
-            let _ = sender.send(result);
-        }
-        MssqlPrimaryCompletion::Continuation(sender, outcome) => {
-            let _ = sender.send(ResultContinuationAck { outcome });
-        }
-    }
+    network_run_primary_worker(
+        worker,
+        actor,
+        sessions,
+        sql,
+        session_owner,
+        lease,
+        Some(settlement_guard),
+        continuation_sender,
+        continuation_receiver,
+        initial_sender,
+        Some(cancel_rx),
+        Some(run_owner),
+        true,
+    )
+    .await;
 }
 
 type PrimaryInitialSender = tokio::sync::oneshot::Sender<Result<P6UnitOutcome, DatabaseError>>;
@@ -4988,20 +4682,10 @@ fn sqlite_run_primary_worker(
             let Some(row) = rows.next().map_err(|error| sqlite_database_error(&error))? else {
                 return Ok(PrimaryPageRead::End);
             };
-            let values = (0..column_count)
-                .map(|index| {
-                    row.get_ref(index)
-                        .map_err(|error| sqlite_database_error(&error))
-                        .and_then(value_to_db_value)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            if sessions
-                .lock()
-                .map_err(result_session_database_error)?
-                .push_row(&session_owner, values)
-                .map_err(result_session_database_error)?
-                == PushRowOutcome::LimitReached
-            {
+            if matches!(
+                sqlite_push_decoded_row(&connection, row, column_count, &sessions, &session_owner,)?,
+                PushRowOutcome::LimitReached | PushRowOutcome::ValueTooLarge
+            ) {
                 return Ok(PrimaryPageRead::LimitReached);
             }
             cached_rows += 1;
@@ -5010,20 +4694,10 @@ fn sqlite_run_primary_worker(
         let Some(row) = rows.next().map_err(|error| sqlite_database_error(&error))? else {
             return Ok(PrimaryPageRead::End);
         };
-        let values = (0..column_count)
-            .map(|index| {
-                row.get_ref(index)
-                    .map_err(|error| sqlite_database_error(&error))
-                    .and_then(value_to_db_value)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if sessions
-            .lock()
-            .map_err(result_session_database_error)?
-            .push_row(&session_owner, values)
-            .map_err(result_session_database_error)?
-            == PushRowOutcome::LimitReached
-        {
+        if matches!(
+            sqlite_push_decoded_row(&connection, row, column_count, &sessions, &session_owner)?,
+            PushRowOutcome::LimitReached | PushRowOutcome::ValueTooLarge
+        ) {
             Ok(PrimaryPageRead::LimitReached)
         } else {
             Ok(PrimaryPageRead::Streaming)
@@ -5286,74 +4960,380 @@ fn sqlite_run_primary_worker(
     }
 }
 
-async fn pg_read_primary_page(
-    stream: &mut std::pin::Pin<Box<tokio_postgres::RowStream>>,
-    column_types: &[PgType],
+async fn network_read_primary_page(
+    worker: &NetworkQueryWorker,
     sessions: &ResultSessionState,
     session_owner: &ResultSessionOwner,
     mut cached_rows: usize,
 ) -> Result<PrimaryPageRead, DatabaseError> {
     while cached_rows < RESULT_PAGE_ROWS {
-        let Some(row) = stream
-            .as_mut()
-            .try_next()
-            .await
-            .map_err(|error| postgres_database_error(&error))?
-        else {
-            return Ok(PrimaryPageRead::End);
-        };
-        let values = column_types
-            .iter()
-            .enumerate()
-            .map(|(index, column_type)| pg_value_to_db_value(&row, index, column_type))
-            .collect::<Result<Vec<_>, _>>()?;
-        if sessions
-            .lock()
-            .map_err(result_session_database_error)?
-            .push_row(session_owner, values)
-            .map_err(result_session_database_error)?
-            == PushRowOutcome::LimitReached
-        {
-            return Ok(PrimaryPageRead::LimitReached);
+        match worker.next_row().await? {
+            NetworkRow::Value(values) => {
+                if matches!(
+                    sessions
+                        .lock()
+                        .map_err(result_session_database_error)?
+                        .push_row(session_owner, values)
+                        .map_err(result_session_database_error)?,
+                    PushRowOutcome::LimitReached | PushRowOutcome::ValueTooLarge
+                ) {
+                    let _ = worker.stop_streaming().await;
+                    drain_helper_stream(worker).await;
+                    return Ok(PrimaryPageRead::LimitReached);
+                }
+                cached_rows += 1;
+            }
+            NetworkRow::End { .. } => return Ok(PrimaryPageRead::End),
+            NetworkRow::ValueTooLarge => {
+                sessions
+                    .lock()
+                    .map_err(result_session_database_error)?
+                    .mark_value_too_large(session_owner)
+                    .map_err(result_session_database_error)?;
+                return Ok(PrimaryPageRead::ValueTooLarge);
+            }
+            NetworkRow::Cancelled => return Err(cancelled_error()),
         }
-        cached_rows += 1;
     }
-
-    let Some(row) = stream
-        .as_mut()
-        .try_next()
-        .await
-        .map_err(|error| postgres_database_error(&error))?
-    else {
-        return Ok(PrimaryPageRead::End);
-    };
-    let values = column_types
-        .iter()
-        .enumerate()
-        .map(|(index, column_type)| pg_value_to_db_value(&row, index, column_type))
-        .collect::<Result<Vec<_>, _>>()?;
-    if sessions
-        .lock()
-        .map_err(result_session_database_error)?
-        .push_row(session_owner, values)
-        .map_err(result_session_database_error)?
-        == PushRowOutcome::LimitReached
-    {
-        Ok(PrimaryPageRead::LimitReached)
-    } else {
-        Ok(PrimaryPageRead::Streaming)
+    match worker.next_row().await? {
+        NetworkRow::Value(values) => {
+            if matches!(
+                sessions
+                    .lock()
+                    .map_err(result_session_database_error)?
+                    .push_row(session_owner, values)
+                    .map_err(result_session_database_error)?,
+                PushRowOutcome::LimitReached | PushRowOutcome::ValueTooLarge
+            ) {
+                let _ = worker.stop_streaming().await;
+                drain_helper_stream(worker).await;
+                Ok(PrimaryPageRead::LimitReached)
+            } else {
+                Ok(PrimaryPageRead::Streaming)
+            }
+        }
+        NetworkRow::End { .. } => Ok(PrimaryPageRead::End),
+        NetworkRow::ValueTooLarge => {
+            sessions
+                .lock()
+                .map_err(result_session_database_error)?
+                .mark_value_too_large(session_owner)
+                .map_err(result_session_database_error)?;
+            Ok(PrimaryPageRead::ValueTooLarge)
+        }
+        NetworkRow::Cancelled => Err(cancelled_error()),
     }
 }
 
-async fn pg_cancel_and_drain(
-    connection: &PgConn,
-    stream: &mut std::pin::Pin<Box<tokio_postgres::RowStream>>,
+async fn network_run_primary_worker(
+    worker: &NetworkQueryWorker,
+    actor: Arc<ProductionConnectionActor>,
+    sessions: ResultSessionState,
+    sql: String,
+    session_owner: ResultSessionOwner,
+    lease: ExecutionLease,
+    mut settlement_guard: Option<ExecutionSettlementGuard>,
+    continuation_sender: tokio::sync::mpsc::UnboundedSender<ResultContinuationCommand>,
+    mut continuation_receiver: tokio::sync::mpsc::UnboundedReceiver<ResultContinuationCommand>,
+    initial_sender: PrimaryInitialSender,
+    mut cancel_rx: Option<tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>>,
+    run_owner: Option<QueryRunOwner>,
+    terminate_on_cancel: bool,
 ) {
-    let _ = connection.cancel_resource().cancel().await;
+    let started = match worker.start_query(&sql).await {
+        Ok(started) => started,
+        Err(error) => {
+            let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
+            let _ = settle_primary_guard(&mut settlement_guard);
+            let result = if cancelled {
+                Ok(P6UnitOutcome {
+                    result: StatementExecutionResult::Cancelled { error },
+                    effect_outcome: EffectOutcome::Unknown,
+                    stop: true,
+                    connection_terminated: terminate_on_cancel,
+                })
+            } else {
+                Err(error)
+            };
+            let _ = initial_sender.send(result);
+            return;
+        }
+    };
+    match started {
+        NetworkQueryStart::Execute { affected_rows } => {
+            let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
+            let _ = settle_primary_guard(&mut settlement_guard);
+            let result = if cancelled {
+                Ok(P6UnitOutcome {
+                    result: StatementExecutionResult::Cancelled {
+                        error: cancelled_error(),
+                    },
+                    effect_outcome: EffectOutcome::Unknown,
+                    stop: true,
+                    connection_terminated: terminate_on_cancel,
+                })
+            } else {
+                Ok(P6UnitOutcome {
+                    result: StatementExecutionResult::Execute { affected_rows },
+                    effect_outcome: EffectOutcome::Unknown,
+                    stop: false,
+                    connection_terminated: false,
+                })
+            };
+            let _ = initial_sender.send(result);
+            return;
+        }
+        NetworkQueryStart::Rows { columns } => {
+            if let Err(error) = sessions
+                .lock()
+                .map_err(result_session_database_error)
+                .and_then(|mut sessions| {
+                    sessions
+                        .begin_session(session_owner.clone(), columns)
+                        .map_err(result_session_database_error)
+                })
+            {
+                let _ = settle_primary_guard(&mut settlement_guard);
+                let _ = initial_sender.send(Err(error));
+                return;
+            }
+            let initial = network_read_primary_page(worker, &sessions, &session_owner, 0).await;
+            match initial {
+                Ok(PrimaryPageRead::Streaming) => {
+                    let session = sessions
+                        .lock()
+                        .map_err(result_session_database_error)
+                        .and_then(|mut sessions| {
+                            sessions
+                                .mark_page_ready(&session_owner, 0)
+                                .map_err(result_session_database_error)?;
+                            sessions
+                                .result_session(&session_owner)
+                                .map_err(result_session_database_error)
+                        });
+                    if let Err(error) = actor.install_result_continuation(
+                        &lease,
+                        session_owner.clone(),
+                        continuation_sender,
+                    ) {
+                        if let Ok(mut sessions) = sessions.lock() {
+                            let _ = sessions.discard(&session_owner);
+                        }
+                        let _ = worker.stop_streaming().await;
+                        drain_helper_stream(worker).await;
+                        let _ = settle_primary_guard(&mut settlement_guard);
+                        let _ = initial_sender.send(Err(continuation_database_error(error)));
+                        return;
+                    }
+                    match session {
+                        Ok(session) => {
+                            if initial_sender
+                                .send(Ok(primary_rows_outcome(
+                                    session,
+                                    EffectOutcome::Unknown,
+                                    false,
+                                    None,
+                                )))
+                                .is_err()
+                            {
+                                if let Ok(mut sessions) = sessions.lock() {
+                                    let _ = sessions.discard(&session_owner);
+                                }
+                                let _ = worker.stop_streaming().await;
+                                drain_helper_stream(worker).await;
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = worker.stop_streaming().await;
+                            drain_helper_stream(worker).await;
+                            let _ = settle_primary_guard(&mut settlement_guard);
+                            let _ = initial_sender.send(Err(error));
+                            return;
+                        }
+                    }
+                }
+                Ok(terminal) => {
+                    if terminal == PrimaryPageRead::LimitReached {
+                        let _ = worker.stop_streaming().await;
+                        drain_helper_stream(worker).await;
+                    }
+                    let result_session = sessions
+                        .lock()
+                        .map_err(result_session_database_error)
+                        .and_then(|mut sessions| {
+                            sessions
+                                .finish_session(&session_owner, EffectOutcome::Unknown)
+                                .map_err(result_session_database_error)
+                        });
+                    let _ = settle_primary_guard(&mut settlement_guard);
+                    match result_session {
+                        Ok(session) => {
+                            let _ = initial_sender.send(Ok(primary_rows_outcome(
+                                session,
+                                EffectOutcome::Unknown,
+                                matches!(
+                                    terminal,
+                                    PrimaryPageRead::LimitReached | PrimaryPageRead::ValueTooLarge
+                                ),
+                                None,
+                            )));
+                        }
+                        Err(error) => {
+                            let _ = initial_sender.send(Err(error));
+                        }
+                    }
+                    return;
+                }
+                Err(error) => {
+                    if let Ok(mut sessions) = sessions.lock() {
+                        let _ = sessions.discard(&session_owner);
+                    }
+                    let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
+                    let _ = settle_primary_guard(&mut settlement_guard);
+                    let result = if cancelled {
+                        Ok(P6UnitOutcome {
+                            result: StatementExecutionResult::Cancelled { error },
+                            effect_outcome: EffectOutcome::Unknown,
+                            stop: true,
+                            connection_terminated: terminate_on_cancel,
+                        })
+                    } else {
+                        Err(error)
+                    };
+                    let _ = initial_sender.send(result);
+                    return;
+                }
+            }
+        }
+    }
+
     loop {
-        match stream.as_mut().try_next().await {
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => break,
+        let command = if let Some(cancel_rx) = cancel_rx.as_mut() {
+            tokio::select! {
+                request = cancel_rx.recv() => {
+                    if request.as_ref() == run_owner.as_ref() {
+                        let _ = worker.cancel_query().await;
+                        worker.abort();
+                        if let Ok(mut sessions) = sessions.lock() {
+                            let _ = sessions.finish_session_with_lifecycle(
+                                &session_owner,
+                                EffectOutcome::Unknown,
+                                ResultSessionLifecycle::Cancelled,
+                            );
+                        }
+                        let _ = settle_primary_guard(&mut settlement_guard);
+                        return;
+                    }
+                    continue;
+                }
+                command = continuation_receiver.recv() => command,
+            }
+        } else {
+            continuation_receiver.recv().await
+        };
+        match command {
+            Some(ResultContinuationCommand::Next { respond_to }) => {
+                let read = network_read_primary_page(worker, &sessions, &session_owner, 0).await;
+                match read {
+                    Ok(PrimaryPageRead::Streaming) | Ok(PrimaryPageRead::End) => {
+                        let page = sessions
+                            .lock()
+                            .map_err(result_session_database_error)
+                            .and_then(|mut sessions| {
+                                let page_index = sessions
+                                    .next(&session_owner)
+                                    .ok()
+                                    .and_then(|next| match next {
+                                        crate::db_result_session::NextPage::Continue {
+                                            page_index,
+                                        } => Some(page_index),
+                                        _ => None,
+                                    })
+                                    .unwrap_or(1);
+                                sessions
+                                    .mark_page_ready(&session_owner, page_index)
+                                    .map_err(result_session_database_error)
+                            });
+                        let outcome = if matches!(read, Ok(PrimaryPageRead::End)) {
+                            if let Ok(mut sessions) = sessions.lock() {
+                                let _ =
+                                    sessions.finish_session(&session_owner, EffectOutcome::Unknown);
+                            }
+                            let _ = settle_primary_guard(&mut settlement_guard);
+                            ResultContinuationOutcome::End
+                        } else {
+                            ResultContinuationOutcome::PageReady
+                        };
+                        let _ = page;
+                        let _ = respond_to.send(ResultContinuationAck { outcome });
+                        if outcome == ResultContinuationOutcome::End {
+                            return;
+                        }
+                    }
+                    Ok(PrimaryPageRead::LimitReached) | Ok(PrimaryPageRead::ValueTooLarge) => {
+                        if matches!(read, Ok(PrimaryPageRead::LimitReached)) {
+                            let _ = worker.stop_streaming().await;
+                            drain_helper_stream(worker).await;
+                        }
+                        if let Ok(mut sessions) = sessions.lock() {
+                            let _ = sessions.finish_session(&session_owner, EffectOutcome::Unknown);
+                        }
+                        let _ = settle_primary_guard(&mut settlement_guard);
+                        let _ = respond_to.send(ResultContinuationAck {
+                            outcome: ResultContinuationOutcome::LimitReached,
+                        });
+                        return;
+                    }
+                    Err(_) => {
+                        if let Ok(mut sessions) = sessions.lock() {
+                            let _ = sessions.finish_session_with_lifecycle(
+                                &session_owner,
+                                EffectOutcome::Unknown,
+                                ResultSessionLifecycle::Error,
+                            );
+                        }
+                        let _ = settle_primary_guard(&mut settlement_guard);
+                        let _ = respond_to.send(ResultContinuationAck {
+                            outcome: ResultContinuationOutcome::Error,
+                        });
+                        return;
+                    }
+                }
+            }
+            Some(ResultContinuationCommand::Release { respond_to }) => {
+                let _ = worker.stop_streaming().await;
+                drain_helper_stream(worker).await;
+                if let Ok(mut sessions) = sessions.lock() {
+                    let _ = sessions.release_with_effect(&session_owner, EffectOutcome::Unknown);
+                }
+                let _ = settle_primary_guard(&mut settlement_guard);
+                let _ = respond_to.send(ResultContinuationAck {
+                    outcome: ResultContinuationOutcome::Released,
+                });
+                return;
+            }
+            Some(ResultContinuationCommand::Cancel) => {
+                let _ = worker.cancel_query().await;
+                drain_helper_stream(worker).await;
+                if let Ok(mut sessions) = sessions.lock() {
+                    let _ = sessions.finish_session_with_lifecycle(
+                        &session_owner,
+                        EffectOutcome::Unknown,
+                        ResultSessionLifecycle::Cancelled,
+                    );
+                }
+                let _ = settle_primary_guard(&mut settlement_guard);
+                return;
+            }
+            None => {
+                let _ = worker.stop_streaming().await;
+                drain_helper_stream(worker).await;
+                if let Ok(mut sessions) = sessions.lock() {
+                    let _ = sessions.discard(&session_owner);
+                }
+                return;
+            }
         }
     }
 }
@@ -5362,357 +5342,36 @@ async fn pg_run_primary_worker(
     actor: Arc<ProductionConnectionActor>,
     sessions: ResultSessionState,
     sql: String,
+    run_owner: QueryRunOwner,
     session_owner: ResultSessionOwner,
     lease: ExecutionLease,
     settlement_guard: ExecutionSettlementGuard,
     continuation_sender: tokio::sync::mpsc::UnboundedSender<ResultContinuationCommand>,
-    mut continuation_receiver: tokio::sync::mpsc::UnboundedReceiver<ResultContinuationCommand>,
+    continuation_receiver: tokio::sync::mpsc::UnboundedReceiver<ResultContinuationCommand>,
+    cancel_rx: tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>,
     initial_sender: PrimaryInitialSender,
 ) {
-    let mut settlement_guard = Some(settlement_guard);
-    let DbHandle::Postgres(connection) = actor.handle() else {
+    let handle_actor = actor.clone();
+    let DbHandle::Postgres(connection) = handle_actor.handle() else {
         let _ = initial_sender.send(Err(continuation_database_error(ActorError::OwnerMismatch)));
         return;
     };
-    let statement = match connection.client.prepare(&sql).await {
-        Ok(statement) => statement,
-        Err(error) => {
-            let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-            let _ = settle_primary_guard(&mut settlement_guard);
-            let error = postgres_database_error(&error);
-            let result = if cancelled {
-                Ok(P6UnitOutcome {
-                    result: StatementExecutionResult::Cancelled { error },
-                    effect_outcome: EffectOutcome::Unknown,
-                    stop: true,
-                    connection_terminated: false,
-                })
-            } else {
-                Err(error)
-            };
-            let _ = initial_sender.send(result);
-            return;
-        }
-    };
-    if statement.columns().is_empty() {
-        let result = connection
-            .client
-            .execute(&statement, &[])
-            .await
-            .map_err(|error| postgres_database_error(&error));
-        let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-        let _ = settle_primary_guard(&mut settlement_guard);
-        let result = match result {
-            Ok(affected) => Ok(P6UnitOutcome {
-                result: StatementExecutionResult::Execute {
-                    affected_rows: Some(affected.to_string()),
-                },
-                effect_outcome: EffectOutcome::Unknown,
-                stop: false,
-                connection_terminated: false,
-            }),
-            Err(error) if cancelled => Ok(P6UnitOutcome {
-                result: StatementExecutionResult::Cancelled { error },
-                effect_outcome: EffectOutcome::Unknown,
-                stop: true,
-                connection_terminated: false,
-            }),
-            Err(error) => Err(error),
-        };
-        let _ = initial_sender.send(result);
-        return;
-    }
-
-    let columns = statement
-        .columns()
-        .iter()
-        .map(|column| column.name().to_string())
-        .collect::<Vec<_>>();
-    let column_types = statement
-        .columns()
-        .iter()
-        .map(|column| column.type_().clone())
-        .collect::<Vec<_>>();
-    if let Err(error) = sessions
-        .lock()
-        .map_err(result_session_database_error)
-        .and_then(|mut sessions| {
-            sessions
-                .begin_session(session_owner.clone(), columns)
-                .map_err(result_session_database_error)
-        })
-    {
-        let _ = settle_primary_guard(&mut settlement_guard);
-        let _ = initial_sender.send(Err(error));
-        return;
-    }
-    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
-    let stream = match connection.client.query_raw(&statement, params).await {
-        Ok(stream) => stream,
-        Err(error) => {
-            if let Ok(mut sessions) = sessions.lock() {
-                let _ = sessions.discard(&session_owner);
-            }
-            let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-            let _ = settle_primary_guard(&mut settlement_guard);
-            let error = postgres_database_error(&error);
-            let result = if cancelled {
-                Ok(P6UnitOutcome {
-                    result: StatementExecutionResult::Cancelled { error },
-                    effect_outcome: EffectOutcome::Unknown,
-                    stop: true,
-                    connection_terminated: false,
-                })
-            } else {
-                Err(error)
-            };
-            let _ = initial_sender.send(result);
-            return;
-        }
-    };
-    let mut stream = Box::pin(stream);
-    match pg_read_primary_page(&mut stream, &column_types, &sessions, &session_owner, 0).await {
-        Ok(PrimaryPageRead::Streaming) => {
-            let session = sessions
-                .lock()
-                .map_err(result_session_database_error)
-                .and_then(|mut sessions| {
-                    sessions
-                        .mark_page_ready(&session_owner, 0)
-                        .map_err(result_session_database_error)?;
-                    sessions
-                        .result_session(&session_owner)
-                        .map_err(result_session_database_error)
-                });
-            if let Err(error) = actor.install_result_continuation(
-                &lease,
-                session_owner.clone(),
-                continuation_sender,
-            ) {
-                if let Ok(mut sessions) = sessions.lock() {
-                    let _ = sessions.discard(&session_owner);
-                }
-                pg_cancel_and_drain(connection, &mut stream).await;
-                let _ = settle_primary_guard(&mut settlement_guard);
-                let _ = initial_sender.send(Err(continuation_database_error(error)));
-                return;
-            }
-            match session {
-                Ok(session) => {
-                    if initial_sender
-                        .send(Ok(primary_rows_outcome(
-                            session,
-                            EffectOutcome::Unknown,
-                            false,
-                            None,
-                        )))
-                        .is_err()
-                    {
-                        if let Ok(mut sessions) = sessions.lock() {
-                            let _ = sessions.discard(&session_owner);
-                        }
-                        pg_cancel_and_drain(connection, &mut stream).await;
-                        return;
-                    }
-                }
-                Err(error) => {
-                    pg_cancel_and_drain(connection, &mut stream).await;
-                    let _ = settle_primary_guard(&mut settlement_guard);
-                    let _ = initial_sender.send(Err(error));
-                    return;
-                }
-            }
-        }
-        Ok(terminal) => {
-            if terminal == PrimaryPageRead::LimitReached {
-                pg_cancel_and_drain(connection, &mut stream).await;
-            }
-            let affected_rows = stream
-                .as_ref()
-                .get_ref()
-                .rows_affected()
-                .map(|rows| rows.to_string());
-            drop(stream);
-            let result_session = sessions
-                .lock()
-                .map_err(result_session_database_error)
-                .and_then(|mut sessions| {
-                    sessions
-                        .finish_session(&session_owner, EffectOutcome::Unknown)
-                        .map_err(result_session_database_error)
-                });
-            let _ = settle_primary_guard(&mut settlement_guard);
-            let outcome = result_session.map(|session| {
-                primary_rows_outcome(
-                    session,
-                    EffectOutcome::Unknown,
-                    terminal == PrimaryPageRead::LimitReached,
-                    affected_rows,
-                )
-            });
-            let _ = initial_sender.send(outcome);
-            return;
-        }
-        Err(error) => {
-            let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-            pg_cancel_and_drain(connection, &mut stream).await;
-            drop(stream);
-            if let Ok(mut sessions) = sessions.lock() {
-                let _ = sessions.discard(&session_owner);
-            }
-            let _ = settle_primary_guard(&mut settlement_guard);
-            let result = if cancelled {
-                Ok(P6UnitOutcome {
-                    result: StatementExecutionResult::Cancelled { error },
-                    effect_outcome: EffectOutcome::Unknown,
-                    stop: true,
-                    connection_terminated: false,
-                })
-            } else {
-                Err(error)
-            };
-            let _ = initial_sender.send(result);
-            return;
-        }
-    }
-
-    loop {
-        match continuation_receiver.recv().await {
-            Some(ResultContinuationCommand::Next { respond_to }) => {
-                let page_index = match sessions
-                    .lock()
-                    .map_err(result_session_database_error)
-                    .and_then(|mut sessions| {
-                        match sessions
-                            .next(&session_owner)
-                            .map_err(result_session_database_error)?
-                        {
-                            NextPage::Continue { page_index } => Ok(page_index),
-                            NextPage::Cached(_) => {
-                                Err(continuation_database_error(ActorError::ConnectionBusy))
-                            }
-                        }
-                    }) {
-                    Ok(page_index) => page_index,
-                    Err(_) => {
-                        let _ = respond_to.send(ResultContinuationAck {
-                            outcome: ResultContinuationOutcome::Error,
-                        });
-                        continue;
-                    }
-                };
-                match pg_read_primary_page(&mut stream, &column_types, &sessions, &session_owner, 1)
-                    .await
-                {
-                    Ok(PrimaryPageRead::Streaming) => {
-                        let ready = sessions
-                            .lock()
-                            .map_err(result_session_database_error)
-                            .and_then(|mut sessions| {
-                                sessions
-                                    .mark_page_ready(&session_owner, page_index)
-                                    .map_err(result_session_database_error)
-                            });
-                        if ready.is_ok() {
-                            let _ = respond_to.send(ResultContinuationAck {
-                                outcome: ResultContinuationOutcome::PageReady,
-                            });
-                        } else {
-                            pg_cancel_and_drain(connection, &mut stream).await;
-                            let _ = sessions.lock().map(|mut sessions| {
-                                let _ = sessions.finish_session_with_lifecycle(
-                                    &session_owner,
-                                    EffectOutcome::Unknown,
-                                    ResultSessionLifecycle::Error,
-                                );
-                            });
-                            let _ = settle_primary_guard(&mut settlement_guard);
-                            let _ = respond_to.send(ResultContinuationAck {
-                                outcome: ResultContinuationOutcome::Error,
-                            });
-                            return;
-                        }
-                    }
-                    Ok(terminal) => {
-                        if terminal == PrimaryPageRead::LimitReached {
-                            pg_cancel_and_drain(connection, &mut stream).await;
-                        }
-                        drop(stream);
-                        let _ = sessions.lock().map(|mut sessions| {
-                            let _ = sessions.finish_session(&session_owner, EffectOutcome::Unknown);
-                        });
-                        let _ = settle_primary_guard(&mut settlement_guard);
-                        let _ = respond_to.send(ResultContinuationAck {
-                            outcome: if terminal == PrimaryPageRead::LimitReached {
-                                ResultContinuationOutcome::LimitReached
-                            } else {
-                                ResultContinuationOutcome::End
-                            },
-                        });
-                        return;
-                    }
-                    Err(_) => {
-                        let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-                        pg_cancel_and_drain(connection, &mut stream).await;
-                        drop(stream);
-                        let _ = sessions.lock().map(|mut sessions| {
-                            let _ = sessions.finish_session_with_lifecycle(
-                                &session_owner,
-                                EffectOutcome::Unknown,
-                                if cancelled {
-                                    ResultSessionLifecycle::Cancelled
-                                } else {
-                                    ResultSessionLifecycle::Error
-                                },
-                            );
-                        });
-                        let _ = settle_primary_guard(&mut settlement_guard);
-                        let _ = respond_to.send(ResultContinuationAck {
-                            outcome: if cancelled {
-                                ResultContinuationOutcome::Cancelled
-                            } else {
-                                ResultContinuationOutcome::Error
-                            },
-                        });
-                        return;
-                    }
-                }
-            }
-            Some(ResultContinuationCommand::Release { respond_to }) => {
-                pg_cancel_and_drain(connection, &mut stream).await;
-                drop(stream);
-                let _ = sessions.lock().map(|mut sessions| {
-                    let _ = sessions.release_with_effect(&session_owner, EffectOutcome::Unknown);
-                });
-                let _ = settle_primary_guard(&mut settlement_guard);
-                let _ = respond_to.send(ResultContinuationAck {
-                    outcome: ResultContinuationOutcome::Released,
-                });
-                return;
-            }
-            Some(ResultContinuationCommand::Cancel) => {
-                pg_cancel_and_drain(connection, &mut stream).await;
-                drop(stream);
-                let _ = sessions.lock().map(|mut sessions| {
-                    let _ = sessions.finish_session_with_lifecycle(
-                        &session_owner,
-                        EffectOutcome::Unknown,
-                        ResultSessionLifecycle::Cancelled,
-                    );
-                });
-                let _ = settle_primary_guard(&mut settlement_guard);
-                return;
-            }
-            None => {
-                pg_cancel_and_drain(connection, &mut stream).await;
-                drop(stream);
-                if let Ok(mut sessions) = sessions.lock() {
-                    let _ = sessions.discard(&session_owner);
-                }
-                return;
-            }
-        }
-    }
+    network_run_primary_worker(
+        connection.worker(),
+        actor,
+        sessions,
+        sql,
+        session_owner,
+        lease,
+        Some(settlement_guard),
+        continuation_sender,
+        continuation_receiver,
+        initial_sender,
+        Some(cancel_rx),
+        Some(run_owner),
+        false,
+    )
+    .await;
 }
 
 pub(crate) async fn query_run_in_state(
@@ -5748,15 +5407,16 @@ pub(crate) async fn query_run_in_state(
         .map_err(actor_error)?;
     let lease_for_status = lease.clone();
     let settlement_guard = ExecutionSettlementGuard::new(actor.clone(), lease);
-    let mut mssql_cancel_rx = if matches!(actor.handle(), DbHandle::Mssql(_)) {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        actor
-            .install_mssql_cancel_channel(&lease_for_status, sender)
-            .map_err(actor_error)?;
-        Some(receiver)
-    } else {
-        None
-    };
+    let mut mssql_cancel_rx =
+        if matches!(actor.handle(), DbHandle::Mssql(_) | DbHandle::Postgres(_),) {
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            actor
+                .install_mssql_cancel_channel(&lease_for_status, sender)
+                .map_err(actor_error)?;
+            Some(receiver)
+        } else {
+            None
+        };
     sessions
         .lock()
         .map_err(|_| {
@@ -5817,11 +5477,15 @@ pub(crate) async fn query_run_in_state(
                     worker_actor,
                     worker_sessions,
                     worker_sql,
+                    worker_owner,
                     session_owner,
                     worker_lease,
                     settlement_guard,
                     continuation_sender,
                     continuation_receiver,
+                    mssql_cancel_rx
+                        .take()
+                        .expect("PostgreSQL execution installs one cancel receiver"),
                     initial_sender,
                 ));
             }
@@ -5954,16 +5618,9 @@ pub(crate) async fn query_run_in_state(
                         connection_terminated: false,
                     })
             }
-            DbHandle::Mssql(connection) => {
-                let mut guard = connection.lock().await;
-                let Some(client) = guard.as_mut() else {
-                    return Err(DatabaseOperationalError::new(
-                        DatabaseOperationalErrorCode::ServerDisconnected,
-                        "database server disconnected",
-                    ));
-                };
+            DbHandle::Mssql(worker) => {
                 let outcome = mssql_run_materialized_unit(
-                    client,
+                    worker,
                     &unit.sql,
                     sessions,
                     session_owner,
@@ -5977,9 +5634,7 @@ pub(crate) async fn query_run_in_state(
                     .as_ref()
                     .is_ok_and(|outcome| outcome.connection_terminated)
                 {
-                    let client = guard.take().expect("MSSQL client was borrowed above");
-                    drop(guard);
-                    let _ = client.close().await;
+                    worker.abort();
                     actor
                         .mark_connection_terminated(&lease_for_status)
                         .map_err(actor_error)?;
@@ -6245,6 +5900,43 @@ pub async fn db_result_session_release(
 pub mod integration_harness {
     use super::*;
 
+    fn postgres_open_config_from_legacy_flags(
+        host: String,
+        port: u16,
+        database: String,
+        user: String,
+        password: String,
+        ssl: bool,
+        trust_cert: bool,
+    ) -> DbOpenConfig {
+        let (transport_mode, insecure_exception, trust_server_cert_acknowledged) = if !ssl {
+            (
+                PostgresTransportMode::InsecurePlaintext,
+                Some(PostgresInsecureException::new(
+                    host.clone(),
+                    port,
+                    user.clone(),
+                    database.clone(),
+                )),
+                false,
+            )
+        } else if trust_cert {
+            (PostgresTransportMode::EncryptedTrustServerCert, None, true)
+        } else {
+            (PostgresTransportMode::VerifyFull, None, false)
+        };
+        DbOpenConfig::Postgres {
+            host,
+            port,
+            database,
+            user,
+            password: SecretString::from(password),
+            transport_mode,
+            insecure_exception,
+            trust_server_cert_acknowledged,
+        }
+    }
+
     #[derive(Clone, Default)]
     pub struct IntegrationRuntime {
         state: DbState,
@@ -6304,17 +5996,14 @@ pub mod integration_harness {
             ssl: bool,
             trust_cert: bool,
         ) -> Result<IntegrationConnection, DatabaseOperationalError> {
+            let host = host.into();
+            let database = database.into();
+            let user = user.into();
             self.open(
                 descriptor_id.into(),
-                DbOpenConfig::Postgres {
-                    host: host.into(),
-                    port,
-                    database: database.into(),
-                    user: user.into(),
-                    password: SecretString::from(password),
-                    ssl,
-                    trust_cert,
-                },
+                postgres_open_config_from_legacy_flags(
+                    host, port, database, user, password, ssl, trust_cert,
+                ),
             )
             .await
         }
@@ -6362,15 +6051,12 @@ pub mod integration_harness {
             ssl: bool,
             trust_cert: bool,
         ) -> Result<Option<String>, DatabaseOperationalError> {
-            test_unregistered(DbOpenConfig::Postgres {
-                host: host.into(),
-                port,
-                database: database.into(),
-                user: user.into(),
-                password: SecretString::from(password),
-                ssl,
-                trust_cert,
-            })
+            let host = host.into();
+            let database = database.into();
+            let user = user.into();
+            test_unregistered(postgres_open_config_from_legacy_flags(
+                host, port, database, user, password, ssl, trust_cert,
+            ))
             .await
         }
 
@@ -6784,10 +6470,12 @@ mod tests {
             effect_outcome: EffectOutcome::Unknown,
             lifecycle: ResultSessionLifecycle::Released,
             result_limit_reached: true,
+            value_too_large: false,
         };
         let json = serde_json::to_value(page).unwrap();
         assert_eq!(json["lifecycle"], "released");
         assert_eq!(json["resultLimitReached"], true);
+        assert_eq!(json["valueTooLarge"], false);
         assert_eq!(json["effectOutcome"], "unknown");
 
         let state = DbState::default();
@@ -6824,212 +6512,44 @@ mod tests {
     }
 
     #[test]
-    fn p7_postgres_primary_worker_owns_rowstream_and_drains_release_before_settlement() {
-        fn assert_send<T: Send>() {}
-        assert_send::<tokio_postgres::RowStream>();
-
+    fn network_primary_workers_decode_only_inside_the_helper() {
         let source = include_str!("db_service.rs");
-        let worker = source
-            .split("async fn pg_run_primary_worker")
+        let production = source
+            .split("mod tests {")
+            .next()
+            .expect("production source before tests");
+        assert!(production.contains("network_run_primary_worker("));
+        assert!(production.contains("tauri::async_runtime::spawn(pg_run_primary_worker"));
+        assert!(production.contains("tauri::async_runtime::spawn(mssql_run_primary_worker"));
+        assert!(production.contains("async fn helper_pg_query"));
+        assert!(production.contains("async fn helper_mssql_query"));
+        assert!(
+            !production.contains("async fn pg_read_primary_page"),
+            "parent must not decode PostgreSQL rows in-process"
+        );
+        assert!(
+            !production.contains("async fn mssql_drive_primary_stream"),
+            "parent must not drive an in-process MSSQL QueryStream"
+        );
+        let release = production
+            .split("async fn network_run_primary_worker")
             .nth(1)
             .and_then(|source| {
                 source
-                    .split("pub(crate) async fn query_run_in_state")
-                    .next()
+                    .split("Some(ResultContinuationCommand::Release")
+                    .nth(1)
             })
-            .expect("PostgreSQL primary worker source boundary");
-        let release = worker
-            .split("Some(ResultContinuationCommand::Release")
-            .nth(1)
-            .expect("PostgreSQL Release branch");
+            .expect("network Release branch");
         let cancel = release
-            .find("pg_cancel_and_drain(connection, &mut stream).await")
-            .expect("Release must cancel and drain the owned RowStream");
+            .find("worker.stop_streaming()")
+            .expect("Release must stop the helper stream");
+        let drain = release
+            .find("drain_helper_stream(worker).await")
+            .expect("Release must drain the helper before settlement");
         let settle = release
             .find("settle_primary_guard")
             .expect("Release must settle its exact lease");
-        assert!(cancel < settle);
-        assert!(source.contains("tauri::async_runtime::spawn(pg_run_primary_worker"));
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct FakeMssqlPrimaryClient(u8);
-
-    #[test]
-    fn p7_mssql_primary_client_is_taken_once_and_normal_eof_restores_it() {
-        let mut slot = Some(FakeMssqlPrimaryClient(7));
-        let mut worker = MssqlPrimaryClientState::take(&mut slot).unwrap();
-
-        assert!(slot.is_none());
-        assert!(matches!(
-            MssqlPrimaryClientState::take(&mut slot),
-            Err(MssqlPrimaryStateError::ClientUnavailable)
-        ));
-
-        worker.request_exit(MssqlPrimaryExit::NormalEof);
-        assert_eq!(
-            worker.finish(&mut slot),
-            Err(MssqlPrimaryStateError::DrainRequired)
-        );
-        worker.mark_drained();
-        let finished = worker.finish(&mut slot).unwrap();
-        assert_eq!(finished.disposition, MssqlPrimaryClientDisposition::Reuse);
-        assert!(finished.client_to_close.is_none());
-        assert_eq!(slot, Some(FakeMssqlPrimaryClient(7)));
-    }
-
-    #[test]
-    fn p7_mssql_primary_cancel_and_teardown_never_restore_the_client() {
-        for reason in [
-            MssqlPrimaryExit::UserCancel,
-            MssqlPrimaryExit::LifecycleTermination,
-            MssqlPrimaryExit::ChannelClosedWhileTerminating,
-        ] {
-            let mut slot = Some(FakeMssqlPrimaryClient(9));
-            let mut worker = MssqlPrimaryClientState::take(&mut slot).unwrap();
-            worker.request_exit(reason);
-
-            let finished = worker.finish(&mut slot).unwrap();
-            assert_eq!(
-                finished.disposition,
-                MssqlPrimaryClientDisposition::CloseNoReuse
-            );
-            assert_eq!(finished.client_to_close, Some(FakeMssqlPrimaryClient(9)));
-            assert!(slot.is_none(), "{reason:?} restored a terminated client");
-        }
-    }
-
-    #[test]
-    fn p7_mssql_primary_release_limit_and_error_require_eof_before_reuse() {
-        for reason in [
-            MssqlPrimaryExit::Release,
-            MssqlPrimaryExit::Limit,
-            MssqlPrimaryExit::DeferredError,
-        ] {
-            let policy = reason.policy();
-            assert!(policy.drain_required, "{reason:?} skipped EOF drain");
-            assert_eq!(policy.disposition, MssqlPrimaryClientDisposition::Reuse);
-
-            let mut slot = Some(FakeMssqlPrimaryClient(11));
-            let mut worker = MssqlPrimaryClientState::take(&mut slot).unwrap();
-            worker.request_exit(reason);
-            assert_eq!(
-                worker.finish(&mut slot),
-                Err(MssqlPrimaryStateError::DrainRequired)
-            );
-            assert!(slot.is_none());
-            worker.mark_drained();
-            let finished = worker.finish(&mut slot).unwrap();
-            assert_eq!(finished.disposition, MssqlPrimaryClientDisposition::Reuse);
-            assert!(finished.client_to_close.is_none());
-            assert_eq!(slot, Some(FakeMssqlPrimaryClient(11)));
-        }
-    }
-
-    #[test]
-    fn p7_mssql_primary_real_query_stream_lifetime_seam_compiles() {
-        let _ = mssql_primary_query_stream_compile_seam;
-        let source = include_str!("db_service.rs");
-        assert!(source.contains("tauri::async_runtime::spawn(mssql_run_primary_worker"));
-        assert!(source.contains("async fn mssql_drive_primary_stream"));
-        assert!(!source.contains("todo!(\"P7 MSSQL primary"));
-    }
-
-    fn drive_mssql_primary_fixture_rows(
-        state: &mut MssqlPrimaryStreamState,
-        row_count: usize,
-    ) -> usize {
-        let mut observed = 0;
-        for value in 0..row_count {
-            if state.prepare_row(0, 1) == MssqlRowAction::DrainOnly {
-                state.record_drained_item();
-                continue;
-            }
-            let row = state
-                .record_decoded_row(Ok(vec![DbValue::Integer {
-                    value: value.to_string(),
-                }]))
-                .expect("fixture row should decode");
-            assert_eq!(row.len(), 1);
-            observed += 1;
-            if state.record_push(PushRowOutcome::Stored) == MssqlPrimaryPageProgress::Streaming {
-                break;
-            }
-        }
-        observed
-    }
-
-    #[test]
-    fn p7_mssql_primary_fixture_proves_500_and_501_lookahead_boundaries() {
-        for (rows, expected_progress, expected_observed) in [
-            (500, MssqlPrimaryPageProgress::Continue, 500),
-            (501, MssqlPrimaryPageProgress::Streaming, 501),
-        ] {
-            let mut state = MssqlPrimaryStreamState::new(0);
-            assert_eq!(
-                state.observe_metadata(0, vec!["value".to_string()]),
-                Some(vec!["value".to_string()])
-            );
-            assert_eq!(
-                drive_mssql_primary_fixture_rows(&mut state, rows),
-                expected_observed
-            );
-            assert_eq!(state.page_progress(), expected_progress);
-        }
-    }
-
-    #[test]
-    fn p7_mssql_primary_fixture_release_drains_later_items_and_keeps_effect() {
-        let mut state = MssqlPrimaryStreamState::new(0);
-        state.observe_metadata(0, vec!["value".to_string()]);
-        assert_eq!(drive_mssql_primary_fixture_rows(&mut state, 2), 2);
-        state.request_release();
-        for _ in 0..3 {
-            assert_eq!(state.prepare_row(0, 1), MssqlRowAction::DrainOnly);
-            state.record_drained_item();
-        }
-
-        let terminal = state.finish_eof(&[5]);
-        assert_eq!(terminal.exit, MssqlPrimaryExit::Release);
-        assert_eq!(terminal.affected_rows.as_deref(), Some("5"));
-        assert_eq!(terminal.effect_outcome, EffectOutcome::Unknown);
-        assert_eq!(terminal.drained_items, 3);
-        assert!(terminal.deferred_error.is_none());
-    }
-
-    #[test]
-    fn p7_mssql_primary_fixture_defers_first_decode_and_shape_errors_until_eof() {
-        let first_decode_error = value_decode_error(
-            DatabaseErrorEngine::Mssql,
-            "fixture value",
-            "first decode failure",
-        );
-        let mut decode = MssqlPrimaryStreamState::new(0);
-        decode.observe_metadata(0, vec!["value".to_string()]);
-        assert!(decode
-            .record_decoded_row(Err(first_decode_error.clone()))
-            .is_none());
-        decode.observe_metadata(1, vec!["later".to_string()]);
-        decode.record_drained_item();
-        let terminal = decode.finish_eof(&[7]);
-        assert_eq!(terminal.exit, MssqlPrimaryExit::DeferredError);
-        assert_eq!(terminal.deferred_error, Some(first_decode_error));
-        assert_eq!(terminal.affected_rows.as_deref(), Some("7"));
-
-        let mut shape = MssqlPrimaryStreamState::new(0);
-        shape.observe_metadata(0, vec!["first".to_string()]);
-        shape.observe_metadata(1, vec!["second".to_string()]);
-        assert_eq!(shape.prepare_row(1, 1), MssqlRowAction::DrainOnly);
-        shape.record_drained_item();
-        let terminal = shape.finish_eof(&[]);
-        assert_eq!(terminal.exit, MssqlPrimaryExit::DeferredError);
-        assert_eq!(
-            terminal
-                .deferred_error
-                .as_ref()
-                .and_then(|error| error.code.as_deref()),
-            Some("resultShape")
-        );
+        assert!(cancel < drain && drain < settle);
     }
 
     #[tokio::test]
@@ -7430,6 +6950,95 @@ mod tests {
                 .unwrap()
                 .execute_batch("ROLLBACK")
                 .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_field_ceiling_rejects_before_clone_and_next_query_recovers() {
+        let state = DbState::default();
+        let actor = registered_sqlite_actor(&state, "descriptor-field", "connection-field");
+        if let DbHandle::Sqlite(connection) = actor.handle() {
+            connection
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TABLE hostile(id INTEGER PRIMARY KEY, payload BLOB NOT NULL);",
+                )
+                .unwrap();
+            let oversized = vec![0u8; crate::db_result_session::DEFAULT_FIELD_BYTES + 1];
+            connection
+                .lock()
+                .unwrap()
+                .execute(
+                    "INSERT INTO hostile(id, payload) VALUES (1, ?1)",
+                    [&oversized as &[u8]],
+                )
+                .unwrap();
+            connection
+                .lock()
+                .unwrap()
+                .execute("INSERT INTO hostile(id, payload) VALUES (2, x'00')", [])
+                .unwrap();
+        }
+        let identity = actor.identity().clone();
+        let sessions = crate::db_result_session::ResultSessionState::default();
+        let hostile = query_run_in_state(
+            &state,
+            &sessions,
+            QueryRunRequest {
+                descriptor_id: identity.descriptor_id.clone(),
+                connection_id: identity.connection_id.clone(),
+                connection_generation: identity.connection_generation.clone(),
+                query_run_id: QueryRunId("run-hostile-field".into()),
+                mode: QueryRunMode::Primary,
+                statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
+                    sql: "SELECT payload FROM hostile WHERE id = 1".into(),
+                    transaction_boundary: TransactionBoundary::None,
+                }])
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        match &hostile.statements[0].result {
+            StatementExecutionResult::ResultLimitReached { result_session, .. } => {
+                assert!(result_session.initial_page.value_too_large);
+                assert!(result_session.initial_page.rows.is_empty());
+            }
+            other => panic!("expected valueTooLarge limit, got {other:?}"),
+        }
+
+        let recovered = query_run_in_state(
+            &state,
+            &sessions,
+            QueryRunRequest {
+                descriptor_id: identity.descriptor_id.clone(),
+                connection_id: identity.connection_id.clone(),
+                connection_generation: identity.connection_generation.clone(),
+                query_run_id: QueryRunId("run-hostile-recover".into()),
+                mode: QueryRunMode::Primary,
+                statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
+                    sql: "SELECT id FROM hostile WHERE id = 2".into(),
+                    transaction_boundary: TransactionBoundary::None,
+                }])
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        match &recovered.statements[0].result {
+            StatementExecutionResult::Rows {
+                result_session: Some(session),
+                ..
+            } => {
+                assert_eq!(session.initial_page.rows.len(), 1);
+                assert!(!session.initial_page.value_too_large);
+                assert_eq!(
+                    session.initial_page.rows[0][0],
+                    DbValue::Integer { value: "2".into() }
+                );
+            }
+            other => panic!("expected recovered rows, got {other:?}"),
         }
     }
 
@@ -7969,6 +7578,67 @@ mod tests {
         // 兩種模式都要能建出 rustls connector（不連線，只驗證設定組裝）
         assert!(pg_tls(false).is_ok());
         assert!(pg_tls(true).is_ok());
+        assert!(postgres_transport_is_authorized(
+            PostgresTransportMode::VerifyFull,
+            "db.example",
+            5432,
+            "alice",
+            "app",
+            None,
+            false,
+        ));
+        assert!(!postgres_transport_is_authorized(
+            PostgresTransportMode::EncryptedTrustServerCert,
+            "db.example",
+            5432,
+            "alice",
+            "app",
+            None,
+            false,
+        ));
+        assert!(postgres_transport_is_authorized(
+            PostgresTransportMode::EncryptedTrustServerCert,
+            "db.example",
+            5432,
+            "alice",
+            "app",
+            None,
+            true,
+        ));
+        assert!(!postgres_transport_is_authorized(
+            PostgresTransportMode::InsecurePlaintext,
+            "db.example",
+            5432,
+            "alice",
+            "app",
+            None,
+            false,
+        ));
+        assert!(!postgres_transport_is_authorized(
+            PostgresTransportMode::InsecurePlaintext,
+            "db.example",
+            5432,
+            "alice",
+            "app",
+            Some(&PostgresInsecureException::new(
+                "other", 5432, "alice", "app",
+            )),
+            false,
+        ));
+        assert!(postgres_transport_is_authorized(
+            PostgresTransportMode::InsecurePlaintext,
+            "db.example",
+            5432,
+            "alice",
+            "app",
+            Some(&PostgresInsecureException::new(
+                "db.example",
+                5432,
+                "alice",
+                "app",
+            )),
+            false,
+        ));
     }
 
     #[test]
@@ -8093,19 +7763,20 @@ mod tests {
             descriptor_id: DescriptorId("descriptor-1".to_string()),
             config_generation: 1,
             name: "App".to_string(),
-            target: ProfileTarget::Postgres {
-                host: "db.internal".to_string(),
-                port: 5432,
-                database: "app".to_string(),
-                user: "alice".to_string(),
-                ssl: true,
-                trust_cert: false,
-            },
+            target: ProfileTarget::postgres(
+                "db.internal",
+                5432,
+                "app",
+                "alice",
+                PostgresTransportMode::VerifyFull,
+            ),
             credential_state: CredentialState::Stored,
         };
         let profile_json = serde_json::to_value(profile).unwrap();
         assert_eq!(profile_json["descriptorId"], "descriptor-1");
-        assert_eq!(profile_json["target"]["trustCert"], false);
+        assert_eq!(profile_json["target"]["transportMode"], "verifyFull");
+        assert!(profile_json["target"].get("ssl").is_none());
+        assert!(profile_json["target"].get("trustCert").is_none());
         assert!(profile_json.get("password").is_none());
 
         let live = LiveConnection {
@@ -8237,6 +7908,7 @@ mod tests {
                                 effect_outcome: EffectOutcome::None,
                                 lifecycle: ResultSessionLifecycle::Complete,
                                 result_limit_reached: false,
+                                value_too_large: false,
                             },
                         }),
                         affected_rows: None,
@@ -9221,8 +8893,7 @@ mod tests {
             "database": "app",
             "user": "alice",
             "password": SENTINEL,
-            "ssl": false,
-            "trustCert": false
+            "transportMode": "verifyFull"
         }))
         .unwrap();
         let DbOpenConfig::Postgres { password, .. } = config else {
@@ -9248,7 +8919,8 @@ mod tests {
             "d".to_string(),
             "u".to_string(),
             "p".to_string().into(),
-            false,
+            PostgresTransportMode::VerifyFull,
+            None,
             false,
         )
         .await;
@@ -9313,7 +8985,8 @@ mod tests {
             "app".to_string(),
             "alice".to_string(),
             SECRET.to_string().into(),
-            false,
+            PostgresTransportMode::VerifyFull,
+            None,
             false,
             std::time::Duration::from_millis(40),
         )
@@ -9332,7 +9005,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn postgres_auth_sqlstate_survives_open_envelope_without_secret() {
+    async fn postgres_auth_sqlstate_survives_connect_failure_without_secret() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const SECRET: &str = "YUZORA_POSTGRES_AUTH_SECRET";
@@ -9355,15 +9028,21 @@ mod tests {
             socket.write_all(fields.as_bytes()).await.unwrap();
         });
 
-        let result = open_unregistered(DbOpenConfig::Postgres {
-            host: address.ip().to_string(),
-            port: address.port(),
-            database: "app".to_string(),
-            user: "alice".to_string(),
-            password: SECRET.to_string().into(),
-            ssl: false,
-            trust_cert: false,
-        })
+        let result = pg_open(
+            address.ip().to_string(),
+            address.port(),
+            "app".to_string(),
+            "alice".to_string(),
+            SECRET.to_string().into(),
+            PostgresTransportMode::InsecurePlaintext,
+            Some(PostgresInsecureException::new(
+                address.ip().to_string(),
+                address.port(),
+                "alice",
+                "app",
+            )),
+            false,
+        )
         .await;
         server.await.unwrap();
 
@@ -9371,12 +9050,139 @@ mod tests {
             Err(failure) => failure,
             Ok(_) => panic!("fake authentication rejection must fail"),
         };
-        assert_eq!(failure.code, DatabaseOperationalErrorCode::ConnectionFailed);
-        let diagnostic = failure.error.expect("structured PostgreSQL diagnostic");
+        let diagnostic = pg_connect_failure_database_error(&failure);
         assert_eq!(diagnostic.code.as_deref(), Some("28P01"));
         assert_eq!(diagnostic.retryability, Retryability::NotRetryable);
         let serialized = serde_json::to_string(&diagnostic).unwrap();
         assert!(!serialized.contains(SECRET));
         assert!(serialized.contains("&lt;redacted&gt;") || serialized.contains("<redacted>"));
+    }
+
+    #[tokio::test]
+    async fn pg_tls_rejects_unacked_plaintext_before_network() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = accepted.clone();
+        let server = tokio::spawn(async move {
+            if listener.accept().await.is_ok() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        const SECRET: &str = "YUZORA_PG_TLS_PLAINTEXT_SECRET";
+        let result = pg_open(
+            address.ip().to_string(),
+            address.port(),
+            "app".to_string(),
+            "alice".to_string(),
+            SECRET.to_string().into(),
+            PostgresTransportMode::InsecurePlaintext,
+            None,
+            false,
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        server.abort();
+
+        let failure = match result {
+            Err(failure) => failure,
+            Ok(_) => panic!("unacked plaintext must not open"),
+        };
+        let diagnostic = pg_connect_failure_database_error(&failure);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some("postgresTransportRejected")
+        );
+        assert!(!accepted.load(Ordering::SeqCst));
+        assert!(!format!("{failure:?}").contains(SECRET));
+    }
+
+    #[tokio::test]
+    async fn pg_tls_rejects_unacked_trust_server_cert_before_network() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = accepted.clone();
+        let server = tokio::spawn(async move {
+            if listener.accept().await.is_ok() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        const SECRET: &str = "YUZORA_PG_TLS_TRUST_SECRET";
+        let result = pg_open(
+            address.ip().to_string(),
+            address.port(),
+            "app".to_string(),
+            "alice".to_string(),
+            SECRET.to_string().into(),
+            PostgresTransportMode::EncryptedTrustServerCert,
+            None,
+            false,
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        server.abort();
+
+        let failure = match result {
+            Err(failure) => failure,
+            Ok(_) => panic!("unacked trust-server-cert must not open"),
+        };
+        let diagnostic = pg_connect_failure_database_error(&failure);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some("postgresTransportRejected")
+        );
+        assert!(!accepted.load(Ordering::SeqCst));
+        assert!(!format!("{failure:?}").contains(SECRET));
+    }
+
+    #[tokio::test]
+    async fn pg_tls_verify_full_does_not_send_password_to_plaintext_server() {
+        use tokio::io::AsyncReadExt;
+
+        const SECRET: &str = "YUZORA_PG_TLS_VERIFY_SECRET";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let received = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let received_for_server = received.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0_u8; 1024];
+            if let Ok(n) = socket.read(&mut buf).await {
+                received_for_server
+                    .lock()
+                    .await
+                    .extend_from_slice(&buf[..n]);
+            }
+        });
+
+        let result = pg_open(
+            address.ip().to_string(),
+            address.port(),
+            "app".to_string(),
+            "alice".to_string(),
+            SECRET.to_string().into(),
+            PostgresTransportMode::VerifyFull,
+            None,
+            false,
+        )
+        .await;
+        let _ = server.await;
+
+        if result.is_ok() {
+            panic!("plaintext fixture must fail verify-full TLS");
+        }
+        let bytes = received.lock().await;
+        let haystack = String::from_utf8_lossy(&bytes);
+        assert!(
+            !haystack.contains(SECRET),
+            "verify-full must not send the password before TLS succeeds: {haystack:?}"
+        );
     }
 }

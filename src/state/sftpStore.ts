@@ -8,7 +8,7 @@ import {
     sftpRename,
     sftpUpload
 } from "@/lib/ipc"
-import type { SftpEntry, SftpProgressEvent } from "@/lib/types"
+import type { SftpDownloadDest, SftpEntry, SftpProgressEvent, SftpUploadSource } from "@/lib/types"
 import { useSshStore } from "./sshStore"
 
 // Which pane of the SSH panel is showing. cmOpenSftp flips this to "sftp" so the
@@ -51,8 +51,8 @@ interface SftpStore {
     rename: (hostId: string, entry: SftpEntry, newName: string) => Promise<void>
     remove: (hostId: string, entry: SftpEntry) => Promise<void>
     // destDir（可選）：拖放到遠端資料夾 row 時的目標目錄；預設遠端 cwd。
-    upload: (hostId: string, localPath: string, destDir?: string) => Promise<void>
-    download: (hostId: string, entry: SftpEntry, localPath: string) => Promise<void>
+    upload: (hostId: string, source: SftpUploadSource, destDir?: string) => Promise<void>
+    download: (hostId: string, entry: SftpEntry, dest: SftpDownloadDest) => Promise<void>
     applyProgress: (evt: SftpProgressEvent) => void
     clearTransfer: (transferId: string) => void
     reset: () => void
@@ -194,7 +194,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         await get().listRemote(hostId, cwd)
     },
 
-    upload: async (hostId, localPath, destDir) => {
+    upload: async (hostId, source, destDir) => {
         const sessionId = sessionIdOf(hostId)
         const cwd = destDir || get().remote[hostId]?.cwd
         // Reject an empty cwd too: the loading placeholder seeds cwd:"" before the
@@ -202,13 +202,14 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         // root "/" instead of the real home directory.
         if (!sessionId || !cwd) return
         const transferId = newTransferId()
+        const name = source.kind === "workspace" ? baseName(source.relativePath) : source.name
         set((s) => ({
             transfers: {
                 ...s.transfers,
                 [transferId]: {
                     hostId,
                     direction: "upload",
-                    name: baseName(localPath),
+                    name,
                     transferred: 0,
                     total: 0,
                     done: false,
@@ -217,7 +218,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             }
         }))
         try {
-            await sftpUpload(sessionId, transferId, localPath, cwd)
+            await sftpUpload(sessionId, transferId, source, cwd)
             get().applyProgress({ sessionId, transferId, transferred: 0, total: 0, done: true })
             // Refresh the pane the user is looking at — uploading into a folder
             // row (destDir) must not navigate the view into that folder.
@@ -237,7 +238,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         }
     },
 
-    download: async (hostId, entry, localPath) => {
+    download: async (hostId, entry, dest) => {
         const sessionId = sessionIdOf(hostId)
         if (!sessionId) return
         const transferId = newTransferId()
@@ -256,7 +257,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             }
         }))
         try {
-            await sftpDownload(sessionId, transferId, entry.path, localPath)
+            await sftpDownload(sessionId, transferId, entry.path, dest)
             get().applyProgress({ sessionId, transferId, transferred: 0, total: 0, done: true })
         } catch (e) {
             set((s) => {

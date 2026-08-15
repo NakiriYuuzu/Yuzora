@@ -62,12 +62,9 @@ export const t = {
   mintSoft: "#e0f6ee",
   amberSoft: "#fff2dc",
   dangerSoft: "#ffe6e9",
-  // thread kind styles（AgentZonePanel THREAD_KIND_STYLE）
-  diffFg: "#0f7a55",
-  diffBd: "rgba(43, 191, 138, 0.28)",
+  // ADE / HERDR state tints
   permFg: "#9a6512",
   permBd: "rgba(214, 138, 12, 0.3)",
-  acpPurple: "#5b3fd1",
   // gradients
   gradSunrise: "linear-gradient(160deg, #ffb23e 0%, #ff6b54 55%, #e0539b 100%)",
   gradDusk: "linear-gradient(160deg, #7b5bff 0%, #2f6bff 100%)",

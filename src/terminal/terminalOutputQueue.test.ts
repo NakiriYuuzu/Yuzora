@@ -69,6 +69,70 @@ describe("TerminalOutputQueue", () => {
     expect(writes[1]?.data).toBe("c")
   })
 
+  it("writes an authoritative full frame without truncating its ANSI prefix", () => {
+    const writes: string[] = []
+    const beforeWrite = vi.fn()
+    const queue = new TerminalOutputQueue(
+      (data, done) => {
+        writes.push(data)
+        done()
+      },
+      true,
+      8,
+    )
+    const fullFrame = "\u001b[2J" + "x".repeat(64)
+
+    queue.replace(fullFrame, beforeWrite)
+    flushFrame()
+
+    expect(beforeWrite).toHaveBeenCalledTimes(1)
+    expect(writes).toEqual([fullFrame])
+    expect(writes[0]).not.toContain(TERMINAL_OUTPUT_TRUNCATED_NOTICE)
+    expect(queue.droppedBytes).toBe(0)
+  })
+
+  it("can flush a hidden full frame synchronously when its tab becomes visible", () => {
+    const writes: string[] = []
+    const queue = new TerminalOutputQueue(
+      (data, done) => {
+        writes.push(data)
+        done()
+      },
+      false,
+    )
+
+    queue.replace("authoritative frame")
+    queue.setVisible(true)
+    queue.flushNow()
+
+    expect(writes).toEqual(["authoritative frame"])
+    expect(frames.size).toBe(0)
+  })
+
+  it("retains one oversized full frame while hidden without reporting truncation", () => {
+    const writes: string[] = []
+    const queue = new TerminalOutputQueue(
+      (data, done) => {
+        writes.push(data)
+        done()
+      },
+      false,
+      8,
+    )
+    const fullFrame = "\u001b[H" + "z".repeat(64)
+
+    queue.replace(fullFrame)
+    expect(queue.hiddenBytes).toBe(utf8Length(fullFrame))
+    expect(frames.size).toBe(0)
+
+    queue.setVisible(true)
+    flushFrame()
+
+    expect(writes).toEqual([fullFrame])
+    expect(writes[0]).not.toContain(TERMINAL_OUTPUT_TRUNCATED_NOTICE)
+    expect(queue.droppedBytes).toBe(0)
+  })
+
   it("does not write while hidden and replays a bounded buffer with a truncation notice", () => {
     const writes: string[] = []
     const queue = new TerminalOutputQueue(

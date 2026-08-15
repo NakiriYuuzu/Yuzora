@@ -1,5 +1,7 @@
 # 全面依賴升級 Runbook
 
+> Shell snippets below assume **Bash / Git Bash / WSL**.
+
 > 最後驗證：2026-07-11。這份文件記錄 Yuzora 進行跨 Bun、TypeScript、Tauri/Rust 全面升級時的判斷順序、相容策略與驗證 gate。版本號是當次快照；後續執行時仍應重新查詢 registry，不可把本文件中的版本視為永久最新版。
 
 ## 1. 目標與範圍

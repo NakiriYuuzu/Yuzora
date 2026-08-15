@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react"
-import { confirm as confirmDialog, open as openFileDialog, save as saveDialog } from "@tauri-apps/plugin-dialog"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import {
   ArrowUp,
   Download,
   File as FileIcon,
+  FileSymlink,
   Folder,
   FolderPlus,
   FolderSync,
@@ -20,11 +20,24 @@ import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
-import { listDir } from "@/lib/ipc"
-import { workspacePathForDisplay } from "@/lib/paths"
-import type { FileNode, SftpEntry } from "@/lib/types"
+import { requestAppConfirmation } from "@/state/appDialogStore"
+import { requestTextInputDialog } from "@/state/textInputDialogStore"
+import {
+  listDir,
+  sftpPickDownloadDestination,
+  sftpPickSelectedPath
+} from "@/lib/ipc"
+import {
+  isSafeLeafName,
+  localPathParent,
+  relativePathWithin,
+  samePathIdentity,
+  workspacePathForDisplay
+} from "@/lib/paths"
+import type { FileNode, SftpEntry, SftpUploadSource } from "@/lib/types"
 import { SshTerminalSession } from "@/terminal/SshTerminalSession"
 import {
   physicalPointInRect,
@@ -230,12 +243,10 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-// Parent of a native local path (macOS/Linux "/"): "/a/b/c" → "/a/b", "/a" → "/".
+// Parent of a native local path. Supports POSIX, drive letters, UNC, and
+// Windows verbatim forms. Remote SFTP paths stay POSIX and must not use this.
 function localParent(path: string): string {
-  const trimmed = path.replace(/\/+$/, "")
-  const slash = trimmed.lastIndexOf("/")
-  if (slash <= 0) return "/"
-  return trimmed.slice(0, slash)
+  return localPathParent(path)
 }
 
 /**
@@ -270,10 +281,8 @@ function SftpTabContent() {
 }
 
 function SftpBrowser({ hostId }: { hostId: string }) {
-  const { t } = useTranslation("panels")
   const remote = useSftpStore((s) => s.remote[hostId])
   const listRemote = useSftpStore((s) => s.listRemote)
-  const upload = useSftpStore((s) => s.upload)
   const download = useSftpStore((s) => s.download)
   const transfers = useSftpStore((s) => s.transfers)
   const [dragOver, setDragOver] = useState(false)
@@ -313,22 +322,14 @@ function SftpBrowser({ hostId }: { hostId: string }) {
   // which confirms natively; a drop must not silently clobber a local file).
   // confirm comes from plugin-dialog, matching the repo's confirm convention
   // (contextMenuStore) rather than relying on wry's window.confirm.
-  async function acceptRemoteToLocalDrop(payload: SftpDragState, target: SftpHoverTarget) {
-    const targetDir = target.dirPath ?? target.paneCwd
-    if (!targetDir) return
-    let exists = false
-    try {
-      exists = (await listDir(targetDir)).some((node) => node.name === payload.name)
-    } catch {
-      // Target dir unreadable — let the transfer surface the real error.
-    }
-    if (exists && !(await confirmDialog(t("sshPanel.sftpOverwriteConfirm", { name: payload.name })))) {
-      return
-    }
+  async function acceptRemoteToLocalDrop(payload: SftpDragState, _target: SftpHoverTarget) {
+    if (!isSafeLeafName(payload.name)) return
+    const grant = await sftpPickDownloadDestination(payload.name)
+    if (!grant) return
     await download(
       hostId,
       { name: payload.name, path: payload.path, isDir: false, isSymlink: false, size: payload.size },
-      localJoin(targetDir, payload.name)
+      { capabilityId: grant.id, leaf: grant.leaf }
     )
     setLocalRefreshTick((tick) => tick + 1)
   }
@@ -366,7 +367,7 @@ function SftpBrowser({ hostId }: { hostId: string }) {
       if (current.kind === "local") {
         // Local file → remote pane / folder row: undefined destDir falls back
         // to the remote cwd inside the store.
-        void upload(hostId, current.path, target.dirPath ?? undefined)
+        void uploadFromLocalPath(hostId, current.path, target.dirPath ?? undefined)
       } else {
         void acceptRemoteToLocalDrop(current, target)
       }
@@ -414,7 +415,7 @@ function SftpBrowser({ hostId }: { hostId: string }) {
         if (payload.type === "drop") {
           setDragOver(false)
           if (inside) {
-            for (const p of payload.paths) void upload(hostId, p)
+            for (const p of payload.paths) void uploadFromLocalPath(hostId, p)
           }
         } else {
           setDragOver(inside)
@@ -428,7 +429,7 @@ function SftpBrowser({ hostId }: { hostId: string }) {
       disposed = true
       unlisten?.()
     }
-  }, [hostId, upload])
+  }, [hostId])
 
   const hostTransfers = Object.entries(transfers).filter(([, tr]) => tr.hostId === hostId)
 
@@ -510,8 +511,59 @@ function sftpDropTargetAt(x: number, y: number): SftpHoverTarget | null {
   return { pane, dirPath: null, paneCwd }
 }
 
-function localJoin(dir: string, name: string): string {
-  return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`
+function workspaceUploadSource(
+  workspacePath: string,
+  workspaceId: string,
+  localPath: string
+): SftpUploadSource | null {
+  const relativePath = relativePathWithin(workspacePath, localPath)
+  if (!relativePath) return null
+  return { kind: "workspace", workspaceId, relativePath }
+}
+
+async function uploadFromLocalPath(hostId: string, localPath: string, destDir?: string) {
+  const { workspacePath, workspaceCapabilityId } = useWorkspaceStore.getState()
+  const workspaceSource = workspacePath && workspaceCapabilityId
+    ? workspaceUploadSource(workspacePath, workspaceCapabilityId, localPath)
+    : null
+  if (workspaceSource) {
+    await useSftpStore.getState().upload(hostId, workspaceSource, destDir)
+    return
+  }
+  // Outside the workspace the renderer has no authority to mint a path
+  // capability. Native picker grants are the only non-workspace source.
+}
+
+function localNodeKind(node: FileNode): NonNullable<FileNode["kind"]> {
+  return node.kind ?? (node.isDir ? "directory" : "file")
+}
+
+function canUploadLocalNode(node: FileNode): boolean {
+  const kind = localNodeKind(node)
+  return kind === "file" && isSafeLeafName(node.name)
+}
+
+function canTransferRemoteEntry(entry: SftpEntry): boolean {
+  return !entry.isDir && !entry.isSymlink && entry.nameSafe !== false && isSafeLeafName(entry.name)
+}
+
+const SFTP_ERROR_KEYS: Record<string, string> = {
+  "unsafe-leaf-name": "sshPanel.sftpErrorUnsafeLeaf",
+  "unsafe-relative-path": "sshPanel.sftpErrorUnsafeLeaf",
+  "symlink-rejected": "sshPanel.sftpErrorSymlink",
+  "reparse-rejected": "sshPanel.sftpErrorReparse",
+  "not-a-regular-file": "sshPanel.sftpErrorNotRegular",
+  "destination-busy": "sshPanel.sftpErrorDestinationBusy",
+  "selected-path-expired": "sshPanel.sftpErrorCapabilityExpired",
+  "selected-path-missing": "sshPanel.sftpErrorCapabilityExpired",
+  "path-not-utf8": "sshPanel.sftpErrorPathNotUtf8",
+  "path-escape": "sshPanel.sftpErrorWorkspaceEscape"
+}
+
+function localizedSftpError(t: (key: string) => string, error: string): string {
+  const code = error.trim()
+  const key = SFTP_ERROR_KEYS[code]
+  return key ? t(key) : t("sshPanel.sftpTransferFailed")
 }
 
 function LocalPane({
@@ -535,7 +587,6 @@ function LocalPane({
 }) {
   const { t } = useTranslation("panels")
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-  const upload = useSftpStore((s) => s.upload)
   const [cwd, setCwd] = useState<string | null>(workspacePath)
   const [entries, setEntries] = useState<FileNode[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -566,24 +617,28 @@ function LocalPane({
     }
   }, [cwd, refreshTick])
 
+  const parent = cwd ? localParent(cwd) : null
+  const atRoot = Boolean(cwd && parent && samePathIdentity(cwd, parent))
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <PaneHeader title={t("sshPanel.sftpLocalTitle")} path={workspacePathForDisplay(cwd ?? "")}>
         <IconButton
           label={t("sshPanel.sftpUp")}
-          onClick={() => cwd && setCwd(localParent(cwd))}
-          disabled={!cwd || cwd === "/"}
+          onClick={() => parent && setCwd(parent)}
+          disabled={!cwd || !parent || atRoot}
           icon={ArrowUp}
         />
       </PaneHeader>
-      <div
+      <ScrollArea
         data-testid="sftp-local-pane-body"
         data-sftp-drop-pane="local"
         data-sftp-pane-cwd={cwd ?? ""}
         className={cn(
-          "min-h-0 flex-1 overflow-y-auto px-[4px] py-[4px]",
+          "min-h-0 flex-1",
           paneDropActive && "bg-(--yz-hover) ring-2 ring-inset ring-(--yz-accent)"
         )}
+        viewportClassName="px-[4px] py-[4px]"
       >
         {!cwd ? (
           <PaneNote text={t("sshPanel.sftpLocalNoWorkspace")} />
@@ -592,11 +647,14 @@ function LocalPane({
         ) : entries.length === 0 ? (
           <PaneNote text={t("sshPanel.sftpEmptyDir")} />
         ) : (
-          entries.map((node) => (
+          entries.map((node) => {
+            const kind = localNodeKind(node)
+            const uploadable = canUploadLocalNode(node)
+            return (
             <div
               key={node.path}
               onPointerDown={
-                !node.isDir
+                uploadable
                   ? (event) =>
                       onFileDragStart("local", { path: node.path, name: node.name, size: 0 }, event)
                   : undefined
@@ -612,29 +670,35 @@ function LocalPane({
               <button
                 type="button"
                 onClick={() => node.isDir && setCwd(node.path)}
+                title={kind === "symlink" ? t("sshPanel.sftpSymlinkEntry", { name: node.name }) : node.name}
                 className="flex min-w-0 flex-1 items-center gap-[6px] text-left"
               >
                 {node.isDir ? (
                   <Folder className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
+                ) : kind === "symlink" ? (
+                  <FileSymlink className="size-[13px] shrink-0 text-(--ink-4)" aria-hidden="true" />
                 ) : (
                   <FileIcon className="size-[13px] shrink-0 text-(--ink-4)" aria-hidden="true" />
                 )}
                 <span className="truncate text-(--ink-2)">{node.name}</span>
               </button>
-              {!node.isDir ? (
+              {uploadable ? (
                 <span data-sftp-row-actions className="flex shrink-0 items-center">
                   <IconButton
                     label={t("sshPanel.sftpUploadFile", { name: node.name })}
-                    onClick={() => void upload(hostId, node.path)}
+                    onClick={() => {
+                      void uploadFromLocalPath(hostId, node.path)
+                    }}
                     icon={Upload}
                     hoverOnly
                   />
                 </span>
               ) : null}
             </div>
-          ))
+            )
+          })
         )}
-      </div>
+      </ScrollArea>
     </div>
   )
 }
@@ -669,7 +733,6 @@ function RemotePane({
   const mkdir = useSftpStore((s) => s.mkdir)
   const rename = useSftpStore((s) => s.rename)
   const remove = useSftpStore((s) => s.remove)
-  const upload = useSftpStore((s) => s.upload)
   const download = useSftpStore((s) => s.download)
 
   // This pane only receives local-sourced drags (upload direction).
@@ -677,38 +740,59 @@ function RemotePane({
   const rowDropPath = dragKind === "local" && hover?.pane === "remote" ? hover.dirPath : null
 
   async function pickAndUpload() {
-    const selected = await openFileDialog({ multiple: true })
-    if (!selected) return
-    const paths = Array.isArray(selected) ? selected : [selected]
-    for (const p of paths) void upload(hostId, p)
+    const grants = await sftpPickSelectedPath()
+    if (!grants.length) return
+    for (const grant of grants) {
+      void useSftpStore.getState().upload(
+        hostId,
+        { kind: "selected", capabilityId: grant.id, name: grant.leaf }
+      )
+    }
   }
 
   async function promptMkdir() {
-    const name = window.prompt(t("sshPanel.sftpNewFolderPrompt"))?.trim()
-    if (name) await mkdir(hostId, name)
+    const name = await requestTextInputDialog({
+      title: t("sshPanel.sftpNewFolderPrompt"),
+      label: t("sshPanel.sftpNameLabel"),
+      confirmLabel: t("sshPanel.sftpCreate")
+    })
+    if (name && isSafeLeafName(name)) await mkdir(hostId, name)
   }
 
   async function promptRename(entry: SftpEntry) {
-    const name = window.prompt(t("sshPanel.sftpRenamePrompt"), entry.name)?.trim()
-    if (name && name !== entry.name) await rename(hostId, entry, name)
+    const name = await requestTextInputDialog({
+      title: t("sshPanel.sftpRenamePrompt"),
+      label: t("sshPanel.sftpNameLabel"),
+      initialValue: entry.name,
+      confirmLabel: t("sshPanel.sftpRenameAction")
+    })
+    if (name && name !== entry.name && isSafeLeafName(name)) await rename(hostId, entry, name)
   }
 
   async function confirmRemove(entry: SftpEntry) {
     const text = entry.isDir
       ? t("sshPanel.sftpDeleteDirConfirm", { name: entry.name })
       : t("sshPanel.sftpDeleteConfirm", { name: entry.name })
-    if (window.confirm(text)) await remove(hostId, entry)
+    const accepted = await requestAppConfirmation({
+      title: t("sshPanel.sftpDeleteTitle"),
+      description: text,
+      kind: "warning",
+      destructive: true
+    })
+    if (accepted) await remove(hostId, entry)
   }
 
   async function pickAndDownload(entry: SftpEntry) {
-    const target = await saveDialog({ defaultPath: entry.name })
-    if (typeof target === "string") void download(hostId, entry, target)
+    const grant = await sftpPickDownloadDestination(entry.name)
+    if (!grant) return
+    void download(hostId, entry, { capabilityId: grant.id, leaf: grant.leaf })
   }
 
   return (
     <div
       ref={paneRef}
       data-testid="sftp-remote-pane"
+      data-yuzora-os-file-drop-target="sftp-upload"
       className={cn(
         "flex min-h-0 flex-1 flex-col",
         dragOver && "bg-(--yz-hover) ring-2 ring-inset ring-(--yz-accent)"
@@ -740,14 +824,15 @@ function RemotePane({
           icon={Upload}
         />
       </PaneHeader>
-      <div
+      <ScrollArea
         data-testid="sftp-remote-pane-body"
         data-sftp-drop-pane="remote"
         data-sftp-pane-cwd={remote?.cwd ?? ""}
         className={cn(
-          "min-h-0 flex-1 overflow-y-auto px-[4px] py-[4px]",
+          "min-h-0 flex-1",
           paneDropActive && "bg-(--yz-hover) ring-2 ring-inset ring-(--yz-accent)"
         )}
+        viewportClassName="px-[4px] py-[4px]"
       >
         {remote?.error ? (
           <PaneNote text={remote.error} />
@@ -756,11 +841,13 @@ function RemotePane({
         ) : remote && remote.entries.length === 0 ? (
           <PaneNote text={t("sshPanel.sftpEmptyDir")} />
         ) : (
-          remote?.entries.map((entry) => (
+          remote?.entries.map((entry) => {
+            const transferable = canTransferRemoteEntry(entry)
+            return (
             <div
               key={entry.path}
               onPointerDown={
-                !entry.isDir
+                transferable
                   ? (event) =>
                       onFileDragStart(
                         "remote",
@@ -780,11 +867,19 @@ function RemotePane({
               <button
                 type="button"
                 onClick={() => entry.isDir && navigateInto(entry)}
-                title={entry.name}
+                title={
+                  entry.isSymlink
+                    ? t("sshPanel.sftpSymlinkEntry", { name: entry.name })
+                    : entry.nameSafe === false
+                      ? t("sshPanel.sftpUnsafeEntry", { name: entry.name })
+                      : entry.name
+                }
                 className="flex min-w-0 flex-1 items-center gap-[6px] text-left"
               >
                 {entry.isDir ? (
                   <Folder className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
+                ) : entry.isSymlink ? (
+                  <FileSymlink className="size-[13px] shrink-0 text-(--ink-4)" aria-hidden="true" />
                 ) : (
                   <FileIcon className="size-[13px] shrink-0 text-(--ink-4)" aria-hidden="true" />
                 )}
@@ -799,7 +894,7 @@ function RemotePane({
                 data-sftp-row-actions
                 className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-hover:opacity-100"
               >
-                {!entry.isDir ? (
+                {transferable ? (
                   <IconButton
                     label={t("sshPanel.sftpDownload", { name: entry.name })}
                     onClick={() => void pickAndDownload(entry)}
@@ -818,9 +913,10 @@ function RemotePane({
                 />
               </div>
             </div>
-          ))
+            )
+          })
         )}
-      </div>
+      </ScrollArea>
     </div>
   )
 }
@@ -833,7 +929,7 @@ function TransfersStrip({ entries }: { entries: [string, TransferState][] }) {
       {entries.map(([id, tr]) => {
         const pct = tr.total > 0 ? Math.min(100, Math.round((tr.transferred / tr.total) * 100)) : null
         const label = tr.error
-          ? t("sshPanel.sftpTransferFailed")
+          ? localizedSftpError(t, tr.error)
           : tr.done
             ? t("sshPanel.sftpTransferDone")
             : tr.direction === "upload"

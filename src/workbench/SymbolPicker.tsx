@@ -4,12 +4,21 @@ import { SearchIcon } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "../components/ui/command"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
+import { ScrollArea } from "../components/ui/scroll-area"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+    dialogMinSize,
+} from "../components/ui/dialog"
 import { ensureClient } from "../lsp/lspManager"
 import { requestDocumentSymbols, requestWorkspaceSymbols } from "../lsp/symbols"
 import type { FlatSymbol, WorkspaceSymbolItem } from "../lsp/symbols"
 import { pathToUri, uriToPath } from "../lsp/workspace"
 import { getDocument } from "../editor/documentRegistry"
+import { isFileTab } from "../lib/markdownPreviewTab"
 import { fileGradeOf, lspLanguageOf } from "../lib/types"
 import { useOverlayPresence } from "../state/overlayStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -38,8 +47,12 @@ const DEBOUNCE_MS = 250
 // (document mode only — see below).
 async function resolveActive(gradeGate: boolean) {
     const { workspacePath, groups, activeGroupIndex } = useWorkspaceStore.getState()
-    const activePath = groups[activeGroupIndex]?.activePath ?? null
-    if (!workspacePath || !activePath) return { managed: null, activePath: null }
+    const group = groups[activeGroupIndex]
+    const activeTab = group?.tabs.find((tab) => tab.path === group.activePath)
+    if (!workspacePath || !activeTab || !isFileTab(activeTab)) {
+        return { managed: null, activePath: null }
+    }
+    const activePath = activeTab.path
     const language = lspLanguageOf(activePath)
     if (!language) return { managed: null, activePath }
     // Document mode gates on the active file's grade the same way EditorPane does:
@@ -194,11 +207,13 @@ export function SymbolPicker({ open, onOpenChange, mode }: SymbolPickerProps) {
                 <DialogDescription>{placeholder}</DialogDescription>
             </DialogHeader>
             <DialogContent
+                resizeId="symbol-picker"
+                minSize={dialogMinSize(420, 280)}
                 showCloseButton={false}
-                className="yz-diffin top-[15vh] w-[620px] max-w-[88vw] translate-y-0 gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 backdrop-blur-[20px] backdrop-saturate-[1.5] sm:max-w-[88vw]"
+                className="yz-diffin flex min-h-0 flex-col gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 backdrop-blur-[20px] backdrop-saturate-[1.5]"
             >
-                <Command shouldFilter={false} className="rounded-none! bg-transparent p-0">
-                    <div className="flex items-center gap-3 border-b border-(--line-1) px-[21px] py-[17px]">
+                <Command shouldFilter={false} className="flex min-h-0 flex-1 flex-col rounded-none! bg-transparent p-0">
+                    <div className="flex shrink-0 items-center gap-3 border-b border-(--line-1) px-[21px] py-[17px]">
                         <SearchIcon className="size-5 shrink-0 text-(--ink-3)" aria-hidden="true" />
                         <CommandPrimitive.Input
                             autoFocus
@@ -212,7 +227,8 @@ export function SymbolPicker({ open, onOpenChange, mode }: SymbolPickerProps) {
                         </kbd>
                     </div>
 
-                    <CommandList className="yzs max-h-[398px] p-[8px]">
+                    <ScrollArea className="min-h-0 flex-1">
+                    <CommandList className="p-[8px]">
                         <CommandEmpty className="py-6 text-center text-[13px] text-(--ink-3)">
                             {t("noSymbols")}
                         </CommandEmpty>
@@ -250,6 +266,7 @@ export function SymbolPicker({ open, onOpenChange, mode }: SymbolPickerProps) {
                             </CommandGroup>
                         )}
                     </CommandList>
+                    </ScrollArea>
                 </Command>
             </DialogContent>
         </Dialog>

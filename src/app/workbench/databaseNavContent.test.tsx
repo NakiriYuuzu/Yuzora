@@ -9,6 +9,7 @@ import type {
   DbQueryRun,
   DbQueryRunRequest,
 } from "@/lib/types"
+import { migrateLegacyPostgresTransport } from "@/lib/types"
 import { dbObjectRefKey } from "@/lib/databaseSql"
 import i18n from "@/lib/i18n"
 import type { DbConnection, DbHistoryEntry, SavedDbConnection } from "@/state/dbStore"
@@ -28,7 +29,8 @@ vi.mock("@/lib/ipc", () => ({
   dbProfileRecover: vi.fn(),
   dbProfileOpen: vi.fn(),
   dbProfileDisconnect: vi.fn(),
-  dbTestConnection: vi.fn()
+  dbTestConnection: vi.fn(),
+  dbPostgresTransportChallenge: vi.fn()
 }))
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }))
 
@@ -44,7 +46,8 @@ import {
   dbProfileRemoveCredential,
   dbProfileUpdate,
   dbQueryRun,
-  dbTestConnection
+  dbTestConnection,
+  dbPostgresTransportChallenge
 } from "@/lib/ipc"
 import { useDbStore } from "@/state/dbStore"
 import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
@@ -62,6 +65,7 @@ const mockProfileForget = vi.mocked(dbProfileForget)
 const mockProfileRecover = vi.mocked(dbProfileRecover)
 const mockProfileOpen = vi.mocked(dbProfileOpen)
 const mockTestConnection = vi.mocked(dbTestConnection)
+const mockTransportChallenge = vi.mocked(dbPostgresTransportChallenge)
 
 // The Bun-hosted test runtime injects an empty `localStorage` global with no
 // Storage methods; install a minimal in-memory Storage (mirrors sshStore.test.ts).
@@ -140,8 +144,9 @@ function storedPostgres(id: string): SavedDbConnection {
     port: 5432,
     database: "d",
     user: "u",
-    ssl: false,
-    trustCert: false,
+    transportMode: "verifyFull",
+    insecureException: null,
+    trustServerCertAcknowledged: false,
     credentialState: "stored"
   }
 }
@@ -165,8 +170,7 @@ function profilesFromStore(): DbProfileDescriptor[] {
             port: saved.port,
             database: saved.database,
             user: saved.user,
-            ssl: saved.ssl ?? false,
-            trustCert: saved.trustCert ?? false
+            ...migrateLegacyPostgresTransport(saved)
           }
         : {
             kind: "mssql",
@@ -289,6 +293,16 @@ beforeEach(() => {
     }
   })
   mockTestConnection.mockResolvedValue({ elapsedMs: 3, serverVersion: "test-db" })
+  let challengeSequence = 0
+  mockTransportChallenge.mockImplementation(async (request) => ({
+    challengeId: `pg-chal-${++challengeSequence}`,
+    transportMode: request.transportMode,
+    host: request.host,
+    port: request.port,
+    user: request.user,
+    database: request.database,
+    expiresAt: Date.now() + 60_000
+  }))
 })
 
 afterEach(() => {
@@ -415,18 +429,57 @@ describe("DatabaseNavContent P5 bounded regions", () => {
         "/tmp/app.sqlite": [{ sql: "SELECT 1", ranAt: Date.now(), ok: true, elapsedMs: 1 }]
       }
     })
+    // Seed a representative object so object-tree ownership is content-backed.
+    useDbStore.setState({
+      tableBuckets: {
+        "/tmp/app.sqlite": [
+          { catalog: "main", schema: "main", name: "users", kind: "table" as const }
+        ]
+      }
+    })
     render(<DatabaseNavContent />)
 
     expect(screen.getByTestId("db-nav-root")).toHaveClass("overflow-hidden")
     expect(screen.getByTestId("db-region-grid")).toHaveClass(
       "grid-rows-[minmax(40px,0.8fr)_minmax(40px,1.4fr)_minmax(24px,0.7fr)]"
     )
+
+    const savedRoot = screen.getByTestId("db-saved-scroll")
+    const savedViewport = savedRoot.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    ) as HTMLElement
     expect(screen.getByTestId("db-saved-region")).toHaveClass("min-h-0", "overflow-hidden")
-    expect(screen.getByTestId("db-saved-scroll")).toHaveClass("min-h-0", "overflow-y-auto")
+    expect(savedRoot).toHaveAttribute("data-slot", "scroll-area")
+    expect(savedRoot).toHaveClass("min-h-0")
+    expect(savedViewport).toBeTruthy()
+    const savedRow = screen.getByTestId("db-saved-row")
+    expect(savedViewport.contains(savedRow)).toBe(true)
+    expect(savedViewport.contains(screen.getByText("app.sqlite"))).toBe(true)
+
+    const objectRoot = screen.getByTestId("db-object-scroll")
+    const objectViewport = objectRoot.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    ) as HTMLElement
     expect(screen.getByTestId("db-object-region")).toHaveClass("min-h-0", "overflow-hidden")
-    expect(screen.getByTestId("db-object-scroll")).toHaveClass("min-h-0", "overflow-y-auto")
+    expect(objectRoot).toHaveAttribute("data-slot", "scroll-area")
+    expect(objectRoot).toHaveClass("min-h-0")
+    expect(objectViewport).toBeTruthy()
+    const objectRow = screen.getByTestId("db-object-row")
+    expect(objectViewport.contains(objectRow)).toBe(true)
+    expect(objectViewport.contains(screen.getByText("users"))).toBe(true)
+
+    const historyRoot = screen.getByTestId("db-history-scroll")
+    const historyViewport = historyRoot.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    ) as HTMLElement
     expect(screen.getByTestId("db-history-region")).toHaveClass("max-h-[168px]", "overflow-hidden")
-    expect(screen.getByTestId("db-history-scroll")).toHaveClass("overflow-y-auto")
+    expect(historyRoot).toHaveAttribute("data-slot", "scroll-area")
+    expect(historyRoot).toHaveClass("max-h-[144px]")
+    expect(historyViewport).toBeTruthy()
+    const historyRow = screen.getByTestId("db-history-row")
+    expect(historyViewport.contains(historyRow)).toBe(true)
+    expect(historyViewport.contains(screen.getByText("SELECT 1"))).toBe(true)
+
     expect(screen.getByTestId("db-new-connection")).toHaveClass("shrink-0")
 
     const toggle = screen.getByTestId("db-history-toggle")
@@ -665,7 +718,7 @@ describe("DatabaseNavContent saved connections", () => {
           port: 5432,
           database: "d",
           user: "u",
-          ssl: false
+          ssl: true
         }
       ],
       activeConnId: null
@@ -699,7 +752,7 @@ describe("DatabaseNavContent saved connections", () => {
           port: 5432,
           database: "d",
           user: "u",
-          ssl: false
+          ssl: true
         }
       ],
       activeConnId: null
@@ -737,7 +790,7 @@ describe("DatabaseNavContent saved connections", () => {
       port: 5432,
       database: "d",
       user: "u",
-      ssl: false
+      ssl: true
     }
     useDbStore.setState({
       connections: [],
@@ -784,7 +837,7 @@ describe("DatabaseNavContent saved connections", () => {
           port: 5432,
           database: "d",
           user: "u",
-          ssl: false
+          ssl: true
         }
       ],
       activeConnId: null
@@ -820,7 +873,7 @@ describe("DatabaseNavContent saved connections", () => {
           port: 5432,
           database: "d",
           user: "u",
-          ssl: false
+          ssl: true
         }
       ],
       activeConnId: null
@@ -859,7 +912,7 @@ describe("DatabaseNavContent saved connections", () => {
           port: 5432,
           database: "d",
           user: "u",
-          ssl: false
+          ssl: true
         }
       ],
       activeConnId: null
@@ -913,7 +966,7 @@ describe("DatabaseNavContent saved connections", () => {
     expect(screen.getByText("Host")).toBeInTheDocument()
     expect(screen.getByText("Database")).toBeInTheDocument()
     expect(screen.getByText("Password")).toBeInTheDocument()
-    expect(screen.getByText("Use SSL")).toBeInTheDocument()
+    expect(screen.getByText("Verify certificate and hostname")).toBeInTheDocument()
   })
 
   it("treats a cancelled SQLite picker as a no-op but surfaces a rejected picker safely", async () => {
@@ -947,8 +1000,9 @@ describe("DatabaseNavContent saved connections", () => {
         port: 5432,
         database: "app",
         user: "alice",
-        ssl: false,
-        trustCert: false
+        transportMode: "verifyFull",
+        insecureException: null,
+        trustServerCertAcknowledged: false
       },
       credential: { password: secret }
     }))
@@ -1045,8 +1099,9 @@ describe("DatabaseNavContent saved connections", () => {
         port: 5432,
         database: "d",
         user: "u",
-        ssl: false,
-        trustCert: false
+        transportMode: "verifyFull",
+        insecureException: null,
+        trustServerCertAcknowledged: false
       },
       credential: { password: "draft-secret" }
     }))
@@ -1120,8 +1175,9 @@ describe("DatabaseNavContent saved connections", () => {
           port: 5432,
           database: "app",
           user: "alice",
-          ssl: false,
-          trustCert: false
+          transportMode: "verifyFull",
+          insecureException: null,
+          trustServerCertAcknowledged: false
         },
         credentialState: "stored"
       },
@@ -1152,7 +1208,7 @@ describe("DatabaseNavContent saved connections", () => {
     render(<DatabaseNavContent />)
 
     fireEvent.click(screen.getByText("New connection…"))
-    fireEvent.change(screen.getByPlaceholderText("/path/to/database.sqlite"), {
+    fireEvent.change(screen.getByLabelText("File"), {
       target: { value: "/tmp/failed.db" }
     })
     fireEvent.click(screen.getByText("Save and Connect"))
@@ -1220,7 +1276,7 @@ describe("DatabaseNavContent status + edit + delete (SSH parity)", () => {
           port: 5432,
           database: "d",
           user: "u",
-          ssl: false
+          ssl: true
         }
       ],
       activeConnId: null,
@@ -1335,7 +1391,7 @@ describe("DatabaseNavContent status + edit + delete (SSH parity)", () => {
         port: 5432,
         database: "d",
         user: "u",
-        ssl: false,
+        ssl: true,
         credentialState: "stored"
       }],
       activeConnId: null,
@@ -1476,5 +1532,230 @@ describe("DatabaseNavContent status + edit + delete (SSH parity)", () => {
       credential: null
     }))
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("defaults a new PostgreSQL profile to verify-full and requires plaintext acknowledgement", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    render(<DatabaseNavContent />)
+    await fillNewPostgresForm("plain-secret")
+
+    expect(screen.getByRole("radio", { name: /Verify certificate and hostname/ })).toBeChecked()
+    fireEvent.click(screen.getByRole("radio", { name: /Insecure plaintext/ }))
+
+    const ack = await screen.findByTestId("database-transport-ack-dialog")
+    expect(ack).toHaveTextContent("db.example")
+    expect(ack).toHaveTextContent("alice")
+    expect(ack).toHaveTextContent("app")
+    expect(ack).toHaveTextContent("Allow insecure plaintext?")
+    fireEvent.click(within(ack).getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByTestId("database-transport-ack-dialog")).not.toBeInTheDocument())
+    expect(screen.getByRole("radio", { name: /Verify certificate and hostname/ })).toBeChecked()
+    expect(mockTestConnection).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("radio", { name: /Insecure plaintext/ }))
+    fireEvent.click(await screen.findByRole("button", { name: "Allow plaintext for this profile" }))
+    await waitFor(() => expect(mockTransportChallenge).toHaveBeenCalledWith({
+      transportMode: "insecurePlaintext",
+      host: "db.example",
+      port: 5432,
+      user: "alice",
+      database: "app"
+    }))
+    fireEvent.click(screen.getByText("Test connection"))
+
+    await waitFor(() => expect(mockTestConnection).toHaveBeenCalledWith({
+      kind: "ephemeral",
+      target: {
+        kind: "postgres",
+        host: "db.example",
+        port: 5432,
+        database: "app",
+        user: "alice",
+        transportMode: "insecurePlaintext",
+        insecureException: {
+          host: "db.example",
+          port: 5432,
+          user: "alice",
+          database: "app"
+        },
+        trustServerCertAcknowledged: false
+      },
+      credential: { password: "plain-secret" },
+      transportChallengeId: "pg-chal-1"
+    }))
+  })
+
+  it("shows a distinct trust-server-certificate warning before testing", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    render(<DatabaseNavContent />)
+    await fillNewPostgresForm("trust-secret")
+
+    fireEvent.click(screen.getByRole("radio", { name: /Encrypt, but trust the server certificate/ }))
+    const ack = await screen.findByTestId("database-transport-ack-dialog")
+    expect(ack).toHaveTextContent("Trust this server certificate?")
+    expect(ack).toHaveTextContent("db.example")
+    fireEvent.click(screen.getByRole("button", { name: "Trust server certificate" }))
+    await waitFor(() => expect(mockTransportChallenge).toHaveBeenCalledWith({
+      transportMode: "encryptedTrustServerCert",
+      host: "db.example",
+      port: 5432,
+      user: "alice",
+      database: "app"
+    }))
+    fireEvent.click(screen.getByText("Test connection"))
+
+    await waitFor(() => expect(mockTestConnection).toHaveBeenCalledWith({
+      kind: "ephemeral",
+      target: {
+        kind: "postgres",
+        host: "db.example",
+        port: 5432,
+        database: "app",
+        user: "alice",
+        transportMode: "encryptedTrustServerCert",
+        insecureException: null,
+        trustServerCertAcknowledged: true
+      },
+      credential: { password: "trust-secret" },
+      transportChallengeId: "pg-chal-1"
+    }))
+  })
+
+  it("requires a fresh plaintext acknowledgement before saving a migrated NoTls profile", async () => {
+    useDbStore.setState({
+      connections: [],
+      saved: [{
+        id: "pg-legacy-plain",
+        targetKey: "postgres:h:5432:d",
+        kind: "postgres",
+        name: "d@h",
+        host: "h",
+        port: 5432,
+        database: "d",
+        user: "u",
+        ssl: false,
+        trustCert: false,
+        credentialState: "stored"
+      }],
+      activeConnId: null
+    })
+    render(<DatabaseNavContent />)
+    fireEvent.click(screen.getByLabelText("Edit d@h"))
+    expect(screen.getByRole("radio", { name: /Insecure plaintext/ })).toBeChecked()
+    fireEvent.click(screen.getByText("Save"))
+    expect(await screen.findByTestId("database-transport-ack-dialog")).toHaveTextContent("h")
+    expect(mockProfileUpdate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Allow plaintext for this profile" }))
+    await waitFor(() => expect(mockTransportChallenge).toHaveBeenCalledWith({
+      transportMode: "insecurePlaintext",
+      host: "h",
+      port: 5432,
+      user: "u",
+      database: "d"
+    }))
+    await waitFor(() => expect(mockProfileUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      descriptorId: "pg-legacy-plain",
+      transportChallengeId: "pg-chal-1",
+      target: expect.objectContaining({
+        transportMode: "insecurePlaintext",
+        insecureException: { host: "h", port: 5432, user: "u", database: "d" }
+      })
+    })))
+  })
+
+  it("does not treat renderer-set plaintext flags as authority without a challenge", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    render(<DatabaseNavContent />)
+    await fillNewPostgresForm("plain-secret")
+    fireEvent.click(screen.getByRole("radio", { name: /Insecure plaintext/ }))
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByTestId("database-transport-ack-dialog")).not.toBeInTheDocument())
+    fireEvent.click(screen.getByText("Save and Connect"))
+    await waitFor(() => expect(mockProfileCreate).toHaveBeenCalledWith(expect.objectContaining({
+      target: expect.objectContaining({ transportMode: "verifyFull" })
+    })))
+    expect(mockTransportChallenge).not.toHaveBeenCalled()
+    expect(mockProfileCreate.mock.calls[0]?.[0].transportChallengeId).toBeUndefined()
+    const createdTarget = mockProfileCreate.mock.calls[0]?.[0].target
+    expect(createdTarget?.kind).toBe("postgres")
+    if (createdTarget?.kind === "postgres") {
+      expect(createdTarget.insecureException ?? null).toBeNull()
+    }
+  })
+
+  it("requires a fresh confirmation after the single-use challenge is consumed", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    render(<DatabaseNavContent />)
+    await fillNewPostgresForm("plain-secret")
+    fireEvent.click(screen.getByRole("radio", { name: /Insecure plaintext/ }))
+    fireEvent.click(await screen.findByRole("button", { name: "Allow plaintext for this profile" }))
+    await waitFor(() => expect(mockTransportChallenge).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole("radio", { name: /Insecure plaintext/ })).toBeChecked())
+    fireEvent.click(screen.getByText("Test connection"))
+    await waitFor(() => expect(mockTestConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ transportChallengeId: "pg-chal-1" })
+    ))
+    mockTransportChallenge.mockClear()
+    fireEvent.click(screen.getByText("Save and Connect"))
+    expect(await screen.findByTestId("database-transport-ack-dialog")).toBeInTheDocument()
+    expect(mockProfileCreate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Allow plaintext for this profile" }))
+    await waitFor(() => expect(mockTransportChallenge).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockProfileCreate).toHaveBeenCalledWith(expect.objectContaining({
+      transportChallengeId: "pg-chal-2"
+    })))
+  })
+
+  it("invalidates a pending challenge when the canonical target changes", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    render(<DatabaseNavContent />)
+    await fillNewPostgresForm("plain-secret")
+    fireEvent.click(screen.getByRole("radio", { name: /Insecure plaintext/ }))
+    fireEvent.click(await screen.findByRole("button", { name: "Allow plaintext for this profile" }))
+    await waitFor(() => expect(mockTransportChallenge).toHaveBeenCalledTimes(1))
+    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "other.example" } })
+    fireEvent.click(screen.getByText("Test connection"))
+    expect(await screen.findByTestId("database-transport-ack-dialog")).toHaveTextContent("other.example")
+    expect(mockTestConnection).not.toHaveBeenCalled()
+  })
+
+  it("reuses a persisted backend-authorized exception only for the same target", async () => {
+    useDbStore.setState({
+      connections: [],
+      saved: [{
+        id: "pg-acked",
+        configGeneration: 2,
+        targetKey: "postgres:h:5432:d",
+        kind: "postgres",
+        name: "d@h",
+        host: "h",
+        port: 5432,
+        database: "d",
+        user: "u",
+        transportMode: "insecurePlaintext",
+        insecureException: { host: "h", port: 5432, user: "u", database: "d" },
+        trustServerCertAcknowledged: false,
+        credentialState: "stored"
+      }],
+      activeConnId: null
+    })
+    render(<DatabaseNavContent />)
+    fireEvent.click(screen.getByLabelText("Edit d@h"))
+    fireEvent.click(screen.getByText("Save"))
+    await waitFor(() => expect(mockProfileUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      descriptorId: "pg-acked",
+      target: expect.objectContaining({
+        transportMode: "insecurePlaintext",
+        host: "h"
+      })
+    })))
+    expect(mockTransportChallenge).not.toHaveBeenCalled()
+    expect(mockProfileUpdate.mock.calls[0]?.[0].transportChallengeId).toBeUndefined()
+
+    fireEvent.click(screen.getByLabelText("Edit d@h"))
+    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "other.example" } })
+    fireEvent.click(screen.getByText("Save"))
+    expect(await screen.findByTestId("database-transport-ack-dialog")).toHaveTextContent("other.example")
+    expect(mockTransportChallenge).not.toHaveBeenCalled()
   })
 })

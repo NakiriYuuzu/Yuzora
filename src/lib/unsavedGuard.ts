@@ -1,4 +1,5 @@
 import { saveDirtyTab } from "@/editor/saveDocument"
+import { isFileTab } from "@/lib/markdownPreviewTab"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -12,7 +13,7 @@ export function dirtyTabPaths(): string[] {
             useWorkspaceStore
                 .getState()
                 .groups.flatMap((g) => g.tabs)
-                .filter((tab) => tab.kind !== "preview" && tab.dirty)
+                .filter((tab) => isFileTab(tab) && tab.dirty)
                 .map((tab) => tab.path)
         )
     ]

@@ -1,4 +1,4 @@
-import { render, screen, cleanup, fireEvent, act } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent, act, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // Regression coverage for the two SSH panel review findings:
@@ -80,6 +80,13 @@ const ipcMock = vi.hoisted(() => ({
     sftpMkdir: vi.fn(),
     sftpRename: vi.fn(),
     sftpRemove: vi.fn(),
+    sftpPickSelectedPath: vi.fn(async () => [] as { id: string; leaf: string }[]),
+    sftpPickDownloadDestination: vi.fn(
+        async (leaf: string): Promise<{ id: string; leaf: string } | null> => ({
+            id: "download-cap",
+            leaf
+        })
+    ),
     sftpUpload: vi.fn(),
     sftpDownload: vi.fn()
 }))
@@ -107,6 +114,7 @@ const dialogMock = vi.hoisted(() => ({
 vi.mock("@tauri-apps/plugin-dialog", () => dialogMock)
 
 import { SshPanel } from "./SshPanel"
+import { useAppDialogStore } from "@/state/appDialogStore"
 import { useSshStore } from "@/state/sshStore"
 import { useSftpStore } from "@/state/sftpStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -165,13 +173,19 @@ beforeEach(() => {
     ipcMock.sftpMkdir.mockResolvedValue(undefined)
     ipcMock.sftpRename.mockResolvedValue(undefined)
     ipcMock.sftpRemove.mockResolvedValue(undefined)
+    ipcMock.sftpPickSelectedPath.mockResolvedValue([])
+    ipcMock.sftpPickDownloadDestination.mockImplementation(async (leaf: string) => ({
+        id: "download-cap",
+        leaf
+    }))
     ipcMock.sftpUpload.mockResolvedValue(undefined)
     ipcMock.sftpDownload.mockResolvedValue(undefined)
     dragMock.handler = null
 
     useSshStore.setState({ hosts: [], sessions: {}, activeHostId: null, pendingAuthHostId: null })
     useSftpStore.getState().reset()
-    useWorkspaceStore.setState({ workspacePath: null })
+    useWorkspaceStore.setState({ workspacePath: null, workspaceCapabilityId: "ws-cap" })
+    useAppDialogStore.setState({ pending: null })
 })
 
 afterEach(() => {
@@ -317,6 +331,71 @@ describe("SshPanel SFTP browser (F5)", () => {
         expect(ipcMock.listDir).toHaveBeenCalledWith(rawWorkspace)
     })
 
+    it.each([
+        ["POSIX", "/", "/"],
+        ["Windows drive", "C:\\", "C:\\"],
+        ["Windows UNC share", String.raw`\\Server\Share`, String.raw`\\Server\Share`],
+        ["Windows verbatim drive", "\\\\?\\C:\\", "C:\\"],
+        ["Windows verbatim UNC", String.raw`\\?\UNC\Server\Share`, String.raw`\\Server\Share`],
+    ])("disables Local Up at the %s root", async (_label, workspace, display) => {
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        await connectTwoHosts()
+        act(() => {
+            useWorkspaceStore.setState({ workspacePath: workspace })
+            useSftpStore.getState().setActiveTab("sftp")
+        })
+
+        render(<SshPanel />)
+
+        const pathLabel = await screen.findByTitle(display)
+        const up = pathLabel.parentElement?.querySelector("button")
+        expect(up).toBeDisabled()
+        expect(ipcMock.listDir).toHaveBeenCalledWith(workspace)
+    })
+
+    it.each([
+        ["POSIX", "/work/repo/src", "/work/repo/src", "/work/repo"],
+        ["Windows drive", String.raw`C:\Work\Repo\src`, String.raw`C:\Work\Repo\src`, String.raw`C:\Work\Repo`],
+        [
+            "Windows UNC",
+            String.raw`\\Server\Share\Repo\src`,
+            String.raw`\\Server\Share\Repo\src`,
+            String.raw`\\Server\Share\Repo`,
+        ],
+        [
+            "Windows verbatim drive",
+            String.raw`\\?\C:\Work\Repo\src`,
+            String.raw`C:\Work\Repo\src`,
+            String.raw`\\?\C:\Work\Repo`,
+        ],
+    ])("navigates Local Up from a non-root %s path using its native parent", async (
+        _label,
+        workspace,
+        display,
+        expectedParent
+    ) => {
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        await connectTwoHosts()
+        act(() => {
+            useWorkspaceStore.setState({ workspacePath: workspace })
+            useSftpStore.getState().setActiveTab("sftp")
+        })
+
+        render(<SshPanel />)
+
+        const pathLabel = await screen.findByTitle(display)
+        await vi.waitFor(() => expect(ipcMock.listDir).toHaveBeenCalledWith(workspace))
+        ipcMock.listDir.mockClear()
+        const remoteCalls = ipcMock.sftpListDir.mock.calls.length
+
+        const up = pathLabel.parentElement?.querySelector("button")
+        expect(up).toBeEnabled()
+        fireEvent.click(up!)
+
+        await vi.waitFor(() => expect(ipcMock.listDir).toHaveBeenCalledWith(expectedParent))
+        expect(ipcMock.sftpListDir).toHaveBeenCalledTimes(remoteCalls)
+    })
+
     it("uploads OS files dropped inside the remote pane to the remote cwd", async () => {
         ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
         const { hostB } = await connectTwoHosts()
@@ -341,9 +420,61 @@ describe("SshPanel SFTP browser (F5)", () => {
             })
         })
 
-        await vi.waitFor(() => expect(ipcMock.sftpUpload).toHaveBeenCalledTimes(2))
-        expect(ipcMock.sftpUpload).toHaveBeenCalledWith(sessionId, expect.any(String), "/a/f1.txt", "/home/u")
-        expect(ipcMock.sftpUpload).toHaveBeenCalledWith(sessionId, expect.any(String), "/a/f2.txt", "/home/u")
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(ipcMock.sftpPickSelectedPath).not.toHaveBeenCalled()
+        expect(ipcMock.sftpUpload).not.toHaveBeenCalled()
+        expect(sessionId).toBeTruthy()
+    })
+
+    it("uploads native picker grants without minting authority from path strings", async () => {
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        ipcMock.sftpPickSelectedPath.mockResolvedValue([{ id: "sel-9", leaf: "picked.txt" }])
+        const { hostB } = await connectTwoHosts()
+        const sessionId = useSshStore.getState().sessions[hostB.id]!.sessionId
+        act(() => {
+            useWorkspaceStore.setState({ workspacePath: "/ws" })
+            useSftpStore.getState().setActiveTab("sftp")
+        })
+        render(<SshPanel />)
+        await screen.findByTestId("sftp-remote-pane")
+        fireEvent.click(screen.getByRole("button", { name: "Upload files" }))
+        await vi.waitFor(() => expect(ipcMock.sftpPickSelectedPath).toHaveBeenCalledTimes(1))
+        await vi.waitFor(() => expect(ipcMock.sftpUpload).toHaveBeenCalledWith(
+            sessionId,
+            expect.any(String),
+            { kind: "selected", capabilityId: "sel-9", name: "picked.txt" },
+            "/home/u"
+        ))
+    })
+
+    it("uploads workspace-relative OS drops as workspace sources", async () => {
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        const { hostB } = await connectTwoHosts()
+        const sessionId = useSshStore.getState().sessions[hostB.id]!.sessionId
+        act(() => {
+            useWorkspaceStore.setState({ workspacePath: "/ws" })
+            useSftpStore.getState().setActiveTab("sftp")
+        })
+        render(<SshPanel />)
+        const pane = await screen.findByTestId("sftp-remote-pane")
+        await vi.waitFor(() => expect(dragMock.handler).not.toBeNull())
+        pane.getBoundingClientRect = () =>
+            ({ left: 100, top: 100, right: 300, bottom: 300, width: 200, height: 200, x: 100, y: 100 }) as DOMRect
+        window.devicePixelRatio = 1
+        await act(async () => {
+            dragMock.handler!({
+                payload: { type: "drop", paths: ["/ws/local.txt"], position: { x: 150, y: 150 } }
+            })
+        })
+        await vi.waitFor(() => expect(ipcMock.sftpUpload).toHaveBeenCalledWith(
+            sessionId,
+            expect.any(String),
+            { kind: "workspace", workspaceId: "ws-cap", relativePath: "local.txt" },
+            "/home/u"
+        ))
+        expect(ipcMock.sftpPickSelectedPath).not.toHaveBeenCalled()
     })
 
     describe("SFTP 窗格互拖（P5，pointer-based）", () => {
@@ -414,7 +545,10 @@ describe("SshPanel SFTP browser (F5)", () => {
 
             await vi.waitFor(() => expect(ipcMock.sftpUpload).toHaveBeenCalledTimes(1))
             expect(ipcMock.sftpUpload).toHaveBeenCalledWith(
-                sessionId, expect.any(String), "/ws/local.txt", "/home/u"
+                sessionId,
+                expect.any(String),
+                { kind: "workspace", workspaceId: "ws-cap", relativePath: "local.txt" },
+                "/home/u"
             )
             expect(remoteBody.className).not.toContain("ring-2")
 
@@ -431,7 +565,10 @@ describe("SshPanel SFTP browser (F5)", () => {
 
             await vi.waitFor(() => expect(ipcMock.sftpUpload).toHaveBeenCalledTimes(1))
             expect(ipcMock.sftpUpload).toHaveBeenCalledWith(
-                sessionId, expect.any(String), "/ws/local.txt", "/home/u/docs"
+                sessionId,
+                expect.any(String),
+                { kind: "workspace", workspaceId: "ws-cap", relativePath: "local.txt" },
+                "/home/u/docs"
             )
             // 上傳後 refresh 針對目前顯示目錄（cwd），不跳進 docs。
             await vi.waitFor(() =>
@@ -446,7 +583,10 @@ describe("SshPanel SFTP browser (F5)", () => {
 
             await vi.waitFor(() => expect(ipcMock.sftpDownload).toHaveBeenCalledTimes(1))
             expect(ipcMock.sftpDownload).toHaveBeenCalledWith(
-                sessionId, expect.any(String), "/home/u/remote.txt", "/ws/remote.txt"
+                sessionId,
+                expect.any(String),
+                "/home/u/remote.txt",
+                { capabilityId: "download-cap", leaf: "remote.txt" }
             )
         })
 
@@ -457,7 +597,10 @@ describe("SshPanel SFTP browser (F5)", () => {
 
             await vi.waitFor(() => expect(ipcMock.sftpDownload).toHaveBeenCalledTimes(1))
             expect(ipcMock.sftpDownload).toHaveBeenCalledWith(
-                sessionId, expect.any(String), "/home/u/remote.txt", "/ws/localdir/remote.txt"
+                sessionId,
+                expect.any(String),
+                "/home/u/remote.txt",
+                { capabilityId: "download-cap", leaf: "remote.txt" }
             )
         })
 
@@ -487,7 +630,10 @@ describe("SshPanel SFTP browser (F5)", () => {
 
             await vi.waitFor(() => expect(ipcMock.sftpUpload).toHaveBeenCalledTimes(1))
             expect(ipcMock.sftpUpload).toHaveBeenCalledWith(
-                sessionId, expect.any(String), "/ws/local.txt", "/home/u"
+                sessionId,
+                expect.any(String),
+                { kind: "workspace", workspaceId: "ws-cap", relativePath: "local.txt" },
+                "/home/u"
             )
         })
 
@@ -522,12 +668,13 @@ describe("SshPanel SFTP browser (F5)", () => {
             // 未進入拖曳態 → 本機窗格不高亮。
             expect(screen.getByTestId("sftp-local-pane-body").className).not.toContain("ring-2")
             fireEvent.pointerUp(window, { clientX: 40, clientY: 40 })
+            ipcMock.sftpPickDownloadDestination.mockResolvedValueOnce(null)
             fireEvent.click(downloadBtn)
 
             await new Promise((resolve) => setTimeout(resolve, 0))
-            // 沒有任何拖曳傳輸；按鈕點擊走 saveDialog 路徑（cancel → 無下載呼叫）。
+            // 沒有任何拖曳傳輸；按鈕點擊只可走 backend native-save capability。
             expect(ipcMock.sftpDownload).not.toHaveBeenCalled()
-            expect(dialogMock.save).toHaveBeenCalledTimes(1)
+            expect(ipcMock.sftpPickDownloadDestination).toHaveBeenCalledWith("remote.txt")
         })
 
         it("Escape 取消拖曳：高亮消失、放開不觸發傳輸", async () => {
@@ -555,14 +702,14 @@ describe("SshPanel SFTP browser (F5)", () => {
             dragByPointer(rowOf("remote.txt"), screen.getByTestId("sftp-local-pane-body"))
 
             await vi.waitFor(() => expect(ipcMock.sftpDownload).toHaveBeenCalledTimes(1))
-            // 覆蓋檢查 list 一次＋下載完成 refresh 一次，且都停留在原目錄。
+            // 下載完成後 refresh 一次，且仍停留在原目錄。
             await vi.waitFor(() =>
-                expect(ipcMock.listDir.mock.calls.length).toBe(callsBefore + 2)
+                expect(ipcMock.listDir.mock.calls.length).toBe(callsBefore + 1)
             )
             expect(ipcMock.listDir).toHaveBeenLastCalledWith("/ws")
         })
 
-        it("拖曳下載遇本機同名檔：confirm 取消 → 不下載；確認 → 覆蓋下載", async () => {
+        it("拖曳下載只能消耗 backend native-save capability；取消不下載", async () => {
             const { sessionId } = await sftpDualPaneSetup()
             const localBody = screen.getByTestId("sftp-local-pane-body")
 
@@ -587,18 +734,89 @@ describe("SshPanel SFTP browser (F5)", () => {
                 .map((el) => el.closest("div.group") as HTMLElement)
                 .find((row) => row.closest("[data-sftp-drop-pane=\"remote\"]"))!
 
-            dialogMock.confirm.mockResolvedValueOnce(false)
+            ipcMock.sftpPickDownloadDestination.mockResolvedValueOnce(null)
             dragByPointer(remoteRow, localBody)
-            await vi.waitFor(() => expect(dialogMock.confirm).toHaveBeenCalledTimes(1))
-            expect(String(dialogMock.confirm.mock.calls[0][0])).toContain("local.txt")
+            await vi.waitFor(() =>
+                expect(ipcMock.sftpPickDownloadDestination).toHaveBeenCalledWith("local.txt")
+            )
             expect(ipcMock.sftpDownload).not.toHaveBeenCalled()
+            expect(useAppDialogStore.getState().pending).toBeNull()
 
-            dialogMock.confirm.mockResolvedValueOnce(true)
             dragByPointer(remoteRow, localBody)
             await vi.waitFor(() => expect(ipcMock.sftpDownload).toHaveBeenCalledTimes(1))
             expect(ipcMock.sftpDownload).toHaveBeenCalledWith(
-                sessionId, expect.any(String), "/home/u/local.txt", "/ws/local.txt"
+                sessionId,
+                expect.any(String),
+                "/home/u/local.txt",
+                { capabilityId: "download-cap", leaf: "local.txt" }
             )
+        })
+
+        it("本機上傳按鈕：工作區檔走 workspace source，區外檔不能用路徑換 capability", async () => {
+            const { sessionId } = await sftpDualPaneSetup()
+            fireEvent.click(screen.getByRole("button", { name: "Upload local.txt" }))
+            await vi.waitFor(() => expect(ipcMock.sftpUpload).toHaveBeenCalledTimes(1))
+            expect(ipcMock.sftpPickSelectedPath).not.toHaveBeenCalled()
+            expect(ipcMock.sftpUpload).toHaveBeenCalledWith(
+                sessionId,
+                expect.any(String),
+                { kind: "workspace", workspaceId: "ws-cap", relativePath: "local.txt" },
+                "/home/u"
+            )
+
+            ipcMock.listDir.mockResolvedValue([
+                { name: "picked.txt", path: "/outside/picked.txt", isDir: false, kind: "file" }
+            ])
+            const localPane = screen.getByTestId("sftp-local-pane-body").parentElement
+            expect(localPane).toBeTruthy()
+            fireEvent.click(within(localPane!).getByRole("button", { name: "Up one level" }))
+            await screen.findByText("picked.txt")
+            fireEvent.click(screen.getByRole("button", { name: "Upload picked.txt" }))
+            await act(async () => {
+                await Promise.resolve()
+            })
+            expect(ipcMock.sftpPickSelectedPath).not.toHaveBeenCalled()
+            expect(ipcMock.sftpUpload).toHaveBeenCalledTimes(1)
+        })
+
+        it("symlink 與不安全檔名不可拖、沒有上傳／下載按鈕", async () => {
+            ipcMock.listDir.mockResolvedValue([
+                { name: "local.txt", path: "/ws/local.txt", isDir: false, kind: "file" },
+                { name: "link.txt", path: "/ws/link.txt", isDir: false, kind: "symlink" }
+            ])
+            ipcMock.sftpListDir.mockResolvedValue({
+                cwd: "/home/u",
+                entries: [
+                    { name: "remote.txt", path: "/home/u/remote.txt", isDir: false, isSymlink: false, size: 7 },
+                    { name: "away", path: "/home/u/away", isDir: false, isSymlink: true, size: 0 },
+                    { name: "..evil", path: "/home/u/..evil", isDir: false, isSymlink: false, nameSafe: false, size: 1 }
+                ]
+            })
+            const { hostB } = await connectTwoHosts()
+            act(() => {
+                useWorkspaceStore.setState({ workspacePath: "/ws" })
+                useSftpStore.getState().setActiveTab("sftp")
+            })
+            render(<SshPanel />)
+            await screen.findByText("link.txt")
+            await screen.findByText("away")
+            await screen.findByText("..evil")
+            expect(screen.queryByRole("button", { name: "Upload link.txt" })).toBeNull()
+            expect(screen.queryByRole("button", { name: "Download away" })).toBeNull()
+            expect(screen.queryByRole("button", { name: "Download ..evil" })).toBeNull()
+
+            dragByPointer(
+                screen.getByText("link.txt").closest("div.group") as HTMLElement,
+                screen.getByTestId("sftp-remote-pane-body")
+            )
+            dragByPointer(
+                screen.getByText("away").closest("div.group") as HTMLElement,
+                screen.getByTestId("sftp-local-pane-body")
+            )
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(ipcMock.sftpUpload).not.toHaveBeenCalled()
+            expect(ipcMock.sftpDownload).not.toHaveBeenCalled()
+            expect(useSshStore.getState().sessions[hostB.id]?.sessionId).toBeTruthy()
         })
     })
 

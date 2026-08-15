@@ -160,6 +160,11 @@ export class TerminalOutputQueue {
   private pendingSizes: number[] = []
   private pendingSize = 0
   private pendingTruncated = false
+  private replacement: {
+    data: string
+    size: number
+    beforeWrite?: () => void
+  } | null = null
   private droppedTotal = 0
   // Backend loss reported since the last flush, kept as running totals rather
   // than accumulated marker text. Out of the ring buffers so a notice about
@@ -187,12 +192,12 @@ export class TerminalOutputQueue {
 
   /** UTF-8 bytes buffered for the next visible flush. */
   get pendingBytes(): number {
-    return this.pendingSize
+    return this.pendingSize + (this.visible ? this.replacement?.size ?? 0 : 0)
   }
 
   /** UTF-8 bytes buffered by the ring buffer while the session is hidden. */
   get hiddenBytes(): number {
-    return this.hiddenSize
+    return this.hiddenSize + (!this.visible ? this.replacement?.size ?? 0 : 0)
   }
 
   /** Cumulative UTF-8 bytes this queue's ring buffers discarded. */
@@ -262,6 +267,35 @@ export class TerminalOutputQueue {
     this.schedule()
   }
 
+  /**
+   * Replaces all queued output with one authoritative terminal snapshot.
+   *
+   * Full Herdr frames are bounded screen-state snapshots, not an output burst.
+   * They must bypass the incremental ring-buffer ceiling: trimming the ANSI
+   * prefix corrupts the reconstructed screen and emits a misleading hidden
+   * output warning while a tab is merely opening. Later incremental output is
+   * still bounded normally.
+   */
+  replace(data: string, beforeWrite?: () => void): void {
+    if (this.disposed) return
+    this.hiddenChunks = []
+    this.hiddenSizes = []
+    this.hiddenSize = 0
+    this.hiddenTruncated = false
+    this.pendingChunks = []
+    this.pendingSizes = []
+    this.pendingSize = 0
+    this.pendingTruncated = false
+    this.noticeDroppedBytes = 0
+    this.noticeMissedEvents = 0
+    this.replacement = {
+      data,
+      size: utf8Length(data),
+      beforeWrite
+    }
+    this.schedule()
+  }
+
   setVisible(visible: boolean): void {
     if (this.disposed || this.visible === visible) return
     this.visible = visible
@@ -288,6 +322,16 @@ export class TerminalOutputQueue {
     this.schedule()
   }
 
+  /** Flushes already-buffered output before the browser paints a newly visible tab. */
+  flushNow(): void {
+    if (this.disposed || !this.visible || this.writing) return
+    if (this.scheduled) {
+      this.scheduled.cancel(this.scheduled.id)
+      this.scheduled = null
+    }
+    this.flush()
+  }
+
   dispose(): void {
     this.disposed = true
     if (this.scheduled) this.scheduled.cancel(this.scheduled.id)
@@ -298,6 +342,7 @@ export class TerminalOutputQueue {
     this.hiddenSizes = []
     this.pendingChunks = []
     this.pendingSizes = []
+    this.replacement = null
     this.hiddenSize = 0
     this.pendingSize = 0
   }
@@ -358,7 +403,11 @@ export class TerminalOutputQueue {
       || !this.visible
       || this.writing
       || this.scheduled
-      || (this.pendingChunks.length === 0 && this.pendingLossNotice().length === 0)
+      || (
+        this.replacement === null
+        && this.pendingChunks.length === 0
+        && this.pendingLossNotice().length === 0
+      )
     ) {
       return
     }
@@ -373,15 +422,21 @@ export class TerminalOutputQueue {
       this.disposed
       || !this.visible
       || this.writing
-      || (this.pendingChunks.length === 0 && this.pendingLossNotice().length === 0)
+      || (
+        this.replacement === null
+        && this.pendingChunks.length === 0
+        && this.pendingLossNotice().length === 0
+      )
     ) {
       return
     }
+    const replacement = this.replacement
+    this.replacement = null
     const truncationPrefix = this.pendingTruncated ? TERMINAL_OUTPUT_TRUNCATED_NOTICE : ""
     const noticePrefix = this.pendingLossNotice()
     this.noticeDroppedBytes = 0
     this.noticeMissedEvents = 0
-    const data = truncationPrefix + noticePrefix + this.pendingChunks.join("")
+    const data = (replacement?.data ?? "") + truncationPrefix + noticePrefix + this.pendingChunks.join("")
     this.pendingChunks = []
     this.pendingSizes = []
     this.pendingSize = 0
@@ -390,6 +445,7 @@ export class TerminalOutputQueue {
     this.flushes += 1
     this.flushStartedAt = now()
     try {
+      replacement?.beforeWrite?.()
       this.write(data, () => {
         this.flushLatencyMs = now() - this.flushStartedAt
         this.writing = false

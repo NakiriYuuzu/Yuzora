@@ -21,9 +21,11 @@ import {
     DialogDescription,
     DialogFooter,
     DialogHeader,
-    DialogTitle
+    DialogTitle,
+    dialogMinSize,
 } from "../components/ui/dialog"
 import { Button } from "../components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 // Pure interception predicate exported for EditorPane's save closure. When the
 // target tab is flagged externallyModified, open the resolver and swallow the
@@ -266,8 +268,10 @@ function ResolverBody({ path }: { path: string }) {
             }}
         >
             <DialogContent
+                resizeId="external-change"
+                minSize={dialogMinSize(480, 320)}
                 showCloseButton={false}
-                className="flex h-[80vh] max-w-[90vw] flex-col gap-[12px] sm:max-w-[90vw]"
+                className="flex min-h-0 flex-col gap-[12px]"
             >
                 <DialogHeader>
                     <DialogTitle>檔案已被外部修改</DialogTitle>
@@ -291,11 +295,11 @@ function ResolverBody({ path }: { path: string }) {
                 )}
 
                 {degraded ? (
-                    <div className="min-h-0 flex-1 overflow-auto text-[13px] text-(--ink-2)">
+                    <ScrollArea className="min-h-0 flex-1" focusable viewportClassName="text-[13px] text-(--ink-2)">
                         {degraded === "deleted"
                             ? "你可以保留目前編輯內容並覆寫存檔，或丟棄變更並關閉分頁。"
                             : "你可以保留目前編輯內容並覆寫存檔，或改用磁碟版重新載入。"}
-                    </div>
+                    </ScrollArea>
                 ) : (
                     <div
                         ref={containerRef}

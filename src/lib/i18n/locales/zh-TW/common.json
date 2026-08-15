@@ -1,5 +1,9 @@
 {
   "language": {
     "system": "跟隨系統"
+  },
+  "dialog": {
+    "resize": "調整對話框大小",
+    "resetSize": "重設對話框大小為 App 視窗的 80%"
   }
 }

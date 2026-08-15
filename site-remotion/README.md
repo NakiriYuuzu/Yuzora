@@ -1,54 +1,28 @@
-# Remotion video
+# Yuzora product media
 
-<p align="center">
-  <a href="https://github.com/remotion-dev/logo">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-dark.apng">
-      <img alt="Animated Remotion Logo" src="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-light.gif">
-    </picture>
-  </a>
-</p>
-
-Welcome to your Remotion project!
+Remotion sources for the Yuzora GitHub Pages feature videos and README media. The compositions mirror the current ADE + HERDR UI using the same design tokens as the desktop app.
 
 ## Commands
 
-**Install Dependencies**
-
-```console
+```bash
 bun install
+bun run dev    # Remotion Studio, no automatic browser open
+bun run build  # create a deployable Remotion bundle
+bun run lint
 ```
 
-**Start Preview**
+Render the public feature videos:
 
-```console
-bun run dev
+```bash
+for c in ade-herdr-zh ade-herdr-en remote-db-zh remote-db-en terminal-git-zh terminal-git-en; do
+  bunx remotion render "$c" "../site/assets/$c.mp4" --scale=2
+done
 ```
 
-**Render video**
+Render a still for visual QA:
 
-```console
-bunx remotion render
+```bash
+bunx remotion still ade-herdr-en /tmp/ade-herdr-en.png --frame=210 --scale=1
 ```
 
-**Upgrade Remotion**
-
-```console
-bunx remotion upgrade
-```
-
-## Docs
-
-Get started with Remotion by reading the [fundamentals page](https://www.remotion.dev/docs/the-fundamentals).
-
-## Help
-
-We provide help on our [Discord server](https://discord.gg/6VzzNDwUwV).
-
-## Issues
-
-Found an issue with Remotion? [File an issue here](https://github.com/remotion-dev/remotion/issues/new).
-
-## License
-
-Note that for some entities a company license is needed. [Read the terms here](https://github.com/remotion-dev/remotion/blob/main/LICENSE.md).
+All animation timing must come from Remotion frames (`useCurrentFrame`, `interpolate`, or `Sequence`), not CSS animations or transitions.

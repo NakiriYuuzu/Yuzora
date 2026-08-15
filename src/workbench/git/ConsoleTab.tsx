@@ -1,3 +1,4 @@
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { useTranslation } from "react-i18next"
 
 import { useGitStore } from "../../state/gitStore"
@@ -14,12 +15,17 @@ export function ConsoleTab() {
     const consoleLog = useGitStore((s) => s.consoleLog)
 
     return (
-        <div
-            className="yzs flex min-h-0 flex-1 flex-col overflow-auto font-mono text-[12px] leading-[19px]"
-            style={{
-                padding: "13px 16px",
-                background: "var(--term-bg)",
-                color: "var(--term-fg)"
+        <ScrollArea
+            className="min-h-0 flex-1 font-mono text-[12px] leading-[19px]"
+            orientation="both"
+            focusable
+            contentClassName="flex flex-col"
+            viewportProps={{
+                style: {
+                    padding: "13px 16px",
+                    background: "var(--term-bg)",
+                    color: "var(--term-fg)"
+                }
             }}
         >
             {consoleLog.length === 0 ? (
@@ -59,6 +65,6 @@ export function ConsoleTab() {
                     </div>
                 ))
             )}
-        </div>
+        </ScrollArea>
     )
 }

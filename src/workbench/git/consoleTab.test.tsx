@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
 
 import type { GitConsoleEntry } from "../../state/gitStore"
 
@@ -8,7 +8,7 @@ import type { GitConsoleEntry } from "../../state/gitStore"
 vi.mock("../../lib/ipc", () => ({
     gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50.1" })),
     gitStatus: vi.fn(async () => ({})),
-    gitBranches: vi.fn(async () => ({ local: [], remote: [] })),
+    gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     gitRemoteProbe: vi.fn(async () => "no"),
     gitFetch: vi.fn(async () => undefined)
 }))
@@ -61,5 +61,70 @@ describe("ConsoleTab", () => {
         render(<ConsoleTab />)
         const cmds = screen.getAllByText(/^\$ git/).map((el) => el.textContent)
         expect(cmds).toEqual(["$ git push", "$ git fetch"])
+    })
+
+    it("uses both-axis ScrollArea so long unbreakable tokens remain reachable", async () => {
+        const longToken = `git show ${"a".repeat(180)}`
+        const observerCallbacks: ResizeObserverCallback[] = []
+        class RecordingResizeObserver {
+            private readonly callback: ResizeObserverCallback
+            constructor(callback: ResizeObserverCallback) {
+                this.callback = callback
+                observerCallbacks.push(callback)
+            }
+            observe() {
+                this.callback([], this as unknown as ResizeObserver)
+            }
+            unobserve() {}
+            disconnect() {}
+        }
+        const previousRO = globalThis.ResizeObserver
+        vi.stubGlobal("ResizeObserver", RecordingResizeObserver)
+
+        try {
+            useGitStore.setState({
+                consoleLog: [
+                    entry({
+                        id: 9,
+                        cmd: longToken,
+                        out: ["ok"],
+                        time: "15:00"
+                    })
+                ]
+            })
+            render(<ConsoleTab />)
+
+            const viewport = document.querySelector(
+                '[data-slot="scroll-area-viewport"]'
+            ) as HTMLElement
+            expect(viewport).toBeTruthy()
+            expect(viewport.tabIndex).toBe(0)
+            expect(viewport.contains(screen.getByText(`$ ${longToken}`))).toBe(true)
+
+            // Radix type="auto" only mounts scrollbars after overflow is measured.
+            Object.defineProperty(viewport, "offsetWidth", { configurable: true, value: 120 })
+            Object.defineProperty(viewport, "scrollWidth", { configurable: true, value: 480 })
+            Object.defineProperty(viewport, "offsetHeight", { configurable: true, value: 80 })
+            Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 320 })
+            for (const callback of observerCallbacks) {
+                callback([], {} as ResizeObserver)
+            }
+
+            await waitFor(() => {
+                const root = document.querySelector('[data-slot="scroll-area"]') as HTMLElement
+                expect(
+                    root.querySelector(
+                        '[data-slot="scroll-area-scrollbar"][data-orientation="vertical"]'
+                    )
+                ).toBeTruthy()
+                expect(
+                    root.querySelector(
+                        '[data-slot="scroll-area-scrollbar"][data-orientation="horizontal"]'
+                    )
+                ).toBeTruthy()
+            })
+        } finally {
+            vi.stubGlobal("ResizeObserver", previousRO)
+        }
     })
 })

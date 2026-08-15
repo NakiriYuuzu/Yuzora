@@ -5,16 +5,18 @@ vi.mock("@/editor/saveDocument", () => ({ saveDirtyTab: vi.fn() }))
 import { saveDirtyTab } from "@/editor/saveDocument"
 import { confirmDiscardingUnsaved, dirtyTabPaths } from "@/lib/unsavedGuard"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
+import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
 const LABELS = { title: "t", description: "d", saveLabel: "s" }
 
-const tab = (path: string, dirty: boolean, kind?: "file" | "preview") => ({
+const tab = (path: string, dirty: boolean, kind?: "file" | "preview" | "markdown-preview", sourcePath?: string) => ({
     path,
     name: path,
     dirty,
     externallyModified: false,
-    ...(kind ? { kind } : {})
+    ...(kind ? { kind } : {}),
+    ...(sourcePath ? { sourcePath } : {})
 })
 
 beforeEach(() => {
@@ -41,7 +43,8 @@ test("dirtyTabPaths：跨 group 去重、排除乾淨分頁與 preview 分頁", 
                 tabs: [
                     tab("/w/a.ts", true),
                     tab("/w/b.ts", true),
-                    tab(PREVIEW_TAB_PATH, true, "preview")
+                    tab(PREVIEW_TAB_PATH, true, "preview"),
+                    tab(markdownPreviewPath("/w/r.md"), true, "markdown-preview", "/w/r.md")
                 ]
             }
         ]

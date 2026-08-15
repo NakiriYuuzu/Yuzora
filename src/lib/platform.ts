@@ -1,5 +1,4 @@
 import { isTauri } from "@tauri-apps/api/core"
-import { resolveResource } from "@tauri-apps/api/path"
 
 // Re-exported so the rest of the app detects the Tauri shell through this module
 // instead of importing `@tauri-apps/api/core` directly (kept to ipc.ts + here).
@@ -11,7 +10,7 @@ export { isTauri }
  * reserve space for them. Windows/Linux keep their native title bar.
  */
 export function showsNativeTrafficLights(): boolean {
-    return isTauri() && /Mac/.test(navigator.userAgent)
+    return isTauri() && isMacPlatform()
 }
 
 export function isWindowsPlatform(): boolean {
@@ -19,34 +18,27 @@ export function isWindowsPlatform(): boolean {
 }
 
 /**
- * 內建 pi adapter（yuzora-pi-acp，隨 app 打包於 resources）的 spawn 指令。
- * P5 的 pi runtime 選擇器據此提供 builtin 選項；bundle 外（dev server、測試）
- * 或 resource 缺失時回 null，呼叫端退回 community runtime。
+ * True when the user agent reports a Mac host. Unknown platforms fall through
+ * as non-Mac so UI labels prefer the Ctrl / neutral branch.
  */
-async function builtinPiAdapterCommand(): Promise<string | null> {
-    if (!isTauri()) return null
-    try {
-        const path = await resolveResource("adapters/yuzora-pi-acp/index.mjs")
-        return path ? `node "${path}"` : null
-    } catch {
-        return null
+export function isMacPlatform(): boolean {
+    return /Mac/.test(navigator.userAgent)
+}
+
+export type ShortcutChord = "mod-k" | "mod-enter" | "mod-shift-enter"
+
+/**
+ * Platform-aware keyboard badge text only. Does not bind or interpret keydown
+ * events; callers keep existing Mod-star or metaKey/ctrlKey handlers.
+ */
+export function shortcutLabel(chord: ShortcutChord): string {
+    const mac = isMacPlatform()
+    switch (chord) {
+        case "mod-k":
+            return mac ? "⌘K" : "Ctrl+K"
+        case "mod-enter":
+            return mac ? "⌘↵" : "Ctrl+Enter"
+        case "mod-shift-enter":
+            return mac ? "⇧⌘↵" : "Ctrl+Shift+Enter"
     }
-}
-
-// resolveResource 是 async，但 command 路由（settingsStorage.resolveAgentCommandRoute）
-// 是同步呼叫鏈——啟動時（AgentBridge 的 startup effect，先於 prewarm）resolve 一次
-// 進 cache，之後同步讀。null＝尚未 init／非 Tauri／resource 缺失 → 退回 community。
-let builtinPiAdapterCommandCache: string | null = null
-
-export async function initBuiltinPiAdapterCommand(): Promise<void> {
-    builtinPiAdapterCommandCache = await builtinPiAdapterCommand()
-}
-
-export function cachedBuiltinPiAdapterCommand(): string | null {
-    return builtinPiAdapterCommandCache
-}
-
-/** 測試替身；生產程式碼不呼叫。 */
-export function setCachedBuiltinPiAdapterCommandForTests(command: string | null): void {
-    builtinPiAdapterCommandCache = command
 }
