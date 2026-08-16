@@ -32,7 +32,7 @@ export const RemotionRoot: React.FC = () => {
           id={`ade-herdr-${lang}`}
           component={AdeHerdr}
           defaultProps={{ lang }}
-          durationInFrames={290}
+          durationInFrames={170}
           fps={FPS}
           width={WIDTH}
           height={HEIGHT}
@@ -56,7 +56,7 @@ export const RemotionRoot: React.FC = () => {
           id={`terminal-git-${lang}`}
           component={TerminalGit}
           defaultProps={{ lang }}
-          durationInFrames={240}
+          durationInFrames={300}
           fps={FPS}
           width={WIDTH}
           height={HEIGHT}

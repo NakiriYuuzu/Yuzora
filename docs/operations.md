@@ -502,36 +502,36 @@ gh release view "v${VERSION}" \
 
 ### 來源與觸發
 
-- Deploy artifact 是完整 `site/` 目錄；現行入口包含 `index.html`、`styles.css`、`exploded-view.js`、`exploded-view-model.js`、`downloads.js` 與 `assets/`。
+- Deploy artifact 是完整 `site/` 目錄；現行入口包含 `index.html`、`styles.css`、`app.js`、`downloads.js` 與 `assets/`。網站 favicon、導覽與頁尾使用的 `site/assets/yuzora-icon.png` 必須與目前桌面 app 的 `src-tauri/icons/128x128@2x.png` 一致。
 - `main` 上 `site/**` 有變更時自動部署，也可從 Actions 手動 dispatch `Deploy Pages`。
 - 現行 Deploy Pages 不等待 CI；部署後必須另外確認相同 `head_sha` 的 `CI` push run 成功。後續應改成 successful `workflow_run` exact-SHA gate，或在部署 workflow 內執行完整 site checks。
 - Pages 沒有 bundling step，不得引用 `node_modules` runtime path。
 - `site-remotion/` 是影片原始碼，不包含在 Pages artifact。
 
-### Exploded View 維護邊界
+### 產品頁維護邊界
 
-- Desktop `>=1024px` 只有一個 pinned story，由 `exploded-view.js` 的單一 requestAnimationFrame-throttled progress driver 控制七個 phases；progress/phase/media 核心位於可直接測試的 `exploded-view-model.js`。
-- Tablet、mobile、no-JS 與 `prefers-reduced-motion` 使用 vertical fallback，不得保留 `650dvh` 長 spacer。
-- Live media plate 同時只允許一支 active video 播放；inactive videos 必須 pause。
-- Language switching 必須同步 still src、video source、poster、alt、aria-label 與 meta/OG content。
+- 產品頁是無 bundling 的靜態 HTML／CSS／ES module；`app.js` 負責中英文、light/dark theme、section reveal、active navigation、影片 viewport lifecycle、GitHub star badge 與 command palette，平台下載仍由 `downloads.js` 負責。
+- 語言切換必須同步 still src、video source、poster、alt、placeholder、aria-label 與 meta/OG content；新增 markup key 時，`app.js` 的 `zh-Hant` 與 `en` dictionaries 必須同時提供。
+- Theme 遵循系統偏好並保存至 `yuzora-theme`；no-JS、mobile 與 `prefers-reduced-motion` 必須保持內容可讀，不得依賴動畫才能看見主要資訊。
+- Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
 - 現行無 GSAP 或其他 Pages runtime dependency；不要以 smooth-scroll library 取代 native scrolling。
 
 ### 產品頁 smoke test
 
 - Canonical URL 可開啟，HTTP 正確導向 HTTPS。
-- Hero 首屏、七段 Exploded View、REASSEMBLE final state 可讀。
-- 中文／英文切換後，全部 still、poster、video source 與 accessibility labels 正確。
-- Desktop pinned motion 沒有 overflow/jank；mobile 不 pin、不出現水平捲軸；reduced motion 沒有長空白區。
-- 任一時間最多一支 live story video 播放；離開 story 或分頁隱藏時全部 pause。
-- 裝置偵測只推薦支援的平台與架構，三個主要下載 CTA 指向固定檔名 Release assets。
+- Hero、三步工作流、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 可讀。
+- 中文／英文切換後，全部 still、poster、video source、placeholder、meta content 與 accessibility labels 正確。
+- Light/dark theme 初始值、手動切換與 persistence 正確；mobile 沒有水平捲軸，no-JS 與 reduced motion 不會隱藏主要內容。
+- Feature videos 進入 viewport 時播放、離開時 pause；分頁離開後不應持續播放或消耗資源。
+- 裝置偵測只推薦支援的平台與架構，主要下載 CTA 指向固定檔名 Release assets。
 - 未支援的 mobile、ChromeOS、Linux、ARM／32-bit Windows 不會收到錯誤的桌面下載推薦。
 
 截至 2026-08-15，GitHub Pages API 回報頁面 URL 為 `http://github.yuuzu.net/Yuzora/`、`https_enforced=false`，外層由 Cloudflare 導向 HTTPS。DNS、Cloudflare 規則、canonical URL 與監控方式應由 maintainer 另行保管；Cloudflare challenge 可能讓單純的無瀏覽器 `curl` smoke test 回傳 403，不能直接等同於頁面部署失敗。
 
 ### 功能影片與 still 重製
 
-原始碼位於 `site-remotion/`；render commands 與 composition 規則見 `site-remotion/README.md`，實際 media naming 以 `site-remotion/src/Root.tsx`、`site/exploded-view.js` 與 `tests/site-exploded-view.test.js` 為準。
+原始碼位於 `site-remotion/`；render commands 與 composition 規則見 `site-remotion/README.md`，實際 media naming 以 `site-remotion/src/Root.tsx`、`site/app.js` 與 `tests/site-page.test.js` 為準。
 
 ```bash
 cd site-remotion
@@ -542,13 +542,19 @@ for c in ade-herdr-zh ade-herdr-en remote-db-zh remote-db-en terminal-git-zh ter
 done
 
 for lang in zh en; do
-  bunx remotion ffmpeg -y -ss 00:00:05 \
-    -i "../site/assets/ade-herdr-${lang}.mp4" -frames:v 1 \
-    "../site/assets/ade-herdr-runtime-${lang}.png"
+  bunx remotion still "ade-herdr-${lang}" \
+    "../site/assets/ade-herdr-runtime-${lang}.png" \
+    --frame=148 --scale=2
+  bunx remotion still "terminal-git-${lang}" \
+    "../site/assets/terminal-git-${lang}.png" \
+    --frame=270 --scale=1
+  bunx remotion still "remote-db-${lang}" \
+    "../site/assets/remote-db-${lang}.png" \
+    --frame=210 --scale=1
 done
 ```
 
-Inspector、remote database 與 terminal/git poster stills 必須使用同語言的真實 Remotion frame。預覽使用 `bun run dev`（Remotion Studio，不自動開啟 browser）；`bun run build` 可驗證並產生 Remotion bundle。Browser visual QA 仍需當次明確授權，不能以靜態檢查取代。影片與頁面變更應透過同一個 PR review，merge 後才由 Pages workflow 部署。
+ADE/HERDR runtime、remote database 與 terminal/git poster stills 必須使用同語言的真實 Remotion frame；Agent Inspector still 已移除。預覽使用 `bun run dev`（Remotion Studio，不自動開啟 browser）；`bun run build` 可驗證並產生 Remotion bundle。Browser visual QA 仍需當次明確授權，不能以靜態檢查取代。影片與頁面變更應透過同一個 PR review，merge 後才由 Pages workflow 部署。
 
 ---
 
@@ -578,6 +584,8 @@ package.json
 src-tauri/Cargo.toml
 src-tauri/tauri.conf.json
 site/index.html
+site/styles.css
+site/app.js
 site/downloads.js
 ```
 

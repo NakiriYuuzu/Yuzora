@@ -27,7 +27,7 @@ const COPY: Record<Lang, Record<string, string>> = {
     s3title: "除錯不離開工作台",
     slogan: "ADE 與 HERDR，融合成一個工作面。",
     slogan2: "agent development under the evening sky",
-    endNote: "macOS · Windows · Linux",
+    endNote: "macOS · Windows",
   },
   en: {
     badge: "Open-source ADE · HERDR-native",
@@ -41,14 +41,14 @@ const COPY: Record<Lang, Record<string, string>> = {
     s3title: "Debug without leaving the bench",
     slogan: "An ADE fused with the HERDR runtime.",
     slogan2: "agent development under the evening sky",
-    endNote: "macOS · Windows · Linux",
+    endNote: "macOS · Windows",
   },
 };
 
 /* ---------- timeline（30fps，共 555 frames = 18.5s） ---------- */
 const T = {
   title: { start: 0, end: 90 },
-  s1: { start: 82, end: 212, inner: 110 }, // ADE/HERDR 精華：BSP panes + Inspector
+  s1: { start: 82, end: 212, inner: 110 }, // ADE/HERDR 精華：Spaces、Agents 與 BSP panes
   s2: { start: 204, end: 334, inner: 70 }, // RemoteDb 精華：query + rows
   s3: { start: 326, end: 456, inner: 80 }, // TerminalGit 精華：log + cherry-pick
   end: { start: 448, end: 555 },

@@ -11,17 +11,6 @@ type Copy = {
   attention: string;
   agents: string;
   newTerminal: string;
-  inspect: string;
-  readOnly: string;
-  status: string;
-  pane: string;
-  space: string;
-  tab: string;
-  cwd: string;
-  source: string;
-  lines: string;
-  refresh: string;
-  output: string;
   controller: string;
   terminalTitle: string;
   attentionTitle: string;
@@ -37,17 +26,6 @@ const COPY: Record<Lang, Copy> = {
     attention: "ATTENTION",
     agents: "AGENTS",
     newTerminal: "新增 HERDR terminal",
-    inspect: "Agent Inspector",
-    readOnly: "唯讀",
-    status: "狀態",
-    pane: "Pane",
-    space: "Space",
-    tab: "Tab",
-    cwd: "工作目錄",
-    source: "來源",
-    lines: "行數",
-    refresh: "重新整理",
-    output: "輸出",
     controller: "controller",
     terminalTitle: "HERDR · build-check",
     attentionTitle: "docs-review 等待處理",
@@ -61,17 +39,6 @@ const COPY: Record<Lang, Copy> = {
     attention: "ATTENTION",
     agents: "AGENTS",
     newTerminal: "New HERDR terminal",
-    inspect: "Agent Inspector",
-    readOnly: "Read-only",
-    status: "Status",
-    pane: "Pane",
-    space: "Space",
-    tab: "Tab",
-    cwd: "Working directory",
-    source: "Source",
-    lines: "Lines",
-    refresh: "Refresh",
-    output: "Output",
     controller: "controller",
     terminalTitle: "HERDR · build-check",
     attentionTitle: "docs-review needs attention",
@@ -434,136 +401,6 @@ const HerdrSurface: React.FC<{ lang: Lang }> = ({ lang }) => {
   );
 };
 
-const Meta: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <div
-    style={{
-      minWidth: 0,
-      borderRadius: 8,
-      border: `1px solid ${t.line1}`,
-      background: t.paper0,
-      padding: "7px 9px",
-    }}
-  >
-    <div style={{ color: t.ink4, fontSize: 9, fontWeight: 700, letterSpacing: "0.06em" }}>
-      {label.toUpperCase()}
-    </div>
-    <div
-      style={{
-        marginTop: 2,
-        color: t.ink1,
-        fontSize: 11,
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-      }}
-    >
-      {value}
-    </div>
-  </div>
-);
-
-const Inspector: React.FC<{ lang: Lang }> = ({ lang }) => {
-  const frame = useCurrentFrame();
-  const copy = COPY[lang];
-  const opacity = interpolate(frame, [166, 184, 258, 278], [0, 1, 1, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.bezier(...EASE),
-  });
-  const translateY = interpolate(frame, [166, 184], [18, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.bezier(...EASE),
-  });
-  return (
-    <div
-      style={{
-        position: "absolute",
-        inset: "72px 72px 54px 390px",
-        opacity,
-        translate: `0px ${translateY}px`,
-        display: "flex",
-        flexDirection: "column",
-        borderRadius: 16,
-        border: `1px solid ${t.line2}`,
-        background: t.glassStrong,
-        boxShadow: t.shadowLg,
-        backdropFilter: "blur(18px)",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 9,
-          padding: "13px 16px",
-          borderBottom: `1px solid ${t.line1}`,
-          background: t.paper0,
-        }}
-      >
-        <span style={{ color: t.ink0, fontFamily: fonts.serif, fontSize: 17, fontWeight: 600 }}>
-          {copy.inspect}
-        </span>
-        <span
-          style={{
-            borderRadius: 999,
-            background: `rgba(${t.accentRgb}, 0.14)`,
-            color: t.accentInk,
-            padding: "2px 8px",
-            fontSize: 10,
-            fontWeight: 700,
-          }}
-        >
-          {copy.readOnly}
-        </span>
-        <div style={{ flex: 1 }} />
-        <span style={{ color: t.ink4, fontFamily: fonts.mono, fontSize: 10 }}>build-check</span>
-      </div>
-      <div style={{ display: "flex", minHeight: 0, flex: 1, flexDirection: "column", gap: 10, padding: 14 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 7 }}>
-          <Meta label={copy.status} value="working" />
-          <Meta label={copy.pane} value="pane-a" />
-          <Meta label={copy.space} value="Yuzora" />
-          <Meta label={copy.tab} value="tab-build" />
-        </div>
-        <Meta label={copy.cwd} value="workspace/yuzora" />
-        <div style={{ display: "flex", alignItems: "center", gap: 8, color: t.ink3, fontSize: 10.5 }}>
-          <span>{copy.source}</span>
-          <span style={{ border: `1px solid ${t.line2}`, borderRadius: 7, background: t.paper0, padding: "4px 8px" }}>recent</span>
-          <span style={{ borderRadius: 7, background: t.ink1, color: t.paper0, padding: "4px 8px" }}>text</span>
-          <span>{copy.lines}</span>
-          <span style={{ border: `1px solid ${t.line2}`, borderRadius: 7, background: t.paper0, padding: "4px 8px" }}>120</span>
-          <span style={{ borderRadius: 7, background: t.accent, color: "white", padding: "4px 9px", fontWeight: 600 }}>{copy.refresh}</span>
-        </div>
-        <div style={{ color: t.ink3, fontSize: 10, fontWeight: 700, letterSpacing: "0.06em" }}>{copy.output.toUpperCase()}</div>
-        <pre
-          style={{
-            minHeight: 0,
-            flex: 1,
-            margin: 0,
-            borderRadius: 10,
-            border: `1px solid ${t.line2}`,
-            background: t.termBg,
-            color: t.termFg,
-            padding: 11,
-            fontFamily: fonts.mono,
-            fontSize: 10.5,
-            lineHeight: 1.55,
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          $ bun run typecheck{"\n"}
-          checking 318 modules{"\n"}
-          <span style={{ color: t.termOk }}>✓ frontend typecheck passed</span>{"\n"}
-          connector: control / controller{"\n"}
-          runtime: HERDR session default
-        </pre>
-      </div>
-    </div>
-  );
-};
-
 export const AdeHerdr: React.FC<{ lang: Lang }> = ({ lang }) => {
   const frame = useCurrentFrame();
   const { durationInFrames } = useVideoConfig();
@@ -582,7 +419,6 @@ export const AdeHerdr: React.FC<{ lang: Lang }> = ({ lang }) => {
         statusRight="HERDR · default · connected"
         lang={lang}
       />
-      {frame >= 160 ? <Inspector lang={lang} /> : null}
     </div>
   );
 };

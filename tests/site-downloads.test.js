@@ -175,11 +175,10 @@ describe("GitHub Pages platform download selection", () => {
     ).toBe(true)
     expect(page.querySelector("[data-device-message='windows']")?.hasAttribute("hidden")).toBe(false)
     expect(page.querySelector("[data-platform-download='linux']")).toBeNull()
-    expect(
-      [...page.querySelectorAll('script[type="module"]')].some((script) =>
-        script.textContent?.includes('from "./downloads.js"'),
-      ),
-    ).toBe(true)
+    expect(page.querySelector('script[type="module"][src="./app.js"]')).not.toBeNull()
+    expect(readFileSync(resolve(process.cwd(), "site/app.js"), "utf8")).toContain(
+      'from "./downloads.js"',
+    )
   })
 
   it("keeps manual platform selection usable before JavaScript runs", () => {

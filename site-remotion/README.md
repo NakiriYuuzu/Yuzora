@@ -22,7 +22,7 @@ done
 Render a still for visual QA:
 
 ```bash
-bunx remotion still ade-herdr-en /tmp/ade-herdr-en.png --frame=210 --scale=1
+bunx remotion still ade-herdr-en /tmp/ade-herdr-en.png --frame=148 --scale=1
 ```
 
 All animation timing must come from Remotion frames (`useCurrentFrame`, `interpolate`, or `Sequence`), not CSS animations or transitions.

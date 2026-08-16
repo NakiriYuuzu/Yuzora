@@ -20,7 +20,8 @@
 - LSP 下載改由內建完整性 catalog 驗證來源、內容與 provenance；找不到可信 artifact 時會拒絕安裝，而不是繼續使用未驗證內容。
 - Markdown 預覽改為與來源文件相鄰的連結頁面，並改善分頁拖曳排序、檔案拖放、圖片／SVG 預覽與工作區切換後的狀態恢復。
 - Git 變更清單、diff、log 與 branch 操作改善大量資料下的載入、選取、虛擬化與 stale response 防護。
-- 更新 Tauri、React、Vite、CodeMirror、資料庫／SSH 函式庫與其他開發相依套件，並同步更新產品網站與中英文導覽素材。
+- 更新 Tauri、React、Vite、CodeMirror、資料庫／SSH 函式庫與其他開發相依套件。
+- 重構產品網站與中英文導覽素材，套用目前的 Yuzora Logo，並改以更精簡的 ADE × HERDR 故事、light/dark theme、響應式功能展示與新版 Git／Terminal 影片介紹目前工作面。
 - Windows 上的 HERDR public API 與事件訂閱改用 HERDR 0.8.0 的 named-pipe transport；當 server、protocol 與 schema 相容時，可使用 snapshot、runtime mutation 與即時事件，不再因作業系統固定停用。
 - macOS 與 Windows 安裝檔內附經 SHA-256 固定的 Yuzora-managed HERDR 0.8.0 相容 binary；預設優先使用 PATH 全域安裝版，偵測不到時會自動退回內附版本。Windows 內附官方 protocol-19 preview package 與其 ConPTY runtime。
 
