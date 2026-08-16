@@ -34,7 +34,7 @@ const BINARY_SOURCE_CONFIG_FILE: &str = "herdr-config-v1.json";
 #[cfg(not(test))]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
-const EVENT_ACK_TIMEOUT: Duration = Duration::from_millis(150);
+const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const AGENT_READ_MIN_LINES: u32 = 20;
@@ -5579,7 +5579,7 @@ exit 2
             BufReader::new(stream.try_clone().unwrap())
                 .read_line(&mut request)
                 .unwrap();
-            std::thread::sleep(Duration::from_millis(400));
+            std::thread::sleep(Duration::from_millis(1_200));
         });
         let binary = write_fake_herdr_event_session(dir.path(), &socket);
         let manager = Arc::new(HerdrManager::with_binary(binary));

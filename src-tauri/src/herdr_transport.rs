@@ -298,6 +298,10 @@ pub(crate) fn write_local_all_until(
     while offset < bytes.len() {
         remaining_timeout(deadline)?;
         match stream.write(&bytes[offset..]) {
+            // A nonblocking Windows named pipe reports a full output buffer as
+            // a successful zero-byte write. Treat that as backpressure and let
+            // the same deadline used for WouldBlock terminate the request.
+            Ok(0) if cfg!(windows) => sleep_until(Some(deadline)),
             Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
