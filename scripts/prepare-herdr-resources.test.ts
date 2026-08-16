@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  fetchWithRetry,
   HERDR_RESOURCE_TARGETS,
   HERDR_RESOURCE_VERSION,
   resourceTargetIdsForHost,
@@ -10,6 +11,11 @@ import {
 } from "./prepare-herdr-resources"
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 describe("prepare Herdr resources", () => {
   it("pins protocol-19 Herdr resources for both released desktop platforms", () => {
@@ -36,6 +42,30 @@ describe("prepare Herdr resources", () => {
     expect(HERDR_RESOURCE_TARGETS["windows-x86_64"].files.map((file) => file.path)).toContain(
       "conpty/x64/OpenConsole.exe"
     )
+  })
+
+  it("retries transient download failures with bounded backoff", async () => {
+    vi.useFakeTimers()
+    const response = new Response("payload", { status: 200 })
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("connection refused"))
+      .mockResolvedValueOnce(response)
+    vi.stubGlobal("fetch", fetchMock)
+
+    const pending = fetchWithRetry("https://example.invalid/herdr")
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    await expect(pending).resolves.toBe(response)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not retry permanent HTTP failures", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("missing", { status: 404 }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(fetchWithRetry("https://example.invalid/herdr")).rejects.toThrow(/HTTP 404/)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it("maps prepared resources into each released desktop bundle", async () => {

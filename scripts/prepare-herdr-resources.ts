@@ -167,11 +167,38 @@ async function targetIsValid(root: string, target: HerdrResourceTarget): Promise
   }
 }
 
-async function download(target: HerdrResourceTarget): Promise<Uint8Array> {
-  const response = await fetch(target.url, { redirect: "follow" })
-  if (!response.ok) {
-    throw new Error(`Herdr resource download failed with HTTP ${response.status}: ${target.url}`)
+export async function fetchWithRetry(url: string): Promise<Response> {
+  const attempts = 4
+  let lastError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let response: Response
+    try {
+      response = await fetch(url, { redirect: "follow" })
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, attempt * 1_000))
+        continue
+      }
+      break
+    }
+
+    if (response.ok) return response
+    await response.body?.cancel()
+    const error = new Error(`Herdr resource download failed with HTTP ${response.status}: ${url}`)
+    if (response.status < 500 && response.status !== 429) throw error
+    lastError = error
+    if (attempt < attempts) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, attempt * 1_000))
+    }
   }
+  throw new Error(`Herdr resource download failed after ${attempts} attempts: ${url}`, {
+    cause: lastError
+  })
+}
+
+async function download(target: HerdrResourceTarget): Promise<Uint8Array> {
+  const response = await fetchWithRetry(target.url)
   const declaredLength = Number(response.headers.get("content-length") ?? 0)
   if (declaredLength > MAX_DOWNLOAD_BYTES) {
     throw new Error(`Herdr resource exceeds the ${MAX_DOWNLOAD_BYTES}-byte download limit`)
@@ -200,8 +227,8 @@ async function download(target: HerdrResourceTarget): Promise<Uint8Array> {
   return bytes
 }
 
-function runTar(args: string[]): string {
-  const result = Bun.spawnSync(["tar", ...args], { stdout: "pipe", stderr: "pipe" })
+function runTar(args: string[], cwd: string): string {
+  const result = Bun.spawnSync(["tar", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
   if (result.exitCode !== 0) {
     throw new Error(`tar ${args[0]} failed: ${result.stderr.toString().trim()}`)
   }
@@ -228,12 +255,13 @@ async function prepareTarget(root: string, target: HerdrResourceTarget): Promise
       await chmod(output, 0o755)
     } else {
       await writeFile(archivePath, bytes)
-      const entries = runTar(["-tf", archivePath]).split(/\r?\n/)
+      const archiveName = basename(archivePath)
+      const entries = runTar(["-tf", archiveName], stagingRoot).split(/\r?\n/)
       validateArchiveEntries(
         entries,
         target.files.map((file) => file.path)
       )
-      runTar(["-xf", archivePath, "-C", stagingTarget])
+      runTar(["-xf", archiveName, "-C", target.destination], stagingRoot)
     }
 
     if (!(await targetIsValid(stagingRoot, target))) {
