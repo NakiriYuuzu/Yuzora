@@ -23,7 +23,7 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::fs::OpenOptions;
 #[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
 pub const SELECTED_PATH_TTL: Duration = Duration::from_secs(60);
 pub const DOWNLOAD_DEST_TTL: Duration = Duration::from_secs(60);

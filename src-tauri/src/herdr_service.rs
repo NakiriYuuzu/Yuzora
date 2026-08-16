@@ -4581,7 +4581,9 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    #[cfg(unix)]
+    use std::time::Instant;
 
     fn frame(seq: u64, full: bool) -> HerdrWireFrame {
         HerdrWireFrame {
