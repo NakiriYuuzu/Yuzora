@@ -800,7 +800,7 @@
   {
     "code": "clippy::needless_return",
     "file": "src/git_service.rs",
-    "line": 1602,
+    "line": 1599,
     "message": "unneeded `return` statement",
     "count": 2
   },

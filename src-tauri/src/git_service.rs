@@ -10,14 +10,6 @@ use std::time::Duration;
 /// 靠 clone Arc 帶進 blocking thread（見 `with_requested_repo_blocking`）。
 pub struct GitServiceState(pub std::sync::Arc<std::sync::Mutex<Option<RepoHandle>>>);
 
-#[cfg(test)]
-static GIT_SPAWN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(test)]
-pub(crate) fn git_spawn_count() -> u64 {
-    GIT_SPAWN_COUNT.load(std::sync::atomic::Ordering::SeqCst)
-}
-
 #[derive(Clone)]
 pub struct RepoHandle {
     pub root: PathBuf,
@@ -221,8 +213,6 @@ fn run_git_inner(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::process_kill::configure_background_process(&mut cmd);
-    #[cfg(test)]
-    GIT_SPAWN_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut child = cmd.spawn().map_err(|e| format!("git spawn failed: {e}"))?;
     if let Some(hook) = on_spawn {
         hook(child.id());
@@ -445,6 +435,19 @@ fn detect_commit_and_watch(
     Ok(env)
 }
 
+fn detect_trusted_environment(
+    trust: &crate::workspace_trust::WorkspaceTrustState,
+    path: &str,
+    detect: impl FnOnce() -> Result<GitEnvironment, String>,
+) -> Result<GitEnvironment, String> {
+    let identity = trust.require_trusted(path)?;
+    let env = detect()?;
+    if let GitEnvironment::Ready { root, .. } = &env {
+        trust.bind_session_git_root(&identity, root);
+    }
+    Ok(env)
+}
+
 #[tauri::command]
 pub async fn git_detect(
     app: tauri::AppHandle,
@@ -459,12 +462,9 @@ pub async fn git_detect(
     let watch_shared = watch_state.0.clone();
     let trust = trust.inner().clone();
     run_blocking(move || {
-        let identity = trust.require_trusted(&path)?;
-        let env = detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)?;
-        if let GitEnvironment::Ready { root, .. } = &env {
-            trust.bind_session_git_root(&identity, root);
-        }
-        Ok(env)
+        detect_trusted_environment(&trust, &path, || {
+            detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)
+        })
     })
     .await
 }
@@ -545,12 +545,9 @@ pub async fn git_bootstrap(
     let watch_shared = watch_state.0.clone();
     let trust = trust.inner().clone();
     let env = run_blocking(move || {
-        let identity = trust.require_trusted(&path)?;
-        let env = detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)?;
-        if let GitEnvironment::Ready { root, .. } = &env {
-            trust.bind_session_git_root(&identity, root);
-        }
-        Ok(env)
+        detect_trusted_environment(&trust, &path, || {
+            detect_commit_and_watch(app, &repo_shared, &watch_shared, generation, &path)
+        })
     })
     .await?;
     let root = match &env {
@@ -4073,13 +4070,14 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         test_repo::init(&repo);
         let path = repo.to_str().unwrap().to_string();
-        let before = git_spawn_count();
         let error = trust.require_trusted(&path).unwrap_err();
         assert!(
             error.contains("untrustedWorkspace"),
             "expected untrusted workspace, got {error}"
         );
-        let detect_error = match detect_environment_if_trusted(&trust, &path) {
+        let detect_error = match detect_trusted_environment(&trust, &path, || {
+            panic!("untrusted detect must not reach environment detection")
+        }) {
             Ok(_) => panic!("expected detect to stay closed"),
             Err(error) => error,
         };
@@ -4087,31 +4085,22 @@ mod tests {
             detect_error.contains("untrustedWorkspace"),
             "expected detect to stay closed, got {detect_error}"
         );
-        assert_eq!(
-            git_spawn_count(),
-            before,
-            "untrusted detect must not spawn git"
-        );
 
         let state = GitServiceState(std::sync::Arc::new(std::sync::Mutex::new(Some(
             RepoHandle { root: repo.clone() },
         ))));
-        let before = git_spawn_count();
         let wrapper_error = tauri::async_runtime::block_on(with_requested_repo_blocking(
             &state,
             &trust,
             path,
-            |_| Ok(()),
+            |_| -> Result<(), String> {
+                panic!("untrusted git wrapper must not reach the repository operation")
+            },
         ))
         .unwrap_err();
         assert!(
             wrapper_error.contains("untrustedWorkspace"),
             "expected wrapper to stay closed, got {wrapper_error}"
-        );
-        assert_eq!(
-            git_spawn_count(),
-            before,
-            "untrusted git wrapper must not spawn git"
         );
     }
 
@@ -4223,6 +4212,5 @@ fn detect_environment_if_trusted(
     trust: &crate::workspace_trust::WorkspaceTrustState,
     path: &str,
 ) -> Result<GitEnvironment, String> {
-    let _ = trust.require_trusted(path)?;
-    Ok(detect_environment(Path::new(path)))
+    detect_trusted_environment(trust, path, || Ok(detect_environment(Path::new(path))))
 }
