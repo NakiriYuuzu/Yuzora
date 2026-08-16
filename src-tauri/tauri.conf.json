@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun run dev:tauri",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "bun run herdr:prepare && bun run build",
     "frontendDist": "../dist"
   },
   "app": {

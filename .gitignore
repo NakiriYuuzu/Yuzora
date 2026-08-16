@@ -21,6 +21,9 @@ build/
 .scaffold/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/resources/herdr/macos-aarch64/
+src-tauri/resources/herdr/macos-x86_64/
+src-tauri/resources/herdr/windows-x86_64/
 /logs/
 *.log
 *.local

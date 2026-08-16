@@ -477,9 +477,9 @@
   },
   "herdrSettings": {
     "binarySource": "Herdr 二進位來源",
-    "binarySourceSub": "選擇 PATH 安裝版或 Yuzora 管理的 default。變更需重啟後生效。",
-    "global": "全域（PATH）",
-    "default": "預設（Yuzora 管理）",
+    "binarySourceSub": "優先使用 PATH 安裝版；找不到時自動改用 Yuzora-managed Herdr，也可指定僅使用 managed binary。變更需重啟後生效。",
+    "global": "全域優先",
+    "default": "僅 Yuzora-managed",
     "restartRequired": "請重新啟動 Yuzora 以套用選定的 Herdr 二進位。",
     "diagnostics": "二進位診斷",
     "configured": "設定",
@@ -496,7 +496,7 @@
     "unavailable": "不可用",
     "reason": "原因",
     "configurationError": "已儲存的二進位來源設定無法信任：{{error}}",
-    "defaultUnavailable": "此建置尚未內建 managed Herdr binary。重啟前仍沿用目前來源；若要在重啟後繼續使用 Herdr，請先改回 Global。"
+    "defaultUnavailable": "內建的 Herdr 資源無法使用。請重新安裝 Yuzora，或在重啟前檢查二進位診斷。"
   },
   "workspaceTrust": {
     "title": "要信任這個 workspace 嗎？",

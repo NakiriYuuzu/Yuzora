@@ -58,7 +58,7 @@ export function HerdrSettingsSection() {
   }
 
   const configured = info?.configured ?? "global"
-  const active = info?.active ?? info?.resolved ?? info?.configured ?? null
+  const active = info?.resolved ?? info?.active ?? info?.configured ?? null
   const configuredAvailable = info
     ? (info.configuredAvailable ?? (info.configured === active ? info.available : false))
     : false

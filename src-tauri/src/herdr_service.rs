@@ -35,6 +35,8 @@ const BINARY_SOURCE_CONFIG_FILE: &str = "herdr-config-v1.json";
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const AGENT_READ_MIN_LINES: u32 = 20;
@@ -795,11 +797,11 @@ impl HerdrManager {
     pub fn binary_source_info(&self) -> HerdrBinarySourceInfo {
         let configured = *self.configured_source.lock().unwrap();
         let active = *self.active_source.lock().unwrap();
-        let (active_path, active_reason) = self.resolve_binary_for_source(active);
-        let (configured_path, configured_reason) = if configured == active {
-            (active_path.clone(), active_reason.clone())
+        let (active_path, resolved, active_reason) = self.resolve_binary_selection(active);
+        let (configured_path, _configured_resolved, configured_reason) = if configured == active {
+            (active_path.clone(), resolved, active_reason.clone())
         } else {
-            self.resolve_binary_for_source(configured)
+            self.resolve_binary_selection(configured)
         };
         let (version, protocol) = active_path
             .as_deref()
@@ -816,7 +818,7 @@ impl HerdrManager {
         HerdrBinarySourceInfo {
             configured,
             active,
-            resolved: active_path.as_ref().map(|_| active),
+            resolved,
             available: active_path.is_some(),
             path: active_path.map(|p| p.to_string_lossy().into_owned()),
             reason: active_reason,
@@ -860,9 +862,30 @@ impl HerdrManager {
 
     pub fn resolve_binary(&self) -> Option<PathBuf> {
         let active = *self.active_source.lock().unwrap();
-        self.resolve_binary_for_source(active).0
+        self.resolve_binary_selection(active).0
     }
 
+    /// Resolve a user's source preference into the executable used by this
+    /// process. Global is the automatic policy: prefer PATH, then use the
+    /// bundled Yuzora-managed binary. Explicit managed selection stays strict.
+    fn resolve_binary_selection(
+        &self,
+        source: HerdrBinarySource,
+    ) -> (Option<PathBuf>, Option<HerdrBinarySource>, Option<String>) {
+        let has_explicit_override = self.binary_override.lock().unwrap().is_some();
+        let primary = self.resolve_binary_for_source(source);
+        let managed =
+            if source == HerdrBinarySource::Global && primary.0.is_none() && !has_explicit_override
+            {
+                self.resolve_binary_for_source(HerdrBinarySource::Default)
+            } else {
+                (None, None)
+            };
+        select_binary_resolution(source, has_explicit_override, primary, managed)
+    }
+
+    /// Strict lookup for one source. Automatic fallback belongs only in
+    /// `resolve_binary_selection`, keeping explicit managed diagnostics honest.
     fn resolve_binary_for_source(
         &self,
         source: HerdrBinarySource,
@@ -882,13 +905,7 @@ impl HerdrManager {
         match source {
             HerdrBinarySource::Global => match which_binary("herdr").map(PathBuf::from) {
                 Some(path) => (Some(path), None),
-                None => (
-                    None,
-                    Some(
-                        "Herdr was not found on PATH; install Herdr or choose Yuzora-managed"
-                            .into(),
-                    ),
-                ),
+                None => (None, Some("Herdr was not found on PATH".into())),
             },
             HerdrBinarySource::Default => {
                 if let Some(path) = self.managed_binary_override.lock().unwrap().clone() {
@@ -2583,6 +2600,41 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
 }
 
 // ── Binary / API helpers ────────────────────────────────────────────────────
+
+fn select_binary_resolution(
+    source: HerdrBinarySource,
+    has_explicit_override: bool,
+    primary: (Option<PathBuf>, Option<String>),
+    managed: (Option<PathBuf>, Option<String>),
+) -> (Option<PathBuf>, Option<HerdrBinarySource>, Option<String>) {
+    let (primary_path, primary_reason) = primary;
+    if primary_path.is_some() {
+        return (primary_path, Some(source), primary_reason);
+    }
+    if source != HerdrBinarySource::Global || has_explicit_override {
+        return (None, None, primary_reason);
+    }
+
+    let (managed_path, managed_reason) = managed;
+    if managed_path.is_some() {
+        return (
+            managed_path,
+            Some(HerdrBinarySource::Default),
+            Some("Herdr was not found on PATH; using Yuzora-managed Herdr".into()),
+        );
+    }
+    let primary_reason =
+        primary_reason.unwrap_or_else(|| "Herdr was not found on PATH".to_string());
+    let managed_reason =
+        managed_reason.unwrap_or_else(|| "Yuzora-managed Herdr is unavailable".to_string());
+    (
+        None,
+        None,
+        Some(format!(
+            "{primary_reason}; Yuzora-managed fallback is also unavailable: {managed_reason}"
+        )),
+    )
+}
 
 fn managed_binary_path(resource_dir: &Path) -> PathBuf {
     let os = if cfg!(target_os = "macos") {
@@ -4968,6 +5020,35 @@ mod tests {
     }
 
     #[test]
+    fn missing_global_binary_falls_back_to_yuzora_managed() {
+        let managed = PathBuf::from("/bundled/herdr");
+        let (path, resolved, reason) = select_binary_resolution(
+            HerdrBinarySource::Global,
+            false,
+            (None, Some("Herdr was not found on PATH".into())),
+            (Some(managed.clone()), None),
+        );
+        assert_eq!(path, Some(managed));
+        assert_eq!(resolved, Some(HerdrBinarySource::Default));
+        assert!(reason.unwrap().contains("using Yuzora-managed"));
+    }
+
+    #[test]
+    fn missing_global_and_managed_binaries_report_both_failures() {
+        let (path, resolved, reason) = select_binary_resolution(
+            HerdrBinarySource::Global,
+            false,
+            (None, Some("Herdr was not found on PATH".into())),
+            (None, Some("managed binary missing".into())),
+        );
+        assert!(path.is_none());
+        assert!(resolved.is_none());
+        let reason = reason.unwrap();
+        assert!(reason.contains("not found on PATH"), "{reason}");
+        assert!(reason.contains("managed binary missing"), "{reason}");
+    }
+
+    #[test]
     fn default_binary_source_does_not_silently_fall_back_to_global() {
         let mgr = HerdrManager::new();
         *mgr.active_source.lock().unwrap() = HerdrBinarySource::Default;
@@ -5545,7 +5626,7 @@ exit 2
             .events_subscribe(Some("default".into()), callback)
             .unwrap();
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
             HerdrSubscriptionEvent::Subscribed { .. }
         ));
         let started = Instant::now();
@@ -5752,10 +5833,10 @@ exit 2
             .events_subscribe(Some("default".into()), callback)
             .unwrap();
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
             HerdrSubscriptionEvent::Subscribed { .. }
         ));
-        match rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+        match rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap() {
             HerdrSubscriptionEvent::Error { message, .. } => {
                 assert!(message.contains("tooLarge"), "{message}");
             }
@@ -5793,11 +5874,11 @@ exit 2
             .events_subscribe(Some("default".into()), callback)
             .unwrap();
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
             HerdrSubscriptionEvent::Subscribed { .. }
         ));
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
             HerdrSubscriptionEvent::Error { .. }
         ));
         manager.events_release(&id).unwrap();
@@ -5834,17 +5915,17 @@ exit 2
             .events_subscribe(Some("default".into()), callback)
             .unwrap();
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
             HerdrSubscriptionEvent::Subscribed { .. }
         ));
         for _ in 0..2 {
             assert!(matches!(
-                rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
                 HerdrSubscriptionEvent::AgentStatusChanged { .. }
             ));
         }
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
             HerdrSubscriptionEvent::Disconnected { .. }
         ));
         manager.events_release(&id).unwrap();

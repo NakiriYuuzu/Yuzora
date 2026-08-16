@@ -477,9 +477,9 @@
   },
   "herdrSettings": {
     "binarySource": "Herdr binary source",
-    "binarySourceSub": "Choose the PATH-installed binary or Yuzora-managed default. Changes apply after restart.",
-    "global": "Global (PATH)",
-    "default": "Default (Yuzora-managed)",
+    "binarySourceSub": "Prefer PATH-installed Herdr with automatic Yuzora-managed fallback, or require the managed binary. Changes apply after restart.",
+    "global": "Global preferred",
+    "default": "Yuzora-managed only",
     "restartRequired": "Restart Yuzora to apply the selected Herdr binary.",
     "diagnostics": "Binary diagnostics",
     "configured": "Configured",
@@ -496,7 +496,7 @@
     "unavailable": "Unavailable",
     "reason": "Reason",
     "configurationError": "The saved binary-source preference could not be trusted: {{error}}",
-    "defaultUnavailable": "This build does not include a managed Herdr binary. The active source remains unchanged until restart; choose Global before restarting to keep Herdr available."
+    "defaultUnavailable": "The bundled Herdr resource is unavailable. Reinstall Yuzora or review the binary diagnostics before restarting."
   },
   "workspaceTrust": {
     "title": "Trust this workspace?",

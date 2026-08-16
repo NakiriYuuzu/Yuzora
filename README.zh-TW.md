@@ -121,7 +121,7 @@ Windows `.msi` 安裝檔與歷史版本見 [GitHub Releases](https://github.com/
 | Terminal | xterm.js ＋本機 pty ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
-關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會隱式終止 HERDR server、panes 或 agents。
+Yuzora 會優先使用 PATH 安裝的 HERDR binary；偵測不到時，會自動改用 macOS／Windows 安裝檔內附且固定版本的 Yuzora-managed binary。關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會隱式啟動或終止 HERDR server、panes 或 agents。
 
 ## 開發
 

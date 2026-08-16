@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:tauri": "vite --mode tauri",
     "build": "bun run typecheck && vite build",
+    "herdr:prepare": "bun scripts/prepare-herdr-resources.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

@@ -122,7 +122,7 @@ The Windows `.msi` installer and past versions live on [GitHub Releases](https:/
 | Terminal | xterm.js + local pty + HERDR terminal pages |
 | Toolchain | Bun · Vitest · Cargo |
 
-Yuzora releases only its own connector children when pages or the app close; it does not implicitly terminate the HERDR server, panes or agents.
+Yuzora prefers a PATH-installed HERDR binary and automatically falls back to the pinned Yuzora-managed binary bundled with macOS and Windows builds. Yuzora releases only its own connector children when pages or the app close; it does not implicitly start or terminate the HERDR server, panes or agents.
 
 ## Development
 
