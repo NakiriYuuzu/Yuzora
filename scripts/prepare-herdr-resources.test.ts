@@ -7,7 +7,8 @@ import {
   HERDR_RESOURCE_TARGETS,
   HERDR_RESOURCE_VERSION,
   resourceTargetIdsForHost,
-  validateArchiveEntries
+  validateArchiveEntries,
+  zipExtractionToolForPlatform
 } from "./prepare-herdr-resources"
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -27,6 +28,8 @@ describe("prepare Herdr resources", () => {
     })
     expect(resourceTargetIdsForHost("darwin")).toEqual(["macos-aarch64", "macos-x86_64"])
     expect(resourceTargetIdsForHost("win32")).toEqual(["windows-x86_64"])
+    expect(zipExtractionToolForPlatform("win32")).toBe("powershell")
+    expect(zipExtractionToolForPlatform("darwin")).toBe("tar")
     expect(() => resourceTargetIdsForHost("linux")).toThrow(/does not build desktop/)
   })
 

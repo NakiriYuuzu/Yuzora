@@ -235,6 +235,62 @@ function runTar(args: string[], cwd: string): string {
   return result.stdout.toString()
 }
 
+function runWindowsPowerShell(script: string, archivePath: string, destination?: string): string {
+  const result = Bun.spawnSync(
+    ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      env: {
+        ...process.env,
+        YUZORA_HERDR_ARCHIVE: archivePath,
+        YUZORA_HERDR_DESTINATION: destination ?? ""
+      },
+      stdout: "pipe",
+      stderr: "pipe"
+    }
+  )
+  if (result.exitCode !== 0) {
+    throw new Error(`PowerShell ZIP operation failed: ${result.stderr.toString().trim()}`)
+  }
+  return result.stdout.toString()
+}
+
+export function zipExtractionToolForPlatform(
+  platform: NodeJS.Platform
+): "powershell" | "tar" {
+  return platform === "win32" ? "powershell" : "tar"
+}
+
+function listZipEntries(archivePath: string, stagingRoot: string): string[] {
+  if (zipExtractionToolForPlatform(process.platform) === "powershell") {
+    const script = `
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::OpenRead($env:YUZORA_HERDR_ARCHIVE)
+try {
+  foreach ($entry in $archive.Entries) { [Console]::Out.WriteLine($entry.FullName) }
+} finally {
+  $archive.Dispose()
+}
+`
+    return runWindowsPowerShell(script, archivePath).split(/\r?\n/)
+  }
+  return runTar(["-tf", basename(archivePath)], stagingRoot).split(/\r?\n/)
+}
+
+function extractZip(archivePath: string, stagingRoot: string, destination: string): void {
+  if (zipExtractionToolForPlatform(process.platform) === "powershell") {
+    const script = `
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::ExtractToDirectory(
+  $env:YUZORA_HERDR_ARCHIVE,
+  $env:YUZORA_HERDR_DESTINATION
+)
+`
+    runWindowsPowerShell(script, archivePath, join(stagingRoot, destination))
+    return
+  }
+  runTar(["-xf", basename(archivePath), "-C", destination], stagingRoot)
+}
+
 async function prepareTarget(root: string, target: HerdrResourceTarget): Promise<void> {
   if (await targetIsValid(root, target)) {
     console.log(`Herdr resource ${target.id} is already verified`)
@@ -255,13 +311,12 @@ async function prepareTarget(root: string, target: HerdrResourceTarget): Promise
       await chmod(output, 0o755)
     } else {
       await writeFile(archivePath, bytes)
-      const archiveName = basename(archivePath)
-      const entries = runTar(["-tf", archiveName], stagingRoot).split(/\r?\n/)
+      const entries = listZipEntries(archivePath, stagingRoot)
       validateArchiveEntries(
         entries,
         target.files.map((file) => file.path)
       )
-      runTar(["-xf", archiveName, "-C", target.destination], stagingRoot)
+      extractZip(archivePath, stagingRoot, target.destination)
     }
 
     if (!(await targetIsValid(stagingRoot, target))) {
