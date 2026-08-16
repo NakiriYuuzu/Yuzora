@@ -215,6 +215,22 @@ async function connectTwoHosts() {
     return { hostA, hostB, sessionIdA, sessionIdB, fingerprintB }
 }
 
+describe("SshPanel SSH/SFTP icons", () => {
+    it("uses the server icon for the empty SSH state", () => {
+        act(() => useSftpStore.getState().setActiveTab("ssh"))
+        const { container } = render(<SshPanel />)
+
+        expect(container.querySelector(".lucide-server")).toBeInTheDocument()
+    })
+
+    it("uses the server icon for the disconnected SFTP state", () => {
+        act(() => useSftpStore.getState().setActiveTab("sftp"))
+        const { container } = render(<SshPanel />)
+
+        expect(container.querySelector(".lucide-server")).toBeInTheDocument()
+    })
+})
+
 describe("SshPanel fingerprint display", () => {
     it("renders the TOFU host-key fingerprint for the active session", async () => {
         const { fingerprintB } = await connectTwoHosts()

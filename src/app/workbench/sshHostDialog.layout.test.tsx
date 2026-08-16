@@ -45,7 +45,12 @@ describe("SSH host dialog layout", () => {
     fireEvent.click(screen.getByRole("button", { name: "Key file" }))
 
     const dialog = screen.getByTestId("ssh-host-dialog")
-    expect(dialog).toHaveAttribute("data-dialog-size-id", "ssh-host")
+    expect(dialog).not.toHaveAttribute("data-dialog-size-id")
+    expect(dialog.style.width).toBe("")
+    expect(dialog.style.height).toBe("")
+    expect(dialog.className).toMatch(/sm:max-w-\[420px\]/)
+    expect(dialog.className).not.toMatch(/max-w-none/)
+    expect(dialog.querySelectorAll('[data-slot="dialog-resize-handle"]')).toHaveLength(0)
 
     const body = screen.getByTestId("ssh-host-body")
     expect(body).toHaveAttribute("data-slot", "scroll-area")
@@ -57,5 +62,26 @@ describe("SSH host dialog layout", () => {
 
     const add = screen.getByRole("button", { name: "Add" })
     expect(body.contains(add)).toBe(false)
+  })
+
+  it("uses the compact alert-sized contract for the SSH password prompt", () => {
+    const host = useSshStore.getState().addHost({
+      name: "web",
+      host: "example.com",
+      port: 22,
+      user: "root",
+      authKind: "password",
+    })
+    useSshStore.setState({ pendingAuthHostId: host.id })
+
+    render(<SshNavContent />)
+
+    const dialog = screen.getByTestId("ssh-password-dialog")
+    expect(dialog).not.toHaveAttribute("data-dialog-size-id")
+    expect(dialog.style.width).toBe("")
+    expect(dialog.style.height).toBe("")
+    expect(dialog.className).toMatch(/sm:max-w-\[420px\]/)
+    expect(dialog.className).not.toMatch(/max-w-none/)
+    expect(dialog.querySelectorAll('[data-slot="dialog-resize-handle"]')).toHaveLength(0)
   })
 })

@@ -7,11 +7,10 @@ import {
   FileSymlink,
   Folder,
   FolderPlus,
-  FolderSync,
   Pencil,
   RefreshCw,
+  Server,
   ShieldCheck,
-  TerminalSquare,
   Trash2,
   Upload,
   X
@@ -164,7 +163,7 @@ function NonTerminalState({
     return (
       <div className="absolute inset-0 flex items-center justify-center">
         <EmptyState
-          icon={TerminalSquare}
+          icon={Server}
           title={t("sshPanel.noSessionTitle")}
           description={t("sshPanel.noSessionDescription")}
         />
@@ -266,7 +265,7 @@ function SftpTabContent() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-[12px] px-[24px] text-center">
         <EmptyState
-          icon={FolderSync}
+          icon={Server}
           title={t("sshPanel.sftpDisconnectedTitle")}
           description={t("sshPanel.sftpDisconnectedDescription")}
         />

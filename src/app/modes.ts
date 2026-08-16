@@ -1,4 +1,4 @@
-import { Bot, Database, Files, GitBranch, TerminalSquare, type LucideIcon } from "lucide-react"
+import { Bot, Database, Files, GitBranch, Server, type LucideIcon } from "lucide-react"
 
 /** Workbench modes. ADE (Agents) is first/default; Files is second. */
 export type Mode = "ade" | "files" | "git" | "database" | "ssh"
@@ -14,7 +14,7 @@ export const MODES: ModeDefinition[] = [
   { id: "files", label: "Files", icon: Files },
   { id: "git", label: "Git", icon: GitBranch },
   { id: "database", label: "Database", icon: Database },
-  { id: "ssh", label: "SSH", icon: TerminalSquare },
+  { id: "ssh", label: "SSH", icon: Server },
 ]
 
 export const DEFAULT_MODE: Mode = "ade"

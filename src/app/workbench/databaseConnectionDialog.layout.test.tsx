@@ -58,7 +58,12 @@ describe("Database connection dialog layout", () => {
     fireEvent.click(screen.getByText("PostgreSQL"))
 
     const dialog = await screen.findByTestId("database-connection-dialog")
-    expect(dialog).toHaveAttribute("data-dialog-size-id", "database-connection")
+    expect(dialog).not.toHaveAttribute("data-dialog-size-id")
+    expect(dialog.style.width).toBe("")
+    expect(dialog.style.height).toBe("")
+    expect(dialog.className).toMatch(/sm:max-w-\[420px\]/)
+    expect(dialog.className).not.toMatch(/max-w-none/)
+    expect(dialog.querySelectorAll('[data-slot="dialog-resize-handle"]')).toHaveLength(0)
 
     const body = screen.getByTestId("database-connection-body")
     expect(body).toHaveAttribute("data-slot", "scroll-area")

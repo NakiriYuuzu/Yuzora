@@ -25,7 +25,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }))
 
 import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
-import { DIALOG_SIZE_STORAGE_KEY } from "@/lib/dialogSize"
 import { useDbStore } from "@/state/dbStore"
 
 function installLocalStorage(): void {
@@ -46,25 +45,10 @@ function installLocalStorage(): void {
   })
 }
 
-function setViewport(width: number, height: number) {
-  Object.defineProperty(window, "innerWidth", {
-    configurable: true,
-    writable: true,
-    value: width,
-  })
-  Object.defineProperty(window, "innerHeight", {
-    configurable: true,
-    writable: true,
-    value: height,
-  })
-  window.dispatchEvent(new Event("resize"))
-}
-
 describe("Database recovery dialog layout", () => {
   beforeEach(() => {
     installLocalStorage()
     localStorage.clear()
-    setViewport(1000, 800)
     useDbStore.getState().reset()
     mockProfileImportLegacy.mockResolvedValue({ profiles: [], recovery: [] })
     mockProfileList.mockResolvedValue({
@@ -88,23 +72,17 @@ describe("Database recovery dialog layout", () => {
     vi.clearAllMocks()
   })
 
-  it("uses a ScrollArea body and shrink-0 footer at the 280×180 minimum", async () => {
-    // Force the allowed default minimum so header + description + field cannot fit.
-    localStorage.setItem(
-      DIALOG_SIZE_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
-        sizes: { "database-recovery": { widthRatio: 0.01, heightRatio: 0.01 } },
-      }),
-    )
-
+  it("uses the compact alert-sized contract with a ScrollArea body and fixed footer", async () => {
     render(<DatabaseNavContent />)
     fireEvent.click(await screen.findByText("Resume"))
 
     const dialog = await screen.findByTestId("database-recovery-dialog")
-    expect(dialog).toHaveAttribute("data-dialog-size-id", "database-recovery")
-    expect(dialog.style.width).toBe("280px")
-    expect(dialog.style.height).toBe("180px")
+    expect(dialog).not.toHaveAttribute("data-dialog-size-id")
+    expect(dialog.style.width).toBe("")
+    expect(dialog.style.height).toBe("")
+    expect(dialog.className).toMatch(/sm:max-w-\[420px\]/)
+    expect(dialog.className).not.toMatch(/max-w-none/)
+    expect(dialog.querySelectorAll('[data-slot="dialog-resize-handle"]')).toHaveLength(0)
     expect(dialog.className).toMatch(/min-h-0/)
     expect(dialog.className).toMatch(/flex-col/)
     expect(dialog.className).toMatch(/overflow-hidden/)

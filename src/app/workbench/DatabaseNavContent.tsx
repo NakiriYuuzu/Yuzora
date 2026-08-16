@@ -283,8 +283,7 @@ export function DatabaseNavContent() {
         }}
       >
         <DialogContent
-          resizeId="database-recovery"
-          className="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+          className="flex max-h-[calc(100vh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0"
           data-testid="database-recovery-dialog"
         >
           <DialogHeader className="shrink-0 px-4 pt-4">
@@ -1457,8 +1456,7 @@ function NewConnectionDialog({
     <>
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent
-        resizeId="database-connection"
-        className="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+        className="flex max-h-[calc(100vh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0"
         data-testid="database-connection-dialog"
       >
         <DialogHeader className="shrink-0 px-4 pt-4">

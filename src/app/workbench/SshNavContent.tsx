@@ -294,8 +294,7 @@ function NewHostDialog({
       }}
     >
       <DialogContent
-        resizeId="ssh-host"
-        className="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+        className="flex max-h-[calc(100vh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0"
         data-testid="ssh-host-dialog"
       >
         <DialogHeader className="shrink-0 px-4 pt-4">
@@ -397,10 +396,10 @@ function PasswordPromptDialog({ host }: { host: SshHost }) {
         }
       }}
     >
-<DialogContent
-        resizeId="ssh-password"
+      <DialogContent
         showCloseButton={false}
         className="flex min-h-0 flex-col"
+        data-testid="ssh-password-dialog"
       >
         <DialogHeader>
           <DialogTitle>{t("ssh.passwordDialogTitle")}</DialogTitle>
