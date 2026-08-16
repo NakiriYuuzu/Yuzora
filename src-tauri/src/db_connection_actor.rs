@@ -498,9 +498,24 @@ impl ConnectionActor {
     /// Called only after EOF/error, driver cancellation settlement, or (for
     /// MSSQL fallback) connection close. Only this releases the single lease.
     pub fn settle_execution(&mut self, lease: &ExecutionLease) -> Result<Settlement, ActorError> {
-        let active = self.active.as_ref().ok_or(ActorError::NoActiveExecution)?;
+        self.settle_execution_with_policy(lease, false)
+    }
+
+    /// Atomically arbitrates completion against a concurrently accepted cancel.
+    /// Ambiguous helper completion closes the actor before releasing the lease,
+    /// so a late transport cancellation can never target a future execution.
+    pub fn settle_execution_with_policy(
+        &mut self,
+        lease: &ExecutionLease,
+        terminate_if_cancelled: bool,
+    ) -> Result<Settlement, ActorError> {
+        let active = self.active.as_mut().ok_or(ActorError::NoActiveExecution)?;
         if active.lease != *lease {
             return Err(ActorError::StaleLease);
+        }
+        if terminate_if_cancelled && active.cancel_requested {
+            active.connection_termination_required = true;
+            self.closed = true;
         }
         let active = self.active.take().expect("active execution was validated");
         Ok(Settlement {
@@ -733,11 +748,19 @@ impl ProductionConnectionActor {
     }
 
     pub fn settle_execution(&self, lease: &ExecutionLease) -> Result<Settlement, ActorError> {
+        self.settle_execution_with_policy(lease, false)
+    }
+
+    pub fn settle_execution_with_policy(
+        &self,
+        lease: &ExecutionLease,
+        terminate_if_cancelled: bool,
+    ) -> Result<Settlement, ActorError> {
         let settlement = self
             .core
             .lock()
             .map_err(|_| ActorError::Closed)?
-            .settle_execution(lease)?;
+            .settle_execution_with_policy(lease, terminate_if_cancelled)?;
         self.clear_result_continuation_for_run(lease.owner());
         if let Ok(mut channel) = self.mssql_cancel.lock() {
             if channel
@@ -1200,6 +1223,55 @@ mod tests {
         assert!(actor
             .acquire_execution(
                 owner("generation-7", "query-b"),
+                CancelCapability::PostgresProtocolCancel,
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn ambiguous_completion_atomically_closes_only_when_cancel_won_the_lease_race() {
+        let mut cancelled_actor = ConnectionActor::new(connection("generation-7"));
+        let owner_a = owner("generation-7", "query-a");
+        let lease_a = cancelled_actor
+            .acquire_execution(owner_a.clone(), CancelCapability::PostgresProtocolCancel)
+            .unwrap();
+        cancelled_actor.request_cancel(&owner_a).unwrap();
+        cancelled_actor.complete_cancel_dispatch(&owner_a).unwrap();
+        let settlement = cancelled_actor
+            .settle_execution_with_policy(&lease_a, true)
+            .unwrap();
+        assert!(settlement.cancel_requested);
+        assert!(settlement.connection_termination_required);
+        assert!(cancelled_actor.teardown_report().closed);
+        assert_eq!(
+            cancelled_actor.acquire_execution(
+                owner("generation-7", "query-b"),
+                CancelCapability::PostgresProtocolCancel,
+            ),
+            Err(ActorError::Closed)
+        );
+
+        let mut completed_actor = ConnectionActor::new(connection("generation-8"));
+        let completed_owner = owner("generation-8", "query-a");
+        let completed_lease = completed_actor
+            .acquire_execution(
+                completed_owner.clone(),
+                CancelCapability::PostgresProtocolCancel,
+            )
+            .unwrap();
+        let settlement = completed_actor
+            .settle_execution_with_policy(&completed_lease, true)
+            .unwrap();
+        assert!(!settlement.cancel_requested);
+        assert!(!settlement.connection_termination_required);
+        assert!(!completed_actor.teardown_report().closed);
+        assert_eq!(
+            completed_actor.request_cancel(&completed_owner),
+            Err(ActorError::NoActiveExecution)
+        );
+        assert!(completed_actor
+            .acquire_execution(
+                owner("generation-8", "query-b"),
                 CancelCapability::PostgresProtocolCancel,
             )
             .is_ok());

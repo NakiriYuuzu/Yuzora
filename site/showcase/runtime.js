@@ -76,7 +76,6 @@ function renderSite() {
         <div class="download-grid">
           <a class="download-card magnetic" data-platform="macos" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-universal.dmg"><span>macOS</span><b>.dmg · Universal</b><em>Apple Silicon / Intel</em>${icon("download")}</a>
           <a class="download-card magnetic" data-platform="windows" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe"><span>Windows</span><b>.exe · x64</b><em>NSIS installer</em>${icon("download")}</a>
-          <a class="download-card magnetic" data-platform="linux" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-linux-x86_64.AppImage"><span>Linux</span><b>.AppImage · x86_64</b><em>Portable build</em>${icon("download")}</a>
         </div>
         <div class="download-footer"><a href="https://github.com/NakiriYuuzu/Yuzora/releases" target="_blank" rel="noreferrer">${langSpan("查看所有 Releases", "View all releases")}${icon("arrow")}</a><span>Open source · Tauri 2 · React · Rust</span></div>
       </section>
@@ -299,7 +298,6 @@ function initPlatformHint() {
   let target = null;
   if (/mac/.test(platform) && !/iphone|ipad/.test(platform)) target = "macos";
   else if (/win/.test(platform)) target = "windows";
-  else if (/linux/.test(platform) && !/android/.test(platform)) target = "linux";
   document.querySelectorAll("[data-platform]").forEach((card) => card.classList.toggle("is-recommended", card.dataset.platform === target));
 }
 

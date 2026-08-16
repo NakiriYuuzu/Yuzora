@@ -290,7 +290,7 @@ Release PR 除了一般 PR gate，還必須符合 [`docs/operations.md`](../oper
 - Tag 尚未存在。
 - Merge 後 exact `main` commit 的完整 CI 通過，才可建立 tag。
 - Tag push 與 `main` push 分開，Release workflow 不得與尚未完成的 CI 競速。
-- Draft assets、`latest.json`、signatures 與三平台 smoke test 完成後才 Publish。
+- Draft assets、`latest.json`、signatures 與 macOS／Windows 兩個支援桌面平台的 smoke test 完成後才 Publish。
 
 Release workflow、signing key、updater public key 或 stable endpoint 的變更，視為 supply-chain sensitive review。
 

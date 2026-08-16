@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, FileType};
+#[cfg(unix)]
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,7 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::fs::OpenOptions;
 #[cfg(windows)]
-use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::fs::OpenOptionsExt;
 
 pub const SELECTED_PATH_TTL: Duration = Duration::from_secs(60);
 pub const DOWNLOAD_DEST_TTL: Duration = Duration::from_secs(60);
@@ -1056,9 +1057,9 @@ fn require_operational_utf8(path: &Path) -> Result<&str, PathCapabilityError> {
 }
 
 fn file_id(file: &File) -> Result<FileId, PathCapabilityError> {
-    let meta = file.metadata().map_err(|_| PathCapabilityError::Io)?;
     #[cfg(unix)]
     {
+        let meta = file.metadata().map_err(|_| PathCapabilityError::Io)?;
         Ok(FileId::Unix {
             dev: meta.dev(),
             ino: meta.ino(),
@@ -1066,16 +1067,19 @@ fn file_id(file: &File) -> Result<FileId, PathCapabilityError> {
     }
     #[cfg(windows)]
     {
-        Ok(FileId::Windows {
-            volume: meta.volume_serial_number().ok_or(PathCapabilityError::Io)?,
-            index: meta.file_index().ok_or(PathCapabilityError::Io)?,
-        })
+        let (volume, index, _) = windows_file_identity(file)?;
+        Ok(FileId::Windows { volume, index })
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = meta;
+        let _ = file;
         Err(PathCapabilityError::Io)
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_file_identity(file: &File) -> Result<(u32, u64, bool), PathCapabilityError> {
+    win_at::file_identity(file)
 }
 
 #[cfg(unix)]
@@ -1249,6 +1253,27 @@ mod win_at {
             info: *const c_void,
             size: u32,
         ) -> i32;
+    }
+
+    pub(super) fn file_identity(file: &File) -> Result<(u32, u64, bool), PathCapabilityError> {
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) };
+        if ok == 0 {
+            return Err(PathCapabilityError::Io);
+        }
+        let index = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
+        Ok((
+            info.dwVolumeSerialNumber,
+            index,
+            info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+        ))
     }
 
     #[derive(Clone, Copy)]
@@ -1551,6 +1576,27 @@ mod tests {
                 "expected reject on windows: {name:?}"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_identity_is_stable_and_distinguishes_live_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+
+        let first_a = File::open(&first).unwrap();
+        let first_b = File::open(&first).unwrap();
+        let second = File::open(&second).unwrap();
+        let first_a_id = windows_file_identity(&first_a).unwrap();
+        let first_b_id = windows_file_identity(&first_b).unwrap();
+        let second_id = windows_file_identity(&second).unwrap();
+
+        assert_eq!(first_a_id, first_b_id);
+        assert_ne!(first_a_id, second_id);
+        assert!(!first_a_id.2);
     }
 
     #[cfg(not(windows))]

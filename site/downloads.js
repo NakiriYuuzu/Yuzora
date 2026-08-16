@@ -9,10 +9,6 @@ const DOWNLOADS = {
     platform: "windows",
     url: `${RELEASE_DOWNLOAD_BASE}Yuzora-windows-x64-setup.exe`,
   },
-  linux: {
-    platform: "linux",
-    url: `${RELEASE_DOWNLOAD_BASE}Yuzora-linux-x86_64.AppImage`,
-  },
 }
 
 export function resolveDownloadTarget({
@@ -32,7 +28,7 @@ export function resolveDownloadTarget({
   const isIPad = /mac/i.test(platform) && maxTouchPoints > 1
   const isUnsupportedDevice =
     userAgentData?.mobile === true ||
-    /android|iphone|ipad|ipod|cros|chrome os/i.test(reportedPlatform) ||
+    /android|iphone|ipad|ipod|cros|chrome os|linux/i.test(reportedPlatform) ||
     isIPad
 
   if (isUnsupportedDevice) {
@@ -50,12 +46,6 @@ export function resolveDownloadTarget({
     return { status: "supported", ...DOWNLOADS.windows }
   }
 
-  if (/linux/i.test(reportedPlatform)) {
-    if (hasIncompatibleX64Architecture) {
-      return { status: "unsupported-architecture", platform: "linux", url: null }
-    }
-    return { status: "supported", ...DOWNLOADS.linux }
-  }
 
   return { status: "unknown", platform: null, url: null }
 }

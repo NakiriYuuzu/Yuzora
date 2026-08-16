@@ -297,7 +297,17 @@ pub fn observe_identity(path: &str) -> Result<WorkspaceIdentity, TrustError> {
             reason: "non-utf8 path".into(),
         })?
         .to_string();
-    let metadata = fs::metadata(&canonical).map_err(|error| TrustError::UnsupportedPath {
+    Ok(WorkspaceIdentity {
+        canonical_path,
+        fs_identity: platform_identity(&canonical)?,
+    })
+}
+
+#[cfg(unix)]
+fn platform_identity(path: &Path) -> Result<String, TrustError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::metadata(path).map_err(|error| TrustError::UnsupportedPath {
         reason: format!("metadata failed: {error}"),
     })?;
     if !metadata.is_dir() {
@@ -305,36 +315,41 @@ pub fn observe_identity(path: &str) -> Result<WorkspaceIdentity, TrustError> {
             reason: "workspace is not a directory".into(),
         });
     }
-    Ok(WorkspaceIdentity {
-        canonical_path,
-        fs_identity: platform_identity(&metadata)?,
-    })
-}
-
-#[cfg(unix)]
-fn platform_identity(metadata: &fs::Metadata) -> Result<String, TrustError> {
-    use std::os::unix::fs::MetadataExt;
     Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn platform_identity(metadata: &fs::Metadata) -> Result<String, TrustError> {
-    use std::os::windows::fs::MetadataExt;
-    let volume = metadata
-        .volume_serial_number()
-        .ok_or_else(|| TrustError::UnsupportedPath {
-            reason: "missing volume serial".into(),
+fn platform_identity(path: &Path) -> Result<String, TrustError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|error| TrustError::UnsupportedPath {
+            reason: format!("open identity handle failed: {error}"),
         })?;
-    let index = metadata
-        .file_index()
-        .ok_or_else(|| TrustError::UnsupportedPath {
-            reason: "missing file index".into(),
+    let (volume, index, is_directory) = crate::path_capability::windows_file_identity(&file)
+        .map_err(|_| TrustError::UnsupportedPath {
+            reason: "read filesystem identity failed".into(),
         })?;
+    if !is_directory {
+        return Err(TrustError::UnsupportedPath {
+            reason: "workspace is not a directory".into(),
+        });
+    }
     Ok(format!("{volume}:{index}"))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn platform_identity(_metadata: &fs::Metadata) -> Result<String, TrustError> {
+fn platform_identity(_path: &Path) -> Result<String, TrustError> {
     Err(TrustError::UnsupportedPath {
         reason: "unsupported platform".into(),
     })

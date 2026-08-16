@@ -64,8 +64,8 @@ Required CI checks：
 
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR 三平台候選安裝檔 |
-| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；自動建立 tag、三平台建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish                    |
+| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔 |
+| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；自動建立 tag、macOS／Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish                    |
 | Pages    | `.github/workflows/deploy-pages.yml` | `main` 上 `site/**` 變更；手動 dispatch | 將 `site/` 部署到 GitHub Pages                                                                                                                                          |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
@@ -78,7 +78,7 @@ Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可�
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
-- `release/*` PR 額外建置未發布的 macOS／Windows／Linux candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證。
+- `release/*` PR 額外建置未發布的 macOS／Windows candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證；Linux 只作為 CI／測試 host，不是桌面發佈平台。
 - 同一 ref 上被新 commit 取代的 CI run 會由 concurrency 設定取消。
 - 現行 PR CI 沒有獨立執行 `check:version` 與 `check:updater-release`；在新增 blocking contract job 前，Release PR 必須保留第 5 節的本機 preflight 證據。
 
@@ -229,7 +229,7 @@ docker compose -f tests/database/docker-compose.yml --profile mssql down -v
 
 ### PR 候選安裝檔與使用者驗證 gate
 
-`release/vX.Y.Z` PR 的 CI 會執行三個 `Release candidate (...)` jobs；Beta lane 啟用後，`release/vX.Y.Z-beta.N` 使用相同 candidate gate。候選檔有以下限制：
+`release/vX.Y.Z` PR 的 CI 會執行兩個 `Release candidate (...)` jobs；Beta lane 啟用後，`release/vX.Y.Z-beta.N` 使用相同 candidate gate。候選檔有以下限制：
 
 - 只存在 GitHub Actions artifacts，不建立或更新 tag。
 - 不建立 GitHub Release，也不會成為 `releases/latest`。
@@ -246,10 +246,7 @@ gh run download "${RUN_ID}" \
   --name yuzora-release-candidate-windows-x86-64
 ```
 
-需要其他平台時將 artifact name 改為：
-
-- `yuzora-release-candidate-macos-universal`
-- `yuzora-release-candidate-linux-x86-64`
+需要 macOS 候選檔時，將 artifact name 改為 `yuzora-release-candidate-macos-universal`。
 
 使用者至少要在本次受影響平台驗證 acceptance criteria。Windows terminal／IME 版本至少包括：
 
@@ -326,13 +323,12 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 
 現行 Guard 不負責證明該 SHA 來自 release PR 或已完成 candidate／使用者驗證，也未強制既有 draft tag SHA 一致；這些仍是明確的人工 gate。Guard 失敗時所有 build 都不會執行。
 
-### 7.2 三平台建置
+### 7.2 雙平台建置
 
 `fail-fast: false`，單一平台失敗不會中止其他平台：
 
 - macOS universal：Apple Silicon＋Intel；產生 `.dmg` 與 updater app archive／signature。
 - Windows x64：產生 NSIS `.exe`、`.msi` 與 updater signatures。
-- Linux x86-64：產生 `.AppImage`、`.deb`、`.rpm` 與 updater signatures。
 
 所有平台上傳至同一個**暫態 draft** Release，名稱為 `Yuzora v<version>`。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列。
 
@@ -344,13 +340,12 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 | ------- | ----------------------------------------------------------------------------------- |
 | macOS   | `Yuzora-macos-universal.dmg`                                                        |
 | Windows | `Yuzora-windows-x64-setup.exe`、`Yuzora-windows-x64.msi`                            |
-| Linux   | `Yuzora-linux-x86_64.AppImage`、`Yuzora-linux-amd64.deb`、`Yuzora-linux-x86_64.rpm` |
 
 固定檔名如有變更，必須在同一個 PR 更新所有實際 consumer：
 
-- 六個 alias 都要同步 `.github/workflows/release.yml` 與本文件。
-- 產品頁直接使用的 macOS DMG、Windows NSIS EXE、Linux AppImage 三個主要 alias，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
-- MSI、DEB、RPM 若新增其他頁面或 script consumer，也要一併更新並補測試。
+- 三個 alias 都要同步 `.github/workflows/release.yml` 與本文件。
+- 產品頁直接使用的 macOS DMG 與 Windows NSIS EXE，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
+- MSI 若新增其他頁面或 script consumer，也要一併更新並補測試。
 
 固定別名是手動下載入口；Tauri updater 使用的是具版本號且帶 `.sig` 的 updater artifacts，不應把兩者混為同一套檔案。
 
@@ -360,8 +355,9 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 
 - 使用 Guard 解析出的 `tag_name`，透過非保留的 `YUZORA_RELEASE_TAG` 環境變數查找 draft Release；不得依賴或嘗試覆寫 `workflow_run` 的 `GITHUB_REF_NAME`，其值是 `main` 而不是 release tag。
 - 下載 draft 中的 `latest.json`。
+- 刪除新建或既有 draft 中殘留的 Linux AppImage／DEB／RPM 與固定別名資產。
 - 驗證 metadata version 與 notes。
-- 移除 Windows NSIS updater entries。
+- 移除不支援的 Linux updater entries 與 Windows NSIS updater entries。
 - 強制 Windows updater URL 指向 MSI。
 - 驗證每個 metadata artifact 與 `.sig` 都存在於 Release。
 - 以 finalized `latest.json` 覆蓋 draft 中的原始檔案。
@@ -372,16 +368,16 @@ Finalizer 未成功時不得 Publish。
 
 `publish-release` 只在下列其中一條路徑成立時執行：
 
-- 新版本的三平台 build 與 metadata finalizer 全部成功。
+- 新版本的 macOS／Windows build 與 metadata finalizer 全部成功。
 - 既有同版本 draft 的銜接模式啟用、build 正確略過，且 metadata finalizer 成功。
 
 Publish 前 workflow 自動驗證：
 
 - Release 仍是 draft、不是 prerelease，且 release body 非空。
-- 六個固定檔名別名與 `latest.json` 齊全。
+- 三個固定檔名別名與 `latest.json` 齊全。
 - `latest.json.version` 與 tag 相同，notes 非空。
-- `darwin-aarch64`、`darwin-x86_64`、`linux-x86_64`、`windows-x86_64` 都有非空 URL 與 signature。
-- 不含 Windows NSIS updater key，且 Windows OTA URL 使用 `.msi`。
+- `darwin-aarch64`、`darwin-x86_64`、`windows-x86_64` 都有非空 URL 與 signature。
+- 不含 Linux 或 Windows NSIS updater key、不含 Linux 固定別名資產，且 Windows OTA URL 使用 `.msi`。
 
 Stable 全部成功後執行 `gh release edit --draft=false --prerelease=false --latest`，並再次查證 `publishedAt`。任一條件失敗時 workflow 結束為失敗，Release 保持 draft，不會出現部分成功卻永久等待人工 Publish 的正常路徑。
 
@@ -391,13 +387,12 @@ Stable 全部成功後執行 `gh release edit --draft=false --prerelease=false -
 
 ## 8. 自動發布與發布後 smoke test
 
-Release workflow 的 automated publish gate 是 blocking gate；三平台 build、固定別名、updater signatures、metadata completeness 或 MSI-only contract 任一失敗都不會 Publish。正常成功路徑不需要 maintainer 再按一次 Publish。
+Release workflow 的 automated publish gate 是 blocking gate；macOS／Windows build、固定別名、updater signatures、metadata completeness 或 MSI-only contract 任一失敗都不會 Publish。正常成功路徑不需要 maintainer 再按一次 Publish。
 
 受影響平台的主要互動式驗收已在 release PR merge 前完成。Release Published 後仍應儘快確認正式 artifacts 與 updater 路徑：
 
 - macOS DMG 掛載、安裝與首次啟動。
 - Windows NSIS／MSI 安裝；OTA 預期路徑以 MSI 為準。
-- Linux 主要格式啟動。
 - 從上一個 stable 版本執行 updater smoke test。
 - 確認 release notes 已揭露尚未啟用 macOS／Windows OS code signing 的警告。
 
@@ -431,7 +426,7 @@ curl -fsSL \
 - Latest Release 為剛發布的 tag。
 - `latest.json.version` 等於新版本。
 - `latest.json.notes` 非空。
-- 至少存在 `darwin-aarch64`、`darwin-x86_64`、`linux-x86_64`、`windows-x86_64`。
+- 至少存在 `darwin-aarch64`、`darwin-x86_64`、`windows-x86_64`。
 - 沒有 `windows-*-nsis` key。
 - 所有 Windows updater URLs 指向 `.msi`。
 - Metadata 中每個 artifact URL 與 signature 都可下載。
@@ -443,13 +438,10 @@ curl -fsSL \
 - `Yuzora-macos-universal.dmg`
 - `Yuzora-windows-x64-setup.exe`
 - `Yuzora-windows-x64.msi`
-- `Yuzora-linux-x86_64.AppImage`
-- `Yuzora-linux-amd64.deb`
-- `Yuzora-linux-x86_64.rpm`
 
 ### OTA smoke test
 
-從上一個 stable 版本，在 macOS universal、Windows x64、Linux x86-64 驗證：
+從上一個 stable 版本，在 macOS universal 與 Windows x64 驗證：
 
 1. App 發現新版本。
 2. 顯示的 release notes 正確。
@@ -530,7 +522,7 @@ gh release view "v${VERSION}" \
 - Desktop pinned motion 沒有 overflow/jank；mobile 不 pin、不出現水平捲軸；reduced motion 沒有長空白區。
 - 任一時間最多一支 live story video 播放；離開 story 或分頁隱藏時全部 pause。
 - 裝置偵測只推薦支援的平台與架構，三個主要下載 CTA 指向固定檔名 Release assets。
-- 未支援的 mobile、ChromeOS、ARM／32-bit Windows 或 Linux 不會收到錯誤的 x64 下載推薦。
+- 未支援的 mobile、ChromeOS、Linux、ARM／32-bit Windows 不會收到錯誤的桌面下載推薦。
 
 截至 2026-08-15，GitHub Pages API 回報頁面 URL 為 `http://github.yuuzu.net/Yuzora/`、`https_enforced=false`，外層由 Cloudflare 導向 HTTPS。DNS、Cloudflare 規則、canonical URL 與監控方式應由 maintainer 另行保管；Cloudflare challenge 可能讓單純的無瀏覽器 `curl` smoke test 回傳 403，不能直接等同於頁面部署失敗。
 

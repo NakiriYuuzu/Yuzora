@@ -2777,23 +2777,122 @@ fn classify_helper_raw(raw_len: usize, row_used: usize) -> Option<ResultLimitKin
     }
 }
 
+type WorkerRequestReceiver = tokio::sync::mpsc::Receiver<Result<WorkerRequest, DatabaseError>>;
+const WORKER_REQUEST_QUEUE_DEPTH: usize = 8;
+
+// Length-prefixed stdin reads must never be cancelled after consuming a partial
+// frame. One dedicated reader owns framing; streaming selects consume the
+// bounded channel, whose recv operation is cancellation-safe.
+async fn pump_worker_requests<R>(
+    mut reader: R,
+    sender: tokio::sync::mpsc::Sender<Result<WorkerRequest, DatabaseError>>,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    loop {
+        let request = read_request(&mut reader).await;
+        let terminal = request.is_err();
+        if sender.send(request).await.is_err() || terminal {
+            return;
+        }
+    }
+}
+
+fn spawn_worker_request_reader() -> WorkerRequestReceiver {
+    let (sender, receiver) = tokio::sync::mpsc::channel(WORKER_REQUEST_QUEUE_DEPTH);
+    tokio::spawn(pump_worker_requests(tokio::io::stdin(), sender));
+    receiver
+}
+
+async fn next_worker_request(
+    requests: &mut WorkerRequestReceiver,
+) -> Result<WorkerRequest, DatabaseError> {
+    match requests.recv().await {
+        Some(request) => request,
+        None => Err(worker_error(
+            "helperIo",
+            "database helper request reader stopped",
+        )),
+    }
+}
+
 async fn helper_pg_query(
     live: &LivePg,
     sql: &str,
     stdout: &mut tokio::io::Stdout,
-    stdin: &mut tokio::io::Stdin,
+    requests: &mut WorkerRequestReceiver,
 ) -> Result<(), DatabaseError> {
-    let statement = live
-        .client
-        .prepare(sql)
-        .await
-        .map_err(|error| postgres_database_error(&error))?;
+    let statement = tokio::select! {
+        biased;
+        request = next_worker_request(requests) => {
+            match request? {
+                WorkerRequest::CancelQuery | WorkerRequest::Close => {
+                    write_frame(stdout, &WorkerResponse::Cancelled).await?;
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        live.cancel.cancel(),
+                    )
+                    .await;
+                    return Ok(());
+                }
+                WorkerRequest::StopStreaming => {
+                    write_frame(
+                        stdout,
+                        &WorkerResponse::End {
+                            affected_rows: None,
+                        },
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(worker_error(
+                        "helperProtocol",
+                        "unexpected request before PostgreSQL statement prepare",
+                    ));
+                }
+            }
+        }
+        statement = live.client.prepare(sql) => {
+            statement.map_err(|error| postgres_database_error(&error))?
+        }
+    };
     if statement.columns().is_empty() {
-        let affected = live
-            .client
-            .execute(&statement, &[])
-            .await
-            .map_err(|error| postgres_database_error(&error))?;
+        let affected = tokio::select! {
+            biased;
+            request = next_worker_request(requests) => {
+                match request? {
+                    WorkerRequest::CancelQuery | WorkerRequest::Close => {
+                        write_frame(stdout, &WorkerResponse::Cancelled).await?;
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            live.cancel.cancel(),
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    WorkerRequest::StopStreaming => {
+                        write_frame(
+                            stdout,
+                            &WorkerResponse::End {
+                                affected_rows: None,
+                            },
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(worker_error(
+                            "helperProtocol",
+                            "unexpected request during PostgreSQL statement execution",
+                        ));
+                    }
+                }
+            }
+            affected = live.client.execute(&statement, &[]) => {
+                affected.map_err(|error| postgres_database_error(&error))?
+            }
+        };
         return write_frame(
             stdout,
             &WorkerResponse::Execute {
@@ -2816,7 +2915,7 @@ async fn helper_pg_query(
     let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
     let stream = tokio::select! {
         biased;
-        request = read_request(stdin) => {
+        request = next_worker_request(requests) => {
             match request? {
                 WorkerRequest::CancelQuery | WorkerRequest::Close => {
                     write_frame(stdout, &WorkerResponse::Cancelled).await?;
@@ -2874,7 +2973,7 @@ async fn helper_pg_query(
     loop {
         tokio::select! {
             biased;
-            request = read_request(stdin) => {
+            request = next_worker_request(requests) => {
                 match request? {
                     WorkerRequest::StopStreaming => {
                         let _ = live.cancel.cancel().await;
@@ -2971,23 +3070,66 @@ async fn helper_pg_query(
     }
 }
 
+fn helper_mssql_terminal_response(
+    columns_sent: bool,
+    affected_rows: Option<String>,
+) -> WorkerResponse {
+    if columns_sent {
+        WorkerResponse::End { affected_rows }
+    } else {
+        WorkerResponse::Execute { affected_rows }
+    }
+}
+
 async fn helper_mssql_query(
     client: &mut MssqlClient,
     sql: &str,
     stdout: &mut tokio::io::Stdout,
-    stdin: &mut tokio::io::Stdin,
+    requests: &mut WorkerRequestReceiver,
     terminate_on_cancel: &mut bool,
 ) -> Result<(), DatabaseError> {
-    let mut stream = client
-        .simple_query(sql)
-        .await
-        .map_err(|error| mssql_database_error(&MssqlInternalError::Driver(error)))?;
+    // Tiberius may wait for the first server response before yielding a stream.
+    // Race that startup against the control channel so cancellation can still
+    // terminate a long-running query that has not produced metadata or rows.
+    let mut stream = tokio::select! {
+        biased;
+        request = next_worker_request(requests) => {
+            match request? {
+                WorkerRequest::CancelQuery => {
+                    *terminate_on_cancel = true;
+                    return write_frame(stdout, &WorkerResponse::Cancelled).await;
+                }
+                WorkerRequest::Close => {
+                    *terminate_on_cancel = true;
+                    return write_frame(stdout, &WorkerResponse::Closed).await;
+                }
+                WorkerRequest::StopStreaming => {
+                    return write_frame(
+                        stdout,
+                        &WorkerResponse::End {
+                            affected_rows: None,
+                        },
+                    )
+                    .await;
+                }
+                _ => {
+                    return Err(worker_error(
+                        "helperProtocol",
+                        "unexpected request before MSSQL query stream started",
+                    ));
+                }
+            }
+        }
+        stream = client.simple_query(sql) => {
+            stream.map_err(|error| mssql_database_error(&MssqlInternalError::Driver(error)))?
+        }
+    };
     let mut columns_sent = false;
     let mut stop = false;
     loop {
         tokio::select! {
             biased;
-            request = read_request(stdin) => {
+            request = next_worker_request(requests) => {
                 match request? {
                     WorkerRequest::CancelQuery => {
                         *terminate_on_cancel = true;
@@ -3008,11 +3150,10 @@ async fn helper_mssql_query(
                     mssql_database_error(&MssqlInternalError::Driver(error))
                 })?;
                 let Some(item) = item else {
+                    let affected_rows = aggregate_mssql_affected_rows(stream.rows_affected())?;
                     return write_frame(
                         stdout,
-                        &WorkerResponse::End {
-                            affected_rows: aggregate_mssql_affected_rows(stream.rows_affected())?,
-                        },
+                        &helper_mssql_terminal_response(columns_sent, affected_rows),
                     )
                     .await;
                 };
@@ -3056,9 +3197,9 @@ async fn helper_mssql_query(
 }
 
 pub(crate) async fn query_worker_loop() -> Result<(), DatabaseError> {
-    let mut stdin = tokio::io::stdin();
+    let mut requests = spawn_worker_request_reader();
     let mut stdout = tokio::io::stdout();
-    let connect = read_request(&mut stdin).await?;
+    let connect = next_worker_request(&mut requests).await?;
     let mut engine = match connect {
         WorkerRequest::ConnectPostgres {
             host,
@@ -3153,7 +3294,7 @@ pub(crate) async fn query_worker_loop() -> Result<(), DatabaseError> {
 
     let mut pending_cancel = false;
     loop {
-        let request = match read_request(&mut stdin).await {
+        let request = match next_worker_request(&mut requests).await {
             Ok(request) => request,
             Err(_) => break,
         };
@@ -3232,7 +3373,7 @@ pub(crate) async fn query_worker_loop() -> Result<(), DatabaseError> {
                 }
                 let result = match &mut engine {
                     LiveNetwork::Postgres(live) => {
-                        helper_pg_query(live, &sql, &mut stdout, &mut stdin).await
+                        helper_pg_query(live, &sql, &mut stdout, &mut requests).await
                     }
                     LiveNetwork::Mssql(client) => {
                         let mut terminate = false;
@@ -3240,7 +3381,7 @@ pub(crate) async fn query_worker_loop() -> Result<(), DatabaseError> {
                             client,
                             &sql,
                             &mut stdout,
-                            &mut stdin,
+                            &mut requests,
                             &mut terminate,
                         )
                         .await;
@@ -4114,11 +4255,19 @@ impl ExecutionSettlementGuard {
     }
 
     fn settle(mut self) -> Result<crate::db_connection_actor::Settlement, ActorError> {
+        self.settle_with_policy(false)
+    }
+
+    fn settle_with_policy(
+        &mut self,
+        terminate_if_cancelled: bool,
+    ) -> Result<crate::db_connection_actor::Settlement, ActorError> {
         let lease = self
             .lease
             .take()
             .expect("execution settlement guard is armed");
-        self.actor.settle_execution(&lease)
+        self.actor
+            .settle_execution_with_policy(&lease, terminate_if_cancelled)
     }
 }
 
@@ -4298,6 +4447,39 @@ async fn drain_helper_stream(worker: &NetworkQueryWorker) {
     }
 }
 
+fn helper_confirmed_cancel(error: &DatabaseError) -> bool {
+    error.code.as_deref() == Some("cancelled")
+}
+
+fn terminate_network_worker(worker: &NetworkQueryWorker) {
+    worker.abort();
+}
+
+async fn settle_network_stream_cancel(
+    worker: &NetworkQueryWorker,
+    terminate_connection: bool,
+) -> bool {
+    if terminate_connection {
+        let _ = worker.cancel_query().await;
+        worker.abort();
+        return true;
+    }
+    // PostgreSQL's actor already wrote one helper CancelQuery before it
+    // signalled the worker. Reuse is safe only when the helper confirms that
+    // it consumed that request for the current stream. End/error means the
+    // cancel arrived after completion and may now be queued for the next query.
+    loop {
+        match worker.next_row().await {
+            Ok(NetworkRow::Value(_)) => {}
+            Ok(NetworkRow::Cancelled) => return false,
+            Ok(NetworkRow::End { .. }) | Ok(NetworkRow::ValueTooLarge) | Err(_) => {
+                worker.abort();
+                return true;
+            }
+        }
+    }
+}
+
 async fn network_run_materialized_unit(
     worker: &NetworkQueryWorker,
     sql: &str,
@@ -4440,6 +4622,14 @@ fn mssql_cancelled_connection_error() -> DatabaseError {
     }
 }
 
+fn network_primary_cancel_error(terminate_connection: bool) -> DatabaseError {
+    if terminate_connection {
+        mssql_cancelled_connection_error()
+    } else {
+        cancelled_error()
+    }
+}
+
 async fn mssql_run_materialized_unit(
     worker: &NetworkQueryWorker,
     sql: &str,
@@ -4501,6 +4691,11 @@ enum PrimaryPageRead {
     ValueTooLarge,
 }
 
+enum CancellablePrimaryPageRead {
+    Read(Result<PrimaryPageRead, DatabaseError>),
+    Cancelled { connection_terminated: bool },
+}
+
 async fn mssql_run_primary_worker(
     actor: Arc<ProductionConnectionActor>,
     sessions: ResultSessionState,
@@ -4530,8 +4725,8 @@ async fn mssql_run_primary_worker(
         continuation_sender,
         continuation_receiver,
         initial_sender,
-        Some(cancel_rx),
-        Some(run_owner),
+        cancel_rx,
+        run_owner,
         true,
     )
     .await;
@@ -4578,10 +4773,29 @@ fn primary_rows_outcome(
 fn settle_primary_guard(
     guard: &mut Option<ExecutionSettlementGuard>,
 ) -> Result<crate::db_connection_actor::Settlement, ActorError> {
+    settle_primary_guard_with_policy(guard, false)
+}
+
+fn settle_primary_guard_with_policy(
+    guard: &mut Option<ExecutionSettlementGuard>,
+    terminate_if_cancelled: bool,
+) -> Result<crate::db_connection_actor::Settlement, ActorError> {
     guard
         .take()
         .expect("primary worker settlement guard is armed")
-        .settle()
+        .settle_with_policy(terminate_if_cancelled)
+}
+
+fn settle_network_primary_completion(
+    guard: &mut Option<ExecutionSettlementGuard>,
+    worker: &NetworkQueryWorker,
+    terminate_if_cancelled: bool,
+) -> Result<crate::db_connection_actor::Settlement, ActorError> {
+    let settlement = settle_primary_guard_with_policy(guard, terminate_if_cancelled)?;
+    if settlement.connection_termination_required {
+        terminate_network_worker(worker);
+    }
+    Ok(settlement)
 }
 
 fn sqlite_run_primary_worker(
@@ -5025,6 +5239,65 @@ async fn network_read_primary_page(
     }
 }
 
+async fn cancellable_network_read_primary_page(
+    worker: &NetworkQueryWorker,
+    sessions: &ResultSessionState,
+    session_owner: &ResultSessionOwner,
+    cached_rows: usize,
+    cancel_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>,
+    run_owner: &QueryRunOwner,
+    terminate_on_cancel: bool,
+) -> CancellablePrimaryPageRead {
+    let read_result = {
+        let read = network_read_primary_page(worker, sessions, session_owner, cached_rows);
+        tokio::pin!(read);
+        loop {
+            tokio::select! {
+                biased;
+                request = cancel_rx.recv() => {
+                    match request {
+                        Some(request) if request == *run_owner => break None,
+                        Some(_) => continue,
+                        None => break Some(read.as_mut().await),
+                    }
+                }
+                result = &mut read => break Some(result),
+            }
+        }
+    };
+    match read_result {
+        Some(result) => CancellablePrimaryPageRead::Read(result),
+        None => {
+            // Drop the pending page read before draining cancellation output so
+            // it cannot retain the worker's single stdout lock.
+            let connection_terminated =
+                settle_network_stream_cancel(worker, terminate_on_cancel).await;
+            CancellablePrimaryPageRead::Cancelled {
+                connection_terminated,
+            }
+        }
+    }
+}
+
+fn mark_next_network_page_ready(
+    sessions: &ResultSessionState,
+    session_owner: &ResultSessionOwner,
+) -> Result<(), DatabaseError> {
+    let mut sessions = sessions.lock().map_err(result_session_database_error)?;
+    let page_index = sessions
+        .next(session_owner)
+        .ok()
+        .and_then(|next| match next {
+            crate::db_result_session::NextPage::Continue { page_index } => Some(page_index),
+            _ => None,
+        })
+        .unwrap_or(1);
+    sessions
+        .mark_page_ready(session_owner, page_index)
+        .map(|_| ())
+        .map_err(result_session_database_error)
+}
+
 async fn network_run_primary_worker(
     worker: &NetworkQueryWorker,
     actor: Arc<ProductionConnectionActor>,
@@ -5036,21 +5309,89 @@ async fn network_run_primary_worker(
     continuation_sender: tokio::sync::mpsc::UnboundedSender<ResultContinuationCommand>,
     mut continuation_receiver: tokio::sync::mpsc::UnboundedReceiver<ResultContinuationCommand>,
     initial_sender: PrimaryInitialSender,
-    mut cancel_rx: Option<tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>>,
-    run_owner: Option<QueryRunOwner>,
+    mut cancel_rx: tokio::sync::mpsc::UnboundedReceiver<QueryRunOwner>,
+    run_owner: QueryRunOwner,
     terminate_on_cancel: bool,
 ) {
-    let started = match worker.start_query(&sql).await {
-        Ok(started) => started,
-        Err(error) => {
-            let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-            let _ = settle_primary_guard(&mut settlement_guard);
-            let result = if cancelled {
-                Ok(P6UnitOutcome {
+    // Keep the start future pinned while racing the exact-owner cancel channel.
+    // Recreating it after a cancel wake could send the same SQL more than once.
+    let start_query = worker.start_query(&sql);
+    tokio::pin!(start_query);
+    let start_result = loop {
+        tokio::select! {
+            biased;
+            started = &mut start_query => break started,
+            request = cancel_rx.recv() => {
+                let Some(request) = request else {
+                    break start_query.as_mut().await;
+                };
+                if request != run_owner {
+                    continue;
+                }
+                let (error, connection_terminated) = if terminate_on_cancel {
+                    let _ = worker.cancel_query().await;
+                    (network_primary_cancel_error(true), true)
+                } else {
+                    // ProductionConnectionActor already dispatched PostgreSQL's
+                    // protocol CancelToken before notifying this channel. Await
+                    // the in-flight start response instead of queuing a second
+                    // helper CancelQuery that could cancel the next query.
+                    match start_query.as_mut().await {
+                        Err(error) => {
+                            let terminate = !helper_confirmed_cancel(&error);
+                            (error, terminate)
+                        }
+                        Ok(_) => (cancelled_error(), true),
+                    }
+                };
+                if connection_terminated {
+                    terminate_network_worker(worker);
+                }
+                let _ = settle_network_primary_completion(
+                    &mut settlement_guard,
+                    worker,
+                    connection_terminated,
+                );
+                let _ = initial_sender.send(Ok(P6UnitOutcome {
                     result: StatementExecutionResult::Cancelled { error },
                     effect_outcome: EffectOutcome::Unknown,
                     stop: true,
-                    connection_terminated: terminate_on_cancel,
+                    connection_terminated,
+                }));
+                return;
+            }
+        }
+    };
+    let started = match start_result {
+        Ok(started) => started,
+        Err(error) => {
+            let helper_confirmed = helper_confirmed_cancel(&error);
+            let settlement = match settle_network_primary_completion(
+                &mut settlement_guard,
+                worker,
+                terminate_on_cancel || !helper_confirmed,
+            ) {
+                Ok(settlement) => settlement,
+                Err(actor_error) => {
+                    terminate_network_worker(worker);
+                    let _ = initial_sender.send(Err(continuation_database_error(actor_error)));
+                    return;
+                }
+            };
+            let cancelled = settlement.cancel_requested;
+            let connection_terminated = settlement.connection_termination_required;
+            let result = if cancelled {
+                Ok(P6UnitOutcome {
+                    result: StatementExecutionResult::Cancelled {
+                        error: if terminate_on_cancel {
+                            network_primary_cancel_error(true)
+                        } else {
+                            error
+                        },
+                    },
+                    effect_outcome: EffectOutcome::Unknown,
+                    stop: true,
+                    connection_terminated,
                 })
             } else {
                 Err(error)
@@ -5061,16 +5402,26 @@ async fn network_run_primary_worker(
     };
     match started {
         NetworkQueryStart::Execute { affected_rows } => {
-            let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-            let _ = settle_primary_guard(&mut settlement_guard);
+            let settlement =
+                match settle_network_primary_completion(&mut settlement_guard, worker, true) {
+                    Ok(settlement) => settlement,
+                    Err(actor_error) => {
+                        terminate_network_worker(worker);
+                        let _ = initial_sender.send(Err(continuation_database_error(actor_error)));
+                        return;
+                    }
+                };
+            let cancelled = settlement.cancel_requested;
+            // Completion and cancellation were arbitrated under the actor
+            // mutex, so a late helper CancelQuery cannot escape to Run B.
             let result = if cancelled {
                 Ok(P6UnitOutcome {
                     result: StatementExecutionResult::Cancelled {
-                        error: cancelled_error(),
+                        error: network_primary_cancel_error(terminate_on_cancel),
                     },
                     effect_outcome: EffectOutcome::Unknown,
                     stop: true,
-                    connection_terminated: terminate_on_cancel,
+                    connection_terminated: true,
                 })
             } else {
                 Ok(P6UnitOutcome {
@@ -5093,13 +5444,37 @@ async fn network_run_primary_worker(
                         .map_err(result_session_database_error)
                 })
             {
-                let _ = settle_primary_guard(&mut settlement_guard);
-                let _ = initial_sender.send(Err(error));
+                let _ = worker.stop_streaming().await;
+                drain_helper_stream(worker).await;
+                let settlement =
+                    settle_network_primary_completion(&mut settlement_guard, worker, true);
+                let result = match settlement {
+                    Ok(settlement) if settlement.cancel_requested => Ok(P6UnitOutcome {
+                        result: StatementExecutionResult::Cancelled {
+                            error: network_primary_cancel_error(terminate_on_cancel),
+                        },
+                        effect_outcome: EffectOutcome::Unknown,
+                        stop: true,
+                        connection_terminated: settlement.connection_termination_required,
+                    }),
+                    Ok(_) => Err(error),
+                    Err(actor_error) => Err(continuation_database_error(actor_error)),
+                };
+                let _ = initial_sender.send(result);
                 return;
             }
-            let initial = network_read_primary_page(worker, &sessions, &session_owner, 0).await;
+            let initial = cancellable_network_read_primary_page(
+                worker,
+                &sessions,
+                &session_owner,
+                0,
+                &mut cancel_rx,
+                &run_owner,
+                terminate_on_cancel,
+            )
+            .await;
             match initial {
-                Ok(PrimaryPageRead::Streaming) => {
+                CancellablePrimaryPageRead::Read(Ok(PrimaryPageRead::Streaming)) => {
                     let session = sessions
                         .lock()
                         .map_err(result_session_database_error)
@@ -5121,8 +5496,21 @@ async fn network_run_primary_worker(
                         }
                         let _ = worker.stop_streaming().await;
                         drain_helper_stream(worker).await;
-                        let _ = settle_primary_guard(&mut settlement_guard);
-                        let _ = initial_sender.send(Err(continuation_database_error(error)));
+                        let settlement =
+                            settle_network_primary_completion(&mut settlement_guard, worker, true);
+                        let result = match settlement {
+                            Ok(settlement) if settlement.cancel_requested => Ok(P6UnitOutcome {
+                                result: StatementExecutionResult::Cancelled {
+                                    error: network_primary_cancel_error(terminate_on_cancel),
+                                },
+                                effect_outcome: EffectOutcome::Unknown,
+                                stop: true,
+                                connection_terminated: settlement.connection_termination_required,
+                            }),
+                            Ok(_) => Err(continuation_database_error(error)),
+                            Err(actor_error) => Err(continuation_database_error(actor_error)),
+                        };
+                        let _ = initial_sender.send(result);
                         return;
                     }
                     match session {
@@ -5141,22 +5529,76 @@ async fn network_run_primary_worker(
                                 }
                                 let _ = worker.stop_streaming().await;
                                 drain_helper_stream(worker).await;
+                                let _ = settle_network_primary_completion(
+                                    &mut settlement_guard,
+                                    worker,
+                                    true,
+                                );
                                 return;
                             }
                         }
                         Err(error) => {
                             let _ = worker.stop_streaming().await;
                             drain_helper_stream(worker).await;
-                            let _ = settle_primary_guard(&mut settlement_guard);
-                            let _ = initial_sender.send(Err(error));
+                            let settlement = settle_network_primary_completion(
+                                &mut settlement_guard,
+                                worker,
+                                true,
+                            );
+                            let result = match settlement {
+                                Ok(settlement) if settlement.cancel_requested => {
+                                    Ok(P6UnitOutcome {
+                                        result: StatementExecutionResult::Cancelled {
+                                            error: network_primary_cancel_error(
+                                                terminate_on_cancel,
+                                            ),
+                                        },
+                                        effect_outcome: EffectOutcome::Unknown,
+                                        stop: true,
+                                        connection_terminated: settlement
+                                            .connection_termination_required,
+                                    })
+                                }
+                                Ok(_) => Err(error),
+                                Err(actor_error) => Err(continuation_database_error(actor_error)),
+                            };
+                            let _ = initial_sender.send(result);
                             return;
                         }
                     }
                 }
-                Ok(terminal) => {
-                    if terminal == PrimaryPageRead::LimitReached {
-                        let _ = worker.stop_streaming().await;
-                        drain_helper_stream(worker).await;
+                CancellablePrimaryPageRead::Read(Ok(terminal)) => {
+                    let settlement = match settle_network_primary_completion(
+                        &mut settlement_guard,
+                        worker,
+                        true,
+                    ) {
+                        Ok(settlement) => settlement,
+                        Err(error) => {
+                            if let Ok(mut sessions) = sessions.lock() {
+                                let _ = sessions.discard(&session_owner);
+                            }
+                            let _ = initial_sender.send(Err(continuation_database_error(error)));
+                            return;
+                        }
+                    };
+                    if settlement.cancel_requested {
+                        if let Ok(mut sessions) = sessions.lock() {
+                            let _ = sessions.finish_session_with_lifecycle(
+                                &session_owner,
+                                EffectOutcome::Unknown,
+                                ResultSessionLifecycle::Cancelled,
+                            );
+                        }
+                        let _ = initial_sender.send(Ok(P6UnitOutcome {
+                            result: StatementExecutionResult::Cancelled {
+                                error: network_primary_cancel_error(terminate_on_cancel),
+                            },
+                            effect_outcome: EffectOutcome::Unknown,
+                            stop: true,
+                            connection_terminated: settlement.connection_termination_required,
+                        }));
+                        return;
                     }
                     let result_session = sessions
                         .lock()
@@ -5166,7 +5608,6 @@ async fn network_run_primary_worker(
                                 .finish_session(&session_owner, EffectOutcome::Unknown)
                                 .map_err(result_session_database_error)
                         });
-                    let _ = settle_primary_guard(&mut settlement_guard);
                     match result_session {
                         Ok(session) => {
                             let _ = initial_sender.send(Ok(primary_rows_outcome(
@@ -5185,18 +5626,64 @@ async fn network_run_primary_worker(
                     }
                     return;
                 }
-                Err(error) => {
+                CancellablePrimaryPageRead::Cancelled {
+                    connection_terminated,
+                } => {
+                    let settlement = settle_network_primary_completion(
+                        &mut settlement_guard,
+                        worker,
+                        connection_terminated,
+                    )
+                    .ok();
+                    if let Ok(mut sessions) = sessions.lock() {
+                        let _ = sessions.finish_session_with_lifecycle(
+                            &session_owner,
+                            EffectOutcome::Unknown,
+                            ResultSessionLifecycle::Cancelled,
+                        );
+                    }
+                    let _ = initial_sender.send(Ok(P6UnitOutcome {
+                        result: StatementExecutionResult::Cancelled {
+                            error: network_primary_cancel_error(terminate_on_cancel),
+                        },
+                        effect_outcome: EffectOutcome::Unknown,
+                        stop: true,
+                        connection_terminated: settlement
+                            .is_none_or(|settlement| settlement.connection_termination_required),
+                    }));
+                    return;
+                }
+                CancellablePrimaryPageRead::Read(Err(error)) => {
                     if let Ok(mut sessions) = sessions.lock() {
                         let _ = sessions.discard(&session_owner);
                     }
-                    let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
-                    let _ = settle_primary_guard(&mut settlement_guard);
+                    let helper_confirmed = helper_confirmed_cancel(&error);
+                    let settlement = match settle_network_primary_completion(
+                        &mut settlement_guard,
+                        worker,
+                        terminate_on_cancel || !helper_confirmed,
+                    ) {
+                        Ok(settlement) => settlement,
+                        Err(actor_error) => {
+                            let _ =
+                                initial_sender.send(Err(continuation_database_error(actor_error)));
+                            return;
+                        }
+                    };
+                    let cancelled = settlement.cancel_requested;
+                    let connection_terminated = settlement.connection_termination_required;
                     let result = if cancelled {
                         Ok(P6UnitOutcome {
-                            result: StatementExecutionResult::Cancelled { error },
+                            result: StatementExecutionResult::Cancelled {
+                                error: if terminate_on_cancel {
+                                    network_primary_cancel_error(true)
+                                } else {
+                                    error
+                                },
+                            },
                             effect_outcome: EffectOutcome::Unknown,
                             stop: true,
-                            connection_terminated: terminate_on_cancel,
+                            connection_terminated,
                         })
                     } else {
                         Err(error)
@@ -5209,12 +5696,116 @@ async fn network_run_primary_worker(
     }
 
     loop {
-        let command = if let Some(cancel_rx) = cancel_rx.as_mut() {
-            tokio::select! {
-                request = cancel_rx.recv() => {
-                    if request.as_ref() == run_owner.as_ref() {
-                        let _ = worker.cancel_query().await;
-                        worker.abort();
+        let command = tokio::select! {
+            request = cancel_rx.recv() => {
+                if request.as_ref() == Some(&run_owner) {
+                    let connection_terminated =
+                        settle_network_stream_cancel(worker, terminate_on_cancel).await;
+                    let _ = settle_network_primary_completion(
+                        &mut settlement_guard,
+                        worker,
+                        connection_terminated,
+                    );
+                    if let Ok(mut sessions) = sessions.lock() {
+                        let _ = sessions.finish_session_with_lifecycle(
+                            &session_owner,
+                            EffectOutcome::Unknown,
+                            ResultSessionLifecycle::Cancelled,
+                        );
+                    }
+                    return;
+                }
+                continue;
+            }
+            command = continuation_receiver.recv() => command,
+        };
+        match command {
+            Some(ResultContinuationCommand::Next { respond_to }) => {
+                let read = cancellable_network_read_primary_page(
+                    worker,
+                    &sessions,
+                    &session_owner,
+                    0,
+                    &mut cancel_rx,
+                    &run_owner,
+                    terminate_on_cancel,
+                )
+                .await;
+                match read {
+                    CancellablePrimaryPageRead::Read(Ok(PrimaryPageRead::Streaming)) => {
+                        let _ = mark_next_network_page_ready(&sessions, &session_owner);
+                        let _ = respond_to.send(ResultContinuationAck {
+                            outcome: ResultContinuationOutcome::PageReady,
+                        });
+                    }
+                    CancellablePrimaryPageRead::Read(Ok(PrimaryPageRead::End)) => {
+                        let _ = mark_next_network_page_ready(&sessions, &session_owner);
+                        let settlement =
+                            settle_network_primary_completion(&mut settlement_guard, worker, true);
+                        let cancelled = settlement
+                            .as_ref()
+                            .is_ok_and(|settlement| settlement.cancel_requested);
+                        if let Ok(mut sessions) = sessions.lock() {
+                            if cancelled {
+                                let _ = sessions.finish_session_with_lifecycle(
+                                    &session_owner,
+                                    EffectOutcome::Unknown,
+                                    ResultSessionLifecycle::Cancelled,
+                                );
+                            } else {
+                                let _ =
+                                    sessions.finish_session(&session_owner, EffectOutcome::Unknown);
+                            }
+                        }
+                        let _ = respond_to.send(ResultContinuationAck {
+                            outcome: if cancelled {
+                                ResultContinuationOutcome::Cancelled
+                            } else if settlement.is_ok() {
+                                ResultContinuationOutcome::End
+                            } else {
+                                ResultContinuationOutcome::Error
+                            },
+                        });
+                        return;
+                    }
+                    CancellablePrimaryPageRead::Read(Ok(PrimaryPageRead::LimitReached))
+                    | CancellablePrimaryPageRead::Read(Ok(PrimaryPageRead::ValueTooLarge)) => {
+                        let settlement =
+                            settle_network_primary_completion(&mut settlement_guard, worker, true);
+                        let cancelled = settlement
+                            .as_ref()
+                            .is_ok_and(|settlement| settlement.cancel_requested);
+                        if let Ok(mut sessions) = sessions.lock() {
+                            if cancelled {
+                                let _ = sessions.finish_session_with_lifecycle(
+                                    &session_owner,
+                                    EffectOutcome::Unknown,
+                                    ResultSessionLifecycle::Cancelled,
+                                );
+                            } else {
+                                let _ =
+                                    sessions.finish_session(&session_owner, EffectOutcome::Unknown);
+                            }
+                        }
+                        let _ = respond_to.send(ResultContinuationAck {
+                            outcome: if cancelled {
+                                ResultContinuationOutcome::Cancelled
+                            } else if settlement.is_ok() {
+                                ResultContinuationOutcome::LimitReached
+                            } else {
+                                ResultContinuationOutcome::Error
+                            },
+                        });
+                        return;
+                    }
+                    CancellablePrimaryPageRead::Cancelled {
+                        connection_terminated,
+                    } => {
+                        let _ = settle_network_primary_completion(
+                            &mut settlement_guard,
+                            worker,
+                            connection_terminated,
+                        );
                         if let Ok(mut sessions) = sessions.lock() {
                             let _ = sessions.finish_session_with_lifecycle(
                                 &session_owner,
@@ -5222,80 +5813,38 @@ async fn network_run_primary_worker(
                                 ResultSessionLifecycle::Cancelled,
                             );
                         }
-                        let _ = settle_primary_guard(&mut settlement_guard);
-                        return;
-                    }
-                    continue;
-                }
-                command = continuation_receiver.recv() => command,
-            }
-        } else {
-            continuation_receiver.recv().await
-        };
-        match command {
-            Some(ResultContinuationCommand::Next { respond_to }) => {
-                let read = network_read_primary_page(worker, &sessions, &session_owner, 0).await;
-                match read {
-                    Ok(PrimaryPageRead::Streaming) | Ok(PrimaryPageRead::End) => {
-                        let page = sessions
-                            .lock()
-                            .map_err(result_session_database_error)
-                            .and_then(|mut sessions| {
-                                let page_index = sessions
-                                    .next(&session_owner)
-                                    .ok()
-                                    .and_then(|next| match next {
-                                        crate::db_result_session::NextPage::Continue {
-                                            page_index,
-                                        } => Some(page_index),
-                                        _ => None,
-                                    })
-                                    .unwrap_or(1);
-                                sessions
-                                    .mark_page_ready(&session_owner, page_index)
-                                    .map_err(result_session_database_error)
-                            });
-                        let outcome = if matches!(read, Ok(PrimaryPageRead::End)) {
-                            if let Ok(mut sessions) = sessions.lock() {
-                                let _ =
-                                    sessions.finish_session(&session_owner, EffectOutcome::Unknown);
-                            }
-                            let _ = settle_primary_guard(&mut settlement_guard);
-                            ResultContinuationOutcome::End
-                        } else {
-                            ResultContinuationOutcome::PageReady
-                        };
-                        let _ = page;
-                        let _ = respond_to.send(ResultContinuationAck { outcome });
-                        if outcome == ResultContinuationOutcome::End {
-                            return;
-                        }
-                    }
-                    Ok(PrimaryPageRead::LimitReached) | Ok(PrimaryPageRead::ValueTooLarge) => {
-                        if matches!(read, Ok(PrimaryPageRead::LimitReached)) {
-                            let _ = worker.stop_streaming().await;
-                            drain_helper_stream(worker).await;
-                        }
-                        if let Ok(mut sessions) = sessions.lock() {
-                            let _ = sessions.finish_session(&session_owner, EffectOutcome::Unknown);
-                        }
-                        let _ = settle_primary_guard(&mut settlement_guard);
                         let _ = respond_to.send(ResultContinuationAck {
-                            outcome: ResultContinuationOutcome::LimitReached,
+                            outcome: ResultContinuationOutcome::Cancelled,
                         });
                         return;
                     }
-                    Err(_) => {
+                    CancellablePrimaryPageRead::Read(Err(error)) => {
+                        let helper_confirmed = helper_confirmed_cancel(&error);
+                        let settlement = settle_network_primary_completion(
+                            &mut settlement_guard,
+                            worker,
+                            terminate_on_cancel || !helper_confirmed,
+                        );
+                        let cancelled = settlement
+                            .as_ref()
+                            .is_ok_and(|settlement| settlement.cancel_requested);
                         if let Ok(mut sessions) = sessions.lock() {
                             let _ = sessions.finish_session_with_lifecycle(
                                 &session_owner,
                                 EffectOutcome::Unknown,
-                                ResultSessionLifecycle::Error,
+                                if cancelled {
+                                    ResultSessionLifecycle::Cancelled
+                                } else {
+                                    ResultSessionLifecycle::Error
+                                },
                             );
                         }
-                        let _ = settle_primary_guard(&mut settlement_guard);
                         let _ = respond_to.send(ResultContinuationAck {
-                            outcome: ResultContinuationOutcome::Error,
+                            outcome: if cancelled {
+                                ResultContinuationOutcome::Cancelled
+                            } else {
+                                ResultContinuationOutcome::Error
+                            },
                         });
                         return;
                     }
@@ -5304,18 +5853,42 @@ async fn network_run_primary_worker(
             Some(ResultContinuationCommand::Release { respond_to }) => {
                 let _ = worker.stop_streaming().await;
                 drain_helper_stream(worker).await;
+                let settlement =
+                    settle_network_primary_completion(&mut settlement_guard, worker, true);
+                let cancelled = settlement
+                    .as_ref()
+                    .is_ok_and(|settlement| settlement.cancel_requested);
                 if let Ok(mut sessions) = sessions.lock() {
-                    let _ = sessions.release_with_effect(&session_owner, EffectOutcome::Unknown);
+                    if cancelled {
+                        let _ = sessions.finish_session_with_lifecycle(
+                            &session_owner,
+                            EffectOutcome::Unknown,
+                            ResultSessionLifecycle::Cancelled,
+                        );
+                    } else {
+                        let _ =
+                            sessions.release_with_effect(&session_owner, EffectOutcome::Unknown);
+                    }
                 }
-                let _ = settle_primary_guard(&mut settlement_guard);
                 let _ = respond_to.send(ResultContinuationAck {
-                    outcome: ResultContinuationOutcome::Released,
+                    outcome: if cancelled {
+                        ResultContinuationOutcome::Cancelled
+                    } else if settlement.is_ok() {
+                        ResultContinuationOutcome::Released
+                    } else {
+                        ResultContinuationOutcome::Error
+                    },
                 });
                 return;
             }
             Some(ResultContinuationCommand::Cancel) => {
-                let _ = worker.cancel_query().await;
-                drain_helper_stream(worker).await;
+                let connection_terminated =
+                    settle_network_stream_cancel(worker, terminate_on_cancel).await;
+                let _ = settle_network_primary_completion(
+                    &mut settlement_guard,
+                    worker,
+                    connection_terminated,
+                );
                 if let Ok(mut sessions) = sessions.lock() {
                     let _ = sessions.finish_session_with_lifecycle(
                         &session_owner,
@@ -5323,12 +5896,12 @@ async fn network_run_primary_worker(
                         ResultSessionLifecycle::Cancelled,
                     );
                 }
-                let _ = settle_primary_guard(&mut settlement_guard);
                 return;
             }
             None => {
                 let _ = worker.stop_streaming().await;
                 drain_helper_stream(worker).await;
+                let _ = settle_network_primary_completion(&mut settlement_guard, worker, true);
                 if let Ok(mut sessions) = sessions.lock() {
                     let _ = sessions.discard(&session_owner);
                 }
@@ -5367,8 +5940,8 @@ async fn pg_run_primary_worker(
         continuation_sender,
         continuation_receiver,
         initial_sender,
-        Some(cancel_rx),
-        Some(run_owner),
+        cancel_rx,
+        run_owner,
         false,
     )
     .await;
@@ -5719,6 +6292,32 @@ pub async fn db_query_run(
     Ok(run)
 }
 
+fn classify_cancel_request(
+    request: Result<crate::db_connection_actor::CancelRequest, ActorError>,
+    connection_terminated: bool,
+) -> Result<QueryCancelOutcome, ActorError> {
+    match request {
+        Err(ActorError::CancelFailed) if connection_terminated => {
+            Ok(QueryCancelOutcome::CancelledConnectionTerminated)
+        }
+        Err(error) => Err(error),
+        Ok(crate::db_connection_actor::CancelRequest::AlreadyRequested) => {
+            Ok(QueryCancelOutcome::AlreadyRequested)
+        }
+        Ok(crate::db_connection_actor::CancelRequest::DriverCancellationRequired(_))
+            if connection_terminated =>
+        {
+            Ok(QueryCancelOutcome::CancelledConnectionTerminated)
+        }
+        Ok(crate::db_connection_actor::CancelRequest::DriverCancellationRequired(_)) => {
+            Ok(QueryCancelOutcome::Cancelled)
+        }
+        Ok(crate::db_connection_actor::CancelRequest::ConnectionTerminationRequired) => {
+            Ok(QueryCancelOutcome::CancelledConnectionTerminated)
+        }
+    }
+}
+
 pub(crate) async fn query_cancel_in_state(
     state: &DbState,
     owner: QueryRunOwner,
@@ -5729,17 +6328,17 @@ pub(crate) async fn query_cancel_in_state(
         connection_generation: owner.connection_generation.clone(),
     };
     let actor = get_exact_actor(state, &identity)?;
-    let outcome = match actor.request_cancel(&owner).await.map_err(actor_error)? {
-        crate::db_connection_actor::CancelRequest::AlreadyRequested => {
-            QueryCancelOutcome::AlreadyRequested
-        }
-        crate::db_connection_actor::CancelRequest::DriverCancellationRequired(_) => {
-            QueryCancelOutcome::Cancelled
-        }
-        crate::db_connection_actor::CancelRequest::ConnectionTerminationRequired => {
-            QueryCancelOutcome::CancelledConnectionTerminated
-        }
+    let connection_is_terminated = || {
+        actor.teardown_report().closed
+            || match actor.handle() {
+                DbHandle::Postgres(connection) => connection.worker().is_closed(),
+                DbHandle::Mssql(worker) => worker.is_closed(),
+                DbHandle::Sqlite(_) => false,
+            }
     };
+    let request = actor.request_cancel(&owner).await;
+    let outcome =
+        classify_cancel_request(request, connection_is_terminated()).map_err(actor_error)?;
     Ok(QueryCancelResult { outcome })
 }
 
@@ -6512,6 +7111,94 @@ mod tests {
     }
 
     #[test]
+    fn network_primary_cancel_error_preserves_connection_termination_semantics() {
+        assert_eq!(
+            network_primary_cancel_error(true).engine,
+            DatabaseErrorEngine::Mssql
+        );
+        assert_eq!(
+            network_primary_cancel_error(false).engine,
+            DatabaseErrorEngine::Yuzora
+        );
+    }
+
+    #[test]
+    fn cancel_dispatch_failure_is_success_only_after_atomic_connection_termination() {
+        assert_eq!(
+            classify_cancel_request(Err(ActorError::CancelFailed), true),
+            Ok(QueryCancelOutcome::CancelledConnectionTerminated)
+        );
+        assert_eq!(
+            classify_cancel_request(Err(ActorError::CancelFailed), false),
+            Err(ActorError::CancelFailed)
+        );
+        assert_eq!(
+            classify_cancel_request(
+                Ok(
+                    crate::db_connection_actor::CancelRequest::DriverCancellationRequired(
+                        crate::db_connection_actor::DriverCancelPrimitive::PostgresCancelToken,
+                    )
+                ),
+                true,
+            ),
+            Ok(QueryCancelOutcome::CancelledConnectionTerminated)
+        );
+    }
+
+    #[test]
+    fn mssql_helper_terminal_response_distinguishes_execute_from_row_stream() {
+        assert!(matches!(
+            helper_mssql_terminal_response(false, Some("1201".into())),
+            WorkerResponse::Execute {
+                affected_rows: Some(value)
+            } if value == "1201"
+        ));
+        assert!(matches!(
+            helper_mssql_terminal_response(true, Some("1".into())),
+            WorkerResponse::End {
+                affected_rows: Some(value)
+            } if value == "1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn worker_request_pump_preserves_fragmented_control_frames() {
+        use tokio::io::AsyncWriteExt;
+
+        fn frame(request: &WorkerRequest) -> Vec<u8> {
+            let body = serde_json::to_vec(request).unwrap();
+            let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+            frame.extend_from_slice(&body);
+            frame
+        }
+
+        let (mut writer, reader) = tokio::io::duplex(256);
+        let (sender, mut requests) = tokio::sync::mpsc::channel(WORKER_REQUEST_QUEUE_DEPTH);
+        let pump = tokio::spawn(pump_worker_requests(reader, sender));
+        let stop = frame(&WorkerRequest::StopStreaming);
+        let query = frame(&WorkerRequest::Query {
+            sql: "SELECT 7".into(),
+        });
+
+        writer.write_all(&stop[..2]).await.unwrap();
+        tokio::task::yield_now().await;
+        writer.write_all(&stop[2..]).await.unwrap();
+        writer.write_all(&query).await.unwrap();
+
+        assert!(matches!(
+            next_worker_request(&mut requests).await.unwrap(),
+            WorkerRequest::StopStreaming
+        ));
+        match next_worker_request(&mut requests).await.unwrap() {
+            WorkerRequest::Query { sql } => assert_eq!(sql, "SELECT 7"),
+            other => panic!("expected queued query after stop, got {other:?}"),
+        }
+
+        drop(writer);
+        let _ = pump.await;
+    }
+
+    #[test]
     fn network_primary_workers_decode_only_inside_the_helper() {
         let source = include_str!("db_service.rs");
         let production = source
@@ -6523,6 +7210,57 @@ mod tests {
         assert!(production.contains("tauri::async_runtime::spawn(mssql_run_primary_worker"));
         assert!(production.contains("async fn helper_pg_query"));
         assert!(production.contains("async fn helper_mssql_query"));
+        assert!(production.contains("spawn_worker_request_reader"));
+        assert!(
+            !production.contains("request = read_request(stdin)"),
+            "streaming helpers must receive control frames through the cancellation-safe request pump"
+        );
+        let pg_helper = production
+            .split("async fn helper_pg_query")
+            .nth(1)
+            .and_then(|source| source.split("async fn helper_mssql_query").next())
+            .expect("PostgreSQL helper body");
+        assert!(pg_helper.contains("statement = live.client.prepare(sql)"));
+        assert!(pg_helper.contains("request = next_worker_request(requests)"));
+        let mssql_helper = production
+            .split("async fn helper_mssql_query")
+            .nth(1)
+            .and_then(|source| source.split("pub(crate) async fn query_worker_loop").next())
+            .expect("MSSQL helper body");
+        assert!(mssql_helper.contains("let mut stream = tokio::select!"));
+        assert!(mssql_helper.contains("stream = client.simple_query(sql)"));
+        assert!(mssql_helper.contains("request = next_worker_request(requests)"));
+        let network_worker = production
+            .split("async fn network_run_primary_worker")
+            .nth(1)
+            .and_then(|source| source.split("async fn pg_run_primary_worker").next())
+            .expect("network primary worker body");
+        assert!(network_worker.contains("tokio::pin!(start_query)"));
+        assert!(network_worker.contains("request = cancel_rx.recv()"));
+        assert!(network_worker.contains("started = &mut start_query"));
+        assert!(
+            !network_worker.contains("actor.cancel_requested(&lease)"),
+            "network completion must arbitrate cancellation atomically while settling the lease"
+        );
+        assert!(
+            !network_worker.contains("settle_primary_guard(&mut settlement_guard)"),
+            "network exits must not bypass termination-aware atomic settlement"
+        );
+        assert!(
+            network_worker
+                .matches("settle_network_primary_completion")
+                .count()
+                >= 10,
+            "Execute, End, limit, error, release, and cancellation exits must use atomic settlement"
+        );
+        let execute_cancel = network_worker
+            .split("NetworkQueryStart::Execute")
+            .nth(1)
+            .and_then(|source| source.split("NetworkQueryStart::Rows").next())
+            .expect("network Execute cancellation branch");
+        assert!(execute_cancel.contains("settle_network_primary_completion"));
+        assert!(execute_cancel.contains("worker, true"));
+        assert!(execute_cancel.contains("connection_terminated: true"));
         assert!(
             !production.contains("async fn pg_read_primary_page"),
             "parent must not decode PostgreSQL rows in-process"
@@ -6547,8 +7285,8 @@ mod tests {
             .find("drain_helper_stream(worker).await")
             .expect("Release must drain the helper before settlement");
         let settle = release
-            .find("settle_primary_guard")
-            .expect("Release must settle its exact lease");
+            .find("settle_network_primary_completion")
+            .expect("Release must atomically settle its exact lease");
         assert!(cancel < drain && drain < settle);
     }
 

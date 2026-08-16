@@ -86,8 +86,7 @@ const I18N = {
     "dl.lede": "所有版本由 GitHub Actions 建置並發佈於 GitHub Releases。",
     "dl.device.macos": "已辨識：macOS · Universal",
     "dl.device.windows": "已辨識：Windows · x64",
-    "dl.device.linux": "已辨識：Linux · x86_64",
-    "dl.device.unsupported": "僅支援 macOS、Windows 與 Linux 桌面裝置",
+    "dl.device.unsupported": "僅支援 macOS 與 Windows 桌面裝置",
     "dl.device.unsupportedArchitecture": "此裝置架構尚未提供安裝檔",
     "dl.device.unknown": "請從下方選擇你的平台",
     "dl.recommended": "適合此裝置",
@@ -166,9 +165,7 @@ const I18N = {
       "Every build is produced by GitHub Actions and published on GitHub Releases.",
     "dl.device.macos": "Detected: macOS · Universal",
     "dl.device.windows": "Detected: Windows · x64",
-    "dl.device.linux": "Detected: Linux · x86_64",
-    "dl.device.unsupported":
-      "Available for macOS, Windows and Linux desktop devices",
+    "dl.device.unsupported": "Available for macOS and Windows desktop devices",
     "dl.device.unsupportedArchitecture":
       "No installer is available for this device architecture yet",
     "dl.device.unknown": "Choose your platform below",

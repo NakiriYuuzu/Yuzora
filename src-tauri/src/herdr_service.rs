@@ -4576,7 +4576,9 @@ pub async fn herdr_events_release(
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
     use std::io::BufRead;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -4920,10 +4922,13 @@ mod tests {
     fn managed_binary_override_resolves_only_the_default_source() {
         let dir = tempfile::tempdir().unwrap();
         let binary = dir.path().join("herdr-managed");
-        fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut permissions = fs::metadata(&binary).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&binary, permissions).unwrap();
+        fs::write(&binary, "managed Herdr fixture").unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&binary).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&binary, permissions).unwrap();
+        }
         let mgr = HerdrManager::new();
         mgr.set_managed_binary_override(Some(binary.clone()));
         let (resolved, reason) = mgr.resolve_binary_for_source(HerdrBinarySource::Default);
@@ -5315,6 +5320,7 @@ mod tests {
         assert!(collect_schema_methods(&schema).is_empty());
     }
 
+    #[cfg(unix)]
     fn write_fake_herdr_with(dir: &Path, status_json: &str, schema_json: &str) -> PathBuf {
         write_fake_herdr_with_sessions(
             dir,
@@ -5324,6 +5330,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     fn write_fake_herdr_with_sessions(
         dir: &Path,
         status_json: &str,
@@ -5390,6 +5397,7 @@ exit 2
         path
     }
 
+    #[cfg(unix)]
     fn write_fake_herdr(dir: &Path) -> PathBuf {
         write_fake_herdr_with(
             dir,
@@ -5398,6 +5406,7 @@ exit 2
         )
     }
 
+    #[cfg(unix)]
     fn write_fake_herdr_running_session(dir: &Path) -> PathBuf {
         write_fake_herdr_with_sessions(
             dir,
@@ -5783,6 +5792,7 @@ exit 2
         server.join().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn fake_binary_capabilities_use_discovered_protocol() {
         let dir = tempfile::tempdir().unwrap();
@@ -5863,6 +5873,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         server.join().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn capabilities_do_not_claim_api_when_server_incompatible() {
         let dir = tempfile::tempdir().unwrap();
@@ -5889,6 +5900,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             .contains("incompatible"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn capabilities_do_not_claim_methods_missing_from_schema() {
         let dir = tempfile::tempdir().unwrap();
@@ -5914,6 +5926,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn capabilities_claim_methods_present_in_schema_when_compatible() {
         let dir = tempfile::tempdir().unwrap();
@@ -5975,6 +5988,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             .all(|event| !matches!(event, HerdrTerminalEvent::Frame { .. })));
     }
 
+    #[cfg(unix)]
     #[test]
     fn fake_connector_observe_emits_first_full_frame_and_release_kills_only_child() {
         let dir = tempfile::tempdir().unwrap();
@@ -6032,6 +6046,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(mgr.sessions.lock().unwrap().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn fake_connector_control_resize_and_release() {
         let dir = tempfile::tempdir().unwrap();
@@ -6107,6 +6122,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(saw_closed || mgr.sessions.lock().unwrap().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn release_all_connectors_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
@@ -6188,6 +6204,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(!sessions[1].running);
     }
 
+    #[cfg(unix)]
     #[test]
     fn list_sessions_uses_session_list_json_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -6208,6 +6225,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert_eq!(work.socket_path, "/tmp/work.sock");
     }
 
+    #[cfg(unix)]
     #[test]
     fn snapshot_and_mutations_reject_stopped_session_without_starting_server() {
         let dir = tempfile::tempdir().unwrap();
@@ -6262,6 +6280,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         // Fake binary has no session attach / server start subcommands — ensuring we never call them.
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_specific_socket_routes_api_and_sets_herdr_session_env() {
         let dir = tempfile::tempdir().unwrap();
@@ -6348,6 +6367,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert_eq!(saw.as_deref().map(str::trim), Some("work"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn unknown_named_session_never_inherits_default_capabilities() {
         let dir = tempfile::tempdir().unwrap();
@@ -6373,6 +6393,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             .contains("session not found"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn live_alias_resolves_to_default_named_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -6620,6 +6641,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert_eq!(parsed.title.as_deref(), Some("Split"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn native_interaction_methods_gate_on_schema_and_stopped_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -6825,6 +6847,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn worktree_list_refuses_stopped_named_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -6841,6 +6864,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(err.contains("not running"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn worktree_list_capability_is_schema_gated() {
         let dir = tempfile::tempdir().unwrap();
@@ -6865,6 +6889,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn tab_move_capability_is_schema_gated() {
         let dir = tempfile::tempdir().unwrap();
@@ -6921,6 +6946,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn herdr_cli_oversized_stdout_is_killed_and_too_large() {
         let script = format!(
@@ -6944,6 +6970,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(err.contains("tooLarge"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn herdr_cli_invalid_utf8_is_protocol_error() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -6958,6 +6985,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(err.contains("invalidUtf8"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn herdr_cli_normal_json_is_parsed() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -6972,6 +7000,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert_eq!(value["ok"], true);
     }
 
+    #[cfg(unix)]
     #[test]
     fn herdr_cli_timeout_kills_and_reaps_child() {
         let started = Instant::now();
@@ -6998,6 +7027,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(!unix_pid_exists(pid), "child {pid} should be reaped");
     }
 
+    #[cfg(unix)]
     #[test]
     fn herdr_cli_success_with_invalid_utf8_stderr_is_protocol_error() {
         let script = r#"
@@ -7015,6 +7045,7 @@ sys.stderr.buffer.write(b"\xff\xfe")
         assert!(err.contains("invalidUtf8"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn herdr_cli_long_child_is_reaped_within_timeout() {
         let started = Instant::now();

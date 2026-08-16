@@ -28,11 +28,14 @@
 - 修正 HERDR terminal 串流在第一次 flush 後可能停止更新，以及 snapshot／capability 暫時失敗後無法恢復或隱藏錯誤的問題。
 - 修正 Git diff、log、branch checkout／cherry-pick 與工作區切換時，較舊的非同步結果可能覆蓋目前 repository 狀態的競態問題。
 - 修正資料庫查詢取消、SSH／SFTP 傳輸、askpass 與預覽資源生命週期中的多個清理、逾時與錯誤回報問題。
+- 修正提早釋放分頁結果後，下一次 MSSQL 查詢可能因 helper 控制訊息被中斷而失敗，以及無資料列的 stored procedure 回傳被誤判為串流結尾的問題。
 - 修正 macOS 因系統拒絕有限的 process memory rlimit，導致 PostgreSQL／MSSQL query helper 無法啟動的問題；改以短週期 resident-memory watchdog 保留隔離與上限保護。
+- 修正 Windows 工作區信任與路徑能力使用不穩定 metadata identity API，導致無法以 stable Rust 建置的問題；改由已開啟的檔案 handle 取得穩定 identity。
 - 修正 HERDR／Markdown pseudo pages 被誤存成一般檔案分頁，導致重新啟動後嘗試以檔案方式還原的問題。
 
 ### 已知限制
 
+- Yuzora 桌面版目前只發佈 macOS 與 Windows 安裝檔；Linux 僅作為 CI／測試 host，不是支援的桌面發佈平台。
 - HERDR public API 與事件訂閱目前使用 Unix socket；Windows 尚未提供 named-pipe lane，因此依賴 snapshot 或 runtime mutation 的 HERDR 功能會顯示不支援，Windows 測試應同時確認此狀態不會影響其他工作台功能。
 - HERDR 功能取決於實際選用 binary 的版本、protocol 與 schema；不相容或缺少必要 method 時會停用對應操作並顯示原因。
 - macOS 上以 ⌘Q 結束應用程式時不會提示未儲存的變更；請改以關閉視窗的方式離開。

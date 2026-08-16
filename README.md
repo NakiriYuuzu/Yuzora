@@ -13,7 +13,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
 ![Version](https://img.shields.io/badge/version-0.0.8-86b81f?style=flat-square&labelColor=1b1a17)
-![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux-57534b?style=flat-square&labelColor=1b1a17)
+![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
 <samp>English · <a href="README.zh-TW.md">繁體中文</a> · <a href="https://nakiriyuuzu.github.io/Yuzora/">Website</a></samp>
@@ -109,9 +109,8 @@ Every build is produced by GitHub Actions and published on [GitHub Releases](htt
 |:--|:--|:--|
 | **macOS** | `.dmg` — universal (Apple Silicon / Intel) | [Yuzora-macos-universal.dmg](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-universal.dmg) |
 | **Windows** | `.exe` (NSIS) — x64 | [Yuzora-windows-x64-setup.exe](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe) |
-| **Linux** | `.AppImage` — x86_64 | [Yuzora-linux-x86_64.AppImage](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-linux-x86_64.AppImage) |
 
-Other installer formats (`.msi` / `.deb` / `.rpm`) and past versions live on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases).
+The Windows `.msi` installer and past versions live on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Linux is used as a CI/test host only and is not a supported Yuzora desktop release platform.
 
 ## Tech stack
 

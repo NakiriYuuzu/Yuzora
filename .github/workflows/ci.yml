@@ -134,15 +134,6 @@ jobs:
             artifact-path: |
               src-tauri/target/release/bundle/nsis/*setup.exe
               src-tauri/target/release/bundle/msi/*.msi
-          - os: ubuntu-22.04
-            label: Linux x86-64
-            rust-targets: ""
-            build-args: ""
-            artifact-name: yuzora-release-candidate-linux-x86-64
-            artifact-path: |
-              src-tauri/target/release/bundle/appimage/*.AppImage
-              src-tauri/target/release/bundle/deb/*.deb
-              src-tauri/target/release/bundle/rpm/*.rpm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -155,22 +146,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-targets }}
-
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            wget
 
       - uses: Swatinem/rust-cache@v2
         with:

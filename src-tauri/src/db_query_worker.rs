@@ -5,12 +5,12 @@
 //! child. The parent only reads length-prefixed frames that already respect
 //! the field/row ceilings.
 //!
-//! Residual: `RLIMIT_AS` is applied on Unix hosts that support it, a sampled
-//! resident-set watchdog is used on macOS (where current kernels reject finite
-//! memory rlimits), and a job-object process limit is used on Windows. If the
-//! platform guard cannot be installed, the helper fails closed before driver
-//! or network decode. The macOS watchdog has a short sampling window rather
-//! than a kernel-enforced pre-allocation ceiling.
+//! Residual: Unix helpers use a sampled resident-set watchdog; non-macOS Unix
+//! also keeps a larger `RLIMIT_AS` fail-safe so normal driver virtual mappings
+//! do not consume the actual resident-memory budget. Windows uses a job-object
+//! process limit. If a platform guard cannot be installed, the helper fails
+//! closed before driver or network decode. The watchdog has a short sampling
+//! window rather than a kernel-enforced resident pre-allocation ceiling.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -44,6 +44,10 @@ pub const HELPER_MEMORY_BYTES: u64 =
     (DEFAULT_PROCESS_BYTES as u64).saturating_add(256 * 1024 * 1024);
 const HELPER_IO_TIMEOUT: Duration = Duration::from_secs(120);
 const HELPER_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+// Tiberius/TLS may reserve more than 1 GiB of virtual address space while
+// resident memory stays small; keep RLIMIT_AS well above that normal mapping.
+#[cfg(all(unix, not(target_os = "macos")))]
+const UNIX_ADDRESS_SPACE_HEADROOM_MULTIPLIER: u64 = 8;
 
 #[derive(Serialize, Deserialize)]
 #[serde(
@@ -222,24 +226,11 @@ pub fn helper_program() -> PathBuf {
 }
 
 pub fn apply_process_memory_limit(bytes: u64) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
-        start_macos_memory_watchdog(bytes)
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let limit = libc::rlimit {
-            rlim_cur: bytes,
-            rlim_max: bytes,
-        };
-        let rc = unsafe { libc::setrlimit(libc::RLIMIT_AS, &limit) };
-        if rc != 0 {
-            return Err(format!(
-                "setrlimit(RLIMIT_AS) failed: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
+        #[cfg(not(target_os = "macos"))]
+        install_unix_address_space_limit(unix_address_space_limit(bytes))?;
+        start_resident_memory_watchdog(bytes)
     }
     #[cfg(windows)]
     {
@@ -252,13 +243,34 @@ pub fn apply_process_memory_limit(bytes: u64) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn macos_memory_limit_exceeded(observed_bytes: u64, limit_bytes: u64) -> bool {
+#[cfg(all(unix, not(target_os = "macos")))]
+fn unix_address_space_limit(bytes: u64) -> u64 {
+    bytes.saturating_mul(UNIX_ADDRESS_SPACE_HEADROOM_MULTIPLIER)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn install_unix_address_space_limit(bytes: u64) -> Result<(), String> {
+    let limit = libc::rlimit {
+        rlim_cur: bytes,
+        rlim_max: bytes,
+    };
+    let rc = unsafe { libc::setrlimit(libc::RLIMIT_AS, &limit) };
+    if rc != 0 {
+        return Err(format!(
+            "setrlimit(RLIMIT_AS) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn resident_memory_limit_exceeded(observed_bytes: u64, limit_bytes: u64) -> bool {
     observed_bytes > limit_bytes
 }
 
-#[cfg(target_os = "macos")]
-fn start_macos_memory_watchdog(bytes: u64) -> Result<(), String> {
+#[cfg(unix)]
+fn start_resident_memory_watchdog(bytes: u64) -> Result<(), String> {
     use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
     let pid = get_current_pid().map_err(|error| format!("resolve worker pid failed: {error}"))?;
@@ -276,14 +288,14 @@ fn start_macos_memory_watchdog(bytes: u64) -> Result<(), String> {
                 let Some(process) = system.process(pid) else {
                     return;
                 };
-                if macos_memory_limit_exceeded(process.memory(), bytes) {
+                if resident_memory_limit_exceeded(process.memory(), bytes) {
                     std::process::abort();
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
         })
         .map(|_| ())
-        .map_err(|error| format!("start macOS memory watchdog failed: {error}"))
+        .map_err(|error| format!("start resident-memory watchdog failed: {error}"))
 }
 
 #[cfg(windows)]
@@ -1137,18 +1149,27 @@ mod tests {
         assert!(MAX_HELPER_FRAME_BYTES > DEFAULT_ROW_BYTES);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[test]
-    fn macos_memory_watchdog_installs_and_trips_only_above_the_limit() {
-        apply_process_memory_limit(u64::MAX).unwrap();
-        assert!(!macos_memory_limit_exceeded(
+    fn unix_memory_watchdog_installs_and_trips_only_above_the_limit() {
+        start_resident_memory_watchdog(u64::MAX).unwrap();
+        assert!(!resident_memory_limit_exceeded(
             HELPER_MEMORY_BYTES,
             HELPER_MEMORY_BYTES
         ));
-        assert!(macos_memory_limit_exceeded(
+        assert!(resident_memory_limit_exceeded(
             HELPER_MEMORY_BYTES + 1,
             HELPER_MEMORY_BYTES
         ));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn unix_address_space_fail_safe_keeps_driver_headroom() {
+        assert_eq!(
+            unix_address_space_limit(HELPER_MEMORY_BYTES),
+            HELPER_MEMORY_BYTES * UNIX_ADDRESS_SPACE_HEADROOM_MULTIPLIER
+        );
     }
 
     #[test]

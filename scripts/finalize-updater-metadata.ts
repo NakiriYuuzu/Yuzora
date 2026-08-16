@@ -45,6 +45,7 @@ export function finalizeUpdaterMetadata(
 
   const platforms: Record<string, UpdaterPlatform> = {}
   for (const [key, rawPlatform] of Object.entries(rawPlatforms)) {
+    if (key.startsWith("linux-")) continue
     if (key.startsWith("windows-") && key.endsWith("-nsis")) continue
 
     const platform = record(rawPlatform, `platform ${key}`)
@@ -123,6 +124,6 @@ if (import.meta.main) {
 
   await Bun.write(metadataPath, `${JSON.stringify(finalized, null, 2)}\n`)
   console.log(
-    `Updater metadata finalized: ${Object.keys(finalized.platforms).length} signed MSI-only platform entries`
+    `Updater metadata finalized: ${Object.keys(finalized.platforms).length} supported signed platform entries with MSI-only Windows OTA`
   )
 }

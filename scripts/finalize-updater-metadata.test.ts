@@ -7,6 +7,8 @@ const nsisUrl =
   "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.2/Yuzora_0.0.2_x64-setup.exe"
 const macUrl =
   "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.2/Yuzora_universal.app.tar.gz"
+const linuxUrl =
+  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.2/Yuzora_0.0.2_amd64.AppImage"
 
 function metadata() {
   return {
@@ -17,6 +19,7 @@ function metadata() {
       "windows-x86_64-msi": { url: msiUrl, signature: "msi-signature" },
       "windows-x86_64-nsis": { url: nsisUrl, signature: "nsis-signature" },
       "darwin-aarch64": { url: macUrl, signature: "mac-signature" },
+      "linux-x86_64": { url: linuxUrl, signature: "linux-signature" },
     },
   }
 }
@@ -38,7 +41,7 @@ describe("finalizeUpdaterMetadata", () => {
     ).toThrow("updater notes are required")
   })
 
-  it("removes NSIS platform entries while keeping MSI as the Windows OTA target", () => {
+  it("removes unsupported Linux and NSIS entries while keeping MSI as the Windows OTA target", () => {
     const finalized = finalizeUpdaterMetadata(metadata(), assets, "0.0.2")
 
     expect(finalized.platforms["windows-x86_64"]).toEqual({
@@ -47,6 +50,7 @@ describe("finalizeUpdaterMetadata", () => {
     })
     expect(finalized.platforms["windows-x86_64-msi"]).toBeDefined()
     expect(finalized.platforms["windows-x86_64-nsis"]).toBeUndefined()
+    expect(finalized.platforms["linux-x86_64"]).toBeUndefined()
     expect(finalized.notes).toBe("### 改善\n\n- 可直接在設定中檢查更新。")
   })
 

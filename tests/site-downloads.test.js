@@ -27,24 +27,11 @@ describe("GitHub Pages platform download selection", () => {
     })
   })
 
-  it.each([
-    {
-      name: "Windows",
-      navigator: { userAgentData: { platform: "Windows" } },
+  it("selects the x64 installer for Windows", () => {
+    expect(resolveDownloadTarget({ userAgentData: { platform: "Windows" } })).toMatchObject({
+      status: "supported",
       platform: "windows",
       url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
-    },
-    {
-      name: "Linux",
-      navigator: { platform: "Linux x86_64" },
-      platform: "linux",
-      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-linux-x86_64.AppImage",
-    },
-  ])("selects the primary installer for $name", ({ navigator, platform, url }) => {
-    expect(resolveDownloadTarget(navigator)).toMatchObject({
-      status: "supported",
-      platform,
-      url,
     })
   })
 
@@ -64,6 +51,10 @@ describe("GitHub Pages platform download selection", () => {
       name: "iPadOS",
       navigator: { platform: "MacIntel", maxTouchPoints: 5 },
     },
+    {
+      name: "Linux desktop",
+      navigator: { platform: "Linux x86_64" },
+    },
   ])("does not offer a desktop installer to $name", ({ navigator }) => {
     expect(resolveDownloadTarget(navigator)).toMatchObject({
       status: "unsupported",
@@ -72,41 +63,14 @@ describe("GitHub Pages platform download selection", () => {
     })
   })
 
-  it.each([
-    {
-      name: "Windows on ARM",
-      navigator: {
+  it("does not offer the x64 installer to Windows on ARM", () => {
+    expect(
+      resolveDownloadTarget({
         userAgentData: { platform: "Windows", architecture: "arm", bitness: "64" },
-      },
+      }),
+    ).toMatchObject({
+      status: "unsupported-architecture",
       platform: "windows",
-    },
-    {
-      name: "32-bit Linux",
-      navigator: {
-        userAgentData: { platform: "Linux", architecture: "x86", bitness: "32" },
-      },
-      platform: "linux",
-    },
-  ])("does not offer an incompatible x64 installer to $name", ({ navigator, platform }) => {
-    expect(resolveDownloadTarget(navigator)).toMatchObject({
-      status: "unsupported-architecture",
-      platform,
-      url: null,
-    })
-  })
-
-  it("uses legacy navigator fields to reject a known ARM Linux device", () => {
-    expect(resolveDownloadTarget({ platform: "Linux armv8l" })).toMatchObject({
-      status: "unsupported-architecture",
-      platform: "linux",
-      url: null,
-    })
-  })
-
-  it("uses legacy navigator fields to reject a known 32-bit Linux device", () => {
-    expect(resolveDownloadTarget({ platform: "Linux i686" })).toMatchObject({
-      status: "unsupported-architecture",
-      platform: "linux",
       url: null,
     })
   })
@@ -158,7 +122,6 @@ describe("GitHub Pages platform download selection", () => {
       </span>
       <a data-platform-download="macos"><span data-recommended-badge hidden>Recommended</span></a>
       <a data-platform-download="windows"><span data-recommended-badge hidden>Recommended</span></a>
-      <a data-platform-download="linux"><span data-recommended-badge hidden>Recommended</span></a>
     `
 
     const target = resolveDownloadTarget({ userAgentData: { platform: "macOS" } })
@@ -202,15 +165,16 @@ describe("GitHub Pages platform download selection", () => {
     const html = readFileSync(resolve(process.cwd(), "site/index.html"), "utf8")
     const page = new DOMParser().parseFromString(html, "text/html")
 
-    await initDownloadExperience({ userAgentData: { platform: "Linux" } }, page)
+    await initDownloadExperience({ userAgentData: { platform: "Windows" } }, page)
 
     expect(page.querySelector("#primary-download")?.getAttribute("href")).toBe(
-      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-linux-x86_64.AppImage",
+      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
     )
     expect(
-      page.querySelector("[data-platform-download='linux']")?.classList.contains("is-recommended"),
+      page.querySelector("[data-platform-download='windows']")?.classList.contains("is-recommended"),
     ).toBe(true)
-    expect(page.querySelector("[data-device-message='linux']")?.hasAttribute("hidden")).toBe(false)
+    expect(page.querySelector("[data-device-message='windows']")?.hasAttribute("hidden")).toBe(false)
+    expect(page.querySelector("[data-platform-download='linux']")).toBeNull()
     expect(
       [...page.querySelectorAll('script[type="module"]')].some((script) =>
         script.textContent?.includes('from "./downloads.js"'),
