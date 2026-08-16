@@ -100,6 +100,19 @@ impl ProcessManager {
         }
     }
 
+    pub fn start_authorized(
+        self: &Arc<Self>,
+        trust: &crate::workspace_trust::WorkspaceTrustStore,
+        workspace: &str,
+        command: &str,
+        challenge_id: &str,
+        port: Option<u16>,
+        on_output: OnOutput,
+    ) -> Result<DevServerInfo, String> {
+        let authorized = trust.authorize_execution(workspace, command, challenge_id)?;
+        self.start(workspace, &authorized.command, port, on_output)
+    }
+
     pub fn start(
         self: &Arc<Self>,
         workspace: &str,
@@ -122,7 +135,9 @@ impl ProcessManager {
         }
 
         let mut cmd = shell_command(command);
-        cmd.current_dir(workspace)
+        let cwd = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.into());
+        apply_minimal_env(&mut cmd);
+        cmd.current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -638,21 +653,94 @@ fn localhost_url_occupies_line(line: &str) -> bool {
     false
 }
 
+fn apply_minimal_env(cmd: &mut Command) {
+    let inherited: Vec<(String, String)> = std::env::vars()
+        .filter(|(key, _)| is_allowed_process_env(key))
+        .collect();
+    cmd.env_clear();
+    cmd.envs(inherited);
+}
+
+fn is_allowed_process_env(key: &str) -> bool {
+    const ALLOWED: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "COLORTERM",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
+        "BUN_INSTALL",
+        "BUN_INSTALL_CACHE_DIR",
+        "NVM_DIR",
+        "NVM_BIN",
+        "NVM_INC",
+        "VOLTA_HOME",
+        "FNM_DIR",
+        "FNM_MULTISHELL_PATH",
+        "PNPM_HOME",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "HOMEBREW_PREFIX",
+        "HOMEBREW_CELLAR",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMFILES",
+        "PROGRAMDATA",
+        "SYSTEMDRIVE",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+    ];
+    ALLOWED
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(key))
+        || key.eq_ignore_ascii_case("ProgramFiles(x86)")
+}
+
 #[tauri::command]
 pub async fn dev_server_start(
     state: tauri::State<'_, ProcessState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     workspace: String,
     command: String,
     port: Option<u16>,
+    challenge_id: String,
     on_output: tauri::ipc::Channel<String>,
 ) -> Result<DevServerInfo, String> {
     let manager = state.0.clone();
+    let trust = trust.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let channel = on_output;
         let on_output: OnOutput = Arc::new(move |line| {
             let _ = channel.send(line);
         });
-        manager.start(&workspace, &command, port, on_output)
+        manager.start_authorized(
+            &trust.0,
+            &workspace,
+            &command,
+            &challenge_id,
+            port,
+            on_output,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -918,5 +1006,161 @@ mod tests {
             .unwrap();
         mgr.stop(workspace).unwrap();
         mgr.stop(workspace).unwrap();
+    }
+
+    fn temp_trust() -> (
+        tempfile::TempDir,
+        crate::workspace_trust::WorkspaceTrustStore,
+        std::path::PathBuf,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let store = crate::workspace_trust::WorkspaceTrustStore::at(
+            tmp.path().join("workspace-trust.json"),
+        );
+        (tmp, store, workspace)
+    }
+
+    #[test]
+    fn untrusted_start_does_not_spawn() {
+        let (_tmp, store, workspace) = temp_trust();
+        let mgr = test_manager();
+        let (on_output, output) = capture_output();
+        let path = workspace.to_str().unwrap();
+        let error = mgr
+            .start_authorized(
+                &store,
+                path,
+                "sh -c 'echo leaked'",
+                "missing-challenge",
+                None,
+                on_output,
+            )
+            .unwrap_err();
+        assert!(error.contains("staleChallenge"), "{error}");
+        assert!(mgr.status_for(path).is_none());
+        assert!(output.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn mismatched_command_does_not_spawn() {
+        let (_tmp, store, workspace) = temp_trust();
+        let mgr = test_manager();
+        let (on_output, output) = capture_output();
+        let path = workspace.to_str().unwrap();
+        let challenge = store
+            .issue_execution_challenge(path, "sh -c 'echo allowed'")
+            .unwrap();
+        let error = mgr
+            .start_authorized(
+                &store,
+                path,
+                "sh -c 'echo evil'",
+                &challenge.challenge_id,
+                None,
+                on_output,
+            )
+            .unwrap_err();
+        assert!(error.contains("staleChallenge"), "{error}");
+        assert!(mgr.status_for(path).is_none());
+        assert!(output.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn grant_and_execute_starts_exact_command() {
+        let (_tmp, store, workspace) = temp_trust();
+        let mgr = test_manager();
+        let (on_output, output) = capture_output();
+        let path = workspace.to_str().unwrap();
+        let command = "sh -c 'echo Local: http://localhost:4321'";
+        let challenge = store.issue_execution_challenge(path, command).unwrap();
+        assert!(challenge.grants_trust);
+        mgr.start_authorized(
+            &store,
+            path,
+            command,
+            &challenge.challenge_id,
+            Some(4321),
+            on_output,
+        )
+        .unwrap();
+        assert!(poll_until(Duration::from_secs(3), || output
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("localhost:4321"))));
+        assert_eq!(store.status(path).unwrap().state, "trusted");
+        mgr.stop(path).unwrap();
+    }
+
+    #[test]
+    fn revoke_stops_authorized_server() {
+        let (_tmp, store, workspace) = temp_trust();
+        let mgr = test_manager();
+        let (on_output, _output) = capture_output();
+        let path = workspace.to_str().unwrap();
+        let command = "sh -c 'sleep 5'";
+        let challenge = store.issue_execution_challenge(path, command).unwrap();
+        mgr.start_authorized(
+            &store,
+            path,
+            command,
+            &challenge.challenge_id,
+            None,
+            on_output,
+        )
+        .unwrap();
+        let stopped = store.revoke(path).unwrap();
+        for candidate in stopped {
+            let _ = mgr.stop_workspace(&candidate);
+        }
+        assert!(poll_until(Duration::from_secs(3), || mgr
+            .status_for(path)
+            .is_none()
+            || matches!(
+                mgr.status_for(path).unwrap().status,
+                DevServerStatus::Exited { .. } | DevServerStatus::Failed { .. }
+            )));
+        assert!(store.require_trusted(path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_strips_sensitive_environment() {
+        let (_tmp, store, workspace) = temp_trust();
+        let mgr = test_manager();
+        let (on_output, output) = capture_output();
+        let path = workspace.to_str().unwrap();
+        unsafe {
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "should-not-leak");
+            std::env::set_var("GIT_ASKPASS", "/tmp/askpass");
+        }
+        let command = "sh -c 'printf AWS=%s ASK=%s\\n \"$AWS_SECRET_ACCESS_KEY\" \"$GIT_ASKPASS\"'";
+        let challenge = store.issue_execution_challenge(path, command).unwrap();
+        mgr.start_authorized(
+            &store,
+            path,
+            command,
+            &challenge.challenge_id,
+            None,
+            on_output,
+        )
+        .unwrap();
+        assert!(poll_until(Duration::from_secs(3), || output
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("AWS="))));
+        let combined = output.lock().unwrap().join("\n");
+        assert!(
+            !combined.contains("should-not-leak"),
+            "secret leaked: {combined}"
+        );
+        assert!(
+            !combined.contains("/tmp/askpass"),
+            "askpass leaked: {combined}"
+        );
+        mgr.stop(path).unwrap();
     }
 }

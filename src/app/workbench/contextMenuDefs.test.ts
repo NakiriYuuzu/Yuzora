@@ -12,9 +12,8 @@ import type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contex
 import i18n from "@/lib/i18n"
 import { registerView, unregisterView, updateViewMetadata } from "@/editor/viewRegistry"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import { useAgentStore, type SessionState } from "@/state/agentStore"
 import { useTerminalStore } from "@/state/terminalStore"
-import { initialGitState, useGitStore } from "@/state/gitStore"
+import { clearGitSnapshots, initialGitState, useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
 import { useDbStore } from "@/state/dbStore"
 import { useSftpStore } from "@/state/sftpStore"
@@ -34,34 +33,17 @@ const FINAL_KINDS: ContextMenuKind[] = [
   "tab",
   "editor",
   "terminalTab",
-  "agentSession",
   "git",
   "gitChange",
   "status",
   "sshhost",
   "dbconn",
   "preview",
+  "herdrSpace",
+  "herdrTab",
+  "herdrPane",
 ]
 
-function agentSession(overrides: Partial<SessionState> = {}): SessionState {
-  return {
-    title: "Clicked session",
-    agentLabel: "Agent",
-    model: null,
-    tone: "idle",
-    transcript: [],
-    availableCommands: [],
-    stopReason: null,
-    stopBadge: null,
-    error: null,
-    queueDepth: null,
-    running: null,
-    pendingTurn: false,
-    metadataTitle: false,
-    cwd: "/w/project",
-    ...overrides,
-  }
-}
 
 function gitStatus(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -102,12 +84,7 @@ beforeEach(async () => {
     activeGroupIndex: 0,
   })
   useTerminalStore.getState().reset()
-  useAgentStore.setState({
-    sessions: new Map(),
-    activeSessionId: null,
-    renamingSessionId: null,
-    confirmRemoveRequest: null,
-  })
+  clearGitSnapshots()
   useGitStore.setState(initialGitState)
   useDbStore.setState({
     connections: [],
@@ -329,6 +306,31 @@ describe("CONTEXT_MENU_DEFS", () => {
     }
   })
 
+  it("Markdown preview tab 隱藏 Split and Copy Rel", () => {
+    useWorkspaceStore.setState({
+      groups: [{
+        activePath: "/w/r.md",
+        tabs: [{ path: "/w/r.md", name: "r.md", dirty: false, externallyModified: false }]
+      }],
+      activeGroupIndex: 0
+    })
+    useWorkspaceStore.getState().toggleMarkdownPreview("/w/r.md", 0)
+    const previewPath = useWorkspaceStore.getState().groups[1]?.tabs[0]?.path
+    expect(previewPath).toBeTruthy()
+    const entries = resolveContextMenuEntries({
+      kind: "tab",
+      workspacePath: "/w",
+      path: previewPath!,
+      groupIndex: 1,
+    })
+    expect(entries.some(
+      (entry) => entry.type === "command" && entry.command.id === "cmSplit"
+    )).toBe(false)
+    expect(entries.some(
+      (entry) => entry.type === "command" && entry.command.id === "cmCopyRel"
+    )).toBe(false)
+  })
+
   it("Preview sentinel tab 隱藏 Split and Move Right", () => {
     useWorkspaceStore.getState().openPreviewTab()
     const entries = resolveContextMenuEntries({
@@ -427,160 +429,10 @@ describe("CONTEXT_MENU_DEFS", () => {
     expect(useTerminalStore.getState().layouts["/w"].renamingSessionId).toBe("terminal-tab")
   })
 
-  it("agentSession registry 只保留 final actions，並提供精確文案與 pending disabled reason", async () => {
-    const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-    useAgentStore.setState({
-      activeSessionId: "other",
-      sessions: new Map([
-        ["clicked", agentSession()],
-        ["other", agentSession({ pendingTurn: true })],
-      ]),
-    })
 
-    const entries = resolveContextMenuEntries(request)
-    expect(entries.map((entry) => entry.type === "separator" ? "|" : entry.command.id)).toEqual([
-      "cmContinueSession",
-      "cmCancelResponse",
-      "cmRenameSession",
-      "|",
-      "cmCopyWorkingDirectory",
-      "|",
-      "cmRemoveSession",
-    ])
-    expect(commandFor(request, "cmCancelResponse")?.availability(request)).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.noPendingResponse",
-    })
-    expect(commandFor(request, "cmRenameSession")?.label(request)).toBe("Rename display name…")
-    expect(commandFor(request, "cmStop")).toBeNull()
-    expect(commandFor(request, "cmCopyPath")).toBeNull()
-    expect(commandFor(request, "cmDuplicate")).toBeNull()
 
-    await i18n.changeLanguage("zh-TW")
-    expect(commandFor(request, "cmCancelResponse")?.label(request)).toBe("取消目前回應")
-    expect(commandFor(request, "cmCopyWorkingDirectory")?.label(request)).toBe("複製工作目錄路徑")
-  })
 
-  it("agentSession availability matrix：session 不存在／存在時的 continue、rename、remove；cancelResponse 依 pendingTurn", () => {
-    const missing: ContextMenuRequest = { kind: "agentSession", sessionId: "ghost" }
-    const idle: ContextMenuRequest = { kind: "agentSession", sessionId: "idle-session" }
-    const running: ContextMenuRequest = { kind: "agentSession", sessionId: "running-session" }
-    useAgentStore.setState({
-      sessions: new Map([
-        ["idle-session", agentSession()],
-        ["running-session", agentSession({ pendingTurn: true })],
-      ]),
-    })
 
-    for (const id of ["cmContinueSession", "cmRenameSession", "cmRemoveSession"] as const) {
-      expect(commandFor(missing, id)?.availability(missing)).toEqual({
-        visible: true,
-        enabled: false,
-        disabledReasonKey: "contextMenu.disabled.targetUnavailable",
-      })
-      expect(commandFor(idle, id)?.availability(idle)).toEqual({ visible: true, enabled: true })
-    }
-    expect(commandFor(missing, "cmCancelResponse")?.availability(missing)).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.targetUnavailable",
-    })
-    expect(commandFor(idle, "cmCancelResponse")?.availability(idle)).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.noPendingResponse",
-    })
-    expect(commandFor(running, "cmCancelResponse")?.availability(running)).toEqual({
-      visible: true,
-      enabled: true,
-    })
-  })
-
-  it("agentSession executors 只作用 request.sessionId：continue／rename 觸發對應 store action", async () => {
-    const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-    useAgentStore.setState({
-      activeSessionId: "other",
-      sessions: new Map([
-        ["clicked", agentSession()],
-        ["other", agentSession()],
-      ]),
-    })
-
-    const continueSession = commandFor(request, "cmContinueSession")
-    if (!continueSession) throw new Error("missing cmContinueSession")
-    expect(await continueSession.executor(request)).toBe("completed")
-    expect(useAgentStore.getState().activeSessionId).toBe("clicked")
-
-    const rename = commandFor(request, "cmRenameSession")
-    if (!rename) throw new Error("missing cmRenameSession")
-    expect(await rename.executor(request)).toBe("completed")
-    expect(useAgentStore.getState().renamingSessionId).toBe("clicked")
-  })
-
-  it("agentSession cmRemoveSession executor 等待 confirm：拒絕時 cancelled 且不移除，確認時 completed 並移除 clicked session", async () => {
-    const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-    useAgentStore.setState({
-      sessions: new Map([
-        ["clicked", agentSession()],
-        ["other", agentSession()],
-      ]),
-    })
-    const remove = commandFor(request, "cmRemoveSession")
-    if (!remove) throw new Error("missing cmRemoveSession")
-
-    const declined = remove.executor(request)
-    useAgentStore.getState().respondRemoveSessionConfirm(false)
-    expect(await declined).toBe("cancelled")
-    expect(useAgentStore.getState().sessions.has("clicked")).toBe(true)
-
-    const confirmed = remove.executor(request)
-    useAgentStore.getState().respondRemoveSessionConfirm(true)
-    expect(await confirmed).toBe("completed")
-    expect(useAgentStore.getState().sessions.has("clicked")).toBe(false)
-    expect(useAgentStore.getState().sessions.has("other")).toBe(true)
-
-    useAgentStore.setState({
-      sessions: new Map([
-        ["clicked", agentSession()],
-        ["other", agentSession()],
-      ]),
-    })
-    const stale = remove.executor(request)
-    useAgentStore.setState({ sessions: new Map([["other", agentSession()]]) })
-    useAgentStore.getState().respondRemoveSessionConfirm(true)
-    expect(await stale).toBe("cancelled")
-    expect(useAgentStore.getState().sessions.has("other")).toBe(true)
-  })
-
-  it("agentSession Copy Working Directory 只顯示並複製 clicked session 的 absolute cwd", async () => {
-    const calls: Array<{ cmd: string; args: unknown }> = []
-    mockIPC((cmd, args) => {
-      calls.push({ cmd, args })
-      return cmd === "log_event" ? null : undefined
-    })
-    const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-    useAgentStore.setState({
-      activeSessionId: "other",
-      sessions: new Map([
-        ["clicked", agentSession({ cwd: "/clicked/project" })],
-        ["other", agentSession({ cwd: "/active/project" })],
-      ]),
-    })
-    const copy = commandFor(request, "cmCopyWorkingDirectory")
-    if (!copy) throw new Error("missing cmCopyWorkingDirectory")
-
-    expect(await copy.executor(request)).toBe("completed")
-    expect(calls.find((call) => call.cmd === "plugin:clipboard-manager|write_text")?.args)
-      .toEqual({ text: "/clicked/project" })
-
-    useAgentStore.setState({
-      sessions: new Map([["clicked", agentSession({ cwd: "relative/project" })]]),
-    })
-    expect(resolveContextMenuEntries(request).some(
-      (entry) => entry.type === "command" && entry.command.id === "cmCopyWorkingDirectory"
-    )).toBe(false)
-  })
 
   it("dbconn Open/Reconnect label and disabled reason follow live state in both locales", async () => {
     const request: ContextMenuRequest = {
@@ -1007,7 +859,7 @@ describe("CONTEXT_MENU_DEFS", () => {
     )).toBe(false)
   })
 
-  it("gitChange mixed selection shows Stage/Unstage subsets and Rollback", () => {
+  it("gitChange mixed selection shows Stage/Unstage subsets and hides conflict Rollback", () => {
     const status = gitStatus({
       staged: [{ path: "staged.ts", origPath: null, status: "M" }],
       unstaged: [{ path: "changed.ts", origPath: null, status: "M" }],
@@ -1023,9 +875,50 @@ describe("CONTEXT_MENU_DEFS", () => {
     )).toEqual([
       "cmStageSelected",
       "cmUnstageSelected",
-      "|",
-      "cmRollbackSelected",
     ])
+    expect(commandFor(request, "cmRollbackSelected")?.availability(request)).toEqual({
+      visible: false,
+      enabled: false,
+    })
+  })
+
+  it("gitChange non-conflict mixed selection shows Rollback", () => {
+    const status = gitStatus({
+      staged: [{ path: "staged.ts", origPath: null, status: "M" }],
+      unstaged: [{ path: "changed.ts", origPath: null, status: "M" }],
+    })
+    useGitStore.setState({
+      environment: { status: "ready", root: "/w", version: "2.50.1" },
+      status,
+    })
+    const request = gitChangeRequest(status)
+    expect(commandFor(request, "cmRollbackSelected")?.availability(request)).toEqual({
+      visible: true,
+      enabled: true,
+    })
+  })
+
+  it("gitChange conflict-only selection hides ordinary Stage/Unstage/Rollback", () => {
+    const status = gitStatus({
+      conflicted: [{ path: "conflict.ts", origPath: null, status: "UU" }],
+    })
+    useGitStore.setState({
+      environment: { status: "ready", root: "/w", version: "2.50.1" },
+      status,
+    })
+    const request = gitChangeRequest(status)
+    expect(commandFor(request, "cmStageSelected")?.availability(request)).toEqual({
+      visible: false,
+      enabled: false,
+    })
+    expect(commandFor(request, "cmUnstageSelected")?.availability(request)).toEqual({
+      visible: false,
+      enabled: false,
+    })
+    expect(commandFor(request, "cmRollbackSelected")?.availability(request)).toEqual({
+      visible: false,
+      enabled: false,
+    })
   })
 
   it("gitChange mixed Stage/Unstage executors operate only their applicable subsets", async () => {
@@ -1053,16 +946,24 @@ describe("CONTEXT_MENU_DEFS", () => {
     expect(await commandFor(request, "cmStageSelected")?.executor(request)).toBe("completed")
     expect(calls.find((call) => call.cmd === "git_stage")?.args).toEqual({
       repositoryRoot: "/w",
-      paths: ["changed.ts", "conflict.ts"],
+      paths: ["changed.ts"],
     })
-    expect(runOp).toHaveBeenLastCalledWith("stage", expect.any(Function))
+    expect(runOp).toHaveBeenLastCalledWith(
+      "stage",
+      expect.any(Function),
+      expect.objectContaining({ afterMutationBeforeRefresh: expect.any(Function) })
+    )
 
     expect(await commandFor(request, "cmUnstageSelected")?.executor(request)).toBe("completed")
     expect(calls.find((call) => call.cmd === "git_unstage")?.args).toEqual({
       repositoryRoot: "/w",
       paths: ["staged.ts"],
     })
-    expect(runOp).toHaveBeenLastCalledWith("unstage", expect.any(Function))
+    expect(runOp).toHaveBeenLastCalledWith(
+      "unstage",
+      expect.any(Function),
+      expect.objectContaining({ afterMutationBeforeRefresh: expect.any(Function) })
+    )
   })
 
   it("gitChange busy keeps applicable actions visible and reason names current operation", () => {
@@ -1098,6 +999,36 @@ describe("CONTEXT_MENU_DEFS", () => {
       visible: false,
       enabled: false,
     })
+  })
+
+  it("gitChange Stage cancels when any originally applicable snapshot drifted", async () => {
+    const original = gitStatus({
+      unstaged: [
+        { path: "a.ts", origPath: null, status: "M" },
+        { path: "b.ts", origPath: null, status: "M" },
+      ],
+    })
+    const request = gitChangeRequest(original)
+    const runOp = vi.fn(async (_name: string, operation: () => Promise<unknown>) => {
+      await operation()
+      return true
+    })
+    useGitStore.setState({
+      environment: { status: "ready", root: "/w", version: "2.50.1" },
+      status: gitStatus({
+        unstaged: [
+          { path: "a.ts", origPath: "old.ts", status: "R" },
+          { path: "b.ts", origPath: null, status: "M" },
+        ],
+      }),
+      runOp,
+    })
+    expect(commandFor(request, "cmStageSelected")?.availability(request)).toEqual({
+      visible: false,
+      enabled: false,
+    })
+    expect(await commandFor(request, "cmStageSelected")?.executor(request)).toBe("cancelled")
+    expect(runOp).not.toHaveBeenCalled()
   })
 
   it("gitChange Rollback executor awaits the app-level dialog outcome", async () => {
@@ -1225,13 +1156,15 @@ describe("CONTEXT_MENU_DEFS", () => {
       { kind: "tab", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
       { kind: "editor", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
       { kind: "terminalTab", workspacePath: "/w", sessionId: "session" },
-      { kind: "agentSession", sessionId: "missing-session" },
       { kind: "git", repositoryRoot: "/w" },
       change,
       { kind: "status", repositoryRoot: "/w" },
       { kind: "sshhost", hostId: "host-1", address: "user@example.com:22" },
       { kind: "dbconn", descriptorId: "missing-db", address: "missing" },
       { kind: "preview", workspacePath: "/w", url: null, serverAttempt: 0 },
+      { kind: "herdrSpace", sessionName: "default", workspaceId: "ws-1", label: "Space" },
+      { kind: "herdrTab", sessionName: "default", tabId: "tab-1", workspaceId: "ws-1", label: "Tab" },
+      { kind: "herdrPane", sessionName: "default", paneId: "pane-1", tabId: "tab-1", label: "Pane", focusedPaneId: "pane-2" },
     ]
 
     expect(requests.map((request) => request.kind)).toEqual(FINAL_KINDS)

@@ -31,7 +31,11 @@ export function ConfirmDialogHost() {
             }}
         >
             {pending && (
-                <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
+<DialogContent
+                    resizeId="unsaved-confirmation"
+                    showCloseButton={false}
+                    className="flex flex-col"
+                >
                     <DialogHeader>
                         <DialogTitle>{pending.title}</DialogTitle>
                         <DialogDescription>{pending.description}</DialogDescription>

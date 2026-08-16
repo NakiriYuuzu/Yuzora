@@ -8,5 +8,8 @@ fn main() {
             std::process::exit(yuzora_lib::askpass::run_client(&endpoint, &prompt));
         }
     }
+    if std::env::var_os(yuzora_lib::db_query_worker::WORKER_ENV).is_some() {
+        std::process::exit(yuzora_lib::db_query_worker::run());
+    }
     yuzora_lib::run()
 }

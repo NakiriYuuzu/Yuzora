@@ -1,22 +1,16 @@
-# CODING AGENTS: READ THIS FIRST
+# DESIGN HANDOFF: READ THIS FIRST
 
-This is a **handoff bundle** from Claude Design (claude.ai/design).
+This directory contains HTML/CSS/JS prototypes exported from a design tool. They are visual references, not production architecture or current product terminology.
 
-A user mocked up designs in HTML/CSS/JS using an AI design tool, then exported this bundle so a coding agent can implement the designs for real.
+## Primary prototype
 
-## What you should do — IMPORTANT
+Read [`project/Yuuzu Workbench.dc.html`](project/Yuuzu%20Workbench.dc.html) in full and follow its local imports before implementing visual changes. Match its dimensions, tokens and layout where they still agree with the production app.
 
-**Read `yuuzu-ide-native-workbench/project/Yuuzu Workbench.dc.html` in full.** The user had this file open when they triggered the handoff, so it's almost certainly the primary design they want built. Read it top to bottom — don't skim. Then **follow its imports**: open every file it pulls in (shared components, CSS, scripts) so you understand how the pieces fit together before you start implementing.
+The production source and current ADE × HERDR behavior are authoritative whenever this prototype differs. In particular, the Workspace rail projects HERDR Spaces, the ADE sidebar contains named Sessions plus Attention and Agents, and HERDR terminal pages own recursive BSP panes.
 
-**If anything is ambiguous, ask the user to confirm before you start implementing.** It's much cheaper to clarify scope up front than to build the wrong thing.
+## Working rules
 
-## About the design files
-
-The design medium is **HTML/CSS/JS** — these are prototypes, not production code. Your job is to **recreate them pixel-perfectly** in whatever technology makes sense for the target codebase (React, Vue, native, whatever fits). Match the visual output; don't copy the prototype's internal structure unless it happens to fit.
-
-**Don't render these files in a browser or take screenshots unless the user asks you to.** Everything you need — dimensions, colors, layout rules — is spelled out in the source. Read the HTML and CSS directly; a screenshot won't tell you anything they don't.
-
-## Bundle contents
-
-- `yuuzu-ide-native-workbench/README.md` — this file
-- `yuuzu-ide-native-workbench/project/` — the `Yuuzu-IDE Native Workbench` project files (HTML prototypes, assets, components)
+- Recreate the visual result in the target stack; do not copy prototype internals blindly.
+- Check `src/styles.css` and current React components before adopting tokens or UI structure.
+- Do not infer current runtime behavior from this handoff.
+- Render or capture the prototype only when visual comparison is explicitly needed.

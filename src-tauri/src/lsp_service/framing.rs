@@ -4,7 +4,7 @@
 // (`frame` / `parse_frames`) and command resolution (`which`). Heavily unit
 // tested here; the manager consumes them via `super`.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // Upper bound on a single *declared* JSON-RPC frame body. Real LSP messages are far
 // smaller (a large completion/diagnostics payload is a few MB at most); 64 MB leaves
@@ -105,16 +105,52 @@ fn content_length(header: &[u8]) -> Option<usize> {
     None
 }
 
-/// Resolve a command to an absolute path. Spike trap #1: never spawn a relative
-/// name. Search the ~/.yuzora/servers/ bin dirs (T14 one-click install landing
-/// spots) first, then PATH.
+/// Resolve a managed server command to an absolute path. Spike trap #1: never
+/// spawn a relative name. Search the ~/.yuzora/servers/ bin dirs first, then
+/// only absolute trusted PATH entries (no `.` / `..` / workspace-relative).
 pub fn which(command: &str) -> Option<String> {
+    if !is_safe_command_name(command) {
+        return None;
+    }
     if let Some(p) = resolve_in_dirs(command, &server_bin_dirs()) {
         return Some(p);
     }
-    let path = std::env::var_os("PATH")?;
-    let path_dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
-    resolve_in_dirs(command, &path_dirs)
+    resolve_in_dirs(command, &trusted_path_dirs())
+}
+
+/// Resolve npm/python launchers from the app-process PATH only. Never search
+/// the managed servers prefix (package-shipped shims) or relative PATH entries.
+pub fn which_toolchain(command: &str) -> Option<String> {
+    if !is_safe_command_name(command) {
+        return None;
+    }
+    resolve_in_dirs(command, &trusted_path_dirs())
+}
+
+fn is_safe_command_name(command: &str) -> bool {
+    let path = Path::new(command);
+    let mut parts = path.components();
+    matches!(parts.next(), Some(Component::Normal(_))) && parts.next().is_none()
+}
+
+pub fn is_trusted_path_entry(path: &Path) -> bool {
+    path.is_absolute()
+        && path
+            .components()
+            .all(|c| !matches!(c, Component::CurDir | Component::ParentDir))
+}
+
+fn trusted_path_dirs() -> Vec<PathBuf> {
+    trusted_path_dirs_from(std::env::var_os("PATH").as_deref())
+}
+
+fn trusted_path_dirs_from(path: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    std::env::split_paths(path)
+        .filter(|dir| is_trusted_path_entry(dir))
+        .collect()
 }
 
 /// First `dir/<candidate>` that is an executable file, as an absolute string.
@@ -171,11 +207,20 @@ fn server_bin_dirs_from(base: &Path) -> Vec<PathBuf> {
     } else {
         base.join("pyenv").join("bin")
     };
-    vec![
-        base.to_path_buf(),
-        base.join("npm").join("node_modules").join(".bin"),
-        pyenv_bin,
-    ]
+    let mut dirs = vec![base.to_path_buf()];
+    for server_id in ["vtsls", "typescript-language-server", "pyright"] {
+        dirs.push(
+            base.join("npm")
+                .join(server_id)
+                .join("node_modules")
+                .join(".bin"),
+        );
+    }
+    // Legacy shared prefix from pre-catalog installs. Launch still requires
+    // provenance, so an unverified binary here cannot start.
+    dirs.push(base.join("npm").join("node_modules").join(".bin"));
+    dirs.push(pyenv_bin);
+    dirs
 }
 
 #[cfg(unix)]
@@ -350,16 +395,30 @@ mod tests {
         let base = tmp.path().join(".yuzora").join("servers");
         let dirs = server_bin_dirs_from(&base);
 
-        // T14 landing spots in resolution order: servers root > npm private-prefix
-        // bin > pylsp venv bin.
+        assert_eq!(dirs[0], base);
         assert_eq!(
-            dirs,
-            vec![
-                base.clone(),
-                base.join("npm").join("node_modules").join(".bin"),
-                base.join("pyenv").join("bin"),
-            ]
+            dirs[1],
+            base.join("npm")
+                .join("vtsls")
+                .join("node_modules")
+                .join(".bin")
         );
+        assert_eq!(
+            dirs[2],
+            base.join("npm")
+                .join("typescript-language-server")
+                .join("node_modules")
+                .join(".bin")
+        );
+        assert_eq!(
+            dirs[3],
+            base.join("npm")
+                .join("pyright")
+                .join("node_modules")
+                .join(".bin")
+        );
+        assert_eq!(dirs[4], base.join("npm").join("node_modules").join(".bin"));
+        assert_eq!(dirs[5], base.join("pyenv").join("bin"));
 
         let make_exec = |dir: &Path| {
             std::fs::create_dir_all(dir).unwrap();
@@ -408,6 +467,27 @@ mod tests {
         // The live wrapper picks the current platform's shape.
         #[cfg(unix)]
         assert_eq!(candidate_names("cat"), vec!["cat".to_string()]);
+    }
+
+    #[test]
+    fn trusted_path_dirs_skip_relative_and_dot_entries() {
+        assert!(!is_trusted_path_entry(Path::new(".")));
+        assert!(!is_trusted_path_entry(Path::new("../bin")));
+        assert!(!is_trusted_path_entry(Path::new("node_modules/.bin")));
+        assert!(!is_safe_command_name("../npm"));
+        assert!(!is_safe_command_name("./npm"));
+        assert!(!is_safe_command_name("/usr/bin/npm"));
+        assert!(is_safe_command_name("npm"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trusted_path_dirs_keep_only_absolute_unix_entries() {
+        let unix = trusted_path_dirs_from(Some(std::ffi::OsStr::new(
+            "bin:./node_modules/.bin:../shadow:/usr/bin:/bin",
+        )));
+        assert_eq!(unix, vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
+        assert!(is_trusted_path_entry(Path::new("/usr/local/bin")));
     }
 
     #[cfg(windows)]

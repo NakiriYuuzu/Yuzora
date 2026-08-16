@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
 import {
+  BotIcon,
   ListTreeIcon,
   MonitorPlayIcon,
   SearchIcon,
@@ -18,15 +19,21 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  dialogMinSize,
 } from "@/components/ui/dialog"
 import { MODES, type Mode } from "@/app/modes"
 import { useOverlayPresence } from "@/state/overlayStore"
+import { useHerdrStore } from "@/state/herdrStore"
+import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
+import { showActionError } from "@/lib/actionFeedback"
+import i18n from "@/lib/i18n"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { SymbolPicker } from "@/workbench/SymbolPicker"
@@ -64,9 +71,21 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   const [pickerMode, setPickerMode] = useState<"document" | "workspace">("document")
   const [search, setSearch] = useState("")
   const [caseSensitive, setCaseSensitive] = useState(false)
+  const setPaletteOpen = useCallback((nextOpen: boolean) => {
+    if (!nextOpen) setSearch("")
+    onOpenChange(nextOpen)
+  }, [onOpenChange])
   const toggleTerminal = useUiStore((s) => s.toggleTerminal)
   const togglePreviewTab = useWorkspaceStore((s) => s.togglePreviewTab)
   const requestReveal = useWorkspaceStore((s) => s.requestReveal)
+  const herdrSnapshot = useHerdrStore((s) => s.snapshot)
+  const selectedHerdrSpaceId = useHerdrStore((s) => s.selectedSpaceId)
+  const canCreateHerdrTerminal = useHerdrStore((s) => s.canCreateTerminal())
+  const canFocusHerdrTab = useHerdrStore((s) => s.canFocusSelectedTab())
+  const createHerdrTerminal = useHerdrStore((s) => s.createTerminalInSelectedSpace)
+  const activateHerdrTab = useHerdrStore((s) => s.activateTab)
+  const herdrTabs =
+    herdrSnapshot?.tabs.filter((tab) => tab.workspaceId === selectedHerdrSpaceId) ?? []
 
   const isCommandMode = search.startsWith(">")
   const commandFilter = (isCommandMode ? search.slice(1) : search).trim().toLowerCase()
@@ -89,7 +108,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       icon: m.icon,
       onSelect: () => {
         onSelectMode(m.id)
-        onOpenChange(false)
+        setPaletteOpen(false)
       },
       className: ITEM_CLASS,
     })),
@@ -98,7 +117,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       label: t("commandPalette.goToSymbol"),
       icon: ListTreeIcon,
       onSelect: () => {
-        onOpenChange(false)
+        setPaletteOpen(false)
         setPickerMode("document")
         setPickerOpen(true)
       },
@@ -109,7 +128,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       label: t("commandPalette.workspaceSymbols"),
       icon: WaypointsIcon,
       onSelect: () => {
-        onOpenChange(false)
+        setPaletteOpen(false)
         setPickerMode("workspace")
         setPickerOpen(true)
       },
@@ -121,7 +140,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       icon: SquareTerminalIcon,
       onSelect: () => {
         toggleTerminal()
-        onOpenChange(false)
+        setPaletteOpen(false)
       },
       className: ITEM_CLASS,
     },
@@ -131,17 +150,59 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       icon: MonitorPlayIcon,
       onSelect: () => {
         togglePreviewTab()
-        onOpenChange(false)
+        setPaletteOpen(false)
       },
       className: ITEM_CLASS,
     },
+    ...(canCreateHerdrTerminal && selectedHerdrSpaceId
+      ? [{
+          value: t("commandPalette.newHerdrTab"),
+          label: t("commandPalette.newHerdrTab"),
+          icon: BotIcon,
+          onSelect: () => {
+            setPaletteOpen(false)
+            void createHerdrTerminal().then(async (created) => {
+              if (!created) return
+              onSelectMode("ade")
+              try {
+                await openCreatedHerdrTabAndRequestName({
+                  sessionName: created.herdrSessionId,
+                  workspaceId: created.workspaceId,
+                  terminalId: created.terminalId,
+                  title: created.title,
+                  paneId: created.paneId,
+                  tabId: created.tabId
+                })
+              } catch (error) {
+                await showActionError(
+                  i18n.t("contextMenu.cmHerdrRenameTab", { ns: "menus" }),
+                  error
+                )
+              }
+            })
+          },
+          className: ITEM_CLASS,
+        }]
+      : []),
+    ...(canFocusHerdrTab
+      ? herdrTabs.map((tab) => ({
+          value: `${t("commandPalette.openHerdrTab", { name: tab.label })} ${tab.id}`,
+          label: t("commandPalette.openHerdrTab", { name: tab.label }),
+          icon: BotIcon,
+          onSelect: () => {
+            setPaletteOpen(false)
+            void activateHerdrTab(tab)
+          },
+          className: ITEM_CLASS,
+        }))
+      : []),
     {
       value: t("commandPalette.settings"),
       label: t("commandPalette.settings"),
       icon: SettingsIcon,
       onSelect: () => {
         onOpenSettings()
-        onOpenChange(false)
+        setPaletteOpen(false)
       },
       className: "h-[42px] gap-3",
     },
@@ -158,31 +219,28 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
           setPickerOpen(false)
           return
         }
-        onOpenChange(!open)
+        setPaletteOpen(!open)
       }
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [open, onOpenChange, pickerOpen])
-
-  // Start every open from a clean query; closing also lets the search hook cancel.
-  useEffect(() => {
-    if (!open) setSearch("")
-  }, [open])
+  }, [open, pickerOpen, setPaletteOpen])
 
   return (
     <>
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={setPaletteOpen}>
       <DialogHeader className="sr-only">
         <DialogTitle>{t("commandPalette.title")}</DialogTitle>
         <DialogDescription>{t("commandPalette.searchPlaceholder")}</DialogDescription>
       </DialogHeader>
       <DialogContent
+        resizeId="command-palette"
+        minSize={dialogMinSize(420, 280)}
         showCloseButton={false}
-        className="yz-diffin top-[15vh] w-[620px] max-w-[88vw] translate-y-0 gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 backdrop-blur-[20px] backdrop-saturate-[1.5] sm:max-w-[88vw]"
+        className="yz-diffin flex min-h-0 flex-col gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 backdrop-blur-[20px] backdrop-saturate-[1.5]"
       >
-        <Command shouldFilter={false} className="rounded-none! bg-transparent p-0">
-          <div className="flex items-center gap-3 border-b border-(--line-1) px-[21px] py-[17px]">
+        <Command shouldFilter={false} className="flex min-h-0 flex-1 flex-col rounded-none! bg-transparent p-0">
+          <div className="flex shrink-0 items-center gap-3 border-b border-(--line-1) px-[21px] py-[17px]">
             <SearchIcon className="size-5 shrink-0 text-(--ink-3)" aria-hidden="true" />
             <CommandPrimitive.Input
               autoFocus
@@ -196,7 +254,8 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
             </kbd>
           </div>
 
-          <CommandList className="yzs max-h-[398px] p-[8px]">
+          <ScrollArea className="min-h-0 flex-1">
+          <CommandList className="p-[8px]">
             {!showWorkspace && (
               <CommandEmpty className="py-6 text-center text-[13px] text-(--ink-3)">
                 {t("commandPalette.noCommandsMatch")}
@@ -234,13 +293,14 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
                 onToggleCaseSensitive={() => setCaseSensitive((v) => !v)}
                 onReveal={(path, line) => {
                   requestReveal(path, line)
-                  onOpenChange(false)
+                  setPaletteOpen(false)
                 }}
               />
             )}
           </CommandList>
+          </ScrollArea>
 
-          <div className="flex items-center gap-[16px] border-t border-(--line-1) bg-(--yz-hover) px-[18px] py-[10px] text-[11px] text-(--ink-3)">
+<div className="flex shrink-0 items-center gap-[16px] border-t border-(--line-1) bg-(--yz-hover) px-[18px] py-[10px] text-[11px] text-(--ink-3)">
             <span className="flex items-center gap-[5px]">
               <kbd className="rounded-[4px] bg-(--yz-active) px-[6px] py-px font-mono">↑↓</kbd>
               {t("commandPalette.navigateHint")}

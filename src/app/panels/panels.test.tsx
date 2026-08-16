@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
 import { AppShell } from "@/app/AppShell"
-import { AgentZonePanel } from "@/app/panels/AgentZonePanel"
 import { GitPanel } from "@/app/panels/GitPanel"
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import { GitNavContent } from "@/app/workbench/GitNavContent"
@@ -15,6 +14,7 @@ import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const ipcMocks = vi.hoisted(() => ({
+  requestDevServerAuthorization: vi.fn(),
   devServerDetect: vi.fn(),
   devServerStart: vi.fn(),
   devServerStop: vi.fn(),
@@ -24,6 +24,12 @@ const logMocks = vi.hoisted(() => ({
   logQueryCalls: [] as Array<Record<string, unknown>>,
   queryResult: [] as unknown[],
   sourcesResult: [] as string[],
+}))
+
+vi.mock("@/state/workspaceTrustStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/state/workspaceTrustStore")>()),
+  requestDevServerAuthorization: (...args: unknown[]) =>
+    ipcMocks.requestDevServerAuthorization(...args),
 }))
 
 vi.mock("@/lib/ipc", async (importOriginal) => ({
@@ -86,6 +92,7 @@ beforeEach(() => {
   logMocks.logQueryCalls = []
   logMocks.queryResult = []
   logMocks.sourcesResult = ["dev_server", "lsp"]
+  ipcMocks.requestDevServerAuthorization.mockResolvedValue("challenge-1")
 })
 
 afterEach(() => {
@@ -146,11 +153,19 @@ function PreviewWithSettings() {
 
 describe("Git/Database/SSH/Agent mode entry states", () => {
   it("shows the git nav and enables all three git view tabs", () => {
+    useGitStore.setState({
+      environment: { status: "ready", root: "/w", version: "2.50.1" },
+      status: {
+        branch: "main", headOid: "0".repeat(40), detached: false, upstream: null,
+        ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [],
+        inProgress: null
+      }
+    })
     render(<AppShell />)
     switchMode("Git")
 
     const nav = screen.getByTestId("nav-mode-content-git")
-    expect(within(nav).getByText("No repository status")).toBeInTheDocument()
+    expect(within(nav).getByText("Working tree clean")).toBeInTheDocument()
 
     // Log (default), Local changes and Console are all live now.
     const gitViews = screen.getByRole("tablist", { name: "Git views" })
@@ -193,14 +208,15 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
     expect(screen.queryByText("No active session")).not.toBeInTheDocument()
   })
 
-  it("shows the agent nav and main entry states", () => {
+  it("shows the ADE nav entry state (Herdr Spaces/Agents)", () => {
     render(<AppShell />)
-    switchMode("AgentZone")
+    switchMode("ADE")
 
-    const nav = screen.getByTestId("nav-mode-content-agent")
-    expect(within(nav).getByText("No sessions yet", { selector: "p" })).toBeInTheDocument()
-    expect(within(nav).getByRole("button", { name: "New session" })).toBeInTheDocument()
-    expect(screen.getByText("ACP sessions will be managed here")).toBeInTheDocument()
+    const nav = screen.getByTestId("nav-mode-content-ade")
+    // Default herdrStore is idle/connecting until HerdrBridge bootstraps.
+    expect(
+      within(nav).getByText(/Connecting to Herdr|No Herdr agents yet|Herdr unavailable/)
+    ).toBeInTheDocument()
   })
 })
 
@@ -248,12 +264,12 @@ describe("Settings dialog content", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: /^Git/ }))
     expect(within(dialog).getByText(/2\.50\.1/)).toBeInTheDocument()
-    expect(within(dialog).getByRole("button", { name: "唯讀檢查" })).toHaveAttribute(
+    expect(within(dialog).getByRole("button", { name: "Read-only check" })).toHaveAttribute(
       "aria-pressed",
       "true"
     )
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "自動 fetch" }))
+    fireEvent.click(within(dialog).getByRole("button", { name: "Auto fetch" }))
     expect(useGitStore.getState().remoteCheck.mode).toBe("autofetch")
   })
 
@@ -264,9 +280,9 @@ describe("Settings dialog content", () => {
     const dialog = await screen.findByRole("dialog")
     fireEvent.click(within(dialog).getByRole("button", { name: /^Git/ }))
 
-    expect(within(dialog).getByRole("group", { name: "遠端檢查" })).toBeInTheDocument()
+    expect(within(dialog).getByRole("group", { name: "Remote checks" })).toBeInTheDocument()
     expect(
-      within(dialog).queryByRole("radiogroup", { name: "遠端檢查" })
+      within(dialog).queryByRole("radiogroup", { name: "Remote checks" })
     ).not.toBeInTheDocument()
   })
 
@@ -295,15 +311,15 @@ describe("Git guided setup", () => {
   it("git panel shows guided setup when git missing", () => {
     useGitStore.setState({ environment: { status: "missing", reason: "git not found" } })
     render(<GitPanel />)
-    expect(screen.getByText("未偵測到 Git")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "重新偵測" })).toBeInTheDocument()
+    expect(screen.getByText("Git not detected")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Re-detect" })).toBeInTheDocument()
   })
 
   it("git nav shows guided setup when git missing", () => {
     useGitStore.setState({ environment: { status: "missing", reason: "git not found" } })
     render(<GitNavContent />)
-    expect(screen.getByText("未偵測到 Git")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "重新偵測" })).toBeInTheDocument()
+    expect(screen.getByText("Git not detected")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Re-detect" })).toBeInTheDocument()
   })
 })
 
@@ -354,7 +370,8 @@ describe("PreviewPanel dev server flow", () => {
         "/workspace",
         "bun run dev",
         5173,
-        expect.any(Function)
+        expect.any(Function),
+        "challenge-1"
       )
     )
     expect((screen.getByLabelText("Preview URL") as HTMLInputElement).value).toBe(
@@ -391,7 +408,8 @@ describe("PreviewPanel dev server flow", () => {
         "/workspace",
         "bun run preview:custom",
         6000,
-        expect.any(Function)
+        expect.any(Function),
+        "challenge-1"
       )
     )
     expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe(
@@ -511,7 +529,8 @@ describe("PreviewPanel dev server flow", () => {
         "/workspace",
         "bun run dev",
         5173,
-        expect.any(Function)
+        expect.any(Function),
+        "challenge-1"
       )
     )
   })
@@ -605,7 +624,8 @@ describe("PreviewPanel dev server flow", () => {
         "/workspace",
         "bun run dev",
         5173,
-        expect.any(Function)
+        expect.any(Function),
+        "challenge-1"
       )
     )
     expect(
@@ -667,7 +687,8 @@ describe("PreviewPanel dev server flow", () => {
         "/workspace",
         "bun run dev",
         6000,
-        expect.any(Function)
+        expect.any(Function),
+        "challenge-1"
       )
     )
   })
@@ -771,14 +792,16 @@ describe("PreviewPanel dev server flow", () => {
 })
 
 it("右鍵 Git 面板開啟 git 選單", () => {
+  useGitStore.setState({
+    environment: { status: "ready", root: "/w", version: "2.50.1" },
+    status: {
+      branch: "main", headOid: "0".repeat(40), detached: false, upstream: null,
+      ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [],
+      inProgress: null
+    }
+  })
   render(<GitPanel />)
   // Default tab is Log; its details panel always shows this prompt.
   fireEvent.contextMenu(screen.getByText("Select a commit to view details"))
   expect(useContextMenuStore.getState().request?.kind).toBe("git")
-})
-
-it("右鍵 Agent 面板不開啟 agent 選單", () => {
-  render(<AgentZonePanel />)
-  fireEvent.contextMenu(screen.getByText("ACP sessions will be managed here"))
-  expect(useContextMenuStore.getState().request).toBeNull()
 })

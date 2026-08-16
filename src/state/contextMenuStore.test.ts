@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
+import { invoke } from "@tauri-apps/api/core"
 import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import type { MouseEvent as ReactMouseEvent } from "react"
@@ -12,7 +13,7 @@ import {
 } from "@/state/contextMenuStore"
 import { commandFor } from "@/app/workbench/contextMenuDefs"
 import type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contextMenuModel"
-import { useAgentStore, type SessionState } from "@/state/agentStore"
+import { useAppDialogStore } from "@/state/appDialogStore"
 import { useDbStore } from "@/state/dbStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { useFileTreeStore } from "@/state/fileTreeStore"
@@ -22,8 +23,11 @@ import { useSftpStore } from "@/state/sftpStore"
 import { useSshStore } from "@/state/sshStore"
 import { useSvgPreviewStore } from "@/state/svgPreviewStore"
 import { useTerminalStore, terminalInitialState } from "@/state/terminalStore"
+import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useUiStore, uiInitialState } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
+import * as documentRegistry from "@/editor/documentRegistry"
 import { registerView, unregisterView } from "@/editor/viewRegistry"
 import type { GitStatus } from "@/lib/types"
 
@@ -52,29 +56,9 @@ function makeStatus(over: Partial<GitStatus> = {}): GitStatus {
     }
 }
 
-function makeAgentSession(overrides: Partial<SessionState> = {}): SessionState {
-    return {
-        title: "Session",
-        agentLabel: "Agent",
-        model: null,
-        tone: "idle",
-        transcript: [],
-        availableCommands: [],
-        stopReason: null,
-        stopBadge: null,
-        error: null,
-        queueDepth: null,
-        running: null,
-        pendingTurn: false,
-        metadataTitle: false,
-        cwd: "/w",
-        ...overrides
-    }
-}
 
-const originalAgentCancel = useAgentStore.getState().cancel
 
-type LegacyKind = Exclude<ContextMenuKind, "agentSession" | "gitChange" | "preview">
+type LegacyKind = Exclude<ContextMenuKind, "gitChange" | "preview">
 interface LegacyPayload {
     path?: string
     groupIndex?: number
@@ -136,6 +120,12 @@ function runLegacyContextMenuAction(kind: LegacyKind, actionId: string, payload:
     return executeLegacyContextMenuAction(legacyRequest(kind, payload), actionId)
 }
 
+const originalAppDialogMethods = {
+    confirm: useAppDialogStore.getState().confirm,
+    message: useAppDialogStore.getState().message,
+}
+const originalTextInputRequest = useTextInputDialogStore.getState().request
+
 beforeEach(() => {
     clearMocks()
     mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
@@ -152,19 +142,32 @@ beforeEach(() => {
     })
     useGitStore.setState({ status: null, environment: null, busy: null, lastError: null, consoleLog: [] })
     useTerminalStore.setState(terminalInitialState)
-    useAgentStore.setState({
-        sessions: new Map(),
-        pendingPermissions: new Map(),
-        activeSessionId: null,
-        connectionState: "idle",
-        connectionError: null,
-        connection: null,
-        authRequired: null,
-        pendingNewSession: false,
-        renamingSessionId: null,
-        confirmRemoveRequest: null,
-        cancel: originalAgentCancel
+    // Keep the broad legacy context-menu assertions focused on command effects
+    // while routing their old prompt/plugin stubs through the new app-owned
+    // dialog seams. Dedicated host tests verify the actual modal UI.
+    useAppDialogStore.setState({
+        pending: null,
+        confirm: async (request) =>
+            (await invoke<string>("plugin:dialog|message", {
+                title: request.title,
+                message: request.description,
+            })) === "Ok",
+        message: async (request) => {
+            await invoke("plugin:dialog|message", {
+                title: request.title,
+                message: request.description,
+            })
+        },
     })
+    useTextInputDialogStore.setState({
+        pending: null,
+        request: async (request) => window.prompt(request.title, request.initialValue ?? ""),
+    })
+})
+
+afterEach(() => {
+    useAppDialogStore.setState({ pending: null, ...originalAppDialogMethods })
+    useTextInputDialogStore.setState({ pending: null, request: originalTextInputRequest })
 })
 
 describe("contextMenuStore", () => {
@@ -374,137 +377,6 @@ describe("contextMenuStore", () => {
     })
 })
 
-describe("agentSession command preflight", () => {
-    it("非 pending 的 clicked session 保持 menu 開啟、顯示原因且不 fallback 到 pending active session", async () => {
-        const cancel = vi.fn(async () => true)
-        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-        useAgentStore.setState({
-            activeSessionId: "active",
-            cancel,
-            sessions: new Map([
-                ["clicked", makeAgentSession({ pendingTurn: false })],
-                ["active", makeAgentSession({ pendingTurn: true })]
-            ])
-        })
-        const command = commandFor(request, "cmCancelResponse")
-        if (!command) throw new Error("missing cmCancelResponse")
-        expect(command.availability(request)).toEqual({
-            visible: true,
-            enabled: false,
-            disabledReasonKey: "contextMenu.disabled.noPendingResponse"
-        })
-        useContextMenuStore.getState().open(request, 10, 20)
-
-        expect(await runContextMenuAction(request, command)).toBe("cancelled")
-        expect(useContextMenuStore.getState().request).toBe(request)
-        expect(cancel).not.toHaveBeenCalled()
-    })
-
-    it("pending clicked session 只 dispatch clicked sessionId，不使用 activeSessionId", async () => {
-        const cancel = vi.fn(async () => true)
-        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-        useAgentStore.setState({
-            activeSessionId: "active",
-            cancel,
-            sessions: new Map([
-                ["clicked", makeAgentSession({ pendingTurn: true })],
-                ["active", makeAgentSession({ pendingTurn: true })]
-            ])
-        })
-        const command = commandFor(request, "cmCancelResponse")
-        if (!command) throw new Error("missing cmCancelResponse")
-        useContextMenuStore.getState().open(request, 10, 20)
-
-        expect(await runContextMenuAction(request, command)).toBe("completed")
-        expect(cancel).toHaveBeenCalledTimes(1)
-        expect(cancel).toHaveBeenCalledWith("clicked")
-        expect(useAgentStore.getState().activeSessionId).toBe("active")
-    })
-
-    it("Cancel Response failure reaches actionFeedback and preserves the clicked pending turn", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
-            return cmd === "plugin:dialog|message" ? "Ok" : null
-        })
-        const cancel = vi.fn(async () => {
-            throw new Error("cancel failed")
-        })
-        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-        useAgentStore.setState({
-            activeSessionId: "other",
-            connection: { cancel } as never,
-            sessions: new Map([
-                ["clicked", makeAgentSession({ pendingTurn: true, running: true, tone: "run" })],
-                ["other", makeAgentSession({ pendingTurn: true })]
-            ])
-        })
-        const command = commandFor(request, "cmCancelResponse")
-        if (!command) throw new Error("missing cmCancelResponse")
-        useContextMenuStore.getState().open(request, 10, 20)
-
-        expect(await runContextMenuAction(request, command)).toBe("error")
-        expect(cancel).toHaveBeenCalledWith("clicked")
-        expect(useAgentStore.getState().sessions.get("clicked")).toMatchObject({
-            pendingTurn: true,
-            running: true,
-            tone: "run"
-        })
-        expect(useAgentStore.getState().sessions.get("other")?.pendingTurn).toBe(true)
-        expect(calls).toContain("plugin:dialog|message")
-        expect(calls).not.toContain("log_event")
-    })
-
-    it("Remove Session confirms first, then keeps a pending session when cancel fails", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
-            return cmd === "plugin:dialog|message" ? "Ok" : null
-        })
-        const cancel = vi.fn(async () => {
-            throw new Error("cancel refused")
-        })
-        const dropSession = vi.fn()
-        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-        useAgentStore.setState({
-            connection: { cancel, dropSession } as never,
-            sessions: new Map([["clicked", makeAgentSession({ pendingTurn: true, running: true })]])
-        })
-        const command = commandFor(request, "cmRemoveSession")
-        if (!command) throw new Error("missing cmRemoveSession")
-        useContextMenuStore.getState().open(request, 10, 20)
-
-        const removing = runContextMenuAction(request, command)
-        useAgentStore.getState().respondRemoveSessionConfirm(true)
-
-        expect(await removing).toBe("error")
-        expect(useAgentStore.getState().sessions.has("clicked")).toBe(true)
-        expect(dropSession).not.toHaveBeenCalled()
-        expect(calls).toContain("plugin:dialog|message")
-        expect(calls).not.toContain("log_event")
-    })
-
-    it("Copy Working Directory clipboard failure 交給 actionFeedback 顯示，不冒充成功", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
-            if (cmd === "plugin:clipboard-manager|write_text") throw new Error("clipboard denied")
-            return cmd === "plugin:dialog|message" ? "Ok" : null
-        })
-        const request: ContextMenuRequest = { kind: "agentSession", sessionId: "clicked" }
-        useAgentStore.setState({
-            sessions: new Map([["clicked", makeAgentSession({ cwd: "/clicked/project" })]])
-        })
-        const command = commandFor(request, "cmCopyWorkingDirectory")
-        if (!command) throw new Error("missing cmCopyWorkingDirectory")
-        useContextMenuStore.getState().open(request, 10, 20)
-
-        expect(await runContextMenuAction(request, command)).toBe("error")
-        expect(calls).toContain("plugin:clipboard-manager|write_text")
-        expect(calls).toContain("plugin:dialog|message")
-        expect(calls).not.toContain("log_event")
-    })
-})
 
 // PROB-5 前波：純前端可完成的 action 真的接到目標 API（而非只 close+log）。
 describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
@@ -525,6 +397,33 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         expect(useUiStore.getState().paletteOpenRequest).toBe(before + 1)
         runLegacyContextMenuAction("editor", "cmCmdPalette", {})
         expect(useUiStore.getState().paletteOpenRequest).toBe(before + 2)
+    })
+
+    it("tab: generic cmCloseTab cannot bypass Herdr runtime tab.close", async () => {
+        const herdrPath = "yuzora://herdr/default/term-1"
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: herdrPath,
+                tabs: [{
+                    path: herdrPath,
+                    name: "Agent",
+                    dirty: false,
+                    externallyModified: false,
+                    kind: "herdr-terminal",
+                    herdrSessionId: "default",
+                    terminalId: "term-1",
+                    herdrTabId: "tab-1"
+                }]
+            }]
+        })
+
+        expect(await runLegacyContextMenuAction("tab", "cmCloseTab", {
+            path: herdrPath,
+            groupIndex: 0
+        })).toBe("cancelled")
+        expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(1)
     })
 
     it("tab: cmCloseTab 直接關閉非 dirty tab（不彈 confirm）", async () => {
@@ -637,6 +536,72 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
     })
 
+    it("tab: cmCloseOthers 保留 Herdr pages，避免繞過 runtime tab.close", async () => {
+        const herdrPath = "yuzora://herdr/default/term-1"
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: "/w/file.ts",
+                tabs: [
+                    { path: "/w/file.ts", name: "file.ts", dirty: false, externallyModified: false },
+                    {
+                        path: herdrPath,
+                        name: "Agent",
+                        dirty: false,
+                        externallyModified: false,
+                        kind: "herdr-terminal",
+                        herdrSessionId: "default",
+                        terminalId: "term-1",
+                        herdrTabId: "tab-1"
+                    },
+                    { path: "/w/other.ts", name: "other.ts", dirty: false, externallyModified: false }
+                ]
+            }]
+        })
+
+        await runLegacyContextMenuAction("tab", "cmCloseOthers", {
+            path: "/w/file.ts",
+            groupIndex: 0
+        })
+
+        expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
+            "/w/file.ts",
+            herdrPath
+        ])
+    })
+
+    it("tab: cmCloseAll 只關本機 tabs，保留需 destructive runtime close 的 Herdr pages", async () => {
+        const herdrPath = "yuzora://herdr/default/term-1"
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: "/w/file.ts",
+                tabs: [
+                    { path: "/w/file.ts", name: "file.ts", dirty: false, externallyModified: false },
+                    {
+                        path: herdrPath,
+                        name: "Agent",
+                        dirty: false,
+                        externallyModified: false,
+                        kind: "herdr-terminal",
+                        herdrSessionId: "default",
+                        terminalId: "term-1",
+                        herdrTabId: "tab-1"
+                    }
+                ]
+            }]
+        })
+
+        await runLegacyContextMenuAction("tab", "cmCloseAll", { groupIndex: 0 })
+
+        expect(useWorkspaceStore.getState().groups[0]).toMatchObject({
+            tabs: [expect.objectContaining({ path: herdrPath, kind: "herdr-terminal" })],
+            activePath: herdrPath
+        })
+    })
+
     it("tab: cmCloseAll 清空該 group 的所有 tabs", async () => {
         useWorkspaceStore.setState({
             workspacePath: "/w",
@@ -682,6 +647,26 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         expect(
             (calls.find((c) => c.cmd === "plugin:clipboard-manager|write_text")?.args as { text: string }).text
         ).toBe("/other/a.ts")
+    })
+
+    it("tab/file: cmCopyRel 對 Windows drive / verbatim workspace 輸出 Git 風格相對路徑", async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args })
+            return cmd === "log_event" ? null : undefined
+        })
+        const workspace = String.raw`\\?\C:\Work\Repo`
+        useWorkspaceStore.setState({ workspacePath: workspace })
+
+        runLegacyContextMenuAction("file", "cmCopyRel", {
+            path: String.raw`C:\Work\Repo\src\a.ts`
+        })
+        await vi.waitFor(() => {
+            expect(calls.some((c) => c.cmd === "plugin:clipboard-manager|write_text")).toBe(true)
+        })
+        expect(
+            (calls.find((c) => c.cmd === "plugin:clipboard-manager|write_text")?.args as { text: string }).text
+        ).toBe("src/a.ts")
     })
 
     it("tab/file: split action 執行 atomic move/open，不留下空 group", async () => {
@@ -898,7 +883,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         mockIPC((cmd, args) => {
             calls.push({ cmd, args })
-            if (cmd === "git_branches") return { local: [], remote: [] }
+            if (cmd === "git_branches") return { local: [], remote: [], tags: [] }
             return cmd === "log_event" ? null : null
         })
         useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50" } })
@@ -912,7 +897,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         mockIPC((cmd, args) => {
             calls.push({ cmd, args })
-            if (cmd === "git_branches") return { local: [], remote: [] }
+            if (cmd === "git_branches") return { local: [], remote: [], tags: [] }
             return cmd === "log_event" ? null : null
         })
         useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50" } })
@@ -926,7 +911,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         mockIPC((cmd, args) => {
             calls.push({ cmd, args })
-            if (cmd === "git_branches") return { local: [], remote: [] }
+            if (cmd === "git_branches") return { local: [], remote: [], tags: [] }
             return cmd === "log_event" ? null : null
         })
         useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50" } })
@@ -1354,13 +1339,18 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         })
     })
 
-    // P3: serve the html file's own dir, then open the served URL in the
-    // singleton preview tab (same dir reuses one port on the Rust side).
-    it("file: cmOpenInBrowser preview_serve 該檔目錄並在 preview 分頁開啟服務網址", async () => {
+    // P3: create a per-document static preview session, then open that isolated
+    // URL in the singleton preview tab.
+    it("file: cmOpenInBrowser preview_create 選取檔並在 preview 分頁開啟 session 網址", async () => {
         const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
         mockIPC((cmd, args) => {
             calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
-            if (cmd === "preview_serve") return 4599
+            if (cmd === "preview_create") {
+                return {
+                    token: "ab".repeat(32),
+                    url: "http://127.0.0.1:4599/abababababababababababababababababababababababababababababababab/index.html"
+                }
+            }
             return cmd === "log_event" ? null : undefined
         })
         useWorkspaceStore.setState({
@@ -1373,10 +1363,13 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
 
         await vi.waitFor(() =>
             expect(usePreviewStore.getState().navForWorkspace("/w").url).toBe(
-                "http://127.0.0.1:4599/index.html"
+                "http://127.0.0.1:4599/abababababababababababababababababababababababababababababababab/index.html"
             )
         )
-        expect(calls.find((c) => c.cmd === "preview_serve")?.args).toMatchObject({ dir: "/w/site" })
+        expect(calls.find((c) => c.cmd === "preview_create")?.args).toMatchObject({
+            path: "/w/site/index.html"
+        })
+        expect(usePreviewStore.getState().staticPreview?.token).toBe("ab".repeat(32))
         const g = useWorkspaceStore.getState().groups[0]
         expect(g.tabs.some((t) => t.kind === "preview")).toBe(true)
         expect(g.activePath).toBe("yuzora://preview")
@@ -1442,6 +1435,77 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
             ])
         })
         expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/outside.ts")
+    })
+
+    it("file: cmDelete Windows 資料夾 → 關閉 backslash / verbatim 後代 tab 並保留外部檔", async () => {
+        ipcCalls()
+        const workspace = String.raw`C:\Work\Repo`
+        const dir = String.raw`C:\Work\Repo\src`
+        const nested = String.raw`C:\Work\Repo\src\nested\a.ts`
+        const outside = String.raw`C:\Work\Repo\outside.ts`
+        const verbatimNested = String.raw`\\?\C:\Work\Repo\src\nested\a.ts`
+        useWorkspaceStore.setState({
+            workspacePath: workspace,
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                {
+                    activePath: nested,
+                    tabs: [
+                        { path: nested, name: "a.ts", dirty: false, externallyModified: false },
+                        { path: outside, name: "outside.ts", dirty: false, externallyModified: false }
+                    ]
+                },
+                {
+                    activePath: verbatimNested,
+                    tabs: [
+                        { path: verbatimNested, name: "a.ts", dirty: true, externallyModified: false }
+                    ]
+                }
+            ]
+        })
+        runLegacyContextMenuAction("file", "cmDelete", { path: dir, isDir: true })
+        await vi.waitFor(() => {
+            expect(useWorkspaceStore.getState().groups[0].tabs.map((t) => t.path)).toEqual([outside])
+            expect(useWorkspaceStore.getState().groups[1].tabs).toEqual([])
+        })
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe(outside)
+        expect(useWorkspaceStore.getState().groups[1].activePath).toBeNull()
+    })
+
+    it("file: cmRename Windows 資料夾 → 後代 tab 以 native 分隔符 re-point", async () => {
+        ipcCalls()
+        const workspace = String.raw`C:\Work\Repo`
+        const fromDir = String.raw`C:\Work\Repo\src`
+        const nested = String.raw`C:\Work\Repo\src\nested\a.ts`
+        useWorkspaceStore.setState({
+            workspacePath: workspace,
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                {
+                    activePath: nested,
+                    tabs: [
+                        { path: nested, name: "a.ts", dirty: true, externallyModified: false }
+                    ]
+                }
+            ]
+        })
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("lib")
+        runLegacyContextMenuAction("file", "cmRename", { path: fromDir, isDir: true })
+        await vi.waitFor(() => {
+            expect(
+                useWorkspaceStore.getState().groups[0].tabs.some(
+                    (t) => t.path === String.raw`C:\Work\Repo\lib\nested\a.ts`
+                )
+            ).toBe(true)
+        })
+        const g = useWorkspaceStore.getState().groups[0]
+        expect(g.tabs[0].path).toBe(String.raw`C:\Work\Repo\lib\nested\a.ts`)
+        expect(g.tabs[0].name).toBe("a.ts")
+        expect(g.tabs[0].dirty).toBe(true)
+        expect(g.activePath).toBe(String.raw`C:\Work\Repo\lib\nested\a.ts`)
+        promptSpy.mockRestore()
     })
 
     it("file: cmRename → 受影響 tab 的 path/name 改為新路徑（dirty 保留、不留 stale 舊 path）", async () => {
@@ -1699,5 +1763,196 @@ describe("runContextMenuAction — 檔案操作精準失效 (#59 T4b)", () => {
         expect(tree?.childrenByDir["/w/src"]).toBeUndefined()
         expect(tree?.childrenByDir["/w/src/nested"]).toBeUndefined()
         expect(tree?.expandedDirs.size).toBe(0)
+    })
+})
+
+describe("markdown preview context-menu linkage", () => {
+    const fileTab = (path: string, dirty = false) => ({
+        path,
+        name: path.split("/").at(-1) ?? path,
+        dirty,
+        externallyModified: false
+    })
+    const previewTab = (sourcePath: string) => ({
+        path: markdownPreviewPath(sourcePath),
+        name: "Preview",
+        dirty: false,
+        externallyModified: false,
+        kind: "markdown-preview" as const,
+        sourcePath
+    })
+
+    function ipcCalls() {
+        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+            if (cmd.startsWith("fs_")) return null
+            if (cmd === "plugin:dialog|message") return "Ok"
+            return cmd === "log_event" ? null : undefined
+        })
+        return calls
+    }
+
+    let dropSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+        dropSpy = vi.spyOn(documentRegistry, "dropDocument")
+    })
+
+    afterEach(() => {
+        dropSpy.mockRestore()
+    })
+
+    it("tab: cmCloseTab closes a markdown preview without dropDocument(pseudo)", async () => {
+        const preview = previewTab("/w/readme.md")
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [
+                { activePath: "/w/readme.md", tabs: [fileTab("/w/readme.md")] },
+                { activePath: preview.path, tabs: [preview] }
+            ]
+        })
+
+        expect(await runLegacyContextMenuAction("tab", "cmCloseTab", {
+            path: preview.path,
+            groupIndex: 1
+        })).toBe("completed")
+
+        expect(useWorkspaceStore.getState().groups).toHaveLength(1)
+        expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/readme.md")).toBe(false)
+        expect(dropSpy).not.toHaveBeenCalled()
+    })
+
+    it("tab: cmCloseOthers/all close markdown previews without dropDocument(pseudo)", async () => {
+        const preview = previewTab("/w/readme.md")
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 1,
+            groups: [
+                { activePath: "/w/readme.md", tabs: [fileTab("/w/readme.md")] },
+                {
+                    activePath: preview.path,
+                    tabs: [preview, fileTab("/w/keep.ts")]
+                }
+            ]
+        })
+
+        expect(await runLegacyContextMenuAction("tab", "cmCloseOthers", {
+            path: "/w/keep.ts",
+            groupIndex: 1
+        })).toBe("completed")
+        expect(useWorkspaceStore.getState().groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/keep.ts"])
+        expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/readme.md")).toBe(false)
+        expect(dropSpy.mock.calls.flat()).not.toContain(preview.path)
+
+        const otherPreview = previewTab("/w/notes.md")
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 0,
+            groups: [{
+                activePath: otherPreview.path,
+                tabs: [fileTab("/w/notes.md"), otherPreview]
+            }]
+        })
+        dropSpy.mockClear()
+        expect(await runLegacyContextMenuAction("tab", "cmCloseAll", { groupIndex: 0 })).toBe("completed")
+        expect(useWorkspaceStore.getState().groups[0].tabs).toEqual([])
+        expect(dropSpy).toHaveBeenCalledWith("/w/notes.md")
+        expect(dropSpy).not.toHaveBeenCalledWith(otherPreview.path)
+    })
+
+    it("file: cmDelete source closes the linked preview and only dropDocument the real file", async () => {
+        ipcCalls()
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                { activePath: "/w/readme.md", tabs: [fileTab("/w/readme.md"), fileTab("/w/keep.ts")] },
+                { activePath: markdownPreviewPath("/w/readme.md"), tabs: [previewTab("/w/readme.md")] }
+            ]
+        })
+
+        await runLegacyContextMenuAction("file", "cmDelete", { path: "/w/readme.md", isDir: false })
+        await vi.waitFor(() => {
+            expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/readme.md")).toBe(false)
+        })
+        expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual(["/w/keep.ts"])
+        expect(dropSpy).toHaveBeenCalledWith("/w/readme.md")
+        expect(dropSpy).not.toHaveBeenCalledWith(markdownPreviewPath("/w/readme.md"))
+    })
+
+    it("file: cmDelete folder closes descendant sources and their linked previews", async () => {
+        ipcCalls()
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                {
+                    activePath: "/w/dir/a.md",
+                    tabs: [fileTab("/w/dir/a.md"), fileTab("/w/outside.ts")]
+                },
+                {
+                    activePath: markdownPreviewPath("/w/dir/a.md"),
+                    tabs: [previewTab("/w/dir/a.md")]
+                }
+            ]
+        })
+
+        await runLegacyContextMenuAction("file", "cmDelete", { path: "/w/dir", isDir: true })
+        await vi.waitFor(() => {
+            expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual(["/w/outside.ts"])
+        })
+        expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/dir/a.md")).toBe(false)
+        expect(dropSpy).toHaveBeenCalledWith("/w/dir/a.md")
+        expect(dropSpy).not.toHaveBeenCalledWith(markdownPreviewPath("/w/dir/a.md"))
+    })
+
+    it("file: cmRename source and folder rebase linked preview identity", async () => {
+        ipcCalls()
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                { activePath: "/w/readme.md", tabs: [fileTab("/w/readme.md", true)] },
+                { activePath: markdownPreviewPath("/w/readme.md"), tabs: [previewTab("/w/readme.md")] }
+            ]
+        })
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("renamed.md")
+        await runLegacyContextMenuAction("file", "cmRename", { path: "/w/readme.md" })
+        await vi.waitFor(() => {
+            expect(useWorkspaceStore.getState().groups[0].tabs[0].path).toBe("/w/renamed.md")
+        })
+        expect(useWorkspaceStore.getState().groups[1].tabs[0]).toMatchObject({
+            kind: "markdown-preview",
+            sourcePath: "/w/renamed.md",
+            path: markdownPreviewPath("/w/renamed.md")
+        })
+        expect(useWorkspaceStore.getState().groups[1].activePath).toBe(markdownPreviewPath("/w/renamed.md"))
+        promptSpy.mockRestore()
+
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            treeRevision: 0,
+            activeGroupIndex: 0,
+            groups: [
+                { activePath: "/w/dir/a.md", tabs: [fileTab("/w/dir/a.md")] },
+                { activePath: markdownPreviewPath("/w/dir/a.md"), tabs: [previewTab("/w/dir/a.md")] }
+            ]
+        })
+        const folderPrompt = vi.spyOn(window, "prompt").mockReturnValue("renamed-dir")
+        await runLegacyContextMenuAction("file", "cmRename", { path: "/w/dir", isDir: true })
+        await vi.waitFor(() => {
+            expect(useWorkspaceStore.getState().groups[0].tabs[0].path).toBe("/w/renamed-dir/a.md")
+        })
+        expect(useWorkspaceStore.getState().groups[1].tabs[0]).toMatchObject({
+            kind: "markdown-preview",
+            sourcePath: "/w/renamed-dir/a.md",
+            path: markdownPreviewPath("/w/renamed-dir/a.md")
+        })
+        folderPrompt.mockRestore()
     })
 })

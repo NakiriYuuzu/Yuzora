@@ -6,6 +6,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
 import i18n from "@/lib/i18n"
 import { contextMenuHandler, useContextMenuStore } from "@/state/contextMenuStore"
+import { useAppDialogStore } from "@/state/appDialogStore"
 import { MAX_TERMINAL_TABS, useTerminalStore } from "@/state/terminalStore"
 import { useWorkbenchLayoutStore, workbenchLayoutInitialState } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -196,7 +197,7 @@ describe("TerminalDrawer content resize", () => {
 
     const handle = screen.getByRole("separator", { name: "Resize terminal" })
     const drawer = screen.getByTestId("terminal-drawer")
-    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const content = screen.getByTestId("terminal-drawer-content")
     expect(drawer.style.height).toBe("237px")
     expect(content.style.height).toBe("193px")
     expect(content.style.transition).toContain("height 220ms")
@@ -224,7 +225,7 @@ describe("TerminalDrawer content resize", () => {
 
     const handle = screen.getByRole("separator", { name: "Resize terminal" })
     const drawer = screen.getByTestId("terminal-drawer")
-    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const content = screen.getByTestId("terminal-drawer-content")
 
     fireEvent.pointerDown(handle, { button: 0, clientY: 663, pointerId: 1 })
     fireEvent.pointerMove(handle, { clientY: 2000, pointerId: 1 })
@@ -242,7 +243,7 @@ describe("TerminalDrawer content resize", () => {
     const { container } = renderDrawer({ height: 180 })
 
     const drawer = screen.getByTestId("terminal-drawer")
-    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const content = screen.getByTestId("terminal-drawer-content")
 
     expect(drawer.style.height).toBe("126px")
     expect(content.style.height).toBe("82px")
@@ -275,7 +276,7 @@ describe("TerminalDrawer content resize", () => {
       mainSurfaceMinHeight: 44,
     })
     const drawer = screen.getByTestId("terminal-drawer")
-    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const content = screen.getByTestId("terminal-drawer-content")
 
     expect(drawer.style.height).toBe("746px")
 
@@ -307,7 +308,7 @@ describe("TerminalDrawer content resize", () => {
     useWorkbenchLayoutStore.getState().setTerminalRatio(null, 0.95)
     renderDrawer({ height: 240, mainSurfaceMinHeight: 280 })
     const drawer = screen.getByTestId("terminal-drawer")
-    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const content = screen.getByTestId("terminal-drawer-content")
     const handle = screen.getByRole("separator", { name: "Resize terminal" })
 
     expect(drawer.style.height).toBe("0px")
@@ -449,7 +450,7 @@ describe("TerminalDrawer content resize", () => {
     const container = screen.getByTestId("terminal-test-stack")
     resizeContainer(container, 800)
     const drawer = screen.getByTestId("terminal-drawer")
-    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const content = screen.getByTestId("terminal-drawer-content")
 
     expect(drawer.style.height).toBe("237px")
     fireEvent.click(screen.getByRole("button", { name: "Collapse terminal" }))
@@ -557,7 +558,7 @@ describe("TerminalDrawer sessions", () => {
     renderDrawer({ includeAppShellContextMenu: true })
     fireEvent.click(screen.getByTitle("New terminal"))
 
-    const content = document.querySelector(".yzs.overflow-y-auto.font-mono") as HTMLElement
+    const content = screen.getByTestId("terminal-drawer-content")
     const contentEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
     expect(content.dispatchEvent(contentEvent)).toBe(false)
     expect(contentEvent.defaultPrevented).toBe(true)
@@ -692,7 +693,9 @@ describe("TerminalDrawer sessions", () => {
     renderDrawer()
 
     fireEvent.click(screen.getByTitle("New terminal"))
-    fireEvent.click(screen.getByRole("button", { name: "Close Terminal 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Close workspace" }))
+    await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+    useAppDialogStore.getState().respond(true)
 
     await waitFor(() => expect(screen.queryAllByTestId(/terminal-session-/)).toHaveLength(0))
     expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).toBeInTheDocument()
@@ -786,8 +789,8 @@ describe("TerminalDrawer sessions", () => {
     )
     expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute("aria-selected", "true")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Terminal 1" }))
-    expect(screen.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true")
+    fireEvent.click(screen.getByRole("tab", { name: "workspace" }))
+    expect(screen.getByRole("tab", { name: "workspace" })).toHaveAttribute("aria-selected", "true")
     expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute(
       "data-visible-pane",
       "right",
@@ -809,7 +812,7 @@ describe("TerminalDrawer sessions", () => {
     })
     const menu = await screen.findByRole("menu")
     expect(
-      within(menu).getByRole("menuitem", { name: "Terminal 1 · Left" }),
+      within(menu).getByRole("menuitem", { name: "workspace · Left" }),
     ).toBeInTheDocument()
     expect(within(menu).getByRole("menuitem", { name: "Terminal 2" })).toBeInTheDocument()
     expect(
@@ -835,10 +838,10 @@ describe("TerminalDrawer sessions", () => {
 
     fireEvent.click(screen.getByTitle("New terminal"))
     fireEvent.click(screen.getByRole("button", { name: "Collapse terminal" }))
-    expect(screen.getByRole("tab", { name: "Terminal 1" })).toBeVisible()
+    expect(screen.getByRole("tab", { name: "workspace" })).toBeVisible()
     expect(screen.getByTestId(/terminal-session-/)).toHaveAttribute("data-visible", "false")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Terminal 1" }))
+    fireEvent.click(screen.getByRole("tab", { name: "workspace" }))
     expect(screen.getByRole("button", { name: "Collapse terminal" })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse terminal" }))
@@ -896,7 +899,7 @@ describe("TerminalDrawer sessions", () => {
     fireEvent.click(screen.getByTitle("Split right"))
     fireEvent.click(screen.getByTitle("New terminal"))
 
-    const firstTab = screen.getByRole("tab", { name: "Terminal 1" })
+    const firstTab = screen.getByRole("tab", { name: "workspace" })
     const thirdTab = screen.getByRole("tab", { name: "Terminal 3" })
     fireEvent.contextMenu(firstTab)
     expect(useContextMenuStore.getState().request).toMatchObject({
@@ -921,7 +924,7 @@ describe("TerminalDrawer sessions", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label"))).toEqual([
       "Terminal 2",
       "Terminal 3",
-      "Terminal 1",
+      "workspace",
     ])
     expect(useTerminalStore.getState().layouts["/workspace"].panes).toEqual(panesBefore)
   })
@@ -937,9 +940,47 @@ describe("TerminalDrawer sessions", () => {
     fireEvent.keyDown(tabList, { key: "ArrowLeft" })
     expect(screen.getByRole("tab", { name: "Terminal 2" })).toHaveAttribute("aria-selected", "true")
     fireEvent.keyDown(tabList, { key: "Home" })
-    expect(screen.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("tab", { name: "workspace" })).toHaveAttribute("aria-selected", "true")
     fireEvent.keyDown(tabList, { key: "End" })
     expect(screen.getByRole("tab", { name: "Terminal 3" })).toHaveAttribute("aria-selected", "true")
+  })
+
+  it("uses auto scrollIntoView under prefers-reduced-motion", () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }))
+    const previousMatchMedia = window.matchMedia
+    window.matchMedia = matchMedia as unknown as typeof window.matchMedia
+
+    try {
+      useWorkspaceStore.setState({ workspacePath: "/workspace" })
+      renderDrawer()
+      fireEvent.click(screen.getByTitle("New terminal"))
+      fireEvent.click(screen.getByTitle("New terminal"))
+
+      const tabList = screen.getByRole("tablist", { name: "Terminal tabs" })
+      fireEvent.keyDown(tabList, { key: "ArrowLeft" })
+
+      expect(matchMedia).toHaveBeenCalled()
+      expect(scrollIntoView).toHaveBeenCalledWith(
+        expect.objectContaining({
+          behavior: "auto",
+          block: "nearest",
+          inline: "nearest",
+        })
+      )
+    } finally {
+      window.matchMedia = previousMatchMedia
+    }
   })
 
   it("closes hidden tabs without disturbing panes and unsplits when a visible tab closes", async () => {
@@ -1006,10 +1047,10 @@ describe("TerminalDrawer sessions", () => {
 
     act(() => terminalSessionMocks.props.get(session.sessionId)?.onOpenError?.("spawn failed"))
     expect(screen.getByLabelText("Terminal failed to start")).toBeInTheDocument()
-    expect(screen.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("tab", { name: "workspace" })).toHaveAttribute("aria-selected", "true")
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Terminal 1" }))
-    await waitFor(() => expect(screen.queryByRole("tab", { name: "Terminal 1" })).toBeNull())
+    fireEvent.click(screen.getByRole("button", { name: "Close workspace" }))
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "workspace" })).toBeNull())
     expect(commands).toContain("pty_close")
     expect(commands).not.toContain("pty_activity")
   })
@@ -1026,7 +1067,7 @@ describe("TerminalDrawer sessions", () => {
     const session = useTerminalStore.getState().sessionsForWorkspace("/workspace")[0]
 
     act(() => terminalSessionMocks.props.get(session.sessionId)?.onExit?.(0))
-    expect(screen.queryByRole("tab", { name: "Terminal 1" })).toBeNull()
+    expect(screen.queryByRole("tab", { name: "workspace" })).toBeNull()
     expect(commands).not.toContain("pty_activity")
     expect(commands).not.toContain("plugin:dialog|message")
   })
@@ -1034,14 +1075,6 @@ describe("TerminalDrawer sessions", () => {
 
 describe("TerminalDrawer tab limit", () => {
   it("reports an explicit error instead of silently dropping New terminal at the tab limit", async () => {
-    const dialogs: string[] = []
-    mockIPC((cmd, payload) => {
-      if (cmd === "plugin:dialog|message") {
-        dialogs.push(JSON.stringify(payload))
-        return "Ok"
-      }
-      return undefined
-    })
     const workspace = "/workspace/limit"
     useWorkspaceStore.setState({ workspacePath: workspace })
     renderDrawer()
@@ -1052,12 +1085,14 @@ describe("TerminalDrawer tab limit", () => {
     expect(useTerminalStore.getState().layouts[workspace].tabIds).toHaveLength(
       MAX_TERMINAL_TABS,
     )
-    expect(dialogs).toEqual([])
+    expect(useAppDialogStore.getState().pending).toBeNull()
 
     fireEvent.click(screen.getByTitle("New terminal"))
 
-    await waitFor(() => expect(dialogs).toHaveLength(1))
-    expect(dialogs[0]).toContain(String(MAX_TERMINAL_TABS))
+    await waitFor(() => expect(useAppDialogStore.getState().pending).toMatchObject({
+      type: "message",
+      description: expect.stringContaining(String(MAX_TERMINAL_TABS)),
+    }))
     expect(useTerminalStore.getState().layouts[workspace].tabIds).toHaveLength(
       MAX_TERMINAL_TABS,
     )

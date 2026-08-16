@@ -14,6 +14,7 @@ import {
     unregisterTerminalOutputQueue
 } from "./terminalOutputQueue"
 import { buildXtermTheme } from "./xtermTheme"
+import { installTerminalTargetOpen } from "./terminalTarget"
 
 export interface TerminalSessionProps {
     workspace: string
@@ -89,6 +90,9 @@ export function TerminalSession({
     const themeObserverRef = useRef<MutationObserver | null>(null)
     const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const titleDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const parsedDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const targetOpenRef = useRef<ReturnType<typeof installTerminalTargetOpen> | null>(null)
+    const resetTargetHoverRef = useRef<(() => void) | null>(null)
     const outputQueueRef = useRef<TerminalOutputQueue | null>(null)
     const lastOutputSeqRef = useRef<number | null>(null)
     const openedRef = useRef(false)
@@ -124,14 +128,21 @@ export function TerminalSession({
             if (cleanupTimerRef.current !== null) return
             disposedRef.current = true
             openReadyRef.current = false
-
             cleanupTimerRef.current = window.setTimeout(() => {
                 cleanupTimerRef.current = null
                 const pendingOpen = openSettledRef.current ? null : openPromiseRef.current
+                const resetTargetHover = resetTargetHoverRef.current
+                if (resetTargetHover) {
+                    containerRef.current?.removeEventListener("mouseleave", resetTargetHover)
+                    window.removeEventListener("blur", resetTargetHover)
+                    resetTargetHoverRef.current = null
+                }
                 themeObserverRef.current?.disconnect()
                 observerRef.current?.disconnect()
                 dataDisposableRef.current?.dispose()
                 titleDisposableRef.current?.dispose()
+                parsedDisposableRef.current?.dispose()
+                targetOpenRef.current?.dispose()
                 unregisterTerminalOutputQueue(sessionId)
                 outputQueueRef.current?.dispose()
                 fitRef.current?.dispose()
@@ -140,6 +151,8 @@ export function TerminalSession({
                 observerRef.current = null
                 dataDisposableRef.current = null
                 titleDisposableRef.current = null
+                parsedDisposableRef.current = null
+                targetOpenRef.current = null
                 outputQueueRef.current = null
                 fitRef.current = null
                 termRef.current = null
@@ -183,6 +196,14 @@ export function TerminalSession({
 
         term.loadAddon(fitAddon)
         term.open(container)
+        targetOpenRef.current = installTerminalTargetOpen(term, {
+            getCwd: () => workspace
+        })
+        parsedDisposableRef.current = term.onWriteParsed?.(() => targetOpenRef.current?.resetHover()) ?? null
+        const resetTargetHover = () => targetOpenRef.current?.resetHover()
+        resetTargetHoverRef.current = resetTargetHover
+        container.addEventListener("mouseleave", resetTargetHover)
+        window.addEventListener("blur", resetTargetHover)
         outputQueueRef.current = new TerminalOutputQueue(
             (data, onProcessed) => term.write(data, onProcessed),
             visibleRef.current
@@ -359,7 +380,10 @@ export function TerminalSession({
             className="relative h-full min-h-0 w-full overflow-hidden bg-(--term-bg) text-(--term-fg)"
             data-testid={`terminal-session-${sessionId}`}
             data-visible={String(visible)}
-            onContextMenu={(event) => event.preventDefault()}
+            onContextMenu={(event) => {
+                if (targetOpenRef.current?.handleContextMenu(event)) return
+                event.preventDefault()
+            }}
         >
             <div ref={containerRef} className="h-full min-h-0 w-full" />
             {exitCode !== undefined ? (

@@ -1,9 +1,16 @@
 import { useMemo } from "react"
 
+export type PreviewFrameMode = "static" | "dev-server"
+
 interface PreviewFrameProps {
     url: string | null
     reloadNonce: number
+    mode?: PreviewFrameMode
 }
+
+const DEV_SERVER_SANDBOX =
+    "allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
+const STATIC_SANDBOX = "allow-scripts"
 
 // PreviewPanel only mounts this for local dev-server / static-server URLs (external
 // https goes to the child webview); this guard is defence in depth.
@@ -22,7 +29,7 @@ function validatedLocalhostUrl(rawUrl: string | null): string | null {
 // The dev-server info + "Open externally" that used to live in a footer here moved
 // to the StatusBar / PreviewPanel toolbar (they were duplicated), so this is just
 // the iframe now.
-export function PreviewFrame({ url, reloadNonce }: PreviewFrameProps) {
+export function PreviewFrame({ url, reloadNonce, mode = "dev-server" }: PreviewFrameProps) {
     const safeUrl = useMemo(() => validatedLocalhostUrl(url), [url])
 
     if (url && !safeUrl) {
@@ -43,7 +50,7 @@ export function PreviewFrame({ url, reloadNonce }: PreviewFrameProps) {
             title="Live preview"
             src={safeUrl}
             className="min-h-0 flex-1 border-0 bg-white"
-            sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
+            sandbox={mode === "static" ? STATIC_SANDBOX : DEV_SERVER_SANDBOX}
         />
     )
 }

@@ -136,7 +136,7 @@ export function TerminalSection() {
           <SettingsTextInput
             label={t("customExecutableLabel")}
             value={settings.customProfile.shell}
-            placeholder={"C:\\Program Files\\PowerShell\\7\\pwsh.exe"}
+            placeholder={t("customExecutablePlaceholder")}
             onChange={(shell) => updateCustomProfile({ shell })}
           />
           <label className="flex flex-col gap-[6px]">
@@ -147,7 +147,7 @@ export function TerminalSection() {
               aria-label={t("customArgsLabel")}
               rows={3}
               value={settings.customProfile.args.join("\n")}
-              placeholder={"-NoLogo\n-NoProfile"}
+              placeholder={t("customArgsPlaceholder")}
               onChange={(event) => {
                 const args = event.currentTarget.value
                   .split("\n")
@@ -163,12 +163,20 @@ export function TerminalSection() {
             label={t("customCwdStrategyLabel")}
             options={[
               { id: "native", label: t("customCwdNative") },
-              { id: "wsl", label: t("customCwdWsl") },
+              ...(isWindowsPlatform()
+                ? [{ id: "wsl" as const, label: t("customCwdWsl") }]
+                : []),
             ]}
-            value={settings.customProfile.cwdStrategy}
+            value={
+              !isWindowsPlatform() && settings.customProfile.cwdStrategy === "wsl"
+                ? "native"
+                : settings.customProfile.cwdStrategy
+            }
             onChange={(cwdStrategy) => {
               if (cwdStrategy === "native" || cwdStrategy === "wsl") {
-                updateCustomProfile({ cwdStrategy })
+                updateCustomProfile({
+                  cwdStrategy: isWindowsPlatform() ? cwdStrategy : "native",
+                })
               }
             }}
           />

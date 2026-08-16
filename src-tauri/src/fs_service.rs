@@ -5,12 +5,31 @@ use serde::Serialize;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FileNodeKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct FileNode {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    pub kind: FileNodeKind,
+}
+
+fn file_node_kind(file_type: std::fs::FileType) -> FileNodeKind {
+    match crate::path_capability::node_kind_from_file_type(file_type) {
+        crate::path_capability::NodeKind::File => FileNodeKind::File,
+        crate::path_capability::NodeKind::Directory => FileNodeKind::Directory,
+        crate::path_capability::NodeKind::Symlink => FileNodeKind::Symlink,
+        crate::path_capability::NodeKind::Other => FileNodeKind::Other,
+    }
 }
 
 pub fn list_dir_entries(dir: &Path) -> Result<Vec<FileNode>, String> {
@@ -19,12 +38,17 @@ pub fn list_dir_entries(dir: &Path) -> Result<Vec<FileNode>, String> {
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let is_dir = entry.file_type().ok()?.is_dir();
+            let name = entry.file_name().to_str()?.to_string();
+            let path = path.to_str()?.to_string();
+            if name.contains('\0') || path.contains('\0') {
+                return None;
+            }
+            let kind = file_node_kind(entry.file_type().ok()?);
             Some(FileNode {
                 name,
-                path: path.to_string_lossy().into_owned(),
-                is_dir,
+                path,
+                is_dir: kind == FileNodeKind::Directory,
+                kind,
             })
         })
         .collect();
@@ -41,7 +65,16 @@ pub fn canonicalize_workspace(path: &str) -> Result<String, String> {
     if !p.is_dir() {
         return Err("workspace path is not a directory".into());
     }
-    Ok(p.to_string_lossy().into_owned())
+    p.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| "workspace path is not valid UTF-8".to_string())
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceOpenResult {
+    pub canonical_path: String,
+    pub capability_id: String,
 }
 
 /// T2（#56）：Tauri 2 同步 command 在 main thread 執行，整檔讀寫／base64 編碼
@@ -60,8 +93,19 @@ where
 }
 
 #[tauri::command(async)]
-pub fn open_workspace(path: String) -> Result<String, String> {
-    canonicalize_workspace(&path)
+pub fn open_workspace(
+    path: String,
+    state: tauri::State<'_, crate::path_capability::WorkspacePathState>,
+) -> Result<WorkspaceOpenResult, String> {
+    let canonical_path = canonicalize_workspace(&path)?;
+    let capability_id = state
+        .0
+        .activate(Path::new(&canonical_path))
+        .map_err(String::from)?;
+    Ok(WorkspaceOpenResult {
+        canonical_path,
+        capability_id,
+    })
 }
 
 #[tauri::command(async)]
@@ -223,6 +267,20 @@ pub fn write_file(path: &str, content: &str) -> Result<u64, String> {
         .map_err(|e| format!("time error: {e}"))?
         .as_millis() as u64;
     Ok(mtime)
+}
+
+pub fn path_is_openable_file(path: &Path) -> Result<bool, String> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("stat failed: {error}")),
+    };
+    Ok(metadata.is_file())
+}
+
+#[tauri::command]
+pub async fn is_openable_file(path: String) -> Result<bool, String> {
+    run_blocking(move || path_is_openable_file(Path::new(&path))).await
 }
 
 #[tauri::command]
@@ -424,6 +482,21 @@ mod tests {
         let names: Vec<_> = nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, vec!["zeta", "alpha.txt", "Beta.txt"]);
         assert!(nodes[0].is_dir);
+        assert_eq!(nodes[0].kind, FileNodeKind::Directory);
+        assert_eq!(nodes[1].kind, FileNodeKind::File);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_dir_marks_symlinks_distinctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("real.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("real.txt"), tmp.path().join("link.txt"))
+            .unwrap();
+        let nodes = list_dir_entries(tmp.path()).unwrap();
+        let link = nodes.iter().find(|node| node.name == "link.txt").unwrap();
+        assert!(!link.is_dir);
+        assert_eq!(link.kind, FileNodeKind::Symlink);
     }
 
     #[test]
@@ -433,6 +506,20 @@ mod tests {
         fs::write(&f, "x").unwrap();
         assert!(canonicalize_workspace(f.to_str().unwrap()).is_err());
         assert!(canonicalize_workspace(tmp.path().to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn openable_file_accepts_files_and_rejects_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("target.txt");
+        std::fs::write(&file, "ok").unwrap();
+
+        assert_eq!(path_is_openable_file(&file).unwrap(), true);
+        assert_eq!(path_is_openable_file(dir.path()).unwrap(), false);
+        assert_eq!(
+            path_is_openable_file(&dir.path().join("missing")).unwrap(),
+            false
+        );
     }
 
     #[test]

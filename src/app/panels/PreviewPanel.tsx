@@ -45,9 +45,15 @@ import {
   type PreviewCommandTarget,
 } from "@/preview/previewCommands"
 import { useAnyOverlayOpen } from "@/state/overlayStore"
-import { isLocalPreviewUrl, type PreviewNavState, usePreviewStore } from "@/state/previewStore"
+import {
+  isLocalPreviewUrl,
+  previewFrameModeFor,
+  type PreviewNavState,
+  usePreviewStore,
+} from "@/state/previewStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { requestDevServerAuthorization } from "@/state/workspaceTrustStore"
 
 const EMPTY_NAV: PreviewNavState = {
   url: null,
@@ -136,6 +142,7 @@ export function PreviewPanel() {
   const devServer = usePreviewStore((s) =>
     workspace ? s.devServerForWorkspace(workspace) : null
   )
+  const staticPreview = usePreviewStore((s) => s.staticPreview)
   const navMap = usePreviewStore((s) => s.nav)
   const attempts = usePreviewStore((s) => s.attempts)
   const nativeNavigationSyncs = usePreviewStore((s) => s.nativeNavigationSyncs)
@@ -297,7 +304,8 @@ export function PreviewPanel() {
   // Visibility gate: show the webview only when the preview is the visible
   // foreground — Files mode, no overlay open (the webview paints above every DOM
   // overlay). Recompute bounds on show so it doesn't flash at a stale position.
-  const previewVisible = mode === "files" && !overlayOpen
+  // Browser preview tab is hosted on the shared ADE/Files editor surface.
+  const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
   useEffect(() => {
     if (!isTauri() || !external) return
     if (previewVisible) {
@@ -344,6 +352,15 @@ export function PreviewPanel() {
     if (!attemptWorkspace) return
     const attemptToken = attempt ?? usePreviewStore.getState().beginAttempt(attemptWorkspace)
     setLocalError(null)
+    const challengeId = await requestDevServerAuthorization(
+      attemptWorkspace,
+      candidate.command
+    )
+    if (!isAttemptLive(attemptWorkspace, attemptToken)) return
+    if (!challengeId) {
+      setFlowState("idle")
+      return
+    }
     const startingInfo: DevServerInfo = {
       workspace: attemptWorkspace,
       command: candidate.command,
@@ -352,7 +369,13 @@ export function PreviewPanel() {
     }
     usePreviewStore.getState().setDevServer(startingInfo)
     try {
-      const info = await devServerStart(attemptWorkspace, candidate.command, port, () => {})
+      const info = await devServerStart(
+        attemptWorkspace,
+        candidate.command,
+        port,
+        () => {},
+        challengeId
+      )
       if (!isAttemptLive(attemptWorkspace, attemptToken)) {
         if (useWorkspaceStore.getState().workspacePath !== attemptWorkspace) {
           try {
@@ -461,7 +484,11 @@ export function PreviewPanel() {
                 className="min-h-0 flex-1 bg-white"
               />
             ) : (
-              <PreviewFrame url={nav.url} reloadNonce={nav.reloadNonce} />
+              <PreviewFrame
+                url={nav.url}
+                reloadNonce={nav.reloadNonce}
+                mode={previewFrameModeFor(nav.url, staticPreview)}
+              />
             )}
           </div>
         </div>
@@ -514,6 +541,7 @@ export function PreviewPanel() {
             <p className="text-[12.5px] text-(--ink-3)">
               {tp("previewPanel.portOccupiedDescription", { ports: runningPorts.join(", ") })}
             </p>
+            <p className="text-[12.5px] text-(--ink-3)">{t("connectExistingHint")}</p>
             <div className="flex flex-wrap items-center justify-center gap-[8px]">
               {runningPorts.map((port) => (
                 <button

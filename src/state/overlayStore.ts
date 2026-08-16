@@ -1,9 +1,11 @@
 import { useEffect } from "react"
 import { create } from "zustand"
 
+import { useAppDialogStore } from "./appDialogStore"
 import { useContextMenuStore } from "./contextMenuStore"
 import { useDiffModalStore } from "./diffModalStore"
 import { useSshStore } from "./sshStore"
+import { useTextInputDialogStore } from "./textInputDialogStore"
 import { useUiStore } from "./uiStore"
 
 // The preview child webview (P3) is a native layer that paints above every DOM
@@ -13,9 +15,10 @@ import { useUiStore } from "./uiStore"
 // hides the webview whenever it returns true.
 //
 // Store-backed overlays (settings, external-change resolver, context menu, diff
-// modal, ssh auth prompt) are read directly below. Overlays whose open state is
-// only local component state (command palette, branch popover, askpass) register
-// via useOverlayPresence so the gate can see them without lifting their state.
+// modal, ssh auth prompt, text-input dialog) are read directly below. Overlays
+// whose open state is only local component state (command palette, branch
+// popover, askpass) register via useOverlayPresence so the gate can see them
+// without lifting their state.
 
 interface OverlayState {
     count: number
@@ -42,18 +45,22 @@ export function useOverlayPresence(active: boolean): void {
 
 // True when ANY overlay is open (see the module comment).
 export function useAnyOverlayOpen(): boolean {
+    const appDialogOpen = useAppDialogStore((s) => s.pending !== null)
     const settingsOpen = useUiStore((s) => s.settingsOpen)
     const resolverOpen = useUiStore((s) => s.resolverPath !== null)
     const contextMenuOpen = useContextMenuStore((s) => s.request !== null)
     const diffModalOpen = useDiffModalStore((s) => s.open)
     const sshAuthOpen = useSshStore((s) => s.pendingAuthHostId !== null)
+    const textInputOpen = useTextInputDialogStore((s) => s.pending !== null)
     const localCount = useOverlayStore((s) => s.count)
     return (
+        appDialogOpen ||
         settingsOpen ||
         resolverOpen ||
         contextMenuOpen ||
         diffModalOpen ||
         sshAuthOpen ||
+        textInputOpen ||
         localCount > 0
     )
 }

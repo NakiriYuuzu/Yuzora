@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "roots": [
+    "pyright"
+  ],
+  "fileCount": 5423,
+  "treeSha256": "79b66167ea4c446b0073ec8bd83731cef1ecb7fdb1a41ab3790372b14b6ec257"
+}

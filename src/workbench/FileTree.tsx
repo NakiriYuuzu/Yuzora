@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, GitCompareArrows } from "lucide-react"
 import { useEffect, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { logUserAction } from "@/features/logs/userAction"
+import { relativePathWithin } from "@/lib/paths"
 import { FileIcon } from "../lib/fileIcons"
 import type { FileNode } from "../lib/types"
 import { contextMenuHandler } from "../state/contextMenuStore"
@@ -11,10 +12,10 @@ import { useUiStore } from "../state/uiStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
 // Repo-relative form of an absolute node path, matched against the git status
-// (which reports paths relative to the repo root).
+// (which reports paths relative to the repo root). Uses forward slashes.
 function relativePath(path: string, root: string | null) {
-    if (root && path.startsWith(root + "/")) return path.slice(root.length + 1)
-    return path
+    if (!root) return path
+    return relativePathWithin(root, path) ?? path
 }
 
 // Controlled node (#59 T4b): expansion + children live in fileTreeStore's
@@ -158,11 +159,15 @@ export function FileTree() {
         void fileTree.ensureTree(workspacePath)
     }, [workspacePath, treeRevision])
 
-    // Persist/restore the nav scroller offset per workspace. The scroll
-    // container is FileTree's parent (FilesNavContent's overflow-y-auto div).
+    // Persist/restore the nav scroller offset per workspace. Prefer the nearest
+    // ScrollArea viewport (Radix wraps children in an intermediate table div);
+    // fall back to the immediate parent for unit tests that mount FileTree alone.
     useEffect(() => {
         if (!workspacePath) return
-        const scroller = listRef.current?.parentElement
+        const scroller =
+            (listRef.current?.closest(
+                '[data-slot="scroll-area-viewport"], [data-radix-scroll-area-viewport]'
+            ) as HTMLElement | null) ?? listRef.current?.parentElement
         if (!scroller) return
         scroller.scrollTop = useFileTreeStore.getState().trees[workspacePath]?.scrollTop ?? 0
         const onScroll = () =>

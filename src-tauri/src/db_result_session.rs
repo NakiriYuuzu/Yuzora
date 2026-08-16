@@ -10,13 +10,38 @@ use crate::db_service::{
 };
 
 pub const RESULT_PAGE_ROWS: usize = 500;
+pub const DEFAULT_FIELD_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_ROW_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_SESSION_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_PROCESS_BYTES: usize = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultLimitKind {
+    Field,
+    Row,
+    Session,
+    Process,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PushRowOutcome {
     Stored,
     LimitReached,
+    ValueTooLarge,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemainingBudget {
+    pub field: usize,
+    pub row: usize,
+    pub session: usize,
+    pub process: usize,
+}
+
+impl RemainingBudget {
+    pub fn convertible_remaining(&self) -> usize {
+        self.row.min(self.session).min(self.process)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,11 +77,14 @@ struct StoredSession {
     effect_outcome: EffectOutcome,
     lifecycle: SessionLifecycle,
     result_limit_reached: bool,
+    value_too_large: bool,
 }
 
 pub struct ResultSessionRegistry {
     sessions: HashMap<String, StoredSession>,
     active_runs: HashMap<String, ActiveRun>,
+    field_limit: usize,
+    row_limit: usize,
     session_limit: usize,
     process_limit: usize,
     total_bytes: usize,
@@ -70,9 +98,25 @@ impl Default for ResultSessionRegistry {
 
 impl ResultSessionRegistry {
     pub fn with_limits(session_limit: usize, process_limit: usize) -> Self {
+        Self::with_ceilings(
+            DEFAULT_FIELD_BYTES,
+            DEFAULT_ROW_BYTES,
+            session_limit,
+            process_limit,
+        )
+    }
+
+    pub fn with_ceilings(
+        field_limit: usize,
+        row_limit: usize,
+        session_limit: usize,
+        process_limit: usize,
+    ) -> Self {
         Self {
             sessions: HashMap::new(),
             active_runs: HashMap::new(),
+            field_limit,
+            row_limit,
             session_limit,
             process_limit,
             total_bytes: 0,
@@ -102,32 +146,115 @@ impl ResultSessionRegistry {
         if self.sessions.contains_key(&key) {
             return Err(SessionError::SessionAlreadyExists);
         }
-        self.sessions.insert(
-            key.clone(),
-            StoredSession {
-                owner,
-                columns,
-                pages: vec![Vec::new()],
-                ready_pages: 0,
-                current_page: 0,
-                bytes: 0,
-                effect_outcome: EffectOutcome::Unknown,
-                lifecycle: ResultSessionLifecycle::Streaming,
-                result_limit_reached: false,
-            },
-        );
-        self.refresh_accounting();
-        let session_bytes = self
-            .sessions
-            .get(&key)
-            .map(|session| session.bytes)
-            .unwrap_or(usize::MAX);
-        if session_bytes > self.session_limit || self.total_bytes > self.process_limit {
-            self.sessions.remove(&key);
-            self.sessions.shrink_to_fit();
-            self.refresh_accounting();
+        let probe = StoredSession {
+            owner,
+            columns,
+            pages: vec![Vec::new()],
+            ready_pages: 0,
+            current_page: 0,
+            bytes: 0,
+            effect_outcome: EffectOutcome::Unknown,
+            lifecycle: ResultSessionLifecycle::Streaming,
+            result_limit_reached: false,
+            value_too_large: false,
+        };
+        let session_bytes = estimate_session_retained_bytes(&key, &probe);
+        let map_growth = map_insert_growth_bytes(self.sessions.len(), self.sessions.capacity());
+        let projected_process = self
+            .total_bytes
+            .saturating_add(session_bytes)
+            .saturating_add(map_growth);
+        if session_bytes > self.session_limit || projected_process > self.process_limit {
             return Err(SessionError::BudgetExceeded);
         }
+        self.sessions.insert(key.clone(), probe);
+        self.refresh_accounting();
+        debug_assert!(self
+            .sessions
+            .get(&key)
+            .is_some_and(|session| session.bytes <= self.session_limit));
+        debug_assert!(self.total_bytes <= self.process_limit);
+        Ok(())
+    }
+
+    pub fn remaining_budget(
+        &self,
+        owner: &ResultSessionOwner,
+    ) -> Result<RemainingBudget, SessionError> {
+        self.validate_active_run(owner)?;
+        let session = self
+            .sessions
+            .get(&owner.result_session_id.0)
+            .ok_or(SessionError::SessionNotFound)?;
+        if session.owner != *owner {
+            return Err(SessionError::OwnerMismatch);
+        }
+        Ok(RemainingBudget {
+            field: self.field_limit,
+            row: self.row_limit,
+            session: self.session_limit.saturating_sub(session.bytes),
+            process: self.process_limit.saturating_sub(self.total_bytes),
+        })
+    }
+
+    pub fn field_limit(&self) -> usize {
+        self.field_limit
+    }
+
+    pub fn row_limit(&self) -> usize {
+        self.row_limit
+    }
+
+    pub fn classify_raw_field(
+        &self,
+        raw_len: usize,
+        row_used: usize,
+        owner: &ResultSessionOwner,
+    ) -> Result<Option<ResultLimitKind>, SessionError> {
+        let budget = self.remaining_budget(owner)?;
+        if raw_len > budget.field {
+            return Ok(Some(ResultLimitKind::Field));
+        }
+        if row_used.saturating_add(raw_len) > budget.row {
+            return Ok(Some(ResultLimitKind::Row));
+        }
+        let remaining = budget.session.min(budget.process);
+        if row_used.saturating_add(raw_len) > remaining {
+            return Ok(Some(if budget.session <= budget.process {
+                ResultLimitKind::Session
+            } else {
+                ResultLimitKind::Process
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn mark_result_limit_reached(
+        &mut self,
+        owner: &ResultSessionOwner,
+    ) -> Result<(), SessionError> {
+        self.validate_active_run(owner)?;
+        let session = self
+            .sessions
+            .get_mut(&owner.result_session_id.0)
+            .ok_or(SessionError::SessionNotFound)?;
+        if session.owner != *owner {
+            return Err(SessionError::OwnerMismatch);
+        }
+        session.result_limit_reached = true;
+        Ok(())
+    }
+
+    pub fn mark_value_too_large(&mut self, owner: &ResultSessionOwner) -> Result<(), SessionError> {
+        self.validate_active_run(owner)?;
+        let session = self
+            .sessions
+            .get_mut(&owner.result_session_id.0)
+            .ok_or(SessionError::SessionNotFound)?;
+        if session.owner != *owner {
+            return Err(SessionError::OwnerMismatch);
+        }
+        session.value_too_large = true;
         Ok(())
     }
 
@@ -140,14 +267,42 @@ impl ResultSessionRegistry {
         let key = owner.result_session_id.0.as_str();
         let session = self
             .sessions
-            .get_mut(key)
+            .get(key)
             .ok_or(SessionError::SessionNotFound)?;
         if session.owner != *owner {
             return Err(SessionError::OwnerMismatch);
         }
+        if session.value_too_large {
+            return Ok(PushRowOutcome::ValueTooLarge);
+        }
         if session.result_limit_reached {
             return Ok(PushRowOutcome::LimitReached);
         }
+        if let Some(kind) = classify_converted_row(&row, self.field_limit, self.row_limit) {
+            let session = self
+                .sessions
+                .get_mut(key)
+                .expect("the exact session was validated before classification");
+            session.value_too_large = true;
+            let _ = kind;
+            return Ok(PushRowOutcome::ValueTooLarge);
+        }
+        let projected_session =
+            estimate_session_after_push(&owner.result_session_id.0, session, &row);
+        let process_without_session = self.total_bytes.saturating_sub(session.bytes);
+        let projected_process = process_without_session.saturating_add(projected_session);
+        if projected_session > self.session_limit || projected_process > self.process_limit {
+            let session = self
+                .sessions
+                .get_mut(key)
+                .expect("the exact session was validated before reservation");
+            session.result_limit_reached = true;
+            return Ok(PushRowOutcome::LimitReached);
+        }
+        let session = self
+            .sessions
+            .get_mut(key)
+            .expect("the exact session was validated before insertion");
         if session
             .pages
             .last()
@@ -161,35 +316,11 @@ impl ResultSessionRegistry {
             .expect("a materialized session always has one page")
             .push(row);
         self.refresh_accounting();
-        let exceeds_limit = self
+        debug_assert!(self
             .sessions
             .get(key)
-            .is_none_or(|session| session.bytes > self.session_limit)
-            || self.total_bytes > self.process_limit;
-        if exceeds_limit {
-            let session = self
-                .sessions
-                .get_mut(key)
-                .expect("the exact session was validated before insertion");
-            let page = session
-                .pages
-                .last_mut()
-                .expect("a materialized session always has one page");
-            drop(page.pop());
-            page.shrink_to_fit();
-            if page.is_empty() && session.pages.len() > 1 {
-                session.pages.pop();
-            }
-            session.pages.shrink_to_fit();
-            session.result_limit_reached = true;
-            self.refresh_accounting();
-            debug_assert!(self
-                .sessions
-                .get(key)
-                .is_some_and(|session| session.bytes <= self.session_limit));
-            debug_assert!(self.total_bytes <= self.process_limit);
-            return Ok(PushRowOutcome::LimitReached);
-        }
+            .is_some_and(|session| session.bytes <= self.session_limit));
+        debug_assert!(self.total_bytes <= self.process_limit);
         Ok(PushRowOutcome::Stored)
     }
 
@@ -393,6 +524,18 @@ impl ResultSessionRegistry {
         Ok(session.result_limit_reached)
     }
 
+    pub fn value_too_large(&self, owner: &ResultSessionOwner) -> Result<bool, SessionError> {
+        self.validate_active_run(owner)?;
+        let session = self
+            .sessions
+            .get(&owner.result_session_id.0)
+            .ok_or(SessionError::SessionNotFound)?;
+        if session.owner != *owner {
+            return Err(SessionError::OwnerMismatch);
+        }
+        Ok(session.value_too_large)
+    }
+
     /// User-facing release keeps every ready cache page but makes continuation
     /// terminal. A new run or connection teardown performs the actual discard.
     pub fn release(&mut self, owner: &ResultSessionOwner) -> Result<(), SessionError> {
@@ -556,6 +699,7 @@ fn page_from_session(
         effect_outcome: session.effect_outcome,
         lifecycle: session.lifecycle,
         result_limit_reached: session.result_limit_reached,
+        value_too_large: session.value_too_large,
     })
 }
 
@@ -642,12 +786,108 @@ fn estimate_columns_retained_bytes(columns: &[String], columns_capacity: usize) 
     })
 }
 
+fn next_vec_capacity(current: usize) -> usize {
+    match current {
+        0 => 4,
+        n => n.saturating_mul(2),
+    }
+}
+
+fn map_insert_growth_bytes(len: usize, capacity: usize) -> usize {
+    if len < capacity {
+        0
+    } else {
+        let grown = next_vec_capacity(capacity);
+        grown
+            .saturating_sub(capacity)
+            .saturating_mul(session_map_slot_bytes())
+    }
+}
+
+fn estimate_session_after_push(key: &String, session: &StoredSession, row: &Vec<DbValue>) -> usize {
+    let current = estimate_session_retained_bytes(key, session);
+    let last_len = session.pages.last().map(Vec::len).unwrap_or(0);
+    let last_cap = session.pages.last().map(Vec::capacity).unwrap_or(0);
+    let need_new_page = last_len == RESULT_PAGE_ROWS;
+    let extra_page_slots = if need_new_page && session.pages.len() == session.pages.capacity() {
+        next_vec_capacity(session.pages.capacity())
+            .saturating_sub(session.pages.capacity())
+            .saturating_mul(size_of::<Vec<Vec<DbValue>>>())
+    } else {
+        0
+    };
+    let page_cap_now = if need_new_page { 0 } else { last_cap };
+    let page_len_now = if need_new_page { 0 } else { last_len };
+    let extra_row_slots = if page_len_now == page_cap_now {
+        next_vec_capacity(page_cap_now)
+            .saturating_sub(page_cap_now)
+            .saturating_mul(size_of::<Vec<DbValue>>())
+    } else {
+        0
+    };
+    current
+        .saturating_add(extra_page_slots)
+        .saturating_add(extra_row_slots)
+        .saturating_add(estimate_row_heap_bytes(row, row.capacity()))
+}
+
+fn db_value_retained_bytes(value: &DbValue) -> usize {
+    match value {
+        DbValue::Null | DbValue::Boolean { .. } => 0,
+        DbValue::Integer { value }
+        | DbValue::Decimal { value }
+        | DbValue::Text { value }
+        | DbValue::Json { value }
+        | DbValue::Date { value }
+        | DbValue::Time { value }
+        | DbValue::DateTime { value } => value.capacity(),
+        DbValue::Binary { hex } => hex.capacity(),
+    }
+}
+
+fn classify_converted_row(
+    row: &Vec<DbValue>,
+    field_limit: usize,
+    row_limit: usize,
+) -> Option<ResultLimitKind> {
+    let mut used = row.capacity().saturating_mul(size_of::<DbValue>());
+    for value in row {
+        let retained = db_value_retained_bytes(value);
+        let raw = match value {
+            DbValue::Binary { hex } => hex.len() / 2,
+            _ => retained,
+        };
+        if raw > field_limit {
+            return Some(ResultLimitKind::Field);
+        }
+        used = used.saturating_add(retained);
+        if used > row_limit {
+            return Some(ResultLimitKind::Row);
+        }
+    }
+    None
+}
+
 #[derive(Clone, Default)]
 pub struct ResultSessionState(pub Arc<Mutex<ResultSessionRegistry>>);
 
 impl ResultSessionState {
     pub fn with_limits(session_limit: usize, process_limit: usize) -> Self {
         Self(Arc::new(Mutex::new(ResultSessionRegistry::with_limits(
+            session_limit,
+            process_limit,
+        ))))
+    }
+
+    pub fn with_ceilings(
+        field_limit: usize,
+        row_limit: usize,
+        session_limit: usize,
+        process_limit: usize,
+    ) -> Self {
+        Self(Arc::new(Mutex::new(ResultSessionRegistry::with_ceilings(
+            field_limit,
+            row_limit,
             session_limit,
             process_limit,
         ))))
@@ -882,6 +1122,8 @@ mod tests {
         assert_eq!(session.initial_page.effect_outcome, EffectOutcome::Unknown);
         assert!(registry.result_limit_reached(&result_owner).unwrap());
         assert!(registry.session_bytes(&result_owner).unwrap() <= session_limit);
+        assert_eq!(DEFAULT_FIELD_BYTES, 1024 * 1024);
+        assert_eq!(DEFAULT_ROW_BYTES, 8 * 1024 * 1024);
         assert_eq!(DEFAULT_SESSION_BYTES, 64 * 1024 * 1024);
         assert_eq!(DEFAULT_PROCESS_BYTES, 256 * 1024 * 1024);
     }
@@ -1182,5 +1424,159 @@ mod tests {
         );
         assert_eq!(registry.session_count(), 0);
         assert_eq!(registry.total_bytes(), 0);
+    }
+
+    #[test]
+    fn one_value_over_the_field_ceiling_is_rejected_before_retention() {
+        let mut registry = ResultSessionRegistry::with_ceilings(8, 1024, 1 << 20, 2 << 20);
+        let result_owner = owner("run-field", "statement-field", "session-field");
+        registry.begin_run(&run_owner("run-field")).unwrap();
+        registry
+            .begin_session(result_owner.clone(), vec!["value".into()])
+            .unwrap();
+        let before = registry.session_bytes(&result_owner).unwrap();
+        assert_eq!(
+            registry.classify_raw_field(9, 0, &result_owner).unwrap(),
+            Some(ResultLimitKind::Field)
+        );
+        assert_eq!(
+            registry.push_row(
+                &result_owner,
+                vec![DbValue::Text {
+                    value: "012345678".into(),
+                }],
+            ),
+            Ok(PushRowOutcome::ValueTooLarge)
+        );
+        assert_eq!(registry.session_bytes(&result_owner).unwrap(), before);
+        assert!(registry.value_too_large(&result_owner).unwrap());
+        let session = registry
+            .finish_session(&result_owner, EffectOutcome::Unknown)
+            .unwrap();
+        assert!(session.initial_page.rows.is_empty());
+        assert!(session.initial_page.value_too_large);
+    }
+
+    #[test]
+    fn cumulative_row_ceiling_rejects_before_the_next_column_is_retained() {
+        let mut registry = ResultSessionRegistry::with_ceilings(64, 16, 1 << 20, 2 << 20);
+        let result_owner = owner("run-row", "statement-row", "session-row");
+        registry.begin_run(&run_owner("run-row")).unwrap();
+        registry
+            .begin_session(result_owner.clone(), vec!["a".into(), "b".into()])
+            .unwrap();
+        assert_eq!(
+            registry.classify_raw_field(8, 0, &result_owner).unwrap(),
+            None
+        );
+        assert_eq!(
+            registry.classify_raw_field(8, 12, &result_owner).unwrap(),
+            Some(ResultLimitKind::Row)
+        );
+        assert_eq!(
+            registry.push_row(
+                &result_owner,
+                vec![
+                    DbValue::Text {
+                        value: "abcdefgh".into(),
+                    },
+                    DbValue::Text {
+                        value: "ijklmnop".into(),
+                    },
+                ],
+            ),
+            Ok(PushRowOutcome::ValueTooLarge)
+        );
+        assert!(registry.value_too_large(&result_owner).unwrap());
+        assert_eq!(
+            registry
+                .finish_session(&result_owner, EffectOutcome::Unknown)
+                .unwrap()
+                .initial_page
+                .rows
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn session_and_process_reservation_is_atomic_across_concurrent_pushers() {
+        let first = owner("run-race", "statement-a", "session-a");
+        let second = owner("run-race", "statement-b", "session-b");
+        let candidate = || {
+            vec![DbValue::Text {
+                value: "x".repeat(2048),
+            }]
+        };
+
+        let mut probe = ResultSessionRegistry::with_limits(usize::MAX, usize::MAX);
+        probe.begin_run(&run_owner("run-race")).unwrap();
+        probe
+            .begin_session(first.clone(), vec!["value".into()])
+            .unwrap();
+        probe
+            .begin_session(second.clone(), vec!["value".into()])
+            .unwrap();
+        let before = probe.total_bytes();
+        probe.push_row(&first, candidate()).unwrap();
+        let one_row = probe.total_bytes().saturating_sub(before);
+        assert!(one_row > 0);
+        let process_limit = before + one_row + one_row / 2;
+
+        let state = ResultSessionState::with_limits(usize::MAX, process_limit);
+        {
+            let mut registry = state.lock().unwrap();
+            registry.begin_run(&run_owner("run-race")).unwrap();
+            registry
+                .begin_session(first.clone(), vec!["value".into()])
+                .unwrap();
+            registry
+                .begin_session(second.clone(), vec!["value".into()])
+                .unwrap();
+        }
+
+        let left = state.clone();
+        let right = state.clone();
+        let left_owner = first.clone();
+        let right_owner = second.clone();
+        let left_thread = std::thread::spawn(move || {
+            left.lock()
+                .unwrap()
+                .push_row(&left_owner, candidate())
+                .unwrap()
+        });
+        let right_thread = std::thread::spawn(move || {
+            right
+                .lock()
+                .unwrap()
+                .push_row(&right_owner, candidate())
+                .unwrap()
+        });
+        let outcomes = [left_thread.join().unwrap(), right_thread.join().unwrap()];
+        let stored = outcomes
+            .iter()
+            .filter(|outcome| **outcome == PushRowOutcome::Stored)
+            .count();
+        let rejected = outcomes
+            .iter()
+            .filter(|outcome| **outcome == PushRowOutcome::LimitReached)
+            .count();
+        assert_eq!(stored, 1, "exactly one reservation must win: {outcomes:?}");
+        assert_eq!(rejected, 1, "the loser must not insert: {outcomes:?}");
+        {
+            let registry = state.lock().unwrap();
+            assert!(registry.total_bytes() <= process_limit);
+        }
+        let mut registry = state.lock().unwrap();
+        registry
+            .finish_session(&first, EffectOutcome::Unknown)
+            .unwrap();
+        registry
+            .finish_session(&second, EffectOutcome::Unknown)
+            .unwrap();
+        let accepted = registry.page(&first, 0).unwrap().rows.len()
+            + registry.page(&second, 0).unwrap().rows.len();
+        assert_eq!(accepted, 1);
+        assert!(registry.total_bytes() <= process_limit);
     }
 }

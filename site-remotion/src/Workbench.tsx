@@ -88,11 +88,11 @@ export const icons = {
   ),
 };
 
-/* ---------- 左側 activity rail（WorkspaceRail：w60, 按鈕 38×32 r10） ---------- */
-const Rail: React.FC = () => (
+/* ---------- 左側 activity rail（ADE 時投影 selected named session 的 Spaces） ---------- */
+const Rail: React.FC<{ ade?: boolean }> = ({ ade = false }) => (
   <div
     style={{
-      width: 60,
+      width: ade ? 68 : 60,
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
@@ -101,25 +101,126 @@ const Rail: React.FC = () => (
       paddingBottom: 11,
     }}
   >
-    {[icons.sidebar, icons.terminal, icons.preview].map((ic, i) => (
-      <div
-        key={i}
-        style={{
-          width: 38,
-          height: 32,
-          borderRadius: 10,
-          background: t.solid,
-          border: `1px solid ${t.line1}`,
-          boxShadow: t.shadowXs,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: i === 0 ? t.accentInk : t.ink3,
-        }}
-      >
-        <I d={ic} size={15} />
-      </div>
-    ))}
+    {(ade ? [icons.sidebar, icons.terminal] : [icons.sidebar, icons.terminal, icons.preview]).map(
+      (ic, i) => (
+        <div
+          key={i}
+          style={{
+            width: 38,
+            height: 32,
+            borderRadius: 10,
+            background: i === 0 ? t.hover : t.solid,
+            border: `1px solid ${t.line1}`,
+            boxShadow: t.shadowXs,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: i === 0 ? t.accentInk : t.ink3,
+          }}
+        >
+          <I d={ic} size={15} />
+        </div>
+      ),
+    )}
+    {ade ? (
+      <>
+        <div style={{ width: 24, height: 1, margin: "4px 0", background: t.line1 }} />
+        <div style={{ color: t.ink3, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.12em" }}>
+          SPACES
+        </div>
+        {[
+          { glyph: "Y", label: "Yuzora", count: "1/2", active: true },
+          { glyph: "H", label: "Herdr", count: "1", active: false },
+          { glyph: "D", label: "Docs", count: "1", active: false },
+        ].map((space) => (
+          <div
+            key={space.label}
+            style={{
+              position: "relative",
+              width: 58,
+              minHeight: 51,
+              borderRadius: 10,
+              background: space.active ? t.hover : "transparent",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 3,
+            }}
+          >
+            {space.active ? (
+              <span
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 16,
+                  width: 3,
+                  height: 20,
+                  borderRadius: 999,
+                  background: t.accent,
+                }}
+              />
+            ) : null}
+            <span
+              style={{
+                position: "relative",
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                border: `1px solid ${t.line1}`,
+                background: t.field,
+                color: t.ink2,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 13,
+                fontWeight: 700,
+                boxShadow: t.shadowXs,
+                outline: space.active ? `2px solid rgba(${t.accentRgb}, 0.4)` : "none",
+              }}
+            >
+              {space.glyph}
+              <span
+                style={{
+                  position: "absolute",
+                  right: -5,
+                  top: -5,
+                  minWidth: 15,
+                  height: 15,
+                  borderRadius: 999,
+                  background: space.active ? t.accent : t.ink4,
+                  color: "white",
+                  padding: "0 3px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 8,
+                  lineHeight: 1,
+                }}
+              >
+                {space.count}
+              </span>
+            </span>
+            <span
+              style={{
+                width: 54,
+                color: space.active ? t.ink0 : t.ink3,
+                fontSize: 8.5,
+                fontWeight: 700,
+                textAlign: "center",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {space.label}
+            </span>
+          </div>
+        ))}
+      </>
+    ) : (
+      <div style={{ flex: 1 }} />
+    )}
     <div style={{ flex: 1 }} />
     <div
       style={{
@@ -187,7 +288,8 @@ const WB_COPY = {
 
 /* ---------- 完整 workbench 外框 ---------- */
 export const Workbench: React.FC<{
-  mode: number; // 0 files / 1 git / 2 db / 3 ssh / 4 agent
+  mode: number; // 0 files / 1 git / 2 db / 3 ssh / 4 ADE
+  adeRail?: boolean;
   sectionLabel: string;
   sidebar: React.ReactNode;
   sidebarFooter?: React.ReactNode;
@@ -197,6 +299,7 @@ export const Workbench: React.FC<{
   lang?: "zh" | "en";
 }> = ({
   mode,
+  adeRail = false,
   sectionLabel,
   sidebar,
   sidebarFooter,
@@ -215,7 +318,7 @@ export const Workbench: React.FC<{
       }}
     >
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <Rail />
+        <Rail ade={adeRail} />
         {/* sidebar glass 卡片 */}
         <div
           style={{
@@ -262,7 +365,7 @@ export const Workbench: React.FC<{
                 Yuzora
               </div>
               <div style={{ fontFamily: fonts.mono, fontSize: 10.5, color: t.ink3 }}>
-                ~/App/Tauri/yuzora
+                workspace/yuzora
               </div>
             </div>
           </div>
@@ -295,7 +398,7 @@ export const Workbench: React.FC<{
                 background: t.solid,
               }}
             >
-              ⌘K
+              ⌘K / Ctrl+K
             </span>
           </div>
           <ModeTabs active={mode} />

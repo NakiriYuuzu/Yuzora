@@ -1,23 +1,28 @@
-import { PanelLeft, Plus } from "lucide-react"
+import { FolderPlus, PanelLeft, Plus, Settings } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { open } from "@tauri-apps/plugin-dialog"
 
 import { cn } from "@/lib/utils"
-import { canonicalPathKey, workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
-import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
-import { selectWorkspaceAgentCounts, useAgentStore } from "@/state/agentStore"
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger
+} from "@/components/ui/hover-card"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
+import { resolveSpaceTabCount } from "@/lib/workbenchTabReorder"
+import { canonicalPathKey, workspacePathBasename } from "@/lib/paths"
 import { contextMenuHandler } from "@/state/contextMenuStore"
-import { normalizeWorkspacePath, useRecentWorkspacesStore } from "@/state/recentWorkspaces"
+import { useHerdrStore } from "@/state/herdrStore"
+import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
 
 interface WorkspaceRailProps {
   navCollapsed: boolean
   onToggleNav: () => void
   onOpenSettings: () => void
-  previewOpen: boolean
-  onTogglePreview: () => void
   terminalOpen: boolean
   onToggleTerminalDrawer: () => void
 }
@@ -28,32 +33,49 @@ const RAIL_IDLE_CLASS = "text-(--ink-3)"
 const RAIL_ACTIVE_CLASS = "bg-(--yz-hover) text-(--yz-accent-ink)"
 
 /**
- * Activity rail — design reference 5.1. 60px fixed column: the nav-collapse
- * toggle and terminal/browser dock toggles up top, then the RECENT workspace
- * tiles, then the "open workspace" slot and settings avatar pinned to the
- * bottom. On macOS the native traffic lights float in AppShell's title band
- * above this rail (hidden on other platforms).
+ * Activity rail — global controls stay; middle list is the selected named
+ * session's Herdr Spaces (not Recent folders). "+" creates/focuses a Herdr
+ * workspace via public `workspace.create` for the running session.
  */
 export function WorkspaceRail({
   navCollapsed,
   onToggleNav,
   onOpenSettings,
-  previewOpen,
-  onTogglePreview,
   terminalOpen,
   onToggleTerminalDrawer
 }: WorkspaceRailProps) {
   const { t } = useTranslation("workbench")
-  const recents = useRecentWorkspacesStore((s) => s.list)
-  const presentations = useRecentWorkspacesStore((s) => s.presentations)
   const removedNotice = useUiStore((s) => s.recentWorkspaceRemovedNotice)
   const clearRemovedNotice = useUiStore((s) => s.clearRecentWorkspaceRemovedNotice)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-  const activePathKey = workspacePath ? canonicalPathKey(workspacePath) : null
-  const sessions = useAgentStore((s) => s.sessions)
-  const agentCounts = useMemo(() => selectWorkspaceAgentCounts(sessions), [sessions])
+  const presentations = useRecentWorkspacesStore((s) => s.presentations)
+  const spaces = useHerdrStore((s) => s.snapshot?.spaces)
+  const selectedSpaceId = useHerdrStore((s) => s.selectedSpaceId)
+  const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
+  const connectionState = useHerdrStore((s) => s.connectionState)
+  const canMutate = useHerdrStore((s) => s.canMutateSelectedSession())
+  const createSpaceFromFolder = useHerdrStore((s) => s.createSpaceFromFolder)
+  const activateSpace = useHerdrStore((s) => s.activateSpace)
+  const agents = useHerdrStore((s) => s.snapshot?.agents)
+  const tabs = useHerdrStore((s) => s.snapshot?.tabs)
+
+  const spaceList = spaces ?? []
+
+  const agentCounts = useMemo(() => {
+    const map = new Map<string, { total: number; running: number }>()
+    for (const agent of agents ?? []) {
+      const current = map.get(agent.workspaceId) ?? { total: 0, running: 0 }
+      current.total += 1
+      if (agent.status === "working" || agent.status === "blocked") {
+        current.running += 1
+      }
+      map.set(agent.workspaceId, current)
+    }
+    return map
+  }, [agents])
 
   const [notice, setNotice] = useState<{ message: string; danger: boolean } | null>(null)
+  const [creating, setCreating] = useState(false)
   const noticeTimer = useRef<number | null>(null)
 
   useEffect(
@@ -78,25 +100,46 @@ export function WorkspaceRail({
   const visibleNotice = removedNotice
     ? {
         message: t("rail.removedFromRecent", { name: removedNotice.name }),
-        danger: false,
+        danger: false
       }
     : notice
 
-  async function handleOpenRecent(path: string) {
-    try {
-      await openWorkspaceAtPath(path)
-    } catch {
-      // Folder moved/deleted — drop it from the MRU and flag it once.
-      useRecentWorkspacesStore.getState().remove(path)
-      showNotice(t("rail.recentNotFound", { name: workspacePathBasename(path) }))
+  const mutationsDisabled = !canMutate || connectionState === "stopped" || creating
+
+  async function handleActivateSpace(spaceId: string, path?: string | null) {
+    if (!selectedSessionName || !canMutate) return
+    const result = await activateSpace({
+      sessionName: selectedSessionName,
+      workspaceId: spaceId,
+      path
+    })
+    if (!result.ok && result.error && !result.cancelled) {
+      showNotice(result.error)
     }
   }
 
-  async function handleOpenWorkspace() {
+  async function handleNewSpace() {
+    if (mutationsDisabled || !selectedSessionName) return
+    setCreating(true)
     try {
-      await pickWorkspace()
+      const selected = await open({ directory: true, multiple: false })
+      if (typeof selected !== "string") return
+      const label = workspacePathBasename(selected)
+      // Single guarded transaction: unsaved preflight → workspace.create →
+      // preapproved local switch → commit selection. Cancel never creates.
+      const result = await createSpaceFromFolder(selected, label)
+      if (!result.ok) {
+        if (result.cancelled) return
+        const reason =
+          result.error ??
+          useHerdrStore.getState().errorMessage ??
+          t("rail.newSpaceFailedUnknown")
+        showNotice(t("rail.newSpaceFailed", { error: reason }))
+      }
     } catch (e) {
-      showNotice(t("rail.openFolderFailed", { error: String(e) }))
+      showNotice(t("rail.newSpaceFailed", { error: String(e) }))
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -104,7 +147,7 @@ export function WorkspaceRail({
     <nav
       aria-label={t("rail.ariaLabel")}
       onContextMenu={contextMenuHandler({ kind: "rail" })}
-      className="flex w-[60px] shrink-0 flex-col items-center gap-[5px] pt-[13px] pb-[11px]"
+      className="flex w-[68px] shrink-0 flex-col items-center gap-[5px] pt-[13px] pb-[11px]"
     >
       <button
         type="button"
@@ -143,94 +186,253 @@ export function WorkspaceRail({
         </svg>
       </button>
 
-      <button
-        type="button"
-        aria-label={t("rail.togglePreview")}
-        aria-pressed={previewOpen}
-        title={t("rail.togglePreviewTitle")}
-        onClick={onTogglePreview}
-        className={cn(RAIL_BUTTON_CLASS, previewOpen ? RAIL_ACTIVE_CLASS : RAIL_IDLE_CLASS)}
+      <div aria-hidden="true" className="my-[4px] h-px w-[24px] bg-(--line-1)" />
+      <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-(--ink-3)">
+        {t("rail.spaces")}
+      </div>
+      <ScrollArea
+        data-testid="rail-spaces-scroll"
+        className={cn(
+          "min-h-0 w-full flex-1",
+          // Compact B: 68px rail − 58px tile = 5px side margins when centered.
+          // Keep this rail's vertical scrollbar ≤5px so it sits in the right
+          // blank margin instead of shifting content flush-left with pr-10.
+          "[&_[data-slot=scroll-area-scrollbar][data-orientation=vertical]]:w-[5px]",
+          "[&_[data-slot=scroll-area-scrollbar][data-orientation=vertical]]:p-0",
+          "[&_[data-slot=scroll-area-scrollbar][data-orientation=vertical]]:border-l-0"
+        )}
+        contentClassName="flex flex-col items-center gap-[5px] pt-[3px]"
       >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <rect x="3" y="4" width="18" height="16" rx="2.5" />
-          <path d="M3 9.5h18M6.4 6.9h.01M9 6.9h.01" />
-        </svg>
-      </button>
-
-      {recents.length > 0 && (
-        <>
-          <div aria-hidden="true" className="my-[4px] h-px w-[24px] bg-(--line-1)" />
-          <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-(--ink-3)">
-            {t("rail.recent")}
-          </div>
-          <div className="flex min-h-0 w-full flex-col items-center gap-[4px] overflow-y-auto pt-[3px]">
-            {recents.map((path) => {
-              const active = activePathKey === canonicalPathKey(path)
-              const presentation = resolveProjectPresentation(
-                path,
-                presentations[canonicalPathKey(path)]
+        {spaceList.map((space) => {
+          const active =
+            space.id === selectedSpaceId ||
+            Boolean(
+              !selectedSpaceId &&
+                space.path &&
+                workspacePath &&
+                canonicalPathKey(space.path) === canonicalPathKey(workspacePath)
+            )
+          const counts = agentCounts.get(space.id)
+          // Trim only decides blankness; never rewrite a valid operational path
+          // before presentation lookup or resolveProjectPresentation.
+          const rawPath = typeof space.path === "string" ? space.path : ""
+          const hasPath = rawPath.trim().length > 0
+          const fallbackName =
+            (typeof space.label === "string" ? space.label.trim() : "") ||
+            (typeof space.id === "string" ? space.id.trim() : "") ||
+            "S"
+          const identity = hasPath
+            ? resolveProjectPresentation(
+                rawPath,
+                presentations[canonicalPathKey(rawPath)]
               )
-              const counts = agentCounts.get(normalizeWorkspacePath(path))
-              return (
-                <div key={path} className="relative">
-                  <button
-                    type="button"
-                    aria-label={t("rail.openRecentWorkspace", { name: presentation.name })}
-                    aria-pressed={active}
-                    title={workspacePathForDisplay(path)}
-                    onClick={() => handleOpenRecent(path)}
-                    onContextMenu={contextMenuHandler({ kind: "recentWorkspace", path })}
-                    className={cn(
-                      "flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold transition-all duration-[160ms] ease-(--ease-out)",
-                      active
-                        ? "bg-(--yz-hover) text-(--yz-accent-ink) shadow-(--shadow-xs)"
-                        : "border border-(--line-1) text-(--ink-2) hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
-                    )}
-                    style={active ? {
-                      background: presentation.color.background,
-                      color: presentation.color.foreground,
-                    } : undefined}
-                  >
-                    {presentation.glyph}
-                  </button>
-                  {counts && counts.total > 0 && (
-                    <span
-                      aria-label={t("rail.agentCount", { total: counts.total, running: counts.running })}
-                      className={cn(
-                        "absolute -right-[3px] -top-[3px] flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[9px] font-semibold leading-none text-white",
-                        counts.running > 0 ? "bg-(--yz-accent)" : "bg-(--ink-4)"
-                      )}
-                    >
-                      {counts.running > 0 ? `${counts.running}/${counts.total}` : counts.total}
-                    </span>
+            : {
+                name: fallbackName,
+                glyph: fallbackName.charAt(0).toUpperCase() || "S",
+                color: null
+              }
+          // Accessible open name prefers trimmed label, then id, never blank.
+          const openName = fallbackName
+          const statusLabel = space.status ?? "unknown"
+          const provenanceKind =
+            space.isLinkedWorktree === true
+              ? "linked"
+              : space.isLinkedWorktree === false
+                ? "source"
+                : null
+          const branchLabel = space.isDetached
+            ? t("rail.spaceDetached")
+            : space.branch
+              ? space.branch
+              : null
+          const resolvedTabCount = resolveSpaceTabCount(space, tabs)
+          const openAriaLabel = (() => {
+            const baseLabel = (() => {
+              if (provenanceKind === "linked") {
+                return t("rail.openLinkedWorktreeSpace", {
+                  name: openName,
+                  branch: branchLabel ?? t("rail.spaceNoBranch"),
+                  repo: space.repoName ?? space.repoRoot ?? ""
+                })
+              }
+              if (provenanceKind === "source") {
+                return t("rail.openSourceCheckoutSpace", {
+                  name: openName,
+                  branch: branchLabel ?? t("rail.spaceNoBranch"),
+                  repo: space.repoName ?? space.repoRoot ?? ""
+                })
+              }
+              return t("rail.openSpace", { name: openName })
+            })()
+            return `${baseLabel}, ${t("rail.tabCount", { count: resolvedTabCount })}`
+          })()
+          return (
+            <HoverCard key={space.id} openDelay={250} closeDelay={100}>
+              <HoverCardTrigger asChild>
+                <button
+                  type="button"
+                  data-testid={`rail-space-${space.id}`}
+                  aria-label={openAriaLabel}
+                  aria-pressed={active}
+                  aria-disabled={!canMutate}
+                  data-worktree-kind={provenanceKind ?? undefined}
+                  data-worktree-branch={space.branch ?? undefined}
+                  data-worktree-detached={space.isDetached ? "true" : undefined}
+                  onClick={() => void handleActivateSpace(space.id, space.path)}
+                  onContextMenu={contextMenuHandler({
+                    kind: "herdrSpace",
+                    sessionName: selectedSessionName ?? "",
+                    workspaceId: space.id,
+                    label: space.label,
+                    path: space.path ?? null
+                  })}
+                  className={cn(
+                    "relative flex w-[58px] min-h-[51px] shrink-0 flex-col items-center justify-center gap-[3px] rounded-[10px] px-0 py-[4px] transition-all duration-[160ms] ease-(--ease-out) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--yz-accent)/50",
+                    active ? "bg-(--yz-hover)" : "hover:bg-(--yz-hover)/70",
+                    !canMutate && "cursor-not-allowed opacity-50"
                   )}
+                >
+                  {active && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-0 top-1/2 h-[20px] w-[3px] -translate-y-1/2 rounded-full bg-(--yz-accent)"
+                    />
+                  )}
+                  <span className="relative">
+                    <span
+                      aria-hidden="true"
+                      data-testid={`rail-space-glyph-${space.id}`}
+                      className={cn(
+                        "flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold shadow-(--shadow-xs)",
+                        !identity.color &&
+                          "border border-(--line-1) bg-(--yz-field) text-(--ink-2)",
+                        active && "ring-2 ring-(--yz-accent)/45"
+                      )}
+                      style={
+                        identity.color
+                          ? {
+                              background: identity.color.background,
+                              color: identity.color.foreground
+                            }
+                          : undefined
+                      }
+                    >
+                      {identity.glyph}
+                    </span>
+                    {counts && counts.total > 0 && (
+                      <span
+                        aria-label={t("rail.agentCount", {
+                          total: counts.total,
+                          running: counts.running
+                        })}
+                        className={cn(
+                          "absolute -right-[3px] -top-[3px] flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[9px] font-semibold leading-none text-white",
+                          counts.running > 0 ? "bg-(--yz-accent)" : "bg-(--ink-4)"
+                        )}
+                      >
+                        {counts.running > 0 ? `${counts.running}/${counts.total}` : counts.total}
+                      </span>
+                    )}
+                    {resolvedTabCount > 0 && (
+                      <span
+                        data-testid={`rail-space-tab-count-${space.id}`}
+                        aria-label={t("rail.tabCount", { count: resolvedTabCount })}
+                        className="absolute -bottom-[3px] -right-[3px] flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-(--ink-2) px-[3px] text-[9px] font-semibold leading-none text-white"
+                      >
+                        {resolvedTabCount}
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    data-testid={`rail-space-label-${space.id}`}
+                    className={cn(
+                      "w-[54px] truncate text-center text-[8.5px] font-semibold leading-none",
+                      active ? "text-(--ink-0)" : "text-(--ink-3)"
+                    )}
+                  >
+                    {identity.name}
+                  </span>
+                </button>
+              </HoverCardTrigger>
+              <HoverCardContent
+                side="right"
+                align="start"
+                className="w-[260px]"
+                data-testid={`rail-space-card-${space.id}`}
+              >
+                <div className="flex flex-col gap-1.5">
+                  <div
+                    className="break-words text-[13px] font-semibold text-(--ink-0)"
+                    data-testid={`rail-space-card-label-${space.id}`}
+                  >
+                    {space.label}
+                  </div>
+                  <div
+                    className="break-all font-mono text-[11px] text-(--ink-3)"
+                    data-testid={`rail-space-card-path-${space.id}`}
+                  >
+                    {space.path ?? t("rail.spaceNoPath")}
+                  </div>
+                  <div className="text-[11px] text-(--ink-3)">
+                    {t("rail.spaceSession", {
+                      name: selectedSessionName ?? "—"
+                    })}
+                  </div>
+                  {provenanceKind && (
+                    <div
+                      className="text-[11px] text-(--ink-3)"
+                      data-testid={`rail-space-card-provenance-${space.id}`}
+                    >
+                      {provenanceKind === "linked"
+                        ? t("rail.spaceLinkedWorktree")
+                        : t("rail.spaceSourceCheckout")}
+                      {space.repoName
+                        ? ` · ${t("rail.spaceRepo", { name: space.repoName })}`
+                        : space.repoRoot
+                          ? ` · ${t("rail.spaceRepo", { name: space.repoRoot })}`
+                          : ""}
+                      {space.isDetached
+                        ? ` · ${t("rail.spaceDetached")}`
+                        : space.branch
+                          ? ` · ${t("rail.spaceBranch", { branch: space.branch })}`
+                          : ""}
+                    </div>
+                  )}
+                  <div className="text-[11px] text-(--ink-3)">
+                    {t("rail.spaceAgents", {
+                      total: counts?.total ?? 0,
+                      running: counts?.running ?? 0,
+                      status: statusLabel
+                    })}
+                  </div>
+                  <div className="text-[11px] text-(--ink-3)">
+                    {t("rail.spaceTabs", { count: resolvedTabCount })}
+                  </div>
                 </div>
-              )
-            })}
-          </div>
-        </>
-      )}
-
-      <div className="flex-1" />
+              </HoverCardContent>
+            </HoverCard>
+          )
+        })}
+      </ScrollArea>
 
       <button
         type="button"
-        aria-label={t("rail.openWorkspace")}
-        title={t("rail.openWorkspace")}
-        onClick={handleOpenWorkspace}
-        className="flex size-[38px] items-center justify-center rounded-[11px] border-[1.5px] border-dashed border-(--line-2) text-(--ink-3) transition-all duration-[180ms] ease-(--ease-spring) hover:border-(--yz-accent)/60 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
+        data-testid="rail-new-space"
+        aria-label={t("rail.newSpace")}
+        title={
+          mutationsDisabled
+            ? t("rail.newSpaceUnavailable")
+            : t("rail.newSpace")
+        }
+        onClick={() => void handleNewSpace()}
+        disabled={mutationsDisabled}
+        className="flex size-[38px] items-center justify-center rounded-[11px] border-[1.5px] border-dashed border-(--line-2) text-(--ink-3) transition-all duration-[180ms] ease-(--ease-spring) hover:border-(--yz-accent)/60 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink) disabled:pointer-events-none disabled:opacity-50"
       >
-        <Plus className="size-[16px]" aria-hidden="true" />
+        {creating ? (
+          <Plus className="size-[16px] animate-pulse" aria-hidden="true" />
+        ) : (
+          <FolderPlus className="size-[16px]" aria-hidden="true" />
+        )}
       </button>
 
       <button
@@ -238,18 +440,20 @@ export function WorkspaceRail({
         aria-label={t("rail.settings")}
         title={t("rail.settings")}
         onClick={onOpenSettings}
-        className="flex size-[32px] items-center justify-center rounded-full bg-[image:var(--grad-dusk)] text-[12px] font-semibold text-white shadow-(--shadow-sm) transition-transform duration-150 ease-(--ease-spring) hover:scale-[1.08]"
+        className="flex size-[32px] items-center justify-center rounded-[10px] text-(--ink-3) transition-colors duration-150 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
       >
-        Y
+        <Settings className="size-[17px]" aria-hidden="true" />
       </button>
 
       {visibleNotice && (
         <div
           role="status"
-          className="fixed bottom-[16px] left-[68px] z-50 max-w-[280px] rounded-[10px] border border-(--line-1) px-[12px] py-[8px] text-[11px] shadow-[var(--shadow-xl)]"
-          style={visibleNotice.danger
-            ? { background: "var(--danger-soft)", color: "var(--status-d)" }
-            : { background: "var(--frost-light)", color: "var(--ink-1)" }}
+          className="fixed bottom-[16px] left-[84px] z-50 max-w-[280px] rounded-[10px] border border-(--line-1) px-[12px] py-[8px] text-[11px] shadow-[var(--shadow-xl)]"
+          style={
+            visibleNotice.danger
+              ? { background: "var(--danger-soft)", color: "var(--status-d)" }
+              : { background: "var(--frost-light)", color: "var(--ink-1)" }
+          }
         >
           {visibleNotice.message}
         </div>

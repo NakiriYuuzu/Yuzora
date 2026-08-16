@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
+import { useAppDialogStore } from "@/state/appDialogStore"
 import {
   MAX_TERMINAL_TABS,
   terminalDisplayTitle,
@@ -146,7 +147,7 @@ describe("terminalCommands", () => {
     useTerminalStore.getState().removeSession(target.workspacePath, first.sessionId)
     const second = createTerminalSessionMeta(target.workspacePath)
 
-    expect(first.title).toBe("Terminal 1")
+    expect(first.title).toBe("workspace")
     expect(second.title).toBe("Terminal 2")
     expect(second.launchStatus).toBe("opening")
   })
@@ -235,21 +236,23 @@ describe("terminalCommands", () => {
       seedTarget()
       useTerminalStore.getState().setShellTitle(target.sessionId, "dev server")
       const calls: string[] = []
-      mockIPC((cmd, args) => {
+      mockIPC((cmd) => {
         calls.push(cmd)
         if (cmd === "pty_activity") return activity
-        if (cmd === "plugin:dialog|message") {
-          expect(args).toMatchObject({
-            title: "Close terminal",
-            message: expect.stringContaining("dev server"),
-          })
-          return "Ok"
-        }
         return undefined
       })
 
-      expect(await closeTerminal(target)).toBe("completed")
-      expect(calls).toEqual(["pty_activity", "plugin:dialog|message", "pty_close"])
+      const result = closeTerminal(target)
+      await vi.waitFor(() => {
+        expect(useAppDialogStore.getState().pending).toMatchObject({
+          type: "confirm",
+          title: "Close terminal",
+          description: expect.stringContaining("dev server"),
+        })
+      })
+      useAppDialogStore.getState().respond(true)
+      await expect(result).resolves.toBe("completed")
+      expect(calls).toEqual(["pty_activity", "pty_close"])
     }
   )
 
@@ -257,11 +260,13 @@ describe("terminalCommands", () => {
     seedTarget()
     mockIPC((cmd) => {
       if (cmd === "pty_activity") return "busy"
-      if (cmd === "plugin:dialog|message") return "Cancel"
       return undefined
     })
 
-    expect(await closeTerminal(target)).toBe("cancelled")
+    const result = closeTerminal(target)
+    await vi.waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+    useAppDialogStore.getState().respond(false)
+    await expect(result).resolves.toBe("cancelled")
     expect(useTerminalStore.getState().sessions[target.sessionId]).toBeDefined()
   })
 
@@ -271,12 +276,14 @@ describe("terminalCommands", () => {
     mockIPC((cmd) => {
       calls.push(cmd)
       if (cmd === "pty_activity") throw new Error("unsupported")
-      if (cmd === "plugin:dialog|message") return "Cancel"
       return undefined
     })
 
-    expect(await closeTerminal(target)).toBe("cancelled")
-    expect(calls).toEqual(["pty_activity", "plugin:dialog|message"])
+    const result = closeTerminal(target)
+    await vi.waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+    useAppDialogStore.getState().respond(false)
+    await expect(result).resolves.toBe("cancelled")
+    expect(calls).toEqual(["pty_activity"])
   })
 
   it("closes a failed spawn without activity lookup or confirmation", async () => {

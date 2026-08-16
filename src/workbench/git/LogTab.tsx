@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
+import { Button } from "@/components/ui/button"
+
 import type { CommitFileChange } from "@/lib/types"
 import { logUserAction } from "@/features/logs/userAction"
 import { gitCheckout, gitCherryPick } from "@/lib/ipc"
@@ -138,7 +140,9 @@ export function LogTab({
     const hasMore = useGitLogStore((s) => s.hasMore)
     const loading = useGitLogStore((s) => s.loading)
     const loadingMore = useGitLogStore((s) => s.loadingMore)
-    const error = useGitLogStore((s) => s.error)
+    const listError = useGitLogStore((s) => s.listError)
+    const loadMoreError = useGitLogStore((s) => s.loadMoreError)
+    const detailError = useGitLogStore((s) => s.detailError)
     const filters = useGitLogStore((s) => s.filters)
     const authors = useGitLogStore((s) => s.authors)
     const selectedHash = useGitLogStore((s) => s.selectedHash)
@@ -153,6 +157,8 @@ export function LogTab({
     const runOp = useGitStore((s) => s.runOp)
     const status = useGitStore((s) => s.status)
     const busy = useGitStore((s) => s.busy)
+    const snapshotStale = useGitStore((s) => s.snapshotStale)
+    const repositoryRoot = useGitStore((s) => s.environment?.status === "ready" ? s.environment.root : null)
 
     // HEAD-change signal. branch + headOid change together on commit / checkout /
     // reset / merge but NOT on plain working-tree edits (those touch the file
@@ -175,13 +181,23 @@ export function LogTab({
     // avoid a redundant second load from the HEAD effect firing on the same
     // change.
     const firstHead = useRef(true)
+    const hasStatus = status != null
+    const mutationsDisabled = busy != null || snapshotStale || !repositoryRoot
     useEffect(() => {
-        useGitLogStore.getState().reset()
+        // Cancel any pending search debounce on repository/readiness change so a
+        // pre-switch timer cannot issue A-root setFilters under B's UI.
+        if (queryTimer.current) {
+            clearTimeout(queryTimer.current)
+            queryTimer.current = null
+        }
+        useGitLogStore.getState().reset({ preserveAuthorSession: true })
         setQuery("")
         firstHead.current = true
-        void loadFirstPage()
+        // Depend on hasStatus, not the whole status object — ordinary refresh
+        // must not wipe the log list/selection.
+        if (repositoryRoot && !snapshotStale && hasStatus) void loadFirstPage(repositoryRoot)
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [workspacePath])
+    }, [workspacePath, repositoryRoot, snapshotStale, hasStatus, loadFirstPage])
 
     // Reload when HEAD moves (new commit / checkout / reset). Skipped on the very
     // first render pair via a ref so it doesn't double-load alongside mount.
@@ -190,9 +206,9 @@ export function LogTab({
             firstHead.current = false
             return
         }
-        void loadFirstPage()
+        if (repositoryRoot && !snapshotStale && hasStatus) void loadFirstPage(repositoryRoot)
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [branch, headOid])
+    }, [branch, headOid, repositoryRoot, snapshotStale, hasStatus, loadFirstPage])
 
     // Clear a pending debounce on unmount so a trailing timer can't fire after
     // the input is gone. Without this, "type → switch tab → switch back" inside
@@ -208,7 +224,12 @@ export function LogTab({
         setQuery(next)
         if (queryTimer.current) clearTimeout(queryTimer.current)
         queryTimer.current = setTimeout(() => {
-            setFilters({ query: next })
+            // Re-read live store: the closure may outlive a workspace switch.
+            const live = useGitStore.getState()
+            const root =
+                live.environment?.status === "ready" ? live.environment.root : null
+            if (!root || live.snapshotStale || live.status == null) return
+            setFilters(root, { query: next })
         }, QUERY_DEBOUNCE_MS)
     }
 
@@ -225,13 +246,14 @@ export function LogTab({
             return
         }
         setCheckoutNotice(null)
-        const ok = await runOp("checkout", () => gitCheckout(hash))
+        if (mutationsDisabled || !repositoryRoot) return
+        const ok = await runOp("checkout", () => gitCheckout(repositoryRoot, hash))
         if (ok) void logUserAction("git_checkout", `checkout ${hash.slice(0, 7)}`)
     }
 
     const selectedCommit = commits.find((c) => c.hash === selectedHash) ?? null
     const cherryPickDisabled =
-        !!status?.inProgress || (status?.conflicted?.length ?? 0) > 0 || !!busy
+        !!status?.inProgress || (status?.conflicted?.length ?? 0) > 0 || mutationsDisabled
 
     // User dropdown options: "All" + author names (§brief filters.author = name).
     const userOptions = [
@@ -275,9 +297,11 @@ export function LogTab({
                     field={t("logTab.userFilterLabel")}
                     value={userValue}
                     options={userOptions}
-                    onSelect={(key) =>
-                        setFilters({ author: key === "__all__" ? null : key })
-                    }
+                    onSelect={(key) => {
+                        if (repositoryRoot && !snapshotStale) {
+                            setFilters(repositoryRoot, { author: key === "__all__" ? null : key })
+                        }
+                    }}
                 />
                 <FilterDropdown
                     field={t("logTab.dateFilterLabel")}
@@ -285,7 +309,9 @@ export function LogTab({
                     options={DATE_OPTIONS.map((o) => ({ key: o.label, label: o.label }))}
                     onSelect={(key) => {
                         const opt = DATE_OPTIONS.find((o) => o.label === key)
-                        setFilters({ since: opt?.since ?? null })
+                        if (repositoryRoot && !snapshotStale) {
+                            setFilters(repositoryRoot, { since: opt?.since ?? null })
+                        }
                     }}
                 />
             </div>
@@ -306,16 +332,19 @@ export function LogTab({
                         <div className="flex flex-1 items-center justify-center text-[12.5px] text-(--ink-3)">
                             {t("logTab.loadingCommits")}
                         </div>
-                    ) : error ? (
+                    ) : listError ? (
                         <div className="flex flex-1 flex-col items-center justify-center gap-[10px] px-[16px] text-center">
-                            <span className="text-[12.5px] text-(--ink-2)">{error}</span>
-                            <button
+                            <span role="alert" className="text-[12.5px] text-(--ink-2)">
+                                {t("logTab.listFailed", { message: listError })}
+                            </span>
+                            <Button
                                 type="button"
-                                onClick={() => void loadFirstPage()}
+                                size="sm"
+                                onClick={() => repositoryRoot && void loadFirstPage(repositoryRoot)}
                                 className="h-[28px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[12px] text-[11.5px] font-semibold text-(--ink-1) shadow-(--shadow-xs) transition-colors hover:bg-(--paper-1)"
                             >
                                 {t("logTab.retry")}
-                            </button>
+                            </Button>
                         </div>
                     ) : commits.length === 0 ? (
                         <div className="flex flex-1 items-center justify-center text-[12.5px] text-(--ink-3)">
@@ -325,10 +354,12 @@ export function LogTab({
                         <LogGraph
                             commits={commits}
                             selectedHash={selectedHash}
-                            onSelect={(hash) => void select(hash)}
+                            onSelect={(hash) => repositoryRoot && void select(repositoryRoot, hash)}
                             hasMore={hasMore}
                             loadingMore={loadingMore}
-                            onLoadMore={() => void loadMore()}
+                            loadMoreError={loadMoreError}
+                            onLoadMore={() => repositoryRoot && void loadMore(repositoryRoot)}
+                            onRetryLoadMore={() => repositoryRoot && void loadMore(repositoryRoot)}
                         />
                     )}
                 </div>
@@ -337,14 +368,25 @@ export function LogTab({
                     selectedCommit={selectedCommit}
                     detail={detail}
                     detailLoading={detailLoading}
+                    detailError={detailError}
+                    onRetryDetail={
+                        repositoryRoot && selectedCommit
+                            ? () => void select(repositoryRoot, selectedCommit.hash)
+                            : undefined
+                    }
                     onCheckout={(hash) => void onCheckout(hash)}
+                    checkoutDisabled={mutationsDisabled}
                     onOpenFile={
                         onOpenFile && selectedCommit
                             ? (file) => onOpenFile(selectedCommit.hash, file)
                             : undefined
                     }
                     onCompare={onCompare}
-                    onCherryPick={(hash) => void runOp("cherry-pick", () => gitCherryPick(hash))}
+                    onCherryPick={(hash) =>
+                        repositoryRoot
+                        && !mutationsDisabled
+                        && void runOp("cherry-pick", () => gitCherryPick(repositoryRoot, hash))
+                    }
                     cherryPickDisabled={cherryPickDisabled}
                 />
             </div>

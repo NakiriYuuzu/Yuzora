@@ -56,12 +56,13 @@ function makeDetail(overrides: Partial<CommitDetail> = {}): CommitDetail {
 // Controllable ipc mocks. gitLogPage / gitCommitDetail are reassigned per test.
 const gitLogPage = vi.fn<(...a: unknown[]) => Promise<LogPage>>(async () => ({
     commits: [],
-    hasMore: false
+    hasMore: false,
+    nextCursor: null
 }))
-const gitLogAuthors = vi.fn<() => Promise<AuthorEntry[]>>(async () => [])
-const gitCommitDetail = vi.fn<(hash: string) => Promise<CommitDetail>>(async () => makeDetail())
-const gitCheckout = vi.fn(async () => undefined)
-const gitCherryPick = vi.fn<(hash: string) => Promise<void>>(async () => undefined)
+const gitLogAuthors = vi.fn<(...a: unknown[]) => Promise<AuthorEntry[]>>(async () => [])
+const gitCommitDetail = vi.fn<(root: string, hash: string) => Promise<CommitDetail>>(async () => makeDetail())
+const gitCheckout = vi.fn<(...a: unknown[]) => Promise<void>>(async () => undefined)
+const gitCherryPick = vi.fn<(root: string, hash: string) => Promise<void>>(async () => undefined)
 const logUserAction = vi.fn<
     (event: string, message: string, metadata?: Record<string, unknown>) => Promise<void>
 >(async () => undefined)
@@ -69,14 +70,14 @@ const writeText = vi.fn(async () => undefined)
 
 vi.mock("@/lib/ipc", () => ({
     gitLogPage: (...a: unknown[]) => gitLogPage(...a),
-    gitLogAuthors: () => gitLogAuthors(),
-    gitCommitDetail: (h: string) => gitCommitDetail(h),
-    gitCheckout: () => gitCheckout(),
-    gitCherryPick: (h: string) => gitCherryPick(h),
+    gitLogAuthors: (root: string) => gitLogAuthors(root),
+    gitCommitDetail: (root: string, h: string) => gitCommitDetail(root, h),
+    gitCheckout: (...a: unknown[]) => gitCheckout(...a),
+    gitCherryPick: (root: string, h: string) => gitCherryPick(root, h),
     // gitStore also imports these; harmless stubs for its module graph.
     gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50" })),
     gitStatus: vi.fn(async () => makeStatus()),
-    gitBranches: vi.fn(async () => ({ local: [], remote: [] })),
+    gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     gitRemoteProbe: vi.fn(async () => "no"),
     gitFetch: vi.fn(async () => undefined),
     gitPull: vi.fn(async () => undefined),
@@ -95,7 +96,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 
 const { LogTab } = await import("./LogTab")
 const { useGitLogStore } = await import("@/state/gitLogStore")
-const { useGitStore, initialGitState } = await import("@/state/gitStore")
+const { useGitStore, initialGitState, clearGitSnapshots } = await import("@/state/gitStore")
 const { useWorkspaceStore } = await import("@/state/workspaceStore")
 
 async function renderLog() {
@@ -107,10 +108,21 @@ async function renderLog() {
 }
 
 beforeEach(() => {
+    clearGitSnapshots()
     useGitLogStore.getState().reset()
-    useGitStore.setState({ ...initialGitState, status: makeStatus() })
-    useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }] })
-    gitLogPage.mockReset().mockResolvedValue({ commits: [], hasMore: false })
+    useGitStore.setState({
+        ...initialGitState,
+        environment: { status: "ready", root: "/w", version: "2.50" },
+        status: makeStatus(),
+        snapshotStale: false,
+        busy: null
+    })
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        groups: [{ tabs: [], activePath: null }],
+        activeGroupIndex: 0
+    })
+    gitLogPage.mockReset().mockResolvedValue({ commits: [], hasMore: false, nextCursor: null })
     gitLogAuthors.mockReset().mockResolvedValue([])
     gitCommitDetail.mockReset().mockResolvedValue(makeDetail())
     gitCheckout.mockClear()
@@ -128,7 +140,8 @@ describe("LogTab commit list", () => {
                 makeCommit(0, { subject: "Merge feature", refs: [{ name: "main", kind: "local" }] }),
                 makeCommit(1, { subject: "second commit" })
             ],
-            hasMore: false
+            hasMore: false,
+            nextCursor: null
         })
         await renderLog()
 
@@ -140,8 +153,22 @@ describe("LogTab commit list", () => {
         expect(screen.getByText("main")).toBeInTheDocument()
     })
 
+    it("activates a focused commit row with Enter and Space", async () => {
+        gitLogPage.mockResolvedValue({ commits: [makeCommit(0), makeCommit(1)], hasMore: false , nextCursor: null })
+        await renderLog()
+
+        const first = (await screen.findByText("commit subject 0")).closest('[role="button"]')
+        const second = screen.getByText("commit subject 1").closest('[role="button"]')
+        expect(first).not.toBeNull()
+        expect(second).not.toBeNull()
+        fireEvent.keyDown(first!, { key: "Enter" })
+        await waitFor(() => expect(gitCommitDetail).toHaveBeenCalledWith("/w", makeCommit(0).hash))
+        fireEvent.keyDown(second!, { key: " " })
+        await waitFor(() => expect(gitCommitDetail).toHaveBeenCalledWith("/w", makeCommit(1).hash))
+    })
+
     it("selecting a row loads and shows the commit details", async () => {
-        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false })
+        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false , nextCursor: null })
         gitCommitDetail.mockResolvedValue(makeDetail({ subject: "commit subject 0" }))
         await renderLog()
 
@@ -153,7 +180,7 @@ describe("LogTab commit list", () => {
     })
 
     it("shows the empty state when no commits match", async () => {
-        gitLogPage.mockResolvedValue({ commits: [], hasMore: false })
+        gitLogPage.mockResolvedValue({ commits: [], hasMore: false , nextCursor: null })
         await renderLog()
         expect(
             await screen.findByText("No commits match the current filters.")
@@ -164,13 +191,13 @@ describe("LogTab commit list", () => {
         gitLogPage.mockRejectedValueOnce(new Error("boom"))
         await renderLog()
         const retry = await screen.findByRole("button", { name: "Retry" })
-        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false })
+        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false , nextCursor: null })
         fireEvent.click(retry)
         expect(await screen.findByText("commit subject 0")).toBeInTheDocument()
     })
 
     it("reloads the first page when HEAD moves (headOid changes)", async () => {
-        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false })
+        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false , nextCursor: null })
         await renderLog()
         await screen.findByText("commit subject 0")
         gitLogPage.mockClear()
@@ -196,7 +223,42 @@ describe("LogTab filters", () => {
             act(() => {
                 vi.advanceTimersByTime(250)
             })
-            expect(setFilters).toHaveBeenCalledWith({ query: "fix" })
+            expect(setFilters).toHaveBeenCalledWith("/w", { query: "fix" })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it("cancels pending debounce on repository switch so A cannot setFilters under B", async () => {
+        vi.useFakeTimers()
+        try {
+            const setFilters = vi.spyOn(useGitLogStore.getState(), "setFilters")
+            render(<LogTab />)
+            fireEvent.change(screen.getByLabelText("Filter commits"), {
+                target: { value: "from-a" },
+            })
+            // Switch to cached/stale B before the 250ms debounce fires.
+            act(() => {
+                useGitStore.setState({
+                    environment: { status: "ready", root: "/repo-b", version: "2.50.1" },
+                    snapshotStale: true,
+                    status: makeStatus(),
+                })
+            })
+            act(() => {
+                vi.advanceTimersByTime(250)
+            })
+            expect(setFilters).not.toHaveBeenCalledWith("/w", { query: "from-a" })
+            expect(setFilters).not.toHaveBeenCalledWith("/repo-b", { query: "from-a" })
+            expect(gitLogPage).not.toHaveBeenCalledWith(
+                "/w",
+                expect.anything(),
+                expect.anything(),
+                "from-a",
+                expect.anything(),
+                expect.anything(),
+                expect.anything()
+            )
         } finally {
             vi.useRealTimers()
         }
@@ -269,20 +331,66 @@ describe("LogTab filters", () => {
         fireEvent.click(screen.getByRole("menuitem", { name: "All" }))
         expect(useGitLogStore.getState().filters.since).toBe(null)
     })
+
+    it("reuses authors after a repository A → B → A switch without a third scan", async () => {
+        gitLogAuthors.mockImplementation(async (root: unknown) => (
+            root === "/repo-a"
+                ? [{ name: "Alice", email: "a@x" }]
+                : [{ name: "Bob", email: "b@x" }]
+        ))
+        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false, nextCursor: null })
+        act(() => {
+            useGitStore.setState({
+                environment: { status: "ready", root: "/repo-a", version: "2.50" }
+            })
+            useWorkspaceStore.setState({ workspacePath: "/repo-a" })
+        })
+        await renderLog()
+        await waitFor(() => expect(useGitLogStore.getState().authors).toEqual([
+            { name: "Alice", email: "a@x" }
+        ]))
+        expect(gitLogAuthors).toHaveBeenCalledTimes(1)
+
+        act(() => {
+            useGitStore.setState({
+                environment: { status: "ready", root: "/repo-b", version: "2.50" }
+            })
+            useWorkspaceStore.setState({ workspacePath: "/repo-b" })
+        })
+        await waitFor(() => expect(useGitLogStore.getState().authors).toEqual([
+            { name: "Bob", email: "b@x" }
+        ]))
+        expect(gitLogAuthors).toHaveBeenCalledTimes(2)
+
+        act(() => {
+            useGitStore.setState({
+                environment: { status: "ready", root: "/repo-a", version: "2.50" }
+            })
+            useWorkspaceStore.setState({ workspacePath: "/repo-a" })
+        })
+        await waitFor(() => expect(useGitLogStore.getState().authors).toEqual([
+            { name: "Alice", email: "a@x" }
+        ]))
+        expect(gitLogAuthors).toHaveBeenCalledTimes(2)
+        expect(gitLogAuthors).toHaveBeenNthCalledWith(1, "/repo-a")
+        expect(gitLogAuthors).toHaveBeenNthCalledWith(2, "/repo-b")
+    })
 })
 
 describe("LogTab infinite scroll + virtualization", () => {
     it("triggers loadMore when scrolled near the bottom", async () => {
         gitLogPage.mockResolvedValue({
             commits: Array.from({ length: 200 }, (_, i) => makeCommit(i)),
-            hasMore: true
+            hasMore: true,
+            nextCursor: "cursor-next"
         })
         await renderLog()
         await screen.findByText("commit subject 0")
         gitLogPage.mockClear()
         gitLogPage.mockResolvedValue({
             commits: Array.from({ length: 50 }, (_, i) => makeCommit(200 + i)),
-            hasMore: false
+            hasMore: false,
+            nextCursor: null
         })
 
         const scroll = screen.getByTestId("log-scroll")
@@ -298,7 +406,8 @@ describe("LogTab infinite scroll + virtualization", () => {
     it("virtualizes: 1000 commits render only a windowed subset of rows", async () => {
         gitLogPage.mockResolvedValue({
             commits: Array.from({ length: 1000 }, (_, i) => makeCommit(i)),
-            hasMore: false
+            hasMore: false,
+            nextCursor: null
         })
         await renderLog()
         await screen.findByText("commit subject 0")
@@ -307,12 +416,58 @@ describe("LogTab infinite scroll + virtualization", () => {
         const rendered = screen.getAllByText(/^commit subject \d+$/)
         expect(rendered.length).toBeLessThan(200)
         expect(rendered.length).toBeGreaterThan(0)
+        const svg = screen.getByTestId("log-graph-svg")
+        expect(Number(svg.getAttribute("height"))).toBeLessThan(1000 * 32)
+        expect(Number(svg.getAttribute("height"))).toBeGreaterThan(0)
+    })
+
+    it("renders newly exposed rows when the viewport resizes without scrolling", async () => {
+        const observed: Array<{ cb: ResizeObserverCallback; el: Element }> = []
+        class Harness implements ResizeObserver {
+            constructor(private readonly cb: ResizeObserverCallback) {}
+            observe(el: Element) { observed.push({ cb: this.cb, el }) }
+            unobserve() {}
+            disconnect() {}
+            takeRecords(): ResizeObserverEntry[] { return [] }
+        }
+        const previous = globalThis.ResizeObserver
+        globalThis.ResizeObserver = Harness as unknown as typeof ResizeObserver
+        try {
+            gitLogPage.mockResolvedValue({
+                commits: Array.from({ length: 1000 }, (_, i) => makeCommit(i)),
+                hasMore: false,
+                nextCursor: null
+            })
+            await renderLog()
+            await screen.findByText("commit subject 0")
+            expect(screen.queryByText("commit subject 80")).toBeNull()
+            const target = observed.find(({ el }) => (el as HTMLElement).dataset.testid === "log-scroll") ?? observed[0]
+            expect(target).toBeTruthy()
+            Object.defineProperty(target.el, "clientHeight", { value: 2400, configurable: true })
+            Object.defineProperty(target.el, "scrollTop", { value: 0, configurable: true })
+            await act(async () => {
+                target.cb([
+                    {
+                        target: target.el,
+                        contentRect: {
+                            x: 0, y: 0, width: 300, height: 2400, top: 0, left: 0, bottom: 2400, right: 300,
+                            toJSON() { return {} }
+                        }
+                    } as ResizeObserverEntry
+                ], {} as ResizeObserver)
+                await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
+            })
+            expect(screen.getByText("commit subject 80")).toBeInTheDocument()
+            expect(screen.getByText("commit subject 0")).toBeInTheDocument()
+        } finally {
+            globalThis.ResizeObserver = previous
+        }
     })
 })
 
 describe("LogTab details actions", () => {
     async function renderWithSelection() {
-        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false })
+        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false , nextCursor: null })
         await renderLog()
         fireEvent.click(await screen.findByText("commit subject 0"))
         await screen.findByText("git.rs")
@@ -333,7 +488,7 @@ describe("LogTab details actions", () => {
     it("Cherry-pick routes through gitStore.runOp / gitCherryPick", async () => {
         await renderWithSelection()
         fireEvent.click(screen.getByRole("button", { name: "Cherry-pick" }))
-        await waitFor(() => expect(gitCherryPick).toHaveBeenCalledWith(makeCommit(0).hash))
+        await waitFor(() => expect(gitCherryPick).toHaveBeenCalledWith("/w", makeCommit(0).hash))
     })
 
     it("blocks Checkout while an editor tab is dirty", async () => {
@@ -354,33 +509,35 @@ describe("LogTab details actions", () => {
     })
 
     it("disables Cherry-pick while an operation is in progress", async () => {
-        useGitStore.setState({ status: makeStatus({ inProgress: "merge" }) })
         await renderWithSelection()
-        expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
+        act(() => useGitStore.setState({ status: makeStatus({ inProgress: "merge" }) }))
+        expect(await screen.findByRole("button", { name: "Cherry-pick" })).toBeDisabled()
     })
 
     it("disables Cherry-pick when conflicts are present", async () => {
-        useGitStore.setState({
-            status: makeStatus({ conflicted: [{ path: "a.ts", origPath: null, status: "UU" }] })
-        })
         await renderWithSelection()
-        expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
+        act(() => useGitStore.setState({
+            status: makeStatus({ conflicted: [{ path: "a.ts", origPath: null, status: "UU" }] })
+        }))
+        expect(await screen.findByRole("button", { name: "Cherry-pick" })).toBeDisabled()
     })
 
     it("disables Cherry-pick while the git store is busy", async () => {
-        useGitStore.setState({ busy: "pull" })
         await renderWithSelection()
-        expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
+        act(() => useGitStore.setState({ busy: "pull" }))
+        await waitFor(() =>
+            expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
+        )
     })
 
     it("Compare / Reset are present and disabled", async () => {
         await renderWithSelection()
-        expect(screen.getByRole("button", { name: "Compare" })).toBeDisabled()
+        expect(await screen.findByRole("button", { name: "Compare" })).toBeDisabled()
         expect(screen.getByRole("button", { name: "Reset main to here…" })).toBeDisabled()
     })
 
     it("shows the empty details prompt before any selection", async () => {
-        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false })
+        gitLogPage.mockResolvedValue({ commits: [makeCommit(0)], hasMore: false , nextCursor: null })
         await renderLog()
         expect(
             await screen.findByText("Select a commit to view details")

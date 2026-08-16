@@ -36,7 +36,72 @@ describe("uiStore", () => {
         expect(s.mode).toBe("git")
         expect(s.gitSelectedPath).toBe("/w/a.ts")
         expect(s.gitSelectedStaged).toBe(false)
+        expect(s.gitPanelTab).toBe("local")
+        expect(s.gitChangeSelection).toHaveLength(1)
+        expect(s.gitChangeSelection[0]).toMatchObject({ path: "/w/a.ts", staged: false })
     })
+
+    it("selectGitFile routes ConflictBanner selections to Local changes", () => {
+        useUiStore.getState().selectGitFile("conflict.ts", false)
+        const s = useUiStore.getState()
+        expect(s.mode).toBe("git")
+        expect(s.gitPanelTab).toBe("local")
+        expect(s.gitSelectedPath).toBe("conflict.ts")
+        expect(s.gitChangeSelection).toEqual([
+            expect.objectContaining({ path: "conflict.ts", staged: false })
+        ])
+        expect(s.gitChangePrimary).toMatchObject({ path: "conflict.ts", staged: false })
+        expect(s.gitChangeAnchor).toMatchObject({ path: "conflict.ts", staged: false })
+    })
+
+    it("selectGitFile replaces a previous Local selection with the conflict target", () => {
+        const other = {
+            path: "other.ts",
+            staged: false as const,
+            classification: "tracked" as const,
+            stagedStatus: null,
+            unstagedStatus: "M",
+            origPath: null,
+            badge: "M"
+        }
+        useUiStore.getState().selectGitChange(other, [other], "single")
+        useUiStore.getState().selectGitFile("conflict.ts", false)
+        const s = useUiStore.getState()
+        expect(s.gitSelectedPath).toBe("conflict.ts")
+        expect(s.gitChangeSelection.map((row) => row.path)).toEqual(["conflict.ts"])
+        expect(s.gitChangePrimary?.path).toBe("conflict.ts")
+    })
+
+    it("gitDiffMode defaults to split and stays sticky across repository UI resets", () => {
+        expect(useUiStore.getState().gitDiffMode).toBe("split")
+        useUiStore.getState().setGitDiffMode("unified")
+        useUiStore.getState().resetGitRepositoryUi()
+        expect(useUiStore.getState().gitDiffMode).toBe("unified")
+    })
+
+    it("gitDiffSplitRatio is session-only, clamped, and survives repository UI resets", () => {
+        expect(useUiStore.getState().gitDiffSplitRatio).toBe(0.5)
+        useUiStore.getState().setGitDiffSplitRatio(0.1)
+        expect(useUiStore.getState().gitDiffSplitRatio).toBe(0.25)
+        useUiStore.getState().setGitDiffSplitRatio(0.9)
+        expect(useUiStore.getState().gitDiffSplitRatio).toBe(0.75)
+        useUiStore.getState().resetGitRepositoryUi()
+        expect(useUiStore.getState().gitDiffSplitRatio).toBe(0.75)
+        useUiStore.getState().resetGitDiffSplitRatio()
+        expect(useUiStore.getState().gitDiffSplitRatio).toBe(0.5)
+    })
+
+    it("resetGitRepositoryUi clears repository-scoped tab and selection", () => {
+        useUiStore.getState().selectGitFile("a.ts", false)
+        useUiStore.getState().setGitPanelTab("console")
+        useUiStore.getState().resetGitRepositoryUi()
+        expect(useUiStore.getState()).toMatchObject({
+            gitPanelTab: "log",
+            gitSelectedPath: null,
+            gitChangeSelection: []
+        })
+    })
+
     it("resolver open/close roundtrip", () => {
         useUiStore.getState().openResolver("/w/b.ts")
         expect(useUiStore.getState().resolverPath).toBe("/w/b.ts")
@@ -133,6 +198,66 @@ describe("uiStore", () => {
         expect(useUiStore.getState().gitSelectedStaged).toBe(true)
     })
 
+    it("drops a missing path+staged identity unless movedSides names the path",
+        () => {
+            const before = gitChangeRows(status({
+                staged: [{ path: "mm.ts", origPath: null, status: "M" }],
+                unstaged: [{ path: "mm.ts", origPath: null, status: "M" }]
+            }))
+            useUiStore.getState().selectGitChange(before[0], before, "single")
+            const onlyUnstaged = gitChangeRows(status({
+                unstaged: [{ path: "mm.ts", origPath: null, status: "M" }]
+            }))
+            useUiStore.getState().reconcileGitChangeSelection(onlyUnstaged)
+            expect(useUiStore.getState().gitChangeSelection).toEqual([])
+            expect(useUiStore.getState().gitChangePrimary).toBeNull()
+            expect(useUiStore.getState().gitChangeAnchor).toBeNull()
+            expect(useUiStore.getState().gitSelectedPath).toBeNull()
+            expect(useUiStore.getState().gitSelectedStaged).toBe(false)
+        })
+
+    it("movedSides can remapped a staged identity onto the surviving unstaged side", () => {
+        const before = gitChangeRows(status({
+            staged: [{ path: "mm.ts", origPath: null, status: "M" }],
+            unstaged: [{ path: "mm.ts", origPath: null, status: "M" }]
+        }))
+        useUiStore.getState().selectGitChange(before[0], before, "single")
+        const onlyUnstaged = gitChangeRows(status({
+            unstaged: [{ path: "mm.ts", origPath: null, status: "M" }]
+        }))
+        useUiStore.getState().reconcileGitChangeSelection(onlyUnstaged, { "mm.ts": false })
+        expect(useUiStore.getState().gitChangeSelection).toEqual([onlyUnstaged[0]])
+        expect(useUiStore.getState().gitChangePrimary).toEqual(onlyUnstaged[0])
+        expect(useUiStore.getState().gitSelectedStaged).toBe(false)
+    })
+
+    it("applyGitChangeMovedSides flips identity without requiring the target row", () => {
+        const before = gitChangeRows(status({
+            unstaged: [{ path: "b.ts", origPath: null, status: "M" }]
+        }))
+        useUiStore.getState().selectGitChange(before[0], before, "single")
+        useUiStore.getState().applyGitChangeMovedSides({ "b.ts": true })
+        expect(useUiStore.getState().gitChangeSelection[0]?.staged).toBe(true)
+        expect(useUiStore.getState().gitSelectedPath).toBe("b.ts")
+        expect(useUiStore.getState().gitSelectedStaged).toBe(true)
+        useUiStore.getState().reconcileGitChangeSelection(before)
+        expect(useUiStore.getState().gitChangeSelection).toEqual([])
+        expect(useUiStore.getState().gitSelectedPath).toBeNull()
+    })
+
+    it("deep-link reconcile keeps the seeded unstaged side when that identity exists", () => {
+        useUiStore.getState().openDiffInGitMode("readme.md")
+        const rows = gitChangeRows(status({
+            staged: [{ path: "readme.md", origPath: null, status: "M" }],
+            unstaged: [{ path: "readme.md", origPath: null, status: "M" }]
+        }))
+        useUiStore.getState().reconcileGitChangeSelection(rows)
+        const selected = useUiStore.getState()
+        expect(selected.gitSelectedPath).toBe("readme.md")
+        expect(selected.gitSelectedStaged).toBe(false)
+        expect(selected.gitChangeSelection).toEqual([rows.find((row) => !row.staged)])
+    })
+
     it("right-click selection keeps an already-selected row, but replaces selection for an unselected row", () => {
         const rows = gitChangeRows(status({ untracked: ["a.ts", "b.ts", "c.ts"] }))
         useUiStore.getState().selectGitChange(rows[0], rows, "single")
@@ -155,6 +280,19 @@ describe("uiStore", () => {
         expect(isGitToggleModifier({ metaKey: false, ctrlKey: true })).toBe(true)
         expect(isGitToggleModifier({ metaKey: true, ctrlKey: false })).toBe(false)
         platform.mockRestore()
+    })
+
+    it("clear and select-visible keep primary/anchor aligned", () => {
+        const rows = gitChangeRows(status({
+            staged: [{ path: "a.ts", origPath: null, status: "M" }],
+            unstaged: [{ path: "b.ts", origPath: null, status: "M" }]
+        }))
+        useUiStore.getState().selectVisibleGitChanges(rows)
+        expect(useUiStore.getState().gitChangeSelection).toHaveLength(2)
+        expect(useUiStore.getState().gitChangePrimary?.path).toBe("b.ts")
+        useUiStore.getState().clearGitChangeSelection()
+        expect(useUiStore.getState().gitChangeSelection).toEqual([])
+        expect(useUiStore.getState().gitSelectedPath).toBeNull()
     })
 
     it("classifies an unstaged A snapshot as added for the rollback contract", () => {

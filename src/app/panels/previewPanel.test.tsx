@@ -3,7 +3,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import i18n from "@/lib/i18n"
+import { useAppDialogStore } from "@/state/appDialogStore"
 import { useContextMenuStore } from "@/state/contextMenuStore"
+import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { usePreviewStore } from "@/state/previewStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -14,6 +16,7 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 // deliberately small since the happy paths are already covered there.
 
 const ipcMocks = vi.hoisted(() => ({
+  requestDevServerAuthorization: vi.fn(),
   devServerDetect: vi.fn(),
   devServerStart: vi.fn(),
   devServerStop: vi.fn(),
@@ -34,6 +37,12 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 vi.mock("@/lib/actionFeedback", () => ({
   showActionError: (...args: unknown[]) => ipcMocks.showActionError(...args),
+}))
+
+vi.mock("@/state/workspaceTrustStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/state/workspaceTrustStore")>()),
+  requestDevServerAuthorization: (...args: unknown[]) =>
+    ipcMocks.requestDevServerAuthorization(...args),
 }))
 
 vi.mock("@/lib/ipc", async (importOriginal) => ({
@@ -88,6 +97,7 @@ beforeEach(() => {
   installLocalStorage()
   useWorkspaceStore.setState({ workspacePath: "/workspace" })
   useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
+  ipcMocks.requestDevServerAuthorization.mockResolvedValue("challenge-1")
 })
 
 afterEach(async () => {
@@ -96,6 +106,7 @@ afterEach(async () => {
   usePreviewStore.getState().reset()
   useWorkspaceStore.setState({ workspacePath: null })
   useContextMenuStore.setState({ request: null })
+  useTextInputDialogStore.setState({ pending: null })
   delete (globalThis as { isTauri?: boolean }).isTauri
   vi.clearAllMocks()
 })
@@ -134,12 +145,35 @@ describe("PreviewPanel dev-server detection", () => {
         "/workspace",
         "bun run dev:web",
         4173,
-        expect.any(Function)
+        expect.any(Function),
+        "challenge-1"
       )
     )
     expect(
       await screen.findByText(i18n.t("previewPanel.status.running", { ns: "panels" }))
     ).toBeInTheDocument()
+  })
+})
+
+describe("PreviewPanel workspace trust", () => {
+  it("does not spawn when the user cancels the exact-command prompt", async () => {
+    ipcMocks.devServerDetect.mockResolvedValueOnce({
+      candidates: [{ scriptName: "dev", command: "bun run dev:web", likelyPort: 4173 }],
+      runningPorts: [],
+    })
+    ipcMocks.requestDevServerAuthorization.mockResolvedValueOnce(null)
+
+    render(<PreviewPanel />)
+    fireEvent.click(startButton())
+
+    await waitFor(() =>
+      expect(ipcMocks.requestDevServerAuthorization).toHaveBeenCalledWith(
+        "/workspace",
+        "bun run dev:web"
+      )
+    )
+    expect(ipcMocks.devServerStart).not.toHaveBeenCalled()
+    expect(usePreviewStore.getState().devServer).toBeNull()
   })
 })
 
@@ -199,6 +233,43 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
 
     unmount()
     await waitFor(() => expect(ipcMocks.previewClose).toHaveBeenCalled())
+  })
+
+  it("hides the native webview while an app-owned message dialog is open", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    render(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true))
+
+    useAppDialogStore.setState({
+      pending: {
+        type: "message",
+        title: "Drop failed",
+        description: "Is a directory",
+        resolve: () => {},
+      },
+    })
+
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(false))
+  })
+
+  it("hides the native webview while a text-input dialog is open", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    render(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true))
+
+    useTextInputDialogStore.setState({
+      pending: {
+        requestId: 1,
+        title: "Create branch from tag",
+        label: "Branch name",
+        confirmLabel: "Create branch",
+        resolve: () => {},
+      },
+    })
+
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(false))
   })
 
   it("does not touch the native webview when running outside Tauri", () => {

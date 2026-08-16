@@ -22,7 +22,9 @@ import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { ensureClient } from "@/lsp/lspManager"
 import { requestDocumentSymbols, requestWorkspaceSymbols } from "@/lsp/symbols"
 import { getDocument } from "@/editor/documentRegistry"
+import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
+import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
 const managed = {
@@ -33,6 +35,7 @@ const managed = {
 
 beforeEach(() => {
     useUiStore.setState(uiInitialState)
+    useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
     vi.mocked(ensureClient).mockResolvedValue(managed as never)
     vi.mocked(requestDocumentSymbols).mockResolvedValue([])
     vi.mocked(requestWorkspaceSymbols).mockResolvedValue([])
@@ -48,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+    useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
 })
 
 const flush = async () => {
@@ -104,6 +108,52 @@ it("toggle preview command opens the singleton preview tab", async () => {
 
     const groups = useWorkspaceStore.getState().groups
     expect(groups.some((g) => g.tabs.some((t) => t.path === PREVIEW_TAB_PATH))).toBe(true)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
+it("lists existing Herdr tabs as commands and activates the selected tab", async () => {
+    const activateTab = vi.fn().mockResolvedValue({ ok: true })
+    useHerdrStore.setState({
+        selectedSessionName: "default",
+        selectedSpaceId: "ws-1",
+        snapshot: {
+            herdrSessionId: "default",
+            protocol: 19,
+            version: "0.8.0",
+            spaces: [{ id: "ws-1", label: "Main", order: 1, focused: true }],
+            agents: [],
+            tabs: [
+                {
+                    id: "tab-1",
+                    label: "Agent",
+                    order: 1,
+                    workspaceId: "ws-1",
+                    paneCount: 2,
+                    status: "idle",
+                    active: true,
+                    focused: true,
+                    paneId: "pane-1",
+                    terminalId: "term-1",
+                    sessionName: "default"
+                }
+            ],
+            terminals: [],
+            focusedWorkspaceId: "ws-1",
+            focusedTabId: "tab-1",
+            focusedPaneId: "pane-1",
+            raw: {}
+        },
+        canMutateSelectedSession: () => true,
+        canFocusSelectedTab: () => true,
+        activateTab
+    })
+    render(<Harness />)
+
+    fireEvent.click(await screen.findByRole("option", { name: "Open Herdr tab: Agent" }))
+
+    expect(activateTab).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "tab-1", terminalId: "term-1" })
+    )
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 })
 
@@ -185,4 +235,31 @@ it("workspace search sanitizes an extended Windows child path but reveals the ra
     fireEvent.click(screen.getByText("needle"))
     expect(useWorkspaceStore.getState().pendingReveal).toEqual({ path: rawPath, line: 3 })
     vi.useRealTimers()
+})
+
+it("Go to symbol with an active markdown preview does not start document/LSP lookup", async () => {
+    const previewPath = markdownPreviewPath("/ws/readme.md")
+    useWorkspaceStore.setState({
+        workspacePath: "/ws",
+        groups: [{
+            activePath: previewPath,
+            tabs: [{
+                path: previewPath,
+                name: "Preview",
+                dirty: false,
+                externallyModified: false,
+                kind: "markdown-preview",
+                sourcePath: "/ws/readme.md"
+            }]
+        }],
+        activeGroupIndex: 0
+    })
+
+    render(<Harness />)
+    fireEvent.click(await screen.findByRole("option", { name: /go to symbol/i }))
+    await flush()
+
+    expect(getDocument).not.toHaveBeenCalled()
+    expect(ensureClient).not.toHaveBeenCalled()
+    expect(requestDocumentSymbols).not.toHaveBeenCalled()
 })

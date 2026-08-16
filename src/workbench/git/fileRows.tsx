@@ -2,8 +2,8 @@ import type { WorktreeDiffFile } from "@/state/diffModalStore"
 import type { GitStatus } from "@/lib/types"
 
 // Shared git file-row primitives for the two change surfaces — the sidebar Git
-// nav (E1) and the Local changes tab (E3). Only the badge + section header +
-// the worktree-flatten helper are shared; the row bodies differ (the sidebar
+// nav (E1) and the Local changes tab (E3). Only the badge + worktree-flatten
+// helper are shared; the row bodies differ (the sidebar
 // row opens the Diff modal and carries stage/unstage; the local row selects into
 // the split view and carries discard), so each surface keeps its own FileRow
 // rather than forcing an ugly parameterised abstraction (T7 brief §共用元件抽取).
@@ -40,32 +40,6 @@ export function GitBadge({ badge }: { badge: string }) {
     )
 }
 
-// §1.4/§1.5 section header: uppercase label + mono count + accent-ink actions.
-// Padding differs per call site so the caller passes the container className
-// (sidebar uses `px-6 py-{7,11}/5`; the flat local list has no headers).
-export function SectionHeader({
-    label,
-    count,
-    className,
-    children
-}: {
-    label: string
-    count: number
-    className: string
-    children?: React.ReactNode
-}) {
-    return (
-        <div className={"flex items-center gap-[8px] " + className}>
-            <span className="text-[9.5px] font-semibold tracking-[0.07em] text-(--ink-3) uppercase">
-                {label}
-            </span>
-            <span className="font-mono text-[10px] text-(--ink-4)">{count}</span>
-            <span className="flex-1" />
-            {children}
-        </div>
-    )
-}
-
 // Flatten the four GitStatus buckets into the modal's WorktreeDiffFile list,
 // staged first then working-tree changes — matching the design's openDiffWork
 // ordering (dc.html L3215). Untracked → "?", conflicted → "!". Shared by the
@@ -74,9 +48,9 @@ export function SectionHeader({
 export function worktreeFilesFrom(status: GitStatus | null): WorktreeDiffFile[] {
     if (!status) return []
     return [
-        ...status.staged.map((e) => ({ path: e.path, status: e.status, staged: true })),
-        ...status.unstaged.map((e) => ({ path: e.path, status: e.status, staged: false })),
-        ...status.untracked.map((path) => ({ path, status: "?", staged: false })),
-        ...status.conflicted.map((e) => ({ path: e.path, status: "!", staged: false }))
+        ...status.staged.map((e) => ({ path: e.path, origPath: e.origPath, status: e.status, staged: true })),
+        ...status.unstaged.map((e) => ({ path: e.path, origPath: e.origPath, status: e.status, staged: false })),
+        ...status.untracked.map((path) => ({ path, origPath: null, status: "?", staged: false })),
+        ...status.conflicted.map((e) => ({ path: e.path, origPath: e.origPath, status: "!", staged: false }))
     ]
 }

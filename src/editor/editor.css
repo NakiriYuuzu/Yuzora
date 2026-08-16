@@ -1,10 +1,26 @@
-.editor-pane { flex: 1; min-width: 0; overflow: auto }
+/* Structural clip only — CodeMirror .cm-scroller owns scrolling. */
+.editor-pane { flex: 1; min-width: 0; overflow: hidden }
 /* font-size is a per-view CSS variable (F6) EditorPane sets from editorSettings;
    the fallback keeps the pre-setting default. font-size inherits down to the lines
    (CodeMirror never re-declares it). line-height must go on .cm-scroller — the base
    theme sets line-height:1.4 there, which would trump inheritance — and tracks the
    font size (fz + 8px, from the design reference) so larger sizes stay legible. */
 .editor-pane .cm-editor { height: 100%; font-family: var(--font-mono, monospace); font-size: var(--yz-editor-font-size, 13px) }
+/* Diff hosts are height-bounded independently from .editor-pane.
+   Split: installed MergeView owns shared vertical scrolling on `.cm-mergeView`
+   (overflow-y: auto + child height/overflow !important). Do not force 100%
+   height or independent overflow on merge children — that clips content so
+   scrollHeight === clientHeight.
+   Unified: the root `.cm-editor` fills the host and `.cm-scroller` scrolls. */
+.diff-view { --yz-diff-split-a: 0.5 }
+.diff-view > .cm-editor,
+.diff-view > .cm-mergeView { height: 100%; min-height: 0 }
+.diff-view > .cm-mergeView { overflow: auto }
+.diff-view .cm-mergeViewEditors,
+.diff-view .cm-mergeViewEditor { min-height: 0 }
+.diff-view .cm-mergeViewEditor:first-child { flex-grow: var(--yz-diff-split-a) }
+.diff-view .cm-mergeViewEditor:last-child { flex-grow: calc(1 - var(--yz-diff-split-a)) }
+.diff-view > .cm-editor .cm-scroller { overflow: auto }
 .editor-pane .cm-editor .cm-scroller { line-height: calc(var(--yz-editor-font-size, 13px) + 8px) }
 .editor-pane .cm-editor.cm-focused { outline: none }
 

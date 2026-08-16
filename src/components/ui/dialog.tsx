@@ -1,8 +1,16 @@
 import * as React from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
+import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { DialogResizeHandles } from "@/components/ui/dialog-resize-handles"
+import { useResizableDialogSize } from "@/hooks/useResizableDialogSize"
+import {
+  dialogMinSize,
+  type DialogMinSize,
+  type DialogSizeId,
+} from "@/lib/dialogSize"
 import { XIcon } from "lucide-react"
 
 function Dialog({
@@ -43,19 +51,101 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  resizeId,
+  minSize,
+  resizeLabel,
+  resetSizeLabel,
+  style,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  resizeId?: DialogSizeId
+  minSize?: DialogMinSize
+  resizeLabel?: string
+  resetSizeLabel?: string
 }) {
+  if (!resizeId) {
+    return (
+      <DialogPortal>
+        <DialogOverlay />
+        <DialogPrimitive.Content
+          data-slot="dialog-content"
+          className={cn(
+            "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-[420px] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+            className
+          )}
+          style={style}
+          {...props}
+        >
+          {children}
+          {showCloseButton && (
+            <DialogPrimitive.Close data-slot="dialog-close" asChild>
+              <Button
+                variant="ghost"
+                className="absolute top-2 right-2"
+                size="icon-sm"
+              >
+                <XIcon />
+                <span className="sr-only">Close</span>
+              </Button>
+            </DialogPrimitive.Close>
+          )}
+        </DialogPrimitive.Content>
+      </DialogPortal>
+    )
+  }
+
+  return (
+    <ResizableDialogContent
+      className={className}
+      showCloseButton={showCloseButton}
+      resizeId={resizeId}
+      minSize={minSize}
+      resizeLabel={resizeLabel}
+      resetSizeLabel={resetSizeLabel}
+      style={style}
+      {...props}
+    >
+      {children}
+    </ResizableDialogContent>
+  )
+}
+
+function ResizableDialogContent({
+  className,
+  children,
+  showCloseButton,
+  resizeId,
+  minSize,
+  resizeLabel,
+  resetSizeLabel,
+  style,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  showCloseButton: boolean
+  resizeId: DialogSizeId
+  minSize?: DialogMinSize
+  resizeLabel?: string
+  resetSizeLabel?: string
+}) {
+  const { t } = useTranslation("common")
+  const sizing = useResizableDialogSize({ resizeId, minSize })
+  const resolvedResizeLabel = resizeLabel ?? t("dialog.resize")
+  const resolvedResetLabel = resetSizeLabel ?? t("dialog.resetSize")
+
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        data-dialog-size-id={resizeId}
+        data-resizing={sizing.isResizing ? "true" : undefined}
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed top-1/2 left-1/2 z-50 grid max-w-none -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          sizing.isResizing && "duration-0",
           className
         )}
+        style={{ ...style, ...sizing.style }}
         {...props}
       >
         {children}
@@ -72,6 +162,11 @@ function DialogContent({
             </Button>
           </DialogPrimitive.Close>
         )}
+        <DialogResizeHandles
+          sizing={sizing}
+          resizeLabel={resolvedResizeLabel}
+          resetSizeLabel={resolvedResetLabel}
+        />
       </DialogPrimitive.Content>
     </DialogPortal>
   )
@@ -154,4 +249,5 @@ export {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  dialogMinSize,
 }

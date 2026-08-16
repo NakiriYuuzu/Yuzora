@@ -1,7 +1,14 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import type { DevServerInfo } from "../lib/types"
-import { isLocalPreviewUrl, previewInitialState, usePreviewStore } from "./previewStore"
+import {
+    isLocalPreviewUrl,
+    previewFrameModeFor,
+    previewInitialState,
+    usePreviewStore
+} from "./previewStore"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "./workspaceStore"
 
 const runningServer: DevServerInfo = {
     workspace: "/ws/a",
@@ -17,7 +24,14 @@ const otherServer: DevServerInfo = {
     status: { status: "running", port: 3000 }
 }
 
-beforeEach(() => usePreviewStore.getState().reset())
+beforeEach(() => {
+    clearMocks()
+    usePreviewStore.getState().reset()
+})
+
+afterEach(() => {
+    clearMocks()
+})
 
 describe("usePreviewStore", () => {
     it("sets dev server info and keeps it isolated by workspace", () => {
@@ -218,5 +232,84 @@ describe("usePreviewStore", () => {
         s.reset()
 
         expect(usePreviewStore.getState()).toMatchObject(previewInitialState)
+    })
+
+    it("opens a static session and uses the restrictive frame mode only for that URL", () => {
+        const session = {
+            token: "ab".repeat(32),
+            url: "http://127.0.0.1:4599/abababababababababababababababababababababababababababababababab/index.html"
+        }
+        expect(usePreviewStore.getState().openStaticPreview("/ws/a", session)).toBe(true)
+        expect(usePreviewStore.getState().staticPreview).toMatchObject({
+            workspace: "/ws/a",
+            token: session.token,
+            url: session.url
+        })
+        expect(usePreviewStore.getState().navForWorkspace("/ws/a").url).toBe(session.url)
+        expect(previewFrameModeFor(session.url, usePreviewStore.getState().staticPreview)).toBe(
+            "static"
+        )
+        expect(
+            previewFrameModeFor("http://localhost:5173", usePreviewStore.getState().staticPreview)
+        ).toBe("dev-server")
+    })
+
+    it("revokes the static session on reset, workspace switch, and preview tab close", async () => {
+        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+        })
+        const session = {
+            token: "cd".repeat(32),
+            url: "http://127.0.0.1:4599/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd/index.html"
+        }
+        usePreviewStore.getState().openStaticPreview("/ws/a", session)
+        usePreviewStore.getState().reset()
+        await Promise.resolve()
+        expect(usePreviewStore.getState().staticPreview).toBeNull()
+        expect(calls.some((call) => call.cmd === "preview_revoke" && call.args.token === session.token)).toBe(
+            true
+        )
+
+        calls.length = 0
+        const next = {
+            token: "ef".repeat(32),
+            url: "http://127.0.0.1:4599/efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef/index.html"
+        }
+        useWorkspaceStore.setState({ workspacePath: "/ws/a" })
+        usePreviewStore.getState().openStaticPreview("/ws/a", next)
+        useWorkspaceStore.setState({ workspacePath: "/ws/b" })
+        await Promise.resolve()
+        expect(usePreviewStore.getState().staticPreview).toBeNull()
+        expect(calls.some((call) => call.cmd === "preview_revoke" && call.args.token === next.token)).toBe(
+            true
+        )
+
+        calls.length = 0
+        const last = {
+            token: "aa".repeat(32),
+            url: "http://127.0.0.1:4599/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/index.html"
+        }
+        useWorkspaceStore.setState({
+            workspacePath: "/ws/a",
+            groups: [{
+                tabs: [{
+                    path: PREVIEW_TAB_PATH,
+                    name: "Preview",
+                    dirty: false,
+                    externallyModified: false,
+                    kind: "preview"
+                }],
+                activePath: PREVIEW_TAB_PATH
+            }],
+            activeGroupIndex: 0
+        })
+        usePreviewStore.getState().openStaticPreview("/ws/a", last)
+        useWorkspaceStore.getState().closePreviewTab()
+        await Promise.resolve()
+        expect(usePreviewStore.getState().staticPreview).toBeNull()
+        expect(calls.some((call) => call.cmd === "preview_revoke" && call.args.token === last.token)).toBe(
+            true
+        )
     })
 })

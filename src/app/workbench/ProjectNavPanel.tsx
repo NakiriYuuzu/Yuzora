@@ -3,12 +3,13 @@ import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import { MODES, type Mode } from "@/app/modes"
-import { AgentNavContent } from "@/app/workbench/AgentNavContent"
 import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 import { FilesNavContent } from "@/app/workbench/FilesNavContent"
 import { GitNavContent } from "@/app/workbench/GitNavContent"
+import { HerdrNavContent } from "@/app/workbench/HerdrNavContent"
 import { SshNavContent } from "@/app/workbench/SshNavContent"
 import { canonicalPathKey, workspacePathForDisplay } from "@/lib/paths"
+import { shortcutLabel } from "@/lib/platform"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -37,7 +38,7 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
     : resolveProjectPresentation("/Yuzora")
   const displayPath = workspacePath
     ? workspacePathForDisplay(workspacePath).replace(/^\/Users\/[^/]+/, "~")
-    : "~/App/Tauri/yuzora"
+    : t("projectNav.noWorkspacePath")
 
   return (
     <aside
@@ -78,7 +79,7 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
           <SearchIcon className="size-[15px] shrink-0" aria-hidden="true" />
           <span className="flex-1 truncate text-[13px] font-medium">{t("projectNav.searchPlaceholder")}</span>
           <kbd className="shrink-0 rounded-[6px] bg-(--yz-active) px-[6px] py-[2px] font-mono text-[10.5px] text-(--ink-3)">
-            ⌘K
+            {shortcutLabel("mod-k")}
           </kbd>
         </button>
       </div>
@@ -118,7 +119,7 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
         </span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-[9px] pb-[8px]">
+      <div className="min-h-0 flex-1 overflow-hidden px-[9px] pb-[8px]">
         {mode === "files" && (
           <div data-testid="nav-mode-content-files" className="h-full min-h-[120px]">
             <FilesNavContent />
@@ -139,9 +140,9 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
             <SshNavContent />
           </div>
         )}
-        {mode === "agent" && (
-          <div data-testid="nav-mode-content-agent" className="h-full min-h-[120px]">
-            <AgentNavContent />
+        {mode === "ade" && (
+          <div data-testid="nav-mode-content-ade" className="h-full min-h-[120px]">
+            <HerdrNavContent />
           </div>
         )}
       </div>

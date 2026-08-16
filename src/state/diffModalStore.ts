@@ -8,6 +8,7 @@ export type DiffMode = "unified" | "split"
 // changes tab: `staged` records which side git diffs against (staged↔working).
 export interface WorktreeDiffFile {
     path: string
+    origPath: string | null
     status: string
     staged: boolean
 }
@@ -16,9 +17,10 @@ export interface WorktreeDiffFile {
 // hash/parents needed to load each file's old/new sides plus the file changes.
 // Text carries preloaded blobs, so the modal can render non-git diffs directly.
 export type DiffModalSource =
-    | { type: "worktree"; files: WorktreeDiffFile[] }
+    | { type: "worktree"; repositoryRoot: string; files: WorktreeDiffFile[] }
     | {
           type: "commit"
+          repositoryRoot: string
           hash: string
           shortHash: string
           subject: string
@@ -41,6 +43,7 @@ interface DiffModalState {
     open: boolean
     source: DiffModalSource | null
     activeIndex: number
+    sourceGeneration: number
     mode: DiffMode
     // active locates the row to open on. A string matches by path only (legacy
     // semantics: first row with that path — staged side wins when a path has both
@@ -48,10 +51,11 @@ interface DiffModalState {
     // which the sidebar CHANGED/STAGED rows need so a partially-staged (MM) file
     // opens on the clicked side rather than always the staged one.
     openWorktree: (
+        repositoryRoot: string,
         files: WorktreeDiffFile[],
         active?: { path: string; staged: boolean } | string
     ) => void
-    openCommit: (commit: CommitLike, activeIndex?: number) => void
+    openCommit: (repositoryRoot: string, commit: CommitLike, activeIndex?: number) => void
     openText: (title: string, original: GradedText, modified: GradedText) => void
     setActive: (index: number) => void
     setMode: (mode: DiffMode) => void
@@ -65,39 +69,46 @@ export const useDiffModalStore = create<DiffModalState>((set) => ({
     open: false,
     source: null,
     activeIndex: 0,
-    mode: "unified",
-    openWorktree: (files, active) => {
+    sourceGeneration: 0,
+    // Product default is split; a user toggle remains sticky for the session
+    // because open/close paths intentionally leave `mode` alone.
+    mode: "split",
+    openWorktree: (repositoryRoot, files, active) => {
         const idx =
             typeof active === "string"
                 ? files.findIndex((f) => f.path === active)
                 : active
                   ? files.findIndex((f) => f.path === active.path && f.staged === active.staged)
                   : -1
-        set({
+        set((state) => ({
             open: true,
-            source: { type: "worktree", files },
-            activeIndex: idx >= 0 ? idx : 0
-        })
+            source: { type: "worktree", repositoryRoot, files },
+            activeIndex: idx >= 0 ? idx : 0,
+            sourceGeneration: state.sourceGeneration + 1
+        }))
     },
-    openCommit: (commit, activeIndex = 0) =>
-        set({
+    openCommit: (repositoryRoot, commit, activeIndex = 0) =>
+        set((state) => ({
             open: true,
             source: {
                 type: "commit",
+                repositoryRoot,
                 hash: commit.hash,
                 shortHash: commit.shortHash,
                 subject: commit.subject,
                 parents: commit.parents,
                 files: commit.files
             },
-            activeIndex
-        }),
+            activeIndex,
+            sourceGeneration: state.sourceGeneration + 1
+        })),
     openText: (title, original, modified) =>
-        set({
+        set((state) => ({
             open: true,
             source: { type: "text", title, original, modified },
-            activeIndex: 0
-        }),
+            activeIndex: 0,
+            sourceGeneration: state.sourceGeneration + 1
+        })),
     setActive: (index) => set({ activeIndex: index }),
     setMode: (mode) => set({ mode }),
     close: () => set({ open: false, source: null, activeIndex: 0 })

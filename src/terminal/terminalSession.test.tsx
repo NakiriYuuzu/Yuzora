@@ -1,5 +1,5 @@
 import React from "react"
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PtyEvent } from "../lib/types"
@@ -23,10 +23,15 @@ const xtermMock = vi.hoisted(() => {
         dataHandler: DataHandler | null = null
         keyHandler: KeyHandler | null = null
         titleHandler: TitleHandler | null = null
+        writeParsedHandler: (() => void) | null = null
         titleDisposable = { dispose: vi.fn() }
+        linkProvider: unknown = null
+        linkProviderDisposable = { dispose: vi.fn() }
+        element = document.createElement("div")
         open = vi.fn()
         write = vi.fn((_data: string, onProcessed?: () => void) => onProcessed?.())
         focus = vi.fn()
+        refresh = vi.fn()
         hasSelection = vi.fn(() => this.selection.length > 0)
         getSelection = vi.fn(() => this.selection)
         paste = vi.fn((text: string) => this.dataHandler?.(text))
@@ -42,9 +47,17 @@ const xtermMock = vi.hoisted(() => {
         attachCustomKeyEventHandler = vi.fn((handler: KeyHandler) => {
             this.keyHandler = handler
         })
+        onWriteParsed = vi.fn((handler: () => void) => {
+            this.writeParsedHandler = handler
+            return { dispose: vi.fn() }
+        })
         onTitleChange = vi.fn((handler: TitleHandler) => {
             this.titleHandler = handler
             return this.titleDisposable
+        })
+        registerLinkProvider = vi.fn((provider: unknown) => {
+            this.linkProvider = provider
+            return this.linkProviderDisposable
         })
 
         constructor(options: Record<string, unknown>) {
@@ -216,12 +229,34 @@ describe("TerminalSession", () => {
         )
         expect(xtermMock.state.terminals).toHaveLength(1)
         expect(xtermMock.state.terminals[0].options.fontSize).toBe(12)
+        expect(xtermMock.state.terminals[0].registerLinkProvider).toHaveBeenCalledTimes(1)
+        expect(xtermMock.state.terminals[0].options.linkHandler).toMatchObject({
+            activate: expect.any(Function),
+            hover: expect.any(Function),
+            leave: expect.any(Function),
+            allowNonHttpProtocols: false
+        })
         expect(xtermMock.state.terminals[0].open).toHaveBeenCalled()
         expect(xtermMock.state.fits[0].fit).toHaveBeenCalled()
+        fireEvent.mouseLeave(screen.getByTestId("terminal-session-pty-1").firstElementChild!)
+        expect(xtermMock.state.terminals[0].refresh).toHaveBeenCalledWith(0, 29)
         expect(imeMock.install).toHaveBeenCalledWith(
             xtermMock.state.terminals[0],
             { anchorMode: "cursor" }
         )
+    })
+
+    it("resets stale link hover after parsed output, mouseleave, and window blur", async () => {
+        render(<TerminalSession workspace="/w" sessionId="pty-hover" active visible />)
+        await waitFor(() => expect(xtermMock.state.terminals).toHaveLength(1))
+        const term = xtermMock.state.terminals[0]
+
+        term.writeParsedHandler?.()
+        fireEvent.mouseLeave(screen.getByTestId("terminal-session-pty-hover").firstElementChild!)
+        fireEvent.blur(window)
+
+        expect(term.onWriteParsed).toHaveBeenCalledTimes(1)
+        expect(term.element.style.cursor).toBe("")
     })
 
     it("wires terminal input to ptyWrite and pty output to term.write", async () => {
@@ -510,6 +545,7 @@ describe("TerminalSession", () => {
         await waitFor(() => expect(xtermMock.state.terminals[0].dispose).toHaveBeenCalled())
         expect(xtermMock.state.fits[0].dispose).toHaveBeenCalled()
         expect(xtermMock.state.terminals[0].titleDisposable.dispose).toHaveBeenCalledTimes(1)
+        expect(xtermMock.state.terminals[0].linkProviderDisposable.dispose).toHaveBeenCalledTimes(1)
         expect(imeMock.state.disposables[0].dispose).toHaveBeenCalledTimes(1)
         expect(resizeObservers[0].disconnect).toHaveBeenCalled()
         expect(ipcMock.ptyClose).toHaveBeenCalledWith("pty-5")

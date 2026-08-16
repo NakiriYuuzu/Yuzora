@@ -1,6 +1,20 @@
-import { useEffect, useRef, useState } from "react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { DialogResizeHandles } from "@/components/ui/dialog-resize-handles"
+import { useResizableDialogSize } from "@/hooks/useResizableDialogSize"
+import { dialogMinSize } from "@/lib/dialogSize"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import type { PanelImperativeHandle } from "react-resizable-panels"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { useTranslation } from "react-i18next"
+import {
+    FILE_FILTER_MIN_COUNT,
+    filterRowsByPath,
+    moveListIndex
+} from "@/workbench/git/diffPreview"
 
 import i18n from "@/lib/i18n"
 import type { DiffContent } from "@/lib/types"
@@ -17,6 +31,7 @@ import {
     type DiffModalSource
 } from "@/state/diffModalStore"
 import { DiffView } from "@/workbench/git/DiffView"
+import { DiffFilesToggle } from "@/workbench/git/DiffFilesToggle"
 
 // §5 gitBadge palette (design L3206-3210) — reused for the file-list rows.
 const BADGE_COLORS: Record<string, { fg: string; bg: string }> = {
@@ -75,6 +90,7 @@ interface Row {
     path: string
     badge: string
     cacheKey: string
+    side: "staged" | "unstaged" | null
 }
 
 function sourceRows(source: DiffModalSource): Row[] {
@@ -82,14 +98,15 @@ function sourceRows(source: DiffModalSource): Row[] {
         return source.files.map((f) => ({
             path: f.path,
             badge: badgeChar(f.status),
-            cacheKey: `${f.staged ? "s" : "c"}:${f.path}`
+            cacheKey: `${f.staged ? "s" : "c"}:${f.path}`,
+            side: f.staged ? "staged" : "unstaged"
         }))
     }
     if (source.type === "text") {
-        return [{ path: source.title, badge: "M", cacheKey: `text:${source.title}` }]
+        return [{ path: source.title, badge: "M", cacheKey: `text:${source.title}`, side: null }]
     }
     // Commit files have a single side per path — key by path (unchanged).
-    return source.files.map((f) => ({ path: f.path, badge: badgeChar(f.status), cacheKey: f.path }))
+    return source.files.map((f) => ({ path: f.path, badge: badgeChar(f.status), cacheKey: f.path, side: null }))
 }
 
 // Load the diff for the file at `index`, keyed by path in a per-open cache. The
@@ -98,13 +115,110 @@ function sourceRows(source: DiffModalSource): Row[] {
 function loadDiffFor(source: DiffModalSource, index: number): Promise<DiffContent> {
     if (source.type === "worktree") {
         const f = source.files[index]
-        return loadWorktreeDiff(f.path, f.staged)
+        return loadWorktreeDiff(source.repositoryRoot, f.path, f.staged, f.origPath)
     }
     if (source.type === "text") {
         return Promise.resolve({ original: source.original, modified: source.modified })
     }
     const f = source.files[index]
-    return loadCommitDiff(source.hash, source.parents, f)
+    return loadCommitDiff(source.repositoryRoot, source.hash, source.parents, f)
+}
+
+type IndexedRow = Row & { index: number }
+
+function DiffFileOption({
+    row,
+    index,
+    visibleIndex,
+    selected,
+    tabbable,
+    sideLabel,
+    onSelect,
+    onKeyDown
+}: {
+    row: Row
+    index: number
+    visibleIndex: number
+    selected: boolean
+    tabbable: boolean
+    sideLabel?: string
+    onSelect: (index: number) => void
+    onKeyDown: (event: React.KeyboardEvent, visibleIndex: number) => void
+}) {
+    const { name, dir } = splitPath(row.path)
+    return (
+        <Button
+            id={`diff-file-${index}`}
+            type="button"
+            variant="ghost"
+            role="option"
+            aria-selected={selected}
+            tabIndex={tabbable ? 0 : -1}
+            title={row.path}
+            aria-label={sideLabel ? `${row.path} (${sideLabel})` : row.path}
+            onClick={() => onSelect(index)}
+            onKeyDown={(event) => onKeyDown(event, visibleIndex)}
+            className={
+                "my-[1px] flex h-[32px] w-full items-center gap-[9px] rounded-[8px] px-[8px] text-left transition-[background] duration-[120ms] " +
+                (selected ? "bg-(--yz-active) shadow-(--shadow-xs)" : "hover:bg-(--yz-panel)")
+            }
+        >
+            <FileBadge badge={row.badge} />
+            <span className="min-w-0 flex-1 truncate">
+                <span className={"text-[12px] " + (selected ? "font-semibold text-(--ink-0)" : "font-medium text-(--ink-1)")}>
+                    {name}
+                </span>
+                {sideLabel && <span className="ml-[6px] text-[10px] font-semibold text-(--ink-3)">{sideLabel}</span>}
+                {dir && <span className="ml-[6px] text-[10px] text-(--ink-4)">{dir}</span>}
+            </span>
+        </Button>
+    )
+}
+
+function DiffFileGroup({
+    label,
+    rows,
+    activeIndex,
+    focusIndex,
+    sideLabel,
+    onSelect,
+    onKeyDown,
+    visibleRows
+}: {
+    label: string
+    rows: IndexedRow[]
+    activeIndex: number
+    focusIndex: number | null
+    sideLabel: string
+    onSelect: (index: number) => void
+    onKeyDown: (event: React.KeyboardEvent, visibleIndex: number) => void
+    visibleRows: IndexedRow[]
+}) {
+    if (rows.length === 0) return null
+    return (
+        <div className="mb-[6px]">
+            <div className="flex items-center gap-[6px] px-[8px] pt-[5px] pb-[4px] text-[9.5px] font-semibold tracking-[0.08em] text-(--ink-3) uppercase">
+                <span>{label}</span>
+                <span className="font-mono text-(--ink-4)">{rows.length}</span>
+            </div>
+            {rows.map((row) => {
+                const visibleIndex = visibleRows.findIndex((candidate) => candidate.index === row.index)
+                return (
+                    <DiffFileOption
+                        key={row.cacheKey}
+                        row={row}
+                        index={row.index}
+                        visibleIndex={visibleIndex}
+                        selected={row.index === activeIndex}
+                        tabbable={focusIndex === row.index}
+                        sideLabel={sideLabel}
+                        onSelect={onSelect}
+                        onKeyDown={onKeyDown}
+                    />
+                )
+            })}
+        </div>
+    )
 }
 
 /**
@@ -116,58 +230,178 @@ function loadDiffFor(source: DiffModalSource, index: number): Promise<DiffConten
  */
 export function DiffModal() {
     const { t } = useTranslation("menus")
+    const { t: tc } = useTranslation("common")
     const open = useDiffModalStore((s) => s.open)
-    const source = useDiffModalStore((s) => s.source)
+    const liveSource = useDiffModalStore((s) => s.source)
+    const [heldSource, setHeldSource] = useState(liveSource)
+    if (liveSource && liveSource !== heldSource) setHeldSource(liveSource)
+    const source = liveSource ?? heldSource
+    const previousFocusRef = useRef<HTMLElement | null>(null)
+    const closeButtonRef = useRef<HTMLButtonElement>(null)
     const activeIndex = useDiffModalStore((s) => s.activeIndex)
+    const sourceGeneration = useDiffModalStore((s) => s.sourceGeneration)
     const mode = useDiffModalStore((s) => s.mode)
     const setActive = useDiffModalStore((s) => s.setActive)
     const setMode = useDiffModalStore((s) => s.setMode)
     const close = useDiffModalStore((s) => s.close)
+    const sizing = useResizableDialogSize({
+        resizeId: "git-diff",
+        minSize: dialogMinSize(640, 400),
+    })
 
-    const [diff, setDiff] = useState<DiffContent | null>(null)
-    // Per-open cache path→loaded diff. Cleared whenever the source identity
-    // changes (new open). A ref so mutating it doesn't re-render.
-    const cache = useRef<Map<string, DiffContent>>(new Map())
-    const cacheKey = useRef<DiffModalSource | null>(null)
-
-    if (cacheKey.current !== source) {
-        cache.current = new Map()
-        cacheKey.current = source
-    }
+    const [loadState, setLoadState] = useState<{
+        identity: string
+        diff: DiffContent | null
+        error: string | null
+    } | null>(null)
+    const [retryToken, setRetryToken] = useState(0)
+    const [fileFilter, setFileFilter] = useState("")
+    // Collapse chrome is bound to sourceGeneration so a leftover collapsed=true
+    // from the previous heldSource session derives to expanded on the next open*.
+    // Mount-time onCollapse (0px first resize) must not stamp this generation.
+    const [filesPanel, setFilesPanel] = useState({ sourceGeneration: -1, collapsed: false })
+    const filesCollapsed = filesPanel.sourceGeneration === sourceGeneration && filesPanel.collapsed
+    const filesPanelRef = useRef<PanelImperativeHandle>(null)
+    const filePanelContentRef = useRef<HTMLDivElement>(null)
+    const expandFilesRef = useRef<HTMLButtonElement>(null)
+    // Per-open cache path→loaded diff. Capture a dedicated Map for each source
+    // generation so a late response from source A can never write into source B.
+    const cacheRef = useRef<{ sourceGeneration: number; values: Map<string, DiffContent> }>({
+        sourceGeneration: -1,
+        values: new Map()
+    })
+    const requestGenerationRef = useRef<Map<string, number>>(new Map())
 
     const rows = source ? sourceRows(source) : []
     const activeRow = rows[activeIndex] ?? null
+    const activeIdentity = source && activeRow
+        ? `${sourceGeneration}:${source.type === "text" ? "text" : source.repositoryRoot}:${activeRow.cacheKey}`
+        : ""
+    const diff = loadState?.identity === activeIdentity ? loadState.diff : null
+    const loadError = loadState?.identity === activeIdentity ? loadState.error : null
 
     // Load (or serve from cache) the active file's diff. Stale responses are
-    // dropped when the active row changed before the load resolved.
+    // dropped when the active row or source generation changed before resolve.
     useEffect(() => {
         if (!source || !activeRow) {
-            setDiff(null)
+            setLoadState(null)
             return
         }
+        const identity = activeIdentity
         const key = activeRow.cacheKey
-        const cached = cache.current.get(key)
+        if (cacheRef.current.sourceGeneration !== sourceGeneration) {
+            cacheRef.current = { sourceGeneration, values: new Map() }
+            requestGenerationRef.current = new Map()
+        }
+        const cacheContext = cacheRef.current
+        const cached = cacheContext.values.get(key)
         if (cached) {
-            setDiff(cached)
+            setLoadState({ identity, diff: cached, error: null })
             return
         }
-        setDiff(null)
+        setLoadState(null)
         let cancelled = false
-        void loadDiffFor(source, activeIndex).then((content) => {
-            cache.current.set(key, content)
-            if (!cancelled) setDiff(content)
-        })
+        const generation = (requestGenerationRef.current.get(key) ?? 0) + 1
+        requestGenerationRef.current.set(key, generation)
+        void loadDiffFor(source, activeIndex)
+            .then((content) => {
+                // A request is allowed to populate the cache only while it is
+                // still the newest request for this exact source+row identity.
+                if (
+                    cancelled
+                    || cacheRef.current !== cacheContext
+                    || requestGenerationRef.current.get(key) !== generation
+                ) return
+                cacheContext.values.set(key, content)
+                setLoadState({ identity, diff: content, error: null })
+            })
+            .catch((error: unknown) => {
+                if (
+                    cancelled
+                    || cacheRef.current !== cacheContext
+                    || requestGenerationRef.current.get(key) !== generation
+                ) return
+                setLoadState({
+                    identity,
+                    diff: null,
+                    error: error instanceof Error ? error.message : String(error)
+                })
+            })
         return () => {
             cancelled = true
         }
-        // activeRow.cacheKey identifies the file+side; source identity gates the
-        // cache (per-open). eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [source, activeIndex, activeRow?.cacheKey])
+        // Depend on cacheKey/identity, not the activeRow object: sourceRows()
+        // returns a fresh object each render, and putting that in deps would
+        // re-fire the cache-hit setLoadState path forever.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [source, sourceGeneration, activeIndex, activeRow?.cacheKey, activeIdentity, retryToken])
 
-    if (!open || !source) return null
+    useLayoutEffect(() => {
+        if (!open) return
+        filesPanelRef.current?.expand()
+    }, [open, sourceGeneration])
+
+    useLayoutEffect(() => {
+        if (!filesCollapsed) return
+        const panel = filePanelContentRef.current
+        const expand = expandFilesRef.current
+        if (!panel || !expand) return
+        const active = document.activeElement
+        if (active instanceof Node && panel.contains(active)) expand.focus()
+    }, [filesCollapsed])
+
+    const stats = useMemo(() => (diff ? diffStats(diff) : null), [diff])
+
+    if (!source) return null
 
     const { title, sub } = sourceHeader(source)
-    const stats = diff ? diffStats(diff) : null
+    const indexedRows = rows.map((row, index) => ({ row, index }))
+    const visibleRows = filterRowsByPath(indexedRows.map(({ row, index }) => ({ ...row, index })), fileFilter)
+    const focusRow = visibleRows.find((row) => row.index === activeIndex) ?? visibleRows[0] ?? null
+    const focusIndex = focusRow?.index ?? null
+    const showFilter = rows.length > FILE_FILTER_MIN_COUNT
+    const worktreeGroups = source.type === "worktree"
+        ? {
+            staged: visibleRows.filter((row) => row.side === "staged"),
+            unstaged: visibleRows.filter((row) => row.side === "unstaged")
+        }
+        : null
+
+    function toggleFilesPanel() {
+        const panel = filesPanelRef.current
+        if (!panel) return
+        if (panel.isCollapsed()) panel.expand()
+        else panel.collapse()
+    }
+
+    function onFilesPanelCollapse() {
+        setFilesPanel({ sourceGeneration, collapsed: true })
+    }
+
+    function onFilesPanelExpand() {
+        setFilesPanel({ sourceGeneration, collapsed: false })
+    }
+
+    function focusOption(index: number) {
+        document.getElementById(`diff-file-${index}`)?.focus()
+    }
+
+    function onFileListKeyDown(event: React.KeyboardEvent, currentVisible: number) {
+        const nextVisible = moveListIndex(currentVisible, visibleRows.length, event.key)
+        if (nextVisible != null) {
+            event.preventDefault()
+            const next = visibleRows[nextVisible]
+            if (!next) return
+            setActive(next.index)
+            focusOption(next.index)
+            return
+        }
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault()
+            const current = visibleRows[currentVisible]
+            if (current) setActive(current.index)
+        }
+    }
     const activePath = activeRow?.path ?? ""
     const { name: activeName, dir: activeDir } = activePath
         ? splitPath(activePath)
@@ -187,11 +421,26 @@ export function DiffModal() {
                     onClick={() => close()}
                     className="absolute inset-0 z-[62] flex items-center justify-center bg-[rgba(27,26,23,0.34)] p-[24px] supports-backdrop-filter:backdrop-blur-[3px] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0"
                 />
-                {/* Panel: design L1396 — 1040px / 88vh paper card. */}
+                {/* Panel: shared 80% viewport sizing + per-modal resize; keep absolute/no-Portal. */}
                 <DialogPrimitive.Content
                     aria-label={t("diffModal.title", { title })}
-                    onOpenAutoFocus={(e) => e.preventDefault()}
-                    className="yz-diffin absolute top-1/2 left-1/2 z-[62] flex h-[88vh] w-[1040px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--paper-0) shadow-(--shadow-xl) outline-none"
+                    data-dialog-size-id="git-diff"
+                    data-resizing={sizing.isResizing ? "true" : undefined}
+                    onOpenAutoFocus={(event) => {
+                        event.preventDefault()
+                        const related = (event as { relatedTarget?: EventTarget | null }).relatedTarget
+                        if (related instanceof HTMLElement) previousFocusRef.current = related
+                        else if (document.activeElement instanceof HTMLElement) previousFocusRef.current = document.activeElement
+                        ;(closeButtonRef.current ?? expandFilesRef.current)?.focus()
+                    }}
+                    onCloseAutoFocus={(event) => {
+                        event.preventDefault()
+                        const restore = previousFocusRef.current
+                        if (restore?.isConnected) restore.focus()
+                    }}
+                    data-diff-surface=""
+                    className={`yz-diffin absolute top-1/2 left-1/2 z-[62] flex min-h-0 max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--paper-0) shadow-(--shadow-xl) outline-none${sizing.isResizing ? " duration-0" : ""}`}
+                    style={sizing.style}
                 >
                     <DialogPrimitive.Title className="sr-only">
                         {t("diffModal.title", { title })}
@@ -214,33 +463,34 @@ export function DiffModal() {
                         >
                             <path d="M8 3v18M3 8h5M16 21V3M16 16h5" />
                         </svg>
-                        <div className="flex min-w-0 flex-col gap-[1px]">
-                            <div className="whitespace-nowrap font-serif text-[15px] font-semibold leading-[1.1] text-(--ink-0)">
+                        <div data-testid="diff-modal-title" className="flex min-w-0 flex-1 flex-col gap-[1px] overflow-hidden">
+                            <div className="min-w-0 truncate overflow-hidden font-serif text-[15px] font-semibold leading-[1.1] text-(--ink-0)">
                                 {t("diffModal.title", { title })}
                             </div>
-                            <div className="truncate font-mono text-[10.5px] text-(--ink-3)">{sub}</div>
+                            <div className="min-w-0 truncate font-mono text-[10.5px] text-(--ink-3)">{sub}</div>
                         </div>
-                        <div className="flex-1" />
                         {/* §4.2 unified/split toggle */}
-                        <div className="flex shrink-0 gap-[3px] rounded-[9px] bg-(--yz-sunk) p-[3px]">
+                        <ToggleGroup
+                            type="single"
+                            value={mode}
+                            onValueChange={(value) => value && setMode(value as DiffMode)}
+                            className="flex shrink-0 gap-[3px] rounded-[9px] bg-(--yz-sunk) p-[3px]"
+                        >
                             {(["unified", "split"] as const).map((m: DiffMode) => (
-                                <button
+                                <ToggleGroupItem
                                     key={m}
-                                    type="button"
-                                    aria-pressed={mode === m}
-                                    onClick={() => setMode(m)}
-                                    className={
-                                        "h-[26px] rounded-[7px] px-[12px] text-[11px] font-semibold transition-all duration-[140ms] " +
-                                        (mode === m
-                                            ? "bg-(--yz-solid) text-(--ink-0) shadow-(--shadow-xs)"
-                                            : "text-(--ink-3)")
-                                    }
+                                    value={m}
+                                    aria-label={m === "unified" ? t("diffModal.unified") : t("diffModal.split")}
+                                    className="h-[26px] rounded-[7px] px-[12px] text-[11px] font-semibold transition-all duration-[140ms] data-[state=on]:bg-(--yz-solid) data-[state=on]:text-(--ink-0) data-[state=on]:shadow-(--shadow-xs) data-[state=off]:text-(--ink-3)"
                                 >
                                     {m === "unified" ? t("diffModal.unified") : t("diffModal.split")}
-                                </button>
+                                </ToggleGroupItem>
                             ))}
-                        </div>
-                        <button
+                        </ToggleGroup>
+                        <Button
+                            ref={closeButtonRef}
+                            variant="ghost"
+                            size="icon-sm"
                             type="button"
                             aria-label={t("diffModal.close")}
                             title={t("diffModal.close")}
@@ -259,89 +509,170 @@ export function DiffModal() {
                             >
                                 <path d="M18 6 6 18M6 6l12 12" />
                             </svg>
-                        </button>
+                        </Button>
                     </div>
 
-                    <div className="flex min-h-0 flex-1">
-                        {/* left file list — design L1413 */}
-                        <div className="yzs w-[236px] shrink-0 overflow-auto border-r border-(--line-1) bg-(--paper-1) p-[9px]">
-                            <div className="px-[8px] pt-[5px] pb-[7px] text-[9.5px] font-semibold tracking-[0.08em] text-(--ink-3) uppercase">
-                                {sub}
-                            </div>
-                            {rows.map((row, i) => {
-                                const { name, dir } = splitPath(row.path)
-                                const selected = i === activeIndex
-                                return (
-                                    <button
-                                        key={`${row.path}:${i}`}
-                                        type="button"
-                                        onClick={() => setActive(i)}
-                                        className={
-                                            "flex h-[32px] w-full items-center gap-[9px] rounded-[8px] px-[8px] my-[1px] text-left transition-[background] duration-[120ms] " +
-                                            (selected
-                                                ? "bg-(--yz-active) shadow-(--shadow-xs)"
-                                                : "hover:bg-(--yz-panel)")
-                                        }
-                                    >
-                                        <FileBadge badge={row.badge} />
-                                        <span className="min-w-0 flex-1 truncate">
-                                            <span
-                                                className={
-                                                    "text-[12px] " +
-                                                    (selected
-                                                        ? "font-semibold text-(--ink-0)"
-                                                        : "font-medium text-(--ink-1)")
-                                                }
-                                            >
-                                                {name}
-                                            </span>
-                                            {dir && (
-                                                <span className="ml-[6px] text-[10px] text-(--ink-4)">{dir}</span>
-                                            )}
-                                        </span>
-                                    </button>
-                                )
-                            })}
-                        </div>
-
-                        {/* diff body — design L1423 */}
-                        <div className="flex min-w-0 flex-1 flex-col">
-                            <div className="flex h-[38px] shrink-0 items-center gap-[9px] border-b border-(--line-1) bg-(--yz-sunk) px-[16px]">
-                                <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-semibold text-(--ink-1)">
-                                    {activeDir}
-                                    {activeName}
-                                </span>
-                                {lang && (
-                                    <span className="shrink-0 font-mono text-[11px] text-(--ink-3)">{lang}</span>
-                                )}
-                                {stats && (
-                                    <>
-                                        <span
-                                            className="shrink-0 font-mono text-[11px] font-semibold"
-                                            style={{ color: "#178a63" }}
-                                        >
-                                            +{stats.added}
-                                        </span>
-                                        <span
-                                            className="shrink-0 font-mono text-[11px] font-semibold"
-                                            style={{ color: "#c2293f" }}
-                                        >
-                                            −{stats.deleted}
-                                        </span>
-                                    </>
-                                )}
-                            </div>
-                            <div className="min-h-0 flex-1 overflow-hidden bg-(--paper-0)">
-                                {diff ? (
-                                    <DiffView content={diff} mode={mode} path={activePath} />
-                                ) : (
-                                    <div className="flex h-full items-center justify-center text-[12.5px] text-(--ink-3)">
-                                        {t("diffModal.loadingEllipsis")}
+                    <ResizablePanelGroup
+                        id="diff-modal-layout"
+                        orientation="horizontal"
+                        className="min-h-0 flex-1"
+                    >
+                        <ResizablePanel
+                            id="diff-files"
+                            panelRef={filesPanelRef}
+                            defaultSize="24"
+                            minSize="15"
+                            maxSize="40"
+                            collapsible
+                            collapsedSize="0"
+                            onCollapse={onFilesPanelCollapse}
+                            onExpand={onFilesPanelExpand}
+                            className="min-h-0"
+                            data-files-collapsed={filesCollapsed ? "true" : "false"}
+                        >
+                            <div
+                                ref={filePanelContentRef}
+                                id="diff-file-panel-content"
+                                data-testid="diff-file-panel-content"
+                                inert={filesCollapsed || undefined}
+                                aria-hidden={filesCollapsed || undefined}
+                                className="flex h-full min-h-0 flex-col border-r border-(--line-1) bg-(--paper-1)"
+                            >
+                                <div className="flex h-[36px] shrink-0 items-center gap-[6px] px-[10px]">
+                                    <span className="min-w-0 flex-1 truncate text-[9.5px] font-semibold tracking-[0.08em] text-(--ink-3) uppercase">
+                                        {t("diffModal.filesLabel")}
+                                    </span>
+                                </div>
+                                {showFilter && (
+                                    <div className="shrink-0 px-[9px] pb-[6px]">
+                                        <Input
+                                            value={fileFilter}
+                                            onChange={(event) => setFileFilter(event.target.value)}
+                                            aria-label={t("diffModal.filterFiles")}
+                                            placeholder={t("diffModal.filterFilesPlaceholder")}
+                                            className="h-[28px] text-[12px]"
+                                        />
                                     </div>
                                 )}
+                                <ScrollArea className="min-h-0 flex-1" viewportClassName="p-[9px]">
+                                    <div
+                                        role="listbox"
+                                        aria-label={t("diffModal.filesLabel")}
+                                        aria-activedescendant={focusRow ? `diff-file-${focusRow.index}` : undefined}
+                                        data-testid="diff-file-list"
+                                    >
+                                        {worktreeGroups ? (
+                                            <>
+                                                <DiffFileGroup
+                                                    label={t("diffModal.stagedGroup")}
+                                                    rows={worktreeGroups.staged}
+                                                    activeIndex={activeIndex}
+                                                    focusIndex={focusIndex}
+                                                    sideLabel={t("diffModal.stagedSide")}
+                                                    onSelect={setActive}
+                                                    onKeyDown={onFileListKeyDown}
+                                                    visibleRows={visibleRows}
+                                                />
+                                                <DiffFileGroup
+                                                    label={t("diffModal.unstagedGroup")}
+                                                    rows={worktreeGroups.unstaged}
+                                                    activeIndex={activeIndex}
+                                                    focusIndex={focusIndex}
+                                                    sideLabel={t("diffModal.unstagedSide")}
+                                                    onSelect={setActive}
+                                                    onKeyDown={onFileListKeyDown}
+                                                    visibleRows={visibleRows}
+                                                />
+                                            </>
+                                        ) : (
+                                            visibleRows.map((row, visibleIndex) => (
+                                                <DiffFileOption
+                                                    key={row.cacheKey}
+                                                    row={row}
+                                                    index={row.index}
+                                                    visibleIndex={visibleIndex}
+                                                    selected={row.index === activeIndex}
+                                                    tabbable={focusIndex === row.index}
+                                                    onSelect={setActive}
+                                                    onKeyDown={onFileListKeyDown}
+                                                />
+                                            ))
+                                        )}
+                                    </div>
+                                </ScrollArea>
                             </div>
-                        </div>
-                    </div>
+                        </ResizablePanel>
+                        <ResizableHandle
+                            id="diff-files-handle"
+                            data-testid="diff-files-handle"
+                            disabled={filesCollapsed}
+                            aria-hidden={filesCollapsed || undefined}
+                            className={filesCollapsed ? "pointer-events-none w-0 overflow-hidden border-0 bg-transparent after:hidden" : undefined}
+                        />
+                        <ResizablePanel id="diff-body" defaultSize="76" minSize="60" className="min-h-0">
+                            <div className="relative flex h-full min-w-0 flex-col">
+                                <div className="flex h-[38px] shrink-0 items-center gap-[9px] border-b border-(--line-1) bg-(--yz-sunk) px-[10px]">
+                                    <DiffFilesToggle
+                                        ref={expandFilesRef}
+                                        collapsed={filesCollapsed}
+                                        label={filesCollapsed ? t("diffModal.expandFiles") : t("diffModal.collapseFiles")}
+                                        controlsId="diff-file-panel-content"
+                                        onToggle={toggleFilesPanel}
+                                    />
+                                    <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-semibold text-(--ink-1)">
+                                        {activeDir}
+                                        {activeName}
+                                    </span>
+                                    {lang && (
+                                        <span className="shrink-0 font-mono text-[11px] text-(--ink-3)">{lang}</span>
+                                    )}
+                                    {stats && (
+                                        <>
+                                            <span
+                                                className="shrink-0 font-mono text-[11px] font-semibold"
+                                                style={{ color: "#178a63" }}
+                                            >
+                                                +{stats.added}
+                                            </span>
+                                            <span
+                                                className="shrink-0 font-mono text-[11px] font-semibold"
+                                                style={{ color: "#c2293f" }}
+                                            >
+                                                −{stats.deleted}
+                                            </span>
+                                        </>
+                                    )}
+                                </div>
+                                <div className="min-h-0 flex-1 overflow-hidden bg-(--paper-0)">
+                                    {diff ? (
+                                        <DiffView content={diff} mode={mode} path={activePath} />
+                                    ) : loadError ? (
+                                        <div className="flex h-full flex-col items-center justify-center gap-[10px] px-[16px] text-center">
+                                            <p role="alert" className="text-[12.5px] text-(--ink-2)">
+                                                {t("diffModal.loadFailed", { message: loadError })}
+                                            </p>
+                                            <Button
+                                                type="button"
+                                                size="xs"
+                                                onClick={() => setRetryToken((token) => token + 1)}
+                                            >
+                                                {t("diffModal.retry")}
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <div className="flex h-full items-center justify-center text-[12.5px] text-(--ink-3)">
+                                            {t("diffModal.loadingEllipsis")}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </ResizablePanel>
+                    </ResizablePanelGroup>
+                    <DialogResizeHandles
+                        sizing={sizing}
+                        resizeLabel={tc("dialog.resize")}
+                        resetSizeLabel={tc("dialog.resetSize")}
+                    />
                 </DialogPrimitive.Content>
             </>
         </DialogPrimitive.Root>

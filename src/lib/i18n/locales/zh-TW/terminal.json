@@ -13,6 +13,8 @@
   "defaultProfileLabel": "預設 Profile",
   "customProfileName": "自訂",
   "customExecutableLabel": "自訂執行檔",
+  "customExecutablePlaceholder": "執行檔路徑",
+  "customArgsPlaceholder": "選用參數，每行一個",
   "customArgsLabel": "自訂參數",
   "customArgsHint": "每行是一個 argv 值；同一行內的空白會保留在同一個參數。",
   "customCwdStrategyLabel": "工作目錄策略",
@@ -31,5 +33,10 @@
   "profileWslDistro": "WSL：{{distro}}",
   "noSessions": "尚無終端機工作階段",
   "emptyDescription": "開啟新的終端機，在這裡執行指令。",
-  "tabLimitReached": "Yuzora 在所有工作區合計已開啟 {{limit}} 個終端機分頁，已達上限。請先在任一工作區關閉一個分頁，再開新的。"
+  "tabLimitReached": "Yuzora 在所有工作區合計已開啟 {{limit}} 個終端機分頁，已達上限。請先在任一工作區關閉一個分頁，再開新的。",
+  "targetOpen": {
+    "action": "從終端機開啟",
+    "noWorkspace": "請先開啟工作區，才能在 Preview 開啟此連結",
+    "previewRejected": "此連結無法在 Preview 開啟"
+  }
 }

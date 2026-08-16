@@ -55,4 +55,11 @@ describe("ProjectEditorPopover", () => {
     expect(nav.getByText("Studio")).toBeInTheDocument()
     expect(useRecentWorkspacesStore.getState().presentationFor(PATH)?.name).toBe("Studio")
   })
+
+  it("anchors 14px past the 68px Spaces rail (left: 82px)", () => {
+    useUiStore.getState().openProjectEditor(PATH)
+    render(<ProjectEditorPopover />)
+    const dialog = screen.getByRole("dialog", { name: "Edit project" })
+    expect(dialog.className).toContain("left-[82px]")
+  })
 })

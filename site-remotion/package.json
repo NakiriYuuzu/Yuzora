@@ -1,36 +1,36 @@
 {
   "name": "site-remotion",
   "version": "1.0.0",
-  "description": "My Remotion video",
+  "description": "Yuzora ADE + HERDR product media",
   "repository": {},
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "@remotion/cli": "4.0.487",
-    "@remotion/google-fonts": "^4.0.487",
-    "@remotion/tailwind-v4": "4.0.487",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
-    "remotion": "4.0.487",
-    "tailwindcss": "4.3.2"
+    "@remotion/cli": "4.0.509",
+    "@remotion/google-fonts": "^4.0.509",
+    "@remotion/tailwind-v4": "4.0.509",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.509",
+    "tailwindcss": "4.3.3"
   },
   "devDependencies": {
-    "@remotion/eslint-config-flat": "4.0.487",
+    "@remotion/eslint-config-flat": "4.0.509",
     "@typescript/native": "npm:typescript@7.0.2",
-    "@types/react": "19.2.17",
-    "@types/web": "0.0.352",
-    "eslint": "10.7.0",
-    "prettier": "3.9.5",
+    "@types/react": "19.2.18",
+    "@types/web": "0.0.354",
+    "eslint": "10.8.1",
+    "prettier": "3.9.6",
     "typescript": "6.0.3"
   },
   "scripts": {
-    "dev": "remotionb studio",
-    "build": "remotionb bundle",
-    "upgrade": "remotionb upgrade",
+    "dev": "remotion studio --no-open",
+    "build": "remotion bundle",
+    "upgrade": "remotion upgrade",
     "lint": "eslint src && bun ./node_modules/@typescript/native/bin/tsc"
   },
   "overrides": {
-    "typescript-eslint": "8.63.0"
+    "typescript-eslint": "8.67.0"
   },
   "sideEffects": [
     "*.css"

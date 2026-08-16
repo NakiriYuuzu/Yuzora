@@ -55,7 +55,10 @@ const dirtyWorkspace = () =>
 beforeEach(() => {
     installLocalStorage()
     localStorage.clear()
-    vi.mocked(openWorkspace).mockReset().mockResolvedValue("/canonical")
+    vi.mocked(openWorkspace).mockReset().mockResolvedValue({
+        canonicalPath: "/canonical",
+        capabilityId: "ws-capability"
+    })
     vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
     vi.mocked(startWatch).mockReset().mockResolvedValue(undefined)
     vi.mocked(saveDirtyTab).mockReset().mockResolvedValue({ kind: "saved" })
@@ -88,6 +91,7 @@ test("有 dirty 分頁：discard → 不存檔、直接開新工作區", async (
     expect(saveDirtyTab).not.toHaveBeenCalled()
     expect(openWorkspace).toHaveBeenCalledWith("/new")
     expect(useWorkspaceStore.getState().workspacePath).toBe("/canonical")
+    expect(useWorkspaceStore.getState().workspaceCapabilityId).toBe("ws-capability")
 })
 
 test("有 dirty 分頁：save → 先存檔再開新工作區", async () => {

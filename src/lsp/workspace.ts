@@ -5,6 +5,7 @@ import { LSPPlugin, Workspace } from "@codemirror/lsp-client"
 import type { LSPClient, WorkspaceFile } from "@codemirror/lsp-client"
 
 import { openFile, saveFile } from "../lib/ipc"
+import { rebasePath, samePathIdentity } from "../lib/paths"
 import { recentlySaved } from "../lib/saveSuppress"
 import { fileGradeOf } from "../lib/types"
 import type { DocumentLineEnding, LspLanguage } from "../lib/types"
@@ -278,8 +279,24 @@ export class YuzoraWorkspace extends Workspace {
     // User navigation into a (possibly unopened) file: open a real tab. The view
     // is created asynchronously by EditorPane, so it may not be resolvable yet.
     async displayFile(uri: string): Promise<EditorView | null> {
-        const path = uriToPath(uri)
-        useWorkspaceStore.getState().openTab(path)
-        return getView(path) ?? null
+        const decodedPath = uriToPath(uri)
+        const workspace = useWorkspaceStore.getState()
+        const tabs = workspace.groups.flatMap((group) => group.tabs)
+        // `//host/...` is ambiguous: it can be an exact case-sensitive POSIX
+        // path or an LSP spelling of Windows UNC. Preserve an exact tab before
+        // considering canonical Windows aliases.
+        const exactPath = tabs.find((tab) => tab.path === decodedPath)?.path
+        const existingPath = exactPath
+            ?? tabs.find((tab) => samePathIdentity(tab.path, decodedPath))?.path
+        // For a new LSP target, rebuild the path beneath the raw workspace root
+        // so verbatim drive/UNC syntax remains the operational tab identity.
+        const workspacePath = workspace.workspacePath
+        const operationalPath = existingPath
+            ?? (workspacePath
+                ? rebasePath(workspacePath, workspacePath, decodedPath)
+                : null)
+            ?? decodedPath
+        workspace.openTab(operationalPath)
+        return getView(operationalPath) ?? null
     }
 }

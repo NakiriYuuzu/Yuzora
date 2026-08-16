@@ -16,11 +16,34 @@
 
 use std::sync::Mutex;
 
+use serde::Serialize;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder,
+    WebviewEvent, WebviewUrl,
 };
 
 const PREVIEW_LABEL: &str = "preview-child";
+const PREVIEW_FILE_DROP_EVENT: &str = "preview:file-drop";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewFileDropPayload {
+    paths: Vec<String>,
+}
+
+pub fn forward_preview_file_drop(webview: &Webview, event: &WebviewEvent) {
+    if webview.label() != PREVIEW_LABEL {
+        return;
+    }
+    let WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event else {
+        return;
+    };
+    let paths = paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    let _ = webview.emit(PREVIEW_FILE_DROP_EVENT, PreviewFileDropPayload { paths });
+}
 
 pub struct PreviewWebviewState(pub Mutex<Option<Webview>>);
 

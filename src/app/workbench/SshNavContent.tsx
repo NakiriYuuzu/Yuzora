@@ -15,6 +15,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import {
@@ -73,7 +74,8 @@ export function SshNavContent() {
           />
         </div>
       ) : (
-        <ul className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto">
+        <ScrollArea className="min-h-0 flex-1">
+        <ul className="flex flex-col gap-[2px]">
           {hosts.map((host) => {
             const status = sessions[host.id]?.status
             const isActive = host.id === activeHostId
@@ -170,6 +172,7 @@ export function SshNavContent() {
             )
           })}
         </ul>
+        </ScrollArea>
       )}
 
       <DashedActionButton label={t("ssh.newHost")} onClick={openNewHost} />
@@ -290,14 +293,22 @@ function NewHostDialog({
         onOpenChange(next)
       }}
     >
-      <DialogContent className="sm:max-w-[440px]">
-        <DialogHeader>
+      <DialogContent
+        className="flex max-h-[calc(100vh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0"
+        data-testid="ssh-host-dialog"
+      >
+        <DialogHeader className="shrink-0 px-4 pt-4">
           <DialogTitle>
             {isEdit ? t("ssh.editHostDialogTitle") : t("ssh.newHostDialogTitle")}
           </DialogTitle>
           <DialogDescription>{t("ssh.newHostDialogDescription")}</DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-[10px]">
+        <ScrollArea
+          data-testid="ssh-host-body"
+          className="min-h-0 flex-1"
+          viewportClassName="px-4 py-3"
+          contentClassName="flex flex-col gap-[10px]"
+        >
           <Field label={t("ssh.fieldName")}>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("ssh.namePlaceholder")} />
           </Field>
@@ -350,8 +361,8 @@ function NewHostDialog({
               </div>
             </Field>
           ) : null}
-        </div>
-        <DialogFooter>
+        </ScrollArea>
+        <DialogFooter className="mx-0 mb-0 shrink-0 rounded-none border-t px-4 py-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t("ssh.cancel")}
           </Button>
@@ -385,7 +396,11 @@ function PasswordPromptDialog({ host }: { host: SshHost }) {
         }
       }}
     >
-      <DialogContent showCloseButton={false} className="sm:max-w-[400px]">
+      <DialogContent
+        showCloseButton={false}
+        className="flex min-h-0 flex-col"
+        data-testid="ssh-password-dialog"
+      >
         <DialogHeader>
           <DialogTitle>{t("ssh.passwordDialogTitle")}</DialogTitle>
           <DialogDescription>

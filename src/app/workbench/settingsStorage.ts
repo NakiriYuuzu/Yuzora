@@ -1,10 +1,4 @@
-import {
-  AGENT_PRESETS, DEFAULT_AGENT_COMMAND, DEFAULT_AGENT_ID,
-  resolveCuratedAgentCommand,
-  type AgentCommandIdentity, type AgentCommandMode, type AgentCommandResolution,
-  type AgentId, type AgentPreset,
-} from "@/lib/agentPresets"
-import { cachedBuiltinPiAdapterCommand } from "@/lib/platform"
+import { isWindowsPlatform } from "@/lib/platform"
 import type { TerminalProfile, TerminalProfileKind } from "@/lib/types"
 import {
   EMPTY_CUSTOM_TERMINAL_PROFILE,
@@ -12,18 +6,8 @@ import {
 } from "@/terminal/terminalProfiles"
 import type { TerminalImeAnchorMode } from "@/terminal/terminalImePositioning"
 
-export { AGENT_PRESETS, DEFAULT_AGENT_COMMAND }
-export type { AgentId, AgentPreset }
-
-/** P5：pi 的 runtime 選擇——builtin（bundle 內 yuzora-pi-acp）為預設，community
- *（bunx pi-acp，#37 起為釘選版本）保留為一鍵 rollback。只影響 pi preset 的
- * latest mode。 */
-export type PiRuntime = "builtin" | "community"
-
 export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 export const PREVIEW_SETTINGS_STORAGE_KEY = "yuzora:preview-settings"
-export const AGENT_SETTINGS_STORAGE_KEY = "yuzora:agent-settings"
-export const LAST_USED_CURATED_AGENT_STORAGE_KEY = "yuzora:last-used-curated-agent"
 export const APPEARANCE_SETTINGS_STORAGE_KEY = "yuzora:appearance-settings"
 
 export type ThemePreference = "light" | "dark" | "auto"
@@ -44,19 +28,6 @@ export interface PreviewSettings {
   port: string
 }
 
-export interface AgentSettings {
-  preset: AgentPreset
-  command: string
-  traceEnabled: boolean
-  presetCommands: Record<AgentId, AgentPresetCommandSettings>
-  piRuntime: PiRuntime
-}
-
-interface AgentPresetCommandSettings {
-  mode: AgentCommandMode
-  customCommand: string
-}
-
 const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
   command: "",
   port: "",
@@ -67,18 +38,6 @@ const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
 }
 
 const VALID_THEME_PREFERENCES: ThemePreference[] = ["light", "dark", "auto"]
-
-const DEFAULT_AGENT_SETTINGS: AgentSettings = {
-  preset: "pi",
-  command: DEFAULT_AGENT_COMMAND,
-  traceEnabled: false,
-  presetCommands: {
-    pi: { mode: "latest", customCommand: "" },
-    claude: { mode: "latest", customCommand: "" },
-    codex: { mode: "latest", customCommand: "" },
-  },
-  piRuntime: "builtin",
-}
 
 function readJsonSetting<T extends object>(key: string, fallback: T): T {
   try {
@@ -178,7 +137,8 @@ function normalizeTerminalProfile(
     shell: profile.shell.trim(),
     args: [...profile.args],
     kind: forcedKind ?? profile.kind!,
-    cwdStrategy: profile.cwdStrategy === "wsl" ? "wsl" : "native",
+    cwdStrategy:
+      profile.cwdStrategy === "wsl" && isWindowsPlatform() ? "wsl" : "native",
   }
 }
 
@@ -197,132 +157,4 @@ export function loadAppearanceSettings(): AppearanceSettings {
 
 export function saveAppearanceSettings(settings: AppearanceSettings): void {
   writeJsonSetting(APPEARANCE_SETTINGS_STORAGE_KEY, settings)
-}
-
-const VALID_PRESETS: AgentPreset[] = ["pi", "claude", "codex", "custom"]
-const VALID_COMMAND_MODES: AgentCommandMode[] = ["latest", "custom"]
-
-export function loadAgentSettings(): AgentSettings {
-  const settings = readJsonSetting<Partial<AgentSettings>>(AGENT_SETTINGS_STORAGE_KEY, {})
-  return {
-    preset: VALID_PRESETS.includes(settings.preset as AgentPreset)
-      ? settings.preset as AgentPreset
-      : DEFAULT_AGENT_SETTINGS.preset,
-    command: typeof settings.command === "string" && settings.command.trim()
-      ? settings.command.trim()
-      : DEFAULT_AGENT_SETTINGS.command,
-    traceEnabled: settings.traceEnabled === true,
-    presetCommands: normalizePresetCommands(settings.presetCommands),
-    piRuntime: settings.piRuntime === "community" ? "community" : DEFAULT_AGENT_SETTINGS.piRuntime,
-  }
-}
-
-export function resolveAgentCommand(settings = loadAgentSettings()): string {
-  return resolveAgentCommandRoute(undefined, settings).command
-}
-
-export function resolveAgentCommandRoute(
-  agentId?: AgentId,
-  settings = loadAgentSettings(),
-): AgentCommandResolution {
-  const selectedPreset = agentId ?? settings.preset
-  if (selectedPreset === "custom") {
-    return {
-      selectedPreset,
-      commandMode: "custom",
-      command: settings.command.trim() || DEFAULT_AGENT_COMMAND,
-      trustedAgentId: null,
-    }
-  }
-  const preference = settings.presetCommands[selectedPreset]
-  // P5：pi＋latest＋builtin runtime → bundle 內 adapter。builtin 一樣是 curated
-  //（trustedAgentId 維持 "pi"，prewarm／last-used 通道不變）；cache 未 ready
-  //（dev server、非 Tauri、resource 缺失）時退回 community command。custom mode
-  // 不受 runtime 選擇影響。agentRouter 契約不動——runtime 差異只反映在 command
-  // 字串，command+cwd keying 天然隔離兩個 runtime 的子行程與 session。
-  if (selectedPreset === "pi" && preference.mode === "latest" && settings.piRuntime === "builtin") {
-    const builtin = cachedBuiltinPiAdapterCommand()
-    if (builtin) {
-      return {
-        selectedPreset,
-        commandMode: "latest",
-        command: builtin,
-        trustedAgentId: "pi",
-      }
-    }
-  }
-  return resolveCuratedAgentCommand(
-    selectedPreset,
-    preference.mode,
-    preference.customCommand,
-  )
-}
-
-export function loadLastUsedCuratedAgent(): AgentId | null {
-  try {
-    const value = localStorage.getItem(LAST_USED_CURATED_AGENT_STORAGE_KEY)
-    return value === "pi" || value === "claude" || value === "codex" ? value : null
-  } catch {
-    return null
-  }
-}
-
-// Only a successful session/new result can supply this trusted identity. Custom
-// commands never enter the last-used channel, including custom mode selected
-// from a branded preset.
-export function rememberLastUsedCuratedAgent(identity: AgentCommandIdentity | undefined): void {
-  const agentId = identity?.commandMode === "custom" ? null : identity?.trustedAgentId
-  if (!agentId) return
-  try {
-    localStorage.setItem(LAST_USED_CURATED_AGENT_STORAGE_KEY, agentId)
-  } catch {
-    // private mode / quota — resolver will use Settings instead
-  }
-}
-
-// Resolve only identities that remain curated under today's Settings. If no
-// successful session has been recorded, prefer the selected trusted preset and
-// then the latest/default Pi route. A branded preset in Custom mode is still
-// untrusted and therefore produces no prewarm candidate.
-export function resolvePrewarmAgentId(settings = loadAgentSettings()): AgentId | null {
-  const lastUsed = loadLastUsedCuratedAgent()
-  if (lastUsed) {
-    if (resolveAgentCommandRoute(lastUsed, settings).trustedAgentId) return lastUsed
-  }
-  const selected = resolveAgentCommandRoute(undefined, settings)
-  if (selected.trustedAgentId) return selected.trustedAgentId
-  const fallback = resolveAgentCommandRoute(DEFAULT_AGENT_ID, settings)
-  return fallback.trustedAgentId ? DEFAULT_AGENT_ID : null
-}
-
-// AgentPickerPopover 的「自訂 command…」流用：把 picker 內填的 command 存為
-// 全域 custom preset（保留既有 traceEnabled），讓後續省略 agentId 的
-// newSession(cwd) 走 resolveAgentCommand() 解出同一條 command。
-export function saveCustomAgentCommand(command: string): AgentSettings {
-  const next: AgentSettings = { ...loadAgentSettings(), preset: "custom", command: command.trim() }
-  writeJsonSetting(AGENT_SETTINGS_STORAGE_KEY, next)
-  return next
-}
-
-function normalizePresetCommands(value: unknown): AgentSettings["presetCommands"] {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : {}
-  return {
-    pi: normalizePresetCommand(record.pi),
-    claude: normalizePresetCommand(record.claude),
-    codex: normalizePresetCommand(record.codex),
-  }
-}
-
-function normalizePresetCommand(value: unknown): AgentPresetCommandSettings {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : {}
-  // `verified` is the pre-latest legacy value. Treat it (and any unknown mode)
-  // as latest without writing during load; the next Settings change persists
-  // the normalized envelope.
-  const mode = VALID_COMMAND_MODES.includes(record.mode as AgentCommandMode)
-    ? record.mode as AgentCommandMode
-    : "latest"
-  return {
-    mode,
-    customCommand: typeof record.customCommand === "string" ? record.customCommand : "",
-  }
 }

@@ -1,6 +1,6 @@
-// Shared split-pane math for the editor-group companion previews
-// (MarkdownSplitView, SvgSplitView). Pure functions only — drag state and JSX
-// stay with each view.
+// Shared split-pane math for SvgSplitView companion previews.
+// Markdown preview now lives in an adjacent EditorGroup tab, so this
+// module is no longer used by Markdown.
 
 export const NARROW_BREAKPOINT = 640
 const MIN_PANE_SIZE = 160

@@ -1,27 +1,42 @@
 import { useState } from "react"
+import { useTranslation } from "react-i18next"
 
+import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { GitGuidedSetup } from "@/app/workbench/GitNavContent"
+import { EmptyState } from "@/app/workbench/EmptyState"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { commitLikeFrom, useDiffModalStore } from "@/state/diffModalStore"
 import { changedPathSet, useGitStore } from "@/state/gitStore"
 import { useGitLogStore } from "@/state/gitLogStore"
+import { useUiStore, type GitPanelTab } from "@/state/uiStore"
 import { gitFetch, gitPull, gitPush } from "@/lib/ipc"
 import type { CommitFileChange } from "@/lib/types"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 import { BranchPopover } from "@/workbench/git/BranchPopover"
 import { ConflictBanner } from "@/workbench/git/ConflictBanner"
 import { ConsoleTab } from "@/workbench/git/ConsoleTab"
 import { LocalChangesTab } from "@/workbench/git/LocalChangesTab"
 import { LogTab } from "@/workbench/git/LogTab"
+import { FolderGit2, MoreHorizontal } from "lucide-react"
 
 /**
- * Git mode main region — design reference §2. Log, Local changes and Console
- * tabs are all live now. defaultValue is "log" so the panel opens on the commit
- * history (design §2 default). When the git executable is missing the whole
- * region becomes a guided setup instead of the tabbed view.
+ * Git mode main region. Only the ready environment mounts Log/Local/Console.
+ * Tab selection is store-backed so FileTree/ConflictBanner can land on Local.
  */
 export function GitPanel() {
+  const { t } = useTranslation("menus")
   const environment = useGitStore((s) => s.environment)
+  const status = useGitStore((s) => s.status)
+  const lastError = useGitStore((s) => s.lastError)
+  const detect = useGitStore((s) => s.detect)
+  const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   return (
     <div
@@ -29,80 +44,103 @@ export function GitPanel() {
         kind: "git",
         repositoryRoot: environment?.status === "ready" ? environment.root : null,
       })}
-      className="yz-modein flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-1) bg-(--paper-0) shadow-(--shadow-lg)"
+      className="yz-modein @container/git-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-1) bg-(--paper-0) shadow-(--shadow-lg)"
     >
       {environment?.status === "missing" ? (
-        <GitGuidedSetup reason={environment.reason} />
-      ) : (
+        <GitGuidedSetup
+          reason={environment.reason}
+          kind={environment.kind}
+          minimumVersion={environment.minimumVersion}
+        />
+      ) : environment?.status === "ready" && status ? (
         <GitPanelTabs />
+      ) : environment?.status === "notARepo" ? (
+        <div className="flex h-full items-center justify-center p-[16px]">
+          <EmptyState
+            icon={FolderGit2}
+            title={t("gitPanel.notARepoTitle")}
+            description={t("gitPanel.notARepoDescription")}
+          />
+        </div>
+      ) : (
+        <div className="flex h-full flex-col items-center justify-center gap-[10px] p-[16px] text-center">
+          <EmptyState
+            icon={FolderGit2}
+            title={lastError ? t("gitPanel.errorTitle") : t("gitPanel.detectingTitle")}
+            description={
+              lastError
+                ? t("gitPanel.errorDescription", { message: lastError })
+                : t("gitPanel.detectingDescription")
+            }
+          />
+          {workspacePath && lastError && (
+            <Button
+              type="button"
+              onClick={() => void detect(workspacePath)}
+              className="rounded-[8px] bg-(--yz-solid) px-[11px] py-[5px] text-[11.5px] font-semibold text-(--ink-0) shadow-(--shadow-xs) hover:bg-(--yz-hover)"
+            >
+              {t("gitPanel.retry")}
+            </Button>
+          )}
+        </div>
       )}
     </div>
   )
 }
 
 function GitPanelTabs() {
+  const { t } = useTranslation("menus")
   const status = useGitStore((s) => s.status)
-  const changedCount = changedPathSet(status).size
+  const repositoryRoot = useGitStore((s) =>
+    s.environment?.status === "ready" ? s.environment.root : null
+  )
   const openCommit = useDiffModalStore((s) => s.openCommit)
+  const gitPanelTab = useUiStore((s) => s.gitPanelTab)
+  const setGitPanelTab = useUiStore((s) => s.setGitPanelTab)
 
-  // Resolve the selected commit + its loaded detail from the log store, then
-  // open the Diff modal on it. onOpenFile lands on the clicked file; onCompare
-  // opens the whole commit (activeIndex 0). Both require detail to be loaded —
-  // the wiring passes undefined otherwise so the surfaces stay inert.
+  const totalCount = new Set([
+    ...(status?.staged.map((entry) => entry.path) ?? []),
+    ...changedPathSet(status)
+  ]).size
+
   function openCommitDiff(hash: string, file?: CommitFileChange) {
     const s = useGitLogStore.getState()
-    // Guard against the stale-flash window: if the selection has moved on since
-    // the row/Compare was rendered, s.detail belongs to a different commit than
-    // `hash`. Bail rather than open the modal with mismatched hash + files.
     if (s.selectedHash !== hash) return
     const commit = s.commits.find((c) => c.hash === hash)
     const detail = s.detail
-    if (!commit || !detail) return
+    if (!repositoryRoot || !commit || !detail) return
     const index = file ? detail.files.findIndex((f) => f.path === file.path) : 0
-    openCommit(commitLikeFrom(commit, detail), index < 0 ? 0 : index)
+    openCommit(repositoryRoot, commitLikeFrom(commit, detail), index < 0 ? 0 : index)
   }
 
   return (
     <>
       <ConflictBanner />
-      <Tabs defaultValue="log" className="min-h-0 flex-1 gap-0">
-        <div className="flex h-[43px] shrink-0 items-center gap-[4px] border-b border-(--line-1) px-[10px]">
-          <TabsList variant="line" aria-label="Git views">
-            <TabsTrigger value="log">
-              {/* §2 L726 git-graph icon, stroke #3b6fe0 */}
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="#3b6fe0"
-                strokeWidth="1.9"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <circle cx="6" cy="6" r="2.4" />
-                <circle cx="6" cy="18" r="2.4" />
-                <circle cx="18" cy="8" r="2.4" />
-                <path d="M6 8.4v7.2M18 10.4a6 6 0 0 1-6 6H8.4" />
-              </svg>
-              Log
-            </TabsTrigger>
-            <TabsTrigger value="local">
-              Local changes
-              {/* §2 L730 amber changed-count pill (hidden at 0) */}
-              {changedCount > 0 && (
+      <Tabs
+        value={gitPanelTab}
+        onValueChange={(value) => setGitPanelTab(value as GitPanelTab)}
+        className="min-h-0 flex-1 gap-0"
+      >
+        <div
+          data-testid="git-panel-toolbar"
+          className="flex h-[43px] min-w-0 shrink-0 items-center gap-[4px] overflow-hidden border-b border-(--line-1) px-[10px]"
+        >
+          <TabsList variant="line" aria-label={t("gitPanel.viewsAriaLabel")} className="min-w-0 flex-1">
+            <TabsTrigger value="log" className="min-w-0 flex-1">{t("gitPanel.tabLog")}</TabsTrigger>
+            <TabsTrigger value="local" className="min-w-0 flex-1">
+              <span data-testid="git-panel-local-label" className="min-w-0 flex-1 truncate">{t("gitPanel.tabLocal")}</span>
+              {totalCount > 0 && (
                 <span
-                  className="rounded-(--r-pill) bg-(--amber-soft) px-[6px] py-[1px] font-mono text-[9.5px] font-semibold"
+                  data-testid="git-panel-local-count"
+                  className="shrink-0 whitespace-nowrap rounded-(--r-pill) bg-(--amber-soft) px-[6px] py-[1px] font-mono text-[9.5px] font-semibold"
                   style={{ color: "#9a6512" }}
                 >
-                  {changedCount}
+                  {totalCount}
                 </span>
               )}
             </TabsTrigger>
-            <TabsTrigger value="console">Console</TabsTrigger>
+            <TabsTrigger value="console" className="min-w-0 flex-1">{t("gitPanel.tabConsole")}</TabsTrigger>
           </TabsList>
-          <div className="flex-1" />
           <GitTabActions />
         </div>
 
@@ -125,17 +163,13 @@ function GitPanelTabs() {
   )
 }
 
-/**
- * §2 L734-740 tab-strip right cluster: branch pill (opens BranchPopover) +
- * Fetch / Pull / Push icon buttons. Only rendered when the repo is ready; the
- * three ops route through the same gitStore.runOp path the popover uses and are
- * disabled together while any op is busy.
- */
 function GitTabActions() {
+  const { t } = useTranslation("menus")
   const environment = useGitStore((s) => s.environment)
   const status = useGitStore((s) => s.status)
   const busy = useGitStore((s) => s.busy)
   const runOp = useGitStore((s) => s.runOp)
+  const snapshotStale = useGitStore((s) => s.snapshotStale)
 
   const [branchOpen, setBranchOpen] = useState(false)
 
@@ -145,13 +179,17 @@ function GitTabActions() {
     ? status.headOid.slice(0, 7)
     : (status?.branch ?? "main")
 
-  // §2 L734 branch pill — h28, rounded pill, solid track + line border, dot +
-  // mono name + chevron; opens the shared BranchPopover.
   const branchPill = (
-    <button
+    <Button
       type="button"
-      aria-label="Branches"
-      className="flex h-[28px] cursor-pointer items-center gap-[7px] rounded-(--r-pill) border border-(--line-1) bg-(--yz-solid) pr-[11px] pl-[9px] text-[11.5px] text-(--ink-1) shadow-(--shadow-xs) transition-colors hover:bg-(--paper-1)"
+      variant="outline"
+      size="sm"
+      aria-label={t("gitPanel.branchesAriaLabel")}
+      title={branchName}
+      aria-busy={busy != null || undefined}
+      aria-expanded={branchOpen}
+      aria-haspopup="dialog"
+      className="flex h-[28px] min-w-0 max-w-[72px] shrink cursor-pointer items-center gap-[7px] rounded-(--r-pill) border border-(--line-1) bg-(--yz-solid) pr-[11px] pl-[9px] text-[11.5px] text-(--ink-1) shadow-(--shadow-xs) transition-colors hover:bg-(--paper-1) disabled:cursor-not-allowed disabled:opacity-50 @min-[720px]/git-panel:max-w-[180px]"
       onClick={() => setBranchOpen((v) => !v)}
     >
       <span
@@ -159,7 +197,7 @@ function GitTabActions() {
         className="size-[8px] shrink-0 rounded-full"
         style={{ background: "#3b6fe0" }}
       />
-      <span className="font-mono font-medium">{branchName}</span>
+      <span className="min-w-0 truncate font-mono font-medium">{branchName}</span>
       <svg
         width="12"
         height="12"
@@ -170,52 +208,102 @@ function GitTabActions() {
         strokeLinecap="round"
         strokeLinejoin="round"
         aria-hidden="true"
+        className={`shrink-0 transition-transform ${branchOpen ? "rotate-180" : ""}`}
       >
         <path d="m6 9 6 6 6-6" />
       </svg>
-    </button>
+    </Button>
   )
 
   return (
-    <>
+    <div className="flex min-w-0 items-center gap-[2px]">
       <BranchPopover open={branchOpen} onOpenChange={setBranchOpen} trigger={branchPill} />
-      <GitActionButton
-        label="Fetch"
-        busy={busy}
-        onClick={() => runOp("fetch", () => gitFetch(false))}
-      >
-        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-        <path d="M3 3v5h5" />
-      </GitActionButton>
-      <GitActionButton label="Pull" busy={busy} onClick={() => runOp("pull", () => gitPull())}>
-        <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
-      </GitActionButton>
-      <GitActionButton label="Push" busy={busy} onClick={() => runOp("push", () => gitPush())}>
-        <path d="M12 21V9M7 14l5-5 5 5M5 3h14" />
-      </GitActionButton>
-    </>
+      <div className="hidden items-center gap-[2px] @min-[720px]/git-panel:flex">
+        <GitActionButton
+          label={t("branchPopover.fetch", { ns: "menus" })}
+          busy={busy}
+          stale={snapshotStale}
+          onClick={() => runOp("fetch", () => gitFetch(environment.root, false))}
+        >
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+          <path d="M3 3v5h5" />
+        </GitActionButton>
+        <GitActionButton
+          label={t("branchPopover.pull", { ns: "menus" })}
+          busy={busy}
+          stale={snapshotStale}
+          onClick={() => runOp("pull", () => gitPull(environment.root))}
+        >
+          <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
+        </GitActionButton>
+        <GitActionButton
+          label={t("branchPopover.push", { ns: "menus" })}
+          busy={busy}
+          stale={snapshotStale}
+          onClick={() => runOp("push", () => gitPush(environment.root))}
+        >
+          <path d="M12 21V9M7 14l5-5 5 5M5 3h14" />
+        </GitActionButton>
+      </div>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("gitPanel.moreActionsAriaLabel")}
+            disabled={busy != null || snapshotStale}
+            className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50 @min-[720px]/git-panel:hidden"
+          >
+            <MoreHorizontal className="size-[15px]" aria-hidden="true" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[140px]">
+          <DropdownMenuItem
+            disabled={busy != null || snapshotStale}
+            onSelect={() => void runOp("fetch", () => gitFetch(environment.root, false))}
+          >
+            {t("branchPopover.fetch", { ns: "menus" })}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={busy != null || snapshotStale}
+            onSelect={() => void runOp("pull", () => gitPull(environment.root))}
+          >
+            {t("branchPopover.pull", { ns: "menus" })}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={busy != null || snapshotStale}
+            onSelect={() => void runOp("push", () => gitPush(environment.root))}
+          >
+            {t("branchPopover.push", { ns: "menus" })}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   )
 }
 
-// §2 L738-740 30×30 icon button — r9, ink-3, hover paper-2/ink-1, disabled while
-// any op is busy (dimmed). svg is 15px, stroke-width 1.9 (design).
 function GitActionButton({
   label,
   busy,
+  stale,
   onClick,
   children
 }: {
   label: string
   busy: string | null
+  stale: boolean
   onClick: () => void
   children: React.ReactNode
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="icon-sm"
       title={label}
       aria-label={label}
-      disabled={busy != null}
+      disabled={busy != null || stale}
       onClick={onClick}
       className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-(--ink-3)"
     >
@@ -232,6 +320,6 @@ function GitActionButton({
       >
         {children}
       </svg>
-    </button>
+    </Button>
   )
 }

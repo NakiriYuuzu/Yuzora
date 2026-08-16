@@ -160,8 +160,8 @@ assert(
   "macOS universal build is required"
 )
 assert(
-  matrixRows.some((row) => row.platform === "ubuntu-22.04"),
-  "Linux x86_64 build is required"
+  !matrixRows.some((row) => row.platform === "ubuntu-22.04"),
+  "Linux app release builds must remain disabled"
 )
 assert(
   matrixRows.some((row) => row.platform === "windows-latest"),
@@ -233,13 +233,33 @@ assert(
 const normalizedFinalizeSteps = finalizeSteps.map((step, index) =>
   record(step, `finalize.steps[${index}]`)
 )
+const removeLinuxStepIndex = normalizedFinalizeSteps.findIndex(
+  (step) => step.name === "Remove unsupported Linux release assets"
+)
+const downloadMetadataStepIndex = normalizedFinalizeSteps.findIndex(
+  (step) => step.name === "Download generated updater metadata"
+)
+const removeLinuxStep = normalizedFinalizeSteps[removeLinuxStepIndex]
 const sanitizeStep = normalizedFinalizeSteps.find(
   (step) => step.name === "Enforce MSI-only Windows updater metadata"
 )
 const replaceStep = normalizedFinalizeSteps.find(
   (step) => step.name === "Replace generated updater metadata"
 )
-assert(sanitizeStep, "release must remove NSIS entries from updater metadata")
+assert(removeLinuxStep, "release must remove unsupported Linux release assets")
+assert(
+  downloadMetadataStepIndex >= 0 && removeLinuxStepIndex < downloadMetadataStepIndex,
+  "release must remove stale Linux assets before metadata download can fail"
+)
+assert(
+  typeof removeLinuxStep.run === "string" &&
+    removeLinuxStep.run.includes('gh release delete-asset "$TAG_NAME" "$asset" --yes') &&
+    removeLinuxStep.run.includes("*.AppImage") &&
+    removeLinuxStep.run.includes("*.deb") &&
+    removeLinuxStep.run.includes("*.rpm"),
+  "release must delete every unsupported Linux installer shape from new and resumed drafts"
+)
+assert(sanitizeStep, "release must remove unsupported Linux and NSIS entries from updater metadata")
 assert(
   sanitizeStep.run === "bun scripts/finalize-updater-metadata.ts updater-release/latest.json",
   "release must run the checked-in updater metadata finalizer"
@@ -282,9 +302,13 @@ const confirmPublication = normalizedPublishSteps.find(
 assert(verifyPublish, "automated publish must verify release assets and updater metadata")
 assert(
   typeof verifyPublish.run === "string" &&
-    verifyPublish.run.includes("darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64") &&
+    verifyPublish.run.includes("darwin-aarch64 darwin-x86_64 windows-x86_64") &&
+    !verifyPublish.run.includes("linux-x86_64") &&
+    verifyPublish.run.includes('startswith("linux-")') &&
+    verifyPublish.run.includes("^Yuzora-linux-") &&
+    verifyPublish.run.includes("AppImage") &&
     verifyPublish.run.includes('endswith(".msi")'),
-  "automated publish must require every updater platform and MSI-only Windows OTA"
+  "automated publish must require only supported updater platforms, reject Linux assets, and enforce MSI-only Windows OTA"
 )
 assert(publishRelease, "verified releases must be published automatically")
 assert(
@@ -313,12 +337,16 @@ assert(Array.isArray(candidateMatrix.include), "release candidate matrix include
 const candidateRows = candidateMatrix.include.map((row, index) =>
   record(row, `release candidate matrix row ${index}`)
 )
-for (const os of ["macos-latest", "windows-latest", "ubuntu-22.04"]) {
+for (const os of ["macos-latest", "windows-latest"]) {
   assert(
     candidateRows.some((row) => row.os === os),
     `release candidate matrix must include ${os}`
   )
 }
+assert(
+  !candidateRows.some((row) => row.os === "ubuntu-22.04"),
+  "Linux app release candidates must remain disabled"
+)
 const candidateSteps = releaseCandidate.steps
 assert(Array.isArray(candidateSteps), "release candidate steps are required")
 const candidateBuild = candidateSteps

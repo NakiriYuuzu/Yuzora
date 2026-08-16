@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "roots": [
+    "pylsp"
+  ],
+  "fileCount": 40,
+  "treeSha256": "ad1ab46a64ab9231608bfdfc37b0507520c56f9b6ac6c198f6626c2614208694",
+  "artifactSha256": "d6ac11b467021310498f2dffb2edf09629bbcfe0d3073156db2337334a60463f"
+}

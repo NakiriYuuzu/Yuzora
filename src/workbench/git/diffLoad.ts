@@ -44,8 +44,13 @@ export function diffStats(diff: DiffContent): { added: number; deleted: number }
 
 // Worktree diff (§2.5): same mechanism the Local changes tab uses. `staged`
 // selects which side (staged↔working) git diffs.
-export function loadWorktreeDiff(path: string, staged: boolean): Promise<DiffContent> {
-    return gitDiffContent(path, staged)
+export function loadWorktreeDiff(
+    repositoryRoot: string,
+    path: string,
+    staged: boolean,
+    origPath?: string | null
+): Promise<DiffContent> {
+    return gitDiffContent(repositoryRoot, path, staged, origPath)
 }
 
 // A FileAtRevResult carries content only for full/limited; the tooLarge/binary
@@ -71,6 +76,7 @@ function revToGraded(res: FileAtRevResult): GradedText {
 // → empty text); new = the file at this commit. Rename/copy resolves the old
 // side against `oldPath` when present. Both sides load in parallel.
 export async function loadCommitDiff(
+    repositoryRoot: string,
     hash: string,
     parents: string[],
     file: CommitFileChange
@@ -79,9 +85,9 @@ export async function loadCommitDiff(
     const parent = parents[0]
     const [original, modified] = await Promise.all([
         parent
-            ? gitFileAtRev(parent, oldPath).then(revToGraded)
+            ? gitFileAtRev(repositoryRoot, parent, oldPath).then(revToGraded)
             : Promise.resolve<GradedText>({ kind: "full", content: "" }),
-        gitFileAtRev(hash, file.path).then(revToGraded)
+        gitFileAtRev(repositoryRoot, hash, file.path).then(revToGraded)
     ])
     return { original, modified }
 }

@@ -128,8 +128,10 @@ class LspProcessClient {
 
     private write(obj: unknown) {
         const json = JSON.stringify(obj)
-        this.proc.stdin!.write(frame(json))
-        ;(this.proc.stdin as any).flush?.()
+        const stdin = this.proc.stdin
+        if (!stdin || typeof stdin === 'number') throw new Error('vtsls stdin pipe is unavailable')
+        stdin.write(frame(json))
+        ;(stdin as any).flush?.()
     }
 
     request(method: string, params: unknown, timeoutMs = 20000): Promise<any> {
@@ -178,7 +180,7 @@ class LspProcessClient {
 function offsetAt(text: string, pos: { line: number; character: number }): number {
     const docLines = text.split('\n')
     let offset = 0
-    for (let i = 0; i < pos.line; i++) offset += docLines[i].length + 1
+    for (let i = 0; i < pos.line; i++) offset += (docLines[i]?.length ?? 0) + 1
     return offset + pos.character
 }
 

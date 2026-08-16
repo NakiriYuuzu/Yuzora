@@ -13,6 +13,7 @@ vi.mock("../lib/ipc", () => ({
 import { YuzoraWorkspace, pathToUri, uriToPath } from "./workspace"
 import { registerView, unregisterView } from "../editor/viewRegistry"
 import { recentlySaved } from "../lib/saveSuppress"
+import { useWorkspaceStore } from "../state/workspaceStore"
 
 function fakeClient() {
     return { didOpen: vi.fn(), didClose: vi.fn(), notification: vi.fn() }
@@ -25,6 +26,11 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks()
+    useWorkspaceStore.setState({
+        workspacePath: null,
+        groups: [{ tabs: [], activePath: null }],
+        activeGroupIndex: 0,
+    })
 })
 
 it.each([
@@ -274,6 +280,87 @@ it("does NOT write back to disk when the target file is open in a tab: it dispat
     unregisterView("/ws/open.ts", view)
     view.destroy()
 })
+
+it("displayFile reuses an open Windows operational alias without creating a duplicate tab", async () => {
+    const workspace = String.raw`\\?\C:\Users\Yuuzu\project`
+    const raw = String.raw`\\?\C:\Users\Yuuzu\project\src\open.ts`
+    const client = fakeClient()
+    const ws = new YuzoraWorkspace(client as never, "typescript")
+    const uri = pathToUri(raw)
+    const view = new EditorView({ state: EditorState.create({ doc: "let foo = 1" }) })
+
+    useWorkspaceStore.getState().setWorkspace(workspace)
+    useWorkspaceStore.getState().openTab(raw)
+    registerView(raw, view)
+
+    expect(await ws.displayFile(uri)).toBe(view)
+    const tabs = useWorkspaceStore.getState().groups.flatMap((group) => group.tabs)
+    expect(tabs.map((tab) => tab.path)).toEqual([raw])
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe(raw)
+
+    unregisterView(raw, view)
+    view.destroy()
+})
+
+it.each([
+    [
+        "verbatim drive",
+        String.raw`\\?\C:\Users\Yuuzu\project`,
+        String.raw`\\?\C:\Users\Yuuzu\project\src\new.ts`,
+    ],
+    [
+        "verbatim UNC",
+        String.raw`\\?\UNC\Server\Share\project`,
+        String.raw`\\?\UNC\Server\Share\project\src\new.ts`,
+    ],
+])("displayFile preserves an unopened %s target's workspace operational path", async (_kind, workspacePath, rawPath) => {
+    const client = fakeClient()
+    const ws = new YuzoraWorkspace(client as never, "typescript")
+
+    useWorkspaceStore.getState().setWorkspace(workspacePath)
+
+    expect(await ws.displayFile(pathToUri(rawPath))).toBeNull()
+    expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
+        rawPath,
+    ])
+
+    // FileTree passes its raw node path to openTab. The operational path opened
+    // by LSP must therefore dedupe instead of leaving URI and native aliases.
+    useWorkspaceStore.getState().openTab(rawPath)
+    const state = useWorkspaceStore.getState()
+    expect(state.groups[0].tabs.map((tab) => tab.path)).toEqual([rawPath])
+    expect(state.groups[0].activePath).toBe(rawPath)
+})
+
+it.each(["windows-first", "posix-first"] as const)(
+    "displayFile prefers the exact POSIX // tab and view when UNC coexists (%s)",
+    async (order) => {
+        const client = fakeClient()
+        const ws = new YuzoraWorkspace(client as never, "typescript")
+        const windowsPath = String.raw`\\server\share\file.ts`
+        const posixPath = "//server/share/file.ts"
+        const windowsView = new EditorView({ state: EditorState.create({ doc: "windows" }) })
+        const posixView = new EditorView({ state: EditorState.create({ doc: "posix" }) })
+        const orderedPaths = order === "windows-first"
+            ? [windowsPath, posixPath]
+            : [posixPath, windowsPath]
+
+        useWorkspaceStore.getState().setWorkspace("//server/share")
+        for (const path of orderedPaths) useWorkspaceStore.getState().openTab(path)
+        registerView(windowsPath, windowsView)
+        registerView(posixPath, posixView)
+
+        expect(await ws.displayFile(pathToUri(posixPath))).toBe(posixView)
+        const state = useWorkspaceStore.getState()
+        expect(state.groups[0].tabs.map((tab) => tab.path)).toEqual(orderedPaths)
+        expect(state.groups[0].activePath).toBe(posixPath)
+
+        unregisterView(posixPath, posixView)
+        unregisterView(windowsPath, windowsView)
+        posixView.destroy()
+        windowsView.destroy()
+    }
+)
 
 it("evicts the least-recently-used background file past the LRU limit, sending didClose", async () => {
     openFile.mockImplementation(async () => ({ kind: "full", content: "x", size: 1 }))

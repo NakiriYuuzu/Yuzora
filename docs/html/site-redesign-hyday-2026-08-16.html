@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>結案報告 · gh-pages 宣傳頁重設計（hyday 風格）· 2026-08-16</title>
+<style>
+:root { --ink: #101422; --body: #565d73; --line: #e7e9ef; --accent: #4c7a0d; --wash: #f6f7f3; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Hanken Grotesk", "Noto Sans TC", system-ui, sans-serif; color: var(--ink); line-height: 1.75; }
+main { max-width: 860px; margin: 0 auto; padding: 56px 24px 88px; }
+h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 19px; font-weight: 600; margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--line); }
+p, li { color: var(--body); font-size: 15px; }
+code { font-family: "JetBrains Mono", monospace; font-size: 13px; background: var(--wash); padding: 1px 6px; border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; margin-top: 14px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: top; }
+th { color: var(--ink); font-weight: 600; white-space: nowrap; }
+td { color: var(--body); }
+.ok { color: var(--accent); font-weight: 600; }
+.meta { color: var(--body); font-size: 13.5px; }
+ul { padding-left: 22px; }
+</style>
+</head>
+<body>
+<main>
+<h1>gh-pages 宣傳頁重設計（hyday 風格）— 結案報告</h1>
+<p class="meta">2026-08-16 · branch <code>release/v0.0.8</code> · 未 commit（依約定等使用者明令）</p>
+
+<h2>目標與流程</h2>
+<p>依 hyday.tw 風格重做 <code>site/</code>（GitHub Pages 宣傳頁）：light 主題、精緻動效、zh-TW 優先雙語。流程契約全數走完：single-html 預覽（七輪迭代）→ 使用者拍板 → 重構正式 <code>site/</code> → 本機瀏覽器 RWD 驗收。</p>
+
+<h2>預覽迭代重點（七輪）</h2>
+<ul>
+<li>hero 進場編排、kicker 逐字、滑鼠視差、mini Command Palette、技術 marquee、GitHub stars 實時 badge、CSS scroll-driven progress bar。</li>
+<li>terminal-git 影片兩度重製，1:1 對齊新版 git 面板（tabs／SVG git graph／RefChip／CommitDetails），敘事＝cherry-pick 長節點 → push 後 <code>origin/main</code> 跟上。</li>
+<li>影片下緣 git-tail 線串流衍生至 bento git graph（真實 lane 色、draw-in＋流動）。</li>
+<li>boundary flow-diagram 置中＋IPC 封包光點雙向穿梭＋lane 進場動畫。</li>
+<li>四顆 float 藥丸（含 icons）：捲動第一個像素即開始重力落體至 hero 底部，續捲後飛進「開一個 Space」卡片被吞掉（卡片綠環吞嚥動畫）；全程 CSS scroll-driven（<code>scroll()</code>＋<code>timeline-scope</code> named view-timeline 雙軌）。</li>
+<li>拍板前最後修訂：移除 Apple Silicon 晶片卡。</li>
+</ul>
+
+<h2>正式重構交付物</h2>
+<table>
+<tr><th>檔案</th><th>說明</th></tr>
+<tr><td><code>site/index.html</code></td><td>重設計頁面結構＋OG meta＋favicon；接回 downloads.js DOM 契約（<code>#primary-download</code>、<code>[data-platform-download]</code>、recommended badge、device note）</td></tr>
+<tr><td><code>site/styles.css</code></td><td>全套重設計樣式＋下載契約樣式（badge／is-recommended／device-note）</td></tr>
+<tr><td><code>site/app.js</code>（新檔）</td><td>i18n（含 meta／OG 與 accessibility labels）、localStorage <code>yuzora-lang</code>、互動動效、影片 viewport／分頁可見性 lifecycle，以及 <code>initDownloadExperience</code> 掛載（ES module）</td></tr>
+<tr><td><code>site/downloads.js</code></td><td>未改動；平台偵測與下載檔名契約原樣保留</td></tr>
+<tr><td><code>site/assets/yuzora-icon.png</code></td><td>網站 favicon、導覽與頁尾改用目前桌面 app 的正式 Logo，內容與 <code>src-tauri/icons/128x128@2x.png</code> 一致</td></tr>
+<tr><td><code>site/assets/ade-herdr-*</code></td><td>重 render 去除已下架的 Agent Inspector：170 frames（約 5.7s）、zh/en mp4 各約 620KB、poster 以 frame 148 重產（2560×1600）；页面 timeupdate 裁切 hack 一併移除</td></tr>
+<tr><td>刪除</td><td><code>exploded-view*.js</code>、<code>showcase/</code>、六個 Design Lab 模型資料夾、<code>ade-herdr-inspector-*.png</code>、<code>redesign-preview.html</code>（備份於 <code>/tmp/yuzora-site-backup/</code>）</td></tr>
+</table>
+
+<h2>驗收證據（agent-browser，localhost HTTP）</h2>
+<table>
+<tr><th>項目</th><th>結果</th></tr>
+<tr><td>downloads.js 契約（macOS UA）</td><td class="ok">PASS</td></tr>
+<tr><td>─ <code>#primary-download</code> href</td><td>換為 <code>releases/latest/download/Yuzora-macos-universal.dmg</code></td></tr>
+<tr><td>─ 裝置註記／推薦卡</td><td>「已辨識：macOS · Universal」；macOS 卡 <code>is-recommended</code>＋badge 顯示</td></tr>
+<tr><td>i18n 雙向切換</td><td class="ok">PASS</td> </tr>
+<tr><td>─ EN</td><td><code>html[lang]=en</code>、badge「Recommended」、note「Detected: macOS · Universal」、<code>yuzora-lang=en</code></td></tr>
+<tr><td>藥丸捲動動畫</td><td class="ok">PASS（scrollY=1 即有進度；300px 時 0.71；吞嚥與卡片同步不變）</td></tr>
+<tr><td>RWD 1440／768／390</td><td class="ok">PASS（390 無橫向溢出、float 藥丸如設計隱藏、下載島單欄）</td></tr>
+<tr><td>GitHub stars badge</td><td class="ok">PASS（api.github.com 抓取成功）</td></tr>
+</table>
+
+<h2>硬需求核對</h2>
+<ul>
+<li>下載檔名契約 <code>Yuzora-{macos-universal.dmg,windows-x64-setup.exe}</code> ✔（downloads.js 原樣＋靜態 href 一致）</li>
+<li>只宣傳 macOS＋Windows ✔；DB 引擎寫 SQLite／PostgreSQL／MSSQL ✔；頁面不寫死版本號 ✔</li>
+<li>Agent Inspector 零殘留：頁面文案、影片、poster、素材檔全清 ✔</li>
+<li>部署不變：<code>deploy-pages.yml</code>（main push 觸發、path: site、無 build step）✔</li>
+</ul>
+
+<h2>Dark / Light mode（收官追加）</h2>
+<ul>
+<li>機制：<code>html[data-theme]</code> tokens 覆蓋層（surface／ink／line／shadow 全套暗色化，<code>--accent-ink</code> 於深底改亮綠 <code>#a9d64d</code> 維持對比）；head inline script 於 CSS 前套用主題防 FOUC；<code>color-scheme</code> 同步。</li>
+<li>行為：預設跟隨系統（<code>prefers-color-scheme</code>，含即時跟隨系統切換），使用者按 nav 太陽／月亮鈕後存 localStorage <code>yuzora-theme</code>；<code>meta[theme-color]</code> 隨主題切換。</li>
+<li>寫死色修正：nav 玻璃底、float 藥丸、marquee logo（dark 用 <code>invert</code> 反轉、hover 回品牌色）、GitHub icon、git-tail 節點 ring、bento-e 漸層、IPC state 封包、hero 暮色光暈；夕空下載島與深色按鈕改為模式不變的字面色。</li>
+<li>連帶修正：主題鈕使 390px nav 溢出——CTA 加 <code>nowrap</code>、≤520px 縮成圓形箭頭鈕（<code>aria-label</code>＋data-i18n-aria-label 補語意，applyLang 新增 aria-label i18n 支援）。</li>
+<li>驗證：headless 預設 dark 證明系統跟隨生效；重載持久化 ✔、light 回歸無破壞 ✔、dark 六區段截圖 ✔、390 無溢出 nav 62px ✔。順帶移除 app.js 內與 downloads.js 重複的舊 platform-detect 區塊。</li>
+</ul>
+
+<h2>Release 整合補強</h2>
+<ul>
+<li>網站 favicon、導覽與頁尾已替換為目前桌面 app 使用的 Yuzora Logo。</li>
+<li>補上中英文 meta／OG metadata、主導覽／頁尾／影片／Command Palette 的可存取標籤同步。</li>
+<li>影片在分頁隱藏時一律 pause，回到前景後只恢復仍在 viewport 的影片；reduced-motion 仍改用手動 controls。</li>
+<li>Command Palette 的語言切換結果改用原生 <code>button</code>，可由鍵盤操作；light/dark secondary text token 提升至 AA 對比。</li>
+<li>新增靜態回歸測試覆蓋 Logo 同一性、metadata、可存取標籤、影片 lifecycle、鍵盤操作與退休資產清理。此次 release 整合未重新執行 browser/E2E automation；仍須在核准後進行人工視覺驗證。</li>
+</ul>
+
+<h2>後續事項</h2>
+<ul>
+<li>變更尚未 commit；merge 進 main 且觸及 <code>site/**</code> 即自動部署 Pages。</li>
+<li><code>site-remotion/src/TerminalGit.tsx</code>／<code>Root.tsx</code>（前輪影片重製）與本輪 <code>AdeHerdr.tsx</code> 改動宜同批 commit。</li>
+<li>OG image 沿用相對路徑（與舊版一致）；若日後設 custom domain 可改絕對 URL。</li>
+</ul>
+</main>
+</body>
+</html>

@@ -20,15 +20,10 @@
         color: #2e2c28;
         font-family: "Hanken Grotesk Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         opacity: 1;
-        transition: opacity 250ms ease;
       }
       .dark #yz-splash {
         background: #1a191f;
         color: #e7e4df;
-      }
-      #yz-splash.yz-splash-leave {
-        opacity: 0;
-        pointer-events: none;
       }
       #yz-splash .yz-wordmark {
         font-size: 27px;
@@ -37,11 +32,6 @@
         text-transform: uppercase;
         /* re-center: tracking adds a trailing gap after the last glyph */
         padding-left: 0.35em;
-      }
-      @media (prefers-reduced-motion: reduce) {
-        #yz-splash {
-          transition: none;
-        }
       }
     </style>
     <script>

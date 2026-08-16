@@ -5,8 +5,10 @@ import { allowWorkspaceAssetScope } from "@/lib/ipc"
 import { dismissSplash } from "@/lib/splash"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { isImagePath } from "@/workbench/ImageView"
+import { isHerdrPagePath } from "@/lib/herdrPages"
 import {
     clearWorkspaceSession,
+    isPersistableSessionPath,
     loadWorkspaceSession,
     markWorkspaceSessionActive,
     saveWorkspaceSession
@@ -34,6 +36,7 @@ export function SessionRestoreBridge() {
         if (store.workspacePath || !session) {
             // Nothing to restore — open the save gate immediately.
             restoredRef.current = true
+            store.markSessionRestoreReady()
             dismissSplash()
             return
         }
@@ -71,6 +74,8 @@ export function SessionRestoreBridge() {
                 }
                 const opened: string[] = []
                 for (const path of session.tabs) {
+                    // Defense in depth: never restore preview / Herdr pseudo paths.
+                    if (!isPersistableSessionPath(path)) continue
                     try {
                         // Warm the document cache and confirm the file still
                         // exists; a since-deleted file rejects and is skipped.
@@ -90,7 +95,10 @@ export function SessionRestoreBridge() {
                 clearWorkspaceSession()
             } finally {
                 unsubscribeGuard()
-                if (!cancelled) restoredRef.current = true
+                if (!cancelled) {
+                    restoredRef.current = true
+                    useWorkspaceStore.getState().markSessionRestoreReady()
+                }
                 // The splash lives exactly as long as the restore attempt —
                 // success, workspace-gone and cancellation all release it.
                 dismissSplash()
@@ -124,10 +132,14 @@ export function SessionRestoreBridge() {
             if (state.groups[0] === prev.groups[0]) return
             const group = state.groups[0]
             const tabs = group.tabs
-                .filter((tab) => tab.path !== PREVIEW_TAB_PATH)
+                .filter((tab) => {
+                    if (tab.kind === "preview" || tab.kind === "markdown-preview" || tab.kind === "herdr-terminal") return false
+                    if (tab.path === PREVIEW_TAB_PATH || isHerdrPagePath(tab.path)) return false
+                    return isPersistableSessionPath(tab.path)
+                })
                 .map((tab) => tab.path)
             const activePath =
-                group.activePath && group.activePath !== PREVIEW_TAB_PATH
+                group.activePath && isPersistableSessionPath(group.activePath)
                     ? group.activePath
                     : null
             saveWorkspaceSession({ workspacePath, tabs, activePath })

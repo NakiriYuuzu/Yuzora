@@ -358,15 +358,18 @@ describe("AppShell", () => {
     expect(screen.getByLabelText("Status bar")).toBeInTheDocument()
   })
 
-  it("uses the shared 44px floor normally and 280px floor in Agent mode", () => {
+  it("keeps the shared 44px main-surface floor in ADE and Files modes", () => {
     render(<AppShell />)
     const mainSurface = screen.getByTestId("main-surface")
 
+    // ADE is the default mode and shares the editor surface floor with Files.
+    expect(screen.getByRole("tab", { name: "ADE" })).toHaveAttribute("aria-selected", "true")
     expect(mainSurface).toHaveStyle({ minHeight: "44px" })
-    fireEvent.click(screen.getByRole("tab", { name: "AgentZone" }))
-    expect(mainSurface).toHaveStyle({ minHeight: "280px" })
     fireEvent.click(screen.getByRole("tab", { name: "Files" }))
     expect(mainSurface).toHaveStyle({ minHeight: "44px" })
+    fireEvent.click(screen.getByRole("tab", { name: "ADE" }))
+    expect(mainSurface).toHaveStyle({ minHeight: "44px" })
+    expect(screen.getByTestId("nav-mode-content-ade")).toBeInTheDocument()
   })
 
   it("switches to Git mode and shows the selected state", () => {

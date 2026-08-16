@@ -1,10 +1,10 @@
-import { confirm } from "@tauri-apps/plugin-dialog"
 import { useTranslation } from "react-i18next"
 
 import { gitConflictAbort, gitConflictContinue } from "../../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
 import { useGitStore } from "../../state/gitStore"
 import { useUiStore } from "../../state/uiStore"
+import { requestAppConfirmation } from "@/state/appDialogStore"
 
 /**
  * Merge-conflict banner shown above the Git tabs while an operation is in
@@ -20,9 +20,13 @@ export function ConflictBanner() {
     const status = useGitStore((s) => s.status)
     const runOp = useGitStore((s) => s.runOp)
     const lastError = useGitStore((s) => s.lastError)
+    const busy = useGitStore((s) => s.busy)
+    const snapshotStale = useGitStore((s) => s.snapshotStale)
+    const repositoryRoot = useGitStore((s) => s.environment?.status === "ready" ? s.environment.root : null)
     const selectGitFile = useUiStore((s) => s.selectGitFile)
 
     const op = status?.inProgress ?? null
+    const mutationsDisabled = busy != null || snapshotStale || !repositoryRoot
     if (!op) return null
 
     const conflicted = status?.conflicted ?? []
@@ -30,17 +34,57 @@ export function ConflictBanner() {
     // Arrow bindings (not hoisted function declarations) so TypeScript keeps the
     // `op` non-null narrowing from the guard above inside these handlers.
     const abort = async () => {
-        const ok = await confirm(t("conflictBanner.abortConfirm", { op }))
+        if (mutationsDisabled || !repositoryRoot) return
+        const capturedRoot = repositoryRoot
+        const capturedOp = op
+        const ok = await requestAppConfirmation({
+            title: t("conflictBanner.abort"),
+            description: t("conflictBanner.abortConfirm", { op: capturedOp }),
+            kind: "warning",
+            destructive: true
+        })
         if (!ok) return
-        const done = await runOp("conflict-abort", () => gitConflictAbort(op), { conflictOp: op })
-        if (done) void logUserAction("git_conflict_abort", `abort ${op}`)
+        // Confirmation gap: require the same ready root and in-progress op.
+        const live = useGitStore.getState()
+        const liveRoot = live.environment?.status === "ready" ? live.environment.root : null
+        if (
+            liveRoot !== capturedRoot
+            || live.snapshotStale
+            || live.busy != null
+            || live.status?.inProgress !== capturedOp
+        ) return
+        const done = await runOp(
+            "conflict-abort",
+            () => gitConflictAbort(capturedRoot, capturedOp),
+            { conflictOp: capturedOp }
+        )
+        if (done) void logUserAction("git_conflict_abort", `abort ${capturedOp}`)
     }
 
     const conflictContinue = async () => {
-        const ok = await confirm(t("conflictBanner.continueConfirm", { op }))
+        if (mutationsDisabled || !repositoryRoot) return
+        const capturedRoot = repositoryRoot
+        const capturedOp = op
+        const ok = await requestAppConfirmation({
+            title: t("conflictBanner.continue"),
+            description: t("conflictBanner.continueConfirm", { op: capturedOp }),
+            kind: "warning"
+        })
         if (!ok) return
-        const done = await runOp("conflict-continue", () => gitConflictContinue(op), { conflictOp: op })
-        if (done) void logUserAction("git_conflict_continue", `continue ${op}`)
+        const live = useGitStore.getState()
+        const liveRoot = live.environment?.status === "ready" ? live.environment.root : null
+        if (
+            liveRoot !== capturedRoot
+            || live.snapshotStale
+            || live.busy != null
+            || live.status?.inProgress !== capturedOp
+        ) return
+        const done = await runOp(
+            "conflict-continue",
+            () => gitConflictContinue(capturedRoot, capturedOp),
+            { conflictOp: capturedOp }
+        )
+        if (done) void logUserAction("git_conflict_continue", `continue ${capturedOp}`)
     }
 
     return (
@@ -65,6 +109,7 @@ export function ConflictBanner() {
                 <button
                     type="button"
                     aria-label={t("conflictBanner.abort")}
+                    disabled={mutationsDisabled}
                     onClick={abort}
                     className="shrink-0 rounded-[6px] border border-[#c2293f] px-[10px] py-[3px] text-[11px] font-semibold text-[#c2293f] transition-colors duration-[130ms] hover:bg-[#c2293f] hover:text-(--paper-0)"
                 >
@@ -73,6 +118,7 @@ export function ConflictBanner() {
                 <button
                     type="button"
                     aria-label={t("conflictBanner.continue")}
+                    disabled={mutationsDisabled}
                     onClick={conflictContinue}
                     className="shrink-0 rounded-[6px] bg-(--ink-1) px-[10px] py-[3px] text-[11px] font-semibold text-(--paper-0) transition-opacity duration-[130ms] hover:opacity-90"
                 >

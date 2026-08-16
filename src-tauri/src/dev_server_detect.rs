@@ -1,3 +1,6 @@
+// Script discovery is read-only. Detect may surface package.json command text
+// for review, but it never authorizes or spawns a process. Spawn stays behind
+// workspace trust + exact-command challenge in process_service.
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::path::Path;

@@ -1,9 +1,9 @@
-import { confirm } from "@tauri-apps/plugin-dialog"
-
 import type { ContextMenuCommandOutcome } from "@/app/workbench/contextMenuModel"
 import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import i18n from "@/lib/i18n"
+import { workspacePathBasename } from "@/lib/paths"
 import { ptyActivity, ptyClose } from "@/lib/ipc"
+import { requestAppConfirmation } from "@/state/appDialogStore"
 import type { TerminalProfile } from "@/lib/types"
 import {
   MAX_TERMINAL_TABS,
@@ -81,7 +81,7 @@ export function createTerminalSessionMeta(
 
   return {
     sessionId,
-    title: `Terminal ${terminalNumber}`,
+    title: terminalNumber === 1 ? workspacePathBasename(workspace) : `Terminal ${terminalNumber}`,
     launchStatus: "opening",
     workspace,
     shell,
@@ -133,8 +133,9 @@ export async function closeTerminal(
   }
 
   if (activity !== "idle") {
-    const confirmed = await confirm(
-      i18n.t(
+    const confirmed = await requestAppConfirmation({
+      title: i18n.t("contextMenu.terminal.closeConfirmTitle", { ns: "menus" }),
+      description: i18n.t(
         activity === "busy"
           ? "contextMenu.terminal.closeBusyConfirmMessage"
           : "contextMenu.terminal.closeUnknownConfirmMessage",
@@ -143,11 +144,9 @@ export async function closeTerminal(
           title: terminalDisplayTitle(session),
         }
       ),
-      {
-        title: i18n.t("contextMenu.terminal.closeConfirmTitle", { ns: "menus" }),
-        kind: "warning",
-      }
-    )
+      kind: "warning",
+      destructive: true
+    })
     if (!confirmed) return cancelled()
   }
   if (!terminalTargetExists(target)) return cancelled()

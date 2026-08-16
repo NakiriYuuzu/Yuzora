@@ -25,8 +25,10 @@ export interface GitConsoleEntry {
     time: string
 }
 
-interface RunOpOptions {
+export interface RunOpOptions {
     conflictOp?: string
+    /** Runs only after `fn` succeeds and before post-mutation refresh. */
+    afterMutationBeforeRefresh?: () => void | Promise<void>
 }
 
 // Ring-buffer cap — matches the prototype's "keep recent history" intent
@@ -156,6 +158,26 @@ export function clearGitSnapshots(): void {
     liveSnapshotKey = null
     detectInFlight = false
     refreshAfterDetect = false
+    statusEpoch = 0
+    branchEpoch = 0
+    branchRequestSeq = 0
+    resetRefreshFlight()
+}
+
+/**
+ * Shared pre-action gate for every Git mutation surface. `runOp` remains
+ * authoritative; UI/menu/dialog controls must disable with this predicate so
+ * users never open a confirmation they cannot complete.
+ */
+export function gitMutationsBlocked(
+    state: Pick<GitState, "busy" | "snapshotStale" | "environment"> = useGitStore.getState()
+): boolean {
+    return (
+        state.busy != null
+        || state.snapshotStale
+        || state.environment?.status !== "ready"
+        || detectInFlight
+    )
 }
 
 interface GitState {
@@ -164,6 +186,9 @@ interface GitState {
     branches: BranchList | null
     // hydrate 後、背景 bootstrap 落地前為 true——僅標記概念（本輪不加 UI 指示）。
     snapshotStale: boolean
+    // Monotonic only when a repository status snapshot is accepted. Inline
+    // worktree diffs use it as an explicit content identity revision.
+    statusRevision: number
     busy: string | null
     lastError: string | null
     remoteIncoming: RemoteProbe
@@ -187,6 +212,7 @@ export const initialGitState = {
     status: null,
     branches: null,
     snapshotStale: false,
+    statusRevision: 0,
     busy: null,
     lastError: null,
     remoteIncoming: "unknown" as RemoteProbe,
@@ -209,10 +235,40 @@ let consoleSeq = 0
 // caller within one debounce window awaits (等同一班機).
 let timer: ReturnType<typeof setTimeout> | null = null
 let inflight: Promise<void> | null = null
-// Set when a refresh is requested while a status fetch is already in flight (past
-// the debounce). The current fetch runs one more time on completion so a change
-// that landed mid-flight isn't lost. Bounded: reset before the single rerun.
-let pendingRerun = false
+let settleInflight: (() => void) | null = null
+// Bumped for every new flight and every reset so a stale timer/IPC/finally
+// cannot own the current module flight or its resolver.
+let refreshFlightGen = 0
+// Path scope for the not-yet-started debounce request, and for one post-flight
+// rerun. `undefined` means a full status; `null` means none scheduled.
+type RefreshPathScope = string[] | undefined
+let scheduledScope: RefreshPathScope | null = null
+let pendingRerunScope: RefreshPathScope | null = null
+
+function mergeRefreshPathScope(
+    current: RefreshPathScope | null,
+    incoming?: string[]
+): RefreshPathScope {
+    if (incoming === undefined || current === undefined) return undefined
+    if (current === null) return [...incoming]
+    const merged = new Set(current)
+    for (const path of incoming) merged.add(path)
+    return [...merged]
+}
+
+function resetRefreshFlight(): void {
+    refreshFlightGen += 1
+    if (timer) {
+        clearTimeout(timer)
+        timer = null
+    }
+    scheduledScope = null
+    pendingRerunScope = null
+    inflight = null
+    const settle = settleInflight
+    settleInflight = null
+    settle?.()
+}
 // git_detect async 化（#55 T1）後兩個 detect 可真併發、resolve 順序不保證：快速
 // 切換 workspace 時舊 workspace 的慢結果可能晚到。以單調序號丟棄過期 resolve /
 // reject，避免 stale environment 覆蓋新 workspace（Rust 端 git_detect 亦有同款
@@ -228,6 +284,14 @@ let detectSeq = 0
 // 被抑制的 refresh 記一筆，bootstrap 落地後補跑一次收斂（fs 變更不漏）。
 let detectInFlight = false
 let refreshAfterDetect = false
+// Invalidates in-flight gitStatus / gitBranches responses sampled before a
+// successful mutation (or a landed detect). Capture immediately before IPC;
+// publish only when the captured value still matches.
+let statusEpoch = 0
+let branchEpoch = 0
+// Latest-request generation for loadBranches: two same-root/same-epoch
+// fetches can still resolve out of order; only the newest seq may publish.
+let branchRequestSeq = 0
 
 // ready environment 的 root，否則 null。status/branches 的 stale-resolve 丟棄
 // 用：只看 `status === "ready"` 擋不住 ready→ready 的 workspace 切換（A 的慢
@@ -235,6 +299,33 @@ let refreshAfterDetect = false
 // 下」的 root 是否同一個 repo——與 detectSeq 同款語意，各守一條路。
 function readyRoot(env: GitEnvironment | null | undefined): string | null {
     return env?.status === "ready" ? env.root : null
+}
+
+function statusRequestIsCurrent(
+    env: GitEnvironment | null | undefined,
+    rootAtFetch: string,
+    epochAtFetch: number
+): boolean {
+    return !detectInFlight && readyRoot(env) === rootAtFetch && epochAtFetch === statusEpoch
+}
+
+function branchRequestIsCurrent(
+    env: GitEnvironment | null | undefined,
+    rootAtFetch: string,
+    epochAtFetch: number,
+    seqAtFetch: number
+): boolean {
+    return (
+        !detectInFlight
+        && readyRoot(env) === rootAtFetch
+        && epochAtFetch === branchEpoch
+        && seqAtFetch === branchRequestSeq
+    )
+}
+
+function bumpMutationEpochs(): void {
+    statusEpoch += 1
+    branchEpoch += 1
 }
 
 export const useGitStore = create<GitState>()((set, get) => ({
@@ -268,6 +359,22 @@ export const useGitStore = create<GitState>()((set, get) => ({
             // environment 已換血成快照的 → live key 跟著換：hydrate 期間 watcher/
             // focus refresh 落地的更新要寫進「這個」workspace 的快照。
             liveSnapshotKey = workspacePath
+        } else {
+            // An uncached workspace must never keep repo A actionable while
+            // repo B is still bootstrapping. Clear all repository-owned state
+            // before the async request starts.
+            liveSnapshotKey = null
+            set({
+                environment: null,
+                status: null,
+                branches: null,
+                snapshotStale: false,
+                busy: null,
+                lastError: null,
+                remoteIncoming: "unknown",
+                remotePaused: false,
+                commitMessage: ""
+            })
         }
         try {
             // #57 T3：首載一趟 bootstrap 回齊 environment＋status＋branches——
@@ -277,6 +384,8 @@ export const useGitStore = create<GitState>()((set, get) => ({
             // 過期 resolve（更新的 detect 已進場）→ 整段丟棄，不觸碰 store，
             // 抑制旗標歸更新的 detect 管。
             if (seq !== detectSeq) return
+            // Landed detect replaces status/branches; drop samples from before it.
+            bumpMutationEpochs()
             detectInFlight = false
             // 一次 set 換血：notARepo/missing 帶回 null 清掉舊 repo 殘留；ready
             // 直接帶回首載快照，無「先清空再重抓」的空白窗。ready 但快照失敗
@@ -289,11 +398,14 @@ export const useGitStore = create<GitState>()((set, get) => ({
                 status,
                 branches,
                 snapshotStale: false,
+                ...(environment.status === "ready" && status
+                    ? { statusRevision: get().statusRevision + 1 }
+                    : {}),
                 remoteIncoming: "unknown",
                 remotePaused: false,
                 // 與舊流程「detect 成功、refresh 失敗」同語意：只記 lastError，
                 // 後續 watcher/focus refresh 會自行收斂。
-                ...(snapshotError ? { lastError: snapshotError } : {})
+                lastError: snapshotError ?? null
             })
             // #58 T4a：bootstrap 真值落地 → 播種/覆蓋快照。非 ready（notARepo/
             // missing）則失效舊快照：這個 workspace 已不是 repo，下次切回不得
@@ -333,67 +445,97 @@ export const useGitStore = create<GitState>()((set, get) => ({
             return Promise.resolve()
         }
         if (inflight) {
-            // Within the debounce window (timer still pending) calls just coalesce;
-            // once the fetch is actually running, remember to run once more so a
-            // change that landed mid-flight isn't lost (m3).
-            if (!timer) pendingRerun = true
+            // Within the debounce window (timer still pending) widen the not-yet-
+            // started request. Once the fetch is running, contribute this caller's
+            // path scope to one post-flight rerun. Full refresh dominates.
+            if (timer) {
+                scheduledScope = mergeRefreshPathScope(scheduledScope, paths)
+            } else {
+                pendingRerunScope = mergeRefreshPathScope(pendingRerunScope, paths)
+            }
             return inflight
         }
-        inflight = new Promise<void>((resolve) => {
+        scheduledScope = paths === undefined ? undefined : [...paths]
+        const generation = ++refreshFlightGen
+        let settled = false
+        const promise = new Promise<void>((resolve) => {
+            const settle = () => {
+                if (settled) return
+                settled = true
+                resolve()
+            }
+            settleInflight = settle
             if (timer) clearTimeout(timer)
             timer = setTimeout(async () => {
-                timer = null
-                // Re-check readiness at execution time: the environment can flip to
-                // non-ready (notARepo/missing) during the debounce window, and
-                // running the fetch then would write lastError — the very background
-                // noise m2 removes (F2). Abandon the fetch and drop any pending rerun
-                // so no stale flag lingers.
-                const rootAtFetch = readyRoot(get().environment)
-                // detect 在飛（debounce 窗口內開始了 workspace 切換）同樣放棄本次
-                // fetch——Rust 端可能回「另一個 repo」的 status；記一筆待補跑。
-                if (rootAtFetch === null || detectInFlight) {
-                    if (detectInFlight) refreshAfterDetect = true
-                    pendingRerun = false
-                    inflight = null
-                    resolve()
-                    return
-                }
                 try {
-                    const status = await gitStatus(paths)
-                    // Re-check after the await: the environment can flip to
-                    // non-ready while the fetch is in flight (detect() switching to
-                    // a non-repo workspace clears status and does not refresh), so a
-                    // stale resolve would re-fill the just-cleared status. Discard it
-                    // (F-1). ready→ready 切換同樣要擋：A 的慢 status 晚到時 B 也是
-                    // ready，比對 root 才能丟棄跨 repo 的 stale resolve（#57 覆核）。
-                    // detectInFlight 落地閘：resolve 期間切換開始的話，這筆 status
-                    // 的 repo 歸屬不明（root guard 對 Rust state 時序盲視）→ 丟棄，
-                    // bootstrap 落地後自帶新快照收斂。
-                    if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
-                        set({ status })
-                        syncLiveSnapshot(get())
+                    if (generation !== refreshFlightGen) return
+                    timer = null
+                    // Re-check readiness at execution time: the environment can flip to
+                    // non-ready (notARepo/missing) during the debounce window, and
+                    // running the fetch then would write lastError — the very background
+                    // noise m2 removes (F2). Abandon the fetch and drop any pending rerun
+                    // so no stale flag lingers.
+                    const rootAtFetch = readyRoot(get().environment)
+                    // detect 在飛（debounce 窗口內開始了 workspace 切換）同樣放棄本次
+                    // fetch——Rust 端可能回「另一個 repo」的 status；記一筆待補跑。
+                    if (rootAtFetch === null || detectInFlight) {
+                        if (generation !== refreshFlightGen) return
+                        if (detectInFlight) refreshAfterDetect = true
+                        scheduledScope = null
+                        pendingRerunScope = null
+                        inflight = null
+                        if (settleInflight === settle) settleInflight = null
+                        return
                     }
-                } catch (e) {
-                    // Same guard for a stale rejection — a failure from the old
-                    // workspace must not surface lastError noise on the new one (F-1).
-                    if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
-                        set({ lastError: String(e) })
-                    }
-                } finally {
-                    inflight = null
-                    resolve()
-                    if (pendingRerun) {
-                        pendingRerun = false
-                        // Same guard before the rerun: skip (not just entry-gate) if
-                        // the environment went non-ready while the fetch was running.
-                        if (get().environment?.status === "ready") {
-                            void get().refresh(paths)
+                    const requestPaths = scheduledScope === null ? paths : scheduledScope
+                    if (generation === refreshFlightGen) scheduledScope = null
+                    const epochAtFetch = statusEpoch
+                    try {
+                        const status = await gitStatus(rootAtFetch, requestPaths)
+                        if (generation !== refreshFlightGen) return
+                        // Re-check after the await: the environment can flip to
+                        // non-ready while the fetch is in flight (detect() switching to
+                        // a non-repo workspace clears status and does not refresh), so a
+                        // stale resolve would re-fill the just-cleared status. Discard it
+                        // (F-1). ready→ready 切換同樣要擋：A 的慢 status 晚到時 B 也是
+                        // ready，比對 root 才能丟棄跨 repo 的 stale resolve（#57 覆核）。
+                        // detectInFlight 落地閘：resolve 期間切換開始的話，這筆 status
+                        // 的 repo 歸屬不明（root guard 對 Rust state 時序盲視）→ 丟棄，
+                        // bootstrap 落地後自帶新快照收斂。
+                        // statusEpoch: a successful mutation (or landed detect) sampled
+                        // after this request started makes the result stale even on the
+                        // same root.
+                        if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+                            set((state) => ({ status, lastError: null, statusRevision: state.statusRevision + 1 }))
+                            syncLiveSnapshot(get())
+                        }
+                    } catch (e) {
+                        if (generation !== refreshFlightGen) return
+                        // Same guard for a stale rejection — a failure from the old
+                        // workspace or pre-mutation epoch must stay silent.
+                        if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+                            set({ lastError: String(e) })
                         }
                     }
+                    if (generation !== refreshFlightGen) return
+                    const rerunPaths = pendingRerunScope
+                    pendingRerunScope = null
+                    inflight = null
+                    if (settleInflight === settle) settleInflight = null
+                    if (rerunPaths !== null && get().environment?.status === "ready") {
+                        // Include the scheduled rerun in this promise so coalesced
+                        // callers (especially runOp after an epoch bump) wait for
+                        // a current-epoch publish, not just the discarded request.
+                        // Full-refresh callers win over any path-scoped pending set.
+                        await get().refresh(rerunPaths)
+                    }
+                } finally {
+                    settle()
                 }
             }, REFRESH_DEBOUNCE_MS)
         })
-        return inflight
+        inflight = promise
+        return promise
     },
 
     // Background refresh for checkRemote: updates `status` on success but keeps
@@ -410,10 +552,20 @@ export const useGitStore = create<GitState>()((set, get) => ({
         // workspace 切換才 resolve，不得蓋掉新 workspace 的快照（refresh 同款
         // root 比對；錯誤照舊往上拋給 checkRemote 設 remotePaused）。
         const rootAtFetch = readyRoot(get().environment)
-        const status = await gitStatus(paths)
-        if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
-            set({ status })
-            syncLiveSnapshot(get())
+        if (!rootAtFetch || get().snapshotStale) return
+        const epochAtFetch = statusEpoch
+        try {
+            const status = await gitStatus(rootAtFetch, paths)
+            if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+                set((state) => ({ status, lastError: null, statusRevision: state.statusRevision + 1 }))
+                syncLiveSnapshot(get())
+            }
+        } catch (e) {
+            // Rethrow only while the request is still current so checkRemote can
+            // pause. A pre-mutation or cross-root failure must not become last writer.
+            if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+                throw e
+            }
         }
     },
 
@@ -426,21 +578,26 @@ export const useGitStore = create<GitState>()((set, get) => ({
         // 舊 workspace 的 branches 不得蓋掉新 workspace 的首載快照；stale 的
         // reject 同樣不得在新 workspace 冒 lastError（refresh F-1 同款語意）。
         const rootAtFetch = readyRoot(get().environment)
+        if (!rootAtFetch || get().snapshotStale) return
+        const epochAtFetch = branchEpoch
+        const seqAtFetch = ++branchRequestSeq
         try {
-            const branches = await gitBranches()
-            if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
-                set({ branches })
+            const branches = await gitBranches(rootAtFetch)
+            if (branchRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
+                set({ branches, lastError: null })
                 syncLiveSnapshot(get())
             }
         } catch (e) {
-            if (!detectInFlight && readyRoot(get().environment) === rootAtFetch) {
+            if (branchRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
                 set({ lastError: String(e) })
             }
         }
     },
 
     runOp: async (name, fn, options) => {
-        if (get().busy) return false
+        if (gitMutationsBlocked(get())) return false
+        const capturedRoot = readyRoot(get().environment)
+        if (!capturedRoot) return false
         set({ busy: name })
         // Single-point Console wiring: every runOp completion (success and
         // failure) records one entry here. The IPC layer returns no stdout, so
@@ -449,6 +606,22 @@ export const useGitStore = create<GitState>()((set, get) => ({
         const cmd = consoleCmdLabel(name, options)
         try {
             await fn()
+            const afterSuccess = get()
+            if (
+                !detectInFlight
+                && !afterSuccess.snapshotStale
+                && readyRoot(afterSuccess.environment) === capturedRoot
+            ) {
+                // Invalidate every gitStatus/gitBranches sampled before this mutation.
+                bumpMutationEpochs()
+                if (options?.afterMutationBeforeRefresh) {
+                    try {
+                        await options.afterMutationBeforeRefresh()
+                    } catch {
+                        // Mutation already succeeded; hook failure must not invert runOp.
+                    }
+                }
+            }
             set({ lastError: null })
             if (name === "fetch") set({ remotePaused: false, remoteIncoming: "no" })
             get().appendConsole({
@@ -478,21 +651,50 @@ export const useGitStore = create<GitState>()((set, get) => ({
     checkRemote: async () => {
         // busy：不與前景 op 爭用（spec 契約）。remotePaused：背景檢查已因失敗停檢，
         // 待手動 fetch 成功復位（runOp fetch 分支清 remotePaused）——閉環成立。
-        if (get().busy || get().remotePaused) return
-        const { mode } = get().remoteCheck
+        const before = get()
+        if (
+            before.busy
+            || before.remotePaused
+            || detectInFlight
+            || before.snapshotStale
+            || before.environment?.status !== "ready"
+        ) return
+        const root = before.environment.root
+        const { mode } = before.remoteCheck
         if (mode === "off") return
         try {
             if (mode === "probe") {
-                const remoteIncoming = await gitRemoteProbe()
-                set({ remoteIncoming })
+                const remoteIncoming = await gitRemoteProbe(root)
+                const current = get()
+                if (!detectInFlight && !current.snapshotStale && readyRoot(current.environment) === root) {
+                    set({ remoteIncoming })
+                }
             } else {
-                await gitFetch(true)
-                await get().refreshQuiet()
+                await gitFetch(root, true)
+                const current = get()
+                if (!detectInFlight && !current.snapshotStale && readyRoot(current.environment) === root) {
+                    const epochAtQuiet = statusEpoch
+                    try {
+                        await current.refreshQuiet()
+                    } catch {
+                        const after = get()
+                        if (
+                            !detectInFlight
+                            && !after.snapshotStale
+                            && readyRoot(after.environment) === root
+                            && statusEpoch === epochAtQuiet
+                        ) {
+                            set({ remotePaused: true })
+                        }
+                        return
+                    }
+                }
             }
         } catch {
-            // Background auth/network failures must stay silent: pause future
-            // checks, never surface an error or trigger an interactive path.
-            set({ remotePaused: true })
+            const current = get()
+            if (!detectInFlight && !current.snapshotStale && readyRoot(current.environment) === root) {
+                set({ remotePaused: true })
+            }
         }
     },
 

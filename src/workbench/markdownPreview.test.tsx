@@ -5,6 +5,7 @@ import type { OpenFileResult } from "../lib/types"
 import { getView } from "../editor/viewRegistry"
 import { getDocument } from "../editor/documentRegistry"
 import { openUrl } from "@tauri-apps/plugin-opener"
+import { markdownPreviewPath } from "../lib/markdownPreviewTab"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
 // Mutable stand-in for the editor buffer the preview reads. Each test seeds it
@@ -24,7 +25,6 @@ const {
     MarkdownPreview,
     renderMarkdown,
     isMarkdownPath,
-    useMarkdownPreviewStore,
     __renderMarkdownCallCount
 } = await import("./MarkdownPreview")
 
@@ -36,7 +36,6 @@ afterEach(() => {
     // live view must not leak that into the next test's initial buffer read.
     vi.mocked(getView).mockReturnValue(undefined)
     vi.useRealTimers()
-    useMarkdownPreviewStore.setState({ openPaths: {} })
 })
 
 // A minimal live-view stand-in whose doc content is controllable per tick.
@@ -348,7 +347,7 @@ test("isMarkdownPath 認 .md 與 .markdown、拒其他", () => {
 
 test("full grade 檔渲染出對應 HTML", async () => {
     mockResult = { kind: "full", content: "# Title\n\n- one\n- two", size: 20, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/r.md" />)
+    render(<MarkdownPreview sourcePath="/w/r.md" />)
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toBeTruthy())
     expect(screen.getByText("one")).toBeTruthy()
 })
@@ -362,7 +361,7 @@ test("synthetic offsets 證明 editor／preview scroll events 雙向接線（非
     mockResult = { kind: "full", content: "# one\n\nparagraph\n\n## end", size: 31, lineEnding: "lf" }
 
     try {
-        render(<MarkdownPreview path="/w/sync.md" />)
+        render(<MarkdownPreview sourcePath="/w/sync.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         // Coordinator setup waits on async getDocument(); observe its scroll
         // subscription before dispatching events so an empty rAF flush cannot hide it.
@@ -398,7 +397,7 @@ test("400ms content rerender rebuilds live anchors and preserves preview driver 
     mockResult = { kind: "full", content: initial, size: initial.length, lineEnding: "lf" }
 
     try {
-        render(<MarkdownPreview path="/w/live-sync.md" />)
+        render(<MarkdownPreview sourcePath="/w/live-sync.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
             "scroll",
@@ -432,7 +431,7 @@ test("late EditorView attach succeeds, and unmount removes scroll sync without g
     vi.mocked(getView).mockReturnValue(undefined)
 
     try {
-        const rendered = render(<MarkdownPreview path="/w/late.md" />)
+        const rendered = render(<MarkdownPreview sourcePath="/w/late.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         const editor = syncView(source)
         const subscribeEditorScroll = vi.spyOn(editor.view.scrollDOM, "addEventListener")
@@ -464,12 +463,16 @@ test("late EditorView attach succeeds, and unmount removes scroll sync without g
 test("preview ResizeObserver and image load rebuild live offsets at the current source line", async () => {
     const geometry = installSyntheticPreviewGeometry()
     const flushFrame = installAnimationFrameQueue()
-    const resizeCallbacks: ResizeObserverCallback[] = []
+    const observations: Array<{ callback: ResizeObserverCallback; targets: Element[] }> = []
     vi.stubGlobal("ResizeObserver", class {
+        #entry: { callback: ResizeObserverCallback; targets: Element[] }
         constructor(callback: ResizeObserverCallback) {
-            resizeCallbacks.push(callback)
+            this.#entry = { callback, targets: [] }
+            observations.push(this.#entry)
         }
-        observe() {}
+        observe(target: Element) {
+            this.#entry.targets.push(target)
+        }
         unobserve() {}
         disconnect() {}
     })
@@ -480,7 +483,7 @@ test("preview ResizeObserver and image load rebuild live offsets at the current 
     mockResult = { kind: "full", content: source, size: source.length, lineEnding: "lf" }
 
     try {
-        render(<MarkdownPreview path="/w/reflow.md" />)
+        render(<MarkdownPreview sourcePath="/w/reflow.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
             "scroll",
@@ -493,7 +496,16 @@ test("preview ResizeObserver and image load rebuild live offsets at the current 
         flushFrame()
 
         geometry.setMarkerScale(150)
-        act(() => resizeCallbacks.at(-1)?.([], {} as ResizeObserver))
+        // Only fire observers that actually watch the markdown viewport.
+        const viewportObservers = observations.filter((entry) =>
+            entry.targets.includes(preview)
+        )
+        expect(viewportObservers.length).toBeGreaterThan(0)
+        act(() => {
+            for (const entry of viewportObservers) {
+                entry.callback([], {} as ResizeObserver)
+            }
+        })
         expect(preview.scrollTop).toBe(450)
 
         geometry.setMarkerScale(200)
@@ -520,7 +532,7 @@ test("document fonts ready and loadingdone rebuild live offsets at the current s
     mockResult = { kind: "full", content: source, size: source.length, lineEnding: "lf" }
 
     try {
-        render(<MarkdownPreview path="/w/font-reflow.md" />)
+        render(<MarkdownPreview sourcePath="/w/font-reflow.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
             "scroll",
@@ -560,7 +572,7 @@ test("font reflow subscription cleanup removes loadingdone and ignores stale rea
     mockResult = { kind: "full", content: source, size: source.length, lineEnding: "lf" }
 
     try {
-        const rendered = render(<MarkdownPreview path="/w/font-cleanup.md" />)
+        const rendered = render(<MarkdownPreview sourcePath="/w/font-cleanup.md" />)
         const preview = await screen.findByTestId("markdown-preview-body")
         const queryAnchors = vi.spyOn(preview, "querySelectorAll")
         await waitFor(() => expect(fonts.listenerCount()).toBe(1))
@@ -581,27 +593,27 @@ test("font reflow subscription cleanup removes loadingdone and ignores stale rea
 
 test("limited grade 顯示降級提示、不渲染內文", async () => {
     mockResult = { kind: "limited", content: "# 很大的檔案", size: 99_999_999, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/big.md" />)
+    render(<MarkdownPreview sourcePath="/w/big.md" />)
     await waitFor(() => expect(screen.getByTestId("markdown-preview-downgrade")).toBeTruthy())
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull()
 })
 
 test("tooLarge grade 顯示降級提示", async () => {
     mockResult = { kind: "tooLarge", size: 999_999_999 }
-    render(<MarkdownPreview path="/w/huge.md" />)
+    render(<MarkdownPreview sourcePath="/w/huge.md" />)
     await waitFor(() => expect(screen.getByTestId("markdown-preview-downgrade")).toBeTruthy())
 })
 
 test("空內容顯示空狀態提示", async () => {
     mockResult = { kind: "full", content: "   \n", size: 4, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/empty.md" />)
+    render(<MarkdownPreview sourcePath="/w/empty.md" />)
     await waitFor(() => expect(screen.getByTestId("markdown-preview-empty")).toBeTruthy())
 })
 
 test("limited grade 不建輪詢 interval（不重複 stringify）（W4）", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     mockResult = { kind: "limited", content: "# big", size: 50_000_000, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/big.md" />)
+    render(<MarkdownPreview sourcePath="/w/big.md" />)
     await screen.findByTestId("markdown-preview-downgrade")
     vi.mocked(getView).mockClear()
     await vi.advanceTimersByTimeAsync(1300)
@@ -610,7 +622,7 @@ test("limited grade 不建輪詢 interval（不重複 stringify）（W4）", asy
 
 test("點擊 http 連結 preventDefault 並改用 openUrl 外開（W10）", async () => {
     mockResult = { kind: "full", content: "[link](https://example.com)", size: 20, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/l.md" />)
+    render(<MarkdownPreview sourcePath="/w/l.md" />)
     const anchor = await screen.findByText("link")
     const notPrevented = fireEvent.click(anchor)
     expect(notPrevented).toBe(false)
@@ -622,7 +634,7 @@ test("openUrl reject 走 .catch、不造成未捕捉錯誤（R2-9）", async () 
     // 吞掉 rejection；若無 .catch，vitest 會將 unhandled rejection 判為失敗。
     vi.mocked(openUrl).mockRejectedValueOnce(new Error("no handler"))
     mockResult = { kind: "full", content: "[link](https://example.com)", size: 20, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/l.md" />)
+    render(<MarkdownPreview sourcePath="/w/l.md" />)
     const anchor = await screen.findByText("link")
     expect(() => fireEvent.click(anchor)).not.toThrow()
     expect(vi.mocked(openUrl)).toHaveBeenCalledWith("https://example.com")
@@ -633,7 +645,7 @@ test("openUrl reject 走 .catch、不造成未捕捉錯誤（R2-9）", async () 
 
 test("preview 是 render container 內的 in-flow aside，不使用 portal/fixed overlay", async () => {
     mockResult = { kind: "full", content: "# x", size: 3, lineEnding: "lf" }
-    const { container } = render(<MarkdownPreview path="/w/r.md" />)
+    const { container } = render(<MarkdownPreview sourcePath="/w/r.md" />)
     const panel = await screen.findByRole("complementary", { name: "Markdown preview" })
     expect(panel.tagName).toBe("ASIDE")
     expect(container.contains(panel)).toBe(true)
@@ -643,18 +655,18 @@ test("preview 是 render container 內的 in-flow aside，不使用 portal/fixed
 
 test("getDocument reject 顯示錯誤態、不逸出未捕捉錯誤（R3-7）", async () => {
     vi.mocked(getDocument).mockRejectedValueOnce(new Error("file gone"))
-    render(<MarkdownPreview path="/w/gone.md" />)
+    render(<MarkdownPreview sourcePath="/w/gone.md" />)
     await screen.findByTestId("markdown-preview-error")
     expect(screen.queryByTestId("markdown-preview-downgrade")).toBeNull()
 })
 
 test("父 re-render 內容未變時不重解／重 sanitize（R4-1）", async () => {
     mockResult = { kind: "full", content: "# Memo\n\ntext", size: 12, lineEnding: "lf" }
-    const { rerender } = render(<MarkdownPreview path="/w/m.md" />)
+    const { rerender } = render(<MarkdownPreview sourcePath="/w/m.md" />)
     await screen.findByRole("heading", { level: 1 })
     const base = __renderMarkdownCallCount()
-    rerender(<MarkdownPreview path="/w/m.md" />)
-    rerender(<MarkdownPreview path="/w/m.md" />)
+    rerender(<MarkdownPreview sourcePath="/w/m.md" />)
+    rerender(<MarkdownPreview sourcePath="/w/m.md" />)
     expect(__renderMarkdownCallCount()).toBe(base)
 })
 
@@ -666,7 +678,7 @@ test("內容未變時輪詢不重複 doc.toString（R4-3）", async () => {
         () => ({ state: { doc } }) as unknown as ReturnType<typeof getView>
     )
     mockResult = { kind: "full", content: "# stable", size: 8, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/s.md" />)
+    render(<MarkdownPreview sourcePath="/w/s.md" />)
     await screen.findByRole("heading", { level: 1 })
     toString.mockClear()
     await act(async () => {
@@ -680,7 +692,7 @@ test("外部 reload 跨 10MB 邊界 full→tooLarge 更新 kind、停用渲染�
     let live = "# small"
     vi.mocked(getView).mockImplementation(() => fakeView(() => live))
     mockResult = { kind: "full", content: "# small", size: 100, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/g.md" />)
+    render(<MarkdownPreview sourcePath="/w/g.md" />)
     await screen.findByRole("heading", { level: 1 })
     // 模擬外部 reload：檔案跨界變 tooLarge → 快取 kind 改變。
     mockResult = { kind: "tooLarge", size: 20_000_000 }
@@ -697,7 +709,7 @@ test("輪詢 tick 的 getDocument reject 不逸出未捕捉錯誤、下一 tick 
     let live = "# ok"
     vi.mocked(getView).mockImplementation(() => fakeView(() => live))
     mockResult = { kind: "full", content: "# ok", size: 4, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/d.md" />)
+    render(<MarkdownPreview sourcePath="/w/d.md" />)
     await screen.findByRole("heading", { level: 1 })
 
     // 外部刪檔 → reloadDocument 清快取 → 下一 tick getDocument 走 openFile reject。
@@ -722,7 +734,7 @@ test("full 檔輪詢中注入超長行顯示降級、移除後自動恢復（R2-
     let live = "# Title"
     vi.mocked(getView).mockImplementation(() => fakeView(() => live))
     mockResult = { kind: "full", content: "# Title", size: 7, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/r.md" />)
+    render(<MarkdownPreview sourcePath="/w/r.md" />)
     await screen.findByRole("heading", { level: 1 })
 
     // 注入 >10000 字元單行 → content-derived grade 變 veryLongLine → 顯示降級。
@@ -746,7 +758,7 @@ test("veryLongLine 期間不做白費的全量渲染、長行移除後恢復（R
     let live = "# Title"
     vi.mocked(getView).mockImplementation(() => fakeView(() => live))
     mockResult = { kind: "full", content: "# Title", size: 7, lineEnding: "lf" }
-    render(<MarkdownPreview path="/w/vll.md" />)
+    render(<MarkdownPreview sourcePath="/w/vll.md" />)
     await screen.findByRole("heading", { level: 1 })
 
     // 注入 >10000 字元單行 → grade 變 veryLongLine → 顯示 downgrade：期間即使
@@ -773,8 +785,23 @@ test("veryLongLine 期間不做白費的全量渲染、長行移除後恢復（R
     expect(screen.queryByTestId("markdown-preview-downgrade")).toBeNull()
 })
 
-test("切換 workspace 清空 preview 開關狀態（W8）", () => {
-    useMarkdownPreviewStore.setState({ openPaths: { "/w/a.md": true } })
-    useWorkspaceStore.getState().setWorkspace("/w2-" + Math.random())
-    expect(useMarkdownPreviewStore.getState().openPaths).toEqual({})
+test("Close preview 關閉相鄰 group 的 markdown preview tab", () => {
+    mockResult = { kind: "full", content: "# Hi", size: 4, lineEnding: "lf" }
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        activeGroupIndex: 0,
+        groups: [
+            {
+                activePath: "/w/a.md",
+                tabs: [{ path: "/w/a.md", name: "a.md", dirty: false, externallyModified: false }]
+            }
+        ]
+    })
+    useWorkspaceStore.getState().toggleMarkdownPreview("/w/a.md", 0)
+    expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/a.md")).toBe(true)
+    render(<MarkdownPreview sourcePath="/w/a.md" />)
+    fireEvent.click(screen.getByLabelText("Close preview"))
+    expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/a.md")).toBe(false)
+    expect(useWorkspaceStore.getState().groups).toHaveLength(1)
+    expect(markdownPreviewPath("/w/a.md")).toContain("markdown-preview")
 })

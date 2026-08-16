@@ -10,9 +10,11 @@ import {
     DialogHeader,
     DialogTitle
 } from "@/components/ui/dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { gitRollbackPaths, type GitRollbackResult } from "@/lib/ipc"
+import { isSameOrDescendantPath, nativePathJoin } from "@/lib/paths"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
-import { useGitStore } from "@/state/gitStore"
+import { gitMutationsBlocked, useGitStore } from "@/state/gitStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore, type EditorGroup } from "@/state/workspaceStore"
 
@@ -24,12 +26,16 @@ import {
 } from "./gitChangeSelection"
 
 function absolutePath(root: string, path: string): string {
-    return `${root.replace(/\/$/, "")}/${path}`
+    return nativePathJoin(root, path.replace(/\//g, preferredSep(root)))
+}
+
+function preferredSep(root: string): string {
+    return root.includes("\\") || /^[A-Za-z]:/.test(root) ? "\\" : "/"
 }
 
 function tabMatchesRepoPath(tabPath: string, root: string, path: string): boolean {
-    const target = absolutePath(root, path).replace(/\/$/, "")
-    return tabPath === target || tabPath.startsWith(`${target}/`)
+    const target = absolutePath(root, path)
+    return isSameOrDescendantPath(target, tabPath)
 }
 
 function tabsAffectedByPaths(
@@ -71,8 +77,10 @@ export function GitRollbackDialog() {
     const pending = useGitRollbackDialogStore((state) => state.pending)
     const respond = useGitRollbackDialogStore((state) => state.respond)
     const setError = useGitRollbackDialogStore((state) => state.setError)
+    const environment = useGitStore((state) => state.environment)
     const status = useGitStore((state) => state.status)
     const busy = useGitStore((state) => state.busy)
+    const snapshotStale = useGitStore((state) => state.snapshotStale)
     const groups = useWorkspaceStore((state) => state.groups)
     const [deleteUntrackedOrAdded, setDeleteUntrackedOrAdded] = useState(false)
     const [submitting, setSubmitting] = useState(false)
@@ -93,15 +101,26 @@ export function GitRollbackDialog() {
     const hasDeletable = latest.some((target) =>
         target.classification === "untracked" || target.classification === "added"
     )
-    const blockedReason = stale
-        ? t("gitRollbackDialog.stale")
-        : conflicted
-            ? t("gitRollbackDialog.conflictBlocked")
-            : dirty.length > 0
-                ? t("gitRollbackDialog.dirtyBlocked")
-                : busy
-                    ? t("gitRollbackDialog.busy", { operation: busy })
-                    : null
+    const liveRoot = environment?.status === "ready" ? environment.root : null
+    const rootMismatch = Boolean(pending && liveRoot !== pending.repositoryRoot)
+    const mutationsBlocked = gitMutationsBlocked({ busy, snapshotStale, environment })
+    // Pre-action gate: confirm stays disabled when the pending request's root no
+    // longer matches the live ready root, or when the shared mutation gate is on.
+    // Matching target snapshots alone must not keep Confirm enabled across a
+    // repository switch.
+    const blockedReason = !pending
+        ? null
+        : rootMismatch || mutationsBlocked
+            ? (busy
+                ? t("gitRollbackDialog.busy", { operation: busy })
+                : t("gitRollbackDialog.stale"))
+            : stale
+                ? t("gitRollbackDialog.stale")
+                : conflicted
+                    ? t("gitRollbackDialog.conflictBlocked")
+                    : dirty.length > 0
+                        ? t("gitRollbackDialog.dirtyBlocked")
+                        : null
 
     async function confirmRollback() {
         const request = useGitRollbackDialogStore.getState().pending
@@ -126,8 +145,17 @@ export function GitRollbackDialog() {
             setError(t("gitRollbackDialog.dirtyBlocked"))
             return
         }
-        if (useGitStore.getState().busy) {
-            setError(t("gitRollbackDialog.busy", { operation: useGitStore.getState().busy }))
+        const live = useGitStore.getState()
+        if (
+            live.environment?.status !== "ready"
+            || live.environment.root !== request.repositoryRoot
+            || gitMutationsBlocked(live)
+        ) {
+            setError(
+                live.busy
+                    ? t("gitRollbackDialog.busy", { operation: live.busy })
+                    : t("gitRollbackDialog.stale")
+            )
             return
         }
 
@@ -181,13 +209,25 @@ export function GitRollbackDialog() {
             }}
         >
             {pending && (
-                <DialogContent showCloseButton={false} className="sm:max-w-[480px]">
+<DialogContent
+                    resizeId="git-rollback"
+                    showCloseButton={false}
+                    className="flex min-h-0 flex-col"
+                >
                     <DialogHeader>
                         <DialogTitle>{t("gitRollbackDialog.title")}</DialogTitle>
                         <DialogDescription>{t("gitRollbackDialog.description")}</DialogDescription>
                     </DialogHeader>
 
-                    <ul className="max-h-[220px] space-y-1 overflow-y-auto rounded-lg border border-(--line-1) bg-(--yz-panel) p-2">
+                    <ScrollArea
+                        className="max-h-[220px] rounded-lg border border-(--line-1) bg-(--yz-panel)"
+                        focusable
+                        viewportProps={{
+                            role: "region",
+                            "aria-label": t("gitRollbackDialog.title"),
+                        }}
+                    >
+                    <ul className="space-y-1 p-2">
                         {rollbackTargetsFromKeys(pending.targets).map((target) => (
                             <li key={target.path} className="flex items-center gap-2 rounded-md px-2 py-1.5">
                                 <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{target.path}</span>
@@ -197,6 +237,7 @@ export function GitRollbackDialog() {
                             </li>
                         ))}
                     </ul>
+                    </ScrollArea>
 
                     {hasDeletable && (
                         <label className="flex items-start gap-2 text-[12px] text-(--ink-2)">
@@ -226,7 +267,7 @@ export function GitRollbackDialog() {
                         </Button>
                         <Button
                             variant="destructive"
-                            disabled={Boolean(blockedReason) || busy !== null || submitting}
+                            disabled={Boolean(blockedReason) || mutationsBlocked || submitting}
                             onClick={() => void confirmRollback()}
                         >
                             {submitting ? t("gitRollbackDialog.rollingBack") : t("gitRollbackDialog.confirm")}

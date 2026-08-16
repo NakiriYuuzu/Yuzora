@@ -1,5 +1,8 @@
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { writeText } from "@tauri-apps/plugin-clipboard-manager"
 import { useTranslation } from "react-i18next"
+
+import { Button } from "@/components/ui/button"
 
 import type { CommitDetail, CommitFileChange, LogCommit } from "@/lib/types"
 import { fullDateTime } from "@/lib/relativeTime"
@@ -124,7 +127,10 @@ export function CommitDetails({
     selectedCommit,
     detail,
     detailLoading,
+    detailError,
+    onRetryDetail,
     onCheckout,
+    checkoutDisabled,
     onOpenFile,
     onCompare,
     onCherryPick,
@@ -133,7 +139,10 @@ export function CommitDetails({
     selectedCommit: LogCommit | null
     detail: CommitDetail | null
     detailLoading: boolean
+    detailError?: string | null
+    onRetryDetail?: () => void
     onCheckout: (hash: string) => void
+    checkoutDisabled?: boolean
     onOpenFile?: (file: CommitFileChange) => void
     onCompare?: (hash: string) => void
     onCherryPick?: (hash: string) => void
@@ -224,6 +233,22 @@ export function CommitDetails({
                 <div className="flex flex-1 items-center justify-center text-[11.5px] text-(--ink-3)">
                     {t("commitDetails.loadingEllipsis")}
                 </div>
+            ) : detailError && !detail ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-[10px] px-[14px] text-center">
+                    <span role="alert" className="text-[11.5px] text-(--ink-2)">
+                        {t("commitDetails.loadFailed", { message: detailError })}
+                    </span>
+                    {onRetryDetail && (
+                        <Button
+                            type="button"
+                            size="sm"
+                            onClick={onRetryDetail}
+                            className="h-[28px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[12px] text-[11.5px] font-semibold text-(--ink-1) shadow-(--shadow-xs) transition-colors hover:bg-(--paper-1)"
+                        >
+                            {t("commitDetails.retry")}
+                        </Button>
+                    )}
+                </div>
             ) : (
                 <>
                     {/* changed files header */}
@@ -248,11 +273,11 @@ export function CommitDetails({
                     </div>
 
                     {/* changed files list */}
-                    <div className="yzs min-h-0 flex-1 overflow-auto px-[10px]">
+                    <ScrollArea className="min-h-0 flex-1" viewportClassName="px-[10px]">
                         {detail?.files.map((file) => (
                             <FileRow key={file.path} file={file} onOpen={onOpenFile} />
                         ))}
-                    </div>
+                    </ScrollArea>
                 </>
             )}
 
@@ -260,6 +285,7 @@ export function CommitDetails({
             <div className="flex flex-wrap gap-[7px] border-t border-(--line-1) px-[14px] py-[11px]">
                 <FooterButton
                     label={t("commitDetails.checkout")}
+                    disabled={checkoutDisabled}
                     onClick={() => onCheckout(selectedCommit.hash)}
                 />
                 <FooterButton

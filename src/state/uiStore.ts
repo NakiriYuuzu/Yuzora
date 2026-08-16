@@ -1,6 +1,10 @@
 import { create } from "zustand"
 
-import { DEFAULT_MODE, type Mode } from "@/app/modes"
+import { DEFAULT_MODE, normalizeWorkbenchMode, type Mode } from "@/app/modes"
+import {
+    clampGitDiffSplitRatio,
+    GIT_DIFF_SPLIT_DEFAULT
+} from "@/workbench/git/diffPreview"
 import {
     currentGitChange,
     sameGitChange,
@@ -13,11 +17,22 @@ type SettingsTargetOptions = {
     source?: string
 }
 
+export type GitPanelTab = "log" | "local" | "console"
+export type GitDiffMode = "unified" | "split"
+
 interface UiState {
     mode: Mode
     setMode: (mode: Mode) => void
     gitSelectedPath: string | null            // GitPanel Local changes 目前選中檔
     gitSelectedStaged: boolean                // 選中的是 staged 節或 changes 節
+    gitPanelTab: GitPanelTab                  // Git main surface active tab
+    gitDiffMode: GitDiffMode
+    gitDiffSplitRatio: number
+    setGitPanelTab: (tab: GitPanelTab) => void
+    setGitDiffMode: (mode: GitDiffMode) => void
+    setGitDiffSplitRatio: (ratio: number) => void
+    resetGitDiffSplitRatio: () => void
+    resetGitRepositoryUi: () => void
     selectGitFile: (path: string | null, staged: boolean) => void
     gitChangeSelection: GitChangeKey[]
     gitChangePrimary: GitChangeKey | null
@@ -28,6 +43,10 @@ interface UiState {
         mode: "single" | "toggle" | "range"
     ) => void
     ensureGitChangeContextSelection: (key: GitChangeKey) => void
+    clearGitChangeSelection: () => void
+    selectVisibleGitChanges: (rows: readonly GitChangeRow[]) => void
+    setGitChangeSelection: (rows: readonly GitChangeKey[], primary?: GitChangeKey | null) => void
+    applyGitChangeMovedSides: (movedSides: Readonly<Record<string, boolean>>) => void
     reconcileGitChangeSelection: (
         rows: readonly GitChangeRow[],
         movedSides?: Readonly<Record<string, boolean>>
@@ -74,6 +93,9 @@ export const uiInitialState = {
     mode: DEFAULT_MODE,
     gitSelectedPath: null,
     gitSelectedStaged: false,
+    gitPanelTab: "log" as GitPanelTab,
+    gitDiffMode: "split" as GitDiffMode,
+    gitDiffSplitRatio: GIT_DIFF_SPLIT_DEFAULT,
     gitChangeSelection: [] as GitChangeKey[],
     gitChangePrimary: null as GitChangeKey | null,
     gitChangeAnchor: null as GitChangeKey | null,
@@ -93,9 +115,38 @@ export const uiInitialState = {
 
 export const useUiStore = create<UiState>()((set) => ({
     ...uiInitialState,
-    setMode: (mode) => set({ mode }),
-    selectGitFile: (path, staged) =>
-        set({ gitSelectedPath: path, gitSelectedStaged: staged }),
+    setMode: (mode) => set({ mode: normalizeWorkbenchMode(mode) }),
+    setGitPanelTab: (tab) => set({ gitPanelTab: tab }),
+    setGitDiffMode: (gitDiffMode) => set({ gitDiffMode }),
+    setGitDiffSplitRatio: (ratio) => set({ gitDiffSplitRatio: clampGitDiffSplitRatio(ratio) }),
+    resetGitDiffSplitRatio: () => set({ gitDiffSplitRatio: GIT_DIFF_SPLIT_DEFAULT }),
+    resetGitRepositoryUi: () => set({
+        gitSelectedPath: null,
+        gitSelectedStaged: false,
+        gitPanelTab: "log",
+        gitChangeSelection: [],
+        gitChangePrimary: null,
+        gitChangeAnchor: null
+    }),
+    selectGitFile: (path, staged) => {
+        const key: GitChangeKey | null = path ? {
+            path,
+            staged,
+            classification: "conflicted",
+            stagedStatus: null,
+            unstagedStatus: null,
+            origPath: null
+        } : null
+        set({
+            gitSelectedPath: path,
+            gitSelectedStaged: staged,
+            gitPanelTab: "local",
+            mode: "git",
+            gitChangeSelection: key ? [key] : [],
+            gitChangePrimary: key,
+            gitChangeAnchor: key
+        })
+    },
     selectGitChange: (key, order, mode) =>
         set((state) => {
             const current = state.gitChangeSelection
@@ -149,6 +200,65 @@ export const useUiStore = create<UiState>()((set) => ({
                 gitSelectedStaged: key.staged
             }
         }),
+    clearGitChangeSelection: () => set({
+        gitChangeSelection: [],
+        gitChangePrimary: null,
+        gitChangeAnchor: null,
+        gitSelectedPath: null,
+        gitSelectedStaged: false
+    }),
+    applyGitChangeMovedSides: (movedSides) =>
+        set((state) => {
+            const remap = (key: GitChangeKey | null): GitChangeKey | null => {
+                if (!key) return null
+                if (!Object.prototype.hasOwnProperty.call(movedSides, key.path)) return key
+                const staged = movedSides[key.path]
+                return key.staged === staged ? key : { ...key, staged }
+            }
+            const seen = new Set<string>()
+            const selection = state.gitChangeSelection.flatMap((key) => {
+                const next = remap(key)
+                if (!next) return []
+                const id = `${next.staged ? "s" : "c"}:${next.path}`
+                if (seen.has(id)) return []
+                seen.add(id)
+                return [next]
+            })
+            const primary = remap(state.gitChangePrimary)
+                ?? (state.gitChangePrimary ? selection[0] ?? null : null)
+            const anchor = remap(state.gitChangeAnchor) ?? primary
+            const desiredDiffSide = state.gitSelectedPath != null
+                && Object.prototype.hasOwnProperty.call(movedSides, state.gitSelectedPath)
+                ? movedSides[state.gitSelectedPath]
+                : state.gitSelectedStaged
+            return {
+                gitChangeSelection: selection,
+                gitChangePrimary: primary,
+                gitChangeAnchor: anchor,
+                gitSelectedPath: primary?.path ?? (state.gitSelectedPath ?? null),
+                gitSelectedStaged: primary?.staged ?? desiredDiffSide
+            }
+        }),
+    selectVisibleGitChanges: (rows) => {
+        const primary = rows.at(-1) ?? null
+        set({
+            gitChangeSelection: [...rows],
+            gitChangePrimary: primary,
+            gitChangeAnchor: rows[0] ?? null,
+            gitSelectedPath: primary?.path ?? null,
+            gitSelectedStaged: primary?.staged ?? false
+        })
+    },
+    setGitChangeSelection: (rows, primary) => {
+        const nextPrimary = primary ?? rows.at(-1) ?? null
+        set({
+            gitChangeSelection: [...rows],
+            gitChangePrimary: nextPrimary,
+            gitChangeAnchor: nextPrimary,
+            gitSelectedPath: nextPrimary?.path ?? null,
+            gitSelectedStaged: nextPrimary?.staged ?? false
+        })
+    },
     reconcileGitChangeSelection: (rows, movedSides = {}) =>
         set((state) => {
             const remap = (key: GitChangeKey | null): GitChangeRow | null => {
@@ -158,7 +268,6 @@ export const useUiStore = create<UiState>()((set) => ({
                     : key.staged
                 return rows.find((row) => row.path === key.path && row.staged === desiredSide)
                     ?? rows.find((row) => sameGitChange(row, key))
-                    ?? rows.find((row) => row.path === key.path)
                     ?? null
             }
             const seen = new Set<string>()
@@ -173,12 +282,12 @@ export const useUiStore = create<UiState>()((set) => ({
             const primary = remap(state.gitChangePrimary)
                 ?? (state.gitChangePrimary ? selection[0] ?? null : null)
             const anchor = remap(state.gitChangeAnchor) ?? primary
+            const desiredDiffSide = state.gitSelectedPath != null
+                && Object.prototype.hasOwnProperty.call(movedSides, state.gitSelectedPath)
+                ? movedSides[state.gitSelectedPath]
+                : state.gitSelectedStaged
             const diff = primary ?? (state.gitSelectedPath
-                ? rows.find((row) => row.path === state.gitSelectedPath && row.staged === (
-                    Object.prototype.hasOwnProperty.call(movedSides, state.gitSelectedPath)
-                        ? movedSides[state.gitSelectedPath]
-                        : state.gitSelectedStaged
-                )) ?? rows.find((row) => row.path === state.gitSelectedPath) ?? null
+                ? rows.find((row) => row.path === state.gitSelectedPath && row.staged === desiredDiffSide) ?? null
                 : null)
             return {
                 gitChangeSelection: selection,
@@ -191,11 +300,36 @@ export const useUiStore = create<UiState>()((set) => ({
     openDiffInGitMode: (path) =>
         set({
             mode: "git",
+            gitPanelTab: "local",
             gitSelectedPath: path,
             gitSelectedStaged: false,
-            gitChangeSelection: [],
-            gitChangePrimary: null,
-            gitChangeAnchor: null
+            // The exact side is reconciled from live status on LocalChangesTab
+            // mount; seeding selection makes the deep-linked row visibly and
+            // accessibly selected instead of only loading its diff.
+            gitChangeSelection: [{
+                path,
+                staged: false,
+                classification: "tracked",
+                stagedStatus: null,
+                unstagedStatus: null,
+                origPath: null
+            }],
+            gitChangePrimary: {
+                path,
+                staged: false,
+                classification: "tracked",
+                stagedStatus: null,
+                unstagedStatus: null,
+                origPath: null
+            },
+            gitChangeAnchor: {
+                path,
+                staged: false,
+                classification: "tracked",
+                stagedStatus: null,
+                unstagedStatus: null,
+                origPath: null
+            }
         }),
     openResolver: (path) => set({ resolverPath: path }),
     closeResolver: () => set({ resolverPath: null }),

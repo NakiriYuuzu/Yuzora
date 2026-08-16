@@ -1,9 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 import { beforeEach, expect, it, vi } from "vitest"
 
 import App from "@/App"
 import type { PtyEvent } from "@/lib/types"
+import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { terminalInitialState, useTerminalStore } from "@/state/terminalStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
@@ -33,6 +34,7 @@ const terminalMocks = vi.hoisted(() => {
     paste = vi.fn()
     clear = vi.fn()
     dispose = vi.fn()
+    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }))
 
     constructor(options: Record<string, unknown>) {
       this.options = options
@@ -116,7 +118,10 @@ beforeEach(() => {
   installLocalStorage()
   mockWindows("main")
   mockIPC((command, payload) => {
-    if (command === "open_workspace") return (payload as { path: string }).path
+    if (command === "open_workspace") {
+      const path = (payload as { path: string }).path
+      return { canonicalPath: path, capabilityId: `workspace:${path}` }
+    }
     if (command === "list_dir") return []
     if (command === "agent_list") return []
     if (command === "plugin:dialog|message") return "Ok"
@@ -191,7 +196,10 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
   const firstXterm = terminalMocks.state.terminals[0]
   expect(firstTerminal).toBeVisible()
 
-  fireEvent.click(screen.getByRole("button", { name: "Open workspace-b" }))
+  // Rail no longer lists Recent folders; switch project via the shared action.
+  await act(async () => {
+    await openWorkspaceAtPath(secondWorkspace)
+  })
 
   await waitFor(() => {
     expect(useWorkspaceStore.getState().workspacePath).toBe(secondWorkspace)
@@ -237,7 +245,9 @@ it("keeps a live terminal session mounted across an A to B to A workspace switch
   )
   expect(secondTerminal).toBeVisible()
 
-  fireEvent.click(screen.getByRole("button", { name: "Open workspace-a" }))
+  await act(async () => {
+    await openWorkspaceAtPath(firstWorkspace)
+  })
 
   await waitFor(() => {
     expect(useWorkspaceStore.getState().workspacePath).toBe(firstWorkspace)

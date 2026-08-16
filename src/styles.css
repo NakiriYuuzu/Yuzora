@@ -361,29 +361,7 @@
     background: rgba(var(--yz-accent-rgb), 0.3);
 }
 
-.yzs::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
-}
-.yzs::-webkit-scrollbar-thumb {
-    background: rgba(27, 26, 23, 0.14);
-    border-radius: 8px;
-    border: 2px solid transparent;
-    background-clip: padding-box;
-}
-.yzs::-webkit-scrollbar-thumb:hover {
-    background: rgba(27, 26, 23, 0.24);
-    background-clip: padding-box;
-}
-.yzs::-webkit-scrollbar-track {
-    background: transparent;
-}
-.dark .yzs::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.13);
-}
-.dark .yzs::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.22);
-}
+/* App-owned scrollbars use shadcn ScrollArea (src/components/ui/scroll-area.tsx). */
 
 @keyframes yzspin {
     to { transform: rotate(360deg); }

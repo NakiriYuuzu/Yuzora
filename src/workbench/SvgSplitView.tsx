@@ -21,6 +21,7 @@ import {
     ratioText,
     type Orientation
 } from "./splitMath"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 // Store 本體住在 state/svgPreviewStore（見該檔說明）；由此 re-export 維持
 // 「preview 開關跟著 preview 元件走」的既有 import 慣例（TabBar 等）。
@@ -103,10 +104,13 @@ function SvgPreview({ path, style }: { path: string; style?: React.CSSProperties
     }, [content])
 
     return (
-        <div
+        <ScrollArea
             data-testid="svg-preview"
             style={style}
-            className="flex min-h-0 min-w-0 items-center justify-center overflow-auto border-l border-(--line-1) bg-(--paper-1) p-[12px]"
+            className="min-h-0 min-w-0 border-l border-(--line-1) bg-(--paper-1)"
+            orientation="both"
+            focusable
+            contentClassName="flex min-h-full min-w-full items-center justify-center p-[12px]"
         >
             {loadError || renderError ? (
                 <EmptyState
@@ -124,7 +128,7 @@ function SvgPreview({ path, style }: { path: string; style?: React.CSSProperties
                     onError={() => setRenderError(true)}
                 />
             ) : null}
-        </div>
+        </ScrollArea>
     )
 }
 
@@ -144,11 +148,9 @@ interface DragState {
 }
 
 /**
- * SVG source editor + auto-open companion preview, mirroring
- * MarkdownSplitView's layout contract: same narrow-breakpoint orientation
- * flip, same divider interaction, and the same global
- * markdownEditorRatio preference (one split preference across companion
- * previews, per plan t3-3a).
+ * SVG source editor + auto-open companion preview. This view owns its
+ * in-pane split: narrow-breakpoint orientation flip, divider interaction,
+ * and the global markdownEditorRatio preference.
  */
 export function SvgSplitView({ path, groupIndex }: { path: string; groupIndex: number }) {
     const { t: tMenus } = useTranslation("menus")
@@ -193,7 +195,9 @@ export function SvgSplitView({ path, groupIndex }: { path: string; groupIndex: n
     const editorLabel = tWorkbench("settings.sections.editor.label")
     const previewLabel = tWorkbench("settings.sections.preview.label")
     const valueText = ratioText(editorLabel, previewLabel, ratio)
-    const showPreview = mode === "files" && groupIndex === activeGroupIndex && previewOpen
+    // ADE and Files share the typed page host; SVG preview works in both.
+    const showPreview =
+      (mode === "files" || mode === "ade") && groupIndex === activeGroupIndex && previewOpen
 
     function finishDrag(pointerId: number) {
         const drag = dragRef.current

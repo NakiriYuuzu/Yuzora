@@ -24,6 +24,7 @@ import { useLspStore } from "@/state/lspStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { SettingCard, ToggleRow } from "./settingsPrimitives"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 // The four languages Yuzora ships LSP servers for (LspLanguage), with display
 // labels for the settings cards.
@@ -213,9 +214,11 @@ function LspLanguageCard({
       {info?.lastStartupLog && (
         <details className="mt-[9px]">
           <summary className="cursor-pointer text-[11px] text-(--ink-3)">最近啟動記錄</summary>
-          <pre className="mt-[6px] overflow-x-auto rounded-[8px] bg-(--yz-sunk) px-[9px] py-[7px] font-mono text-[10.5px] leading-[1.5] whitespace-pre-wrap text-(--ink-2)">
-            {info.lastStartupLog}
-          </pre>
+          <ScrollArea className="mt-[6px] rounded-[8px] bg-(--yz-sunk)" orientation="horizontal" focusable>
+            <pre className="px-[9px] py-[7px] font-mono text-[10.5px] leading-[1.5] whitespace-pre-wrap text-(--ink-2)">
+              {info.lastStartupLog}
+            </pre>
+          </ScrollArea>
         </details>
       )}
 

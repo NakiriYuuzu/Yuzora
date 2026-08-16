@@ -2,6 +2,48 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.8] - 2026-08-15
+
+### 新增
+
+- 以 HERDR runtime 取代原本的 AgentZone：工作區側欄現在可直接查看 Spaces、具名 Sessions、Attention 與 Agents，並把指定 HERDR terminal 以可和檔案並存的頁面開啟。
+- HERDR terminal 頁面支援建立、聚焦、重新命名、移動與關閉分頁，以及 pane 的分割、縮放、交換、關閉和配置調整；預設為觀察模式，需要時可明確接管輸入控制。
+- 新增唯讀 Agent Inspector，可查看 agent 的狀態與輸出，而不會在檢視時改變 HERDR runtime。
+- 新增工作區信任確認；執行指令、Git 寫入、預覽與遠端檔案操作會在 native backend 再次檢查授權、路徑與資源限制。
+- Git 分支選擇器新增 Local、Remote 與 Tags 分類、搜尋與狀態標記，支援 detached checkout、從 tag 建立 branch，以及大量變更的多選與批次操作。
+- App 內的一般 Dialog 可依各自用途調整大小並保留偏好；Alert 類確認視窗仍維持精簡尺寸。
+
+### 改善
+
+- Git、SSH／SFTP、資料庫、LSP 與預覽等耗時操作加強取消、逾時、輸入大小與並行數限制，降低大型工作區或異常遠端回應拖慢介面的風險。
+- Git revision 與檔案操作改用更嚴格的 OID、literal path 與 repository 邊界檢查，避免 branch、路徑或 symlink 被誤當成命令選項或越過工作區範圍。
+- LSP 下載改由內建完整性 catalog 驗證來源、內容與 provenance；找不到可信 artifact 時會拒絕安裝，而不是繼續使用未驗證內容。
+- Markdown 預覽改為與來源文件相鄰的連結頁面，並改善分頁拖曳排序、檔案拖放、圖片／SVG 預覽與工作區切換後的狀態恢復。
+- Git 變更清單、diff、log 與 branch 操作改善大量資料下的載入、選取、虛擬化與 stale response 防護。
+- 更新 Tauri、React、Vite、CodeMirror、資料庫／SSH 函式庫與其他開發相依套件。
+- 重構產品網站與中英文導覽素材，套用目前的 Yuzora Logo，並改以更精簡的 ADE × HERDR 故事、light/dark theme、響應式功能展示與新版 Git／Terminal 影片介紹目前工作面。
+- Windows 上的 HERDR public API 與事件訂閱改用 HERDR 0.8.0 的 named-pipe transport；當 server、protocol 與 schema 相容時，可使用 snapshot、runtime mutation 與即時事件，不再因作業系統固定停用。
+- macOS 與 Windows 安裝檔內附經 SHA-256 固定的 Yuzora-managed HERDR 0.8.0 相容 binary；預設優先使用 PATH 全域安裝版，偵測不到時會自動退回內附版本。Windows 內附官方 protocol-19 preview package 與其 ConPTY runtime。
+
+### 修正
+
+- 修正開發模式重新載入時，Tauri event listener 清理可能拋出錯誤並略過 backend unlisten，造成殘留 listener 的問題。
+- 修正 HERDR terminal 串流在第一次 flush 後可能停止更新，以及 snapshot／capability 暫時失敗後無法恢復或隱藏錯誤的問題。
+- 修正 Git diff、log、branch checkout／cherry-pick 與工作區切換時，較舊的非同步結果可能覆蓋目前 repository 狀態的競態問題。
+- 修正資料庫查詢取消、SSH／SFTP 傳輸、askpass 與預覽資源生命週期中的多個清理、逾時與錯誤回報問題。
+- 修正提早釋放分頁結果後，下一次 MSSQL 查詢可能因 helper 控制訊息被中斷而失敗，以及無資料列的 stored procedure 回傳被誤判為串流結尾的問題。
+- 修正 macOS 因系統拒絕有限的 process memory rlimit，導致 PostgreSQL／MSSQL query helper 無法啟動的問題；改以短週期 resident-memory watchdog 保留隔離與上限保護。
+- 修正 Windows 工作區信任與路徑能力使用不穩定 metadata identity API，導致無法以 stable Rust 建置的問題；改由已開啟的檔案 handle 取得穩定 identity。
+- 修正 HERDR／Markdown pseudo pages 被誤存成一般檔案分頁，導致重新啟動後嘗試以檔案方式還原的問題。
+- 修正 Windows canonical path 的 `\\?\` 前綴出現在 HERDR 診斷與工作區信任介面；顯示路徑會正規化，但 backend 仍使用原始 canonical identity 執行授權與撤銷。
+
+### 已知限制
+
+- Yuzora 桌面版目前只發佈 macOS 與 Windows 安裝檔；Linux 僅作為 CI／測試 host，不是支援的桌面發佈平台。
+- HERDR 功能取決於實際選用 binary 的版本、protocol 與 schema；不相容或缺少必要 method 時會停用對應操作並顯示原因。
+- macOS 上以 ⌘Q 結束應用程式時不會提示未儲存的變更；請改以關閉視窗的方式離開。
+- macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現 Gatekeeper 或 SmartScreen 提示。
+
 ## [0.0.7] - 2026-07-26
 
 ### 改善

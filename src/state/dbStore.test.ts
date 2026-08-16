@@ -16,6 +16,7 @@ import type {
     DbStatementExecution,
     DbTable
 } from "@/lib/types"
+import { migrateLegacyPostgresTransport } from "@/lib/types"
 import { dbObjectRefKey } from "@/lib/databaseSql"
 
 vi.mock("@/lib/ipc", () => ({
@@ -61,6 +62,7 @@ import {
     DB_HISTORY_SQL_MAX,
     DB_HISTORY_STORAGE_KEY,
     dbProfileNeedsCredentialPrompt,
+    dbProfileNeedsTransportAcknowledgement,
     dbProfileUiErrorCode,
     loadSavedConnections,
     resultPageKey,
@@ -323,8 +325,7 @@ function snapshotProfiles(): DbProfileDescriptor[] {
                       port: saved.port,
                       database: saved.database,
                       user: saved.user,
-                      ssl: saved.ssl ?? false,
-                      trustCert: saved.trustCert ?? false
+                      ...migrateLegacyPostgresTransport(saved)
                   }
                 : {
                       kind: "mssql",
@@ -463,6 +464,16 @@ describe("Issue #14 PostgreSQL profile diagnostics", () => {
         [diagnostic("28garbage"), "connectionFailed"]
     ])("fails closed for malformed PostgreSQL profile envelopes", (error, expected) => {
         expect(dbProfileUiErrorCode(error)).toBe(expected)
+    })
+
+    it.each([
+        "postgresTransportRejected",
+        "postgresTransportChallengeExpired",
+        "postgresTransportChallengeMismatch",
+        "postgresTransportChallengeReplay"
+    ])("maps transport challenge code %s onto the acknowledgement flow", (code) => {
+        expect(dbProfileUiErrorCode({ code, message: code })).toBe(code)
+        expect(dbProfileNeedsTransportAcknowledgement(code as never)).toBe(true)
     })
 })
 
@@ -1408,8 +1419,7 @@ describe("dbStore saved connections", () => {
             database: "app",
             user: "admin",
             password: "s3cr3t",
-            ssl: true,
-            trustCert: false
+            transportMode: "verifyFull"
         })
 
         const s = useDbStore.getState()
@@ -1434,8 +1444,9 @@ describe("dbStore saved connections", () => {
                 port: 5432,
                 database: "app",
                 user: "admin",
-                ssl: true,
-                trustCert: false
+                transportMode: "verifyFull",
+                insecureException: null,
+                trustServerCertAcknowledged: false
             }
         ])
         // The password must never reach localStorage.
@@ -1452,8 +1463,7 @@ describe("dbStore saved connections", () => {
             database: "d",
             user: "u",
             password: "p",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         useDbStore.getState().setSql("SELECT 1")
         await useDbStore.getState().runQuery()
@@ -1491,8 +1501,149 @@ describe("dbStore saved connections", () => {
         )
         const [saved] = loadSavedConnections()
         expect(saved.kind).toBe("postgres")
-        expect(saved.ssl).toBe(true)
-        expect(saved.trustCert).toBe(true)
+        expect(saved.transportMode).toBe("encryptedTrustServerCert")
+        expect(saved.trustServerCertAcknowledged).toBe(true)
+        expect(saved.ssl).toBeUndefined()
+        expect(saved.trustCert).toBeUndefined()
+    })
+
+    it("loadSavedConnections migrates explicit ssl=false to unacked plaintext", () => {
+        localStorage.setItem(
+            DB_CONNECTIONS_STORAGE_KEY,
+            JSON.stringify([{
+                id: "postgres:h:5432:d",
+                kind: "postgres",
+                name: "d@h",
+                host: "h",
+                port: 5432,
+                database: "d",
+                user: "u",
+                ssl: false,
+                trustCert: false
+            }])
+        )
+        const [saved] = loadSavedConnections()
+        expect(saved.transportMode).toBe("insecurePlaintext")
+        expect(saved.insecureException).toBeNull()
+        expect(saved.trustServerCertAcknowledged).toBe(false)
+    })
+
+    it("loadSavedConnections defaults missing postgres TLS fields to verifyFull", () => {
+        localStorage.setItem(
+            DB_CONNECTIONS_STORAGE_KEY,
+            JSON.stringify([{
+                id: "postgres:h:5432:d",
+                kind: "postgres",
+                name: "d@h",
+                host: "h",
+                port: 5432,
+                database: "d",
+                user: "u"
+            }])
+        )
+        const [saved] = loadSavedConnections()
+        expect(saved.transportMode).toBe("verifyFull")
+        expect(saved.insecureException).toBeNull()
+        expect(saved.trustServerCertAcknowledged).toBe(false)
+    })
+
+    it("updateSaved persists and revokes a per-profile plaintext exception", async () => {
+        await useDbStore.getState().openConfig({
+            kind: "postgres",
+            host: "db.example",
+            port: 5432,
+            database: "app",
+            user: "alice",
+            password: "p",
+            transportMode: "verifyFull"
+        })
+        const id = useDbStore.getState().saved[0].id
+        mockProfileUpdate.mockClear()
+
+        await useDbStore.getState().updateSaved(id, {
+            kind: "postgres",
+            host: "db.example",
+            port: 5432,
+            database: "app",
+            user: "alice",
+            password: "",
+            transportMode: "insecurePlaintext",
+            insecureException: {
+                host: "db.example",
+                port: 5432,
+                user: "alice",
+                database: "app"
+            },
+            trustServerCertAcknowledged: false
+        })
+        expect(mockProfileUpdate).toHaveBeenCalledWith(expect.objectContaining({
+            target: expect.objectContaining({
+                transportMode: "insecurePlaintext",
+                insecureException: {
+                    host: "db.example",
+                    port: 5432,
+                    user: "alice",
+                    database: "app"
+                }
+            })
+        }))
+        expect(useDbStore.getState().saved[0].transportMode).toBe("insecurePlaintext")
+        expect(useDbStore.getState().saved[0].insecureException).toEqual({
+            host: "db.example",
+            port: 5432,
+            user: "alice",
+            database: "app"
+        })
+
+        await useDbStore.getState().updateSaved(id, {
+            kind: "postgres",
+            host: "db.example",
+            port: 5432,
+            database: "app",
+            user: "alice",
+            password: "",
+            transportMode: "verifyFull"
+        })
+        expect(useDbStore.getState().saved[0].transportMode).toBe("verifyFull")
+        expect(useDbStore.getState().saved[0].insecureException).toBeNull()
+    })
+
+    it("forwards a transport challenge id on create and update", async () => {
+        await useDbStore.getState().openConfig({
+            kind: "postgres",
+            host: "db.example",
+            port: 5432,
+            database: "app",
+            user: "alice",
+            password: "p",
+            transportMode: "insecurePlaintext",
+            insecureException: {
+                host: "db.example",
+                port: 5432,
+                user: "alice",
+                database: "app"
+            },
+            trustServerCertAcknowledged: false
+        }, { transportChallengeId: "pg-chal-create" })
+        expect(mockProfileCreate).toHaveBeenCalledWith(expect.objectContaining({
+            transportChallengeId: "pg-chal-create"
+        }))
+        const id = useDbStore.getState().saved[0].id
+        mockProfileUpdate.mockClear()
+        await useDbStore.getState().updateSaved(id, {
+            kind: "postgres",
+            host: "db.example",
+            port: 5432,
+            database: "app",
+            user: "alice",
+            password: "",
+            transportMode: "encryptedTrustServerCert",
+            insecureException: null,
+            trustServerCertAcknowledged: true
+        }, { transportChallengeId: "pg-chal-update" })
+        expect(mockProfileUpdate).toHaveBeenCalledWith(expect.objectContaining({
+            transportChallengeId: "pg-chal-update"
+        }))
     })
 
     it("removeSaved forgets the Rust-owned descriptor", async () => {
@@ -1528,8 +1679,9 @@ describe("P2 profile repository migration and recovery projection", () => {
             port: 5432,
             database: "app",
             user: "alice",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull",
+            insecureException: null,
+            trustServerCertAcknowledged: false
         },
         credentialState: "stored"
     }
@@ -1814,8 +1966,7 @@ describe("P2 profile repository migration and recovery projection", () => {
             database: "app",
             user: "alice",
             password: secret,
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
 
         expect(JSON.stringify(useDbStore.getState())).not.toContain(secret)
@@ -1922,8 +2073,9 @@ describe("dbStore descriptor identity + sessions", () => {
                     port: 5432,
                     database: "app",
                     user: "alice",
-                    ssl: false,
-                    trustCert: false
+                    transportMode: "verifyFull",
+                    insecureException: null,
+                    trustServerCertAcknowledged: false
                 },
                 credentialState: "stored"
             },
@@ -1949,8 +2101,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "alice",
             password: "one-shot-secret",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
 
         expect(useDbStore.getState().sessions[descriptorId]).toEqual({
@@ -2030,8 +2181,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "admin",
             password: "p",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         const id = useDbStore.getState().saved[0].id
 
@@ -2042,8 +2192,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "root",
             password: "p",
-            ssl: true,
-            trustCert: false
+            transportMode: "verifyFull"
         })
 
         const saved = useDbStore.getState().saved[0]
@@ -2063,8 +2212,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "admin",
             password: "p",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         const id = useDbStore.getState().saved[0].id
         expect(useDbStore.getState().sessions[id].status).toBe("connected")
@@ -2078,8 +2226,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "admin",
             password: "",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         expect(mockProfileUpdate).toHaveBeenCalledWith({
             descriptorId: id,
@@ -2090,8 +2237,9 @@ describe("dbStore descriptor identity + sessions", () => {
                 port: 5432,
                 database: "app",
                 user: "admin",
-                ssl: false,
-                trustCert: false
+                transportMode: "verifyFull",
+                insecureException: null,
+                trustServerCertAcknowledged: false
             },
             replacementCredential: null
         })
@@ -2115,8 +2263,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "admin",
             password: "p",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         const id = useDbStore.getState().saved[0].id
         useDbStore.getState().setSql("SELECT 1")
@@ -2136,8 +2283,9 @@ describe("dbStore descriptor identity + sessions", () => {
                     port: 5432,
                     database: "app",
                     user: "admin",
-                    ssl: false,
-                    trustCert: false
+                    transportMode: "verifyFull",
+                    insecureException: null,
+                    trustServerCertAcknowledged: false
                 },
                 credentialState: "stored"
             }],
@@ -2153,8 +2301,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "admin",
             password: "",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })).rejects.toBe(rejection)
 
         const state = useDbStore.getState()
@@ -2181,8 +2328,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "admin",
             password: "p",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         const id = useDbStore.getState().saved[0].id
 
@@ -2193,8 +2339,7 @@ describe("dbStore descriptor identity + sessions", () => {
             database: "app",
             user: "root",
             password: "p",
-            ssl: true,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         await new Promise((r) => setTimeout(r, 0))
 
@@ -2426,8 +2571,7 @@ describe("P3 descriptor-owned connection orchestration", () => {
             database: "app",
             user: "alice",
             password: "alice-secret",
-            ssl: false,
-            trustCert: false
+            transportMode: "verifyFull"
         })
         await useDbStore.getState().openConfig({
             kind: "postgres",
@@ -2436,8 +2580,7 @@ describe("P3 descriptor-owned connection orchestration", () => {
             database: "app",
             user: "bob",
             password: "bob-secret",
-            ssl: true,
-            trustCert: true
+            transportMode: "verifyFull"
         })
 
         const [alice, bob] = useDbStore.getState().saved
@@ -2478,8 +2621,9 @@ describe("P3 descriptor-owned connection orchestration", () => {
                 port: 5432,
                 database: "app",
                 user,
-                ssl: user === "bob",
-                trustCert: false
+                transportMode: "verifyFull",
+                insecureException: null,
+                trustServerCertAcknowledged: false
             },
             credentialState: "stored"
         })
@@ -3041,8 +3185,7 @@ describe("approved owner-tagged database regression seams", () => {
                       database: "app",
                       user: "alice",
                       password: "secret",
-                      ssl: false,
-                      trustCert: false
+                      transportMode: "verifyFull"
                   }
                 : {
                       kind,

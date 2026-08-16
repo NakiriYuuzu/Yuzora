@@ -9,6 +9,8 @@ docs/operation.md
 .playwright-mcp/
 .playwright-cli/
 .firecrawl/
+.pi/
+.pi-subagents/
 output/
 tsconfig.tsbuildinfo
 node_modules/
@@ -19,6 +21,12 @@ build/
 .scaffold/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/resources/herdr/macos-aarch64/*
+!src-tauri/resources/herdr/macos-aarch64/.gitkeep
+src-tauri/resources/herdr/macos-x86_64/*
+!src-tauri/resources/herdr/macos-x86_64/.gitkeep
+src-tauri/resources/herdr/windows-x86_64/*
+!src-tauri/resources/herdr/windows-x86_64/.gitkeep
 /logs/
 *.log
 *.local

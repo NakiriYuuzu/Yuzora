@@ -87,14 +87,6 @@ jobs:
           workspaces: src-tauri
           key: ci-${{ matrix.cache-key }}
 
-      # tauri.conf.json 的 bundle.resources 指向 adapters/yuzora-pi-acp/dist
-      #（gitignored build 產物）——Tauri build script 解析設定時要求路徑存在，
-      # 所以任何 cargo 編譯前都要先產出 adapter dist（zero-dep bun build）。
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Build builtin pi adapter (bundle resource)
-        run: bun run build:adapter
-
       - name: Compile all targets with locked dependencies
         working-directory: src-tauri
         run: cargo check --locked --all-targets
@@ -117,6 +109,14 @@ jobs:
         if: runner.os == 'macOS'
         working-directory: src-tauri
         run: cargo test --locked
+
+      # Named-pipe connect/write/event seams are portable and must run on the
+      # Windows compiler job. This is not a substitute for real Herdr GUI
+      # acceptance on a Windows desktop.
+      - name: Herdr transport tests
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        run: cargo test --locked --lib herdr_ -- --test-threads=1
 
   # Release PRs must provide runnable installers before merge so the user can
   # complete platform validation. These are Actions artifacts only: no tag,
@@ -142,15 +142,6 @@ jobs:
             artifact-path: |
               src-tauri/target/release/bundle/nsis/*setup.exe
               src-tauri/target/release/bundle/msi/*.msi
-          - os: ubuntu-22.04
-            label: Linux x86-64
-            rust-targets: ""
-            build-args: ""
-            artifact-name: yuzora-release-candidate-linux-x86-64
-            artifact-path: |
-              src-tauri/target/release/bundle/appimage/*.AppImage
-              src-tauri/target/release/bundle/deb/*.deb
-              src-tauri/target/release/bundle/rpm/*.rpm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -163,22 +154,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-targets }}
-
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            wget
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -239,12 +214,6 @@ jobs:
         with:
           workspaces: src-tauri
           key: database-integration-linux-x86-64
-
-      # 同 rust-compile：cargo 編譯前先產出 tauri.conf 引用的 adapter dist。
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Build builtin pi adapter (bundle resource)
-        run: bun run build:adapter
 
       - name: Start PostgreSQL and MSSQL fixtures
         run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait

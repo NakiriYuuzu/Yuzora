@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::Connection as SqliteFixtureConnection;
+use yuzora_lib::db_result_session::DEFAULT_FIELD_BYTES;
 use yuzora_lib::db_service::integration_harness::{IntegrationConnection, IntegrationRuntime};
 use yuzora_lib::db_service::{
     DatabaseError, DatabaseErrorEngine, DatabaseObjectKind, DatabaseOperationalErrorCode, DbValue,
@@ -27,6 +28,14 @@ impl Engine {
             Self::Sqlite => "sqlite",
             Self::Postgres => "postgres",
             Self::Mssql => "mssql",
+        }
+    }
+}
+
+fn ensure_query_helper_bin() {
+    if std::env::var_os(yuzora_lib::db_query_worker::WORKER_BIN_ENV).is_none() {
+        if let Some(path) = option_env!("CARGO_BIN_EXE_yuzora") {
+            std::env::set_var(yuzora_lib::db_query_worker::WORKER_BIN_ENV, path);
         }
     }
 }
@@ -120,7 +129,7 @@ fn first_result_session(run: &QueryRun) -> ResultSession {
             result_session: session,
             ..
         } => session.clone(),
-        _ => panic!("expected a row-producing result session"),
+        other => panic!("expected a row-producing result session, got {other:?}"),
     }
 }
 
@@ -719,6 +728,7 @@ async fn assert_postgres_boundary(connection: &IntegrationConnection, row_count:
 }
 
 async fn run_postgres() {
+    ensure_query_helper_bin();
     const HOST: &str = "127.0.0.1";
     const PORT: u16 = 55432;
     const DATABASE: &str = "yuzora_p8";
@@ -1193,6 +1203,181 @@ async fn run_postgres() {
     )
     .await;
 
+    assert_hostile_field_recovers(
+        &connection,
+        Engine::Postgres,
+        &format!("SELECT repeat('x', {})", DEFAULT_FIELD_BYTES + 1),
+        "SELECT 1",
+        1,
+    )
+    .await;
+    assert_session_limit_recovers(
+        &connection,
+        Engine::Postgres,
+        "SELECT repeat('x', 850000) FROM generate_series(1, 100)",
+        "SELECT 40",
+        40,
+    )
+    .await;
+
+    scenario(Engine::Postgres, "pre-start-cancel-reuse");
+    let lock_connection = runtime
+        .open_postgres(
+            "postgres-prepare-lock",
+            HOST,
+            PORT,
+            DATABASE,
+            FULL_USER,
+            password.clone(),
+            true,
+            true,
+        )
+        .await
+        .expect("open PostgreSQL prepare-lock connection");
+    let lock = lock_connection
+        .run_script(
+            "postgres-prepare-lock",
+            vec![
+                QueryExecutionUnit {
+                    sql: "BEGIN".to_string(),
+                    transaction_boundary: TransactionBoundary::Begin,
+                },
+                QueryExecutionUnit {
+                    sql: "LOCK TABLE alpha.rows_1201 IN ACCESS EXCLUSIVE MODE".to_string(),
+                    transaction_boundary: TransactionBoundary::None,
+                },
+            ],
+        )
+        .await
+        .expect("hold PostgreSQL relation lock before prepare");
+    assert!(lock.transaction_may_be_open);
+
+    let pre_start_cancel_id = QueryRunId("postgres-pre-start-cancel".to_string());
+    let pre_start_connection = connection.clone();
+    let pre_start_run_id = pre_start_cancel_id.clone();
+    let pre_start_run = tokio::spawn(async move {
+        pre_start_connection
+            .run_primary(
+                pre_start_run_id.0,
+                "SELECT id FROM alpha.rows_1201 ORDER BY id",
+            )
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let cancel = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        connection.cancel(pre_start_cancel_id),
+    )
+    .await
+    .expect("PostgreSQL pre-start cancel command timeout")
+    .expect("cancel PostgreSQL query blocked during prepare");
+    assert_eq!(cancel.outcome, QueryCancelOutcome::Cancelled);
+    let cancelled = tokio::time::timeout(std::time::Duration::from_secs(10), pre_start_run)
+        .await
+        .expect("PostgreSQL pre-start query settlement timeout")
+        .expect("PostgreSQL pre-start query task")
+        .expect("PostgreSQL pre-start cancelled query result");
+    assert!(matches!(
+        cancelled.statements[0].result,
+        StatementExecutionResult::Cancelled { .. }
+    ));
+    let reused = connection
+        .run_primary("postgres-pre-start-reuse", "SELECT 41")
+        .await
+        .expect("reuse PostgreSQL helper after pre-start cancellation");
+    let reused_session = first_result_session(&reused);
+    assert_integer_id(&reused_session.initial_page.rows[0][0], 41);
+    connection
+        .release_result(reused_session.owner)
+        .await
+        .expect("release PostgreSQL pre-start reuse result");
+    let unlock = lock_connection
+        .run_script(
+            "postgres-prepare-unlock",
+            vec![QueryExecutionUnit {
+                sql: "COMMIT".to_string(),
+                transaction_boundary: TransactionBoundary::Commit,
+            }],
+        )
+        .await
+        .expect("release PostgreSQL prepare lock");
+    assert!(!unlock.transaction_may_be_open);
+
+    scenario(Engine::Postgres, "zero-column-execute-cancel-reuse");
+    let row_lock = lock_connection
+        .run_script(
+            "postgres-row-lock",
+            vec![
+                QueryExecutionUnit {
+                    sql: "BEGIN".to_string(),
+                    transaction_boundary: TransactionBoundary::Begin,
+                },
+                QueryExecutionUnit {
+                    sql: "SELECT id FROM alpha.rows_1201 WHERE id = 1 FOR UPDATE".to_string(),
+                    transaction_boundary: TransactionBoundary::None,
+                },
+            ],
+        )
+        .await
+        .expect("hold PostgreSQL row lock before zero-column execute");
+    assert!(row_lock.transaction_may_be_open);
+    let execute_cancel_id = QueryRunId("postgres-execute-cancel".to_string());
+    let execute_connection = connection.clone();
+    let execute_run_id = execute_cancel_id.clone();
+    let execute_run = tokio::spawn(async move {
+        execute_connection
+            .run_primary(
+                execute_run_id.0,
+                "UPDATE alpha.rows_1201 SET id = id WHERE id = 1",
+            )
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let cancel = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        connection.cancel(execute_cancel_id),
+    )
+    .await
+    .expect("PostgreSQL execute cancel command timeout")
+    .expect("cancel PostgreSQL zero-column execution");
+    assert_eq!(cancel.outcome, QueryCancelOutcome::Cancelled);
+    let cancelled = tokio::time::timeout(std::time::Duration::from_secs(10), execute_run)
+        .await
+        .expect("PostgreSQL execute cancellation settlement timeout")
+        .expect("PostgreSQL execute cancellation task")
+        .expect("PostgreSQL execute cancelled query result");
+    assert!(matches!(
+        cancelled.statements[0].result,
+        StatementExecutionResult::Cancelled { .. }
+    ));
+    let reused = connection
+        .run_primary("postgres-execute-cancel-reuse", "SELECT 42")
+        .await
+        .expect("reuse PostgreSQL helper after zero-column cancellation");
+    let reused_session = first_result_session(&reused);
+    assert_integer_id(&reused_session.initial_page.rows[0][0], 42);
+    connection
+        .release_result(reused_session.owner)
+        .await
+        .expect("release PostgreSQL execute-cancel reuse result");
+    let row_unlock = lock_connection
+        .run_script(
+            "postgres-row-unlock",
+            vec![QueryExecutionUnit {
+                sql: "COMMIT".to_string(),
+                transaction_boundary: TransactionBoundary::Commit,
+            }],
+        )
+        .await
+        .expect("release PostgreSQL row lock");
+    assert!(!row_unlock.transaction_may_be_open);
+    assert!(
+        lock_connection
+            .close()
+            .expect("close PostgreSQL lock connection")
+            .closed
+    );
+
     scenario(Engine::Postgres, "cancel-a-run-b");
     let cancel_id = QueryRunId("postgres-cancel-a".to_string());
     let cancel_connection = connection.clone();
@@ -1348,7 +1533,77 @@ fn first_affected_rows(run: &QueryRun) -> Option<&str> {
     }
 }
 
+async fn assert_session_limit_recovers(
+    connection: &IntegrationConnection,
+    engine: Engine,
+    limit_sql: &str,
+    recover_sql: &str,
+    recover_value: usize,
+) {
+    scenario(engine, "session-limit-reuse");
+    let limited = connection
+        .run_primary(format!("{}-session-limit", engine.name()), limit_sql)
+        .await
+        .expect("run aggregate session-limit query");
+    let limited_session = match &limited.statements[0].result {
+        StatementExecutionResult::ResultLimitReached { result_session, .. } => result_session,
+        other => panic!("expected aggregate session limit, got {other:?}"),
+    };
+    assert!(limited_session.initial_page.result_limit_reached);
+    assert!(!limited_session.initial_page.value_too_large);
+    connection
+        .release_result(limited_session.owner.clone())
+        .await
+        .expect("release aggregate session-limit result");
+    let recovered = connection
+        .run_primary(
+            format!("{}-session-limit-reuse", engine.name()),
+            recover_sql,
+        )
+        .await
+        .expect("reuse connection after aggregate session limit");
+    let recovered_session = first_result_session(&recovered);
+    assert_integer_id(&recovered_session.initial_page.rows[0][0], recover_value);
+    connection
+        .release_result(recovered_session.owner)
+        .await
+        .expect("release aggregate session-limit recovery result");
+}
+
+async fn assert_hostile_field_recovers(
+    connection: &IntegrationConnection,
+    engine: Engine,
+    hostile_sql: &str,
+    recover_sql: &str,
+    recover_value: usize,
+) {
+    scenario(engine, "hostile-field-recovers");
+    let hostile = connection
+        .run_primary(format!("{}-hostile-field", engine.name()), hostile_sql)
+        .await
+        .expect("run hostile field query");
+    match &hostile.statements[0].result {
+        StatementExecutionResult::ResultLimitReached { result_session, .. } => {
+            assert!(result_session.initial_page.value_too_large);
+            assert!(result_session.initial_page.rows.is_empty());
+        }
+        other => panic!("expected valueTooLarge limit, got {other:?}"),
+    }
+    let recovered = connection
+        .run_primary(format!("{}-hostile-recover", engine.name()), recover_sql)
+        .await
+        .expect("run recovery query after hostile field");
+    let session = first_result_session(&recovered);
+    assert_integer_id(&session.initial_page.rows[0][0], recover_value);
+    assert!(!session.initial_page.value_too_large);
+    connection
+        .release_result(session.owner)
+        .await
+        .expect("release recovery result after hostile field");
+}
+
 async fn run_mssql() {
+    ensure_query_helper_bin();
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         panic!("engine=mssql scenario=requires-linux-x86_64");
     }
@@ -1925,6 +2180,26 @@ async fn run_mssql() {
     )
     .await;
 
+    assert_hostile_field_recovers(
+        &connection,
+        Engine::Mssql,
+        &format!(
+            "SELECT REPLICATE(CAST('x' AS varchar(max)), {})",
+            DEFAULT_FIELD_BYTES + 1
+        ),
+        "SELECT CAST(1 AS INT)",
+        1,
+    )
+    .await;
+    assert_session_limit_recovers(
+        &connection,
+        Engine::Mssql,
+        "SELECT TOP (100) REPLICATE(CAST('x' AS varchar(max)), 850000) FROM alpha.rows_1201",
+        "SELECT CAST(40 AS INT)",
+        40,
+    )
+    .await;
+
     scenario(Engine::Mssql, "close-reconnect-stale-owner");
     let stale = connection
         .run_primary(
@@ -1965,14 +2240,17 @@ async fn run_mssql() {
         DatabaseOperationalErrorCode::StaleConnection
     );
 
-    scenario(Engine::Mssql, "cancel-a-terminate-reconnect-b");
+    scenario(Engine::Mssql, "metadata-then-cancel-terminate-reconnect");
     let cancel_identity = connection.identity();
     let cancel_id = QueryRunId("mssql-cancel-a".to_string());
     let run_connection = connection.clone();
     let run_id = cancel_id.clone();
     let run_a = tokio::spawn(async move {
         run_connection
-            .run_primary(run_id.0, "EXEC alpha.long_query")
+            .run_primary(
+                run_id.0,
+                "SELECT CAST(1 AS INT) AS id; WAITFOR DELAY '00:00:30'; SELECT CAST(2 AS INT) AS id",
+            )
             .await
     });
     tokio::task::yield_now().await;
@@ -2042,6 +2320,59 @@ async fn run_mssql() {
         .await
         .expect("release MSSQL Run B");
     assert!(reconnected.close().expect("close reconnected MSSQL").closed);
+}
+
+#[tokio::test]
+async fn sqlite_hostile_value_is_rejected_and_the_connection_recovers() {
+    let fixture_dir = tempfile::tempdir().expect("create SQLite hostile fixture directory");
+    let fixture_path = fixture_dir.path().join("hostile.sqlite");
+    {
+        let fixture = rusqlite::Connection::open(&fixture_path).expect("create hostile fixture");
+        fixture
+            .execute_batch("CREATE TABLE hostile(id INTEGER PRIMARY KEY, payload BLOB NOT NULL);")
+            .unwrap();
+        let oversized = vec![7u8; DEFAULT_FIELD_BYTES + 1];
+        fixture
+            .execute(
+                "INSERT INTO hostile(id, payload) VALUES (1, ?1), (2, x'01')",
+                [&oversized as &[u8]],
+            )
+            .unwrap();
+    }
+    let runtime = IntegrationRuntime::default();
+    let connection = runtime
+        .open_sqlite("sqlite-hostile", fixture_path.to_string_lossy())
+        .await
+        .expect("open hostile SQLite fixture");
+    let hostile = connection
+        .run_primary(
+            "sqlite-hostile-field",
+            "SELECT payload FROM hostile WHERE id = 1",
+        )
+        .await
+        .expect("run hostile SQLite query");
+    match &hostile.statements[0].result {
+        StatementExecutionResult::ResultLimitReached { result_session, .. } => {
+            assert!(result_session.initial_page.value_too_large);
+            assert!(result_session.initial_page.rows.is_empty());
+        }
+        other => panic!("expected valueTooLarge limit, got {other:?}"),
+    }
+    let recovered = connection
+        .run_primary(
+            "sqlite-hostile-recover",
+            "SELECT id FROM hostile WHERE id = 2",
+        )
+        .await
+        .expect("run recovery SQLite query");
+    let session = first_result_session(&recovered);
+    assert_integer_id(&session.initial_page.rows[0][0], 2);
+    assert!(!session.initial_page.value_too_large);
+    connection
+        .release_result(session.owner)
+        .await
+        .expect("release recovery result");
+    assert!(connection.close().expect("close hostile SQLite").closed);
 }
 
 #[tokio::test]

@@ -23,7 +23,7 @@ vi.mock("../../lib/ipc", () => ({
     gitConflictAbort: vi.fn(async () => undefined),
     gitConflictContinue: vi.fn(async () => undefined),
     gitStatus: vi.fn(async () => makeStatus()),
-    gitBranches: vi.fn(async () => ({ local: [], remote: [] })),
+    gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     gitFetch: vi.fn(async () => undefined),
     gitRemoteProbe: vi.fn(async () => "no"),
     gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50.1" }))
@@ -39,15 +39,16 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 // Imported after the mocks so the component and tests share the mocked modules.
 const ipc = await import("../../lib/ipc")
-const dialog = await import("@tauri-apps/plugin-dialog")
+const { useAppDialogStore } = await import("../../state/appDialogStore")
 const { ConflictBanner } = await import("./ConflictBanner")
 const { useGitStore, initialGitState } = await import("../../state/gitStore")
 const { useUiStore, uiInitialState } = await import("../../state/uiStore")
 
 describe("ConflictBanner", () => {
     beforeEach(() => {
-        useGitStore.setState(initialGitState)
+        useGitStore.setState({ ...initialGitState, environment: { status: "ready", root: "/w", version: "2.50" } })
         useUiStore.setState(uiInitialState)
+        useAppDialogStore.setState({ pending: null })
     })
     afterEach(() => {
         vi.clearAllMocks()
@@ -94,26 +95,29 @@ describe("ConflictBanner", () => {
         useGitStore.setState({ status: { ...makeStatus(), inProgress: "merge" } })
         render(<ConflictBanner />)
         fireEvent.click(screen.getByRole("button", { name: "Abort" }))
-        await waitFor(() => expect(dialog.confirm).toHaveBeenCalled())
-        await waitFor(() => expect(ipc.gitConflictAbort).toHaveBeenCalledWith("merge"))
+        await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+        useAppDialogStore.getState().respond(true)
+        await waitFor(() => expect(ipc.gitConflictAbort).toHaveBeenCalledWith("/w", "merge"))
     })
 
     it("Abort records a cherry-pick-specific console label", async () => {
         useGitStore.setState({ status: { ...makeStatus(), inProgress: "cherry-pick" } })
         render(<ConflictBanner />)
         fireEvent.click(screen.getByRole("button", { name: "Abort" }))
-        await waitFor(() => expect(ipc.gitConflictAbort).toHaveBeenCalledWith("cherry-pick"))
+        await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+        useAppDialogStore.getState().respond(true)
+        await waitFor(() => expect(ipc.gitConflictAbort).toHaveBeenCalledWith("/w", "cherry-pick"))
         await waitFor(() =>
             expect(useGitStore.getState().consoleLog[0]?.cmd).toBe("git cherry-pick --abort")
         )
     })
 
     it("Abort does nothing when confirm is declined", async () => {
-        vi.mocked(dialog.confirm).mockResolvedValueOnce(false)
         useGitStore.setState({ status: { ...makeStatus(), inProgress: "merge" } })
         render(<ConflictBanner />)
         fireEvent.click(screen.getByRole("button", { name: "Abort" }))
-        await waitFor(() => expect(dialog.confirm).toHaveBeenCalled())
+        await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+        useAppDialogStore.getState().respond(false)
         expect(ipc.gitConflictAbort).not.toHaveBeenCalled()
     })
 
@@ -121,7 +125,9 @@ describe("ConflictBanner", () => {
         useGitStore.setState({ status: { ...makeStatus(), inProgress: "rebase" } })
         render(<ConflictBanner />)
         fireEvent.click(screen.getByRole("button", { name: "Continue" }))
-        await waitFor(() => expect(ipc.gitConflictContinue).toHaveBeenCalledWith("rebase"))
+        await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+        useAppDialogStore.getState().respond(true)
+        await waitFor(() => expect(ipc.gitConflictContinue).toHaveBeenCalledWith("/w", "rebase"))
     })
 
     it("shows lastError below the banner when continue fails", () => {
@@ -131,5 +137,26 @@ describe("ConflictBanner", () => {
         })
         render(<ConflictBanner />)
         expect(screen.getByText(/unmerged files/i)).toBeInTheDocument()
+    })
+
+    it("does not abort when inProgress changes during confirmation", async () => {
+        useGitStore.setState({ status: { ...makeStatus(), inProgress: "merge" } })
+        render(<ConflictBanner />)
+        fireEvent.click(screen.getByRole("button", { name: "Abort" }))
+        await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+        useGitStore.setState({ status: { ...makeStatus(), inProgress: "rebase" } })
+        useAppDialogStore.getState().respond(true)
+        await Promise.resolve()
+        expect(ipc.gitConflictAbort).not.toHaveBeenCalled()
+    })
+
+    it("disables abort/continue while snapshot is stale", () => {
+        useGitStore.setState({
+            status: { ...makeStatus(), inProgress: "merge" },
+            snapshotStale: true,
+        })
+        render(<ConflictBanner />)
+        expect(screen.getByRole("button", { name: "Abort" })).toBeDisabled()
+        expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled()
     })
 })
