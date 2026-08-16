@@ -82,6 +82,31 @@ it("confirms an execution challenge and keeps the exact command bound", async ()
     await expect(pending).resolves.toBe("exec-2")
 })
 
+it("displays a verbatim Windows workspace path without changing grant identity", async () => {
+    ipcMocks.workspaceTrustStatus.mockResolvedValue({
+        state: "untrusted",
+        canonicalPath: String.raw`\\?\C:\Apps\Tauri\Yuzora`,
+        challengeId: "grant-win",
+        repoPresent: true
+    })
+    ipcMocks.workspaceTrustGrant.mockResolvedValue({
+        state: "trusted",
+        canonicalPath: String.raw`\\?\C:\Apps\Tauri\Yuzora`,
+        repoPresent: true
+    })
+    useWorkspaceStore.setState({ workspacePath: String.raw`\\?\C:\Apps\Tauri\Yuzora` })
+    render(<WorkspaceTrustHost />)
+
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument()
+    expect(screen.getByText(String.raw`C:\Apps\Tauri\Yuzora`)).toBeInTheDocument()
+    expect(screen.queryByText(/\\\?\\/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("workspaceTrust.grant", { ns: "workbench" }) }))
+    await waitFor(() => expect(ipcMocks.workspaceTrustGrant).toHaveBeenCalledWith("grant-win"))
+    await waitFor(() =>
+        expect(useGitStore.getState().detect).toHaveBeenCalledWith(String.raw`\\?\C:\Apps\Tauri\Yuzora`)
+    )
+})
+
 it("grants workspace trust for a detected repo and retries git detect", async () => {
     ipcMocks.workspaceTrustStatus.mockResolvedValue({
         state: "untrusted",

@@ -96,3 +96,36 @@ it("lists trusted workspaces and revokes from the Safety settings pane", async (
     expect(screen.getByText(i18n.t("settings.noTrustedWorkspaces", { ns: "workbench" }))).toBeInTheDocument()
     expect(useWorkspaceTrustStore.getState().trustRevision).toBe(1)
 })
+
+it("displays verbatim Windows trusted paths without changing revoke identity", async () => {
+    const canonicalPath = String.raw`\\?\F:\Apps\Tauri\Yuzora`
+    ipcMocks.workspaceTrustList.mockResolvedValue([
+        {
+            canonicalPath,
+            fsIdentity: "id-win",
+            grantedAt: "2026-01-01T00:00:00Z",
+        },
+    ])
+
+    render(
+        <SettingsDialog
+            open
+            onOpenChange={() => {}}
+            theme="light"
+            onThemeChange={() => {}}
+            initialSection="safety"
+        />,
+    )
+
+    expect(await screen.findByText(String.raw`F:\Apps\Tauri\Yuzora`)).toBeInTheDocument()
+    expect(screen.queryByText(/\\\?\\/)).not.toBeInTheDocument()
+    fireEvent.click(
+        screen.getByRole("button", {
+            name: i18n.t("settings.revokeWorkspaceNamed", {
+                ns: "workbench",
+                path: String.raw`F:\Apps\Tauri\Yuzora`,
+            }),
+        }),
+    )
+    await waitFor(() => expect(ipcMocks.workspaceTrustRevoke).toHaveBeenCalledWith(canonicalPath))
+})

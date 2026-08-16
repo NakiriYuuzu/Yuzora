@@ -21,6 +21,7 @@
 - Markdown 預覽改為與來源文件相鄰的連結頁面，並改善分頁拖曳排序、檔案拖放、圖片／SVG 預覽與工作區切換後的狀態恢復。
 - Git 變更清單、diff、log 與 branch 操作改善大量資料下的載入、選取、虛擬化與 stale response 防護。
 - 更新 Tauri、React、Vite、CodeMirror、資料庫／SSH 函式庫與其他開發相依套件，並同步更新產品網站與中英文導覽素材。
+- Windows 上的 HERDR public API 與事件訂閱改用 HERDR 0.8.0 的 named-pipe transport；當 server、protocol 與 schema 相容時，可使用 snapshot、runtime mutation 與即時事件，不再因作業系統固定停用。
 
 ### 修正
 
@@ -32,11 +33,11 @@
 - 修正 macOS 因系統拒絕有限的 process memory rlimit，導致 PostgreSQL／MSSQL query helper 無法啟動的問題；改以短週期 resident-memory watchdog 保留隔離與上限保護。
 - 修正 Windows 工作區信任與路徑能力使用不穩定 metadata identity API，導致無法以 stable Rust 建置的問題；改由已開啟的檔案 handle 取得穩定 identity。
 - 修正 HERDR／Markdown pseudo pages 被誤存成一般檔案分頁，導致重新啟動後嘗試以檔案方式還原的問題。
+- 修正 Windows canonical path 的 `\\?\` 前綴出現在 HERDR 診斷與工作區信任介面；顯示路徑會正規化，但 backend 仍使用原始 canonical identity 執行授權與撤銷。
 
 ### 已知限制
 
 - Yuzora 桌面版目前只發佈 macOS 與 Windows 安裝檔；Linux 僅作為 CI／測試 host，不是支援的桌面發佈平台。
-- HERDR public API 與事件訂閱目前使用 Unix socket；Windows 尚未提供 named-pipe lane，因此依賴 snapshot 或 runtime mutation 的 HERDR 功能會顯示不支援，Windows 測試應同時確認此狀態不會影響其他工作台功能。
 - HERDR 功能取決於實際選用 binary 的版本、protocol 與 schema；不相容或缺少必要 method 時會停用對應操作並顯示原因。
 - macOS 上以 ⌘Q 結束應用程式時不會提示未儲存的變更；請改以關閉視窗的方式離開。
 - macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現 Gatekeeper 或 SmartScreen 提示。

@@ -17,6 +17,7 @@ pub mod git_status;
 pub mod git_watch;
 mod herdr_limits;
 pub mod herdr_service;
+mod herdr_transport;
 pub mod logging;
 pub mod lsp_adapters;
 pub mod lsp_config;

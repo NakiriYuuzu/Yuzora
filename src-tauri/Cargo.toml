@@ -74,6 +74,7 @@ uuid = { version = "1", default-features = false, features = ["v4"] }
 tiny_http = "0.12.0"
 scraper = "0.23"
 tempfile = "3"
+interprocess = "=2.4.2"
 tauri-plugin-window-state = "2.4.1"
 tauri-plugin-process = "2.3.1"
 
@@ -83,4 +84,4 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }

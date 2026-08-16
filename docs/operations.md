@@ -253,6 +253,8 @@ gh run download "${RUN_ID}" \
 - Microsoft Pinyin 中文 composition、replacement、commit 不重複也不遺失。
 - Command Prompt、Windows PowerShell、PowerShell 7 能依設定與單次選擇啟動。
 - WSL default 與已安裝 distro 能啟動，Windows／UNC workspace 的 cwd 轉換正確。
+- HERDR 0.8.0 running session 可透過 named pipe 完成 snapshot、schema-gated mutation 與 `events.subscribe`；停止、不相容或缺少 method 時仍需顯示真實 unavailable 原因。
+- HERDR 診斷與工作區信任介面不顯示 Windows `\\?\` verbatim prefix，且信任授權／撤銷仍作用於原始 canonical path identity。
 - 一般 shell 與 TUI 模式的 IME anchor／輸入位置可接受。
 
 驗證結果必須寫入 PR comment 或 review，包含平台、installer、結果與已知限制。只有使用者明確表示「驗證通過」並授權 merge，maintainer／agent 才能 merge。CI 全綠、artifact 存在或 reviewer 沒有留言，都不能推定為使用者核准。

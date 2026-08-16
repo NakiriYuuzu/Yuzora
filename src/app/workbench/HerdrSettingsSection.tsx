@@ -4,6 +4,19 @@ import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { herdrBinarySourceGet, herdrBinarySourceSet } from "@/lib/herdrIpc"
 import type { HerdrBinarySource, HerdrBinarySourceInfo } from "@/lib/herdrTypes"
+import { workspacePathForDisplay } from "@/lib/paths"
+
+const MANAGED_UNAVAILABLE_PREFIX = "Yuzora-managed Herdr binary is unavailable at "
+const OVERRIDE_NOT_EXECUTABLE_PREFIX = "herdr binary override is not executable: "
+
+function formatHerdrDiagnosticReason(reason: string): string {
+  for (const prefix of [MANAGED_UNAVAILABLE_PREFIX, OVERRIDE_NOT_EXECUTABLE_PREFIX]) {
+    if (reason.startsWith(prefix)) {
+      return `${prefix}${workspacePathForDisplay(reason.slice(prefix.length))}`
+    }
+  }
+  return reason
+}
 
 export function HerdrSettingsSection() {
   const { t } = useTranslation("workbench")
@@ -98,7 +111,9 @@ export function HerdrSettingsSection() {
           <dt>{t("herdrSettings.active")}</dt>
           <dd>{active ?? "—"}</dd>
           <dt>{t("herdrSettings.path")}</dt>
-          <dd className="break-all font-mono text-[11px]">{info?.path ?? "—"}</dd>
+          <dd className="break-all font-mono text-[11px]">
+            {info?.path ? workspacePathForDisplay(info.path) : "—"}
+          </dd>
           <dt>{t("herdrSettings.version")}</dt>
           <dd>{info?.version ?? "—"}</dd>
           <dt>{t("herdrSettings.protocol")}</dt>
@@ -112,12 +127,12 @@ export function HerdrSettingsSection() {
               : "—"}
           </dd>
           <dt>{t("herdrSettings.reason")}</dt>
-          <dd>{info?.reason ?? "—"}</dd>
+          <dd>{info?.reason ? formatHerdrDiagnosticReason(info.reason) : "—"}</dd>
           <dt>{t("herdrSettings.configuredTarget")}</dt>
           <dd>{info?.configured ?? "—"}</dd>
           <dt>{t("herdrSettings.targetPath")}</dt>
           <dd className="break-all font-mono text-[11px]">
-            {info?.configuredPath ?? "—"}
+            {info?.configuredPath ? workspacePathForDisplay(info.configuredPath) : "—"}
           </dd>
           <dt>{t("herdrSettings.version")}</dt>
           <dd>{info?.configuredVersion ?? "—"}</dd>
@@ -132,7 +147,11 @@ export function HerdrSettingsSection() {
               : "—"}
           </dd>
           <dt>{t("herdrSettings.reason")}</dt>
-          <dd>{info?.configuredReason ?? "—"}</dd>
+          <dd>
+            {info?.configuredReason
+              ? formatHerdrDiagnosticReason(info.configuredReason)
+              : "—"}
+          </dd>
         </dl>
         {!configuredAvailable && info?.configured === "default" && (
           <p className="mt-[10px] text-[11.5px] text-(--ink-3)">

@@ -49,4 +49,40 @@ describe("HerdrSettingsSection", () => {
     ).not.toHaveLength(0)
     await waitFor(() => expect(ipc.get).toHaveBeenCalledTimes(1))
   })
+
+  it("normalizes verbatim Windows diagnostic paths without mutating the DTO", async () => {
+    const fixture = {
+      configured: "default",
+      active: "global",
+      resolved: "global",
+      available: true,
+      path: String.raw`\\?\C:\Users\me\.local\bin\herdr.exe`,
+      version: "0.8.0",
+      protocol: 19,
+      configuredAvailable: false,
+      configuredPath: null,
+      configuredReason: String.raw`Yuzora-managed Herdr binary is unavailable at \\?\C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
+      configuredVersion: null,
+      configuredProtocol: null,
+      configurationError: null,
+      restartRequired: true
+    }
+    ipc.get.mockResolvedValue(fixture)
+
+    render(<HerdrSettingsSection />)
+
+    expect(
+      await screen.findByText(String.raw`C:\Users\me\.local\bin\herdr.exe`)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        String.raw`Yuzora-managed Herdr binary is unavailable at C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/\\\?\\/)).not.toBeInTheDocument()
+    expect(fixture.path).toBe(String.raw`\\?\C:\Users\me\.local\bin\herdr.exe`)
+    expect(fixture.configuredReason).toBe(
+      String.raw`Yuzora-managed Herdr binary is unavailable at \\?\C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`
+    )
+  })
 })

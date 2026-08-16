@@ -20,6 +20,7 @@ use crate::herdr_limits::{
     validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH,
     MAX_NDJSON_LINE_BYTES, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
 };
+use crate::herdr_transport::{connect_local_stream, read_local_ndjson_line, write_local_all_until};
 use crate::process_kill;
 
 pub type OnTerminalEvent = Arc<dyn Fn(HerdrTerminalEvent) -> Result<(), String> + Send + Sync>;
@@ -34,6 +35,8 @@ const BINARY_SOURCE_CONFIG_FILE: &str = "herdr-config-v1.json";
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_millis(150);
+const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const AGENT_READ_MIN_LINES: u32 = 20;
 const AGENT_READ_MAX_LINES: u32 = 500;
 #[cfg(not(test))]
@@ -395,7 +398,7 @@ pub struct HerdrTerminalCapability {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrEventsCapability {
-    /// Event subscription is deferred until a safe long-lived socket lane exists.
+    /// Availability of the long-lived local-socket event lane.
     pub status: HerdrEventsStatus,
     pub reason: Option<String>,
 }
@@ -723,8 +726,6 @@ struct ConnectorSession {
 
 struct EventSubscription {
     closed: Arc<AtomicBool>,
-    #[cfg(unix)]
-    shutdown: Mutex<Option<std::os::unix::net::UnixStream>>,
     reader: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -948,25 +949,51 @@ impl HerdrManager {
     /// publishing a mixed-epoch capability document.
     pub fn capabilities_for_session(&self, session_name: Option<&str>) -> HerdrCapabilities {
         let _probe_guard = self.capability_probe_lock.lock().unwrap();
-        let caps = self.discover_capabilities_for_session(session_name);
+        let mut caps = self.discover_capabilities_for_session(session_name);
         let cache_key = Self::capability_cache_key(session_name);
-        let cache_entry = self
-            .require_running_session_socket(session_name)
-            .ok()
-            .and_then(|(session, socket_path)| {
-                let live_identity = ping_server_identity(&socket_path).ok()?;
-                if Some(live_identity) != caps.server.version.clone().zip(caps.server.protocol)
-                    || caps.server.compatible == Some(false)
-                {
-                    return None;
+        let should_probe = caps.server.running
+            && caps.server.socket_path.is_some()
+            && caps.server.compatible != Some(false);
+        let cache_entry = if should_probe {
+            match self.require_running_session_socket(session_name) {
+                Ok((session, socket_path)) => match ping_server_identity(&socket_path) {
+                    Ok(live_identity)
+                        if Some(live_identity.clone())
+                            == caps.server.version.clone().zip(caps.server.protocol) =>
+                    {
+                        Some(CachedCapabilities {
+                            capabilities: caps.clone(),
+                            named_session: session.name,
+                            socket_path,
+                            binary_fingerprint: self.active_binary_fingerprint(),
+                        })
+                    }
+                    Ok(_) => {
+                        disable_live_socket_capabilities(
+                            &mut caps,
+                            "herdr server identity changed during capability discovery",
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        disable_live_socket_capabilities(
+                            &mut caps,
+                            &format!("herdr local socket probe failed: {error}"),
+                        );
+                        None
+                    }
+                },
+                Err(error) => {
+                    disable_live_socket_capabilities(
+                        &mut caps,
+                        &format!("herdr running session became unavailable: {error}"),
+                    );
+                    None
                 }
-                Some(CachedCapabilities {
-                    capabilities: caps.clone(),
-                    named_session: session.name,
-                    socket_path,
-                    binary_fingerprint: self.active_binary_fingerprint(),
-                })
-            });
+            }
+        } else {
+            None
+        };
         let mut cache = self.capability_cache.lock().unwrap();
         if let Some(entry) = cache_entry {
             cache.insert(cache_key, entry);
@@ -1240,45 +1267,15 @@ impl HerdrManager {
             caps.api.reason = Some("herdr server not running or socket unavailable".into());
         }
 
-        // Event subscription is only advertised when the long-lived Unix socket
-        // lane can actually open against a running compatible session.
-        let has_events_subscribe = schema_methods.contains("events.subscribe");
-        #[cfg(unix)]
-        {
-            if socket_ready && has_events_subscribe {
-                caps.events = HerdrEventsCapability {
-                    status: HerdrEventsStatus::Available,
-                    reason: None,
-                };
-            } else if !has_events_subscribe {
-                caps.events = HerdrEventsCapability {
-                    status: HerdrEventsStatus::Unavailable,
-                    reason: Some("selected herdr schema lacks events.subscribe".into()),
-                };
-            } else if session_stopped {
-                caps.events = HerdrEventsCapability {
-                    status: HerdrEventsStatus::Unavailable,
-                    reason: Some("herdr session is not running".into()),
-                };
-            } else {
-                caps.events = HerdrEventsCapability {
-                    status: HerdrEventsStatus::Unavailable,
-                    reason: Some(
-                        "herdr events.subscribe requires a running compatible session".into(),
-                    ),
-                };
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (socket_ready, has_events_subscribe, session_stopped);
-            caps.events = HerdrEventsCapability {
-                status: HerdrEventsStatus::Unavailable,
-                reason: Some(
-                    "herdr public NDJSON event subscription is only supported on unix hosts".into(),
-                ),
-            };
-        }
+        // Event subscription is advertised when the long-lived local-socket lane
+        // can open against a running compatible session. Transport is Unix
+        // domain sockets or Windows named pipes, not host-OS gated.
+        apply_events_capability(
+            &mut caps.events,
+            socket_ready,
+            schema_methods.contains("events.subscribe"),
+            session_stopped,
+        );
 
         caps
     }
@@ -1831,239 +1828,216 @@ impl HerdrManager {
         session_name: Option<String>,
         on_event: OnSubscriptionEvent,
     ) -> Result<String, String> {
-        #[cfg(not(unix))]
-        {
-            let _ = (session_name, on_event);
-            return Err(
-                "herdr public NDJSON event subscription is only supported on unix hosts".into(),
-            );
+        let (session, socket) = self.require_running_session_socket(session_name.as_deref())?;
+        let caps =
+            self.cached_capabilities_without_ping(session_name.as_deref(), &session.name, &socket);
+        if !caps.api.events_subscribe || caps.events.status != HerdrEventsStatus::Available {
+            return Err(caps
+                .events
+                .reason
+                .or(caps.api.reason)
+                .unwrap_or_else(|| "herdr events.subscribe unavailable".into()));
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::net::UnixStream;
-            let (session, socket) = self.require_running_session_socket(session_name.as_deref())?;
-            let caps = self.cached_capabilities_without_ping(
-                session_name.as_deref(),
-                &session.name,
-                &socket,
-            );
-            if !caps.api.events_subscribe || caps.events.status != HerdrEventsStatus::Available {
-                return Err(caps
-                    .events
-                    .reason
-                    .or(caps.api.reason)
-                    .unwrap_or_else(|| "herdr events.subscribe unavailable".into()));
-            }
-            let mut stream = UnixStream::connect(&socket)
-                .map_err(|e| format!("connect {socket} failed: {e}"))?;
-            stream
-                .set_read_timeout(Some(EVENT_ACK_TIMEOUT))
-                .map_err(|e| e.to_string())?;
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .map_err(|e| e.to_string())?;
+        let write_deadline = Instant::now() + LOCAL_IO_TIMEOUT;
+        let mut stream = connect_local_stream(&socket, write_deadline)
+            .map_err(|e| format!("connect {socket} failed: {e}"))?;
 
-            let request_id = format!(
-                "yuzora:herdr:sub:{}",
-                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-            );
-            let req = serde_json::json!({
-                "id": request_id,
-                "method": "events.subscribe",
-                "params": {
-                    "subscriptions": [
-                        { "type": "pane.agent_status_changed" },
-                        { "type": "pane.exited" },
-                        { "type": "worktree.created" },
-                        { "type": "worktree.opened" },
-                        { "type": "worktree.removed" },
-                        { "type": "tab.created" },
-                        { "type": "tab.closed" },
-                        { "type": "tab.moved" },
-                        { "type": "workspace.created" },
-                        { "type": "workspace.closed" },
-                        { "type": "workspace.moved" },
-                        { "type": "workspace.reordered" }
-                    ]
-                }
-            });
-            let mut line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
-            line.push('\n');
-            stream
-                .write_all(line.as_bytes())
-                .map_err(|e| format!("write events.subscribe failed: {e}"))?;
+        let request_id = format!(
+            "yuzora:herdr:sub:{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let req = serde_json::json!({
+            "id": request_id,
+            "method": "events.subscribe",
+            "params": {
+                "subscriptions": [
+                    { "type": "pane.agent_status_changed" },
+                    { "type": "pane.exited" },
+                    { "type": "worktree.created" },
+                    { "type": "worktree.opened" },
+                    { "type": "worktree.removed" },
+                    { "type": "tab.created" },
+                    { "type": "tab.closed" },
+                    { "type": "tab.moved" },
+                    { "type": "workspace.created" },
+                    { "type": "workspace.closed" },
+                    { "type": "workspace.moved" },
+                    { "type": "workspace.reordered" }
+                ]
+            }
+        });
+        let mut line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
+        line.push('\n');
+        write_local_all_until(&mut stream, line.as_bytes(), write_deadline)
+            .map_err(|e| format!("write events.subscribe failed: {e}"))?;
 
-            let mut reader = BufReader::new(stream);
-            let mut response = String::new();
-            match read_bounded_ndjson_line(&mut reader, &mut response) {
-                Ok(0) => {
-                    let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-                    return Err(HerdrProtocolError::EmptyResponse.into());
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-                    return Err(format!("events.subscribe ack read failed: {error}"));
-                }
+        let mut pending = Vec::new();
+        let response = match read_local_ndjson_line(
+            &mut stream,
+            &mut pending,
+            Some(Instant::now() + EVENT_ACK_TIMEOUT),
+            MAX_NDJSON_LINE_BYTES,
+        ) {
+            Ok(None) => return Err(HerdrProtocolError::EmptyResponse.into()),
+            Ok(Some(response)) => response,
+            Err(error) => {
+                return Err(format!("events.subscribe ack read failed: {error}"));
             }
-            if response.trim().is_empty() {
-                let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-                return Err(HerdrProtocolError::EmptyResponse.into());
-            }
-            let value: serde_json::Value = serde_json::from_str(response.trim())
-                .map_err(|e| format!("invalid events.subscribe ack json: {e}"))?;
-            if let Err(error) = validate_json_complexity(&value) {
-                let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-                return Err(error.into());
-            }
-            if let Some(err) = value.get("error") {
-                let code = err.get("code").and_then(|v| v.as_str()).unwrap_or("error");
-                let message = err
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown error");
-                return Err(format!("{code}: {message}"));
-            }
-            let result_type = value
-                .get("result")
-                .and_then(|r| r.get("type"))
+        };
+        if response.trim().is_empty() {
+            return Err(HerdrProtocolError::EmptyResponse.into());
+        }
+        let value: serde_json::Value = serde_json::from_str(response.trim())
+            .map_err(|e| format!("invalid events.subscribe ack json: {e}"))?;
+        if let Err(error) = validate_json_complexity(&value) {
+            return Err(error.into());
+        }
+        if let Some(err) = value.get("error") {
+            let code = err.get("code").and_then(|v| v.as_str()).unwrap_or("error");
+            let message = err
+                .get("message")
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if result_type != "subscription_started" {
-                return Err(format!(
-                    "events.subscribe expected subscription_started, got {result_type}"
-                ));
+                .unwrap_or("unknown error");
+            return Err(format!("{code}: {message}"));
+        }
+        let result_type = value
+            .get("result")
+            .and_then(|r| r.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if result_type != "subscription_started" {
+            return Err(format!(
+                "events.subscribe expected subscription_started, got {result_type}"
+            ));
+        }
+
+        let subscription_id = format!(
+            "herdr-sub-{}",
+            NEXT_SUBSCRIPTION_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let closed = Arc::new(AtomicBool::new(false));
+        let closed_for_thread = Arc::clone(&closed);
+        let subscription_id_for_thread = subscription_id.clone();
+        let on_event_for_thread = Arc::clone(&on_event);
+        let (start_tx, start_rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+        // Register ownership before the reader can emit events, so a fast
+        // terminal error/release can always find and close this stream.
+        let handle = std::thread::spawn(move || {
+            if start_rx.recv().is_err() {
+                closed_for_thread.store(true, Ordering::SeqCst);
+                return;
             }
-
-            let shutdown = reader
-                .get_ref()
-                .try_clone()
-                .map_err(|e| format!("clone events.subscribe socket failed: {e}"))?;
-            let subscription_id = format!(
-                "herdr-sub-{}",
-                NEXT_SUBSCRIPTION_ID.fetch_add(1, Ordering::Relaxed)
-            );
-            let closed = Arc::new(AtomicBool::new(false));
-            let closed_for_thread = Arc::clone(&closed);
-            let subscription_id_for_thread = subscription_id.clone();
-            let on_event_for_thread = Arc::clone(&on_event);
-            let (start_tx, start_rx) = std::sync::mpsc::sync_channel::<()>(1);
-
-            // Register ownership before the reader can emit events, so a fast
-            // terminal error/release can always find and close this stream.
-            let handle = std::thread::spawn(move || {
-                if start_rx.recv().is_err() {
-                    closed_for_thread.store(true, Ordering::SeqCst);
-                    return;
+            let mut stream = stream;
+            let mut pending = pending;
+            loop {
+                if closed_for_thread.load(Ordering::SeqCst) {
+                    break;
                 }
-                let mut reader = reader;
-                loop {
-                    if closed_for_thread.load(Ordering::SeqCst) {
+                match read_local_ndjson_line(
+                    &mut stream,
+                    &mut pending,
+                    Some(Instant::now() + EVENT_POLL_INTERVAL),
+                    MAX_NDJSON_LINE_BYTES,
+                ) {
+                    Ok(None) => {
+                        let _ = emit_subscription_event(
+                            &on_event_for_thread,
+                            HerdrSubscriptionEvent::Disconnected {
+                                subscription_id: subscription_id_for_thread.clone(),
+                                reason: Some("socket closed".into()),
+                            },
+                        );
                         break;
                     }
-                    let mut line = String::new();
-                    match read_bounded_ndjson_line(&mut reader, &mut line) {
-                        Ok(0) => {
-                            let _ = emit_subscription_event(
-                                &on_event_for_thread,
-                                HerdrSubscriptionEvent::Disconnected {
-                                    subscription_id: subscription_id_for_thread.clone(),
-                                    reason: Some("socket closed".into()),
-                                },
-                            );
-                            break;
+                    Ok(Some(line)) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
                         }
-                        Ok(_) => {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() {
-                                continue;
-                            }
-                            match parse_subscription_event_line(
-                                &subscription_id_for_thread,
-                                trimmed,
-                            ) {
-                                Ok(Some(event)) => {
-                                    let terminal =
-                                        matches!(event, HerdrSubscriptionEvent::Error { .. });
-                                    if emit_subscription_event(&on_event_for_thread, event).is_err()
-                                        || terminal
-                                    {
-                                        break;
-                                    }
-                                }
-                                Ok(None) => {}
-                                Err(message) => {
-                                    let _ = emit_subscription_event(
-                                        &on_event_for_thread,
-                                        HerdrSubscriptionEvent::Error {
-                                            subscription_id: subscription_id_for_thread.clone(),
-                                            message,
-                                        },
-                                    );
+                        match parse_subscription_event_line(&subscription_id_for_thread, trimmed) {
+                            Ok(Some(event)) => {
+                                let terminal =
+                                    matches!(event, HerdrSubscriptionEvent::Error { .. });
+                                if emit_subscription_event(&on_event_for_thread, event).is_err()
+                                    || terminal
+                                {
                                     break;
                                 }
                             }
-                        }
-                        Err(BoundedNdjsonReadError::Io(err))
-                            if matches!(
-                                err.kind(),
-                                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                            ) =>
-                        {
-                            continue;
-                        }
-                        Err(err) => {
-                            if closed_for_thread.load(Ordering::SeqCst) {
+                            Ok(None) => {}
+                            Err(message) => {
+                                let _ = emit_subscription_event(
+                                    &on_event_for_thread,
+                                    HerdrSubscriptionEvent::Error {
+                                        subscription_id: subscription_id_for_thread.clone(),
+                                        message,
+                                    },
+                                );
                                 break;
                             }
-                            let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-                            let _ = emit_subscription_event(
-                                &on_event_for_thread,
-                                HerdrSubscriptionEvent::Error {
-                                    subscription_id: subscription_id_for_thread.clone(),
-                                    message: format!("events.subscribe read failed: {err}"),
-                                },
-                            );
-                            break;
                         }
                     }
+                    Err(BoundedNdjsonReadError::Protocol(HerdrProtocolError::TimedOut)) => {
+                        continue;
+                    }
+                    Err(BoundedNdjsonReadError::Io(err))
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(err) => {
+                        if closed_for_thread.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let _ = emit_subscription_event(
+                            &on_event_for_thread,
+                            HerdrSubscriptionEvent::Error {
+                                subscription_id: subscription_id_for_thread.clone(),
+                                message: format!("events.subscribe read failed: {err}"),
+                            },
+                        );
+                        break;
+                    }
                 }
-                closed_for_thread.store(true, Ordering::SeqCst);
-            });
+            }
+            closed_for_thread.store(true, Ordering::SeqCst);
+        });
 
-            let subscription = Arc::new(EventSubscription {
-                closed,
-                shutdown: Mutex::new(Some(shutdown)),
-                reader: Mutex::new(Some(handle)),
-            });
+        let subscription = Arc::new(EventSubscription {
+            closed,
+            reader: Mutex::new(Some(handle)),
+        });
+        self.event_subscriptions
+            .lock()
+            .unwrap()
+            .insert(subscription_id.clone(), Arc::clone(&subscription));
+        if let Err(error) = emit_subscription_event(
+            &on_event,
+            HerdrSubscriptionEvent::Subscribed {
+                subscription_id: subscription_id.clone(),
+            },
+        ) {
+            drop(start_tx);
             self.event_subscriptions
                 .lock()
                 .unwrap()
-                .insert(subscription_id.clone(), Arc::clone(&subscription));
-            if let Err(error) = emit_subscription_event(
-                &on_event,
-                HerdrSubscriptionEvent::Subscribed {
-                    subscription_id: subscription_id.clone(),
-                },
-            ) {
-                drop(start_tx);
-                self.event_subscriptions
-                    .lock()
-                    .unwrap()
-                    .remove(&subscription_id);
-                release_event_subscription(&subscription);
-                return Err(error);
-            }
-            if start_tx.send(()).is_err() {
-                self.event_subscriptions
-                    .lock()
-                    .unwrap()
-                    .remove(&subscription_id);
-                release_event_subscription(&subscription);
-                return Err("events.subscribe reader failed to start".into());
-            }
-            Ok(subscription_id)
+                .remove(&subscription_id);
+            release_event_subscription(&subscription);
+            return Err(error);
         }
+        if start_tx.send(()).is_err() {
+            self.event_subscriptions
+                .lock()
+                .unwrap()
+                .remove(&subscription_id);
+            release_event_subscription(&subscription);
+            return Err("events.subscribe reader failed to start".into());
+        }
+        Ok(subscription_id)
     }
 
     pub fn events_release(&self, subscription_id: &str) -> Result<(), String> {
@@ -2739,10 +2713,6 @@ fn probe_binary_identity(binary: &Path) -> (Option<String>, Option<u32>) {
 
 fn release_event_subscription(subscription: &EventSubscription) {
     subscription.closed.store(true, Ordering::SeqCst);
-    #[cfg(unix)]
-    if let Some(stream) = subscription.shutdown.lock().unwrap().take() {
-        let _ = stream.shutdown(std::net::Shutdown::Both);
-    }
     if let Some(handle) = subscription.reader.lock().unwrap().take() {
         let _ = handle.join();
     }
@@ -3443,6 +3413,23 @@ const IMPLEMENTED_API_METHODS: &[&str] = &[
     "worktree.list",
 ];
 
+fn disable_live_socket_capabilities(caps: &mut HerdrCapabilities, reason: &str) {
+    clear_api_method_flags(&mut caps.api);
+    caps.api.reason = Some(reason.into());
+    caps.terminal.observe = false;
+    caps.terminal.control = false;
+    caps.terminal.takeover = false;
+    caps.terminal.input = false;
+    caps.terminal.resize = false;
+    caps.terminal.scroll = false;
+    caps.terminal.create = false;
+    caps.terminal.reason = Some(reason.into());
+    caps.events = HerdrEventsCapability {
+        status: HerdrEventsStatus::Unavailable,
+        reason: Some(reason.into()),
+    };
+}
+
 fn clear_api_method_flags(api: &mut HerdrApiCapability) {
     api.snapshot = false;
     api.ping = false;
@@ -3468,6 +3455,35 @@ fn clear_api_method_flags(api: &mut HerdrApiCapability) {
     api.events_subscribe = false;
     api.worktree_list = false;
     api.methods.clear();
+}
+
+fn apply_events_capability(
+    events: &mut HerdrEventsCapability,
+    socket_ready: bool,
+    has_events_subscribe: bool,
+    session_stopped: bool,
+) {
+    if socket_ready && has_events_subscribe {
+        *events = HerdrEventsCapability {
+            status: HerdrEventsStatus::Available,
+            reason: None,
+        };
+    } else if !has_events_subscribe {
+        *events = HerdrEventsCapability {
+            status: HerdrEventsStatus::Unavailable,
+            reason: Some("selected herdr schema lacks events.subscribe".into()),
+        };
+    } else if session_stopped {
+        *events = HerdrEventsCapability {
+            status: HerdrEventsStatus::Unavailable,
+            reason: Some("herdr session is not running".into()),
+        };
+    } else {
+        *events = HerdrEventsCapability {
+            status: HerdrEventsStatus::Unavailable,
+            reason: Some("herdr events.subscribe requires a running compatible session".into()),
+        };
+    }
 }
 
 fn apply_schema_method_flags(
@@ -3684,74 +3700,54 @@ fn api_request(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::net::UnixStream;
-        let mut stream = UnixStream::connect(socket_path)
-            .map_err(|e| format!("connect {socket_path} failed: {e}"))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| e.to_string())?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + LOCAL_IO_TIMEOUT;
+    let mut stream = connect_local_stream(socket_path, deadline)
+        .map_err(|e| format!("connect {socket_path} failed: {e}"))?;
+    let id = format!(
+        "yuzora:herdr:{}",
+        NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let req = serde_json::json!({
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    let mut line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
+    line.push('\n');
+    write_local_all_until(&mut stream, line.as_bytes(), deadline)
+        .map_err(|e| format!("write failed: {e}"))?;
 
-        let id = format!(
-            "yuzora:herdr:{}",
-            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let req = serde_json::json!({
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        let mut line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
-        line.push('\n');
-        stream
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("write failed: {e}"))?;
-
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-        match read_bounded_ndjson_line(&mut reader, &mut response) {
-            Ok(0) => {
-                let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-                return Err(HerdrProtocolError::EmptyResponse.into());
-            }
-            Ok(_) => {}
-            Err(error) => {
-                let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-                return Err(match error {
-                    BoundedNdjsonReadError::Protocol(protocol) => protocol.into(),
-                    BoundedNdjsonReadError::Io(io_error) => format!("read failed: {io_error}"),
-                });
-            }
+    let mut pending = Vec::new();
+    let response = match read_local_ndjson_line(
+        &mut stream,
+        &mut pending,
+        Some(deadline),
+        MAX_NDJSON_LINE_BYTES,
+    ) {
+        Ok(None) => return Err(HerdrProtocolError::EmptyResponse.into()),
+        Ok(Some(response)) => response,
+        Err(BoundedNdjsonReadError::Protocol(protocol)) => return Err(protocol.into()),
+        Err(BoundedNdjsonReadError::Io(io_error)) => {
+            return Err(format!("read failed: {io_error}"))
         }
-        if response.trim().is_empty() {
-            let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-            return Err(HerdrProtocolError::EmptyResponse.into());
-        }
-        let value: serde_json::Value =
-            serde_json::from_str(response.trim()).map_err(|e| format!("invalid api json: {e}"))?;
-        if let Err(error) = validate_json_complexity(&value) {
-            let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
-            return Err(error.into());
-        }
-        if let Some(err) = value.get("error") {
-            let code = err.get("code").and_then(|v| v.as_str()).unwrap_or("error");
-            let message = err
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error");
-            return Err(format!("{code}: {message}"));
-        }
-        Ok(value)
+    };
+    if response.trim().is_empty() {
+        return Err(HerdrProtocolError::EmptyResponse.into());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (socket_path, method, params);
-        Err("herdr public NDJSON socket is only supported on unix hosts".into())
+    let value: serde_json::Value =
+        serde_json::from_str(response.trim()).map_err(|e| format!("invalid api json: {e}"))?;
+    if let Err(error) = validate_json_complexity(&value) {
+        return Err(error.into());
     }
+    if let Some(err) = value.get("error") {
+        let code = err.get("code").and_then(|v| v.as_str()).unwrap_or("error");
+        let message = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("{code}: {message}"));
+    }
+    Ok(value)
 }
 
 fn parse_snapshot_response(response: serde_json::Value) -> Result<HerdrSnapshotResult, String> {
@@ -4852,6 +4848,67 @@ mod tests {
         assert_eq!(caps.events.status, HerdrEventsStatus::Unavailable);
         assert!(caps.events.reason.is_some());
         assert!(!caps.binary_source.available);
+        assert!(!caps
+            .events
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("only supported on unix hosts"));
+    }
+
+    #[test]
+    fn events_capability_is_available_for_compatible_running_schema() {
+        let mut events = HerdrEventsCapability {
+            status: HerdrEventsStatus::Unavailable,
+            reason: Some("unset".into()),
+        };
+        apply_events_capability(&mut events, true, true, false);
+        assert_eq!(events.status, HerdrEventsStatus::Available);
+        assert!(events.reason.is_none());
+
+        apply_events_capability(&mut events, true, false, false);
+        assert_eq!(events.status, HerdrEventsStatus::Unavailable);
+        assert_eq!(
+            events.reason.as_deref(),
+            Some("selected herdr schema lacks events.subscribe")
+        );
+
+        apply_events_capability(&mut events, false, true, true);
+        assert_eq!(events.status, HerdrEventsStatus::Unavailable);
+        assert_eq!(
+            events.reason.as_deref(),
+            Some("herdr session is not running")
+        );
+    }
+
+    #[test]
+    fn api_request_roundtrip_uses_local_stream_transport() {
+        use crate::herdr_transport::{bind_local_listener, unique_local_socket_path};
+        use interprocess::local_socket::traits::Listener as _;
+
+        let path = unique_local_socket_path("api-roundtrip");
+        let listener = bind_local_listener(&path).unwrap();
+        let advertised = path.to_string_lossy().into_owned();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut pending = Vec::new();
+            let _ = read_local_ndjson_line(
+                &mut stream,
+                &mut pending,
+                Some(Instant::now() + Duration::from_secs(2)),
+                MAX_NDJSON_LINE_BYTES,
+            );
+            write_local_all_until(
+                &mut stream,
+                b"{\"result\":{\"type\":\"pong\",\"version\":\"0.8.0\",\"protocol\":19}}\n",
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+        });
+        let value = api_request(&advertised, "ping", serde_json::json!({})).unwrap();
+        assert_eq!(value["result"]["protocol"], 19);
+        server.join().unwrap();
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -5914,7 +5971,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr-default","socket_path":"/tmp/herdr-fake.sock"}]}"#,
         );
         let mgr = HerdrManager::with_binary(binary);
-        let caps = mgr.capabilities();
+        let caps = mgr.discover_capabilities_for_session(None);
         assert!(caps.server.running);
         assert_eq!(caps.server.compatible, Some(true));
         assert!(!caps.api.snapshot);
@@ -5935,11 +5992,11 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         let binary = write_fake_herdr_with_sessions(
             dir.path(),
             r#"{"client":{"version":"0.0.0-fake","channel":"test","protocol":19,"binary":"FAKE"},"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":19,"compatible":true,"socket":"/tmp/herdr-fake.sock"},"update":{"restart_needed":false}}"#,
-            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.move","workspace.focus","workspace.create","session.ping"],"schemas":{"session.snapshot":{},"tab.create":{},"tab.move":{},"workspace.focus":{},"workspace.create":{}}}"#,
+            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.move","workspace.focus","workspace.create","session.ping","events.subscribe"],"schemas":{"session.snapshot":{},"tab.create":{},"tab.move":{},"workspace.focus":{},"workspace.create":{},"events.subscribe":{}}}"#,
             r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr-default","socket_path":"/tmp/herdr-fake.sock"}]}"#,
         );
         let mgr = HerdrManager::with_binary(binary);
-        let caps = mgr.capabilities();
+        let caps = mgr.discover_capabilities_for_session(None);
         assert!(caps.api.snapshot);
         assert!(caps.api.tab_create);
         assert!(caps.api.tab_move);
@@ -5949,7 +6006,48 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(caps.api.ping);
         assert!(caps.terminal.create);
         assert!(caps.terminal.control);
+        assert!(caps.api.events_subscribe);
+        assert_eq!(caps.events.status, HerdrEventsStatus::Available);
+        assert!(caps.events.reason.is_none());
         assert!(caps.api.reason.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capabilities_downgrade_when_live_socket_probe_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("missing-herdr.sock");
+        let status = format!(
+            r#"{{"client":{{"version":"0.8.0","channel":"test","protocol":19,"binary":"FAKE"}},"server":{{"status":"running","running":true,"version":"0.8.0","protocol":19,"compatible":true,"socket":"{}"}},"update":{{"restart_needed":false}}}}"#,
+            socket.display()
+        );
+        let sessions = format!(
+            r#"{{"sessions":[{{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr-default","socket_path":"{}"}}]}}"#,
+            socket.display()
+        );
+        let binary = write_fake_herdr_with_sessions(
+            dir.path(),
+            &status,
+            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","session.ping","events.subscribe"],"schemas":{"session.snapshot":{},"tab.create":{},"events.subscribe":{}}}"#,
+            &sessions,
+        );
+        let mgr = HerdrManager::with_binary(binary);
+        let caps = mgr.capabilities();
+
+        assert!(caps.server.running);
+        assert!(!caps.api.snapshot);
+        assert!(!caps.api.tab_create);
+        assert!(!caps.api.events_subscribe);
+        assert!(!caps.terminal.observe);
+        assert!(!caps.terminal.control);
+        assert!(!caps.terminal.create);
+        assert_eq!(caps.events.status, HerdrEventsStatus::Unavailable);
+        assert!(caps
+            .api
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("local socket probe failed"));
     }
 
     #[test]
@@ -6295,7 +6393,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             sessions,
         );
         let mgr = Arc::new(HerdrManager::with_binary(binary));
-        let caps = mgr.capabilities_for_session(Some("work"));
+        let caps = mgr.discover_capabilities_for_session(Some("work"));
         assert_eq!(caps.server.socket_path.as_deref(), Some("/tmp/work.sock"));
         assert!(caps.api.snapshot);
         assert!(caps.api.workspace_focus);
@@ -6655,7 +6753,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr-default","socket_path":"/tmp/herdr-fake.sock"}]}"#,
         );
         let mgr = HerdrManager::with_binary(binary);
-        let caps = mgr.capabilities();
+        let caps = mgr.discover_capabilities_for_session(None);
         assert!(caps.api.snapshot);
         assert!(caps.api.tab_create);
         assert!(!caps.api.workspace_rename);
@@ -6677,7 +6775,10 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             .layout_export(None, Some("tab_1".into()), None)
             .unwrap_err();
         assert!(
-            err.contains("unavailable") || err.contains("lacks") || err.contains("not running"),
+            err.contains("unavailable")
+                || err.contains("lacks")
+                || err.contains("not running")
+                || err.contains("socket probe failed"),
             "{err}"
         );
 
@@ -6877,7 +6978,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"/tmp/default.sock"}]}"#,
         );
         let mgr = HerdrManager::with_binary(binary);
-        let caps = mgr.capabilities_for_session(Some("default"));
+        let caps = mgr.discover_capabilities_for_session(Some("default"));
         assert!(!caps.api.worktree_list);
         assert!(!caps.api.methods.iter().any(|m| m == "worktree.list"));
         let err = mgr.worktree_list(Some("default"), None, None).unwrap_err();
@@ -6886,7 +6987,8 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             err.contains("unavailable")
                 || err.contains("not")
                 || err.contains("lacks")
-                || err.contains("worktree.list"),
+                || err.contains("worktree.list")
+                || err.contains("socket probe failed"),
             "{err}"
         );
     }
@@ -6902,7 +7004,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"/tmp/default.sock"}]}"#,
         );
         let mgr = HerdrManager::with_binary(binary);
-        let caps = mgr.capabilities_for_session(Some("default"));
+        let caps = mgr.discover_capabilities_for_session(Some("default"));
         assert!(!caps.api.tab_move);
         assert!(!caps.api.methods.iter().any(|m| m == "tab.move"));
         let err = mgr
@@ -6912,7 +7014,8 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             err.contains("unavailable")
                 || err.contains("not")
                 || err.contains("lacks")
-                || err.contains("tab.move"),
+                || err.contains("tab.move")
+                || err.contains("socket probe failed"),
             "{err}"
         );
     }

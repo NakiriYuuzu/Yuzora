@@ -42,6 +42,7 @@ import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useUpdateStore } from "@/state/updateStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { workspacePathForDisplay } from "@/lib/paths"
 import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
 import { SettingCard, Segmented, ToggleRow } from "./settingsPrimitives"
 import { HerdrSettingsSection } from "@/app/workbench/HerdrSettingsSection"
@@ -682,7 +683,7 @@ function SafetySettingsSection({
                 >
                   <div className="min-w-0">
                     <p className="break-all font-mono text-[12px] text-(--ink-1)">
-                      {workspace.canonicalPath}
+                      {workspacePathForDisplay(workspace.canonicalPath)}
                     </p>
                     <p className="mt-[2px] text-[11px] text-(--ink-3)">
                       {tw("settings.trustedWorkspaceGrantedAt", {
@@ -696,7 +697,7 @@ function SafetySettingsSection({
                     size="sm"
                     className="h-[26px] shrink-0 px-[8px] text-[11px]"
                     aria-label={tw("settings.revokeWorkspaceNamed", {
-                      path: workspace.canonicalPath,
+                      path: workspacePathForDisplay(workspace.canonicalPath),
                     })}
                     onClick={() => void onRevokeWorkspace(workspace.canonicalPath)}
                   >

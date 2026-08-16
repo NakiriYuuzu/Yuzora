@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { workspacePathForDisplay } from "@/lib/paths"
 import { useGitStore } from "@/state/gitStore"
 import { useOverlayPresence } from "@/state/overlayStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -79,7 +80,9 @@ export function WorkspaceTrustHost() {
                             <p className="mb-[4px] text-[11px] font-medium uppercase tracking-[0.04em] text-(--ink-3)">
                                 {t("workspaceTrust.workspaceLabel")}
                             </p>
-                            <p className="break-all font-mono text-(--ink-1)">{prompt.canonicalPath}</p>
+                            <p className="break-all font-mono text-(--ink-1)">
+                                {workspacePathForDisplay(prompt.canonicalPath)}
+                            </p>
                         </div>
                         {execute ? (
                             <div>

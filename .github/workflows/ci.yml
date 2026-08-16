@@ -110,6 +110,14 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
 
+      # Named-pipe connect/write/event seams are portable and must run on the
+      # Windows compiler job. This is not a substitute for real Herdr GUI
+      # acceptance on a Windows desktop.
+      - name: Herdr transport tests
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        run: cargo test --locked --lib herdr_ -- --test-threads=1
+
   # Release PRs must provide runnable installers before merge so the user can
   # complete platform validation. These are Actions artifacts only: no tag,
   # GitHub Release, updater signature, or publication happens from a PR.
