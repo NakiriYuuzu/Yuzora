@@ -163,6 +163,17 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify release candidate branch matches product version
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          VERSION="$(jq -er '.version' package.json)"
+          if [ "$HEAD_REF" != "release/v${VERSION}" ]; then
+            echo "::error::release candidate branch must be release/v${VERSION}, got ${HEAD_REF}"
+            exit 1
+          fi
+
       - name: Build unsigned release candidate
         shell: bash
         run: >-

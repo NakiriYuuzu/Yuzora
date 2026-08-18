@@ -103,6 +103,7 @@ export function EditorArea() {
                                     >
                                         <HerdrTerminalPage
                                             herdrSessionId={tab.herdrSessionId!}
+                                            runtimeTarget={tab.herdrRuntimeTarget}
                                             terminalId={tab.terminalId!}
                                             paneId={tab.paneId}
                                             herdrTabId={tab.herdrTabId}

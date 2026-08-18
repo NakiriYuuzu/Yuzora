@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: 全域可調整大小 Modal（預設 App 視窗 80%）</title>
+<style>
+  :root {
+    --paper: #f7f4ec;
+    --panel: #fffdf7;
+    --ink: #202a3a;
+    --muted: #687184;
+    --line: #d8d5ca;
+    --accent: #325d88;
+    --accent-soft: #dce9f3;
+    --ok: #2f6d4f;
+    --warn: #936420;
+    --risk: #9b3f46;
+    --shadow: 0 18px 50px rgba(28, 39, 54, .12);
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: light; background: var(--paper); }
+  body { margin: 0; color: var(--ink); background: var(--paper); font: 15px/1.65 ui-serif, Georgia, "Noto Serif TC", serif; }
+  main { width: min(1120px, calc(100% - 32px)); margin: 28px auto 64px; }
+  header, section { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 24px; margin: 16px 0; }
+  h1, h2, h3, h4 { font-family: ui-serif, Georgia, "Noto Serif TC", serif; line-height: 1.25; }
+  h1 { margin: 0 0 8px; font-size: clamp(26px, 4vw, 42px); color: var(--accent); }
+  h2 { margin-top: 0; color: var(--accent); border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+  h3 { margin-top: 24px; }
+  p { margin: 10px 0; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { background: #eef1f3; border-radius: 5px; padding: 1px 5px; font-size: .92em; }
+  pre { overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #182231; color: #eef5fb; }
+  table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; }
+  th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+  th { color: var(--accent); background: #f0f4f6; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 6px 0; }
+  details { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 10px 0; background: #fbfaf5; }
+  summary { cursor: pointer; font-weight: 700; }
+  .meta dl { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; }
+  .meta dt { color: var(--muted); }
+  .meta dd { margin: 0; overflow-wrap: anywhere; }
+  .lead { color: var(--muted); font-size: 17px; }
+  .callout { border-left: 5px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 14px 16px; }
+  .warning { border-left-color: var(--warn); background: #fff4d9; }
+  .risk { border-left-color: var(--risk); background: #fdebed; }
+  .ok { border-left-color: var(--ok); background: #e7f4ec; }
+  .tag { display: inline-block; border-radius: 999px; padding: 2px 8px; font: 700 12px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .existing { color: #4c5564; background: #eceef0; }
+  .new { color: #285a41; background: #dff1e7; }
+  .phase { border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 16px 0; }
+  .phase > h3 { margin-top: 0; }
+  .status { color: var(--accent); font-weight: 800; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding-left: 0; }
+  .loop { margin-top: 14px; padding: 12px 14px; border-radius: 8px; background: #eef4f7; color: var(--accent); }
+  .diagram { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 10px; align-items: center; }
+  .diagram > div { min-height: 76px; display: grid; place-items: center; text-align: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #f7fafb; font-family: ui-sans-serif, system-ui, sans-serif; }
+  .diagram .arrow { min-height: auto; border: 0; background: transparent; font-size: 24px; }
+  @media (max-width: 800px) {
+    .diagram { grid-template-columns: 1fr; }
+    .diagram .arrow { transform: rotate(90deg); }
+    header, section { padding: 18px; }
+    .meta dl { grid-template-columns: 1fr; }
+  }
+  @media print {
+    body { background: white; }
+    main { width: 100%; margin: 0; }
+    header, section { box-shadow: none; break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>全域可調整大小 Dialog Modal</h1>
+  <p class="lead">In-scope App DOM <code>Dialog</code> Modal（排除 Alert / AlertDialog）預設為目前 WebView 可視範圍的 <strong>80% × 80%</strong>，並讓使用者以滑鼠與鍵盤自訂每個 in-scope Modal 的大小。</p>
+  <details class="meta">
+    <summary>Metadata</summary>
+    <dl>
+      <dt>created</dt><dd>2026-08-12T07:03:31Z</dd>
+      <dt>modified</dt><dd>2026-08-12T07:03:31Z, 2026-08-12T07:26:13Z, 2026-08-12T08:01:16Z, 2026-08-12T08:30:55Z, 2026-08-12T08:59:57Z, 2026-08-12T09:16:30Z, 2026-08-12T09:24:10Z, 2026-08-12T09:44:53Z</dd>
+      <dt>commits</dt><dd>f994a3d</dd>
+      <dt>back refs</dt><dd>Scout runs 8ce08441, 3b386061, 7bf05e7f；<code>AGENTS.md</code>；shadcn Dialog / Resizable 文件</dd>
+      <dt>forward refs</dt><dd>待使用者確認後建立 implementation run</dd>
+    </dl>
+  </details>
+</header>
+
+<section id="decision">
+  <h2>待確認的基準決策</h2>
+  <div class="callout ok">
+    <strong>生效基準（使用者修正後）：</strong>涵蓋 App DOM <code>Dialog</code> Modal，包括小型確認框與表單；<strong>Alert / AlertDialog（含 AppDialogHost）不參與</strong> 80% 與可調整大小。仍排除 Popover、Menu、Drawer、原生 OS 對話框、瀏覽器 <code>prompt/confirm</code> 與 Preview iframe 對話框。
+  </div>
+  <ol>
+    <li>沒有儲存過尺寸時，in-scope Dialog Modal 實際寬高均為目前 WebView viewport 的 80%。</li>
+    <li>尺寸以穩定的 Modal ID 分別保存，重新開啟仍保留；不是所有 in-scope Modal 共用一個尺寸。</li>
+    <li>保存 viewport 比例，不保存固定 pixel；App 視窗改變時 Modal 會維持相同比例。</li>
+    <li>App 視窗縮小時只暫時 clamp，不能覆寫使用者偏好；視窗放大後恢復原偏好。</li>
+    <li>右邊界控制寬度、下邊界控制高度、右下角控制兩者；邊界支援 pointer capture 與鍵盤方向鍵。</li>
+    <li><kbd>Home</kbd> 或雙擊 resize handle，將該 in-scope Modal 重設為 80% × 80%。</li>
+    <li>最大尺寸保留每側 16px 安全距離；最小尺寸由共用預設與個別 Modal 覆寫共同決定。</li>
+    <li><strong>Alert / AlertDialog（含 AppDialogHost）維持 compact content-sized，不套用 80%、resize handles 或 size persistence。</strong></li>
+  </ol>
+  <div class="callout warning">
+    <strong>UX 代價：</strong>in-scope Dialog 的確認框、密碼框、文字輸入框也會變成 80% 視窗，內容周圍會有大量留白。Alert / AlertDialog 則維持 compact，不套用此代價。<span class="tag existing">historical superseded</span> 早期「所有 Modal」字面需求已被使用者修正覆蓋。
+  </div>
+</section>
+
+<section id="purpose">
+  <h2>目的與成功條件</h2>
+  <p>建立單一、可測試、可持久化的 <strong>Dialog Modal</strong> 尺寸契約（排除 Alert / AlertDialog），取代目前散落在 in-scope Dialog callsite 的 <code>400px</code>、<code>620px</code>、<code>720px</code>、<code>1040px</code>、<code>80vh</code>、<code>88vh</code> 等硬編碼。</p>
+  <ul>
+    <li>首次開啟任一 in-scope Dialog Modal：寬度 = viewport 80%，高度 = viewport 80%。</li>
+    <li>使用者可調整寬、高或兩者，過程不破壞 Radix focus trap、Escape、outside click 與 nested dialog。</li>
+    <li>每個 Modal 的自訂尺寸獨立保存，重啟 App 後仍可恢復。</li>
+    <li>所有內容列表與閱讀區使用既有 shadcn <code>ScrollArea</code>；CodeMirror、xterm 等既有例外不更動。</li>
+    <li>Alert / AlertDialog（含 AppDialogHost）維持 compact content-sized，不套用 80% 與 resize handles。</li>
+    <li>Popup、Popover、Context Menu、Terminal Drawer、Tauri native dialog 的尺寸不受影響。</li>
+    <li>不新增第三方 resize 套件；現有 shadcn <code>Resizable</code> 是 panel-group 元件，不適合外層 Modal 邊界。</li>
+  </ul>
+</section>
+
+<section id="architecture">
+  <h2>方案架構</h2>
+  <div class="diagram" aria-label="Modal sizing data flow">
+    <div>Modal stable ID</div><div class="arrow">→</div><div>dialog size model / storage</div><div class="arrow">→</div><div>shared Radix Dialog surface</div>
+    <div>window resize</div><div class="arrow">→</div><div>ratio clamp</div><div class="arrow">→</div><div>inline width / height</div>
+    <div>pointer / keyboard</div><div class="arrow">→</div><div>resize handles</div><div class="arrow">→</div><div>commit per-modal ratio</div>
+  </div>
+  <h3>資料模型</h3>
+  <pre><code>type DialogSizeId =
+  | "command-palette" | "symbol-picker" | "settings"
+  | "settings-install" | "database-recovery" | "database-connection"
+  | "ssh-host" | "ssh-password" | "askpass"
+  | "unsaved-confirmation" | "text-input" | "external-change"
+  | "git-rollback" | "git-diff" | "herdr-agent-inspector"
+// 15 IDs. Alert/app-dialog is intentionally excluded.
+
+type DialogSizePreference = {
+  widthRatio: number
+  heightRatio: number
+}
+
+type DialogSizeStorageV1 = {
+  version: 1
+  sizes: Partial&lt;Record&lt;DialogSizeId, DialogSizePreference&gt;&gt;
+}</code></pre>
+  <p>localStorage key 建議使用 <code>yuzora.dialog-sizes.v1</code>。寫入只發生在 pointer release、鍵盤 resize 完成或 reset，避免 drag 過程高頻寫入。</p>
+  <h3>共用 API</h3>
+  <pre><code>&lt;DialogContent
+  resizeId="settings"
+  minSize={dialogMinSize(520, 320)}
+  resizeLabel={t("dialog.resize")}
+  resetSizeLabel={t("dialog.resetSize")}
+&gt;
+  ...
+&lt;/DialogContent&gt;</code></pre>
+  <p><code>DialogContent</code> 必須要求穩定 <code>resizeId</code>，使新 Dialog Modal 無法在 TypeScript 編譯下忘記套用契約。直接使用 Radix 的 Git Diff Modal 則共用同一 sizing hook。<strong>Override：</strong><code>AlertDialogContent</code> 維持 compact content-sized，不暴露 <code>resizeId</code> / handles。</p>
+</section>
+
+<section id="scope">
+  <h2>Modal 完整範圍</h2>
+  <table>
+    <thead><tr><th>ID</th><th>Modal</th><th>檔案</th><th>目前尺寸</th><th>遷移重點</th></tr></thead>
+    <tbody>
+      <tr><td><code>command-palette</code></td><td>Command Palette</td><td><code>src/app/workbench/CommandPalette.tsx</code></td><td>620px / 88vw</td><td>結果 ScrollArea 改為 <code>min-h-0 flex-1</code></td></tr>
+      <tr><td><code>symbol-picker</code></td><td>Symbol Picker</td><td><code>src/workbench/SymbolPicker.tsx</code></td><td>620px / 88vw</td><td>移除 398px 固定結果高度</td></tr>
+      <tr><td><code>settings</code></td><td>Settings</td><td><code>src/app/workbench/SettingsDialog.tsx</code></td><td>720×556px</td><td>保留 sidebar，內容維持 ScrollArea</td></tr>
+      <tr><td><code>settings-install</code></td><td>Install / Relaunch</td><td><code>SettingsDialog.tsx</code></td><td>max 440px</td><td>驗證 nested focus / Escape</td></tr>
+      <tr><td><code>database-recovery</code></td><td>DB Recovery Credential</td><td><code>src/app/workbench/DatabaseNavContent.tsx</code></td><td>max 400px</td><td>欄位區補 ScrollArea</td></tr>
+      <tr><td><code>database-connection</code></td><td>New / Edit / Reconnect DB</td><td><code>DatabaseNavContent.tsx</code></td><td>max 440px</td><td>表單 header/body/footer 分層</td></tr>
+      <tr><td><code>ssh-host</code></td><td>New / Edit SSH Host</td><td><code>src/app/workbench/SshNavContent.tsx</code></td><td>max 440px</td><td>表單內容可捲動</td></tr>
+      <tr><td><code>ssh-password</code></td><td>SSH Password</td><td><code>SshNavContent.tsx</code></td><td>max 400px</td><td>保留 initial focus</td></tr>
+      <tr><td><code>askpass</code></td><td>Git Askpass</td><td><code>src/workbench/AskpassHost.tsx</code></td><td>max 440px</td><td>保留 queue 與 fingerprint ScrollArea</td></tr>
+      <tr><td><code>—</code></td><td>Generic App Alert（excluded）</td><td><code>src/workbench/AppDialogHost.tsx</code></td><td>max 420px compact</td><td><strong>使用者修正：不參與 80%/resize</strong>；維持 AlertDialog content-sized</td></tr>
+      <tr><td><code>unsaved-confirmation</code></td><td>Unsaved Confirmation</td><td><code>src/workbench/ConfirmDialogHost.tsx</code></td><td>max 420px</td><td>cancel semantics 不變</td></tr>
+      <tr><td><code>text-input</code></td><td>Shared Text Input</td><td><code>src/workbench/TextInputDialogHost.tsx</code></td><td>max 420px</td><td>保留 submit/null contract</td></tr>
+      <tr><td><code>external-change</code></td><td>External Change Resolver</td><td><code>src/workbench/ExternalChangeResolver.tsx</code></td><td>80vh / 90vw</td><td>CodeMirror merge host 保持 library overflow 例外</td></tr>
+      <tr><td><code>git-rollback</code></td><td>Git Rollback</td><td><code>src/workbench/git/GitRollbackDialog.tsx</code></td><td>max 480px</td><td>target list 保留 ScrollArea</td></tr>
+      <tr><td><code>git-diff</code></td><td>Git Diff Viewer</td><td><code>src/workbench/git/DiffModal.tsx</code></td><td>1040px × 88vh</td><td>直接 Radix、無 Portal；獨立接 sizing hook</td></tr>
+      <tr><td><code>herdr-agent-inspector</code></td><td>Herdr Agent Inspector</td><td><code>src/app/workbench/HerdrAgentInspector.tsx</code></td><td>720px / 86vh</td><td>目前未找到 production mount；先完成契約以防掛載</td></tr>
+    </tbody>
+  </table>
+  <p><strong>明確排除：</strong>Alert / AlertDialog（含 AppDialogHost）、<code>ProjectEditorPopover</code>、Branch Popover、Context Menu、Dropdown/HoverCard、Terminal Drawer、inline delete confirmation、Tauri plugin-dialog、<code>window.prompt/confirm</code>、Preview iframe modals。In-scope Dialog IDs 共 <strong>15</strong> 個。</p>
+</section>
+
+<section id="files" class="files">
+  <h2>相關檔案</h2>
+  <h3>新增</h3>
+  <ul>
+    <li><span class="tag new">new</span> <code>src/lib/dialogSize.ts</code> — 純 sizing math、schema 驗證、clamp、storage migration。</li>
+    <li><span class="tag new">new</span> <code>src/hooks/useResizableDialogSize.ts</code> — viewport subscription、pointer/keyboard resize、commit/reset。</li>
+    <li><span class="tag new">new</span> <code>src/components/ui/dialog-resize-handles.tsx</code> — Dialog 專用的右、下、右下 resize affordance。shadcn registry 沒有可調整外框 Dialog；現有 Resizable 只處理 panel group，因此此自訂 primitive 有明確必要性。</li>
+    <li><span class="tag new">new</span> <code>src/lib/dialogSize.test.ts</code> — 純函式與 storage 測試。</li>
+    <li><span class="tag new">new</span> <code>src/components/ui/dialog.test.tsx</code> — 共用 Dialog 行為測試。</li>
+  </ul>
+  <h3>修改</h3>
+  <ul>
+    <li><span class="tag existing">existing</span> <code>src/components/ui/dialog.tsx</code> — 接上 resize API；非尺寸行為維持 Radix。</li>
+    <li><span class="tag existing">existing</span> <code>src/components/ui/alert-dialog.tsx</code> — <strong>override：</strong>保持 compact content-sized，不接 resize API。</li>
+    <li><span class="tag existing">existing</span> 上表 12 個 Modal host 檔案 — 指派 stable ID、移除衝突硬編碼、整理 flex/ScrollArea。</li>
+    <li><span class="tag existing">existing</span> <code>src/lib/i18n/locales/{en,zh-TW}/common.json</code> — resize/reset 無障礙文案。</li>
+    <li><span class="tag existing">existing</span> <code>src/test/setup.ts</code> — 可觸發 callback 的 ResizeObserver/viewport test helper（若個別測試無法局部建立）。</li>
+  </ul>
+  <div class="callout warning"><strong>工作樹提醒：</strong>目前 <code>package.json</code>、<code>bun.lock</code> 已有既存修改，<code>alert-dialog.tsx</code> 為 untracked。實作不得覆寫或整理這些不屬於本需求的變更，也不需要新增 resize dependency。</div>
+</section>
+
+<section id="phases">
+  <h2>實作階段</h2>
+  <p><strong>執行規則：</strong>待使用者確認後才開始；單一 writer；每個 phase 先補測試，再實作，再跑 focused validation。狀態均從 <code>[]</code> 開始。</p>
+
+  <div class="phase">
+    <h3><code class="status">[x]</code> Phase 1：鎖定契約與純尺寸模型</h3>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 建立 stable Modal IDs 與 versioned storage schema（現行為 15 個 Dialog IDs；Alert 已排除）。</li>
+      <li><code class="status">[x]</code> 實作 default 0.8 ratio、16px margin、min/max clamp、corrupt storage fallback。</li>
+      <li><code class="status">[x]</code> 視窗縮小只 clamp render value，不回寫 preference。</li>
+      <li><code class="status">[x]</code> Reset 僅刪除該 ID，回到 0.8/0.8。</li>
+    </ul>
+    <h4>Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> <code>bun run test src/lib/dialogSize.test.ts</code> — 比例、clamp、migration、corrupt data、reset。</li>
+    </ul>
+    <div class="loop">🔁 純尺寸模型未完全通過前，不進入 UI integration。</div>
+  </div>
+
+  <div class="phase">
+    <h3><code class="status">[x]</code> Phase 2：建立共用可調整 Dialog surface</h3>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 實作 viewport listener，初始與 resize 後皆從比例計算 pixel 尺寸。</li>
+      <li><code class="status">[x]</code> 實作右、下、右下 pointer handles；使用 pointer capture，避免游標離開 handle 中斷。</li>
+      <li><code class="status">[x]</code> 右/下 handle 可 focus，方向鍵每次調整 8px，Shift+方向鍵調整 32px；提供 ARIA min/max/current。</li>
+      <li><code class="status">[x]</code> <kbd>Home</kbd> 與雙擊 reset；拖曳時不觸發 outside click 或意外關閉。</li>
+      <li><code class="status">[x]</code> <code>DialogContent</code> 接入 resizable 契約；<code>AlertDialogContent</code> 維持 compact（使用者修正 override）。</li>
+      <li><code class="status">[x]</code> 保留 Radix portal、focus trap、Escape、outside click、nested modal 與 animation。</li>
+    </ul>
+    <h4>Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> <code>bun run test src/components/ui/dialog.test.tsx</code> — 80% 初始、pointer/keyboard、clamp、reset、dismiss、focus。</li>
+      <li><code class="status">[x]</code> <code>bun run test src/components/ui/scroll-area.test.tsx</code> — 共用 ScrollArea 不退化。</li>
+    </ul>
+    <div class="loop">🔁 共用 primitive 不得用泛用 <code>overflow-auto</code> 取代 ScrollArea。</div>
+  </div>
+
+  <div class="phase">
+    <h3><code class="status">[x]</code> Phase 3：遷移所有 in-scope Dialog callsites（排除 Alert / AlertDialog）</h3>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 為 Command Palette、Symbol Picker、Settings、DB、SSH、Askpass、generic Dialog hosts、External Resolver、Rollback、Herdr Inspector 指派 stable ID。<strong>不遷移 AlertDialog / AppDialogHost。</strong></li>
+      <li><code class="status">[x]</code> 移除與新 inline dimensions 衝突的固定 width/height/max classes。</li>
+      <li><code class="status">[x]</code> 內容型 Modal 使用 <code>flex min-h-0 flex-col</code>，header/footer 固定，body 使用 shadcn <code>ScrollArea</code>。</li>
+      <li><code class="status">[x]</code> Command/Symbol list 與 Herdr output 改為消耗可用高度，不再固定 398px/280px。</li>
+      <li><code class="status">[x]</code> DB/SSH 等長表單在縮小後仍可操作最後欄位與 action buttons。</li>
+      <li><code class="status">[x]</code> Nested Settings install dialog 驗證 resize/focus 互不污染。</li>
+    </ul>
+    <h4>Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> <code>bun run test src/workbench/ConfirmDialogHost.test.tsx src/workbench/TextInputDialogHost.test.tsx src/workbench/askpassHost.test.tsx src/workbench/externalChangeResolver.test.tsx src/workbench/git/GitRollbackDialog.test.tsx</code></li>
+      <li><code class="status">[x]</code> <code>bun run test src/app/workbench/commandPalette.test.tsx src/workbench/symbolPicker.test.tsx src/app/workbench/databaseNavContent.test.tsx src/app/workbench/sshNavContent.test.tsx src/app/workbench/HerdrAgentInspector.test.tsx</code></li>
+      <li><code class="status">[x]</code> Settings 各 section 與 updates focused tests 全數通過。</li>
+    </ul>
+    <div class="loop">🔁 任何縮小後不可達的欄位或 action 都視為 blocker。</div>
+  </div>
+
+  <div class="phase">
+    <h3><code class="status">[x]</code> Phase 4：遷移 Git Diff 特例</h3>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 保留 DiffModal 不使用 Portal、absolute overlay 與 AppShell 內 z-order 的既有設計。</li>
+      <li><code class="status">[x]</code> 以 <code>git-diff</code> 接同一 hook，替換 1040px × 88vh 硬編碼。</li>
+      <li><code class="status">[x]</code> 保留左側 file ScrollArea、DiffView 自有 scrolling 與 autofocus exception。</li>
+      <li><code class="status">[x]</code> 確認 overlay click、Escape、mode toggle、file switching 不受 resize handle 影響。</li>
+    </ul>
+    <h4>Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> <code>bun run test src/workbench/git/diffModal.test.tsx src/state/diffModalStore.test.ts</code></li>
+    </ul>
+    <div class="loop">🔁 不為了共用而破壞 DiffModal 的 in-tree overlay 邊界。</div>
+  </div>
+
+  <div class="phase">
+    <h3><code class="status">[x]</code> Phase 5：整體驗證與 fresh-context review</h3>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 跑 focused modal suite + lint/typecheck/build；reviewer 接受後已補齊 Settings/DB/SSH/handle/keyboard/ratio 修正。</li>
+      <li><code class="status">[x]</code> Fresh reviewer 最終針對性複審 PASS；latest recovery layout 與 active-drag viewport clamp 均確認修正。</li>
+      <li><code class="status">[x]</code> Computer-use / Tauri 驗收：fresh process 的 Settings、Command Palette、Database AX splitter 均為 1440×851（1800×1064 viewport 的 80%）；Command input focus、PostgreSQL 長表單與 footer 可見。座標拖曳仍因工具回報 synthetic/unverified，保留為 residual gap。</li>
+      <li><code class="status">[x]</code> 最終 diff 僅包含此需求與對應測試；不得 stage、commit 或 push。</li>
+    </ul>
+    <h4>Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> <code>bun run lint</code> — 0 errors</li>
+      <li><code class="status">[x]</code> <code>bun run typecheck</code></li>
+      <li><code class="status">[x]</code> <code>bun run test</code> — latest final-findings pass: full suite green (150 files / 1949 tests); focused modal suite green；fresh targeted final review PASS。</li>
+      <li><code class="status">[x]</code> <code>bun run build</code></li>
+      <li><code class="status">[x]</code> <code>git diff --check</code></li>
+    </ul>
+    <div class="loop">✅ Fresh final review PASS；computer-use 已確認 fresh Tauri 的 80% 尺寸與主要內容可達。Real pointer coordinate drag 因 Orca synthetic input 未能成為通過證據，列為 residual validation gap。</div>
+  </div>
+</section>
+
+<section id="acceptance">
+  <h2>驗收矩陣</h2>
+  <table>
+    <thead><tr><th>情境</th><th>期望</th><th>證據</th></tr></thead>
+    <tbody>
+      <tr><td>首次開啟</td><td>每個 in-scope Dialog Modal 為 viewport 80% × 80%</td><td>純 math + component class/style contract</td></tr>
+      <tr><td>Pointer resize</td><td>in-scope Dialog 寬/高/雙軸可調，離開 handle 仍持續，release 後保存</td><td>pointer capture tests</td></tr>
+      <tr><td>Keyboard resize</td><td>handle 可 focus，方向鍵調整，ARIA value 更新</td><td>keyboard/a11y tests</td></tr>
+      <tr><td>App window shrink/grow</td><td>暫時 clamp，長大後恢復偏好</td><td>viewport helper tests</td></tr>
+      <tr><td>Reset</td><td>Home/雙擊只重設目前 in-scope Modal 到 80%</td><td>storage isolation tests</td></tr>
+      <tr><td>Reopen/restart</td><td>每個 in-scope Modal 獨立保留尺寸</td><td>localStorage hydration tests</td></tr>
+      <tr><td>Long content</td><td>欄位、列表、footer 都可抵達</td><td>ScrollArea/flex host tests</td></tr>
+      <tr><td>Nested modal</td><td>父 Settings 與子確認框尺寸、focus、Escape 各自獨立</td><td>settings updates test</td></tr>
+      <tr><td>Dismissal</td><td>Escape/outside semantics 與目前一致</td><td>host behavior tests</td></tr>
+      <tr><td>Alert / AlertDialog</td><td>維持 compact content-sized，無 80%、handles 或 size persistence；長 error 可斷行/捲動</td><td>alert-dialog + AppDialogHost tests</td></tr>
+      <tr><td>Out-of-scope overlays</td><td>Alert/Popover/Menu/Drawer/native dialogs 尺寸不變</td><td>regression smoke</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="risks">
+  <h2>風險與控制</h2>
+  <ul>
+    <li><strong>80% 小型 Dialog 確認框過大：</strong>in-scope Dialog 產品決策；Alert / AlertDialog 則維持 compact content-size。</li>
+    <li><strong>Radix focus/dismiss 退化：</strong>resize handle 置於 Content 內，所有 pointer event 必須阻止被判定為 outside interaction。</li>
+    <li><strong>jsdom 不計算真實 vw/vh：</strong>單元測試驗證 math 與 inline style；真實 Tauri 視覺驗收需另獲 E2E 同意。</li>
+    <li><strong>內容 overflow：</strong>逐 host 使用 ScrollArea，禁止在共用 DialogContent 上直接加 bare <code>overflow-auto</code>。</li>
+    <li><strong>儲存損毀：</strong>schema validator 遇到 NaN、Infinity、負值、未知 version 時回到 0.8，不讓 Dialog 無法顯示。</li>
+    <li><strong>Preview native child webview z-order：</strong><code>overlayStore</code> 目前未涵蓋所有 local modal；這是 scout 發現的既存缺口。除非驗證證明本需求因此不可用，先記錄為獨立 follow-up，避免擴張 scope。</li>
+    <li><strong>dirty worktree：</strong>實作前記錄 baseline；不可還原使用者既存變更。</li>
+  </ul>
+</section>
+
+<section id="questionables">
+  <h2>請確認</h2>
+  <details open>
+    <summary>Q1 — 小型確認框與表單是否也必須強制 80%？</summary>
+    <p><strong>現行答案（使用者修正後）：in-scope Dialog 是；Alert / AlertDialog 否。</strong> Dialog 確認框/表單維持 80% 可調整；Alert / AlertDialog（含 AppDialogHost）維持 compact content-sized。若再縮 Dialog scope 只涵蓋內容型 Modal，則會變成 Settings、Command Palette、Symbol Picker、External Resolver、Git Diff、Herdr Inspector 等集合。</p>
+  </details>
+  <details open>
+    <summary>Q2 — 自訂尺寸是否需要跨 reopen / App restart 保存？</summary>
+    <p><strong>本計畫預設：每個 Modal 分別永久保存。</strong>若只需本次開啟有效，可移除 storage phase，實作量與風險會顯著下降。</p>
+  </details>
+  <details open>
+    <summary>Q3 — 是否接受「右邊＋下邊＋右下角」並支援鍵盤的 resize UI？</summary>
+    <p><strong>本計畫預設：接受。</strong>不採 native CSS <code>resize: both</code>，因為其鍵盤可及性、持久化 callback 與 WebView 一致性不足。</p>
+  </details>
+  <details>
+    <summary>Q4 — dormant Herdr Agent Inspector 是否納入？</summary>
+    <p><strong>本計畫預設：納入 source contract。</strong>即使目前沒有 production mount，也會在掛載時符合相同規則。</p>
+  </details>
+  <details>
+    <summary>Q5 — 80% 是 WebView 內容區，還是包含 native window decoration？</summary>
+    <p><strong>本計畫預設：WebView CSS viewport（<code>window.innerWidth/innerHeight</code>）。</strong>這是 DOM Modal 可可靠量測且跨平台一致的「App 可視內容區」。</p>
+  </details>
+</section>
+
+<section id="notes">
+  <h2>不在本計畫內</h2>
+  <ul>
+    <li>不調整 Tauri 主視窗本身大小。</li>
+    <li>不新增拖動 Modal 位置；Modal 仍維持置中。</li>
+    <li>不改 Alert / AlertDialog、Popover、Sheet、Drawer、Menu、Terminal drawer 的 compact / non-resizable 行為。</li>
+    <li>不替換 Radix Dialog，也不安裝新的 resize library。</li>
+    <li>不順手修正 overlayStore、release、Herdr 或其他 scout findings，除非它們直接阻擋本功能。</li>
+    <li>不在未取得本次對話明確同意前執行 browser/E2E 工具。</li>
+    <li>不執行 <code>git add</code>、<code>git commit</code>、<code>git push</code>。</li>
+  </ul>
+</section>
+
+<section id="amendments">
+  <h2>Amendments</h2>
+  <p>Append-only history after first execution.</p>
+    <details open>
+      <summary>2026-08-12T08:01:16Z — Review-fix pass: honest Phase 5 + accepted findings</summary>
+      <p>Applied accepted fresh-review findings: Settings sidebar ScrollArea, DB/SSH form body ScrollArea, in-bounds visible resize handles, exact 8/32 keyboard deltas, removed 5% preference floor. Corrected Phase 5 markers: fresh review and computer-use remain pending; full <code>bun run test</code> remains failed due to baseline dirty-worktree tests.</p>
+    </details>
+    <details open>
+      <summary>2026-08-12T08:30:55Z — Second-review fix: full-precision ratios + AppDialog ScrollArea</summary>
+      <p>Removed four-decimal ratio quantization so 280×180 persists on a 10,000,000 viewport and keyboard steps stay exact 8/32px at adversarial widths 10,128 / 10,094. AppDialogHost now keeps title fixed, long description in shadcn ScrollArea, and a shrink-0 footer. Fresh review / computer-use remain parent-owned pending; full suite is not marked passed.</p>
+    </details>
+    <details open>
+      <summary>2026-08-12T08:59:57Z — Final accepted findings: recovery layout + drag/viewport clamp</summary>
+      <p>database-recovery modal now uses fixed header, shadcn ScrollArea body, and shrink-0 footer so 280×180 remains usable. Active pointer drags clamp transient/last size when the viewport shrinks before release, so ARIA and persisted ratios cannot exceed the new max. Fresh final review and real pointer geometry remain parent-owned; this amendment does not claim computer-use verification.</p>
+    </details>
+    <details open>
+      <summary>2026-08-12T09:16:30Z — Final review PASS + fresh Tauri computer-use</summary>
+      <p>Fresh targeted reviewer reported no blocker or should-fix findings and explicitly marked the database-recovery constrained layout and shrink-during-active-drag fixes as FIXED. On a newly restarted Tauri process, Orca accessibility reported Settings, Command Palette, and Database modal splitters at 1440×851 for an 1800×1064 window, with Command focus and PostgreSQL long-form/footer reachability intact. Real pointer-coordinate drag remains synthetic/unverified and is retained as the only notable UI validation gap.</p>
+    </details>
+    <details open>
+      <summary>2026-08-12T09:24:10Z — USER CORRECTION OVERRIDE: exclude Alert / AlertDialog</summary>
+      <p><strong>Newer override of earlier scope that treated AlertDialog/AppDialog as resizable.</strong> User stated alerts must not participate. <code>AlertDialogContent</code> restored to compact content-sized shadcn behavior with no <code>resizeId</code>, sizing hook, handles, or persisted size. <code>app-dialog</code> removed from <code>DIALOG_SIZE_IDS</code> (16 → 15 Dialog IDs). <code>AppDialogHost</code> remains AlertDialog; long messages may use a bounded <code>max-h-[40vh]</code> ScrollArea only. Ordinary Dialog/Modal 80% resize behavior is unchanged.</p>
+    </details>
+    <details open>
+      <summary>2026-08-12T09:44:53Z — Alert exclusion review fix: wrapping + plan consistency</summary>
+      <p>Accepted review findings: (1) long unbroken runtime/OS error tokens in compact AppDialogHost now use <code>break-words</code> / <code>overflow-wrap:anywhere</code> so vertical ScrollArea does not hide horizontal overflow; (2) current operational plan sections (headline/lead, decisions, Phase 3, acceptance matrix, Q1, notes) no longer imply AlertDialog is 80%-resizable. Historical amendments remain append-only; earlier “all modals / AlertDialog callsites” wording is superseded by the user correction.</p>
+    </details>
+</section>
+</main>
+</body>
+</html>

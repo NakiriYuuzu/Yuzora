@@ -1,7 +1,11 @@
 import { create } from "zustand"
 import type { DocumentLineEnding } from "../lib/types"
-import type { HerdrSnapshot } from "../lib/herdrTypes"
+import type { HerdrRuntimeTarget, HerdrSnapshot } from "../lib/herdrTypes"
 import { herdrPagePath, isHerdrPagePath } from "../lib/herdrPages"
+import {
+    normalizeHerdrRuntimeTarget,
+    sameHerdrRuntimeTarget
+} from "../lib/herdrRuntime"
 import {
     isFileTab,
     isMarkdownPreviewForSource,
@@ -14,7 +18,7 @@ import {
 } from "../lib/markdownPreviewTab"
 import { rebasePath, workspacePathBasename } from "../lib/paths"
 import {
-    herdrPageMatchesSnapshotSession,
+    herdrPageMatchesSnapshotRuntime,
     hydrateFocusedSpaceHerdrPages,
     moveItemToIndex,
     reorderProjectedSlots
@@ -44,6 +48,8 @@ export interface TabInfo {
     /** Only for kind === "markdown-preview"; canonical source file path. */
     sourcePath?: string
     herdrSessionId?: string
+    /** Missing persisted value is a legacy Native page. */
+    herdrRuntimeTarget?: HerdrRuntimeTarget | null
     terminalId?: string
     herdrTabId?: string | null
     /** Owning Herdr Space/workspace identity for selected-Space tab projection. */
@@ -123,6 +129,7 @@ interface WorkspaceState {
     /** Open or focus a Herdr terminal page. Dedupes by (session, tabId) when available. */
     openHerdrTerminalPage: (args: {
         herdrSessionId: string
+        runtimeTarget?: HerdrRuntimeTarget | null
         terminalId: string
         title?: string
         paneId?: string | null
@@ -675,16 +682,26 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 next.forEach((tab, index) => {
                     if (tab.kind !== "herdr-terminal" || !tab.herdrTabId) return
                     if (
-                        !herdrPageMatchesSnapshotSession(
+                        tab.herdrRuntimeTarget === undefined &&
+                        sameHerdrRuntimeTarget(tab.herdrRuntimeTarget, snapshot.runtimeTarget)
+                    ) {
+                        next[index] = { ...tab, herdrRuntimeTarget: normalizeHerdrRuntimeTarget(snapshot.runtimeTarget) }
+                        tab = next[index]
+                        changed = true
+                    }
+                    if (
+                        !herdrPageMatchesSnapshotRuntime(
                             tab.herdrSessionId,
+                            tab.herdrRuntimeTarget,
                             snapshot.herdrSessionId,
+                            snapshot.runtimeTarget,
                             defaultSessionName
                         )
                     ) {
                         return
                     }
                     const spaceId =
-                        tab.herdrWorkspaceId ?? workspaceByTabId.get(tab.herdrTabId)
+                        tab.herdrWorkspaceId ?? workspaceByTabId.get(tab.herdrTabId!)
                     if (!spaceId) return
                     const indices = indicesBySpace.get(spaceId) ?? []
                     indices.push(index)
@@ -907,6 +924,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     hasMarkdownPreview: (sourcePath) => findMarkdownPreview(get().groups, sourcePath) !== null,
     openHerdrTerminalPage: ({
         herdrSessionId,
+        runtimeTarget,
         terminalId,
         title,
         paneId,
@@ -915,7 +933,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         groupIndex
     }) =>
         set((s) => {
-            const path = herdrPagePath(herdrSessionId, terminalId)
+            const resolvedRuntimeTarget = normalizeHerdrRuntimeTarget(runtimeTarget)
+            const path = herdrPagePath(herdrSessionId, terminalId, resolvedRuntimeTarget)
             const tabId = herdrTabId?.trim() || null
             let existingGroupIndex = -1
             let existingPath: string | null = null
@@ -924,6 +943,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 for (const tab of group.tabs) {
                     if (tab.kind !== "herdr-terminal") continue
                     if (tab.herdrSessionId !== herdrSessionId) continue
+                    if (!sameHerdrRuntimeTarget(tab.herdrRuntimeTarget, resolvedRuntimeTarget)) continue
                     if (tabId && tab.herdrTabId && tab.herdrTabId === tabId) {
                         existingGroupIndex = gi
                         existingPath = tab.path
@@ -965,6 +985,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                                                   : tab.herdrWorkspaceId ?? null,
                                           kind: "herdr-terminal" as const,
                                           herdrSessionId,
+                                          herdrRuntimeTarget: resolvedRuntimeTarget,
                                           // Keep original path identity; refresh live metadata.
                                           terminalId: tab.terminalId ?? terminalId
                                       }
@@ -986,6 +1007,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 externallyModified: false,
                 kind: "herdr-terminal",
                 herdrSessionId,
+                herdrRuntimeTarget: resolvedRuntimeTarget,
                 terminalId,
                 herdrTabId: tabId,
                 herdrWorkspaceId: herdrWorkspaceId ?? null,

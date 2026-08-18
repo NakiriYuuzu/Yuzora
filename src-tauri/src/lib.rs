@@ -16,6 +16,7 @@ pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
 mod herdr_limits;
+pub mod herdr_runtime;
 pub mod herdr_service;
 mod herdr_transport;
 pub mod logging;
@@ -361,6 +362,9 @@ pub fn run() {
             path_capability::sftp_pick_selected_path,
             path_capability::sftp_pick_download_destination,
             herdr_service::herdr_sessions,
+            herdr_service::herdr_wsl_distributions,
+            herdr_service::herdr_wsl_runtime_to_host_path,
+            herdr_service::herdr_wsl_host_to_runtime_path,
             herdr_service::herdr_capabilities,
             herdr_service::herdr_snapshot,
             herdr_service::herdr_terminal_open,

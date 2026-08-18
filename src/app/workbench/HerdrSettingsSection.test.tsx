@@ -1,19 +1,25 @@
-import { render, screen, waitFor } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const ipc = vi.hoisted(() => ({
   get: vi.fn(),
-  set: vi.fn()
+  set: vi.fn(),
+  wslDistributions: vi.fn()
 }))
 
 vi.mock("@/lib/herdrIpc", () => ({
   herdrBinarySourceGet: ipc.get,
-  herdrBinarySourceSet: ipc.set
+  herdrBinarySourceSet: ipc.set,
+  herdrWslDistributions: ipc.wslDistributions
 }))
 
 import { HerdrSettingsSection } from "./HerdrSettingsSection"
+import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
+
+const initialHerdrState = useHerdrStore.getState()
 
 beforeEach(() => {
+  useHerdrStore.setState({ ...herdrInitialState, selectRuntimeTarget: vi.fn(async () => undefined) })
   ipc.get.mockReset().mockResolvedValue({
     configured: "default",
     active: "global",
@@ -31,6 +37,11 @@ beforeEach(() => {
     restartRequired: true
   })
   ipc.set.mockReset()
+  ipc.wslDistributions.mockReset().mockResolvedValue([])
+})
+
+afterEach(() => {
+  useHerdrStore.setState(initialHerdrState, true)
 })
 
 describe("HerdrSettingsSection", () => {
@@ -77,6 +88,46 @@ describe("HerdrSettingsSection", () => {
       "true"
     )
     expect(screen.getAllByText(/using Yuzora-managed Herdr/)).not.toHaveLength(0)
+  })
+
+  it("lists distros without probing one, selects a Unicode distro by keyboard, and exposes transport diagnostics", async () => {
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu 開発" }
+    const selectRuntimeTarget = vi.fn(async () => undefined)
+    ipc.wslDistributions.mockResolvedValue([{ distro: ubuntu.distro }])
+    useHerdrStore.setState({
+      selectedRuntimeTarget: ubuntu,
+      connectionState: "ready",
+      errorMessage: "proxy unavailable",
+      capabilities: {
+        binarySource: { configured: "global", active: "global", available: true, configuredAvailable: true, restartRequired: false },
+        server: { running: true },
+        api: { snapshot: true, ping: true, tabCreate: false, workspaceFocus: false, workspaceCreate: false, workspaceRename: false, workspaceClose: false, tabRename: false, tabClose: false, tabFocus: false, paneFocus: false, paneRename: false, paneSplit: false, paneZoom: false, paneSwap: false, paneClose: false, layoutExport: false, layoutSetSplitRatio: false, agentGet: false, agentRead: false, eventsSubscribe: false, worktreeList: false, methods: [] },
+        terminal: { observe: true, control: true, takeover: true, input: true, resize: true, scroll: true, release: true, create: false },
+        events: { status: "unavailable", reason: "proxy unavailable" },
+        transport: { mode: "wsl-cli-fallback", state: "degraded", generation: null, pendingRequests: 0, eventListeners: 0, activeChildren: 0, requests: 1, responses: 0, eventsDelivered: 0, staleEventsDropped: 0, maxRequestMs: 0, maxEventDispatchMs: 0, failure: "proxy unavailable" }
+      },
+      selectRuntimeTarget
+    })
+
+    render(<HerdrSettingsSection />)
+    const selected = await screen.findByRole("button", { name: /Selected|已選取/ })
+    expect(selected).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByTestId("herdr-wsl-transport-diagnostics")).toHaveTextContent("wsl-cli-fallback")
+    fireEvent.keyDown(selected, { key: "Enter" })
+    fireEvent.click(selected)
+    await waitFor(() => expect(selectRuntimeTarget).toHaveBeenCalledWith(ubuntu))
+    // The Settings surface only calls host-level distro listing; selecting is
+    // delegated to the store and no per-distro probe happens before the click.
+    expect(ipc.wslDistributions).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports a missing distro without selecting Native or dropping WSL diagnostics", async () => {
+    const ubuntu = { kind: "wsl" as const, distro: "Missing Distro" }
+    ipc.wslDistributions.mockRejectedValue(new Error("WSL distribution not found"))
+    useHerdrStore.setState({ selectedRuntimeTarget: ubuntu, errorMessage: "WSL distribution not found" })
+    render(<HerdrSettingsSection />)
+    expect(await screen.findByRole("alert")).toHaveTextContent("WSL distribution not found")
+    expect(useHerdrStore.getState().selectedRuntimeTarget).toEqual(ubuntu)
   })
 
   it("normalizes verbatim Windows diagnostic paths without mutating the DTO", async () => {

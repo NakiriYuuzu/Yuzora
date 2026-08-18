@@ -6,6 +6,7 @@ import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 const xtermMock = vi.hoisted(() => {
   type DataHandler = (data: string) => void
+  type KeyHandler = (event: KeyboardEvent) => boolean
 
   const state = {
     terminals: [] as TerminalMock[]
@@ -15,7 +16,9 @@ const xtermMock = vi.hoisted(() => {
     options: Record<string, unknown>
     cols = 80
     rows = 24
+    selection = ""
     dataHandler: DataHandler | null = null
+    keyHandler: KeyHandler | null = null
     writeParsedHandler: (() => void) | null = null
     writeParsedDisposable = { dispose: vi.fn() }
     linkProvider: { provideLinks: (y: number, cb: (links: unknown) => void) => void } | null = null
@@ -54,6 +57,9 @@ const xtermMock = vi.hoisted(() => {
     write = vi.fn((_data: string, onProcessed?: () => void) => onProcessed?.())
     focus = vi.fn()
     reset = vi.fn()
+    hasSelection = vi.fn(() => this.selection.length > 0)
+    getSelection = vi.fn(() => this.selection)
+    paste = vi.fn((text: string) => this.dataHandler?.(text))
     dispose = vi.fn()
     loadAddon = vi.fn((addon: { activate?: (terminal: TerminalMock) => void }) => {
       addon.activate?.(this)
@@ -66,6 +72,12 @@ const xtermMock = vi.hoisted(() => {
       this.dataHandler = handler
       return { dispose: vi.fn() }
     })
+    attachCustomKeyEventHandler = vi.fn((handler: KeyHandler) => {
+      this.keyHandler = handler
+    })
+    emitKey(event: KeyboardEvent) {
+      return this.keyHandler?.(event) ?? true
+    }
     customWheelEventHandler: ((event: WheelEvent) => boolean) | null = null
     attachCustomWheelEventHandler = vi.fn((handler: (event: WheelEvent) => boolean) => {
       this.customWheelEventHandler = handler
@@ -107,6 +119,18 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: xtermMock.FitAddon
 }))
+
+const clipboardMock = vi.hoisted(() => ({
+  readText: vi.fn(),
+  writeText: vi.fn()
+}))
+
+const navigatorClipboardMock = vi.hoisted(() => ({
+  readText: vi.fn(),
+  writeText: vi.fn()
+}))
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => clipboardMock)
 
 vi.mock("@/terminal/terminalImeHandling", () => ({
   installTerminalImeHandling: vi.fn(() => ({ dispose: vi.fn() }))
@@ -224,6 +248,17 @@ function frame(seq: number, text: string, full = false): HerdrTerminalEvent {
     bytesBase64: btoa(text)
   }
 }
+
+beforeEach(() => {
+  clipboardMock.readText.mockResolvedValue("")
+  clipboardMock.writeText.mockResolvedValue(undefined)
+  navigatorClipboardMock.readText.mockResolvedValue("")
+  navigatorClipboardMock.writeText.mockResolvedValue(undefined)
+  Object.defineProperty(globalThis.navigator, "clipboard", {
+    value: navigatorClipboardMock,
+    configurable: true
+  })
+})
 
 describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
   beforeEach(() => {
@@ -378,6 +413,78 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
   })
 })
 
+describe("HerdrTerminalPage clipboard", () => {
+  beforeEach(() => {
+    cleanup()
+    xtermMock.reset()
+    herdrIpcMock.reset()
+    herdrIpcMock.herdrTerminalOpen.mockClear()
+    herdrIpcMock.herdrTerminalInput.mockClear()
+    seedSessions([{ name: "default", default: true, running: true }])
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it.each([
+    ["Ctrl", { ctrlKey: true }],
+    ["Cmd", { metaKey: true }]
+  ])("copies a selection with %s+C", async (_label, modifier) => {
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    term.selection = "selected Herdr text"
+    const event = new KeyboardEvent("keydown", {
+      key: "c",
+      cancelable: true,
+      ...modifier
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await waitFor(() => {
+      expect(clipboardMock.writeText).toHaveBeenCalledWith("selected Herdr text")
+    })
+    expect(event.defaultPrevented).toBe(true)
+    expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["Ctrl", { ctrlKey: true }],
+    ["Cmd", { metaKey: true }]
+  ])("pastes clipboard text with %s+V", async (_label, modifier) => {
+    clipboardMock.readText.mockResolvedValue("Herdr clipboard payload")
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      cancelable: true,
+      ...modifier
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await waitFor(() => {
+      expect(term.paste).toHaveBeenCalledWith("Herdr clipboard payload")
+    })
+    expect(event.defaultPrevented).toBe(true)
+  })
+})
+
 describe("HerdrTerminalPage server-owned scrolling", () => {
   beforeEach(() => {
     cleanup()
@@ -391,6 +498,24 @@ describe("HerdrTerminalPage server-owned scrolling", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("disables xterm local scrollback for server-owned frames", async () => {
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+
+    expect(xtermMock.state.terminals[0].options).toMatchObject({
+      scrollback: 0,
+      scrollOnUserInput: false,
+      smoothScrollDuration: 0
+    })
   })
 
   it("forwards normalized wheel rows to the Herdr control connector", async () => {
@@ -608,6 +733,42 @@ describe("HerdrTerminalPage stopped session gate", () => {
       seedSessions([{ name: "work", default: false, running: true }])
     })
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+  })
+
+  it("refreshes topology through the WSL page RuntimeTarget after terminal exit", async () => {
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
+    const refreshSnapshot = vi.fn(async () => true)
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      attachments: new Map(),
+      selectedSessionName: "default",
+      selectedRuntimeTarget: ubuntu,
+      sessions: [{
+        name: "default",
+        default: true,
+        running: true,
+        sessionDir: "/tmp/ubuntu-default",
+        socketPath: "/tmp/ubuntu-default.sock",
+        runtimeTarget: ubuntu
+      }],
+      refreshSnapshot
+    })
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        runtimeTarget={ubuntu}
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      herdrIpcMock.emit({ type: "closed", sessionId: "sess-1" })
+    })
+
+    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default", ubuntu))
   })
 
   it("releases connector and does not reopen when session transitions running→stopped", async () => {

@@ -1,7 +1,7 @@
 {
   "name": "yuzora",
   "private": true,
-  "version": "0.0.8",
+  "version": "0.0.9-beta.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "check:version": "bun scripts/verify-version-consistency.ts",
     "check:updater-release": "bun scripts/verify-updater-release-contract.ts",
+    "check:beta-release": "bun scripts/verify-beta-release-contract.ts",
     "update:lsp-catalog": "bun scripts/update-lsp-integrity-catalog.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

@@ -129,6 +129,40 @@ describe("normalizeHerdrSnapshot", () => {
     expect(normalized.focusedTerminalId).toBe("term_1")
   })
 
+  it("keeps WSL runtime and host paths distinct without leaking Linux cwd into Yuzora paths", () => {
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
+    const normalized = normalizeHerdrSnapshot({
+      protocol: 19,
+      version: "0.8.0",
+      snapshot: {
+        protocol: 19,
+        version: "0.8.0",
+        workspaces: [{ workspace_id: "ws", label: "Project", focused: true }],
+        panes: [{
+          pane_id: "pane",
+          terminal_id: "term",
+          workspace_id: "ws",
+          cwd: "/home/yuuzu/project",
+          runtime_path: "/home/yuuzu/project",
+          host_path: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`,
+          display_path: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`
+        }],
+        tabs: [],
+        agents: [],
+        layouts: []
+      }
+    }, "default", ubuntu)
+    expect(normalized.spaces[0]).toMatchObject({
+      path: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`,
+      runtimePath: "/home/yuuzu/project",
+      hostPath: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`
+    })
+    expect(normalized.terminals[0]).toMatchObject({
+      cwd: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`,
+      runtimePath: "/home/yuuzu/project"
+    })
+  })
+
   it("tolerates empty or malformed payload", () => {
     const empty = normalizeHerdrSnapshot({
       protocol: 19,

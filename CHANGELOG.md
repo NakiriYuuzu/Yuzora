@@ -2,6 +2,28 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.9-beta.1] - 2026-08-17
+
+### 新增
+
+- 加入實驗性的 WSL-native HERDR Runtime Environment 基礎：可分辨 Native 與不同 WSL distribution 中同名的 HERDR session、Space、tab、pane、terminal 與 Agent，避免切換環境時混用內容或控制權。
+- HERDR Runtime 設定新增 WSL environment、connection mode 與診斷資訊；會清楚區分 proxy、CLI fallback、目標 distro 不存在或 HERDR 不可用等狀態，不會悄悄改連 Native HERDR。
+- WSL 工作區開始使用 Linux Runtime Path 與 Windows Host Path 的雙路徑模型，讓 HERDR 控制、Yuzora 工作區切換與 UNC 路徑各自維持正確環境語意。
+- Terminal 複製／貼上同時支援快捷鍵與系統 Clipboard event，當 Tauri clipboard service 暫時不可用時會改用 WebView clipboard fallback；尚未取得控制權的 HERDR terminal 不會把貼上內容送入 runtime。
+
+### 改善
+
+- HERDR terminal、事件、tab 操作、context menu、Agent Inspector 與恢復流程都保留所屬 Runtime Environment；連線中斷、重連與背景 refresh 會隔離不同 distro 的相同資源 ID。
+- Native Preview child webview 的開啟、尺寸、可見性與關閉操作會依最新工作區、overlay 與 focus 狀態序列化，避免 preview 蓋住應用程式 dialog 或回到過期位置。
+- WSL transport 具備有界 request、event queue、timeout、backoff、診斷與 child-process ownership 保護；關閉 Yuzora 只會釋放自身建立的 connector／proxy，不會要求停止 HERDR server、pane 或整個 WSL。
+
+### 已知限制
+
+- 此為 Beta GitHub Pre-release，僅供手動下載測試；不會成為 Latest Release、不提供 OTA、不會更新 stable `latest.json` 或產品頁固定下載連結。
+- `herdr api proxy --stdio` 的上游 patch 尚未合併；已安裝的 WSL HERDR 未提供此 public API 時，Yuzora 會維持明確的 CLI fallback／功能降級，而不是使用 private protocol。
+- 真實 Windows + WSL2、WSL shutdown／sleep／reconnect、多 distro 與 packaged installer 的完整驗收仍待 Windows 測試；本版不得視為正式支援承諾。
+- macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現 Gatekeeper 或 SmartScreen 提示。
+
 ## [0.0.8] - 2026-08-15
 
 ### 新增

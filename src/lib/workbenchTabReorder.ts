@@ -1,5 +1,6 @@
 import { herdrPagePath } from "@/lib/herdrPages"
-import type { HerdrSnapshot, HerdrTabInfo } from "@/lib/herdrTypes"
+import { sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
+import type { HerdrRuntimeTarget, HerdrSnapshot, HerdrTabInfo } from "@/lib/herdrTypes"
 import type { TabInfo } from "@/state/workspaceStore"
 
 export interface EditorGroupLike {
@@ -72,6 +73,18 @@ export function herdrPageMatchesSnapshotSession(
     return tabSessionId === snapshotSessionId
 }
 
+/** Compare both dimensions; missing persisted page target means Native. */
+export function herdrPageMatchesSnapshotRuntime(
+    tabSessionId: string | undefined,
+    tabRuntimeTarget: HerdrRuntimeTarget | null | undefined,
+    snapshotSessionId: string,
+    snapshotRuntimeTarget: HerdrRuntimeTarget | null | undefined,
+    defaultSessionName?: string | null
+): boolean {
+    return herdrPageMatchesSnapshotSession(tabSessionId, snapshotSessionId, defaultSessionName) &&
+        sameHerdrRuntimeTarget(tabRuntimeTarget, snapshotRuntimeTarget)
+}
+
 export function resolveSpaceTabCount(
     space: { id: string; tabCount?: number },
     tabs: ReadonlyArray<{ workspaceId: string }> | null | undefined
@@ -132,13 +145,16 @@ function pageMatchesHydrationTab(
     page: TabInfo,
     tab: HerdrTabInfo,
     snapshotSessionId: string,
+    snapshotRuntimeTarget: HerdrRuntimeTarget | null | undefined,
     defaultSessionName?: string | null
 ): boolean {
     if (page.kind !== "herdr-terminal") return false
     if (
-        !herdrPageMatchesSnapshotSession(
+        !herdrPageMatchesSnapshotRuntime(
             page.herdrSessionId,
+            page.herdrRuntimeTarget,
             snapshotSessionId,
+            snapshotRuntimeTarget,
             defaultSessionName
         )
     ) {
@@ -161,7 +177,8 @@ function mergeHydratedPage(page: TabInfo, tab: HerdrTabInfo, snapshot: HerdrSnap
         page.kind === "herdr-terminal" &&
         (page.herdrTabId ?? null) === tab.id &&
         (page.herdrWorkspaceId ?? null) === tab.workspaceId &&
-        (page.paneId ?? null) === paneId
+        (page.paneId ?? null) === paneId &&
+        sameHerdrRuntimeTarget(page.herdrRuntimeTarget, snapshot.runtimeTarget)
     ) {
         return page
     }
@@ -171,6 +188,7 @@ function mergeHydratedPage(page: TabInfo, tab: HerdrTabInfo, snapshot: HerdrSnap
         kind: "herdr-terminal",
         herdrTabId: tab.id,
         herdrWorkspaceId: tab.workspaceId,
+        herdrRuntimeTarget: snapshot.runtimeTarget,
         paneId
     }
 }
@@ -178,12 +196,13 @@ function mergeHydratedPage(page: TabInfo, tab: HerdrTabInfo, snapshot: HerdrSnap
 function createHydratedPage(snapshot: HerdrSnapshot, tab: HerdrTabInfo): TabInfo {
     const terminalId = tab.terminalId!.trim()
     return {
-        path: herdrPagePath(snapshot.herdrSessionId, terminalId),
+        path: herdrPagePath(snapshot.herdrSessionId, terminalId, snapshot.runtimeTarget),
         name: tab.label.trim() || terminalId,
         dirty: false,
         externallyModified: false,
         kind: "herdr-terminal",
         herdrSessionId: snapshot.herdrSessionId,
+        herdrRuntimeTarget: snapshot.runtimeTarget,
         terminalId,
         herdrTabId: tab.id,
         herdrWorkspaceId: tab.workspaceId,
@@ -202,9 +221,11 @@ function isFocusedSpaceHerdrSlot(
 ): boolean {
     if (page.kind !== "herdr-terminal") return false
     if (
-        !herdrPageMatchesSnapshotSession(
+        !herdrPageMatchesSnapshotRuntime(
             page.herdrSessionId,
+            page.herdrRuntimeTarget,
             snapshot.herdrSessionId,
+            snapshot.runtimeTarget,
             defaultSessionName
         )
     ) {
@@ -251,6 +272,7 @@ export function hydrateFocusedSpaceHerdrPages<
                         page,
                         tab,
                         snapshot.herdrSessionId,
+                        snapshot.runtimeTarget,
                         defaultSessionName
                     )
                 ) {

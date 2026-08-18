@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yuzora Git Sidebar — Branch &amp; Multi-select Redesign</title>
+<style>
+:root {
+  color-scheme: light;
+  --paper-0:#fff; --paper-1:#fbfaf6; --paper-2:#f4f1ea; --paper-3:#ebe7dd;
+  --ink-0:#1b1a17; --ink-1:#2e2c28; --ink-2:#57534b; --ink-3:#8a857a; --ink-4:#b6b0a3;
+  --line-1:rgba(27,26,23,.10); --line-2:rgba(27,26,23,.16);
+  --accent:#86b81f; --accent-ink:#5f8c1e; --active:rgba(134,184,31,.13); --hover:rgba(27,26,23,.045);
+  --danger:#c2293f; --danger-soft:rgba(194,41,63,.09); --blue:#2456cc; --amber:#9a6512;
+  --shadow-xs:0 1px 2px rgba(27,26,23,.07); --shadow-lg:0 18px 48px rgba(27,26,23,.14);
+  --sans:"Hanken Grotesk",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --serif:Newsreader,Georgia,"Times New Roman",serif;
+  --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:#eeece5;color:var(--ink-1);font-family:var(--sans);font-size:14px}
+button,input{font:inherit;color:inherit} button{cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.app{display:grid;grid-template-columns:minmax(320px,420px) minmax(520px,1fr);min-height:100vh}
+.brief{padding:38px 34px 30px;border-right:1px solid rgba(27,26,23,.08);background:rgba(251,250,246,.82);overflow:auto}
+.eyebrow{font:700 10px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--accent-ink)}
+h1{margin:12px 0 12px;font:500 34px/1.02 var(--serif);letter-spacing:-.025em;color:var(--ink-0)}
+.lede{margin:0;max-width:55ch;color:var(--ink-2);font-size:13px;line-height:1.65}
+.surface{display:inline-flex;align-items:center;gap:7px;margin-top:20px;padding:6px 9px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font:700 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.surface i{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.verdict{margin-top:22px;padding:14px 15px;border:1px solid var(--line-1);border-radius:12px;background:var(--paper-0)}
+.verdict strong{display:block;margin-bottom:5px;color:var(--ink-0);font-size:12px}.verdict p{margin:0;color:var(--ink-2);font-size:12px;line-height:1.55}
+.option-label{margin:26px 0 8px;font:700 10px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+.options{display:grid;gap:7px}.option{display:grid;grid-template-columns:26px 1fr auto;align-items:center;gap:10px;width:100%;padding:10px 11px;border:1px solid var(--line-1);border-radius:10px;background:rgba(255,255,255,.66);text-align:left}.option:hover{background:#fff}.option.active{border-color:rgba(134,184,31,.55);background:var(--active);box-shadow:inset 0 0 0 1px rgba(134,184,31,.14)}
+.option b{display:grid;place-items:center;width:23px;height:23px;border-radius:7px;background:var(--paper-2);font:700 10px/1 var(--mono)}.option strong{display:block;font-size:12px;color:var(--ink-0)}.option small{display:block;margin-top:2px;color:var(--ink-3);font-size:10px}.tag{font:700 9px/1 var(--mono);color:var(--accent-ink);text-transform:uppercase}
+.rules{margin-top:25px;border-top:1px solid var(--line-1)}.rule{display:grid;grid-template-columns:86px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid var(--line-1);font-size:11px;line-height:1.45}.rule dt{font:650 10px/1.4 var(--mono);color:var(--ink-3)}.rule dd{margin:0;color:var(--ink-2)}
+.legend{margin-top:20px;color:var(--ink-3);font-size:10px;line-height:1.6}.legend kbd{padding:2px 5px;border:1px solid var(--line-2);border-bottom-width:2px;border-radius:5px;background:#fff;font:600 9px/1 var(--mono)}
+.stage{position:relative;display:grid;place-items:center;min-height:100vh;padding:46px 42px;background-image:radial-gradient(rgba(27,26,23,.11) .65px,transparent .65px);background-size:16px 16px;overflow:hidden}
+.demo-wrap{display:grid;grid-template-columns:260px 250px;align-items:start;gap:20px}.caption{grid-column:1/-1;display:flex;justify-content:space-between;align-items:end;margin-bottom:-6px;color:var(--ink-3);font-size:10px}.caption strong{font:600 16px/1 var(--serif);color:var(--ink-1)}
+.sidebar{position:relative;width:260px;height:720px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line-2);border-radius:15px;background:var(--paper-1);box-shadow:var(--shadow-lg)}
+.topbar{flex:0 0 auto;padding:8px;border-bottom:1px solid var(--line-1)}
+.branch-context{position:relative;width:100%;min-height:52px;padding:8px 30px 8px 9px;border:1px solid var(--line-1);border-radius:10px;background:var(--paper-0);text-align:left;box-shadow:var(--shadow-xs)}.branch-context:hover{background:var(--paper-2)}
+.branch-line{display:flex;align-items:center;gap:7px;min-width:0}.branch-icon{color:var(--accent-ink);font-size:14px}.branch-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:650 11px/1.25 var(--mono);color:var(--ink-0)}.chev{position:absolute;right:10px;top:10px;color:var(--ink-3)}
+.sync-line{display:flex;align-items:center;gap:5px;margin-top:5px;min-width:0;font:550 9.5px/1.2 var(--mono);color:var(--ink-3)}.sync-line .up{color:var(--blue)}.sync-line .down{color:#c8521f}.upstream{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.stale{margin-left:auto;color:var(--amber)}
+.summary{display:flex;align-items:center;gap:7px;margin:7px 2px 0;min-height:17px;font-size:10px;color:var(--ink-3)}.summary strong{font:650 10px/1 var(--mono);color:var(--ink-2)}.summary .conflict{color:var(--danger)}
+.scroll{flex:1;min-height:0;overflow:auto;padding:6px 5px 12px;scrollbar-width:thin;scrollbar-color:var(--ink-4) transparent}
+.section{margin:0 0 4px}.section-head{display:flex;align-items:center;height:28px;gap:5px;padding:0 3px}.tri{display:grid;place-items:center;width:17px;height:17px;padding:0;border:1px solid var(--line-2);border-radius:5px;background:var(--paper-0);color:#fff;font:800 10px/1 var(--mono)}.tri.checked,.tri.mixed{border-color:var(--accent-ink);background:var(--accent-ink)}.tri.mixed:after{content:"−"}.tri.checked:after{content:"✓"}
+.collapse{display:flex;align-items:center;gap:5px;min-width:0;flex:1;height:24px;padding:0 2px;border:0;background:transparent;text-align:left}.collapse:hover{background:var(--hover);border-radius:6px}.caret{width:10px;color:var(--ink-3);transition:transform .15s}.section.closed .caret{transform:rotate(-90deg)}.section-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 9.5px/1 var(--sans);letter-spacing:.065em;text-transform:uppercase;color:var(--ink-3)}.count{font:550 9.5px/1 var(--mono);color:var(--ink-4)}
+.section-action{height:22px;padding:0 5px;border:0;border-radius:6px;background:transparent;font:650 9px/1 var(--sans);color:var(--accent-ink)}.section-action:hover{background:var(--hover)}.section-body{display:block}.section.closed .section-body{display:none}
+.file-row{position:relative;display:flex;align-items:center;gap:6px;height:32px;margin:1px 2px;padding:0 5px;border-radius:8px}.file-row:hover{background:var(--hover)}.file-row.selected{background:var(--active);box-shadow:inset 0 0 0 1px rgba(134,184,31,.12)}
+.row-select{display:flex;align-items:center;min-width:0;flex:1;height:28px;padding:0;border:0;background:transparent;text-align:left}.leading{position:relative;display:grid;place-items:center;flex:0 0 20px;height:22px;margin-right:6px}.badge{display:grid;place-items:center;width:18px;height:18px;border-radius:6px;background:var(--paper-3);font:800 10px/1 var(--mono);color:var(--ink-2)}.badge.m{background:#e8eefc;color:var(--blue)}.badge.a{background:#e8f5ef;color:#178a63}.badge.d{background:var(--danger-soft);color:var(--danger)}.badge.conf{background:var(--danger-soft);color:var(--danger)}
+.checkbox{position:absolute;inset:2px;display:none;place-items:center;border:1px solid var(--line-2);border-radius:5px;background:var(--paper-0);color:#fff;font:800 10px/1 var(--mono)}.file-row:hover .checkbox,.file-row.selected .checkbox,.file-row:focus-within .checkbox{display:grid}.file-row:hover .badge,.file-row.selected .badge,.file-row:focus-within .badge{visibility:hidden}.file-row.selected .checkbox{border-color:var(--accent-ink);background:var(--accent-ink)}.file-row.selected .checkbox:after{content:"✓"}
+.file-label{display:flex;align-items:baseline;min-width:0;flex:1}.filename{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:600;color:var(--ink-1)}.filepath{max-width:42%;margin-left:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 9px/1 var(--mono);color:var(--ink-4)}
+.diff-btn{display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ink-3);opacity:0}.file-row:hover .diff-btn,.file-row:focus-within .diff-btn{opacity:1}.diff-btn:hover{background:var(--paper-2);color:var(--ink-1)}
+.bulk{display:none;flex:0 0 auto;align-items:center;gap:4px;min-height:42px;padding:6px 7px;border-top:1px solid var(--line-1);background:var(--paper-0);box-shadow:0 -7px 16px rgba(27,26,23,.04)}.bulk.visible{display:flex}.bulk-count{min-width:0;flex:1;padding-left:3px;font:650 10px/1.2 var(--mono);color:var(--ink-2)}.bulk-count small{display:block;margin-top:2px;font:500 8.5px/1.2 var(--sans);color:var(--danger)}
+.mini{height:27px;padding:0 7px;border:1px solid var(--line-1);border-radius:7px;background:var(--paper-1);font-size:9.5px;font-weight:650;white-space:nowrap}.mini:hover{background:var(--paper-2)}.mini.primary{border-color:var(--ink-1);background:var(--ink-1);color:var(--paper-0)}.mini.danger{color:var(--danger)}.mini.icon{width:27px;padding:0}
+.commit{flex:0 0 auto;padding:8px;border-top:1px solid var(--line-1);background:var(--paper-1)}.commit label{display:block;margin:0 0 4px;font:700 9px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}.commit textarea{display:block;width:100%;min-height:48px;resize:none;padding:7px 8px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font-size:11px;outline:none}.commit textarea:focus{border-color:var(--ink-3)}.commit-actions{display:grid;grid-template-columns:1fr auto auto;gap:5px;margin-top:6px}.commit-actions button{height:29px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font-size:10px;font-weight:650}.commit-actions .commit-btn{background:var(--ink-1);color:var(--paper-0)}
+.popover{position:relative;width:250px;max-height:460px;overflow:hidden;border:1px solid var(--line-2);border-radius:14px;background:rgba(255,255,255,.96);box-shadow:var(--shadow-lg);opacity:0;transform:translateX(-8px) scale(.98);pointer-events:none;transition:.16s ease}.popover.open{opacity:1;transform:none;pointer-events:auto}.pop-head{display:flex;align-items:center;gap:7px;padding:11px 12px;border-bottom:1px solid var(--line-1)}.pop-head strong{flex:1;font:600 14px/1 var(--serif);color:var(--ink-0)}.fetch{height:25px;padding:0 8px;border:1px solid var(--line-1);border-radius:7px;background:var(--paper-0);font-size:10px;font-weight:650}.branch-search{display:flex;align-items:center;margin:7px;padding:0 9px;height:30px;border:1px solid var(--line-1);border-radius:9px;background:var(--paper-1)}.branch-search input{min-width:0;width:100%;border:0;outline:0;background:transparent;font:500 10.5px/1 var(--mono)}.branch-list{max-height:305px;overflow:auto;padding:2px 7px 8px}.pop-label{padding:7px 8px 4px;font-size:9px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}.branch-row{display:flex;align-items:center;gap:7px;height:32px;padding:0 8px;border-radius:8px;font:550 10.5px/1 var(--mono)}.branch-row:hover{background:var(--hover)}.branch-row.current{background:var(--active);font-weight:700}.branch-row .check{width:12px;color:#178a63}.branch-row .bn{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.branch-row .sync{font-size:9px;color:var(--ink-3)}.pop-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:7px;border-top:1px solid var(--line-1)}.pop-actions button{height:29px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font-size:10px;font-weight:650}
+.modal-note{position:absolute;inset:0;display:none;place-items:center;background:rgba(27,26,23,.24);backdrop-filter:blur(2px)}.modal-note.open{display:grid}.modal-card{width:210px;padding:18px;border:1px solid var(--line-2);border-radius:13px;background:var(--paper-0);box-shadow:var(--shadow-lg);text-align:center}.modal-card b{display:block;font:600 15px/1.2 var(--serif)}.modal-card p{margin:7px 0 12px;font-size:10px;color:var(--ink-3)}.modal-card button{height:28px;padding:0 10px;border:0;border-radius:7px;background:var(--ink-1);color:#fff;font-size:10px}
+.mode-select .checkbox{display:none!important}.mode-select .badge{visibility:visible!important}.mode-select .file-row.selecting .checkbox,.mode-select .file-row.selecting:hover .checkbox{display:grid!important}.mode-select .file-row.selecting .badge,.mode-select .file-row.selecting:hover .badge{visibility:hidden!important}.mode-select .bulk{display:none!important}.mode-select.selection-mode .bulk.visible{display:flex!important}.mode-select.selection-mode .checkbox{display:grid!important}.mode-select.selection-mode .badge{visibility:hidden!important}
+.mode-always .checkbox{display:grid}.mode-always .badge{visibility:hidden}.mode-always .diff-btn{opacity:.55}
+.select-toggle{display:none;width:100%;height:27px;margin-top:6px;border:1px solid var(--line-1);border-radius:7px;background:var(--paper-0);font-size:10px;font-weight:650}.mode-select .select-toggle{display:block}.mode-select.selection-mode .select-toggle{border-color:rgba(134,184,31,.5);background:var(--active);color:var(--accent-ink)}
+.tweaks{position:absolute;right:16px;bottom:14px;padding:7px 9px;border:1px solid rgba(27,26,23,.10);border-radius:8px;background:rgba(255,255,255,.8);color:var(--ink-3);font:600 9px/1 var(--mono);backdrop-filter:blur(8px)}
+@media(max-width:980px){.app{grid-template-columns:1fr}.brief{border-right:0;border-bottom:1px solid var(--line-1)}.stage{min-height:780px}.demo-wrap{transform-origin:top center}}@media(max-width:600px){.brief{padding:28px 20px}.stage{padding:32px 10px;overflow:auto}.demo-wrap{grid-template-columns:260px}.popover{display:none}.caption{grid-column:1}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="brief">
+    <div class="eyebrow">Yuzora · Git sidebar study</div>
+    <h1>先選取，再操作。</h1>
+    <p class="lede">目前的 +／− 把每列鎖成單檔操作，而列本身又立即開啟 DiffModal，導致已有的多選狀態完全不可見。本提案把側邊欄還原成一個真正的操作清單。</p>
+    <div class="surface"><i></i> Primary surface · Operate</div>
+    <section class="verdict">
+      <strong>Oracle 建議：方案 B · Selection-first</strong>
+      <p>單擊選取，雙擊／Enter 開 diff；hover 或 focus 顯示 checkbox。選取後在清單與 commit composer 之間固定顯示批次列。</p>
+    </section>
+    <div class="option-label">互動架構</div>
+    <div class="options" role="tablist" aria-label="設計方案">
+      <button class="option" data-mode="select"><b>A</b><span><strong>選取模式</strong><small>保留單擊開 diff；先切換模式再多選</small></span><span class="tag">保守</span></button>
+      <button class="option active" data-mode="recommended"><b>B</b><span><strong>Selection-first</strong><small>單擊選取；雙擊／Enter 檢視 diff</small></span><span class="tag">推薦</span></button>
+      <button class="option" data-mode="always"><b>C</b><span><strong>常駐 checkbox</strong><small>最明確，但在 220px 會犧牲檔名空間</small></span><span class="tag">發散</span></button>
+    </div>
+    <dl class="rules">
+      <div class="rule"><dt>Branch context</dt><dd>兩行資訊塊：branch 名稱＋upstream／ahead／behind。Detached 明確標示，不偽裝成 branch。</dd></div>
+      <div class="rule"><dt>Section scope</dt><dd>「未暫存」只暫存該節；「未追蹤」擁有自己的全選與全部暫存。</dd></div>
+      <div class="rule"><dt>Multi-select</dt><dd>Checkbox toggle；Shift 依畫面順序 range；section checkbox 為 tri-state。</dd></div>
+      <div class="rule"><dt>Bulk actions</dt><dd>混合選取可同時提供「暫存」與「取消暫存」；衝突列保留選取但排除 mutation。</dd></div>
+      <div class="rule"><dt>Busy / stale</dt><dd>仍可選取與檢視；mutation controls disabled，沿用 repository-bound safety gate。</dd></div>
+    </dl>
+    <p class="legend"><kbd>Click</kbd> 選取 · <kbd>⇧ Click</kbd> range · <kbd>⌘/Ctrl Click</kbd> toggle · <kbd>Enter</kbd> diff · <kbd>Space</kbd> toggle · <kbd>⌘/Ctrl A</kbd> 全選可見</p>
+  </aside>
+
+  <main class="stage">
+    <div class="demo-wrap">
+      <div class="caption"><span><strong>220px target</strong><br>prototype 額外放大至 260px 方便檢視</span><span id="mode-caption">B · Selection-first</span></div>
+      <section class="sidebar" id="sidebar" aria-label="Git sidebar prototype">
+        <header class="topbar">
+          <button class="branch-context" id="branch-trigger" aria-expanded="false">
+            <span class="branch-line"><span class="branch-icon">⑂</span><span class="branch-name">feature/git-sidebar-selection</span></span>
+            <span class="chev">⌄</span>
+            <span class="sync-line"><span class="up">↑2</span><span class="down">↓1</span><span>·</span><span class="upstream">origin/feature/git-sidebar-selection</span></span>
+          </button>
+          <div class="summary"><strong>8 個變更</strong><span>·</span><span class="conflict">1 個衝突</span><span class="stale" hidden>狀態過期</span></div>
+          <button class="select-toggle" id="select-toggle">進入選取模式</button>
+        </header>
+
+        <div class="scroll" id="change-list" role="listbox" aria-multiselectable="true" aria-label="Git 變更">
+          <div class="section" data-section="conflicts">
+            <div class="section-head"><button class="tri" aria-label="全選衝突"></button><button class="collapse"><span class="caret">⌄</span><span class="section-title">衝突</span><span class="count">1</span></button></div>
+            <div class="section-body">
+              <div class="file-row" data-id="c:src/state/session.ts" data-kind="conflict"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge conf">!</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">session.ts</span><span class="filepath">src/state/</span></span></button><button class="diff-btn" aria-label="檢視 session.ts">◫</button></div>
+            </div>
+          </div>
+          <div class="section" data-section="staged">
+            <div class="section-head"><button class="tri" aria-label="全選已暫存"></button><button class="collapse"><span class="caret">⌄</span><span class="section-title">已暫存</span><span class="count">2</span></button><button class="section-action" data-action="unstage-section">全部取消</button></div>
+            <div class="section-body">
+              <div class="file-row" data-id="s:src/app/AppShell.tsx" data-kind="staged"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge m">M</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">AppShell.tsx</span><span class="filepath">src/app/</span></span></button><button class="diff-btn" aria-label="檢視 AppShell.tsx">◫</button></div>
+              <div class="file-row" data-id="s:src/styles.css" data-kind="staged"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge m">M</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">styles.css</span><span class="filepath">src/</span></span></button><button class="diff-btn" aria-label="檢視 styles.css">◫</button></div>
+            </div>
+          </div>
+          <div class="section" data-section="unstaged">
+            <div class="section-head"><button class="tri" aria-label="全選未暫存"></button><button class="collapse"><span class="caret">⌄</span><span class="section-title">未暫存</span><span class="count">3</span></button><button class="section-action" data-action="stage-section">全部暫存</button></div>
+            <div class="section-body">
+              <div class="file-row" data-id="u:src/app/workbench/GitNavContent.tsx" data-kind="unstaged"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge m">M</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">GitNavContent.tsx</span><span class="filepath">src/app/workbench/</span></span></button><button class="diff-btn" aria-label="檢視 GitNavContent.tsx">◫</button></div>
+              <div class="file-row" data-id="u:src/workbench/git/BranchPopover.tsx" data-kind="unstaged"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge m">M</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">BranchPopover.tsx</span><span class="filepath">src/workbench/git/</span></span></button><button class="diff-btn" aria-label="檢視 BranchPopover.tsx">◫</button></div>
+              <div class="file-row" data-id="u:src/state/uiStore.ts" data-kind="unstaged"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge m">M</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">uiStore.ts</span><span class="filepath">src/state/</span></span></button><button class="diff-btn" aria-label="檢視 uiStore.ts">◫</button></div>
+            </div>
+          </div>
+          <div class="section" data-section="untracked">
+            <div class="section-head"><button class="tri" aria-label="全選未追蹤"></button><button class="collapse"><span class="caret">⌄</span><span class="section-title">未追蹤</span><span class="count">2</span></button><button class="section-action" data-action="stage-section">全部暫存</button></div>
+            <div class="section-body">
+              <div class="file-row" data-id="n:specs/git-sidebar-redesign.html" data-kind="untracked"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge">?</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">git-sidebar-redesign.html</span><span class="filepath">specs/</span></span></button><button class="diff-btn" aria-label="檢視 git-sidebar-redesign.html">◫</button></div>
+              <div class="file-row" data-id="n:notes/interaction.md" data-kind="untracked"><button class="row-select" role="option" aria-selected="false"><span class="leading"><span class="badge">?</span><span class="checkbox"></span></span><span class="file-label"><span class="filename">interaction.md</span><span class="filepath">notes/</span></span></button><button class="diff-btn" aria-label="檢視 interaction.md">◫</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bulk" id="bulk-bar">
+          <span class="bulk-count"><span id="selected-count">已選 0</span><small id="excluded-note"></small></span>
+          <button class="mini primary" id="bulk-stage">暫存</button>
+          <button class="mini" id="bulk-unstage">取消</button>
+          <button class="mini danger" id="bulk-discard">捨棄</button>
+          <button class="mini icon" id="clear-selection" aria-label="清除選取">×</button>
+        </div>
+
+        <footer class="commit">
+          <label for="commit-message">提交訊息</label>
+          <textarea id="commit-message" placeholder="提交訊息…"></textarea>
+          <div class="commit-actions"><button class="commit-btn">提交 2</button><button>檢視</button><button aria-label="捨棄全部">⌫</button></div>
+        </footer>
+        <div class="modal-note" id="diff-modal"><div class="modal-card"><b>Diff preview</b><p id="diff-file">GitNavContent.tsx</p><button id="close-modal">關閉</button></div></div>
+      </section>
+
+      <aside class="popover" id="branch-popover" aria-label="Branch popover">
+        <div class="pop-head"><span>⑂</span><strong>Branches</strong><button class="fetch">↻ Fetch</button></div>
+        <label class="branch-search"><input placeholder="搜尋分支…" /></label>
+        <div class="branch-list">
+          <div class="pop-label">Local</div>
+          <div class="branch-row current"><span class="check">✓</span><span class="bn">feature/git-sidebar-selection</span><span class="sync">↑2 ↓1</span></div>
+          <div class="branch-row"><span class="check"></span><span class="bn">main</span><span class="sync">同步</span></div>
+          <div class="branch-row"><span class="check"></span><span class="bn">feat/history-cursor</span><span class="sync">↑4</span></div>
+          <div class="branch-row"><span class="check"></span><span class="bn">fix/diff-race</span><span class="sync">↓2</span></div>
+          <div class="pop-label">Remote</div>
+          <div class="branch-row"><span class="check">◎</span><span class="bn">origin/main</span></div>
+          <div class="branch-row"><span class="check">◎</span><span class="bn">origin/feature/git-sidebar-selection</span></div>
+        </div>
+        <div class="pop-actions"><button>Fetch</button><button>Pull</button><button>Push</button></div>
+      </aside>
+    </div>
+    <div class="tweaks">Interactive · rows · sections · branch popover</div>
+  </main>
+</div>
+<script>
+(() => {
+  const sidebar = document.querySelector('#sidebar');
+  const rows = [...document.querySelectorAll('.file-row')];
+  const selected = new Set();
+  let anchor = null;
+  let mode = 'recommended';
+  let selectionMode = false;
+
+  const visibleRows = () => rows.filter(r => !r.closest('.section').classList.contains('closed'));
+  const labelFor = row => row.querySelector('.filename').textContent;
+
+  function update(){
+    rows.forEach(row => {
+      const on = selected.has(row.dataset.id);
+      row.classList.toggle('selected', on);
+      row.querySelector('.row-select').setAttribute('aria-selected', String(on));
+      row.classList.toggle('selecting', selectionMode);
+    });
+    document.querySelectorAll('.section').forEach(section => {
+      const sectionRows = [...section.querySelectorAll('.file-row')];
+      const count = sectionRows.filter(r => selected.has(r.dataset.id)).length;
+      const tri = section.querySelector('.tri');
+      tri.classList.toggle('checked', count === sectionRows.length && count > 0);
+      tri.classList.toggle('mixed', count > 0 && count < sectionRows.length);
+    });
+    const selectedRows = rows.filter(r => selected.has(r.dataset.id));
+    const conflicts = selectedRows.filter(r => r.dataset.kind === 'conflict').length;
+    const stageable = selectedRows.some(r => ['unstaged','untracked'].includes(r.dataset.kind));
+    const unstageable = selectedRows.some(r => r.dataset.kind === 'staged');
+    const discardable = selectedRows.some(r => ['unstaged','untracked'].includes(r.dataset.kind));
+    document.querySelector('#bulk-bar').classList.toggle('visible', selected.size > 0);
+    document.querySelector('#selected-count').textContent = `已選 ${selected.size}`;
+    document.querySelector('#excluded-note').textContent = conflicts ? `${conflicts} 個衝突不會被修改` : '';
+    document.querySelector('#bulk-stage').hidden = !stageable;
+    document.querySelector('#bulk-unstage').hidden = !unstageable;
+    document.querySelector('#bulk-discard').hidden = !discardable;
+  }
+
+  function openDiff(row){
+    document.querySelector('#diff-file').textContent = labelFor(row);
+    document.querySelector('#diff-modal').classList.add('open');
+  }
+
+  function selectRow(row, event, viaCheckbox=false){
+    if(mode === 'select' && !selectionMode && !viaCheckbox){ openDiff(row); return; }
+    const order = visibleRows();
+    if(event.shiftKey && anchor){
+      const a = order.findIndex(r => r.dataset.id === anchor);
+      const b = order.indexOf(row);
+      if(a >= 0 && b >= 0){
+        selected.clear();
+        order.slice(Math.min(a,b), Math.max(a,b)+1).forEach(r => selected.add(r.dataset.id));
+      }
+    } else if(viaCheckbox || event.metaKey || event.ctrlKey){
+      selected.has(row.dataset.id) ? selected.delete(row.dataset.id) : selected.add(row.dataset.id);
+      anchor = row.dataset.id;
+    } else {
+      selected.clear(); selected.add(row.dataset.id); anchor = row.dataset.id;
+    }
+    update();
+  }
+
+  rows.forEach((row, index) => {
+    const main = row.querySelector('.row-select');
+    main.addEventListener('click', e => selectRow(row,e));
+    main.addEventListener('dblclick', e => { e.preventDefault(); openDiff(row); });
+    main.addEventListener('keydown', e => {
+      const order = visibleRows(); const at = order.indexOf(row);
+      if(e.key === 'Enter'){ e.preventDefault(); openDiff(row); }
+      if(e.key === ' '){ e.preventDefault(); selectRow(row,{...e,metaKey:true},true); }
+      if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+        e.preventDefault(); const delta=e.key==='ArrowDown'?1:-1; const next=order[Math.max(0,Math.min(order.length-1,at+delta))];
+        if(next){ selectRow(next,e); next.querySelector('.row-select').focus(); }
+      }
+      if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='a'){
+        e.preventDefault(); visibleRows().forEach(r=>selected.add(r.dataset.id)); update();
+      }
+    });
+    row.querySelector('.leading').addEventListener('click', e => {e.stopPropagation();selectRow(row,e,true)});
+    row.querySelector('.diff-btn').addEventListener('click', e => {e.stopPropagation();openDiff(row)});
+  });
+
+  document.querySelectorAll('.collapse').forEach(btn => btn.addEventListener('click', () => btn.closest('.section').classList.toggle('closed')));
+  document.querySelectorAll('.tri').forEach(btn => btn.addEventListener('click', () => {
+    const group=[...btn.closest('.section').querySelectorAll('.file-row')];
+    const all=group.every(r=>selected.has(r.dataset.id));
+    group.forEach(r=>all?selected.delete(r.dataset.id):selected.add(r.dataset.id)); update();
+  }));
+  document.querySelectorAll('.section-action').forEach(btn => btn.addEventListener('click', () => {
+    const group=[...btn.closest('.section').querySelectorAll('.file-row')]; selected.clear(); group.forEach(r=>selected.add(r.dataset.id)); update();
+  }));
+  document.querySelector('#clear-selection').addEventListener('click',()=>{selected.clear();update()});
+  document.querySelector('#bulk-stage').addEventListener('click',()=>{[...selected].filter(id=>id.startsWith('u:')||id.startsWith('n:')).forEach(id=>selected.delete(id));update()});
+  document.querySelector('#bulk-unstage').addEventListener('click',()=>{[...selected].filter(id=>id.startsWith('s:')).forEach(id=>selected.delete(id));update()});
+  document.querySelector('#bulk-discard').addEventListener('click',()=>{[...selected].filter(id=>!id.startsWith('c:')&&!id.startsWith('s:')).forEach(id=>selected.delete(id));update()});
+  document.querySelector('#close-modal').addEventListener('click',()=>document.querySelector('#diff-modal').classList.remove('open'));
+  document.querySelector('#branch-trigger').addEventListener('click',()=>{
+    const pop=document.querySelector('#branch-popover'); pop.classList.toggle('open');
+    document.querySelector('#branch-trigger').setAttribute('aria-expanded',String(pop.classList.contains('open')));
+  });
+  document.querySelector('#select-toggle').addEventListener('click',()=>{
+    selectionMode=!selectionMode; sidebar.classList.toggle('selection-mode',selectionMode);
+    document.querySelector('#select-toggle').textContent=selectionMode?'完成選取':'進入選取模式';
+    if(!selectionMode){selected.clear();update()}
+  });
+  document.querySelectorAll('.option').forEach(button => button.addEventListener('click',()=>{
+    document.querySelectorAll('.option').forEach(b=>b.classList.remove('active')); button.classList.add('active');
+    mode=button.dataset.mode; selectionMode=false; selected.clear();
+    sidebar.classList.remove('mode-select','mode-always','selection-mode');
+    if(mode==='select') sidebar.classList.add('mode-select');
+    if(mode==='always') sidebar.classList.add('mode-always');
+    document.querySelector('#mode-caption').textContent=button.querySelector('b').textContent+' · '+button.querySelector('strong').textContent;
+    document.querySelector('#select-toggle').textContent='進入選取模式'; update();
+  }));
+  update();
+})();
+</script>
+</body>
+</html>

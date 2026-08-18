@@ -172,6 +172,25 @@ describe("HerdrNavContent", () => {
     expect(screen.getByText("Main")).toBeInTheDocument() // owning Space label
   })
 
+  it("labels Session and Agent surfaces with the selected WSL Runtime", () => {
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu 開発" }
+    const state = readyState({
+      selectedRuntimeTarget: ubuntu,
+      sessions: [{
+        name: "default", default: true, running: true,
+        sessionDir: "/tmp/u", socketPath: "/tmp/u.sock", runtimeTarget: ubuntu
+      }]
+    })
+    const snapshot = state.snapshot as { agents: Array<Record<string, unknown>> }
+    snapshot.agents[0] = { ...snapshot.agents[0]!, runtimeTarget: ubuntu }
+    useHerdrStore.setState(state)
+    render(<HerdrNavContent />)
+
+    expect(screen.getByTestId("herdr-runtime-label")).toHaveTextContent("WSL: Ubuntu 開発")
+    expect(screen.getByTestId("herdr-session-default")).toHaveAttribute("aria-description", "WSL: Ubuntu 開発")
+    expect(screen.getByTestId("herdr-agent-ag-1")).toHaveTextContent("WSL: Ubuntu 開発")
+  })
+
   it("does not add an unrequested per-agent Inspector action", () => {
     useHerdrStore.setState(readyState())
 

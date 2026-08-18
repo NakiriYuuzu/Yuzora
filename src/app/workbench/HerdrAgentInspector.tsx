@@ -22,6 +22,7 @@ import type {
   HerdrReadSource
 } from "@/lib/herdrTypes"
 import { useHerdrStore } from "@/state/herdrStore"
+import { sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
 
 const SOURCES: HerdrReadSource[] = [
   "visible",
@@ -42,6 +43,7 @@ export function HerdrAgentInspector({
   const { t } = useTranslation("workbench")
   const sessions = useHerdrStore((s) => s.sessions)
   const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
+  const selectedRuntimeTarget = useHerdrStore((s) => s.selectedRuntimeTarget)
   const [details, setDetails] = useState<HerdrAgentDetails | null>(null)
   const [readResult, setReadResult] = useState<HerdrAgentReadResult | null>(null)
   const [source, setSource] = useState<HerdrReadSource>("recent")
@@ -52,13 +54,16 @@ export function HerdrAgentInspector({
   const requestGenerationRef = useRef(0)
 
   const sessionName = agent?.sessionName ?? selectedSessionName ?? null
-  const canInspect = useHerdrStore((s) => s.canInspectAgent(sessionName))
+  const runtimeTarget = agent?.runtimeTarget ?? selectedRuntimeTarget
+  const canInspect = useHerdrStore((s) => s.canInspectAgent(sessionName, runtimeTarget))
   const target = agent?.paneId ?? null
   const stopped = useMemo(() => {
     if (!sessionName) return true
-    const session = sessions.find((item) => item.name === sessionName)
+    const session = sessions.find(
+      (item) => item.name === sessionName && sameHerdrRuntimeTarget(item.runtimeTarget, runtimeTarget)
+    )
     return session ? !session.running : true
-  }, [sessionName, sessions])
+  }, [sessionName, sessions, runtimeTarget])
 
   const load = useCallback(async () => {
     const generation = ++requestGenerationRef.current
@@ -74,8 +79,13 @@ export function HerdrAgentInspector({
     setError(null)
     try {
       const [nextDetails, nextRead] = await Promise.all([
-        herdrAgentGet({ sessionName, target }),
+        herdrAgentGet({
+          ...(agent.runtimeTarget ? { runtimeTarget: agent.runtimeTarget } : {}),
+          sessionName,
+          target
+        }),
         herdrAgentRead({
+          ...(agent.runtimeTarget ? { runtimeTarget: agent.runtimeTarget } : {}),
           sessionName,
           target,
           source,

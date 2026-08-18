@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next"
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { HerdrAgentInfo, HerdrAgentStatus, HerdrNamedSession } from "@/lib/herdrTypes"
+import { sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
 import { cn } from "@/lib/utils"
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
 import { showActionError } from "@/lib/actionFeedback"
@@ -29,6 +30,7 @@ export function HerdrNavContent() {
   const { t } = useTranslation("workbench")
   const sessions = useHerdrStore((s) => s.sessions)
   const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
+  const selectedRuntimeTarget = useHerdrStore((s) => s.selectedRuntimeTarget)
   const selectSession = useHerdrStore((s) => s.selectSession)
   const connectionState = useHerdrStore((s) => s.connectionState)
   const errorMessage = useHerdrStore((s) => s.errorMessage)
@@ -49,12 +51,19 @@ export function HerdrNavContent() {
     return Array.from(attentionByKey.values())
       .filter((item) => {
         if (selected && item.sessionName !== selected) return false
+        if (!sameHerdrRuntimeTarget(item.runtimeTarget, selectedRuntimeTarget)) return false
         if (item.kind === "done" && item.seen) return false
         return true
       })
       .sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [attentionByKey, selectedSessionName])
+  }, [attentionByKey, selectedSessionName, selectedRuntimeTarget])
 
+  const visibleSessions = sessions.filter((session) =>
+    sameHerdrRuntimeTarget(session.runtimeTarget, selectedRuntimeTarget)
+  )
+  const selectedRuntimeLabel = selectedRuntimeTarget.kind === "wsl"
+    ? t("herdrSettings.wslRuntime", { distro: selectedRuntimeTarget.distro })
+    : t("herdrSettings.nativeRuntime")
   const agents = snapshot?.agents ?? []
   const herdrSessionId = selectedSessionName ?? snapshot?.herdrSessionId
   const stopped = connectionState === "stopped"
@@ -65,7 +74,7 @@ export function HerdrNavContent() {
   const onSelectSession = (session: HerdrNamedSession) => {
     // HerdrBridge is the single focus-restoration owner so a user-closed page
     // is not reopened while the runtime focus key remains unchanged.
-    void selectSession(session.name)
+    void selectSession(session.name, selectedRuntimeTarget)
   }
 
   const openAgent = async (agent: HerdrAgentInfo) => {
@@ -96,6 +105,7 @@ export function HerdrNavContent() {
       setMode("ade")
       try {
         await openCreatedHerdrTabAndRequestName({
+          runtimeTarget: created.runtimeTarget,
           sessionName: created.herdrSessionId,
           workspaceId: created.workspaceId,
           terminalId: created.terminalId,
@@ -114,7 +124,7 @@ export function HerdrNavContent() {
   if (
     (connectionState === "unsupported" || connectionState === "error") &&
     !snapshot &&
-    sessions.length === 0
+    visibleSessions.length === 0
   ) {
     return (
       <div className="flex h-full flex-col gap-[10px]">
@@ -130,7 +140,7 @@ export function HerdrNavContent() {
   if (
     (connectionState === "connecting" || connectionState === "idle") &&
     !snapshot &&
-    sessions.length === 0
+    visibleSessions.length === 0
   ) {
     return (
       <div className="flex h-full items-center justify-center text-[12px] text-(--ink-3)">
@@ -141,21 +151,26 @@ export function HerdrNavContent() {
 
   return (
     <div className="flex h-full flex-col gap-[10px]">
-      {sessions.length > 0 && (
+      <p className="px-[2px] text-[10px] font-mono text-(--ink-4)" data-testid="herdr-runtime-label">
+        {selectedRuntimeLabel}
+      </p>
+      {visibleSessions.length > 0 && (
         <div
           role="tablist"
           aria-label={t("herdrNav.sessionsHeading")}
           className="flex shrink-0 flex-wrap gap-[6px] px-[2px]"
         >
-          {sessions.map((session) => {
-            const selected = session.name === selectedSessionName
+          {visibleSessions.map((session) => {
+            const selected = session.name === selectedSessionName &&
+              sameHerdrRuntimeTarget(session.runtimeTarget, selectedRuntimeTarget)
             return (
               <button
-                key={session.name}
+                key={`${session.runtimeTarget?.kind === "wsl" ? `wsl:${session.runtimeTarget.distro}` : "native"}:${session.name}`}
                 type="button"
                 role="tab"
                 data-testid={`herdr-session-${session.name}`}
                 aria-selected={selected}
+                aria-description={selectedRuntimeLabel}
                 title={
                   session.running
                     ? session.socketPath
@@ -298,7 +313,12 @@ function AgentRow({
   onSelect: () => void
   sessionName?: string | null
 }) {
+  const { t } = useTranslation("workbench")
   const spaceLabel = agent.spaceLabel ?? agent.workspaceId
+  const runtimeTarget = agent.runtimeTarget ?? { kind: "native" as const }
+  const runtimeLabel = runtimeTarget.kind === "wsl"
+    ? t("herdrSettings.wslRuntime", { distro: runtimeTarget.distro })
+    : t("herdrSettings.nativeRuntime")
   const resolvedSession = agent.sessionName ?? sessionName ?? ""
   return (
       <button
@@ -310,6 +330,7 @@ function AgentRow({
           agent.paneId
             ? contextMenuHandler({
                 kind: "herdrPane",
+                runtimeTarget: agent.runtimeTarget,
                 sessionName: resolvedSession,
                 paneId: agent.paneId,
                 terminalId: agent.terminalId ?? null,
@@ -335,6 +356,7 @@ function AgentRow({
             {agent.title ?? agent.name}
           </span>
           <span className="block truncate text-[10px] text-(--ink-4)">{spaceLabel}</span>
+          <span className="block truncate text-[9px] text-(--ink-4)" data-runtime-label={runtimeLabel}>{runtimeLabel}</span>
         </span>
         <span className="shrink-0 font-mono text-[10px] text-(--ink-4)">{agent.status}</span>
       </button>

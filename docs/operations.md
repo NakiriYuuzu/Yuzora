@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> 最後查證：2026-08-15。
+> 最後查證：2026-08-18。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
@@ -102,6 +102,7 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 - `.github/workflows/release.yml`
 - `scripts/verify-updater-release-contract.ts`
 - `scripts/finalize-updater-metadata.ts`
+- `scripts/prepare-updater-metadata.ts`
 - `src-tauri/tauri.conf.json` 的 updater public key／endpoint
 
 這些變更應由指定 maintainer review。建議後續將 signing secrets 放入具 required reviewer 的 protected GitHub Environment；在完成前不得宣稱此 gate 已啟用。
@@ -117,15 +118,15 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 在 workflow 修正前，不得把下列條件描述為已由自動化強制：
 
 - Release guard 只辨識成功的 `main` push CI，尚未查證該 SHA 是否來自 `release/vX.Y.Z` PR、是否跑過 candidate jobs，或是否取得使用者核准。
-- 既有同版本 draft 的銜接模式只確認 Release 為 draft，尚未強制 draft tag SHA 等於本次 `workflow_run.head_sha`。若兩者不同，必須取消 workflow，不得 Publish 舊 binary。
-- `tauri-apps/tauri-action@v0` 等 Release action 仍使用可移動 ref；接觸 updater private key 與 write token 的 action 應 pin 至完整 commit SHA，並將 signing secrets 移入 protected Environment。
+- Release guard 尚未從 GitHub 查證 source SHA 對應的 PR、candidate run 與使用者核准；既有同版本 draft 的 tag SHA 已強制必須等於本次 `workflow_run.head_sha`，不一致時會 fail closed。
+- Release actions 已固定到經審查的完整 commit SHA，checkout 一律停用 persisted credentials；仍應定期審查並更新 pin，並將 signing secrets 移入具 required reviewer 的 protected Environment。
 - Metadata finalizer 目前確認 URL／signature 非空與同名 artifact／`.sig` 存在，但尚未強制 URL 屬於目前 repository/tag，也未比較 metadata signature 與 `.sig` 內容。
 
 ---
 
 ## 5. Release PR
 
-每次發版先建立 release Issue 或在既有 release Issue 更新 acceptance criteria。Stable 使用 `release/vX.Y.Z` branch；Beta lane 啟用後使用 `release/vX.Y.Z-beta.N`。
+每次發版先建立 release Issue 或在既有 release Issue 更新 acceptance criteria。Stable 使用 `release/vX.Y.Z` branch；Beta 使用 `release/vX.Y.Z-beta.N`。CI 會驗證 branch 必須精確等於 `release/v<package.json version>`，因此 Beta branch 不可只使用泛用 `release/` prefix。
 
 ### Stable 與 Beta（GitHub Pre-release）
 
@@ -142,7 +143,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - Beta 不得更新 stable `latest.json`、`releases/latest` 或產品頁固定下載入口。
 - Beta 只發布供手動下載的 installer，必須停用 updater artifacts，不產生 `latest.json` 或 updater `.sig`，也不需要存取 updater signing secrets。
 - PR candidate 是未簽章、未發布的 Actions artifact，用於 merge 前驗證；它不是 Beta Release。
-- 現行 `.github/workflows/release.yml` 固定 `prerelease=false` 並執行 `--latest`，因此**目前只支援 Stable**。在 workflow、version classification 與 contract tests 完成 Beta lane 前，不得以手動改旗標方式發布 Beta。
+- `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持簽章、updater metadata、固定下載別名與 `--latest`；Beta 使用獨立 unsigned build／publish path，固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
 
 ### PR 必須包含
 
@@ -166,7 +167,7 @@ git diff -- src-tauri/Cargo.lock
 
 ### Release contract preflight
 
-現行 Stable lane 在乾淨的 release branch 執行：
+Stable lane 在乾淨的 release branch 執行：
 
 ```bash
 VERSION="X.Y.Z"
@@ -175,14 +176,27 @@ bun scripts/release-notes.ts "v${VERSION}"
 bun run check:updater-release
 ```
 
+Beta lane 使用相同 version／notes preflight，但必須驗證獨立的 prerelease contract：
+
+```bash
+VERSION="X.Y.Z-beta.N"
+GITHUB_REF_NAME="v${VERSION}" bun run check:version
+bun scripts/release-notes.ts "v${VERSION}"
+bun run check:beta-release
+```
+
 PowerShell 使用以下等價步驟；完成後移除只供 preflight 使用的環境變數：
 
 ```powershell
-$Version = "X.Y.Z"
+$Version = "X.Y.Z" # Beta 改為 X.Y.Z-beta.N
 $env:GITHUB_REF_NAME = "v$Version"
 bun run check:version
 bun scripts/release-notes.ts "v$Version"
-bun run check:updater-release
+if ($Version -match '-beta\.[1-9][0-9]*$') {
+  bun run check:beta-release
+} else {
+  bun run check:updater-release
+}
 Remove-Item Env:GITHUB_REF_NAME
 ```
 
@@ -190,9 +204,10 @@ Remove-Item Env:GITHUB_REF_NAME
 
 - 三份 product version 與 tag contract 一致。
 - `CHANGELOG.md` 存在對應版本且內容非空。
-- Updater signing、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
+- Stable：Updater signing、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
+- Beta：`prerelease=true`、沒有 updater signing secrets、沒有 updater artifacts／`.sig`／`latest.json`／stable aliases，且 publish command 不含 `--latest`。
 
-另外確認遠端 `v${VERSION}` tag 與同版本 GitHub Release 都不存在。若已存在 Published Release，不能重用 version；若存在 draft，必須先確認其 tag SHA 與預期發布 SHA 完全一致。Beta lane 啟用後也必須執行同樣 preflight，但 version 必須是 `X.Y.Z-beta.N`，且 contract 必須證明 `prerelease=true`、不執行 `--latest`、不發布 stable `latest.json`。
+另外確認遠端 `v${VERSION}` tag 與同版本 GitHub Release 都不存在。若已存在 Published Release，不能重用 version；若存在 draft，Release guard 會先強制確認其 tag SHA 與成功的 `main` CI SHA 完全一致，否則 fail closed。
 
 ### 對齊 CI 的本機檢查
 
@@ -229,7 +244,7 @@ docker compose -f tests/database/docker-compose.yml --profile mssql down -v
 
 ### PR 候選安裝檔與使用者驗證 gate
 
-`release/vX.Y.Z` PR 的 CI 會執行兩個 `Release candidate (...)` jobs；Beta lane 啟用後，`release/vX.Y.Z-beta.N` 使用相同 candidate gate。候選檔有以下限制：
+`release/vX.Y.Z` 與 `release/vX.Y.Z-beta.N` PR 的 CI 都會執行兩個 `Release candidate (...)` jobs；job 會拒絕與 product version 不相符的 release branch。候選檔有以下限制：
 
 - 只存在 GitHub Actions artifacts，不建立或更新 tag。
 - 不建立 GitHub Release，也不會成為 `releases/latest`。
@@ -277,15 +292,15 @@ gh run download "${RUN_ID}" \
 
 ## 6. PR merge 後自動建立 Release
 
-現行自動流程只支援 Stable。Release tag 不由本機或 maintainer 手動建立；完整入口是 release PR：
+自動流程依 product version 選擇 Stable 或 Beta channel。Release tag 不由本機或 maintainer 手動建立；完整入口是 release PR：
 
 1. Release PR 包含版本、lockfile、Changelog 與必要的 workflow／contract 修改。
 2. PR required CI 與 candidate builds 成功後保持開啟，等待使用者下載安裝檔並完成實機驗證。
 3. 使用者在 PR 明確回報驗證通過並授權 merge 後，才 merge 至 `main`；merge 同時透過 `Closes` 關閉已完成 Issues。
 4. `main` push 觸發完整 CI；Release workflow 透過 `workflow_run` 接收完成事件。
 5. Guard 只接受 `event=push`、`head_branch=main`、`conclusion=success`，並 checkout `workflow_run.head_sha`，確保後續 tag、build 與 checks 使用同一個 immutable commit。
-6. Guard 從該 commit 的 `package.json` 解析 Stable version，執行版本、release notes 與 updater contract checks。
-7. 若版本 tag 不存在，workflow 建立 annotated `vX.Y.Z` tag 並精確指向該成功 CI SHA；接著開始建置。
+6. Guard 從該 commit 的 `package.json` 解析唯一允許的 Stable `X.Y.Z` 或 Beta `X.Y.Z-beta.N` version，執行版本與 release notes checks；Stable 再執行 updater contract，Beta 改執行 prerelease isolation contract。
+7. 若版本 tag 不存在，workflow 建立 annotated `v<version>` tag 並精確指向該成功 CI SHA；接著開始建置。既有 draft 的 tag SHA 不同時會 fail closed。
 8. 若相同版本已 Published，workflow 安全略過，不會因後續一般 PR 重複發布。
 
 流程政策將 PR 定義為唯一 repository 變更入口，並避免「PR CI 綠燈但尚未進入 `main`」就對外發布。不過，現行 Release guard 尚未從 GitHub 查證 source SHA 對應的 PR、candidate run 與使用者核准；在 branch protection 與此 gate 完成前，仍需依第 4、5 節人工核對。CI、tag、Release 與 Issue 關閉的關係如下：
@@ -306,7 +321,7 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
                                                    auto Publish
 ```
 
-若 upgrade 前已存在同版本的 draft Release，Guard 會進入銜接模式：不重建、不覆寫既有 binary artifacts，但會重新執行 deterministic metadata finalizer 並只覆蓋 `latest.json`；後續 automated publish gate 完整驗證資產與 updater metadata 後才移除 draft 狀態。現行 Guard 尚未自動要求 draft tag SHA 等於本次 `workflow_run.head_sha`，因此 maintainer 必須先核對；SHA 不一致時應立即取消 workflow，驗證不完整時 Release 保持 draft。
+若 upgrade 前已存在同版本、且 tag SHA 已由 Guard 驗證等於本次 `workflow_run.head_sha` 的 draft Release，Guard 會進入銜接模式：Stable 重新執行 metadata finalizer 並只覆蓋 `latest.json`；Beta 不執行 finalizer，直接重新驗證沒有 updater assets、signatures 或 stable aliases。驗證不完整時 Release 保持 draft。
 
 ---
 
@@ -318,22 +333,23 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 
 1. 上游事件是成功完成的 `main` push CI，而不是 pull request 或其他 branch。
 2. Checkout SHA 與成功 CI 的 `workflow_run.head_sha` 完全一致。
-3. `TAURI_SIGNING_PRIVATE_KEY` 與 password secret 非空。
-4. 解析出的 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致。
+3. Stable 才驗證 `TAURI_SIGNING_PRIVATE_KEY` 與 password secret；Beta build step 不接收這些 secrets。
+4. 解析出的 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致，且版本只可為 Stable 或 `-beta.N`。
 5. `CHANGELOG.md` 有該版本 release notes。
-6. Updater release contract 完整。
-7. 新版本自動建立 annotated tag；已發布版本則安全略過。
+6. Stable 驗證 updater release contract；Beta 驗證 prerelease isolation contract。
+7. 新版本由獨立、無 checkout 的 `create-tag` write job 建立 annotated tag；既有 draft 的 tag SHA 必須與 CI SHA 一致；已發布版本安全略過。
 
-現行 Guard 不負責證明該 SHA 來自 release PR 或已完成 candidate／使用者驗證，也未強制既有 draft tag SHA 一致；這些仍是明確的人工 gate。Guard 失敗時所有 build 都不會執行。
+Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 checkout 並執行 repository code，但沒有 write-capable token。所有 contents write 都只存在於無 checkout、只執行固定 inline `gh`/shell 的 job。現行 Guard 不負責證明該 SHA 來自 release PR 或已完成 candidate／使用者驗證；這些仍是明確的人工 gate。任何 guard failure 都不會進入 build。
 
-### 7.2 雙平台建置
+### 7.2 雙平台建置與 artifact boundary
 
 `fail-fast: false`，單一平台失敗不會中止其他平台：
 
-- macOS universal：Apple Silicon＋Intel；產生 `.dmg` 與 updater app archive／signature。
-- Windows x64：產生 NSIS `.exe`、`.msi` 與 updater signatures。
+- Stable macOS universal：Apple Silicon＋Intel；本機產生 `.dmg`、`.app.tar.gz` 與 updater signature。
+- Stable Windows x64：本機產生 NSIS `setup.exe`、`.msi` 與 MSI updater signature。
+- Beta macOS／Windows：產生同樣供手動下載的 versioned installers，但不產生 updater archive、`latest.json` 或 `.sig`，且 build environment 不含 updater signing secrets與 contents-write token。
 
-所有平台上傳至同一個**暫態 draft** Release，名稱為 `Yuzora v<version>`。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列。
+`build` job 只執行 `bun tauri build`、驗證 Tauri CLI 的實際 bundle paths，並以 Actions artifacts 上傳結果；它不建立或上傳 GitHub Release。兩平台都成功後，獨立的無 checkout `assemble-draft` write job 下載已驗證的 Actions artifacts、建立同一個暫態 draft `Yuzora v<version>`、上傳 versioned assets；Stable 同時上傳固定檔名 aliases。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列。
 
 ### 7.3 固定檔名別名
 
@@ -350,26 +366,20 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 - 產品頁直接使用的 macOS DMG 與 Windows NSIS EXE，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
 - MSI 若新增其他頁面或 script consumer，也要一併更新並補測試。
 
-固定別名是手動下載入口；Tauri updater 使用的是具版本號且帶 `.sig` 的 updater artifacts，不應把兩者混為同一套檔案。
+固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。Tauri Stable updater 使用具版本號且帶 `.sig` 的 updater artifacts；Beta 不產生 updater artifacts，兩者不可混為一談。
 
 ### 7.4 Finalize updater metadata
 
-所有 build 成功後，或既有同版本 draft 進入銜接模式時，`finalize-updater-metadata` job：
+只有 Stable build 成功後，或既有同版本 Stable draft 進入銜接模式時，metadata 採兩段式 boundary：
 
-- 使用 Guard 解析出的 `tag_name`，透過非保留的 `YUZORA_RELEASE_TAG` 環境變數查找 draft Release；不得依賴或嘗試覆寫 `workflow_run` 的 `GITHUB_REF_NAME`，其值是 `main` 而不是 release tag。
-- 下載 draft 中的 `latest.json`。
-- 刪除新建或既有 draft 中殘留的 Linux AppImage／DEB／RPM 與固定別名資產。
-- 驗證 metadata version 與 notes。
-- 移除不支援的 Linux updater entries 與 Windows NSIS updater entries。
-- 強制 Windows updater URL 指向 MSI。
-- 驗證每個 metadata artifact 與 `.sig` 都存在於 Release。
-- 以 finalized `latest.json` 覆蓋 draft 中的原始檔案。
+1. `prepare-updater-metadata` 是 read-only checkout job。它從 draft 以 read token 取得 asset inventory與 `.app.tar.gz.sig`／`.msi.sig`，執行 repository-owned metadata generator，驗證 version、notes、macOS universal archive、MSI URL 與 signatures，然後把 `latest.json` 作為 Actions artifact 上傳。
+2. `upload-updater-metadata` 是無 checkout 的 contents-write job。它下載該 metadata artifact、移除 draft 中殘留的 Linux AppImage／DEB／RPM assets，再以 `gh release upload --clobber` 取代 `latest.json`；它不執行 repository code。
 
-Finalizer 未成功時不得 Publish。
+不得讓 write-capable token 進入 metadata generator。任一段失敗時不得 Publish。
 
 ### 7.5 Automated publish gate
 
-`publish-release` 只在下列其中一條路徑成立時執行：
+`publish-release`（Stable）是無 checkout 的 contents-write verification/publish job，只在下列其中一條路徑成立時執行：
 
 - 新版本的 macOS／Windows build 與 metadata finalizer 全部成功。
 - 既有同版本 draft 的銜接模式啟用、build 正確略過，且 metadata finalizer 成功。
@@ -384,13 +394,13 @@ Publish 前 workflow 自動驗證：
 
 Stable 全部成功後執行 `gh release edit --draft=false --prerelease=false --latest`，並再次查證 `publishedAt`。任一條件失敗時 workflow 結束為失敗，Release 保持 draft，不會出現部分成功卻永久等待人工 Publish 的正常路徑。
 
-未來 Beta lane 必須使用獨立 publish branch，設定 `prerelease=true` 且不得傳入 `--latest`；build 必須停用 updater artifacts，不得執行 stable metadata finalizer、不得上傳 stable `latest.json`，也不得改變 `releases/latest`。在這些 contract checks 實作前，Beta 發布保持停用。
+`publish-beta-release` 使用獨立、無 checkout 的 contents-write job，僅在 macOS／Windows Beta draft 都成功時執行。它驗證 release body 與版本化 `.dmg`、`setup.exe`、`.msi`，並拒絕 `latest.json`、任何 `.sig` 與所有 stable fixed aliases；最後只執行 `gh release edit --draft=false --prerelease=true`，絕不傳入 `--latest`。Beta 不執行 stable metadata finalizer，亦不改變 `releases/latest`。
 
 ---
 
 ## 8. 自動發布與發布後 smoke test
 
-Release workflow 的 automated publish gate 是 blocking gate；macOS／Windows build、固定別名、updater signatures、metadata completeness 或 MSI-only contract 任一失敗都不會 Publish。正常成功路徑不需要 maintainer 再按一次 Publish。
+Release workflow 的 automated publish gate 是 blocking gate；Stable 的 macOS／Windows build、固定別名、updater signatures、metadata completeness 或 MSI-only contract 任一失敗都不會 Publish。Beta 則要求兩平台 versioned installer 完整且不含 updater／stable assets。正常成功路徑不需要 maintainer 再按一次 Publish。
 
 受影響平台的主要互動式驗收已在 release PR merge 前完成。Release Published 後仍應儘快確認正式 artifacts 與 updater 路徑：
 
@@ -456,7 +466,7 @@ curl -fsSL \
 
 將 Release URL、平台、起始版本、目標版本、結果與診斷證據回填 release Issue。真實 OTA 驗收不得只以 CI artifact 存在代替。
 
-### Beta（Beta lane 啟用後）
+### Beta
 
 Beta 只驗證 GitHub Pre-release 與手動下載，不執行 OTA smoke test：
 

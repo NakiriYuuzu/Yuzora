@@ -17,6 +17,7 @@ import {
   herdrTerminalScroll
 } from "@/lib/herdrIpc"
 import type {
+  HerdrRuntimeTarget,
   HerdrTerminalEvent,
   HerdrTerminalMode,
   HerdrTerminalRole
@@ -169,6 +170,8 @@ export interface HerdrTerminalTransportOptions {
   takeover?: boolean
   /** Named Herdr session for HERDR_SESSION connector routing. */
   sessionName?: string | null
+  /** Runtime Environment that owns the connector target. */
+  runtimeTarget?: HerdrRuntimeTarget | null
   onAttachment?: (info: {
     sessionId: string
     mode: HerdrTerminalMode
@@ -189,6 +192,7 @@ export function createHerdrTerminalTransport(
     mode: initialMode = "control",
     takeover: initialTakeover = true,
     sessionName = null,
+    runtimeTarget = undefined,
     onAttachment,
     onPaneId
   } = options
@@ -258,6 +262,7 @@ export function createHerdrTerminalTransport(
       cols,
       rows,
       sessionName,
+      ...(runtimeTarget === undefined ? {} : { runtimeTarget }),
       onEvent: (event) => {
         if (disposed || generation !== openGeneration) return
         if (event.type === "closed") {
@@ -270,7 +275,10 @@ export function createHerdrTerminalTransport(
     })
     // Late open after release/dispose/unmount: drop connector, never re-register.
     if (disposed || generation !== openGeneration) {
-      await herdrTerminalRelease(result.sessionId).catch(() => undefined)
+      await (runtimeTarget === undefined
+        ? herdrTerminalRelease(result.sessionId)
+        : herdrTerminalRelease(result.sessionId, runtimeTarget)
+      ).catch(() => undefined)
       return
     }
     sessionId = result.sessionId
@@ -296,7 +304,10 @@ export function createHerdrTerminalTransport(
     },
     async write(data) {
       if (disposed || !sessionId || mode !== "control") return
-      await herdrTerminalInput(sessionId, data, null)
+      await (runtimeTarget === undefined
+        ? herdrTerminalInput(sessionId, data, null)
+        : herdrTerminalInput(sessionId, data, null, runtimeTarget)
+      )
     },
     async resize(cols, rows) {
       if (disposed) return
@@ -305,13 +316,19 @@ export function createHerdrTerminalTransport(
       if (!sessionId) return
       // Resize is controller-owned in Herdr; observers skip silently.
       if (mode !== "control") return
-      await herdrTerminalResize(sessionId, cols, rows)
+      await (runtimeTarget === undefined
+        ? herdrTerminalResize(sessionId, cols, rows)
+        : herdrTerminalResize(sessionId, cols, rows, runtimeTarget)
+      )
     },
     async scroll(delta) {
       if (disposed || !sessionId || mode !== "control" || delta === 0) return
       const direction = delta < 0 ? "up" : "down"
       const lines = Math.max(1, Math.abs(Math.trunc(delta)))
-      await herdrTerminalScroll(sessionId, direction, lines)
+      await (runtimeTarget === undefined
+        ? herdrTerminalScroll(sessionId, direction, lines)
+        : herdrTerminalScroll(sessionId, direction, lines, runtimeTarget)
+      )
     },
     async release() {
       openGeneration += 1
@@ -320,7 +337,10 @@ export function createHerdrTerminalTransport(
       sessionId = null
       lastSeq = null
       // Release is idempotent and never terminates the Herdr pane/process.
-      await herdrTerminalRelease(id).catch(() => undefined)
+      await (runtimeTarget === undefined
+        ? herdrTerminalRelease(id)
+        : herdrTerminalRelease(id, runtimeTarget)
+      ).catch(() => undefined)
     },
     async dispose() {
       disposed = true
@@ -330,7 +350,10 @@ export function createHerdrTerminalTransport(
       const id = sessionId
       sessionId = null
       lastSeq = null
-      await herdrTerminalRelease(id).catch(() => undefined)
+      await (runtimeTarget === undefined
+        ? herdrTerminalRelease(id)
+        : herdrTerminalRelease(id, runtimeTarget)
+      ).catch(() => undefined)
     },
     async takeControl() {
       if (disposed) return
@@ -343,7 +366,10 @@ export function createHerdrTerminalTransport(
       if (sessionId) {
         const previous = sessionId
         sessionId = null
-        await herdrTerminalRelease(previous).catch(() => undefined)
+        await (runtimeTarget === undefined
+          ? herdrTerminalRelease(previous)
+          : herdrTerminalRelease(previous, runtimeTarget)
+        ).catch(() => undefined)
       }
       // Re-check after awaited release — unmount may have disposed mid-flight.
       if (disposed) return

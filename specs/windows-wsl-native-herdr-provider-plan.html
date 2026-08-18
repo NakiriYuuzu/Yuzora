@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: Windows WSL-native Herdr Provider</title>
+<style>
+:root{
+  --paper:#f3f1e9;--panel:#fffdf8;--panel-2:#f7f8f6;--ink:#172230;--muted:#657083;--line:#d7d3c9;
+  --navy:#183d5d;--blue:#2f6f9f;--blue-soft:#dcebf4;--teal:#19756f;--teal-soft:#dff1ed;
+  --green:#2d6b4c;--green-soft:#e3f1e8;--amber:#94631d;--amber-soft:#fff0ce;--red:#9c3d49;--red-soft:#f8e3e5;
+  --shadow:0 18px 52px rgba(20,36,52,.09);--serif:Charter,"Noto Serif TC","Source Han Serif TC",Georgia,serif;
+  --sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC",sans-serif;
+  --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+}
+*{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--paper)}body{margin:0;color:var(--ink);background:var(--paper);font:15px/1.68 var(--sans)}main{width:min(1180px,calc(100% - 32px));margin:28px auto 72px}header,section{margin:16px 0;padding:26px;border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:var(--shadow)}h1,h2,h3{font-family:var(--serif);line-height:1.22}h1{margin:0 0 10px;color:var(--navy);font-size:clamp(32px,5vw,50px);letter-spacing:-.03em}h2{margin:0 0 14px;padding-bottom:10px;border-bottom:1px solid var(--line);color:var(--navy);font-size:26px}h3{margin:24px 0 10px;font-size:20px}h4{margin:20px 0 8px;color:var(--navy);font-size:15px}p{margin:8px 0 13px}a{color:var(--blue)}code,pre{font-family:var(--mono)}code{padding:1px 5px;border-radius:5px;background:#edf1f2;font-size:.9em}pre{overflow:auto;padding:15px;border:1px solid #294052;border-radius:11px;background:#162534;color:#eef6fb;font-size:12.5px;line-height:1.6}ul,ol{padding-left:22px}li{margin:6px 0}figure{margin:18px 0}figure img{width:100%;max-height:620px;object-fit:cover;border:1px solid var(--line);border-radius:15px;background:#e9e5dc}figcaption{margin-top:7px;color:var(--muted);font-size:13px}.lead{max-width:900px;color:var(--muted);font-size:17px}.kicker{margin-bottom:10px;color:var(--teal);font:800 12px/1.4 var(--sans);letter-spacing:.14em;text-transform:uppercase}.meta dl{display:grid;grid-template-columns:140px 1fr;gap:7px 14px}.meta dt{color:var(--muted)}.meta dd{margin:0;overflow-wrap:anywhere}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0}.metric{padding:15px;border:1px solid var(--line);border-radius:12px;background:#faf9f3}.metric strong{display:block;color:var(--navy);font:800 27px/1.1 var(--sans)}.metric span{color:var(--muted);font-size:13px}.toc{columns:2;column-gap:30px}.toc li{break-inside:avoid}.callout{margin:14px 0;padding:14px 16px;border-left:5px solid var(--blue);border-radius:9px;background:var(--blue-soft)}.callout.ok{border-color:var(--green);background:var(--green-soft)}.callout.warn{border-color:var(--amber);background:var(--amber-soft)}.callout.risk{border-color:var(--red);background:var(--red-soft)}.decision-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.decision-card{padding:16px;border:1px solid var(--line);border-radius:13px;background:var(--panel-2)}.decision-card strong{display:block;margin-bottom:5px;color:var(--navy)}.architecture{display:grid;grid-template-columns:1fr auto 1.1fr auto 1fr;align-items:stretch;gap:9px;margin:18px 0}.architecture .box{display:grid;place-items:center;min-height:105px;padding:14px;border:1px solid var(--line);border-radius:12px;background:#f4f7f7;text-align:center;font-weight:800}.architecture .runtime{border-color:var(--teal);background:var(--teal-soft)}.architecture .transport{border-color:var(--blue);background:var(--blue-soft)}.architecture .arrow{display:grid;place-items:center;color:var(--blue);font-size:24px}.table-wrap{overflow-x:auto;margin:12px 0;border:1px solid var(--line);border-radius:12px}table{width:100%;min-width:780px;border-collapse:collapse;font-size:13px}th,td{padding:10px 11px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--navy);background:#edf3f5;font-weight:800}tr:last-child td{border-bottom:0}.tag{display:inline-block;padding:2px 8px;border-radius:999px;font:800 11px/1.5 var(--sans);white-space:nowrap}.existing{color:#52606f;background:#e8ecef}.new{color:#245e45;background:#dceee4}.primary{color:#fff;background:var(--teal)}.fallback{color:#724c14;background:#f5ddb1}.blocked{color:#fff;background:var(--red)}.phase{margin:18px 0;padding:20px;border:1px solid var(--line);border-radius:14px;background:#fdfbf6}.phase>h3{margin-top:0}.status{color:var(--blue);font-weight:900}.checklist{list-style:none;padding-left:0}.checklist li{padding:4px 0}.loop{margin-top:14px;padding:12px 14px;border-radius:9px;color:var(--navy);background:#e8f0f4}.code-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.risk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.risk-card{padding:15px;border:1px solid var(--line);border-radius:12px;background:#faf8f2}.risk-card strong{display:block;margin-bottom:5px;color:var(--red)}details{margin:10px 0;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:#faf8f2}summary{cursor:pointer;color:var(--navy);font-weight:800}.qa-answer{color:var(--muted)}.timeline{display:grid;gap:9px}.timeline-row{display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px;border:1px solid var(--line);border-radius:11px;background:#faf9f4}.timeline-row b{font-family:var(--mono);color:var(--teal)}.meta-note{color:var(--muted);font-size:12px}.support-full{color:var(--green);font-weight:800}.support-partial{color:var(--amber);font-weight:800}.support-no{color:var(--red);font-weight:800}@media(max-width:900px){.metrics,.decision-grid{grid-template-columns:1fr 1fr}.architecture{grid-template-columns:1fr}.architecture .arrow{transform:rotate(90deg)}.code-grid,.risk-grid{grid-template-columns:1fr}}@media(max-width:560px){main{width:min(100% - 18px,1180px);margin-top:10px}header,section{padding:18px;border-radius:13px}.metrics,.decision-grid{grid-template-columns:1fr}.meta dl,.timeline-row{grid-template-columns:1fr}.toc{columns:1}}@media print{body{background:white}main{width:100%;margin:0}header,section{box-shadow:none}.phase,figure,table,pre{break-inside:avoid}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="kicker">Accepted architecture · Windows host · WSL-native runtime</div>
+  <h1>Windows WSL-native Herdr Provider 實作計畫</h1>
+  <p class="lead">將 WSL 視為真正擁有 Herdr、PTY、Agent process tree、Git 與 worktree 的 Runtime Environment；Yuzora Windows 以 typed Provider transport 投影該 runtime。長期主要 transport 為通用 NDJSON stdio proxy，CLI bridge 僅作為 bootstrap 與 degraded fallback。</p>
+  <details class="meta">
+    <summary>Metadata</summary>
+    <dl>
+      <dt>created</dt><dd>2026-08-17T14:55:03Z</dd>
+      <dt>modified</dt><dd>2026-08-17T14:55:03Z</dd>
+      <dt>commits</dt><dd>20e3d0cae01d63bdd1e1dec63dac2b60f5651a4e</dd>
+      <dt>back refs</dt><dd><code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>docs/agents/domain.md</code>, <code>docs/html/herdr-replaces-agentzone-ade-architecture-2026-08-10.html</code>, <code>docs/html/herdr-yuzora-deep-integration-analysis-2026-08-10.html</code>, <code>.yuuzu/adr/0001-wsl-native-herdr-runtime-provider.html</code></dd>
+      <dt>forward refs</dt><dd>Yuzora implementation issue、Herdr upstream stdio proxy proposal、Provider implementation PRs、Windows/WSL acceptance evidence</dd>
+    </dl>
+  </details>
+  <div class="metrics">
+    <div class="metric"><strong>2</strong><span>實際 adapters：Native / WSL</span></div>
+    <div class="metric"><strong>Primary</strong><span>長連線 NDJSON stdio proxy</span></div>
+    <div class="metric"><strong>Fallback</strong><span>one-shot CLI + snapshot polling</span></div>
+    <div class="metric"><strong>4–7w</strong><span>單一工程師、含 upstream 與 Windows hardening</span></div>
+  </div>
+</header>
+
+<figure>
+  <img src="windows-wsl-native-herdr-provider-plan/hero.png" alt="Windows Yuzora 經 stdio bridge 連接 WSL-native Herdr runtime 的架構圖">
+  <figcaption>最終形狀：Yuzora 不跨越 process ownership；它只透過 Provider interface 觀察與控制工作實際所在環境中的 Herdr runtime。</figcaption>
+</figure>
+
+<section id="decision">
+  <h2>拍板決策</h2>
+  <div class="decision-grid">
+    <div class="decision-card"><strong>Runtime ownership</strong>WSL 專案由 WSL 內的 Herdr 擁有 PTY、process tree、Agents、Git 與 worktree。</div>
+    <div class="decision-card"><strong>Transport ownership</strong>Yuzora Rust backend 擁有 proxy／connector children；React 只呼叫 typed IPC。</div>
+    <div class="decision-card"><strong>Identity ownership</strong>所有資源 identity 由 <code>Runtime Environment + Named Session + resource ID</code> 組成。</div>
+  </div>
+  <div class="callout ok"><strong>完成定義：</strong>Windows Yuzora 能在不啟動 native Windows Herdr 的情況下，連接使用者明確選定的 WSL distro，列出其 Herdr named sessions、投影 Spaces/Agents、完整控制 Terminal Session、接收 events、執行既有 typed mutations，並在 WSL 或 proxy 中斷後安全恢復。</div>
+  <div class="callout risk"><strong>明確不做：</strong>不讓 Windows-native Herdr 以 <code>wsl.exe</code> shell 偽裝成完整 WSL runtime；不直接以 UNC 開啟 Unix socket；不在第一版自動安裝 Herdr、修改 distro 或背景啟動所有 distros。</div>
+</section>
+
+<section id="toc">
+  <h2>執行導覽</h2>
+  <ol class="toc">
+    <li><a href="#problem">問題與現況</a></li><li><a href="#architecture">目標架構</a></li><li><a href="#interfaces">核心 interface</a></li><li><a href="#support">能力矩陣</a></li><li><a href="#files">相關檔案</a></li><li><a href="#phases">Implementation Phases</a></li><li><a href="#validation">全域驗證</a></li><li><a href="#questionables">Questionables</a></li><li><a href="#notes">風險、回滾與後續</a></li>
+  </ol>
+</section>
+
+<section id="problem">
+  <h2>問題與現況</h2>
+  <p>Yuzora 現行 Herdr 模型把 <code>sessionName</code> 當作全域 runtime key，Rust <code>HerdrManager</code> 同時負責 native binary selection、named-session discovery、local socket、capability probing、events 與 terminal connectors。這對單一 native runtime 正確，但無法表示 Ubuntu/default 與 Debian/default 是兩個不同 runtime。</p>
+  <ul>
+    <li><code>src-tauri/src/herdr_service.rs</code> 固定從 host PATH／bundled resources 解出一支 Herdr binary，並直接連 Unix socket 或 Windows Named Pipe。</li>
+    <li><code>src/state/herdrStore.ts</code> 的 <code>runtimesBySession</code>、in-flight guards、attention keys 與 event ownership 只以 session name 隔離。</li>
+    <li><code>src/lib/herdrPages.ts</code> 的 pseudo path 只有 session + terminal，跨 runtime 會碰撞。</li>
+    <li><code>workspaceStore</code>、TabBar、HerdrTerminalPage 與 hydration/reorder 邏輯都假設 session name 足以決定 runtime。</li>
+    <li>現有 local PTY lane 已能偵測 WSL distros、解碼 UTF-16 清單並將 WSL UNC workspace 轉成 <code>--distribution/--cd</code>；此能力尚未進入 Herdr lane。</li>
+  </ul>
+  <div class="callout warn"><strong>路徑不能只做字串轉換：</strong>Herdr/Git/agent 應使用 WSL Runtime Path，Yuzora file APIs 應使用 Windows Host Path；兩者都屬 operational path，與 UI Display Path 又不同。</div>
+</section>
+
+<section id="architecture">
+  <h2>目標架構</h2>
+  <div class="architecture" aria-label="Runtime Provider architecture">
+    <div class="box">React stores / pages<br><small>typed RuntimeKey only</small></div>
+    <div class="arrow">→</div>
+    <div class="box transport">Tauri Herdr facade<br><small>capability gate · request · event · connector</small></div>
+    <div class="arrow">→</div>
+    <div class="box runtime">Native socket adapter<br>或<br>WSL stdio adapter</div>
+  </div>
+  <figure>
+    <img src="windows-wsl-native-herdr-provider-plan/provider-seam.png" alt="Native socket 與 WSL stdio adapters 位於同一 Provider seam 後方的架構圖">
+    <figcaption>Provider seam 位於 Rust backend；既有 typed Herdr facade 留在外側，frontend 不知道 socket、wsl.exe 或 proxy process 細節。</figcaption>
+  </figure>
+  <h3>Adapter 策略</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Adapter</th><th>Primary transport</th><th>Fallback</th><th>Runtime owner</th></tr></thead>
+    <tbody>
+      <tr><td>Native</td><td>現有 Unix socket／Windows Named Pipe</td><td>無變更</td><td>Host-native Herdr</td></tr>
+      <tr><td>WSL</td><td><code>wsl.exe … herdr api proxy --stdio</code></td><td>CLI discovery/snapshot + polling；official terminal connector</td><td>選定 distro 內 Herdr</td></tr>
+    </tbody>
+  </table></div>
+  <p>Native adapter 的 observable behavior 必須先由 characterization tests 固定，再移入 Provider seam。這次不是重寫 Herdr integration，而是讓既有行為成為第一個 adapter。</p>
+</section>
+
+<section id="interfaces">
+  <h2>核心 interface 與 identity</h2>
+  <div class="code-grid">
+  <pre><code>#[derive(Clone, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum HerdrRuntimeTarget {
+    Native,
+    Wsl { distro: String },
+}
+
+struct HerdrRuntimeKey {
+    target: HerdrRuntimeTarget,
+    session_name: String,
+}</code></pre>
+  <pre><code>trait HerdrRuntimeProvider {
+    fn target(&self) -&gt; &amp;HerdrRuntimeTarget;
+    fn list_sessions(&self) -&gt; Result&lt;Vec&lt;HerdrNamedSession&gt;, String&gt;;
+    fn capabilities(&self, session: Option&lt;&amp;str&gt;) -&gt; Result&lt;HerdrCapabilities, String&gt;;
+    fn request(&self, session: &amp;str, request: HerdrApiRequest) -&gt; Result&lt;Value, String&gt;;
+    fn subscribe(&self, session: &amp;str, sink: EventSink) -&gt; Result&lt;Subscription, String&gt;;
+    fn open_terminal(&self, request: TerminalOpenRequest) -&gt; Result&lt;Connector, String&gt;;
+}</code></pre>
+  </div>
+  <p><strong>Interface discipline：</strong>外層仍保留 <code>workspace_focus</code>、<code>tab_create</code> 等 typed methods 與 schema gating；Provider 只隱藏「如何執行 Herdr 與如何交換 NDJSON」。Frontend 不得新增 raw method/params passthrough。</p>
+  <h3>Frontend stable keys</h3>
+  <pre><code>type HerdrRuntimeTarget =
+  | { kind: "native" }
+  | { kind: "wsl"; distro: string }
+
+type HerdrSessionRef = {
+  runtimeTarget: HerdrRuntimeTarget
+  sessionName: string
+}
+
+runtimeKey(target)                  // stable encoded key
+sessionKey(target, sessionName)     // maps/caches/events
+pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
+  <ul>
+    <li>不可把 <code>wsl:Ubuntu</code> 字串散落到 UI；只允許中央 key codec。</li>
+    <li>既有沒有 runtime target 的頁面與 persisted metadata 一律 migration 為 <code>{kind:"native"}</code>。</li>
+    <li>Distro 名稱保留原文，可含空白／Unicode；所有 process launch 使用 argv，不進 shell program text。</li>
+  </ul>
+  <h3>雙路徑資料</h3>
+  <pre><code>interface HerdrWorkspaceLocation {
+  runtimePath: string | null // /home/yuuzu/project
+  hostPath: string | null    // \\wsl.localhost\Ubuntu\home\yuuzu\project
+  displayPath: string | null // presentation only
+}</code></pre>
+  <p>Path conversion 由選定 distro 內的 <code>wslpath</code> 或明確 UNC parser 完成；custom mounts 不以 <code>/mnt/c</code> 猜測。Workspace activation 以 Host Path 通過 Yuzora unsaved/trust/open-workspace flow；Herdr mutation 仍使用 Runtime Path。</p>
+</section>
+
+<figure>
+  <img src="windows-wsl-native-herdr-provider-plan/path-model.png" alt="Runtime Path 與 Host Path 同時指向一個 workspace 的雙路徑模型">
+  <figcaption>同一 workspace 有兩條 operational path；將它們壓成一個 cwd 會讓 Git、檔案操作或 identity 比對落到錯誤環境。</figcaption>
+</figure>
+
+<section id="support">
+  <h2>最終能力矩陣</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>能力</th><th>WSL stdio proxy</th><th>WSL CLI fallback</th><th>完成條件</th></tr></thead>
+    <tbody>
+      <tr><td>Session discovery/status/schema</td><td class="support-full">完整</td><td class="support-full">完整</td><td>不啟動未選擇的 distro；selected binary 為權威</td></tr>
+      <tr><td>Snapshot/Spaces/Agents</td><td class="support-full">完整</td><td class="support-partial">輪詢</td><td>相同 IDs 跨 distro 不碰撞</td></tr>
+      <tr><td>Workspace/Tab/Pane mutations</td><td class="support-full">完整</td><td class="support-partial">誠實降級</td><td>schema-gated；無 proxy 時不可假裝支援</td></tr>
+      <tr><td>events.subscribe</td><td class="support-full">完整</td><td class="support-no">不可用</td><td>events 與 responses 可在同一 stdout 安全分流</td></tr>
+      <tr><td>Terminal observe/control</td><td class="support-full">完整</td><td class="support-full">完整</td><td>既有 official connector 經 wsl.exe 啟動</td></tr>
+      <tr><td>Agent lifecycle/integrations</td><td class="support-full">WSL-native</td><td class="support-full">WSL-native</td><td>Herdr 在 distro 內看得到 Linux process tree</td></tr>
+      <tr><td>Git/worktree</td><td class="support-full">WSL-native</td><td class="support-partial">read-only 可先行</td><td>Runtime Path 不送進 Windows Git</td></tr>
+      <tr><td>Reconnect/recovery</td><td class="support-full">完整</td><td class="support-partial">重啟 CLI</td><td>generation isolation，舊 response/event 不污染新連線</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="files" class="files">
+  <h2>Relevant Files</h2>
+  <h3>Existing Files</h3>
+  <ul>
+    <li><span class="tag existing">existing</span> <code>src-tauri/src/herdr_service.rs</code> — 保留 typed facade、schema gating、DTO parsing、connector ownership；逐步把 execution/transport 細節移到 Provider adapters。</li>
+    <li><span class="tag existing">existing</span> <code>src-tauri/src/herdr_transport.rs</code> — 成為 Native adapter 的 local-socket transport，不承擔 WSL path 或 process launch。</li>
+    <li><span class="tag existing">existing</span> <code>src-tauri/src/pty_service.rs</code> — 重用 WSL distro list decoding、UNC parsing 的測試契約；避免 copy-paste divergent behavior。</li>
+    <li><span class="tag existing">existing</span> <code>src-tauri/src/process_kill.rs</code> — wsl/proxy/connector child hidden launch、Windows Job containment、bounded termination。</li>
+    <li><span class="tag existing">existing</span> <code>src-tauri/src/lib.rs</code> — 註冊新增 runtime settings/discovery commands，維持 shutdown 只 release Yuzora-owned children。</li>
+    <li><span class="tag existing">existing</span> <code>src/lib/herdrTypes.ts</code> / <code>src/lib/herdrIpc.ts</code> — typed RuntimeTarget、SessionRef 與所有 IPC payload 增加 target。</li>
+    <li><span class="tag existing">existing</span> <code>src/state/herdrStore.ts</code> — session-only maps 全面遷移為 runtime-scoped keys；poll/event/attention/activation queues 同步 namespace。</li>
+    <li><span class="tag existing">existing</span> <code>src/lib/herdrPages.ts</code> — pseudo path v2 與 legacy native migration。</li>
+    <li><span class="tag existing">existing</span> <code>src/state/workspaceStore.ts</code> / <code>src/lib/workbenchTabReorder.ts</code> — page metadata、dedupe、hydrate、reorder 以 RuntimeTarget + session + tab ID 判定。</li>
+    <li><span class="tag existing">existing</span> <code>src/workbench/HerdrBridge.tsx</code> — selected Runtime Session 的 events/polling owner，generation key 改為 composite key。</li>
+    <li><span class="tag existing">existing</span> <code>src/app/panels/HerdrTerminalPage.tsx</code> / <code>src/terminal/terminalTransport.ts</code> — connector open/takeover/release 傳入 RuntimeTarget。</li>
+    <li><span class="tag existing">existing</span> <code>src/app/workbench/HerdrSettingsSection.tsx</code> — Binary Source 與 Runtime Environment 分開顯示；WSL distro 是 live-select provider，不是假裝成 binary source。</li>
+    <li><span class="tag existing">existing</span> <code>src/lib/paths.ts</code> / <code>src/lib/workspaceActions.ts</code> — Host Path、Display Path 與 workspace activation。</li>
+    <li><span class="tag existing">existing</span> <code>src/lib/i18n/locales/{en,zh-TW}/workbench.json</code> — runtime、distro、proxy、fallback 與安裝診斷文案。</li>
+  </ul>
+  <h3>New Files</h3>
+  <ul>
+    <li><span class="tag new">new</span> <code>src-tauri/src/herdr_runtime/mod.rs</code> — RuntimeTarget、RuntimeKey、Provider interface 與 registry。</li>
+    <li><span class="tag new">new</span> <code>src-tauri/src/herdr_runtime/native.rs</code> — 現有 host binary/local socket 行為的 adapter。</li>
+    <li><span class="tag new">new</span> <code>src-tauri/src/herdr_runtime/wsl.rs</code> — distro discovery、argv-safe command builder、Herdr probe、CLI fallback 與 path conversion。</li>
+    <li><span class="tag new">new</span> <code>src-tauri/src/herdr_runtime/stdio_proxy.rs</code> — 長連線 child、request correlation、event fanout、generation/reconnect、bounded stderr。</li>
+    <li><span class="tag new">new</span> <code>src/lib/herdrRuntime.ts</code> — RuntimeTarget codecs、stable keys、labels、legacy migration helpers。</li>
+    <li><span class="tag new">new</span> <code>.yuuzu/eval/windows-wsl-herdr-provider.html</code> — Windows/WSL evidence matrix，實作時建立並累積驗收證據。</li>
+  </ul>
+</section>
+
+<section id="phases">
+  <h2>Implementation Phases</h2>
+  <p><strong>執行規則：</strong>依序執行；每個 phase 完成前，Native Herdr regression 與該 phase 新增契約都必須通過。狀態：<code>[]</code> idle · <code>[wip]</code> in progress · <code>[x]</code> complete · <code>[f]</code> failed。</p>
+
+  <div class="phase" id="phase-0">
+    <h3><code class="status">[x]</code> Phase 0：決策、版本基線與 characterization</h3>
+    <p>先固定現有 Native adapter 的 observable behavior，避免建立 Provider seam 時無意改變 session routing、capability gating、connector ownership 或 page lifecycle。</p>
+    <h4>0.1 Contract baseline</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 已建立本地 implementation-issue body 與 ADR/domain glossary back references：<code>specs/windows-wsl-native-herdr-implementation-issue.md</code>；GitHub publication 為外部未授權事項。</li>
+      <li><code class="status">[x]</code> 已建立 Native behavior matrix：<code>specs/windows-wsl-native-herdr-provider-baseline.html</code>，涵蓋 global/default binary、named sessions、socket ping、schema drift、stopped sessions、events、terminal connector 與 shutdown。</li>
+      <li><code class="status">[x]</code> 已以 selected binary 的 <code>status --json</code>／<code>api schema --json</code> characterization tests 固定 protocol authority；不從 upstream master protocol 推論。</li>
+      <li><code class="status">[x]</code> 為現有 page path、session maps、attention keys、event ownership 與 attachment keys 補 collision characterization tests。</li>
+    </ul>
+    <h4>0.2 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; cargo test --locked --lib herdr_ -- --test-threads=1</code> — Native Herdr baseline。</li>
+      <li><code class="status">[x]</code> <code>bun run test src/state/herdrStore.test.ts src/lib/herdrPages.test.ts src/lib/workbenchTabReorder.test.ts src/app/panels/HerdrTerminalPage.test.tsx src/workbench/TabBar.test.tsx</code> — session/page/connector baseline。</li>
+    </ul>
+    <div class="loop">🔁 Provider extraction 前必須有可證明 Native parity 的測試；不能以 full-suite 綠燈代替缺少的 collision contract。</div>
+  </div>
+
+  <div class="phase" id="phase-1">
+    <h3><code class="status">[x]</code> Phase 1：Runtime identity migration 與 Provider seam</h3>
+    <p>先讓 Native Herdr 經由新 seam 運作；此 phase 不加入 WSL execution，目標是把 session-only identity 改成 runtime-scoped identity 且 UI 無行為變化。</p>
+    <h4>1.1 Rust provider facade</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 新增 <code>HerdrRuntimeTarget</code>、<code>HerdrRuntimeKey</code>、Provider interface 與 registry；目前只註冊 Native adapter。</li>
+      <li><code class="status">[x]</code> binary selection、configured/resolved diagnostics、preference persistence、PATH→managed fallback 與 restart-required lifecycle 已移入 Native adapter；typed facade 僅委派並保留 DTO/schema gate。</li>
+      <li><code class="status">[x]</code> Native adapter 已擁有 session list、capability/snapshot request、event subscription/release 與 terminal connector opening/control/release；typed facade 保留 DTO/schema gate。</li>
+      <li><code class="status">[x]</code> connector、native event subscription、WSL proxy subscription 與 long-lived proxy generation registry 以 RuntimeKey ownership namespace，且 opaque IDs 維持 public control handles。</li>
+      <li><code class="status">[x]</code> 所有 Tauri commands 新增 optional <code>runtimeTarget</code>；省略時視為 Native，保留舊 caller compatibility。</li>
+    </ul>
+    <h4>1.2 Frontend identity migration</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 新增中央 <code>runtimeKey/sessionKey</code> helpers；禁止直接 template-string runtime keys。</li>
+      <li><code class="status">[x]</code> <code>runtimesBySession</code>、selected Space、in-flight maps、activation queues、attention、events health 改以 composite session key。</li>
+      <li><code class="status">[x]</code> Page metadata 加入 <code>herdrRuntimeTarget</code>；page path v2 包含 target，legacy v1 decode 為 Native 並在 snapshot reconcile 時升級 metadata。</li>
+      <li><code class="status">[x]</code> hydrate/reorder/close/context menus/terminal target links 全部以 runtime + session 判定，不讓跨 runtime 相同 tab ID dedupe。</li>
+    </ul>
+    <h4>1.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Native existing tests 全部維持通過，且 IPC omit-target compatibility 有 Rust/TS tests。</li>
+      <li><code class="status">[x]</code> 新增 Ubuntu/default 與 Native/default 同時存在的 store/page/attention/attachment collision tests。</li>
+      <li><code class="status">[x]</code> <code>bun run typecheck</code> — 所有 Herdr action 呼叫點都顯式攜帶或安全 default RuntimeTarget。</li>
+    </ul>
+    <div class="loop">🔁 Phase 1 結束時 UI 仍只有 Native runtime，但所有 identity 已能無碰撞承載第二個 adapter。</div>
+  </div>
+
+  <div class="phase" id="phase-2">
+    <h3><code class="status">[wip]</code> Phase 2：WSL discovery、CLI bootstrap 與雙路徑</h3>
+    <p>建立無 upstream 依賴的 read-only/terminal-capable WSL Provider，證明 distro 內 Herdr 可被發現、驗證、snapshot 與連接。</p>
+    <h4>2.1 Distro discovery policy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Windows 只用 <code>wsl.exe --list --quiet</code> 列出 distro，不啟動它們；重用 UTF-16LE/UTF-8 decoder，拒絕 empty/duplicate output，且有 host-runnable fake executor coverage。</li>
+      <li><code class="status">[x]</code> 只在使用者明確選擇或開啟既有 WSL page 時 probe 該 distro；背景 refresh 不遍歷啟動所有 distros，fake plan 斷言 list 不啟動 distro。</li>
+      <li><code class="status">[x]</code> 所有 WSL command 使用 <code>Command::new(wsl.exe).args(...)</code>；distro、session、path 不進 cmd/bash 字串，fake executor 斷言完整 argv/env。</li>
+      <li><code class="status">[x]</code> hidden process + Windows Job + bounded stdout/stderr + stage-specific timeout；failure classes 區分 WSL/distro/Herdr/session/protocol，host fake harness 覆蓋 bounded plans、timeout/owned-tree error。</li>
+    </ul>
+    <h4>2.2 CLI bootstrap</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 在 selected distro 內執行 Herdr session list、status、schema、snapshot；使用 <code>env HERDR_SESSION=… herdr …</code> argv，而非 host environment 假設。</li>
+      <li><code class="status">[x]</code> CLI fallback capability 誠實標示：snapshot/terminal 可用；events 不可用；未實作的 mutations 不可宣告 available。</li>
+      <li><code class="status">[x]</code> 將 CLI snapshot 經既有 bounded JSON/complexity/count parsers，不新增 WSL 專屬寬鬆 parser。</li>
+    </ul>
+    <h4>2.3 Path mapping</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 從 snapshot 的 Runtime Path 取得 Windows Host Path；優先使用 selected distro 的 <code>wslpath -w</code>，必要時正規化為 <code>\\wsl.localhost\distro\…</code>，並由 fake executor 驗證 custom mount/response bounds。</li>
+      <li><code class="status">[x]</code> Host Path → Runtime Path 使用 <code>wslpath -u</code>；UNC distro 必須與 RuntimeTarget distro 一致，跨 distro path fail closed。</li>
+      <li><code class="status">[x]</code> Workspace DTO 同時保留 runtimePath/hostPath/displayPath；既有 <code>space.path</code> 遷移時明確指定它的語意，不做 silent dual-use。</li>
+      <li><code class="status">[x]</code> custom mounts、空白、Unicode、UNC/verbatim path、distro 名稱大小寫與不存在 path 有 pure/fake command fixtures。</li>
+    </ul>
+    <h4>2.4 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Rust pure/fake tests：UTF-16/UTF-8 distro list、argv shape、timeout class、path mapping response、cross-distro rejection、snapshot conversion bounds。</li>
+      <li><code class="status">[x]</code> 可重用 fake <code>wsl.exe</code> executor 記錄 argv/env、回傳 bounded Herdr JSON、模擬 missing binary/timeout/invalid UTF-8；不依賴 Windows host。</li>
+      <li><code class="status">[]</code> Windows manual gate：選擇 Ubuntu 後才啟動 distro，顯示正確 Herdr version/protocol/session/snapshot。</li>
+    </ul>
+    <div class="loop">🔁 Phase 2 只證明 provider bootstrap 與 path correctness；尚未有 stdio proxy 時不得把 full mutations/events 標為可用。</div>
+  </div>
+
+  <div class="phase" id="phase-3">
+    <h3><code class="status">[wip]</code> Phase 3：WSL Terminal Session connector 與 page lifecycle</h3>
+    <p>透過既有 Herdr official connector，在 WSL-native runtime 中提供 observe/control、takeover、input、resize、scroll、release。</p>
+    <h4>3.1 Connector launch</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> WSL adapter 產生 <code>wsl.exe --distribution D --exec env HERDR_SESSION=S herdr terminal session control|observe …</code> argv，具 exact-plan test。</li>
+      <li><code class="status">[x]</code> 沿用現有 frame tracker、first-full/contiguous sequence、bounded stderr、control NDJSON 與 xterm write path，host fake connector 覆蓋 frame/stderr/exit。</li>
+      <li><code class="status">[x]</code> Connector registry key 加 RuntimeKey；相同 terminal ID 跨 distro 可同時開啟，host fake connector test 驗證 isolation。</li>
+      <li><code class="status">[x]</code> proxy/connector child 終止只關閉 Yuzora-owned Windows process tree；不得呼叫 <code>wsl --shutdown</code>、Herdr server stop 或 pane close，fake owned-child lifecycle test 驗證 release。</li>
+    </ul>
+    <h4>3.2 Page/activation integration</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> HerdrTerminalPage、leaf attachments、take-control 與 layout requests 傳入 RuntimeTarget。</li>
+      <li><code class="status">[x]</code> WSL Space activation 先以 Host Path 執行 unsaved/trust/workspace switch，再向 WSL Herdr focus Runtime Path 所屬 workspace/tab，Vitest 有雙路徑 assertion。</li>
+      <li><code class="status">[x]</code> 開啟 WSL page 不切走另一 runtime 的 selected pages；EditorGroup placement/cache 與 existing connector 保持。</li>
+      <li><code class="status">[x]</code> WSL 中斷時 page 保持 mounted，顯示 disconnected/reconnect；不得刪除 local page 或自動 close Herdr tab。</li>
+    </ul>
+    <h4>3.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Host-runnable fake WSL connector tests 覆蓋 frame、input、resize、scroll、takeover、stderr、exit、release、late open。</li>
+      <li><code class="status">[x]</code> Vitest 覆蓋 Native/Ubuntu 同 terminal ID 的 attachment isolation、page v2 paths、disconnected retention，並驗證 Host Path workspace activation 與 Runtime Path Herdr focus。</li>
+      <li><code class="status">[]</code> Windows manual gate：在 Yuzora xterm 中控制 WSL Herdr pane，關閉 Yuzora 後 WSL Herdr pane/server 持續存在。</li>
+    </ul>
+    <div class="loop">🔁 Terminal connector 完成不等於 control-plane 完成；events/mutations 仍維持 CLI fallback capability。</div>
+  </div>
+
+  <div class="phase" id="phase-4">
+    <h3><code class="status">[wip]</code> Phase 4：Herdr upstream 通用 NDJSON stdio proxy</h3>
+    <p>在 Herdr upstream 建立非 WSL-specific 的 transport bridge，使任何只能啟動遠端 process 的 client 都能代理 public socket API。</p>
+    <h4>4.1 Proxy wire contract</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 已在 <code>specs/herdr-upstream-api-proxy.patch</code> 實作命令 <code>herdr api proxy --stdio</code>；session 由 explicit option 或 <code>HERDR_SESSION</code> 選擇，連接現有 public API socket。</li>
+      <li><code class="status">[x]</code> Patch 的 stdin 接收 bounded NDJSON；stdout 只輸出 responses/events；stderr 只輸出 diagnostics，永不混入 protocol。</li>
+      <li><code class="status">[x]</code> Patch 保留 request IDs、error bodies、subscription event ordering 與 protocol/schema 語意，不創造第二套 RPC。</li>
+      <li><code class="status">[x]</code> Patch 對 stdin/socket EOF、malformed/oversized line、server restart 設定 deterministic exit/error；proxy 不停止 server。</li>
+      <li><code class="status">[x]</code> Patch 沿用 public API permission/security 與 bounded framing；不接受任意 socket path。</li>
+    </ul>
+    <h4>4.2 Upstream verification</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <strong>外部 toolchain gate：</strong>在 upstream 支援的 Linux/macOS/Windows toolchain 執行 Patch 的 unit/integration tests（ping、snapshot、mutation、events.subscribe、concurrent IDs、slow reader/backpressure、server disconnect）。此 host 的 vendored Ghostty SDK linker 阻擋 Cargo。</li>
+      <li><code class="status">[]</code> <strong>外部 cross-platform gate：</strong>Linux、macOS、native Windows build 維持，並證明 stdio proxy 可在 native host 使用。</li>
+      <li><code class="status">[x]</code> Patch 文件已明確區分 proxy process lifecycle 與 Herdr server/pane lifecycle。</li>
+    </ul>
+    <div class="callout warn"><strong>External dependency：</strong>Yuzora 不應依賴未合併的 private Herdr behavior。若 upstream 尚未接受 proxy，Phase 2/3 可交付 read/terminal beta，但 full mutations/events 保持 blocked。</div>
+    <div class="loop">🔁 Proxy 必須是 public、versioned、documented Herdr interface；不得複製 private bincode client protocol。</div>
+  </div>
+
+  <div class="phase" id="phase-5">
+    <h3><code class="status">[wip]</code> Phase 5：Yuzora StdioProxy transport、events 與 full control plane</h3>
+    <p>將 WSL adapter 從 CLI bootstrap 提升為長連線 primary transport，並保留 CLI fallback。</p>
+    <h4>5.1 Long-lived process module</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 每個 RuntimeKey 至多一個 active proxy generation；writer serialized，reader 依 request ID resolve pending calls，subscription events fanout。</li>
+      <li><code class="status">[x]</code> request deadline、pending count、line bytes、stderr bytes、JSON complexity 與 event queue 都有 hard ceilings。</li>
+      <li><code class="status">[x]</code> EOF/parse error 一次性 fail 所有 pending requests，emit disconnected，清掉 capability cache；舊 generation 的 late response/event 全部拒絕。</li>
+      <li><code class="status">[x]</code> reconnect 先重新 probe version/protocol/schema、再 snapshot、再 events；identity drift 不沿用舊 cache。</li>
+    </ul>
+    <h4>5.2 Facade parity</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> 既有 typed workspace/tab/pane/layout/agent/worktree methods 透過 Provider request，Native 與 WSL 共用 parsers與 capability flags。</li>
+      <li><code class="status">[x]</code> WSL events.subscribe 接進既有 HerdrBridge/store flow；healthy events 仍保留低頻 authoritative snapshot fallback。</li>
+      <li><code class="status">[x]</code> proxy unavailable 時自動降級 CLI snapshot/polling + terminal connector，並在 capabilities/diagnostics 顯示 degraded reason。</li>
+      <li><code class="status">[x]</code> Mutation 在 degraded mode 只有經明確支援的 CLI command 可開啟；其餘按鈕 disabled，不做 optimistic fake。</li>
+    </ul>
+    <h4>5.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Fake stdio proxy：out-of-order responses、events interleave、duplicate IDs、oversize、malformed JSON、EOF、stderr flood、write backpressure。</li>
+      <li><code class="status">[x]</code> Store/Bridge：proxy generation race、event owner switch、snapshot fallback、multi-distro concurrent pages、reconnect resnapshot。</li>
+      <li><code class="status">[]</code> Real WSL：workspace/tab/pane create/focus/rename/split/move/close、layout ratio、agent get/read、worktree list。</li>
+    </ul>
+    <div class="loop">🔁 Full support 只有在 typed mutations、events、terminal connector 與 reconnect 都經 WSL-native runtime 驗證後才能宣告。</div>
+  </div>
+
+  <div class="phase" id="phase-6">
+    <h3><code class="status">[x]</code> Phase 6：Settings、UX、持久化與多 distro</h3>
+    <p>讓 Runtime Environment 成為可理解、可診斷、可選擇的產品概念，但不把 WSL 與 Native binary source 混成一個設定。</p>
+    <h4>6.1 Settings UX</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Herdr Settings 分為 Runtime Environments 與 Native Binary Source；Native global/default 行為不變。</li>
+      <li><code class="status">[x]</code> 顯示可用 WSL distros；使用者可 enable/select，一次只 probe selected target；顯示 distro、Herdr path/version/protocol、proxy/fallback mode、reason。</li>
+      <li><code class="status">[x]</code> Herdr 未安裝時提供 distro 內安裝指引與 copy command；第一版不自動下載、sudo 或修改 shell config。</li>
+      <li><code class="status">[x]</code> Session/Space/Agent UI 顯示 Runtime Environment label，避免兩個 default session 無法辨識。</li>
+    </ul>
+    <h4>6.2 Persistence/migration</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Persist enabled/last-selected RuntimeTarget；只列 distro 不啟動，選擇/開頁才 connect。</li>
+      <li><code class="status">[x]</code> Legacy Herdr pages/settings/session metadata migration 為 Native；migration idempotent，原 page placement 不變。</li>
+      <li><code class="status">[x]</code> 若 persisted WSL distro 不存在，保留 page metadata與 readable diagnostic，不 silently fallback 到 Native。</li>
+      <li><code class="status">[x]</code> en/zh-TW 文案覆蓋 runtime、distro、not installed、proxy unavailable、CLI fallback、reconnect、path conversion failure。</li>
+    </ul>
+    <h4>6.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Settings tests：不 probe 未選 distro、selected probe、missing Herdr、proxy fallback、native binary controls unchanged。</li>
+      <li><code class="status">[x]</code> Migration tests：v1 native pages、missing distro、same session names、Unicode distro、restored inactive pages。</li>
+      <li><code class="status">[x]</code> Accessibility：Runtime selector、diagnostics、disabled mutation reasons、screen-reader labels 與 keyboard flow。</li>
+    </ul>
+    <div class="loop">🔁 Missing WSL target 絕不可 silently 連到 Native Herdr；runtime identity 是產品資料，不只是設定 label。</div>
+  </div>
+
+  <div class="phase" id="phase-7">
+    <h3><code class="status">[wip]</code> Phase 7：Windows/WSL hardening、performance 與 release gate</h3>
+    <p>以真實 Windows + WSL2 packaged build 證明 process、path、events、recovery 與 shutdown semantics。</p>
+    <h4>7.1 Failure matrix</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Host fake harness 已模擬 WSL executable/distro 缺失或 unregister、Herdr missing、session stopped、protocol drift，並驗證 fail-closed diagnostics。</li>
+      <li><code class="status">[x]</code> Host fake harness 已模擬 proxy crash/EOF、connector exit、app shutdown 與 restart generation；只釋放 Yuzora-owned children/pending requests。</li>
+      <li><code class="status">[x]</code> Host fake harness 已驗證多 distro 同名 IDs、Unicode/空白 distro、custom mount 與 UNC cross-distro/unavailable fail-closed。</li>
+      <li><code class="status">[x]</code> Host fake harness 已驗證 slow listener/event storm、large NDJSON/snapshot、agent text/frame limits與 rapid runtime reconnect guards。</li>
+      <li><code class="status">[]</code> <strong>Windows manual gate：</strong>在真實 WSL2 驗證 <code>wsl --terminate</code>、server/connector crash、sleep/resume、distro unregister 與同名 multi-distro recovery。</li>
+    </ul>
+    <h4>7.2 Performance budgets</h4>
+    <ul class="checklist">
+      <li><code class="status">[x]</code> Host diagnostics 已記錄 bounded cold start、warm proxy request、event dispatch、terminal frame dispatch simulation與 owned child count；CLI fallback 與 proxy mode 分開。</li>
+      <li><code class="status">[x]</code> Host fake harness 已保證 listing 不啟動 distro、同 RuntimeKey concurrent proxy creation 至多一 child，snapshot path enrichment 上限 64。</li>
+      <li><code class="status">[x]</code> Host Bridge test 已驗證 repeated disconnect 僅產生一個 reconnect generation，最多一個 event-driven recovery snapshot race。</li>
+      <li><code class="status">[]</code> <strong>Windows performance gate：</strong>在 packaged app 量測 selected cold probe、warm proxy、snapshot、event-to-UI、terminal frame 與 process-count budgets。</li>
+    </ul>
+    <h4>7.3 Release validation</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <strong>Windows packaged gate：</strong>完整 WSL Spaces/Agents/Terminal/control-plane smoke，收集 screenshot/log/process evidence。</li>
+      <li><code class="status">[]</code> <strong>Windows packaged gate：</strong>關閉 Yuzora 後 Herdr server/panes 仍存活，Yuzora proxy/connector children全部退出。</li>
+      <li><code class="status">[x]</code> 此 host 的 Native frontend/Rust full suite/build、touched-file lint、exact clippy baseline 與 release-only shutdown simulation 已通過；Windows native regression仍屬 packaged gate。</li>
+    </ul>
+    <div class="loop">🔁 沒有真實 Windows/WSL packaged evidence，不得把功能從 experimental 提升為 supported。</div>
+  </div>
+</section>
+
+<section id="validation">
+  <h2>Validation Commands</h2>
+  <ul class="checklist">
+    <li><code class="status">[x]</code> <code>bun run lint</code> exit 0（45 個既有且未觸及的 warnings、0 errors）；所有 touched Herdr/runtime/UI files 的 targeted ESLint 為 zero warnings。</li>
+    <li><code class="status">[x]</code> <code>bun run typecheck</code> — RuntimeTarget/SessionRef migration完整。</li>
+    <li><code class="status">[x]</code> <code>bun run test</code> — full Vitest suite。</li>
+    <li><code class="status">[x]</code> <code>bun run build</code> — production frontend build。</li>
+    <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; cargo fmt --package yuzora -- --check</code> — Rust formatting。</li>
+    <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; cargo check --locked --all-targets</code> — all Rust targets compile。</li>
+    <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; cargo test --locked</code> — full Rust suite。</li>
+    <li><code class="status">[x]</code> <code>ruby .github/scripts/verify-clippy-baseline.rb .github/clippy-baseline.json</code> — exact warning baseline。</li>
+    <li><code class="status">[x]</code> <code>git diff --check</code> — patch whitespace integrity。</li>
+    <li><code class="status">[x]</code> <code>git diff --cached --name-only</code> — 必須為空，除非使用者在當次對話明確授權 staging。</li>
+  </ul>
+  <div class="callout warn"><strong>Browser/E2E consent：</strong>Windows Tauri/WSL UI 驗收需要另行取得使用者明確授權後，才可使用 browser、computer-use 或其他 E2E automation。計畫建立階段不自動執行。</div>
+</section>
+
+<section id="questionables">
+  <h2>Questionables</h2>
+  <details open><summary>Herdr upstream 若暫時不接受 <code>api proxy --stdio</code>，Yuzora 是否仍可發布？</summary><p class="qa-answer">可以發布 experimental read/terminal beta：CLI discovery/status/schema/snapshot + snapshot polling + official terminal connector。Full mutation/events capability 必須 disabled 並顯示 degraded reason；不可在 Yuzora 內重作 Herdr private protocol。</p></details>
+  <details><summary>選擇 WSL distro 是否允許啟動該 distro？</summary><p class="qa-answer">建議：列舉不啟動；使用者明確選擇 Runtime Environment、開啟 persisted WSL page 或按 Connect 時，視為啟動 selected distro 的意圖。背景 refresh 不得 probe 未選 distros。</p></details>
+  <details><summary>第一版是否由 Yuzora managed-install Herdr 到 WSL？</summary><p class="qa-answer">否。先驗證 external installed Herdr，提供明確安裝指引與 diagnostics。Managed install 會涉及 distro filesystem、更新 ownership、arch/channel、sudo 與 supply-chain policy，應另立決策與計畫。</p></details>
+  <details><summary>WSL1 是否列入正式支援？</summary><p class="qa-answer">第一版以 WSL2 為驗收基線；Provider interface 不故意阻擋 WSL1，但未經 PTY/process/session persistence 驗證前只標示 unverified，不承諾 supported。</p></details>
+</section>
+
+<section id="notes">
+  <h2>Notes：時程、風險、回滾與後續</h2>
+  <h3>建議時程</h3>
+  <div class="timeline">
+    <div class="timeline-row"><b>Week 1</b><span>Phase 0–1：characterization、RuntimeTarget、Native adapter parity、frontend identity migration。</span></div>
+    <div class="timeline-row"><b>Week 2</b><span>Phase 2：WSL discovery、CLI bootstrap、path mapping、experimental settings。</span></div>
+    <div class="timeline-row"><b>Week 3</b><span>Phase 3：WSL terminal connector、page lifecycle、first real Windows POC。</span></div>
+    <div class="timeline-row"><b>Week 3–4</b><span>Phase 4 upstream track：Herdr stdio proxy proposal/implementation/review；可與 Yuzora Phase 2–3 部分平行。</span></div>
+    <div class="timeline-row"><b>Week 4–5</b><span>Phase 5：proxy transport、events、full typed mutations、fallback。</span></div>
+    <div class="timeline-row"><b>Week 6–7</b><span>Phase 6–7：multi-distro UX、migration、recovery/performance、packaged acceptance。</span></div>
+  </div>
+  <h3>Top risks</h3>
+  <div class="risk-grid">
+    <div class="risk-card"><strong>Upstream dependency</strong>Proxy 未合併會限制 full control plane；以 CLI/terminal beta 解耦進度，但不可 fork private protocol。</div>
+    <div class="risk-card"><strong>Identity migration breadth</strong>sessionName 假設散布 store/page/tab/context menu/tests；Phase 1 必須獨立完成並以 collision tests 封鎖漏點。</div>
+    <div class="risk-card"><strong>Process storms</strong>HerdrBridge polling + WSL CLI + reconnect 若各自 backoff，可能大量啟動 wsl.exe；Provider 必須集中 in-flight/backoff。</div>
+    <div class="risk-card"><strong>Path authority</strong>錯把 Runtime Path 當 Host Path 可能讓 workspace switch/Git/Editor 指向錯誤環境；DTO 與 function names 必須顯式。</div>
+    <div class="risk-card"><strong>Shutdown semantics</strong>Windows Job kill 若包含不該包含的 descendants，可能傷害 Herdr pane；只 containment proxy/connector direct child，不把 server納入。</div>
+    <div class="risk-card"><strong>Protocol drift</strong>Yuzora pinned Herdr 0.8.0/protocol 19 與 upstream protocol 20 並存；每個 RuntimeTarget 都需獨立 schema/protocol probe。</div>
+  </div>
+  <h3>Rollback strategy</h3>
+  <ul>
+    <li>RuntimeTarget DTO 與 legacy Native default 保留，使 WSL feature flag 關閉時 Native behavior 不變。</li>
+    <li>WSL adapter 可整體 disable，不刪除或改寫 WSL Herdr sessions/pages；既有 WSL pages顯示 unavailable。</li>
+    <li>Proxy regression 時降級 CLI snapshot/polling + terminal connector；mutation buttons依 capabilities停用。</li>
+    <li>不允許 WSL failure fallback 到 Native session，避免在錯誤 runtime 執行 destructive action。</li>
+  </ul>
+  <h3>Out of scope / future</h3>
+  <ul>
+    <li>Managed Herdr install/update inside WSL。</li>
+    <li>SSH、Dev Container、Docker/Podman Provider；stdio proxy與RuntimeTarget seam會保留延伸空間，但本計畫不實作。</li>
+    <li>跨 Runtime Environment 移動 live pane/session。</li>
+    <li>自動啟動所有 persisted distros、background health polling every distro。</li>
+    <li>WSL distro lifecycle管理、<code>wsl --shutdown</code> 或 unregister。</li>
+  </ul>
+  <p class="meta-note">Planning-only artifact：本文件建立時未修改產品功能、未執行 Git staging/commit/push、未啟動 browser/E2E automation。</p>
+</section>
+
+<section id="amendments">
+  <h2>Amendments</h2>
+  <p class="meta-note">尚無。後續變更採 append-only，並同步更新 modified/back refs/forward refs。</p>
+</section>
+</main>
+</body>
+</html>

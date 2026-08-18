@@ -2,7 +2,7 @@ import { act, cleanup, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { HerdrCapabilities, HerdrSubscriptionEvent } from "@/lib/herdrTypes"
-import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
+import { herdrInitialState, herdrStoreRuntimeKey, useHerdrStore } from "@/state/herdrStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const eventIpc = vi.hoisted(() => ({
@@ -109,6 +109,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -139,7 +140,7 @@ describe("HerdrBridge event ownership", () => {
     })
 
     await waitFor(() => expect(useHerdrStore.getState().topologyRevision).toBe(before + 1))
-    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default"))
+    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default", { kind: "native" }))
   })
 
   it("lets the store own worktree inventory refresh and only schedules snapshot recovery", async () => {
@@ -167,7 +168,7 @@ describe("HerdrBridge event ownership", () => {
     })
 
     await waitFor(() => expect(refreshWorktreeInventory).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default"))
+    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default", { kind: "native" }))
   })
 
   it("refreshes after tab.closed and workspace topology events", async () => {
@@ -196,7 +197,7 @@ describe("HerdrBridge event ownership", () => {
       })
     })
     await waitFor(() => expect(useHerdrStore.getState().topologyRevision).toBe(before + 1))
-    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default"))
+    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default", { kind: "native" }))
 
     refreshSnapshot.mockClear()
     act(() => {
@@ -208,7 +209,127 @@ describe("HerdrBridge event ownership", () => {
       })
     })
     await waitFor(() => expect(useHerdrStore.getState().topologyRevision).toBe(before + 2))
-    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default"))
+    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default", { kind: "native" }))
+  })
+
+  it("re-probes, re-snapshots, then resubscribes after a WSL proxy disconnect", async () => {
+    vi.useFakeTimers()
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
+    const calls: string[] = []
+    let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
+    const bootstrap = vi.fn(async () => { calls.push("probe") })
+    const refreshSnapshot = vi.fn(async () => {
+      calls.push("snapshot")
+      return true
+    })
+    eventIpc.subscribe.mockImplementation(async ({ onEvent }: {
+      onEvent: (event: HerdrSubscriptionEvent) => void
+    }) => {
+      calls.push("subscribe")
+      callback = onEvent
+      const id = calls.filter((call) => call === "subscribe").length === 1
+        ? "sub-1"
+        : "sub-2"
+      onEvent({ type: "subscribed", subscriptionId: id })
+      return id
+    })
+    useHerdrStore.setState((state) => ({
+      sessions: [{ ...sessions[0]!, runtimeTarget: ubuntu }],
+      selectedSessionName: "default",
+      selectedRuntimeTarget: ubuntu,
+      connectionState: "ready",
+      capabilities,
+      runtimesBySession: {
+        ...state.runtimesBySession,
+        [herdrStoreRuntimeKey("default", ubuntu)]: {
+          runtimeTarget: ubuntu,
+          capabilities,
+          snapshot: null,
+          baseSnapshot: null,
+          worktreeInventory: null,
+          connectionState: "ready",
+          errorMessage: null
+        }
+      },
+      bootstrap,
+      refreshSnapshot
+    }))
+
+    render(<HerdrBridge />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(callback).toBeDefined()
+    act(() => {
+      callback?.({ type: "disconnected", subscriptionId: "sub-1", reason: "proxy EOF" })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(bootstrap).toHaveBeenCalledWith("default", ubuntu)
+    expect(refreshSnapshot).toHaveBeenCalledWith("default", ubuntu)
+    expect(calls.indexOf("probe")).toBeLessThan(calls.lastIndexOf("snapshot"))
+    expect(calls.lastIndexOf("snapshot")).toBeLessThan(calls.lastIndexOf("subscribe"))
+  })
+
+  it("bounds repeated WSL proxy disconnects to one reconnect generation", async () => {
+    vi.useFakeTimers()
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
+    let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
+    const bootstrap = vi.fn(async () => undefined)
+    const refreshSnapshot = vi.fn(async () => true)
+    eventIpc.subscribe.mockImplementation(async ({ onEvent }: {
+      onEvent: (event: HerdrSubscriptionEvent) => void
+    }) => {
+      callback = onEvent
+      const id = eventIpc.subscribe.mock.calls.length === 1 ? "sub-1" : "sub-2"
+      onEvent({ type: "subscribed", subscriptionId: id })
+      return id
+    })
+    useHerdrStore.setState((state) => ({
+      sessions: [{ ...sessions[0]!, runtimeTarget: ubuntu }],
+      selectedSessionName: "default",
+      selectedRuntimeTarget: ubuntu,
+      connectionState: "ready",
+      capabilities,
+      runtimesBySession: {
+        ...state.runtimesBySession,
+        [herdrStoreRuntimeKey("default", ubuntu)]: {
+          runtimeTarget: ubuntu,
+          capabilities,
+          snapshot: null,
+          baseSnapshot: null,
+          worktreeInventory: null,
+          connectionState: "ready",
+          errorMessage: null
+        }
+      },
+      bootstrap,
+      refreshSnapshot
+    }))
+
+    render(<HerdrBridge />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(callback).toBeDefined()
+    const beforeReconnectSnapshots = refreshSnapshot.mock.calls.length
+    const beforeReconnectSubscribes = eventIpc.subscribe.mock.calls.length
+    act(() => {
+      for (let index = 0; index < 16; index += 1) {
+        callback?.({ type: "disconnected", subscriptionId: "sub-1", reason: "fixture crash" })
+      }
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    // One event-driven recovery snapshot may race the one post-probe snapshot,
+    // but repeated disconnect notices must not multiply proxy reconnects.
+    expect(refreshSnapshot.mock.calls.length).toBeLessThanOrEqual(beforeReconnectSnapshots + 2)
+    expect(eventIpc.subscribe).toHaveBeenCalledTimes(beforeReconnectSubscribes + 1)
   })
 
   it("rejects late events from the previous named session", async () => {
@@ -267,6 +388,53 @@ describe("HerdrBridge event ownership", () => {
       })
     })
     expect(useHerdrStore.getState().attentionItems("work")[0]?.title).toBe("Current")
-    expect(eventIpc.release).toHaveBeenCalledWith("sub-default")
+    expect(eventIpc.release).toHaveBeenCalledWith("sub-default", { kind: "native" })
   })
+})
+
+it("owns event subscribe and release by RuntimeTarget for same-name WSL sessions", async () => {
+  const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
+  let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
+  eventIpc.subscribe.mockImplementation(async ({ onEvent }: {
+    onEvent: (event: HerdrSubscriptionEvent) => void
+  }) => {
+    callback = onEvent
+    onEvent({ type: "subscribed", subscriptionId: "sub-ubuntu" })
+    return "sub-ubuntu"
+  })
+  useHerdrStore.setState((state) => ({
+    sessions: [{
+      name: "default",
+      default: true,
+      running: true,
+      sessionDir: "/tmp/ubuntu-default",
+      socketPath: "/tmp/ubuntu-default.sock",
+      runtimeTarget: ubuntu
+    }],
+    selectedSessionName: "default",
+    selectedRuntimeTarget: ubuntu,
+    connectionState: "ready",
+    capabilities,
+    runtimesBySession: {
+      ...state.runtimesBySession,
+      [herdrStoreRuntimeKey("default", ubuntu)]: {
+        runtimeTarget: ubuntu,
+        capabilities,
+        snapshot: null,
+        baseSnapshot: null,
+        worktreeInventory: null,
+        connectionState: "ready",
+        errorMessage: null
+      }
+    }
+  }))
+
+  const view = render(<HerdrBridge />)
+  await waitFor(() => expect(callback).toBeDefined())
+  expect(eventIpc.subscribe).toHaveBeenCalledWith(expect.objectContaining({
+    runtimeTarget: ubuntu,
+    sessionName: "default"
+  }))
+  view.unmount()
+  await waitFor(() => expect(eventIpc.release).toHaveBeenCalledWith("sub-ubuntu", ubuntu))
 })

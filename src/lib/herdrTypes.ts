@@ -35,6 +35,25 @@ export type HerdrConnectionState =
   | "error"
   | "stopped"
 
+/** Runtime Environment that owns Herdr, PTYs, process tree, and paths. */
+export type HerdrRuntimeTarget =
+  | { kind: "native" }
+  | { kind: "wsl"; distro: string }
+
+/** A Windows-visible WSL distribution; listing it does not start it. */
+export interface HerdrWslDistribution {
+  distro: string
+}
+
+/** One workspace has distinct Runtime/Host operational paths in WSL mode. */
+export interface HerdrWslWorkspaceLocation {
+  distro: string
+  runtimePath: string
+  hostPath: string
+  /** Presentation-only path; never use as an IPC cwd. */
+  displayPath: string
+}
+
 /** `pane.split` direction (protocol-19). */
 export type HerdrSplitDirection = "right" | "down"
 
@@ -43,6 +62,8 @@ export type HerdrPaneZoomMode = "toggle" | "on" | "off"
 
 /** Named persistent Herdr session from `herdr session list --json`. */
 export interface HerdrNamedSession {
+  /** Omitted by legacy/native IPC; normalize to Native in state. */
+  runtimeTarget?: HerdrRuntimeTarget | null
   name: string
   default: boolean
   running: boolean
@@ -109,6 +130,28 @@ export interface HerdrEventsCapability {
   reason?: string | null
 }
 
+/** Read-only health/telemetry for a runtime-specific transport. */
+export interface HerdrTransportDiagnostics {
+  mode: "wsl-stdio-proxy" | "wsl-cli-fallback" | string
+  state: "available" | "degraded" | "reconnecting" | "failed" | string
+  generation?: number | null
+  pendingRequests: number
+  eventListeners: number
+  /** Yuzora-owned proxy/connector children only; never includes Herdr/panes. */
+  activeChildren: number
+  requests: number
+  responses: number
+  eventsDelivered: number
+  staleEventsDropped: number
+  /** Coarse capped local timings, not paths, process IDs, or command arguments. */
+  coldStartMs?: number | null
+  lastRequestMs?: number | null
+  maxRequestMs: number
+  lastEventDispatchMs?: number | null
+  maxEventDispatchMs: number
+  failure?: string | null
+}
+
 export interface HerdrBinarySourceInfo {
   configured: HerdrBinarySource
   active?: HerdrBinarySource | null
@@ -144,6 +187,8 @@ export interface HerdrCapabilities {
   api: HerdrApiCapability
   terminal: HerdrTerminalCapability
   events: HerdrEventsCapability
+  /** Absent for legacy/native capability documents. */
+  transport?: HerdrTransportDiagnostics | null
 }
 
 export interface HerdrAgentDetails {
@@ -226,6 +271,8 @@ export type HerdrAttentionKind = "blocked" | "done" | "unknown" | "error"
 
 export interface HerdrAttentionItem {
   key: string
+  /** Absent only on persisted legacy state; normalize to Native at use sites. */
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName: string
   paneId: string
   workspaceId?: string | null
@@ -251,7 +298,12 @@ export interface HerdrSpaceInfo {
   order: number
   focused: boolean
   activeTabId?: string | null
+  /** Host path used by Yuzora workspace/filesystem APIs. */
   path?: string | null
+  /** Linux path owned by the runtime (WSL/Git/Herdr only). */
+  runtimePath?: string | null
+  hostPath?: string | null
+  displayPath?: string | null
   status?: HerdrAgentStatus | null
   agentCount?: number
   terminalCount?: number
@@ -323,8 +375,13 @@ export interface HerdrAgentInfo {
   focused?: boolean
   /** Owning named session (frontend-annotated). */
   sessionName?: string | null
+  /** Owning Runtime Environment (frontend-annotated). */
+  runtimeTarget?: HerdrRuntimeTarget | null
   /** Owning Space label for ADE Agents list. */
   spaceLabel?: string | null
+  runtimePath?: string | null
+  hostPath?: string | null
+  displayPath?: string | null
 }
 
 export interface HerdrTerminalInfo {
@@ -333,7 +390,11 @@ export interface HerdrTerminalInfo {
   workspaceId?: string | null
   tabId?: string | null
   title?: string | null
+  /** Host cwd for editor links; runtimePath remains the Herdr/Linux cwd. */
   cwd?: string | null
+  runtimePath?: string | null
+  hostPath?: string | null
+  displayPath?: string | null
   status?: HerdrAgentStatus | null
 }
 
@@ -353,6 +414,8 @@ export interface HerdrTabInfo {
   terminalId?: string | null
   /** Owning named session (frontend-annotated). */
   sessionName?: string | null
+  /** Owning Runtime Environment (frontend-annotated). */
+  runtimeTarget?: HerdrRuntimeTarget | null
 }
 
 /**
@@ -361,6 +424,8 @@ export interface HerdrTabInfo {
  */
 export interface HerdrSnapshot {
   herdrSessionId: string
+  /** Absent only on protocol-19/legacy state; normalize to Native at use sites. */
+  runtimeTarget?: HerdrRuntimeTarget | null
   protocol: number
   version: string
   spaces: HerdrSpaceInfo[]
@@ -412,6 +477,7 @@ export type HerdrTerminalEvent =
   | { type: "error"; sessionId: string; code: string; message: string }
 
 export interface HerdrCreateTerminalRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   workspaceId?: string | null
   title?: string | null
@@ -426,6 +492,7 @@ export interface HerdrCreateTerminalResult {
 }
 
 export interface HerdrWorkspaceCreateRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   cwd?: string | null
   label?: string | null
@@ -476,17 +543,20 @@ export interface HerdrLayoutDescription {
 }
 
 export interface HerdrWorkspaceRenameRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   workspaceId: string
   label: string
 }
 
 export interface HerdrWorkspaceCloseRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   workspaceId: string
 }
 
 export interface HerdrTabCreateRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   workspaceId?: string | null
   label?: string | null
@@ -495,39 +565,46 @@ export interface HerdrTabCreateRequest {
 }
 
 export interface HerdrTabFocusRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   tabId: string
 }
 
 export interface HerdrTabRenameRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   tabId: string
   label: string
 }
 
 export interface HerdrTabCloseRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   tabId: string
 }
 
 export interface HerdrTabMoveRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   tabId: string
   insertIndex: number
 }
 
 export interface HerdrPaneFocusRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   paneId: string
 }
 
 export interface HerdrPaneRenameRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   paneId: string
   label?: string | null
 }
 
 export interface HerdrPaneSplitRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   direction: HerdrSplitDirection
   targetPaneId?: string | null
@@ -538,12 +615,14 @@ export interface HerdrPaneSplitRequest {
 }
 
 export interface HerdrPaneZoomRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   paneId?: string | null
   mode?: HerdrPaneZoomMode | null
 }
 
 export interface HerdrPaneSwapRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   sourcePaneId?: string | null
   targetPaneId?: string | null
@@ -552,17 +631,20 @@ export interface HerdrPaneSwapRequest {
 }
 
 export interface HerdrPaneCloseRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   paneId: string
 }
 
 export interface HerdrLayoutExportRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   tabId?: string | null
   paneId?: string | null
 }
 
 export interface HerdrLayoutSetSplitRatioRequest {
+  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   tabId?: string | null
   paneId?: string | null
@@ -572,6 +654,8 @@ export interface HerdrLayoutSetSplitRatioRequest {
 }
 
 export interface HerdrSessionRuntime {
+  /** Runtime Environment for this cached capability/snapshot document. */
+  runtimeTarget?: HerdrRuntimeTarget | null
   capabilities: HerdrCapabilities | null
   snapshot: HerdrSnapshot | null
   /** Undecorated normalized snapshot used as the authoritative projection base. */

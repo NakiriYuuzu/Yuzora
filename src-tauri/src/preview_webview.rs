@@ -47,6 +47,12 @@ pub fn forward_preview_file_drop(webview: &Webview, event: &WebviewEvent) {
 
 pub struct PreviewWebviewState(pub Mutex<Option<Webview>>);
 
+fn focus_main_webview(app: &AppHandle) {
+    if let Some(webview) = app.get_webview("main") {
+        let _ = webview.set_focus();
+    }
+}
+
 fn parse_web_url(url: &str) -> Result<Url, String> {
     let parsed = Url::parse(url).map_err(|e| e.to_string())?;
     match parsed.scheme() {
@@ -72,14 +78,13 @@ pub fn preview_open_url(
         webview.navigate(parsed).map_err(|e| e.to_string())?;
         let _ = webview.set_position(LogicalPosition::new(x, y));
         let _ = webview.set_size(LogicalSize::new(width, height));
-        let _ = webview.show();
         return Ok(());
     }
 
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
-    let builder = WebviewBuilder::new(PREVIEW_LABEL, WebviewUrl::External(parsed));
+    let builder = WebviewBuilder::new(PREVIEW_LABEL, WebviewUrl::External(parsed)).focused(false);
     let webview = window
         .add_child(
             builder,
@@ -87,6 +92,7 @@ pub fn preview_open_url(
             LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
+    let _ = webview.hide();
     *guard = Some(webview);
     Ok(())
 }
@@ -109,6 +115,7 @@ pub fn preview_set_bounds(
 
 #[tauri::command]
 pub fn preview_set_visible(
+    app: AppHandle,
     visible: bool,
     state: tauri::State<'_, PreviewWebviewState>,
 ) -> Result<(), String> {
@@ -120,15 +127,22 @@ pub fn preview_set_visible(
             webview.hide()
         };
     }
+    if !visible {
+        focus_main_webview(&app);
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn preview_close(state: tauri::State<'_, PreviewWebviewState>) -> Result<(), String> {
+pub fn preview_close(
+    app: AppHandle,
+    state: tauri::State<'_, PreviewWebviewState>,
+) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(webview) = guard.take() {
         let _ = webview.close();
     }
+    focus_main_webview(&app);
     Ok(())
 }
 

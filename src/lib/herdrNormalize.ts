@@ -3,11 +3,13 @@ import type {
   HerdrAgentStatus,
   HerdrSnapshot,
   HerdrSnapshotResult,
+  HerdrRuntimeTarget,
   HerdrSpaceInfo,
   HerdrTabInfo,
   HerdrTerminalInfo
 } from "./herdrTypes"
 import { spaceProvenanceFromSnapshotWorktree } from "./herdrWorktree"
+import { normalizeHerdrRuntimeTarget } from "./herdrRuntime"
 
 /** Legacy page namespace alias; backend resolves `live` to the default named session. */
 export const HERDR_LIVE_SESSION_ID = "live"
@@ -54,8 +56,10 @@ function asAgentStatus(value: unknown): HerdrAgentStatus {
  */
 export function normalizeHerdrSnapshot(
   result: HerdrSnapshotResult,
-  herdrSessionId: string = HERDR_LIVE_SESSION_ID
+  herdrSessionId: string = HERDR_LIVE_SESSION_ID,
+  runtimeTarget?: HerdrRuntimeTarget | null
 ): HerdrSnapshot {
+  const normalizedRuntimeTarget = normalizeHerdrRuntimeTarget(runtimeTarget)
   const raw = result.snapshot
   const root = asRecord(raw) ?? {}
 
@@ -70,15 +74,22 @@ export function normalizeHerdrSnapshot(
   // Protocol 19 workspace summaries do not expose cwd/path. Derive the Space
   // path from its agent/pane launch cwd so selecting another Space can also
   // switch Yuzora's project context. Prefer `cwd` over mutable foreground_cwd.
-  const fallbackSpacePaths = new Map<string, string>()
+  const fallbackSpacePaths = new Map<string, {
+    runtimePath: string | null
+    hostPath: string | null
+    displayPath: string | null
+  }>()
   for (const values of [agentsRaw, panesRaw]) {
     for (const value of values) {
       const item = asRecord(value)
       if (!item) continue
       const workspaceId = asString(item.workspace_id)
-      const path = asString(item.cwd) ?? asString(item.foreground_cwd)
-      if (workspaceId && path && !fallbackSpacePaths.has(workspaceId)) {
-        fallbackSpacePaths.set(workspaceId, path)
+      const runtimePath =
+        asString(item.runtime_path) ?? asString(item.cwd) ?? asString(item.foreground_cwd)
+      const hostPath = asString(item.host_path) ?? runtimePath
+      const displayPath = asString(item.display_path) ?? hostPath
+      if (workspaceId && hostPath && !fallbackSpacePaths.has(workspaceId)) {
+        fallbackSpacePaths.set(workspaceId, { runtimePath, hostPath, displayPath })
       }
     }
   }
@@ -93,19 +104,31 @@ export function normalizeHerdrSnapshot(
     const worktreeRec = asRecord(ws.worktree)
     const snapshotProvenance = spaceProvenanceFromSnapshotWorktree(worktreeRec)
     // Protocol 19 path fallback: worktree.checkout_path → path/cwd → agent/pane cwd.
-    const path =
-      snapshotProvenance.path ??
-      asString(ws.path) ??
+    // In WSL snapshots `runtime_path` is Linux-only; `host_path` is the only
+    // path passed to Yuzora workspace/filesystem APIs.
+    const fallbackLocation = fallbackSpacePaths.get(id)
+    const runtimePath =
+      asString(ws.runtime_path) ??
       asString(ws.cwd) ??
-      fallbackSpacePaths.get(id) ??
+      asString(ws.path) ??
+      fallbackLocation?.runtimePath ??
       null
+    const hostPath =
+      asString(ws.host_path) ??
+      (normalizedRuntimeTarget.kind === "native"
+        ? (snapshotProvenance.path ?? asString(ws.path) ?? fallbackLocation?.hostPath ?? null)
+        : (fallbackLocation?.hostPath ?? null))
+    const displayPath = asString(ws.display_path) ?? fallbackLocation?.displayPath ?? hostPath
     spaces.push({
       id,
       label: asString(ws.label) ?? id,
       order,
       focused: asBool(ws.focused),
       activeTabId: asString(ws.active_tab_id),
-      path,
+      path: hostPath,
+      runtimePath,
+      hostPath,
+      displayPath,
       status: asAgentStatus(ws.agent_status),
       agentCount: undefined,
       terminalCount: asNumber(ws.pane_count) ?? undefined,
@@ -147,7 +170,16 @@ export function normalizeHerdrSnapshot(
         asString(agent.terminal_title) ??
         asString(agent.name),
       displayAgent: asString(agent.display_agent) ?? asString(agent.agent),
-      focused: asBool(agent.focused)
+      focused: asBool(agent.focused),
+      runtimePath: asString(agent.runtime_path) ?? asString(agent.cwd) ?? asString(agent.foreground_cwd),
+      hostPath: asString(agent.host_path) ??
+        (normalizedRuntimeTarget.kind === "native"
+          ? (asString(agent.cwd) ?? asString(agent.foreground_cwd))
+          : null),
+      displayPath: asString(agent.display_path) ?? asString(agent.host_path) ??
+        (normalizedRuntimeTarget.kind === "native"
+          ? (asString(agent.cwd) ?? asString(agent.foreground_cwd))
+          : null)
     })
   }
 
@@ -168,7 +200,19 @@ export function normalizeHerdrSnapshot(
         asString(pane.label) ??
         asString(pane.terminal_title_stripped) ??
         asString(pane.terminal_title),
-      cwd: asString(pane.cwd) ?? asString(pane.foreground_cwd),
+      cwd: asString(pane.host_path) ??
+        (normalizedRuntimeTarget.kind === "native"
+          ? (asString(pane.cwd) ?? asString(pane.foreground_cwd))
+          : null),
+      runtimePath: asString(pane.runtime_path) ?? asString(pane.cwd) ?? asString(pane.foreground_cwd),
+      hostPath: asString(pane.host_path) ??
+        (normalizedRuntimeTarget.kind === "native"
+          ? (asString(pane.cwd) ?? asString(pane.foreground_cwd))
+          : null),
+      displayPath: asString(pane.display_path) ?? asString(pane.host_path) ??
+        (normalizedRuntimeTarget.kind === "native"
+          ? (asString(pane.cwd) ?? asString(pane.foreground_cwd))
+          : null),
       status: asAgentStatus(pane.agent_status)
     })
   }
@@ -210,7 +254,8 @@ export function normalizeHerdrSnapshot(
       focused: wireFocused || focusedTabId === id,
       paneId: representativeTerminal?.paneId ?? null,
       terminalId: representativeTerminal?.terminalId ?? null,
-      sessionName: herdrSessionId
+      sessionName: herdrSessionId,
+      runtimeTarget: normalizedRuntimeTarget
     })
   }
 
@@ -265,6 +310,7 @@ export function normalizeHerdrSnapshot(
   const spaceLabels = new Map(spaces.map((space) => [space.id, space.label]))
   for (const agent of agents) {
     agent.sessionName = herdrSessionId
+    agent.runtimeTarget = normalizedRuntimeTarget
     agent.spaceLabel = spaceLabels.get(agent.workspaceId) ?? agent.workspaceId
   }
 
@@ -277,6 +323,7 @@ export function normalizeHerdrSnapshot(
 
   return {
     herdrSessionId,
+    runtimeTarget: normalizedRuntimeTarget,
     protocol: result.protocol,
     version: result.version,
     spaces,

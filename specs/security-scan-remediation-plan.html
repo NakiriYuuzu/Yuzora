@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: Yuzora 安全掃描完整修復</title>
+<style>
+  :root {
+    --paper: #f4f1e8;
+    --panel: #fffdf7;
+    --ink: #172334;
+    --muted: #667082;
+    --line: #d8d4c8;
+    --navy: #193b63;
+    --navy-soft: #dce8f2;
+    --red: #9d3f46;
+    --red-soft: #f8e3e4;
+    --amber: #92651f;
+    --amber-soft: #fff0cf;
+    --green: #2f6b50;
+    --green-soft: #e2f1e8;
+    --shadow: 0 18px 52px rgba(22, 34, 50, .10);
+    --serif: "TsangerJinKai02", "Noto Serif TC", "Source Han Serif TC", Charter, Georgia, serif;
+    --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: light; scroll-behavior: smooth; background: var(--paper); }
+  body { margin: 0; color: var(--ink); background: var(--paper); font: 15.5px/1.68 var(--serif); }
+  main { width: min(1180px, calc(100% - 32px)); margin: 28px auto 72px; }
+  header, section { margin: 16px 0; padding: 26px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); }
+  h1, h2, h3, h4 { line-height: 1.25; }
+  h1 { margin: 0 0 10px; color: var(--navy); font-size: clamp(30px, 5vw, 48px); font-weight: 700; }
+  h2 { margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); color: var(--navy); font-size: 25px; }
+  h3 { margin: 25px 0 10px; font-size: 20px; }
+  h4 { margin: 20px 0 8px; color: var(--navy); font-size: 16px; }
+  p { margin: 9px 0 13px; }
+  a { color: var(--navy); }
+  code, pre { font-family: var(--mono); }
+  code { padding: 1px 5px; border-radius: 5px; background: #edf0f2; font-size: .9em; }
+  pre { overflow: auto; padding: 15px; border: 1px solid #283a4d; border-radius: 10px; background: #172334; color: #eef5fb; font-size: 13px; }
+  ul, ol { padding-left: 23px; }
+  li { margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 13.5px; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { position: sticky; top: 0; z-index: 1; color: var(--navy); background: #eef3f6; font-weight: 700; }
+  .table-wrap { overflow-x: auto; margin: 12px 0 18px; border: 1px solid var(--line); border-radius: 12px; }
+  .table-wrap table { min-width: 820px; }
+  .lead { max-width: 850px; color: var(--muted); font-size: 17px; }
+  .kicker { margin-bottom: 10px; color: var(--red); font: 700 12px/1.4 var(--sans); letter-spacing: .14em; text-transform: uppercase; }
+  .meta dl { display: grid; grid-template-columns: 140px 1fr; gap: 7px 14px; }
+  .meta dt { color: var(--muted); font-family: var(--sans); }
+  .meta dd { margin: 0; overflow-wrap: anywhere; }
+  figure { margin: 18px 0; }
+  figure img { width: 100%; max-height: 620px; object-fit: cover; border: 1px solid var(--line); border-radius: 14px; background: #eee9dd; }
+  figcaption { margin-top: 7px; color: var(--muted); font: 13px/1.5 var(--sans); }
+  .callout { margin: 14px 0; padding: 14px 16px; border-left: 5px solid var(--navy); border-radius: 9px; background: var(--navy-soft); }
+  .callout.risk { border-color: var(--red); background: var(--red-soft); }
+  .callout.warn { border-color: var(--amber); background: var(--amber-soft); }
+  .callout.ok { border-color: var(--green); background: var(--green-soft); }
+  .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+  .metric { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #faf8f1; }
+  .metric strong { display: block; color: var(--navy); font: 700 28px/1.1 var(--sans); }
+  .metric span { color: var(--muted); font: 13px/1.4 var(--sans); }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font: 700 11px/1.5 var(--sans); white-space: nowrap; }
+  .high { color: white; background: var(--red); }
+  .medium { color: #6e4a15; background: #f6ddac; }
+  .existing { color: #4e5968; background: #e9ecef; }
+  .new { color: #255b42; background: #dceee4; }
+  .phase { margin: 18px 0; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: #fdfbf5; }
+  .phase > h3 { margin-top: 0; }
+  .status { color: var(--navy); font-weight: 800; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding: 5px 0; }
+  .loop { margin-top: 15px; padding: 12px 14px; border-radius: 8px; color: var(--navy); background: #eaf1f5; font-family: var(--sans); }
+  .architecture { display: grid; grid-template-columns: repeat(7, minmax(90px, 1fr)); gap: 8px; align-items: center; margin: 16px 0; }
+  .architecture .box { min-height: 82px; display: grid; place-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #f4f7f8; text-align: center; font: 700 13px/1.4 var(--sans); }
+  .architecture .gate { color: var(--navy); border-color: var(--navy); background: var(--navy-soft); }
+  .architecture .arrow { text-align: center; color: var(--navy); font-size: 22px; }
+  .toc { columns: 2; column-gap: 30px; font-family: var(--sans); }
+  .toc li { break-inside: avoid; }
+  .finding-id { font-family: var(--mono); font-weight: 800; }
+  .decision { display: grid; grid-template-columns: 190px 1fr; gap: 8px 18px; margin: 12px 0; }
+  .decision dt { color: var(--navy); font-weight: 700; }
+  .decision dd { margin: 0; }
+  details { margin: 10px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: #faf8f2; }
+  summary { cursor: pointer; color: var(--navy); font-weight: 700; }
+  @media (max-width: 860px) {
+    .metrics { grid-template-columns: 1fr 1fr; }
+    .architecture { grid-template-columns: 1fr; }
+    .architecture .arrow { transform: rotate(90deg); }
+    .meta dl, .decision { grid-template-columns: 1fr; }
+    .toc { columns: 1; }
+  }
+  @media (max-width: 520px) {
+    main { width: min(100% - 18px, 1180px); margin-top: 10px; }
+    header, section { padding: 18px; border-radius: 12px; }
+    .metrics { grid-template-columns: 1fr; }
+  }
+  @media print {
+    body { background: white; }
+    main { width: 100%; margin: 0; }
+    header, section { box-shadow: none; break-inside: auto; }
+    .phase, figure, table, pre { break-inside: avoid; }
+    details { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="kicker">Security Remediation · 12 Findings · Defense in Depth</div>
+  <h1>Yuzora 安全掃描完整修復計畫</h1>
+  <p class="lead">針對 Codex Security 於封存修訂 <code>f994a3df1a7b78b68083d13c46cf2d7fcb990c81</code> 提出的 6 項高嚴重度、6 項中嚴重度發現，以及 4 組覆蓋缺口，建立可分階段實作、逐項驗證、最終重掃關閉的工程計畫。</p>
+  <details class="meta">
+    <summary>Metadata</summary>
+    <dl>
+      <dt>created</dt><dd>2026-08-14T08:44:04Z</dd>
+<dt>modified</dt><dd>2026-08-14T08:44:04Z, 2026-08-14T11:26:02Z</dd>
+      <dt>commits</dt><dd>f994a3d</dd>
+      <dt>back refs</dt><dd>本機 security scan report（不納入版本控制）；<code>AGENTS.md</code>；<code>CLAUDE.md</code>；<code>docs/agents/domain.md</code>；掃描 canonical artifacts：<code>scan-manifest.json</code>、<code>findings.json</code>、<code>coverage.json</code></dd>
+      <dt>forward refs</dt><dd>Umbrella security issue、各 phase implementation PR、跨平台 packaged-runtime 證據、修復後 Codex Security 重掃報告</dd>
+    </dl>
+  </details>
+
+  <div class="metrics" aria-label="修復範圍摘要">
+    <div class="metric"><strong>12</strong><span>高信賴安全發現</span></div>
+    <div class="metric"><strong>6 / 6</strong><span>High / Medium</span></div>
+    <div class="metric"><strong>8</strong><span>依賴順序實作階段</span></div>
+    <div class="metric"><strong>0</strong><span>目標：重掃未關閉 findings</span></div>
+  </div>
+</header>
+
+<figure>
+  <img src="security-scan-remediation/hero.png" alt="Yuzora 以信任、路徑隔離、供應鏈完整性與資源預算構成的安全架構">
+  <figcaption>目標架構：任何不可信輸入在跨入 native execution、filesystem、credentials 或 renderer memory 前，都必須通過後端持有且 fail-closed 的控制。</figcaption>
+</figure>
+
+<section id="purpose">
+  <h2>目的與完成定義</h2>
+  <p>本計畫不是只消除掃描器指出的單一 sink，而是把重複出現的根因提升為共用安全契約：<strong>工作區信任、typed identifiers、descriptor-relative path confinement、operation-scoped authority、secure transport、verified provenance、pre-allocation budgets</strong>。</p>
+  <div class="callout risk">
+    <strong>Release gate：</strong>Phase 1–4 的 6 項 High 在任何新版本發布前必須全部關閉；Medium 不得以「顯示警告」代替後端控制。最終必須以 hostile fixture、跨平台 packaged build 與獨立重掃證明，不以 code review 主觀判斷代替。
+  </div>
+  <ul>
+    <li>12 項發現都有對應的 backend control、regression test、UI 行為與完成證據。</li>
+    <li>所有 native security decision 在 Rust backend 執行；renderer validation 只作 UX，不作唯一防線。</li>
+    <li>所有拒絕路徑為 typed / machine-readable error，UI 只顯示安全、可翻譯訊息，不洩漏 secrets。</li>
+    <li>報告列出的 4 組 follow-up proof gap 必須有實測結論；若發現新漏洞，新增 finding 而非把它藏在備註。</li>
+    <li>修復後 Codex Security 對相同與新增 fixtures 重掃，目標為 0 個未關閉 High / Medium。</li>
+  </ul>
+</section>
+
+<section id="toc">
+  <h2>執行導覽</h2>
+  <ol class="toc">
+    <li><a href="#principles">安全架構原則</a></li>
+    <li><a href="#coverage">Finding 對照與驗收矩陣</a></li>
+    <li><a href="#files">相關檔案</a></li>
+    <li><a href="#phase-0">Phase 0：基線與 release gate</a></li>
+    <li><a href="#phase-1">Phase 1：Git literal path 與 OID</a></li>
+    <li><a href="#phase-2">Phase 2：Workspace Trust</a></li>
+    <li><a href="#phase-3">Phase 3：Static Preview Isolation</a></li>
+    <li><a href="#phase-4">Phase 4：SFTP / SSH</a></li>
+    <li><a href="#phase-5">Phase 5：Askpass / Database</a></li>
+    <li><a href="#phase-6">Phase 6：LSP / Herdr</a></li>
+    <li><a href="#phase-7">Phase 7：覆蓋缺口與跨平台</a></li>
+    <li><a href="#phase-8">Phase 8：整體驗證與重掃</a></li>
+    <li><a href="#validation">全域驗證命令</a></li>
+    <li><a href="#notes">決策、風險與回滾</a></li>
+  </ol>
+</section>
+
+<section id="principles">
+  <h2>安全架構原則</h2>
+  <div class="architecture" aria-label="安全資料流">
+    <div class="box">Untrusted workspace / remote peer</div>
+    <div class="arrow">→</div>
+    <div class="box gate">Typed validation + trust gate</div>
+    <div class="arrow">→</div>
+    <div class="box gate">Capability-bound backend operation</div>
+    <div class="arrow">→</div>
+    <div class="box">Native side effect / bounded IPC</div>
+  </div>
+  <dl class="decision">
+    <dt>Fail closed</dt><dd>安全 metadata 缺失、host-key store 寫入失敗、LSP digest 不存在、response 超限時，一律拒絕，不以 best-effort 繼續。</dd>
+    <dt>Trust is not sanitization</dt><dd>工作區 trust 只授權執行 repository code；即使 trusted，Git path、SFTP leaf、preview filesystem 與 response budgets 仍然必須驗證。</dd>
+    <dt>Backend-held authority</dt><dd>前端不能透過傳入 <code>trusted=true</code>、完整 destination path 或任意 hash 取得權限；backend 從自身 state 與 typed context 判定。</dd>
+    <dt>Exact user intent</dt><dd>預覽命令顯示原文並原樣執行，不改寫 user-defined command；但執行前必須取得 workspace trust。破壞性 Git / SFTP 操作只作用於確認的 literal object。</dd>
+    <dt>One capability, one operation</dt><dd>Askpass、preview session、SSH host-key challenge、SFTP destination 都使用短生命週期 capability，不使用 app-lifetime bearer。</dd>
+    <dt>Budget before allocation</dt><dd>限制必須在 clone、decode、row retention、JSON parse 或 DOM segment creation之前生效；事後 pop 不算完成修復。</dd>
+  </dl>
+</section>
+
+<section id="coverage">
+  <h2>Finding 對照與驗收矩陣</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>嚴重度</th><th>根因</th><th>主要控制</th><th>Phase</th><th>完成證據</th></tr></thead>
+      <tbody>
+        <tr><td class="finding-id">F1</td><td><span class="tag high">HIGH</span></td><td>未信任 workspace 可觸發 Git config 與 preview shell</td><td>Backend workspace trust；未信任前不執行任何 repo-aware Git 或 package script；exact-command consent</td><td>2</td><td><code>core.fsmonitor</code> marker 與 package script 在 grant 前皆不執行</td></tr>
+        <tr><td class="finding-id">F2</td><td><span class="tag high">HIGH</span></td><td>Static preview 以整個 parent directory 為 script-readable origin</td><td>Per-preview session、explicit asset allowlist、opaque iframe origin、secret deny policy、tab-close expiry</td><td>3</td><td>HTML 可載入宣告 asset；<code>.env</code>、<code>.git</code>、未宣告 sibling 均為 403</td></tr>
+        <tr><td class="finding-id">F3</td><td><span class="tag high">HIGH</span></td><td>Git pathspec magic 把單檔操作擴大</td><td>中央 <code>GIT_LITERAL_PATHSPECS=1</code> + exact post-operation scope test</td><td>1</td><td>stage / unstage / discard / rollback 對 5 組 magic filename 只改 literal file</td></tr>
+        <tr><td class="finding-id">F4</td><td><span class="tag high">HIGH</span></td><td>Workspace symlink upload 跟隨至外部檔案</td><td>Symlink-aware DTO；workspace capability open；no-follow descriptor；picker source 分離</td><td>4</td><td>外部 secret symlink 可見但不可 upload，且 target 從未被開啟</td></tr>
+        <tr><td class="finding-id">F5</td><td><span class="tag high">HIGH</span></td><td>Remote SFTP name 被當成本機 path component</td><td>Backend <code>SafeLeafName</code>；destination dir + leaf 分離；directory-handle-relative temp/rename</td><td>4</td><td>POSIX、Windows、UNC、NUL、separator payload 在任何 local I/O 前拒絕</td></tr>
+        <tr><td class="finding-id">F6</td><td><span class="tag high">HIGH</span></td><td>Commit subject delimiter injection 偽造 git show option</td><td>OID-first log pipeline；typed full OID；central resolver；<code>--end-of-options</code></td><td>1</td><td>控制字元 subject 不產生 synthetic row；<code>--output=...</code> 不 spawn Git</td></tr>
+        <tr><td class="finding-id">F7</td><td><span class="tag medium">MEDIUM</span></td><td>App-wide askpass token 與 prompt-only cache</td><td>Per-operation token/context/cache；background-first；child-exit revoke + zeroize</td><td>5</td><td>Operation B 無法讀取 A 的 warm credential；background 永不命中 cache</td></tr>
+        <tr><td class="finding-id">F8</td><td><span class="tag medium">MEDIUM</span></td><td>PostgreSQL profile 預設 NoTls</td><td>Typed TLS mode；verify-full default；明文需持久化 explicit exception</td><td>5</td><td>新 profile 預設驗證 TLS；NoTls 未確認不能儲存或連線</td></tr>
+        <tr><td class="finding-id">F9</td><td><span class="tag medium">MEDIUM</span></td><td>DB byte limit 在完整 allocation 後才檢查</td><td>Field/row remaining budget、borrowed raw-length check、driver/frame cap 或 capped worker</td><td>5</td><td>超大單值不使主程序 RSS 越過預算；query 被取消且既有 pages 可用</td></tr>
+        <tr><td class="finding-id">F10</td><td><span class="tag medium">MEDIUM</span></td><td>首次 SSH key 在 credential 前自動接受且 best-effort persist</td><td>Pre-auth blocking challenge；atomic locked known-host store；fail-closed persistence</td><td>4</td><td>未決定前沒有 auth packet；concurrent writes 不遺失 pin</td></tr>
+        <tr><td class="finding-id">F11</td><td><span class="tag medium">MEDIUM</span></td><td>LSP binary/package 無權威完整性 metadata</td><td>Immutable catalog；binary digest/signature；npm lock integrity；pip hashes；no lifecycle scripts</td><td>6</td><td>缺 metadata 或 digest mismatch 時 bytes 不可寫成 executable</td></tr>
+        <tr><td class="finding-id">F12</td><td><span class="tag medium">MEDIUM</span></td><td>Herdr API line、agent text 與 ANSI segments 無 byte/complexity cap</td><td>共用 bounded NDJSON；schema byte ceilings；segment cap；typed oversize error</td><td>6</td><td>超大 line 在 JSON parse 前拒絕；renderer 不收到超限 text / segments</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<figure>
+  <img src="security-scan-remediation/high-risk-paths.png" alt="惡意 repository 與 remote peer 在工作區信任、Git、Preview、SFTP 邊界被阻擋的資料流">
+  <figcaption>High findings 的共同點：repository 或 remote-controlled bytes 被錯當成 native authority。修復以 typed identity 與 capability confinement 取代字串信任。</figcaption>
+</figure>
+
+<section id="files" class="files">
+  <h2>相關檔案</h2>
+  <h3>既有檔案</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>檔案</th><th>用途</th><th>Findings</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/git_service.rs</code></td><td>Git process policy、literal paths、remote askpass lifecycle、workspace trust enforcement</td><td>F1, F3, F7</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/git_log.rs</code></td><td>OID-first log parsing、revision resolution、safe <code>git show</code></td><td>F6</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/dev_server_detect.rs</code></td><td>偵測 script 但不得自行授權執行</td><td>F1</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/process_service.rs</code></td><td>Trusted command spawn、environment allowlist、operation cleanup</td><td>F1</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/app/panels/PreviewPanel.tsx</code></td><td>Exact command review 與 trust flow；preview session lifecycle</td><td>F1, F2</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/state/contextMenuStore.ts</code></td><td>Static preview API 改為 selected-file session，而非 parent directory</td><td>F2</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/preview_server.rs</code></td><td>Tokenized session、resource allowlist、deny policy、expiry</td><td>F2</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/preview/PreviewFrame.tsx</code></td><td>移除 <code>allow-same-origin</code>，維持 sandbox defense in depth</td><td>F2</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/fs_service.rs</code> / <code>src/lib/types.ts</code></td><td>Symlink / reparse-point identity 進入 DTO</td><td>F4</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/ssh_service.rs</code></td><td>Safe SFTP source/destination 與 host-key challenge/persistence</td><td>F4, F5, F10</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/app/panels/SshPanel.tsx</code> / <code>src/lib/paths.ts</code></td><td>Unsafe leaf UX、symlink display、backend-shaped transfer request</td><td>F4, F5, F10</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/askpass.rs</code></td><td>Per-operation capability、cache isolation、zeroization</td><td>F7</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/app/workbench/DatabaseNavContent.tsx</code></td><td>TLS mode default、insecure exception dialog</td><td>F8</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/state/dbStore.ts</code> / <code>src-tauri/src/db_profiles.rs</code></td><td>Profile schema migration 與 explicit transport policy</td><td>F8</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/db_service.rs</code> / <code>db_result_session.rs</code></td><td>Field/row/process budgets、query cancellation、peak-allocation tests</td><td>F9</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/lsp_download.rs</code> / <code>lsp_download/plan.rs</code></td><td>Immutable artifacts 與 restricted installers</td><td>F11</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/lsp_service.rs</code></td><td>Managed executable provenance、absolute launcher resolution</td><td>F11 + follow-up</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/herdr_service.rs</code></td><td>Bounded request framing 與 response schema</td><td>F12</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/app/workbench/ansiSegments.ts</code> / <code>AnsiText.tsx</code></td><td>Frontend input、segment、DOM ceilings</td><td>F12</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src-tauri/src/lib.rs</code> / <code>src/lib/ipc.ts</code></td><td>註冊新的 typed commands / events / DTO</td><td>cross-cutting</td></tr>
+        <tr><td><span class="tag existing">existing</span> <code>src/lib/i18n/locales/en</code> / <code>zh-TW</code></td><td>Trust、host-key、plaintext、oversize 的雙語安全訊息</td><td>cross-cutting</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>預計新增檔案</h3>
+  <ul>
+    <li><span class="tag new">new</span> <code>src-tauri/src/workspace_trust.rs</code> — canonical workspace identity、versioned trust store、grant/revoke/status API。</li>
+    <li><span class="tag new">new</span> <code>src/state/workspaceTrustStore.ts</code> — renderer projection；不持有最終 authority。</li>
+    <li><span class="tag new">new</span> <code>src/workbench/WorkspaceTrustHost.tsx</code> — 使用既有 shadcn <code>AlertDialog</code> 組合信任與 exact-command consent。</li>
+    <li><span class="tag new">new</span> <code>src-tauri/src/path_capability.rs</code> — workspace source、destination directory handle、no-follow / beneath helpers；OS-specific 實作集中於此。</li>
+    <li><span class="tag new">new</span> <code>src-tauri/src/git_oid.rs</code> — typed full OID、repository-aware resolver 與 argv builder。</li>
+    <li><span class="tag new">new</span> <code>src-tauri/src/lsp_download/catalog.rs</code> 與 <code>src-tauri/lsp-catalog/manifest.json</code> — immutable version、URL、SHA/signature、npm integrity、pip hashes。</li>
+    <li><span class="tag new">new</span> <code>scripts/update-lsp-integrity-catalog.ts</code> — 只更新 metadata，不自動信任 downloaded bytes；更新需 review。</li>
+    <li><span class="tag new">new</span> <code>docs/security/security-regression-matrix.md</code> — fixture、平台、證據路徑與重掃結果。</li>
+  </ul>
+  <div class="callout warn"><strong>UI 規則：</strong>Trust、SSH fingerprint 與 insecure database confirmation 必須先搜尋並重用 shadcn AlertDialog / Dialog；不得另造 generic modal primitive。</div>
+</section>
+
+<section id="phases">
+  <h2>Implementation Phases</h2>
+  <p><strong>執行規則：</strong>每個 phase 依序執行；狀態標記為 <code>[]</code> idle、<code>[wip]</code> in progress、<code>[x]</code> complete、<code>[f]</code> failed。任何 phase 的測試未通過，不得宣稱該 finding 已關閉。</p>
+
+  <div class="phase" id="phase-0">
+    <h3><code class="status">[]</code> Phase 0：基線、威脅 fixtures 與 release gate</h3>
+    <p>先把現況與 exploit paths 固定為可重現測試，避免後續以「程式看起來安全」取代證據。</p>
+    <h4>0.1 建立追蹤與切片</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 建立一個 umbrella security issue，子項固定為 F1–F12 與 4 組 follow-up；每項記錄 owner、phase、測試與 rescan artifact。</li>
+      <li><code class="status">[]</code> 標示 Phase 1–4 為 release-blocking；實作 PR 一次只跨一個安全 seam，避免 Git、SSH、DB 大型混合 diff。</li>
+      <li><code class="status">[]</code> 將原始報告與 canonical JSON digest 記入 regression matrix，但不複製 secret 或 credential。</li>
+    </ul>
+    <h4>0.2 建立 hostile fixtures</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Git fixture：<code>core.fsmonitor</code> marker、含控制字元 subject、pathspec magic filenames、<code>--output=</code> revision payload。</li>
+      <li><code class="status">[]</code> Preview fixture：root HTML 嘗試 fetch <code>.env</code>、<code>.git/config</code>、未宣告 sibling，並載入合法 CSS/JS/image。</li>
+      <li><code class="status">[]</code> SFTP fixture server：惡意 leaf names、symlink workspace upload、partial transfer、overwrite race。</li>
+      <li><code class="status">[]</code> SSH fixture：new / match / changed key、concurrent known-host writes、injected fsync/rename failure。</li>
+      <li><code class="status">[]</code> DB fixture：單一超大 TEXT/BLOB/VARBINARY、逐列 budget exhaustion、TLS/NoTls endpoints。</li>
+      <li><code class="status">[]</code> Herdr fixture：超過 1 MiB NDJSON、unterminated line、one-SGR-per-character、超大 agent text。</li>
+      <li><code class="status">[]</code> LSP fixture：digest mismatch binary、缺 metadata asset、tampered npm/pip payload。</li>
+    </ul>
+    <h4>0.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>bun run lint &amp;&amp; bun run typecheck &amp;&amp; bun run test</code> — 記錄 frontend baseline 與已知 flake。</li>
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked</code> — 記錄 Rust baseline。</li>
+      <li><code class="status">[]</code> 對每個 exploit fixture 先確認舊版可重現或以 source-to-sink proof 固定失敗測試，避免寫出永遠不會失敗的測試。</li>
+    </ul>
+    <div class="loop">🔁 Baseline 與 fixture 缺一不可；不能重現時，先補 observability 或縮小 claim，再進入修復。</div>
+  </div>
+
+  <div class="phase" id="phase-1">
+    <h3><code class="status">[]</code> Phase 1：Git literal paths 與 typed revision（F3、F6）</h3>
+    <p>先關閉兩個高嚴重度、修復面較集中的 Git injection，降低實作其餘 phase 時對工作樹造成破壞的風險。</p>
+    <h4>1.1 F3 — 全部 repository path 一律 literal</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 在 <code>run_git</code> 的安全預設環境加入 <code>GIT_LITERAL_PATHSPECS=1</code>；只有經安全 review 的 internal pattern command 才可使用具名 escape hatch。</li>
+      <li><code class="status">[]</code> 清點 <code>stage</code>、<code>unstage</code>、<code>discard</code>、rollback、status scope、diff、file-at-rev、ls-tree 等所有 path sinks；移除散落的重複 literal env 或改為中央 helper。</li>
+      <li><code class="status">[]</code> 保留 <code>--</code> 與 existing status-classification checks；literal pathspec 不取代 stale-state / containment 控制。</li>
+      <li><code class="status">[]</code> 破壞性操作後重新取得 status，驗證 changed set 沒超出請求集合；若 scope mismatch，回報安全錯誤並停止後續 mutation。</li>
+    </ul>
+    <h4>1.2 F6 — OID-first log pipeline</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 新增 <code>GitOid</code>；只接受 repository object format 對應的完整 hex OID，不接受 ref、prefix、option 或 revision expression。</li>
+      <li><code class="status">[]</code> Log pagination 第一步只輸出固定格式 OID；metadata 以 <code>git cat-file --batch</code> 的長度 framing 讀取 commit object，解析 headers/message，而不以 commit-controlled delimiter 切 record。</li>
+      <li><code class="status">[]</code> Ref decoration 由 <code>for-each-ref</code> 建立 OID→refs map；不可讓 subject 重新塑造 hash / parents / timestamp。</li>
+      <li><code class="status">[]</code> 所有 renderer-supplied revision 經中央 <code>resolve_commit_oid</code>：<code>rev-parse --verify --end-of-options</code>，只把 resolved OID 傳給後續 Git。</li>
+      <li><code class="status">[]</code> <code>git show</code> / name-status / numstat argv 在 revision 前使用 end-of-options，並在 pathspec 前保留 <code>--</code>。</li>
+      <li><code class="status">[]</code> Malformed metadata 採整頁 fail-closed；不得 silently <code>continue</code> 丟棄可疑 record 後回傳部分偽造資料。</li>
+    </ul>
+    <h4>1.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked git_service::tests</code> — stage/unstage/discard/rollback 對 <code>:(top)**</code>、<code>:(glob)**</code>、<code>*</code>、<code>?</code>、<code>:(exclude)</code> 只作用 literal file。</li>
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked git_log::tests</code> — delimiter subject 不產生 synthetic row；option revision 在 spawn 前拒絕；正常 merge/root/rename log 不回歸。</li>
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked</code> — 中央 Git env 不破壞 branches、diff、status、file-at-rev 與 conflict flows。</li>
+    </ul>
+    <div class="loop">🔁 只有 literal filename scope 與 typed OID 的 exploit fixtures 全通過，F3/F6 才可標記完成。</div>
+  </div>
+
+  <div class="phase" id="phase-2">
+    <h3><code class="status">[]</code> Phase 2：Backend Workspace Trust 與 process execution（F1）</h3>
+    <p>採取最小且最強的 pre-trust policy：<strong>未信任 workspace 不執行任何 repository-aware Git、package script 或 workspace-selected native process</strong>。這比維護一份不完整的 Git executable-config blacklist 更可證明。</p>
+    <h4>2.1 Trust identity 與持久化</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 實作 versioned <code>~/.yuzora/workspace-trust.json</code>；測試使用 temp path，不污染使用者資料。</li>
+      <li><code class="status">[]</code> Identity 至少綁定 workspace canonical path 與 filesystem identity（Unix dev/inode；Windows volume/file identity）；directory replacement、symlink retarget 或不可解析時使 grant 失效。</li>
+      <li><code class="status">[]</code> Backend 提供 status / grant / revoke；grant request 必須引用 backend 剛簽發、短生命週期的 challenge，不接受 renderer 自報 identity。</li>
+      <li><code class="status">[]</code> Store 寫入使用 same-directory temp、flush/fsync、atomic rename；寫入失敗不授權當次操作。</li>
+    </ul>
+    <h4>2.2 Enforce trust at sinks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>git_detect</code> / <code>git_bootstrap</code> 在 pre-trust 只做 filesystem-level repo presence projection，禁止 spawn Git；UI 顯示「信任後啟用 Git」。</li>
+      <li><code class="status">[]</code> 所有 Git commands 在 backend 共用 trust guard；不得逐 command 漏加。</li>
+      <li><code class="status">[]</code> <code>dev_server_detect</code> 可讀取 script 字串供 review，但 <code>process_service.start</code> 在 spawn 前重新檢查 trust challenge、canonical workspace 與 command digest。</li>
+      <li><code class="status">[]</code> Trust dialog 顯示 canonical workspace 與 exact command；user-defined command 保持原文，不在 Rust 端改寫。</li>
+      <li><code class="status">[]</code> Child process 採最小 environment allowlist；移除 app secrets、askpass token、provider credentials 等非必要繼承值。PATH 來源需明確，避免 cwd-first launcher hijack。</li>
+      <li><code class="status">[]</code> Revoke / identity mismatch 時停止該 workspace 由 Yuzora 啟動的 dev server，並清理 pending execution capabilities。</li>
+    </ul>
+    <h4>2.3 UI 與 i18n</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 以 shadcn <code>AlertDialog</code> 組合 Trust Host；焦點、Escape、取消、exact command copy 與 screen-reader label 都有測試。</li>
+      <li><code class="status">[]</code> 新增 en / zh-TW 文案，明確區分「信任 workspace」與「只連接既有 localhost server」。後者不需執行 repo code。</li>
+      <li><code class="status">[]</code> 設定頁提供 trusted workspaces 列表與 revoke；UI 只投影 backend state。</li>
+    </ul>
+    <h4>2.4 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Rust：untrusted fixture 的 <code>core.fsmonitor</code> marker 在 bootstrap 前後皆不存在；所有 Git command 回 typed UntrustedWorkspace。</li>
+      <li><code class="status">[]</code> Vitest：Preview Start 顯示 exact command；取消不 invoke spawn；identity change 後重新要求信任。</li>
+      <li><code class="status">[]</code> <code>bun run test src/app/panels/previewPanel.test.tsx</code> — trust、connect-existing、command override flow。</li>
+<li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked workspace_trust &amp;&amp; cargo test --locked git_service &amp;&amp; cargo test --locked process_service</code> — backend authorization 與持久化。</li>
+    </ul>
+    <div class="loop">🔁 未信任 workspace 只要有任何 Git / shell 子程序可被 spawn，F1 即未完成。</div>
+  </div>
+
+  <div class="phase" id="phase-3">
+    <h3><code class="status">[]</code> Phase 3：Static Preview capability isolation（F2）</h3>
+    <p>把「serve directory」改成「建立 selected document 的 preview session」。合法 asset availability 與 filesystem confidentiality 必須同時成立。</p>
+    <h4>3.1 Session 與 resource policy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 將 <code>preview_serve(dir)</code> 改為 <code>preview_create(selected_html)</code>；backend canonicalize selected file 並建立不可預測 session token、專屬 port / origin、expiry 與 allowed-path set。</li>
+      <li><code class="status">[]</code> 解析 HTML 的相對 <code>src</code>、<code>href</code>、<code>srcset</code>、<code>poster</code>；遞迴解析 CSS <code>@import</code> / <code>url()</code> 與 static module imports，將 canonical-contained dependency 加入 allowlist。</li>
+      <li><code class="status">[]</code> 任意 requested path 不在 allowlist 即 403；一律禁止 dotfiles、VCS metadata、secret basenames / extensions、NUL、symlink escape，即使被 HTML 引用也拒絕。</li>
+      <li><code class="status">[]</code> 回應加入 <code>Cache-Control: no-store</code>、嚴格 MIME、<code>X-Content-Type-Options: nosniff</code> 與適用的 CSP；不回傳 filesystem path。</li>
+      <li><code class="status">[]</code> 同一檔案每次 preview 都取得新 token；tab close、workspace switch、app shutdown 立即 revoke；不得只靠 port 保密。</li>
+    </ul>
+    <h4>3.2 Browser isolation</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Static preview iframe 移除 <code>allow-same-origin</code>；保留 scripts 需明確接受 module/CORS 相容性調整，且 server 不得加 wildcard CORS。</li>
+      <li><code class="status">[]</code> 將 static preview 與 dev-server preview 模式分開：dev server 維持 localhost URL，但不共享 static session authorization。</li>
+      <li><code class="status">[]</code> External child WebView 加入 navigation allowlist / external-open policy，阻止由 remote page 導向 asset/app custom protocol；相關 Tauri ACL 只授權 main window。</li>
+    </ul>
+    <h4>3.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked preview_server::tests</code> — declared assets 200；<code>.env</code>、<code>.git/config</code>、unknown sibling、traversal、symlink 均 403；expired token 404/410。</li>
+<li><code class="status">[]</code> <code>bun run test src/preview/previewFrame.test.tsx src/preview/previewCommands.test.ts src/state/previewStore.test.ts src/state/contextMenuStore.test.ts</code> — iframe sandbox、session lifecycle、workspace switch cleanup。</li>
+      <li><code class="status">[]</code> Packaged macOS / Windows / Linux：惡意 static HTML 的 fetch / iframe / module / popup 不能讀取 denied bytes；合法 CSS/JS/image 仍載入。</li>
+    </ul>
+    <div class="loop">🔁 只加 denylist 或只移除 same-origin 都不是完整修復；allowlist、origin isolation、expiry 三者需同時有證據。</div>
+  </div>
+
+  <div class="phase" id="phase-4">
+    <h3><code class="status">[]</code> Phase 4：SFTP path capabilities 與 SSH host trust（F4、F5、F10）</h3>
+    <p>將 remote name、workspace pathname 與 authenticated host identity 從一般 String 升級為經 backend 驗證的 capability。</p>
+    <h4>4.1 F4 — Symlink-aware workspace upload</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>FileNode</code> 增加 <code>kind: file | directory | symlink | other</code> 與必要的 reparse metadata；使用 <code>symlink_metadata</code>，不跟隨 final link。</li>
+      <li><code class="status">[]</code> UI 顯示 symlink 狀態並預設停用 workspace upload；提示使用者以 explicit native picker 選擇 target，而非暗中跟隨。</li>
+      <li><code class="status">[]</code> Upload IPC 改為 tagged source：<code>Workspace { root, relativePath }</code> 或 <code>Picker { capabilityId }</code>；不得只傳任意 <code>localPath</code>。</li>
+      <li><code class="status">[]</code> Workspace source 透過 <code>path_capability</code> descriptor-relative / beneath / no-follow open；在同一已驗證 descriptor 上取得 size 並 streaming，避免 check-then-open race。</li>
+      <li><code class="status">[]</code> Unix 使用 <code>openat2 RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS</code> 或等價 fallback；Windows 使用拒絕 reparse point 的 handle semantics。無可靠實作的平台 fail closed。</li>
+    </ul>
+    <h4>4.2 F5 — Safe remote leaf 與 destination handle</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 實作 backend <code>SafeLeafName</code>：拒絕 empty、<code>.</code>、<code>..</code>、NUL、<code>/</code>、<code>\</code>、drive/UNC/verbatim prefix 與平台 alternate separator。</li>
+      <li><code class="status">[]</code> SFTP listing ingestion 先驗證 leaf；transfer sink 再驗證一次。前端檢查只用於提早提示。</li>
+      <li><code class="status">[]</code> Download IPC 傳 <code>destinationDirectoryCapability</code>、validated remote leaf、overwrite mode；不再傳 renderer 拼好的完整 destination path。</li>
+      <li><code class="status">[]</code> Temp create、flush、replace/rename 全部相對於 pinned directory handle；temp 使用 <code>create_new</code> / no-follow，並在取消或錯誤時清理。</li>
+      <li><code class="status">[]</code> Overwrite confirmation 綁定 directory identity + leaf + existing file identity；確認後若 identity 改變，重新要求確認或拒絕。</li>
+    </ul>
+    <h4>4.3 F10 — Blocking host-key challenge</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>check_server_key</code> 對 unseen key 建立 pending challenge，emit endpoint、algorithm、SHA256 fingerprint，等待 user accept/reject；在結果前不得進入 password/public-key authentication。</li>
+      <li><code class="status">[]</code> Challenge 有不可預測 ID、canonical endpoint、timeout、single-use semantics；renderer 不能替另一連線決定。</li>
+      <li><code class="status">[]</code> Accept 先完成 locked read-merge-write、file sync、atomic rename、parent sync，再回傳 true；持久化失敗 fail closed。若未來提供 session-only trust，必須為明確第二個選項。</li>
+      <li><code class="status">[]</code> Matching pin 靜默通過；changed pin 永遠 hard fail 並顯示 old/new fingerprint，不提供一鍵覆寫。</li>
+      <li><code class="status">[]</code> UI 使用 shadcn AlertDialog，支援 keyboard、copy fingerprint、取消與 timeout 狀態。</li>
+    </ul>
+    <h4>4.4 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked ssh_service::tests &amp;&amp; cargo test --locked fs_service::tests</code> — symlink/reparse、malicious leaf、atomic store、concurrency、write failure。</li>
+      <li><code class="status">[]</code> <code>bun run test src/app/panels/sshPanel.test.tsx src/lib/paths.test.ts</code> — disabled symlink action、unsafe name UX、fingerprint dialog。</li>
+      <li><code class="status">[]</code> Packet-level fixture 證明 unseen key decision 前沒有 auth request；changed key 也沒有 credential。</li>
+      <li><code class="status">[]</code> macOS / Windows / Linux race fixture 在 path swap 下不能讀寫 selected directory 外。</li>
+    </ul>
+    <div class="loop">🔁 Canonicalize-then-open 仍有 TOCTOU，不算 F4/F5 完成；必須以 pinned handle / descriptor 證明。</div>
+  </div>
+
+  <div class="phase" id="phase-5">
+    <h3><code class="status">[]</code> Phase 5：Askpass authority、PostgreSQL TLS、DB memory（F7、F8、F9）</h3>
+    <p>同時處理 credential scope、transport confidentiality 與 hostile result allocation，確保 remote-service 邊界不再依賴安全預設或事後 accounting。</p>
+    <h4>5.1 F7 — Per-operation askpass</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 每次 fetch/pull/push/probe 建立獨立 random capability 與 server-side context：repository identity、remote fingerprint、operation type、foreground policy、expiry。</li>
+      <li><code class="status">[]</code> Token 只注入該 child environment；cache key 包含 operation ID + prompt kind，或預設不 cache。Background policy 必須在任何 cache lookup 前執行。</li>
+      <li><code class="status">[]</code> Child spawn 後綁定 PID / process tree；Unix 以 peer credential、Windows 以 named-pipe client identity 或等價控制驗證 caller。不能驗證的平台至少維持 one-operation unguessable token。</li>
+      <li><code class="status">[]</code> Child exit、timeout、cancel 時 revoke capability，喚醒 pending waiter，並以 <code>zeroize</code> 清除 secret/cache。</li>
+      <li><code class="status">[]</code> Askpass UI request 顯示 operation/repository/remote context，不只顯示 attacker-controlled prompt。</li>
+    </ul>
+    <h4>5.2 F8 — Secure PostgreSQL profile schema</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 以 typed mode 取代模糊 booleans：<code>verifyFull</code>（default）、<code>encryptedTrustServerCert</code>、<code>insecurePlaintext</code>。</li>
+      <li><code class="status">[]</code> 新 profile 與缺欄位 migration 對 PostgreSQL 預設 <code>verifyFull</code>；既有明確 <code>ssl=false</code> 保留但標記 insecure exception，首次使用前要求重新確認。</li>
+      <li><code class="status">[]</code> Plaintext save/connect 需 explicit per-profile acknowledgement；UI 顯示 host/user/database、可被攔截的資料類型與撤銷方式。</li>
+      <li><code class="status">[]</code> Backend 拒絕未帶 persisted exception 的 NoTls；TLS default 驗證 certificate chain 與 hostname。<code>trustServerCert</code> 也必須明確警告。</li>
+      <li><code class="status">[]</code> Migration 不改動 SQLite/MSSQL 語意，且 credential 不出現在 log/error。</li>
+    </ul>
+    <h4>5.3 F9 — Allocation 前 budget</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 定義單欄、單列、session 與 process 四層 hard ceiling；registry 暴露 <code>remaining_budget</code>，converter 在 clone/decode 前取得。</li>
+      <li><code class="status">[]</code> SQLite 對 borrowed TEXT/BLOB bytes 先檢查長度，再建立 <code>DbValue</code>；超限立即 interrupt。</li>
+      <li><code class="status">[]</code> PostgreSQL / MSSQL 使用 raw/borrowed decoder 檢查 wire value length，避免先建完整 String/Vec 再計算；一旦不足，立即 cancel 並停止 materialization。</li>
+      <li><code class="status">[]</code> <code>push_row</code> 改為 insertion 前估算 / reserve budget，移除「push → refresh → pop」安全依賴；保留 accounting assertion。</li>
+      <li><code class="status">[]</code> 驗證 driver 是否仍會在 Row 建立前無上限配置 protocol frame。若無可用 frame cap，將 query decode 移入具 OS memory limit 的 helper process；helper crash 轉為 typed QueryResultTooLarge，主程序保持可用。</li>
+      <li><code class="status">[]</code> Result DTO 回傳 <code>limitReached</code> 與已保留 pages；不得把超限內容送往 Tauri IPC。</li>
+    </ul>
+    <h4>5.4 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked askpass::tests &amp;&amp; cargo test --locked db_result_session::tests &amp;&amp; cargo test --locked db_service::tests</code> — authority isolation、TLS mapping、pre-insert budget。</li>
+      <li><code class="status">[]</code> <code>bun run test src/state/dbStore.test.ts src/app/workbench/databaseNavContent.test.tsx</code> — migration、secure default、warning acknowledgement。</li>
+      <li><code class="status">[]</code> DB integration 對三 engine 回傳超過 field/session ceiling 的單值，記錄主程序 peak RSS；需在預算內拒絕且仍可執行下一個正常 query。</li>
+      <li><code class="status">[]</code> Warm operation A credential 後，由 B 與 background caller 重播相同 prompt，兩者都拿不到 secret。</li>
+    </ul>
+    <div class="loop">🔁 只降低 retained bytes 不足以關閉 F9；驗收看 peak allocation / RSS，而不是 session 結束後的記憶體。</div>
+  </div>
+
+  <figure>
+    <img src="security-scan-remediation/defense-controls.png" alt="Credentials、TLS、Provenance、Limits 四條防線的技術示意圖">
+    <figcaption>Medium findings 仍涉及 credential theft、MITM、native supply-chain execution 與 availability；全部採 backend hard control，而非 warning-only。</figcaption>
+  </figure>
+
+  <div class="phase" id="phase-6">
+    <h3><code class="status">[]</code> Phase 6：Verified LSP supply chain 與 bounded Herdr（F11、F12）</h3>
+    <h4>6.1 F11 — Immutable LSP catalog</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Catalog 每個 server/platform 綁定 exact version、asset URL、expected SHA256 或 signature key、unpack type、expected executable path；metadata 缺失即不可 install。</li>
+      <li><code class="status">[]</code> Binary 下載先 streaming 至 non-executable temp，同步計算 digest；驗證成功後才 unpack、chmod、atomic promote。失敗清理 temp，既有版本保持不動。</li>
+      <li><code class="status">[]</code> npm route 使用 repo-reviewed lockfile/integrity，staging 執行 <code>npm ci --ignore-scripts --no-audit --no-fund</code>；package 與 transitive dependency 都不可浮動。</li>
+      <li><code class="status">[]</code> pip route 使用 exact versions + <code>--require-hashes</code>，包含 transitive wheels；預設 <code>--only-binary=:all:</code>，禁止任意 build backend code。</li>
+      <li><code class="status">[]</code> Lifecycle/build script 若不可避免，需 catalog 明示 audited exception、版本與 rationale，並在受限環境執行；不得默默開啟。</li>
+      <li><code class="status">[]</code> Managed launcher 從 app-process PATH 絕對解析，拒絕 relative PATH segment 與 workspace shadowing；user-defined custom command 原樣保留但受 workspace trust。</li>
+      <li><code class="status">[]</code> 安裝完成寫 provenance record：catalog version、artifact digest、installed path、verified timestamp；launch 前重驗 file identity/digest 或 immutable install identity。</li>
+    </ul>
+    <h4>6.2 F12 — Bounded Herdr framing 與 rendering</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 將 existing <code>read_bounded_ndjson_line</code> 提升為所有 event/API lanes 共用 helper；<code>api_request</code> 不再使用 unbounded <code>read_line</code>。</li>
+      <li><code class="status">[]</code> 1 MiB framing ceiling 在 newline/JSON parse 前生效；oversized、unterminated、invalid UTF-8 回 typed protocol error 並關閉 stream。</li>
+      <li><code class="status">[]</code> Response schema 對 agent text、arrays、pane counts 與 nested depth 設定 hard cap；agent text 建議 512 KiB，超限請求 server-side truncation 或拒絕。</li>
+      <li><code class="status">[]</code> Tauri IPC 前再次檢查 serialized byte size；不把任意 <code>serde_json::Value</code> 原樣 fan-out 至 renderer。</li>
+      <li><code class="status">[]</code> <code>parseAnsiSegments</code> 先限制 input bytes / code points，合併相鄰 style，限制 segment count（例如 10,000），超限顯示單一 truncation sentinel。</li>
+      <li><code class="status">[]</code> React render 使用穩定 key 與 bounded spans；大量 text 使用現有 ScrollArea / virtualized surface，不創造 bare overflow primitive。</li>
+    </ul>
+    <h4>6.3 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked lsp_download &amp;&amp; cargo test --locked herdr_service</code> — digest mismatch、metadata missing、pinned argv、oversized line、invalid UTF-8。</li>
+      <li><code class="status">[]</code> <code>bun run test src/app/workbench/ansiSegments.test.ts src/app/workbench/ansiText.test.tsx</code> — segment cap、coalescing、truncation、normal ANSI parity。</li>
+      <li><code class="status">[]</code> Tampered LSP bytes 從未獲 executable permission，也不覆蓋既有 good install。</li>
+      <li><code class="status">[]</code> Herdr hostile peer 連續傳送超限 bytes 時，backend 與 renderer RSS 保持在測試預算內，UI 可繼續操作。</li>
+    </ul>
+    <div class="loop">🔁 顯示 locally computed SHA 不是 verification；catalog 沒有 expected identity 時必須 fail。</div>
+  </div>
+
+  <div class="phase" id="phase-7">
+    <h3><code class="status">[]</code> Phase 7：關閉掃描覆蓋缺口與平台特有風險</h3>
+    <p>原報告 coverage 為 partial；這些項目不應在 12 findings 修完後被遺忘。</p>
+    <h4>7.1 External preview custom-protocol runtime proof</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 在 packaged macOS、Windows、Linux 建立 test workspace 與 harmless invoke command，觀察 external child WebView 導向 asset/app/file URL 的行為與 Tauri ACL log。</li>
+      <li><code class="status">[]</code> 驗證 remote-origin page 不能導航至 attacker-controlled local document 後取得 custom-command authority；若可重現，新增獨立 High finding 並以 navigation allowlist + window-scoped capability 修復。</li>
+    </ul>
+    <h4>7.2 Filesystem / Git / PATH platform proof</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 對 parent swap、final symlink、Windows junction/reparse、case-insensitive alias 執行 race tests，證明 <code>path_capability</code> 的 beneath/no-follow 語意。</li>
+      <li><code class="status">[]</code> 評估 non-UTF-8 Git paths；若現有 String DTO 會 lossily alias 兩個路徑，導入 opaque byte path ID + display label，mutation 只接受 opaque ID。</li>
+      <li><code class="status">[]</code> 清點 managed LSP / shell binary resolution 的 relative PATH entries；curated launchers 必須絕對路徑，workspace cwd 不可優先。</li>
+    </ul>
+    <h4>7.3 Deferred repository tail review</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 依 <code>coverage.json</code> 的 unreviewed-tail 對 workspace/process、Git、preview、filesystem、SSH/SFTP、DB、LSP、askpass/agent、content/logging 做第二輪 risk-focused review。</li>
+      <li><code class="status">[]</code> 任何新 source-to-sink 以新 finding 記錄；不得只在「已審查」清單勾選。</li>
+      <li><code class="status">[]</code> 更新 <code>docs/security/security-regression-matrix.md</code> 的 examined paths、platform、tool、result 與 artifact location。</li>
+    </ul>
+    <h4>7.4 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 三平台 packaged smoke + hostile navigation fixture，保存可重複步驟、Tauri ACL log 與 harmless invoke 結果。</li>
+      <li><code class="status">[]</code> Path race harness 至少重複 10,000 次或達明確 time budget，沒有 containment escape。</li>
+      <li><code class="status">[]</code> Coverage review 有 reviewer sign-off，並列出仍不可證明的 residual risk；不可宣稱 absolute completeness。</li>
+    </ul>
+    <div class="loop">🔁 掃描報告的「needs follow-up」必須轉成證據或新 finding，不能以沒有重現直接關閉。</div>
+  </div>
+
+  <div class="phase" id="phase-8">
+    <h3><code class="status">[]</code> Phase 8：全域整合、獨立 review、重掃與發布判定</h3>
+    <h4>8.1 Security regression sweep</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 執行 frontend、Rust、DB integration、packaged platform matrix 與所有 hostile fixtures。</li>
+      <li><code class="status">[]</code> 檢查 security errors 不含 passwords、tokens、query content、local secret bytes 或完整 private paths。</li>
+      <li><code class="status">[]</code> 檢查每個 capability 都有 timeout、single-use/revoke、shutdown cleanup 與 stale-request test。</li>
+      <li><code class="status">[]</code> 檢查所有新增 UI 的 keyboard、focus、screen reader、雙語文案；安全拒絕不能讓使用者陷入無法恢復的狀態。</li>
+    </ul>
+    <h4>8.2 Independent review</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 安排未參與實作者的 security review，逐項從 fixture input trace 到 backend sink；對 F4/F5/F9/F10 特別檢查 race 與 peak allocation。</li>
+      <li><code class="status">[]</code> 以 diff blast-radius 檢查 trust gate、Git runner、path capability、DB converter、LSP installer 與 Herdr reader 的所有 callers。</li>
+      <li><code class="status">[]</code> 修正 review findings 後重跑相關 phase，不以 reviewer comment resolved 代替 test pass。</li>
+    </ul>
+    <h4>8.3 Rescan 與 close criteria</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 對 final candidate revision 執行同等或更完整 Codex Security scan，保留 manifest、findings、coverage 與 HTML artifact。</li>
+      <li><code class="status">[]</code> 將原 F1–F12 與新掃描 finding IDs 做一對一 disposition：fixed / superseded / still open；仍 open 的 High/Medium 阻擋 release。</li>
+      <li><code class="status">[]</code> 更新 umbrella issue 與 regression matrix，列出 commands、平台、artifact paths、residual risks 與 rollback point。</li>
+    </ul>
+    <h4>8.4 Testing Strategy</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> 執行下方所有全域 validation commands。</li>
+      <li><code class="status">[]</code> 修復後 security scan：0 個未關閉 High / Medium；若 scanner 對同根因產生新變體，回到對應 phase。</li>
+    </ul>
+    <div class="loop">🔁 計畫只有在 tests、independent review、packaged proof、rescan 四者都完成後才算完成。</div>
+  </div>
+</section>
+
+<section id="validation">
+  <h2>全域 Validation Commands</h2>
+  <p>以下為最終 candidate 的最低驗證集合；實作者應先跑 phase-targeted tests，再跑全域集合。</p>
+  <ul class="checklist">
+    <li><code class="status">[]</code> <code>bun run lint</code> — ESLint 無新增問題。</li>
+    <li><code class="status">[]</code> <code>bun run typecheck</code> — 兩份 TypeScript config 通過。</li>
+    <li><code class="status">[]</code> <code>bun run test</code> — frontend regression 與新增 security tests 通過；已知 TerminalDrawer concurrency flake 必須單獨重跑並標記 baseline/regression。</li>
+    <li><code class="status">[]</code> <code>bun run build</code> — production Vite build 通過。</li>
+    <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo fmt --package yuzora -- --check</code> — Rust format 通過。</li>
+    <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo check --locked --all-targets</code> — 所有 Rust targets compile。</li>
+    <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked</code> — Rust unit/regression suite 通過。</li>
+    <li><code class="status">[]</code> <code>ruby .github/scripts/verify-clippy-baseline.rb .github/clippy-baseline.json</code> — exact clippy baseline 契約通過；warning 變動需明確 review。</li>
+<li><code class="status">[]</code> <code>docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait</code> — 啟動 PostgreSQL / MSSQL integration fixtures。</li>
+    <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; YUZORA_P8_DATABASE_PASSWORD='&lt;fixture password from CLAUDE.md&gt;' YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql cargo test --locked --test database_integration -- --ignored</code> — 三 engine TLS 與 hostile result budgets 通過。</li>
+    <li><code class="status">[]</code> macOS / Windows / Linux packaged fixture matrix — preview origin、path capabilities、host-key challenge、LSP install 行為一致。</li>
+    <li><code class="status">[]</code> final Codex Security rescan — 原 12 findings 關閉，沒有新 High / Medium。</li>
+  </ul>
+  <div class="loop">🔁 任一命令失敗就修復根因並重跑；不可用跳過測試或放寬 ceiling 的方式讓 suite 變綠。</div>
+</section>
+
+<section id="notes">
+  <h2>決策、風險與回滾策略</h2>
+  <h3>優先順序與依賴</h3>
+  <ol>
+    <li><strong>Phase 1 先行：</strong>F3/F6 是集中且高破壞性的 Git input bugs，可快速降低 blast radius。</li>
+    <li><strong>Phase 2 是 execution foundation：</strong>其後所有 package script / user command 行為都依賴 backend trust。</li>
+    <li><strong>Phase 3/4 關閉其餘 High：</strong>release gate 到此才可解除。</li>
+    <li><strong>Phase 5/6 關閉 Medium：</strong>其中 F9 可能需要 helper-process architecture，不得為趕時程把驗收降級為 retained-byte test。</li>
+    <li><strong>Phase 7/8 補證據：</strong>partial scan 不可直接轉為「整個 repo 安全」。</li>
+  </ol>
+
+  <h3>不可採用的捷徑</h3>
+  <ul>
+    <li>只在前端檢查 filename/hash/trust，再把未驗證 String 傳給 Rust。</li>
+    <li>把 <code>--</code> 當作 Git pathspec magic 的完整防護。</li>
+    <li>Preview 只 deny <code>.env</code>，但仍 serve whole directory / same origin。</li>
+    <li>SFTP 只做 <code>canonicalize</code> 再 open，留下 TOCTOU。</li>
+    <li>SSH unseen key 先連線，連線後再通知 user。</li>
+    <li>Askpass 只把 app-wide cache TTL 從 60 秒縮短，卻不隔離 operation。</li>
+    <li>DB 只在 row push 後 pop、只限制 row count、或把 ceiling 調高。</li>
+    <li>LSP 只顯示 computed digest、只 pin top-level package version、或信任 registry 的 current metadata。</li>
+    <li>Herdr 只設 timeout；持續傳送 bytes 的 peer 仍能在 timeout 前耗盡 memory。</li>
+  </ul>
+
+  <h3>風險與 mitigation</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>風險</th><th>可能影響</th><th>Mitigation</th></tr></thead>
+      <tbody>
+        <tr><td>Workspace trust 使 Git 初次使用多一步</td><td>Git panel 在 grant 前不可用</td><td>清楚呈現原因；仍允許不執行 code 的 filesystem editing 與 connect-existing preview。</td></tr>
+        <tr><td>Static asset allowlist 不支援 dynamic fetch</td><td>部分 HTML preview asset 失敗</td><td>回傳可讀 blocked-resource 診斷；擴充 parser 只加入明確 dependency，不提供 whole-directory fallback。</td></tr>
+        <tr><td>Descriptor-relative API 跨平台差異</td><td>Windows / older Linux 實作複雜</td><td>集中於 <code>path_capability.rs</code>；無安全 primitive 時 fail closed 或使用 native picker capability。</td></tr>
+        <tr><td>DB driver 自身先配置巨大 frame</td><td>應用仍可 OOM</td><td>以 RSS fixture 決策；若無 driver cap，使用受 OS memory limit 的 helper process。</td></tr>
+        <tr><td>LSP pins 容易過期</td><td>新版 server 無法即時安裝</td><td>提供 catalog update script + review 流程；安全上寧可 fail unavailable，不可自動信任 latest。</td></tr>
+        <tr><td>Herdr ceiling 截斷合法大輸出</td><td>使用者看不到完整內容</td><td>顯示 truncation/too-large 狀態，讓使用者縮小 lines/source；不要 silently truncate。</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Rollout 與 rollback</h3>
+  <ul>
+    <li>每 phase 使用獨立 feature flag 只作部署控制，<strong>不得</strong>提供回到 vulnerable behavior 的使用者開關。</li>
+    <li>Profile / trust / provenance store 都具 schema version 與 backward-read migration；寫新格式前先備份舊檔，credential 不進備份。</li>
+    <li>若 phase 發生功能回歸，rollback 到前一個安全版本；不要 rollback 單一 backend guard 而保留依賴它的新 UI。</li>
+    <li>DB plaintext exception、trusted workspace、SSH pin 與 LSP provenance 都應可由設定頁檢視與撤銷。</li>
+  </ul>
+
+  <h3>Issue / PR 切片建議</h3>
+  <ol>
+    <li>PR A：F3 literal pathspec + regression fixtures。</li>
+    <li>PR B：F6 GitOid + OID-first log pipeline。</li>
+    <li>PR C：Workspace trust backend/store。</li>
+    <li>PR D：Trust UI + Git/dev-server enforcement。</li>
+    <li>PR E：Static preview session/allowlist/sandbox。</li>
+    <li>PR F：Path capability + SFTP upload/download。</li>
+    <li>PR G：SSH host-key challenge + atomic store。</li>
+    <li>PR H：Askpass operation scopes。</li>
+    <li>PR I：PostgreSQL transport schema/migration。</li>
+    <li>PR J：DB pre-allocation budgets / helper process（若需要）。</li>
+    <li>PR K：LSP immutable catalog/installers。</li>
+    <li>PR L：Herdr/ANSI budgets。</li>
+    <li>PR M：Packaged cross-platform proof、deferred tail、final rescan。</li>
+  </ol>
+</section>
+
+<section id="amendments">
+  <h2>Amendments</h2>
+  <p>尚無。後續若安全決策、ceiling、平台能力或 phase scope 變更，僅以 append-only entry 記錄日期、原因、影響 finding 與新驗收證據。</p>
+</section>
+
+</main>
+</body>
+</html>

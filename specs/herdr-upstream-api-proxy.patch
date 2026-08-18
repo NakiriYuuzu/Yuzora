@@ -1,0 +1,643 @@
+diff --git a/docs/next/website/src/content/docs/socket-api.mdx b/docs/next/website/src/content/docs/socket-api.mdx
+index 46eac4c..cdf9dfc 100644
+--- a/docs/next/website/src/content/docs/socket-api.mdx
++++ b/docs/next/website/src/content/docs/socket-api.mdx
+@@ -33,6 +33,35 @@ Schema document for tools, and `--output PATH` writes that document to a file.
+ The schema covers raw requests, success responses, error responses, emitted
+ events, and subscription events.
+
++## Stdio proxy
++
++Clients that can start a process but cannot open the local socket directly can
++use the generic stdio bridge:
++
++```bash
++herdr --session work api proxy --stdio
++```
++
++The bridge accepts one public API request JSON object per stdin line. Ordinary
++responses are written unchanged as NDJSON on stdout, so their public `id` and
++error body remain authoritative. `events.subscribe` sends its normal
++`subscription_started` response first; each following subscription event is
++written as a small multiplexing envelope:
++
++```json
++{"type":"proxy.event","request_id":"subscribe-1","event":{"event":"pane.exited","data":{}}}
++```
++
++`request_id` is the public request id used to open that subscription. This is
++needed only because a single stdio process can carry more than one subscription;
++the nested `event` value is the unmodified public event envelope. The proxy
++reserves stderr for diagnostics and never writes diagnostics into stdout.
++
++The proxy does not accept an arbitrary socket path and never starts or stops a
++server. Use Herdr's standard `--session NAME` option or `HERDR_SESSION` to
++select the existing named session. EOF on stdin exits the proxy and releases
++only its socket connections; it does not stop Herdr or its panes.
++
+ ## What you can control
+
+ The socket API can:
+diff --git a/src/cli/api.rs b/src/cli/api.rs
+index 418072e..39491ae 100644
+--- a/src/cli/api.rs
++++ b/src/cli/api.rs
+@@ -1,7 +1,19 @@
+ const API_SCHEMA_JSON: &str = include_str!("../../docs/next/api/herdr-api.schema.json");
+
++use std::collections::HashMap;
++use std::io::{self, BufRead, BufReader, Read, Write};
++use std::sync::{Arc, Mutex};
++
++use crate::api::client::ApiClient;
+ use crate::api::schema::{EmptyParams, Method, Request};
+
++const PROXY_MAX_LINE_BYTES: usize = 1024 * 1024;
++
++type ProxyOutput = Arc<Mutex<Box<dyn Write + Send>>>;
++type ProxyActiveIds = Arc<Mutex<HashMap<String, bool>>>;
++type ProxyRequestHandler = Arc<dyn Fn(Request) -> io::Result<serde_json::Value> + Send + Sync>;
++type ProxySubscriptionHandler = Arc<dyn Fn(Request, &ProxyOutput) -> io::Result<()> + Send + Sync>;
++
+ pub(super) fn run_api_command(args: &[String]) -> std::io::Result<i32> {
+     let Some(subcommand) = args.first().map(String::as_str) else {
+         print_api_help();
+@@ -11,6 +23,7 @@ pub(super) fn run_api_command(args: &[String]) -> std::io::Result<i32> {
+     match subcommand {
+         "schema" => api_schema(&args[1..]),
+         "snapshot" => api_snapshot(&args[1..]),
++        "proxy" => run_proxy_command(&args[1..]),
+         "help" | "--help" | "-h" => {
+             print_api_help();
+             Ok(0)
+@@ -65,6 +78,290 @@ fn api_snapshot(args: &[String]) -> std::io::Result<i32> {
+     })?)
+ }
+
++/// Proxy the public Herdr NDJSON API over stdin/stdout.
++///
++/// Requests are the unmodified public API `Request` JSON values, one per stdin
++/// line. Ordinary API responses are emitted verbatim on stdout. A streaming
++/// `events.subscribe` acknowledgement is likewise emitted verbatim; subsequent
++/// subscription events use a minimal envelope so independently subscribed
++/// streams remain correlatable after multiplexing:
++///
++/// `{ "type": "proxy.event", "request_id": "<request id>", "event": <public event> }`
++///
++/// stderr is reserved for diagnostics. No socket path can be supplied here:
++/// selection is still controlled by Herdr's established `--session` flag or
++/// `HERDR_SESSION` environment variable.
++fn run_proxy_command(args: &[String]) -> std::io::Result<i32> {
++    match args {
++        [flag] if flag == "--stdio" => run_stdio_proxy(),
++        [flag] if matches!(flag.as_str(), "help" | "--help" | "-h") => {
++            print_proxy_help();
++            Ok(0)
++        }
++        _ => {
++            print_proxy_help();
++            Ok(2)
++        }
++    }
++}
++
++fn run_stdio_proxy() -> std::io::Result<i32> {
++    let output: ProxyOutput = Arc::new(Mutex::new(Box::new(io::stdout())));
++    let stdin = io::stdin();
++    let mut reader = BufReader::new(stdin.lock());
++    let request_handler: ProxyRequestHandler =
++        Arc::new(|request| ApiClient::local().request_value(&request));
++    let subscription_handler: ProxySubscriptionHandler = Arc::new(proxy_events_subscribe);
++    run_stdio_proxy_with(&mut reader, output, request_handler, subscription_handler)
++}
++
++/// Deterministic stdio-proxy coordinator. Production passes the local public
++/// API client; unit tests pass an in-memory handler to cover request ordering,
++/// duplicate IDs, EOF and stdout serialization without a private transport.
++fn run_stdio_proxy_with<R: BufRead>(
++    reader: &mut R,
++    output: ProxyOutput,
++    request_handler: ProxyRequestHandler,
++    subscription_handler: ProxySubscriptionHandler,
++) -> std::io::Result<i32> {
++    let active_ids = Arc::new(Mutex::new(HashMap::new()));
++    loop {
++        let Some(line) = read_proxy_line(reader)? else {
++            return finish_proxy_on_eof(&active_ids);
++        };
++        let trimmed = line.trim();
++        if trimmed.is_empty() {
++            continue;
++        }
++
++        let request = match serde_json::from_str::<Request>(trimmed) {
++            Ok(request) => request,
++            Err(error) => {
++                write_proxy_line(
++                    &output,
++                    &proxy_error("", "invalid_request", format!("invalid request: {error}")),
++                )?;
++                continue;
++            }
++        };
++        if request.id.trim().is_empty() {
++            write_proxy_line(
++                &output,
++                &proxy_error("", "invalid_request", "request id must not be empty"),
++            )?;
++            continue;
++        }
++        let request_id = request.id.clone();
++        let is_streaming = matches!(&request.method, Method::EventsSubscribe(_));
++        let inserted = {
++            let mut ids = active_ids.lock().map_err(proxy_lock_error)?;
++            if ids.contains_key(&request_id) {
++                false
++            } else {
++                ids.insert(request_id.clone(), is_streaming);
++                true
++            }
++        };
++        if !inserted {
++            write_proxy_line(
++                &output,
++                &proxy_error(
++                    &request_id,
++                    "duplicate_request_id",
++                    "a request with this id is still active",
++                ),
++            )?;
++            continue;
++        }
++
++        let output_for_request = Arc::clone(&output);
++        let active_ids_for_request = Arc::clone(&active_ids);
++        let request_handler = Arc::clone(&request_handler);
++        let subscription_handler = Arc::clone(&subscription_handler);
++        std::thread::spawn(move || {
++            let result = if matches!(&request.method, Method::EventsSubscribe(_)) {
++                subscription_handler(request, &output_for_request)
++            } else {
++                proxy_request_with(request, &output_for_request, request_handler)
++            };
++            if let Err(error) = result {
++                // The request id is still known even if the underlying socket
++                // fails before it can emit a public response.
++                let _ = write_proxy_line(
++                    &output_for_request,
++                    &proxy_error(&request_id, "proxy_io", error.to_string()),
++                );
++            }
++            if let Ok(mut ids) = active_ids_for_request.lock() {
++                ids.remove(&request_id);
++            }
++        });
++    }
++}
++
++/// EOF should let ordinary requests flush their responses, but it must not
++/// wait forever for a subscription stream. Process exit then closes only this
++/// bridge's socket connections.
++fn finish_proxy_on_eof(active_ids: &ProxyActiveIds) -> io::Result<i32> {
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    loop {
++        let waiting_on_normal_request = active_ids
++            .lock()
++            .map_err(proxy_lock_error)?
++            .values()
++            .any(|streaming| !streaming);
++        if !waiting_on_normal_request || std::time::Instant::now() >= deadline {
++            return Ok(0);
++        }
++        std::thread::sleep(std::time::Duration::from_millis(10));
++    }
++}
++
++fn proxy_request_with(
++    request: Request,
++    output: &ProxyOutput,
++    request_handler: ProxyRequestHandler,
++) -> io::Result<()> {
++    match request_handler(request.clone()) {
++        Ok(response) => write_proxy_line(output, &response),
++        Err(error) => write_proxy_line(
++            output,
++            &proxy_error(&request.id, "proxy_io", error.to_string()),
++        ),
++    }
++}
++
++fn proxy_events_subscribe(request: Request, output: &ProxyOutput) -> io::Result<()> {
++    use interprocess::local_socket::traits::Stream as _;
++
++    let socket = crate::api::socket_path();
++    let mut stream = crate::ipc::connect_local_stream(&socket)?;
++    let encoded = serde_json::to_vec(&request)
++        .map_err(|error| io::Error::other(format!("encode proxy request: {error}")))?;
++    if encoded.len() > PROXY_MAX_LINE_BYTES {
++        return write_proxy_line(
++            output,
++            &proxy_error(
++                &request.id,
++                "invalid_request",
++                "request exceeds the proxy NDJSON size limit",
++            ),
++        );
++    }
++    stream.write_all(&encoded)?;
++    stream.write_all(b"\n")?;
++    stream.flush()?;
++
++    let mut reader = BufReader::new(stream);
++    let Some(ack) = read_proxy_line(&mut reader)? else {
++        return write_proxy_line(
++            output,
++            &proxy_error(
++                &request.id,
++                "server_unavailable",
++                "socket closed before subscription acknowledgement",
++            ),
++        );
++    };
++    let ack: serde_json::Value = serde_json::from_str(ack.trim()).map_err(|error| {
++        io::Error::new(
++            io::ErrorKind::InvalidData,
++            format!("subscription acknowledgement is not JSON: {error}"),
++        )
++    })?;
++    write_proxy_line(output, &ack)?;
++    if ack.get("error").is_some() {
++        return Ok(());
++    }
++
++    while let Some(line) = read_proxy_line(&mut reader)? {
++        let trimmed = line.trim();
++        if trimmed.is_empty() {
++            continue;
++        }
++        let event: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
++            io::Error::new(
++                io::ErrorKind::InvalidData,
++                format!("subscription event is not JSON: {error}"),
++            )
++        })?;
++        write_proxy_line(
++            output,
++            &serde_json::json!({
++                "type": "proxy.event",
++                "request_id": request.id,
++                "event": event,
++            }),
++        )?;
++    }
++
++    write_proxy_line(
++        output,
++        &serde_json::json!({
++            "type": "proxy.disconnected",
++            "request_id": request.id,
++            "reason": "api socket closed",
++        }),
++    )
++}
++
++fn read_proxy_line<R: BufRead>(reader: &mut R) -> io::Result<Option<String>> {
++    let mut bytes = Vec::new();
++    let mut limited = reader.take((PROXY_MAX_LINE_BYTES + 2) as u64);
++    let read = limited.read_until(b'\n', &mut bytes)?;
++    if read == 0 {
++        return Ok(None);
++    }
++    let terminated = bytes.last() == Some(&b'\n');
++    let content_len = if terminated {
++        bytes.len().saturating_sub(1)
++    } else {
++        bytes.len()
++    };
++    if content_len > PROXY_MAX_LINE_BYTES {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidData,
++            "proxy NDJSON line exceeds 1 MiB",
++        ));
++    }
++    String::from_utf8(bytes)
++        .map(Some)
++        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
++}
++
++fn write_proxy_line(output: &ProxyOutput, value: &serde_json::Value) -> io::Result<()> {
++    let encoded = serde_json::to_vec(value)
++        .map_err(|error| io::Error::other(format!("encode proxy response: {error}")))?;
++    if encoded.len() > PROXY_MAX_LINE_BYTES {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidData,
++            "proxy response exceeds 1 MiB",
++        ));
++    }
++    let mut stdout = output.lock().map_err(proxy_lock_error)?;
++    stdout.write_all(&encoded)?;
++    stdout.write_all(b"\n")?;
++    stdout.flush()
++}
++
++fn proxy_error(
++    id: impl AsRef<str>,
++    code: impl Into<String>,
++    message: impl Into<String>,
++) -> serde_json::Value {
++    serde_json::json!({
++        "id": id.as_ref(),
++        "error": {
++            "code": code.into(),
++            "message": message.into(),
++        }
++    })
++}
++
++fn proxy_lock_error<T>(_: std::sync::PoisonError<T>) -> io::Error {
++    io::Error::other("stdio proxy output lock poisoned")
++}
++
+ fn write_schema_file(path: &std::path::Path) -> std::io::Result<()> {
+     std::fs::write(path, API_SCHEMA_JSON)
+ }
+@@ -100,14 +397,105 @@ fn print_api_help() {
+     eprintln!("herdr api commands:");
+     eprintln!("  herdr api snapshot");
+     eprintln!("  herdr api schema [--json | --output PATH]");
++    eprintln!("  herdr api proxy --stdio");
+ }
+
+ fn print_api_schema_help() {
+     eprintln!("usage: herdr api schema [--json | --output PATH]");
+ }
+
++fn print_proxy_help() {
++    eprintln!("usage: herdr api proxy --stdio");
++    eprintln!("reads public API NDJSON requests from stdin and writes responses/events to stdout");
++    eprintln!(
++        "select a named session with `herdr --session NAME api proxy --stdio` or HERDR_SESSION"
++    );
++}
++
+ #[cfg(test)]
+ mod tests {
++    use std::collections::HashMap;
++    use std::io::{Cursor, Write};
++    use std::sync::{Arc, Mutex};
++    use std::time::Duration;
++
++    #[derive(Clone, Default)]
++    struct SharedOutput(Arc<Mutex<Vec<u8>>>);
++
++    impl Write for SharedOutput {
++        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++            self.0.lock().unwrap().extend_from_slice(bytes);
++            Ok(bytes.len())
++        }
++
++        fn flush(&mut self) -> std::io::Result<()> {
++            Ok(())
++        }
++    }
++
++    fn proxy_harness(
++        input: &[u8],
++        request_handler: super::ProxyRequestHandler,
++        subscription_handler: super::ProxySubscriptionHandler,
++    ) -> Vec<serde_json::Value> {
++        let shared = SharedOutput::default();
++        let capture = shared.clone();
++        let output: super::ProxyOutput = Arc::new(Mutex::new(Box::new(shared)));
++        let mut reader = Cursor::new(input.to_vec());
++        assert_eq!(
++            super::run_stdio_proxy_with(
++                &mut reader,
++                output,
++                request_handler,
++                subscription_handler,
++            )
++            .unwrap(),
++            0
++        );
++        String::from_utf8(capture.0.lock().unwrap().clone())
++            .unwrap()
++            .lines()
++            .map(|line| serde_json::from_str(line).unwrap())
++            .collect()
++    }
++
++    fn successful_request_handler() -> super::ProxyRequestHandler {
++        Arc::new(|request| {
++            if request.id == "slow" {
++                std::thread::sleep(Duration::from_millis(40));
++            }
++            if request.id == "mutate-error" {
++                return Err(std::io::Error::other("server rejected mutation"));
++            }
++            Ok(serde_json::json!({ "id": request.id, "result": { "ok": true } }))
++        })
++    }
++
++    fn scripted_subscription_handler() -> super::ProxySubscriptionHandler {
++        Arc::new(|request, output| {
++            super::write_proxy_line(
++                output,
++                &serde_json::json!({ "id": request.id, "result": { "type": "subscription_started" } }),
++            )?;
++            super::write_proxy_line(
++                output,
++                &serde_json::json!({
++                    "type": "proxy.event",
++                    "request_id": request.id,
++                    "event": { "event": "pane.exited", "data": { "pane_id": "p1" } }
++                }),
++            )?;
++            super::write_proxy_line(
++                output,
++                &serde_json::json!({
++                    "type": "proxy.disconnected",
++                    "request_id": request.id,
++                    "reason": "fixture server disconnected"
++                }),
++            )
++        })
++    }
++
+     #[test]
+     fn schema_summary_text_stays_human_sized() {
+         let text = super::schema_summary_text().unwrap();
+@@ -115,4 +503,173 @@ mod tests {
+         assert!(text.contains("Use `herdr api schema --json`"));
+         assert!(text.len() < 400);
+     }
++
++    #[test]
++    fn proxy_reader_keeps_valid_utf8_ndjson_lines() {
++        let mut input = Cursor::new(b"{\"id\":\"a\"}\n".to_vec());
++        assert_eq!(
++            super::read_proxy_line(&mut input).unwrap(),
++            Some("{\"id\":\"a\"}\n".into())
++        );
++        assert_eq!(super::read_proxy_line(&mut input).unwrap(), None);
++    }
++
++    #[test]
++    fn proxy_reader_rejects_oversized_lines_before_json_parse() {
++        let mut input = Cursor::new(vec![b'x'; super::PROXY_MAX_LINE_BYTES + 1]);
++        let err = super::read_proxy_line(&mut input).unwrap_err();
++        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
++        assert!(err.to_string().contains("exceeds"));
++    }
++
++    #[test]
++    fn proxy_reader_rejects_invalid_utf8_before_json_parse() {
++        let mut input = Cursor::new(vec![0xff, b'\n']);
++        let err = super::read_proxy_line(&mut input).unwrap_err();
++        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
++        assert!(err.to_string().contains("UTF-8"));
++    }
++
++    #[test]
++    fn proxy_error_preserves_public_request_id_and_message() {
++        let error = super::proxy_error("request-42", "invalid_request", "bad payload");
++        assert_eq!(error["id"], "request-42");
++        assert_eq!(error["error"]["code"], "invalid_request");
++        assert_eq!(error["error"]["message"], "bad payload");
++    }
++
++    #[test]
++    fn proxy_eof_without_active_streams_exits_cleanly() {
++        let active: super::ProxyActiveIds =
++            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
++        assert_eq!(super::finish_proxy_on_eof(&active).unwrap(), 0);
++    }
++
++    #[test]
++    fn proxy_event_envelope_keeps_originating_request_id() {
++        let envelope = serde_json::json!({
++            "type": "proxy.event",
++            "request_id": "sub-1",
++            "event": { "event": "pane.exited" },
++        });
++        assert_eq!(envelope["request_id"], "sub-1");
++        assert_eq!(envelope["event"]["event"], "pane.exited");
++    }
++
++    #[test]
++    fn proxy_eof_waits_for_ordinary_requests_but_not_subscription_streams() {
++        let ordinary: super::ProxyActiveIds =
++            Arc::new(Mutex::new(HashMap::from([("ordinary".into(), false)])));
++        let ordinary_for_thread = Arc::clone(&ordinary);
++        std::thread::spawn(move || {
++            std::thread::sleep(Duration::from_millis(30));
++            ordinary_for_thread.lock().unwrap().remove("ordinary");
++        });
++        let started = std::time::Instant::now();
++        assert_eq!(super::finish_proxy_on_eof(&ordinary).unwrap(), 0);
++        assert!(started.elapsed() >= Duration::from_millis(10));
++
++        let streaming: super::ProxyActiveIds =
++            Arc::new(Mutex::new(HashMap::from([("sub".into(), true)])));
++        let started = std::time::Instant::now();
++        assert_eq!(super::finish_proxy_on_eof(&streaming).unwrap(), 0);
++        assert!(started.elapsed() < Duration::from_millis(50));
++    }
++
++    #[test]
++    fn proxy_stdout_mutex_serializes_slow_concurrent_writers() {
++        let shared = SharedOutput::default();
++        let capture = shared.clone();
++        let output: super::ProxyOutput = Arc::new(Mutex::new(Box::new(shared)));
++        let mut handles = Vec::new();
++        for id in 0..8 {
++            let output = Arc::clone(&output);
++            handles.push(std::thread::spawn(move || {
++                std::thread::sleep(Duration::from_millis((7 - id) as u64));
++                super::write_proxy_line(&output, &serde_json::json!({ "id": id, "result": true }))
++            }));
++        }
++        for handle in handles {
++            handle.join().unwrap().unwrap();
++        }
++        let lines = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
++        let values: Vec<serde_json::Value> = lines
++            .lines()
++            .map(|line| serde_json::from_str(line).unwrap())
++            .collect();
++        assert_eq!(values.len(), 8);
++        assert!(values.iter().all(|value| value["result"] == true));
++    }
++
++    #[test]
++    fn proxy_harness_preserves_ping_snapshot_and_out_of_order_response_ids() {
++        let output = proxy_harness(
++            br#"{"id":"slow","method":"ping","params":{}}
++{"id":"fast","method":"session.snapshot","params":{}}
++"#,
++            successful_request_handler(),
++            scripted_subscription_handler(),
++        );
++        assert_eq!(output.len(), 2);
++        assert_eq!(output[0]["id"], "fast");
++        assert_eq!(output[1]["id"], "slow");
++        assert_eq!(output[0]["result"]["ok"], true);
++    }
++
++    #[test]
++    fn proxy_harness_preserves_mutation_error_id_and_serializes_subscription_events() {
++        let output = proxy_harness(
++            br#"{"id":"mutate-error","method":"tab.rename","params":{"tab_id":"tab-1","label":"Renamed"}}
++{"id":"sub-1","method":"events.subscribe","params":{"subscriptions":[{"type":"pane.exited"}]}}
++{"id":"slow","method":"ping","params":{}}
++"#,
++            successful_request_handler(),
++            scripted_subscription_handler(),
++        );
++        let mutation = output
++            .iter()
++            .find(|value| value["id"] == "mutate-error")
++            .unwrap();
++        assert_eq!(mutation["error"]["code"], "proxy_io");
++        let acknowledgement = output.iter().find(|value| value["id"] == "sub-1").unwrap();
++        assert_eq!(acknowledgement["result"]["type"], "subscription_started");
++        let event = output
++            .iter()
++            .find(|value| value["type"] == "proxy.event")
++            .unwrap();
++        assert_eq!(event["request_id"], "sub-1");
++        assert!(output
++            .iter()
++            .any(|value| value["type"] == "proxy.disconnected"));
++    }
++
++    #[test]
++    fn proxy_harness_rejects_duplicate_active_ids_without_corrupting_stdout() {
++        let output = proxy_harness(
++            br#"{"id":"slow","method":"ping","params":{}}
++{"id":"slow","method":"ping","params":{}}
++"#,
++            successful_request_handler(),
++            scripted_subscription_handler(),
++        );
++        assert_eq!(output.len(), 2);
++        assert!(output
++            .iter()
++            .any(|value| value["error"]["code"] == "duplicate_request_id"));
++        assert!(output.iter().any(|value| value["result"]["ok"] == true));
++    }
++
++    #[test]
++    fn proxy_harness_reports_malformed_input_without_stopping_following_requests() {
++        let output = proxy_harness(
++            br#"not-json
++{"id":"ping","method":"ping","params":{}}
++"#,
++            successful_request_handler(),
++            scripted_subscription_handler(),
++        );
++        assert_eq!(output.len(), 2);
++        assert_eq!(output[0]["error"]["code"], "invalid_request");
++        assert_eq!(output[1]["id"], "ping");
++    }
+ }

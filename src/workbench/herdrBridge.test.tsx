@@ -144,9 +144,9 @@ describe("HerdrBridge attachment reconciliation", () => {
       for (let index = 0; index < 8; index++) await Promise.resolve()
     })
 
-    expect(restoreFocusedState).toHaveBeenCalledWith("default")
+    expect(restoreFocusedState).toHaveBeenCalledWith("default", { kind: "native" })
     expect(restoreFocusedState).toHaveBeenCalledTimes(1)
-    expect(refreshSnapshot).toHaveBeenCalledWith("default")
+    expect(refreshSnapshot).toHaveBeenCalledWith("default", { kind: "native" })
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })

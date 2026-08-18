@@ -1,11 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 
 import { ptyClose, ptyOpen, ptyResize, ptyWrite } from "../lib/ipc"
 import type { PtyEvent, TerminalCwdStrategy } from "../lib/types"
 import { useTerminalSettingsStore } from "../state/terminalSettingsStore"
+import {
+    installTerminalClipboardHandling,
+    type TerminalClipboardController
+} from "./terminalClipboard"
 import { installTerminalImeHandling } from "./terminalImeHandling"
 import type { TerminalImeAnchorMode } from "./terminalImePositioning"
 import {
@@ -89,6 +92,7 @@ export function TerminalSession({
     const observerRef = useRef<ResizeObserver | null>(null)
     const themeObserverRef = useRef<MutationObserver | null>(null)
     const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const clipboardRef = useRef<TerminalClipboardController | null>(null)
     const titleDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const parsedDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const targetOpenRef = useRef<ReturnType<typeof installTerminalTargetOpen> | null>(null)
@@ -106,15 +110,17 @@ export function TerminalSession({
     const onTitleChangeRef = useRef(onTitleChange)
     const onReadyRef = useRef(onReady)
     const onOpenErrorRef = useRef(onOpenError)
+    const activeRef = useRef(active)
     const visibleRef = useRef(visible)
     const previousVisibleRef = useRef(visible)
     const fontSizeRef = useRef(fontSize)
     const [exitCode, setExitCode] = useState<number | null | undefined>(undefined)
 
     useLayoutEffect(() => {
+        activeRef.current = active
         visibleRef.current = visible
         outputQueueRef.current?.setVisible(visible)
-    }, [visible])
+    }, [active, visible])
 
     useEffect(() => {
         onExitRef.current = onExit
@@ -140,6 +146,7 @@ export function TerminalSession({
                 themeObserverRef.current?.disconnect()
                 observerRef.current?.disconnect()
                 dataDisposableRef.current?.dispose()
+                clipboardRef.current?.dispose()
                 titleDisposableRef.current?.dispose()
                 parsedDisposableRef.current?.dispose()
                 targetOpenRef.current?.dispose()
@@ -150,6 +157,7 @@ export function TerminalSession({
                 themeObserverRef.current = null
                 observerRef.current = null
                 dataDisposableRef.current = null
+                clipboardRef.current = null
                 titleDisposableRef.current = null
                 parsedDisposableRef.current = null
                 targetOpenRef.current = null
@@ -196,6 +204,7 @@ export function TerminalSession({
 
         term.loadAddon(fitAddon)
         term.open(container)
+        if (activeRef.current) safeFocus(term)
         targetOpenRef.current = installTerminalTargetOpen(term, {
             getCwd: () => workspace
         })
@@ -211,36 +220,8 @@ export function TerminalSession({
         // Expose the queue's metrics for the lifetime of the pty session; the
         // ref itself is unreachable from outside this component (#40 §3.4).
         registerTerminalOutputQueue(sessionId, outputQueueRef.current)
-        term.attachCustomKeyEventHandler((event) => {
-            if (
-                event.type !== "keydown"
-                || event.altKey
-                || (!event.ctrlKey && !event.metaKey)
-            ) return true
-
-            const key = event.key.toLowerCase()
-            if (key === "c") {
-                if (!term.hasSelection()) return true
-                event.preventDefault()
-                void writeText(term.getSelection()).catch(() => undefined)
-                return false
-            }
-            if (key === "v") {
-                event.preventDefault()
-                if (!openReadyRef.current || disposedRef.current) return false
-                void readText()
-                    .then((text) => {
-                        if (
-                            text.length === 0
-                            || !openReadyRef.current
-                            || disposedRef.current
-                        ) return
-                        term.paste(text)
-                    })
-                    .catch(() => undefined)
-                return false
-            }
-            return true
+        clipboardRef.current = installTerminalClipboardHandling(term, {
+            canPaste: () => openReadyRef.current && !disposedRef.current
         })
         titleDisposableRef.current = term.onTitleChange((title) => {
             if (!disposedRef.current) onTitleChangeRef.current?.(title)
@@ -298,6 +279,7 @@ export function TerminalSession({
             .then(() => {
                 if (openPromiseRef.current === openPromise && !disposedRef.current) {
                     openReadyRef.current = true
+                    clipboardRef.current?.flushPendingPaste()
                     onReadyRef.current?.()
                 }
             })
@@ -355,7 +337,7 @@ export function TerminalSession({
         }
     }, [fontSize, sessionId])
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const term = termRef.current
         const fitAddon = fitRef.current
         const becameVisible = visible && !previousVisibleRef.current
@@ -371,6 +353,7 @@ export function TerminalSession({
                 lastSizeRef.current = next
                 void ptyResize(sessionId, next.cols, next.rows).catch(() => undefined)
             }
+            outputQueueRef.current?.flushNow()
         }
         if (active) safeFocus(term)
     }, [active, sessionId, visible])

@@ -96,6 +96,7 @@ function deferred<T>() {
 beforeEach(() => {
   installLocalStorage()
   useWorkspaceStore.setState({ workspacePath: "/workspace" })
+  useAppDialogStore.setState({ pending: null })
   useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
   ipcMocks.requestDevServerAuthorization.mockResolvedValue("challenge-1")
 })
@@ -105,6 +106,7 @@ afterEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 0))
   usePreviewStore.getState().reset()
   useWorkspaceStore.setState({ workspacePath: null })
+  useAppDialogStore.setState({ pending: null })
   useContextMenuStore.setState({ request: null })
   useTextInputDialogStore.setState({ pending: null })
   delete (globalThis as { isTauri?: boolean }).isTauri
@@ -233,6 +235,29 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
 
     unmount()
     await waitFor(() => expect(ipcMocks.previewClose).toHaveBeenCalled())
+  })
+
+  it("serializes visibility behind a pending open and revalidates the latest overlay state", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const opening = deferred<void>()
+    ipcMocks.previewOpenUrl.mockImplementationOnce(() => opening.promise)
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    render(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1))
+
+    useAppDialogStore.setState({
+      pending: {
+        type: "message",
+        title: "Drop failed",
+        description: "Is a directory",
+        resolve: () => {},
+      },
+    })
+
+    expect(ipcMocks.previewSetVisible).not.toHaveBeenCalled()
+    opening.resolve(undefined)
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(false))
+    expect(ipcMocks.previewSetVisible).not.toHaveBeenCalledWith(true)
   })
 
   it("hides the native webview while an app-owned message dialog is open", async () => {

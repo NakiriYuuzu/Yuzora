@@ -161,8 +161,10 @@ export function PreviewPanel() {
   const [localError, setLocalError] = useState<string | null>(null)
 
   const overlayOpen = useAnyOverlayOpen()
+  const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const webviewHostRef = useRef<HTMLDivElement | null>(null)
+  const previewVisibleRef = useRef(previewVisible)
   const consumedNativeNavigationRef = useRef<{ url: string; token: number } | null>(null)
 
   const status = devServer?.status ?? null
@@ -217,13 +219,19 @@ export function PreviewPanel() {
     }
     const host = webviewHostRef.current
     if (!host) return
-    const rect = host.getBoundingClientRect()
     const targetUrl = nav.url
     const requestToken = usePreviewStore.getState().beginNativeOpenRequest(workspace, targetUrl)
     let cancelled = false
     void enqueueNativePreviewOperation(async () => {
       if (!usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) return
       try {
+        const currentHost = webviewHostRef.current
+        if (!currentHost) {
+          usePreviewStore.getState().closeNativeSession()
+          usePreviewStore.getState().settleNativeRequest(requestToken)
+          return
+        }
+        const rect = currentHost.getBoundingClientRect()
         await previewOpenUrl(targetUrl, rect.left, rect.top, rect.width, rect.height)
       } catch (error) {
         if (usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) {
@@ -259,7 +267,7 @@ export function PreviewPanel() {
     return () => {
       cancelled = true
     }
-  }, [external, nativeNavigationSync, nav.url, workspace])
+  }, [external, nativeNavigationSync, nav.url, tp, workspace])
 
   // Close the webview when the preview is no longer showing an external URL, and
   // on unmount (the panel unmounts when another tab becomes active — a stray
@@ -275,7 +283,7 @@ export function PreviewPanel() {
         (error) => showActionError(tp("previewPanel.reload"), error)
       )
     }
-  }, [external, workspace])
+  }, [external, tp, workspace])
   useEffect(() => {
     return () => {
       if (isTauri()) requestNativePreviewClose(null)
@@ -285,12 +293,22 @@ export function PreviewPanel() {
   // Track the placeholder's bounds so the native layer stays glued to it as the
   // panel resizes (nav width, terminal drawer, responsive-frame toggle, window).
   useEffect(() => {
-    if (!isTauri() || !external) return
+    if (!isTauri() || !external || !workspace || !nav.url) return
     const host = webviewHostRef.current
     if (!host) return
+    const targetWorkspace = workspace
+    const targetUrl = nav.url
     const update = () => {
-      const rect = host.getBoundingClientRect()
-      void previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+      void enqueueNativePreviewOperation(async () => {
+        if (
+          useWorkspaceStore.getState().workspacePath !== targetWorkspace
+          || usePreviewStore.getState().navForWorkspace(targetWorkspace).url !== targetUrl
+        ) return
+        const currentHost = webviewHostRef.current
+        if (!currentHost) return
+        const rect = currentHost.getBoundingClientRect()
+        await previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+      })
     }
     const observer = new ResizeObserver(update)
     observer.observe(host)
@@ -299,26 +317,35 @@ export function PreviewPanel() {
       observer.disconnect()
       window.removeEventListener("resize", update)
     }
-  }, [external])
+  }, [external, nav.url, workspace])
 
   // Visibility gate: show the webview only when the preview is the visible
   // foreground — Files mode, no overlay open (the webview paints above every DOM
   // overlay). Recompute bounds on show so it doesn't flash at a stale position.
   // Browser preview tab is hosted on the shared ADE/Files editor surface.
-  const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
   useEffect(() => {
-    if (!isTauri() || !external) return
-    if (previewVisible) {
-      const host = webviewHostRef.current
-      if (host) {
-        const rect = host.getBoundingClientRect()
-        void previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+    previewVisibleRef.current = previewVisible
+  }, [previewVisible])
+  useEffect(() => {
+    if (!isTauri() || !external || !workspace || !nav.url) return
+    const targetWorkspace = workspace
+    const targetUrl = nav.url
+    void enqueueNativePreviewOperation(async () => {
+      if (
+        useWorkspaceStore.getState().workspacePath !== targetWorkspace
+        || usePreviewStore.getState().navForWorkspace(targetWorkspace).url !== targetUrl
+      ) return
+      const shouldShow = previewVisibleRef.current
+      if (shouldShow) {
+        const host = webviewHostRef.current
+        if (host) {
+          const rect = host.getBoundingClientRect()
+          await previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+        }
       }
-      void previewSetVisible(true)
-    } else {
-      void previewSetVisible(false)
-    }
-  }, [external, previewVisible])
+      await previewSetVisible(shouldShow)
+    })
+  }, [external, nav.url, previewVisible, workspace])
 
   const submitUrl = () => {
     if (!workspace || urlDraft === null) return

@@ -7,6 +7,7 @@ import {
   herdrBinarySourceGet,
   herdrBinarySourceSet,
   herdrEventsRelease,
+  herdrCapabilities,
   herdrLayoutExport,
   herdrLayoutSetSplitRatio,
   herdrPaneClose,
@@ -20,7 +21,11 @@ import {
   herdrTabRename,
   herdrWorkspaceClose,
   herdrWorkspaceRename,
-  herdrWorktreeList
+  herdrSnapshot,
+  herdrWorktreeList,
+  herdrWslDistributions,
+  herdrWslHostToRuntimePath,
+  herdrWslRuntimeToHostPath
 } from "./herdrIpc"
 
 afterEach(() => {
@@ -104,6 +109,56 @@ describe("herdrIpc native interaction wrappers", () => {
         }
       },
       { cmd: "herdr_events_release", args: { subscriptionId: "sub-1" } }
+    ])
+  })
+
+  it("lists WSL distros and preserves explicit dual-path conversion payloads", async () => {
+    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+      if (cmd === "herdr_wsl_distributions") return [{ distro: "Ubuntu" }]
+      return {
+        distro: "Ubuntu",
+        runtimePath: "/home/yuuzu/project",
+        hostPath: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`,
+        displayPath: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`
+      }
+    })
+    await herdrWslDistributions()
+    await herdrWslRuntimeToHostPath("Ubuntu", "/home/yuuzu/project")
+    await herdrWslHostToRuntimePath("Ubuntu", String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`)
+    expect(calls).toEqual([
+      { cmd: "herdr_wsl_distributions", args: {} },
+      {
+        cmd: "herdr_wsl_runtime_to_host_path",
+        args: { distro: "Ubuntu", runtimePath: "/home/yuuzu/project" }
+      },
+      {
+        cmd: "herdr_wsl_host_to_runtime_path",
+        args: { distro: "Ubuntu", hostPath: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project` }
+      }
+    ])
+  })
+
+  it("passes the RuntimeTarget to event release and same-name snapshot requests", async () => {
+    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+      if (cmd === "herdr_snapshot") return { protocol: 19, version: "0.8.0", snapshot: {} }
+      return null
+    })
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
+    await herdrSnapshot("default", ubuntu)
+    await herdrEventsRelease("sub-ubuntu", ubuntu)
+    expect(calls).toEqual([
+      {
+        cmd: "herdr_snapshot",
+        args: { sessionName: "default", runtimeTarget: ubuntu }
+      },
+      {
+        cmd: "herdr_events_release",
+        args: { subscriptionId: "sub-ubuntu", runtimeTarget: ubuntu }
+      }
     ])
   })
 
@@ -204,6 +259,30 @@ describe("herdrIpc native interaction wrappers", () => {
       direction: "right",
       targetPaneId: "p1"
     })
+  })
+})
+
+describe("herdr runtime-target IPC compatibility", () => {
+  it("omits runtimeTarget for legacy callers and forwards an explicit target", async () => {
+    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+      return null
+    })
+
+    await herdrCapabilities("default")
+    await herdrSnapshot("default", { kind: "wsl", distro: "Ubuntu" })
+
+    expect(calls).toEqual([
+      { cmd: "herdr_capabilities", args: { sessionName: "default" } },
+      {
+        cmd: "herdr_snapshot",
+        args: {
+          sessionName: "default",
+          runtimeTarget: { kind: "wsl", distro: "Ubuntu" }
+        }
+      }
+    ])
   })
 })
 
