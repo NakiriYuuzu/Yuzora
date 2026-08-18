@@ -58,19 +58,7 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            wget
+        run: sudo bash .github/scripts/install-linux-system-dependencies.sh
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -176,10 +164,11 @@ jobs:
 
       - name: Build unsigned release candidate
         shell: bash
-        run: >-
-          bun tauri build --ci --no-sign
-          --config '{"bundle":{"createUpdaterArtifacts":false}}'
-          ${{ matrix.build-args }}
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -er '.version' package.json)"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
+          bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build-args }}
 
       - name: Upload release candidate
         uses: actions/upload-artifact@v4
@@ -201,19 +190,7 @@ jobs:
         run: test "$(uname -m)" = "x86_64"
 
       - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            wget
+        run: sudo bash .github/scripts/install-linux-system-dependencies.sh
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:

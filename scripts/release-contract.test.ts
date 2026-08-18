@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 
 import { describe, expect, it } from "vitest"
 
@@ -67,6 +68,49 @@ describe("release workflow contracts", () => {
 
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain("encode the release-notes output file")
+  })
+
+  it("requires the generated numeric WiX override in stable, beta, and candidate builds", () => {
+    const run = (contract: string, mutation: string) => spawnSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow, ${contract} } from "./scripts/release-contract.ts";
+        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+        ${mutation}
+      `],
+      { encoding: "utf8" }
+    )
+
+    const stable = run(
+      "verifyStableReleaseContract",
+      `release.jobs.build.steps.find((step) => step.name === "Build signed stable installers locally").run = "bun tauri build --ci"; verifyStableReleaseContract(release);`
+    )
+    expect(stable.status).not.toBe(0)
+    expect(stable.stderr).toContain("generated numeric WiX version override")
+
+    const beta = run(
+      "verifyBetaReleaseContract",
+      `release.jobs.build.steps.find((step) => step.name === "Build unsigned beta installers locally").run = "bun tauri build --ci --no-sign"; verifyBetaReleaseContract(release, ci);`
+    )
+    expect(beta.status).not.toBe(0)
+    expect(beta.stderr).toContain("generated no-updater numeric WiX version override")
+
+    const candidate = run(
+      "verifyBetaReleaseContract",
+      `ci.jobs["release-candidate"].steps.find((step) => step.name === "Build unsigned release candidate").run = "bun tauri build --ci --no-sign"; verifyBetaReleaseContract(release, ci);`
+    )
+    expect(candidate.status).not.toBe(0)
+    expect(candidate.stderr).toContain("release candidates must use the generated no-updater numeric WiX version override")
+  })
+
+  it("uses one bounded canonical-mirror installer for both Linux CI jobs", () => {
+    const installer = readFileSync(".github/scripts/install-linux-system-dependencies.sh", "utf8")
+    expect(installer).toContain("https://archive.ubuntu.com/ubuntu/")
+    expect(installer).toContain("https://security.ubuntu.com/ubuntu/")
+    expect(installer).toContain("Acquire::Retries=3")
+    expect(installer).toContain("timeout --foreground 8m")
+    expect(installer).toContain("timeout --foreground 12m")
   })
 
   it("rejects contents-write jobs that checkout or execute repository code", () => {

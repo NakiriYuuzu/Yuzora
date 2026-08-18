@@ -332,7 +332,14 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
       stableEnv.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
     "only stable local build may receive updater signing secrets"
   )
-  assert(includes(stableBuild.run, "bun tauri build --ci"), "stable must build installers locally")
+  assert(
+    includes(stableBuild.run, "bun tauri build --ci") &&
+      includes(stableBuild.run, 'scripts/release-msi-build-config.ts "$VERSION"') &&
+      includes(stableBuild.run, '--config "$RELEASE_BUILD_CONFIG"') &&
+      !includes(stableBuild.run, "--no-updater") &&
+      !includes(stableBuild.run, "--no-sign"),
+    "stable must use the generated numeric WiX version override without disabling signing or updater artifacts"
+  )
 
   const publish = jobFor(workflow, "publish-release")
   assert(
@@ -370,8 +377,9 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
     !JSON.stringify(betaBuild.env ?? {}).includes("TAURI_SIGNING_PRIVATE_KEY") &&
       !JSON.stringify(betaBuild.env ?? {}).includes("GITHUB_TOKEN") &&
       includes(betaBuild.run, "--no-sign") &&
-      includes(betaBuild.run, '"createUpdaterArtifacts":false'),
-    "beta local build must receive no write token or signing secrets and disable updater artifacts"
+      includes(betaBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
+      includes(betaBuild.run, '--config "$RELEASE_BUILD_CONFIG"'),
+    "beta local build must use the generated no-updater numeric WiX version override without secrets"
   )
 
   const betaPublish = jobFor(workflow, "publish-beta-release")
@@ -407,4 +415,27 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
     includes(branchCheck.run, '"$HEAD_REF" != "release/v${VERSION}"'),
     "candidate installers must require the exact release/v<product-version> branch"
   )
+  const candidateBuild = stepByName(steps(candidate, "release candidate"), "Build unsigned release candidate")
+  assert(
+    includes(candidateBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
+      includes(candidateBuild.run, '--config "$RELEASE_BUILD_CONFIG"') &&
+      includes(candidateBuild.run, "--no-sign"),
+    "release candidates must use the generated no-updater numeric WiX version override for every channel"
+  )
+
+  verifyCiLinuxDependencySetup(ci)
+}
+
+function verifyCiLinuxDependencySetup(ci: Workflow): void {
+  const jobs = jobsFor(ci)
+  for (const [jobName, stepName] of [
+    ["rust-compile", "Install Linux system dependencies"],
+    ["database-integration", "Install Linux system dependencies"],
+  ]) {
+    const install = stepByName(steps(record(jobs[jobName], `CI jobs.${jobName}`), `CI jobs.${jobName}`), stepName)
+    assert(
+      install.run === "sudo bash .github/scripts/install-linux-system-dependencies.sh",
+      `${jobName} must use the bounded canonical-mirror Linux dependency installer`
+    )
+  }
 }

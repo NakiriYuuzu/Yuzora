@@ -142,6 +142,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - Beta 只接受 `X.Y.Z-beta.N`；不以 `rc`、build metadata 或其他自訂 suffix 表示 Beta。
 - Beta 不得更新 stable `latest.json`、`releases/latest` 或產品頁固定下載入口。
 - Beta 只發布供手動下載的 installer，必須停用 updater artifacts，不產生 `latest.json` 或 updater `.sig`，也不需要存取 updater signing secrets。
+- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 同時停用 updater artifacts 並清空 updater endpoints；Stable build 只覆寫 WiX version，保留簽章、stable endpoint 與 updater artifacts。
 - PR candidate 是未簽章、未發布的 Actions artifact，用於 merge 前驗證；它不是 Beta Release。
 - `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持簽章、updater metadata、固定下載別名與 `--latest`；Beta 使用獨立 unsigned build／publish path，固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
 

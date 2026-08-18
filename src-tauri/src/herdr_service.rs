@@ -6102,14 +6102,21 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn omitted_runtime_target_uses_native_and_rejects_unregistered_wsl() {
+    fn omitted_runtime_target_uses_native_and_wsl_is_platform_scoped() {
         let manager = HerdrManager::new();
+        assert_eq!(
+            HerdrManager::resolved_runtime_target(None),
+            HerdrRuntimeTarget::Native
+        );
         assert!(manager.require_runtime_target(None).is_ok());
-        assert!(manager
-            .require_runtime_target(Some(&HerdrRuntimeTarget::Wsl {
-                distro: "Ubuntu".to_string(),
-            }))
-            .is_err());
+
+        let wsl = HerdrRuntimeTarget::Wsl {
+            distro: "Ubuntu".to_string(),
+        };
+        #[cfg(windows)]
+        assert!(manager.require_runtime_target(Some(&wsl)).is_ok());
+        #[cfg(not(windows))]
+        assert!(manager.require_runtime_target(Some(&wsl)).is_err());
     }
 
     fn frame(seq: u64, full: bool) -> HerdrWireFrame {

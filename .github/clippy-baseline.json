@@ -807,14 +807,14 @@
   {
     "code": "clippy::manual_repeat_n",
     "file": "src/herdr_service.rs",
-    "line": 7249,
+    "line": 7256,
     "message": "this `repeat().take()` can be written more concisely",
     "count": 1
   },
   {
     "code": "clippy::manual_repeat_n",
     "file": "src/herdr_service.rs",
-    "line": 7673,
+    "line": 7680,
     "message": "this `repeat().take()` can be written more concisely",
     "count": 1
   },

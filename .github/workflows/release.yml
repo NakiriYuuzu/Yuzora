@@ -274,17 +274,22 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: >-
-          bun tauri build --ci
-          ${{ matrix.build_args }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION")"
+          bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
       - name: Build unsigned beta installers locally
         if: needs.guard.outputs.is_beta == 'true'
         shell: bash
-        run: >-
-          bun tauri build --ci --no-sign
-          --config '{"bundle":{"createUpdaterArtifacts":false}}'
-          ${{ matrix.build_args }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
+          bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
       - name: Collect verified local installer artifacts
         shell: bash
