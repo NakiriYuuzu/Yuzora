@@ -10,6 +10,7 @@ import { useAppDialogStore } from "@/state/appDialogStore"
 import { MAX_TERMINAL_TABS, useTerminalStore } from "@/state/terminalStore"
 import { useWorkbenchLayoutStore, workbenchLayoutInitialState } from "@/state/workbenchLayoutStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { pickWorkspace } from "@/lib/workspaceActions"
 
 interface TerminalSessionMockProps {
   sessionId: string
@@ -51,6 +52,13 @@ vi.mock("@/terminal/TerminalSession", () => ({
 
 vi.mock("@/features/logs/userAction", () => ({
   logUserAction: vi.fn(async () => undefined),
+}))
+
+const workspaceActionsMock = vi.hoisted(() => ({
+  pickWorkspace: vi.fn(),
+}))
+vi.mock("@/lib/workspaceActions", () => ({
+  pickWorkspace: workspaceActionsMock.pickWorkspace,
 }))
 
 function installLocalStorage(): void {
@@ -172,6 +180,7 @@ beforeEach(() => {
   installLocalStorage()
   resizeObservations.length = 0
   terminalSessionMocks.props.clear()
+  vi.mocked(pickWorkspace).mockReset()
   globalThis.ResizeObserver = ResizeObserverHarness as unknown as typeof ResizeObserver
   useTerminalStore.getState().reset()
   useWorkbenchLayoutStore.setState({
@@ -479,7 +488,7 @@ describe("TerminalDrawer content resize", () => {
 it("header 與 empty state 不會開啟 terminal entity menu", () => {
   renderDrawer()
   fireEvent.contextMenu(screen.getByTestId("terminal-header"))
-  fireEvent.contextMenu(screen.getByText(i18n.t("noSessions", { ns: "terminal" })))
+  fireEvent.contextMenu(screen.getByText(i18n.t("noWorkspaceTitle", { ns: "terminal" })))
   expect(useContextMenuStore.getState().request).toBeNull()
 })
 
@@ -551,6 +560,84 @@ describe("TerminalDrawer sessions", () => {
     expect(sessions[0]).toHaveAttribute("data-active", "true")
     expect(screen.queryByText(i18n.t("noSessions", { ns: "terminal" }))).not.toBeInTheDocument()
     expect(useTerminalStore.getState().sessionsForWorkspace("/workspace")).toHaveLength(1)
+  })
+
+  it("offers an actionable folder escape when no workspace is open", () => {
+    renderDrawer()
+
+    expect(screen.getByText("Choose a folder to start a terminal")).toBeInTheDocument()
+    expect(screen.getByTestId("terminal-open-folder")).toHaveTextContent(
+      "Open folder and create terminal",
+    )
+    expect(screen.getByTitle("New terminal")).toBeEnabled()
+  })
+
+  it("opens a picked canonical workspace then creates one terminal with the selected profile", async () => {
+    localStorage.setItem(
+      "yuzora:terminal-settings",
+      JSON.stringify({ shellPath: "/bin/fish", shellArgs: "--no-config" }),
+    )
+    vi.mocked(pickWorkspace).mockImplementation(async () => {
+      useWorkspaceStore.setState({ workspacePath: "/canonical/workspace" })
+      return true
+    })
+    renderDrawer()
+
+    fireEvent.click(screen.getByTestId("terminal-open-folder"))
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().sessionsForWorkspace("/canonical/workspace")).toHaveLength(1)
+    })
+    const session = useTerminalStore.getState().sessionsForWorkspace("/canonical/workspace")[0]!
+    expect(session).toMatchObject({ workspace: "/canonical/workspace", shell: "/bin/fish" })
+    expect(session.shellArgs).toEqual(["--no-config"])
+    expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1)
+  })
+
+  it("creates no session when the no-workspace picker is cancelled", async () => {
+    vi.mocked(pickWorkspace).mockResolvedValue(false)
+    renderDrawer()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    await waitFor(() => expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1))
+    expect(Object.keys(useTerminalStore.getState().sessions)).toHaveLength(0)
+  })
+
+  it("shows existing action feedback when opening a no-workspace folder fails", async () => {
+    vi.mocked(pickWorkspace).mockRejectedValue(new Error("picker unavailable"))
+    renderDrawer()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+
+    await waitFor(() => {
+      expect(useAppDialogStore.getState().pending).toMatchObject({
+        type: "message",
+        title: "Action failed",
+        description: "New terminal failed: picker unavailable"
+      })
+    })
+    expect(Object.keys(useTerminalStore.getState().sessions)).toHaveLength(0)
+  })
+
+  it("guards repeated no-workspace clicks until the picker completes", async () => {
+    let finishPicker!: (opened: boolean) => void
+    vi.mocked(pickWorkspace).mockImplementation(
+      () => new Promise<boolean>((resolve) => {
+        finishPicker = resolve
+      }),
+    )
+    renderDrawer()
+
+    fireEvent.click(screen.getByTitle("New terminal"))
+    fireEvent.click(screen.getByTestId("terminal-open-folder"))
+    expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1)
+
+    useWorkspaceStore.setState({ workspacePath: "/canonical/workspace" })
+    finishPicker(true)
+    await waitFor(() => {
+      expect(useTerminalStore.getState().sessionsForWorkspace("/canonical/workspace")).toHaveLength(1)
+    })
   })
 
   it("suppresses the terminal viewport context menu without opening Yuzora actions", () => {

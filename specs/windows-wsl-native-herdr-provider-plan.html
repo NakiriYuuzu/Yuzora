@@ -163,11 +163,11 @@ pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
     <tbody>
       <tr><td>Session discovery/status/schema</td><td class="support-full">完整</td><td class="support-full">完整</td><td>不啟動未選擇的 distro；selected binary 為權威</td></tr>
       <tr><td>Snapshot/Spaces/Agents</td><td class="support-full">完整</td><td class="support-partial">輪詢</td><td>相同 IDs 跨 distro 不碰撞</td></tr>
-      <tr><td>Workspace/Tab/Pane mutations</td><td class="support-full">完整</td><td class="support-partial">誠實降級</td><td>schema-gated；無 proxy 時不可假裝支援</td></tr>
+      <tr><td>Workspace/Tab/Pane mutations</td><td class="support-full">完整</td><td class="support-partial">Herdr 0.8.0 公開 CLI command map</td><td>精確 version/protocol/schema gate；未映射能力維持 disabled</td></tr>
       <tr><td>events.subscribe</td><td class="support-full">完整</td><td class="support-no">不可用</td><td>events 與 responses 可在同一 stdout 安全分流</td></tr>
       <tr><td>Terminal observe/control</td><td class="support-full">完整</td><td class="support-full">完整</td><td>既有 official connector 經 wsl.exe 啟動</td></tr>
       <tr><td>Agent lifecycle/integrations</td><td class="support-full">WSL-native</td><td class="support-full">WSL-native</td><td>Herdr 在 distro 內看得到 Linux process tree</td></tr>
-      <tr><td>Git/worktree</td><td class="support-full">WSL-native</td><td class="support-partial">read-only 可先行</td><td>Runtime Path 不送進 Windows Git</td></tr>
+      <tr><td>Git/worktree</td><td class="support-full">WSL-native</td><td class="support-partial"><code>worktree.list</code></td><td>Runtime Path 不送進 Windows Git；未映射 write 操作不宣告</td></tr>
       <tr><td>Reconnect/recovery</td><td class="support-full">完整</td><td class="support-partial">重啟 CLI</td><td>generation isolation，舊 response/event 不污染新連線</td></tr>
     </tbody>
   </table></div>
@@ -254,7 +254,7 @@ pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
 
   <div class="phase" id="phase-2">
     <h3><code class="status">[wip]</code> Phase 2：WSL discovery、CLI bootstrap 與雙路徑</h3>
-    <p>建立無 upstream 依賴的 read-only/terminal-capable WSL Provider，證明 distro 內 Herdr 可被發現、驗證、snapshot 與連接。</p>
+    <p>建立無 upstream patch 依賴的 WSL Provider：先證明 distro 內 Herdr 可被發現、驗證、snapshot 與連接，再對精確驗證的官方 Herdr 0.8.0 啟用封閉的公開 CLI control map。</p>
     <h4>2.1 Distro discovery policy</h4>
     <ul class="checklist">
       <li><code class="status">[x]</code> Windows 只用 <code>wsl.exe --list --quiet</code> 列出 distro，不啟動它們；重用 UTF-16LE/UTF-8 decoder，拒絕 empty/duplicate output，且有 host-runnable fake executor coverage。</li>
@@ -265,7 +265,7 @@ pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
     <h4>2.2 CLI bootstrap</h4>
     <ul class="checklist">
       <li><code class="status">[x]</code> 在 selected distro 內執行 Herdr session list、status、schema、snapshot；使用 <code>env HERDR_SESSION=… herdr …</code> argv，而非 host environment 假設。</li>
-      <li><code class="status">[x]</code> CLI fallback capability 誠實標示：snapshot/terminal 可用；events 不可用；未實作的 mutations 不可宣告 available。</li>
+      <li><code class="status">[x]</code> CLI compatibility capability 誠實標示：精確官方 Herdr 0.8.0／protocol 20／schema 1 才啟用映射的 workspace/tab/pane mutations、layout geometry 與 terminal；events、tab.move、direct pane.focus、split-ratio write 與未知版本維持不可用。</li>
       <li><code class="status">[x]</code> 將 CLI snapshot 經既有 bounded JSON/complexity/count parsers，不新增 WSL 專屬寬鬆 parser。</li>
     </ul>
     <h4>2.3 Path mapping</h4>
@@ -281,7 +281,7 @@ pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
       <li><code class="status">[x]</code> 可重用 fake <code>wsl.exe</code> executor 記錄 argv/env、回傳 bounded Herdr JSON、模擬 missing binary/timeout/invalid UTF-8；不依賴 Windows host。</li>
       <li><code class="status">[]</code> Windows manual gate：選擇 Ubuntu 後才啟動 distro，顯示正確 Herdr version/protocol/session/snapshot。</li>
     </ul>
-    <div class="loop">🔁 Phase 2 只證明 provider bootstrap 與 path correctness；尚未有 stdio proxy 時不得把 full mutations/events 標為可用。</div>
+    <div class="loop">🔁 Phase 2 的公開 CLI control 是精確版本的 compatibility floor，不等於 proxy full control；events、未映射 mutations 與 split-ratio persistence 仍不得宣告可用。</div>
   </div>
 
   <div class="phase" id="phase-3">
@@ -307,7 +307,7 @@ pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
       <li><code class="status">[x]</code> Vitest 覆蓋 Native/Ubuntu 同 terminal ID 的 attachment isolation、page v2 paths、disconnected retention，並驗證 Host Path workspace activation 與 Runtime Path Herdr focus。</li>
       <li><code class="status">[]</code> Windows manual gate：在 Yuzora xterm 中控制 WSL Herdr pane，關閉 Yuzora 後 WSL Herdr pane/server 持續存在。</li>
     </ul>
-    <div class="loop">🔁 Terminal connector 完成不等於 control-plane 完成；events/mutations 仍維持 CLI fallback capability。</div>
+    <div class="loop">🔁 Terminal connector 完成不等於 proxy control-plane 完成；公開 CLI mode 只開啟精確映射能力，events 與未映射操作仍維持 disabled。</div>
   </div>
 
   <div class="phase" id="phase-4">
@@ -327,7 +327,7 @@ pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
       <li><code class="status">[]</code> <strong>外部 cross-platform gate：</strong>Linux、macOS、native Windows build 維持，並證明 stdio proxy 可在 native host 使用。</li>
       <li><code class="status">[x]</code> Patch 文件已明確區分 proxy process lifecycle 與 Herdr server/pane lifecycle。</li>
     </ul>
-    <div class="callout warn"><strong>External dependency：</strong>Yuzora 不應依賴未合併的 private Herdr behavior。若 upstream 尚未接受 proxy，Phase 2/3 可交付 read/terminal beta，但 full mutations/events 保持 blocked。</div>
+    <div class="callout warn"><strong>External dependency：</strong>Yuzora 不應依賴未合併的 private Herdr behavior。若 upstream 尚未接受 proxy，精確驗證的官方 Herdr 0.8.0 可透過公開 CLI command map 交付 compatibility control；events、agent raw methods、tab.move、direct pane.focus 與 split-ratio persistence 仍保持 blocked。</div>
     <div class="loop">🔁 Proxy 必須是 public、versioned、documented Herdr interface；不得複製 private bincode client protocol。</div>
   </div>
 
@@ -345,7 +345,7 @@ pagePath(target, session, terminal) // pseudo-tab identity</code></pre>
     <ul class="checklist">
       <li><code class="status">[x]</code> 既有 typed workspace/tab/pane/layout/agent/worktree methods 透過 Provider request，Native 與 WSL 共用 parsers與 capability flags。</li>
       <li><code class="status">[x]</code> WSL events.subscribe 接進既有 HerdrBridge/store flow；healthy events 仍保留低頻 authoritative snapshot fallback。</li>
-      <li><code class="status">[x]</code> proxy unavailable 時自動降級 CLI snapshot/polling + terminal connector，並在 capabilities/diagnostics 顯示 degraded reason。</li>
+      <li><code class="status">[x]</code> proxy unavailable 時重新 probe；精確官方 Herdr 0.8.0 選擇公開 CLI snapshot/polling + command-map mutations + terminal connector，未知 dialect 則 fail-closed read-only，capabilities/diagnostics 顯示實際模式與 reason。</li>
       <li><code class="status">[x]</code> Mutation 在 degraded mode 只有經明確支援的 CLI command 可開啟；其餘按鈕 disabled，不做 optimistic fake。</li>
     </ul>
     <h4>5.3 Testing Strategy</h4>

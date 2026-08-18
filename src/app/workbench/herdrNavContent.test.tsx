@@ -5,6 +5,17 @@ import { HerdrNavContent } from "@/app/workbench/HerdrNavContent"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
+import { useUiStore } from "@/state/uiStore"
+import { open } from "@tauri-apps/plugin-dialog"
+import { pickWorkspace } from "@/lib/workspaceActions"
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn()
+}))
+
+vi.mock("@/lib/workspaceActions", () => ({
+  pickWorkspace: vi.fn()
+}))
 
 vi.mock("@/lib/herdrIpc", () => ({
   herdrSessions: vi.fn(),
@@ -154,6 +165,9 @@ describe("HerdrNavContent", () => {
     cleanup()
     useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
     useTextInputDialogStore.setState({ pending: null })
+    useUiStore.setState({ mode: "ade" })
+    vi.mocked(open).mockReset()
+    vi.mocked(pickWorkspace).mockReset()
     useWorkspaceStore.setState({
       groups: [{ tabs: [], activePath: null }],
       activeGroupIndex: 0
@@ -197,6 +211,157 @@ describe("HerdrNavContent", () => {
     render(<HerdrNavContent />)
 
     expect(screen.queryByTestId("herdr-inspect-ag-1")).toBeNull()
+  })
+
+  it("disables attention rows when the selected runtime cannot mutate", () => {
+    const state = readyState()
+    useHerdrStore.setState(
+      readyState({
+        capabilities: {
+          ...state.capabilities,
+          api: {
+            ...state.capabilities.api,
+            workspaceFocus: false,
+            reason: "WSL public control is read-only"
+          }
+        },
+        attentionByKey: new Map([
+          [
+            "native::default::pane-1",
+            {
+              key: "native::default::pane-1",
+              runtimeTarget: { kind: "native" },
+              sessionName: "default",
+              paneId: "pane-1",
+              workspaceId: "ws-1",
+              agentStatus: "blocked",
+              kind: "blocked",
+              title: "Needs input",
+              seen: false,
+              updatedAt: Date.now()
+            }
+          ]
+        ])
+      })
+    )
+
+    render(<HerdrNavContent />)
+
+    const attention = screen.getByTestId("herdr-attention-pane-1")
+    expect(attention).toBeDisabled()
+    expect(attention).toHaveAttribute("title", "WSL public control is read-only")
+  })
+
+  it("onboards a connected zero-Space session with one scoped Space create action", async () => {
+    const createSpaceFromFolder = vi.fn().mockResolvedValue({ ok: true })
+    useHerdrStore.setState(
+      readyState({
+        selectedSpaceId: null,
+        selectedSpaceBySession: { default: null },
+        snapshot: {
+          ...readyState().snapshot,
+          spaces: [],
+          tabs: [],
+          agents: [],
+          terminals: []
+        },
+        canCreateSpace: () => true,
+        createSpaceFromFolder
+      })
+    )
+    vi.mocked(open).mockResolvedValue("/Users/tester/first-space")
+
+    render(<HerdrNavContent />)
+
+    expect(screen.getByTestId("herdr-zero-space-onboarding")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("herdr-create-space-from-folder"))
+    fireEvent.click(screen.getByTestId("herdr-create-space-from-folder"))
+
+    await vi.waitFor(() => {
+      expect(createSpaceFromFolder).toHaveBeenCalledTimes(1)
+    })
+    expect(createSpaceFromFolder).toHaveBeenCalledWith("/Users/tester/first-space", "first-space")
+    expect(vi.mocked(open)).toHaveBeenCalledTimes(1)
+  })
+
+  it("opens a local folder from zero-Space onboarding and visibly switches to Files", async () => {
+    useHerdrStore.setState(
+      readyState({
+        selectedSpaceId: null,
+        selectedSpaceBySession: { default: null },
+        snapshot: {
+          ...readyState().snapshot,
+          spaces: [],
+          tabs: [],
+          agents: [],
+          terminals: []
+        }
+      })
+    )
+    vi.mocked(pickWorkspace).mockResolvedValue(true)
+
+    render(<HerdrNavContent />)
+    fireEvent.click(screen.getByTestId("herdr-open-local-folder"))
+
+    await vi.waitFor(() => expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1))
+    expect(useUiStore.getState().mode).toBe("files")
+  })
+
+  it("keeps the local-folder escape available when Herdr itself is unavailable", async () => {
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      attachments: new Map(),
+      connectionState: "unsupported",
+      errorMessage: "Herdr is unavailable"
+    })
+    vi.mocked(pickWorkspace).mockResolvedValue(true)
+
+    render(<HerdrNavContent />)
+    fireEvent.click(screen.getByTestId("herdr-unavailable-open-local-folder"))
+
+    await vi.waitFor(() => expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1))
+    expect(useUiStore.getState().mode).toBe("files")
+  })
+
+  it("keeps the local-folder escape available for a stopped session without a snapshot", async () => {
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      attachments: new Map(),
+      connectionState: "stopped",
+      errorMessage: "Herdr session is stopped"
+    })
+    vi.mocked(pickWorkspace).mockResolvedValue(true)
+
+    render(<HerdrNavContent />)
+    fireEvent.click(screen.getByTestId("herdr-unavailable-open-local-folder"))
+
+    await vi.waitFor(() => expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1))
+    expect(useUiStore.getState().mode).toBe("files")
+  })
+
+  it("renders the first-Space blocked reason instead of hiding it in a tooltip", () => {
+    useHerdrStore.setState(
+      readyState({
+        selectedSpaceId: null,
+        selectedSpaceBySession: { default: null },
+        snapshot: {
+          ...readyState().snapshot,
+          spaces: [],
+          tabs: [],
+          agents: [],
+          terminals: []
+        },
+        canCreateSpace: () => false,
+        createSpaceBlockedReason: () => "WSL public control is read-only"
+      })
+    )
+
+    render(<HerdrNavContent />)
+
+    expect(screen.getByTestId("herdr-create-space-from-folder")).toBeDisabled()
+    expect(screen.getByTestId("herdr-create-space-blocked-reason")).toHaveTextContent(
+      "WSL public control is read-only"
+    )
   })
 
   it("opens a page when an agent is activated", async () => {
@@ -259,21 +424,19 @@ describe("HerdrNavContent", () => {
     })
   })
 
-  it("shows stopped guidance and disables mutations for stopped session tab", () => {
+  it("shows the local-folder escape for a stopped session without a snapshot", () => {
     useHerdrStore.setState(
       readyState({
         selectedSessionName: "work",
         connectionState: "stopped",
         selectedSpaceId: null,
         snapshot: null,
-        canCreateTerminal: () => false,
-        canMutateSelectedSession: () => false,
-        createTerminalBlockedReason: () => "stopped"
+        errorMessage: "stopped"
       })
     )
     render(<HerdrNavContent />)
-    expect(screen.getByTestId("herdr-session-stopped")).toBeInTheDocument()
-    expect(screen.getByTestId("herdr-create-terminal")).toBeDisabled()
+    expect(screen.getByTestId("herdr-unavailable-open-local-folder")).toBeEnabled()
+    expect(screen.queryByTestId("herdr-create-terminal")).toBeNull()
   })
 
   it("disables + with capability reason when create is unavailable", () => {

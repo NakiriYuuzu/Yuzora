@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { HerdrTerminalEvent } from "@/lib/herdrTypes"
+import type { HerdrCapabilities, HerdrTerminalEvent } from "@/lib/herdrTypes"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 const xtermMock = vi.hoisted(() => {
@@ -210,17 +210,72 @@ import { isMacPlatform } from "@/lib/platform"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
+const terminalControlCapabilities = {
+  binaryPath: "/bin/herdr",
+  binarySource: {
+    configured: "global",
+    resolved: "global",
+    available: true,
+    path: "/bin/herdr",
+    reason: null,
+    restartRequired: false
+  },
+  server: { running: true },
+  api: {
+    snapshot: true,
+    ping: true,
+    tabCreate: true,
+    workspaceFocus: true,
+    workspaceCreate: true,
+    workspaceRename: true,
+    workspaceClose: true,
+    tabRename: true,
+    tabClose: true,
+    tabFocus: true,
+    tabMove: false,
+    paneFocus: true,
+    paneRename: true,
+    paneSplit: true,
+    paneZoom: true,
+    paneSwap: true,
+    paneClose: true,
+    layoutExport: false,
+    layoutSetSplitRatio: false,
+    agentGet: false,
+    agentRead: false,
+    eventsSubscribe: false,
+    worktreeList: false,
+    methods: [],
+    reason: null
+  },
+  terminal: {
+    observe: true,
+    control: true,
+    takeover: true,
+    input: true,
+    resize: true,
+    scroll: true,
+    release: true,
+    create: true,
+    reason: null
+  },
+  events: { status: "deferred" }
+} satisfies HerdrCapabilities
+
 function seedSessions(
   sessions: Array<{ name: string; default: boolean; running: boolean }>
 ) {
   useHerdrStore.setState({
     ...herdrInitialState,
     attachments: new Map(),
+    selectedRuntimeTarget: { kind: "native" },
+    selectedSessionName: sessions.find((session) => session.default)?.name ?? sessions[0]?.name ?? null,
     sessions: sessions.map((s) => ({
       ...s,
       sessionDir: `/tmp/${s.name}`,
       socketPath: `/tmp/${s.name}.sock`
-    }))
+    })),
+    capabilities: terminalControlCapabilities
   })
 }
 
@@ -272,6 +327,26 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("does not open a control connector before exact runtime capabilities are known", async () => {
+    useHerdrStore.setState({ capabilities: null })
+
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Terminal control is unavailable for this Herdr runtime."
+      )
+    })
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
   })
 
   it("honors onProcessed so two separate flushes both reach xterm", async () => {
@@ -743,6 +818,7 @@ describe("HerdrTerminalPage stopped session gate", () => {
       attachments: new Map(),
       selectedSessionName: "default",
       selectedRuntimeTarget: ubuntu,
+      capabilities: terminalControlCapabilities,
       sessions: [{
         name: "default",
         default: true,
@@ -785,14 +861,14 @@ describe("HerdrTerminalPage stopped session gate", () => {
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
 
     act(() => {
-      seedSessions([{ name: "work", default: true, running: false }])
+      replaceSessionInventory([{ name: "work", default: true, running: false }])
     })
 
     await waitFor(() => {
       expect(screen.getByTestId("herdr-terminal-stopped")).toBeInTheDocument()
     })
     await waitFor(() => {
-      expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalled()
+      expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
     })
     // No additional open after stop.
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
@@ -811,6 +887,58 @@ describe("HerdrTerminalPage dispose races", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("releases exactly once when stale-page registry cleanup races leaf unmount", async () => {
+    seedSessions([{ name: "default", default: true, running: true }])
+    const { unmount } = render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const attachmentKey = "yuzora://herdr/default/term-1::term-1"
+    await waitFor(() => expect(useHerdrStore.getState().attachments.has(attachmentKey)).toBe(true))
+
+    const staleCleanup = useHerdrStore.getState().releaseAttachment(attachmentKey)
+    unmount()
+    await staleCleanup
+
+    expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
+    expect(useHerdrStore.getState().attachments.size).toBe(0)
+  })
+
+  it("releases exactly once per connector generation across Take Control and unmount", async () => {
+    seedSessions([{ name: "default", default: true, running: true }])
+    herdrIpcMock.herdrTerminalOpen.mockResolvedValueOnce({
+      sessionId: "sess-observer",
+      target: "term-1",
+      mode: "observe",
+      role: "observer",
+      cols: 80,
+      rows: 24,
+      takeover: false
+    })
+    const { unmount } = render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(await screen.findByTestId("herdr-take-control"))
+
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+    expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
+
+    unmount()
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(2))
   })
 
   it("resync release completing after unmount cannot reopen a hidden connector", async () => {
@@ -850,6 +978,7 @@ describe("HerdrTerminalPage dispose races", () => {
     })
 
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+    expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
     expect(useHerdrStore.getState().attachments.size).toBe(0)
   })
 })
@@ -873,7 +1002,7 @@ function seedNamedRuntime() {
     },
     runtimesBySession: {
       work: {
-        capabilities: null,
+        capabilities: terminalControlCapabilities,
         snapshot: {
           herdrSessionId: "work",
           protocol: 19,

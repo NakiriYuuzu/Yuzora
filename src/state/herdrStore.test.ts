@@ -239,6 +239,43 @@ const rawSnapshot = {
   }
 }
 
+function snapshotWithWorkspace(
+  workspaceId: string,
+  label: string,
+  path: string,
+  protocol = 19
+) {
+  return {
+    ...rawSnapshot,
+    protocol,
+    snapshot: {
+      ...rawSnapshot.snapshot,
+      protocol,
+      focused_workspace_id: workspaceId,
+      workspaces: [
+        ...rawSnapshot.snapshot.workspaces.map((workspace) => ({
+          ...workspace,
+          focused: false
+        })),
+        {
+          ...rawSnapshot.snapshot.workspaces[0],
+          workspace_id: workspaceId,
+          number: rawSnapshot.snapshot.workspaces.length,
+          label,
+          focused: true,
+          pane_count: 0,
+          tab_count: 0,
+          active_tab_id: null,
+          worktree: {
+            ...rawSnapshot.snapshot.workspaces[0].worktree,
+            checkout_path: path
+          }
+        }
+      ]
+    }
+  }
+}
+
 describe("herdrStore", () => {
   beforeEach(() => {
     useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
@@ -1001,6 +1038,114 @@ describe("herdrStore", () => {
     expect(useHerdrStore.getState().canMutateSelectedSession()).toBe(false)
   })
 
+  it("allows the first Space without workspace.focus while Space activation stays gated", () => {
+    const createOnlyCaps = {
+      ...caps,
+      api: { ...caps.api, workspaceFocus: false, workspaceCreate: true }
+    }
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      attachments: new Map(),
+      sessions: [sessions[0]!],
+      selectedSessionName: "default",
+      selectedSpaceId: null,
+      selectedSpaceBySession: { default: null },
+      capabilities: createOnlyCaps,
+      snapshot: {
+        herdrSessionId: "default",
+        protocol: 19,
+        version: "0.8.0",
+        spaces: [],
+        tabs: [],
+        terminals: [],
+        agents: [],
+        raw: {}
+      }
+    })
+
+    const state = useHerdrStore.getState()
+    expect(state.canCreateSpace()).toBe(true)
+    expect(state.createSpaceBlockedReason()).toBeNull()
+    expect(state.canMutateSelectedSession()).toBe(false)
+  })
+
+  it("reports the dedicated workspace.create reason when first-Space creation is unavailable", () => {
+    const unavailableCaps = {
+      ...caps,
+      api: {
+        ...caps.api,
+        workspaceFocus: false,
+        workspaceCreate: false,
+        reason: "WSL public control is read-only"
+      }
+    }
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      attachments: new Map(),
+      sessions: [sessions[0]!],
+      selectedSessionName: "default",
+      capabilities: unavailableCaps
+    })
+
+    const state = useHerdrStore.getState()
+    expect(state.canCreateSpace()).toBe(false)
+    expect(state.createSpaceBlockedReason()).toBe("WSL public control is read-only")
+    expect(state.canMutateSelectedSession()).toBe(false)
+  })
+
+  it("preserves the selected WSL RuntimeTarget while creating the first Space", async () => {
+    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
+    const createOnlyCaps = {
+      ...caps,
+      api: { ...caps.api, workspaceFocus: false, workspaceCreate: true }
+    }
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      attachments: new Map(),
+      selectedRuntimeTarget: ubuntu,
+      sessions: [{ ...sessions[0]!, runtimeTarget: ubuntu }],
+      selectedSessionName: "default",
+      selectedSpaceId: null,
+      selectedSpaceBySession: { "wsl:Ubuntu::default": null },
+      capabilities: createOnlyCaps,
+      snapshot: {
+        herdrSessionId: "default",
+        protocol: 20,
+        version: "0.8.0",
+        spaces: [],
+        tabs: [],
+        terminals: [],
+        agents: [],
+        raw: {}
+      }
+    })
+    vi.mocked(herdrWorkspaceCreate).mockResolvedValue({
+      workspaceId: "ws-new",
+      label: "new",
+      path: "/home/test/new",
+      tabId: null,
+      terminalId: null,
+      paneId: null
+    })
+    vi.mocked(herdrSnapshot).mockResolvedValue(
+      snapshotWithWorkspace("ws-new", "new", "/home/test/new", 20)
+    )
+
+    const result = await useHerdrStore.getState().createSpaceFromFolder(
+      "\\\\wsl.localhost\\Ubuntu\\home\\test\\new",
+      "new"
+    )
+
+    expect(result.ok).toBe(true)
+    expect(herdrWorkspaceCreate).toHaveBeenCalledWith({
+      runtimeTarget: ubuntu,
+      sessionName: "default",
+      cwd: "\\\\wsl.localhost\\Ubuntu\\home\\test\\new",
+      label: "new",
+      focus: true
+    })
+  })
+
   it("session switch preserves mixed pages and does not clear attachments map entries for other pages", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
@@ -1062,6 +1207,9 @@ describe("herdrStore", () => {
       terminalId: "term-new",
       paneId: "pane-new"
     })
+    vi.mocked(herdrSnapshot).mockResolvedValue(
+      snapshotWithWorkspace("ws-new", "new", "/tmp/new")
+    )
 
     const result = await useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
     expect(confirmDiscardingUnsaved).toHaveBeenCalled()
@@ -1082,6 +1230,90 @@ describe("herdrStore", () => {
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.space?.id).toBe("ws-new")
     expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-new")
+  })
+
+  it("serializes first-Space creation across callers for one RuntimeKey", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finishCreate!: (value: {
+      workspaceId: string
+      label: string
+      path: string
+      tabId: null
+      terminalId: null
+      paneId: null
+    }) => void
+    vi.mocked(herdrWorkspaceCreate).mockImplementation(
+      () => new Promise((resolve) => {
+        finishCreate = resolve
+      })
+    )
+    vi.mocked(herdrSnapshot).mockResolvedValue(
+      snapshotWithWorkspace("ws-new", "new", "/tmp/new")
+    )
+
+    const first = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1))
+    const second = await useHerdrStore
+      .getState()
+      .createSpaceFromFolder("/tmp/other", "other")
+
+    finishCreate({
+      workspaceId: "ws-new",
+      label: "new",
+      path: "/tmp/new",
+      tabId: null,
+      terminalId: null,
+      paneId: null
+    })
+    await expect(first).resolves.toMatchObject({ ok: true })
+
+    expect(second).toEqual({
+      ok: false,
+      error: "Space creation is already in progress for this Herdr session."
+    })
+    expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not report success when an applied workspace.create cannot refresh", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrWorkspaceCreate).mockResolvedValue({
+      workspaceId: "ws-new",
+      label: "new",
+      path: "/tmp/new",
+      tabId: null,
+      terminalId: null,
+      paneId: null
+    })
+    vi.mocked(herdrSnapshot).mockRejectedValue(new Error("snapshot offline"))
+
+    const result = await useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("may have created the Space")
+    expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1)
+    expect(useHerdrStore.getState().errorMessage).toContain("do not create it again")
+  })
+
+  it("does not report success when the refreshed snapshot omits the created Space", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrWorkspaceCreate).mockResolvedValue({
+      workspaceId: "ws-new",
+      label: "new",
+      path: "/tmp/new",
+      tabId: null,
+      terminalId: null,
+      paneId: null
+    })
+    vi.mocked(herdrSnapshot).mockResolvedValue(rawSnapshot)
+
+    const result = await useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("not present in the refreshed snapshot")
+    expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1)
   })
 
   it("createSpaceFromFolder cancel causes zero create/focus/selection/page mutation", async () => {

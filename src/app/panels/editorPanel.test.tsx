@@ -80,11 +80,11 @@ describe("Files mode entry states", () => {
     // Shown, and starts expanded — content is immediately visible.
     const collapseToggle = screen.getByRole("button", { name: "Collapse terminal" })
     expect(collapseToggle).toHaveAttribute("aria-expanded", "true")
-    expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).toBeVisible()
+    expect(screen.getByText(i18n.t("noWorkspaceTitle", { ns: "terminal" }))).toBeVisible()
 
     // Collapsing content only hides the content — the header stays put.
     fireEvent.click(collapseToggle)
-    expect(screen.getByText(i18n.t("noSessions", { ns: "terminal" }))).not.toBeVisible()
+    expect(screen.getByText(i18n.t("noWorkspaceTitle", { ns: "terminal" }))).not.toBeVisible()
     expect(railSwitch).toHaveAttribute("aria-pressed", "true")
     const expandToggle = screen.getByRole("button", { name: "Expand terminal" })
     expect(expandToggle).toHaveAttribute("aria-expanded", "false")

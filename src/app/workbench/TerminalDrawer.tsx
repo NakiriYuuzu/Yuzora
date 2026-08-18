@@ -9,11 +9,12 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react"
-import { ChevronDown, ChevronUp, CircleAlert, List, Plus, TerminalSquare, X } from "lucide-react"
+import { ChevronDown, ChevronUp, CircleAlert, FolderOpen, List, Plus, TerminalSquare, X } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { SplitRatioIndicator } from "@/app/workbench/SplitRatioIndicator"
+import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +24,7 @@ import {
 import { logUserAction } from "@/features/logs/userAction"
 import { showActionError } from "@/lib/actionFeedback"
 import type { TerminalProfile } from "@/lib/types"
+import { pickWorkspace } from "@/lib/workspaceActions"
 import { loadTerminalSettings } from "@/app/workbench/settingsStorage"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import {
@@ -241,7 +243,9 @@ export function TerminalDrawer({
   const [transientPaneRatio, setTransientPaneRatio] = useState<TransientPaneRatio | null>(null)
   const [resizing, setResizing] = useState(false)
   const [geometryTransitionSuppressed, setGeometryTransitionSuppressed] = useState(false)
+  const [openingWorkspaceForTerminal, setOpeningWorkspaceForTerminal] = useState(false)
   const discoveredProfiles = useTerminalProfiles()
+  const openingSessionRef = useRef(false)
   const dragRef = useRef<DragState | null>(null)
   const paneDragRef = useRef<PaneDragState | null>(null)
   const paneGridRef = useRef<HTMLDivElement | null>(null)
@@ -260,7 +264,7 @@ export function TerminalDrawer({
   const activePane = panes.find((pane) => pane.paneId === activePaneId)
   const activeSession = activePane ? sessions[activePane.sessionId] : undefined
   const focusedSessionId = activeSession?.sessionId ?? null
-  const canCreateSession = Boolean(workspacePath)
+  const canCreateSession = !openingWorkspaceForTerminal
   const canSplit = Boolean(workspacePath && activePane) && panes.length < MAX_VISIBLE_TERMINAL_PANES
   const paneRatio =
     transientPaneRatio !== null &&
@@ -376,21 +380,66 @@ export function TerminalDrawer({
     if (!expanded) setExpanded(true)
   }
 
-  const openSession = (profile?: TerminalProfile) => {
-    if (!workspacePath) return
-    if (terminalTabLimitReached()) {
-      void showActionError(
-        t("terminalDrawer.newTerminalTitle", { ns: "menus" }),
-        terminalTabLimitError(),
-      )
+  const openSession = async (profile?: TerminalProfile) => {
+    if (workspacePath) {
+      if (terminalTabLimitReached()) {
+        await showActionError(
+          t("terminalDrawer.newTerminalTitle", { ns: "menus" }),
+          terminalTabLimitError(),
+        )
+        return
+      }
+      expandForTerminalAction()
+      const meta = createTerminalSessionMeta(workspacePath, profile)
+      addSession(workspacePath, meta)
+      void logUserAction("terminal_new", "Open a new terminal", {
+        profileId: profile?.id ?? terminalSettings.defaultProfile.id,
+      })
       return
     }
-    expandForTerminalAction()
-    const meta = createTerminalSessionMeta(workspacePath, profile)
-    addSession(workspacePath, meta)
-    void logUserAction("terminal_new", "Open a new terminal", {
-      profileId: profile?.id ?? terminalSettings.defaultProfile.id,
-    })
+
+    if (openingSessionRef.current) return
+    openingSessionRef.current = true
+    setOpeningWorkspaceForTerminal(true)
+    try {
+      if (terminalTabLimitReached()) {
+        await showActionError(
+          t("terminalDrawer.newTerminalTitle", { ns: "menus" }),
+          terminalTabLimitError(),
+        )
+        return
+      }
+      const opened = await pickWorkspace()
+      if (!opened) return
+      const targetWorkspace = useWorkspaceStore.getState().workspacePath
+      if (!targetWorkspace) {
+        await showActionError(
+          t("terminalDrawer.newTerminalTitle", { ns: "menus" }),
+          new Error(t("noWorkspaceOpenError")),
+        )
+        return
+      }
+      // The picker can take arbitrarily long while another window opens a
+      // terminal, so check the global cap again before creating this session.
+      if (terminalTabLimitReached()) {
+        await showActionError(
+          t("terminalDrawer.newTerminalTitle", { ns: "menus" }),
+          terminalTabLimitError(),
+        )
+        return
+      }
+      expandForTerminalAction()
+      const meta = createTerminalSessionMeta(targetWorkspace, profile)
+      addSession(targetWorkspace, meta)
+      void logUserAction("terminal_new", "Open a new terminal", {
+        profileId: profile?.id ?? terminalSettings.defaultProfile.id,
+      })
+    } catch (error) {
+      await showActionError(t("terminalDrawer.newTerminalTitle", { ns: "menus" }), error)
+    } finally {
+      setOpeningWorkspaceForTerminal(false)
+      openingSessionRef.current = false
+    }
   }
 
   const splitSession = () => {
@@ -975,12 +1024,26 @@ export function TerminalDrawer({
           <div className="relative h-full min-h-0">
             {tabIds.length === 0 && (
               <div className="flex h-full items-center justify-center">
-                <EmptyState
-                  icon={TerminalSquare}
-                  title={t("noSessions")}
-                  description={t("emptyDescription")}
-                  tone="terminal"
-                />
+                <div className="flex flex-col items-center gap-[14px]">
+                  <EmptyState
+                    icon={TerminalSquare}
+                    title={workspacePath ? t("noSessions") : t("noWorkspaceTitle")}
+                    description={workspacePath ? t("emptyDescription") : t("noWorkspaceDescription")}
+                    tone="terminal"
+                  />
+                  {!workspacePath && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      data-testid="terminal-open-folder"
+                      onClick={() => void openSession()}
+                      disabled={!canCreateSession}
+                    >
+                      <FolderOpen data-icon="inline-start" aria-hidden="true" />
+                      {t("openFolderForTerminal")}
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
             {workspaceLayouts.map(([paneWorkspace, paneLayout]) => {

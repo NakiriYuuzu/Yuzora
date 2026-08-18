@@ -20,7 +20,9 @@ use crate::herdr_limits::{
     validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH,
     MAX_NDJSON_LINE_BYTES, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
 };
-use crate::herdr_runtime::{HerdrRuntimeKey, HerdrRuntimeProviderRegistry, HerdrRuntimeTarget};
+use crate::herdr_runtime::{
+    HerdrRuntimeKey, HerdrRuntimeProviderRegistry, HerdrRuntimeTarget, WslControlPlan,
+};
 use crate::herdr_transport::{connect_local_stream, read_local_ndjson_line, write_local_all_until};
 use crate::process_kill;
 
@@ -35,8 +37,10 @@ static NEXT_SUBSCRIPTION_ID: AtomicU64 = AtomicU64::new(1);
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
+// Full CI can schedule the fake WSL launcher behind many process tests. This
+// is only a functional-event allowance; protocol idle deadlines remain strict.
 #[cfg(test)]
-const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(15);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const AGENT_READ_MIN_LINES: u32 = 20;
@@ -231,7 +235,7 @@ pub struct HerdrApiCapability {
     /// Public NDJSON socket methods we safely implement.
     pub snapshot: bool,
     pub ping: bool,
-    /// `tab.create` → root pane/terminal identity (protocol-19 `tab_created`).
+    /// `tab.create` → root pane/terminal identity (public `tab_created`).
     pub tab_create: bool,
     /// `workspace.focus { workspace_id }` for Space activation.
     pub workspace_focus: bool,
@@ -242,7 +246,7 @@ pub struct HerdrApiCapability {
     pub tab_rename: bool,
     pub tab_close: bool,
     pub tab_focus: bool,
-    /// Protocol-19 `tab.move { tab_id, insert_index }`.
+    /// Public `tab.move { tab_id, insert_index }`.
     pub tab_move: bool,
     pub pane_focus: bool,
     pub pane_rename: bool,
@@ -292,7 +296,7 @@ pub struct HerdrWorkspaceCreateResult {
     pub pane_id: Option<String>,
 }
 
-/// Protocol-19 `WorktreeSourceInfo` (camelCase IPC).
+/// Public `WorktreeSourceInfo` (camelCase IPC).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrWorktreeSourceInfo {
@@ -303,7 +307,7 @@ pub struct HerdrWorktreeSourceInfo {
     pub source_workspace_id: Option<String>,
 }
 
-/// Protocol-19 `WorktreeInfo` (camelCase IPC).
+/// Public `WorktreeInfo` (camelCase IPC).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrWorktreeInfo {
@@ -336,7 +340,7 @@ pub struct HerdrPaneIdentity {
     pub title: Option<String>,
 }
 
-/// `pane.split` direction (protocol-19 `SplitDirection`).
+/// `pane.split` direction (public `SplitDirection`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HerdrSplitDirection {
@@ -344,7 +348,7 @@ pub enum HerdrSplitDirection {
     Down,
 }
 
-/// `pane.zoom` mode (protocol-19 `PaneZoomMode`).
+/// `pane.zoom` mode (public `PaneZoomMode`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HerdrPaneZoomMode {
@@ -376,7 +380,7 @@ pub enum HerdrLayoutNode {
     },
 }
 
-/// Protocol-19 `LayoutDescription` (camelCase IPC).
+/// Public `LayoutDescription` (camelCase IPC).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrLayoutDescription {
@@ -734,6 +738,14 @@ pub struct HerdrManager {
     /// poll/reconnect callers from spawning a proxy storm before insertion.
     wsl_proxy_generation_lock: Mutex<()>,
     next_wsl_proxy_generation: AtomicU64,
+    /// Explicit probe result for each selected WSL runtime/session. A failed
+    /// proxy mutation never flips this plan to CLI in-place: only a later
+    /// capabilities re-probe may select a different control plane.
+    wsl_control_plans: Mutex<HashMap<HerdrRuntimeKey, WslControlPlan>>,
+    /// CLI topology commands are individual bounded children. Serialize them
+    /// per RuntimeKey so a slow one-shot command cannot reorder split/close
+    /// side effects from the same session.
+    wsl_cli_topology_locks: Mutex<HashMap<HerdrRuntimeKey, Arc<Mutex<()>>>>,
     socket_override: Mutex<Option<PathBuf>>,
     /// Host-runnable WSL connector fixture. Production always launches
     /// `wsl.exe`; tests use a temporary argv-recording executable.
@@ -870,6 +882,8 @@ impl HerdrManager {
             wsl_proxy_generations: Mutex::new(HashMap::new()),
             wsl_proxy_generation_lock: Mutex::new(()),
             next_wsl_proxy_generation: AtomicU64::new(1),
+            wsl_control_plans: Mutex::new(HashMap::new()),
+            wsl_cli_topology_locks: Mutex::new(HashMap::new()),
             socket_override: Mutex::new(None),
             #[cfg(test)]
             wsl_executable_override: Mutex::new(None),
@@ -912,6 +926,83 @@ impl HerdrManager {
             return executable;
         }
         PathBuf::from("wsl.exe")
+    }
+
+    fn wsl_runtime_key(distro: &str, session_name: &str) -> Option<HerdrRuntimeKey> {
+        // The provider rejects non-canonical names before reaching this layer.
+        // Keep the ownership maps defensive too: a whitespace alias must never
+        // create a second proxy, connector, plan, or topology queue.
+        crate::herdr_runtime::wsl::validate_distro(distro).ok()?;
+        Some(HerdrRuntimeKey::new(
+            HerdrRuntimeTarget::Wsl {
+                distro: distro.to_string(),
+            },
+            session_name,
+        ))
+    }
+
+    pub(crate) fn wsl_control_plan(
+        &self,
+        distro: &str,
+        session_name: &str,
+    ) -> Option<WslControlPlan> {
+        let key = Self::wsl_runtime_key(distro, session_name)?;
+        self.wsl_control_plans.lock().unwrap().get(&key).cloned()
+    }
+
+    pub(crate) fn set_wsl_control_plan(
+        &self,
+        distro: &str,
+        session_name: &str,
+        plan: WslControlPlan,
+    ) {
+        let Some(key) = Self::wsl_runtime_key(distro, session_name) else {
+            return;
+        };
+        self.wsl_control_plans.lock().unwrap().insert(key, plan);
+    }
+
+    pub(crate) fn wsl_cli_topology_lock(
+        &self,
+        distro: &str,
+        session_name: &str,
+    ) -> Option<Arc<Mutex<()>>> {
+        let key = Self::wsl_runtime_key(distro, session_name)?;
+        let mut locks = self.wsl_cli_topology_locks.lock().unwrap();
+        Some(
+            locks
+                .entry(key)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone(),
+        )
+    }
+
+    pub(crate) fn require_wsl_terminal_control_plan(&self, session_id: &str) -> Result<(), String> {
+        let runtime_key = self
+            .connector_runtime_keys
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| format!("no herdr terminal session {session_id}"))?;
+        if !matches!(runtime_key.runtime_target, HerdrRuntimeTarget::Wsl { .. }) {
+            return Err(format!(
+                "Herdr terminal session {session_id} does not belong to a WSL runtime"
+            ));
+        }
+        match self
+            .wsl_control_plans
+            .lock()
+            .unwrap()
+            .get(&runtime_key)
+            .cloned()
+        {
+            Some(WslControlPlan::Proxy | WslControlPlan::OfficialCliV080 { .. }) => Ok(()),
+            Some(WslControlPlan::ReadOnly { reason }) => Err(format!(
+                "WSL terminal control unavailable for this runtime: {reason}"
+            )),
+            None => Err("WSL terminal control plan has not been verified".into()),
+        }
     }
 
     #[cfg(test)]
@@ -1560,7 +1651,7 @@ impl HerdrManager {
         self.tab_create(session_name, workspace_id, title, None, true)
     }
 
-    /// Public `tab.create` with full protocol-19 params.
+    /// Public `tab.create` with full documented params.
     pub fn tab_create(
         &self,
         session_name: Option<&str>,
@@ -1648,7 +1739,7 @@ impl HerdrManager {
     }
 
     /// Public `workspace.close { workspace_id }` (destructive; confirm in UI).
-    /// Read-only protocol-19 `worktree.list` against the selected running session.
+    /// Read-only public `worktree.list` against the selected running session.
     pub fn worktree_list(
         &self,
         session_name: Option<&str>,
@@ -2469,6 +2560,7 @@ impl HerdrManager {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        crate::herdr_runtime::wsl::validate_distro(distro)?;
         let runtime_key = HerdrRuntimeKey::new(
             HerdrRuntimeTarget::Wsl {
                 distro: distro.to_string(),
@@ -2595,6 +2687,22 @@ impl HerdrManager {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        Self::wsl_proxy_request_with_id_timeout(
+            generation,
+            request_id,
+            method,
+            params,
+            WSL_PROXY_REQUEST_TIMEOUT,
+        )
+    }
+
+    fn wsl_proxy_request_with_id_timeout(
+        generation: &Arc<WslProxyGeneration>,
+        request_id: String,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
         let started = Instant::now();
         let request = serde_json::json!({
             "id": request_id,
@@ -2641,11 +2749,14 @@ impl HerdrManager {
             fail_wsl_proxy_generation(generation, error.clone());
             return Err(error);
         }
-        let result = match rx.recv_timeout(WSL_PROXY_REQUEST_TIMEOUT) {
+        let result = match rx.recv_timeout(timeout) {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 generation.pending.lock().unwrap().remove(&request_id);
-                Err("WSL proxy request timed out".into())
+                let reason = "WSL proxy request timed out".to_string();
+                fail_wsl_proxy_generation(generation, reason.clone());
+                let _ = release_wsl_proxy_generation(generation);
+                Err(reason)
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(generation_failure(
                 generation,
@@ -2824,6 +2935,8 @@ impl HerdrManager {
         for generation in proxy_generations {
             let _ = release_wsl_proxy_generation(&generation);
         }
+        self.wsl_control_plans.lock().unwrap().clear();
+        self.wsl_cli_topology_locks.lock().unwrap().clear();
     }
 
     /// Generic Native provider request. The typed facade supplies known public
@@ -7933,23 +8046,69 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             "{argv}"
         );
 
-        manager
-            .terminal_input_for_runtime(&ubuntu, &opened.session_id, Some("hello".into()), None)
-            .unwrap();
-        manager
-            .terminal_resize_for_runtime(&ubuntu, &opened.session_id, 121, 41)
-            .unwrap();
-        manager
-            .terminal_scroll_for_runtime(&ubuntu, &opened.session_id, HerdrScrollDirection::Down, 3)
-            .unwrap();
-        assert!(manager
-            .terminal_input_for_runtime(
-                &debian,
-                &opened.session_id,
-                Some("wrong runtime".into()),
-                None
-            )
-            .is_err());
+        manager.set_wsl_control_plan(
+            "Ubuntu",
+            "default",
+            WslControlPlan::OfficialCliV080 {
+                version: "0.8.0".into(),
+                protocol: 20,
+            },
+        );
+        let provider = crate::herdr_runtime::WslHerdrRuntimeProvider;
+        crate::herdr_runtime::HerdrRuntimeProvider::terminal_input(
+            &provider,
+            &ubuntu,
+            &manager,
+            &opened.session_id,
+            Some("hello".into()),
+            None,
+        )
+        .unwrap();
+        crate::herdr_runtime::HerdrRuntimeProvider::terminal_resize(
+            &provider,
+            &ubuntu,
+            &manager,
+            &opened.session_id,
+            121,
+            41,
+        )
+        .unwrap();
+        crate::herdr_runtime::HerdrRuntimeProvider::terminal_scroll(
+            &provider,
+            &ubuntu,
+            &manager,
+            &opened.session_id,
+            HerdrScrollDirection::Down,
+            3,
+        )
+        .unwrap();
+        assert!(crate::herdr_runtime::HerdrRuntimeProvider::terminal_input(
+            &provider,
+            &debian,
+            &manager,
+            &opened.session_id,
+            Some("wrong runtime".into()),
+            None,
+        )
+        .is_err());
+        manager.set_wsl_control_plan(
+            "Ubuntu",
+            "default",
+            WslControlPlan::ReadOnly {
+                reason: "unverified dialect".into(),
+            },
+        );
+        let read_only_error = crate::herdr_runtime::HerdrRuntimeProvider::terminal_input(
+            &provider,
+            &ubuntu,
+            &manager,
+            &opened.session_id,
+            Some("blocked".into()),
+            None,
+        )
+        .unwrap_err();
+        assert!(read_only_error.contains("terminal control unavailable"));
+        assert!(read_only_error.contains("unverified dialect"));
 
         let debian_opened = manager
             .open_wsl_terminal_with_named_session_for_test(
@@ -9176,6 +9335,36 @@ for raw in sys.stdin:
             assert!(generation.closed.load(Ordering::SeqCst));
             let _ = release_wsl_proxy_generation(&generation);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_wsl_proxy_generation_is_closed_reaped_and_not_reused() {
+        let (manager, generation) = fake_wsl_proxy_generation_with_script();
+        let pid = generation.child.lock().unwrap().as_ref().unwrap().id();
+        let error = HerdrManager::wsl_proxy_request_with_id_timeout(
+            &generation,
+            "timeout-request".into(),
+            "ping",
+            serde_json::json!({ "fixture": "timeout" }),
+            Duration::from_millis(80),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(generation.closed.load(Ordering::SeqCst));
+        assert!(generation.child.lock().unwrap().is_none());
+        assert!(!unix_pid_exists(pid), "timed-out proxy child survived");
+
+        let key = HerdrRuntimeKey::new(
+            HerdrRuntimeTarget::Wsl {
+                distro: "Ubuntu".into(),
+            },
+            "default",
+        );
+        let recovered = manager.ensure_wsl_proxy_generation(&key).unwrap();
+        assert!(!Arc::ptr_eq(&generation, &recovered));
+        assert!(recovered.generation > generation.generation);
+        let _ = release_wsl_proxy_generation(&recovered);
     }
 
     #[test]

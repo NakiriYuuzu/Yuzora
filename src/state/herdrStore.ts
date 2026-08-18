@@ -173,10 +173,12 @@ interface HerdrState {
     label?: string | null
   ) => Promise<HerdrActivationResult & { space?: HerdrSpaceInfo | null }>
   canCreateTerminal: () => boolean
+  canCreateSpace: () => boolean
   canMutateSelectedSession: () => boolean
   canFocusSelectedTab: () => boolean
   canMoveSelectedTab: () => boolean
   createTerminalBlockedReason: () => string | null
+  createSpaceBlockedReason: () => string | null
   mutationBlockedReason: () => string | null
   spaces: () => HerdrSpaceInfo[]
   agents: () => HerdrAgentInfo[]
@@ -489,6 +491,7 @@ const worktreeInventoryRequestedGeneration = new Map<string, number>()
 const snapshotGeneration = new Map<string, number>()
 const tabActivationGeneration = new Map<string, number>()
 const tabActivationTail = new Map<string, Promise<void>>()
+const spaceCreationInFlight = new Set<string>()
 let sessionSelectionGeneration = 0
 
 async function acquireTabActivation(runtimeSessionKey: string): Promise<() => void> {
@@ -1148,10 +1151,21 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     return Boolean(caps?.api.tabCreate && caps.terminal.create)
   },
 
+  canCreateSpace() {
+    const state = get()
+    const session = state.selectedSession()
+    if (!state.selectedSessionName || (session && !session.running)) return false
+    const caps = state.capabilities
+    return Boolean(caps?.server.running && caps.api.snapshot && caps.api.workspaceCreate)
+  },
+
   mutationBlockedReason() {
     const session = get().selectedSession()
     if (session && !session.running) {
-      return i18n.t("herdrNav.sessionStopped", { name: session.name })
+      return i18n.t("herdrNav.sessionStopped", {
+        ns: "workbench",
+        name: session.name
+      })
     }
     const caps = get().capabilities
     return caps?.api.reason ?? caps?.terminal.reason ?? null
@@ -1165,6 +1179,22 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       get().capabilities?.api.reason ??
       "Herdr tab.create unavailable"
     )
+  },
+
+  createSpaceBlockedReason() {
+    if (get().canCreateSpace()) return null
+    const state = get()
+    const session = state.selectedSession()
+    if (!state.selectedSessionName) {
+      return i18n.t("herdrNav.selectSessionFirst", { ns: "workbench" })
+    }
+    if (session && !session.running) {
+      return i18n.t("herdrNav.sessionStopped", {
+        ns: "workbench",
+        name: session.name
+      })
+    }
+    return state.capabilities?.api.reason ?? "Herdr workspace.create unavailable"
   },
 
   async createTerminalInSelectedSpace() {
@@ -1204,10 +1234,10 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const stateBefore = get()
     const sessionName = stateBefore.selectedSessionName
     const runtimeTarget = stateBefore.selectedRuntimeTarget
-    if (!sessionName || !get().canMutateSelectedSession()) {
+    if (!sessionName || !get().canCreateSpace()) {
       return {
         ok: false,
-        error: get().mutationBlockedReason() ?? "herdr workspace.create unavailable"
+        error: get().createSpaceBlockedReason() ?? "herdr workspace.create unavailable"
       }
     }
     const caps = get().capabilities
@@ -1217,91 +1247,112 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       return { ok: false, error: message }
     }
 
-    const previousSession = stateBefore.selectedSessionName
-    const previousRuntimeTarget = stateBefore.selectedRuntimeTarget
-    const previousSpace = previousSession != null
-      ? selectedSpaceFor(stateBefore, previousSession, previousRuntimeTarget)
-      : null
-    const currentWorkspace = useWorkspaceStore.getState().workspacePath
-    const needsWorkspaceSwitch = Boolean(cwd && !pathsMatch(cwd, currentWorkspace))
-
-    // 1) Unsaved preflight BEFORE any workspace.create / selection mutation.
-    if (needsWorkspaceSwitch) {
-      const proceed = await confirmDiscardingUnsaved({
-        title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
-        description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
-        saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
-      })
-      if (!proceed) return { ok: false, cancelled: true }
+    const createKey = runtimeKeyFor(sessionName, runtimeTarget)
+    if (spaceCreationInFlight.has(createKey)) {
+      return {
+        ok: false,
+        error: i18n.t("herdrNav.createSpaceInProgress", { ns: "workbench" })
+      }
     }
-
-    let created
+    spaceCreationInFlight.add(createKey)
     try {
-      created = await herdrWorkspaceCreate({
-        ...runtimeTargetPayload(runtimeTarget),
-        sessionName,
-        cwd,
-        label: label ?? null,
-        focus: true
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      set((state) => withRuntime(state, sessionName, { errorMessage: message }, runtimeTarget))
-      return { ok: false, error: message }
-    }
+      const previousSession = stateBefore.selectedSessionName
+      const previousRuntimeTarget = stateBefore.selectedRuntimeTarget
+      const previousSpace = previousSession != null
+        ? selectedSpaceFor(stateBefore, previousSession, previousRuntimeTarget)
+        : null
+      const currentWorkspace = useWorkspaceStore.getState().workspacePath
+      const needsWorkspaceSwitch = Boolean(cwd && !pathsMatch(cwd, currentWorkspace))
 
-    const rollbackFocus = async () => {
-      if (!previousSession || !previousSpace) return
-      await herdrWorkspaceFocus({
-        ...runtimeTargetPayload(previousRuntimeTarget),
-        sessionName: previousSession,
-        workspaceId: previousSpace
-      }).catch(() => undefined)
-    }
+      // 1) Unsaved preflight BEFORE any workspace.create / selection mutation.
+      if (needsWorkspaceSwitch) {
+        const proceed = await confirmDiscardingUnsaved({
+          title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
+          description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
+          saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
+        })
+        if (!proceed) return { ok: false, cancelled: true }
+      }
 
-    // 2) The Host Path switch remains a Yuzora operation. Runtime path mapping
-    // is introduced with the WSL adapter; this Native-only seam never guesses it.
-    if (needsWorkspaceSwitch) {
+      let created
       try {
-        const opened = await openWorkspaceAtPath(cwd, { skipUnsavedGuard: true })
-        if (opened === false) {
-          await rollbackFocus()
-          void get().refreshSnapshot(sessionName, runtimeTarget)
-          return { ok: false, cancelled: true }
-        }
+        created = await herdrWorkspaceCreate({
+          ...runtimeTargetPayload(runtimeTarget),
+          sessionName,
+          cwd,
+          label: label ?? null,
+          focus: true
+        })
       } catch (error) {
-        await rollbackFocus()
-        void get().refreshSnapshot(sessionName, runtimeTarget)
         const message = error instanceof Error ? error.message : String(error)
         set((state) => withRuntime(state, sessionName, { errorMessage: message }, runtimeTarget))
         return { ok: false, error: message }
       }
-    }
 
-    if (created.tabId) {
-      const terminalLabel =
-        label?.trim() || cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || created.label
-      await herdrTabRename({
-        ...runtimeTargetPayload(runtimeTarget),
-        sessionName,
-        tabId: created.tabId,
-        label: terminalLabel
-      }).catch(() => undefined)
-    }
+      const rollbackFocus = async () => {
+        if (!previousSession || !previousSpace) return
+        await herdrWorkspaceFocus({
+          ...runtimeTargetPayload(previousRuntimeTarget),
+          sessionName: previousSession,
+          workspaceId: previousSpace
+        }).catch(() => undefined)
+      }
 
-    await get().refreshSnapshot(sessionName, runtimeTarget)
-    get().setSelectedSpaceId(created.workspaceId, runtimeTarget, sessionName)
-    set((state) => withRuntime(state, sessionName, { errorMessage: null }, runtimeTarget))
-    const space =
-      get().spaces().find((item) => item.id === created.workspaceId) ??
-      ({
-        id: created.workspaceId,
-        label: created.label,
-        order: 0,
-        focused: true,
-        path: created.path ?? cwd
-      } satisfies HerdrSpaceInfo)
-    return { ok: true, space }
+      // 2) The Host Path switch remains a Yuzora operation. Runtime path mapping
+      // is introduced with the WSL adapter; this Native-only seam never guesses it.
+      if (needsWorkspaceSwitch) {
+        try {
+          const opened = await openWorkspaceAtPath(cwd, { skipUnsavedGuard: true })
+          if (opened === false) {
+            await rollbackFocus()
+            void get().refreshSnapshot(sessionName, runtimeTarget)
+            return { ok: false, cancelled: true }
+          }
+        } catch (error) {
+          await rollbackFocus()
+          void get().refreshSnapshot(sessionName, runtimeTarget)
+          const message = error instanceof Error ? error.message : String(error)
+          set((state) => withRuntime(state, sessionName, { errorMessage: message }, runtimeTarget))
+          return { ok: false, error: message }
+        }
+      }
+
+      if (created.tabId) {
+        const terminalLabel =
+          label?.trim() || cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || created.label
+        await herdrTabRename({
+          ...runtimeTargetPayload(runtimeTarget),
+          sessionName,
+          tabId: created.tabId,
+          label: terminalLabel
+        }).catch(() => undefined)
+      }
+
+      const refreshed = await get().refreshSnapshot(sessionName, runtimeTarget)
+      if (!refreshed) {
+        const message = i18n.t("herdrNav.createSpaceAppliedButRefreshFailed", {
+          ns: "workbench"
+        })
+        set((state) => withRuntime(state, sessionName, { errorMessage: message }, runtimeTarget))
+        return { ok: false, error: message }
+      }
+      const space =
+        runtimeOf(get(), sessionName, runtimeTarget).snapshot?.spaces.find(
+          (item) => item.id === created.workspaceId
+        ) ?? null
+      if (!space) {
+        const message = i18n.t("herdrNav.createSpaceMissingAfterRefresh", {
+          ns: "workbench"
+        })
+        set((state) => withRuntime(state, sessionName, { errorMessage: message }, runtimeTarget))
+        return { ok: false, error: message }
+      }
+      get().setSelectedSpaceId(created.workspaceId, runtimeTarget, sessionName)
+      set((state) => withRuntime(state, sessionName, { errorMessage: null }, runtimeTarget))
+      return { ok: true, space }
+    } finally {
+      spaceCreationInFlight.delete(createKey)
+    }
   },
 
   spaces() {

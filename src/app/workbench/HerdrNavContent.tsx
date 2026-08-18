@@ -1,12 +1,16 @@
-import { Bot, Plus } from "lucide-react"
+import { Bot, FolderOpen, FolderPlus, Plus } from "lucide-react"
 import type { CSSProperties } from "react"
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { open } from "@tauri-apps/plugin-dialog"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { HerdrAgentInfo, HerdrAgentStatus, HerdrNamedSession } from "@/lib/herdrTypes"
 import { sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
+import { workspacePathBasename } from "@/lib/paths"
+import { pickWorkspace } from "@/lib/workspaceActions"
 import { cn } from "@/lib/utils"
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
 import { showActionError } from "@/lib/actionFeedback"
@@ -37,13 +41,19 @@ export function HerdrNavContent() {
   const snapshot = useHerdrStore((s) => s.snapshot)
   const selectedSpaceId = useHerdrStore((s) => s.selectedSpaceId)
   const createTerminalInSelectedSpace = useHerdrStore((s) => s.createTerminalInSelectedSpace)
+  const createSpaceFromFolder = useHerdrStore((s) => s.createSpaceFromFolder)
   const canCreateTerminal = useHerdrStore((s) => s.canCreateTerminal())
+  const canCreateSpace = useHerdrStore((s) => s.canCreateSpace())
   const canMutate = useHerdrStore((s) => s.canMutateSelectedSession())
   const canFocusTab = useHerdrStore((s) => s.canFocusSelectedTab())
   const createBlockedReason = useHerdrStore((s) => s.createTerminalBlockedReason())
+  const createSpaceBlockedReason = useHerdrStore((s) => s.createSpaceBlockedReason())
+  const mutationBlockedReason = useHerdrStore((s) => s.mutationBlockedReason())
   const activateAgent = useHerdrStore((s) => s.activateAgent)
   const setMode = useUiStore((s) => s.setMode)
   const [creating, setCreating] = useState(false)
+  const [onboardingBusy, setOnboardingBusy] = useState(false)
+  const onboardingBusyRef = useRef(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const attentionByKey = useHerdrStore((s) => s.attentionByKey)
   const attentionItems = useMemo(() => {
@@ -69,6 +79,7 @@ export function HerdrNavContent() {
   const stopped = connectionState === "stopped"
   const createDisabled =
     !selectedSpaceId || creating || !herdrSessionId || !canCreateTerminal || stopped
+  const hasNoSpaces = Boolean(snapshot && snapshot.spaces.length === 0)
   const visibleError = actionError ?? errorMessage
 
   const onSelectSession = (session: HerdrNamedSession) => {
@@ -121,30 +132,86 @@ export function HerdrNavContent() {
     }
   }
 
+  const onCreateSpaceFromFolder = async () => {
+    if (!canCreateSpace || onboardingBusyRef.current) return
+    onboardingBusyRef.current = true
+    setOnboardingBusy(true)
+    setActionError(null)
+    try {
+      const selected = await open({ directory: true, multiple: false })
+      if (typeof selected !== "string") return
+      const result = await createSpaceFromFolder(selected, workspacePathBasename(selected))
+      if (!result.ok && !result.cancelled) {
+        const reason = result.error ?? t("herdrNav.createFailedUnknown")
+        setActionError(t("herdrNav.createSpaceFailed", { reason }))
+      }
+    } catch (error) {
+      setActionError(t("herdrNav.createSpaceFailed", { reason: String(error) }))
+    } finally {
+      onboardingBusyRef.current = false
+      setOnboardingBusy(false)
+    }
+  }
+
+  const onOpenLocalFolder = async () => {
+    if (onboardingBusyRef.current) return
+    onboardingBusyRef.current = true
+    setOnboardingBusy(true)
+    setActionError(null)
+    try {
+      if (await pickWorkspace()) setMode("files")
+    } catch (error) {
+      setActionError(t("herdrNav.openLocalFolderFailed", { reason: String(error) }))
+    } finally {
+      onboardingBusyRef.current = false
+      setOnboardingBusy(false)
+    }
+  }
+
   if (
-    (connectionState === "unsupported" || connectionState === "error") &&
-    !snapshot &&
-    visibleSessions.length === 0
+    (connectionState === "unsupported" ||
+      connectionState === "error" ||
+      connectionState === "stopped") &&
+    !snapshot
   ) {
     return (
-      <div className="flex h-full flex-col gap-[10px]">
+      <div className="flex h-full flex-col items-center justify-center gap-[14px] px-[8px]">
         <EmptyState
           icon={Bot}
           title={t("herdrNav.unavailableTitle")}
-          description={errorMessage ?? t("herdrNav.unavailableDescription")}
+          description={actionError ?? errorMessage ?? t("herdrNav.unavailableDescription")}
         />
+        <Button
+          type="button"
+          variant="outline"
+          data-testid="herdr-unavailable-open-local-folder"
+          onClick={() => void onOpenLocalFolder()}
+          disabled={onboardingBusy}
+        >
+          <FolderOpen data-icon="inline-start" aria-hidden="true" />
+          {t("herdrNav.openLocalFolder")}
+        </Button>
       </div>
     )
   }
 
   if (
     (connectionState === "connecting" || connectionState === "idle") &&
-    !snapshot &&
-    visibleSessions.length === 0
+    !snapshot
   ) {
     return (
-      <div className="flex h-full items-center justify-center text-[12px] text-(--ink-3)">
-        {t("herdrNav.connecting")}
+      <div className="flex h-full flex-col items-center justify-center gap-[14px] px-[8px] text-[12px] text-(--ink-3)">
+        <span>{t("herdrNav.connecting")}</span>
+        <Button
+          type="button"
+          variant="outline"
+          data-testid="herdr-connecting-open-local-folder"
+          onClick={() => void onOpenLocalFolder()}
+          disabled={onboardingBusy}
+        >
+          <FolderOpen data-icon="inline-start" aria-hidden="true" />
+          {t("herdrNav.openLocalFolder")}
+        </Button>
       </div>
     )
   }
@@ -212,61 +279,116 @@ export function HerdrNavContent() {
       )}
 
       <ScrollArea className="min-h-0 flex-1" viewportClassName="py-[4px]">
-        {attentionItems.length > 0 && (
-          <>
-            <SectionLabel>{t("herdrNav.attentionHeading")}</SectionLabel>
-            {attentionItems.map((item) => {
-              const agent = agents.find((candidate) => candidate.paneId === item.paneId) ?? null
-              return (
-                <button
-                  key={item.key}
-                  type="button"
-                  data-testid={`herdr-attention-${item.paneId}`}
-                  className="mb-[4px] flex w-full items-center gap-[8px] rounded-[10px] px-[8px] py-[7px] text-left text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
-                  onClick={() => {
-                    if (agent) void openAgent(agent)
-                  }}
+        {hasNoSpaces ? (
+          <div
+            data-testid="herdr-zero-space-onboarding"
+            className="flex min-h-full flex-col items-center justify-center gap-[14px] px-[8px] py-[16px]"
+          >
+            <EmptyState
+              icon={Bot}
+              title={t("herdrNav.emptySpaceTitle")}
+              description={t("herdrNav.emptySpaceDescription")}
+            />
+            <div className="flex w-full flex-col gap-[8px]">
+              <Button
+                type="button"
+                data-testid="herdr-create-space-from-folder"
+                onClick={() => void onCreateSpaceFromFolder()}
+                disabled={!canCreateSpace || onboardingBusy}
+              >
+                <FolderPlus data-icon="inline-start" aria-hidden="true" />
+                {t("herdrNav.createSpaceFromFolder")}
+              </Button>
+              {!canCreateSpace && (
+                <p
+                  role="status"
+                  data-testid="herdr-create-space-blocked-reason"
+                  className="px-[2px] text-center text-[11px] text-(--ink-3)"
                 >
-                  <span className="size-[7px] shrink-0 rounded-full bg-[#ffb23e]" aria-hidden="true" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12.5px] font-medium">
-                      {item.title ?? item.displayAgent ?? item.paneId}
-                    </span>
-                    <span className="block truncate text-[10px] text-(--ink-4)">
-                      {item.kind} · {item.agentStatus}
-                    </span>
-                  </span>
-                </button>
-              )
-            })}
+                  {t("herdrNav.createSpaceUnavailable", {
+                    reason: createSpaceBlockedReason ?? t("herdrNav.createFailedUnknown")
+                  })}
+                </p>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                data-testid="herdr-open-local-folder"
+                onClick={() => void onOpenLocalFolder()}
+                disabled={onboardingBusy}
+              >
+                <FolderOpen data-icon="inline-start" aria-hidden="true" />
+                {t("herdrNav.openLocalFolder")}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {attentionItems.length > 0 && (
+              <>
+                <SectionLabel>{t("herdrNav.attentionHeading")}</SectionLabel>
+                {attentionItems.map((item) => {
+                  const agent = agents.find((candidate) => candidate.paneId === item.paneId) ?? null
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      data-testid={`herdr-attention-${item.paneId}`}
+                      disabled={!agent || stopped || !canMutate}
+                      title={
+                        !agent || stopped || !canMutate
+                          ? mutationBlockedReason ?? t("herdrNav.actionUnavailable")
+                          : undefined
+                      }
+                      className="mb-[4px] flex w-full items-center gap-[8px] rounded-[10px] px-[8px] py-[7px] text-left text-(--ink-2) transition-colors hover:bg-(--yz-hover) disabled:pointer-events-none disabled:opacity-50"
+                      onClick={() => {
+                        if (agent) void openAgent(agent)
+                      }}
+                    >
+                      <span className="size-[7px] shrink-0 rounded-full bg-[#ffb23e]" aria-hidden="true" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12.5px] font-medium">
+                          {item.title ?? item.displayAgent ?? item.paneId}
+                        </span>
+                        <span className="block truncate text-[10px] text-(--ink-4)">
+                          {item.kind} · {item.agentStatus}
+                        </span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </>
+            )}
+            <SectionLabel>{t("herdrNav.agentsHeading")}</SectionLabel>
+            {agents.length === 0 ? (
+              <p className="px-[8px] py-[6px] text-[12px] text-(--ink-4)">
+                {stopped ? t("herdrNav.stoppedNoAgents") : t("herdrNav.noAgents")}
+              </p>
+            ) : (
+              agents.map((agent) => (
+                <AgentRow
+                  key={`${agent.sessionName ?? herdrSessionId}:${agent.id}`}
+                  agent={agent}
+                  sessionName={herdrSessionId}
+                  disabled={
+                    stopped ||
+                    !agent.terminalId ||
+                    (agent.tabId ? !canFocusTab : !canMutate)
+                  }
+                  onSelect={() => void openAgent(agent)}
+                />
+              ))
+            )}
           </>
         )}
-        <SectionLabel>{t("herdrNav.agentsHeading")}</SectionLabel>
-        {agents.length === 0 ? (
-          <p className="px-[8px] py-[6px] text-[12px] text-(--ink-4)">
-            {stopped ? t("herdrNav.stoppedNoAgents") : t("herdrNav.noAgents")}
-          </p>
-        ) : (
-          agents.map((agent) => (
-            <AgentRow
-              key={`${agent.sessionName ?? herdrSessionId}:${agent.id}`}
-              agent={agent}
-              sessionName={herdrSessionId}
-              disabled={
-                stopped ||
-                !agent.terminalId ||
-                (agent.tabId ? !canFocusTab : !canMutate)
-              }
-              onSelect={() => void openAgent(agent)}
-            />
-          ))
-        )}
       </ScrollArea>
-      <CreateTerminalButton
-        onClick={() => void onCreateTerminal()}
-        disabled={createDisabled}
-        reason={!canCreateTerminal || stopped ? createBlockedReason : null}
-      />
+      {!hasNoSpaces && (
+        <CreateTerminalButton
+          onClick={() => void onCreateTerminal()}
+          disabled={createDisabled}
+          reason={!canCreateTerminal || stopped ? createBlockedReason : null}
+        />
+      )}
     </div>
   )
 }

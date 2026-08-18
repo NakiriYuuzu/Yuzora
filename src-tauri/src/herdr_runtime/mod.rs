@@ -22,6 +22,23 @@ use crate::herdr_service::{
 pub use native::NativeHerdrRuntimeProvider;
 pub use wsl::{HerdrWslDistribution, HerdrWslWorkspaceLocation, WslHerdrRuntimeProvider};
 
+/// The selected WSL control plane is scoped to a complete runtime/session key.
+/// A public CLI plan is deliberately version-specific: unknown installed
+/// binaries remain read-only until a healthy stdio proxy is available.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WslControlPlan {
+    Proxy,
+    /// Exact official Herdr 0.8.0 dialect, verified against protocol 20 and
+    /// schema version 1 before mutations are enabled.
+    OfficialCliV080 {
+        version: String,
+        protocol: u32,
+    },
+    ReadOnly {
+        reason: String,
+    },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum HerdrRuntimeTarget {

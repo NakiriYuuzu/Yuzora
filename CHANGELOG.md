@@ -13,6 +13,8 @@
 
 ### 改善
 
+- 官方 WSL HERDR 0.8.0 在 stdio proxy 尚不可用時，可透過公開 CLI control 建立第一個 Space、建立與切換 tab、分割／重新命名／縮放／交換／關閉 pane，並以公開 layout geometry 顯示多窗格；未映射能力仍會明確停用。
+- HERDR 沒有任何 Space、連線失敗或 runtime 不可用時，ADE 會提供建立 Space 與開啟本機資料夾的明確入口；本機 Terminal 沒有 workspace 時會開啟資料夾選擇器，不再靜默無反應。
 - HERDR terminal、事件、tab 操作、context menu、Agent Inspector 與恢復流程都保留所屬 Runtime Environment；連線中斷、重連與背景 refresh 會隔離不同 distro 的相同資源 ID。
 - Native Preview child webview 的開啟、尺寸、可見性與關閉操作會依最新工作區、overlay 與 focus 狀態序列化，避免 preview 蓋住應用程式 dialog 或回到過期位置。
 - WSL transport 具備有界 request、event queue、timeout、backoff、診斷與 child-process ownership 保護；關閉 Yuzora 只會釋放自身建立的 connector／proxy，不會要求停止 HERDR server、pane 或整個 WSL。
@@ -20,7 +22,7 @@
 ### 已知限制
 
 - 此為 Beta GitHub Pre-release，僅供手動下載測試；不會成為 Latest Release、不提供 OTA、不會更新 stable `latest.json` 或產品頁固定下載連結。
-- `herdr api proxy --stdio` 的上游 patch 尚未合併；已安裝的 WSL HERDR 未提供此 public API 時，Yuzora 會維持明確的 CLI fallback／功能降級，而不是使用 private protocol。
+- `herdr api proxy --stdio` 的上游 patch 尚未合併；精確驗證的官方 WSL HERDR 0.8.0 會使用公開 CLI compatibility control，但 `events.subscribe`、`tab.move`、direct `pane.focus` 與 split-ratio persistence 仍不可用；未知版本會 fail closed，而不是使用 private protocol。
 - 真實 Windows + WSL2、WSL shutdown／sleep／reconnect、多 distro 與 packaged installer 的完整驗收仍待 Windows 測試；本版不得視為正式支援承諾。
 - macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現 Gatekeeper 或 SmartScreen 提示。
 

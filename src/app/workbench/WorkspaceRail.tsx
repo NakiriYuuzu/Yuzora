@@ -55,6 +55,8 @@ export function WorkspaceRail({
   const selectedRuntimeTarget = useHerdrStore((s) => s.selectedRuntimeTarget)
   const connectionState = useHerdrStore((s) => s.connectionState)
   const canMutate = useHerdrStore((s) => s.canMutateSelectedSession())
+  const canCreateSpace = useHerdrStore((s) => s.canCreateSpace())
+  const createSpaceBlockedReason = useHerdrStore((s) => s.createSpaceBlockedReason())
   const createSpaceFromFolder = useHerdrStore((s) => s.createSpaceFromFolder)
   const activateSpace = useHerdrStore((s) => s.activateSpace)
   const agents = useHerdrStore((s) => s.snapshot?.agents)
@@ -105,7 +107,8 @@ export function WorkspaceRail({
       }
     : notice
 
-  const mutationsDisabled = !canMutate || connectionState === "stopped" || creating
+  const createSpaceDisabled = !canCreateSpace || connectionState === "stopped" || creating
+  const createSpaceReason = createSpaceBlockedReason ?? t("rail.newSpaceUnavailable")
 
   async function handleActivateSpace(spaceId: string, path?: string | null) {
     if (!selectedSessionName || !canMutate) return
@@ -121,7 +124,7 @@ export function WorkspaceRail({
   }
 
   async function handleNewSpace() {
-    if (mutationsDisabled || !selectedSessionName) return
+    if (createSpaceDisabled || !selectedSessionName) return
     setCreating(true)
     try {
       const selected = await open({ directory: true, multiple: false })
@@ -426,14 +429,10 @@ export function WorkspaceRail({
       <button
         type="button"
         data-testid="rail-new-space"
-        aria-label={t("rail.newSpace")}
-        title={
-          mutationsDisabled
-            ? t("rail.newSpaceUnavailable")
-            : t("rail.newSpace")
-        }
+        title={createSpaceDisabled ? createSpaceReason : t("rail.newSpace")}
+        aria-label={createSpaceDisabled ? createSpaceReason : t("rail.newSpace")}
         onClick={() => void handleNewSpace()}
-        disabled={mutationsDisabled}
+        disabled={createSpaceDisabled}
         className="flex size-[38px] items-center justify-center rounded-[11px] border-[1.5px] border-dashed border-(--line-2) text-(--ink-3) transition-all duration-[180ms] ease-(--ease-spring) hover:border-(--yz-accent)/60 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink) disabled:pointer-events-none disabled:opacity-50"
       >
         {creating ? (
