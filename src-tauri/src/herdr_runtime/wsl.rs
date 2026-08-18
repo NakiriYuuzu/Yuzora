@@ -23,6 +23,89 @@ use super::{HerdrRuntimeProvider, HerdrRuntimeTarget};
 
 const WSL_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const WSL_DISTRO_MAX_LEN: usize = 256;
+const WSL_HERDR_LAUNCHER_ARG0: &str = "yuzora-wsl-herdr";
+const WSL_HERDR_NOT_FOUND_DIAGNOSTIC: &str =
+    "Yuzora: Herdr may be installed but unavailable to the non-interactive WSL runtime.";
+/// Kept constant so no distro, session, target, or user argument is ever
+/// interpolated into shell source. `"$@"` forwards Herdr arguments unchanged.
+///
+/// Yuzora verifies the directly selected Herdr target is a canonical Linux ELF
+/// before `exec`. WSLInterop remains enabled for that Herdr process and its
+/// descendants; user-controlled ELF launchers that intentionally hand off to
+/// Windows are outside this launcher boundary.
+const WSL_HERDR_LAUNCHER: &str = r#"
+locations="$HOME/.local/bin/herdr, $HOME/.cargo/bin/herdr, $HOME/.nix-profile/bin/herdr, /nix/var/nix/profiles/default/bin/herdr, $HOME/.linuxbrew/bin/herdr, /home/linuxbrew/.linuxbrew/bin/herdr, /usr/local/bin/herdr, /usr/bin/herdr, /bin/herdr, Linux-native mise which herdr, inherited non-interactive PATH"
+resolve_linux_elf() {
+  candidate="$1"
+  [ -x "$candidate" ] || return 1
+  resolved="$(readlink -f -- "$candidate" 2>/dev/null)" || return 1
+  case "$resolved" in
+    /mnt/*|/run/desktop/mnt/*|*.[Ee][Xx][Ee])
+      printf '%s %s\n' 'Yuzora: refusing Windows-interoperability Herdr executable:' "$resolved" >&2
+      return 1
+      ;;
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -x "$resolved" ] || return 1
+  magic="$(od -An -N4 -tx1 "$resolved" 2>/dev/null | tr -d '[:space:]')" || return 1
+  if [ "$magic" != '7f454c46' ]; then
+    printf '%s %s (magic %s)\n' 'Yuzora: refusing non-Linux-ELF Herdr executable:' "$resolved" "${magic:-unreadable}" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+launch_mise_herdr() {
+  mise_candidate="$1"
+  shift
+  mise="$(resolve_linux_elf "$mise_candidate")" || return 1
+  mise_target="$("$mise" which herdr 2>/dev/null)" || return 1
+  case "$mise_target" in
+    *'
+'*)
+      printf '%s\n' 'Yuzora: refusing ambiguous mise which herdr output.' >&2
+      return 1
+      ;;
+    /*)
+      resolved="$(resolve_linux_elf "$mise_target")" || return 1
+      exec "$resolved" "$@"
+      ;;
+    *) return 1 ;;
+  esac
+}
+for candidate in \
+  "$HOME/.local/bin/herdr" \
+  "$HOME/.cargo/bin/herdr" \
+  "$HOME/.nix-profile/bin/herdr" \
+  "/nix/var/nix/profiles/default/bin/herdr" \
+  "$HOME/.linuxbrew/bin/herdr" \
+  "/home/linuxbrew/.linuxbrew/bin/herdr" \
+  "/usr/local/bin/herdr" \
+  "/usr/bin/herdr" \
+  "/bin/herdr"
+do
+  if resolved="$(resolve_linux_elf "$candidate")"; then
+    exec "$resolved" "$@"
+  fi
+done
+for candidate in \
+  "$HOME/.local/bin/mise" \
+  "$HOME/.cargo/bin/mise" \
+  "/usr/local/bin/mise" \
+  "/usr/bin/mise" \
+  "/bin/mise"
+do
+  launch_mise_herdr "$candidate" "$@"
+done
+candidate="$(command -v mise 2>/dev/null || true)"
+case "$candidate" in /*) launch_mise_herdr "$candidate" "$@" ;; esac
+candidate="$(command -v herdr 2>/dev/null || true)"
+if resolved="$(resolve_linux_elf "$candidate")"; then
+  exec "$resolved" "$@"
+fi
+printf '%s Searched: %s\n' 'Yuzora: Herdr may be installed but unavailable to the non-interactive WSL runtime.' "$locations" >&2
+exit 127
+"#;
 /// Snapshot enrichment is best-effort and must never become one wsl.exe spawn
 /// per pane in a large workspace.
 const MAX_SNAPSHOT_PATH_CONVERSIONS: usize = 64;
@@ -95,6 +178,23 @@ fn list_distributions_plan(timeout: Duration) -> WslCommandPlan {
         stderr_limit: MAX_NDJSON_LINE_BYTES,
         starts_selected_distro: false,
     }
+}
+
+fn selected_distro_command_plan(
+    distro: &str,
+    command: &[&str],
+    timeout: Duration,
+) -> Result<WslCommandPlan, String> {
+    Ok(WslCommandPlan {
+        args: wsl_selected_distro_exec_args(
+            distro,
+            command.iter().map(|value| (*value).to_string()).collect(),
+        )?,
+        timeout,
+        stdout_limit: MAX_NDJSON_LINE_BYTES,
+        stderr_limit: MAX_NDJSON_LINE_BYTES,
+        starts_selected_distro: true,
+    })
 }
 
 fn herdr_command_plan(
@@ -485,12 +585,7 @@ fn runtime_to_host_path_with(
 ) -> Result<HerdrWslWorkspaceLocation, String> {
     validate_distro(distro)?;
     validate_runtime_path(runtime_path)?;
-    let host_path = run_wsl_text_with(
-        executor,
-        distro,
-        None,
-        &["wslpath", "-w", "--", runtime_path],
-    )?;
+    let host_path = run_wsl_text_with(executor, distro, &["wslpath", "-w", "--", runtime_path])?;
     let host_path = normalize_wsl_host_path(distro, &host_path)?;
     Ok(HerdrWslWorkspaceLocation {
         distro: distro.to_string(),
@@ -516,8 +611,7 @@ fn host_to_runtime_path_with(
 ) -> Result<HerdrWslWorkspaceLocation, String> {
     validate_distro(distro)?;
     validate_host_path_distro(distro, host_path)?;
-    let runtime_path =
-        run_wsl_text_with(executor, distro, None, &["wslpath", "-u", "--", host_path])?;
+    let runtime_path = run_wsl_text_with(executor, distro, &["wslpath", "-u", "--", host_path])?;
     validate_runtime_path(&runtime_path)?;
     Ok(HerdrWslWorkspaceLocation {
         distro: distro.to_string(),
@@ -577,27 +671,43 @@ pub(crate) fn wsl_terminal_connector_args(
     wsl_exec_args(distro, Some(session_name), &command)
 }
 
-pub(crate) fn wsl_exec_args(
+fn wsl_selected_distro_exec_args(
     distro: &str,
-    session_name: Option<&str>,
-    command: &[&str],
+    command: Vec<String>,
 ) -> Result<Vec<String>, String> {
     validate_distro(distro)?;
     let mut args = vec![
         "--distribution".to_string(),
         distro.trim().to_string(),
         "--exec".to_string(),
+    ];
+    args.extend(command);
+    Ok(args)
+}
+
+/// Exact argv for a Herdr command inside a selected WSL distro. The launcher
+/// is constant shell source; all dynamic values remain distinct argv or env
+/// entries and are forwarded to the resolved Linux-native executable as `"$@"`.
+pub(crate) fn wsl_exec_args(
+    distro: &str,
+    session_name: Option<&str>,
+    command: &[&str],
+) -> Result<Vec<String>, String> {
+    let mut launcher = vec![
         "env".to_string(),
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        WSL_HERDR_LAUNCHER.to_string(),
+        WSL_HERDR_LAUNCHER_ARG0.to_string(),
     ];
     if let Some(session_name) = session_name.map(str::trim).filter(|name| !name.is_empty()) {
         if session_name.contains('\0') {
             return Err("Herdr session name is invalid".into());
         }
-        args.push(format!("HERDR_SESSION={session_name}"));
+        launcher.insert(1, format!("HERDR_SESSION={session_name}"));
     }
-    args.push("herdr".to_string());
-    args.extend(command.iter().map(|value| (*value).to_string()));
-    Ok(args)
+    launcher.extend(command.iter().map(|value| (*value).to_string()));
+    wsl_selected_distro_exec_args(distro, launcher)
 }
 
 fn run_herdr_capture_with(
@@ -613,10 +723,13 @@ fn run_herdr_capture_with(
 fn run_wsl_text_with(
     executor: &impl WslCommandExecutor,
     distro: &str,
-    session_name: Option<&str>,
     args: &[&str],
 ) -> Result<String, String> {
-    let output = run_herdr_capture_with(executor, distro, session_name, args, WSL_COMMAND_TIMEOUT)?;
+    let output = executor.execute(&selected_distro_command_plan(
+        distro,
+        args,
+        WSL_COMMAND_TIMEOUT,
+    )?)?;
     let output =
         String::from_utf8(output).map_err(|_| "WSL command output is not UTF-8".to_string())?;
     let output = output.trim();
@@ -652,7 +765,9 @@ fn wait_for_wsl_command(mut command: Command, timeout: Duration) -> Result<Vec<u
 /// different runtime. In particular, no WSL failure may fall back to Native.
 fn classify_wsl_process_failure(exit_code: i32, stderr: &str) -> String {
     let lower = stderr.to_ascii_lowercase();
-    let kind = if lower.contains("no installed distributions")
+    let kind = if stderr.contains(WSL_HERDR_NOT_FOUND_DIAGNOSTIC) {
+        "Herdr unavailable to non-interactive selected WSL runtime"
+    } else if lower.contains("no installed distributions")
         || lower.contains("there is no distribution")
         || lower.contains("distribution with the supplied name")
     {
@@ -956,6 +1071,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    #[cfg(unix)]
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
     use super::*;
 
     /// Host-runnable substitute for `wsl.exe`. It records the argv-only plan
@@ -1013,11 +1131,248 @@ mod tests {
                 "--exec",
                 "env",
                 "HERDR_SESSION=default",
-                "herdr",
+                "/bin/sh",
+                "-c",
+                WSL_HERDR_LAUNCHER,
+                WSL_HERDR_LAUNCHER_ARG0,
                 "api",
                 "snapshot",
             ]
         );
+    }
+
+    #[test]
+    fn launcher_source_is_constant_and_dynamic_values_remain_argv_or_env() {
+        let distro = "Ubuntu Dev; touch /tmp/yuzora-wsl-distro";
+        let session = "session; touch /tmp/yuzora-wsl-session";
+        let target = "target; touch /tmp/yuzora-wsl-target";
+        let command_substitution = "$(touch /tmp/yuzora-wsl-substitution)";
+        let args = wsl_exec_args(
+            distro,
+            Some(session),
+            &["terminal", target, command_substitution],
+        )
+        .unwrap();
+
+        assert_eq!(args[1], distro);
+        assert_eq!(args[4], format!("HERDR_SESSION={session}"));
+        assert_eq!(args[5], "/bin/sh");
+        assert_eq!(args[6], "-c");
+        assert_eq!(args[7], WSL_HERDR_LAUNCHER);
+        assert_eq!(args[8], WSL_HERDR_LAUNCHER_ARG0);
+        assert_eq!(&args[9..], ["terminal", target, command_substitution]);
+        assert!(!WSL_HERDR_LAUNCHER.contains(distro));
+        assert!(!WSL_HERDR_LAUNCHER.contains(session));
+        assert!(!WSL_HERDR_LAUNCHER.contains(target));
+        assert!(!WSL_HERDR_LAUNCHER.contains(command_substitution));
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &std::path::Path, source: &str) {
+        fs::write(path, source).unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn write_launcher_tools(dir: &std::path::Path) {
+        write_executable(
+            &dir.join("readlink"),
+            r#"#!/bin/sh
+last=''
+for value in "$@"; do last="$value"; done
+if [ -n "${HERDR_TEST_TOOL_LOG:-}" ]; then
+  printf 'readlink <%s>\n' "$last" >> "$HERDR_TEST_TOOL_LOG"
+fi
+printf '%s\n' "${HERDR_TEST_READLINK_TARGET:-$last}"
+"#,
+        );
+        write_executable(
+            &dir.join("od"),
+            r#"#!/bin/sh
+last=''
+for value in "$@"; do last="$value"; done
+if [ -n "${HERDR_TEST_TOOL_LOG:-}" ]; then
+  printf 'od <%s>\n' "$last" >> "$HERDR_TEST_TOOL_LOG"
+fi
+case "$last" in
+  *renamed-pe*) printf '%s\n' '4d 5a 90 00' ;;
+  *script-wrapper*) printf '%s\n' '23 21 2f 62' ;;
+  *) printf '%s\n' '7f 45 4c 46' ;;
+esac
+"#,
+        );
+    }
+
+    #[cfg(unix)]
+    fn launcher_command(home: &std::path::Path, tools: &std::path::Path) -> Command {
+        let mut command = Command::new("/usr/bin/env");
+        command
+            .env_clear()
+            .env("HOME", home)
+            .env("PATH", format!("{}:/usr/bin:/bin", tools.display()))
+            .args(["/bin/sh", "-c", WSL_HERDR_LAUNCHER, WSL_HERDR_LAUNCHER_ARG0]);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn noninteractive_launcher_finds_official_install_and_forwards_hostile_values_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let local_bin = home.join(".local/bin");
+        let tools = dir.path().join("tools");
+        let tool_log = dir.path().join("tool.log");
+        fs::create_dir_all(&local_bin).unwrap();
+        fs::create_dir_all(&tools).unwrap();
+        write_launcher_tools(&tools);
+        let herdr = local_bin.join("herdr");
+        write_executable(
+            &herdr,
+            "#!/bin/sh\nprintf 'session=<%s>\\n' \"${HERDR_SESSION:-}\"\nfor value do printf 'arg=<%s>\\n' \"$value\"; done\n",
+        );
+        let marker = dir.path().join("shell-interpreted");
+        let session = format!("session; touch {}", marker.display());
+        let hostile = format!("target; touch {}", marker.display());
+        let substitution = format!("$(touch {})", marker.display());
+
+        let direct = Command::new("/usr/bin/env")
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .args(["herdr", "--version"])
+            .output()
+            .unwrap();
+        assert_eq!(direct.status.code(), Some(127));
+        assert!(String::from_utf8_lossy(&direct.stderr).contains("herdr"));
+
+        let output = launcher_command(&home, &tools)
+            .env("HERDR_TEST_TOOL_LOG", &tool_log)
+            .env("HERDR_SESSION", &session)
+            .args(["--version", &hostile, &substitution])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains(&format!("session=<{session}>")), "{stdout}");
+        assert!(stdout.contains("arg=<--version>"), "{stdout}");
+        assert!(stdout.contains(&format!("arg=<{hostile}>")), "{stdout}");
+        assert!(
+            stdout.contains(&format!("arg=<{substitution}>")),
+            "{stdout}"
+        );
+        assert!(
+            fs::read_to_string(&tool_log)
+                .unwrap()
+                .contains(&format!("readlink <{}>", herdr.display())),
+            "the test must use its portable readlink fixture"
+        );
+        assert!(!marker.exists(), "launcher interpreted a dynamic value");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn noninteractive_launcher_rejects_mounted_renamed_pe_and_script_wrappers() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let local_bin = home.join(".local/bin");
+        let tools = dir.path().join("tools");
+        fs::create_dir_all(&local_bin).unwrap();
+        fs::create_dir_all(&tools).unwrap();
+        write_launcher_tools(&tools);
+        write_executable(&local_bin.join("herdr"), "#!/bin/sh\nexit 99\n");
+        let renamed_pe = dir.path().join("renamed-pe");
+        let script_wrapper = dir.path().join("script-wrapper");
+        write_executable(&renamed_pe, "#!/bin/sh\nexit 98\n");
+        write_executable(&script_wrapper, "#!/bin/sh\nexit 97\n");
+
+        for (resolved, expected) in [
+            (
+                "/mnt/c/Herdr.exe".to_string(),
+                "refusing Windows-interoperability Herdr executable: /mnt/c/Herdr.exe".to_string(),
+            ),
+            (
+                renamed_pe.display().to_string(),
+                format!(
+                    "refusing non-Linux-ELF Herdr executable: {} (magic 4d5a9000)",
+                    renamed_pe.display()
+                ),
+            ),
+            (
+                script_wrapper.display().to_string(),
+                format!(
+                    "refusing non-Linux-ELF Herdr executable: {} (magic 23212f62)",
+                    script_wrapper.display()
+                ),
+            ),
+        ] {
+            let output = launcher_command(&home, &tools)
+                .env("HERDR_TEST_READLINK_TARGET", &resolved)
+                .arg("--version")
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(127));
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(stderr.contains(&expected), "{stderr}");
+            assert!(stderr.contains(WSL_HERDR_NOT_FOUND_DIAGNOSTIC), "{stderr}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn noninteractive_launcher_resolves_mise_to_the_actual_elf_not_its_shim() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let local_bin = home.join(".local/bin");
+        let mise_shims = home.join(".local/share/mise/shims");
+        let actual_dir = dir.path().join("actual");
+        let tools = dir.path().join("tools");
+        let shim_marker = dir.path().join("mise-shim-ran");
+        fs::create_dir_all(&local_bin).unwrap();
+        fs::create_dir_all(&mise_shims).unwrap();
+        fs::create_dir_all(&actual_dir).unwrap();
+        fs::create_dir_all(&tools).unwrap();
+        write_launcher_tools(&tools);
+        let actual_herdr = actual_dir.join("herdr");
+        write_executable(
+            &actual_herdr,
+            "#!/bin/sh\nprintf 'actual=<%s>\\n' \"$0\"\nprintf 'session=<%s>\\n' \"${HERDR_SESSION:-}\"\nfor value do printf 'arg=<%s>\\n' \"$value\"; done\n",
+        );
+        write_executable(
+            &local_bin.join("mise"),
+            "#!/bin/sh\n[ \"${1:-}\" = which ] && [ \"${2:-}\" = herdr ] || exit 2\nprintf '%s\\n' \"$HERDR_MISE_TARGET\"\n",
+        );
+        write_executable(
+            &mise_shims.join("herdr"),
+            &format!("#!/bin/sh\ntouch '{}'\nexit 99\n", shim_marker.display()),
+        );
+
+        let output = launcher_command(&home, &tools)
+            .env("HERDR_MISE_TARGET", &actual_herdr)
+            .env("HERDR_MISE_SHIM_MARKER", &shim_marker)
+            .env("HERDR_SESSION", "mise session")
+            .args(["--version", "literal; no shell"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.contains(&format!("actual=<{}>", actual_herdr.display())),
+            "{stdout}"
+        );
+        assert!(stdout.contains("session=<mise session>"), "{stdout}");
+        assert!(stdout.contains("arg=<literal; no shell>"), "{stdout}");
+        assert!(!shim_marker.exists(), "the generic mise shim was executed");
+    }
+
+    #[test]
+    fn launcher_requires_a_linux_elf_and_preserves_wsl_interop_for_descendants() {
+        assert!(WSL_HERDR_LAUNCHER.contains("od -An -N4 -tx1"));
+        assert!(WSL_HERDR_LAUNCHER.contains("7f454c46"));
+        assert!(WSL_HERDR_LAUNCHER.contains("\"$mise\" which herdr"));
+        assert!(!WSL_HERDR_LAUNCHER.contains("mise/shims/herdr"));
+        assert!(!WSL_HERDR_LAUNCHER.contains("unset WSL_INTEROP"));
     }
 
     #[test]
@@ -1106,7 +1461,10 @@ mod tests {
                 "--exec",
                 "env",
                 "HERDR_SESSION=default",
-                "herdr",
+                "/bin/sh",
+                "-c",
+                WSL_HERDR_LAUNCHER,
+                WSL_HERDR_LAUNCHER_ARG0,
                 "terminal",
                 "session",
                 "control",
@@ -1128,7 +1486,7 @@ mod tests {
                 24,
                 false,
             )
-            .unwrap()[6..],
+            .unwrap()[9..],
             ["terminal", "session", "observe", "term", "--cols", "80", "--rows", "24"]
         );
     }
@@ -1154,7 +1512,10 @@ mod tests {
                 "--exec",
                 "env",
                 "HERDR_SESSION=session with spaces",
-                "herdr",
+                "/bin/sh",
+                "-c",
+                WSL_HERDR_LAUNCHER,
+                WSL_HERDR_LAUNCHER_ARG0,
                 "session",
                 "list",
                 "--json",
@@ -1176,8 +1537,6 @@ mod tests {
                 "--distribution",
                 "Ubuntu Dev",
                 "--exec",
-                "env",
-                "herdr",
                 "wslpath",
                 "-w",
                 "--",
@@ -1187,6 +1546,28 @@ mod tests {
 
         let invalid = FakeWslExecutor::with_outcomes([Ok(vec![0xff])]);
         assert!(runtime_to_host_path_with(&invalid, "Ubuntu", "/work/repo").is_err());
+
+        let reverse = FakeWslExecutor::with_outcomes([Ok(b"/home/yuuzu/repo\n".to_vec())]);
+        let location = host_to_runtime_path_with(
+            &reverse,
+            "Ubuntu",
+            r"\\wsl.localhost\\Ubuntu\\home\\yuuzu\\repo",
+        )
+        .unwrap();
+        assert_eq!(location.runtime_path, "/home/yuuzu/repo");
+        assert_eq!(
+            reverse.plans()[0].args,
+            vec![
+                "--distribution",
+                "Ubuntu",
+                "--exec",
+                "wslpath",
+                "-u",
+                "--",
+                r"\\wsl.localhost\\Ubuntu\\home\\yuuzu\\repo",
+            ]
+        );
+
         let cross_distro = FakeWslExecutor::default();
         assert!(host_to_runtime_path_with(
             &cross_distro,
@@ -1237,6 +1618,10 @@ mod tests {
             (
                 "There is no distribution with the supplied name.",
                 "WSL distribution unavailable",
+            ),
+            (
+                WSL_HERDR_NOT_FOUND_DIAGNOSTIC,
+                "Herdr unavailable to non-interactive selected WSL runtime",
             ),
             (
                 "herdr: command not found",

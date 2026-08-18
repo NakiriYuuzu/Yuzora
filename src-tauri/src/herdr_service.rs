@@ -2287,7 +2287,7 @@ impl HerdrManager {
             Some(_) => {
                 return Err(format!(
                     "Herdr event subscription {subscription_id} belongs to another runtime"
-                ))
+                ));
             }
             // A stream can close before the frontend consumes the final
             // disconnect. Same-runtime release remains idempotent.
@@ -2778,7 +2778,7 @@ impl HerdrManager {
             Some(_) => {
                 return Err(format!(
                     "Herdr WSL event subscription {subscription_id} belongs to another runtime"
-                ))
+                ));
             }
             None => return Ok(()),
         }
@@ -4891,7 +4891,7 @@ fn api_request(
         Ok(Some(response)) => response,
         Err(BoundedNdjsonReadError::Protocol(protocol)) => return Err(protocol.into()),
         Err(BoundedNdjsonReadError::Io(io_error)) => {
-            return Err(format!("read failed: {io_error}"))
+            return Err(format!("read failed: {io_error}"));
         }
     };
     if response.trim().is_empty() {
@@ -7057,6 +7057,38 @@ exit 2
 
     #[cfg(unix)]
     fn write_fake_wsl_connector_shim(dir: &Path, herdr: &Path, argv_log: &Path) -> PathBuf {
+        let home_bin = dir.join("wsl-home/.local/bin");
+        let tool_bin = dir.join("wsl-tools");
+        fs::create_dir_all(&home_bin).unwrap();
+        fs::create_dir_all(&tool_bin).unwrap();
+        let installed_herdr = home_bin.join("herdr");
+        fs::copy(herdr, &installed_herdr).unwrap();
+        let mut installed_permissions = fs::metadata(&installed_herdr).unwrap().permissions();
+        installed_permissions.set_mode(0o755);
+        fs::set_permissions(&installed_herdr, installed_permissions).unwrap();
+        for (name, source) in [
+            (
+                "readlink",
+                r#"#!/bin/sh
+last=''
+for value in "$@"; do last="$value"; done
+printf '%s\n' "$last"
+"#,
+            ),
+            (
+                "od",
+                r#"#!/bin/sh
+printf '%s\n' '7f 45 4c 46'
+"#,
+            ),
+        ] {
+            let tool = tool_bin.join(name);
+            fs::write(&tool, source).unwrap();
+            let mut permissions = fs::metadata(&tool).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&tool, permissions).unwrap();
+        }
+
         let path = dir.join("wsl.exe");
         let script = format!(
             r#"#!/bin/sh
@@ -7071,11 +7103,18 @@ if [ "${{1:-}}" = "env" ]; then
     shift
   fi
 fi
-[ "${{1:-}}" = "herdr" ] && shift
-exec '{}' "$@"
+[ "${{1:-}}" = "/bin/sh" ] || exit 97
+[ "${{2:-}}" = "-c" ] || exit 98
+launcher="$3"
+launcher_arg0="$4"
+shift 4
+export HOME='{}'
+export PATH='{}:/usr/bin:/bin'
+exec /bin/sh -c "$launcher" "$launcher_arg0" "$@"
 "#,
             argv_log.display(),
-            herdr.display(),
+            dir.join("wsl-home").display(),
+            tool_bin.display(),
         );
         fs::write(&path, script).unwrap();
         let mut permissions = fs::metadata(&path).unwrap().permissions();
@@ -7881,9 +7920,14 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         ));
         let argv = fs::read_to_string(&argv_log).unwrap();
         assert!(
-            argv.contains("--distribution\nUbuntu\n--exec\nenv\nHERDR_SESSION=default\nherdr"),
+            argv.contains(
+                "--distribution\nUbuntu\n--exec\nenv\nHERDR_SESSION=default\n/bin/sh\n-c\n"
+            ) && argv.contains("\nyuzora-wsl-herdr\n"),
             "{argv}"
         );
+        // The frame received above is emitted by the copied fake Herdr after
+        // this harness executes the production launcher with fixture readlink
+        // and od commands; it no longer bypasses the launcher via `shift 4`.
         assert!(
             argv.contains("control\nsame-terminal-id\n--cols\n120\n--rows\n40\n--takeover"),
             "{argv}"
