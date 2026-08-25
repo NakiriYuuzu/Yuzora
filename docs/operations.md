@@ -74,7 +74,7 @@ Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可�
 
 ### CI 重要特性
 
-- Frontend 與 release jobs 固定使用 Bun `1.3.14`，並搭配 `@typescript/native` typecheck；升級 Bun 時需在同一個 PR 更新 CI、candidate 與 Release workflow。
+- Frontend 與 release jobs 固定使用 Bun `1.3.14`，Rust compile、database、candidate 與 Release jobs 固定使用 Rust `1.96.0`；升級任一 toolchain 時需在同一個 PR 更新 CI、candidate、Release workflow 與 exact Clippy baseline，再搭配 `@typescript/native` typecheck 驗證。
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
