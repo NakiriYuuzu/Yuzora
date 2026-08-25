@@ -5,10 +5,13 @@ import { useTranslation } from "react-i18next"
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
+import { HerdrNewAgentDialog } from "@/app/workbench/HerdrNewAgentDialog"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents"
+import { formatHerdrExecutionOrigin } from "@/lib/herdrNormalize"
 import type { HerdrAgentInfo, HerdrAgentStatus, HerdrNamedSession } from "@/lib/herdrTypes"
-import { sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
 import { workspacePathBasename } from "@/lib/paths"
 import { pickWorkspace } from "@/lib/workspaceActions"
 import { cn } from "@/lib/utils"
@@ -34,7 +37,6 @@ export function HerdrNavContent() {
   const { t } = useTranslation("workbench")
   const sessions = useHerdrStore((s) => s.sessions)
   const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
-  const selectedRuntimeTarget = useHerdrStore((s) => s.selectedRuntimeTarget)
   const selectSession = useHerdrStore((s) => s.selectSession)
   const connectionState = useHerdrStore((s) => s.connectionState)
   const errorMessage = useHerdrStore((s) => s.errorMessage)
@@ -43,15 +45,18 @@ export function HerdrNavContent() {
   const createTerminalInSelectedSpace = useHerdrStore((s) => s.createTerminalInSelectedSpace)
   const createSpaceFromFolder = useHerdrStore((s) => s.createSpaceFromFolder)
   const canCreateTerminal = useHerdrStore((s) => s.canCreateTerminal())
+  const canCreateAgent = useHerdrStore((s) => s.canCreateAgent())
   const canCreateSpace = useHerdrStore((s) => s.canCreateSpace())
   const canMutate = useHerdrStore((s) => s.canMutateSelectedSession())
   const canFocusTab = useHerdrStore((s) => s.canFocusSelectedTab())
   const createBlockedReason = useHerdrStore((s) => s.createTerminalBlockedReason())
+  const createAgentBlockedReason = useHerdrStore((s) => s.createAgentBlockedReason())
   const createSpaceBlockedReason = useHerdrStore((s) => s.createSpaceBlockedReason())
   const mutationBlockedReason = useHerdrStore((s) => s.mutationBlockedReason())
   const activateAgent = useHerdrStore((s) => s.activateAgent)
   const setMode = useUiStore((s) => s.setMode)
   const [creating, setCreating] = useState(false)
+  const [newAgentOpen, setNewAgentOpen] = useState(false)
   const [onboardingBusy, setOnboardingBusy] = useState(false)
   const onboardingBusyRef = useRef(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -59,22 +64,13 @@ export function HerdrNavContent() {
   const attentionItems = useMemo(() => {
     const selected = selectedSessionName
     return Array.from(attentionByKey.values())
-      .filter((item) => {
-        if (selected && item.sessionName !== selected) return false
-        if (!sameHerdrRuntimeTarget(item.runtimeTarget, selectedRuntimeTarget)) return false
-        if (item.kind === "done" && item.seen) return false
-        return true
-      })
+      .filter((item) => (!selected || item.sessionName === selected) && !(item.kind === "done" && item.seen))
       .sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [attentionByKey, selectedSessionName, selectedRuntimeTarget])
-
-  const visibleSessions = sessions.filter((session) =>
-    sameHerdrRuntimeTarget(session.runtimeTarget, selectedRuntimeTarget)
+  }, [attentionByKey, selectedSessionName])
+  const agents = useMemo(
+    () => sortHerdrAgentsByUrgency(snapshot?.agents ?? []),
+    [snapshot?.agents]
   )
-  const selectedRuntimeLabel = selectedRuntimeTarget.kind === "wsl"
-    ? t("herdrSettings.wslRuntime", { distro: selectedRuntimeTarget.distro })
-    : t("herdrSettings.nativeRuntime")
-  const agents = snapshot?.agents ?? []
   const herdrSessionId = selectedSessionName ?? snapshot?.herdrSessionId
   const stopped = connectionState === "stopped"
   const createDisabled =
@@ -85,7 +81,7 @@ export function HerdrNavContent() {
   const onSelectSession = (session: HerdrNamedSession) => {
     // HerdrBridge is the single focus-restoration owner so a user-closed page
     // is not reopened while the runtime focus key remains unchanged.
-    void selectSession(session.name, selectedRuntimeTarget)
+    void selectSession(session.name)
   }
 
   const openAgent = async (agent: HerdrAgentInfo) => {
@@ -116,7 +112,6 @@ export function HerdrNavContent() {
       setMode("ade")
       try {
         await openCreatedHerdrTabAndRequestName({
-          runtimeTarget: created.runtimeTarget,
           sessionName: created.herdrSessionId,
           workspaceId: created.workspaceId,
           terminalId: created.terminalId,
@@ -218,26 +213,21 @@ export function HerdrNavContent() {
 
   return (
     <div className="flex h-full flex-col gap-[10px]">
-      <p className="px-[2px] text-[10px] font-mono text-(--ink-4)" data-testid="herdr-runtime-label">
-        {selectedRuntimeLabel}
-      </p>
-      {visibleSessions.length > 0 && (
+      {sessions.length > 0 && (
         <div
           role="tablist"
           aria-label={t("herdrNav.sessionsHeading")}
           className="flex shrink-0 flex-wrap gap-[6px] px-[2px]"
         >
-          {visibleSessions.map((session) => {
-            const selected = session.name === selectedSessionName &&
-              sameHerdrRuntimeTarget(session.runtimeTarget, selectedRuntimeTarget)
+          {sessions.map((session) => {
+            const selected = session.name === selectedSessionName
             return (
               <button
-                key={`${session.runtimeTarget?.kind === "wsl" ? `wsl:${session.runtimeTarget.distro}` : "native"}:${session.name}`}
+                key={session.name}
                 type="button"
                 role="tab"
                 data-testid={`herdr-session-${session.name}`}
                 aria-selected={selected}
-                aria-description={selectedRuntimeLabel}
                 title={
                   session.running
                     ? session.socketPath
@@ -383,12 +373,25 @@ export function HerdrNavContent() {
         )}
       </ScrollArea>
       {!hasNoSpaces && (
-        <CreateTerminalButton
-          onClick={() => void onCreateTerminal()}
-          disabled={createDisabled}
-          reason={!canCreateTerminal || stopped ? createBlockedReason : null}
-        />
+        <div className="flex shrink-0 flex-col gap-[8px]">
+          <Button
+            type="button"
+            className="w-full"
+            disabled={!selectedSpaceId || !canCreateAgent || stopped}
+            title={createAgentBlockedReason ?? t("herdrNav.startAgent")}
+            onClick={() => setNewAgentOpen(true)}
+          >
+            <Bot data-icon="inline-start" aria-hidden="true" />
+            {t("herdrNav.startAgent")}
+          </Button>
+          <CreateTerminalButton
+            onClick={() => void onCreateTerminal()}
+            disabled={createDisabled}
+            reason={!canCreateTerminal || stopped ? createBlockedReason : null}
+          />
+        </div>
       )}
+      <HerdrNewAgentDialog open={newAgentOpen} onOpenChange={setNewAgentOpen} />
     </div>
   )
 }
@@ -435,12 +438,8 @@ function AgentRow({
   onSelect: () => void
   sessionName?: string | null
 }) {
-  const { t } = useTranslation("workbench")
   const spaceLabel = agent.spaceLabel ?? agent.workspaceId
-  const runtimeTarget = agent.runtimeTarget ?? { kind: "native" as const }
-  const runtimeLabel = runtimeTarget.kind === "wsl"
-    ? t("herdrSettings.wslRuntime", { distro: runtimeTarget.distro })
-    : t("herdrSettings.nativeRuntime")
+  const originLabel = formatHerdrExecutionOrigin(agent.executionOrigin)
   const resolvedSession = agent.sessionName ?? sessionName ?? ""
   return (
       <button
@@ -452,7 +451,6 @@ function AgentRow({
           agent.paneId
             ? contextMenuHandler({
                 kind: "herdrPane",
-                runtimeTarget: agent.runtimeTarget,
                 sessionName: resolvedSession,
                 paneId: agent.paneId,
                 terminalId: agent.terminalId ?? null,
@@ -477,8 +475,18 @@ function AgentRow({
           <span className="block truncate text-[12.5px] font-medium">
             {agent.title ?? agent.name}
           </span>
-          <span className="block truncate text-[10px] text-(--ink-4)">{spaceLabel}</span>
-          <span className="block truncate text-[9px] text-(--ink-4)" data-runtime-label={runtimeLabel}>{runtimeLabel}</span>
+          <span className="flex min-w-0 items-center gap-[5px] text-[10px] text-(--ink-4)">
+            <span className="truncate">{spaceLabel}</span>
+            {originLabel && (
+              <Badge
+                variant="outline"
+                data-testid={`herdr-agent-origin-${agent.id}`}
+                className="h-[18px] border-(--line-2) px-[6px] text-[9px] font-normal text-(--ink-3)"
+              >
+                {originLabel}
+              </Badge>
+            )}
+          </span>
         </span>
         <span className="shrink-0 font-mono text-[10px] text-(--ink-4)">{agent.status}</span>
       </button>

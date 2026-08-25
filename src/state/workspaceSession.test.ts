@@ -190,6 +190,7 @@ describe("workspaceSession file-only persistence", () => {
                 "yuzora://preview",
                 "yuzora://markdown-preview/%2Fws%2Fnotes.md",
                 "yuzora://herdr/live/term-1",
+                "yuzora://herdr/wsl/ubuntu/term-legacy",
                 "/ws/b.ts"
             ],
             activePath: "yuzora://herdr/live/term-1"
@@ -214,6 +215,7 @@ describe("workspaceSession file-only persistence", () => {
                             "yuzora://preview",
                             "yuzora://markdown-preview/%2Fws%2Fnotes.md",
                             "yuzora://herdr/live/term-9",
+                            "yuzora://herdr/wsl/ubuntu/term-legacy",
                             "/ws/c.ts"
                         ],
                         activePath: "yuzora://markdown-preview/%2Fws%2Fnotes.md"

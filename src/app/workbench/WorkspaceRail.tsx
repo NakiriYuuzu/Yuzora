@@ -52,7 +52,6 @@ export function WorkspaceRail({
   const spaces = useHerdrStore((s) => s.snapshot?.spaces)
   const selectedSpaceId = useHerdrStore((s) => s.selectedSpaceId)
   const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
-  const selectedRuntimeTarget = useHerdrStore((s) => s.selectedRuntimeTarget)
   const connectionState = useHerdrStore((s) => s.connectionState)
   const canMutate = useHerdrStore((s) => s.canMutateSelectedSession())
   const canCreateSpace = useHerdrStore((s) => s.canCreateSpace())
@@ -114,7 +113,6 @@ export function WorkspaceRail({
     if (!selectedSessionName || !canMutate) return
     const result = await activateSpace({
       sessionName: selectedSessionName,
-      ...(selectedRuntimeTarget.kind === "wsl" ? { runtimeTarget: selectedRuntimeTarget } : {}),
       workspaceId: spaceId,
       path
     })
@@ -251,9 +249,6 @@ export function WorkspaceRail({
               ? space.branch
               : null
           const resolvedTabCount = resolveSpaceTabCount(space, tabs)
-          const runtimeLabel = selectedRuntimeTarget.kind === "wsl"
-            ? t("herdrSettings.wslRuntime", { distro: selectedRuntimeTarget.distro })
-            : t("herdrSettings.nativeRuntime")
           const openAriaLabel = (() => {
             const baseLabel = (() => {
               if (provenanceKind === "linked") {
@@ -281,8 +276,6 @@ export function WorkspaceRail({
                   type="button"
                   data-testid={`rail-space-${space.id}`}
                   aria-label={openAriaLabel}
-                  aria-description={runtimeLabel}
-                  data-runtime-label={runtimeLabel}
                   aria-pressed={active}
                   aria-disabled={!canMutate}
                   data-worktree-kind={provenanceKind ?? undefined}
@@ -291,7 +284,6 @@ export function WorkspaceRail({
                   onClick={() => void handleActivateSpace(space.id, space.path)}
                   onContextMenu={contextMenuHandler({
                     kind: "herdrSpace",
-                    runtimeTarget: selectedRuntimeTarget,
                     sessionName: selectedSessionName ?? "",
                     workspaceId: space.id,
                     label: space.label,

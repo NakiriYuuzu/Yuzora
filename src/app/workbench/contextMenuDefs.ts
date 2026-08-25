@@ -18,8 +18,7 @@ import { pickWorkspace } from "@/lib/workspaceActions"
 import { dbProfileUiErrorCode, useDbStore } from "@/state/dbStore"
 import { useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
-import { herdrStoreRuntimeKey, useHerdrStore } from "@/state/herdrStore"
-import { normalizeHerdrRuntimeTarget, sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
+import { useHerdrStore } from "@/state/herdrStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useSshStore } from "@/state/sshStore"
@@ -222,35 +221,23 @@ function previewUrlAvailability(
   return previewTargetHasUrl(request) ? available() : disabled(DISABLED_TARGET)
 }
 
-function herdrSessionRuntime(
-  sessionName: string,
-  runtimeTarget?: ContextMenuRequestFor<"herdrTab">["runtimeTarget"]
-) {
+function herdrSessionRuntime(sessionName: string) {
   const state = useHerdrStore.getState()
-  const target = normalizeHerdrRuntimeTarget(runtimeTarget)
-  const scopedSessions = state.sessions.filter((item) =>
-    sameHerdrRuntimeTarget(item.runtimeTarget, target)
-  )
   const session =
-    scopedSessions.find((item) => item.name === sessionName) ??
+    state.sessions.find((item) => item.name === sessionName) ??
     (sessionName === "live"
-      ? scopedSessions.find((item) => item.default) ?? scopedSessions[0]
+      ? state.sessions.find((item) => item.default) ?? state.sessions[0]
       : null)
   const resolvedName = session?.name ?? sessionName
-  const runtime = state.runtimesBySession[
-    herdrStoreRuntimeKey(resolvedName, target)
-  ] ?? (target.kind === "native" ? state.runtimesBySession[resolvedName] : undefined)
-  const capabilities = runtime?.capabilities ??
-    (state.selectedSessionName === resolvedName &&
-    sameHerdrRuntimeTarget(state.selectedRuntimeTarget, target)
-      ? state.capabilities
-      : null)
+  const runtime = state.runtimesBySession[resolvedName]
+  const capabilities =
+    runtime?.capabilities ??
+    (state.selectedSessionName === resolvedName ? state.capabilities : null)
   return { session, capabilities }
 }
 
 function herdrMethodAvailability(
   sessionName: string,
-  runtimeTarget: ContextMenuRequestFor<"herdrTab">["runtimeTarget"],
   flag:
     | "workspaceRename"
     | "workspaceClose"
@@ -264,7 +251,7 @@ function herdrMethodAvailability(
     | "paneClose",
   method: string
 ): ContextMenuAvailability {
-  const { session, capabilities: caps } = herdrSessionRuntime(sessionName, runtimeTarget)
+  const { session, capabilities: caps } = herdrSessionRuntime(sessionName)
   if (!session?.running || !caps?.server.running) {
     return disabled(DISABLED_HERDR_UNAVAILABLE)
   }
@@ -274,18 +261,9 @@ function herdrMethodAvailability(
   return methodOk ? available() : disabled(DISABLED_HERDR_METHOD)
 }
 
-async function afterHerdrMutation(
-  sessionName: string,
-  runtimeTarget?: ContextMenuRequestFor<"herdrTab">["runtimeTarget"]
-): Promise<void> {
-  // Missing persisted metadata is explicitly Native, not whichever runtime is
-  // currently selected when the mutation settles.
-  const target = normalizeHerdrRuntimeTarget(runtimeTarget)
+async function afterHerdrMutation(sessionName: string): Promise<void> {
   useHerdrStore.getState().bumpTopologyRevision()
-  await useHerdrStore
-    .getState()
-    .refreshSnapshot(sessionName, target)
-    .catch(() => undefined)
+  await useHerdrStore.getState().refreshSnapshot(sessionName).catch(() => undefined)
 }
 
 function gitChangeKeys(request: ContextMenuRequestFor<"gitChange">): GitChangeKey[] {
@@ -777,7 +755,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
   herdrSpace: [
     item<"herdrSpace">("cmHerdrRenameSpace", {
       availability: (request) =>
-        herdrMethodAvailability(request.sessionName, request.runtimeTarget, "workspaceRename", "workspace.rename"),
+        herdrMethodAvailability(request.sessionName, "workspaceRename", "workspace.rename"),
       danger: false,
       executor: async (request) => {
         const label = await requestTextInputDialog({
@@ -789,28 +767,25 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
         if (!label || label === (request.label ?? "")) return CONTEXT_MENU_CANCELLED
         await herdrWorkspaceRename({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           workspaceId: request.workspaceId,
           label
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
     item<"herdrSpace">("cmHerdrNewTab", {
       availability: (request) =>
-        herdrMethodAvailability(request.sessionName, request.runtimeTarget, "tabCreate", "tab.create"),
+        herdrMethodAvailability(request.sessionName, "tabCreate", "tab.create"),
       danger: false,
       executor: async (request) => {
         const created = await herdrTabCreate({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           workspaceId: request.workspaceId,
           focus: true
         })
         await openCreatedHerdrTabAndRequestName({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           workspaceId: request.workspaceId,
           terminalId: created.terminalId,
           title: created.title,
@@ -822,7 +797,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
     item<"herdrSpace">("cmHerdrCloseSpace", {
       availability: (request) =>
-        herdrMethodAvailability(request.sessionName, request.runtimeTarget, "workspaceClose", "workspace.close"),
+        herdrMethodAvailability(request.sessionName, "workspaceClose", "workspace.close"),
       danger: true,
       executor: async (request) => {
         const ok = await requestAppConfirmation({
@@ -837,10 +812,9 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
         if (!ok) return CONTEXT_MENU_CANCELLED
         await herdrWorkspaceClose({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           workspaceId: request.workspaceId
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
@@ -848,18 +822,16 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
   herdrTab: [
     item<"herdrTab">("cmHerdrNewTab", {
       availability: (request) =>
-        herdrMethodAvailability(request.sessionName, request.runtimeTarget, "tabCreate", "tab.create"),
+        herdrMethodAvailability(request.sessionName, "tabCreate", "tab.create"),
       danger: false,
       executor: async (request) => {
         const created = await herdrTabCreate({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           workspaceId: request.workspaceId ?? undefined,
           focus: true
         })
         await openCreatedHerdrTabAndRequestName({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           workspaceId: request.workspaceId ?? null,
           terminalId: created.terminalId,
           title: created.title,
@@ -872,14 +844,13 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"herdrTab">("cmHerdrRenameTab", {
       availability: (request) =>
         request.tabId
-          ? herdrMethodAvailability(request.sessionName, request.runtimeTarget, "tabRename", "tab.rename")
+          ? herdrMethodAvailability(request.sessionName, "tabRename", "tab.rename")
           : disabled(DISABLED_TARGET),
       danger: false,
       executor: async (request) => {
         if (!request.tabId) return CONTEXT_MENU_CANCELLED
         const renamed = await renameHerdrTabWithDialog({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           tabId: request.tabId,
           currentLabel: request.label ?? request.tabId,
           pagePath: request.pagePath
@@ -890,7 +861,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"herdrTab">("cmHerdrCloseTab", {
       availability: (request) =>
         request.tabId
-          ? herdrMethodAvailability(request.sessionName, request.runtimeTarget, "tabClose", "tab.close")
+          ? herdrMethodAvailability(request.sessionName, "tabClose", "tab.close")
           : disabled(DISABLED_TARGET),
       danger: true,
       executor: async (request) => {
@@ -905,11 +876,11 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
           destructive: true
         })
         if (!ok) return CONTEXT_MENU_CANCELLED
-        await closeHerdrTabIdempotently(request.sessionName, request.tabId, request.runtimeTarget)
+        await closeHerdrTabIdempotently(request.sessionName, request.tabId)
         if (request.pagePath) {
           useWorkspaceStore.getState().closeTabsByPath([request.pagePath])
         }
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
@@ -918,7 +889,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"herdrPane">("cmHerdrRenamePane", {
       availability: (request) =>
         request.paneId
-          ? herdrMethodAvailability(request.sessionName, request.runtimeTarget, "paneRename", "pane.rename")
+          ? herdrMethodAvailability(request.sessionName, "paneRename", "pane.rename")
           : disabled(DISABLED_TARGET),
       danger: false,
       executor: async (request) => {
@@ -932,87 +903,82 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
         if (!label || label === (request.label ?? "")) return CONTEXT_MENU_CANCELLED
         await herdrPaneRename({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           paneId: request.paneId,
           label
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
     item<"herdrPane">("cmHerdrClearPaneName", {
       availability: (request) => {
         if (!request.paneId || !request.label) return hidden()
-        return herdrMethodAvailability(request.sessionName, request.runtimeTarget, "paneRename", "pane.rename")
+        return herdrMethodAvailability(request.sessionName, "paneRename", "pane.rename")
       },
       danger: false,
       executor: async (request) => {
         if (!request.paneId) return CONTEXT_MENU_CANCELLED
         await herdrPaneRename({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           paneId: request.paneId,
           label: null
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
     item<"herdrPane">("cmHerdrSplitRight", {
       availability: (request) =>
         request.paneId
-          ? herdrMethodAvailability(request.sessionName, request.runtimeTarget, "paneSplit", "pane.split")
+          ? herdrMethodAvailability(request.sessionName, "paneSplit", "pane.split")
           : disabled(DISABLED_TARGET),
       danger: false,
       executor: async (request) => {
         if (!request.paneId) return CONTEXT_MENU_CANCELLED
         await herdrPaneSplit({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           direction: "right",
           targetPaneId: request.paneId,
           workspaceId: request.workspaceId,
           focus: true
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
     item<"herdrPane">("cmHerdrSplitDown", {
       availability: (request) =>
         request.paneId
-          ? herdrMethodAvailability(request.sessionName, request.runtimeTarget, "paneSplit", "pane.split")
+          ? herdrMethodAvailability(request.sessionName, "paneSplit", "pane.split")
           : disabled(DISABLED_TARGET),
       danger: false,
       executor: async (request) => {
         if (!request.paneId) return CONTEXT_MENU_CANCELLED
         await herdrPaneSplit({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           direction: "down",
           targetPaneId: request.paneId,
           workspaceId: request.workspaceId,
           focus: true
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
     item<"herdrPane">("cmHerdrZoomPane", {
       availability: (request) =>
         request.paneId
-          ? herdrMethodAvailability(request.sessionName, request.runtimeTarget, "paneZoom", "pane.zoom")
+          ? herdrMethodAvailability(request.sessionName, "paneZoom", "pane.zoom")
           : disabled(DISABLED_TARGET),
       danger: false,
       executor: async (request) => {
         if (!request.paneId) return CONTEXT_MENU_CANCELLED
         await herdrPaneZoom({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           paneId: request.paneId,
           mode: "toggle"
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
@@ -1022,7 +988,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
         if (!request.focusedPaneId || request.focusedPaneId === request.paneId) {
           return disabled(DISABLED_HERDR_NO_FOCUS)
         }
-        return herdrMethodAvailability(request.sessionName, request.runtimeTarget, "paneSwap", "pane.swap")
+        return herdrMethodAvailability(request.sessionName, "paneSwap", "pane.swap")
       },
       danger: false,
       executor: async (request) => {
@@ -1030,18 +996,17 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
         if (request.focusedPaneId === request.paneId) return CONTEXT_MENU_CANCELLED
         await herdrPaneSwap({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           sourcePaneId: request.paneId,
           targetPaneId: request.focusedPaneId
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),
     item<"herdrPane">("cmHerdrClosePane", {
       availability: (request) =>
         request.paneId
-          ? herdrMethodAvailability(request.sessionName, request.runtimeTarget, "paneClose", "pane.close")
+          ? herdrMethodAvailability(request.sessionName, "paneClose", "pane.close")
           : disabled(DISABLED_TARGET),
       danger: true,
       executor: async (request) => {
@@ -1058,10 +1023,9 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
         if (!ok) return CONTEXT_MENU_CANCELLED
         await herdrPaneClose({
           sessionName: request.sessionName,
-          runtimeTarget: request.runtimeTarget,
           paneId: request.paneId
         })
-        await afterHerdrMutation(request.sessionName, request.runtimeTarget)
+        await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
     }),

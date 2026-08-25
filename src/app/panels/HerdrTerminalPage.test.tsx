@@ -268,7 +268,6 @@ function seedSessions(
   useHerdrStore.setState({
     ...herdrInitialState,
     attachments: new Map(),
-    selectedRuntimeTarget: { kind: "native" },
     selectedSessionName: sessions.find((session) => session.default)?.name ?? sessions[0]?.name ?? null,
     sessions: sessions.map((s) => ({
       ...s,
@@ -343,7 +342,7 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(
-        "Terminal control is unavailable for this Herdr runtime."
+        "Terminal control is unavailable for this Herdr server."
       )
     })
     expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
@@ -808,43 +807,6 @@ describe("HerdrTerminalPage stopped session gate", () => {
       seedSessions([{ name: "work", default: false, running: true }])
     })
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
-  })
-
-  it("refreshes topology through the WSL page RuntimeTarget after terminal exit", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    const refreshSnapshot = vi.fn(async () => true)
-    useHerdrStore.setState({
-      ...herdrInitialState,
-      attachments: new Map(),
-      selectedSessionName: "default",
-      selectedRuntimeTarget: ubuntu,
-      capabilities: terminalControlCapabilities,
-      sessions: [{
-        name: "default",
-        default: true,
-        running: true,
-        sessionDir: "/tmp/ubuntu-default",
-        socketPath: "/tmp/ubuntu-default.sock",
-        runtimeTarget: ubuntu
-      }],
-      refreshSnapshot
-    })
-    render(
-      <HerdrTerminalPage
-        herdrSessionId="default"
-        runtimeTarget={ubuntu}
-        terminalId="term-1"
-        active
-        visible
-      />
-    )
-    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
-
-    act(() => {
-      herdrIpcMock.emit({ type: "closed", sessionId: "sess-1" })
-    })
-
-    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default", ubuntu))
   })
 
   it("releases connector and does not reopen when session transitions running→stopped", async () => {

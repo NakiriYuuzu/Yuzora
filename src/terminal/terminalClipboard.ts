@@ -95,7 +95,10 @@ export function installTerminalClipboardHandling(
     return true
   }
 
-  term.attachCustomKeyEventHandler(handleShortcut)
+  // A few embedded/xterm test adapters expose only the DOM event surface.
+  // Production xterm supports this API; preserve clipboard behavior through
+  // the capture listeners when the adapter omits it.
+  term.attachCustomKeyEventHandler?.(handleShortcut)
 
   const handleKeyDown = (event: KeyboardEvent) => {
     if (handleShortcut(event)) return

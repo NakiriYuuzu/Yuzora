@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
-import { herdrAttentionKey, herdrInitialState, herdrStoreRuntimeKey, useHerdrStore } from "@/state/herdrStore"
+import { herdrAttentionKey, herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 describe("herdr attention model", () => {
   beforeEach(() => {
@@ -116,6 +116,54 @@ describe("herdr attention model", () => {
     expect(useHerdrStore.getState().attentionItems()).toHaveLength(0)
   })
 
+  it("retains a supplied event execution origin on the current Agent projection", () => {
+    useHerdrStore.getState().applySnapshot("default", {
+      herdrSessionId: "default",
+      protocol: 19,
+      version: "0.8.2",
+      spaces: [{ id: "w1", label: "Main", order: 0, focused: true }],
+      tabs: [],
+      terminals: [{ terminalId: "term-1", paneId: "w1:p1", workspaceId: "w1" }],
+      agents: [
+        {
+          id: "term-1",
+          name: "Pi",
+          status: "working",
+          workspaceId: "w1",
+          paneId: "w1:p1",
+          terminalId: "term-1",
+          sessionName: "default"
+        }
+      ],
+      focusedWorkspaceId: "w1",
+      raw: {}
+    })
+    useHerdrStore.getState().applySubscriptionEvent("default", {
+      type: "subscribed",
+      subscriptionId: "sub-1"
+    })
+    useHerdrStore.getState().applySubscriptionEvent("default", {
+      type: "agent_status_changed",
+      subscriptionId: "sub-1",
+      paneId: "w1:p1",
+      workspaceId: "w1",
+      agentStatus: "working",
+      executionOrigin: { kind: "wsl", distribution: "Ubuntu" },
+      stateLabels: {}
+    })
+
+    const snapshot = useHerdrStore.getState().runtimesBySession.default!.snapshot!
+    expect(snapshot.agents[0]).toMatchObject({
+      id: "term-1",
+      terminalId: "term-1",
+      executionOrigin: { kind: "wsl", distribution: "Ubuntu" }
+    })
+    expect(snapshot.terminals[0]?.executionOrigin).toEqual({
+      kind: "wsl",
+      distribution: "Ubuntu"
+    })
+  })
+
   it("isolates attention across named sessions", () => {
     useHerdrStore.getState().applySubscriptionEvent("default", {
       type: "subscribed",
@@ -173,45 +221,6 @@ describe("herdr attention model", () => {
     const snapshot = useHerdrStore.getState().runtimesBySession.default!.snapshot!
     useHerdrStore.getState().applySnapshot("default", { ...snapshot, agents: [] })
     expect(useHerdrStore.getState().attentionItems("default")).toHaveLength(0)
-  })
-
-  it("keeps Native/default and WSL Ubuntu/default snapshots and attention isolated", () => {
-    const makeSnapshot = (runtimeTarget: { kind: "native" } | { kind: "wsl"; distro: string }) => ({
-      herdrSessionId: "default",
-      runtimeTarget,
-      protocol: 19,
-      version: "0.8.0",
-      spaces: [{ id: "w1", label: "Main", order: 0, focused: true }],
-      tabs: [],
-      terminals: [],
-      agents: [
-        {
-          id: "w1:p1",
-          name: "Reviewer",
-          status: "blocked" as const,
-          workspaceId: "w1",
-          paneId: "w1:p1",
-          sessionName: "default",
-          runtimeTarget
-        }
-      ],
-      focusedWorkspaceId: "w1",
-      raw: {}
-    })
-    const native = { kind: "native" } as const
-    const ubuntu = { kind: "wsl", distro: "Ubuntu" } as const
-
-    useHerdrStore.getState().applySnapshot("default", makeSnapshot(native), native)
-    useHerdrStore.getState().applySnapshot("default", makeSnapshot(ubuntu), ubuntu)
-
-    const state = useHerdrStore.getState()
-    expect(state.runtimesBySession[herdrStoreRuntimeKey("default", native)]).toBeDefined()
-    expect(state.runtimesBySession[herdrStoreRuntimeKey("default", ubuntu)]).toBeDefined()
-    expect(state.attentionItems("default", native)).toHaveLength(1)
-    expect(state.attentionItems("default", ubuntu)).toHaveLength(1)
-    expect(herdrAttentionKey("default", "w1:p1", native)).not.toBe(
-      herdrAttentionKey("default", "w1:p1", ubuntu)
-    )
   })
 
   it("exposes inspect capability from agent.get/read flags", () => {

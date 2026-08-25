@@ -8,8 +8,6 @@ import {
 } from "../lib/markdownPreviewTab"
 import { type TabInfo, useWorkspaceStore } from "../state/workspaceStore"
 import type { HerdrTabInfo } from "../lib/herdrTypes"
-import { herdrStoreRuntimeKey } from "../state/herdrStore"
-import { normalizeHerdrRuntimeTarget, sameHerdrRuntimeTarget } from "../lib/herdrRuntime"
 import { useUiStore } from "../state/uiStore"
 import { useConfirmDialogStore } from "../state/confirmDialogStore"
 import { useHerdrStore } from "../state/herdrStore"
@@ -69,7 +67,6 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const herdrSessions = useHerdrStore((s) => s.sessions)
     const herdrRuntimes = useHerdrStore((s) => s.runtimesBySession)
     const herdrSelectedSessionName = useHerdrStore((s) => s.selectedSessionName)
-    const herdrSelectedRuntimeTarget = useHerdrStore((s) => s.selectedRuntimeTarget)
     const herdrSelectedSpaceId = useHerdrStore((s) => s.selectedSpaceId)
     const herdrSelectedSnapshot = useHerdrStore((s) => s.snapshot)
     const canCreateHerdrTerminal = useHerdrStore((s) => s.canCreateTerminal())
@@ -94,18 +91,11 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         // Before Herdr selection is hydrated, retain the last-known page strip.
         // Once a selected Space exists, projection becomes strictly Space-owned.
         if (!herdrSelectedSessionName || !herdrSelectedSpaceId) return true
-        const tabRuntimeTarget = normalizeHerdrRuntimeTarget(tab.herdrRuntimeTarget)
-        const scopedSessions = herdrSessions.filter((session) =>
-            sameHerdrRuntimeTarget(session.runtimeTarget, tabRuntimeTarget)
-        )
         const sessionName =
             tab.herdrSessionId === "live"
-                ? (scopedSessions.find((session) => session.default) ?? scopedSessions[0])?.name ?? "live"
+                ? (herdrSessions.find((session) => session.default) ?? herdrSessions[0])?.name ?? "live"
                 : tab.herdrSessionId ?? "live"
-        if (
-            sessionName !== herdrSelectedSessionName ||
-            !sameHerdrRuntimeTarget(tabRuntimeTarget, herdrSelectedRuntimeTarget)
-        ) return false
+        if (sessionName !== herdrSelectedSessionName) return false
         const workspaceId =
             tab.herdrWorkspaceId ??
             (tab.herdrTabId ? runtimeWorkspaceByTabId.get(tab.herdrTabId) : null)
@@ -123,14 +113,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         if (!created) return
         setMode("ade")
         try {
-            // `createTerminalInSelectedSpace` now captures the source runtime.
-            // Keep compatibility with an already-restored legacy result until
-            // all persisted callers have refreshed their typed store action.
-            const createdRuntimeTarget = created.runtimeTarget ?? herdrSelectedRuntimeTarget
             await openCreatedHerdrTabAndRequestName({
-                ...(createdRuntimeTarget.kind === "native"
-                    ? {}
-                    : { runtimeTarget: createdRuntimeTarget }),
                 sessionName: created.herdrSessionId,
                 workspaceId: created.workspaceId,
                 terminalId: created.terminalId,
@@ -219,23 +202,11 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         if (draggedTabPathRef.current) event.preventDefault()
     }
 
-    async function moveHerdrTab(
-        sessionName: string,
-        runtimeTarget: TabInfo["herdrRuntimeTarget"],
-        tabId: string,
-        insertIndex: number
-    ) {
+    async function moveHerdrTab(sessionName: string, tabId: string, insertIndex: number) {
         try {
-            await herdrTabMove({
-                ...(runtimeTarget ? { runtimeTarget } : {}),
-                sessionName,
-                tabId,
-                insertIndex
-            })
+            await herdrTabMove({ sessionName, tabId, insertIndex })
             useHerdrStore.getState().bumpTopologyRevision()
-            await useHerdrStore
-                .getState()
-                .refreshSnapshot(sessionName, normalizeHerdrRuntimeTarget(runtimeTarget))
+            await useHerdrStore.getState().refreshSnapshot(sessionName)
             void logUserAction("reorder_tab", `move herdr ${sessionName}:${tabId}`)
         } catch (error) {
             await showActionError(t("tabBar.reorderHerdrFailed"), error)
@@ -268,21 +239,12 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
             )
             const tabId = sourceTab.herdrTabId?.trim()
             if (insertIndex === null || !tabId) return null
-            const sourceRuntimeTarget = normalizeHerdrRuntimeTarget(sourceTab.herdrRuntimeTarget)
-            const scopedSessions = herdrSessions.filter((session) =>
-                sameHerdrRuntimeTarget(session.runtimeTarget, sourceRuntimeTarget)
-            )
             const sessionName =
                 sourceTab.herdrSessionId === "live"
-                    ? (scopedSessions.find((session) => session.default) ?? scopedSessions[0])?.name ??
+                    ? (herdrSessions.find((session) => session.default) ?? herdrSessions[0])?.name ??
                       "live"
                     : sourceTab.herdrSessionId ?? herdrSelectedSessionName ?? "live"
-            return () => void moveHerdrTab(
-                sessionName,
-                sourceTab.herdrRuntimeTarget,
-                tabId,
-                insertIndex
-            )
+            return () => void moveHerdrTab(sessionName, tabId, insertIndex)
         }
         return () => {
             reorderProjectedTab(
@@ -349,22 +311,13 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         if (tab.kind === "herdr-terminal") {
             if (closingHerdrPagesRef.current.has(tab.path)) return
             closingHerdrPagesRef.current.add(tab.path)
-            const runtimeTarget = normalizeHerdrRuntimeTarget(tab.herdrRuntimeTarget)
-            const runtimeTargetForIpc = tab.herdrRuntimeTarget ?? undefined
-            const scopedSessions = herdrSessions.filter((session) =>
-                sameHerdrRuntimeTarget(session.runtimeTarget, runtimeTarget)
-            )
             const sessionName =
                 tab.herdrSessionId === "live"
-                    ? (scopedSessions.find((session) => session.default) ?? scopedSessions[0])?.name ?? "live"
+                    ? (herdrSessions.find((session) => session.default) ?? herdrSessions[0])?.name ?? "live"
                     : tab.herdrSessionId ?? "live"
             const targetSnapshot =
-                herdrRuntimes[herdrStoreRuntimeKey(sessionName, runtimeTarget)]?.snapshot ??
-                (runtimeTarget.kind === "native" ? herdrRuntimes[sessionName]?.snapshot : null) ??
-                (herdrSelectedSessionName === sessionName &&
-                sameHerdrRuntimeTarget(herdrSelectedRuntimeTarget, runtimeTarget)
-                    ? herdrSelectedSnapshot
-                    : null)
+                herdrRuntimes[sessionName]?.snapshot ??
+                (herdrSelectedSessionName === sessionName ? herdrSelectedSnapshot : null)
             const target =
                 targetSnapshot?.terminals.find(
                     (terminal) => terminal.terminalId === tab.terminalId
@@ -382,14 +335,11 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                     destructive: true
                 })
                 if (!accepted) return
-                await closeHerdrTabIdempotently(sessionName, tabId, runtimeTargetForIpc)
+                await closeHerdrTabIdempotently(sessionName, tabId)
                 await useHerdrStore.getState().releaseAttachmentsForPage(tab.path)
                 useWorkspaceStore.getState().closeTabsByPath([tab.path])
                 useHerdrStore.getState().bumpTopologyRevision()
-                void useHerdrStore
-                    .getState()
-                    .refreshSnapshot(sessionName, runtimeTarget)
-                    .catch(() => undefined)
+                void useHerdrStore.getState().refreshSnapshot(sessionName).catch(() => undefined)
                 void logUserAction("close_tab", `close herdr ${sessionName}:${tabId}`)
             } catch (error) {
                 await showActionError(t("contextMenu.cmHerdrCloseTab"), error)
@@ -428,23 +378,13 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
             )}
             {projectedTabs.map((tab, index) => {
                 const active = tab.path === group.activePath
-                const herdrRuntimeTarget = normalizeHerdrRuntimeTarget(tab.herdrRuntimeTarget)
-                const scopedSessions = herdrSessions.filter((session) =>
-                    sameHerdrRuntimeTarget(session.runtimeTarget, herdrRuntimeTarget)
-                )
                 const herdrSessionName =
                     tab.herdrSessionId === "live"
-                        ? (scopedSessions.find((session) => session.default) ?? scopedSessions[0])?.name ?? "live"
+                        ? (herdrSessions.find((session) => session.default) ?? herdrSessions[0])?.name ?? "live"
                         : tab.herdrSessionId ?? "live"
                 const herdrSnapshot =
-                    herdrRuntimes[herdrStoreRuntimeKey(herdrSessionName, herdrRuntimeTarget)]?.snapshot ??
-                    (herdrRuntimeTarget.kind === "native"
-                        ? herdrRuntimes[herdrSessionName]?.snapshot
-                        : null) ??
-                    (herdrSelectedSessionName === herdrSessionName &&
-                    sameHerdrRuntimeTarget(herdrSelectedRuntimeTarget, herdrRuntimeTarget)
-                        ? herdrSelectedSnapshot
-                        : null)
+                    herdrRuntimes[herdrSessionName]?.snapshot ??
+                    (herdrSelectedSessionName === herdrSessionName ? herdrSelectedSnapshot : null)
                 const herdrTarget =
                     herdrSnapshot?.terminals.find((terminal) =>
                         tab.herdrTabId
@@ -464,7 +404,6 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                     tab.kind === "herdr-terminal"
                         ? contextMenuHandler({
                               kind: "herdrTab",
-                              runtimeTarget: herdrRuntimeTarget,
                               sessionName: herdrSessionName,
                               tabId: tab.herdrTabId ?? herdrTarget?.tabId ?? "",
                               workspaceId:

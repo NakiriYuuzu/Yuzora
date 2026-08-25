@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { AnsiText } from "@/app/workbench/AnsiText"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -14,6 +15,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { herdrAgentGet, herdrAgentRead } from "@/lib/herdrIpc"
+import { formatHerdrExecutionOrigin } from "@/lib/herdrNormalize"
 import type {
   HerdrAgentDetails,
   HerdrAgentInfo,
@@ -22,7 +24,6 @@ import type {
   HerdrReadSource
 } from "@/lib/herdrTypes"
 import { useHerdrStore } from "@/state/herdrStore"
-import { sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
 
 const SOURCES: HerdrReadSource[] = [
   "visible",
@@ -43,7 +44,6 @@ export function HerdrAgentInspector({
   const { t } = useTranslation("workbench")
   const sessions = useHerdrStore((s) => s.sessions)
   const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
-  const selectedRuntimeTarget = useHerdrStore((s) => s.selectedRuntimeTarget)
   const [details, setDetails] = useState<HerdrAgentDetails | null>(null)
   const [readResult, setReadResult] = useState<HerdrAgentReadResult | null>(null)
   const [source, setSource] = useState<HerdrReadSource>("recent")
@@ -54,16 +54,13 @@ export function HerdrAgentInspector({
   const requestGenerationRef = useRef(0)
 
   const sessionName = agent?.sessionName ?? selectedSessionName ?? null
-  const runtimeTarget = agent?.runtimeTarget ?? selectedRuntimeTarget
-  const canInspect = useHerdrStore((s) => s.canInspectAgent(sessionName, runtimeTarget))
+  const canInspect = useHerdrStore((s) => s.canInspectAgent(sessionName))
   const target = agent?.paneId ?? null
   const stopped = useMemo(() => {
     if (!sessionName) return true
-    const session = sessions.find(
-      (item) => item.name === sessionName && sameHerdrRuntimeTarget(item.runtimeTarget, runtimeTarget)
-    )
+    const session = sessions.find((item) => item.name === sessionName)
     return session ? !session.running : true
-  }, [sessionName, sessions, runtimeTarget])
+  }, [sessionName, sessions])
 
   const load = useCallback(async () => {
     const generation = ++requestGenerationRef.current
@@ -79,13 +76,8 @@ export function HerdrAgentInspector({
     setError(null)
     try {
       const [nextDetails, nextRead] = await Promise.all([
-        herdrAgentGet({
-          ...(agent.runtimeTarget ? { runtimeTarget: agent.runtimeTarget } : {}),
-          sessionName,
-          target
-        }),
+        herdrAgentGet({ sessionName, target }),
         herdrAgentRead({
-          ...(agent.runtimeTarget ? { runtimeTarget: agent.runtimeTarget } : {}),
           sessionName,
           target,
           source,
@@ -116,6 +108,7 @@ export function HerdrAgentInspector({
     }
   }, [load])
 
+  const originLabel = formatHerdrExecutionOrigin(agent?.executionOrigin)
   const disabledReason = stopped
     ? t("herdrInspector.sessionStopped")
     : !canInspect
@@ -133,9 +126,20 @@ export function HerdrAgentInspector({
       >
         <DialogHeader className="border-b border-(--line-1) px-[20px] py-[16px]">
           <DialogTitle>{t("herdrInspector.title")}</DialogTitle>
-          <DialogDescription>
-            {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
-          </DialogDescription>
+          <div className="flex items-center gap-[8px]">
+            <DialogDescription>
+              {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
+            </DialogDescription>
+            {originLabel && (
+              <Badge
+                variant="outline"
+                data-testid="herdr-inspector-origin"
+                className="h-[18px] border-(--line-2) px-[6px] text-[9px] font-normal text-(--ink-3)"
+              >
+                {originLabel}
+              </Badge>
+            )}
+          </div>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-[12px] px-[20px] py-[16px]">

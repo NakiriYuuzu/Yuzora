@@ -74,7 +74,7 @@ Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可�
 
 ### CI 重要特性
 
-- Frontend 使用 Bun 與 `@typescript/native` typecheck。
+- Frontend 與 release jobs 固定使用 Bun `1.3.14`，並搭配 `@typescript/native` typecheck；升級 Bun 時需在同一個 PR 更新 CI、candidate 與 Release workflow。
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
@@ -269,11 +269,8 @@ gh run download "${RUN_ID}" \
 - Microsoft Pinyin 中文 composition、replacement、commit 不重複也不遺失。
 - Command Prompt、Windows PowerShell、PowerShell 7 能依設定與單次選擇啟動。
 - WSL default 與已安裝 distro 能啟動，Windows／UNC workspace 的 cwd 轉換正確。
-- 在 selected distro 中，Yuzora 的 non-interactive launcher 能解析 `$HOME/.local/bin/herdr` 等受支援位置，且直接 target 必須是 canonical Linux ELF；Windows PE、script wrapper、mounted executable 與錯誤 distro path 必須 fail closed。
-- 官方 WSL Herdr `0.8.0`／protocol 20／schema 1 在 stdio proxy 不可用時，診斷顯示 public CLI control；可從空 session 建立第一個 Space、建立／切換 tab、split／rename／zoom／swap／close pane，並從 public geometry 顯示多窗格。`events.subscribe`、`tab.move`、direct `pane.focus` 與 split-ratio persistence 必須保持 unavailable，resize handle 不可互動。
-- 未驗證的 WSL Herdr version/protocol/schema 必須是 read-only，且 backend 必須拒絕 terminal connector open/input/resize/scroll；不能只在 UI 隱藏。
 - Herdr 沒有任何 Space、連線失敗或不可用時，ADE 必須仍提供 Open Local Folder escape；本機 Terminal 在沒有 workspace 時必須開啟 folder picker，不可 silent no-op。
-- HERDR 0.8.0 running session 可透過 named pipe 完成 snapshot、schema-gated mutation 與 `events.subscribe`；停止、不相容或缺少 method 時仍需顯示真實 unavailable 原因。
+- Windows-native HERDR 0.8.0 running session 可透過 named pipe 完成 snapshot、schema-gated mutation 與 `events.subscribe`；停止、不相容或缺少 method 時仍需顯示真實 unavailable 原因。若 pane 透過 `wsl.exe` 進入互動式 Linux shell，不得假定 HERDR 能看見其中的 Linux descendant Agent。
 - Windows installer 必須包含 `herdr/windows-x86_64/herdr.exe` 與同版 ConPTY runtime。PATH 存在 Herdr 時使用全域版本；暫時移除 PATH 版本並重啟後，必須自動解析到 Yuzora-managed protocol-19 binary，且診斷顯示 `configured=global`、`resolved=default` 與實際 managed path。
 - HERDR 診斷與工作區信任介面不顯示 Windows `\\?\` verbatim prefix，且信任授權／撤銷仍作用於原始 canonical path identity。
 - 一般 shell 與 TUI 模式的 IME anchor／輸入位置可接受。

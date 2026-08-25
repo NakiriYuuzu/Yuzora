@@ -32,7 +32,7 @@ import {
   herdrWorkspaceRename
 } from "@/lib/herdrIpc"
 import { useAppDialogStore } from "@/state/appDialogStore"
-import { herdrInitialState, herdrStoreRuntimeKey, useHerdrStore } from "@/state/herdrStore"
+import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -208,83 +208,6 @@ describe("Herdr context menu registry", () => {
     if (split?.type === "command") {
       expect(split.availability.enabled).toBe(false)
     }
-  })
-
-  it("uses the targeted Runtime Environment for same-name session capability gating", () => {
-    const capabilities = useHerdrStore.getState().capabilities
-    if (!capabilities) throw new Error("expected seeded Herdr capabilities")
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    useHerdrStore.setState((state) => ({
-      sessions: [
-        ...state.sessions,
-        {
-          name: "default",
-          default: true,
-          running: true,
-          sessionDir: "/tmp/ubuntu-default",
-          socketPath: "/tmp/ubuntu-default.sock",
-          runtimeTarget: ubuntu
-        }
-      ],
-      runtimesBySession: {
-        ...state.runtimesBySession,
-        [herdrStoreRuntimeKey("default", ubuntu)]: {
-          runtimeTarget: ubuntu,
-          capabilities,
-          snapshot: null,
-          worktreeInventory: null,
-          connectionState: "ready",
-          errorMessage: null
-        }
-      },
-      capabilities: {
-        ...capabilities,
-        api: { ...capabilities.api, paneSplit: false }
-      }
-    }))
-
-    const pane = resolveContextMenuEntries({
-      kind: "herdrPane",
-      runtimeTarget: ubuntu,
-      sessionName: "default",
-      paneId: "p-ubuntu",
-      focusedPaneId: "p-other"
-    })
-    const split = pane.find(
-      (entry) => entry.type === "command" && entry.command.id === "cmHerdrSplitRight"
-    )
-    expect(split?.type).toBe("command")
-    if (split?.type === "command") expect(split.availability.enabled).toBe(true)
-  })
-
-  it("fails closed for WSL when only same-name Native capabilities exist", () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    useHerdrStore.setState((state) => ({
-      sessions: [
-        ...state.sessions,
-        {
-          name: "default",
-          default: true,
-          running: true,
-          sessionDir: "/tmp/ubuntu-default",
-          socketPath: "/tmp/ubuntu-default.sock",
-          runtimeTarget: ubuntu
-        }
-      ]
-    }))
-
-    const pane = resolveContextMenuEntries({
-      kind: "herdrPane",
-      runtimeTarget: ubuntu,
-      sessionName: "default",
-      paneId: "p-ubuntu",
-      focusedPaneId: "p-other"
-    })
-    const split = pane.find(
-      (entry) => entry.type === "command" && entry.command.id === "cmHerdrSplitRight"
-    )
-    expect(split?.type).toBe("command")
-    if (split?.type === "command") expect(split.availability.enabled).toBe(false)
   })
 
   it("rename uses the in-app text dialog and cancel performs no IPC", async () => {
@@ -482,42 +405,4 @@ describe("Herdr context menu registry", () => {
       focus: true
     })
   })
-
-  it("fails closed for a WSL menu when only Native same-name capabilities exist", () => {
-    const capabilities = useHerdrStore.getState().capabilities
-    if (!capabilities) throw new Error("expected seeded Herdr capabilities")
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    useHerdrStore.setState((state) => ({
-      selectedSessionName: "default",
-      selectedRuntimeTarget: { kind: "native" },
-      sessions: [
-        ...state.sessions,
-        {
-          name: "default",
-          default: true,
-          running: true,
-          sessionDir: "/tmp/ubuntu-default",
-          socketPath: "/tmp/ubuntu-default.sock",
-          runtimeTarget: ubuntu
-        }
-      ],
-      capabilities: {
-        ...capabilities,
-        api: { ...capabilities.api, paneSplit: true, methods: ["pane.split"] }
-      }
-    }))
-    const pane = resolveContextMenuEntries({
-      kind: "herdrPane",
-      runtimeTarget: ubuntu,
-      sessionName: "default",
-      paneId: "p-ubuntu",
-      focusedPaneId: "p-other"
-    })
-    const split = pane.find(
-      (entry) => entry.type === "command" && entry.command.id === "cmHerdrSplitRight"
-    )
-    expect(split?.type).toBe("command")
-    if (split?.type === "command") expect(split.availability.enabled).toBe(false)
-  })
-
 })

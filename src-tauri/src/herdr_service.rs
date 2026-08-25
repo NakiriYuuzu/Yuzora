@@ -10,18 +10,16 @@ use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::herdr_limits::{
     bound_agent_text, bound_optional_json, bounded_ipc, ensure_ipc_bound, parse_herdr_cli_stdout,
     read_bounded_bytes, read_bounded_ndjson_line, validate_json_complexity,
-    validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH,
-    MAX_NDJSON_LINE_BYTES, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
-};
-use crate::herdr_runtime::{
-    HerdrRuntimeKey, HerdrRuntimeProviderRegistry, HerdrRuntimeTarget, WslControlPlan,
+    validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_AGENT_MANIFEST_COUNT,
+    MAX_LAYOUT_DEPTH, MAX_NDJSON_LINE_BYTES, MAX_SESSION_COUNT, MAX_STATE_LABELS,
+    MAX_WORKTREE_COUNT,
 };
 use crate::herdr_transport::{connect_local_stream, read_local_ndjson_line, write_local_all_until};
 use crate::process_kill;
@@ -33,18 +31,19 @@ pub type OnSubscriptionEvent =
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_SUBSCRIPTION_ID: AtomicU64 = AtomicU64::new(1);
+const BINARY_SOURCE_CONFIG_FILE: &str = "herdr-config-v1.json";
 #[cfg(not(test))]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
-// Full CI can schedule the fake WSL launcher behind many process tests. This
-// is only a functional-event allowance; protocol idle deadlines remain strict.
 #[cfg(test)]
-const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(15);
+const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const AGENT_READ_MIN_LINES: u32 = 20;
 const AGENT_READ_MAX_LINES: u32 = 500;
+const AGENT_START_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+const AGENT_START_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(not(test))]
 const HERDR_CLI_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(test)]
@@ -66,10 +65,6 @@ pub struct HerdrCapabilities {
     pub api: HerdrApiCapability,
     pub terminal: HerdrTerminalCapability,
     pub events: HerdrEventsCapability,
-    /// Optional transport health for non-local providers. Native local-socket
-    /// callers retain the historical shape by receiving `None`.
-    #[serde(default)]
-    pub transport: Option<HerdrTransportDiagnostics>,
 }
 
 /// App-global preference: PATH-installed vs Yuzora-managed resource binary.
@@ -168,9 +163,39 @@ pub struct HerdrAgentReadResult {
     pub too_large: bool,
 }
 
+/// One server-advertised Agent kind, enriched with advisory host PATH detection.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrAgentCatalogEntry {
+    pub agent: String,
+    pub source: String,
+    pub source_kind: String,
+    pub active_version: Option<String>,
+    pub warning: Option<String>,
+    pub detected_binary_path: Option<String>,
+    pub bypass_flags: Vec<String>,
+}
+
+/// Transactional result of `tab.create` followed by schema-gated `agent.start`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrAgentCreateResult {
+    pub name: String,
+    pub kind: String,
+    pub terminal_id: String,
+    pub pane_id: String,
+    pub tab_id: String,
+    pub workspace_id: String,
+    pub title: Option<String>,
+}
+
 /// Events delivered over the Tauri Channel for `herdr_events_subscribe`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum HerdrSubscriptionEvent {
     #[serde(rename = "subscribed")]
     Subscribed { subscription_id: String },
@@ -183,6 +208,8 @@ pub enum HerdrSubscriptionEvent {
         agent: Option<String>,
         display_agent: Option<String>,
         title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        execution_origin: Option<serde_json::Value>,
         state_labels: HashMap<String, String>,
     },
     #[serde(rename = "pane_exited")]
@@ -235,7 +262,7 @@ pub struct HerdrApiCapability {
     /// Public NDJSON socket methods we safely implement.
     pub snapshot: bool,
     pub ping: bool,
-    /// `tab.create` → root pane/terminal identity (public `tab_created`).
+    /// `tab.create` → root pane/terminal identity (protocol-19 `tab_created`).
     pub tab_create: bool,
     /// `workspace.focus { workspace_id }` for Space activation.
     pub workspace_focus: bool,
@@ -246,7 +273,7 @@ pub struct HerdrApiCapability {
     pub tab_rename: bool,
     pub tab_close: bool,
     pub tab_focus: bool,
-    /// Public `tab.move { tab_id, insert_index }`.
+    /// Protocol-19 `tab.move { tab_id, insert_index }`.
     pub tab_move: bool,
     pub pane_focus: bool,
     pub pane_rename: bool,
@@ -256,6 +283,10 @@ pub struct HerdrApiCapability {
     pub pane_close: bool,
     pub layout_export: bool,
     pub layout_set_split_ratio: bool,
+    /// Server-advertised Agent manifest catalog.
+    pub agent_manifests: bool,
+    /// Starts a validated manifest kind in a freshly-created pane.
+    pub agent_start: bool,
     /// Read-only `agent.get` (explicit pane/name target).
     pub agent_get: bool,
     /// Read-only `agent.read` (explicit pane/name target).
@@ -296,7 +327,7 @@ pub struct HerdrWorkspaceCreateResult {
     pub pane_id: Option<String>,
 }
 
-/// Public `WorktreeSourceInfo` (camelCase IPC).
+/// Protocol-19 `WorktreeSourceInfo` (camelCase IPC).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrWorktreeSourceInfo {
@@ -307,7 +338,7 @@ pub struct HerdrWorktreeSourceInfo {
     pub source_workspace_id: Option<String>,
 }
 
-/// Public `WorktreeInfo` (camelCase IPC).
+/// Protocol-19 `WorktreeInfo` (camelCase IPC).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrWorktreeInfo {
@@ -340,7 +371,7 @@ pub struct HerdrPaneIdentity {
     pub title: Option<String>,
 }
 
-/// `pane.split` direction (public `SplitDirection`).
+/// `pane.split` direction (protocol-19 `SplitDirection`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HerdrSplitDirection {
@@ -348,7 +379,7 @@ pub enum HerdrSplitDirection {
     Down,
 }
 
-/// `pane.zoom` mode (public `PaneZoomMode`).
+/// `pane.zoom` mode (protocol-19 `PaneZoomMode`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HerdrPaneZoomMode {
@@ -380,7 +411,7 @@ pub enum HerdrLayoutNode {
     },
 }
 
-/// Public `LayoutDescription` (camelCase IPC).
+/// Protocol-19 `LayoutDescription` (camelCase IPC).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrLayoutDescription {
@@ -411,37 +442,6 @@ pub struct HerdrEventsCapability {
     /// Availability of the long-lived local-socket event lane.
     pub status: HerdrEventsStatus,
     pub reason: Option<String>,
-}
-
-/// Bounded telemetry for a runtime-owned transport. It is diagnostic state,
-/// not a control surface: callers cannot configure socket paths or process
-/// ownership through this document.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HerdrTransportDiagnostics {
-    /// `wsl-stdio-proxy`, `wsl-cli-fallback`, or an implementation-specific
-    /// diagnostic transport name.
-    pub mode: String,
-    /// `available`, `degraded`, `reconnecting`, or `failed`.
-    pub state: String,
-    pub generation: Option<u64>,
-    pub pending_requests: u32,
-    pub event_listeners: u32,
-    /// Direct children owned by Yuzora for this RuntimeKey. This deliberately
-    /// excludes the Herdr server and its panes.
-    pub active_children: u32,
-    pub requests: u64,
-    pub responses: u64,
-    pub events_delivered: u64,
-    pub stale_events_dropped: u64,
-    /// Bounded local timings; paths, process IDs, and command arguments never
-    /// leave the backend through this diagnostic document.
-    pub cold_start_ms: Option<u64>,
-    pub last_request_ms: Option<u64>,
-    pub max_request_ms: u64,
-    pub last_event_dispatch_ms: Option<u64>,
-    pub max_event_dispatch_ms: u64,
-    pub failure: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -718,48 +718,31 @@ impl TerminalControlCommand {
 pub struct HerdrState(pub Arc<HerdrManager>);
 
 pub struct HerdrManager {
-    /// Opaque connector IDs remain the public control handle. Ownership is
-    /// recorded separately by RuntimeKey so a same-named WSL session can never
-    /// control/release a Native connector (or vice versa).
     sessions: Mutex<HashMap<String, Arc<ConnectorSession>>>,
-    connector_runtime_keys: Mutex<HashMap<String, HerdrRuntimeKey>>,
     event_subscriptions: Mutex<HashMap<String, Arc<EventSubscription>>>,
-    event_subscription_runtime_keys: Mutex<HashMap<String, HerdrRuntimeKey>>,
-    /// Long-lived `wsl.exe … herdr api proxy --stdio` children. They are
-    /// independent from the local-socket registry and only own Yuzora children.
-    wsl_proxy_subscriptions: Mutex<HashMap<String, Arc<WslProxySubscription>>>,
-    wsl_subscription_runtime_keys: Mutex<HashMap<String, HerdrRuntimeKey>>,
-    /// One serialized stdio proxy child per selected WSL runtime/session. Its
-    /// opaque request IDs are correlated by the reader; it is never shared
-    /// with a different RuntimeKey.
-    wsl_proxy_generations: Mutex<HashMap<HerdrRuntimeKey, Arc<WslProxyGeneration>>>,
-    /// Serializes generation creation. The RuntimeKey map still permits one
-    /// child per selected runtime/session, while this lock prevents concurrent
-    /// poll/reconnect callers from spawning a proxy storm before insertion.
-    wsl_proxy_generation_lock: Mutex<()>,
-    next_wsl_proxy_generation: AtomicU64,
-    /// Explicit probe result for each selected WSL runtime/session. A failed
-    /// proxy mutation never flips this plan to CLI in-place: only a later
-    /// capabilities re-probe may select a different control plane.
-    wsl_control_plans: Mutex<HashMap<HerdrRuntimeKey, WslControlPlan>>,
-    /// CLI topology commands are individual bounded children. Serialize them
-    /// per RuntimeKey so a slow one-shot command cannot reorder split/close
-    /// side effects from the same session.
-    wsl_cli_topology_locks: Mutex<HashMap<HerdrRuntimeKey, Arc<Mutex<()>>>>,
+    /// Optional override for tests / explicit binary selection.
+    binary_override: Mutex<Option<PathBuf>>,
+    /// Optional managed-resource override for tests of `default` source.
+    managed_binary_override: Mutex<Option<PathBuf>>,
     socket_override: Mutex<Option<PathBuf>>,
-    /// Host-runnable WSL connector fixture. Production always launches
-    /// `wsl.exe`; tests use a temporary argv-recording executable.
-    #[cfg(test)]
-    wsl_executable_override: Mutex<Option<PathBuf>>,
+    /// App data dir for binary-source preference persistence.
+    config_dir: Mutex<Option<PathBuf>>,
+    /// Tauri resource dir for Yuzora-managed default binary lookup.
+    resource_dir: Mutex<Option<PathBuf>>,
+    /// Preference loaded from disk / set by user (restart-required semantics).
+    configured_source: Mutex<HerdrBinarySource>,
+    /// Source actively used by this process (frozen after first configure).
+    active_source: Mutex<HerdrBinarySource>,
+    /// Diagnostic retained when the persisted preference cannot be trusted.
+    binary_source_config_error: Mutex<Option<String>>,
+    /// Serializes atomic preference replacement and matching in-memory updates.
+    binary_source_write_lock: Mutex<()>,
     /// Capability documents are expensive to discover because they spawn the
     /// selected CLI for status + schema. Fast paths cache them only while the
     /// named-session socket, server protocol, and selected binary fingerprint
     /// still match. Session list + `ping` remain authoritative on every call.
     capability_cache: Mutex<HashMap<String, CachedCapabilities>>,
     capability_probe_lock: Mutex<()>,
-    /// Dispatches Runtime Environment identity. WSL registration remains
-    /// fail-closed on non-Windows hosts and uses only its own transport.
-    runtime_providers: HerdrRuntimeProviderRegistry,
 }
 
 #[derive(Clone)]
@@ -787,83 +770,6 @@ struct EventSubscription {
     reader: Mutex<Option<JoinHandle<()>>>,
 }
 
-struct WslProxySubscription {
-    closed: Arc<AtomicBool>,
-    generation: Arc<WslProxyGeneration>,
-    request_id: String,
-}
-
-#[derive(Clone)]
-struct WslProxyEventListener {
-    subscription_id: String,
-    /// Dedicated bounded queue keeps a slow Tauri event channel from blocking
-    /// the proxy stdout reader or unboundedly retaining event data.
-    queue: mpsc::SyncSender<HerdrSubscriptionEvent>,
-    closed: Arc<AtomicBool>,
-}
-
-const MAX_WSL_PROXY_PENDING: usize = 64;
-const MAX_WSL_PROXY_EVENT_LISTENERS: usize = 32;
-const MAX_WSL_PROXY_EVENTS_PER_LISTENER: usize = 128;
-const WSL_PROXY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-/// Diagnostics are intentionally coarse and capped. They help identify a
-/// process storm without becoming a high-resolution activity trace.
-const MAX_WSL_DIAGNOSTIC_TIMING_MS: u64 = 60_000;
-type WslProxyPending = HashMap<String, mpsc::SyncSender<Result<serde_json::Value, String>>>;
-
-#[derive(Clone, Debug)]
-struct WslProxyTelemetry {
-    state: String,
-    requests: u64,
-    responses: u64,
-    events_delivered: u64,
-    stale_events_dropped: u64,
-    cold_start_ms: Option<u64>,
-    last_request_ms: Option<u64>,
-    max_request_ms: u64,
-    last_event_dispatch_ms: Option<u64>,
-    max_event_dispatch_ms: u64,
-    failure: Option<String>,
-}
-
-impl Default for WslProxyTelemetry {
-    fn default() -> Self {
-        Self {
-            state: "available".into(),
-            requests: 0,
-            responses: 0,
-            events_delivered: 0,
-            stale_events_dropped: 0,
-            cold_start_ms: None,
-            last_request_ms: None,
-            max_request_ms: 0,
-            last_event_dispatch_ms: None,
-            max_event_dispatch_ms: 0,
-            failure: None,
-        }
-    }
-}
-
-/// A long-lived, request-multiplexing stdio proxy. The reader owns response
-/// routing; requests only hold the writer lock while emitting one complete
-/// NDJSON line and wait on their own bounded channel.
-struct WslProxyGeneration {
-    generation: u64,
-    closed: Arc<AtomicBool>,
-    stdin: Mutex<Option<ChildStdin>>,
-    writer: Mutex<()>,
-    child: Mutex<Option<Child>>,
-    process_tree: Mutex<Option<process_kill::ProcessTreeGuard>>,
-    reader: Mutex<Option<JoinHandle<()>>>,
-    pending: Arc<Mutex<WslProxyPending>>,
-    event_listeners: Arc<Mutex<HashMap<String, WslProxyEventListener>>>,
-    failure: Arc<Mutex<Option<String>>>,
-    telemetry: Arc<Mutex<WslProxyTelemetry>>,
-    /// Keeps a fake executable alive for host-runnable process tests only.
-    #[cfg(test)]
-    fixture_dir: Mutex<Option<tempfile::TempDir>>,
-}
-
 impl Default for HerdrManager {
     fn default() -> Self {
         Self::new()
@@ -874,39 +780,36 @@ impl HerdrManager {
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
-            connector_runtime_keys: Mutex::new(HashMap::new()),
             event_subscriptions: Mutex::new(HashMap::new()),
-            event_subscription_runtime_keys: Mutex::new(HashMap::new()),
-            wsl_proxy_subscriptions: Mutex::new(HashMap::new()),
-            wsl_subscription_runtime_keys: Mutex::new(HashMap::new()),
-            wsl_proxy_generations: Mutex::new(HashMap::new()),
-            wsl_proxy_generation_lock: Mutex::new(()),
-            next_wsl_proxy_generation: AtomicU64::new(1),
-            wsl_control_plans: Mutex::new(HashMap::new()),
-            wsl_cli_topology_locks: Mutex::new(HashMap::new()),
+            binary_override: Mutex::new(None),
+            managed_binary_override: Mutex::new(None),
             socket_override: Mutex::new(None),
-            #[cfg(test)]
-            wsl_executable_override: Mutex::new(None),
+            config_dir: Mutex::new(None),
+            resource_dir: Mutex::new(None),
+            configured_source: Mutex::new(HerdrBinarySource::Global),
+            active_source: Mutex::new(HerdrBinarySource::Global),
+            binary_source_config_error: Mutex::new(None),
+            binary_source_write_lock: Mutex::new(()),
             capability_cache: Mutex::new(HashMap::new()),
             capability_probe_lock: Mutex::new(()),
-            runtime_providers: HerdrRuntimeProviderRegistry::new(),
         }
     }
 
-    /// Wire app-data / resource directories once during Tauri setup. The
-    /// Native provider owns binary-source lifecycle and preference persistence.
+    /// Wire app-data / resource directories once during Tauri setup.
     pub fn configure_paths(&self, config_dir: PathBuf, resource_dir: Option<PathBuf>) {
-        self.runtime_providers
-            .configure_native_binary_paths(config_dir, resource_dir);
+        *self.config_dir.lock().unwrap() = Some(config_dir.clone());
+        *self.resource_dir.lock().unwrap() = resource_dir;
+        let loaded = load_binary_source_preference(&config_dir);
+        *self.configured_source.lock().unwrap() = loaded.source;
+        *self.active_source.lock().unwrap() = loaded.source;
+        *self.binary_source_config_error.lock().unwrap() = loaded.error;
         self.capability_cache.lock().unwrap().clear();
     }
 
     #[cfg(test)]
     pub fn with_binary(binary: PathBuf) -> Self {
         let mgr = Self::new();
-        mgr.runtime_providers
-            .native_binary_source_for_test()
-            .set_binary_override_for_test(Some(binary));
+        *mgr.binary_override.lock().unwrap() = Some(binary);
         mgr
     }
 
@@ -916,116 +819,62 @@ impl HerdrManager {
     }
 
     #[cfg(test)]
-    pub fn set_wsl_executable_for_test(&self, executable: Option<PathBuf>) {
-        *self.wsl_executable_override.lock().unwrap() = executable;
-    }
-
-    fn wsl_executable(&self) -> PathBuf {
-        #[cfg(test)]
-        if let Some(executable) = self.wsl_executable_override.lock().unwrap().clone() {
-            return executable;
-        }
-        PathBuf::from("wsl.exe")
-    }
-
-    fn wsl_runtime_key(distro: &str, session_name: &str) -> Option<HerdrRuntimeKey> {
-        // The provider rejects non-canonical names before reaching this layer.
-        // Keep the ownership maps defensive too: a whitespace alias must never
-        // create a second proxy, connector, plan, or topology queue.
-        crate::herdr_runtime::wsl::validate_distro(distro).ok()?;
-        Some(HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: distro.to_string(),
-            },
-            session_name,
-        ))
-    }
-
-    pub(crate) fn wsl_control_plan(
-        &self,
-        distro: &str,
-        session_name: &str,
-    ) -> Option<WslControlPlan> {
-        let key = Self::wsl_runtime_key(distro, session_name)?;
-        self.wsl_control_plans.lock().unwrap().get(&key).cloned()
-    }
-
-    pub(crate) fn set_wsl_control_plan(
-        &self,
-        distro: &str,
-        session_name: &str,
-        plan: WslControlPlan,
-    ) {
-        let Some(key) = Self::wsl_runtime_key(distro, session_name) else {
-            return;
-        };
-        self.wsl_control_plans.lock().unwrap().insert(key, plan);
-    }
-
-    pub(crate) fn wsl_cli_topology_lock(
-        &self,
-        distro: &str,
-        session_name: &str,
-    ) -> Option<Arc<Mutex<()>>> {
-        let key = Self::wsl_runtime_key(distro, session_name)?;
-        let mut locks = self.wsl_cli_topology_locks.lock().unwrap();
-        Some(
-            locks
-                .entry(key)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone(),
-        )
-    }
-
-    pub(crate) fn require_wsl_terminal_control_plan(&self, session_id: &str) -> Result<(), String> {
-        let runtime_key = self
-            .connector_runtime_keys
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| format!("no herdr terminal session {session_id}"))?;
-        if !matches!(runtime_key.runtime_target, HerdrRuntimeTarget::Wsl { .. }) {
-            return Err(format!(
-                "Herdr terminal session {session_id} does not belong to a WSL runtime"
-            ));
-        }
-        match self
-            .wsl_control_plans
-            .lock()
-            .unwrap()
-            .get(&runtime_key)
-            .cloned()
-        {
-            Some(WslControlPlan::Proxy | WslControlPlan::OfficialCliV080 { .. }) => Ok(()),
-            Some(WslControlPlan::ReadOnly { reason }) => Err(format!(
-                "WSL terminal control unavailable for this runtime: {reason}"
-            )),
-            None => Err("WSL terminal control plan has not been verified".into()),
-        }
-    }
-
-    #[cfg(test)]
     pub fn set_managed_binary_override(&self, path: Option<PathBuf>) {
-        self.runtime_providers
-            .native_binary_source_for_test()
-            .set_managed_binary_override_for_test(path);
+        *self.managed_binary_override.lock().unwrap() = path;
     }
 
     #[cfg(test)]
     pub fn set_config_dir_for_test(&self, dir: PathBuf) {
-        self.runtime_providers
-            .native_binary_source_for_test()
-            .set_config_dir_for_test(dir);
+        *self.config_dir.lock().unwrap() = Some(dir.clone());
+        let loaded = load_binary_source_preference(&dir);
+        *self.configured_source.lock().unwrap() = loaded.source;
+        *self.active_source.lock().unwrap() = loaded.source;
+        *self.binary_source_config_error.lock().unwrap() = loaded.error;
         self.capability_cache.lock().unwrap().clear();
     }
 
     pub fn binary_source_info(&self) -> HerdrBinarySourceInfo {
-        self.runtime_providers.native_binary_source_info()
+        let configured = *self.configured_source.lock().unwrap();
+        let active = *self.active_source.lock().unwrap();
+        let (active_path, resolved, active_reason) = self.resolve_binary_selection(active);
+        let (configured_path, _configured_resolved, configured_reason) = if configured == active {
+            (active_path.clone(), resolved, active_reason.clone())
+        } else {
+            self.resolve_binary_selection(configured)
+        };
+        let (version, protocol) = active_path
+            .as_deref()
+            .map(probe_binary_identity)
+            .unwrap_or((None, None));
+        let (configured_version, configured_protocol) = if configured == active {
+            (version.clone(), protocol)
+        } else {
+            configured_path
+                .as_deref()
+                .map(probe_binary_identity)
+                .unwrap_or((None, None))
+        };
+        HerdrBinarySourceInfo {
+            configured,
+            active,
+            resolved,
+            available: active_path.is_some(),
+            path: active_path.map(|p| p.to_string_lossy().into_owned()),
+            reason: active_reason,
+            version,
+            protocol,
+            configured_available: configured_path.is_some(),
+            configured_path: configured_path.map(|p| p.to_string_lossy().into_owned()),
+            configured_reason,
+            configured_version,
+            configured_protocol,
+            configuration_error: self.binary_source_config_error.lock().unwrap().clone(),
+            restart_required: configured != active,
+        }
     }
 
     pub fn get_binary_source(&self) -> HerdrBinarySource {
-        self.runtime_providers.native_configured_binary_source()
+        *self.configured_source.lock().unwrap()
     }
 
     /// Persist preference. Active process keeps its current binary until restart.
@@ -1033,182 +882,108 @@ impl HerdrManager {
         &self,
         source: HerdrBinarySource,
     ) -> Result<HerdrBinarySourceSetResult, String> {
-        self.runtime_providers.set_native_binary_source(source)
+        let config_dir = self
+            .config_dir
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "herdr config directory is not configured".to_string())?;
+        let _write_guard = self.binary_source_write_lock.lock().unwrap();
+        save_binary_source_preference(&config_dir, source)?;
+        *self.configured_source.lock().unwrap() = source;
+        *self.binary_source_config_error.lock().unwrap() = None;
+        let active = *self.active_source.lock().unwrap();
+        Ok(HerdrBinarySourceSetResult {
+            configured: source,
+            restart_required: source != active,
+        })
     }
 
     pub fn resolve_binary(&self) -> Option<PathBuf> {
-        self.runtime_providers.resolve_native_binary()
+        let active = *self.active_source.lock().unwrap();
+        self.resolve_binary_selection(active).0
     }
 
-    #[cfg(test)]
+    /// Resolve a user's source preference into the executable used by this
+    /// process. Global is the automatic policy: prefer PATH, then use the
+    /// bundled Yuzora-managed binary. Explicit managed selection stays strict.
+    fn resolve_binary_selection(
+        &self,
+        source: HerdrBinarySource,
+    ) -> (Option<PathBuf>, Option<HerdrBinarySource>, Option<String>) {
+        let has_explicit_override = self.binary_override.lock().unwrap().is_some();
+        let primary = self.resolve_binary_for_source(source);
+        let managed =
+            if source == HerdrBinarySource::Global && primary.0.is_none() && !has_explicit_override
+            {
+                self.resolve_binary_for_source(HerdrBinarySource::Default)
+            } else {
+                (None, None)
+            };
+        select_binary_resolution(source, has_explicit_override, primary, managed)
+    }
+
+    /// Strict lookup for one source. Automatic fallback belongs only in
+    /// `resolve_binary_selection`, keeping explicit managed diagnostics honest.
     fn resolve_binary_for_source(
         &self,
         source: HerdrBinarySource,
     ) -> (Option<PathBuf>, Option<String>) {
-        self.runtime_providers
-            .native_binary_source_for_test()
-            .resolve_for_source(source)
+        if let Some(path) = self.binary_override.lock().unwrap().clone() {
+            if is_executable(&path) {
+                return (Some(path), None);
+            }
+            return (
+                None,
+                Some(format!(
+                    "herdr binary override is not executable: {}",
+                    path.display()
+                )),
+            );
+        }
+        match source {
+            HerdrBinarySource::Global => match which_binary("herdr").map(PathBuf::from) {
+                Some(path) => (Some(path), None),
+                None => (None, Some("Herdr was not found on PATH".into())),
+            },
+            HerdrBinarySource::Default => {
+                if let Some(path) = self.managed_binary_override.lock().unwrap().clone() {
+                    if is_executable(&path) {
+                        return (Some(path), None);
+                    }
+                    return (
+                        None,
+                        Some("Yuzora-managed Herdr override is not an executable file".into()),
+                    );
+                }
+                let Some(resource_dir) = self.resource_dir.lock().unwrap().clone() else {
+                    return (
+                        None,
+                        Some("This build does not include a managed Herdr binary".into()),
+                    );
+                };
+                let candidate = managed_binary_path(&resource_dir);
+                if is_executable(&candidate) {
+                    (Some(candidate), None)
+                } else {
+                    (
+                        None,
+                        Some(format!(
+                            "Yuzora-managed Herdr binary is unavailable at {}",
+                            candidate.display()
+                        )),
+                    )
+                }
+            }
+        }
     }
 
     pub fn capabilities(&self) -> HerdrCapabilities {
         self.capabilities_for_session(None)
     }
 
-    /// IPC omission is legacy-compatible Native. Every non-Native target must
-    /// resolve through its own registered provider; it never falls back to Native.
-    fn resolved_runtime_target(runtime_target: Option<&HerdrRuntimeTarget>) -> HerdrRuntimeTarget {
-        runtime_target
-            .cloned()
-            .unwrap_or(HerdrRuntimeTarget::Native)
-    }
-
-    pub fn require_runtime_target(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-    ) -> Result<(), String> {
-        self.runtime_providers
-            .require(&Self::resolved_runtime_target(runtime_target))
-    }
-
-    /// Provider-owned runtime operations. The facade keeps typed IPC DTO and
-    /// schema contracts; Native socket/connector work is delegated to its adapter.
-    pub fn provider_list_sessions(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-    ) -> Result<Vec<HerdrNamedSession>, String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers.list_sessions(&target, self)
-    }
-
-    pub fn provider_capabilities(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_name: Option<&str>,
-    ) -> Result<HerdrCapabilities, String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .capabilities(&target, self, session_name)
-    }
-
-    pub fn provider_snapshot(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_name: Option<&str>,
-    ) -> Result<HerdrSnapshotResult, String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers.snapshot(&target, self, session_name)
-    }
-
-    /// Typed facade entry for operations shared by Native and WSL providers.
-    /// Providers own transport; this facade retains method/schema capability
-    /// gates and response parsers at the public Yuzora boundary.
-    pub fn provider_api_request(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_name: Option<&str>,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .request(&target, self, session_name, method, params)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn provider_open_terminal(
-        self: &Arc<Self>,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        target: String,
-        mode: HerdrTerminalMode,
-        takeover: bool,
-        cols: u16,
-        rows: u16,
-        session_name: Option<String>,
-        on_event: OnTerminalEvent,
-    ) -> Result<HerdrTerminalOpenResult, String> {
-        let runtime_target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers.open_terminal(
-            &runtime_target,
-            self,
-            target,
-            mode,
-            takeover,
-            cols,
-            rows,
-            session_name,
-            on_event,
-        )
-    }
-
-    pub fn provider_terminal_input(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_id: &str,
-        text: Option<String>,
-        bytes_base64: Option<String>,
-    ) -> Result<(), String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .terminal_input(&target, self, session_id, text, bytes_base64)
-    }
-
-    pub fn provider_terminal_resize(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .terminal_resize(&target, self, session_id, cols, rows)
-    }
-
-    pub fn provider_terminal_scroll(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_id: &str,
-        direction: HerdrScrollDirection,
-        lines: u32,
-    ) -> Result<(), String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .terminal_scroll(&target, self, session_id, direction, lines)
-    }
-
-    pub fn provider_terminal_release(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_id: &str,
-    ) -> Result<(), String> {
-        let target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .terminal_release(&target, self, session_id)
-    }
-
-    pub fn provider_events_subscribe(
-        self: &Arc<Self>,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        session_name: Option<String>,
-        on_event: OnSubscriptionEvent,
-    ) -> Result<String, String> {
-        let runtime_target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .subscribe(&runtime_target, self, session_name, on_event)
-    }
-
-    pub fn provider_events_release(
-        &self,
-        runtime_target: Option<&HerdrRuntimeTarget>,
-        subscription_id: &str,
-    ) -> Result<(), String> {
-        let runtime_target = Self::resolved_runtime_target(runtime_target);
-        self.runtime_providers
-            .release_subscription(&runtime_target, self, subscription_id)
-    }
-
     fn capability_cache_key(session_name: Option<&str>) -> String {
-        HerdrRuntimeKey::new(HerdrRuntimeTarget::Native, session_name.unwrap_or("live")).cache_key()
+        session_name.unwrap_or("live").to_string()
     }
 
     fn active_binary_fingerprint(&self) -> Option<String> {
@@ -1381,6 +1156,8 @@ impl HerdrManager {
                 pane_close: false,
                 layout_export: false,
                 layout_set_split_ratio: false,
+                agent_manifests: false,
+                agent_start: false,
                 agent_get: false,
                 agent_read: false,
                 events_subscribe: false,
@@ -1405,7 +1182,6 @@ impl HerdrManager {
                 status: HerdrEventsStatus::Unavailable,
                 reason: Some("herdr events.subscribe unavailable".into()),
             },
-            transport: None,
         };
 
         let Some(binary) = binary_path else {
@@ -1640,7 +1416,6 @@ impl HerdrManager {
     }
 
     /// Create a new tab (and root pane/terminal) via public `tab.create`.
-    /// Create a new tab (and root pane/terminal) via public `tab.create`.
     /// Convenience wrapper used by the existing terminal-create IPC surface.
     pub fn create_terminal(
         &self,
@@ -1651,7 +1426,169 @@ impl HerdrManager {
         self.tab_create(session_name, workspace_id, title, None, true)
     }
 
-    /// Public `tab.create` with full documented params.
+    /// Server-advertised Agent kinds, enriched with advisory PATH detection.
+    /// PATH misses do not hide or disable a manifest: the selected Herdr server
+    /// remains authoritative and validates the actual launch on `agent.start`.
+    pub fn agent_catalog(
+        &self,
+        session_name: Option<&str>,
+    ) -> Result<Vec<HerdrAgentCatalogEntry>, String> {
+        let response = self.call_checked_api(
+            session_name,
+            |api| api.agent_manifests,
+            "server.agent_manifests",
+            serde_json::json!({}),
+            "herdr server.agent_manifests unavailable",
+        )?;
+        bounded_ipc(parse_agent_manifest_response(response)?)
+    }
+
+    /// Transactional New Agent flow adapted from herdrm: create a fresh tab,
+    /// start one validated manifest kind, retry only fresh-shell/name races,
+    /// and close only the tab created by this failed transaction.
+    pub fn agent_create(
+        &self,
+        session_name: Option<&str>,
+        workspace_id: String,
+        kind: String,
+        bypass_permissions: bool,
+    ) -> Result<HerdrAgentCreateResult, String> {
+        if workspace_id.trim().is_empty() {
+            return Err("workspace_id is required".into());
+        }
+        let caps = self.cached_capabilities_for_session(session_name);
+        if !caps.api.tab_close {
+            return Err(caps.api.reason.unwrap_or_else(|| {
+                "herdr tab.close is required for failed New Agent rollback".into()
+            }));
+        }
+        let kind = validate_agent_kind(&kind)?.to_string();
+        let catalog = self.agent_catalog(session_name)?;
+        if !catalog.iter().any(|entry| entry.agent == kind) {
+            return Err(format!("herdr agent manifest not found: {kind}"));
+        }
+
+        let created = self.tab_create(
+            session_name,
+            Some(workspace_id),
+            Some(kind.clone()),
+            None,
+            true,
+        )?;
+        let args = if bypass_permissions {
+            agent_bypass_flags(&kind)
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        match self.start_agent_in_fresh_pane(session_name, &created, &kind, &args) {
+            Ok(name) => Ok(HerdrAgentCreateResult {
+                name,
+                kind,
+                terminal_id: created.terminal_id,
+                pane_id: created.pane_id,
+                tab_id: created.tab_id,
+                workspace_id: created.workspace_id,
+                title: created.title,
+            }),
+            Err(error) => {
+                let cleanup = self.tab_close(session_name, created.tab_id);
+                Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup_error) => {
+                        format!("{error}; failed to close the newly-created tab: {cleanup_error}")
+                    }
+                })
+            }
+        }
+    }
+
+    fn start_agent_in_fresh_pane(
+        &self,
+        session_name: Option<&str>,
+        created: &HerdrTerminalCreateResult,
+        kind: &str,
+        args: &[String],
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + AGENT_START_RETRY_TIMEOUT;
+        let mut name = kind.to_string();
+        let mut retried_name = false;
+        loop {
+            let result = self.call_checked_api(
+                session_name,
+                |api| api.agent_start,
+                "agent.start",
+                serde_json::json!({
+                    "name": name,
+                    "kind": kind,
+                    "pane_id": created.pane_id,
+                    "args": args,
+                }),
+                "herdr agent.start unavailable",
+            );
+            match result {
+                Ok(response) => {
+                    parse_agent_started_response(response, &created.pane_id)?;
+                    return Ok(name);
+                }
+                Err(error) if error.starts_with("agent_pane_busy:") => {
+                    if Instant::now() >= deadline
+                        || !self.created_pane_shell_is_initializing(session_name, created)
+                        || Instant::now() >= deadline
+                    {
+                        return Err(error);
+                    }
+                    std::thread::sleep(AGENT_START_RETRY_INTERVAL);
+                }
+                Err(error) if error.starts_with("agent_name_taken:") && !retried_name => {
+                    retried_name = true;
+                    let suffix = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed) & 0xffff;
+                    name = format!("{kind}-{suffix:04x}");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn created_pane_shell_is_initializing(
+        &self,
+        session_name: Option<&str>,
+        created: &HerdrTerminalCreateResult,
+    ) -> bool {
+        let pane = self.call_checked_api(
+            session_name,
+            |api| api.methods.iter().any(|method| method == "pane.get"),
+            "pane.get",
+            serde_json::json!({ "pane_id": created.pane_id }),
+            "herdr pane.get unavailable",
+        );
+        let Ok(pane) = pane else {
+            return false;
+        };
+        if !pane_get_matches_created_terminal(&pane, created) {
+            return false;
+        }
+
+        let process_info = self.call_checked_api(
+            session_name,
+            |api| {
+                api.methods
+                    .iter()
+                    .any(|method| method == "pane.process_info")
+            },
+            "pane.process_info",
+            serde_json::json!({ "pane_id": created.pane_id }),
+            "herdr pane.process_info unavailable",
+        );
+        process_info.ok().is_some_and(|response| {
+            pane_process_info_shows_shell_initialization(&response, &created.pane_id)
+        })
+    }
+
+    /// Public `tab.create` with full protocol-19 params.
     pub fn tab_create(
         &self,
         session_name: Option<&str>,
@@ -1739,7 +1676,7 @@ impl HerdrManager {
     }
 
     /// Public `workspace.close { workspace_id }` (destructive; confirm in UI).
-    /// Read-only public `worktree.list` against the selected running session.
+    /// Read-only protocol-19 `worktree.list` against the selected running session.
     pub fn worktree_list(
         &self,
         session_name: Option<&str>,
@@ -2297,10 +2234,6 @@ impl HerdrManager {
             .lock()
             .unwrap()
             .insert(subscription_id.clone(), Arc::clone(&subscription));
-        self.event_subscription_runtime_keys.lock().unwrap().insert(
-            subscription_id.clone(),
-            HerdrRuntimeKey::new(HerdrRuntimeTarget::Native, session.name.clone()),
-        );
         if let Err(error) = emit_subscription_event(
             &on_event,
             HerdrSubscriptionEvent::Subscribed {
@@ -2312,19 +2245,11 @@ impl HerdrManager {
                 .lock()
                 .unwrap()
                 .remove(&subscription_id);
-            self.event_subscription_runtime_keys
-                .lock()
-                .unwrap()
-                .remove(&subscription_id);
             release_event_subscription(&subscription);
             return Err(error);
         }
         if start_tx.send(()).is_err() {
             self.event_subscriptions
-                .lock()
-                .unwrap()
-                .remove(&subscription_id);
-            self.event_subscription_runtime_keys
                 .lock()
                 .unwrap()
                 .remove(&subscription_id);
@@ -2340,578 +2265,13 @@ impl HerdrManager {
             .lock()
             .unwrap()
             .remove(subscription_id);
-        self.event_subscription_runtime_keys
-            .lock()
-            .unwrap()
-            .remove(subscription_id);
         if let Some(subscription) = subscription {
             release_event_subscription(&subscription);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn events_subscribe_for_runtime(
-        self: &Arc<Self>,
-        runtime_target: &HerdrRuntimeTarget,
-        session_name: Option<String>,
-        on_event: OnSubscriptionEvent,
-    ) -> Result<String, String> {
-        if !matches!(runtime_target, HerdrRuntimeTarget::Native) {
-            return Err("native events.subscribe requires Native runtime".into());
-        }
-        self.events_subscribe(session_name, on_event)
-    }
-
-    pub(crate) fn events_release_for_runtime(
-        &self,
-        runtime_target: &HerdrRuntimeTarget,
-        subscription_id: &str,
-    ) -> Result<(), String> {
-        let actual = self
-            .event_subscription_runtime_keys
-            .lock()
-            .unwrap()
-            .get(subscription_id)
-            .cloned();
-        match actual {
-            Some(key) if key.runtime_target == *runtime_target => {}
-            Some(_) => {
-                return Err(format!(
-                    "Herdr event subscription {subscription_id} belongs to another runtime"
-                ));
-            }
-            // A stream can close before the frontend consumes the final
-            // disconnect. Same-runtime release remains idempotent.
-            None => return Ok(()),
-        }
-        let subscription = self
-            .event_subscriptions
-            .lock()
-            .unwrap()
-            .remove(subscription_id);
-        self.event_subscription_runtime_keys
-            .lock()
-            .unwrap()
-            .remove(subscription_id);
-        if let Some(subscription) = subscription {
-            release_event_subscription(&subscription);
-        }
-        Ok(())
-    }
-
-    /// Subscribe through the same long-lived stdio proxy generation used by
-    /// typed requests. The public proxy identifies subscription events by the
-    /// original request ID; Yuzora translates only that outer correlation into
-    /// its opaque subscription ID and leaves the nested public event unchanged.
-    pub(crate) fn wsl_events_subscribe(
-        self: &Arc<Self>,
-        distro: &str,
-        session_name: Option<String>,
-        on_event: OnSubscriptionEvent,
-    ) -> Result<String, String> {
-        let named =
-            crate::herdr_runtime::wsl::resolve_named_session(distro, session_name.as_deref())?;
-        if !named.running {
-            return Err(format!(
-                "herdr session '{}' is not running in WSL distribution {distro:?}",
-                named.name
-            ));
-        }
-        let caps = crate::herdr_runtime::wsl::capabilities(distro, Some(&named.name), self);
-        if !caps.api.events_subscribe || caps.events.status != HerdrEventsStatus::Available {
-            return Err(caps
-                .events
-                .reason
-                .or(caps.api.reason)
-                .unwrap_or_else(|| "WSL events.subscribe unavailable".into()));
-        }
-        let runtime_key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: distro.to_string(),
-            },
-            named.name.clone(),
-        );
-        let generation = self.ensure_wsl_proxy_generation(&runtime_key)?;
-        let request_id = format!(
-            "yuzora:wsl:sub:{}:{}",
-            generation.generation,
-            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let subscription_id = format!(
-            "herdr-wsl-sub-{}",
-            NEXT_SUBSCRIPTION_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let subscription_closed = Arc::new(AtomicBool::new(false));
-        let (event_tx, event_rx) = mpsc::sync_channel(MAX_WSL_PROXY_EVENTS_PER_LISTENER);
-        {
-            let mut listeners = generation.event_listeners.lock().unwrap();
-            if listeners.len() >= MAX_WSL_PROXY_EVENT_LISTENERS {
-                return Err("WSL proxy event subscription limit exceeded".into());
-            }
-            listeners.insert(
-                request_id.clone(),
-                WslProxyEventListener {
-                    subscription_id: subscription_id.clone(),
-                    queue: event_tx,
-                    closed: Arc::clone(&subscription_closed),
-                },
-            );
-        }
-        spawn_wsl_proxy_event_worker(
-            event_rx,
-            Arc::clone(&subscription_closed),
-            Arc::clone(&on_event),
-        );
-        let response = Self::wsl_proxy_request_with_id(
-            &generation,
-            request_id.clone(),
-            "events.subscribe",
-            serde_json::json!({
-                "subscriptions": [
-                    { "type": "pane.agent_status_changed" },
-                    { "type": "pane.exited" },
-                    { "type": "worktree.created" },
-                    { "type": "worktree.opened" },
-                    { "type": "worktree.removed" },
-                    { "type": "tab.created" },
-                    { "type": "tab.closed" },
-                    { "type": "tab.moved" },
-                    { "type": "workspace.created" },
-                    { "type": "workspace.closed" },
-                    { "type": "workspace.moved" },
-                    { "type": "workspace.reordered" }
-                ]
-            }),
-        );
-        let started = response
-            .as_ref()
-            .ok()
-            .and_then(|value| value.get("result"))
-            .and_then(|value| value.get("type"))
-            .and_then(serde_json::Value::as_str)
-            == Some("subscription_started");
-        if !started {
-            generation
-                .event_listeners
-                .lock()
-                .unwrap()
-                .remove(&request_id);
-            return Err(match response {
-                Err(error) => error,
-                Ok(value) => value
-                    .get("error")
-                    .map(|error| {
-                        let code = error
-                            .get("code")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("error");
-                        let message = error
-                            .get("message")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("unknown error");
-                        format!("{code}: {message}")
-                    })
-                    .unwrap_or_else(|| {
-                        "WSL events.subscribe did not acknowledge subscription_started".into()
-                    }),
-            });
-        }
-        let subscription = Arc::new(WslProxySubscription {
-            closed: subscription_closed,
-            generation: Arc::clone(&generation),
-            request_id,
-        });
-        self.wsl_proxy_subscriptions
-            .lock()
-            .unwrap()
-            .insert(subscription_id.clone(), Arc::clone(&subscription));
-        self.wsl_subscription_runtime_keys
-            .lock()
-            .unwrap()
-            .insert(subscription_id.clone(), runtime_key);
-        if let Err(error) = emit_subscription_event(
-            &on_event,
-            HerdrSubscriptionEvent::Subscribed {
-                subscription_id: subscription_id.clone(),
-            },
-        ) {
-            self.wsl_proxy_subscriptions
-                .lock()
-                .unwrap()
-                .remove(&subscription_id);
-            self.wsl_subscription_runtime_keys
-                .lock()
-                .unwrap()
-                .remove(&subscription_id);
-            release_wsl_proxy_subscription(&subscription);
-            return Err(error);
-        }
-        Ok(subscription_id)
-    }
-
-    /// Send one typed public API request over the one long-lived stdio proxy
-    /// for this RuntimeKey. The proxy generation never falls back to Native;
-    /// EOF/parse failures fail every pending call and force a fresh generation
-    /// on the next request.
-    pub(crate) fn wsl_proxy_request(
-        &self,
-        distro: &str,
-        session_name: &str,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        crate::herdr_runtime::wsl::validate_distro(distro)?;
-        let runtime_key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: distro.to_string(),
-            },
-            session_name.to_string(),
-        );
-        let generation = self.ensure_wsl_proxy_generation(&runtime_key)?;
-        let request_id = format!(
-            "yuzora:wsl:{}:{}",
-            generation.generation,
-            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let response = Self::wsl_proxy_request_with_id(&generation, request_id, method, params)?;
-        if let Some(error) = response.get("error") {
-            let code = error
-                .get("code")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("error");
-            let message = error
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown error");
-            return Err(format!("{code}: {message}"));
-        }
-        Ok(response)
-    }
-
-    /// Read-only telemetry for Settings and recovery decisions. It exposes
-    /// neither a socket path nor a process handle, so it cannot be used to
-    /// control the WSL runtime.
-    pub(crate) fn wsl_proxy_diagnostics(
-        &self,
-        distro: &str,
-        session_name: &str,
-    ) -> HerdrTransportDiagnostics {
-        let runtime_key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: distro.to_string(),
-            },
-            session_name.to_string(),
-        );
-        let generation = self
-            .wsl_proxy_generations
-            .lock()
-            .unwrap()
-            .get(&runtime_key)
-            .cloned();
-        let Some(generation) = generation else {
-            return HerdrTransportDiagnostics {
-                mode: "wsl-cli-fallback".into(),
-                state: "degraded".into(),
-                generation: None,
-                pending_requests: 0,
-                event_listeners: 0,
-                active_children: 0,
-                requests: 0,
-                responses: 0,
-                events_delivered: 0,
-                stale_events_dropped: 0,
-                cold_start_ms: None,
-                last_request_ms: None,
-                max_request_ms: 0,
-                last_event_dispatch_ms: None,
-                max_event_dispatch_ms: 0,
-                failure: None,
-            };
-        };
-        let telemetry = generation.telemetry.lock().unwrap().clone();
-        let pending_requests = generation.pending.lock().unwrap().len() as u32;
-        let event_listeners = generation.event_listeners.lock().unwrap().len() as u32;
-        let active_children = self.active_wsl_children_for_runtime(&runtime_key, &generation);
-        let failure = generation
-            .failure
-            .lock()
-            .unwrap()
-            .clone()
-            .or(telemetry.failure);
-        HerdrTransportDiagnostics {
-            mode: "wsl-stdio-proxy".into(),
-            state: if generation.closed.load(Ordering::SeqCst) {
-                "failed".into()
-            } else {
-                telemetry.state
-            },
-            generation: Some(generation.generation),
-            pending_requests,
-            event_listeners,
-            active_children,
-            requests: telemetry.requests,
-            responses: telemetry.responses,
-            events_delivered: telemetry.events_delivered,
-            stale_events_dropped: telemetry.stale_events_dropped,
-            cold_start_ms: telemetry.cold_start_ms,
-            last_request_ms: telemetry.last_request_ms,
-            max_request_ms: telemetry.max_request_ms,
-            last_event_dispatch_ms: telemetry.last_event_dispatch_ms,
-            max_event_dispatch_ms: telemetry.max_event_dispatch_ms,
-            failure,
-        }
-    }
-
-    fn active_wsl_children_for_runtime(
-        &self,
-        runtime_key: &HerdrRuntimeKey,
-        generation: &WslProxyGeneration,
-    ) -> u32 {
-        let proxy = u32::from(
-            !generation.closed.load(Ordering::SeqCst) && generation.child.lock().unwrap().is_some(),
-        );
-        let connectors = self
-            .connector_runtime_keys
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|owner| *owner == runtime_key)
-            .count()
-            .min(u32::MAX as usize) as u32;
-        proxy.saturating_add(connectors)
-    }
-
-    fn wsl_proxy_request_with_id(
-        generation: &Arc<WslProxyGeneration>,
-        request_id: String,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        Self::wsl_proxy_request_with_id_timeout(
-            generation,
-            request_id,
-            method,
-            params,
-            WSL_PROXY_REQUEST_TIMEOUT,
-        )
-    }
-
-    fn wsl_proxy_request_with_id_timeout(
-        generation: &Arc<WslProxyGeneration>,
-        request_id: String,
-        method: &str,
-        params: serde_json::Value,
-        timeout: Duration,
-    ) -> Result<serde_json::Value, String> {
-        let started = Instant::now();
-        let request = serde_json::json!({
-            "id": request_id,
-            "method": method,
-            "params": params,
-        });
-        let mut line = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
-        if line.len() >= MAX_NDJSON_LINE_BYTES {
-            return Err("WSL proxy request exceeds the NDJSON size limit".into());
-        }
-        line.push(b'\n');
-        let (tx, rx) = mpsc::sync_channel(1);
-        {
-            let mut pending = generation.pending.lock().unwrap();
-            if generation.closed.load(Ordering::SeqCst) {
-                return Err(generation_failure(
-                    generation,
-                    "WSL proxy generation is closed",
-                ));
-            }
-            if pending.len() >= MAX_WSL_PROXY_PENDING {
-                return Err("WSL proxy pending request limit exceeded".into());
-            }
-            if pending.insert(request_id.clone(), tx).is_some() {
-                return Err("WSL proxy generated a duplicate request id".into());
-            }
-        }
-        generation.telemetry.lock().unwrap().requests += 1;
-        let write_result = {
-            let _writer = generation.writer.lock().unwrap();
-            let mut stdin = generation.stdin.lock().unwrap();
-            let stdin = stdin
-                .as_mut()
-                .ok_or_else(|| generation_failure(generation, "WSL proxy stdin is closed"));
-            stdin.and_then(|stdin| {
-                stdin
-                    .write_all(&line)
-                    .and_then(|()| stdin.flush())
-                    .map_err(|error| format!("write WSL proxy request failed: {error}"))
-            })
-        };
-        if let Err(error) = write_result {
-            generation.pending.lock().unwrap().remove(&request_id);
-            fail_wsl_proxy_generation(generation, error.clone());
-            return Err(error);
-        }
-        let result = match rx.recv_timeout(timeout) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                generation.pending.lock().unwrap().remove(&request_id);
-                let reason = "WSL proxy request timed out".to_string();
-                fail_wsl_proxy_generation(generation, reason.clone());
-                let _ = release_wsl_proxy_generation(generation);
-                Err(reason)
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(generation_failure(
-                generation,
-                "WSL proxy response channel closed",
-            )),
-        };
-        let elapsed = bounded_diagnostic_millis(started.elapsed());
-        let mut telemetry = generation.telemetry.lock().unwrap();
-        telemetry.last_request_ms = Some(elapsed);
-        telemetry.max_request_ms = telemetry.max_request_ms.max(elapsed);
-        drop(telemetry);
-        result
-    }
-
-    fn ensure_wsl_proxy_generation(
-        &self,
-        runtime_key: &HerdrRuntimeKey,
-    ) -> Result<Arc<WslProxyGeneration>, String> {
-        let _generation_lock = self.wsl_proxy_generation_lock.lock().unwrap();
-        if let Some(existing) = self
-            .wsl_proxy_generations
-            .lock()
-            .unwrap()
-            .get(runtime_key)
-            .cloned()
-            .filter(|generation| !generation.closed.load(Ordering::SeqCst))
-        {
-            return Ok(existing);
-        }
-        let stale = self
-            .wsl_proxy_generations
-            .lock()
-            .unwrap()
-            .remove(runtime_key);
-        if let Some(stale) = stale {
-            let _ = release_wsl_proxy_generation(&stale);
-        }
-        let HerdrRuntimeTarget::Wsl { distro } = &runtime_key.runtime_target else {
-            return Err("WSL proxy generation requires a WSL runtime target".into());
-        };
-        let cold_start = Instant::now();
-        let argv = crate::herdr_runtime::wsl::wsl_exec_args(
-            distro,
-            Some(&runtime_key.session_name),
-            &["api", "proxy", "--stdio"],
-        )?;
-        let mut command = Command::new(self.wsl_executable());
-        command
-            .args(argv)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        process_kill::configure_background_process(&mut command);
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("spawn WSL Herdr API proxy failed: {error}"))?;
-        let mut process_tree = process_kill::attach_process_tree(&mut child)
-            .map_err(|error| format!("contain WSL Herdr API proxy failed: {error}"))?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            let _ = process_kill::terminate_process_tree(&mut child, &mut process_tree);
-            "WSL Herdr API proxy has no stdin".to_string()
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            let _ = process_kill::terminate_process_tree(&mut child, &mut process_tree);
-            "WSL Herdr API proxy has no stdout".to_string()
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            let _ = process_kill::terminate_process_tree(&mut child, &mut process_tree);
-            "WSL Herdr API proxy has no stderr".to_string()
-        })?;
-        let generation = Arc::new(WslProxyGeneration {
-            generation: self
-                .next_wsl_proxy_generation
-                .fetch_add(1, Ordering::Relaxed),
-            closed: Arc::new(AtomicBool::new(false)),
-            stdin: Mutex::new(Some(stdin)),
-            writer: Mutex::new(()),
-            child: Mutex::new(Some(child)),
-            process_tree: Mutex::new(Some(process_tree)),
-            reader: Mutex::new(None),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            event_listeners: Arc::new(Mutex::new(HashMap::new())),
-            failure: Arc::new(Mutex::new(None)),
-            telemetry: Arc::new(Mutex::new(WslProxyTelemetry {
-                cold_start_ms: Some(bounded_diagnostic_millis(cold_start.elapsed())),
-                ..WslProxyTelemetry::default()
-            })),
-            #[cfg(test)]
-            fixture_dir: Mutex::new(None),
-        });
-        let reader_generation = Arc::clone(&generation);
-        let reader = std::thread::Builder::new()
-            .name(format!("herdr-wsl-proxy-{}", generation.generation))
-            .spawn(move || read_wsl_proxy_stdout(reader_generation, stdout))
-            .map_err(|error| {
-                let _ = release_wsl_proxy_generation(&generation);
-                format!("failed to spawn WSL proxy reader: {error}")
-            })?;
-        *generation.reader.lock().unwrap() = Some(reader);
-        let stderr_generation = Arc::clone(&generation);
-        std::thread::spawn(move || {
-            let result = read_bounded_bytes(&mut BufReader::new(stderr), MAX_NDJSON_LINE_BYTES);
-            if let Err(error) = result {
-                fail_wsl_proxy_generation(
-                    &stderr_generation,
-                    format!("WSL proxy stderr exceeded bounds or failed: {error}"),
-                );
-            }
-        });
-        self.wsl_proxy_generations
-            .lock()
-            .unwrap()
-            .insert(runtime_key.clone(), Arc::clone(&generation));
-        Ok(generation)
-    }
-
-    pub(crate) fn wsl_events_release_for_runtime(
-        &self,
-        runtime_target: &HerdrRuntimeTarget,
-        subscription_id: &str,
-    ) -> Result<(), String> {
-        let actual = self
-            .wsl_subscription_runtime_keys
-            .lock()
-            .unwrap()
-            .get(subscription_id)
-            .cloned();
-        match actual {
-            Some(key) if key.runtime_target == *runtime_target => {}
-            Some(_) => {
-                return Err(format!(
-                    "Herdr WSL event subscription {subscription_id} belongs to another runtime"
-                ));
-            }
-            None => return Ok(()),
-        }
-        let subscription = self
-            .wsl_proxy_subscriptions
-            .lock()
-            .unwrap()
-            .remove(subscription_id);
-        self.wsl_subscription_runtime_keys
-            .lock()
-            .unwrap()
-            .remove(subscription_id);
-        if let Some(subscription) = subscription {
-            release_wsl_proxy_subscription(&subscription);
         }
         Ok(())
     }
 
     pub fn release_all_event_subscriptions(&self) {
-        // Serialize against proxy creation so app teardown cannot drain the map
-        // just before a concurrent poll/reconnect inserts a new child.
-        let _generation_lock = self.wsl_proxy_generation_lock.lock().unwrap();
         let subscriptions: Vec<Arc<EventSubscription>> = {
             let mut map = self.event_subscriptions.lock().unwrap();
             map.drain().map(|(_, s)| s).collect()
@@ -2919,44 +2279,6 @@ impl HerdrManager {
         for subscription in subscriptions {
             release_event_subscription(&subscription);
         }
-        let wsl_subscriptions: Vec<Arc<WslProxySubscription>> = {
-            let mut map = self.wsl_proxy_subscriptions.lock().unwrap();
-            map.drain().map(|(_, subscription)| subscription).collect()
-        };
-        self.wsl_subscription_runtime_keys.lock().unwrap().clear();
-        self.event_subscription_runtime_keys.lock().unwrap().clear();
-        for subscription in wsl_subscriptions {
-            release_wsl_proxy_subscription(&subscription);
-        }
-        let proxy_generations: Vec<Arc<WslProxyGeneration>> = {
-            let mut map = self.wsl_proxy_generations.lock().unwrap();
-            map.drain().map(|(_, generation)| generation).collect()
-        };
-        for generation in proxy_generations {
-            let _ = release_wsl_proxy_generation(&generation);
-        }
-        self.wsl_control_plans.lock().unwrap().clear();
-        self.wsl_cli_topology_locks.lock().unwrap().clear();
-    }
-
-    /// Generic Native provider request. The typed facade supplies known public
-    /// method names; this keeps Native schema gates identical after moving
-    /// routing behind `HerdrRuntimeProvider`.
-    pub(crate) fn call_checked_api_for_method(
-        &self,
-        session_name: Option<&str>,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        let caps = self.cached_capabilities_for_session(session_name);
-        if !api_method_is_available(&caps.api, method) {
-            return Err(caps
-                .api
-                .reason
-                .unwrap_or_else(|| format!("herdr {method} unavailable")));
-        }
-        let (_session, socket) = self.require_running_session_socket(session_name)?;
-        api_request(&socket, method, params)
     }
 
     /// Schema-gated API request against the selected running session's socket.
@@ -3114,10 +2436,6 @@ impl HerdrManager {
             .lock()
             .unwrap()
             .insert(session_id.clone(), session);
-        self.connector_runtime_keys.lock().unwrap().insert(
-            session_id.clone(),
-            HerdrRuntimeKey::new(HerdrRuntimeTarget::Native, named.name.clone()),
-        );
 
         Ok(HerdrTerminalOpenResult {
             session_id,
@@ -3128,193 +2446,6 @@ impl HerdrManager {
             rows,
             takeover,
         })
-    }
-
-    /// Open the official terminal connector inside the explicitly selected WSL
-    /// distro. The connector is the only process Yuzora owns; its release never
-    /// stops WSL, the Herdr server, or any pane process.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn open_wsl_terminal(
-        self: &Arc<Self>,
-        distro: &str,
-        target: String,
-        mode: HerdrTerminalMode,
-        takeover: bool,
-        cols: u16,
-        rows: u16,
-        session_name: Option<String>,
-        on_event: OnTerminalEvent,
-    ) -> Result<HerdrTerminalOpenResult, String> {
-        if cols == 0 || rows == 0 {
-            return Err("cols and rows must be greater than 0".into());
-        }
-        if target.trim().is_empty() {
-            return Err("target is required".into());
-        }
-        if takeover && !matches!(mode, HerdrTerminalMode::Control) {
-            return Err("takeover requires control mode".into());
-        }
-        let named =
-            crate::herdr_runtime::wsl::resolve_named_session(distro, session_name.as_deref())?;
-        self.open_wsl_terminal_for_named_session(
-            distro, target, mode, takeover, cols, rows, named, on_event,
-        )
-    }
-
-    /// Spawn one Yuzora-owned official connector for an already resolved WSL
-    /// named session. Resolution remains provider-owned; this seam makes the
-    /// child lifecycle independently host-testable.
-    #[allow(clippy::too_many_arguments)]
-    fn open_wsl_terminal_for_named_session(
-        self: &Arc<Self>,
-        distro: &str,
-        target: String,
-        mode: HerdrTerminalMode,
-        takeover: bool,
-        cols: u16,
-        rows: u16,
-        named: HerdrNamedSession,
-        on_event: OnTerminalEvent,
-    ) -> Result<HerdrTerminalOpenResult, String> {
-        if !named.running {
-            return Err(format!(
-                "herdr session '{}' is not running in WSL distribution {distro:?}",
-                named.name
-            ));
-        }
-        let role = match mode {
-            HerdrTerminalMode::Observe => HerdrTerminalRole::Observer,
-            HerdrTerminalMode::Control => HerdrTerminalRole::Controller,
-        };
-        let session_id = format!(
-            "herdr-wsl-term-{}",
-            NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let argv = crate::herdr_runtime::wsl::wsl_terminal_connector_args(
-            distro,
-            &named.name,
-            mode,
-            &target,
-            cols,
-            rows,
-            takeover,
-        )?;
-        let mut cmd = Command::new(self.wsl_executable());
-        cmd.args(argv)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // The direct child is wsl.exe/connector only. Its process tree guard is
-        // released on connector close and never reaches the Herdr server.
-        process_kill::configure_background_process(&mut cmd);
-        let mut child = cmd
-            .spawn()
-            .map_err(|error| format!("failed to spawn WSL Herdr terminal connector: {error}"))?;
-        let mut process_tree = process_kill::attach_process_tree(&mut child)
-            .map_err(|error| format!("failed to contain WSL terminal connector: {error}"))?;
-        let stdout = match child.stdout.take() {
-            Some(stdout) => stdout,
-            None => {
-                let cleanup = process_kill::terminate_process_tree(&mut child, &mut process_tree);
-                return Err(match cleanup {
-                    Ok(()) => "WSL Herdr connector missing stdout".into(),
-                    Err(error) => {
-                        format!("WSL Herdr connector missing stdout; cleanup failed: {error}")
-                    }
-                });
-            }
-        };
-        let stderr = child.stderr.take();
-        let stdin = match child.stdin.take() {
-            Some(stdin) => stdin,
-            None => {
-                let cleanup = process_kill::terminate_process_tree(&mut child, &mut process_tree);
-                return Err(match cleanup {
-                    Ok(()) => "WSL Herdr connector missing stdin".into(),
-                    Err(error) => {
-                        format!("WSL Herdr connector missing stdin; cleanup failed: {error}")
-                    }
-                });
-            }
-        };
-        let session = Arc::new(ConnectorSession {
-            id: session_id.clone(),
-            mode,
-            cols: Mutex::new(cols),
-            rows: Mutex::new(rows),
-            child: Mutex::new(Some(child)),
-            process_tree: Mutex::new(Some(process_tree)),
-            stdin: Mutex::new(Some(stdin)),
-            reader: Mutex::new(None),
-            closed: Mutex::new(false),
-        });
-        let reader_session = Arc::clone(&session);
-        let reader_on_event = Arc::clone(&on_event);
-        let handle = match std::thread::Builder::new()
-            .name(format!("herdr-wsl-term-{session_id}"))
-            .spawn(move || connector_reader_loop(reader_session, stdout, stderr, reader_on_event))
-        {
-            Ok(handle) => handle,
-            Err(error) => {
-                let cleanup = terminate_connector_process(&session);
-                return Err(match cleanup {
-                    Ok(()) => format!("failed to spawn WSL connector reader: {error}"),
-                    Err(cleanup_error) => format!(
-                        "failed to spawn WSL connector reader: {error}; cleanup failed: {cleanup_error}"
-                    ),
-                });
-            }
-        };
-        *session.reader.lock().unwrap() = Some(handle);
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(session_id.clone(), session);
-        self.connector_runtime_keys.lock().unwrap().insert(
-            session_id.clone(),
-            HerdrRuntimeKey::new(
-                HerdrRuntimeTarget::Wsl {
-                    distro: distro.to_string(),
-                },
-                named.name.clone(),
-            ),
-        );
-        Ok(HerdrTerminalOpenResult {
-            session_id,
-            target,
-            mode,
-            role,
-            cols,
-            rows,
-            takeover,
-        })
-    }
-
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn open_wsl_terminal_with_named_session_for_test(
-        self: &Arc<Self>,
-        distro: &str,
-        target: String,
-        mode: HerdrTerminalMode,
-        takeover: bool,
-        cols: u16,
-        rows: u16,
-        named: HerdrNamedSession,
-        on_event: OnTerminalEvent,
-    ) -> Result<HerdrTerminalOpenResult, String> {
-        if cols == 0 || rows == 0 {
-            return Err("cols and rows must be greater than 0".into());
-        }
-        if target.trim().is_empty() {
-            return Err("target is required".into());
-        }
-        if takeover && !matches!(mode, HerdrTerminalMode::Control) {
-            return Err("takeover requires control mode".into());
-        }
-        self.open_wsl_terminal_for_named_session(
-            distro, target, mode, takeover, cols, rows, named, on_event,
-        )
     }
 
     pub fn terminal_input(
@@ -3323,33 +2454,11 @@ impl HerdrManager {
         text: Option<String>,
         bytes_base64: Option<String>,
     ) -> Result<(), String> {
-        self.terminal_input_for_runtime(&HerdrRuntimeTarget::Native, session_id, text, bytes_base64)
-    }
-
-    pub(crate) fn terminal_input_for_runtime(
-        &self,
-        runtime_target: &HerdrRuntimeTarget,
-        session_id: &str,
-        text: Option<String>,
-        bytes_base64: Option<String>,
-    ) -> Result<(), String> {
-        self.require_connector_runtime(runtime_target, session_id)?;
         let cmd = TerminalControlCommand::input(text, bytes_base64)?;
         self.send_control(session_id, &cmd)
     }
 
     pub fn terminal_resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        self.terminal_resize_for_runtime(&HerdrRuntimeTarget::Native, session_id, cols, rows)
-    }
-
-    pub(crate) fn terminal_resize_for_runtime(
-        &self,
-        runtime_target: &HerdrRuntimeTarget,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), String> {
-        self.require_connector_runtime(runtime_target, session_id)?;
         let cmd = TerminalControlCommand::resize(cols, rows)?;
         self.send_control(session_id, &cmd)?;
         if let Some(session) = self.sessions.lock().unwrap().get(session_id) {
@@ -3365,41 +2474,17 @@ impl HerdrManager {
         direction: HerdrScrollDirection,
         lines: u32,
     ) -> Result<(), String> {
-        self.terminal_scroll_for_runtime(&HerdrRuntimeTarget::Native, session_id, direction, lines)
-    }
-
-    pub(crate) fn terminal_scroll_for_runtime(
-        &self,
-        runtime_target: &HerdrRuntimeTarget,
-        session_id: &str,
-        direction: HerdrScrollDirection,
-        lines: u32,
-    ) -> Result<(), String> {
-        self.require_connector_runtime(runtime_target, session_id)?;
         let cmd = TerminalControlCommand::scroll(direction, lines)?;
         self.send_control(session_id, &cmd)
     }
 
     /// Release only the Yuzora-owned connector child for this session.
     pub fn terminal_release(&self, session_id: &str) -> Result<(), String> {
-        self.terminal_release_for_runtime(&HerdrRuntimeTarget::Native, session_id)
-    }
-
-    pub(crate) fn terminal_release_for_runtime(
-        &self,
-        runtime_target: &HerdrRuntimeTarget,
-        session_id: &str,
-    ) -> Result<(), String> {
-        self.require_connector_runtime(runtime_target, session_id)?;
         let session = {
             let mut map = self.sessions.lock().unwrap();
             map.remove(session_id)
                 .ok_or_else(|| format!("no herdr terminal session {session_id}"))?
         };
-        self.connector_runtime_keys
-            .lock()
-            .unwrap()
-            .remove(session_id);
         release_connector(&session)
     }
 
@@ -3409,31 +2494,10 @@ impl HerdrManager {
             let mut map = self.sessions.lock().unwrap();
             map.drain().map(|(_, s)| s).collect()
         };
-        self.connector_runtime_keys.lock().unwrap().clear();
         for session in sessions {
             let _ = release_connector(&session);
         }
         self.release_all_event_subscriptions();
-    }
-
-    fn require_connector_runtime(
-        &self,
-        runtime_target: &HerdrRuntimeTarget,
-        session_id: &str,
-    ) -> Result<(), String> {
-        let actual = self
-            .connector_runtime_keys
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .cloned();
-        match actual {
-            Some(key) if key.runtime_target == *runtime_target => Ok(()),
-            Some(_) => Err(format!(
-                "Herdr terminal session {session_id} belongs to another runtime"
-            )),
-            None => Err(format!("no herdr terminal session {session_id}")),
-        }
     }
 
     fn send_control(&self, session_id: &str, cmd: &TerminalControlCommand) -> Result<(), String> {
@@ -3739,7 +2803,152 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
 
 // ── Binary / API helpers ────────────────────────────────────────────────────
 
-pub(crate) fn probe_binary_identity(binary: &Path) -> (Option<String>, Option<u32>) {
+fn select_binary_resolution(
+    source: HerdrBinarySource,
+    has_explicit_override: bool,
+    primary: (Option<PathBuf>, Option<String>),
+    managed: (Option<PathBuf>, Option<String>),
+) -> (Option<PathBuf>, Option<HerdrBinarySource>, Option<String>) {
+    let (primary_path, primary_reason) = primary;
+    if primary_path.is_some() {
+        return (primary_path, Some(source), primary_reason);
+    }
+    if source != HerdrBinarySource::Global || has_explicit_override {
+        return (None, None, primary_reason);
+    }
+
+    let (managed_path, managed_reason) = managed;
+    if managed_path.is_some() {
+        return (
+            managed_path,
+            Some(HerdrBinarySource::Default),
+            Some("Herdr was not found on PATH; using Yuzora-managed Herdr".into()),
+        );
+    }
+    let primary_reason =
+        primary_reason.unwrap_or_else(|| "Herdr was not found on PATH".to_string());
+    let managed_reason =
+        managed_reason.unwrap_or_else(|| "Yuzora-managed Herdr is unavailable".to_string());
+    (
+        None,
+        None,
+        Some(format!(
+            "{primary_reason}; Yuzora-managed fallback is also unavailable: {managed_reason}"
+        )),
+    )
+}
+
+fn managed_binary_path(resource_dir: &Path) -> PathBuf {
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    let file_name = if cfg!(windows) { "herdr.exe" } else { "herdr" };
+    resource_dir
+        .join("herdr")
+        .join(format!("{os}-{arch}"))
+        .join(file_name)
+}
+
+fn binary_source_config_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(BINARY_SOURCE_CONFIG_FILE)
+}
+
+struct BinarySourcePreferenceLoad {
+    source: HerdrBinarySource,
+    error: Option<String>,
+}
+
+fn load_binary_source_preference(config_dir: &Path) -> BinarySourcePreferenceLoad {
+    let path = binary_source_config_path(config_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return BinarySourcePreferenceLoad {
+                source: HerdrBinarySource::Global,
+                error: None,
+            };
+        }
+        Err(error) => {
+            return BinarySourcePreferenceLoad {
+                source: HerdrBinarySource::Global,
+                error: Some(format!(
+                    "failed to read Herdr binary-source preference at {}: {error}",
+                    path.display()
+                )),
+            };
+        }
+    };
+    let value = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            return BinarySourcePreferenceLoad {
+                source: HerdrBinarySource::Global,
+                error: Some(format!(
+                    "invalid Herdr binary-source preference at {}: {error}",
+                    path.display()
+                )),
+            };
+        }
+    };
+    match value.get("binarySource").and_then(|v| v.as_str()) {
+        Some("global") => BinarySourcePreferenceLoad {
+            source: HerdrBinarySource::Global,
+            error: None,
+        },
+        Some("default") => BinarySourcePreferenceLoad {
+            source: HerdrBinarySource::Default,
+            error: None,
+        },
+        other => BinarySourcePreferenceLoad {
+            source: HerdrBinarySource::Global,
+            error: Some(format!(
+                "unknown Herdr binarySource {:?} in {}",
+                other,
+                path.display()
+            )),
+        },
+    }
+}
+
+fn save_binary_source_preference(
+    config_dir: &Path,
+    source: HerdrBinarySource,
+) -> Result<(), String> {
+    fs::create_dir_all(config_dir)
+        .map_err(|e| format!("failed to create herdr config dir: {e}"))?;
+    let path = binary_source_config_path(config_dir);
+    let value = serde_json::json!({
+        "binarySource": match source {
+            HerdrBinarySource::Global => "global",
+            HerdrBinarySource::Default => "default",
+        }
+    });
+    let body = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(config_dir)
+        .map_err(|e| format!("failed to create temporary herdr config: {e}"))?;
+    temp.write_all(body.as_bytes())
+        .and_then(|_| temp.flush())
+        .and_then(|_| temp.as_file().sync_all())
+        .map_err(|e| format!("failed to flush herdr config: {e}"))?;
+    temp.persist(&path)
+        .map_err(|e| format!("failed to atomically replace herdr config: {}", e.error))?;
+    #[cfg(unix)]
+    fs::File::open(config_dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| format!("failed to sync herdr config directory: {e}"))?;
+    Ok(())
+}
+
+fn probe_binary_identity(binary: &Path) -> (Option<String>, Option<u32>) {
     let Ok(status) = run_herdr_json(binary, &["status", "--json"]) else {
         return (None, None);
     };
@@ -3761,243 +2970,6 @@ fn release_event_subscription(subscription: &EventSubscription) {
     if let Some(handle) = subscription.reader.lock().unwrap().take() {
         let _ = handle.join();
     }
-}
-
-fn release_wsl_proxy_subscription(subscription: &WslProxySubscription) {
-    subscription.closed.store(true, Ordering::SeqCst);
-    subscription
-        .generation
-        .event_listeners
-        .lock()
-        .unwrap()
-        .remove(&subscription.request_id);
-}
-
-fn spawn_wsl_proxy_event_worker(
-    receiver: mpsc::Receiver<HerdrSubscriptionEvent>,
-    closed: Arc<AtomicBool>,
-    on_event: OnSubscriptionEvent,
-) {
-    let _ = std::thread::Builder::new()
-        .name("herdr-wsl-proxy-events".into())
-        .spawn(move || {
-            while let Ok(event) = receiver.recv() {
-                if closed.load(Ordering::SeqCst) {
-                    continue;
-                }
-                if emit_subscription_event(&on_event, event).is_err() {
-                    closed.store(true, Ordering::SeqCst);
-                    break;
-                }
-            }
-        });
-}
-
-fn bounded_diagnostic_millis(elapsed: Duration) -> u64 {
-    elapsed.as_millis().min(MAX_WSL_DIAGNOSTIC_TIMING_MS.into()) as u64
-}
-
-fn generation_failure(generation: &WslProxyGeneration, fallback: &str) -> String {
-    generation
-        .failure
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-fn fail_wsl_proxy_generation(generation: &WslProxyGeneration, reason: String) {
-    if generation.closed.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    *generation.failure.lock().unwrap() = Some(reason.clone());
-    {
-        let mut telemetry = generation.telemetry.lock().unwrap();
-        telemetry.state = "failed".into();
-        telemetry.failure = Some(reason.clone());
-    }
-    generation.stdin.lock().unwrap().take();
-    let pending = std::mem::take(&mut *generation.pending.lock().unwrap());
-    for (_, sender) in pending {
-        let _ = sender.send(Err(reason.clone()));
-    }
-    let listeners = std::mem::take(&mut *generation.event_listeners.lock().unwrap());
-    for (_, listener) in listeners {
-        // Queue one terminal event before the final sender is dropped. The
-        // dedicated worker owns callback delivery, keeping stdout processing
-        // nonblocking even when the frontend cannot keep up.
-        let _ = listener
-            .queue
-            .try_send(HerdrSubscriptionEvent::Disconnected {
-                subscription_id: listener.subscription_id,
-                reason: Some(reason.clone()),
-            });
-    }
-}
-
-fn read_wsl_proxy_stdout(generation: Arc<WslProxyGeneration>, stdout: impl std::io::Read) {
-    let mut reader = BufReader::new(stdout);
-    loop {
-        if generation.closed.load(Ordering::SeqCst) {
-            break;
-        }
-        let mut line = String::new();
-        let read = match read_bounded_ndjson_line(&mut reader, &mut line) {
-            Ok(read) => read,
-            Err(error) => {
-                fail_wsl_proxy_generation(
-                    &generation,
-                    format!("WSL proxy stdout read failed: {error}"),
-                );
-                break;
-            }
-        };
-        if read == 0 {
-            fail_wsl_proxy_generation(&generation, "WSL proxy stdout closed".into());
-            break;
-        }
-        let value: serde_json::Value = match serde_json::from_str(line.trim()) {
-            Ok(value) => value,
-            Err(error) => {
-                fail_wsl_proxy_generation(
-                    &generation,
-                    format!("WSL proxy returned invalid JSON: {error}"),
-                );
-                break;
-            }
-        };
-        if let Err(error) = validate_json_complexity(&value) {
-            fail_wsl_proxy_generation(
-                &generation,
-                format!("WSL proxy response exceeds JSON complexity limits: {error}"),
-            );
-            break;
-        }
-        if value.get("type").and_then(serde_json::Value::as_str) == Some("proxy.event") {
-            let Some(request_id) = value.get("request_id").and_then(serde_json::Value::as_str)
-            else {
-                fail_wsl_proxy_generation(
-                    &generation,
-                    "WSL proxy event is missing request_id".into(),
-                );
-                break;
-            };
-            let Some(event) = value.get("event") else {
-                fail_wsl_proxy_generation(
-                    &generation,
-                    "WSL proxy event is missing nested event".into(),
-                );
-                break;
-            };
-            let listener = generation
-                .event_listeners
-                .lock()
-                .unwrap()
-                .get(request_id)
-                .cloned();
-            let Some(listener) = listener else {
-                // A released subscription may still have one buffered event.
-                // It is stale for this generation and must not affect another.
-                generation.telemetry.lock().unwrap().stale_events_dropped += 1;
-                continue;
-            };
-            let event_line = match serde_json::to_string(event) {
-                Ok(line) => line,
-                Err(error) => {
-                    fail_wsl_proxy_generation(
-                        &generation,
-                        format!("encode WSL proxy event failed: {error}"),
-                    );
-                    break;
-                }
-            };
-            match parse_subscription_event_line(&listener.subscription_id, &event_line) {
-                Ok(Some(event)) => {
-                    let dispatch_started = Instant::now();
-                    match listener.queue.try_send(event) {
-                        Ok(()) => {
-                            let elapsed = bounded_diagnostic_millis(dispatch_started.elapsed());
-                            let mut telemetry = generation.telemetry.lock().unwrap();
-                            telemetry.events_delivered += 1;
-                            telemetry.last_event_dispatch_ms = Some(elapsed);
-                            telemetry.max_event_dispatch_ms =
-                                telemetry.max_event_dispatch_ms.max(elapsed);
-                        }
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            generation.telemetry.lock().unwrap().stale_events_dropped += 1;
-                            listener.closed.store(true, Ordering::SeqCst);
-                            generation
-                                .event_listeners
-                                .lock()
-                                .unwrap()
-                                .remove(request_id);
-                        }
-                        Err(mpsc::TrySendError::Disconnected(_)) => {
-                            generation.telemetry.lock().unwrap().stale_events_dropped += 1;
-                            generation
-                                .event_listeners
-                                .lock()
-                                .unwrap()
-                                .remove(request_id);
-                        }
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    fail_wsl_proxy_generation(
-                        &generation,
-                        format!("invalid WSL proxy event: {error}"),
-                    );
-                    break;
-                }
-            }
-            continue;
-        }
-        let Some(request_id) = value.get("id").and_then(serde_json::Value::as_str) else {
-            fail_wsl_proxy_generation(
-                &generation,
-                "WSL proxy response is missing request id".into(),
-            );
-            break;
-        };
-        if let Some(sender) = generation.pending.lock().unwrap().remove(request_id) {
-            generation.telemetry.lock().unwrap().responses += 1;
-            let _ = sender.send(Ok(value));
-        } else {
-            // A timed-out/replaced generation must never let a late response
-            // mutate a newer request. Count it for diagnostics and discard it.
-            generation.telemetry.lock().unwrap().stale_events_dropped += 1;
-        }
-    }
-}
-
-fn release_wsl_proxy_generation(generation: &WslProxyGeneration) -> Result<(), String> {
-    fail_wsl_proxy_generation(generation, "WSL proxy generation released".into());
-    let (child, process_tree) = {
-        let mut child = generation.child.lock().unwrap();
-        let mut process_tree = generation.process_tree.lock().unwrap();
-        (child.take(), process_tree.take())
-    };
-    if let Some(mut child) = child {
-        if let Some(mut process_tree) = process_tree {
-            process_kill::terminate_process_tree(&mut child, &mut process_tree)
-                .map_err(|error| format!("WSL proxy process-tree cleanup failed: {error}"))?;
-            process_kill::reap_process_tree(&mut child, &mut process_tree)
-                .map_err(|error| format!("WSL proxy process-tree reap failed: {error}"))?;
-        } else if child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            child.kill().map_err(|error| error.to_string())?;
-            process_kill::reap_bounded(&mut child)
-                .map_err(|error| format!("WSL proxy child reap failed: {error}"))?;
-        }
-    }
-    if let Some(reader) = generation.reader.lock().unwrap().take() {
-        let _ = reader.join();
-    }
-    Ok(())
 }
 
 fn parse_subscription_event_line(
@@ -4162,6 +3134,7 @@ fn parse_subscription_event_line(
             .get("title")
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        execution_origin: data.get("execution_origin").cloned(),
         state_labels,
     }))
 }
@@ -4290,7 +3263,286 @@ fn parse_agent_read_response(response: serde_json::Value) -> Result<HerdrAgentRe
     })
 }
 
-pub(crate) fn run_herdr_json(binary: &Path, args: &[&str]) -> Result<serde_json::Value, String> {
+fn parse_agent_manifest_response(
+    response: serde_json::Value,
+) -> Result<Vec<HerdrAgentCatalogEntry>, String> {
+    let result = response
+        .get("result")
+        .ok_or_else(|| "agent manifest response missing result".to_string())?;
+    let result_type = required_wire_str(result, "type")?;
+    if result_type != "agent_manifest_status" {
+        return Err(format!(
+            "unexpected server.agent_manifests result type: {result_type}"
+        ));
+    }
+    let manifests = result
+        .get("manifests")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "agent manifest response missing manifests".to_string())?;
+    if manifests.len() > MAX_AGENT_MANIFEST_COUNT {
+        return Err(HerdrProtocolError::TooComplex("agent_manifests").into());
+    }
+
+    let mut entries = Vec::with_capacity(manifests.len());
+    let mut seen = HashSet::new();
+    for manifest in manifests {
+        let agent = required_wire_str(manifest, "agent")?;
+        validate_agent_kind(&agent)?;
+        if !seen.insert(agent.clone()) {
+            return Err(format!("duplicate herdr agent manifest: {agent}"));
+        }
+        let source = required_wire_str(manifest, "source")?;
+        let source_kind = required_wire_str(manifest, "source_kind")?;
+        let detected_binary_path = which_binary(agent_binary_name(&agent));
+        entries.push(HerdrAgentCatalogEntry {
+            bypass_flags: agent_bypass_flags(&agent)
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect(),
+            agent,
+            source,
+            source_kind,
+            active_version: manifest
+                .get("active_version")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            warning: manifest
+                .get("warning")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            detected_binary_path,
+        });
+    }
+    Ok(entries)
+}
+
+fn parse_agent_started_response(
+    response: serde_json::Value,
+    expected_pane_id: &str,
+) -> Result<(), String> {
+    let result = response
+        .get("result")
+        .ok_or_else(|| "agent.start response missing result".to_string())?;
+    let result_type = required_wire_str(result, "type")?;
+    if result_type != "agent_started" {
+        return Err(format!("unexpected agent.start result type: {result_type}"));
+    }
+    let agent = result
+        .get("agent")
+        .ok_or_else(|| "agent.start response missing agent".to_string())?;
+    let pane_id = required_wire_str(agent, "pane_id")?;
+    if pane_id != expected_pane_id {
+        return Err(format!(
+            "agent.start returned pane {pane_id} for requested pane {expected_pane_id}"
+        ));
+    }
+    Ok(())
+}
+
+fn pane_get_matches_created_terminal(
+    response: &serde_json::Value,
+    created: &HerdrTerminalCreateResult,
+) -> bool {
+    let Some(result) = response.get("result") else {
+        return false;
+    };
+    if result.get("type").and_then(|value| value.as_str()) != Some("pane_info") {
+        return false;
+    }
+    let Some(pane) = result.get("pane") else {
+        return false;
+    };
+    pane.get("pane_id").and_then(|value| value.as_str()) == Some(created.pane_id.as_str())
+        && pane.get("terminal_id").and_then(|value| value.as_str())
+            == Some(created.terminal_id.as_str())
+        && pane.get("tab_id").and_then(|value| value.as_str()) == Some(created.tab_id.as_str())
+        && pane.get("workspace_id").and_then(|value| value.as_str())
+            == Some(created.workspace_id.as_str())
+}
+
+fn pane_process_info_shows_shell_initialization(
+    response: &serde_json::Value,
+    expected_pane_id: &str,
+) -> bool {
+    let Some(result) = response.get("result") else {
+        return false;
+    };
+    if result.get("type").and_then(|value| value.as_str()) != Some("pane_process_info") {
+        return false;
+    }
+    let Some(process_info) = result.get("process_info") else {
+        return false;
+    };
+    if process_info.get("pane_id").and_then(|value| value.as_str()) != Some(expected_pane_id) {
+        return false;
+    }
+    let Some(shell_pid) = process_info
+        .get("shell_pid")
+        .and_then(|value| value.as_u64())
+    else {
+        return false;
+    };
+    if process_info
+        .get("foreground_process_group_id")
+        .and_then(|value| value.as_u64())
+        != Some(shell_pid)
+    {
+        return false;
+    }
+    process_info
+        .get("foreground_processes")
+        .and_then(|value| value.as_array())
+        .is_some_and(|processes| {
+            processes.iter().any(|process| {
+                if process.get("pid").and_then(|value| value.as_u64()) != Some(shell_pid) {
+                    return false;
+                }
+                process
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(is_pane_shell_process_name)
+                    || process
+                        .get("argv")
+                        .and_then(|value| value.as_array())
+                        .and_then(|argv| argv.first())
+                        .and_then(|value| value.as_str())
+                        .is_some_and(is_pane_shell_process_name)
+            })
+        })
+}
+
+fn is_pane_shell_process_name(value: &str) -> bool {
+    let name = value
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(value)
+        .trim_start_matches('-')
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(
+        name,
+        "sh" | "bash"
+            | "dash"
+            | "zsh"
+            | "fish"
+            | "ksh"
+            | "mksh"
+            | "csh"
+            | "tcsh"
+            | "elvish"
+            | "xonsh"
+            | "nu"
+            | "pwsh"
+            | "powershell"
+            | "cmd"
+    )
+}
+
+fn validate_agent_kind(kind: &str) -> Result<&str, String> {
+    let kind = kind.trim();
+    if kind.is_empty() || kind.len() > 64 {
+        return Err("agent kind must contain 1 to 64 characters".into());
+    }
+    if !kind
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("agent kind contains unsupported characters".into());
+    }
+    Ok(kind)
+}
+
+fn agent_binary_name(kind: &str) -> &str {
+    if kind == "cursor" {
+        "cursor-agent"
+    } else {
+        kind
+    }
+}
+
+fn agent_bypass_flags(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "claude" => &["--dangerously-skip-permissions"],
+        "codex" => &["--dangerously-bypass-approvals-and-sandbox"],
+        "grok" => &["--always-approve"],
+        "gemini" => &["--yolo"],
+        "opencode" => &["--auto"],
+        "cursor" => &["--force"],
+        "copilot" => &["--allow-all-tools"],
+        _ => &[],
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_executable_extensions(raw: Option<&str>) -> Vec<String> {
+    let raw = raw
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(".EXE;.CMD;.BAT;.COM");
+    let mut seen = HashSet::new();
+    raw.split(';')
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let normalized = if trimmed.starts_with('.') {
+                trimmed.to_string()
+            } else {
+                format!(".{trimmed}")
+            };
+            if normalized.len() < 2
+                || normalized.len() > 16
+                || !normalized[1..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric())
+            {
+                return None;
+            }
+            let key = normalized.to_ascii_lowercase();
+            seen.insert(key).then_some(normalized)
+        })
+        .collect()
+}
+
+fn which_binary(command: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(command);
+        if is_executable(&candidate) {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+        #[cfg(windows)]
+        {
+            let pathext = std::env::var("PATHEXT").ok();
+            for ext in windows_executable_extensions(pathext.as_deref()) {
+                let candidate = dir.join(format!("{command}{ext}"));
+                if is_executable(&candidate) {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn run_herdr_json(binary: &Path, args: &[&str]) -> Result<serde_json::Value, String> {
     run_herdr_json_with_session(binary, args, None)
 }
 
@@ -4334,7 +3586,7 @@ fn run_herdr_json_with_session_timeout(
     parse_herdr_cli_stdout(&stdout).map_err(String::from)
 }
 
-pub(crate) fn wait_bounded_child(
+fn wait_bounded_child(
     child: &mut Child,
     process_tree: &mut process_kill::ProcessTreeGuard,
     timeout: Duration,
@@ -4449,9 +3701,7 @@ pub(crate) fn wait_bounded_child(
     Ok((stdout, stderr, status))
 }
 
-pub(crate) fn parse_session_list_json(
-    value: &serde_json::Value,
-) -> Result<Vec<HerdrNamedSession>, String> {
+fn parse_session_list_json(value: &serde_json::Value) -> Result<Vec<HerdrNamedSession>, String> {
     let sessions = value
         .get("sessions")
         .and_then(|v| v.as_array())
@@ -4652,8 +3902,12 @@ const IMPLEMENTED_API_METHODS: &[&str] = &[
     "pane.zoom",
     "pane.swap",
     "pane.close",
+    "pane.get",
+    "pane.process_info",
     "layout.export",
     "layout.set_split_ratio",
+    "server.agent_manifests",
+    "agent.start",
     "agent.get",
     "agent.read",
     "events.subscribe",
@@ -4697,6 +3951,8 @@ fn clear_api_method_flags(api: &mut HerdrApiCapability) {
     api.pane_close = false;
     api.layout_export = false;
     api.layout_set_split_ratio = false;
+    api.agent_manifests = false;
+    api.agent_start = false;
     api.agent_get = false;
     api.agent_read = false;
     api.events_subscribe = false;
@@ -4765,6 +4021,8 @@ fn apply_schema_method_flags(
     api.pane_close = has("pane.close");
     api.layout_export = has("layout.export");
     api.layout_set_split_ratio = has("layout.set_split_ratio");
+    api.agent_manifests = has("server.agent_manifests");
+    api.agent_start = has("agent.start");
     api.agent_get = has("agent.get");
     api.agent_read = has("agent.read");
     api.events_subscribe = has("events.subscribe");
@@ -4790,7 +4048,7 @@ fn apply_schema_method_flags(
 /// - top-level `methods: [...]`
 /// - `schemas` object keys that look like `namespace.method`
 /// - JSON Schema `const` values under request unions / subcommands
-pub(crate) fn collect_schema_methods(schema: &serde_json::Value) -> HashSet<String> {
+fn collect_schema_methods(schema: &serde_json::Value) -> HashSet<String> {
     let mut methods = HashSet::new();
 
     if let Some(arr) = schema.get("methods").and_then(|v| v.as_array()) {
@@ -4942,35 +4200,6 @@ fn ping_server_identity(socket_path: &str) -> Result<(String, u32), String> {
     Ok((version.to_string(), protocol as u32))
 }
 
-fn api_method_is_available(api: &HerdrApiCapability, method: &str) -> bool {
-    match method {
-        "ping" | "session.ping" => api.ping,
-        "session.snapshot" => api.snapshot,
-        "workspace.create" => api.workspace_create,
-        "workspace.focus" => api.workspace_focus,
-        "workspace.rename" => api.workspace_rename,
-        "workspace.close" => api.workspace_close,
-        "worktree.list" => api.worktree_list,
-        "tab.create" => api.tab_create,
-        "tab.focus" => api.tab_focus,
-        "tab.rename" => api.tab_rename,
-        "tab.move" => api.tab_move,
-        "tab.close" => api.tab_close,
-        "pane.focus" => api.pane_focus,
-        "pane.rename" => api.pane_rename,
-        "pane.split" => api.pane_split,
-        "pane.zoom" => api.pane_zoom,
-        "pane.swap" => api.pane_swap,
-        "pane.close" => api.pane_close,
-        "layout.export" => api.layout_export,
-        "layout.set_split_ratio" => api.layout_set_split_ratio,
-        "agent.get" => api.agent_get,
-        "agent.read" => api.agent_read,
-        "events.subscribe" => api.events_subscribe,
-        _ => false,
-    }
-}
-
 fn api_request(
     socket_path: &str,
     method: &str,
@@ -5004,7 +4233,7 @@ fn api_request(
         Ok(Some(response)) => response,
         Err(BoundedNdjsonReadError::Protocol(protocol)) => return Err(protocol.into()),
         Err(BoundedNdjsonReadError::Io(io_error)) => {
-            return Err(format!("read failed: {io_error}"));
+            return Err(format!("read failed: {io_error}"))
         }
     };
     if response.trim().is_empty() {
@@ -5026,9 +4255,7 @@ fn api_request(
     Ok(value)
 }
 
-pub(crate) fn parse_snapshot_response(
-    response: serde_json::Value,
-) -> Result<HerdrSnapshotResult, String> {
+fn parse_snapshot_response(response: serde_json::Value) -> Result<HerdrSnapshotResult, String> {
     let result = response
         .get("result")
         .ok_or_else(|| "snapshot response missing result".to_string())?;
@@ -5090,15 +4317,30 @@ fn parse_tab_created_response(
         .get("tab_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "tab_created missing tab_id".to_string())?
-        .to_string();
-    let workspace_id = root_pane
-        .get("workspace_id")
-        .or_else(|| tab.get("workspace_id"))
+        .ok_or_else(|| "tab_created missing tab_id".to_string())?;
+    let root_tab_id = root_pane
+        .get("tab_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "tab_created missing workspace_id".to_string())?
-        .to_string();
+        .ok_or_else(|| "tab_created root_pane missing tab_id".to_string())?;
+    if root_tab_id != tab_id {
+        return Err("tab_created root_pane tab_id does not match tab".into());
+    }
+    let tab_workspace_id = tab
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "tab_created tab missing workspace_id".to_string())?;
+    let root_workspace_id = root_pane
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "tab_created root_pane missing workspace_id".to_string())?;
+    if root_workspace_id != tab_workspace_id {
+        return Err("tab_created root_pane workspace_id does not match tab".into());
+    }
+    let tab_id = tab_id.to_string();
+    let workspace_id = root_workspace_id.to_string();
     let title = root_pane
         .get("title")
         .or_else(|| root_pane.get("label"))
@@ -5341,87 +4583,24 @@ fn parse_pane_info_response(response: serde_json::Value) -> Result<HerdrPaneIden
 
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
-/// Herdr mutations always receive paths in their runtime's native syntax. For
-/// WSL, host filesystem paths must prove their distro ownership before they are
-/// converted with that distro's `wslpath`; unknown/cross-distro paths fail closed.
-fn runtime_cwd_for_target(
-    runtime_target: Option<&HerdrRuntimeTarget>,
-    cwd: Option<String>,
-) -> Result<Option<String>, String> {
-    let Some(cwd) = cwd else {
-        return Ok(None);
-    };
-    match runtime_target {
-        Some(HerdrRuntimeTarget::Wsl { distro }) => {
-            crate::herdr_runtime::wsl::host_to_runtime_path(distro, &cwd)
-                .map(|location| Some(location.runtime_path))
-        }
-        _ => Ok(Some(cwd)),
-    }
-}
-
 #[tauri::command]
 pub async fn herdr_sessions(
     state: tauri::State<'_, HerdrState>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<Vec<HerdrNamedSession>, String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.provider_list_sessions(runtime_target.as_ref())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Enumerate installed WSL distributions without starting them. A distro is
-/// only executed after the caller selects its Runtime Environment.
-#[tauri::command]
-pub async fn herdr_wsl_distributions(
-) -> Result<Vec<crate::herdr_runtime::HerdrWslDistribution>, String> {
-    tauri::async_runtime::spawn_blocking(crate::herdr_runtime::wsl::list_distributions)
+    tauri::async_runtime::spawn_blocking(move || manager.list_sessions())
         .await
-        .map_err(|error| error.to_string())?
-}
-
-/// Convert an in-distro Linux path to an operational Windows host path using
-/// that selected distro's `wslpath` implementation.
-#[tauri::command]
-pub async fn herdr_wsl_runtime_to_host_path(
-    distro: String,
-    runtime_path: String,
-) -> Result<crate::herdr_runtime::HerdrWslWorkspaceLocation, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::herdr_runtime::wsl::runtime_to_host_path(&distro, &runtime_path)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-/// Convert a selected-distro UNC host path to Linux runtime path. The helper
-/// rejects paths belonging to a different distro before invoking `wslpath`.
-#[tauri::command]
-pub async fn herdr_wsl_host_to_runtime_path(
-    distro: String,
-    host_path: String,
-) -> Result<crate::herdr_runtime::HerdrWslWorkspaceLocation, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::herdr_runtime::wsl::host_to_runtime_path(&distro, &host_path)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn herdr_capabilities(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrCapabilities, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        bounded_ipc(
-            manager.provider_capabilities(runtime_target.as_ref(), session_name.as_deref())?,
-        )
+        bounded_ipc(manager.capabilities_for_session(session_name.as_deref()))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5431,14 +4610,11 @@ pub async fn herdr_capabilities(
 pub async fn herdr_snapshot(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrSnapshotResult, String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.provider_snapshot(runtime_target.as_ref(), session_name.as_deref())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.snapshot(session_name.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5451,7 +4627,6 @@ pub async fn herdr_terminal_open(
     cols: u16,
     rows: u16,
     session_name: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
     on_event: tauri::ipc::Channel<HerdrTerminalEvent>,
 ) -> Result<HerdrTerminalOpenResult, String> {
     let manager = state.0.clone();
@@ -5461,16 +4636,7 @@ pub async fn herdr_terminal_open(
         let channel = on_event;
         let on_event: OnTerminalEvent =
             Arc::new(move |event| channel.send(event).map_err(|e| e.to_string()));
-        manager.provider_open_terminal(
-            runtime_target.as_ref(),
-            target,
-            mode,
-            takeover,
-            cols,
-            rows,
-            session_name,
-            on_event,
-        )
+        manager.open_terminal(target, mode, takeover, cols, rows, session_name, on_event)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5482,11 +4648,10 @@ pub async fn herdr_terminal_input(
     session_id: String,
     text: Option<String>,
     bytes_base64: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        manager.provider_terminal_input(runtime_target.as_ref(), &session_id, text, bytes_base64)
+        manager.terminal_input(&session_id, text, bytes_base64)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5498,14 +4663,11 @@ pub async fn herdr_terminal_resize(
     session_id: String,
     cols: u16,
     rows: u16,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.provider_terminal_resize(runtime_target.as_ref(), &session_id, cols, rows)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.terminal_resize(&session_id, cols, rows))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5514,11 +4676,10 @@ pub async fn herdr_terminal_scroll(
     session_id: String,
     direction: HerdrScrollDirection,
     lines: u32,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        manager.provider_terminal_scroll(runtime_target.as_ref(), &session_id, direction, lines)
+        manager.terminal_scroll(&session_id, direction, lines)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5528,14 +4689,11 @@ pub async fn herdr_terminal_scroll(
 pub async fn herdr_terminal_release(
     state: tauri::State<'_, HerdrState>,
     session_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.provider_terminal_release(runtime_target.as_ref(), &session_id)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.terminal_release(&session_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5544,17 +4702,43 @@ pub async fn herdr_terminal_create(
     session_name: Option<String>,
     workspace_id: Option<String>,
     title: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrTerminalCreateResult, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
+        manager.create_terminal(session_name.as_deref(), workspace_id, title)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_agent_catalog(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+) -> Result<Vec<HerdrAgentCatalogEntry>, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.agent_catalog(session_name.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_agent_create(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+    workspace_id: String,
+    kind: String,
+    bypass_permissions: Option<bool>,
+) -> Result<HerdrAgentCreateResult, String> {
+    let manager = state.0.clone();
+    let bypass_permissions = bypass_permissions.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.agent_create(
             session_name.as_deref(),
-            "tab.create",
-            build_tab_create_params(workspace_id, title, None, true),
-        )?;
-        bounded_ipc(parse_tab_created_response(response)?)
+            workspace_id,
+            kind,
+            bypass_permissions,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5565,20 +4749,10 @@ pub async fn herdr_workspace_focus(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
     workspace_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if workspace_id.trim().is_empty() {
-            return Err("workspace_id is required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "workspace.focus",
-            serde_json::json!({ "workspace_id": workspace_id }),
-        )?;
-        Ok(())
+        manager.workspace_focus(session_name.as_deref(), workspace_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5591,27 +4765,11 @@ pub async fn herdr_workspace_create(
     cwd: Option<String>,
     label: Option<String>,
     focus: Option<bool>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrWorkspaceCreateResult, String> {
     let manager = state.0.clone();
     let focus = focus.unwrap_or(true);
     tauri::async_runtime::spawn_blocking(move || {
-        let cwd = runtime_cwd_for_target(runtime_target.as_ref(), cwd)?;
-        let mut params = serde_json::Map::new();
-        if let Some(cwd) = cwd.filter(|value| !value.trim().is_empty()) {
-            params.insert("cwd".into(), serde_json::Value::String(cwd));
-        }
-        if let Some(label) = label.filter(|value| !value.trim().is_empty()) {
-            params.insert("label".into(), serde_json::Value::String(label));
-        }
-        params.insert("focus".into(), serde_json::Value::Bool(focus));
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "workspace.create",
-            serde_json::Value::Object(params),
-        )?;
-        bounded_ipc(parse_workspace_created_response(response)?)
+        manager.workspace_create(session_name.as_deref(), cwd, label, focus)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5623,20 +4781,10 @@ pub async fn herdr_workspace_rename(
     session_name: Option<String>,
     workspace_id: String,
     label: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if workspace_id.trim().is_empty() || label.trim().is_empty() {
-            return Err("workspace_id and label are required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "workspace.rename",
-            serde_json::json!({ "workspace_id": workspace_id, "label": label }),
-        )?;
-        Ok(())
+        manager.workspace_rename(session_name.as_deref(), workspace_id, label)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5647,20 +4795,10 @@ pub async fn herdr_workspace_close(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
     workspace_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if workspace_id.trim().is_empty() {
-            return Err("workspace_id is required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "workspace.close",
-            serde_json::json!({ "workspace_id": workspace_id }),
-        )?;
-        Ok(())
+        manager.workspace_close(session_name.as_deref(), workspace_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5672,28 +4810,10 @@ pub async fn herdr_worktree_list(
     session_name: Option<String>,
     cwd: Option<String>,
     workspace_id: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrWorktreeListResult, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cwd = runtime_cwd_for_target(runtime_target.as_ref(), cwd)?;
-        let mut params = serde_json::Map::new();
-        if let Some(cwd) = cwd.filter(|value| !value.trim().is_empty()) {
-            params.insert("cwd".into(), serde_json::Value::String(cwd));
-        }
-        if let Some(workspace_id) = workspace_id.filter(|value| !value.trim().is_empty()) {
-            params.insert(
-                "workspace_id".into(),
-                serde_json::Value::String(workspace_id),
-            );
-        }
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "worktree.list",
-            serde_json::Value::Object(params),
-        )?;
-        bounded_ipc(parse_worktree_list_response(response)?)
+        manager.worktree_list(session_name.as_deref(), cwd, workspace_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5707,19 +4827,11 @@ pub async fn herdr_tab_create(
     label: Option<String>,
     cwd: Option<String>,
     focus: Option<bool>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrTerminalCreateResult, String> {
     let manager = state.0.clone();
     let focus = focus.unwrap_or(true);
     tauri::async_runtime::spawn_blocking(move || {
-        let cwd = runtime_cwd_for_target(runtime_target.as_ref(), cwd)?;
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "tab.create",
-            build_tab_create_params(workspace_id, label, cwd, focus),
-        )?;
-        bounded_ipc(parse_tab_created_response(response)?)
+        manager.tab_create(session_name.as_deref(), workspace_id, label, cwd, focus)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5730,23 +4842,11 @@ pub async fn herdr_tab_focus(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
     tab_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if tab_id.trim().is_empty() {
-            return Err("tab_id is required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "tab.focus",
-            serde_json::json!({ "tab_id": tab_id }),
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.tab_focus(session_name.as_deref(), tab_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5755,20 +4855,10 @@ pub async fn herdr_tab_rename(
     session_name: Option<String>,
     tab_id: String,
     label: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if tab_id.trim().is_empty() || label.trim().is_empty() {
-            return Err("tab_id and label are required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "tab.rename",
-            serde_json::json!({ "tab_id": tab_id, "label": label }),
-        )?;
-        Ok(())
+        manager.tab_rename(session_name.as_deref(), tab_id, label)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5779,23 +4869,11 @@ pub async fn herdr_tab_close(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
     tab_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if tab_id.trim().is_empty() {
-            return Err("tab_id is required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "tab.close",
-            serde_json::json!({ "tab_id": tab_id }),
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.tab_close(session_name.as_deref(), tab_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5804,20 +4882,10 @@ pub async fn herdr_tab_move(
     session_name: Option<String>,
     tab_id: String,
     insert_index: u32,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if tab_id.trim().is_empty() {
-            return Err("tab_id is required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "tab.move",
-            build_tab_move_params(tab_id, insert_index),
-        )?;
-        Ok(())
+        manager.tab_move(session_name.as_deref(), tab_id, insert_index)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5828,20 +4896,10 @@ pub async fn herdr_pane_focus(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
     pane_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if pane_id.trim().is_empty() {
-            return Err("pane_id is required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "pane.focus",
-            serde_json::json!({ "pane_id": pane_id }),
-        )?;
-        Ok(())
+        manager.pane_focus(session_name.as_deref(), pane_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5853,25 +4911,10 @@ pub async fn herdr_pane_rename(
     session_name: Option<String>,
     pane_id: String,
     label: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if pane_id.trim().is_empty() {
-            return Err("pane_id is required".into());
-        }
-        let mut params = serde_json::Map::new();
-        params.insert("pane_id".into(), serde_json::Value::String(pane_id));
-        if let Some(label) = label.filter(|value| !value.trim().is_empty()) {
-            params.insert("label".into(), serde_json::Value::String(label));
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "pane.rename",
-            serde_json::Value::Object(params),
-        )?;
-        Ok(())
+        manager.pane_rename(session_name.as_deref(), pane_id, label)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5888,19 +4931,19 @@ pub async fn herdr_pane_split(
     cwd: Option<String>,
     ratio: Option<f64>,
     focus: Option<bool>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrPaneIdentity, String> {
     let manager = state.0.clone();
     let focus = focus.unwrap_or(true);
     tauri::async_runtime::spawn_blocking(move || {
-        let cwd = runtime_cwd_for_target(runtime_target.as_ref(), cwd)?;
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
+        manager.pane_split(
             session_name.as_deref(),
-            "pane.split",
-            build_pane_split_params(direction, target_pane_id, workspace_id, cwd, ratio, focus),
-        )?;
-        bounded_ipc(parse_pane_info_response(response)?)
+            direction,
+            target_pane_id,
+            workspace_id,
+            cwd,
+            ratio,
+            focus,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5912,27 +4955,10 @@ pub async fn herdr_pane_zoom(
     session_name: Option<String>,
     pane_id: Option<String>,
     mode: Option<HerdrPaneZoomMode>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut params = serde_json::Map::new();
-        if let Some(pane_id) = pane_id.filter(|value| !value.trim().is_empty()) {
-            params.insert("pane_id".into(), serde_json::Value::String(pane_id));
-        }
-        if let Some(mode) = mode {
-            params.insert(
-                "mode".into(),
-                serde_json::to_value(mode).map_err(|error| error.to_string())?,
-            );
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "pane.zoom",
-            serde_json::Value::Object(params),
-        )?;
-        Ok(())
+        manager.pane_zoom(session_name.as_deref(), pane_id, mode)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5946,36 +4972,16 @@ pub async fn herdr_pane_swap(
     target_pane_id: Option<String>,
     pane_id: Option<String>,
     direction: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut params = serde_json::Map::new();
-        if let Some(source_pane_id) = source_pane_id.filter(|value| !value.trim().is_empty()) {
-            params.insert(
-                "source_pane_id".into(),
-                serde_json::Value::String(source_pane_id),
-            );
-        }
-        if let Some(target_pane_id) = target_pane_id.filter(|value| !value.trim().is_empty()) {
-            params.insert(
-                "target_pane_id".into(),
-                serde_json::Value::String(target_pane_id),
-            );
-        }
-        if let Some(pane_id) = pane_id.filter(|value| !value.trim().is_empty()) {
-            params.insert("pane_id".into(), serde_json::Value::String(pane_id));
-        }
-        if let Some(direction) = direction.filter(|value| !value.trim().is_empty()) {
-            params.insert("direction".into(), serde_json::Value::String(direction));
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
+        manager.pane_swap(
             session_name.as_deref(),
-            "pane.swap",
-            serde_json::Value::Object(params),
-        )?;
-        Ok(())
+            source_pane_id,
+            target_pane_id,
+            pane_id,
+            direction,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5986,20 +4992,10 @@ pub async fn herdr_pane_close(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
     pane_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if pane_id.trim().is_empty() {
-            return Err("pane_id is required".into());
-        }
-        let _ = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "pane.close",
-            serde_json::json!({ "pane_id": pane_id }),
-        )?;
-        Ok(())
+        manager.pane_close(session_name.as_deref(), pane_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6011,17 +5007,10 @@ pub async fn herdr_layout_export(
     session_name: Option<String>,
     tab_id: Option<String>,
     pane_id: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrLayoutDescription, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "layout.export",
-            build_layout_export_params(tab_id, pane_id),
-        )?;
-        bounded_ipc(parse_layout_export_response(response)?)
+        manager.layout_export(session_name.as_deref(), tab_id, pane_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6035,17 +5024,10 @@ pub async fn herdr_layout_set_split_ratio(
     pane_id: Option<String>,
     path: Vec<bool>,
     ratio: f64,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrLayoutDescription, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "layout.set_split_ratio",
-            build_layout_set_split_ratio_params(tab_id, pane_id, &path, ratio),
-        )?;
-        bounded_ipc(parse_layout_set_split_ratio_response(response)?)
+        manager.layout_set_split_ratio(session_name.as_deref(), tab_id, pane_id, path, ratio)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6054,36 +5036,22 @@ pub async fn herdr_layout_set_split_ratio(
 #[tauri::command]
 pub async fn herdr_binary_source_get(
     state: tauri::State<'_, HerdrState>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrBinarySourceInfo, String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || match runtime_target.as_ref() {
-        Some(HerdrRuntimeTarget::Wsl { .. }) => manager
-            .provider_capabilities(runtime_target.as_ref(), None)
-            .map(|capabilities| capabilities.binary_source),
-        _ => Ok(manager.binary_source_info()),
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.binary_source_info())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn herdr_binary_source_set(
     state: tauri::State<'_, HerdrState>,
     source: HerdrBinarySource,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrBinarySourceSetResult, String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if matches!(runtime_target, Some(HerdrRuntimeTarget::Wsl { .. })) {
-            return Err(
-                "WSL Herdr uses the distro-installed binary; change it inside that distro".into(),
-            );
-        }
-        manager.set_binary_source(source)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.set_binary_source(source))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -6091,25 +5059,14 @@ pub async fn herdr_agent_get(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
     target: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrAgentDetails, String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        validate_explicit_pane_target(&target)?;
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
-            session_name.as_deref(),
-            "agent.get",
-            serde_json::json!({ "target": target }),
-        )?;
-        bounded_ipc(parse_agent_get_response(response)?)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.agent_get(session_name.as_deref(), target))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn herdr_agent_read(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
@@ -6118,49 +5075,17 @@ pub async fn herdr_agent_read(
     format: Option<HerdrReadFormat>,
     lines: Option<u32>,
     strip_ansi: Option<bool>,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<HerdrAgentReadResult, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        validate_explicit_pane_target(&target)?;
-        if let Some(lines) = lines {
-            if !(AGENT_READ_MIN_LINES..=AGENT_READ_MAX_LINES).contains(&lines) {
-                return Err(format!(
-                    "agent.read lines must be between {AGENT_READ_MIN_LINES} and {AGENT_READ_MAX_LINES}"
-                ));
-            }
-        }
-        let format = format.unwrap_or(HerdrReadFormat::Text);
-        let mut params = serde_json::Map::new();
-        params.insert("target".into(), serde_json::Value::String(target.clone()));
-        params.insert(
-            "source".into(),
-            serde_json::to_value(source).map_err(|error| error.to_string())?,
-        );
-        params.insert(
-            "format".into(),
-            serde_json::to_value(format).map_err(|error| error.to_string())?,
-        );
-        if let Some(lines) = lines {
-            params.insert("lines".into(), serde_json::json!(lines));
-        }
-        if let Some(strip_ansi) = strip_ansi {
-            params.insert("strip_ansi".into(), serde_json::json!(strip_ansi));
-        }
-        let response = manager.provider_api_request(
-            runtime_target.as_ref(),
+        manager.agent_read(
             session_name.as_deref(),
-            "agent.read",
-            serde_json::Value::Object(params),
-        )?;
-        let parsed = parse_agent_read_response(response)?;
-        if parsed.pane_id != target {
-            return Err(format!(
-                "agent.read returned pane {} for requested target {target}",
-                parsed.pane_id
-            ));
-        }
-        bounded_ipc(parsed)
+            target,
+            source,
+            format,
+            lines,
+            strip_ansi,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6170,7 +5095,6 @@ pub async fn herdr_agent_read(
 pub async fn herdr_events_subscribe(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
-    runtime_target: Option<HerdrRuntimeTarget>,
     on_event: tauri::ipc::Channel<HerdrSubscriptionEvent>,
 ) -> Result<String, String> {
     let manager = state.0.clone();
@@ -6178,7 +5102,7 @@ pub async fn herdr_events_subscribe(
         let channel = on_event;
         let on_event: OnSubscriptionEvent =
             Arc::new(move |event| channel.send(event).map_err(|e| e.to_string()));
-        manager.provider_events_subscribe(runtime_target.as_ref(), session_name, on_event)
+        manager.events_subscribe(session_name, on_event)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6188,14 +5112,11 @@ pub async fn herdr_events_subscribe(
 pub async fn herdr_events_release(
     state: tauri::State<'_, HerdrState>,
     subscription_id: String,
-    runtime_target: Option<HerdrRuntimeTarget>,
 ) -> Result<(), String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.provider_events_release(runtime_target.as_ref(), &subscription_id)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || manager.events_release(&subscription_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -6206,31 +5127,12 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::io::BufRead;
-    use std::io::Cursor;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc;
     use std::time::Duration;
     #[cfg(unix)]
     use std::time::Instant;
-
-    #[test]
-    fn omitted_runtime_target_uses_native_and_wsl_is_platform_scoped() {
-        let manager = HerdrManager::new();
-        assert_eq!(
-            HerdrManager::resolved_runtime_target(None),
-            HerdrRuntimeTarget::Native
-        );
-        assert!(manager.require_runtime_target(None).is_ok());
-
-        let wsl = HerdrRuntimeTarget::Wsl {
-            distro: "Ubuntu".to_string(),
-        };
-        #[cfg(windows)]
-        assert!(manager.require_runtime_target(Some(&wsl)).is_ok());
-        #[cfg(not(windows))]
-        assert!(manager.require_runtime_target(Some(&wsl)).is_err());
-    }
 
     fn frame(seq: u64, full: bool) -> HerdrWireFrame {
         HerdrWireFrame {
@@ -6389,6 +5291,74 @@ mod tests {
     }
 
     #[test]
+    fn parse_tab_created_response_rejects_cross_tab_or_workspace_identity() {
+        let response = |root_tab_id: &str, root_workspace_id: &str| {
+            serde_json::json!({
+                "id": "1",
+                "result": {
+                    "type": "tab_created",
+                    "tab": {
+                        "tab_id": "tab_9",
+                        "workspace_id": "ws_1",
+                        "label": "Shell"
+                    },
+                    "root_pane": {
+                        "pane_id": "pane_9",
+                        "terminal_id": "term_9",
+                        "workspace_id": root_workspace_id,
+                        "tab_id": root_tab_id
+                    }
+                }
+            })
+        };
+        assert_eq!(
+            parse_tab_created_response(response("tab_existing", "ws_1")).unwrap_err(),
+            "tab_created root_pane tab_id does not match tab"
+        );
+        assert_eq!(
+            parse_tab_created_response(response("tab_9", "ws_other")).unwrap_err(),
+            "tab_created root_pane workspace_id does not match tab"
+        );
+    }
+
+    #[test]
+    fn pane_process_info_requires_the_created_pane_shell_in_foreground() {
+        let response = |foreground_process_group_id: u64, name: &str| {
+            serde_json::json!({
+                "result": {
+                    "type": "pane_process_info",
+                    "process_info": {
+                        "pane_id": "pane_9",
+                        "shell_pid": 42,
+                        "foreground_process_group_id": foreground_process_group_id,
+                        "foreground_processes": [{
+                            "pid": foreground_process_group_id,
+                            "name": name,
+                            "argv": [name]
+                        }]
+                    }
+                }
+            })
+        };
+        assert!(pane_process_info_shows_shell_initialization(
+            &response(42, "pwsh.exe"),
+            "pane_9"
+        ));
+        assert!(!pane_process_info_shows_shell_initialization(
+            &response(99, "vim"),
+            "pane_9"
+        ));
+        assert!(!pane_process_info_shows_shell_initialization(
+            &response(42, "opencode"),
+            "pane_9"
+        ));
+        assert!(!pane_process_info_shows_shell_initialization(
+            &response(42, "pwsh.exe"),
+            "pane_other"
+        ));
+    }
+
+    #[test]
     fn apply_status_json_gates_server_fields() {
         let mut caps = HerdrCapabilities {
             binary_path: Some("/bin/herdr".into()),
@@ -6440,6 +5410,8 @@ mod tests {
                 pane_close: false,
                 layout_export: false,
                 layout_set_split_ratio: false,
+                agent_manifests: false,
+                agent_start: false,
                 agent_get: false,
                 agent_read: false,
                 events_subscribe: false,
@@ -6464,7 +5436,6 @@ mod tests {
                 status: HerdrEventsStatus::Unavailable,
                 reason: None,
             },
-            transport: None,
         };
         let status = serde_json::json!({
             "client": {
@@ -6495,9 +5466,7 @@ mod tests {
     fn events_capability_is_unavailable_when_binary_missing() {
         let mgr = HerdrManager::new();
         // Force missing binary so we don't depend on the host install for this assertion.
-        mgr.runtime_providers
-            .native_binary_source_for_test()
-            .set_binary_override_for_test(Some(PathBuf::from("/nonexistent/herdr-binary")));
+        *mgr.binary_override.lock().unwrap() = Some(PathBuf::from("/nonexistent/herdr-binary"));
         let caps = mgr.capabilities();
         assert_eq!(caps.events.status, HerdrEventsStatus::Unavailable);
         assert!(caps.events.reason.is_some());
@@ -6576,19 +5545,14 @@ mod tests {
         assert!(result.restart_required);
         // Active process remains on Global until restart/reconfigure.
         assert_eq!(
-            mgr.runtime_providers
-                .native_binary_source_for_test()
-                .active_source_for_test(),
+            *mgr.active_source.lock().unwrap(),
             HerdrBinarySource::Global
         );
         let reloaded = HerdrManager::new();
         reloaded.set_config_dir_for_test(dir.path().to_path_buf());
         assert_eq!(reloaded.get_binary_source(), HerdrBinarySource::Default);
         assert_eq!(
-            reloaded
-                .runtime_providers
-                .native_binary_source_for_test()
-                .active_source_for_test(),
+            *reloaded.active_source.lock().unwrap(),
             HerdrBinarySource::Default
         );
     }
@@ -6596,11 +5560,7 @@ mod tests {
     #[test]
     fn corrupt_binary_source_preference_is_reported() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            crate::herdr_runtime::native::binary_source_config_path_for_test(dir.path()),
-            "{not-json",
-        )
-        .unwrap();
+        fs::write(binary_source_config_path(dir.path()), "{not-json").unwrap();
         let mgr = HerdrManager::new();
         mgr.set_config_dir_for_test(dir.path().to_path_buf());
         let info = mgr.binary_source_info();
@@ -6633,7 +5593,7 @@ mod tests {
     #[test]
     fn missing_global_binary_falls_back_to_yuzora_managed() {
         let managed = PathBuf::from("/bundled/herdr");
-        let (path, resolved, reason) = crate::herdr_runtime::native::select_binary_resolution(
+        let (path, resolved, reason) = select_binary_resolution(
             HerdrBinarySource::Global,
             false,
             (None, Some("Herdr was not found on PATH".into())),
@@ -6646,7 +5606,7 @@ mod tests {
 
     #[test]
     fn missing_global_and_managed_binaries_report_both_failures() {
-        let (path, resolved, reason) = crate::herdr_runtime::native::select_binary_resolution(
+        let (path, resolved, reason) = select_binary_resolution(
             HerdrBinarySource::Global,
             false,
             (None, Some("Herdr was not found on PATH".into())),
@@ -6662,9 +5622,8 @@ mod tests {
     #[test]
     fn default_binary_source_does_not_silently_fall_back_to_global() {
         let mgr = HerdrManager::new();
-        mgr.runtime_providers
-            .native_binary_source_for_test()
-            .set_sources_for_test(HerdrBinarySource::Default);
+        *mgr.active_source.lock().unwrap() = HerdrBinarySource::Default;
+        *mgr.configured_source.lock().unwrap() = HerdrBinarySource::Default;
         let (path, reason) = mgr.resolve_binary_for_source(HerdrBinarySource::Default);
         assert!(path.is_none());
         assert!(reason.unwrap().contains("managed"));
@@ -6735,6 +5694,574 @@ mod tests {
         assert_eq!(read.source, HerdrReadSource::RecentUnwrapped);
         assert!(!read.too_large);
         assert!(!read.truncated);
+    }
+
+    #[test]
+    fn agent_manifest_parser_enriches_catalog_and_rejects_duplicates() {
+        let catalog = parse_agent_manifest_response(serde_json::json!({
+            "result": {
+                "type": "agent_manifest_status",
+                "manifests": [
+                    {
+                        "agent": "codex",
+                        "source": "bundled",
+                        "source_kind": "bundled",
+                        "active_version": "2026.07.18.1"
+                    },
+                    {
+                        "agent": "cursor",
+                        "source": "bundled",
+                        "source_kind": "bundled",
+                        "warning": "preview"
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog[0].agent, "codex");
+        assert_eq!(
+            catalog[0].bypass_flags,
+            vec!["--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert_eq!(catalog[1].warning.as_deref(), Some("preview"));
+        assert_eq!(agent_binary_name("cursor"), "cursor-agent");
+
+        let duplicate = parse_agent_manifest_response(serde_json::json!({
+            "result": {
+                "type": "agent_manifest_status",
+                "manifests": [
+                    { "agent": "pi", "source": "bundled", "source_kind": "bundled" },
+                    { "agent": "pi", "source": "local", "source_kind": "local" }
+                ]
+            }
+        }));
+        assert!(duplicate.unwrap_err().contains("duplicate"));
+        assert!(validate_agent_kind("../codex").is_err());
+    }
+
+    #[test]
+    fn agent_started_parser_pins_the_created_pane() {
+        let response = serde_json::json!({
+            "result": {
+                "type": "agent_started",
+                "agent": { "pane_id": "w1:p1" },
+                "argv": ["codex"]
+            }
+        });
+        assert!(parse_agent_started_response(response.clone(), "w1:p1").is_ok());
+        assert!(parse_agent_started_response(response, "w1:p2")
+            .unwrap_err()
+            .contains("requested pane"));
+    }
+
+    #[test]
+    fn windows_pathext_parser_keeps_safe_unique_extensions() {
+        assert_eq!(
+            windows_executable_extensions(Some(".EXE;.CMD;.exe;BAT;.;.PS1-evil")),
+            vec![".EXE", ".CMD", ".BAT"]
+        );
+        assert_eq!(
+            windows_executable_extensions(None),
+            vec![".EXE", ".CMD", ".BAT", ".COM"]
+        );
+    }
+
+    #[test]
+    fn schema_flags_expose_only_advertised_agent_creation_methods() {
+        let mut api = HerdrApiCapability {
+            snapshot: false,
+            ping: false,
+            tab_create: false,
+            workspace_focus: false,
+            workspace_create: false,
+            workspace_rename: false,
+            workspace_close: false,
+            tab_rename: false,
+            tab_close: false,
+            tab_focus: false,
+            tab_move: false,
+            pane_focus: false,
+            pane_rename: false,
+            pane_split: false,
+            pane_zoom: false,
+            pane_swap: false,
+            pane_close: false,
+            layout_export: false,
+            layout_set_split_ratio: false,
+            agent_manifests: false,
+            agent_start: false,
+            agent_get: false,
+            agent_read: false,
+            events_subscribe: false,
+            worktree_list: false,
+            methods: Vec::new(),
+            schema_protocol: None,
+            schema_version: None,
+            reason: None,
+        };
+        let methods = HashSet::from([
+            "session.snapshot".to_string(),
+            "tab.create".to_string(),
+            "server.agent_manifests".to_string(),
+            "agent.start".to_string(),
+        ]);
+        apply_schema_method_flags(&mut api, &methods, false);
+        assert!(api.agent_manifests);
+        assert!(api.agent_start);
+        assert!(api.methods.contains(&"server.agent_manifests".to_string()));
+        assert!(api.methods.contains(&"agent.start".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_uses_manifest_tab_and_start_as_one_bounded_transaction() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut methods = Vec::new();
+            for _ in 0..7 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(request.trim()).unwrap();
+                let method = request["method"].as_str().unwrap().to_string();
+                methods.push(method.clone());
+                let response = match method.as_str() {
+                    "ping" => serde_json::json!({
+                        "id": request["id"],
+                        "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+                    }),
+                    "server.agent_manifests" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                    "tab.create" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "tab_created",
+                            "tab": {
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1",
+                                "label": "codex"
+                            },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                    "agent.start" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "agent_started",
+                            "agent": { "pane_id": "w1:p2" },
+                            "argv": ["codex"]
+                        }
+                    }),
+                    other => panic!("unexpected method: {other}"),
+                };
+                writeln!(stream, "{response}").unwrap();
+            }
+            methods
+        });
+
+        let binary = dir.path().join("herdr");
+        let script = format!(
+            r#"#!/bin/sh
+set -e
+if [ "$1" = "session" ]; then
+  printf '%s\n' '{{"sessions":[{{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"{}"}}]}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  printf '%s\n' '{{"client":{{"version":"0.8.0","protocol":19,"binary":"FAKE"}},"server":{{"status":"running","running":true,"version":"0.8.0","protocol":19,"compatible":true,"socket":"{}"}}}}'
+  exit 0
+fi
+printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.close","server.agent_manifests","agent.start"]}}'
+"#,
+            socket.display(),
+            socket.display()
+        );
+        fs::write(&binary, script).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+
+        let manager = HerdrManager::with_binary(binary);
+        let created = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap();
+        assert_eq!(created.name, "codex");
+        assert_eq!(created.pane_id, "w1:p2");
+        assert_eq!(created.terminal_id, "term-2");
+        assert_eq!(
+            server.join().unwrap(),
+            vec![
+                "ping",
+                "ping",
+                "server.agent_manifests",
+                "ping",
+                "tab.create",
+                "ping",
+                "agent.start"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_closes_only_the_new_tab_when_agent_start_fails() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create-rollback.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut methods = Vec::new();
+            let mut closed_tab_id = None;
+            for _ in 0..9 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(request.trim()).unwrap();
+                let method = request["method"].as_str().unwrap().to_string();
+                methods.push(method.clone());
+                let response = match method.as_str() {
+                    "ping" => serde_json::json!({
+                        "id": request["id"],
+                        "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+                    }),
+                    "server.agent_manifests" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                    "tab.create" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "tab_created",
+                            "tab": {
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1",
+                                "label": "codex"
+                            },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                    "agent.start" => serde_json::json!({
+                        "id": request["id"],
+                        "error": {
+                            "code": "agent_start_failed",
+                            "message": "codex exited before startup"
+                        }
+                    }),
+                    "tab.close" => {
+                        closed_tab_id = request["params"]["tab_id"].as_str().map(ToOwned::to_owned);
+                        serde_json::json!({
+                            "id": request["id"],
+                            "result": { "type": "tab_closed" }
+                        })
+                    }
+                    other => panic!("unexpected method: {other}"),
+                };
+                writeln!(stream, "{response}").unwrap();
+            }
+            (methods, closed_tab_id)
+        });
+
+        let status = format!(
+            r#"{{"client":{{"version":"0.8.0","protocol":19,"binary":"FAKE"}},"server":{{"status":"running","running":true,"version":"0.8.0","protocol":19,"compatible":true,"socket":"{}"}}}}"#,
+            socket.display()
+        );
+        let sessions = format!(
+            r#"{{"sessions":[{{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"{}"}}]}}"#,
+            socket.display()
+        );
+        let binary = write_fake_herdr_with_sessions(
+            dir.path(),
+            &status,
+            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.close","server.agent_manifests","agent.start"]}"#,
+            &sessions,
+        );
+
+        let manager = HerdrManager::with_binary(binary);
+        let error = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap_err();
+        assert_eq!(error, "agent_start_failed: codex exited before startup");
+        let (methods, closed_tab_id) = server.join().unwrap();
+        assert_eq!(closed_tab_id.as_deref(), Some("w1:t2"));
+        assert_eq!(
+            methods,
+            vec![
+                "ping",
+                "ping",
+                "server.agent_manifests",
+                "ping",
+                "tab.create",
+                "ping",
+                "agent.start",
+                "ping",
+                "tab.close"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_retries_busy_only_for_the_pinned_initializing_shell_and_one_name_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create-retry.sock");
+        let pong = || {
+            serde_json::json!({
+                "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+            })
+        };
+        let server = spawn_scripted_api_server(
+            &socket,
+            vec![
+                ("ping", pong()),
+                ("ping", pong()),
+                (
+                    "server.agent_manifests",
+                    serde_json::json!({
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "tab.create",
+                    serde_json::json!({
+                        "result": {
+                            "type": "tab_created",
+                            "tab": { "tab_id": "w1:t2", "workspace_id": "w1", "label": "codex" },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "error": { "code": "agent_pane_busy", "message": "shell is initializing" }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "pane.get",
+                    serde_json::json!({
+                        "result": {
+                            "type": "pane_info",
+                            "pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "pane.process_info",
+                    serde_json::json!({
+                        "result": {
+                            "type": "pane_process_info",
+                            "process_info": {
+                                "pane_id": "w1:p2",
+                                "shell_pid": 42,
+                                "foreground_process_group_id": 42,
+                                "foreground_processes": [{
+                                    "pid": 42,
+                                    "name": "pwsh.exe",
+                                    "argv": ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"]
+                                }]
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "error": { "code": "agent_name_taken", "message": "name already exists" }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "result": {
+                            "type": "agent_started",
+                            "agent": { "pane_id": "w1:p2" },
+                            "argv": ["codex"]
+                        }
+                    }),
+                ),
+            ],
+        );
+        let binary = write_agent_test_binary(dir.path(), &socket, true);
+
+        let manager = HerdrManager::with_binary(binary);
+        let created = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap();
+        assert!(created.name.starts_with("codex-"));
+        let requests = server.join().unwrap();
+        let start_names = requests
+            .iter()
+            .filter(|request| request["method"] == "agent.start")
+            .map(|request| request["params"]["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(start_names, vec!["codex", "codex", created.name.as_str()]);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "ping",
+                "ping",
+                "server.agent_manifests",
+                "ping",
+                "tab.create",
+                "ping",
+                "agent.start",
+                "ping",
+                "pane.get",
+                "ping",
+                "pane.process_info",
+                "ping",
+                "agent.start",
+                "ping",
+                "agent.start"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_busy_fails_closed_when_the_created_terminal_identity_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create-replaced-terminal.sock");
+        let pong = || {
+            serde_json::json!({
+                "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+            })
+        };
+        let server = spawn_scripted_api_server(
+            &socket,
+            vec![
+                ("ping", pong()),
+                ("ping", pong()),
+                (
+                    "server.agent_manifests",
+                    serde_json::json!({
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "tab.create",
+                    serde_json::json!({
+                        "result": {
+                            "type": "tab_created",
+                            "tab": { "tab_id": "w1:t2", "workspace_id": "w1", "label": "codex" },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "error": { "code": "agent_pane_busy", "message": "pane is occupied" }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "pane.get",
+                    serde_json::json!({
+                        "result": {
+                            "type": "pane_info",
+                            "pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-replaced",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "tab.close",
+                    serde_json::json!({
+                        "result": { "type": "tab_closed" }
+                    }),
+                ),
+            ],
+        );
+        let binary = write_agent_test_binary(dir.path(), &socket, true);
+
+        let manager = HerdrManager::with_binary(binary);
+        let error = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap_err();
+        assert_eq!(error, "agent_pane_busy: pane is occupied");
+        let requests = server.join().unwrap();
+        assert!(!requests
+            .iter()
+            .any(|request| request["method"] == "pane.process_info"));
+        let close = requests
+            .iter()
+            .find(|request| request["method"] == "tab.close")
+            .unwrap();
+        assert_eq!(close["params"]["tab_id"], "w1:t2");
     }
 
     #[test]
@@ -7022,7 +6549,7 @@ mod tests {
     fn parse_subscription_event_line_reads_agent_status_changed() {
         let event = parse_subscription_event_line(
             "sub-1",
-            r#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"done","title":"Review"}}"#,
+            r#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"done","title":"Review","execution_origin":{"kind":"wsl","distribution":"Ubuntu"}}}"#,
         )
         .unwrap()
         .unwrap();
@@ -7031,14 +6558,53 @@ mod tests {
                 pane_id,
                 agent_status,
                 title,
+                execution_origin,
                 ..
             } => {
                 assert_eq!(pane_id, "w1:p1");
                 assert_eq!(agent_status, "done");
                 assert_eq!(title.as_deref(), Some("Review"));
+                assert_eq!(
+                    execution_origin,
+                    Some(serde_json::json!({"kind": "wsl", "distribution": "Ubuntu"}))
+                );
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn subscription_event_serializes_agent_status_changed_with_camel_case_fields() {
+        let event = HerdrSubscriptionEvent::AgentStatusChanged {
+            subscription_id: "sub-1".to_owned(),
+            pane_id: "w1:p1".to_owned(),
+            workspace_id: "w1".to_owned(),
+            agent_status: "working".to_owned(),
+            agent: Some("pi".to_owned()),
+            display_agent: Some("Pi".to_owned()),
+            title: Some("Review".to_owned()),
+            execution_origin: Some(serde_json::json!({
+                "kind": "wsl",
+                "distribution": "Ubuntu"
+            })),
+            state_labels: HashMap::from([("working".to_owned(), "Working".to_owned())]),
+        };
+
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "type": "agent_status_changed",
+                "subscriptionId": "sub-1",
+                "paneId": "w1:p1",
+                "workspaceId": "w1",
+                "agentStatus": "working",
+                "agent": "pi",
+                "displayAgent": "Pi",
+                "title": "Review",
+                "executionOrigin": { "kind": "wsl", "distribution": "Ubuntu" },
+                "stateLabels": { "working": "Working" }
+            })
+        );
     }
 
     #[test]
@@ -7150,6 +6716,79 @@ exit 2
     }
 
     #[cfg(unix)]
+    fn write_agent_test_binary(dir: &Path, socket: &Path, probe_methods: bool) -> PathBuf {
+        let socket_path = socket.to_string_lossy();
+        let status = serde_json::json!({
+            "client": { "version": "0.8.0", "protocol": 19, "binary": "FAKE" },
+            "server": {
+                "status": "running",
+                "running": true,
+                "version": "0.8.0",
+                "protocol": 19,
+                "compatible": true,
+                "socket": socket_path
+            }
+        })
+        .to_string();
+        let mut methods = vec![
+            "session.snapshot",
+            "tab.create",
+            "tab.close",
+            "server.agent_manifests",
+            "agent.start",
+        ];
+        if probe_methods {
+            methods.extend(["pane.get", "pane.process_info"]);
+        }
+        let schema = serde_json::json!({
+            "protocol": 19,
+            "schema_version": 1,
+            "methods": methods
+        })
+        .to_string();
+        let sessions = serde_json::json!({
+            "sessions": [{
+                "name": "default",
+                "default": true,
+                "running": true,
+                "session_dir": "/tmp/default",
+                "socket_path": socket_path
+            }]
+        })
+        .to_string();
+        write_fake_herdr_with_sessions(dir, &status, &schema, &sessions)
+    }
+
+    #[cfg(unix)]
+    fn spawn_scripted_api_server(
+        socket: &Path,
+        script: Vec<(&'static str, serde_json::Value)>,
+    ) -> std::thread::JoinHandle<Vec<serde_json::Value>> {
+        use std::os::unix::net::UnixListener;
+
+        let listener = UnixListener::bind(socket).unwrap();
+        std::thread::spawn(move || {
+            let mut requests = Vec::with_capacity(script.len());
+            for (expected_method, mut response) in script {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(request.trim()).unwrap();
+                assert_eq!(request["method"].as_str(), Some(expected_method));
+                response
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("id".into(), request["id"].clone());
+                writeln!(stream, "{response}").unwrap();
+                requests.push(request);
+            }
+            requests
+        })
+    }
+
+    #[cfg(unix)]
     fn write_fake_herdr(dir: &Path) -> PathBuf {
         write_fake_herdr_with(
             dir,
@@ -7166,74 +6805,6 @@ exit 2
             r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","workspace.focus","workspace.create","session.ping"],"schemas":{"session.snapshot":{},"tab.create":{},"workspace.focus":{},"workspace.create":{}}}"#,
             r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr-default","socket_path":"/tmp/herdr.sock"}]}"#,
         )
-    }
-
-    #[cfg(unix)]
-    fn write_fake_wsl_connector_shim(dir: &Path, herdr: &Path, argv_log: &Path) -> PathBuf {
-        let home_bin = dir.join("wsl-home/.local/bin");
-        let tool_bin = dir.join("wsl-tools");
-        fs::create_dir_all(&home_bin).unwrap();
-        fs::create_dir_all(&tool_bin).unwrap();
-        let installed_herdr = home_bin.join("herdr");
-        fs::copy(herdr, &installed_herdr).unwrap();
-        let mut installed_permissions = fs::metadata(&installed_herdr).unwrap().permissions();
-        installed_permissions.set_mode(0o755);
-        fs::set_permissions(&installed_herdr, installed_permissions).unwrap();
-        for (name, source) in [
-            (
-                "readlink",
-                r#"#!/bin/sh
-last=''
-for value in "$@"; do last="$value"; done
-printf '%s\n' "$last"
-"#,
-            ),
-            (
-                "od",
-                r#"#!/bin/sh
-printf '%s\n' '7f 45 4c 46'
-"#,
-            ),
-        ] {
-            let tool = tool_bin.join(name);
-            fs::write(&tool, source).unwrap();
-            let mut permissions = fs::metadata(&tool).unwrap().permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&tool, permissions).unwrap();
-        }
-
-        let path = dir.join("wsl.exe");
-        let script = format!(
-            r#"#!/bin/sh
-set -eu
-printf '%s\n' "$@" > '{}'
-while [ "$#" -gt 0 ] && [ "$1" != "--exec" ]; do shift; done
-[ "$#" -gt 0 ] && shift
-if [ "${{1:-}}" = "env" ]; then
-  shift
-  if [ "${{1:-}}" != "" ] && printf '%s' "$1" | grep -q '^HERDR_SESSION='; then
-    export "$1"
-    shift
-  fi
-fi
-[ "${{1:-}}" = "/bin/sh" ] || exit 97
-[ "${{2:-}}" = "-c" ] || exit 98
-launcher="$3"
-launcher_arg0="$4"
-shift 4
-export HOME='{}'
-export PATH='{}:/usr/bin:/bin'
-exec /bin/sh -c "$launcher" "$launcher_arg0" "$@"
-"#,
-            argv_log.display(),
-            dir.join("wsl-home").display(),
-            tool_bin.display(),
-        );
-        fs::write(&path, script).unwrap();
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions).unwrap();
-        path
     }
 
     #[cfg(unix)]
@@ -7981,237 +7552,6 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             }
         }
         assert!(saw_closed || mgr.sessions.lock().unwrap().is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fake_wsl_connector_harness_controls_owned_child_and_isolates_runtime_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = write_fake_herdr_running_session(dir.path());
-        let argv_log = dir.path().join("wsl-argv.log");
-        let shim = write_fake_wsl_connector_shim(dir.path(), &binary, &argv_log);
-        let manager = Arc::new(HerdrManager::new());
-        manager.set_wsl_executable_for_test(Some(shim));
-        let named = HerdrNamedSession {
-            name: "default".into(),
-            default: true,
-            running: true,
-            session_dir: "/tmp/herdr-default".into(),
-            socket_path: "/tmp/herdr.sock".into(),
-        };
-        let ubuntu = HerdrRuntimeTarget::Wsl {
-            distro: "Ubuntu".into(),
-        };
-        let debian = HerdrRuntimeTarget::Wsl {
-            distro: "Debian".into(),
-        };
-        let (events_tx, events_rx) = mpsc::channel::<HerdrTerminalEvent>();
-        let events: OnTerminalEvent = Arc::new(move |event| {
-            let _ = events_tx.send(event);
-            Ok(())
-        });
-
-        let opened = manager
-            .open_wsl_terminal_with_named_session_for_test(
-                "Ubuntu",
-                "same-terminal-id".into(),
-                HerdrTerminalMode::Control,
-                true,
-                120,
-                40,
-                named.clone(),
-                events.clone(),
-            )
-            .unwrap();
-        assert!(matches!(
-            events_rx.recv_timeout(TEST_EVENT_RECV_TIMEOUT).unwrap(),
-            HerdrTerminalEvent::Frame {
-                seq: 1,
-                full: true,
-                ..
-            }
-        ));
-        let argv = fs::read_to_string(&argv_log).unwrap();
-        assert!(
-            argv.contains(
-                "--distribution\nUbuntu\n--exec\nenv\nHERDR_SESSION=default\n/bin/sh\n-c\n"
-            ) && argv.contains("\nyuzora-wsl-herdr\n"),
-            "{argv}"
-        );
-        // The frame received above is emitted by the copied fake Herdr after
-        // this harness executes the production launcher with fixture readlink
-        // and od commands; it no longer bypasses the launcher via `shift 4`.
-        assert!(
-            argv.contains("control\nsame-terminal-id\n--cols\n120\n--rows\n40\n--takeover"),
-            "{argv}"
-        );
-
-        manager.set_wsl_control_plan(
-            "Ubuntu",
-            "default",
-            WslControlPlan::OfficialCliV080 {
-                version: "0.8.0".into(),
-                protocol: 20,
-            },
-        );
-        let provider = crate::herdr_runtime::WslHerdrRuntimeProvider;
-        crate::herdr_runtime::HerdrRuntimeProvider::terminal_input(
-            &provider,
-            &ubuntu,
-            &manager,
-            &opened.session_id,
-            Some("hello".into()),
-            None,
-        )
-        .unwrap();
-        crate::herdr_runtime::HerdrRuntimeProvider::terminal_resize(
-            &provider,
-            &ubuntu,
-            &manager,
-            &opened.session_id,
-            121,
-            41,
-        )
-        .unwrap();
-        crate::herdr_runtime::HerdrRuntimeProvider::terminal_scroll(
-            &provider,
-            &ubuntu,
-            &manager,
-            &opened.session_id,
-            HerdrScrollDirection::Down,
-            3,
-        )
-        .unwrap();
-        assert!(crate::herdr_runtime::HerdrRuntimeProvider::terminal_input(
-            &provider,
-            &debian,
-            &manager,
-            &opened.session_id,
-            Some("wrong runtime".into()),
-            None,
-        )
-        .is_err());
-        manager.set_wsl_control_plan(
-            "Ubuntu",
-            "default",
-            WslControlPlan::ReadOnly {
-                reason: "unverified dialect".into(),
-            },
-        );
-        let read_only_error = crate::herdr_runtime::HerdrRuntimeProvider::terminal_input(
-            &provider,
-            &ubuntu,
-            &manager,
-            &opened.session_id,
-            Some("blocked".into()),
-            None,
-        )
-        .unwrap_err();
-        assert!(read_only_error.contains("terminal control unavailable"));
-        assert!(read_only_error.contains("unverified dialect"));
-
-        let debian_opened = manager
-            .open_wsl_terminal_with_named_session_for_test(
-                "Debian",
-                "same-terminal-id".into(),
-                HerdrTerminalMode::Control,
-                false,
-                80,
-                24,
-                named,
-                events,
-            )
-            .unwrap();
-        assert_ne!(opened.session_id, debian_opened.session_id);
-        assert_eq!(manager.sessions.lock().unwrap().len(), 2);
-        manager
-            .terminal_release_for_runtime(&ubuntu, &opened.session_id)
-            .unwrap();
-        assert_eq!(manager.sessions.lock().unwrap().len(), 1);
-        // App shutdown releases direct Yuzora connector children only; the
-        // fake shim has no authority over a Herdr server or pane process.
-        manager.release_all_connectors();
-        assert!(manager.sessions.lock().unwrap().is_empty());
-        assert!(manager.connector_runtime_keys.lock().unwrap().is_empty());
-
-        // A later page open creates a fresh owned connector after teardown; it
-        // cannot reuse a released RuntimeKey/opaque control handle.
-        let late = manager
-            .open_wsl_terminal_with_named_session_for_test(
-                "Ubuntu",
-                "same-terminal-id".into(),
-                HerdrTerminalMode::Observe,
-                false,
-                80,
-                24,
-                HerdrNamedSession {
-                    name: "default".into(),
-                    default: true,
-                    running: true,
-                    session_dir: "/tmp/herdr-default".into(),
-                    socket_path: "/tmp/herdr.sock".into(),
-                },
-                Arc::new(|_| Ok(())),
-            )
-            .unwrap();
-        manager
-            .terminal_release_for_runtime(&ubuntu, &late.session_id)
-            .unwrap();
-    }
-
-    #[test]
-    fn connector_reader_fixture_covers_frame_stderr_and_exit_without_a_real_wsl_host() {
-        let session = Arc::new(ConnectorSession {
-            id: "wsl-fixture".into(),
-            mode: HerdrTerminalMode::Observe,
-            cols: Mutex::new(80),
-            rows: Mutex::new(24),
-            child: Mutex::new(None),
-            process_tree: Mutex::new(None),
-            stdin: Mutex::new(None),
-            reader: Mutex::new(None),
-            closed: Mutex::new(false),
-        });
-        let (tx, rx) = mpsc::channel();
-        let on_event: OnTerminalEvent =
-            Arc::new(move |event| tx.send(event).map_err(|error| error.to_string()));
-        let dispatch_started = Instant::now();
-        connector_reader_loop(
-            session,
-            std::io::Cursor::new(
-                b"{\"type\":\"terminal.frame\",\"seq\":1,\"full\":true,\"encoding\":\"ansi\",\"width\":80,\"height\":24,\"bytes\":\"AAA=\"}\n{\"type\":\"terminal.closed\",\"reason\":\"fixture_exit\"}\n".to_vec(),
-            ),
-            Some(std::io::Cursor::new(b"connector diagnostic\n".to_vec())),
-            on_event,
-        );
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let mut frame = false;
-        let mut stderr = false;
-        let mut closed = false;
-        while Instant::now() < deadline && !(frame && stderr && closed) {
-            match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(HerdrTerminalEvent::Frame {
-                    seq: 1, full: true, ..
-                }) => frame = true,
-                Ok(HerdrTerminalEvent::Error { code, .. }) if code == "connector_stderr" => {
-                    stderr = true
-                }
-                Ok(HerdrTerminalEvent::Closed {
-                    reason: Some(reason),
-                    ..
-                }) if reason == "fixture_exit" => closed = true,
-                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        assert!(
-            frame && stderr && closed,
-            "frame={frame} stderr={stderr} closed={closed}"
-        );
-        assert!(
-            dispatch_started.elapsed() < Duration::from_secs(1),
-            "bounded terminal frame dispatch exceeded host-simulation budget"
-        );
     }
 
     #[cfg(unix)]
@@ -9158,521 +8498,6 @@ sys.stderr.buffer.write(b"\xff\xfe")
             started.elapsed() < Duration::from_secs(3),
             "long child was not reaped within timeout"
         );
-    }
-
-    #[cfg(unix)]
-    fn write_fake_wsl_proxy(dir: &Path) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = dir.join("fake-wsl-proxy.py");
-        fs::write(
-            &path,
-            r#"#!/usr/bin/env python3
-import json, sys, time
-pending = []
-for raw in sys.stdin:
-    request = json.loads(raw)
-    mode = request.get("params", {}).get("fixture")
-    if mode == "malformed":
-        sys.stdout.write("not-json\n")
-        sys.stdout.flush()
-        continue
-    if mode == "oversize":
-        sys.stdout.write("x" * (1024 * 1024 + 1) + "\n")
-        sys.stdout.flush()
-        continue
-    if mode == "stderr":
-        sys.stderr.write("e" * (1024 * 1024 + 1))
-        sys.stderr.flush()
-        time.sleep(1)
-        continue
-    pending.append(request)
-    if len(pending) >= 2:
-        for response in reversed(pending):
-            sys.stdout.write(json.dumps({"id": response["id"], "result": {"ok": response["id"]}}) + "\n")
-        sys.stdout.flush()
-        pending = []
-"#,
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions).unwrap();
-        path
-    }
-
-    #[cfg(unix)]
-    fn fake_wsl_proxy_generation_with_script() -> (HerdrManager, Arc<WslProxyGeneration>) {
-        let dir = tempfile::tempdir().unwrap();
-        let script = write_fake_wsl_proxy(dir.path());
-        let manager = HerdrManager::new();
-        manager.set_wsl_executable_for_test(Some(script));
-        let key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: "Ubuntu".into(),
-            },
-            "default",
-        );
-        let generation = manager.ensure_wsl_proxy_generation(&key).unwrap();
-        *generation.fixture_dir.lock().unwrap() = Some(dir);
-        (manager, generation)
-    }
-
-    fn fake_wsl_proxy_generation_for_test() -> Arc<WslProxyGeneration> {
-        Arc::new(WslProxyGeneration {
-            generation: 1,
-            closed: Arc::new(AtomicBool::new(false)),
-            stdin: Mutex::new(None),
-            writer: Mutex::new(()),
-            child: Mutex::new(None),
-            process_tree: Mutex::new(None),
-            reader: Mutex::new(None),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            event_listeners: Arc::new(Mutex::new(HashMap::new())),
-            failure: Arc::new(Mutex::new(None)),
-            telemetry: Arc::new(Mutex::new(WslProxyTelemetry::default())),
-            fixture_dir: Mutex::new(None),
-        })
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fake_wsl_proxy_serializes_writes_and_correlates_out_of_order_responses() {
-        let (manager, generation) = fake_wsl_proxy_generation_with_script();
-        let first_generation = Arc::clone(&generation);
-        let first = std::thread::spawn(move || {
-            HerdrManager::wsl_proxy_request_with_id(
-                &first_generation,
-                "first".into(),
-                "ping",
-                serde_json::json!({}),
-            )
-        });
-        for _ in 0..50 {
-            if generation.pending.lock().unwrap().contains_key("first") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(generation.pending.lock().unwrap().contains_key("first"));
-        let second = HerdrManager::wsl_proxy_request_with_id(
-            &generation,
-            "second".into(),
-            "session.snapshot",
-            serde_json::json!({}),
-        )
-        .unwrap();
-        let first = first.join().unwrap().unwrap();
-        assert_eq!(second["result"]["ok"], "second");
-        assert_eq!(first["result"]["ok"], "first");
-        assert_eq!(generation.telemetry.lock().unwrap().requests, 2);
-        assert_eq!(generation.telemetry.lock().unwrap().responses, 2);
-        let diagnostics = manager.wsl_proxy_diagnostics("Ubuntu", "default");
-        assert_eq!(diagnostics.active_children, 1);
-        assert!(diagnostics.cold_start_ms.is_some());
-        assert!(diagnostics.last_request_ms.is_some());
-        assert!(diagnostics.max_request_ms <= MAX_WSL_DIAGNOSTIC_TIMING_MS);
-        assert!(diagnostics.max_event_dispatch_ms <= MAX_WSL_DIAGNOSTIC_TIMING_MS);
-        let _ = release_wsl_proxy_generation(&generation);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fake_wsl_proxy_rejects_duplicate_active_request_ids_and_releases_pending_calls() {
-        let (_manager, generation) = fake_wsl_proxy_generation_with_script();
-        let first_generation = Arc::clone(&generation);
-        let first = std::thread::spawn(move || {
-            HerdrManager::wsl_proxy_request_with_id(
-                &first_generation,
-                "same".into(),
-                "ping",
-                serde_json::json!({}),
-            )
-        });
-        for _ in 0..50 {
-            if generation.pending.lock().unwrap().contains_key("same") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(generation.pending.lock().unwrap().contains_key("same"));
-        let duplicate = HerdrManager::wsl_proxy_request_with_id(
-            &generation,
-            "same".into(),
-            "ping",
-            serde_json::json!({}),
-        )
-        .unwrap_err();
-        assert!(duplicate.contains("duplicate request id"), "{duplicate}");
-        let _ = release_wsl_proxy_generation(&generation);
-        let released = first.join().unwrap().unwrap_err();
-        assert!(
-            released.contains("released")
-                || released.contains("stdout closed")
-                || released.contains("response channel closed"),
-            "{released}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fake_wsl_proxy_fails_pending_for_malformed_oversized_and_stderr_floods() {
-        for fixture in ["malformed", "oversize", "stderr"] {
-            let (_manager, generation) = fake_wsl_proxy_generation_with_script();
-            let result = HerdrManager::wsl_proxy_request_with_id(
-                &generation,
-                format!("{fixture}-request"),
-                "ping",
-                serde_json::json!({ "fixture": fixture }),
-            );
-            let error = result.unwrap_err();
-            assert!(
-                error.contains("invalid JSON")
-                    || error.contains("stdout read failed")
-                    || error.contains("stderr exceeded"),
-                "{fixture}: {error}"
-            );
-            assert!(generation.closed.load(Ordering::SeqCst));
-            let _ = release_wsl_proxy_generation(&generation);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn timed_out_wsl_proxy_generation_is_closed_reaped_and_not_reused() {
-        let (manager, generation) = fake_wsl_proxy_generation_with_script();
-        let pid = generation.child.lock().unwrap().as_ref().unwrap().id();
-        let error = HerdrManager::wsl_proxy_request_with_id_timeout(
-            &generation,
-            "timeout-request".into(),
-            "ping",
-            serde_json::json!({ "fixture": "timeout" }),
-            Duration::from_millis(80),
-        )
-        .unwrap_err();
-        assert!(error.contains("timed out"), "{error}");
-        assert!(generation.closed.load(Ordering::SeqCst));
-        assert!(generation.child.lock().unwrap().is_none());
-        assert!(!unix_pid_exists(pid), "timed-out proxy child survived");
-
-        let key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: "Ubuntu".into(),
-            },
-            "default",
-        );
-        let recovered = manager.ensure_wsl_proxy_generation(&key).unwrap();
-        assert!(!Arc::ptr_eq(&generation, &recovered));
-        assert!(recovered.generation > generation.generation);
-        let _ = release_wsl_proxy_generation(&recovered);
-    }
-
-    #[test]
-    fn wsl_proxy_reader_correlates_response_and_fails_late_pending_on_eof() {
-        let generation = fake_wsl_proxy_generation_for_test();
-        let (first_tx, first_rx) = mpsc::sync_channel(1);
-        let (late_tx, late_rx) = mpsc::sync_channel(1);
-        generation
-            .pending
-            .lock()
-            .unwrap()
-            .insert("first".into(), first_tx);
-        generation
-            .pending
-            .lock()
-            .unwrap()
-            .insert("late".into(), late_tx);
-        read_wsl_proxy_stdout(
-            Arc::clone(&generation),
-            Cursor::new(b"{\"id\":\"first\",\"result\":{\"ok\":true}}\n".to_vec()),
-        );
-        assert_eq!(
-            first_rx.recv().unwrap().unwrap()["result"]["ok"],
-            serde_json::Value::Bool(true)
-        );
-        let error = late_rx.recv().unwrap().unwrap_err();
-        assert!(error.contains("stdout closed"), "{error}");
-        assert!(generation.closed.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn wsl_proxy_reader_rejects_malformed_response_for_all_pending() {
-        let generation = fake_wsl_proxy_generation_for_test();
-        let (tx, rx) = mpsc::sync_channel(1);
-        generation.pending.lock().unwrap().insert("one".into(), tx);
-        read_wsl_proxy_stdout(Arc::clone(&generation), Cursor::new(b"not-json\n".to_vec()));
-        let error = rx.recv().unwrap().unwrap_err();
-        assert!(error.contains("invalid JSON"), "{error}");
-    }
-
-    #[test]
-    fn wsl_proxy_reader_multiplexes_event_without_consuming_response() {
-        let generation = fake_wsl_proxy_generation_for_test();
-        let (event_tx, event_rx) = mpsc::sync_channel(1);
-        generation.event_listeners.lock().unwrap().insert(
-            "sub-request".into(),
-            WslProxyEventListener {
-                subscription_id: "opaque-subscription".into(),
-                queue: event_tx,
-                closed: Arc::new(AtomicBool::new(false)),
-            },
-        );
-        let (response_tx, response_rx) = mpsc::sync_channel(1);
-        generation
-            .pending
-            .lock()
-            .unwrap()
-            .insert("request-1".into(), response_tx);
-        read_wsl_proxy_stdout(
-            Arc::clone(&generation),
-            Cursor::new(
-                concat!(
-                    "{\"type\":\"proxy.event\",\"request_id\":\"sub-request\",\"event\":{\"event\":\"pane.exited\",\"data\":{\"pane_id\":\"p1\",\"workspace_id\":\"w1\"}}}\n",
-                    "{\"id\":\"request-1\",\"result\":{\"ok\":true}}\n"
-                )
-                .as_bytes()
-                .to_vec(),
-            ),
-        );
-        assert!(matches!(
-            event_rx.recv().unwrap(),
-            HerdrSubscriptionEvent::PaneExited { subscription_id, pane_id, .. }
-                if subscription_id == "opaque-subscription" && pane_id == "p1"
-        ));
-        assert_eq!(
-            response_rx.recv().unwrap().unwrap()["result"]["ok"],
-            serde_json::Value::Bool(true)
-        );
-        let telemetry = generation.telemetry.lock().unwrap();
-        assert_eq!(telemetry.events_delivered, 1);
-        assert!(telemetry.last_event_dispatch_ms.is_some());
-        assert!(telemetry.max_event_dispatch_ms <= MAX_WSL_DIAGNOSTIC_TIMING_MS);
-    }
-
-    #[test]
-    fn wsl_proxy_reader_drops_stale_and_saturated_listener_events() {
-        let generation = fake_wsl_proxy_generation_for_test();
-        let (queue, _receiver) = mpsc::sync_channel(0);
-        generation.event_listeners.lock().unwrap().insert(
-            "sub-request".into(),
-            WslProxyEventListener {
-                subscription_id: "opaque-subscription".into(),
-                queue,
-                closed: Arc::new(AtomicBool::new(false)),
-            },
-        );
-        read_wsl_proxy_stdout(
-            Arc::clone(&generation),
-            Cursor::new(
-                b"{\"type\":\"proxy.event\",\"request_id\":\"sub-request\",\"event\":{\"event\":\"pane.exited\",\"data\":{\"pane_id\":\"p1\",\"workspace_id\":\"w1\"}}}\n"
-                    .to_vec(),
-            ),
-        );
-        assert!(generation
-            .event_listeners
-            .lock()
-            .unwrap()
-            .get("sub-request")
-            .is_none());
-        assert_eq!(generation.telemetry.lock().unwrap().stale_events_dropped, 1);
-    }
-
-    #[test]
-    fn wsl_proxy_event_storm_drops_slow_listener_without_blocking_reader() {
-        let generation = fake_wsl_proxy_generation_for_test();
-        let (queue, _receiver) = mpsc::sync_channel(0);
-        generation.event_listeners.lock().unwrap().insert(
-            "slow".into(),
-            WslProxyEventListener {
-                subscription_id: "opaque-slow".into(),
-                queue,
-                closed: Arc::new(AtomicBool::new(false)),
-            },
-        );
-        let line = "{\"type\":\"proxy.event\",\"request_id\":\"slow\",\"event\":{\"event\":\"pane.exited\",\"data\":{\"pane_id\":\"p1\",\"workspace_id\":\"w1\"}}}\n";
-        let payload = line
-            .repeat(MAX_WSL_PROXY_EVENTS_PER_LISTENER * 2)
-            .into_bytes();
-        let started = Instant::now();
-        read_wsl_proxy_stdout(Arc::clone(&generation), Cursor::new(payload));
-        assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(generation.event_listeners.lock().unwrap().is_empty());
-        assert!(
-            generation.telemetry.lock().unwrap().stale_events_dropped
-                >= (MAX_WSL_PROXY_EVENTS_PER_LISTENER * 2) as u64
-        );
-        assert!(generation.closed.load(Ordering::SeqCst));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn concurrent_proxy_creation_is_bounded_to_one_child_per_runtime_key() {
-        let (manager, initial) = fake_wsl_proxy_generation_with_script();
-        manager.release_all_event_subscriptions();
-        let manager = Arc::new(manager);
-        let key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: "Ubuntu".into(),
-            },
-            "default",
-        );
-        let workers = (0..16)
-            .map(|_| {
-                let manager = Arc::clone(&manager);
-                let key = key.clone();
-                std::thread::spawn(move || {
-                    manager
-                        .ensure_wsl_proxy_generation(&key)
-                        .map(|generation| generation.generation)
-                })
-            })
-            .collect::<Vec<_>>();
-        let generations = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap().unwrap())
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(generations.len(), 1);
-        assert_eq!(manager.wsl_proxy_generations.lock().unwrap().len(), 1);
-        let diagnostics = manager.wsl_proxy_diagnostics("Ubuntu", "default");
-        assert_eq!(diagnostics.active_children, 1);
-        manager.release_all_event_subscriptions();
-        drop(initial);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn proxy_crash_or_runtime_resume_replaces_only_the_failed_runtime_generation() {
-        let (manager, first) = fake_wsl_proxy_generation_with_script();
-        let key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: "Ubuntu".into(),
-            },
-            "default",
-        );
-        let debian_key = HerdrRuntimeKey::new(
-            HerdrRuntimeTarget::Wsl {
-                distro: "Debian".into(),
-            },
-            "default",
-        );
-        let debian = manager.ensure_wsl_proxy_generation(&debian_key).unwrap();
-        fail_wsl_proxy_generation(&first, "fixture terminate/sleep-resume".into());
-        let recovered = manager.ensure_wsl_proxy_generation(&key).unwrap();
-        assert!(!Arc::ptr_eq(&first, &recovered));
-        assert!(recovered.generation > first.generation);
-        assert!(Arc::ptr_eq(
-            &debian,
-            &manager.ensure_wsl_proxy_generation(&debian_key).unwrap()
-        ));
-        assert_eq!(manager.wsl_proxy_generations.lock().unwrap().len(), 2);
-        assert_eq!(
-            manager
-                .wsl_proxy_diagnostics("Ubuntu", "default")
-                .active_children,
-            1
-        );
-        assert_eq!(
-            manager
-                .wsl_proxy_diagnostics("Debian", "default")
-                .active_children,
-            1
-        );
-        manager.release_all_event_subscriptions();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn wsl_shutdown_releases_only_owned_proxy_children_and_pending_requests() {
-        let (manager, generation) = fake_wsl_proxy_generation_with_script();
-        let repeated = manager
-            .ensure_wsl_proxy_generation(&HerdrRuntimeKey::new(
-                HerdrRuntimeTarget::Wsl {
-                    distro: "Ubuntu".into(),
-                },
-                "default",
-            ))
-            .unwrap();
-        assert!(Arc::ptr_eq(&generation, &repeated));
-        let proxy_pid = generation.child.lock().unwrap().as_ref().unwrap().id();
-        let mut external_pane = Command::new("sleep").arg("30").spawn().unwrap();
-        let external_pane_pid = external_pane.id();
-
-        let pending_generation = Arc::clone(&generation);
-        let pending = std::thread::spawn(move || {
-            HerdrManager::wsl_proxy_request_with_id(
-                &pending_generation,
-                "shutdown-pending".into(),
-                "ping",
-                serde_json::json!({}),
-            )
-        });
-        for _ in 0..50 {
-            if generation
-                .pending
-                .lock()
-                .unwrap()
-                .contains_key("shutdown-pending")
-            {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(generation
-            .pending
-            .lock()
-            .unwrap()
-            .contains_key("shutdown-pending"));
-        assert_eq!(
-            manager
-                .wsl_proxy_diagnostics("Ubuntu", "default")
-                .active_children,
-            1
-        );
-
-        // App teardown releases only proxy/connector children Yuzora created.
-        // This independent stand-in represents a Herdr pane/server and must
-        // remain alive because it was never registered as a child.
-        manager.release_all_event_subscriptions();
-        let pending_error = pending.join().unwrap().unwrap_err();
-        assert!(pending_error.contains("released") || pending_error.contains("stdout closed"));
-        assert!(manager.wsl_proxy_generations.lock().unwrap().is_empty());
-        assert!(manager.wsl_proxy_subscriptions.lock().unwrap().is_empty());
-        for _ in 0..100 {
-            if !unix_pid_exists(proxy_pid) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            !unix_pid_exists(proxy_pid),
-            "owned proxy child survived shutdown"
-        );
-        assert!(
-            unix_pid_exists(external_pane_pid),
-            "teardown killed an unowned pane/server"
-        );
-        let _ = external_pane.kill();
-        let _ = external_pane.wait();
-    }
-
-    #[test]
-    fn wsl_proxy_diagnostics_reports_failed_generation_without_native_fallback() {
-        let manager = HerdrManager::new();
-        let generation = fake_wsl_proxy_generation_for_test();
-        fail_wsl_proxy_generation(&generation, "fixture eof".into());
-        manager.wsl_proxy_generations.lock().unwrap().insert(
-            HerdrRuntimeKey::new(
-                HerdrRuntimeTarget::Wsl {
-                    distro: "Ubuntu 開発".into(),
-                },
-                "default",
-            ),
-            generation,
-        );
-        let diagnostics = manager.wsl_proxy_diagnostics("Ubuntu 開発", "default");
-        assert_eq!(diagnostics.mode, "wsl-stdio-proxy");
-        assert_eq!(diagnostics.state, "failed");
-        assert_eq!(diagnostics.failure.as_deref(), Some("fixture eof"));
     }
 
     fn unix_pid_exists(pid: u32) -> bool {

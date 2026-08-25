@@ -16,7 +16,6 @@ pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
 mod herdr_limits;
-pub mod herdr_runtime;
 pub mod herdr_service;
 mod herdr_transport;
 pub mod logging;
@@ -362,9 +361,6 @@ pub fn run() {
             path_capability::sftp_pick_selected_path,
             path_capability::sftp_pick_download_destination,
             herdr_service::herdr_sessions,
-            herdr_service::herdr_wsl_distributions,
-            herdr_service::herdr_wsl_runtime_to_host_path,
-            herdr_service::herdr_wsl_host_to_runtime_path,
             herdr_service::herdr_capabilities,
             herdr_service::herdr_snapshot,
             herdr_service::herdr_terminal_open,
@@ -373,6 +369,8 @@ pub fn run() {
             herdr_service::herdr_terminal_scroll,
             herdr_service::herdr_terminal_release,
             herdr_service::herdr_terminal_create,
+            herdr_service::herdr_agent_catalog,
+            herdr_service::herdr_agent_create,
             herdr_service::herdr_workspace_focus,
             herdr_service::herdr_workspace_create,
             herdr_service::herdr_workspace_rename,
@@ -540,6 +538,8 @@ mod command_inventory_tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
+            "herdr_service::herdr_agent_catalog",
+            "herdr_service::herdr_agent_create",
             "herdr_service::herdr_agent_get",
             "herdr_service::herdr_agent_read",
             "herdr_service::herdr_events_subscribe",

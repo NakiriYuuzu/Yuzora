@@ -2,28 +2,26 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
-## [0.0.9-beta.1] - 2026-08-17
+## [0.0.9-beta.1] - 2026-08-24
 
 ### 新增
 
-- 加入實驗性的 WSL-native HERDR Runtime Environment 基礎：可分辨 Native 與不同 WSL distribution 中同名的 HERDR session、Space、tab、pane、terminal 與 Agent，避免切換環境時混用內容或控制權。
-- HERDR Runtime 設定新增 WSL environment、connection mode 與診斷資訊；會清楚區分 proxy、CLI fallback、目標 distro 不存在或 HERDR 不可用等狀態，不會悄悄改連 Native HERDR。
-- WSL 工作區開始使用 Linux Runtime Path 與 Windows Host Path 的雙路徑模型，讓 HERDR 控制、Yuzora 工作區切換與 UNC 路徑各自維持正確環境語意。
-- Terminal 複製／貼上同時支援快捷鍵與系統 Clipboard event，當 Tauri clipboard service 暫時不可用時會改用 WebView clipboard fallback；尚未取得控制權的 HERDR terminal 不會把貼上內容送入 runtime。
+- ADE 可從 HERDR 公告的 Agent catalog 在所選 Space 直接啟動 Agent，支援明確選擇已驗證的 bypass-permissions 旗標；建立失敗時只清理由本次操作新建的 tab。
+- 命令面板可依 blocked、done、working、unknown、idle 的優先順序搜尋並跳至 HERDR Agents，也可快速切換 Spaces。
+- Terminal 複製／貼上同時支援快捷鍵與系統 Clipboard event；當 Tauri clipboard service 暫時不可用時會改用 WebView clipboard fallback，尚未取得控制權的 HERDR terminal 不會把貼上內容送入 server。
 
 ### 改善
 
-- 官方 WSL HERDR 0.8.0 在 stdio proxy 尚不可用時，可透過公開 CLI control 建立第一個 Space、建立與切換 tab、分割／重新命名／縮放／交換／關閉 pane，並以公開 layout geometry 顯示多窗格；未映射能力仍會明確停用。
-- HERDR 沒有任何 Space、連線失敗或 runtime 不可用時，ADE 會提供建立 Space 與開啟本機資料夾的明確入口；本機 Terminal 沒有 workspace 時會開啟資料夾選擇器，不再靜默無反應。
-- HERDR terminal、事件、tab 操作、context menu、Agent Inspector 與恢復流程都保留所屬 Runtime Environment；連線中斷、重連與背景 refresh 會隔離不同 distro 的相同資源 ID。
+- Windows 版只會連線 Windows-native HERDR；Yuzora 會如實顯示 HERDR snapshot 與事件回報的所有 Agent 身分與狀態，並依 Windows `PATHEXT` 診斷 `.exe`、`.cmd`、`.bat`、`.com` Agent 啟動器，但實際啟動仍由 HERDR 驗證。
+- New Agent 遇到新 pane 尚在初始化時，只會在 terminal、tab、Space 身分維持一致且前景程序仍是 shell 時短暫重試；若 pane 已被其他程序接管則會安全停止並回收本次新建 tab。
+- HERDR 沒有任何 Space、連線失敗、停止或不可用時，ADE 會提供建立 Space 與開啟本機資料夾的明確入口；本機 Terminal 沒有 workspace 時會開啟資料夾選擇器，不再靜默無反應。
+- 建立第一個 Space 僅要求 `workspace.create`，並在後續 snapshot 驗證成功才回報完成；終端連線、split resize 與接管控制都會依 HERDR capabilities 安全停用。
 - Native Preview child webview 的開啟、尺寸、可見性與關閉操作會依最新工作區、overlay 與 focus 狀態序列化，避免 preview 蓋住應用程式 dialog 或回到過期位置。
-- WSL transport 具備有界 request、event queue、timeout、backoff、診斷與 child-process ownership 保護；關閉 Yuzora 只會釋放自身建立的 connector／proxy，不會要求停止 HERDR server、pane 或整個 WSL。
 
 ### 已知限制
 
 - 此為 Beta GitHub Pre-release，僅供手動下載測試；不會成為 Latest Release、不提供 OTA、不會更新 stable `latest.json` 或產品頁固定下載連結。
-- `herdr api proxy --stdio` 的上游 patch 尚未合併；精確驗證的官方 WSL HERDR 0.8.0 會使用公開 CLI compatibility control，但 `events.subscribe`、`tab.move`、direct `pane.focus` 與 split-ratio persistence 仍不可用；未知版本會 fail closed，而不是使用 private protocol。
-- 真實 Windows + WSL2、WSL shutdown／sleep／reconnect、多 distro 與 packaged installer 的完整驗收仍待 Windows 測試；本版不得視為正式支援承諾。
+- Windows-native HERDR 透過 `wsl.exe` 啟動的互動式 Linux shell，不保證能讓 HERDR 看見其隱藏的 Linux descendant Agent process；Yuzora 不會以自行推測的 Agent 身分取代 HERDR 回報。
 - macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現 Gatekeeper 或 SmartScreen 提示。
 
 ## [0.0.8] - 2026-08-15

@@ -1,13 +1,10 @@
 import i18n from "@/lib/i18n"
 import { herdrTabClose, herdrTabRename } from "@/lib/herdrIpc"
-import type { HerdrRuntimeTarget } from "@/lib/herdrTypes"
-import { normalizeHerdrRuntimeTarget, sameHerdrRuntimeTarget } from "@/lib/herdrRuntime"
 import { useHerdrStore } from "@/state/herdrStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 interface RenameHerdrTabOptions {
-    runtimeTarget?: HerdrRuntimeTarget | null
     sessionName: string
     tabId: string
     currentLabel: string
@@ -15,7 +12,6 @@ interface RenameHerdrTabOptions {
 }
 
 interface OpenCreatedHerdrTabOptions {
-    runtimeTarget?: HerdrRuntimeTarget | null
     sessionName: string
     workspaceId?: string | null
     terminalId: string
@@ -47,15 +43,10 @@ export function isHerdrTabAlreadyClosedError(
  */
 export async function closeHerdrTabIdempotently(
     sessionName: string,
-    tabId: string,
-    runtimeTarget?: HerdrRuntimeTarget | null
+    tabId: string
 ): Promise<void> {
     try {
-        await herdrTabClose({
-            ...(runtimeTarget ? { runtimeTarget } : {}),
-            sessionName,
-            tabId
-        })
+        await herdrTabClose({ sessionName, tabId })
     } catch (error) {
         if (!isHerdrTabAlreadyClosedError(error, tabId)) throw error
     }
@@ -71,19 +62,12 @@ async function requestHerdrTabName(initialValue: string): Promise<string | null>
     })
 }
 
-async function reconcileHerdrTabMutation(
-    sessionName: string,
-    runtimeTarget?: HerdrRuntimeTarget | null
-): Promise<void> {
+async function reconcileHerdrTabMutation(sessionName: string): Promise<void> {
     useHerdrStore.getState().bumpTopologyRevision()
-    await useHerdrStore
-        .getState()
-        .refreshSnapshot(sessionName, normalizeHerdrRuntimeTarget(runtimeTarget))
-        .catch(() => undefined)
+    await useHerdrStore.getState().refreshSnapshot(sessionName).catch(() => undefined)
 }
 
 export async function renameHerdrTabWithDialog({
-    runtimeTarget,
     sessionName,
     tabId,
     currentLabel,
@@ -92,21 +76,15 @@ export async function renameHerdrTabWithDialog({
     const label = await requestHerdrTabName(currentLabel)
     if (!label || label === currentLabel) return false
 
-    await herdrTabRename({
-        ...(runtimeTarget ? { runtimeTarget } : {}),
-        sessionName,
-        tabId,
-        label
-    })
+    await herdrTabRename({ sessionName, tabId, label })
     if (pagePath) {
         useWorkspaceStore.getState().updateHerdrPageTitle(pagePath, label)
     }
-    await reconcileHerdrTabMutation(sessionName, runtimeTarget)
+    await reconcileHerdrTabMutation(sessionName)
     return true
 }
 
 export async function openCreatedHerdrTab({
-    runtimeTarget,
     sessionName,
     workspaceId,
     terminalId,
@@ -118,7 +96,6 @@ export async function openCreatedHerdrTab({
     const initialTitle = title?.trim() || terminalId
     useWorkspaceStore.getState().openHerdrTerminalPage({
         herdrSessionId: sessionName,
-        runtimeTarget,
         terminalId,
         title: initialTitle,
         paneId: paneId ?? null,
@@ -129,7 +106,6 @@ export async function openCreatedHerdrTab({
 }
 
 export async function openCreatedHerdrTabAndRequestName({
-    runtimeTarget,
     sessionName,
     workspaceId,
     terminalId,
@@ -140,7 +116,6 @@ export async function openCreatedHerdrTabAndRequestName({
 }: OpenCreatedHerdrTabOptions): Promise<void> {
     const initialTitle = title?.trim() || terminalId
     await openCreatedHerdrTab({
-        runtimeTarget,
         sessionName,
         workspaceId,
         terminalId,
@@ -158,11 +133,9 @@ export async function openCreatedHerdrTabAndRequestName({
             (candidate) =>
                 candidate.kind === "herdr-terminal" &&
                 candidate.herdrSessionId === sessionName &&
-                sameHerdrRuntimeTarget(candidate.herdrRuntimeTarget, runtimeTarget) &&
                 candidate.herdrTabId === tabId
         )
     await renameHerdrTabWithDialog({
-        runtimeTarget,
         sessionName,
         tabId,
         currentLabel: initialTitle,

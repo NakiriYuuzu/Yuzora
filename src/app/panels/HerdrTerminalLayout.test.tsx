@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { HerdrLayoutDescription } from "@/lib/herdrTypes"
-import { herdrInitialState, herdrStoreRuntimeKey, useHerdrStore } from "@/state/herdrStore"
+import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 const layoutMock = vi.hoisted(() => {
   let layout: HerdrLayoutDescription = {
@@ -362,42 +362,6 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     await screen.findByTestId("herdr-split-root")
     expect(vi.mocked(herdrTerminalOpen)).not.toHaveBeenCalled()
     expect(screen.getByRole("status")).toHaveTextContent("verified control plane unavailable")
-  })
-
-  it("does not borrow selected Native resize capability for an unselected WSL page", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    const snapshot = useHerdrStore.getState().snapshot
-    useHerdrStore.setState({
-      sessions: [
-        { ...useHerdrStore.getState().sessions[0]!, runtimeTarget: { kind: "native" } },
-        { ...useHerdrStore.getState().sessions[0]!, runtimeTarget: ubuntu }
-      ],
-      selectedRuntimeTarget: { kind: "native" },
-      capabilities: layoutCapabilities(true),
-      runtimesBySession: {
-        [herdrStoreRuntimeKey("default", ubuntu)]: {
-          capabilities: layoutCapabilities(false),
-          snapshot,
-          worktreeInventory: null,
-          connectionState: "ready",
-          errorMessage: null
-        }
-      }
-    })
-    render(
-      <HerdrTerminalPage
-        herdrSessionId="default"
-        runtimeTarget={ubuntu}
-        terminalId="t1"
-        herdrTabId="tab-1"
-        pagePath="yuzora://herdr/wsl/ubuntu/t1"
-        active
-        visible
-      />
-    )
-
-    const handle = await screen.findByTestId("herdr-split-handle-root")
-    expect(handle).toHaveAttribute("aria-disabled", "true")
   })
 
   it("keeps split resizing enabled when the exact runtime supports layout.set_split_ratio", async () => {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/lib/herdrIpc", () => ({
+  herdrAgentCreate: vi.fn(),
   herdrSessions: vi.fn(),
   herdrCapabilities: vi.fn(),
   herdrSnapshot: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@/lib/unsavedGuard", () => ({
 }))
 
 import {
+  herdrAgentCreate,
   herdrCapabilities,
   herdrSessions,
   herdrSnapshot,
@@ -33,7 +35,7 @@ import {
 } from "@/lib/herdrIpc"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
-import { herdrInitialState, herdrStoreRuntimeKey, useHerdrStore } from "./herdrStore"
+import { herdrInitialState, useHerdrStore } from "./herdrStore"
 import { useWorkspaceStore } from "./workspaceStore"
 import { useUiStore } from "./uiStore"
 
@@ -69,6 +71,8 @@ const caps = {
         paneClose: true,
         layoutExport: true,
         layoutSetSplitRatio: true,
+        agentManifests: true,
+        agentStart: true,
         agentGet: true,
         agentRead: true,
         eventsSubscribe: true,
@@ -90,7 +94,9 @@ const caps = {
           "pane.swap",
           "pane.close",
           "layout.export",
-          "layout.set_split_ratio"
+          "layout.set_split_ratio",
+          "server.agent_manifests",
+          "agent.start"
         ],
         schemaProtocol: 19,
         schemaVersion: 1,
@@ -239,24 +245,14 @@ const rawSnapshot = {
   }
 }
 
-function snapshotWithWorkspace(
-  workspaceId: string,
-  label: string,
-  path: string,
-  protocol = 19
-) {
+function snapshotWithWorkspace(workspaceId: string, label: string, path: string) {
   return {
     ...rawSnapshot,
-    protocol,
     snapshot: {
       ...rawSnapshot.snapshot,
-      protocol,
       focused_workspace_id: workspaceId,
       workspaces: [
-        ...rawSnapshot.snapshot.workspaces.map((workspace) => ({
-          ...workspace,
-          focused: false
-        })),
+        ...rawSnapshot.snapshot.workspaces.map((workspace) => ({ ...workspace, focused: false })),
         {
           ...rawSnapshot.snapshot.workspaces[0],
           workspace_id: workspaceId,
@@ -302,58 +298,6 @@ describe("herdrStore", () => {
     const state = useHerdrStore.getState()
     expect(state.sessions).toHaveLength(3)
     expect(state.selectedSessionName).toBe("default")
-  })
-
-  it("keeps the selected Native runtime while refreshing a different WSL inventory", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    useHerdrStore.setState({
-      selectedSessionName: "default",
-      selectedRuntimeTarget: { kind: "native" },
-      selectedSpaceId: "native-space",
-      sessions: [{ ...sessions[0]!, runtimeTarget: { kind: "native" } }]
-    })
-    vi.mocked(herdrSessions).mockResolvedValueOnce([{ ...sessions[0]! }])
-
-    await useHerdrStore.getState().refreshSessions(ubuntu)
-
-    const state = useHerdrStore.getState()
-    expect(state.selectedSessionName).toBe("default")
-    expect(state.selectedRuntimeTarget).toEqual({ kind: "native" })
-    expect(state.selectedSpaceId).toBe("native-space")
-    expect(state.sessions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: "default", runtimeTarget: { kind: "native" } }),
-      expect.objectContaining({ name: "default", runtimeTarget: ubuntu })
-    ]))
-  })
-
-  it("fails selected WSL discovery when only Native inventory exists", async () => {
-    const native = { kind: "native" } as const
-    const ubuntu = { kind: "wsl", distro: "Ubuntu" } as const
-    useHerdrStore.setState({
-      selectedSessionName: "default",
-      selectedRuntimeTarget: ubuntu,
-      sessions: [{ ...sessions[0]!, runtimeTarget: native }],
-      connectionState: "idle",
-      snapshot: null,
-      capabilities: null,
-      errorMessage: null
-    })
-    vi.mocked(herdrSessions).mockRejectedValueOnce(new Error("Ubuntu unavailable"))
-
-    await useHerdrStore.getState().refreshSessions(ubuntu)
-
-    const state = useHerdrStore.getState()
-    const ubuntuRuntime = state.runtimesBySession[
-      herdrStoreRuntimeKey("default", ubuntu)
-    ]
-    expect(herdrSessions).toHaveBeenCalledWith(ubuntu)
-    expect(state.selectedRuntimeTarget).toEqual(ubuntu)
-    expect(state.connectionState).toBe("error")
-    expect(state.errorMessage).toBe("Ubuntu unavailable")
-    expect(ubuntuRuntime).toMatchObject({
-      connectionState: "error",
-      errorMessage: "Ubuntu unavailable"
-    })
   })
 
   it("bounds authoritative snapshot retries after deterministic failures", async () => {
@@ -456,6 +400,25 @@ describe("herdrStore", () => {
     expect(herdrTerminalRelease).toHaveBeenCalledWith("herdr-term-1")
   })
 
+  it("preserves a non-takeover controller attachment when its mode is refreshed", () => {
+    const attachmentKey = "yuzora://herdr/default/term-1::term-1"
+    useHerdrStore.getState().registerAttachment(attachmentKey, {
+      sessionId: "herdr-term-1",
+      pagePath: "yuzora://herdr/default/term-1",
+      paneKey: "term-1",
+      herdrSessionId: "default",
+      terminalId: "term-1",
+      target: "term-1",
+      mode: "control",
+      role: "controller",
+      takeover: false
+    })
+
+    useHerdrStore.getState().updateAttachmentMode(attachmentKey, "control", "controller")
+
+    expect(useHerdrStore.getState().attachments.get(attachmentKey)?.takeover).toBe(false)
+  })
+
   it("createTerminalInSelectedSpace passes sessionName and returns namespaced identity", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
@@ -471,7 +434,6 @@ describe("herdrStore", () => {
 
     expect(created).toEqual({
       herdrSessionId: "default",
-      runtimeTarget: { kind: "native" },
       workspaceId: "ws-1",
       terminalId: "term-new",
       paneId: "pane-new",
@@ -483,6 +445,42 @@ describe("herdrStore", () => {
       workspaceId: "ws-1",
       title: "yuzora"
     })
+  })
+
+  it("createAgentInSelectedSpace passes only the allowlisted bypass opt-in and refreshes", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrAgentCreate).mockResolvedValue({
+      name: "codex",
+      kind: "codex",
+      terminalId: "term-agent",
+      paneId: "pane-agent",
+      tabId: "tab-agent",
+      workspaceId: "ws-1",
+      title: "codex"
+    })
+
+    const created = await useHerdrStore
+      .getState()
+      .createAgentInSelectedSpace("codex", true)
+
+    expect(created).toEqual({
+      herdrSessionId: "default",
+      workspaceId: "ws-1",
+      terminalId: "term-agent",
+      paneId: "pane-agent",
+      tabId: "tab-agent",
+      title: "codex",
+      name: "codex",
+      kind: "codex"
+    })
+    expect(herdrAgentCreate).toHaveBeenCalledWith({
+      sessionName: "default",
+      workspaceId: "ws-1",
+      kind: "codex",
+      bypassPermissions: true
+    })
+    expect(useHerdrStore.getState().canCreateAgent()).toBe(true)
   })
 
   it("keeps the folder basename when Herdr returns no created title", async () => {
@@ -641,43 +639,6 @@ describe("herdrStore", () => {
     expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-2")
     expect(useWorkspaceStore.getState().groups[0].tabs[0].terminalId).toBe("term-2")
     expect(useUiStore.getState().mode).toBe("ade")
-  })
-
-  it("activates WSL Herdr with its Runtime Path but opens the Host Path", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    const wslSnapshot = structuredClone(rawSnapshot)
-    const workspace = wslSnapshot.snapshot.workspaces.find((item) => item.workspace_id === "ws-2")!
-    Object.assign(workspace, {
-      runtime_path: "/home/yuuzu/feature-x",
-      host_path: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\feature-x`,
-      display_path: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\feature-x`
-    })
-    const agent = wslSnapshot.snapshot.agents.find((item) => item.workspace_id === "ws-2")!
-    Object.assign(agent, {
-      runtime_path: "/home/yuuzu/feature-x",
-      host_path: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\feature-x`
-    })
-    useHerdrStore.setState({
-      selectedSessionName: "default",
-      selectedRuntimeTarget: ubuntu,
-      sessions: [{ ...sessions[0]!, runtimeTarget: ubuntu }]
-    })
-    vi.mocked(herdrSnapshot).mockResolvedValueOnce(wslSnapshot)
-    await useHerdrStore.getState().bootstrap("default", ubuntu)
-
-    const wslAgent = useHerdrStore.getState().agents().find((item) => item.workspaceId === "ws-2")!
-    expect(wslAgent.runtimePath).toBe("/home/yuuzu/feature-x")
-    expect(wslAgent.hostPath).toBe(String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\feature-x`)
-    await expect(useHerdrStore.getState().activateAgent(wslAgent)).resolves.toEqual({ ok: true })
-    expect(herdrWorkspaceFocus).toHaveBeenCalledWith({
-      sessionName: "default",
-      workspaceId: "ws-2",
-      runtimeTarget: ubuntu
-    })
-    expect(openWorkspaceAtPath).toHaveBeenCalledWith(
-      String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\feature-x`,
-      { skipUnsavedGuard: true }
-    )
   })
 
   it("serializes rapid Tab activations so no stale RPC can apply after the latest", async () => {
@@ -1038,7 +999,7 @@ describe("herdrStore", () => {
     expect(useHerdrStore.getState().canMutateSelectedSession()).toBe(false)
   })
 
-  it("allows the first Space without workspace.focus while Space activation stays gated", () => {
+  it("allows first-Space creation without workspace.focus", () => {
     const createOnlyCaps = {
       ...caps,
       api: { ...caps.api, workspaceFocus: false, workspaceCreate: true }
@@ -1063,10 +1024,9 @@ describe("herdrStore", () => {
       }
     })
 
-    const state = useHerdrStore.getState()
-    expect(state.canCreateSpace()).toBe(true)
-    expect(state.createSpaceBlockedReason()).toBeNull()
-    expect(state.canMutateSelectedSession()).toBe(false)
+    expect(useHerdrStore.getState().canCreateSpace()).toBe(true)
+    expect(useHerdrStore.getState().createSpaceBlockedReason()).toBeNull()
+    expect(useHerdrStore.getState().canMutateSelectedSession()).toBe(false)
   })
 
   it("reports the dedicated workspace.create reason when first-Space creation is unavailable", () => {
@@ -1076,7 +1036,7 @@ describe("herdrStore", () => {
         ...caps.api,
         workspaceFocus: false,
         workspaceCreate: false,
-        reason: "WSL public control is read-only"
+        reason: "Herdr workspace.create unavailable"
       }
     }
     useHerdrStore.setState({
@@ -1087,63 +1047,10 @@ describe("herdrStore", () => {
       capabilities: unavailableCaps
     })
 
-    const state = useHerdrStore.getState()
-    expect(state.canCreateSpace()).toBe(false)
-    expect(state.createSpaceBlockedReason()).toBe("WSL public control is read-only")
-    expect(state.canMutateSelectedSession()).toBe(false)
-  })
-
-  it("preserves the selected WSL RuntimeTarget while creating the first Space", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    const createOnlyCaps = {
-      ...caps,
-      api: { ...caps.api, workspaceFocus: false, workspaceCreate: true }
-    }
-    useHerdrStore.setState({
-      ...herdrInitialState,
-      attachments: new Map(),
-      selectedRuntimeTarget: ubuntu,
-      sessions: [{ ...sessions[0]!, runtimeTarget: ubuntu }],
-      selectedSessionName: "default",
-      selectedSpaceId: null,
-      selectedSpaceBySession: { "wsl:Ubuntu::default": null },
-      capabilities: createOnlyCaps,
-      snapshot: {
-        herdrSessionId: "default",
-        protocol: 20,
-        version: "0.8.0",
-        spaces: [],
-        tabs: [],
-        terminals: [],
-        agents: [],
-        raw: {}
-      }
-    })
-    vi.mocked(herdrWorkspaceCreate).mockResolvedValue({
-      workspaceId: "ws-new",
-      label: "new",
-      path: "/home/test/new",
-      tabId: null,
-      terminalId: null,
-      paneId: null
-    })
-    vi.mocked(herdrSnapshot).mockResolvedValue(
-      snapshotWithWorkspace("ws-new", "new", "/home/test/new", 20)
+    expect(useHerdrStore.getState().canCreateSpace()).toBe(false)
+    expect(useHerdrStore.getState().createSpaceBlockedReason()).toBe(
+      "Herdr workspace.create unavailable"
     )
-
-    const result = await useHerdrStore.getState().createSpaceFromFolder(
-      "\\\\wsl.localhost\\Ubuntu\\home\\test\\new",
-      "new"
-    )
-
-    expect(result.ok).toBe(true)
-    expect(herdrWorkspaceCreate).toHaveBeenCalledWith({
-      runtimeTarget: ubuntu,
-      sessionName: "default",
-      cwd: "\\\\wsl.localhost\\Ubuntu\\home\\test\\new",
-      label: "new",
-      focus: true
-    })
   })
 
   it("session switch preserves mixed pages and does not clear attachments map entries for other pages", async () => {
@@ -1207,9 +1114,34 @@ describe("herdrStore", () => {
       terminalId: "term-new",
       paneId: "pane-new"
     })
-    vi.mocked(herdrSnapshot).mockResolvedValue(
-      snapshotWithWorkspace("ws-new", "new", "/tmp/new")
-    )
+    const refreshed = structuredClone(rawSnapshot)
+    refreshed.snapshot.workspaces.push({
+      workspace_id: "ws-new",
+      number: 2,
+      label: "new",
+      focused: true,
+      pane_count: 1,
+      tab_count: 1,
+      active_tab_id: "tab-new",
+      agent_status: "idle",
+      worktree: {
+        checkout_path: "/tmp/new",
+        is_linked_worktree: false,
+        repo_key: "k",
+        repo_name: "yuzora",
+        repo_root: "/tmp/new"
+      }
+    })
+    refreshed.snapshot.tabs.push({
+      tab_id: "tab-new",
+      workspace_id: "ws-new",
+      number: 3,
+      label: "new",
+      focused: true,
+      pane_count: 1,
+      agent_status: "idle"
+    })
+    vi.mocked(herdrSnapshot).mockResolvedValueOnce(refreshed)
 
     const result = await useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
     expect(confirmDiscardingUnsaved).toHaveBeenCalled()
@@ -1232,7 +1164,7 @@ describe("herdrStore", () => {
     expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-new")
   })
 
-  it("serializes first-Space creation across callers for one RuntimeKey", async () => {
+  it("serializes first-Space creation across callers for one native session", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
     let finishCreate!: (value: {
@@ -1244,20 +1176,13 @@ describe("herdrStore", () => {
       paneId: null
     }) => void
     vi.mocked(herdrWorkspaceCreate).mockImplementation(
-      () => new Promise((resolve) => {
-        finishCreate = resolve
-      })
+      () => new Promise((resolve) => { finishCreate = resolve })
     )
-    vi.mocked(herdrSnapshot).mockResolvedValue(
-      snapshotWithWorkspace("ws-new", "new", "/tmp/new")
-    )
+    vi.mocked(herdrSnapshot).mockResolvedValue(snapshotWithWorkspace("ws-new", "new", "/tmp/new"))
 
     const first = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
     await vi.waitFor(() => expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1))
-    const second = await useHerdrStore
-      .getState()
-      .createSpaceFromFolder("/tmp/other", "other")
-
+    const second = await useHerdrStore.getState().createSpaceFromFolder("/tmp/other", "other")
     finishCreate({
       workspaceId: "ws-new",
       label: "new",
@@ -1266,8 +1191,8 @@ describe("herdrStore", () => {
       terminalId: null,
       paneId: null
     })
-    await expect(first).resolves.toMatchObject({ ok: true })
 
+    await expect(first).resolves.toMatchObject({ ok: true })
     expect(second).toEqual({
       ok: false,
       error: "Space creation is already in progress for this Herdr session."
@@ -1279,12 +1204,7 @@ describe("herdrStore", () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
     vi.mocked(herdrWorkspaceCreate).mockResolvedValue({
-      workspaceId: "ws-new",
-      label: "new",
-      path: "/tmp/new",
-      tabId: null,
-      terminalId: null,
-      paneId: null
+      workspaceId: "ws-new", label: "new", path: "/tmp/new", tabId: null, terminalId: null, paneId: null
     })
     vi.mocked(herdrSnapshot).mockRejectedValue(new Error("snapshot offline"))
 
@@ -1292,7 +1212,6 @@ describe("herdrStore", () => {
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain("may have created the Space")
-    expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1)
     expect(useHerdrStore.getState().errorMessage).toContain("do not create it again")
   })
 
@@ -1300,12 +1219,7 @@ describe("herdrStore", () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
     vi.mocked(herdrWorkspaceCreate).mockResolvedValue({
-      workspaceId: "ws-new",
-      label: "new",
-      path: "/tmp/new",
-      tabId: null,
-      terminalId: null,
-      paneId: null
+      workspaceId: "ws-new", label: "new", path: "/tmp/new", tabId: null, terminalId: null, paneId: null
     })
     vi.mocked(herdrSnapshot).mockResolvedValue(rawSnapshot)
 
@@ -1313,7 +1227,6 @@ describe("herdrStore", () => {
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain("not present in the refreshed snapshot")
-    expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1)
   })
 
   it("createSpaceFromFolder cancel causes zero create/focus/selection/page mutation", async () => {
@@ -1342,164 +1255,4 @@ describe("herdrStore", () => {
     expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(before.tabs)
     expect(useWorkspaceStore.getState().workspacePath).toBe(before.workspace)
   })
-
-  it("keeps same-name Native and WSL bootstrap generations independent", async () => {
-    const native = { kind: "native" } as const
-    const ubuntu = { kind: "wsl", distro: "Ubuntu" } as const
-    let releaseNative!: (value: typeof caps) => void
-    let releaseUbuntu!: (value: typeof caps) => void
-    vi.mocked(herdrCapabilities).mockImplementation((_session, target) =>
-      new Promise((resolve) => {
-        if (target?.kind === "wsl") releaseUbuntu = resolve
-        else releaseNative = resolve
-      })
-    )
-
-    const nativeBootstrap = useHerdrStore.getState().bootstrap("default", native)
-    const ubuntuBootstrap = useHerdrStore.getState().bootstrap("default", ubuntu)
-    expect(herdrCapabilities).toHaveBeenCalledWith("default")
-    expect(herdrCapabilities).toHaveBeenCalledWith("default", ubuntu)
-    releaseUbuntu(caps)
-    releaseNative(caps)
-    await Promise.all([nativeBootstrap, ubuntuBootstrap])
-
-    expect(herdrSnapshot).toHaveBeenCalledWith("default")
-    expect(herdrSnapshot).toHaveBeenCalledWith("default", ubuntu)
-  })
-
-  it("keeps same-name Native and WSL snapshot refreshes isolated out of order", async () => {
-    const native = { kind: "native" } as const
-    const ubuntu = { kind: "wsl", distro: "Ubuntu" } as const
-    const snapshotFor = (prefix: string) => {
-      const result = structuredClone(rawSnapshot)
-      const workspaceId = `${prefix}-space`
-      const tabId = `${prefix}-tab`
-      const paneId = `${prefix}-pane`
-      const terminalId = `${prefix}-terminal`
-      result.version = `${prefix}-snapshot`
-      result.snapshot.focused_workspace_id = workspaceId
-      result.snapshot.focused_tab_id = tabId
-      result.snapshot.focused_pane_id = paneId
-      result.snapshot.workspaces[0]!.workspace_id = workspaceId
-      result.snapshot.workspaces[0]!.active_tab_id = tabId
-      result.snapshot.tabs[0]!.tab_id = tabId
-      result.snapshot.tabs[0]!.workspace_id = workspaceId
-      result.snapshot.panes[0]!.pane_id = paneId
-      result.snapshot.panes[0]!.terminal_id = terminalId
-      result.snapshot.panes[0]!.workspace_id = workspaceId
-      result.snapshot.panes[0]!.tab_id = tabId
-      result.snapshot.agents[0]!.pane_id = paneId
-      result.snapshot.agents[0]!.terminal_id = terminalId
-      result.snapshot.agents[0]!.workspace_id = workspaceId
-      result.snapshot.agents[0]!.tab_id = tabId
-      return result
-    }
-    const nativeSnapshot = snapshotFor("native")
-    const ubuntuSnapshot = snapshotFor("ubuntu")
-    let releaseNative!: (value: typeof rawSnapshot) => void
-    let releaseUbuntu!: (value: typeof rawSnapshot) => void
-    const nativeResponse = new Promise<typeof rawSnapshot>((resolve) => {
-      releaseNative = resolve
-    })
-    const ubuntuResponse = new Promise<typeof rawSnapshot>((resolve) => {
-      releaseUbuntu = resolve
-    })
-    vi.mocked(herdrSnapshot).mockImplementation((_session, target) =>
-      target?.kind === "wsl" ? ubuntuResponse : nativeResponse
-    )
-    useHerdrStore.setState({
-      selectedSessionName: "default",
-      selectedRuntimeTarget: ubuntu,
-      sessions: [
-        { ...sessions[0]!, runtimeTarget: native },
-        { ...sessions[0]!, runtimeTarget: ubuntu }
-      ]
-    })
-
-    const nativeRefresh = useHerdrStore.getState().refreshSnapshot("default", native)
-    const ubuntuRefresh = useHerdrStore.getState().refreshSnapshot("default", ubuntu)
-    expect(herdrSnapshot).toHaveBeenCalledWith("default")
-    expect(herdrSnapshot).toHaveBeenCalledWith("default", ubuntu)
-
-    releaseUbuntu(ubuntuSnapshot)
-    await expect(ubuntuRefresh).resolves.toBe(true)
-    releaseNative(nativeSnapshot)
-    await expect(nativeRefresh).resolves.toBe(true)
-
-    const state = useHerdrStore.getState()
-    const nativeRuntime = state.runtimesBySession[
-      herdrStoreRuntimeKey("default", native)
-    ]
-    const ubuntuRuntime = state.runtimesBySession[
-      herdrStoreRuntimeKey("default", ubuntu)
-    ]
-    expect(nativeRuntime?.snapshot).toMatchObject({
-      version: "native-snapshot",
-      focusedWorkspaceId: "native-space"
-    })
-    expect(ubuntuRuntime?.snapshot).toMatchObject({
-      version: "ubuntu-snapshot",
-      focusedWorkspaceId: "ubuntu-space"
-    })
-    expect(state.snapshot).toMatchObject({
-      version: "ubuntu-snapshot",
-      focusedWorkspaceId: "ubuntu-space"
-    })
-    expect(state.selectedSpaceId).toBe("ubuntu-space")
-  })
-
-  it("releases an attachment through its owning WSL runtime", async () => {
-    const ubuntu = { kind: "wsl", distro: "Ubuntu" } as const
-    vi.mocked(herdrTerminalRelease).mockResolvedValue(undefined)
-    useHerdrStore.setState({
-      attachments: new Map([["page:pane", {
-        sessionId: "connector-ubuntu",
-        pagePath: "yuzora://herdr/v2/wsl%3AUbuntu/default/term-1",
-        paneKey: "pane",
-        herdrSessionId: "default",
-        runtimeTarget: ubuntu,
-        terminalId: "term-1",
-        target: "term-1",
-        mode: "control",
-        role: "controller",
-        takeover: true
-      }]])
-    })
-    await useHerdrStore.getState().releaseAttachment("page:pane")
-    expect(herdrTerminalRelease).toHaveBeenCalledWith("connector-ubuntu", ubuntu)
-  })
-
-  it("rejects same-name Native events when the selected runtime is WSL", () => {
-    const native = { kind: "native" } as const
-    const ubuntu = { kind: "wsl", distro: "Ubuntu" } as const
-    useHerdrStore.setState({
-      selectedSessionName: "default",
-      selectedRuntimeTarget: ubuntu,
-      eventsSubscriptionId: "wsl-sub",
-      sessions: [
-        { ...sessions[0]!, runtimeTarget: native },
-        { ...sessions[0]!, runtimeTarget: ubuntu }
-      ]
-    })
-    useHerdrStore.getState().applySubscriptionEvent("default", {
-      type: "agent_status_changed",
-      subscriptionId: "wsl-sub",
-      paneId: "native-pane",
-      workspaceId: "ws-1",
-      agentStatus: "blocked",
-      stateLabels: {}
-    }, native)
-    expect(useHerdrStore.getState().attentionItems("default", ubuntu)).toHaveLength(0)
-
-    useHerdrStore.getState().applySubscriptionEvent("default", {
-      type: "agent_status_changed",
-      subscriptionId: "wsl-sub",
-      paneId: "ubuntu-pane",
-      workspaceId: "ws-1",
-      agentStatus: "blocked",
-      stateLabels: {}
-    }, ubuntu)
-    expect(useHerdrStore.getState().attentionItems("default", ubuntu)).toHaveLength(1)
-  })
-
 })

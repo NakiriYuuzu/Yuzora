@@ -259,7 +259,7 @@ describe("WorkspaceRail Spaces list", () => {
         api: {
           ...capabilities.api,
           workspaceCreate: false,
-          reason: "WSL public control is read-only"
+          reason: "Herdr workspace.create unavailable"
         }
       }
     })
@@ -268,7 +268,7 @@ describe("WorkspaceRail Spaces list", () => {
 
     const button = screen.getByTestId("rail-new-space")
     expect(button).toBeDisabled()
-    expect(button).toHaveAccessibleName("WSL public control is read-only")
+    expect(button).toHaveAccessibleName("Herdr workspace.create unavailable")
   })
 
   it("uses Compact B geometry with centered tiles and a narrow local scrollbar", () => {

@@ -186,23 +186,25 @@ describe("HerdrNavContent", () => {
     expect(screen.getByText("Main")).toBeInTheDocument() // owning Space label
   })
 
-  it("labels Session and Agent surfaces with the selected WSL Runtime", () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu 開発" }
-    const state = readyState({
-      selectedRuntimeTarget: ubuntu,
-      sessions: [{
-        name: "default", default: true, running: true,
-        sessionDir: "/tmp/u", socketPath: "/tmp/u.sock", runtimeTarget: ubuntu
-      }]
-    })
-    const snapshot = state.snapshot as { agents: Array<Record<string, unknown>> }
-    snapshot.agents[0] = { ...snapshot.agents[0]!, runtimeTarget: ubuntu }
-    useHerdrStore.setState(state)
+  it("projects Herdr-reported WSL origin as a compact Agent badge", () => {
+    const state = readyState()
+    useHerdrStore.setState(
+      readyState({
+        snapshot: {
+          ...state.snapshot,
+          agents: [
+            {
+              ...state.snapshot.agents[0],
+              executionOrigin: { kind: "wsl", distribution: "Ubuntu" }
+            }
+          ]
+        }
+      })
+    )
+
     render(<HerdrNavContent />)
 
-    expect(screen.getByTestId("herdr-runtime-label")).toHaveTextContent("WSL: Ubuntu 開発")
-    expect(screen.getByTestId("herdr-session-default")).toHaveAttribute("aria-description", "WSL: Ubuntu 開発")
-    expect(screen.getByTestId("herdr-agent-ag-1")).toHaveTextContent("WSL: Ubuntu 開発")
+    expect(screen.getByTestId("herdr-agent-origin-ag-1")).toHaveTextContent("WSL · Ubuntu")
   })
 
   it("does not add an unrequested per-agent Inspector action", () => {
@@ -222,7 +224,7 @@ describe("HerdrNavContent", () => {
           api: {
             ...state.capabilities.api,
             workspaceFocus: false,
-            reason: "WSL public control is read-only"
+            reason: "Herdr workspace.focus unavailable"
           }
         },
         attentionByKey: new Map([
@@ -230,7 +232,6 @@ describe("HerdrNavContent", () => {
             "native::default::pane-1",
             {
               key: "native::default::pane-1",
-              runtimeTarget: { kind: "native" },
               sessionName: "default",
               paneId: "pane-1",
               workspaceId: "ws-1",
@@ -249,7 +250,7 @@ describe("HerdrNavContent", () => {
 
     const attention = screen.getByTestId("herdr-attention-pane-1")
     expect(attention).toBeDisabled()
-    expect(attention).toHaveAttribute("title", "WSL public control is read-only")
+    expect(attention).toHaveAttribute("title", "Herdr workspace.focus unavailable")
   })
 
   it("onboards a connected zero-Space session with one scoped Space create action", async () => {
@@ -307,6 +308,21 @@ describe("HerdrNavContent", () => {
     expect(useUiStore.getState().mode).toBe("files")
   })
 
+  it("keeps the local-folder escape available while Herdr is connecting", async () => {
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      attachments: new Map(),
+      connectionState: "connecting"
+    })
+    vi.mocked(pickWorkspace).mockResolvedValue(true)
+
+    render(<HerdrNavContent />)
+    fireEvent.click(screen.getByTestId("herdr-connecting-open-local-folder"))
+
+    await vi.waitFor(() => expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1))
+    expect(useUiStore.getState().mode).toBe("files")
+  })
+
   it("keeps the local-folder escape available when Herdr itself is unavailable", async () => {
     useHerdrStore.setState({
       ...herdrInitialState,
@@ -352,7 +368,7 @@ describe("HerdrNavContent", () => {
           terminals: []
         },
         canCreateSpace: () => false,
-        createSpaceBlockedReason: () => "WSL public control is read-only"
+        createSpaceBlockedReason: () => "Herdr workspace.create unavailable"
       })
     )
 
@@ -360,7 +376,7 @@ describe("HerdrNavContent", () => {
 
     expect(screen.getByTestId("herdr-create-space-from-folder")).toBeDisabled()
     expect(screen.getByTestId("herdr-create-space-blocked-reason")).toHaveTextContent(
-      "WSL public control is read-only"
+      "Herdr workspace.create unavailable"
     )
   })
 

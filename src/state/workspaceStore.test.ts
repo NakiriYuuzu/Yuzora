@@ -994,10 +994,7 @@ describe("workspaceStore", () => {
                 "yuzora://herdr/live/live-1",
                 "yuzora://herdr/work/work-1"
             ])
-            expect(useWorkspaceStore.getState().groups[0].tabs[2]).toEqual({
-                ...hiddenPage,
-                herdrRuntimeTarget: { kind: "native" }
-            })
+            expect(useWorkspaceStore.getState().groups[0].tabs[2]).toBe(hiddenPage)
         })
 
         it("keeps colliding Space and tab ids isolated between live/default and another named session", () => {

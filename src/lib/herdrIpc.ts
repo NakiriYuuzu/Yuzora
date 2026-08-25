@@ -1,6 +1,9 @@
 import { Channel, invoke } from "@tauri-apps/api/core"
 
 import type {
+  HerdrAgentCatalogEntry,
+  HerdrAgentCreateRequest,
+  HerdrAgentCreateResult,
   HerdrAgentDetails,
   HerdrAgentReadResult,
   HerdrBinarySource,
@@ -22,7 +25,6 @@ import type {
   HerdrPaneZoomRequest,
   HerdrReadFormat,
   HerdrReadSource,
-  HerdrRuntimeTarget,
   HerdrScrollDirection,
   HerdrSnapshotResult,
   HerdrSubscriptionEvent,
@@ -38,76 +40,40 @@ import type {
   HerdrWorkspaceCreateRequest,
   HerdrWorkspaceCreateResult,
   HerdrWorkspaceRenameRequest,
-  HerdrWorktreeListResult,
-  HerdrWslDistribution,
-  HerdrWslWorkspaceLocation
+  HerdrWorktreeListResult
 } from "./herdrTypes"
 
 /**
  * Herdr IPC wrappers — payload names match Rust `herdr_service` commands.
  */
 
-function runtimeTargetPayload(runtimeTarget?: HerdrRuntimeTarget | null): {
-  runtimeTarget?: HerdrRuntimeTarget | null
-} {
-  // Omit the field for legacy WebView callers. Rust treats omission as Native.
-  return runtimeTarget === undefined ? {} : { runtimeTarget: runtimeTarget ?? null }
-}
-
-export function herdrSessions(
-  runtimeTarget?: HerdrRuntimeTarget | null
-): Promise<HerdrNamedSession[]> {
-  return invoke("herdr_sessions", runtimeTargetPayload(runtimeTarget))
-}
-
-/** Lists installed distros without starting any of them. */
-export function herdrWslDistributions(): Promise<HerdrWslDistribution[]> {
-  return invoke("herdr_wsl_distributions")
-}
-
-export function herdrWslRuntimeToHostPath(
-  distro: string,
-  runtimePath: string
-): Promise<HerdrWslWorkspaceLocation> {
-  return invoke("herdr_wsl_runtime_to_host_path", { distro, runtimePath })
-}
-
-export function herdrWslHostToRuntimePath(
-  distro: string,
-  hostPath: string
-): Promise<HerdrWslWorkspaceLocation> {
-  return invoke("herdr_wsl_host_to_runtime_path", { distro, hostPath })
+export function herdrSessions(): Promise<HerdrNamedSession[]> {
+  return invoke("herdr_sessions")
 }
 
 export function herdrCapabilities(
-  sessionName?: string | null,
-  runtimeTarget?: HerdrRuntimeTarget | null
+  sessionName?: string | null
 ): Promise<HerdrCapabilities> {
   return invoke("herdr_capabilities", {
-    sessionName: sessionName ?? null,
-    ...runtimeTargetPayload(runtimeTarget)
+    sessionName: sessionName ?? null
   })
 }
 
 export function herdrSnapshot(
-  sessionName?: string | null,
-  runtimeTarget?: HerdrRuntimeTarget | null
+  sessionName?: string | null
 ): Promise<HerdrSnapshotResult> {
   return invoke("herdr_snapshot", {
-    sessionName: sessionName ?? null,
-    ...runtimeTargetPayload(runtimeTarget)
+    sessionName: sessionName ?? null
   })
 }
 
 export function herdrWorkspaceFocus(args: {
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   workspaceId: string
 }): Promise<void> {
   return invoke("herdr_workspace_focus", {
     sessionName: args.sessionName ?? null,
-    workspaceId: args.workspaceId,
-    ...runtimeTargetPayload(args.runtimeTarget)
+    workspaceId: args.workspaceId
   })
 }
 
@@ -118,8 +84,7 @@ export function herdrWorkspaceCreate(
     sessionName: request.sessionName ?? null,
     cwd: request.cwd ?? null,
     label: request.label ?? null,
-    focus: request.focus ?? true,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    focus: request.focus ?? true
   })
 }
 
@@ -129,8 +94,7 @@ export function herdrWorkspaceRename(
   return invoke("herdr_workspace_rename", {
     sessionName: request.sessionName ?? null,
     workspaceId: request.workspaceId,
-    label: request.label,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    label: request.label
   })
 }
 
@@ -139,14 +103,12 @@ export function herdrWorkspaceClose(
 ): Promise<void> {
   return invoke("herdr_workspace_close", {
     sessionName: request.sessionName ?? null,
-    workspaceId: request.workspaceId,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    workspaceId: request.workspaceId
   })
 }
 
 /** Read-only protocol-19 `worktree.list` against the selected named session. */
 export function herdrWorktreeList(args: {
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   cwd?: string | null
   workspaceId?: string | null
@@ -154,8 +116,7 @@ export function herdrWorktreeList(args: {
   return invoke("herdr_worktree_list", {
     sessionName: args.sessionName ?? null,
     cwd: args.cwd ?? null,
-    workspaceId: args.workspaceId ?? null,
-    ...runtimeTargetPayload(args.runtimeTarget)
+    workspaceId: args.workspaceId ?? null
   })
 }
 
@@ -167,16 +128,14 @@ export function herdrTabCreate(
     workspaceId: request.workspaceId ?? null,
     label: request.label ?? null,
     cwd: request.cwd ?? null,
-    focus: request.focus ?? true,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    focus: request.focus ?? true
   })
 }
 
 export function herdrTabFocus(request: HerdrTabFocusRequest): Promise<void> {
   return invoke("herdr_tab_focus", {
     sessionName: request.sessionName ?? null,
-    tabId: request.tabId,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    tabId: request.tabId
   })
 }
 
@@ -184,16 +143,14 @@ export function herdrTabRename(request: HerdrTabRenameRequest): Promise<void> {
   return invoke("herdr_tab_rename", {
     sessionName: request.sessionName ?? null,
     tabId: request.tabId,
-    label: request.label,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    label: request.label
   })
 }
 
 export function herdrTabClose(request: HerdrTabCloseRequest): Promise<void> {
   return invoke("herdr_tab_close", {
     sessionName: request.sessionName ?? null,
-    tabId: request.tabId,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    tabId: request.tabId
   })
 }
 
@@ -201,16 +158,14 @@ export function herdrTabMove(request: HerdrTabMoveRequest): Promise<void> {
   return invoke("herdr_tab_move", {
     sessionName: request.sessionName ?? null,
     tabId: request.tabId,
-    insertIndex: request.insertIndex,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    insertIndex: request.insertIndex
   })
 }
 
 export function herdrPaneFocus(request: HerdrPaneFocusRequest): Promise<void> {
   return invoke("herdr_pane_focus", {
     sessionName: request.sessionName ?? null,
-    paneId: request.paneId,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    paneId: request.paneId
   })
 }
 
@@ -218,8 +173,7 @@ export function herdrPaneRename(request: HerdrPaneRenameRequest): Promise<void> 
   return invoke("herdr_pane_rename", {
     sessionName: request.sessionName ?? null,
     paneId: request.paneId,
-    label: request.label ?? null,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    label: request.label ?? null
   })
 }
 
@@ -233,8 +187,7 @@ export function herdrPaneSplit(
     workspaceId: request.workspaceId ?? null,
     cwd: request.cwd ?? null,
     ratio: request.ratio ?? null,
-    focus: request.focus ?? true,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    focus: request.focus ?? true
   })
 }
 
@@ -242,8 +195,7 @@ export function herdrPaneZoom(request: HerdrPaneZoomRequest = {}): Promise<void>
   return invoke("herdr_pane_zoom", {
     sessionName: request.sessionName ?? null,
     paneId: request.paneId ?? null,
-    mode: request.mode ?? null,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    mode: request.mode ?? null
   })
 }
 
@@ -253,16 +205,14 @@ export function herdrPaneSwap(request: HerdrPaneSwapRequest = {}): Promise<void>
     sourcePaneId: request.sourcePaneId ?? null,
     targetPaneId: request.targetPaneId ?? null,
     paneId: request.paneId ?? null,
-    direction: request.direction ?? null,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    direction: request.direction ?? null
   })
 }
 
 export function herdrPaneClose(request: HerdrPaneCloseRequest): Promise<void> {
   return invoke("herdr_pane_close", {
     sessionName: request.sessionName ?? null,
-    paneId: request.paneId,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    paneId: request.paneId
   })
 }
 
@@ -272,8 +222,7 @@ export function herdrLayoutExport(
   return invoke("herdr_layout_export", {
     sessionName: request.sessionName ?? null,
     tabId: request.tabId ?? null,
-    paneId: request.paneId ?? null,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    paneId: request.paneId ?? null
   })
 }
 
@@ -285,8 +234,7 @@ export function herdrLayoutSetSplitRatio(
     tabId: request.tabId ?? null,
     paneId: request.paneId ?? null,
     path: request.path,
-    ratio: request.ratio,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    ratio: request.ratio
   })
 }
 
@@ -296,7 +244,6 @@ export function herdrTerminalOpen(args: {
   takeover?: boolean | null
   cols: number
   rows: number
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   onEvent: (event: HerdrTerminalEvent) => void
 }): Promise<HerdrTerminalOpenResult> {
@@ -309,7 +256,6 @@ export function herdrTerminalOpen(args: {
     cols: args.cols,
     rows: args.rows,
     sessionName: args.sessionName ?? null,
-    ...runtimeTargetPayload(args.runtimeTarget),
     onEvent: ch
   })
 }
@@ -317,53 +263,33 @@ export function herdrTerminalOpen(args: {
 export function herdrTerminalInput(
   sessionId: string,
   text?: string | null,
-  bytesBase64?: string | null,
-  runtimeTarget?: HerdrRuntimeTarget | null
+  bytesBase64?: string | null
 ): Promise<void> {
   return invoke("herdr_terminal_input", {
     sessionId,
     text: text ?? null,
-    bytesBase64: bytesBase64 ?? null,
-    ...runtimeTargetPayload(runtimeTarget)
+    bytesBase64: bytesBase64 ?? null
   })
 }
 
 export function herdrTerminalResize(
   sessionId: string,
   cols: number,
-  rows: number,
-  runtimeTarget?: HerdrRuntimeTarget | null
+  rows: number
 ): Promise<void> {
-  return invoke("herdr_terminal_resize", {
-    sessionId,
-    cols,
-    rows,
-    ...runtimeTargetPayload(runtimeTarget)
-  })
+  return invoke("herdr_terminal_resize", { sessionId, cols, rows })
 }
 
 export function herdrTerminalScroll(
   sessionId: string,
   direction: HerdrScrollDirection,
-  lines: number,
-  runtimeTarget?: HerdrRuntimeTarget | null
+  lines: number
 ): Promise<void> {
-  return invoke("herdr_terminal_scroll", {
-    sessionId,
-    direction,
-    lines,
-    ...runtimeTargetPayload(runtimeTarget)
-  })
+  return invoke("herdr_terminal_scroll", { sessionId, direction, lines })
 }
 
-export function herdrTerminalRelease(
-  sessionId: string,
-  runtimeTarget?: HerdrRuntimeTarget | null
-): Promise<void> {
-  return invoke("herdr_terminal_release", {
-    sessionId,
-    ...runtimeTargetPayload(runtimeTarget)
-  })
+export function herdrTerminalRelease(sessionId: string): Promise<void> {
+  return invoke("herdr_terminal_release", { sessionId })
 }
 
 /** Create a new Herdr tab/root terminal via public `tab.create`. */
@@ -373,41 +299,50 @@ export function herdrTerminalCreate(
   return invoke("herdr_terminal_create", {
     sessionName: request.sessionName ?? null,
     workspaceId: request.workspaceId ?? null,
-    title: request.title ?? null,
-    ...runtimeTargetPayload(request.runtimeTarget)
+    title: request.title ?? null
   })
 }
 
-export function herdrBinarySourceGet(
-  runtimeTarget?: HerdrRuntimeTarget | null
-): Promise<HerdrBinarySourceInfo> {
-  return invoke("herdr_binary_source_get", runtimeTargetPayload(runtimeTarget))
+export function herdrAgentCatalog(
+  sessionName?: string | null
+): Promise<HerdrAgentCatalogEntry[]> {
+  return invoke("herdr_agent_catalog", {
+    sessionName: sessionName ?? null
+  })
+}
+
+export function herdrAgentCreate(
+  request: HerdrAgentCreateRequest
+): Promise<HerdrAgentCreateResult> {
+  return invoke("herdr_agent_create", {
+    sessionName: request.sessionName ?? null,
+    workspaceId: request.workspaceId,
+    kind: request.kind,
+    bypassPermissions: request.bypassPermissions ?? false
+  })
+}
+
+export function herdrBinarySourceGet(): Promise<HerdrBinarySourceInfo> {
+  return invoke("herdr_binary_source_get")
 }
 
 export function herdrBinarySourceSet(
-  source: HerdrBinarySource,
-  runtimeTarget?: HerdrRuntimeTarget | null
+  source: HerdrBinarySource
 ): Promise<HerdrBinarySourceSetResult> {
-  return invoke("herdr_binary_source_set", {
-    source,
-    ...runtimeTargetPayload(runtimeTarget)
-  })
+  return invoke("herdr_binary_source_set", { source })
 }
 
 export function herdrAgentGet(args: {
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   target: string
 }): Promise<HerdrAgentDetails> {
   return invoke("herdr_agent_get", {
     sessionName: args.sessionName ?? null,
-    target: args.target,
-    ...runtimeTargetPayload(args.runtimeTarget)
+    target: args.target
   })
 }
 
 export function herdrAgentRead(args: {
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   target: string
   source: HerdrReadSource
@@ -421,13 +356,11 @@ export function herdrAgentRead(args: {
     source: args.source,
     format: args.format ?? null,
     lines: args.lines ?? null,
-    stripAnsi: args.stripAnsi ?? null,
-    ...runtimeTargetPayload(args.runtimeTarget)
+    stripAnsi: args.stripAnsi ?? null
   })
 }
 
 export function herdrEventsSubscribe(args: {
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName?: string | null
   onEvent: (event: HerdrSubscriptionEvent) => void
 }): Promise<string> {
@@ -435,17 +368,10 @@ export function herdrEventsSubscribe(args: {
   ch.onmessage = args.onEvent
   return invoke("herdr_events_subscribe", {
     sessionName: args.sessionName ?? null,
-    ...runtimeTargetPayload(args.runtimeTarget),
     onEvent: ch
   })
 }
 
-export function herdrEventsRelease(
-  subscriptionId: string,
-  runtimeTarget?: HerdrRuntimeTarget | null
-): Promise<void> {
-  return invoke("herdr_events_release", {
-    subscriptionId,
-    ...runtimeTargetPayload(runtimeTarget)
-  })
+export function herdrEventsRelease(subscriptionId: string): Promise<void> {
+  return invoke("herdr_events_release", { subscriptionId })
 }

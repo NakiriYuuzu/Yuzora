@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import {
+  herdrAgentCatalog,
+  herdrAgentCreate,
   herdrAgentGet,
   herdrAgentRead,
   herdrBinarySourceGet,
   herdrBinarySourceSet,
   herdrEventsRelease,
-  herdrCapabilities,
   herdrLayoutExport,
   herdrLayoutSetSplitRatio,
   herdrPaneClose,
@@ -21,11 +22,7 @@ import {
   herdrTabRename,
   herdrWorkspaceClose,
   herdrWorkspaceRename,
-  herdrSnapshot,
-  herdrWorktreeList,
-  herdrWslDistributions,
-  herdrWslHostToRuntimePath,
-  herdrWslRuntimeToHostPath
+  herdrWorktreeList
 } from "./herdrIpc"
 
 afterEach(() => {
@@ -112,52 +109,43 @@ describe("herdrIpc native interaction wrappers", () => {
     ])
   })
 
-  it("lists WSL distros and preserves explicit dual-path conversion payloads", async () => {
+  it("invokes Agent catalog/create commands without exposing raw argv", async () => {
     const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
     mockIPC((cmd, args) => {
       calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
-      if (cmd === "herdr_wsl_distributions") return [{ distro: "Ubuntu" }]
+      if (cmd === "herdr_agent_catalog") return []
       return {
-        distro: "Ubuntu",
-        runtimePath: "/home/yuuzu/project",
-        hostPath: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`,
-        displayPath: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`
+        name: "codex",
+        kind: "codex",
+        terminalId: "term-2",
+        paneId: "pane-2",
+        tabId: "tab-2",
+        workspaceId: "ws-1",
+        title: "codex"
       }
     })
-    await herdrWslDistributions()
-    await herdrWslRuntimeToHostPath("Ubuntu", "/home/yuuzu/project")
-    await herdrWslHostToRuntimePath("Ubuntu", String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project`)
-    expect(calls).toEqual([
-      { cmd: "herdr_wsl_distributions", args: {} },
-      {
-        cmd: "herdr_wsl_runtime_to_host_path",
-        args: { distro: "Ubuntu", runtimePath: "/home/yuuzu/project" }
-      },
-      {
-        cmd: "herdr_wsl_host_to_runtime_path",
-        args: { distro: "Ubuntu", hostPath: String.raw`\\wsl.localhost\Ubuntu\home\yuuzu\project` }
-      }
-    ])
-  })
 
-  it("passes the RuntimeTarget to event release and same-name snapshot requests", async () => {
-    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
-    mockIPC((cmd, args) => {
-      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
-      if (cmd === "herdr_snapshot") return { protocol: 19, version: "0.8.0", snapshot: {} }
-      return null
+    await herdrAgentCatalog("work")
+    await herdrAgentCreate({
+      sessionName: "work",
+      workspaceId: "ws-1",
+      kind: "codex",
+      bypassPermissions: true
     })
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    await herdrSnapshot("default", ubuntu)
-    await herdrEventsRelease("sub-ubuntu", ubuntu)
+
     expect(calls).toEqual([
       {
-        cmd: "herdr_snapshot",
-        args: { sessionName: "default", runtimeTarget: ubuntu }
+        cmd: "herdr_agent_catalog",
+        args: { sessionName: "work" }
       },
       {
-        cmd: "herdr_events_release",
-        args: { subscriptionId: "sub-ubuntu", runtimeTarget: ubuntu }
+        cmd: "herdr_agent_create",
+        args: {
+          sessionName: "work",
+          workspaceId: "ws-1",
+          kind: "codex",
+          bypassPermissions: true
+        }
       }
     ])
   })
@@ -259,30 +247,6 @@ describe("herdrIpc native interaction wrappers", () => {
       direction: "right",
       targetPaneId: "p1"
     })
-  })
-})
-
-describe("herdr runtime-target IPC compatibility", () => {
-  it("omits runtimeTarget for legacy callers and forwards an explicit target", async () => {
-    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
-    mockIPC((cmd, args) => {
-      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
-      return null
-    })
-
-    await herdrCapabilities("default")
-    await herdrSnapshot("default", { kind: "wsl", distro: "Ubuntu" })
-
-    expect(calls).toEqual([
-      { cmd: "herdr_capabilities", args: { sessionName: "default" } },
-      {
-        cmd: "herdr_snapshot",
-        args: {
-          sessionName: "default",
-          runtimeTarget: { kind: "wsl", distro: "Ubuntu" }
-        }
-      }
-    ])
   })
 })
 

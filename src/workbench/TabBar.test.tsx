@@ -1466,7 +1466,7 @@ test("legacy Herdr tab without stored Space identity reorders from runtime owner
         tabId: "tab-1",
         insertIndex: 1
     }))
-    expect(refreshSnapshot).toHaveBeenCalledWith("default", { kind: "native" })
+    expect(refreshSnapshot).toHaveBeenCalledWith("default")
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
         firstPath,
         hiddenPath,
@@ -1554,145 +1554,10 @@ test("Alt+Arrow uses schema-gated tab.move for Herdr tabs", async () => {
         tabId: "keyboard-tab-1",
         insertIndex: 1
     }))
-    expect(refreshSnapshot).toHaveBeenCalledWith("default", { kind: "native" })
+    expect(refreshSnapshot).toHaveBeenCalledWith("default")
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
         firstPath,
         secondPath
     ])
     expect(useWorkspaceStore.getState().groups[0].activePath).toBe(firstPath)
-})
-
-
-test("WSL Herdr tab reordering preserves its RuntimeTarget", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    const firstPath = "yuzora://herdr/v2/wsl%3AUbuntu/default/term-1"
-    const secondPath = "yuzora://herdr/v2/wsl%3AUbuntu/default/term-2"
-    useWorkspaceStore.setState({
-        activeGroupIndex: 0,
-        groups: [{
-            activePath: firstPath,
-            tabs: [
-                {
-                    path: firstPath,
-                    name: "WSL One",
-                    dirty: false,
-                    externallyModified: false,
-                    kind: "herdr-terminal",
-                    herdrRuntimeTarget: ubuntu,
-                    herdrSessionId: "default",
-                    terminalId: "term-1",
-                    herdrTabId: "tab-1",
-                    herdrWorkspaceId: "ws-1"
-                },
-                {
-                    path: secondPath,
-                    name: "WSL Two",
-                    dirty: false,
-                    externallyModified: false,
-                    kind: "herdr-terminal",
-                    herdrRuntimeTarget: ubuntu,
-                    herdrSessionId: "default",
-                    terminalId: "term-2",
-                    herdrTabId: "tab-2",
-                    herdrWorkspaceId: "ws-1"
-                }
-            ]
-        }]
-    })
-    useHerdrStore.setState({
-        sessions: [{
-            name: "default",
-            default: true,
-            running: true,
-            sessionDir: "/tmp/ubuntu-default",
-            socketPath: "/tmp/ubuntu-default.sock",
-            runtimeTarget: ubuntu
-        }],
-        selectedSessionName: "default",
-        selectedRuntimeTarget: ubuntu,
-        selectedSpaceId: "ws-1",
-        canMoveSelectedTab: () => true,
-        snapshot: {
-            herdrSessionId: "default",
-            runtimeTarget: ubuntu,
-            protocol: 19,
-            version: "0.8.0",
-            spaces: [{ id: "ws-1", label: "WSL", order: 0, focused: true }],
-            agents: [],
-            tabs: [
-                { id: "tab-1", label: "WSL One", order: 0, workspaceId: "ws-1", paneCount: 1, status: "idle", active: true, focused: true, terminalId: "term-1", sessionName: "default", runtimeTarget: ubuntu },
-                { id: "tab-2", label: "WSL Two", order: 1, workspaceId: "ws-1", paneCount: 1, status: "idle", active: false, focused: false, terminalId: "term-2", sessionName: "default", runtimeTarget: ubuntu }
-            ],
-            terminals: [],
-            raw: {}
-        }
-    })
-    render(<TabBar groupIndex={0} />)
-    fireEvent.keyDown(screen.getByRole("button", { name: "WSL One" }), {
-        key: "ArrowRight",
-        altKey: true
-    })
-    await waitFor(() => expect(herdrTabMove).toHaveBeenCalledWith({
-        runtimeTarget: ubuntu,
-        sessionName: "default",
-        tabId: "tab-1",
-        insertIndex: 1
-    }))
-})
-
-test("WSL Herdr tab close preserves its RuntimeTarget", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    const closeRequests: Array<Record<string, unknown>> = []
-    mockIPC((cmd, args) => {
-        if (cmd === "herdr_tab_close") {
-            closeRequests.push(args as Record<string, unknown>)
-            return null
-        }
-        if (cmd === "log_event") return null
-        return undefined
-    })
-    const pagePath = "yuzora://herdr/v2/wsl%3AUbuntu/default/term-close"
-    useWorkspaceStore.setState({
-        workspacePath: "/w",
-        activeGroupIndex: 0,
-        groups: [{
-            activePath: pagePath,
-            tabs: [{
-                path: pagePath,
-                name: "WSL Closable",
-                dirty: false,
-                externallyModified: false,
-                kind: "herdr-terminal",
-                herdrRuntimeTarget: ubuntu,
-                herdrSessionId: "default",
-                terminalId: "term-close",
-                herdrTabId: "tab-close",
-                paneId: "pane-close"
-            }]
-        }]
-    })
-    useHerdrStore.setState({
-        sessions: [{
-            name: "default",
-            default: true,
-            running: true,
-            sessionDir: "/tmp/ubuntu-default",
-            socketPath: "/tmp/ubuntu-default.sock",
-            runtimeTarget: ubuntu
-        }],
-        selectedSessionName: "default",
-        selectedRuntimeTarget: ubuntu
-    })
-
-    render(<TabBar groupIndex={0} />)
-    fireEvent.click(screen.getByLabelText("Close WSL Closable"))
-    await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
-    useAppDialogStore.getState().respond(true)
-
-    await waitFor(() => expect(closeRequests).toEqual([{
-        runtimeTarget: ubuntu,
-        sessionName: "default",
-        tabId: "tab-close"
-    }]))
-    await waitFor(() => expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(0))
 })

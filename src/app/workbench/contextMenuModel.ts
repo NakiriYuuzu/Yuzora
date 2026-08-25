@@ -1,5 +1,3 @@
-import type { HerdrRuntimeTarget } from "@/lib/herdrTypes"
-
 interface GeneralContextMenuRequest {
   kind: "general"
 }
@@ -94,7 +92,6 @@ interface PreviewContextMenuRequest {
 
 interface HerdrSpaceContextMenuRequest {
   kind: "herdrSpace"
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName: string
   workspaceId: string
   label?: string | null
@@ -103,7 +100,6 @@ interface HerdrSpaceContextMenuRequest {
 
 interface HerdrTabContextMenuRequest {
   kind: "herdrTab"
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName: string
   tabId: string
   workspaceId?: string | null
@@ -113,7 +109,6 @@ interface HerdrTabContextMenuRequest {
 
 interface HerdrPaneContextMenuRequest {
   kind: "herdrPane"
-  runtimeTarget?: HerdrRuntimeTarget | null
   sessionName: string
   paneId: string
   terminalId?: string | null

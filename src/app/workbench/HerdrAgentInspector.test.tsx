@@ -7,7 +7,7 @@ import type {
   HerdrAgentReadResult,
   HerdrCapabilities
 } from "@/lib/herdrTypes"
-import { herdrInitialState, herdrStoreRuntimeKey, useHerdrStore } from "@/state/herdrStore"
+import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 const ipc = vi.hoisted(() => ({
   get: vi.fn(),
@@ -153,6 +153,21 @@ beforeEach(() => {
 })
 
 describe("HerdrAgentInspector", () => {
+  it("displays a Herdr-projected WSL origin badge", async () => {
+    ipc.get.mockResolvedValue(details("w1:p1", "Agent"))
+    ipc.read.mockResolvedValue(readResult("w1:p1", "output"))
+
+    render(
+      <HerdrAgentInspector
+        open
+        onOpenChange={() => undefined}
+        agent={{ ...agent("w1:p1", "Agent"), executionOrigin: { kind: "wsl", distribution: "Ubuntu" } }}
+      />
+    )
+
+    expect(await screen.findByTestId("herdr-inspector-origin")).toHaveTextContent("WSL · Ubuntu")
+  })
+
   it("ignores an older response after the selected agent changes", async () => {
     const oldGet = deferred<HerdrAgentDetails>()
     const oldRead = deferred<HerdrAgentReadResult>()
@@ -190,47 +205,6 @@ describe("HerdrAgentInspector", () => {
     expect(ipc.read).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: "default", target: "w1:p1" })
     )
-  })
-
-  it("uses the agent RuntimeTarget instead of Native same-name session state", async () => {
-    const ubuntu = { kind: "wsl" as const, distro: "Ubuntu" }
-    const wslAgent = { ...agent("w1:p-wsl", "WSL Agent"), runtimeTarget: ubuntu }
-    useHerdrStore.setState((state) => ({
-      sessions: [
-        ...state.sessions,
-        {
-          name: "default",
-          default: true,
-          running: true,
-          sessionDir: "/tmp/ubuntu-default",
-          socketPath: "/tmp/ubuntu-default.sock",
-          runtimeTarget: ubuntu
-        }
-      ],
-      runtimesBySession: {
-        ...state.runtimesBySession,
-        [herdrStoreRuntimeKey("default", ubuntu)]: {
-          runtimeTarget: ubuntu,
-          capabilities,
-          snapshot: null,
-          baseSnapshot: null,
-          worktreeInventory: null,
-          connectionState: "ready",
-          errorMessage: null
-        }
-      }
-    }))
-    ipc.get.mockResolvedValue(details("w1:p-wsl", "WSL Agent"))
-    ipc.read.mockResolvedValue(readResult("w1:p-wsl", "wsl-output"))
-
-    render(<HerdrAgentInspector open onOpenChange={() => undefined} agent={wslAgent} />)
-    expect(await screen.findByText("wsl-output")).toBeInTheDocument()
-    expect(ipc.get).toHaveBeenCalledWith({
-      runtimeTarget: ubuntu,
-      sessionName: "default",
-      target: "w1:p-wsl"
-    })
-    expect(ipc.read).toHaveBeenCalledWith(expect.objectContaining({ runtimeTarget: ubuntu }))
   })
 
   it("shows empty and truncated output states", async () => {
