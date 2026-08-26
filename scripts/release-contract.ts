@@ -275,12 +275,91 @@ function verifyArtifactBoundary(workflow: Workflow): void {
   )
 }
 
+function verifyAppleNotarizationEnvironment(step: UnknownRecord, label: string): void {
+  const env = record(step.env, `${label}.env`)
+  for (const name of [
+    "APPLE_SIGNING_IDENTITY",
+    "APPLE_ID",
+    "APPLE_PASSWORD",
+    "APPLE_TEAM_ID",
+  ]) {
+    assert(
+      env[name] === `\${{ secrets.${name} }}`,
+      `${label} must receive ${name} from protected secrets`
+    )
+  }
+}
+
+function verifyMacOsDistributionContract(workflow: Workflow): void {
+  const buildSteps = steps(jobFor(workflow, "build"), "jobs.build")
+  const importCertificate = stepByName(buildSteps, "Import Developer ID Application certificate")
+  assert(
+    importCertificate.if === "matrix.artifact_name == 'macos'",
+    "Developer ID certificate import must run only on the macOS release runner"
+  )
+  const importEnv = record(importCertificate.env, "Developer ID certificate import env")
+  for (const name of [
+    "APPLE_CERTIFICATE",
+    "APPLE_CERTIFICATE_PASSWORD",
+    "APPLE_SIGNING_IDENTITY",
+    "APPLE_ID",
+    "APPLE_PASSWORD",
+    "APPLE_TEAM_ID",
+  ]) {
+    assert(
+      importEnv[name] === `\${{ secrets.${name} }}`,
+      `macOS release must fail closed unless ${name} is configured`
+    )
+  }
+  assert(
+    includes(importCertificate.run, "Developer ID Application:") &&
+      includes(importCertificate.run, "openssl base64 -d -A") &&
+      includes(importCertificate.run, "security create-keychain") &&
+      includes(importCertificate.run, "security import") &&
+      includes(importCertificate.run, "security set-key-partition-list") &&
+      includes(importCertificate.run, "security find-identity"),
+    "macOS release must import and verify a Developer ID Application .p12 in an isolated keychain"
+  )
+
+  const verifyDistribution = stepByName(
+    buildSteps,
+    "Verify macOS Developer ID signature, Gatekeeper, and notarization"
+  )
+  assert(
+    verifyDistribution.if === "matrix.artifact_name == 'macos'",
+    "macOS distribution verification must run only on the macOS release runner"
+  )
+  const verificationEnv = record(verifyDistribution.env, "macOS distribution verification env")
+  assert(
+    verificationEnv.APPLE_TEAM_ID === "${{ secrets.APPLE_TEAM_ID }}",
+    "macOS distribution verification must compare the signed TeamIdentifier with APPLE_TEAM_ID"
+  )
+  assert(
+    includes(verifyDistribution.run, "codesign --verify --deep --strict") &&
+      includes(verifyDistribution.run, "Authority=Developer ID Application:") &&
+      includes(verifyDistribution.run, "TeamIdentifier=${APPLE_TEAM_ID}") &&
+      includes(verifyDistribution.run, "spctl --assess --type execute") &&
+      includes(verifyDistribution.run, 'xcrun stapler validate "$APP_PATH"') &&
+      includes(verifyDistribution.run, 'xcrun stapler validate "$DMG_PATH"'),
+    "macOS release must fail closed on strict code-signing, Developer ID, Team ID, Gatekeeper, or stapling failure"
+  )
+
+  const cleanup = stepByName(buildSteps, "Remove temporary macOS signing keychain")
+  assert(
+    includes(cleanup.if, "always()") &&
+      includes(cleanup.if, "matrix.artifact_name == 'macos'") &&
+      includes(cleanup.run, "security delete-keychain"),
+    "macOS signing credentials must be removed from the temporary runner keychain even after failure"
+  )
+}
+
 function verifyReleaseWorkflowHardening(workflow: Workflow): void {
   verifyReleaseActionPins(workflow)
   verifyReleaseLeastPrivilege(workflow)
   verifyReleaseLookupFailureHandling(workflow)
   verifyReleaseNotesHandoff(workflow)
   verifyArtifactBoundary(workflow)
+  verifyMacOsDistributionContract(workflow)
 }
 
 export function verifyStableReleaseContract(workflow: Workflow): void {
@@ -324,14 +403,19 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
   const platforms = matrix.include.map((row, index) => record(row, `build matrix row ${index}`).platform)
   assert(platforms.includes("macos-latest") && platforms.includes("windows-latest") && !platforms.includes("ubuntu-22.04"), "release must build only macOS and Windows installers")
   const buildSteps = steps(build, "jobs.build")
-  const stableBuild = stepByName(buildSteps, "Build signed stable installers locally")
-  assert(stableBuild.if === "needs.guard.outputs.is_beta != 'true'", "stable build must exclude beta")
-  const stableEnv = record(stableBuild.env, "stable build env")
+  const stableBuild = stepByName(buildSteps, "Build signed and notarized stable macOS installers")
+  assert(
+    includes(stableBuild.if, "needs.guard.outputs.is_beta != 'true'") &&
+      includes(stableBuild.if, "matrix.artifact_name == 'macos'"),
+    "stable macOS build must be platform- and channel-gated"
+  )
+  const stableEnv = record(stableBuild.env, "stable macOS build env")
   assert(
     stableEnv.TAURI_SIGNING_PRIVATE_KEY === "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" &&
       stableEnv.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
-    "only stable local build may receive updater signing secrets"
+    "stable macOS build must receive updater signing secrets"
   )
+  verifyAppleNotarizationEnvironment(stableBuild, "stable macOS build")
   assert(
     includes(stableBuild.run, "bun tauri build --ci") &&
       includes(stableBuild.run, 'scripts/release-msi-build-config.ts "$VERSION"') &&
@@ -339,6 +423,14 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
       !includes(stableBuild.run, "--no-updater") &&
       !includes(stableBuild.run, "--no-sign"),
     "stable must use the generated numeric WiX version override without disabling signing or updater artifacts"
+  )
+
+  const stableWindowsBuild = stepByName(buildSteps, "Build stable Windows installers")
+  assert(
+    includes(stableWindowsBuild.if, "needs.guard.outputs.is_beta != 'true'") &&
+      includes(stableWindowsBuild.if, "matrix.artifact_name == 'windows'") &&
+      !JSON.stringify(stableWindowsBuild.env ?? {}).includes("APPLE_"),
+    "stable Windows build must remain separate from Apple signing credentials"
   )
 
   const publish = jobFor(workflow, "publish-release")
@@ -371,15 +463,33 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
   assert(betaContract.run === "bun run check:beta-release", "beta contract command changed")
 
   const build = jobFor(workflow, "build")
-  const betaBuild = stepByName(steps(build, "jobs.build"), "Build unsigned beta installers locally")
-  assert(betaBuild.if === "needs.guard.outputs.is_beta == 'true'", "beta build must be channel-gated")
+  const buildSteps = steps(build, "jobs.build")
+  const betaBuild = stepByName(buildSteps, "Build signed and notarized beta macOS installers")
+  assert(
+    includes(betaBuild.if, "needs.guard.outputs.is_beta == 'true'") &&
+      includes(betaBuild.if, "matrix.artifact_name == 'macos'"),
+    "beta macOS build must be platform- and channel-gated"
+  )
+  verifyAppleNotarizationEnvironment(betaBuild, "beta macOS build")
   assert(
     !JSON.stringify(betaBuild.env ?? {}).includes("TAURI_SIGNING_PRIVATE_KEY") &&
       !JSON.stringify(betaBuild.env ?? {}).includes("GITHUB_TOKEN") &&
-      includes(betaBuild.run, "--no-sign") &&
+      !includes(betaBuild.run, "--no-sign") &&
       includes(betaBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
       includes(betaBuild.run, '--config "$RELEASE_BUILD_CONFIG"'),
-    "beta local build must use the generated no-updater numeric WiX version override without secrets"
+    "beta macOS build must use the generated no-updater numeric WiX version override without disabling Developer ID signing"
+  )
+
+  const betaWindowsBuild = stepByName(buildSteps, "Build unsigned beta Windows installers")
+  assert(
+    includes(betaWindowsBuild.if, "needs.guard.outputs.is_beta == 'true'") &&
+      includes(betaWindowsBuild.if, "matrix.artifact_name == 'windows'") &&
+      !JSON.stringify(betaWindowsBuild.env ?? {}).includes("TAURI_SIGNING_PRIVATE_KEY") &&
+      !JSON.stringify(betaWindowsBuild.env ?? {}).includes("APPLE_") &&
+      includes(betaWindowsBuild.run, "--no-sign") &&
+      includes(betaWindowsBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
+      includes(betaWindowsBuild.run, '--config "$RELEASE_BUILD_CONFIG"'),
+    "beta Windows build must use the no-updater numeric WiX override without updater or Apple secrets"
   )
 
   const betaPublish = jobFor(workflow, "publish-beta-release")

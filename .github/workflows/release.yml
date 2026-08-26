@@ -269,8 +269,88 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build signed stable installers locally
-        if: needs.guard.outputs.is_beta != 'true'
+      - name: Import Developer ID Application certificate
+        if: matrix.artifact_name == 'macos'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for variable in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID; do
+            if [ -z "${!variable:-}" ]; then
+              echo "::error::${variable} is required for every released macOS installer"
+              exit 1
+            fi
+          done
+          case "$APPLE_SIGNING_IDENTITY" in
+            "Developer ID Application:"*) ;;
+            *)
+              echo "::error::APPLE_SIGNING_IDENTITY must name a Developer ID Application identity"
+              exit 1
+              ;;
+          esac
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/yuzora-developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/yuzora-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          ORIGINAL_KEYCHAIN="$(security default-keychain -d user | sed -E 's/^[[:space:]]*\"([^\"]+)\".*/\1/')"
+
+          {
+            echo "YUZORA_MACOS_CERTIFICATE_PATH=${CERTIFICATE_PATH}"
+            echo "YUZORA_MACOS_KEYCHAIN=${KEYCHAIN_PATH}"
+            echo "YUZORA_MACOS_ORIGINAL_KEYCHAIN=${ORIGINAL_KEYCHAIN}"
+          } >> "$GITHUB_ENV"
+
+          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep -Fq -- "\"${APPLE_SIGNING_IDENTITY}\""; then
+            echo "::error::configured Developer ID Application identity was not imported"
+            exit 1
+          fi
+
+      - name: Build signed and notarized stable macOS installers
+        if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION")"
+          bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
+
+      - name: Build stable Windows installers
+        if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'windows'
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -282,8 +362,23 @@ jobs:
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION")"
           bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
-      - name: Build unsigned beta installers locally
-        if: needs.guard.outputs.is_beta == 'true'
+      - name: Build signed and notarized beta macOS installers
+        if: needs.guard.outputs.is_beta == 'true' && matrix.artifact_name == 'macos'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
+          bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
+
+      - name: Build unsigned beta Windows installers
+        if: needs.guard.outputs.is_beta == 'true' && matrix.artifact_name == 'windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -291,6 +386,59 @@ jobs:
           VERSION="${VERSION#v}"
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
           bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
+
+      - name: Verify macOS Developer ID signature, Gatekeeper, and notarization
+        if: matrix.artifact_name == 'macos'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+          APPS=("$BUNDLE_DIR"/macos/*.app)
+          DMGS=("$BUNDLE_DIR"/dmg/*.dmg)
+          if [ "${#APPS[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one macOS app bundle, found ${#APPS[@]}"
+            exit 1
+          fi
+          if [ "${#DMGS[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one macOS DMG, found ${#DMGS[@]}"
+            exit 1
+          fi
+          APP_PATH="${APPS[0]}"
+          DMG_PATH="${DMGS[0]}"
+
+          codesign --verify --deep --strict --verbose=4 "$APP_PATH"
+          SIGNATURE_INFO="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+          grep -Fq "Authority=Developer ID Application:" <<<"$SIGNATURE_INFO" || {
+            echo "::error::macOS app is not signed with Developer ID Application"
+            exit 1
+          }
+          grep -Fq "TeamIdentifier=${APPLE_TEAM_ID}" <<<"$SIGNATURE_INFO" || {
+            echo "::error::macOS app TeamIdentifier does not match APPLE_TEAM_ID"
+            exit 1
+          }
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          xcrun stapler validate "$DMG_PATH"
+
+      - name: Remove temporary macOS signing keychain
+        if: always() && matrix.artifact_name == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLEANUP_STATUS=0
+          if [ -n "${YUZORA_MACOS_ORIGINAL_KEYCHAIN:-}" ]; then
+            security default-keychain -s "$YUZORA_MACOS_ORIGINAL_KEYCHAIN" || CLEANUP_STATUS=$?
+          fi
+          if [ -n "${YUZORA_MACOS_KEYCHAIN:-}" ] && [ -f "$YUZORA_MACOS_KEYCHAIN" ]; then
+            security delete-keychain "$YUZORA_MACOS_KEYCHAIN" || CLEANUP_STATUS=$?
+          fi
+          if [ -n "${YUZORA_MACOS_CERTIFICATE_PATH:-}" ]; then
+            rm -f "$YUZORA_MACOS_CERTIFICATE_PATH" || CLEANUP_STATUS=$?
+          fi
+          exit "$CLEANUP_STATUS"
 
       - name: Collect verified local installer artifacts
         shell: bash

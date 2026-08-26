@@ -84,14 +84,14 @@ describe("release workflow contracts", () => {
 
     const stable = run(
       "verifyStableReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Build signed stable installers locally").run = "bun tauri build --ci"; verifyStableReleaseContract(release);`
+      `release.jobs.build.steps.find((step) => step.name === "Build signed and notarized stable macOS installers").run = "bun tauri build --ci"; verifyStableReleaseContract(release);`
     )
     expect(stable.status).not.toBe(0)
     expect(stable.stderr).toContain("generated numeric WiX version override")
 
     const beta = run(
       "verifyBetaReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Build unsigned beta installers locally").run = "bun tauri build --ci --no-sign"; verifyBetaReleaseContract(release, ci);`
+      `release.jobs.build.steps.find((step) => step.name === "Build signed and notarized beta macOS installers").run = "bun tauri build --ci"; verifyBetaReleaseContract(release, ci);`
     )
     expect(beta.status).not.toBe(0)
     expect(beta.stderr).toContain("generated no-updater numeric WiX version override")
@@ -102,6 +102,40 @@ describe("release workflow contracts", () => {
     )
     expect(candidate.status).not.toBe(0)
     expect(candidate.stderr).toContain("release candidates must use the generated no-updater numeric WiX version override")
+  })
+
+  it("requires every released macOS installer to be Developer ID signed, notarized, and fail-closed verified", () => {
+    const run = (contract: string, mutation: string) => spawnSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow, ${contract} } from "./scripts/release-contract.ts";
+        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+        ${mutation}
+      `],
+      { encoding: "utf8" }
+    )
+
+    const missingImport = run(
+      "verifyStableReleaseContract",
+      `release.jobs.build.steps.find((step) => step.name === "Import Developer ID Application certificate").run = "true"; verifyStableReleaseContract(release);`
+    )
+    expect(missingImport.status).not.toBe(0)
+    expect(missingImport.stderr).toContain("import and verify a Developer ID Application")
+
+    const unsignedBeta = run(
+      "verifyBetaReleaseContract",
+      `release.jobs.build.steps.find((step) => step.name === "Build signed and notarized beta macOS installers").run += " --no-sign"; verifyBetaReleaseContract(release, ci);`
+    )
+    expect(unsignedBeta.status).not.toBe(0)
+    expect(unsignedBeta.stderr).toContain("without disabling Developer ID signing")
+
+    const noGatekeeper = run(
+      "verifyStableReleaseContract",
+      `release.jobs.build.steps.find((step) => step.name === "Verify macOS Developer ID signature, Gatekeeper, and notarization").run = "codesign --verify --deep --strict app"; verifyStableReleaseContract(release);`
+    )
+    expect(noGatekeeper.status).not.toBe(0)
+    expect(noGatekeeper.stderr).toContain("Gatekeeper, or stapling failure")
   })
 
   it("uses one bounded canonical-mirror installer for both Linux CI jobs", () => {

@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "bun scripts/build-local-installers.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "check:version": "bun scripts/verify-version-consistency.ts",
