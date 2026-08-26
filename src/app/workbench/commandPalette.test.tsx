@@ -322,6 +322,93 @@ it("lists Herdr Spaces and activates the selected runtime namespace", async () =
     })
 })
 
+it("filters the complete Herdr Space snapshot by name or ID before applying the display cap", async () => {
+    useHerdrStore.setState({
+        selectedSessionName: "work",
+        selectedSpaceId: "ws-0",
+        snapshot: {
+            herdrSessionId: "work",
+            protocol: 19,
+            version: "0.8.0",
+            spaces: [
+                ...Array.from({ length: 64 }, (_, index) => ({
+                    id: `ws-${index}`,
+                    label: `Space ${index}`,
+                    order: index,
+                    focused: index === 0
+                })),
+                { id: "ws-late", label: "Late Space", order: 64, focused: false }
+            ],
+            agents: [],
+            tabs: [],
+            terminals: [],
+            raw: {}
+        },
+        canMutateSelectedSession: () => true,
+        canFocusSelectedTab: () => false
+    })
+    render(<Harness />)
+
+    const input = await screen.findByPlaceholderText("Search files, run a command…")
+    fireEvent.change(input, {
+        target: { value: ">Late Space" }
+    })
+
+    expect(screen.getByRole("option", { name: "Open Herdr Space: Late Space" })).toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: ">ws-late" } })
+
+    expect(screen.getByRole("option", { name: "Open Herdr Space: Late Space" })).toBeInTheDocument()
+})
+
+it("filters the complete Herdr Agent snapshot by name or ID before applying the display cap", async () => {
+    useHerdrStore.setState({
+        selectedSessionName: "default",
+        selectedSpaceId: "ws-1",
+        snapshot: {
+            herdrSessionId: "default",
+            protocol: 19,
+            version: "0.8.0",
+            spaces: [{ id: "ws-1", label: "Main", order: 0, focused: true }],
+            agents: [
+                ...Array.from({ length: 128 }, (_, index) => ({
+                    id: `blocked-${index}`,
+                    name: `Blocked ${index}`,
+                    status: "blocked" as const,
+                    workspaceId: "ws-1"
+                })),
+                {
+                    id: "agent-late",
+                    name: "Late Agent",
+                    status: "idle" as const,
+                    workspaceId: "ws-1"
+                }
+            ],
+            tabs: [],
+            terminals: [],
+            raw: {}
+        },
+        canMutateSelectedSession: () => true,
+        canFocusSelectedTab: () => false
+    })
+    render(<Harness />)
+
+    const input = await screen.findByPlaceholderText("Search files, run a command…")
+    fireEvent.change(input, {
+        target: { value: ">Late Agent" }
+    })
+
+    expect(screen.getByRole("option", {
+        name: "Open Herdr Agent: Late Agent · idle"
+    })).toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: ">agent-late" } })
+
+    expect(screen.getByRole("option", {
+        name: "Open Herdr Agent: Late Agent · idle"
+    })).toBeInTheDocument()
+})
+
 it("'>' prefix restricts to commands and skips the workspace search", async () => {
     render(<Harness />)
     const input = await screen.findByPlaceholderText("Search files, run a command…")

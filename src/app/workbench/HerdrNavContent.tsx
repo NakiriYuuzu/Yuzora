@@ -166,6 +166,47 @@ export function HerdrNavContent() {
     }
   }
 
+  const sessionTabs = sessions.length > 0 && (
+    <div
+      role="tablist"
+      aria-label={t("herdrNav.sessionsHeading")}
+      className="flex shrink-0 flex-wrap gap-[6px] px-[2px]"
+    >
+      {sessions.map((session) => {
+        const selected = session.name === selectedSessionName
+        return (
+          <button
+            key={session.name}
+            type="button"
+            role="tab"
+            data-testid={`herdr-session-${session.name}`}
+            aria-selected={selected}
+            title={
+              session.running
+                ? session.socketPath
+                : t("herdrNav.sessionStoppedTitle", { name: session.name })
+            }
+            onClick={() => onSelectSession(session)}
+            className={cn(
+              "rounded-full border px-[10px] py-[4px] text-[11px] font-medium transition-colors",
+              selected
+                ? "border-(--yz-accent)/50 bg-(--yz-active) text-(--ink-0)"
+                : "border-(--line-2) text-(--ink-3) hover:bg-(--yz-hover)",
+              !session.running && "opacity-70"
+            )}
+          >
+            <span>{session.name}</span>
+            {!session.running && (
+              <span className="ml-[4px] text-[10px] text-(--ink-4)">
+                {t("herdrNav.stoppedBadge")}
+              </span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+
   if (
     (connectionState === "unsupported" ||
       connectionState === "error" ||
@@ -173,22 +214,25 @@ export function HerdrNavContent() {
     !snapshot
   ) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-[14px] px-[8px]">
-        <EmptyState
-          icon={Bot}
-          title={t("herdrNav.unavailableTitle")}
-          description={actionError ?? errorMessage ?? t("herdrNav.unavailableDescription")}
-        />
-        <Button
-          type="button"
-          variant="outline"
-          data-testid="herdr-unavailable-open-local-folder"
-          onClick={() => void onOpenLocalFolder()}
-          disabled={onboardingBusy}
-        >
-          <FolderOpen data-icon="inline-start" aria-hidden="true" />
-          {t("herdrNav.openLocalFolder")}
-        </Button>
+      <div className="flex h-full flex-col gap-[10px]">
+        {sessionTabs}
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-[14px] px-[8px]">
+          <EmptyState
+            icon={Bot}
+            title={t("herdrNav.unavailableTitle")}
+            description={actionError ?? errorMessage ?? t("herdrNav.unavailableDescription")}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            data-testid="herdr-unavailable-open-local-folder"
+            onClick={() => void onOpenLocalFolder()}
+            disabled={onboardingBusy}
+          >
+            <FolderOpen data-icon="inline-start" aria-hidden="true" />
+            {t("herdrNav.openLocalFolder")}
+          </Button>
+        </div>
       </div>
     )
   }
@@ -216,46 +260,7 @@ export function HerdrNavContent() {
 
   return (
     <div className="flex h-full flex-col gap-[10px]">
-      {sessions.length > 0 && (
-        <div
-          role="tablist"
-          aria-label={t("herdrNav.sessionsHeading")}
-          className="flex shrink-0 flex-wrap gap-[6px] px-[2px]"
-        >
-          {sessions.map((session) => {
-            const selected = session.name === selectedSessionName
-            return (
-              <button
-                key={session.name}
-                type="button"
-                role="tab"
-                data-testid={`herdr-session-${session.name}`}
-                aria-selected={selected}
-                title={
-                  session.running
-                    ? session.socketPath
-                    : t("herdrNav.sessionStoppedTitle", { name: session.name })
-                }
-                onClick={() => onSelectSession(session)}
-                className={cn(
-                  "rounded-full border px-[10px] py-[4px] text-[11px] font-medium transition-colors",
-                  selected
-                    ? "border-(--yz-accent)/50 bg-(--yz-active) text-(--ink-0)"
-                    : "border-(--line-2) text-(--ink-3) hover:bg-(--yz-hover)",
-                  !session.running && "opacity-70"
-                )}
-              >
-                <span>{session.name}</span>
-                {!session.running && (
-                  <span className="ml-[4px] text-[10px] text-(--ink-4)">
-                    {t("herdrNav.stoppedBadge")}
-                  </span>
-                )}
-              </button>
-            )
-          })}
-        </div>
-      )}
+      {sessionTabs}
 
       {visibleError && <ErrorBanner message={visibleError} />}
 

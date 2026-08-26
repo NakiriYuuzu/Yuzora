@@ -11,7 +11,7 @@ export type AccentPreference = keyof typeof ACCENT_THEMES
 export const DEFAULT_ACCENT_PREFERENCE: AccentPreference = "lime"
 
 export function isAccentPreference(value: unknown): value is AccentPreference {
-  return typeof value === "string" && value in ACCENT_THEMES
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(ACCENT_THEMES, value)
 }
 
 export function applyAccentPreference(

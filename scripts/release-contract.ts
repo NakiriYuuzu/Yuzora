@@ -2,6 +2,10 @@ type UnknownRecord = Record<string, unknown>
 
 type Workflow = UnknownRecord
 
+// Verified upstream on 2026-08-26: actions/checkout releases/v4 backport #2524.
+const REVIEWED_CHECKOUT_REF =
+  "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+
 function record(value: unknown, label: string): UnknownRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`)
@@ -56,6 +60,12 @@ function hasRepositoryExecution(job: UnknownRecord, label: string) {
     if (typeof step.run !== "string") return false
     return /\b(?:bun|node|npm|pnpm|yarn)\b|\btauri\b|scripts\//.test(step.run)
   })
+}
+
+function hasGhReleaseCommand(job: UnknownRecord, label: string) {
+  return steps(job, label).some(
+    (step) => typeof step.run === "string" && /\bgh release\b/.test(step.run)
+  )
 }
 
 export function parseReleaseWorkflow(text: string): Workflow {
@@ -124,6 +134,10 @@ function verifyReleaseActionPins(workflow: Workflow): void {
         `jobs.${jobName} action must be pinned to a full 40-character commit SHA`
       )
       if (step.uses.startsWith("actions/checkout@")) {
+        assert(
+          step.uses === REVIEWED_CHECKOUT_REF,
+          `jobs.${jobName} checkout must use the reviewed actions/checkout commit`
+        )
         const withOptions = record(step.with, `jobs.${jobName} checkout.with`)
         assert(
           withOptions["persist-credentials"] === false,
@@ -162,6 +176,16 @@ function verifyReleaseLeastPrivilege(workflow: Workflow): void {
 
   for (const [name, rawJob] of Object.entries(jobsFor(workflow))) {
     const job = record(rawJob, `jobs.${name}`)
+    if (!hasCheckout(job, `jobs.${name}`) && hasGhReleaseCommand(job, `jobs.${name}`)) {
+      const environment =
+        job.env && typeof job.env === "object" && !Array.isArray(job.env)
+          ? (job.env as UnknownRecord)
+          : {}
+      assert(
+        environment.GH_REPO === "${{ github.repository }}",
+        `jobs.${name} must set GH_REPO because gh release cannot rely on a no-checkout working directory`
+      )
+    }
     if (contentsPermission(job, `jobs.${name}`) !== "write") continue
     assert(
       !hasCheckout(job, `jobs.${name}`) && !hasRepositoryExecution(job, `jobs.${name}`),
@@ -193,6 +217,17 @@ function verifyReleaseLookupFailureHandling(workflow: Workflow): void {
   )
 }
 
+function verifyReleaseStateNormalization(workflow: Workflow): void {
+  const resolve = stepByName(guardFor(workflow).guardSteps, "Resolve release target")
+  assert(
+    includes(resolve.run, 'RAW_RELEASE_JSON="$(sed -n') &&
+      includes(resolve.run, '(.draft | type) == "boolean"') &&
+      includes(resolve.run, '(.prerelease | type) == "boolean"') &&
+      includes(resolve.run, "{isDraft: .draft, isPrerelease: .prerelease}"),
+    "guard must validate and normalize REST draft/prerelease flags for the release state machine"
+  )
+}
+
 function verifyReleaseNotesHandoff(workflow: Workflow): void {
   const resolve = stepByName(guardFor(workflow).guardSteps, "Resolve release target")
   assert(
@@ -212,6 +247,25 @@ function verifyReleaseNotesHandoff(workflow: Workflow): void {
       includes(assemble.run, "--notes-file release-notes.md"),
     "draft assembly must decode the guard's release-notes bytes directly into its notes file"
   )
+
+  for (const [jobName, verificationStepName] of [
+    ["publish-release", "Verify release assets and updater metadata"],
+    ["publish-beta-release", "Verify beta release assets"],
+  ]) {
+    const publishSteps = steps(jobFor(workflow, jobName), `jobs.${jobName}`)
+    const syncNotes = stepByName(publishSteps, "Synchronize and verify release notes")
+    const verifyRelease = stepByName(publishSteps, verificationStepName)
+    const syncEnv = record(syncNotes.env, `jobs.${jobName} release notes env`)
+    assert(
+      publishSteps.indexOf(syncNotes) < publishSteps.indexOf(verifyRelease) &&
+        syncEnv.RELEASE_NOTES_B64 === "${{ needs.guard.outputs.release_notes_b64 }}" &&
+        includes(syncNotes.run, "printf '%s' \"$RELEASE_NOTES_B64\" | base64 --decode > release-notes.md") &&
+        includes(syncNotes.run, 'gh release edit "$TAG_NAME" --notes-file release-notes.md') &&
+        includes(syncNotes.run, 'gh release view "$TAG_NAME" --json body --jq \'.body\'') &&
+        includes(syncNotes.run, '[ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ]'),
+      `${jobName} must replace and verify the draft body with guard-approved release notes before publication`
+    )
+  }
 }
 
 function verifyArtifactBoundary(workflow: Workflow): void {
@@ -357,6 +411,7 @@ function verifyReleaseWorkflowHardening(workflow: Workflow): void {
   verifyReleaseActionPins(workflow)
   verifyReleaseLeastPrivilege(workflow)
   verifyReleaseLookupFailureHandling(workflow)
+  verifyReleaseStateNormalization(workflow)
   verifyReleaseNotesHandoff(workflow)
   verifyArtifactBoundary(workflow)
   verifyMacOsDistributionContract(workflow)

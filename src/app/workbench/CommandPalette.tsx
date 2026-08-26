@@ -91,17 +91,31 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   const activateHerdrSpace = useHerdrStore((s) => s.activateSpace)
   const activateHerdrTab = useHerdrStore((s) => s.activateTab)
   const activateHerdrAgent = useHerdrStore((s) => s.activateAgent)
-  const herdrTabs =
-    herdrSnapshot?.tabs.filter((tab) => tab.workspaceId === selectedHerdrSpaceId) ?? []
-  const herdrSpaces = herdrSnapshot?.spaces.slice(0, HERDR_PALETTE_SPACE_LIMIT) ?? []
-  const herdrAgents = sortHerdrAgentsByUrgency(herdrSnapshot?.agents ?? [])
-    .filter((agent) => agent.tabId ? canFocusHerdrTab : canMutateHerdrSession)
-    .slice(0, HERDR_PALETTE_AGENT_LIMIT)
-
   const isCommandMode = search.startsWith(">")
   const commandFilter = (isCommandMode ? search.slice(1) : search).trim().toLowerCase()
-  const matchesCommand = (label: string) =>
-    commandFilter === "" || label.toLowerCase().includes(commandFilter)
+  const matchesCommand = (...searchableValues: string[]) =>
+    commandFilter === "" ||
+    searchableValues.some((value) => value.toLowerCase().includes(commandFilter))
+  const herdrTabs =
+    herdrSnapshot?.tabs.filter((tab) => tab.workspaceId === selectedHerdrSpaceId) ?? []
+  const herdrSpaces = (herdrSnapshot?.spaces ?? [])
+    .filter((space) => matchesCommand(
+      t("commandPalette.openHerdrSpace", { name: space.label }),
+      space.id
+    ))
+    .slice(0, HERDR_PALETTE_SPACE_LIMIT)
+  const herdrAgents = sortHerdrAgentsByUrgency(herdrSnapshot?.agents ?? [])
+    .filter((agent) => agent.tabId ? canFocusHerdrTab : canMutateHerdrSession)
+    .filter((agent) => matchesCommand(
+      t("commandPalette.openHerdrAgent", {
+        name: agent.title ?? agent.name,
+        status: agent.status
+      }),
+      agent.id,
+      agent.spaceLabel ?? agent.workspaceId
+    ))
+    .slice(0, HERDR_PALETTE_AGENT_LIMIT)
+
   // ">" is command-only; any other query of at least 2 chars also runs a
   // workspace search (the 2-char floor keeps a single keystroke from scanning
   // the whole tree — mirrored in useWorkspaceSearch).
@@ -258,7 +272,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       className: "h-[42px] gap-3",
     },
   ]
-  const visibleCommands = commands.filter((c) => matchesCommand(c.label))
+  const visibleCommands = commands.filter((c) => matchesCommand(c.label, c.value))
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {

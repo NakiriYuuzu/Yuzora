@@ -9,8 +9,37 @@ import {
   isPinnedReleaseActionRef,
 } from "./release-contract"
 
+interface WorkflowStep {
+  env?: Record<string, string>
+  name?: string
+  run?: string
+  uses?: string
+}
+
+interface WorkflowJob {
+  env?: Record<string, string>
+  steps: WorkflowStep[]
+}
+
+interface ParsedReleaseWorkflow {
+  jobs: Record<string, WorkflowJob>
+}
+
 function verify(script: string) {
   return execFileSync("bun", [script], { encoding: "utf8" })
+}
+
+function releaseWorkflow(): ParsedReleaseWorkflow {
+  return JSON.parse(
+    execFileSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow } from "./scripts/release-contract.ts";
+        console.log(JSON.stringify(parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text())));
+      `],
+      { encoding: "utf8" }
+    )
+  ) as ParsedReleaseWorkflow
 }
 
 describe("release workflow contracts", () => {
@@ -34,6 +63,87 @@ describe("release workflow contracts", () => {
         "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
       )
     ).toBe(true)
+  })
+
+  it("locks every checkout step to the same reviewed upstream commit", () => {
+    const result = spawnSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow, verifyStableReleaseContract } from "./scripts/release-contract.ts";
+        const workflow = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        workflow.jobs.guard.steps.find((step) => step.uses?.startsWith("actions/checkout@"))
+          .uses = "actions/checkout@0000000000000000000000000000000000000000";
+        verifyStableReleaseContract(workflow);
+      `],
+      { encoding: "utf8" }
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("reviewed actions/checkout commit")
+  })
+
+  it("gives every no-checkout gh release job an explicit repository", () => {
+    const workflow = releaseWorkflow()
+    const ghReleaseJobs = Object.entries(workflow.jobs)
+      .filter(([, job]) =>
+        !job.steps.some((step) => step.uses?.startsWith("actions/checkout@")) &&
+        job.steps.some((step) => /\bgh release\b/.test(step.run ?? ""))
+      )
+      .map(([name]) => name)
+
+    expect(ghReleaseJobs).toEqual([
+      "assemble-draft",
+      "upload-updater-metadata",
+      "publish-release",
+      "publish-beta-release",
+    ])
+    for (const name of ghReleaseJobs) {
+      expect(workflow.jobs[name].env?.GH_REPO, name).toBe("${{ github.repository }}")
+    }
+  })
+
+  it("normalizes raw REST release flags for the release state machine", () => {
+    const resolve = releaseWorkflow().jobs.guard.steps.find(
+      (step) => step.name === "Resolve release target"
+    )
+
+    expect(resolve?.run).toContain('RAW_RELEASE_JSON="$(sed -n')
+    expect(resolve?.run).toContain('(.draft | type) == "boolean"')
+    expect(resolve?.run).toContain('(.prerelease | type) == "boolean"')
+    expect(resolve?.run).toContain("{isDraft: .draft, isPrerelease: .prerelease}")
+  })
+
+  it("synchronizes and verifies guard-approved notes before either channel publishes", () => {
+    const workflow = releaseWorkflow()
+    for (const [jobName, verifyStepName] of [
+      ["publish-release", "Verify release assets and updater metadata"],
+      ["publish-beta-release", "Verify beta release assets"],
+    ]) {
+      const job = workflow.jobs[jobName]
+      const syncIndex = job.steps.findIndex(
+        (step) => step.name === "Synchronize and verify release notes"
+      )
+      const verifyIndex = job.steps.findIndex((step) => step.name === verifyStepName)
+      expect(syncIndex, jobName).toBeGreaterThanOrEqual(0)
+      expect(syncIndex, jobName).toBeLessThan(verifyIndex)
+
+      const sync = job.steps[syncIndex]
+      expect(sync?.env?.RELEASE_NOTES_B64, jobName).toBe(
+        "${{ needs.guard.outputs.release_notes_b64 }}"
+      )
+      expect(sync?.run, jobName).toContain(
+        `printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md`
+      )
+      expect(sync?.run, jobName).toContain(
+        'gh release edit "$TAG_NAME" --notes-file release-notes.md'
+      )
+      expect(sync?.run, jobName).toContain(
+        "gh release view \"$TAG_NAME\" --json body --jq '.body'"
+      )
+      expect(sync?.run, jobName).toContain(
+        '[ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ]'
+      )
+    }
   })
 
   it("treats only an authoritative GitHub 404 as an absent release", () => {

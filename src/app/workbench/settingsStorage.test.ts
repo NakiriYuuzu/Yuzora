@@ -59,6 +59,16 @@ describe("appearance settings", () => {
     expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
   })
 
+  it("不把 Object prototype inherited keys 當成合法 accent", () => {
+    for (const accent of ["constructor", "toString"]) {
+      localStorage.setItem(
+        APPEARANCE_SETTINGS_STORAGE_KEY,
+        JSON.stringify({ theme: "dark", accent }),
+      )
+      expect(loadAppearanceSettings()).toEqual({ theme: "dark", accent: "lime" })
+    }
+  })
+
   it("save→load 往返保留合法 theme 與 accent", () => {
     for (const theme of ["light", "dark", "auto"] as const) {
       saveAppearanceSettings({ theme, accent: "violet" })

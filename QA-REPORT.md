@@ -1,30 +1,31 @@
 # Yuzora 上線前唯讀 QA 驗收報告
 
-> 狀態：原始驗收與修復回歸均已完成。2026-08-26 經使用者明確要求，已修復所有 repository 可處理的 QA-001～QA-016，並以 Codex Computer Use 操作最新 packaged app 逐項復驗；外部簽章、平台與憑證條件仍誠實列為 BLOCKED。
+> 狀態：原始唯讀驗收、使用者授權的 remediation 與 release review 回歸均已完成。QA-001～QA-027 中 26 個實際缺陷已修復；QA-019 經 upstream API 證明為 false positive，並已修正誤導性的 provenance 註解與加入 contract。所有外部簽章、平台、review 與權限條件仍誠實列為 BLOCKED。
 
 ## 1. 執行摘要
 
 - 測試開始：2026-08-26 00:52:49 +08:00（Asia/Taipei）
 - 測試環境：macOS 26.6.1（25G76）、Apple arm64、Bun 1.3.14、rustc/cargo 1.96.0
-- 測試來源：`release/v0.0.9-beta.1` @ `d97fb7a5724669394abeb11360eef7330e332d06`
+- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；post-QA review remediation baseline `bf82126649a0f2d44415caf7526f15a3eb1d5757` 加本報告所列 13-file patch
 - 產品版本：`0.0.9-beta.1`（`package.json` 與 `src-tauri/tauri.conf.json` 一致）
 - 原始驗收結束：2026-08-26 09:48:24 +08:00（01:20:36 曾因 QA-009 暫停；經使用者明確要求後續測完成）
-- 修復回歸與結案核對結束：2026-08-26 19:59:01 +08:00
+- Post-review 修復回歸與本機候選驗收結束：2026-08-26 23:32:41 +08:00
 - 整體結論：**NO-GO**
-- 功能總數／通過／失敗／阻塞／未測試：**79／62／0／17／0**
-- Repository 可處理問題：**16／16 已修復；15 項實機或自動回歸 PASS，QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／workflow run 阻擋。**
+- 功能總數／通過／失敗／阻塞／未測試：**90／73／0／17／0**
+- Repository 可處理問題：**26／26 個實際缺陷已修復；QA-019 的 invalid-ref 前提已證偽。QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／workflow run 阻擋。**
 - 上線阻擋問題摘要：
   - QA-003（P1 release gate）：Stable／Beta macOS workflow 已改為 fail-closed Developer ID signing、notarization、strict `codesign`、`spctl` 與 app／DMG stapler validation；本機沒有 Apple credentials，尚未取得實際 signed／notarized candidate，因此仍不可發布。
+  - GitHub secret inventory 只有 `TAURI_SIGNING_PRIVATE_KEY` 與其 password；六項 Apple secrets 仍缺。`main` 未啟用 branch protection，repository rulesets 為空；release-sensitive patch 尚待 maintainer review 與明確 merge 授權。
   - Windows／SmartScreen／WSL2、真實 PostgreSQL／MSSQL、updater download／install 與 OS vault 等外部候選環境仍受阻；不得推定正常。
   - SFTP browse 已實機通過，但 mkdir／rename／delete／upload 等破壞性或寫入流程未在正式資料上執行；backend unsafe-leaf guard 已由回歸測試驗證。
 
 ### 修復驗證摘要
 
-- 最新隔離 build：`/private/tmp/yuzora-fixed-build.8SSbqE/cargo-target/release/bundle/macos/Yuzora.app`；DMG SHA-256 `8ec5bc99302847147bc75104a40ef0e6d3d678071028d2b8ba4806d1f7e13f5c`，`hdiutil verify` PASS。
-- Frontend：typecheck PASS；lint PASS（0 errors，49 既有 warnings）；179 files／2,439 tests PASS。
+- 最新隔離 build：`/private/tmp/yuzora-ops.LSCoT2/cargo-target/release/bundle/macos/Yuzora.app`；DMG SHA-256 `97ad88de36c798473abdbe36bd1dedea4888c9efde4e52927ae32c641230d680`，`hdiutil verify` PASS；bundle `0.0.9-beta.1`／`dev.yuuzu.yuzora`／arm64，按 local candidate contract 為 ad-hoc、無 TeamIdentifier。
+- Frontend：typecheck PASS；lint PASS（0 errors，49 既有 warnings）；179 files／2,452 tests PASS。
 - Rust：`cargo check --locked --all-targets`、fmt、exact clippy baseline PASS；891 unit tests PASS、1 ignored；DB integration 1 PASS、1 ignored。
-- Release：version／Beta／Stable preflight PASS；release/build contract 19 tests PASS；`bun run tauri:build` 在 repository 外 code 0。
-- Computer Use：accent persistence、English LSP／Logs、Logs AX／50-row paging／ISO validation、Agent Inspector 與 focus return、Git menu Escape、Preview invalid scheme／native-webview lifecycle、SSH radios、TOFU accept／reject／reconnect、SSH shell與 SFTP browse均 PASS。
+- Release：version／Beta／Stable preflight PASS；release state＋contracts 18 tests PASS；combined targeted 7 files／77 tests PASS；`bun run tauri:build` 在 repository 外 code 0。
+- Computer Use：僅用 bundled `@oai/sky` 操作 exact `/private/tmp/yuzora-ops.LSCoT2/.../Yuzora.app`。新增回歸包含 `>` Space／Agent 搜尋與 keyboard flow、Logs date-only／datetime-local／RFC3339／非法日曆時間、50-row paging／expanded-state isolation、accent persistence／restore；Git menu、Preview、SSH smoke 亦 PASS。no-snapshot session、large inventory cap 與 execution-origin refresh 以 deterministic tests 覆蓋，未偽稱實機重現。
 
 ### 模型與委派紀錄
 
@@ -44,13 +45,13 @@
 | 05 版本與 release contracts | version、beta、stable updater contract | PASS | 三個 check 均 exit 0。 |
 | 06 README source build | `bun run tauri:build` | PASS | local no-updater／no-sign build code 0；不再要求 production updater private key。 |
 | 07 Beta Tauri build | no-updater／no-sign isolated build | PASS | exit 0，約 1m05s。 |
-| 08 DMG metadata／完整性 | version、identifier、SHA-256、verify | PASS | DMG VALID；hash `8ec5bc99…e13f5c`。 |
+| 08 DMG metadata／完整性 | version、identifier、SHA-256、verify | PASS | 最新 post-review DMG VALID；hash `97ad88de…30d680`。 |
 | 09 macOS code signing | strict codesign／Gatekeeper | BLOCKED | protected workflow 已 fail-closed；本機 build 按設計 unsigned，無 Apple credentials／實際 release run，不能宣稱 Gatekeeper PASS。 |
 | 10 Windows installer／SmartScreen | Windows candidate 實機驗收 | BLOCKED | 無 Windows candidate／主機。 |
 | 11 README 版本資訊 | 英／繁中 badge 對照 | PASS | 兩份 badge 與 packaged README 均為 `0.0.9-beta.1`。 |
 | 12 Frontend 靜態檢查 | typecheck、lint | PASS | exit 0；lint 0 errors／49 既有 warnings。 |
-| 13 Frontend tests | Vitest | PASS | 179 files／2,439 tests，31.54s。 |
-| 14 Frontend production build | Vite build | PASS | exit 0；最新 bundle 3,103.90 kB，保留 chunk warning。 |
+| 13 Frontend tests | Vitest | PASS | 179 files／2,452 tests。 |
+| 14 Frontend production build | Vite build | PASS | exit 0；最新 bundle 3,105.68 kB，保留 chunk warning。 |
 | 15 Rust checks/tests | check、fmt、clippy baseline、tests | PASS | 891 passed／1 ignored；DB integration 1 passed／1 ignored；baseline 251 diagnostics。 |
 | 16 Packaged app 啟動／重啟 | 最新 `.app` 冷啟、關閉、再開 | PASS | 首次可操作 state 約 1.69s。 |
 | 17 Graceful close | native close、process exit | PASS | 關閉後 packaged binary 無 process。 |
@@ -116,6 +117,17 @@
 | 77 Native window controls | minimize、fullscreen、resize persistence | PASS | minimize／restore 正常；原生 full screen button 進入後內容仍可操作，`Ctrl+⌘+F` 正常退出；視窗由 `1463×769` 調為 `1388×768`，關閉／重啟後為 `1389×768` 且 HERDR 正常重連，最後已還原 `1463×769`。 |
 | 78 測試後 tracked Git 狀態 | `git status --short`／diff | PASS | 僅含使用者明確授權的修復檔與 `QA-REPORT.md`；無 staged changes。 |
 | 79 QA write-scope compliance | repository 內實際寫入範圍 | PASS | QA-009 歷史事件保留；本輪修復後的 Cargo／Tauri build 全在 `/private/tmp`，未再寫 repository build outputs。 |
+| 80 HERDR no-snapshot Session recovery | selected stopped/error session、其他 running session | PASS | deterministic component test 顯示 unavailable state 仍保留 Sessions tablist並可切換；live default session 無安全方式製造此狀態，未偽稱實機。 |
+| 81 Command Palette 大型 inventory 搜尋 | 64+ Spaces、128+ Agents、label／exact ID | PASS | 完整集合先比對 label／ID／Space，再套 64／128 cap；Palette targeted 15/15。實機 `>privacy` 與 `>π` keyboard flow PASS。 |
+| 82 HERDR execution origin reconciliation | event set／clear、inventory refresh | PASS | `snapshot` 與 `baseSnapshot` 同步 patch；相鄰 HERDR store 41/41 PASS。 |
+| 83 checkout action provenance | 查證 pinned SHA 是否存在 | PASS | upstream API 回傳 `11d5960…` 與 `backport fixes to releases-v4 (#2524)`；原 P1 invalid-ref 前提不成立，contract 鎖定 reviewed commit。 |
+| 84 no-checkout `gh release` repository | 無 `.git` runner cwd | PASS | 未設定 repo 時重現 fatal；四個 no-checkout jobs 均設定 `GH_REPO: ${{ github.repository }}`，contract 保護。 |
+| 85 REST Release state normalization | existing draft／published release | PASS | 驗證 `draft`／`prerelease` 是 boolean，再正規化為 `isDraft`／`isPrerelease`；state＋contract tests PASS。 |
+| 86 resumed-draft release notes | Stable／Beta publish 前 notes | PASS | publish jobs 以 guard base64 notes 覆寫 draft body並逐字讀回比對；contract tests PASS，真實 publish 因 merge gate 未執行。 |
+| 87 Logs pagination component contract | Previous／Next primitive | PASS | 改用 shadcn `Button`；latest packaged UI 的 10-page paging、disabled state 與視覺 smoke PASS。 |
+| 88 Logs expanded-row identity | 跨頁相同 timestamp/source/event | PASS | key 含 absolute result index；component regression與 packaged page 1→2→1 state isolation PASS。 |
+| 89 Logs supported timestamp formats | date-only、datetime-local、RFC3339、非法日期／時間 | PASS | packaged UI 三種有效格式均套用；`2026-02-30`、`24:00` 顯示可存取錯誤；targeted tests PASS。 |
+| 90 Accent persisted-key validation | own key、`constructor`／`toString` | PASS | own-property regression 拒絕 inherited keys；violet 關閉／重啟保存，最終 lime／Follow system 已還原並再重啟確認。 |
 
 ## 3. 問題清單
 
@@ -436,14 +448,190 @@
 - **對上線的影響**：**上線阻擋**。所有尚未出現在 Yuzora 自有 known-hosts store 的 SSH／SFTP 主機都無法首次連線；主要功能在正常新使用者環境不可用。手工 pre-pin 才能繞過，但不屬產品支援流程。
 - **已知暫時解法**：無 UI 暫時解法。不得要求一般使用者手工修改 `~/.yuzora/known_hosts.json`；本次 QA 亦未繞過。
 
+### QA-017 — HERDR selected Session 無 snapshot 時無法切換其他 Session
+
+- **Bug ID**：QA-017
+- **嚴重度**：P1
+- **修復狀態**：**FIXED／AUTOMATED PASS** — unavailable shell 保留 Sessions tablist；targeted regression PASS。
+- **問題標題**：selected stopped／error Session 無 snapshot 時提前 return，Session switcher 消失
+- **受影響功能**：ADE → named Sessions、HERDR unavailable recovery、Open Local Folder escape
+- **前置條件**：inventory 至少兩個 named Sessions；selected Session stopped 或連線 error，且尚無 snapshot；另一 Session running。
+- **完整重現步驟**：1. 選取 stopped／error Session。2. 使其在 snapshot 前進入 unavailable state。3. 觀察 ADE sidebar。4. 嘗試切回 running Session。
+- **預期結果**：unavailable message 與 Open Local Folder 可見，同時保留 Sessions tablist供切換。
+- **實際結果**：原實作在 render tablist 前 return，只剩 Open Local Folder，running Session 不可達。
+- **重現率**：100% deterministic component test。
+- **錯誤訊息、日誌或畫面證據**：PR #83 discussion `r3852466712`；`herdrNavContent.test.tsx` 覆蓋 no-snapshot stopped Session switching；HERDR targeted suite 37/37。
+- **對上線的影響**：主要 recovery path 被鎖死，使用者可能誤認全部 HERDR runtime 不可用。
+- **已知暫時解法**：修復前只能重啟 app 或改用 Open Local Folder；無可靠 UI Session recovery。
+
+### QA-018 — Command Palette 先 cap 再搜尋使後段 Space／Agent 永久不可達
+
+- **Bug ID**：QA-018
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／PASS** — 完整 inventory 先依 label／ID／Space 比對，再套 64／128 顯示上限。
+- **問題標題**：大型 HERDR snapshot 中第 65 個 Space／第 129 個 Agent 無法被搜尋
+- **受影響功能**：Command Palette、HERDR Space／Agent jump
+- **前置條件**：snapshot 超過 64 Spaces 或 128 Agents，目標位於 cap 後方。
+- **完整重現步驟**：1. 建立 65+ Spaces 或 129+ Agents fixture。2. 開啟 `⌘K`。3. 輸入目標 exact label 或 ID。4. 檢查結果。
+- **預期結果**：完整集合先搜尋，符合項目才受顯示 cap 限制。
+- **實際結果**：原實作先 `slice`，後段項目在 filtering 前已被丟棄，exact query 也無結果。
+- **重現率**：100%（合成 65th／129th fixtures）。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3852466723`；Palette 15/15、combined targeted 37/37；packaged UI `>privacy`、`>π` 與 Enter／Escape PASS。
+- **對上線的影響**：大型真實 Session 的搜尋／跳轉功能不完整，但不影響前段 inventory。
+- **已知暫時解法**：修復前只能從其他 UI 導航或降低 inventory 數量。
+
+### QA-019 — checkout pinned SHA 被誤報為不存在
+
+- **Bug ID**：QA-019
+- **嚴重度**：P1（review 報告；最終判定 **NOT A DEFECT**）
+- **修復狀態**：**DISPROVED／CONTRACT HARDENED** — 保留有效 SHA，修正錯誤的 `v4.2.2` 註解，contract 鎖定已審查 commit。
+- **問題標題**：review 認為 `actions/checkout@11d5960…` 無法解析
+- **受影響功能**：Release guard／build／metadata checkout provenance
+- **前置條件**：檢查 `.github/workflows/release.yml` 的三個 checkout ref。
+- **完整重現步驟**：1. 以 GitHub upstream API 查 `repos/actions/checkout/git/commits/11d5960…`。2. 比對 workflow ref與 commit message。3. 以 mutation 改成全零 SHA執行 contract。
+- **預期結果**：有效 reviewed commit 可解析；非法或未審查 SHA fail closed。
+- **實際結果**：API 回傳有效 commit `11d5960a326750d5838078e36cf38b85af677262`，訊息為 `backport fixes to releases-v4 (#2524)`；問題只在 provenance 註解錯標 `v4.2.2`。
+- **重現率**：誤報前提 0%；API 查證與 mutation contract 100%。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3852466727`；GitHub upstream API live response；checkout mutation test正確 fail closed。
+- **對上線的影響**：沒有 invalid-ref blocker；錯誤註解可能誤導供應鏈 review，已修正並鎖定。
+- **已知暫時解法**：不需要 workaround；以 full SHA 與 upstream API為準。
+
+### QA-020 — executionOrigin 未寫回 baseSnapshot，inventory refresh 會回退
+
+- **Bug ID**：QA-020
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／AUTOMATED PASS** — event set／clear 同步 patch `snapshot` 與 `baseSnapshot`。
+- **問題標題**：Agent execution origin badge 在 worktree inventory refresh 後恢復舊值
+- **受影響功能**：HERDR Agent／terminal origin、WSL badge、event reconciliation
+- **前置條件**：已有 snapshot／baseSnapshot；收到含或清除 `executionOrigin` 的 `agent_status_changed`，之後執行 inventory refresh。
+- **完整重現步驟**：1. 注入 origin event。2. 確認 projected snapshot 更新。3. 觸發 worktree inventory refresh。4. 觀察 origin。
+- **預期結果**：event origin 在 refresh 後仍維持最新值，clear 亦不復活。
+- **實際結果**：原實作只更新 projected snapshot；refresh 從 baseSnapshot 重建後回到舊 origin。
+- **重現率**：100% deterministic store race test。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3852614105`；HERDR store adjacent 41/41 PASS。
+- **對上線的影響**：diagnostic／origin badge可能陳舊，影響使用者判斷 Agent 實際 runtime。
+- **已知暫時解法**：修復前等待下一個完整 snapshot；無即時可靠 UI workaround。
+
+### QA-021 — no-checkout release jobs 無法推斷 repository
+
+- **Bug ID**：QA-021
+- **嚴重度**：P1
+- **修復狀態**：**FIXED／PASS** — 四個 no-checkout `gh release` jobs 均設定 job-level `GH_REPO`。
+- **問題標題**：fresh runner 無 `.git` 時 draft assembly／metadata upload／publish 失敗
+- **受影響功能**：Stable／Beta Release 建立、metadata upload、Publish
+- **前置條件**：GitHub Actions no-checkout job，在沒有 repository cwd 的 runner 執行 `gh release`。
+- **完整重現步驟**：1. 進入無 `.git` 的 `/private/tmp`。2. 只設 `GITHUB_REPOSITORY` 執行 `gh release view`。3. 再設 `GH_REPO=NakiriYuuzu/Yuzora` 重試。
+- **預期結果**：job 明確指定 repository，不依賴 checkout cwd。
+- **實際結果**：原流程回 `fatal: not a git repository`；加入 `GH_REPO` 後查詢成功。
+- **重現率**：100%（無 GH_REPO fail；有 GH_REPO pass）。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3852614111`；release contract列舉並守護四個 jobs。
+- **對上線的影響**：**發布阻擋**；新 release 在 assemble-draft 前即失敗。
+- **已知暫時解法**：手動加 `--repo`；workflow 已採一致的 job-level `GH_REPO`。
+
+### QA-022 — GitHub REST Release flags 未轉成 state machine shape
+
+- **Bug ID**：QA-022
+- **嚴重度**：P1
+- **修復狀態**：**FIXED／PASS** — boolean type validation後正規化為 `isDraft`／`isPrerelease`。
+- **問題標題**：existing draft／published release 一律在 channel assertion 失敗
+- **受影響功能**：Release resume、已發布版本 safe skip、Stable／Beta channel guard
+- **前置條件**：同 tag GitHub Release 已存在，REST 回應使用 `draft`／`prerelease`。
+- **完整重現步驟**：1. 將 raw REST object傳入 state resolver。2. 使用 `{draft:true,prerelease:true}` beta draft。3. 觀察 channel assertion。4. 正規化後重試。
+- **預期結果**：beta draft解析為 `{isDraft:true,isPrerelease:true}` 並進入 publish-existing path。
+- **實際結果**：原 resolver讀到 undefined flags並報 channel mismatch；正規化後回 `shouldPublishExisting=true`。
+- **重現率**：100% deterministic state test。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3852614119`；raw error `existing release prerelease state does not match beta channel`；release state＋contracts 18/18。
+- **對上線的影響**：resume／safe-skip 路徑不可用，可能讓正式 release recovery 失敗。
+- **已知暫時解法**：無安全手動繞過；必須在 guard 正規化並 fail closed。
+
+### QA-023 — Logs pagination 未使用專案標準 shadcn Button
+
+- **Bug ID**：QA-023
+- **嚴重度**：P3
+- **修復狀態**：**FIXED／PASS** — Previous／Next 改用 `@/components/ui/button`。
+- **問題標題**：Logs 新增手刻 native pagination buttons，偏離 UI primitive contract
+- **受影響功能**：Settings → Logs pagination、互動／視覺一致性
+- **前置條件**：log query超過 50 rows。
+- **完整重現步驟**：1. 載入 51+ logs。2. 檢查 Previous／Next component來源。3. 比對 AGENTS.md shadcn-first規則與實際 UI。
+- **預期結果**：共用 shadcn Button variants／interaction behavior。
+- **實際結果**：原實作為手刻 `<button>` class。
+- **重現率**：100% source-level。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3863124932`；targeted Logs 22/22；packaged UI 500 rows／10 pages／disabled state PASS。
+- **對上線的影響**：不直接阻擋功能，但造成設計系統與可用性行為漂移。
+- **已知暫時解法**：原 native buttons 可操作；無需使用者 workaround。
+
+### QA-024 — Logs expanded row key 在跨頁時碰撞
+
+- **Bug ID**：QA-024
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／PASS** — key 使用 absolute result index。
+- **問題標題**：不同頁同 page offset／timestamp／source／event 的 row 共用 expanded state
+- **受影響功能**：Settings → Logs metadata expansion、pagination state
+- **前置條件**：兩頁同一相對 index有相同 timestamp、source與event。
+- **完整重現步驟**：1. 建立碰撞 fixture。2. 第一頁展開 row。3. 切下一頁。4. 觀察相對位置相同的 row。
+- **預期結果**：只有使用者點選的 absolute result row展開。
+- **實際結果**：原 key末段使用 page-local index，每頁從 0 重算，未點選 row也展開。
+- **重現率**：100% collision fixture。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3863124940`；Logs targeted 22/22；packaged page 1→2 無串頁、返回 page 1 原 row仍展開。
+- **對上線的影響**：顯示錯誤 metadata，降低診斷可信度。
+- **已知暫時解法**：修復前切頁前先手動收合；無法避免真實 key collision。
+
+### QA-025 — Accent validator 接受 prototype inherited keys
+
+- **Bug ID**：QA-025
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／PASS** — 使用 own-property判定，拒絕 `constructor`／`toString`。
+- **問題標題**：corrupt persisted accent 可讓 CSS variables 變成 undefined
+- **受影響功能**：Appearance settings、startup persistence、accent CSS variables
+- **前置條件**：persisted appearance accent值是 Object prototype inherited key。
+- **完整重現步驟**：1. 將 stored accent設為 `constructor` 或 `toString`。2. 啟動 app。3. 載入 appearance settings。4. 觀察 accent variables。
+- **預期結果**：只接受 `ACCENT_THEMES` 自有 keys，其餘 fallback lime。
+- **實際結果**：原 `value in ACCENT_THEMES` 對 inherited key回 true，palette欄位為 undefined。
+- **重現率**：100% storage regression fixture。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3863124947`；settings storage adjacent 70/70；packaged violet persistence與 lime restore PASS。
+- **對上線的影響**：損壞或惡意 persisted data會讓每次啟動的主題色失效。
+- **已知暫時解法**：修復前清除 appearance storage；會遺失設定，並非理想處理。
+
+### QA-026 — Logs client validator 拒絕 backend 支援的時間格式
+
+- **Bug ID**：QA-026
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／PASS** — 對齊 date-only、datetime-local、RFC3339，並嚴格拒絕非法日曆／時間／offset。
+- **問題標題**：有效 date-only／datetime-local filters 被 frontend擋下
+- **受影響功能**：Settings → Logs since／until filters
+- **前置條件**：輸入 Rust `parse_query_time` 支援的 `2026-01-02` 或 `2026-01-02T12:30`。
+- **完整重現步驟**：1. 在 since輸入 date-only。2. 再輸入 datetime-local。3. 比對 RFC3339控制組。4. 測 `2026-02-30`、`24:00`、非法 offset。
+- **預期結果**：三種 backend支援格式均查詢；非法日期時間顯示 inline／AX error。
+- **實際結果**：原修復版 validator要求 seconds與timezone，使前兩種合法格式停止 query。
+- **重現率**：100% targeted tests與 packaged UI。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3863124950`；Logs targeted 22/22；packaged date-only／datetime-local／RFC3339得到 0-row future result，invalid輸入顯示 ISO error。
+- **對上線的影響**：既有合法 filter regression，使用者無法使用簡短時間格式。
+- **已知暫時解法**：修復前改輸入完整 RFC3339。
+
+### QA-027 — resumed draft 可能發布 stale／任意 release notes
+
+- **Bug ID**：QA-027
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／CONTRACT PASS** — Stable／Beta publish前同步 guard-verified notes並逐字比對。
+- **問題標題**：assemble-draft 被略過時，非空 stale body 可直接通過 Publish gate
+- **受影響功能**：Stable／Beta draft recovery、Release notes provenance、automated Publish
+- **前置條件**：same-SHA draft已存在且 body非空；guard走 publish-existing path，assemble-draft略過。
+- **完整重現步驟**：1. 建立同 SHA draft並放入任意非空 notes。2. 讓 guard恢復 draft。3. 進入 publish job。4. 比對 body與 CHANGELOG-derived notes。
+- **預期結果**：Publish只能使用 guard驗證的 exact notes。
+- **實際結果**：原 gate只驗證 body非空，stale／人工 notes可不經比對發布。
+- **重現率**：100% workflow contract mutation。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3863124957`；release contract 14/14、state＋contracts 18/18；Stable／Beta contract commands PASS。
+- **對上線的影響**：Release內容與 reviewed CHANGELOG脫鉤，屬供應鏈／發布完整性風險。
+- **已知暫時解法**：修復前只能人工核對 draft；不足以取代 automated fail-closed gate。
+
 ## 4. 未完成與受阻項目
 
 | 未測試功能 | 阻礙原因 | 所需條件 | 殘餘風險 |
 |---|---|---|---|
 | 實際 signed／notarized macOS release candidate | 本機無 Apple Developer ID／notary credentials；protected workflow 尚未執行 | 受保護 secrets、tag／workflow run、下載其 app／DMG | workflow contract 已 fail-closed，但 Gatekeeper／stapling 仍未由真實 artifact 證明；這是目前 NO-GO 主因。 |
-| Windows installer／SmartScreen／WSL2／native HERDR | 無 Windows candidate 或 Windows/WSL2 主機 | 已簽章 Windows build、Windows 11、WSL2、測試 Herdr provider | Windows 發布、named pipe、WSL descendant Agent 行為未知。 |
+| Windows installer／SmartScreen／WSL2／native HERDR | 舊 head Windows candidate已有靜態驗證，但 post-review exact-head candidate尚待 CI；目前無 Windows 11／WSL2 主機 | 新 exact-head candidate、Windows 11、WSL2、測試 Herdr provider | Windows 安裝、SmartScreen、named pipe與 WSL descendant Agent互動行為未知。 |
 | PostgreSQL／MSSQL 真實連線與 SQL console | 無隔離 local listeners／fixtures；不連 saved external DB | Docker 或本機 fixture、非正式資料、測試憑證 | TLS、vault、DML effect、paging、cancel、recovery 未實機證明。 |
-| Docker DB integration | Docker socket `/Users/yuuzu/.docker/run/docker.sock` 不存在 | 可用 Docker daemon／compose fixture | Cargo DB integration 有 1 ignored；跨 engine 風險保留。 |
+| Docker DB integration | Docker socket `/Users/yuuzu/.docker/run/docker.sock` 不存在 | 可用 Docker daemon／compose fixture | ignored matrix以 `YUZORA_DATABASE_TEST_ENGINES=sqlite` 1/1 PASS；PostgreSQL／MSSQL跨 engine風險保留。 |
 | SFTP 寫入／破壞性操作與 changed-key 流程 | SSH shell、TOFU、known-host reconnect、SFTP root／subdir browse 已 PASS；未執行 upload／mkdir／rename／delete 或替換 host key | 全隔離 remote filesystem、可棄置下載／上傳路徑、changed-key fixture | backend guard 有自動測試，但完整 UI mutation／overwrite／cleanup 仍不可推定正常。 |
 | OS vault／真實 credentials／raw logs | 不建立或傳入 sensitive data | 隔離 keychain namespace 與測試 secrets | credential lifecycle／redaction 只具 source/test 證據。 |
 | Updater download／install／relaunch | Beta contract 明示 no OTA，本機 candidate 無 updater signing key | signed Stable artifact、staging endpoint、throwaway install | workflow contract PASS；實際 download/install/relaunch 未測。 |
@@ -466,20 +654,20 @@
 ### 測試後狀態
 
 - 原始 QA 結束時間：2026-08-26 09:48:24 +08:00；當時 `git status --short` 只有 `?? QA-REPORT.md`。
-- 使用者其後明確要求修復所有問題，故目前 tracked／untracked changes 均為本輪授權的產品、workflow、文件、測試與報告修復；沒有 staged changes。
-- 最終核對時間：2026-08-26 19:59:01 +08:00；`git status --short` 為 40 個 tracked modified files 與 6 個 untracked files（含 `QA-REPORT.md`），全部對應本輪修復或報告；未發現額外測試產物。
-- `git diff --check` PASS；`git diff --cached --name-only` 無輸出。
-- 最終 build source、Cargo target、app、DMG、SSH fixture 與 clone apps 全位於 `/private/tmp`；最新 build 未再寫 repository `dist/` 或 `src-tauri/target/`。
+- 使用者其後明確要求修復所有問題；第一批 remediation 已依授權形成 `f8e8d17c1cd4df34a71ba3d360ed0b3f19cbf2d5`、`183ff004a6772f7d1439c97d6c11bb1d2e380b47` 與 `bf82126649a0f2d44415caf7526f15a3eb1d5757` 並 push 至同一 release branch。
+- `bf821266…` 的 11 個 unresolved review threads觸發 QA-017～QA-027；本報告定稿前狀態為 13 個 post-review source／test／workflow modifications 加 `QA-REPORT.md`，沒有 staged changes，全部可追溯至該 11 項 finding。
+- 最終本機核對時間：2026-08-26 23:32:41 +08:00；`git diff --check` PASS；`git diff --cached --name-only` 無輸出；未發現額外 tracked／untracked測試產物。
+- 最新 build source、Cargo target、app與 DMG位於 `/private/tmp/yuzora-ops.LSCoT2`；最新 build 未寫 repository `dist/` 或 `src-tauri/target/`。
 - QA-009 早期 historical ignored-artifact event 保留原狀，沒有清理、刪除或還原；修復階段未再重現。
 - `git check-ignore -v dist src-tauri/target` 證實兩者分別由 root `.gitignore:17` 與 `src-tauri/.gitignore:3` 排除。
 - localhost sshd 已停止、兩個 clone app 已關閉；本輪新增的 `127.0.0.1:48222` known-host test record已移除，原有兩筆正式 fingerprint 內容保持不變。
-- 最新 packaged Yuzora 已以 exact app path 正常 Quit；最終無 matching Yuzora／clone app process，也無測試 sshd／1420／2222／22222 listener。
+- 最新 packaged Yuzora 已以 exact app path正常 Quit；matching process不存在，lime／Follow system已還原並跨重啟確認。
 
 ### Git 寫入確認
 
-- 本次未執行 `git add`、`git commit`、`git push` 或等效 Git 寫入操作。
-- 沒有 stage、commit、push、checkout、reset、restore、clean、stash 或 branch mutation。
-- 沒有刪除、還原或隱藏使用者既有 worktree changes；最終 Git status 已在結案前再次逐項核對。
+- 原始唯讀 QA 階段未執行 `git add`、`git commit` 或 `git push`；使用者後續明確要求修復並執行 `docs/operations.md` 後，才在授權範圍內提交／推送上述 remediation。
+- 本次 post-review patch在本報告內容定稿時尚未 staged／committed／pushed；後續 operations只會明確 stage本報告列出的 14 個檔案。最終 commit SHA、push、exact-head CI與 candidates屬定稿後事件，以 PR #83／Issue #84留言為權威證據。
+- 全程未執行 reset、restore、clean、stash、force push、branch rewrite、tag、merge或 Publish；沒有刪除、還原或隱藏其他 worktree changes。
 
 ## 驗收事件與證據紀錄
 
@@ -513,8 +701,8 @@
 - 2026-08-26 09:48:24 +08:00：以 native close 關閉 packaged app並確認 process exit；最終 `git status --short` 只有 `?? QA-REPORT.md`，tracked／staged diff 均為空。正式 `~/.yuzora/known_hosts.json` 保持既有 7 月 7 日檔案，localhost port 48222 無 listener。全程未執行 add／commit／push。
 - 2026-08-26：使用者明確要求修復所有已發現問題；開始 remediation。QA-001～016 的 repository 可處理範圍均加入實作與回歸測試，QA-009 僅保留歷史事件、不清理既有 ignored artifacts。
 - 2026-08-26：release workflow 改為 macOS Stable／Beta 都要求 Developer ID certificate／identity 與 Apple notarization credentials；建置後必須通過 Developer ID Authority、TeamIdentifier、strict `codesign`、`spctl`、app／DMG `stapler validate`，並在成功或失敗時清理暫時 keychain。Windows lane 不再要求 Apple secrets。
-- 2026-08-26：frontend typecheck PASS；lint 0 errors；完整 Vitest 179 files／2,439 tests PASS。Rust check／fmt／exact-clippy baseline PASS；891 unit tests PASS、1 ignored；DB integration 1 PASS、1 ignored；release/build contract 19 tests PASS。
-- 2026-08-26：以 repository 外 `/private/tmp/yuzora-fixed-build.8SSbqE/source` 與 `cargo-target` 執行 `bun run tauri:build`，code 0；最新 app／DMG version `0.0.9-beta.1`、identifier `dev.yuuzu.yuzora`，DMG SHA-256 `8ec5bc99302847147bc75104a40ef0e6d3d678071028d2b8ba4806d1f7e13f5c`，`hdiutil verify` PASS。
+- 2026-08-26（第一批 remediation）：frontend typecheck PASS；lint 0 errors；完整 Vitest 179 files／2,439 tests PASS。Rust check／fmt／exact-clippy baseline PASS；891 unit tests PASS、1 ignored；DB integration 1 PASS、1 ignored；release/build contract 19 tests PASS。
+- 2026-08-26（第一批 remediation）：以 repository 外 `/private/tmp/yuzora-fixed-build.8SSbqE/source` 與 `cargo-target` 執行 `bun run tauri:build`，code 0；app／DMG version `0.0.9-beta.1`、identifier `dev.yuuzu.yuzora`，DMG SHA-256 `8ec5bc99302847147bc75104a40ef0e6d3d678071028d2b8ba4806d1f7e13f5c`，`hdiutil verify` PASS。
 - 2026-08-26：QA-004 實機回歸：blue／violet 立即 selected、互斥、關閉設定與冷啟後保存；最終還原 lime／Follow system。
 - 2026-08-26：QA-005／006／013 實機回歸：English LSP／Logs 固定字串與 integrity diagnostics 無硬編碼漢字；Logs 500 rows 以 AX content list 呈現、每頁 50 筆共 10 頁，Next／Previous 正常；invalid since 顯示可存取 ISO error，有效未來 ISO 得 0 rows後可清除恢復。
 - 2026-08-26：QA-010／011 實機回歸：Agent Inspector production action可開啟 metadata 與 text／ANSI output；初次發現 Escape 未回焦點後補修，最新 build 已確認焦點回 `Inspect π - privacy-filter`。Git User／Date menus 均可 Escape 關閉且回焦點。
@@ -523,3 +711,9 @@
 - 2026-08-26：SSH fixture 只監聽 `127.0.0.1:48222` 且使用 throwaway keys。測試後 sshd停止、clone apps關閉；測試產生的 localhost known-host record 已精確移除，既有兩筆正式 fingerprint 內容保留。
 - 2026-08-26：本機 no-sign candidate 按設計仍為 ad-hoc linker signature；strict codesign／`spctl` exit 1，DMG `stapler validate` exit 65（無 ticket）。因此 workflow remediation 已完成，但在取得真實 signed／notarized release artifact 前整體維持 NO-GO。
 - 2026-08-26 19:59:01 +08:00：以 bundled Computer Use 聚焦 exact packaged app 並送出 macOS Quit；程序與 listener 複查無 Yuzora／clone app／sshd 殘留。最終 `git diff --check` PASS、staging area 為空；工作區僅有本輪明確授權的 40 個 tracked 修復與 6 個 untracked 修復／報告檔。
+- 2026-08-26：PR #83 三輪 review共 11 個 unresolved threads。獨立重現後記錄 QA-017～QA-027；其中 QA-019 的 invalid checkout ref前提被 upstream API證偽，其餘 10 項皆完成紅→綠最小修復。
+- 2026-08-26：post-review targeted combined 7 files／77 tests PASS；HERDR store adjacent 41/41、Logs／settings adjacent 70/70、release state＋contracts 18/18；全專案 Vitest 179 files／2,452 tests、typecheck、lint（0 errors／49 warnings）、production build、Rust fmt／check／exact 251-diagnostic Clippy baseline、891 unit tests與 SQLite ignored matrix均 PASS。
+- 2026-08-26：以 repository 外 `/private/tmp/yuzora-ops.LSCoT2/repo` 套用 13-file patch並執行 `bun run tauri:build`，code 0；DMG SHA-256 `97ad88de36c798473abdbe36bd1dedea4888c9efde4e52927ae32c641230d680`，`hdiutil verify` PASS；app為 `0.0.9-beta.1`／`dev.yuuzu.yuzora`／arm64／ad-hoc。
+- 2026-08-26：bundled Computer Use exact-path回歸：Command Palette `>privacy`／`>π` 搜尋、Enter與Escape PASS；Logs date-only／datetime-local／RFC3339、非法日曆／時間、10-page navigation與expanded-state isolation PASS；violet persistence後已還原 lime並再重啟確認。
+- 2026-08-26：同一 packaged app 的 Git User／Date Escape、Preview `javascript:`拒絕、`https://example.com` child webview／responsive／Space lifecycle、SSH radio方向鍵與Escape cancel smoke均 PASS。最終以 ⌘Q結束，exact process不存在；未使用 Orca。
+- 2026-08-26 23:32:41 +08:00：post-review patch與 `QA-REPORT.md` 的 `git diff --check` PASS、staging area為空；GitHub live gate仍為六項 Apple secrets缺失、`main`未保護、rulesets空、maintainer review／merge授權未完成，因此結論維持 NO-GO。

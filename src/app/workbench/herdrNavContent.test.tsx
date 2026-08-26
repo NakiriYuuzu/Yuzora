@@ -384,6 +384,31 @@ describe("HerdrNavContent", () => {
     expect(useUiStore.getState().mode).toBe("files")
   })
 
+  it.each(["stopped", "error"] as const)(
+    "keeps Session tabs usable when the selected runtime is %s without a snapshot",
+    (connectionState) => {
+      const selectSession = vi.fn().mockResolvedValue(undefined)
+      useHerdrStore.setState(
+        readyState({
+          selectedSessionName: "work",
+          connectionState,
+          selectedSpaceId: null,
+          snapshot: null,
+          errorMessage: `Herdr session is ${connectionState}`,
+          selectSession
+        })
+      )
+
+      render(<HerdrNavContent />)
+
+      expect(screen.getByTestId("herdr-session-default")).toBeInTheDocument()
+      expect(screen.getByTestId("herdr-session-work")).toHaveAttribute("aria-selected", "true")
+      fireEvent.click(screen.getByTestId("herdr-session-default"))
+      expect(selectSession).toHaveBeenCalledWith("default")
+      expect(screen.getByTestId("herdr-unavailable-open-local-folder")).toBeEnabled()
+    }
+  )
+
   it("renders the first-Space blocked reason instead of hiding it in a tooltip", () => {
     useHerdrStore.setState(
       readyState({

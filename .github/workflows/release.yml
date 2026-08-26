@@ -36,7 +36,7 @@ jobs:
       should_create_tag: ${{ steps.release.outputs.should_create_tag }}
       release_notes_b64: ${{ steps.release.outputs.release_notes_b64 }}
     steps:
-      # actions/checkout@v4.2.2
+      # actions/checkout@releases/v4 backport-fix commit (#2524), verified upstream.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
@@ -87,7 +87,16 @@ jobs:
           RELEASE_STATUS=$?
           set -e
           if [ "$RELEASE_STATUS" -eq 0 ]; then
-            RELEASE_JSON="$(sed -n '/^{/,$p' "$RELEASE_RESPONSE")"
+            RAW_RELEASE_JSON="$(sed -n '/^{/,$p' "$RELEASE_RESPONSE")"
+            if ! jq -e \
+              '(.draft | type) == "boolean" and (.prerelease | type) == "boolean"' \
+              <<<"$RAW_RELEASE_JSON" >/dev/null; then
+              echo "::error::GitHub Release state is missing boolean draft/prerelease flags"
+              exit 1
+            fi
+            RELEASE_JSON="$(jq -c \
+              '{isDraft: .draft, isPrerelease: .prerelease}' \
+              <<<"$RAW_RELEASE_JSON")"
           elif ! api_response_is_404 "$(cat "$RELEASE_RESPONSE")"; then
             cat "$RELEASE_RESPONSE" >&2
             echo "::error::could not resolve GitHub Release state for ${TAG_NAME}"
@@ -244,7 +253,7 @@ jobs:
             rust_targets: ""
             build_args: ""
     steps:
-      # actions/checkout@v4.2.2
+      # actions/checkout@releases/v4 backport-fix commit (#2524), verified upstream.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ needs.guard.outputs.source_sha }}
@@ -512,6 +521,8 @@ jobs:
     # No checkout and no repository-controlled code execute in this write job.
     permissions:
       contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       # actions/download-artifact@v4.3.0
       - name: Download validated installer artifacts
@@ -580,7 +591,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      # actions/checkout@v4.2.2
+      # actions/checkout@releases/v4 backport-fix commit (#2524), verified upstream.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ needs.guard.outputs.source_sha }}
@@ -633,6 +644,8 @@ jobs:
     # No checkout and no repository-controlled code execute in this write job.
     permissions:
       contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       # actions/download-artifact@v4.3.0
       - name: Download finalized metadata
@@ -668,7 +681,25 @@ jobs:
     # No checkout and no repository-controlled code execute in this write job.
     permissions:
       contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
+      - name: Synchronize and verify release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          RELEASE_NOTES_B64: ${{ needs.guard.outputs.release_notes_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md
+          EXPECTED_RELEASE_NOTES="$(cat release-notes.md)"
+          gh release edit "$TAG_NAME" --notes-file release-notes.md
+          ACTUAL_RELEASE_NOTES="$(gh release view "$TAG_NAME" --json body --jq '.body')"
+          [ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ] || {
+            echo "::error::release notes do not match guard-verified notes"
+            exit 1
+          }
       - name: Verify release assets and updater metadata
         shell: bash
         env:
@@ -723,7 +754,25 @@ jobs:
     # No checkout and no repository-controlled code execute in this write job.
     permissions:
       contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
+      - name: Synchronize and verify release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          RELEASE_NOTES_B64: ${{ needs.guard.outputs.release_notes_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md
+          EXPECTED_RELEASE_NOTES="$(cat release-notes.md)"
+          gh release edit "$TAG_NAME" --notes-file release-notes.md
+          ACTUAL_RELEASE_NOTES="$(gh release view "$TAG_NAME" --json body --jq '.body')"
+          [ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ] || {
+            echo "::error::release notes do not match guard-verified notes"
+            exit 1
+          }
       - name: Verify beta release assets
         shell: bash
         env:

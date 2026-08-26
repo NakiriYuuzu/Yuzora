@@ -1632,19 +1632,23 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const executionOrigin = normalizeHerdrExecutionOrigin(event.executionOrigin)
     set((state) => {
       const attentionByKey = new Map(state.attentionByKey)
-      const snapshot = state.runtimesBySession[sessionName]?.snapshot
+      const runtime = state.runtimesBySession[sessionName]
+      const snapshot = runtime?.snapshot
+      const baseSnapshot = runtime?.baseSnapshot
+      const patchExecutionOrigin = (source: HerdrSnapshot): HerdrSnapshot => ({
+        ...source,
+        agents: source.agents.map((agent) =>
+          agent.paneId === event.paneId ? { ...agent, executionOrigin } : agent
+        ),
+        terminals: source.terminals.map((terminal) =>
+          terminal.paneId === event.paneId ? { ...terminal, executionOrigin } : terminal
+        )
+      })
       const snapshotPatch =
-        eventSuppliesExecutionOrigin && snapshot
+        eventSuppliesExecutionOrigin && (snapshot || baseSnapshot)
           ? withRuntime(state, sessionName, {
-              snapshot: {
-                ...snapshot,
-                agents: snapshot.agents.map((agent) =>
-                  agent.paneId === event.paneId ? { ...agent, executionOrigin } : agent
-                ),
-                terminals: snapshot.terminals.map((terminal) =>
-                  terminal.paneId === event.paneId ? { ...terminal, executionOrigin } : terminal
-                )
-              }
+              ...(snapshot ? { snapshot: patchExecutionOrigin(snapshot) } : {}),
+              ...(baseSnapshot ? { baseSnapshot: patchExecutionOrigin(baseSnapshot) } : {})
             })
           : {}
       if (!kind) {

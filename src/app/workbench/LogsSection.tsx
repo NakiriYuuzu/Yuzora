@@ -11,6 +11,7 @@ import { groupRowsByRun, shortRunId, UNKNOWN_RUN } from "@/features/logs/runGrou
 import type { LogRecord, SanitizeSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { SettingCard, SettingsTextInput } from "./settingsPrimitives"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 // 必須與 Rust 的 logging::VALID_KINDS 一致，否則新 kind 的 record 永遠篩不出來。
@@ -22,10 +23,37 @@ const LOG_RESULT_PAGE_SIZE = 50
 function isValidIsoTimestamp(value: string): boolean {
   const trimmed = value.trim()
   if (!trimmed) return true
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)) {
-    return false
+
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed)
+  if (dateOnly) {
+    return isValidCalendarDate(dateOnly[1], dateOnly[2], dateOnly[3])
   }
-  return Number.isFinite(Date.parse(trimmed))
+
+  const datetimeLocal = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?$/.exec(trimmed)
+  if (datetimeLocal) {
+    return isValidCalendarDate(datetimeLocal[1], datetimeLocal[2], datetimeLocal[3])
+      && isValidTime(datetimeLocal[4], datetimeLocal[5], datetimeLocal[6])
+  }
+
+  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(trimmed)
+  return rfc3339 !== null
+    && isValidCalendarDate(rfc3339[1], rfc3339[2], rfc3339[3])
+    && isValidTime(rfc3339[4], rfc3339[5], rfc3339[6])
+    && (rfc3339[7] === undefined || Number(rfc3339[7]) <= 23)
+    && (rfc3339[8] === undefined || Number(rfc3339[8]) <= 59)
+}
+
+function isValidCalendarDate(yearText: string, monthText: string, dayText: string): boolean {
+  const year = Number(yearText)
+  const month = Number(monthText)
+  const day = Number(dayText)
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1]
+}
+
+function isValidTime(hourText: string, minuteText: string, secondText = "0"): boolean {
+  return Number(hourText) <= 23 && Number(minuteText) <= 59 && Number(secondText) <= 59
 }
 
 function toggleFilterValue(values: string[], value: string): string[] {
@@ -502,30 +530,34 @@ export function LogsSection({
         )}
         {resultPageCount > 1 ? (
           <div className="mb-[10px] flex items-center justify-end gap-[8px]">
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="xs"
               aria-label={t("settings.logs.previousPage")}
               disabled={activeResultPage === 0}
               onClick={() => setResultPage((page) => Math.max(0, page - 1))}
               className="h-[26px] rounded-[8px] border border-(--line-1) px-[9px] text-[11px] text-(--ink-2) disabled:opacity-50"
             >
               {t("settings.logs.previous")}
-            </button>
+            </Button>
             <span className="text-[11px] text-(--ink-3)">
               {t("settings.logs.pageStatus", {
                 page: activeResultPage + 1,
                 pages: resultPageCount,
               })}
             </span>
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="xs"
               aria-label={t("settings.logs.nextPage")}
               disabled={activeResultPage >= resultPageCount - 1}
               onClick={() => setResultPage((page) => Math.min(resultPageCount - 1, page + 1))}
               className="h-[26px] rounded-[8px] border border-(--line-1) px-[9px] text-[11px] text-(--ink-2) disabled:opacity-50"
             >
               {t("settings.logs.next")}
-            </button>
+            </Button>
           </div>
         ) : null}
         <ScrollArea
@@ -539,7 +571,8 @@ export function LogsSection({
             </div>
           )}
           {pageRows.map((row, index) => {
-            const key = `${row.timestamp}:${row.source}:${row.event}:${index}`
+            const resultIndex = activeResultPage * LOG_RESULT_PAGE_SIZE + index
+            const key = `${row.timestamp}:${row.source}:${row.event}:${resultIndex}`
             const isExpanded = expanded[key] === true
             return (
               <div role="listitem" key={key} className="rounded-[10px] border border-(--line-1) bg-(--paper-0)">
