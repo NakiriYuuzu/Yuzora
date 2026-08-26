@@ -148,6 +148,49 @@ beforeEach(() => {
 })
 
 describe("SettingsDialog logs section", () => {
+  it("rejects an invalid ISO timestamp accessibly without issuing a query", async () => {
+    renderDialog()
+    await waitFor(() => expect(logQueryCalls.length).toBeGreaterThan(0))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350))
+    })
+    logQueryCalls = []
+    const since = screen.getByLabelText("since")
+
+    fireEvent.change(since, { target: { value: "not-a-date" } })
+
+    expect(since).toHaveAttribute("aria-invalid", "true")
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "since must be a valid ISO 8601 timestamp.",
+    )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350))
+    })
+    expect(logQueryCalls).toEqual([])
+  })
+
+  it("paginates a 500-row result into an accessible bounded list", async () => {
+    queryResult = Array.from({ length: 500 }, (_, index) => ({
+      ...logRows[0],
+      timestamp: `2026-01-02T03:${String(index % 60).padStart(2, "0")}:05+08:00`,
+      event: `event_${index}`,
+    }))
+    renderDialog()
+
+    expect(await screen.findByText("Page 1 of 10")).toBeInTheDocument()
+    const list = screen.getByRole("list", { name: "Log results" })
+    expect(within(list).getAllByRole("listitem")).toHaveLength(50)
+    expect(screen.getByRole("button", { name: "Next results page" })).toBeEnabled()
+  })
+
+  it("renders the English locale without hard-coded Chinese product strings", async () => {
+    renderDialog()
+    await screen.findByRole("heading", { name: "Logs" })
+    await waitFor(() => expect(logQueryCalls.length).toBeGreaterThan(0))
+
+    expect(screen.getByRole("dialog").textContent).not.toMatch(/\p{Script=Han}/u)
+  })
+
   it("builds log_query filters from kind, level, source, text, and time range", async () => {
     renderDialog()
 
@@ -155,19 +198,19 @@ describe("SettingsDialog logs section", () => {
     await waitFor(() => expect(logQueryCalls.length).toBeGreaterThan(0))
 
     fireEvent.click(
-      within(screen.getByRole("group", { name: "kind 篩選" })).getByRole("button", {
+      within(screen.getByRole("group", { name: "kind filter" })).getByRole("button", {
         name: "audit",
       }),
     )
     fireEvent.click(
-      within(screen.getByRole("group", { name: "level 篩選" })).getByRole("button", {
+      within(screen.getByRole("group", { name: "level filter" })).getByRole("button", {
         name: "error",
       }),
     )
-    fireEvent.change(screen.getByRole("combobox", { name: "source 篩選" }), {
+    fireEvent.change(screen.getByRole("combobox", { name: "source filter" }), {
       target: { value: "lsp" },
     })
-    fireEvent.change(screen.getByRole("searchbox", { name: "文字搜尋" }), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "Text search" }), {
       target: { value: "server" },
     })
     fireEvent.change(screen.getByLabelText("since"), {
@@ -199,7 +242,7 @@ describe("SettingsDialog logs section", () => {
     await waitFor(() => expect(logQueryCalls.length).toBeGreaterThan(0))
     const baseline = logQueryCalls.length
 
-    const searchbox = screen.getByRole("searchbox", { name: "文字搜尋" })
+    const searchbox = screen.getByRole("searchbox", { name: "Text search" })
     fireEvent.change(searchbox, { target: { value: "s" } })
     fireEvent.change(searchbox, { target: { value: "se" } })
     fireEvent.change(searchbox, { target: { value: "ser" } })
@@ -257,7 +300,7 @@ describe("SettingsDialog logs section", () => {
     const card = await within(dialog).findByTestId("lsp-card-python")
     expect(within(card).getByText("spawn pylsp failed")).toBeInTheDocument()
 
-    fireEvent.click(within(card).getByRole("button", { name: "檢視 logs" }))
+    fireEvent.click(within(card).getByRole("button", { name: "View logs" }))
 
     expect(await within(dialog).findByRole("heading", { name: "Logs" })).toBeInTheDocument()
     await waitFor(() =>
@@ -289,7 +332,7 @@ describe("SettingsDialog logs section", () => {
     queryResult = logRows
     renderDialog()
 
-    fireEvent.click(await screen.findByRole("button", { name: "展開 metadata lsp_restart" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Expand metadata lsp_restart" }))
 
     expect(await screen.findByText(/"language": "typescript"/)).toBeInTheDocument()
     expect(screen.getByText(/"restartCount": 2/)).toBeInTheDocument()

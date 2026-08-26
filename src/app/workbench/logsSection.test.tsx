@@ -139,7 +139,7 @@ describe("LogsSection sanitize", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy" }))
 
     const alert = await screen.findByRole("alert")
-    expect(alert.textContent).toContain("Copy 失敗")
+    expect(alert.textContent).toContain("Copy failed")
     expect(sanitizeCalls).toEqual([[JSON.stringify(sensitiveRow)]])
     expect(writeText).not.toHaveBeenCalled()
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
@@ -149,7 +149,7 @@ describe("LogsSection sanitize", () => {
   it("copies raw rows without calling log_sanitize_lines when sanitize is off", async () => {
     await renderWithRows()
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
     fireEvent.click(screen.getByRole("button", { name: "Copy" }))
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
@@ -164,7 +164,7 @@ describe("LogsSection sanitize", () => {
 
     expect(screen.queryByTestId("logs-raw-mode-warning")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
 
     const warning = screen.getByTestId("logs-raw-mode-warning")
     expect(warning).toHaveAttribute("role", "note")
@@ -207,8 +207,8 @@ describe("LogsSection sanitize", () => {
     fireEvent.click(screen.getByRole("button", { name: "Export bundle" }))
     await screen.findByTestId("logs-sanitize-counts")
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
 
     expect(screen.getByTestId("logs-sanitize-preview")).toBeInTheDocument()
     expect(screen.queryByTestId("logs-sanitize-counts")).not.toBeInTheDocument()

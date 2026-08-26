@@ -106,6 +106,8 @@ export function SettingsTextInput({
   placeholder,
   disabled = false,
   type = "text",
+  error,
+  errorId,
 }: {
   label: string
   value: string
@@ -113,6 +115,8 @@ export function SettingsTextInput({
   placeholder?: string
   disabled?: boolean
   type?: "text" | "number"
+  error?: string | null
+  errorId?: string
 }) {
   return (
     <label className="flex flex-col gap-[6px]">
@@ -123,9 +127,19 @@ export function SettingsTextInput({
         value={value}
         placeholder={placeholder}
         disabled={disabled}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
         onChange={(event) => onChange(event.currentTarget.value)}
-        className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] font-mono text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent) disabled:cursor-not-allowed disabled:opacity-60"
+        className={cn(
+          "h-[30px] rounded-[8px] border bg-(--paper-0) px-[9px] font-mono text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) disabled:cursor-not-allowed disabled:opacity-60",
+          error ? "border-destructive" : "border-(--line-1) focus:border-(--yz-accent)"
+        )}
       />
+      {error ? (
+        <span id={errorId} role="alert" className="text-[11px] text-destructive">
+          {error}
+        </span>
+      ) : null}
     </label>
   )
 }

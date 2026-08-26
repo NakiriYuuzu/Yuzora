@@ -312,4 +312,53 @@ describe("usePreviewStore", () => {
             true
         )
     })
+
+    it("physically closes a native preview when its workspace or Preview tab goes away", async () => {
+        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+        })
+        useWorkspaceStore.setState({
+            workspacePath: "/ws/a",
+            groups: [{
+                tabs: [{
+                    path: PREVIEW_TAB_PATH,
+                    name: "Preview",
+                    dirty: false,
+                    externallyModified: false,
+                    kind: "preview"
+                }],
+                activePath: PREVIEW_TAB_PATH
+            }],
+            activeGroupIndex: 0
+        })
+        usePreviewStore.getState().navigate("/ws/a", "https://example.com")
+        usePreviewStore.getState().recordNativeOpen("/ws/a", "https://example.com")
+
+        useWorkspaceStore.getState().setWorkspace("/ws/b")
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(calls.some((call) => call.cmd === "preview_close")).toBe(true)
+        expect(usePreviewStore.getState().nativeSession).toBeNull()
+
+        calls.length = 0
+        useWorkspaceStore.setState({
+            workspacePath: "/ws/a",
+            groups: [{
+                tabs: [{
+                    path: PREVIEW_TAB_PATH,
+                    name: "Preview",
+                    dirty: false,
+                    externallyModified: false,
+                    kind: "preview"
+                }],
+                activePath: PREVIEW_TAB_PATH
+            }],
+            activeGroupIndex: 0
+        })
+        usePreviewStore.getState().recordNativeOpen("/ws/a", "https://example.com")
+        useWorkspaceStore.getState().closePreviewTab()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(calls.some((call) => call.cmd === "preview_close")).toBe(true)
+        expect(usePreviewStore.getState().nativeSession).toBeNull()
+    })
 })

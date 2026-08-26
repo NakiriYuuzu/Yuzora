@@ -201,6 +201,27 @@ afterEach(() => {
 })
 
 describe("SettingsDialog LSP section", () => {
+  it("renders the English locale without hard-coded Chinese product strings", async () => {
+    detectHandler = (workspace, language) =>
+      serverInfo(language, {
+        workspace: workspace ?? "",
+        path: null,
+        status: {
+          status: "missing",
+          installHint:
+            "npm i -g @vtsls/language-server（完整性驗證失敗，請重新安裝：launcher 內容與 catalog 不符）",
+        },
+      })
+
+    renderDialog({ initialSection: "lsp" })
+    await screen.findByTestId("lsp-card-typescript")
+
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Integrity verification failed; reinstall this server.",
+    )
+    expect(screen.getByRole("dialog").textContent).not.toMatch(/\p{Script=Han}/u)
+  })
+
   it("renders the LSP section with all four language cards", async () => {
     renderDialog({ initialSection: "lsp" })
 
@@ -225,8 +246,8 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
     const card = await screen.findByTestId("lsp-card-python")
 
-    expect(await within(card).findByText("已安裝")).toBeInTheDocument()
-    expect(within(card).queryByRole("button", { name: "一鍵安裝" })).not.toBeInTheDocument()
+    expect(await within(card).findByText("Installed")).toBeInTheDocument()
+    expect(within(card).queryByRole("button", { name: "Install" })).not.toBeInTheDocument()
     expect(detectCalls).toContainEqual({ workspace: "/ws", language: "python" })
   })
 
@@ -251,7 +272,7 @@ describe("SettingsDialog LSP section", () => {
       expect(detectCalls.filter((call) => call.language === "python")).toHaveLength(1),
     )
 
-    fireEvent.click(within(card).getByRole("button", { name: "重新偵測" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Re-detect" }))
 
     await waitFor(() =>
       expect(detectCalls.filter((call) => call.language === "python")).toHaveLength(2),
@@ -287,11 +308,11 @@ describe("SettingsDialog LSP section", () => {
       expect(detectCalls).toContainEqual({ workspace: "/ws", language: "python" }),
     )
 
-    fireEvent.click(screen.getByRole("radio", { name: "全域" }))
+    fireEvent.click(screen.getByRole("radio", { name: "Global" }))
     await waitFor(() =>
       expect(detectCalls).toContainEqual({ workspace: null, language: "python" }),
     )
-    expect(await within(card).findByText("已安裝")).toBeInTheDocument()
+    expect(await within(card).findByText("Installed")).toBeInTheDocument()
     expect(within(card).getByText("global-python")).toBeInTheDocument()
 
     await act(async () => {
@@ -312,11 +333,11 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
     const card = await screen.findByTestId("lsp-card-python")
 
-    fireEvent.click(screen.getByRole("radio", { name: "全域" }))
+    fireEvent.click(screen.getByRole("radio", { name: "Global" }))
     await waitFor(() =>
       expect(detectCalls).toContainEqual({ workspace: null, language: "python" }),
     )
-    expect(await within(card).findByText("未安裝")).toBeInTheDocument()
+    expect(await within(card).findByText("Not installed")).toBeInTheDocument()
 
     act(() => {
       useLspStore.getState().setServerInfo(
@@ -328,8 +349,8 @@ describe("SettingsDialog LSP section", () => {
       )
     })
 
-    expect(within(card).getByText("未安裝")).toBeInTheDocument()
-    expect(within(card).queryByText("已安裝")).not.toBeInTheDocument()
+    expect(within(card).getByText("Not installed")).toBeInTheDocument()
+    expect(within(card).queryByText("Installed")).not.toBeInTheDocument()
   })
 
   it("does not retain the previous scope when the current probe fails", async () => {
@@ -347,15 +368,15 @@ describe("SettingsDialog LSP section", () => {
 
     renderDialog({ initialSection: "lsp" })
     const card = await screen.findByTestId("lsp-card-python")
-    expect(await within(card).findByText("已安裝")).toBeInTheDocument()
+    expect(await within(card).findByText("Installed")).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("radio", { name: "全域" }))
+    fireEvent.click(screen.getByRole("radio", { name: "Global" }))
     await waitFor(() =>
       expect(detectCalls).toContainEqual({ workspace: null, language: "python" }),
     )
 
-    expect(await within(card).findByText("尚未啟動")).toBeInTheDocument()
-    expect(within(card).queryByText("已安裝")).not.toBeInTheDocument()
+    expect(await within(card).findByText("Not started")).toBeInTheDocument()
+    expect(within(card).queryByText("Installed")).not.toBeInTheDocument()
     expect(within(card).queryByText("/workspace/pyright")).not.toBeInTheDocument()
   })
 
@@ -379,7 +400,7 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
     await screen.findByTestId("lsp-card-python")
 
-    fireEvent.click(screen.getByRole("radio", { name: "全域" }))
+    fireEvent.click(screen.getByRole("radio", { name: "Global" }))
     fireEvent.click(within(screen.getByTestId("lsp-card-python")).getByRole("radio", { name: "pylsp" }))
 
     await waitFor(() =>
@@ -401,7 +422,7 @@ describe("SettingsDialog LSP section", () => {
   it("format-on-save defaults OFF and persists to localStorage", async () => {
     renderDialog({ initialSection: "lsp" })
 
-    const sw = await screen.findByRole("switch", { name: "儲存時自動格式化" })
+    const sw = await screen.findByRole("switch", { name: "Format on save" })
     expect(sw).not.toBeChecked()
 
     fireEvent.click(sw)
@@ -411,7 +432,7 @@ describe("SettingsDialog LSP section", () => {
   it("JSON-RPC trace toggle defaults off and calls lspSetTrace", async () => {
     renderDialog({ initialSection: "lsp" })
 
-    const sw = await screen.findByRole("switch", { name: "JSON-RPC 追蹤" })
+    const sw = await screen.findByRole("switch", { name: "JSON-RPC tracing" })
     expect(sw).not.toBeChecked()
 
     fireEvent.click(sw)
@@ -422,7 +443,7 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
 
     const card = await screen.findByTestId("lsp-card-python")
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
 
     // Must carry the workspace so the Rust side resolves the workspace override
     // (else a pylsp override installs the global-default pyright — dead end).
@@ -434,7 +455,7 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
 
     const card = await screen.findByTestId("lsp-card-python")
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
 
     await waitFor(() => expect(installCalls).toEqual([{ workspace: null, language: "python" }]))
   })
@@ -444,11 +465,11 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
     const card = await screen.findByTestId("lsp-card-python")
 
-    fireEvent.click(screen.getByRole("radio", { name: "全域" }))
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(screen.getByRole("radio", { name: "Global" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
     await waitFor(() => expect(installCalls).toEqual([{ workspace: null, language: "python" }]))
 
-    fireEvent.click(screen.getByRole("radio", { name: "此工作區" }))
+    fireEvent.click(screen.getByRole("radio", { name: "This workspace" }))
     await act(async () => {
       installResolvers!.resolve(
         serverInfo("python", {
@@ -468,13 +489,13 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
 
     const card = await screen.findByTestId("lsp-card-python")
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
 
     const failedCard = screen.getByTestId("lsp-card-python")
     const diagnostic = await within(failedCard).findByText(/npm install 失敗/)
     expect(diagnostic).toHaveTextContent("工具 npm；exit 7")
     expect(diagnostic).toHaveTextContent("stderr（已去敏，末尾）：registry unavailable")
-    expect(within(failedCard).getByRole("button", { name: "一鍵安裝" })).toBeEnabled()
+    expect(within(failedCard).getByRole("button", { name: "Install" })).toBeEnabled()
   })
 
   it("renders install progress from lsp:install-progress events", async () => {
@@ -497,10 +518,10 @@ describe("SettingsDialog LSP section", () => {
     const card = await screen.findByTestId("lsp-card-python")
     await waitFor(() => expect(listeners.has("lsp:install-progress")).toBe(true))
 
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
     await waitFor(() =>
       expect(
-        within(screen.getByTestId("lsp-card-python")).getByRole("button", { name: "安裝中…" }),
+        within(screen.getByTestId("lsp-card-python")).getByRole("button", { name: "Installing…" }),
       ).toBeDisabled(),
     )
 
@@ -516,7 +537,7 @@ describe("SettingsDialog LSP section", () => {
     })
 
     expect(
-      within(screen.getByTestId("lsp-card-python")).getByRole("button", { name: "一鍵安裝" }),
+      within(screen.getByTestId("lsp-card-python")).getByRole("button", { name: "Install" }),
     ).toBeEnabled()
   })
 
@@ -526,7 +547,7 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
     const card = await screen.findByTestId("lsp-card-python")
 
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
     await waitFor(() => expect(installCalls).toHaveLength(1))
 
     // User leaves for a different workspace before the install settles.
@@ -547,7 +568,7 @@ describe("SettingsDialog LSP section", () => {
     renderDialog({ initialSection: "lsp" })
     const card = await screen.findByTestId("lsp-card-python")
 
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
     await waitFor(() => expect(installCalls).toHaveLength(1))
 
     await act(async () => {
@@ -557,8 +578,8 @@ describe("SettingsDialog LSP section", () => {
     })
 
     expect(useLspStore.getState().servers.python?.serverId).toBe("pyright")
-    expect(within(card).getByText("已安裝")).toBeInTheDocument()
-    expect(within(card).queryByRole("button", { name: "一鍵安裝" })).not.toBeInTheDocument()
+    expect(within(card).getByText("Installed")).toBeInTheDocument()
+    expect(within(card).queryByRole("button", { name: "Install" })).not.toBeInTheDocument()
   })
 
   it("does not let an older detection overwrite a successful install", async () => {
@@ -582,7 +603,7 @@ describe("SettingsDialog LSP section", () => {
       expect(detectCalls).toContainEqual({ workspace: "/ws", language: "python" }),
     )
 
-    fireEvent.click(within(card).getByRole("button", { name: "一鍵安裝" }))
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }))
     await act(async () => {
       installResolvers!.resolve(
         serverInfo("python", { serverId: "pyright", status: { status: "stopped" } }),
@@ -598,13 +619,13 @@ describe("SettingsDialog LSP section", () => {
     })
 
     expect(useLspStore.getState().servers.python?.status.status).toBe("stopped")
-    expect(within(card).getByText("已安裝")).toBeInTheDocument()
+    expect(within(card).getByText("Installed")).toBeInTheDocument()
   })
 
   it("reverts the JSON-RPC trace toggle when lspSetTrace rejects (A-F3)", async () => {
     traceReject = true
     renderDialog({ initialSection: "lsp" })
-    const sw = await screen.findByRole("switch", { name: "JSON-RPC 追蹤" })
+    const sw = await screen.findByRole("switch", { name: "JSON-RPC tracing" })
     expect(sw).not.toBeChecked()
 
     fireEvent.click(sw)
@@ -617,7 +638,7 @@ describe("SettingsDialog LSP section", () => {
     // case is non-discriminating (prev1 === click2's target), so use three.
     traceDeferred = true
     renderDialog({ initialSection: "lsp" })
-    const sw = await screen.findByRole("switch", { name: "JSON-RPC 追蹤" })
+    const sw = await screen.findByRole("switch", { name: "JSON-RPC tracing" })
 
     fireEvent.click(sw) // click1 → true  (P1, will reject late)
     fireEvent.click(sw) // click2 → false (P2, resolves)
@@ -640,12 +661,12 @@ describe("SettingsDialog LSP section", () => {
 
   it("keeps trace state across dialog close/reopen (store-backed, A-F4)", async () => {
     renderDialog({ initialSection: "lsp" })
-    fireEvent.click(await screen.findByRole("switch", { name: "JSON-RPC 追蹤" }))
+    fireEvent.click(await screen.findByRole("switch", { name: "JSON-RPC tracing" }))
     await waitFor(() => expect(traceCalls).toEqual([true]))
 
     cleanup() // unmount the pane (dialog close)
     renderDialog({ initialSection: "lsp" })
-    expect(await screen.findByRole("switch", { name: "JSON-RPC 追蹤" })).toBeChecked()
+    expect(await screen.findByRole("switch", { name: "JSON-RPC tracing" })).toBeChecked()
   })
 
   it("unsubscribes the install-progress listener on unmount (A-F6)", async () => {
@@ -675,7 +696,7 @@ describe("SettingsDialog LSP section", () => {
     expect(within(stale).getByText(displayWorkspace)).toBeInTheDocument()
     expect(within(stale).queryByText(rawWorkspace)).not.toBeInTheDocument()
 
-    fireEvent.click(within(stale).getByRole("button", { name: "清除" }))
+    fireEvent.click(within(stale).getByRole("button", { name: "Clear" }))
     await waitFor(() => expect(clearStaleCalls).toEqual([rawWorkspace]))
   })
 

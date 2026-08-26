@@ -42,7 +42,7 @@ describe("SSH host dialog layout", () => {
   it("scrolls key-based host form fields while keeping footer actions fixed", () => {
     render(<SshNavContent />)
     fireEvent.click(screen.getByText("New host"))
-    fireEvent.click(screen.getByRole("button", { name: "Key file" }))
+    fireEvent.click(screen.getByRole("radio", { name: "Key file" }))
 
     const dialog = screen.getByTestId("ssh-host-dialog")
     expect(dialog).not.toHaveAttribute("data-dialog-size-id")

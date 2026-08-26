@@ -37,26 +37,32 @@ beforeEach(() => {
 })
 
 describe("appearance settings", () => {
-  it("沒有持久化值時回傳預設 auto", () => {
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto" })
+  it("沒有持久化值時回傳預設 auto 與 lime", () => {
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
   })
 
-  it("壞 JSON 時回傳預設 auto", () => {
+  it("壞 JSON 時回傳預設 auto 與 lime", () => {
     localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, "{not json")
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto" })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
   })
 
-  it("非法 theme 值時回傳預設 auto", () => {
-    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ theme: "neon" }))
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto" })
-    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ theme: 42 }))
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto" })
+  it("非法 theme 或 accent 值時分別回傳預設值", () => {
+    localStorage.setItem(
+      APPEARANCE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ theme: "neon", accent: "infrared" })
+    )
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
+    localStorage.setItem(
+      APPEARANCE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ theme: 42, accent: 42 })
+    )
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
   })
 
-  it("save→load 往返對三個合法值一致", () => {
+  it("save→load 往返保留合法 theme 與 accent", () => {
     for (const theme of ["light", "dark", "auto"] as const) {
-      saveAppearanceSettings({ theme })
-      expect(loadAppearanceSettings()).toEqual({ theme })
+      saveAppearanceSettings({ theme, accent: "violet" })
+      expect(loadAppearanceSettings()).toEqual({ theme, accent: "violet" })
     }
   })
 })

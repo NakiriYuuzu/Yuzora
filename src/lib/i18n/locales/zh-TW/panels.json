@@ -8,6 +8,7 @@
     "reload": "重新整理",
     "urlLabel": "預覽網址",
     "urlPlaceholder": "輸入網址…",
+    "urlSchemeError": "預覽網址必須使用 http:// 或 https://",
     "openExternally": "以瀏覽器開啟",
     "toggleResponsiveFrame": "切換響應式版面",
     "stop": "停止",

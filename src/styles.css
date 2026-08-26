@@ -106,7 +106,7 @@
     --line-1: rgba(27, 26, 23, 0.10);
     --line-2: rgba(27, 26, 23, 0.16);
 
-    /* ---- accent (lime, theme-invariant) ---- */
+    /* ---- accent (lime fallback; AppShell applies the persisted palette) ---- */
     --yz-accent-rgb: 134, 184, 31;
     --yz-accent: #86b81f;
     --yz-accent-ink: #5f8c1e;
@@ -186,7 +186,7 @@
     --shadow-md: 0 6px 18px rgba(27, 26, 23, 0.09), 0 2px 6px rgba(27, 26, 23, 0.06);
     --shadow-lg: 0 16px 40px rgba(27, 26, 23, 0.12), 0 4px 12px rgba(27, 26, 23, 0.07);
     --shadow-xl: 0 32px 70px rgba(27, 26, 23, 0.18), 0 8px 22px rgba(27, 26, 23, 0.10);
-    --glow-accent: 0 8px 24px rgba(47, 107, 255, 0.30);
+    --glow-accent: 0 8px 24px rgba(var(--yz-accent-rgb), 0.30);
     --glow-coral: 0 8px 24px rgba(255, 107, 84, 0.28);
 
     /* ---- frost / blur ---- */

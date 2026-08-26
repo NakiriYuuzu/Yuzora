@@ -217,6 +217,24 @@ describe("PreviewPanel error path", () => {
       screen.getByRole("button", { name: i18n.t("retryStart", { ns: "preview" }) })
     ).toBeInTheDocument()
   })
+
+  it.each(["file:///etc/passwd", "javascript:alert(1)"])(
+    "keeps %s out of navigation and exposes an accessible error",
+    async (unsafeUrl) => {
+      usePreviewStore.getState().navigate("/workspace", "http://localhost:5173")
+      render(<PreviewPanel />)
+      const input = screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))
+
+      fireEvent.change(input, { target: { value: unsafeUrl } })
+      fireEvent.keyDown(input, { key: "Enter" })
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Preview URLs must use http:// or https://"
+      )
+      expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
+        .toBe("http://localhost:5173")
+    }
+  )
 })
 
 describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {

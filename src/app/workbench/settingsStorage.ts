@@ -5,6 +5,11 @@ import {
   SYSTEM_TERMINAL_PROFILE,
 } from "@/terminal/terminalProfiles"
 import type { TerminalImeAnchorMode } from "@/terminal/terminalImePositioning"
+import {
+  DEFAULT_ACCENT_PREFERENCE,
+  isAccentPreference,
+  type AccentPreference,
+} from "@/theme/accent"
 
 export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 export const PREVIEW_SETTINGS_STORAGE_KEY = "yuzora:preview-settings"
@@ -14,6 +19,7 @@ export type ThemePreference = "light" | "dark" | "auto"
 
 export interface AppearanceSettings {
   theme: ThemePreference
+  accent: AccentPreference
 }
 
 export interface TerminalSettings {
@@ -35,6 +41,7 @@ const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
 
 const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   theme: "auto",
+  accent: DEFAULT_ACCENT_PREFERENCE,
 }
 
 const VALID_THEME_PREFERENCES: ThemePreference[] = ["light", "dark", "auto"]
@@ -152,6 +159,9 @@ export function loadAppearanceSettings(): AppearanceSettings {
     theme: VALID_THEME_PREFERENCES.includes(settings.theme as ThemePreference)
       ? settings.theme as ThemePreference
       : DEFAULT_APPEARANCE_SETTINGS.theme,
+    accent: isAccentPreference(settings.accent)
+      ? settings.accent
+      : DEFAULT_APPEARANCE_SETTINGS.accent,
   }
 }
 

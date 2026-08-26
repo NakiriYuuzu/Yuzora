@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { RefObject } from "react"
 import { useTranslation } from "react-i18next"
 
 import { AnsiText } from "@/app/workbench/AnsiText"
@@ -35,11 +36,13 @@ const SOURCES: HerdrReadSource[] = [
 export function HerdrAgentInspector({
   open,
   onOpenChange,
-  agent
+  agent,
+  returnFocusRef,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   agent: HerdrAgentInfo | null
+  returnFocusRef?: RefObject<HTMLButtonElement | null>
 }) {
   const { t } = useTranslation("workbench")
   const sessions = useHerdrStore((s) => s.sessions)
@@ -119,10 +122,16 @@ export function HerdrAgentInspector({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-<DialogContent
+      <DialogContent
         resizeId="herdr-agent-inspector"
         minSize={dialogMinSize(480, 320)}
         className="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+        onCloseAutoFocus={(event) => {
+          const trigger = returnFocusRef?.current
+          if (!trigger) return
+          event.preventDefault()
+          trigger.focus()
+        }}
       >
         <DialogHeader className="border-b border-(--line-1) px-[20px] py-[16px]">
           <DialogTitle>{t("herdrInspector.title")}</DialogTitle>

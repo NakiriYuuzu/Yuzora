@@ -139,11 +139,14 @@ pub fn preview_close(
     state: tauri::State<'_, PreviewWebviewState>,
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(webview) = guard.take() {
-        let _ = webview.close();
-    }
+    let close_result = if let Some(webview) = guard.take() {
+        webview.close().map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    };
+    drop(guard);
     focus_main_webview(&app);
-    Ok(())
+    close_result
 }
 
 fn eval_history(state: &tauri::State<'_, PreviewWebviewState>, js: &str) -> Result<(), String> {

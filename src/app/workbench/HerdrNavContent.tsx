@@ -1,4 +1,4 @@
-import { Bot, FolderOpen, FolderPlus, Plus } from "lucide-react"
+import { Bot, FolderOpen, FolderPlus, Info, Plus } from "lucide-react"
 import type { CSSProperties } from "react"
 import { useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { HerdrNewAgentDialog } from "@/app/workbench/HerdrNewAgentDialog"
+import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -57,6 +58,8 @@ export function HerdrNavContent() {
   const setMode = useUiStore((s) => s.setMode)
   const [creating, setCreating] = useState(false)
   const [newAgentOpen, setNewAgentOpen] = useState(false)
+  const [inspectedAgent, setInspectedAgent] = useState<HerdrAgentInfo | null>(null)
+  const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [onboardingBusy, setOnboardingBusy] = useState(false)
   const onboardingBusyRef = useRef(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -366,6 +369,10 @@ export function HerdrNavContent() {
                     (agent.tabId ? !canFocusTab : !canMutate)
                   }
                   onSelect={() => void openAgent(agent)}
+                  onInspect={(trigger) => {
+                    inspectorTriggerRef.current = trigger
+                    setInspectedAgent(agent)
+                  }}
                 />
               ))
             )}
@@ -392,6 +399,14 @@ export function HerdrNavContent() {
         </div>
       )}
       <HerdrNewAgentDialog open={newAgentOpen} onOpenChange={setNewAgentOpen} />
+      <HerdrAgentInspector
+        open={inspectedAgent !== null}
+        onOpenChange={(open) => {
+          if (!open) setInspectedAgent(null)
+        }}
+        agent={inspectedAgent}
+        returnFocusRef={inspectorTriggerRef}
+      />
     </div>
   )
 }
@@ -430,18 +445,23 @@ function SectionLabel({
 function AgentRow({
   agent,
   disabled,
+  onInspect,
   onSelect,
   sessionName
 }: {
   agent: HerdrAgentInfo
   disabled?: boolean
+  onInspect: (trigger: HTMLButtonElement) => void
   onSelect: () => void
   sessionName?: string | null
 }) {
+  const { t } = useTranslation("workbench")
   const spaceLabel = agent.spaceLabel ?? agent.workspaceId
   const originLabel = formatHerdrExecutionOrigin(agent.executionOrigin)
   const resolvedSession = agent.sessionName ?? sessionName ?? ""
+  const name = agent.title ?? agent.name
   return (
+    <div className="flex min-w-0 items-center gap-[2px] rounded-[10px]">
       <button
         type="button"
         data-testid={`herdr-agent-${agent.id}`}
@@ -462,7 +482,7 @@ function AgentRow({
             : undefined
         }
         className={cn(
-          "flex w-full min-w-0 items-center gap-[8px] rounded-[10px] px-[8px] py-[7px] text-left text-(--ink-2) transition-colors hover:bg-(--yz-hover)",
+          "flex min-w-0 flex-1 items-center gap-[8px] rounded-[10px] px-[8px] py-[7px] text-left text-(--ink-2) transition-colors hover:bg-(--yz-hover)",
           "disabled:pointer-events-none disabled:opacity-40"
         )}
       >
@@ -473,7 +493,7 @@ function AgentRow({
         />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[12.5px] font-medium">
-            {agent.title ?? agent.name}
+            {name}
           </span>
           <span className="flex min-w-0 items-center gap-[5px] text-[10px] text-(--ink-4)">
             <span className="truncate">{spaceLabel}</span>
@@ -490,6 +510,19 @@ function AgentRow({
         </span>
         <span className="shrink-0 font-mono text-[10px] text-(--ink-4)">{agent.status}</span>
       </button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        data-testid={`herdr-inspect-${agent.id}`}
+        aria-label={t("herdrNav.inspectAgent", { name })}
+        title={t("herdrNav.inspectAgent", { name })}
+        onClick={(event) => onInspect(event.currentTarget)}
+        className="mr-[3px] text-(--ink-3)"
+      >
+        <Info aria-hidden="true" />
+      </Button>
+    </div>
   )
 }
 

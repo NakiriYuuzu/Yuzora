@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { HerdrNavContent } from "@/app/workbench/HerdrNavContent"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
@@ -26,7 +26,28 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalCreate: vi.fn(),
   herdrTerminalRelease: vi.fn(),
   herdrWorkspaceFocus: vi.fn(),
-  herdrWorkspaceCreate: vi.fn()
+  herdrWorkspaceCreate: vi.fn(),
+  herdrAgentGet: vi.fn(async () => ({
+    terminalId: "term-1",
+    agentStatus: "working",
+    workspaceId: "ws-1",
+    tabId: "tab-1",
+    paneId: "pane-1",
+    focused: true,
+    revision: 1,
+    title: "Implementer",
+    stateLabels: {}
+  })),
+  herdrAgentRead: vi.fn(async () => ({
+    paneId: "pane-1",
+    workspaceId: "ws-1",
+    tabId: "tab-1",
+    source: "recent",
+    format: "text",
+    text: "ready",
+    revision: 1,
+    truncated: false
+  }))
 }))
 
 function readyState(overrides: Record<string, unknown> = {}) {
@@ -207,12 +228,20 @@ describe("HerdrNavContent", () => {
     expect(screen.getByTestId("herdr-agent-origin-ag-1")).toHaveTextContent("WSL · Ubuntu")
   })
 
-  it("does not add an unrequested per-agent Inspector action", () => {
+  it("exposes a discoverable per-agent Inspector action without replacing row focus", async () => {
     useHerdrStore.setState(readyState())
 
     render(<HerdrNavContent />)
 
-    expect(screen.queryByTestId("herdr-inspect-ag-1")).toBeNull()
+    const inspect = screen.getByTestId("herdr-inspect-ag-1")
+    expect(inspect).toHaveAccessibleName("Inspect Implementer")
+    expect(inspect).not.toHaveAttribute("tabindex", "-1")
+    fireEvent.click(inspect)
+    const dialog = await screen.findByRole("dialog", { name: "Agent Inspector" })
+    expect(dialog).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => expect(inspect).toHaveFocus())
   })
 
   it("disables attention rows when the selected runtime cannot mutate", () => {

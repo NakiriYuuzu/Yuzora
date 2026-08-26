@@ -163,6 +163,7 @@ export function PreviewPanel() {
   const overlayOpen = useAnyOverlayOpen()
   const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
+  const [urlError, setUrlError] = useState<string | null>(null)
   const webviewHostRef = useRef<HTMLDivElement | null>(null)
   const previewVisibleRef = useRef(previewVisible)
   const consumedNativeNavigationRef = useRef<{ url: string; token: number } | null>(null)
@@ -189,6 +190,11 @@ export function PreviewPanel() {
   const isAttemptLive = (attemptWorkspace: string, attempt: number) =>
     attemptWorkspace === useWorkspaceStore.getState().workspacePath
     && attempt === usePreviewStore.getState().attemptForWorkspace(attemptWorkspace)
+
+  useEffect(() => {
+    setUrlDraft(null)
+    setUrlError(null)
+  }, [workspace])
 
   useEffect(() => {
     if (!workspace || !devServer || devServer.status.status !== "running") return
@@ -352,11 +358,17 @@ export function PreviewPanel() {
     const raw = urlDraft.trim()
     if (!raw) {
       setUrlDraft(null)
+      setUrlError(null)
       return
     }
     const scheme = /^(localhost|127\.0\.0\.1)(:|\/|$)/.test(raw) ? "http" : "https"
-    const normalized = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `${scheme}://${raw}`
-    if (usePreviewStore.getState().navigate(workspace, normalized)) setUrlDraft(null)
+    const normalized = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `${scheme}://${raw}`
+    if (usePreviewStore.getState().navigate(workspace, normalized)) {
+      setUrlDraft(null)
+      setUrlError(null)
+      return
+    }
+    setUrlError(tp("previewPanel.urlSchemeError"))
   }
 
   const runToolbarCommand = async (
@@ -746,20 +758,28 @@ export function PreviewPanel() {
 
         <input
           aria-label={tp("previewPanel.urlLabel")}
+          aria-invalid={urlError ? true : undefined}
+          aria-describedby={urlError ? "preview-url-error" : undefined}
           value={urlDraft ?? nav.url ?? ""}
           placeholder={tp("previewPanel.urlPlaceholder")}
           disabled={!workspace}
           spellCheck={false}
           autoComplete="off"
-          onChange={(event) => setUrlDraft(event.currentTarget.value)}
+          onChange={(event) => {
+            setUrlDraft(event.currentTarget.value)
+            setUrlError(null)
+          }}
           onFocus={(event) => event.currentTarget.select()}
-          onBlur={() => setUrlDraft(null)}
+          onBlur={() => {
+            if (!urlError) setUrlDraft(null)
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault()
               submitUrl()
             } else if (event.key === "Escape") {
               setUrlDraft(null)
+              setUrlError(null)
               event.currentTarget.blur()
             }
           }}
@@ -824,6 +844,16 @@ export function PreviewPanel() {
           {status ? statusLabel(status) : t("noDevServer")}
         </span>
       </div>
+
+      {urlError ? (
+        <div
+          id="preview-url-error"
+          role="alert"
+          className="shrink-0 border-b border-[#f0c4c4] bg-[#fff1f1] px-[10px] py-[5px] text-[11px] text-[#b4232a]"
+        >
+          {urlError}
+        </div>
+      ) : null}
 
       {portOverrideHint ? (
         <div

@@ -8,6 +8,7 @@
     "reload": "Reload",
     "urlLabel": "Preview URL",
     "urlPlaceholder": "Enter a URL…",
+    "urlSchemeError": "Preview URLs must use http:// or https://",
     "openExternally": "Open in browser",
     "toggleResponsiveFrame": "Toggle responsive frame",
     "stop": "Stop",
