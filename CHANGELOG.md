@@ -18,11 +18,18 @@
 - 建立第一個 Space 僅要求 `workspace.create`，並在後續 snapshot 驗證成功才回報完成；終端連線、split resize 與接管控制都會依 HERDR capabilities 安全停用。
 - Native Preview child webview 的開啟、尺寸、可見性與關閉操作會依最新工作區、overlay 與 focus 狀態序列化，避免 preview 蓋住應用程式 dialog 或回到過期位置。
 
+### 修正
+
+- 修正外觀主題色無法即時套用與保存、English 設定頁仍混入繁體中文，以及 Logs 大量結果缺少可存取分頁與無效日期提示的問題。
+- 修正 Agent Inspector 缺少可發現入口與鍵盤關閉後未回焦、Git 使用者／日期篩選選單無法以 Escape 正常取消的問題。
+- 修正 Preview 拒絕危險 URL scheme 時沒有錯誤提示，以及 external child webview 在切換 Space 或關閉分頁後可能殘留的問題。
+- 修正 SSH 驗證方式的可存取名稱互換、首次連線 host key 無法接受或拒絕後長時間卡住，以及 SFTP 刪除缺少遠端路徑安全檢查的問題。
+
 ### 已知限制
 
 - 此為 Beta GitHub Pre-release，僅供手動下載測試；不會成為 Latest Release、不提供 OTA、不會更新 stable `latest.json` 或產品頁固定下載連結。
 - Windows-native HERDR 透過 `wsl.exe` 啟動的互動式 Linux shell，不保證能讓 HERDR 看見其隱藏的 Linux descendant Agent process；Yuzora 不會以自行推測的 Agent 身分取代 HERDR 回報。
-- macOS 與 Windows 安裝檔目前尚未完成作業系統簽章，首次開啟時可能出現 Gatekeeper 或 SmartScreen 提示。
+- 正式發布的 macOS 安裝檔會由 fail-closed workflow 完成 Developer ID 簽章與 notarization；Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
 
 ## [0.0.8] - 2026-08-15
 
