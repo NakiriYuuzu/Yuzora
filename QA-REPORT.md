@@ -1,12 +1,12 @@
 # Yuzora 上線前唯讀 QA 驗收報告
 
-> 狀態：PR #85 已於 2026-08-27 21:14:38 +08:00 由使用者帳號合併為 main commit `f0e5098db1f76b73400ff8b14dd90a07e0248642`；exact-main CI run `33075818160` 已完成但 macOS Rust job 因 QA-045 timing test regression 失敗，其餘 main jobs 成功。PR #85 run `33065472520` 候選因此已標記 superseded；遠端 `v0.0.9-beta.1` tag／Release均未建立。QA-001～QA-045 共45個 findings，44／44個實際缺陷已完成source修復，QA-019為false positive；QA-045補救PR #86 exact-head gates待完成。Apple secrets與Windows實機條件仍BLOCKED，整體維持NO-GO。
+> 狀態：PR #85 已於 2026-08-27 21:14:38 +08:00 由使用者帳號合併為 main commit `f0e5098db1f76b73400ff8b14dd90a07e0248642`；exact-main CI run `33075818160` 的 macOS Rust job 曾因 QA-045 timing test regression 失敗。QA-045 補救 PR #86 head `52945d08a5cd422eb9997777f72db20cf40e90d8` 的 exact-head CI run `33078583686` 7／7、兩平台候選靜態驗證與 bundled Computer Use exact macOS 驗收原已PASS；Final Codex review隨後新增QA-046，指出server完成`write_all`仍不保證client已將prefix讀入`pending`，故run `33078583686`候選已立即標記superseded。QA-046已於test-only commit `97c0780`最小修復：建立短deadline前顯式poll完整prefix；deterministic RED、targeted stress 300／300與完整本機Rust gates均PASS，新exact-head remote gates待branch更新後重跑。PR #85 run `33065472520` 與所有較舊候選亦維持superseded；遠端 `v0.0.9-beta.1` tag／Release均未建立。QA-001～QA-046 共46個 findings，45／45個實際缺陷已完成source修復，QA-019為false positive。Apple secrets、Windows實機、maintainer approval與明確merge授權仍BLOCKED，整體維持NO-GO。
 
 ## 1. 執行摘要
 
 - 測試開始：2026-08-26 00:52:49 +08:00（Asia/Taipei）
 - 測試環境：macOS 26.6.1（25G76）、Apple arm64、Bun 1.3.14、rustc/cargo 1.96.0
-- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；latest remote main `f0e5098db1f76b73400ff8b14dd90a07e0248642`；QA-045補救PR #86 initial head `94ca64f`
+- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；latest remote main `f0e5098db1f76b73400ff8b14dd90a07e0248642`；QA-045補救PR #86 authoritative head `52945d08a5cd422eb9997777f72db20cf40e90d8`
 - 產品版本：`0.0.9-beta.1`（`package.json` 與 `src-tauri/tauri.conf.json` 一致）
 - 原始驗收結束：2026-08-26 09:48:24 +08:00（01:20:36 曾因 QA-009 暫停；經使用者明確要求後續測完成）
 - Post-review 修復回歸與本機候選驗收結束：2026-08-26 23:32:41 +08:00
@@ -17,23 +17,27 @@
 - QA-041～QA-043完整本機驗證結束：2026-08-27 11:37:12 +08:00
 - 最終 exact-head CI／artifact／macOS candidate GUI驗收及收尾核對：2026-08-27 12:06:58 +08:00
 - QA-044 補救 PR exact-head CI／artifact／macOS candidate GUI驗收：2026-08-27 19:24:04 +08:00
+- QA-045 補救 PR exact-head CI／artifact／macOS candidate GUI驗收：2026-08-27 22:08:41 +08:00
 - 整體結論：**NO-GO**
-- 功能總數／通過／失敗／阻塞／未測試：**108／90／1／17／0**
-- Repository 可處理問題：**44／44 個實際缺陷已完成source修復；QA-045已完成deterministic RED→GREEN與完整本機Rust gates，尚待新補救PR／exact-head CI／candidate gates。QA-019的invalid-ref前提已證偽。QA-003的Developer ID signed／notarized artifact仍受外部憑證阻擋。**
+- 功能總數／通過／失敗／阻塞／未測試：**109／92／0／17／0**
+- Repository 可處理問題：**45／45 個實際缺陷已完成source修復；QA-046已取得deterministic RED並以顯式poll完整prefix完成最小GREEN，targeted 300／300與完整本機Rust gates均PASS。run `33078583686`候選維持superseded，新exact-head remote gates待branch更新後重跑。QA-019的invalid-ref前提已證偽。QA-003的Developer ID signed／notarized artifact仍受外部憑證阻擋。**
 - 上線阻擋問題摘要：
   - QA-003（P1 release gate）：Stable／Beta macOS workflow 已改為 fail-closed Developer ID signing、notarization、strict `codesign`、`spctl` 與 app／DMG stapler validation；本機沒有 Apple credentials，尚未取得實際 signed／notarized candidate，因此仍不可發布。
-  - QA-045（P1 release blocker）：PR #85 合併後 exact-main CI run `33075818160` 的 macOS Rust job `98529600496` 在 `reader_keeps_partial_bytes_across_short_deadlines` 失敗（890 passed／1 failed／1 ignored）；run `33065472520`及所有較舊候選已superseded。補救PR #86已建立，尚待exact-head CI、兩平台候選與macOS GUI gate。
+  - QA-045（原P1 release blocker）：PR #85 合併後 exact-main CI run `33075818160` 的 macOS Rust job `98529600496` 曾在 `reader_keeps_partial_bytes_across_short_deadlines` 失敗（890 passed／1 failed／1 ignored）；run `33065472520`及所有較舊候選已superseded。補救PR #86已移除原本固定sleep race；其run `33078583686`後因QA-046 review finding而superseded。
+  - QA-046（原P1 release blocker）：Final Codex review thread `PRRT_kwDOTWXJt86c2Ub6`指出PR #86的prefix-ready rendezvous只證明server完成`write_all`，不證明client已consume prefix；受控150ms pre-poll delay穩定RED。commit `97c0780`改為建立短deadline前顯式poll完整prefix，targeted stress 300／300與完整Rust gates均PASS；新exact-head CI／candidate／macOS GUI gate待重跑。
   - GitHub secret inventory只有`TAURI_SIGNING_PRIVATE_KEY`與其password；六項Apple secrets仍缺。`main`未啟用branch protection，repository rulesets為空；PR #86尚無maintainer approval或明確merge授權。
   - Windows／SmartScreen／WSL2、真實 PostgreSQL／MSSQL、updater download／install 與 OS vault 等外部候選環境仍受阻；不得推定正常。
   - SFTP browse 已實機通過，但 mkdir／rename／delete／upload 等破壞性或寫入流程未在正式資料上執行；backend unsafe-leaf guard 已由回歸測試驗證。
 
 ### 修復驗證摘要
 
+- Superseded PR #86 head `52945d08a5cd422eb9997777f72db20cf40e90d8` 的 run `33078583686` 七個 jobs全部成功；macOS DMG SHA-256 `6a9321238f3377ed726047ed496dedfdd292d3c7b7f903b25798e42a1afdb5ae`、Windows NSIS `0d47ab99696e0fbe659ec7fa70b8d27b66e7dc47651ca2edbd231f099db2e2ed`、MSI `07bfde473b7911c20bfd0df40e682547079b3dfd3e226206162091bf0a15a090`。DMG CRC、`0.0.9-beta.1`／`dev.yuuzu.yuzora`、universal `x86_64 arm64`、ad-hoc／no TeamIdentifier預期狀態、HERDR 0.8.0／protocol 19 exact pins、MSI `ProductVersion=0.0.2305`／HERDR／ConPTY inventory與Beta僅DMG／NSIS／MSI的boundary均PASS，但QA-046使整組候選不再具權威性。
+- QA-046：在原補救中將short deadline先保存、再受控sleep 150ms，exact targeted test 1／1穩定於`assert!(!pending.is_empty())` RED；修復後client以`poll_local_stream_read`實際consume完整prefix，再建立short deadline。exact targeted 1／1、HERDR transport 9／9、12-way targeted stress 300／300、fmt、all-target check、exact 251-diagnostic Clippy baseline、完整library 891 PASS／1 ignored、SQLite integration 1 PASS／1 ignored與doc tests均PASS；production transport未修改。
 - Authoritative PR #85 exact head `d5e76a016095ceaf2b819a6c6bfd175108b07b31` 的 run `33065472520` 七個 jobs全部成功；macOS DMG SHA-256 `287247e1183614600359061390166d18168153e59d6c6c9878154be14cfc5cf4`、Windows NSIS `efa3d5ce44e565d211a6da1bbbb1e9e0d363fc8334672b49d20c6f85226e6fe7`、MSI `719f4c670664596659de0388596e530a806bdbefd1a4cf8131e6909eb893c9cc`。DMG CRC、`0.0.9-beta.1`／`dev.yuuzu.yuzora`、universal `x86_64 arm64`、HERDR 0.8.0／protocol 19 exact pins、MSI `ProductVersion=0.0.2305`／HERDR／ConPTY inventory與Beta僅DMG／NSIS／MSI的boundary均PASS；新`.app`與run `33036976470`已完整驗收的`.app`逐檔內容相同。
 - Frontend：QA-038～QA-040 targeted 3 files／63 tests、相鄰 8 files／129 tests、完整 180 files／2,478 tests與production build PASS；typecheck PASS；targeted ESLint 0 errors／3 個既有 warnings，完整 lint 0 errors／49 個既有 warnings。
 - Rust：`cargo check --locked --all-targets`、fmt、exact 251-warning clippy baseline PASS；library 891 tests PASS／1 ignored，其他 targets與doc tests無失敗；SQLite ignored integration 1 PASS。
 - Release：version／notes／Beta／Stable preflight PASS；release 8 files／46 tests、actionlint v1.7.7（executable SHA-256 `00aba386d026da33be6e85dd5a46d7af4dd9e4d6cbdb02335f4b267162fd2d9e`）與三份 workflow YAML parse PASS。
-- Computer Use：run `33036976470` 的完整exact macOS驗收已涵蓋Settings shared Input、Preview physical close、Space／Session／tabs restore與Quit／restart；run `33065472520`的新`.app`逐檔內容相同，並再次只用bundled Computer Use對exact path確認啟動、版本顯示、Tab／Shift+Tab、Escape、兩個Spaces與default Session restore、Space來回切換及Command-Q。最終exact process為0，兩個比對DMG均正常卸載；未使用Orca。
+- Computer Use：run `33036976470` 的完整exact macOS驗收已涵蓋Settings shared Input、Preview physical close、Space／Session／tabs restore與Quit／restart；run `33078583686`只用bundled Computer Use對exact mounted app path再次確認啟動、Settings版本、Tab／Shift+Tab、Escape、兩個Spaces與default Session restore、Space來回切換及Command-Q。最終exact process為0，DMG正常卸載；未使用Orca。
 - QA-041～QA-043：先各自取得可預期RED，再完成 Stable exact asset allowlist、queued physical close與shared `Input`最小修復；combined 3 files／33 tests、相鄰19 files／191 tests、完整181 files／2,481 tests與run `33036976470`全部PASS。QA-042及QA-043可操作情境的最終candidate GUI回歸PASS；production UI沒有disabled `SettingsTextInput`實例，因此disabled只引用已通過的component contract test，不偽稱GUI PASS。typecheck、lint、production build、Rust gates、SQLite integration、release 7 files／46 tests、version／notes／Beta／Stable contracts、actionlint、YAML parse與`git diff --check`均PASS。
 - Review：PR #83 的25／25 threads皆已resolved，Final Codex review comment `5434305959`對`a0f7de5708`未發現major issue。PR #85另由Copilot review完整檢查4／4檔且無comments；Final Codex review comment `5438317298`明確檢查`d5e76a0160`並回報「Didn’t find any major issues」，GraphQL為0個review threads。`reviewDecision`仍空白，因此automated review不取代maintainer approval。
 
@@ -55,7 +59,7 @@
 | 05 版本與 release contracts | version、beta、stable updater contract | PASS | 三個 check 均 exit 0。 |
 | 06 README source build | `bun run tauri:build` | PASS | local no-updater／no-sign build code 0；不再要求 production updater private key。 |
 | 07 Beta Tauri build | no-updater／no-sign isolated build | PASS | exit 0，約 1m05s。 |
-| 08 DMG metadata／完整性 | version、identifier、SHA-256、verify | PASS | run `33036976470` exact-head DMG CRC VALID；`0.0.9-beta.1`／`dev.yuuzu.yuzora`／universal；hash `92918b66…41c6d`。 |
+| 08 DMG metadata／完整性 | version、identifier、SHA-256、verify | PASS | run `33078583686` exact-head DMG CRC VALID；`0.0.9-beta.1`／`dev.yuuzu.yuzora`／universal；hash `6a932123…db5ae`。 |
 | 09 macOS code signing | strict codesign／Gatekeeper | BLOCKED | protected workflow 已 fail-closed；本機 build 按設計 unsigned，無 Apple credentials／實際 release run，不能宣稱 Gatekeeper PASS。 |
 | 10 Windows installer／SmartScreen | Windows candidate 實機驗收 | BLOCKED | exact-head NSIS／MSI已下載並完成格式、hash、MSI `ProductVersion=0.0.2305`與Beta boundary靜態驗證；無 Windows 11／WSL2 實機。 |
 | 11 README 版本資訊 | 英／繁中 badge 對照 | PASS | 兩份 badge 與 packaged README 均為 `0.0.9-beta.1`。 |
@@ -155,7 +159,8 @@
 | 105 Preview queued native close | workspace switch、queued operation、store reset | PASS | departing owner在enqueue前驗證後，physical `previewClose()`不再受reset token invalidation跳過；deterministic queued-promise、preview store 16/16與exact-head CI PASS。最終candidate切Space立即移除child webview、切回無舊owner／tab，重建後關tab亦完成physical close。 |
 | 106 SettingsTextInput shared Input | focus／invalid／disabled／size contract | PASS | 改由shared `Input`組合；contract與exact-head CI PASS。最終candidate的focus ring、Tab／Shift+Tab、invalid提示／style及有效值恢復PASS；production無disabled實例，disabled僅標記component contract PASS。 |
 | 107 Release guard boolean decisions | `shouldBuild`／`shouldPublishExisting` true／false／invalid | PASS | main Release run `33063991412`證明舊碼會把合法`false`誤判為exit 1；補救已用實際workflow-line regression完成red→green，合法true／false PASS、invalid／missing fail closed。PR #85 exact-head run `33065472520` 7/7與兩平台candidate gate均PASS；post-merge真實Release仍受外部gate阻擋，不偽稱已執行。 |
-| 108 HERDR partial-line deadline regression | macOS full Rust suite、短deadline、partial NDJSON跨poll保存 | FAIL | exact-main run `33075818160`／job `98529600496`：`reader_keeps_partial_bytes_across_short_deadlines`實際得到`Some("{\"ok\":true}\\n")`，890 passed／1 failed／1 ignored。PR #85 run `33065472520` candidates已superseded；補救與新exact-head gates進行中。 |
+| 108 HERDR partial-line deadline regression | macOS full Rust suite、短deadline、partial NDJSON跨poll保存 | PASS | exact-main run `33075818160`／job `98529600496`先取得真實FAIL；受控300ms oversleep deterministic RED，zero-capacity channels修復後HERDR 9／9、targeted stress 300／300、本機library 891 PASS／1 ignored。PR #86 exact-head run `33078583686` 7／7、兩平台候選與macOS GUI gate均PASS；PR #85 run `33065472520`及較舊候選維持superseded。 |
+| 109 HERDR prefix consumption ordering | server write-ready、client pre-poll deschedule、empty pending | PASS | Final Codex review thread `PRRT_kwDOTWXJt86c2Ub6`指出race；受控150ms pre-poll delay取得`pending.is_empty()` deterministic RED。commit `97c0780`在建立短deadline前顯式poll完整prefix；exact targeted、HERDR 9／9、stress 300／300、完整library 891 PASS／1 ignored、SQLite 1 PASS／1 ignored與所有Rust quality gates均PASS。run `33078583686`候選維持superseded，新exact-head remote gates待重跑。 |
 
 ## 3. 問題清單
 
@@ -946,7 +951,7 @@
 
 - **Bug ID**：QA-045
 - **嚴重度**：P1（release blocker）
-- **修復狀態**：**FIXED IN PR #86／REMOTE EXACT-HEAD GATES PENDING；PR #85 CANDIDATES SUPERSEDED**
+- **修復狀態**：**FIXED／PR #86 EXACT-HEAD CI＋CANDIDATE＋MACOS GUI PASS；FINAL REVIEW PENDING；PR #85 CANDIDATES SUPERSEDED**
 - **問題標題**：`reader_keeps_partial_bytes_across_short_deadlines` 以固定 sleep 協調兩個threads，繁忙macOS runner可在建立read deadline前收到完整line
 - **受影響功能**：HERDR local transport Rust regression gate、main CI、Release workflow入口
 - **前置條件**：macOS runner執行完整Rust suite，client thread在server寫入prefix後被排程延遲，直到server固定250ms sleep結束並寫入remainder。
@@ -958,9 +963,25 @@
 - **預期結果**：測試應以deterministic synchronization證明「只收到prefix時deadline會timeout且pending bytes保留」，不依賴runner排程速度；main CI應穩定通過。
 - **實際結果**：exact-main run `33075818160`／macOS job `98529600496` 在`src-tauri/src/herdr_transport.rs:516`失敗：`first poll should time out with a prefix: Some("{\"ok\":true}\\n")`；整體890 passed／1 failed／1 ignored。受控將client延遲由30ms放大至300ms後，targeted test穩定產生完全相同panic，證明固定sleep競態。最小修復以兩個zero-capacity channels建立happens-before：prefix確實寫入後才開始read，server只在第一次timeout與pending-byte assertion完成後寫remainder；production reader未修改。
 - **重現率**：GitHub macOS exact-main 1／1；原碼本機Rust 1.96.0單項serial 200／200 PASS、16-way parallel 256／256 PASS、完整suite 1／1 PASS，顯示自然重現率低；受控300ms oversleep deterministic RED 1／1。修復後HERDR transport 9／9、exact targeted 300／300、完整library 891 PASS／1 ignored、SQLite integration 1 PASS／1 ignored。
-- **錯誤訊息、日誌或畫面證據**：CI run `33075818160`、job `98529600496`；失敗test與panic內容如上。PR #85 exact-head run `33065472520`雖7／7成功，但其candidate SHA在main regression後不再具權威性，已標記superseded。補救PR #86 initial head `94ca64f`；最終本機`cargo fmt --package yuzora -- --check`、`cargo check --locked --all-targets`、exact 251-diagnostic Clippy baseline、`cargo test --locked`及`git diff --check`均PASS。
-- **對上線的影響**：main CI失敗使Release workflow依runbook不得建立tag或進入build／publish；屬直接release blocker。即使判定為test-only flake，也必須透過新PR修復並重跑完整exact-head gates。
-- **已知暫時解法**：source已不需暫時解法；在新補救PR exact-head gates完成前，單純rerun舊main run仍不視為修復，不得沿用run `33065472520`候選、手動建tag或Publish。
+- **錯誤訊息、日誌或畫面證據**：CI run `33075818160`、job `98529600496`；失敗test與panic內容如上。PR #85 exact-head run `33065472520`雖7／7成功，但其candidate SHA在main regression後不再具權威性，已標記superseded。補救PR #86 authoritative head `52945d08a5cd422eb9997777f72db20cf40e90d8`；本機`cargo fmt --package yuzora -- --check`、`cargo check --locked --all-targets`、exact 251-diagnostic Clippy baseline、`cargo test --locked`及`git diff --check`均PASS；exact-head CI run `33078583686`七個jobs全SUCCESS，DMG／NSIS／MSI hashes、DMG CRC、universal architecture、version／bundle ID、HERDR exact pins、MSI ProductVersion／ConPTY inventory與Beta boundary均PASS，bundled Computer Use exact macOS smoke亦PASS。
+- **對上線的影響**：原本main CI失敗使Release workflow依runbook不得建立tag或進入build／publish；PR #86 source修復與exact-head gates現已解除此特定blocker。整體仍因Apple secrets、Windows 11／WSL2實機、maintainer approval與明確merge授權維持NO-GO。
+- **已知暫時解法**：source已不需暫時解法；不得沿用run `33065472520`候選、手動建tag或Publish。
+
+### QA-046 — Prefix-ready同步未保證client已consume partial bytes
+
+- **Bug ID**：QA-046
+- **嚴重度**：P1（release blocker）
+- **修復狀態**：**FIXED LOCALLY IN `97c0780`／REMOTE EXACT-HEAD GATES PENDING／RUN 33078583686 CANDIDATES SUPERSEDED**
+- **問題標題**：server完成prefix write的rendezvous仍允許client在第一次poll前oversleep並以空`pending` timeout
+- **受影響功能**：HERDR local transport Rust regression gate、QA-045 deterministic remediation、main CI可靠性
+- **前置條件**：server已對local stream執行prefix `write_all`並送出`prefix_ready`；client收到signal後，在`read_local_ndjson_line`第一次poll前被排程延遲超過120ms。
+- **完整重現步驟**：1. 使用PR #86 head `52945d08…`的既有test。2. 在`prefix_ready_rx.recv()`後、第一次reader call前受控延遲超過120ms。3. reader先執行`deadline_exceeded`，尚未poll socket。4. 觀察TimedOut時`pending`仍為空，`assert!(!pending.is_empty())`失敗。
+- **預期結果**：建立短deadline前client必須實際將完整prefix讀入`pending`；後續timeout無論何時被排程都應保留非空partial bytes，resume後組成完整line。
+- **實際結果**：原zero-capacity channel只建立「server write返回→client開始」ordering，沒有「client consume完成→建立短deadline」ordering；受控RED如review預測。修復後先以production poll helper將完整prefix讀入`pending`，assert exact bytes後才建立120ms deadline；無論call前是否被排程延遲，TimedOut都保留prefix，resume後可組成完整line。
+- **重現率**：Final review source proof 1／1；受控150ms pre-poll deterministic RED 1／1；修復後exact targeted 1／1、12-way stress 300／300、HERDR suite 9／9與完整library 891 PASS／1 ignored。
+- **錯誤訊息、日誌或畫面證據**：Final Codex review discussion `r3872564517`／thread `PRRT_kwDOTWXJt86c2Ub6`，reviewed head `52945d08a5cd422eb9997777f72db20cf40e90d8`；RED在`src/herdr_transport.rs:526`得到`assertion failed: !pending.is_empty()`，server隨test unwind收到`RecvError`。修復commit `97c0780`；fmt、all-target check、exact 251-diagnostic Clippy baseline、full Rust／SQLite／doc tests及`git diff --check`均PASS。
+- **對上線的影響**：原QA-045 remediation仍可能在繁忙runner失敗，故run `33078583686`不再是最終release evidence。source blocker已於`97c0780`解除，但PR #86仍須重跑exact-head CI、兩平台候選、macOS GUI與final review後才能恢復merge gate。
+- **已知暫時解法**：source不需暫時解法；不得rerun或沿用舊candidate，必須以新exact head重跑所有gate。
 
 ## 4. 未完成與受阻項目
 
@@ -994,12 +1015,12 @@
 - 原始 QA 結束時間：2026-08-26 09:48:24 +08:00；當時 `git status --short` 只有 `?? QA-REPORT.md`。
 - 使用者其後明確要求修復所有問題；第一批 remediation 已依授權形成 `f8e8d17c1cd4df34a71ba3d360ed0b3f19cbf2d5`、`183ff004a6772f7d1439c97d6c11bb1d2e380b47` 與 `bf82126649a0f2d44415caf7526f15a3eb1d5757` 並 push 至同一 release branch。
 - `bf821266…` 後的 review與 exact-head CI觸發 QA-017～QA-033；後續依序形成並推送 `a57c7b43ed79a842a677f06cc32c6bef5016735d`、`30dfbfd1d060a8695ed98e7cc6f94ef8906a7e63` 與最終修復 head `ef9667cf4198fe003d6645fc14b591d0e05f9783`。每次新 finding都使舊候選立即 supersede，未混用不同 SHA artifacts。
-- 最新本機核對時間：2026-08-27 21:22:46 +08:00；本機仍在`release/v0.0.9-beta.1` @ `d5e76a016095ceaf2b819a6c6bfd175108b07b31`，遠端main已前進至PR #85 merge commit `f0e5098db1f76b73400ff8b14dd90a07e0248642`。`git status --short`只含`M QA-REPORT.md`，staging area空白。exact-main run `33075818160`失敗，故run `33065472520`與所有較舊候選均已superseded。
-- 最新 downloaded exact candidates位於 repository外 `/private/tmp/yuzora-rc-33065472520.QmDgo0`。macOS candidate已最終Quit、matching process不存在且DMG `/dev/disk4`已正常卸載；比較用舊DMG `/dev/disk5`亦已卸載。本輪驗證未寫 repository `dist/` 或 `src-tauri/target/`。
+- 最新本機核對時間：2026-08-27 22:10:23 +08:00；本機在`release/v0.0.9-beta.1` @ PR #86 authoritative head `52945d08a5cd422eb9997777f72db20cf40e90d8`，遠端main仍為PR #85 merge commit `f0e5098db1f76b73400ff8b14dd90a07e0248642`。本輪開始時`git status --short`無輸出；更新本報告後預期只含`M QA-REPORT.md`，staging area保持空白。exact-main run `33075818160`的QA-045已由PR #86修復，run `33065472520`與所有較舊候選仍維持superseded。
+- 最新 downloaded exact candidates位於 repository外 `/private/tmp/yuzora-rc-33078583686.WYPo2n`。macOS candidate已最終Command-Q、matching process不存在且DMG `/dev/disk4`已正常卸載；本輪驗證未寫 repository `dist/` 或 `src-tauri/target/`。
 - QA-009 早期 historical ignored-artifact event 保留原狀，沒有清理、刪除或還原；修復階段未再重現。
 - `git check-ignore -v dist src-tauri/target` 證實兩者分別由 root `.gitignore:17` 與 `src-tauri/.gitignore:3` 排除。
 - localhost sshd 已停止、兩個 clone app 已關閉；本輪新增的 `127.0.0.1:48222` known-host test record已移除，原有兩筆正式 fingerprint 內容保持不變。
-- run `33065472520` packaged Yuzora已以 exact app path完成launch／restore／Space switch／最終Quit；matching process不存在且DMG已卸載。
+- run `33078583686` packaged Yuzora已以 exact app path完成launch／Settings版本／keyboard／restore／Space switch／最終Quit；matching process不存在且DMG已卸載。
 
 ### Git 寫入確認
 
@@ -1084,3 +1105,7 @@
 - 2026-08-27 21:14:38–21:22:46 +08:00：PR #85由`NakiriYuuzu`使用者帳號合併為main commit `f0e5098db1f76b73400ff8b14dd90a07e0248642`；本agent未執行merge。exact-main CI run `33075818160`最終FAILURE：Frontend、Windows／Linux Rust與real database jobs成功，macOS Rust job `98529600496`唯一失敗於`reader_keeps_partial_bytes_across_short_deadlines`，記錄QA-045並立即將run `33065472520`candidate標記superseded。六項Apple secrets仍缺，main protection API 404、rulesets空，tag／Release不存在；未建tag或Publish。
 - 2026-08-27 21:23–21:37 +08:00：QA-045以受控300ms client oversleep取得與CI完全相同的deterministic RED；根因為固定30／250ms sleeps無法建立thread happens-before。最小修復只改`src-tauri/src/herdr_transport.rs`內既有test，以zero-capacity channels同步prefix-ready與resume-remainder，production reader零變更。最終HERDR transport 9／9、targeted stress 300／300、fmt、all-target check、exact 251-diagnostic Clippy baseline、完整library 891 PASS／1 ignored、SQLite integration 1 PASS／1 ignored、doc tests與`git diff --check`均PASS；新補救PR／exact-head CI／candidates尚待建立。
 - 2026-08-27 21:43 +08:00：QA-045修復與完整報告形成commit `94ca64f`並以fast-forward更新`release/v0.0.9-beta.1`；push前確認remote head精確為`d5e76a016095ceaf2b819a6c6bfd175108b07b31`。補救PR #86已建立並使用`Refs #84`；未merge、未建tag、未Publish。PR exact-head CI／candidate jobs等待中。
+- 2026-08-27 22:08:41 +08:00：補救PR #86 authoritative head `52945d08a5cd422eb9997777f72db20cf40e90d8`的exact-head CI run `33078583686` frontend、三平台Rust、real database integration與macOS／Windows candidates 7／7 SUCCESS。DMG／NSIS／MSI SHA-256依序為`6a9321238f3377ed726047ed496dedfdd292d3c7b7f903b25798e42a1afdb5ae`、`0d47ab99696e0fbe659ec7fa70b8d27b66e7dc47651ca2edbd231f099db2e2ed`、`07bfde473b7911c20bfd0df40e682547079b3dfd3e226206162091bf0a15a090`。DMG CRC、version／bundle ID、universal architecture、ad-hoc／no TeamIdentifier預期狀態、HERDR 0.8.0／protocol 19 pins、MSI ProductVersion `0.0.2305`／HERDR／ConPTY inventory與Beta no-updater boundary均PASS。
+- 2026-08-27 22:09:46 +08:00：只用bundled Computer Use驗收run `33078583686` exact mounted macOS app；launch、Settings版本、Tab／Shift+Tab、Escape、兩個Spaces／default Session restore、Space來回切換與Command-Q均PASS。exact process為0、DMG `/dev/disk4`正常卸載，未使用Orca。Final Codex review已由comment `5440359809`對exact head觸發且GitHub已加EYES反應，結果仍等待完成；PR為0個review threads。
+- 2026-08-27 22:14:22 +08:00：Final Codex review對exact head `52945d08…`新增P1 thread `PRRT_kwDOTWXJt86c2Ub6`（discussion `r3872564517`），記錄QA-046並立即把run `33078583686`與其兩平台候選標記superseded。finding證明prefix-ready rendezvous只保證server write完成，client仍可能在第一次poll前oversleep使TimedOut保留空`pending`；未resolve thread、未沿用候選，重新進入deterministic RED→GREEN remediation。
+- 2026-08-27 22:16–22:25 +08:00：QA-046先將short deadline保存後受控sleep 150ms，exact test穩定在`assert!(!pending.is_empty())` RED；最小修復在建立short deadline前以`poll_local_stream_read`顯式consume並核對完整prefix，production transport零變更。修復後exact targeted 1／1、12-way stress 300／300、HERDR transport 9／9、fmt、all-target check、exact 251-diagnostic Clippy baseline、完整library 891 PASS／1 ignored、SQLite integration 1 PASS／1 ignored與doc tests均PASS。test-only修復形成commit `97c0780`；新exact-head remote gates待報告commit與branch push後執行。
