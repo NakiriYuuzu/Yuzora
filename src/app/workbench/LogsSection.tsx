@@ -186,6 +186,7 @@ export function LogsSection({
           if (!alive) return
           setRows(records)
           setResultPage(0)
+          setExpanded({})
           // run 分組是從**這一批結果**導出的，因此每次重新查詢都必須清掉 run
           // 篩選：留著上一批的 run id 會讓畫面變成空清單，而使用者看不出原因。
           setRunFilter(null)
@@ -221,18 +222,17 @@ export function LogsSection({
     setError(null)
     setNotice(null)
     try {
-      // 複製畫面上看得到的那些 rows——套了 run 篩選卻複製到全部，會與使用者
-      // 眼前的內容不符。
+      // 複製目前結果頁看得到的 rows；run 篩選與分頁都必須反映在 clipboard。
       const payload = sanitize
-        ? (await logSanitizeLines(visibleRows.map((row) => JSON.stringify(row)))).map(
+        ? (await logSanitizeLines(pageRows.map((row) => JSON.stringify(row)))).map(
             parseRedactedRow
           )
-        : visibleRows
+        : pageRows
       await writeText(JSON.stringify(payload, null, 2))
       setNotice(
         sanitize
-          ? t("settings.logs.copiedSanitized", { count: visibleRows.length })
-          : t("settings.logs.copiedRaw", { count: visibleRows.length })
+          ? t("settings.logs.copiedSanitized", { count: pageRows.length })
+          : t("settings.logs.copiedRaw", { count: pageRows.length })
       )
     } catch (e) {
       setError(t("settings.logs.copyFailed", { error: String(e) }))
@@ -514,6 +514,7 @@ export function LogsSection({
                   onClick={() => {
                     setRunFilter(active ? null : group.runId)
                     setResultPage(0)
+                    setExpanded({})
                   }}
                   className={cn(
                     "h-[26px] rounded-[8px] border px-[9px] font-mono text-[11px] transition-colors",

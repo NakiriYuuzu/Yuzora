@@ -1,18 +1,19 @@
 # Yuzora 上線前唯讀 QA 驗收報告
 
-> 狀態：原始唯讀驗收、使用者授權的 remediation 與 release review 回歸均已完成。QA-001～QA-027 中 26 個實際缺陷已修復；QA-019 經 upstream API 證明為 false positive，並已修正誤導性的 provenance 註解與加入 contract。所有外部簽章、平台、review 與權限條件仍誠實列為 BLOCKED。
+> 狀態：原始唯讀驗收、使用者授權的 remediation 與 release review 回歸均已完成。QA-001～QA-033 共 33 個 findings，其中 32 個實際缺陷已修復；QA-019 經 upstream API 證明為 false positive，並已修正誤導性的 provenance 註解與加入 contract。所有外部簽章、平台、review 與權限條件仍誠實列為 BLOCKED。
 
 ## 1. 執行摘要
 
 - 測試開始：2026-08-26 00:52:49 +08:00（Asia/Taipei）
 - 測試環境：macOS 26.6.1（25G76）、Apple arm64、Bun 1.3.14、rustc/cargo 1.96.0
-- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；post-QA review remediation baseline `bf82126649a0f2d44415caf7526f15a3eb1d5757` 加本報告所列 13-file patch
+- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；latest remote PR head／本輪 remediation baseline `38a445aad3155011b4c13b1c5bfcef1509cfa9d2` 加本報告所列 15-file patch
 - 產品版本：`0.0.9-beta.1`（`package.json` 與 `src-tauri/tauri.conf.json` 一致）
 - 原始驗收結束：2026-08-26 09:48:24 +08:00（01:20:36 曾因 QA-009 暫停；經使用者明確要求後續測完成）
 - Post-review 修復回歸與本機候選驗收結束：2026-08-26 23:32:41 +08:00
+- QA-028～QA-033 follow-up remediation完整本機驗證結束：2026-08-27 09:35:28 +08:00
 - 整體結論：**NO-GO**
-- 功能總數／通過／失敗／阻塞／未測試：**90／73／0／17／0**
-- Repository 可處理問題：**26／26 個實際缺陷已修復；QA-019 的 invalid-ref 前提已證偽。QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／workflow run 阻擋。**
+- 功能總數／通過／失敗／阻塞／未測試：**96／79／0／17／0**
+- Repository 可處理問題：**32／32 個實際缺陷已修復；QA-019 的 invalid-ref 前提已證偽。QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／新 exact-head workflow run 阻擋。**
 - 上線阻擋問題摘要：
   - QA-003（P1 release gate）：Stable／Beta macOS workflow 已改為 fail-closed Developer ID signing、notarization、strict `codesign`、`spctl` 與 app／DMG stapler validation；本機沒有 Apple credentials，尚未取得實際 signed／notarized candidate，因此仍不可發布。
   - GitHub secret inventory 只有 `TAURI_SIGNING_PRIVATE_KEY` 與其 password；六項 Apple secrets 仍缺。`main` 未啟用 branch protection，repository rulesets 為空；release-sensitive patch 尚待 maintainer review 與明確 merge 授權。
@@ -21,10 +22,10 @@
 
 ### 修復驗證摘要
 
-- 最新隔離 build：`/private/tmp/yuzora-ops.LSCoT2/cargo-target/release/bundle/macos/Yuzora.app`；DMG SHA-256 `97ad88de36c798473abdbe36bd1dedea4888c9efde4e52927ae32c641230d680`，`hdiutil verify` PASS；bundle `0.0.9-beta.1`／`dev.yuuzu.yuzora`／arm64，按 local candidate contract 為 ad-hoc、無 TeamIdentifier。
-- Frontend：typecheck PASS；lint PASS（0 errors，49 既有 warnings）；179 files／2,452 tests PASS。
+- 上一個13-file remediation隔離 build：`/private/tmp/yuzora-ops.LSCoT2/cargo-target/release/bundle/macos/Yuzora.app`；DMG SHA-256 `97ad88de36c798473abdbe36bd1dedea4888c9efde4e52927ae32c641230d680`，`hdiutil verify` PASS；bundle `0.0.9-beta.1`／`dev.yuuzu.yuzora`／arm64，按 local candidate contract 為 ad-hoc、無 TeamIdentifier。本輪15-file patch的新 exact-head candidate尚待 push／CI，不把舊包當成最終 acceptance。
+- Frontend：typecheck PASS；lint PASS（0 errors，49 既有 warnings）；180 files／2,463 tests PASS；production build PASS（3,105.77 kB chunk warning保留）。
 - Rust：`cargo check --locked --all-targets`、fmt、exact clippy baseline PASS；891 unit tests PASS、1 ignored；DB integration 1 PASS、1 ignored。
-- Release：version／Beta／Stable preflight PASS；release state＋contracts 18 tests PASS；combined targeted 7 files／77 tests PASS；`bun run tauri:build` 在 repository 外 code 0。
+- Release：version／notes／Beta／Stable preflight PASS；release 7 files／45 tests、actionlint v1.7.7與YAML parse PASS；UI targeted 5 files／80 tests PASS；先前 `bun run tauri:build` 在 repository 外 code 0。
 - Computer Use：僅用 bundled `@oai/sky` 操作 exact `/private/tmp/yuzora-ops.LSCoT2/.../Yuzora.app`。新增回歸包含 `>` Space／Agent 搜尋與 keyboard flow、Logs date-only／datetime-local／RFC3339／非法日曆時間、50-row paging／expanded-state isolation、accent persistence／restore；Git menu、Preview、SSH smoke 亦 PASS。no-snapshot session、large inventory cap 與 execution-origin refresh 以 deterministic tests 覆蓋，未偽稱實機重現。
 
 ### 模型與委派紀錄
@@ -128,6 +129,12 @@
 | 88 Logs expanded-row identity | 跨頁相同 timestamp/source/event | PASS | key 含 absolute result index；component regression與 packaged page 1→2→1 state isolation PASS。 |
 | 89 Logs supported timestamp formats | date-only、datetime-local、RFC3339、非法日期／時間 | PASS | packaged UI 三種有效格式均套用；`2026-02-30`、`24:00` 顯示可存取錯誤；targeted tests PASS。 |
 | 90 Accent persisted-key validation | own key、`constructor`／`toString` | PASS | own-property regression 拒絕 inherited keys；violet 關閉／重啟保存，最終 lime／Follow system 已還原並再重啟確認。 |
+| 91 HERDR read-only paste lifecycle | observer paste、Take Control、async clipboard race | PASS | observer intent不讀取／不保留 clipboard；initial-open control race仍可交付合法 setup paste；Terminal targeted 31/31 PASS。 |
+| 92 Logs expanded-state replacement | new query、run filter switch、colliding records | PASS | successful query與每次 run filter切換清空 expanded state；deterministic collision regressions PASS。 |
+| 93 HERDR Attention component contract | shared shadcn Button、disabled state | PASS | Attention action改由既有 `Button variant="ghost"` 組合；`data-slot=button` regression PASS。 |
+| 94 Partial draft recovery | same-SHA draft、partial upload、notes／channel drift | PASS | local artifacts在 draft mutation前驗證；雙平台重建、notes讀回比對、versioned／alias `--clobber`、無 skipped bypass；release 45/45 PASS。 |
+| 95 Logs Copy current page | page 2、sanitized／raw、100 rows | PASS | 兩種模式只複製 `pageRows` 的 event_50～event_99，notice為 50 rows；Logs adjacent 33/33 PASS。 |
+| 96 macOS watcher batch ordering | root prelude、late `b.txt`、5s deadline | PASS | CI flake已 deterministic重現；測試逐批等待目標事件，exact targeted PASS；新 exact-head CI仍待 patch push後確認。 |
 
 ## 3. 問題清單
 
@@ -537,8 +544,8 @@
 - **受影響功能**：Release resume、已發布版本 safe skip、Stable／Beta channel guard
 - **前置條件**：同 tag GitHub Release 已存在，REST 回應使用 `draft`／`prerelease`。
 - **完整重現步驟**：1. 將 raw REST object傳入 state resolver。2. 使用 `{draft:true,prerelease:true}` beta draft。3. 觀察 channel assertion。4. 正規化後重試。
-- **預期結果**：beta draft解析為 `{isDraft:true,isPrerelease:true}` 並進入 publish-existing path。
-- **實際結果**：原 resolver讀到 undefined flags並報 channel mismatch；正規化後回 `shouldPublishExisting=true`。
+- **預期結果**：beta draft解析為 `{isDraft:true,isPrerelease:true}`，並進入 same-SHA rebuild／repair path。
+- **實際結果**：原 resolver讀到 undefined flags並報 channel mismatch；正規化與 partial-draft修復後回 `shouldBuild=true, shouldPublishExisting=true`。
 - **重現率**：100% deterministic state test。
 - **錯誤訊息、日誌或畫面證據**：PR discussion `r3852614119`；raw error `existing release prerelease state does not match beta channel`；release state＋contracts 18/18。
 - **對上線的影響**：resume／safe-skip 路徑不可用，可能讓正式 release recovery 失敗。
@@ -612,7 +619,7 @@
 
 - **Bug ID**：QA-027
 - **嚴重度**：P2
-- **修復狀態**：**FIXED／CONTRACT PASS** — Stable／Beta publish前同步 guard-verified notes並逐字比對。
+- **修復狀態**：**FIXED／CONTRACT PASS** — Stable／Beta都重新 build／assemble，assembly與publish前同步 guard-verified notes並逐字比對。
 - **問題標題**：assemble-draft 被略過時，非空 stale body 可直接通過 Publish gate
 - **受影響功能**：Stable／Beta draft recovery、Release notes provenance、automated Publish
 - **前置條件**：same-SHA draft已存在且 body非空；guard走 publish-existing path，assemble-draft略過。
@@ -620,9 +627,119 @@
 - **預期結果**：Publish只能使用 guard驗證的 exact notes。
 - **實際結果**：原 gate只驗證 body非空，stale／人工 notes可不經比對發布。
 - **重現率**：100% workflow contract mutation。
-- **錯誤訊息、日誌或畫面證據**：PR discussion `r3863124957`；release contract 14/14、state＋contracts 18/18；Stable／Beta contract commands PASS。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3863124957`；release 7 files／45 tests、Stable／Beta contract commands PASS；另見 QA-031 的 partial-draft recovery contract。
 - **對上線的影響**：Release內容與 reviewed CHANGELOG脫鉤，屬供應鏈／發布完整性風險。
 - **已知暫時解法**：修復前只能人工核對 draft；不足以取代 automated fail-closed gate。
+
+### QA-028 — HERDR observer paste 會在 Take Control 後意外執行
+
+- **Bug ID**：QA-028
+- **嚴重度**：P1
+- **修復狀態**：**FIXED／TARGETED PASS** — setup buffering只存在於 initial connection；read-only paste intent立即丟棄，async clipboard完成時也不會跨 control boundary replay。
+- **問題標題**：唯讀 terminal 拒絕的 clipboard text 被保留，取得 control 後可能連同換行送入 shell
+- **受影響功能**：HERDR Terminal observe／control、Ctrl／Cmd+V、Take Control
+- **前置條件**：HERDR connector以 observer模式開啟；clipboard包含文字，可能含 trailing newline。
+- **完整重現步驟**：
+  1. 在 observer terminal按 Ctrl／Cmd+V或送出 paste event。
+  2. 確認當下 terminal不可寫。
+  3. 點 Take Control，或讓 clipboard read promise在 control切換後才完成。
+  4. 觀察 terminal input。
+- **預期結果**：read-only時發起的 paste永遠丟棄；只有 initial connection最終以 control成功時，setup期間的 paste才可交付一次。
+- **實際結果**：原實作把 rejected text留在 `pendingPaste`，control event的 `flushPendingPaste()` 隨後送入 terminal；async read也可能在取得 control後直接送出舊 intent。
+- **重現率**：100% deterministic controller／component regressions。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3864436328`；新增 async race在修復前收到 `late observer paste` 1次而 FAIL；修復後 Terminal兩檔 31/31、合併 UI targeted 80/80 PASS。
+- **對上線的影響**：可能在使用者只觀察 session時，於稍後取得控制權的瞬間執行非預期 shell內容，包含具副作用命令；屬 terminal safety blocker。
+- **已知暫時解法**：修復前不要在 observer模式貼上，且取得 control前清空 clipboard；無可靠產品內 workaround。
+
+### QA-029 — Logs expanded state 會跨 query／run filter 套到不同 record
+
+- **Bug ID**：QA-029
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／TARGETED PASS** — successful query replacement與 run filter切換時都清空 expanded map。
+- **問題標題**：相同 timestamp／source／event與相對 index可讓舊 metadata expansion轉移到新 record
+- **受影響功能**：Settings → Logs、run groups、query refresh、metadata expansion
+- **前置條件**：兩個 run或前後兩次 query在同一 visible index有相同 timestamp、source與event，但 metadata不同。
+- **完整重現步驟**：
+  1. 載入 collision fixture並展開 run A record。
+  2. 切到 run B filter；或執行會替換 rows的新 query。
+  3. 檢查相同位置 record的 expansion與 metadata。
+- **預期結果**：結果集合或 filter identity改變後，未被本次點選的 record保持收合。
+- **實際結果**：原 expanded key仍以 `visibleRows` index構成，index重置後把舊 expanded state帶到不同 underlying record。
+- **重現率**：100%（run switch與 query replacement各1個 deterministic fixture）。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3864436335`；`logsSection.test.tsx` 驗證 run A／B owner與 replacement owner不誤展開；Logs adjacent 33/33 PASS。
+- **對上線的影響**：診斷畫面可能顯示使用者未選擇的 metadata，造成錯誤歸因。
+- **已知暫時解法**：修復前每次切 filter／重查後手動收合；無法可靠避免 identity collision。
+
+### QA-030 — HERDR Attention action 未使用 shared shadcn Button
+
+- **Bug ID**：QA-030
+- **嚴重度**：P1（review gate classification）
+- **修復狀態**：**FIXED／TARGETED PASS** — Attention entries改用既有 `@/components/ui/button` 的 ghost variant並保留 row layout。
+- **問題標題**：新 Attention actions以手刻 native button繞過 repository UI primitive contract
+- **受影響功能**：ADE → HERDR Attention、disabled／hover／focus interaction consistency
+- **前置條件**：HERDR snapshot含 attention item。
+- **完整重現步驟**：1. 開啟 HERDR nav。2. 顯示 Attention item。3. 檢查 action component與 disabled state。4. 對照 AGENTS.md shadcn-first規則。
+- **預期結果**：通用 button action由 shared `Button` 組合，domain row只提供必要 layout classes。
+- **實際結果**：原新增項目直接使用手刻 `<button>` 與完整互動 classes。
+- **重現率**：100% source-level。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3864436343`；regression確認 `data-slot="button"` 且 unavailable item仍 disabled；UI targeted 80/80 PASS。
+- **對上線的影響**：主要是 review／設計系統 gate；若放行會讓 focus、disabled與後續 theme behavior持續漂移。
+- **已知暫時解法**：原 native button可操作，但不符合 repository acceptance contract。
+
+### QA-031 — Partial draft recovery 會永久略過缺失平台／assets
+
+- **Bug ID**：QA-031
+- **嚴重度**：P1
+- **修復狀態**：**FIXED／CONTRACT PASS** — same-SHA draft必須重建兩平台並修復同一 draft；local handoff在 draft mutation前驗證，notes／channel讀回核對，assets與Stable aliases用 `--clobber`，Publish無 skipped-build旁路。
+- **問題標題**：draft建立後若 validation／upload失敗，後續 run會直接驗證不完整 draft並反覆失敗
+- **受影響功能**：Stable／Beta automated Release、partial upload recovery、artifact provenance
+- **前置條件**：`gh release create`成功，但本地 artifact validation、任一 versioned asset或Stable alias upload、或後續 gate失敗。
+- **完整重現步驟**：
+  1. 讓 release attempt建立 same-SHA draft後於 asset assembly中途失敗。
+  2. 重新執行同一 source SHA的 workflow。
+  3. 觀察 guard輸出的 `shouldBuild` 與 build／assemble jobs。
+  4. 檢查 Publish前 asset inventory。
+- **預期結果**：可預知的本地 handoff錯誤不先建立 draft；既有 same-SHA partial draft則重建 macOS／Windows、冪等覆寫完整 assets並重跑全部 gates。
+- **實際結果**：原 state resolver對 matching draft回 `shouldBuild=false`，因此 build與assemble都 skipped；缺失 asset不會被補回，verification每次都在同一 incomplete draft失敗。
+- **重現率**：100% state／workflow contract regression。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3864436349`；舊 state expectation在紅燈回傳 `shouldBuild=false`；修復後 release 7 files／45 tests、Stable／Beta contracts、actionlint與YAML parse全部 PASS。
+- **對上線的影響**：**發布阻擋**；正常可恢復的網路／upload失敗會把該 immutable version卡在無法自動完成的 draft狀態。
+- **已知暫時解法**：修復前只能經 maintainer授權清理 tag／draft或改新 version；兩者都不是安全的自動 recovery。
+
+### QA-032 — Logs Copy 在第 2 頁仍複製全部查詢結果
+
+- **Bug ID**：QA-032
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／TARGETED PASS** — sanitized與raw Copy都改用 active `pageRows`，成功提示也使用當頁 count。
+- **問題標題**：畫面只顯示50 rows，但 Copy可把最多500 rows／非預期raw資料放進 clipboard
+- **受影響功能**：Settings → Logs pagination、Copy、sanitize/raw
+- **前置條件**：query至少100 rows；切至Page 2。
+- **完整重現步驟**：1. 載入100 rows。2. 切至Page 2。3. 分別在sanitize on／off點Copy。4. 解析clipboard events與count notice。
+- **預期結果**：只複製目前顯示的 event_50～event_99共50 rows，提示也顯示50。
+- **實際結果**：原實作序列化全部 `visibleRows`，Page 2仍複製100 rows；raw mode可能帶入使用者眼前未顯示的資料。
+- **重現率**：100%（sanitized／raw各1次）。
+- **錯誤訊息、日誌或畫面證據**：PR review body（reviewed head `38a445aad…`）；紅燈為實際100 rows、預期50；修復後 Logs adjacent 33/33 PASS。
+- **對上線的影響**：clipboard內容與UI affordance不一致，並擴大未預期 raw log資料暴露範圍。
+- **已知暫時解法**：修復前先用更窄 filter讓全部結果不超過單頁，或不要使用raw Copy。
+
+### QA-033 — macOS FSEvents root prelude 使 watcher test 隨機失敗
+
+- **Bug ID**：QA-033
+- **嚴重度**：P1（release CI gate）
+- **修復狀態**：**FIXED／LOCAL PASS；EXACT-HEAD CI PENDING** — test在5秒deadline內逐批等待 `b.txt`，不再假設第一個合法 FSEvents batch就是目標檔案。
+- **問題標題**：watcher generation test把合法 watch-root batch誤判為功能失敗
+- **受影響功能**：macOS Rust tests、PR required CI、release candidate gate
+- **前置條件**：macOS FSEvents在寫入 `b.txt` 前先回報 watched temp root。
+- **完整重現步驟**：
+  1. 在 exact head `38a445aad…` 執行 macOS `cargo test --locked`。
+  2. 讓 FSEvents先送 root event。
+  3. 觀察 `stale_watch_build_finishing_late_does_not_override_newer_watcher` 的第一個 `recv_timeout`。
+- **預期結果**：測試忽略無關但合法 batch，直到deadline內看到 `b.txt`；產品 watcher generation semantics不變。
+- **實際結果**：原測試只讀第一批並立即 assert `b.txt`，CI收到 `got: ["/private/.../.tmpqEFRyh"]` 後失敗；整體為890 passed／1 failed／1 ignored。
+- **重現率**：CI 1/1該 run；注入 root prelude後舊斷言 deterministic 100% FAIL。
+- **錯誤訊息、日誌或畫面證據**：Actions run `33027444809`、job `98371995228`；修復後 exact targeted PASS，先前完整本機 Rust為891 passed／1 ignored。
+- **對上線的影響**：產品 watcher未證實故障，但 required macOS CI為紅燈，PR不可進入候選／merge gate。
+- **已知暫時解法**：單純 rerun可能碰巧通過但會保留不穩定 gate，不視為修復。
 
 ## 4. 未完成與受阻項目
 
@@ -655,8 +772,8 @@
 
 - 原始 QA 結束時間：2026-08-26 09:48:24 +08:00；當時 `git status --short` 只有 `?? QA-REPORT.md`。
 - 使用者其後明確要求修復所有問題；第一批 remediation 已依授權形成 `f8e8d17c1cd4df34a71ba3d360ed0b3f19cbf2d5`、`183ff004a6772f7d1439c97d6c11bb1d2e380b47` 與 `bf82126649a0f2d44415caf7526f15a3eb1d5757` 並 push 至同一 release branch。
-- `bf821266…` 的 11 個 unresolved review threads觸發 QA-017～QA-027；本報告定稿前狀態為 13 個 post-review source／test／workflow modifications 加 `QA-REPORT.md`，沒有 staged changes，全部可追溯至該 11 項 finding。
-- 最終本機核對時間：2026-08-26 23:32:41 +08:00；`git diff --check` PASS；`git diff --cached --name-only` 無輸出；未發現額外 tracked／untracked測試產物。
+- `bf821266…` 後的 review與 exact-head CI共觸發 QA-017～QA-033；本輪追加修復狀態為 15 個 source／test／workflow／operations modifications 加 `QA-REPORT.md`，沒有 staged changes，全部可追溯至 findings或其必要回歸／文件同步。
+- 最新本機核對時間：2026-08-27 09:35:28 +08:00；local／remote baseline均為 `38a445aad3155011b4c13b1c5bfcef1509cfa9d2`；`git diff --check` PASS；`git diff --cached --name-only` 無輸出；status只含本報告列出的15-file patch加 `QA-REPORT.md`。
 - 最新 build source、Cargo target、app與 DMG位於 `/private/tmp/yuzora-ops.LSCoT2`；最新 build 未寫 repository `dist/` 或 `src-tauri/target/`。
 - QA-009 早期 historical ignored-artifact event 保留原狀，沒有清理、刪除或還原；修復階段未再重現。
 - `git check-ignore -v dist src-tauri/target` 證實兩者分別由 root `.gitignore:17` 與 `src-tauri/.gitignore:3` 排除。
@@ -666,7 +783,7 @@
 ### Git 寫入確認
 
 - 原始唯讀 QA 階段未執行 `git add`、`git commit` 或 `git push`；使用者後續明確要求修復並執行 `docs/operations.md` 後，才在授權範圍內提交／推送上述 remediation。
-- 本次 post-review patch在本報告內容定稿時尚未 staged／committed／pushed；後續 operations只會明確 stage本報告列出的 14 個檔案。最終 commit SHA、push、exact-head CI與 candidates屬定稿後事件，以 PR #83／Issue #84留言為權威證據。
+- 本次 post-review patch在本報告內容定稿時尚未 staged／committed／pushed；後續 operations只會明確 stage本報告列出的 16 個檔案。最終 commit SHA、push、exact-head CI與 candidates屬定稿後事件，以 PR #83／Issue #84留言為權威證據。
 - 全程未執行 reset、restore、clean、stash、force push、branch rewrite、tag、merge或 Publish；沒有刪除、還原或隱藏其他 worktree changes。
 
 ## 驗收事件與證據紀錄
@@ -717,3 +834,7 @@
 - 2026-08-26：bundled Computer Use exact-path回歸：Command Palette `>privacy`／`>π` 搜尋、Enter與Escape PASS；Logs date-only／datetime-local／RFC3339、非法日曆／時間、10-page navigation與expanded-state isolation PASS；violet persistence後已還原 lime並再重啟確認。
 - 2026-08-26：同一 packaged app 的 Git User／Date Escape、Preview `javascript:`拒絕、`https://example.com` child webview／responsive／Space lifecycle、SSH radio方向鍵與Escape cancel smoke均 PASS。最終以 ⌘Q結束，exact process不存在；未使用 Orca。
 - 2026-08-26 23:32:41 +08:00：post-review patch與 `QA-REPORT.md` 的 `git diff --check` PASS、staging area為空；GitHub live gate仍為六項 Apple secrets缺失、`main`未保護、rulesets空、maintainer review／merge授權未完成，因此結論維持 NO-GO。
+- 2026-08-27：GitHub Actions恢復後，authoritative exact-head run `33027444809` 的 frontend、Linux／Windows Rust、database與兩個 candidate jobs均PASS；macOS Rust job `98371995228` 唯一失敗於 watcher test先收到合法 temp-root FSEvents batch，記錄QA-033。舊 outage-corrupted run `32985785981`不再作為測試結果。
+- 2026-08-27：PR head `38a445aad…` 新一輪review記錄QA-028～QA-032。四個 inline threads與一個review-body finding均以deterministic red→green修復；同時補足 observer async clipboard race與「local artifacts先驗證、後建立draft」contract。
+- 2026-08-27：初步 targeted回歸：UI 5 files／80 tests、release 7 files／45 tests、watcher exact test、version／notes／Beta／Stable contracts、actionlint v1.7.7、Ruby YAML parse與`git diff --check`全部PASS；完整 suite與新 exact-head CI仍依後續事件更新。
+- 2026-08-27 09:35:28 +08:00：完整本機gate完成。Frontend typecheck、lint（0 errors／49既有warnings）、180 files／2,463 tests與production build PASS；Rust fmt、check、exact 251-diagnostic Clippy baseline、891 unit tests／1 ignored與SQLite integration 1 PASS／1 ignored；staging area仍為空。新 exact-head CI／candidate與bundled Computer Use驗收尚待PR branch更新後執行。

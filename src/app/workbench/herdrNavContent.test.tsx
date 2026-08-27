@@ -278,6 +278,7 @@ describe("HerdrNavContent", () => {
     render(<HerdrNavContent />)
 
     const attention = screen.getByTestId("herdr-attention-pane-1")
+    expect(attention).toHaveAttribute("data-slot", "button")
     expect(attention).toBeDisabled()
     expect(attention).toHaveAttribute("title", "Herdr workspace.focus unavailable")
   })

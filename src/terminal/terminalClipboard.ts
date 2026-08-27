@@ -46,6 +46,8 @@ export function installTerminalClipboardHandling(
 ): TerminalClipboardController {
   let disposed = false
   let pendingPaste: string | null = null
+  let initialConnectionSetup = true
+  let initialConnectionWasWritable: boolean | null = null
   const element = term.element
   const textarea = term.textarea
 
@@ -54,7 +56,7 @@ export function installTerminalClipboardHandling(
   const deliverPaste = (text: string) => {
     if (disposed || text.length === 0) return
     if (!canPaste()) {
-      pendingPaste = text
+      if (initialConnectionSetup) pendingPaste = text
       return
     }
     pendingPaste = null
@@ -68,8 +70,17 @@ export function installTerminalClipboardHandling(
 
   const pasteClipboard = () => {
     if (disposed) return
+    const requestedDuringInitialSetup = initialConnectionSetup
+    if (!requestedDuringInitialSetup && !canPaste()) return
     void readClipboardText()
-      .then(deliverPaste)
+      .then((text) => {
+        if (
+          requestedDuringInitialSetup
+          && !initialConnectionSetup
+          && initialConnectionWasWritable !== true
+        ) return
+        deliverPaste(text)
+      })
       .catch(() => undefined)
   }
 
@@ -132,7 +143,11 @@ export function installTerminalClipboardHandling(
 
   return {
     flushPendingPaste: () => {
-      if (pendingPaste !== null) deliverPaste(pendingPaste)
+      const text = pendingPaste
+      pendingPaste = null
+      if (initialConnectionSetup) initialConnectionWasWritable = canPaste()
+      initialConnectionSetup = false
+      if (text !== null && canPaste()) term.paste(text)
     },
     dispose: () => {
       disposed = true

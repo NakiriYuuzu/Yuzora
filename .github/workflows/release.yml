@@ -532,22 +532,23 @@ jobs:
           path: release-artifacts
           merge-multiple: true
 
-      - name: Create draft and upload versioned assets
+      - name: Create or repair draft and upload versioned assets
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.guard.outputs.tag_name }}
           IS_BETA: ${{ needs.guard.outputs.is_beta }}
+          RESUME_EXISTING_DRAFT: ${{ needs.guard.outputs.should_publish_existing }}
           RELEASE_NOTES_B64: ${{ needs.guard.outputs.release_notes_b64 }}
         run: |
           set -euo pipefail
           printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md
-          CREATE_ARGS=(--draft --title "Yuzora ${TAG_NAME}" --notes-file release-notes.md)
-          if [ "$IS_BETA" = "true" ]; then CREATE_ARGS+=(--prerelease); fi
-          gh release create "$TAG_NAME" "${CREATE_ARGS[@]}"
 
+          # Validate the complete local handoff before creating or mutating a
+          # GitHub Release, so deterministic artifact errors leave no new draft.
           mapfile -t ASSETS < <(find release-artifacts -maxdepth 1 -type f -print | sort)
           [ "${#ASSETS[@]}" -gt 0 ] || { echo "::error::no build artifacts found"; exit 1; }
+          ALIAS_ASSETS=()
           if [ "$IS_BETA" = "true" ]; then
             [ "${#ASSETS[@]}" -eq 3 ] || { echo "::error::Beta requires exactly three installers"; exit 1; }
             for asset in "${ASSETS[@]}"; do
@@ -556,10 +557,7 @@ jobs:
                 *) echo "::error::unexpected Beta artifact $(basename "$asset")"; exit 1 ;;
               esac
             done
-          fi
-          gh release upload "$TAG_NAME" "${ASSETS[@]}"
-
-          if [ "$IS_BETA" != "true" ]; then
+          else
             DMG="$(find release-artifacts -maxdepth 1 -type f -name '*.dmg' -print -quit)"
             SETUP="$(find release-artifacts -maxdepth 1 -type f -name '*setup.exe' -print -quit)"
             MSI="$(find release-artifacts -maxdepth 1 -type f -name '*.msi' -print -quit)"
@@ -571,9 +569,43 @@ jobs:
               alias="${pair#*:}"
               [ -n "$source" ] && [ -f "$source" ] || { echo "::error::missing stable alias source"; exit 1; }
               cp "$source" "$alias"
-              gh release upload "$TAG_NAME" "$alias"
+              ALIAS_ASSETS+=("$alias")
             done
           fi
+
+          RELEASE_VIEW_ERROR="$(mktemp)"
+          trap 'rm -f "$RELEASE_VIEW_ERROR"' EXIT
+          if RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease 2>"$RELEASE_VIEW_ERROR")"; then
+            [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ] || {
+              echo "::error::existing release must remain a draft"
+              exit 1
+            }
+            [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" = "$IS_BETA" ] || {
+              echo "::error::existing draft channel changed after guard"
+              exit 1
+            }
+            gh release edit "$TAG_NAME" --title "Yuzora ${TAG_NAME}" --notes-file release-notes.md
+            EXPECTED_RELEASE_NOTES="$(cat release-notes.md)"
+            ACTUAL_RELEASE_NOTES="$(gh release view "$TAG_NAME" --json body --jq '.body')"
+            [ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ] || {
+              echo "::error::repaired draft notes do not match guard-verified notes"
+              exit 1
+            }
+          else
+            if [ "$RESUME_EXISTING_DRAFT" = "true" ]; then
+              cat "$RELEASE_VIEW_ERROR" >&2
+              echo "::error::guard-verified draft disappeared before assembly"
+              exit 1
+            fi
+            CREATE_ARGS=(--draft --title "Yuzora ${TAG_NAME}" --notes-file release-notes.md)
+            if [ "$IS_BETA" = "true" ]; then CREATE_ARGS+=(--prerelease); fi
+            gh release create "$TAG_NAME" "${CREATE_ARGS[@]}"
+          fi
+
+          gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber
+          for alias in "${ALIAS_ASSETS[@]}"; do
+            gh release upload "$TAG_NAME" "$alias" --clobber
+          done
 
   prepare-updater-metadata:
     name: Prepare stable updater metadata
@@ -582,10 +614,9 @@ jobs:
       always() &&
       needs.guard.result == 'success' &&
       needs.guard.outputs.is_beta != 'true' &&
-      (
-        (needs.guard.outputs.should_build == 'true' && needs.build.result == 'success' && needs.assemble-draft.result == 'success') ||
-        (needs.guard.outputs.should_publish_existing == 'true' && needs.build.result == 'skipped' && needs.assemble-draft.result == 'skipped')
-      )
+      needs.guard.outputs.should_build == 'true' &&
+      needs.build.result == 'success' &&
+      needs.assemble-draft.result == 'success'
     runs-on: ubuntu-latest
     # Repository metadata code has only read access; upload is a later no-checkout job.
     permissions:
@@ -746,10 +777,8 @@ jobs:
       always() &&
       needs.guard.result == 'success' &&
       needs.guard.outputs.is_beta == 'true' &&
-      (
-        (needs.guard.outputs.should_build == 'true' && needs.assemble-draft.result == 'success') ||
-        (needs.guard.outputs.should_publish_existing == 'true' && needs.assemble-draft.result == 'skipped')
-      )
+      needs.guard.outputs.should_build == 'true' &&
+      needs.assemble-draft.result == 'success'
     runs-on: ubuntu-latest
     # No checkout and no repository-controlled code execute in this write job.
     permissions:

@@ -18,6 +18,7 @@ interface WorkflowStep {
 
 interface WorkflowJob {
   env?: Record<string, string>
+  if?: string
   steps: WorkflowStep[]
 }
 
@@ -144,6 +145,57 @@ describe("release workflow contracts", () => {
         '[ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ]'
       )
     }
+  })
+
+  it("rebuilds and idempotently reassembles a same-SHA partial draft", () => {
+    const workflow = releaseWorkflow()
+    const assemble = workflow.jobs["assemble-draft"]
+    const upload = assemble.steps.find(
+      (step) => step.name === "Create or repair draft and upload versioned assets"
+    )
+
+    expect(assemble.env?.GH_REPO).toBe("${{ github.repository }}")
+    expect(assemble.if).toContain("needs.guard.result == 'success'")
+    expect(assemble.if).toContain("needs.guard.outputs.should_build == 'true'")
+    expect(assemble.if).toContain("needs.build.result == 'success'")
+    expect(upload?.env?.RESUME_EXISTING_DRAFT).toBe(
+      "${{ needs.guard.outputs.should_publish_existing }}"
+    )
+    expect(upload?.run).toContain(
+      'if RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease'
+    )
+    expect(upload?.run).toContain("existing release must remain a draft")
+    expect(upload?.run).toContain("existing draft channel changed after guard")
+    expect(upload?.run).toContain('if [ "$RESUME_EXISTING_DRAFT" = "true" ]')
+    expect(upload?.run).toContain("guard-verified draft disappeared before assembly")
+    expect(upload?.run).toContain(
+      'gh release edit "$TAG_NAME" --title "Yuzora ${TAG_NAME}" --notes-file release-notes.md'
+    )
+    expect(upload?.run).toContain(
+      'gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber'
+    )
+    expect(upload?.run).toContain(
+      'gh release upload "$TAG_NAME" "$alias" --clobber'
+    )
+    const validateAssets = upload?.run?.indexOf("mapfile -t ASSETS") ?? -1
+    const validateAliases = upload?.run?.indexOf("missing stable alias source") ?? -1
+    const createDraft = upload?.run?.indexOf('gh release create "$TAG_NAME"') ?? -1
+    expect(validateAssets).toBeGreaterThanOrEqual(0)
+    expect(validateAliases).toBeGreaterThanOrEqual(0)
+    expect(createDraft).toBeGreaterThanOrEqual(0)
+    expect(validateAssets).toBeLessThan(createDraft)
+    expect(validateAliases).toBeLessThan(createDraft)
+
+    const prepare = workflow.jobs["prepare-updater-metadata"]
+    expect(prepare.if).toContain("needs.build.result == 'success'")
+    expect(prepare.if).toContain("needs.assemble-draft.result == 'success'")
+    expect(prepare.if).not.toContain("skipped")
+    expect(prepare.if).not.toContain("should_publish_existing")
+
+    const betaPublish = workflow.jobs["publish-beta-release"]
+    expect(betaPublish.if).toContain("needs.assemble-draft.result == 'success'")
+    expect(betaPublish.if).not.toContain("skipped")
+    expect(betaPublish.if).not.toContain("should_publish_existing")
   })
 
   it("treats only an authoritative GitHub 404 as an absent release", () => {

@@ -27,15 +27,21 @@ describe("release state resolution", () => {
     ).toEqual({ shouldBuild: false, shouldPublishExisting: false })
   })
 
-  it("resumes only a matching draft on the successful CI SHA", () => {
-    expect(
-      resolveReleaseState(
-        state({
-          tagSha: sourceSha,
-          release: { isDraft: true, isPrerelease: true },
-        })
-      )
-    ).toEqual({ shouldBuild: false, shouldPublishExisting: true })
+  it("rebuilds only a matching draft on the successful CI SHA", () => {
+    for (const [channel, isPrerelease] of [
+      ["beta", true],
+      ["stable", false],
+    ] as const) {
+      expect(
+        resolveReleaseState(
+          state({
+            channel,
+            tagSha: sourceSha,
+            release: { isDraft: true, isPrerelease },
+          })
+        )
+      ).toEqual({ shouldBuild: true, shouldPublishExisting: true })
+    }
     expect(() =>
       resolveReleaseState(
         state({

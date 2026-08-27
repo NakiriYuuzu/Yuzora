@@ -328,9 +328,10 @@ export function HerdrNavContent() {
                 {attentionItems.map((item) => {
                   const agent = agents.find((candidate) => candidate.paneId === item.paneId) ?? null
                   return (
-                    <button
+                    <Button
                       key={item.key}
                       type="button"
+                      variant="ghost"
                       data-testid={`herdr-attention-${item.paneId}`}
                       disabled={!agent || stopped || !canMutate}
                       title={
@@ -338,7 +339,7 @@ export function HerdrNavContent() {
                           ? mutationBlockedReason ?? t("herdrNav.actionUnavailable")
                           : undefined
                       }
-                      className="mb-[4px] flex w-full items-center gap-[8px] rounded-[10px] px-[8px] py-[7px] text-left text-(--ink-2) transition-colors hover:bg-(--yz-hover) disabled:pointer-events-none disabled:opacity-50"
+                      className="mb-[4px] h-auto w-full justify-start gap-[8px] rounded-[10px] px-[8px] py-[7px] text-left font-normal text-(--ink-2) hover:bg-(--yz-hover)"
                       onClick={() => {
                         if (agent) void openAgent(agent)
                       }}
@@ -352,7 +353,7 @@ export function HerdrNavContent() {
                           {item.kind} · {item.agentStatus}
                         </span>
                       </span>
-                    </button>
+                    </Button>
                   )
                 })}
               </>

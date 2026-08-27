@@ -40,7 +40,10 @@ export function resolveReleaseState(input: ReleaseStateInput): ReleaseStateDecis
       input.tagSha === input.sourceSha,
       "existing draft tag must point to the successful main CI SHA"
     )
-    return { shouldBuild: false, shouldPublishExisting: true }
+    // A previous attempt may have created the draft but failed during a later
+    // platform upload or validation step. Rebuild both platforms and repair the
+    // same draft idempotently instead of trusting an incomplete asset set.
+    return { shouldBuild: true, shouldPublishExisting: true }
   }
 
   if (input.tagSha) {

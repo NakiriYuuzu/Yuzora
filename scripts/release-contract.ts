@@ -240,7 +240,7 @@ function verifyReleaseNotesHandoff(workflow: Workflow): void {
 
   const assemble = stepByName(
     steps(jobFor(workflow, "assemble-draft"), "jobs.assemble-draft"),
-    "Create draft and upload versioned assets"
+    "Create or repair draft and upload versioned assets"
   )
   assert(
     includes(assemble.run, "printf '%s' \"$RELEASE_NOTES_B64\" | base64 --decode > release-notes.md") &&
@@ -297,19 +297,49 @@ function verifyArtifactBoundary(workflow: Workflow): void {
   )
 
   const assemble = jobFor(workflow, "assemble-draft")
+  const assembleUpload = stepByName(
+    steps(assemble, "jobs.assemble-draft"),
+    "Create or repair draft and upload versioned assets"
+  )
+  const assembleEnv = record(assembleUpload.env, "jobs.assemble-draft upload env")
   assert(
-    includes(assemble.if, "needs.build.result == 'success'") &&
+    includes(assemble.if, "needs.guard.result == 'success'") &&
+      includes(assemble.if, "needs.guard.outputs.should_build == 'true'") &&
+      includes(assemble.if, "needs.build.result == 'success'") &&
       steps(assemble, "jobs.assemble-draft").some((step) => step.name === "Download validated installer artifacts"),
-    "write-only assembly must depend on a successful read-only build and download its artifacts"
+    "write-only assembly must require the guarded release decision and a successful read-only build"
+  )
+  assert(
+    assembleEnv.RESUME_EXISTING_DRAFT ===
+      "${{ needs.guard.outputs.should_publish_existing }}" &&
+      includes(
+        assembleUpload.run,
+        'if RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease'
+      ) &&
+      includes(assembleUpload.run, "existing release must remain a draft") &&
+      includes(assembleUpload.run, "existing draft channel changed after guard") &&
+      includes(assembleUpload.run, 'if [ "$RESUME_EXISTING_DRAFT" = "true" ]') &&
+      includes(assembleUpload.run, "guard-verified draft disappeared before assembly") &&
+      includes(
+        assembleUpload.run,
+        'gh release edit "$TAG_NAME" --title "Yuzora ${TAG_NAME}" --notes-file release-notes.md'
+      ) &&
+      includes(assembleUpload.run, '[ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ]') &&
+      includes(assembleUpload.run, 'gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber') &&
+      includes(assembleUpload.run, 'gh release upload "$TAG_NAME" "$alias" --clobber'),
+    "matching drafts must rebuild and idempotently repair notes, versioned assets, and stable aliases"
   )
 
   const prepare = jobFor(workflow, "prepare-updater-metadata")
   assert(
     contentsPermission(prepare, "jobs.prepare-updater-metadata") === "read" &&
       hasCheckout(prepare, "jobs.prepare-updater-metadata") &&
+      includes(prepare.if, "needs.guard.outputs.should_build == 'true'") &&
+      includes(prepare.if, "needs.build.result == 'success'") &&
       includes(prepare.if, "needs.assemble-draft.result == 'success'") &&
-      includes(prepare.if, "needs.guard.outputs.should_publish_existing == 'true'"),
-    "read-only metadata preparation must support both fresh builds and matching draft recovery"
+      !includes(prepare.if, "skipped") &&
+      !includes(prepare.if, "should_publish_existing"),
+    "read-only metadata preparation must require rebuilt and reassembled draft assets"
   )
   const prepareSteps = steps(prepare, "jobs.prepare-updater-metadata")
   assert(
@@ -452,7 +482,10 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
   )
 
   const build = jobFor(workflow, "build")
-  assert(includes(build.if, "needs.guard.outputs.should_build == 'true'"), "build must require a new verified tag")
+  assert(
+    includes(build.if, "needs.guard.outputs.should_build == 'true'"),
+    "build must require a verified new or recoverable draft release attempt"
+  )
   const matrix = record(record(build.strategy, "build strategy").matrix, "build matrix")
   assert(Array.isArray(matrix.include), "release build matrix is required")
   const platforms = matrix.include.map((row, index) => record(row, `build matrix row ${index}`).platform)
@@ -550,8 +583,11 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
   const betaPublish = jobFor(workflow, "publish-beta-release")
   assert(
     includes(betaPublish.if, "needs.guard.outputs.is_beta == 'true'") &&
-      includes(betaPublish.if, "needs.assemble-draft.result == 'success'"),
-    "beta publish must require a successfully assembled draft"
+      includes(betaPublish.if, "needs.guard.outputs.should_build == 'true'") &&
+      includes(betaPublish.if, "needs.assemble-draft.result == 'success'") &&
+      !includes(betaPublish.if, "skipped") &&
+      !includes(betaPublish.if, "should_publish_existing"),
+    "beta publish must require a rebuilt and successfully reassembled draft"
   )
   const betaSteps = steps(betaPublish, "jobs.publish-beta-release")
   const verify = stepByName(betaSteps, "Verify beta release assets")

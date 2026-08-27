@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> 最後查證：2026-08-26。
+> 最後查證：2026-08-27。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
@@ -222,7 +222,7 @@ Remove-Item Env:GITHUB_REF_NAME
 - Stable：Updater signing、macOS Developer ID signing／notarization、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
 - Beta：macOS Developer ID signing／notarization、`prerelease=true`、沒有 updater signing secrets、沒有 updater artifacts／`.sig`／`latest.json`／stable aliases，且 publish command 不含 `--latest`。
 
-另外確認遠端 `v${VERSION}` tag 與同版本 GitHub Release 都不存在。若已存在 Published Release，不能重用 version；若存在 draft，Release guard 會先強制確認其 tag SHA 與成功的 `main` CI SHA 完全一致，否則 fail closed。
+另外確認遠端 `v${VERSION}` tag 與同版本 GitHub Release 都不存在。若已存在 Published Release，不能重用 version；若存在 draft，Release guard 會先強制確認其 tag SHA 與成功的 `main` CI SHA 完全一致，否則 fail closed。符合的 same-SHA draft 只視為前次嘗試留下的可修復狀態：workflow 仍會重新建置 macOS／Windows、修復同一 draft 的 notes 與 assets，再重新通過完整發布 gate。
 
 ### 對齊 CI 的本機檢查
 
@@ -300,7 +300,7 @@ gh run download "${RUN_ID}" \
 - Review conversation 全部處理完成。
 - Release／updater 敏感檔案已有合適 reviewer。
 - PR body 對本次完整交付的 Issues 使用 `Closes`／`Fixes`，讓 merge 自動關閉 Issues；未完成的 Issue 只能使用 `Refs`。
-- 遠端 version tag 與同版本 Published Release 不存在；既有 draft 必須先核對 tag SHA。
+- 遠端 version tag 與同版本 Published Release 不存在；既有 draft 必須先核對 tag SHA，且不得把 draft 內既有 assets 當成已驗證候選。
 - PR comment 記錄 release PR number、候選安裝檔 run ID、驗證平台與 candidate head SHA，避免後續一般 `main` commit 被誤認為已驗證的 release source。
 - Merge 後由 Release workflow 等待並查證 `main` 上該 exact commit 的 push CI；PR CI 綠燈本身不會直接發布。
 
@@ -316,7 +316,7 @@ gh run download "${RUN_ID}" \
 4. `main` push 觸發完整 CI；Release workflow 透過 `workflow_run` 接收完成事件。
 5. Guard 只接受 `event=push`、`head_branch=main`、`conclusion=success`，並 checkout `workflow_run.head_sha`，確保後續 tag、build 與 checks 使用同一個 immutable commit。
 6. Guard 從該 commit 的 `package.json` 解析唯一允許的 Stable `X.Y.Z` 或 Beta `X.Y.Z-beta.N` version，執行版本與 release notes checks；Stable 再執行 updater contract，Beta 改執行 prerelease isolation contract。
-7. 若版本 tag 不存在，workflow 建立 annotated `v<version>` tag 並精確指向該成功 CI SHA；接著開始建置。既有 draft 的 tag SHA 不同時會 fail closed。
+7. 若版本 tag 不存在，workflow 建立 annotated `v<version>` tag 並精確指向該成功 CI SHA；接著開始建置。若既有 same-SHA draft，workflow 也會重新建置兩平台並修復該 draft；tag SHA 不同時會 fail closed。
 8. 若相同版本已 Published，workflow 安全略過，不會因後續一般 PR 重複發布。
 
 流程政策將 PR 定義為唯一 repository 變更入口，並避免「PR CI 綠燈但尚未進入 `main`」就對外發布。不過，現行 Release guard 尚未從 GitHub 查證 source SHA 對應的 PR、candidate run 與使用者核准；在 branch protection 與此 gate 完成前，仍需依第 4、5 節人工核對。CI、tag、Release 與 Issue 關閉的關係如下：
@@ -337,7 +337,7 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
                                                    auto Publish
 ```
 
-若 upgrade 前已存在同版本、且 tag SHA 已由 Guard 驗證等於本次 `workflow_run.head_sha` 的 draft Release，Guard 會進入銜接模式：Stable 重新執行 metadata finalizer 並只覆蓋 `latest.json`；Beta 不執行 finalizer，直接重新驗證沒有 updater assets、signatures 或 stable aliases。驗證不完整時 Release 保持 draft。
+若 upgrade 前已存在同版本、且 tag SHA 已由 Guard 驗證等於本次 `workflow_run.head_sha` 的 draft Release，Guard 會進入修復模式：macOS／Windows 都重新建置，`assemble-draft` 重新同步 guard-verified notes、以 `--clobber` 覆寫 versioned assets 與 Stable aliases，再執行該 channel 的完整 metadata／Publish gate。Draft 在 Guard 後消失、變成 Published、channel 改變、notes 讀回不一致或 asset 驗證不完整時都會 fail closed，不會沿用部分或過期候選。
 
 ---
 
@@ -353,7 +353,7 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 4. 解析出的 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致，且版本只可為 Stable 或 `-beta.N`。
 5. `CHANGELOG.md` 有該版本 release notes。
 6. Stable 驗證 updater release contract；Beta 驗證 prerelease isolation contract。
-7. 新版本由獨立、無 checkout 的 `create-tag` write job 建立 annotated tag；既有 draft 的 tag SHA 必須與 CI SHA 一致；已發布版本安全略過。
+7. 新版本由獨立、無 checkout 的 `create-tag` write job 建立 annotated tag；既有 draft 的 tag SHA 必須與 CI SHA 一致並觸發雙平台重建；已發布版本安全略過。
 
 Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 checkout 並執行 repository code，但沒有 write-capable token。所有 contents write 都只存在於無 checkout、只執行固定 inline `gh`/shell 的 job。現行 Guard 不負責證明該 SHA 來自 release PR 或已完成 candidate／使用者驗證；這些仍是明確的人工 gate。任何 guard failure 都不會進入 build。
 
@@ -365,7 +365,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 - Stable Windows x64：本機產生 NSIS `setup.exe`、`.msi` 與 MSI updater signature。
 - Beta macOS／Windows：產生供手動下載的 versioned installers，但不產生 updater archive、`latest.json` 或 `.sig`，且 build environment 不含 updater signing secrets 與 contents-write token；macOS 仍必須 Developer ID signed／notarized，Windows 仍無 Authenticode。
 
-`build` job 只執行 `bun tauri build`、驗證 Tauri CLI 的實際 bundle paths，並以 Actions artifacts 上傳結果；它不建立或上傳 GitHub Release。兩平台都成功後，獨立的無 checkout `assemble-draft` write job 下載已驗證的 Actions artifacts、建立同一個暫態 draft `Yuzora v<version>`、上傳 versioned assets；Stable 同時上傳固定檔名 aliases。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列。
+`build` job 只執行 `bun tauri build`、驗證 Tauri CLI 的實際 bundle paths，並以 Actions artifacts 上傳結果；它不建立或上傳 GitHub Release。Fresh release 與 same-SHA draft recovery 都必須讓兩平台 build 成功。之後獨立的無 checkout `assemble-draft` write job 下載已驗證的 Actions artifacts，先在任何 GitHub Release mutation 前驗證本地 handoff與Stable alias sources：沒有 Release 時才建立暫態 draft `Yuzora v<version>`；已有 Guard 核准的 draft 時，重新驗證 draft／channel、同步並讀回比對 release notes。接著以 `gh release upload --clobber` 上傳全部 versioned assets；Stable 固定檔名 aliases 也以 `--clobber` 覆寫。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列，也不是略過重建的信任來源。
 
 ### 7.3 固定檔名別名
 
@@ -386,7 +386,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 ### 7.4 Finalize updater metadata
 
-只有 Stable build 成功後，或既有同版本 Stable draft 進入銜接模式時，metadata 採兩段式 boundary：
+只有 Stable 雙平台 build 與 `assemble-draft` 都成功後，metadata 才採兩段式 boundary；same-SHA draft recovery 沒有略過 build／assembly 的旁路：
 
 1. `prepare-updater-metadata` 是 read-only checkout job。它從 draft 以 read token 取得 asset inventory與 `.app.tar.gz.sig`／`.msi.sig`，執行 repository-owned metadata generator，驗證 version、notes、macOS universal archive、MSI URL 與 signatures，然後把 `latest.json` 作為 Actions artifact 上傳。
 2. `upload-updater-metadata` 是無 checkout 的 contents-write job。它下載該 metadata artifact、移除 draft 中殘留的 Linux AppImage／DEB／RPM assets，再以 `gh release upload --clobber` 取代 `latest.json`；它不執行 repository code。
@@ -395,10 +395,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 ### 7.5 Automated publish gate
 
-`publish-release`（Stable）是無 checkout 的 contents-write verification/publish job，只在下列其中一條路徑成立時執行：
-
-- 新版本的 macOS／Windows build 與 metadata finalizer 全部成功。
-- 既有同版本 draft 的銜接模式啟用、build 正確略過，且 metadata finalizer 成功。
+`publish-release`（Stable）是無 checkout 的 contents-write verification/publish job，只在 macOS／Windows 重建、draft assembly、metadata preparation 與 metadata upload 全部成功後執行。Fresh release 與 same-SHA draft recovery 使用相同 gate，不存在以既有 draft 略過 build／assembly 的 Publish 旁路。
 
 Publish 前 workflow 自動驗證：
 
@@ -410,7 +407,7 @@ Publish 前 workflow 自動驗證：
 
 Stable 全部成功後執行 `gh release edit --draft=false --prerelease=false --latest`，並再次查證 `publishedAt`。任一條件失敗時 workflow 結束為失敗，Release 保持 draft，不會出現部分成功卻永久等待人工 Publish 的正常路徑。
 
-`publish-beta-release` 使用獨立、無 checkout 的 contents-write job，僅在 macOS／Windows Beta draft 都成功時執行。它驗證 release body 與版本化 `.dmg`、`setup.exe`、`.msi`，並拒絕 `latest.json`、任何 `.sig` 與所有 stable fixed aliases；最後只執行 `gh release edit --draft=false --prerelease=true`，絕不傳入 `--latest`。Beta 不執行 stable metadata finalizer，亦不改變 `releases/latest`。
+`publish-beta-release` 使用獨立、無 checkout 的 contents-write job，僅在 macOS／Windows Beta 重建與 draft assembly 都成功時執行。它驗證 release body 與版本化 `.dmg`、`setup.exe`、`.msi`，並拒絕 `latest.json`、任何 `.sig`、所有 stable fixed aliases，以及任何額外 asset；最後只執行 `gh release edit --draft=false --prerelease=true`，絕不傳入 `--latest`。Beta 不執行 stable metadata finalizer，亦不改變 `releases/latest`。
 
 ---
 
@@ -508,9 +505,10 @@ gh release view "v${VERSION}" \
 | Guard 失敗                  | 不進行 build。修正版本／Changelog／secret／workflow contract，且修正本身也必須走 PR。只有尚未 Publish、未被消費且經 maintainer 明確確認的錯誤 tag，才可進行受控清理。 |
 | Draft tag SHA 不一致        | 立即取消 workflow，不得以新 metadata 發布舊 binary。記錄 source SHA、tag SHA 與 draft assets，經 maintainer 授權後決定受控清理或新版本重建。                          |
 | Beta 被標為 Latest／Stable  | 立即停止 Publish；不得覆蓋 stable `latest.json` 或固定下載入口。修正 prerelease contract 後以新的 Beta version 重建，不重用已對外發布的 tag。                         |
-| 單一平台失敗                | 其他平台可保留。只 re-run failed job；先檢查 draft 是否已存在該平台固定別名，避免同名 asset 重傳造成 HTTP 422。                                                       |
-| Finalizer 失敗              | 不得 Publish。檢查 `latest.json`、Windows MSI metadata、缺少的 artifact 或 `.sig`。                                                                                   |
-| 固定別名缺漏                | 檢查 `Upload fixed-name alias assets` log、artifact path pattern 與 draft 中是否已有同名 asset。                                                                      |
+| 單一平台失敗                | Release 保持 draft。可在同一 run re-run failed jobs；若改以完整 rerun 恢復，Guard 核准的 same-SHA draft 會重建兩平台並以 `--clobber` 修復同名 assets，不得手動混用其他 run／SHA 的候選。 |
+| Draft assembly 部分失敗     | Release 保持 draft。完整 rerun 會重新建置兩平台、同步並比對 notes，再以 `--clobber` 覆寫 versioned assets／Stable aliases；draft 消失、已發布或 channel 改變時必須停止。 |
+| Finalizer 失敗              | 不得 Publish。檢查 `latest.json`、Windows MSI metadata、缺少的 artifact 或 `.sig`；同一 run 可重試失敗 jobs，完整 rerun 則必須重新通過 build／assembly。              |
+| 固定別名缺漏                | 檢查 assembly log、artifact path pattern 與來源候選；由 workflow 的 `--clobber` repair 重傳，不以人工上傳或沿用未驗證 asset 繞過 gate。                                |
 | Automated publish gate 失敗 | Release 保持 draft。以 PR 修正 contract 或 workflow；不得手動略過 gate Publish。                                                                                      |
 | 發布前需緊急停止            | 在 `Publish verified release` 執行前取消 workflow。Draft 不會成為 `releases/latest`；後續 tag／draft 清理仍需 maintainer 明確授權與事件記錄。                         |
 | 已 Publish 後發現問題       | 不覆寫 artifacts、不重用 tag/version。先建立 incident Issue、評估是否暫時隱藏錯誤 Release，再發布新的 patch version 作為永久修正。                                    |

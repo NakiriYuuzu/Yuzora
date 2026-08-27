@@ -940,7 +940,9 @@ function HerdrTerminalLeaf({
         setRole(event.role)
         updateAttachmentMode(attachmentKey, event.mode, event.role)
         term.options.disableStdin = event.mode !== "control"
-        if (event.mode === "control") clipboardRef.current?.flushPendingPaste()
+        if (event.mode === "control" && openReadyRef.current) {
+          clipboardRef.current?.flushPendingPaste()
+        }
       }
     }
 

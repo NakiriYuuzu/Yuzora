@@ -182,6 +182,7 @@ mod tests {
 
         let tmp_b = tempfile::tempdir().unwrap();
         let (tx_b, rx_b) = std::sync::mpsc::channel::<Vec<String>>();
+        let root_event_tx = tx_b.clone();
         let handle_b = build_watcher(tmp_b.path(), move |paths| {
             let _ = tx_b.send(paths);
         })
@@ -199,10 +200,22 @@ mod tests {
             "stale generation must be rejected"
         );
 
-        // B 的 watcher 仍是 active 的那一個。
+        // macOS FSEvents 可能先把 watch root 當成獨立 batch 送達；注入同樣的
+        // 合法 prelude，確保測試驗證「b.txt 終會送達」而不是依賴第一批內容。
+        root_event_tx
+            .send(vec![tmp_b.path().to_string_lossy().into_owned()])
+            .unwrap();
         std::fs::write(tmp_b.path().join("b.txt"), "x").unwrap();
-        let paths = rx_b.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(paths.iter().any(|p| p.ends_with("b.txt")), "got: {paths:?}");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let paths = rx_b
+                .recv_timeout(remaining)
+                .expect("b.txt change was never delivered");
+            if paths.iter().any(|p| p.ends_with("b.txt")) {
+                break;
+            }
+        }
 
         // A 的 handle 已在 install 拒絕時 drop——它的事件永遠不會送達。
         std::fs::write(tmp_a.path().join("a.txt"), "x").unwrap();

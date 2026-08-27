@@ -494,11 +494,59 @@ describe("HerdrTerminalPage clipboard", () => {
     herdrIpcMock.reset()
     herdrIpcMock.herdrTerminalOpen.mockClear()
     herdrIpcMock.herdrTerminalInput.mockClear()
+    clipboardMock.readText.mockClear()
+    clipboardMock.writeText.mockClear()
     seedSessions([{ name: "default", default: true, running: true }])
   })
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("preserves setup paste when control arrives before open readiness", async () => {
+    clipboardMock.readText.mockResolvedValue("setup clipboard payload")
+    let completeOpen: () => void = () => {
+      throw new Error("Expected a pending Herdr terminal open")
+    }
+    herdrIpcMock.herdrTerminalOpen.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        completeOpen = () => resolve({
+          sessionId: "sess-1",
+          target: "term-1",
+          mode: "control",
+          role: "controller",
+          cols: 80,
+          rows: 24,
+          takeover: true
+        })
+      })
+    )
+
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      ctrlKey: true,
+      cancelable: true
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await waitFor(() => expect(clipboardMock.readText).toHaveBeenCalledTimes(1))
+    expect(term.paste).not.toHaveBeenCalled()
+
+    await act(async () => completeOpen())
+
+    await waitFor(() => {
+      expect(term.paste).toHaveBeenCalledWith("setup clipboard payload")
+    })
   })
 
   it.each([
@@ -556,6 +604,44 @@ describe("HerdrTerminalPage clipboard", () => {
       expect(term.paste).toHaveBeenCalledWith("Herdr clipboard payload")
     })
     expect(event.defaultPrevented).toBe(true)
+  })
+
+  it("drops observer paste rather than replaying it after Take Control", async () => {
+    clipboardMock.readText.mockResolvedValue("observer clipboard payload")
+    herdrIpcMock.herdrTerminalOpen.mockResolvedValueOnce({
+      sessionId: "sess-observer",
+      target: "term-1",
+      mode: "observe",
+      role: "observer",
+      cols: 80,
+      rows: 24,
+      takeover: false
+    })
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      ctrlKey: true,
+      cancelable: true
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await act(async () => Promise.resolve())
+    expect(clipboardMock.readText).not.toHaveBeenCalled()
+    expect(term.paste).not.toHaveBeenCalled()
+
+    fireEvent.click(await screen.findByTestId("herdr-take-control"))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+
+    expect(term.paste).not.toHaveBeenCalled()
   })
 })
 
