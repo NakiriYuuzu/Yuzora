@@ -145,8 +145,8 @@ jobs:
             --argjson release "$RELEASE_JSON" \
             '{channel:$channel,sourceSha:$sourceSha,tagSha:(if $tagSha == "" then null else $tagSha end),release:$release}')"
           RESOLUTION="$(YUZORA_RELEASE_STATE="$STATE_INPUT" bun scripts/release-state.ts)"
-          SHOULD_BUILD="$(jq -er '.shouldBuild' <<<"$RESOLUTION")"
-          SHOULD_PUBLISH_EXISTING="$(jq -er '.shouldPublishExisting' <<<"$RESOLUTION")"
+          SHOULD_BUILD="$(jq -r 'if (.shouldBuild | type) == "boolean" then .shouldBuild else error("shouldBuild must be boolean") end' <<<"$RESOLUTION")"
+          SHOULD_PUBLISH_EXISTING="$(jq -r 'if (.shouldPublishExisting | type) == "boolean" then .shouldPublishExisting else error("shouldPublishExisting must be boolean") end' <<<"$RESOLUTION")"
           SHOULD_CREATE_TAG=false
           if [ "$SHOULD_BUILD" = "true" ] && [ -z "$TAG_SHA" ]; then
             SHOULD_CREATE_TAG=true

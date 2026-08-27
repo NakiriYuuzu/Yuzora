@@ -114,6 +114,56 @@ describe("release workflow contracts", () => {
     expect(resolve?.run).toContain("{isDraft: .draft, isPrerelease: .prerelease}")
   })
 
+  it("accepts false release-state decisions without disabling fail-closed parsing", () => {
+    const resolve = releaseWorkflow().jobs.guard.steps.find(
+      (step) => step.name === "Resolve release target"
+    )
+    const assignments = resolve?.run
+      ?.split("\n")
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          line.startsWith('SHOULD_BUILD="') ||
+          line.startsWith('SHOULD_PUBLISH_EXISTING="')
+      )
+
+    expect(assignments).toHaveLength(2)
+    const guardScript = [
+      "set -euo pipefail",
+      'RESOLUTION="$1"',
+      ...(assignments ?? []),
+      "printf '%s %s\\n' \"$SHOULD_BUILD\" \"$SHOULD_PUBLISH_EXISTING\"",
+    ].join("\n")
+    const runGuard = (decisions: Record<string, unknown>) =>
+      spawnSync(
+        "bash",
+        ["-c", guardScript, "release-state-guard", JSON.stringify(decisions)],
+        { encoding: "utf8" }
+      )
+
+    for (const decisions of [
+      { shouldBuild: true, shouldPublishExisting: false },
+      { shouldBuild: false, shouldPublishExisting: false },
+    ]) {
+      const result = runGuard(decisions)
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe(
+        `${decisions.shouldBuild} ${decisions.shouldPublishExisting}`
+      )
+    }
+
+    for (const decisions of [
+      { shouldBuild: "true", shouldPublishExisting: false },
+      { shouldBuild: true },
+    ]) {
+      const result = runGuard(decisions)
+
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("must be boolean")
+    }
+  })
+
   it("synchronizes and verifies guard-approved notes before either channel publishes", () => {
     const workflow = releaseWorkflow()
     for (const [jobName, verifyStepName] of [
