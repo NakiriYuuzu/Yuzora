@@ -223,8 +223,12 @@ function verifyReleaseStateNormalization(workflow: Workflow): void {
     includes(resolve.run, 'RAW_RELEASE_JSON="$(sed -n') &&
       includes(resolve.run, '(.draft | type) == "boolean"') &&
       includes(resolve.run, '(.prerelease | type) == "boolean"') &&
-      includes(resolve.run, "{isDraft: .draft, isPrerelease: .prerelease}"),
-    "guard must validate and normalize REST draft/prerelease flags for the release state machine"
+      includes(resolve.run, "{isDraft: .draft, isPrerelease: .prerelease}") &&
+      includes(resolve.run, '(.shouldBuild | type) == "boolean"') &&
+      includes(resolve.run, '(.shouldPublishExisting | type) == "boolean"') &&
+      !includes(resolve.run, "jq -er '.shouldBuild'") &&
+      !includes(resolve.run, "jq -er '.shouldPublishExisting'"),
+    "guard must validate and normalize REST flags and boolean release-state decisions"
   )
 }
 

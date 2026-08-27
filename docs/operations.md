@@ -354,6 +354,7 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 5. `CHANGELOG.md` 有該版本 release notes。
 6. Stable 驗證 updater release contract；Beta 驗證 prerelease isolation contract。
 7. 新版本由獨立、無 checkout 的 `create-tag` write job 建立 annotated tag；既有 draft 的 tag SHA 必須與 CI SHA 一致並觸發雙平台重建；已發布版本安全略過。
+8. Release state 的 `shouldBuild` 與 `shouldPublishExisting` 先驗證為 boolean 再交給 shell；`false` 是合法決策值，不得被 `jq` truthiness 誤判為 guard failure。
 
 Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 checkout 並執行 repository code，但沒有 write-capable token。所有 contents write 都只存在於無 checkout、只執行固定 inline `gh`/shell 的 job。現行 Guard 不負責證明該 SHA 來自 release PR 或已完成 candidate／使用者驗證；這些仍是明確的人工 gate。任何 guard failure 都不會進入 build。
 
