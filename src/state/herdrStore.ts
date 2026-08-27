@@ -926,10 +926,17 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
   canCreateSpace() {
     const state = get()
+    const sessionName = state.selectedSessionName
     const session = state.selectedSession()
-    if (!state.selectedSessionName || (session && !session.running)) return false
+    if (!sessionName || (session && !session.running)) return false
     const caps = state.capabilities
-    return Boolean(caps?.server.running && caps.api.snapshot && caps.api.workspaceCreate)
+    const previousSpace = state.selectedSpaceBySession[sessionName] ?? null
+    return Boolean(
+      caps?.server.running &&
+      caps.api.snapshot &&
+      caps.api.workspaceCreate &&
+      (!previousSpace || caps.api.workspaceFocus)
+    )
   },
 
   mutationBlockedReason() {
@@ -970,7 +977,18 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     if (session && !session.running) {
       return i18n.t("herdrNav.sessionStopped", { ns: "workbench", name: session.name })
     }
-    return state.capabilities?.api.reason ?? "Herdr workspace.create unavailable"
+    const caps = state.capabilities
+    const previousSpace = state.selectedSpaceBySession[state.selectedSessionName] ?? null
+    if (
+      previousSpace &&
+      caps?.server.running &&
+      caps.api.snapshot &&
+      caps.api.workspaceCreate &&
+      !caps.api.workspaceFocus
+    ) {
+      return "Herdr workspace.focus unavailable"
+    }
+    return caps?.api.reason ?? "Herdr workspace.create unavailable"
   },
 
   async createTerminalInSelectedSpace() {

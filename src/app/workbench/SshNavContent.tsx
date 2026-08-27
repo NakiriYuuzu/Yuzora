@@ -466,7 +466,7 @@ function AuthChoice({
     <RadioGroupItem
       value={value}
       className={cn(
-        "h-auto w-full rounded-[8px] px-[10px] py-[6px] text-[12px] font-medium transition-colors",
+        "aspect-auto h-auto w-full rounded-[8px] px-[10px] py-[6px] text-[12px] font-medium transition-colors",
         "border-(--line-1) text-(--ink-3) hover:bg-(--yz-hover)",
         "data-[state=checked]:border-(--yz-accent) data-[state=checked]:bg-(--yz-solid) data-[state=checked]:text-(--ink-1)",
         "[&_[data-slot=radio-group-indicator]]:hidden"

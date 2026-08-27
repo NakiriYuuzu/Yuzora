@@ -1029,6 +1029,29 @@ describe("herdrStore", () => {
     expect(useHerdrStore.getState().canMutateSelectedSession()).toBe(false)
   })
 
+  it("requires workspace.focus before creating another Space so focus can roll back", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    useHerdrStore.setState({
+      capabilities: {
+        ...caps,
+        api: { ...caps.api, workspaceFocus: false, workspaceCreate: true }
+      }
+    })
+
+    expect(useHerdrStore.getState().selectedSpaceBySession.default).toBe("ws-1")
+    expect(useHerdrStore.getState().canCreateSpace()).toBe(false)
+    expect(useHerdrStore.getState().createSpaceBlockedReason()).toBe(
+      "Herdr workspace.focus unavailable"
+    )
+
+    await expect(
+      useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    ).resolves.toEqual({ ok: false, error: "Herdr workspace.focus unavailable" })
+    expect(confirmDiscardingUnsaved).not.toHaveBeenCalled()
+    expect(herdrWorkspaceCreate).not.toHaveBeenCalled()
+  })
+
   it("reports the dedicated workspace.create reason when first-Space creation is unavailable", () => {
     const unavailableCaps = {
       ...caps,

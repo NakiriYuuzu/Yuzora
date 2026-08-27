@@ -1,20 +1,21 @@
 # Yuzora 上線前唯讀 QA 驗收報告
 
-> 狀態：原始唯讀驗收與第五輪 remediation 已完成本機回歸。QA-001～QA-037 共 37 個 findings；36 個實際缺陷均已修復，QA-019 經 upstream API 證明為 false positive。新 exact-head CI、candidate artifacts 與 GUI 回歸尚待完成；所有外部簽章、平台、review 與權限條件仍誠實列為 BLOCKED。
+> 狀態：原始唯讀驗收與第六輪 remediation 已完成完整本機回歸。QA-001～QA-040 共 40 個 findings；39 個實際缺陷均已修復，QA-019 經 upstream API 證明為 false positive。run `33033082620` 的 exact-head candidates 已完成靜態與 macOS GUI 驗收，但被 QA-038～QA-040 的 6-file patch supersede；所有外部簽章、平台、review 與權限條件仍誠實列為 BLOCKED。
 
 ## 1. 執行摘要
 
 - 測試開始：2026-08-26 00:52:49 +08:00（Asia/Taipei）
 - 測試環境：macOS 26.6.1（25G76）、Apple arm64、Bun 1.3.14、rustc/cargo 1.96.0
-- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；latest remote PR head／本輪 remediation baseline `a57c7b43ed79a842a677f06cc32c6bef5016735d` 加本報告所列 7-file patch
+- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；latest remote PR head／本輪 remediation baseline `30dfbfd1d060a8695ed98e7cc6f94ef8906a7e63` 加本報告所列 6-file patch
 - 產品版本：`0.0.9-beta.1`（`package.json` 與 `src-tauri/tauri.conf.json` 一致）
 - 原始驗收結束：2026-08-26 09:48:24 +08:00（01:20:36 曾因 QA-009 暫停；經使用者明確要求後續測完成）
 - Post-review 修復回歸與本機候選驗收結束：2026-08-26 23:32:41 +08:00
 - QA-028～QA-033 follow-up remediation完整本機驗證結束：2026-08-27 09:35:28 +08:00
 - QA-034～QA-037 follow-up remediation完整本機驗證結束：2026-08-27 10:20:06 +08:00
+- QA-038～QA-040 follow-up remediation完整本機驗證結束：2026-08-27 10:56:22 +08:00
 - 整體結論：**NO-GO**
-- 功能總數／通過／失敗／阻塞／未測試：**100／83／0／17／0**
-- Repository 可處理問題：**36／36 個實際缺陷已修復；QA-019 的 invalid-ref 前提已證偽。QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／新 exact-head workflow run 阻擋。**
+- 功能總數／通過／失敗／阻塞／未測試：**103／86／0／17／0**
+- Repository 可處理問題：**39／39 個實際缺陷已完成本機修復與完整回歸；QA-019 的 invalid-ref 前提已證偽。QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／新 exact-head workflow run 阻擋。**
 - 上線阻擋問題摘要：
   - QA-003（P1 release gate）：Stable／Beta macOS workflow 已改為 fail-closed Developer ID signing、notarization、strict `codesign`、`spctl` 與 app／DMG stapler validation；本機沒有 Apple credentials，尚未取得實際 signed／notarized candidate，因此仍不可發布。
   - GitHub secret inventory 只有 `TAURI_SIGNING_PRIVATE_KEY` 與其 password；六項 Apple secrets 仍缺。`main` 未啟用 branch protection，repository rulesets 為空；release-sensitive patch 尚待 maintainer review 與明確 merge 授權。
@@ -23,11 +24,11 @@
 
 ### 修復驗證摘要
 
-- 上一個 authoritative exact head `a57c7b43ed79a842a677f06cc32c6bef5016735d` 的 run `33030685194` 七個 jobs全部成功；macOS DMG SHA-256 `eb5c57d1b5cbe7aee0eff81a4dc042ba82699c97b575da64e9f19330ae5a4c53`、Windows NSIS `fe98abe547e39c0bc115067c211f9628f4dc76c153c9e60825ad7b48ae4de51b`、MSI `6a6e82744e1f95b6a6fb6559df20bf22988b189ec70e3fda0fac7a0ac14c3504`；DMG verify、version／bundle ID／universal architecture、HERDR／ConPTY pins與Beta artifact boundary均 PASS。該候選已被 QA-034～QA-037 的7-file修復 supersede，不能當最終 acceptance；新 exact-head candidate尚待 push／CI。
-- Frontend：typecheck PASS；lint PASS（0 errors，49 既有 warnings）；完整 suite第一次與 fresh Rust compile並行時有2個 timing failure，分離後相鄰重跑57/57與完整180 files／2,475 tests均 PASS；repository外 production build PASS（3,106.39 kB chunk warning保留）。
-- Rust：`cargo check --locked --all-targets`、fmt、exact clippy baseline PASS；891 unit tests PASS、1 ignored；DB integration 1 PASS、1 ignored。
-- Release：version／notes／Beta／Stable preflight PASS；release 7 files／45 tests、actionlint v1.7.7（download SHA-256 `2693315b9093aeacb4ebd91a993fea54fc215057bf0da2659056b4bc033873db`）與YAML parse PASS；QA-034～QA-037 targeted 6 files／88 tests PASS。
-- Computer Use：僅用 bundled `@oai/sky` 操作 run `33030685194` 的 exact macOS candidate；啟動／Quit／重啟、HERDR default session與 workspace restore、Agent Inspector／Escape focus return、Terminal paste不重複、Logs page-2 sanitized／raw Copy 50 rows、query／run-filter expansion reset與restart persistence均 PASS。該 candidate已被 current patch supersede；最新 candidate GUI仍待 CI產生後重驗，未使用 Orca。
+- 前一個 exact head `30dfbfd1d060a8695ed98e7cc6f94ef8906a7e63` 的 run `33033082620` 七個 jobs全部成功；macOS DMG SHA-256 `462492f5d544a159f65df89eb440ae6ccb8d3b220131cd63d6514e488276aa92`、Windows NSIS `6b56b1ad8719c147199851ff225bac81835dc4e9d21f0742e80a45b89917b3fc`、MSI `fffa17a937986614ce38bdb81756e5771ac47b8664d2f0da250a5f93fefe977b`；DMG verify、version／bundle ID／universal architecture、HERDR／ConPTY pins與Beta artifact boundary均 PASS。該候選已被 QA-038～QA-040 的 6-file patch supersede，不能當最終 acceptance；新 exact-head candidate尚待 push／CI。
+- Frontend：QA-038～QA-040 targeted 3 files／63 tests、相鄰 8 files／129 tests、完整 180 files／2,478 tests與production build PASS；typecheck PASS；targeted ESLint 0 errors／3 個既有 warnings，完整 lint 0 errors／49 個既有 warnings。
+- Rust：`cargo check --locked --all-targets`、fmt、exact 251-warning clippy baseline PASS；library 891 tests PASS／1 ignored，其他 targets與doc tests無失敗；SQLite ignored integration 1 PASS。
+- Release：version／notes／Beta／Stable preflight PASS；release 8 files／46 tests、actionlint v1.7.7（executable SHA-256 `00aba386d026da33be6e85dd5a46d7af4dd9e4d6cbdb02335f4b267162fd2d9e`）與三份 workflow YAML parse PASS。
+- Computer Use：僅用 bundled `@oai/sky` 操作 run `33033082620` 的 exact macOS candidate；啟動／Quit／重啟、HERDR default session與 workspace restore、Sessions AX tab semantics、Preview scheme-less host:port、external HTTPS、English／繁中切換穩定、New Agent Escape、Terminal與Logs smoke均 PASS，最終 exact process為0且DMG正常卸載。pending create dismissal缺安全 throwaway fixture，GUI維持 BLOCKED並由 deterministic regression補證。該 candidate已被 current patch supersede；最新 candidate GUI仍待 CI產生後重驗，未使用 Orca。
 
 ### 模型與委派紀錄
 
@@ -140,6 +141,9 @@
 | 98 Preview scheme-less host:port | `localhost:5173`、`devbox:3000`、`example.com:8080` | PASS | host:port在 generic scheme判定前正規化；localhost／127.0.0.1補 `http://`，其他 host補 `https://`，明確 HTTP(S)保留，ftp／file／javascript仍拒絕。相鄰 Preview 4 files／67 tests PASS；新 exact-head candidate GUI待完成。 |
 | 99 Preview language-change stability | external native preview、locale切換 | PASS | native open／close error path改用 module-stable、呼叫時讀取最新 locale的 reporter，translator不再是 navigation effect dependency；語言切換不重開且 pending error採最新翻譯。相鄰 Preview 4 files／67 tests PASS；candidate GUI待完成。 |
 | 100 New Agent creation dismissal | pending create、Escape／close／outside | PASS | pending期間忽略 `onOpenChange(false)`，成功時以明確 close path關閉；Escape／Close／outside、成功與失敗回歸已覆蓋，HERDR Nav＋New Agent定向 21/21 PASS。新 exact-head CI／candidate GUI仍待完成。 |
+| 101 Git Log filter shared Button | User／Date dropdown trigger、Escape／selection | PASS | 兩個 `DropdownMenuTrigger asChild` 皆改由 shared `Button variant="outline" size="sm"` 組合；composition regression與原 dropdown互動回歸 PASS。新 exact-head CI／candidate GUI仍待完成。 |
+| 102 SSH auth choice compact layout | Password／Key file、RadioGroup aspect ratio | PASS | button-shaped `RadioGroupItem` 明確覆寫為 `aspect-auto`，不再繼承 `aspect-square`；兩個 choices 的 layout contract regression PASS。新 exact-head CI／candidate GUI仍待完成。 |
+| 103 HERDR Space focus rollback gate | create-only capability、既有／首個 Space | PASS | 無既有 Space仍允許 `workspace.create`；已有 Space時缺 `workspace.focus`會在任何 confirm／create mutation前 fail closed並回報真實原因。新 exact-head CI／candidate GUI仍待完成。 |
 
 ## 3. 問題清單
 
@@ -810,6 +814,54 @@
 - **對上線的影響**：取消／關閉 affordance與實際 mutation分離，可造成非預期 Agent process／terminal。
 - **已知暫時解法**：不再需要；新 exact-head candidate若無安全可控的長時間 create fixture，人工 pending-dismiss情境維持 BLOCKED並以 deterministic test作主要證據。
 
+### QA-038 — Git Log filter trigger 未使用 shared Button
+
+- **Bug ID**：QA-038
+- **嚴重度**：P1（release review gate）
+- **修復狀態**：**FIXED／LOCAL REGRESSION PASS；待新 exact-head CI／candidate GUI**
+- **問題標題**：User／Date filter 的 DropdownMenu trigger仍為手寫 native button
+- **受影響功能**：Git Log filter toolbar、shared interaction／focus contract、design-system compliance
+- **前置條件**：Git Log畫面已載入。
+- **完整重現步驟**：1. 開啟 Git Log。2. 檢查 User與Date dropdown trigger。3. 比對 shared `Button` composition metadata與互動。
+- **預期結果**：`DropdownMenuTrigger asChild` 應組合專案 shared `Button`，並保留既有 filter layout與Radix keyboard行為。
+- **實際結果**：原本兩個 trigger均為手寫 `<button>`；現已改用 `Button variant="outline" size="sm"`，並保留原 aria-label、樣式、selection與Escape focus return。
+- **重現率**：100% deterministic rendered-component regression。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3868278504`（thread `PRRT_kwDOTWXJt86crW9i`）；修復前新增 regression缺少 `data-variant`／`data-size`而紅燈，修復後三檔合計63/63 PASS。
+- **對上線的影響**：違反 repository-wide shared component contract，導致互動與theme行為可能漂移，阻擋release review。
+- **已知暫時解法**：不再需要；仍待新 candidate的真實 Git filter視覺／鍵盤 smoke。
+
+### QA-039 — SSH auth radio 繼承 square aspect ratio
+
+- **Bug ID**：QA-039
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／LOCAL REGRESSION PASS；待新 exact-head CI／candidate GUI**
+- **問題標題**：Password／Key file選項可能依 dialog寬度被撐成大型正方形
+- **受影響功能**：SSH New Host dialog、authentication choice layout、基本可用性
+- **前置條件**：開啟 New Host dialog。
+- **完整重現步驟**：1. 開啟SSH。2. 點New Host。3. 觀察Password／Key file radio choices尺寸。
+- **預期結果**：兩個button-shaped choices為緊湊內容高度，不受圓形radio primitive的1:1比例限制。
+- **實際結果**：原本 `RadioGroupItem`基底的`aspect-square`仍存在；現以`aspect-auto`覆寫，兩個 choices均不再帶square ratio。
+- **重現率**：100% deterministic layout-class regression。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3868278508`（thread `PRRT_kwDOTWXJt86crW9k`）；修復前兩個radio均缺`aspect-auto`且保留`aspect-square`，修復後 layout regression PASS。
+- **對上線的影響**：New Host主流程可能被失真控制項大幅撐高，降低小視窗可用性。
+- **已知暫時解法**：不再需要；仍待新 candidate真實像素尺寸驗收。
+
+### QA-040 — HERDR create-only capability 可破壞既有 Space focus rollback
+
+- **Bug ID**：QA-040
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／LOCAL REGRESSION PASS；待新 exact-head CI**
+- **問題標題**：已有舊Space時，缺`workspace.focus`仍允許focus=true建立，local open失敗後無法還原HERDR focus
+- **受影響功能**：HERDR New Space、capability gating、workspace切換、rollback一致性
+- **前置條件**：selected Session已有Space；server提供`workspace.create`但缺`workspace.focus`。
+- **完整重現步驟**：1. 在已有selected Space的Session套用create-only capabilities。2. 建立另一folder Space。3. 讓local workspace open取消或失敗。4. 觀察HERDR focus與Yuzora selection。
+- **預期結果**：若有previous Space，只有同時具`workspace.focus`才允許create；首個Space例外仍可只靠create capability。
+- **實際結果**：原本`canCreateSpace`只檢查create，rollback call會被capability缺口吞掉；現於mutation前要求`!previousSpace || workspaceFocus`，並回報`Herdr workspace.focus unavailable`。
+- **重現率**：100% deterministic store action regression。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3868278512`（thread `PRRT_kwDOTWXJt86crW9m`）；修復前`canCreateSpace()`錯誤回傳true，修復後public action在confirm／create前fail closed，首個Space例外既有test仍PASS。
+- **對上線的影響**：HERDR與Yuzora可能指向不同Space，造成後續Agent／terminal操作落在非預期workspace。
+- **已知暫時解法**：不再需要；GUI缺少可安全重配capability的fixture，以deterministic store regression作主要證據。
+
 ## 4. 未完成與受阻項目
 
 | 未測試功能 | 阻礙原因 | 所需條件 | 殘餘風險 |
@@ -911,3 +963,4 @@
 - 2026-08-27：以 bundled Computer Use驗收 run `33030685194` exact macOS candidate；launch／Quit／restart、HERDR restore、Agent Inspector focus、Terminal paste once-only、Logs page-2 Copy與expanded-state replacement均 PASS；exact process歸零、DMG卸載。`sky.paste`雖回 clipboard handshake timeout，畫面與terminal marker證明內容只貼入／執行一次，記為工具限制。
 - 2026-08-27：PR對 `a57c7b43…` 新增四條 unresolved findings，記錄 QA-034～QA-037；前一組 artifacts因此立即 supersede。Sessions改用 shared Tabs並加入ArrowRight回歸；Preview修正 scheme-less host:port與locale-stable native navigation；New Agent pending期間阻擋 Escape／Close／outside dismissal。
 - 2026-08-27 10:20:06 +08:00：QA-034～QA-037本機gate完成。定向 HERDR 21/21、Preview相鄰4 files／67 tests、合計6 files／88 tests PASS；typecheck、targeted ESLint（0 errors／1既有 warning）與diff-check PASS。完整 frontend第一次與 fresh Rust compile並行時2個 timing tests失敗，資源分離後57/57及完整180 files／2,475 tests均 PASS；repository外 production build PASS。Rust fmt／check／exact 251-diagnostic Clippy、891 unit tests／1 ignored、SQLite integration與release 7 files／45 tests、version／notes／Beta／Stable contract、actionlint v1.7.7、YAML parse均 PASS。新 exact-head CI／candidate仍待 branch更新。
+- 2026-08-27 10:56:22 +08:00：QA-038～QA-040完整本機gate完成。定向3 files／63 tests、相鄰8 files／129 tests、完整180 files／2,478 tests、typecheck、lint（0 errors／49既有warnings）與production build PASS；Rust fmt／check／exact 251-warning Clippy baseline、library 891 tests／1 ignored、其他targets／doc tests及SQLite ignored integration均PASS；release 8 files／46 tests、version／notes／Beta／Stable contracts、actionlint v1.7.7、YAML parse與`git diff --check`全部PASS。新 exact-head CI／candidate仍待branch更新。

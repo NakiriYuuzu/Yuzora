@@ -27,6 +27,7 @@ const QUERY_DEBOUNCE_MS = 250
 function ChevronDown() {
     return (
         <svg
+            data-icon="inline-end"
             width="12"
             height="12"
             viewBox="0 0 24 24"
@@ -61,15 +62,17 @@ function FilterDropdown({
     return (
         <DropdownMenu open={open} onOpenChange={setOpen}>
             <DropdownMenuTrigger asChild>
-                <button
+                <Button
                     type="button"
+                    variant="outline"
+                    size="sm"
                     aria-label={t("logTab.fieldFilterAriaLabel", { field })}
                     className="flex h-[28px] cursor-pointer items-center gap-[5px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[10px] text-[11.5px] text-(--ink-1) transition-colors hover:bg-(--paper-1)"
                 >
                     <span className="text-(--ink-3)">{field}:</span>
                     {value}
                     <ChevronDown />
-                </button>
+                </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
                 align="start"

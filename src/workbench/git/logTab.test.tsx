@@ -211,6 +211,16 @@ describe("LogTab commit list", () => {
 })
 
 describe("LogTab filters", () => {
+    it("composes both filter triggers from the shared Button", async () => {
+        await renderLog()
+
+        for (const name of ["User filter", "Date filter"]) {
+            const trigger = screen.getByRole("button", { name })
+            expect(trigger).toHaveAttribute("data-variant", "outline")
+            expect(trigger).toHaveAttribute("data-size", "sm")
+        }
+    })
+
     it("debounces the search input then calls setFilters", async () => {
         vi.useFakeTimers()
         try {

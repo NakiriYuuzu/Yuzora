@@ -39,6 +39,17 @@ describe("SSH host dialog layout", () => {
     cleanup()
   })
 
+  it("keeps authentication choices compact instead of inheriting the radio square ratio", () => {
+    render(<SshNavContent />)
+    fireEvent.click(screen.getByText("New host"))
+
+    for (const choice of ["Password", "Key file"]) {
+      const radio = screen.getByRole("radio", { name: choice })
+      expect(radio).toHaveClass("aspect-auto")
+      expect(radio).not.toHaveClass("aspect-square")
+    }
+  })
+
   it("scrolls key-based host form fields while keeping footer actions fixed", () => {
     render(<SshNavContent />)
     fireEvent.click(screen.getByText("New host"))
