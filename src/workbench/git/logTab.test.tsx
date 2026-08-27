@@ -211,6 +211,16 @@ describe("LogTab commit list", () => {
 })
 
 describe("LogTab filters", () => {
+    it("composes both filter triggers from the shared Button", async () => {
+        await renderLog()
+
+        for (const name of ["User filter", "Date filter"]) {
+            const trigger = screen.getByRole("button", { name })
+            expect(trigger).toHaveAttribute("data-variant", "outline")
+            expect(trigger).toHaveAttribute("data-size", "sm")
+        }
+    })
+
     it("debounces the search input then calls setFilters", async () => {
         vi.useFakeTimers()
         try {
@@ -311,7 +321,10 @@ describe("LogTab filters", () => {
         // authors load fire-and-forget; wait for them in state
         await waitFor(() => expect(useGitLogStore.getState().authors.length).toBe(2))
 
-        fireEvent.click(screen.getByRole("button", { name: "User filter" }))
+        fireEvent.pointerDown(screen.getByRole("button", { name: "User filter" }), {
+            button: 0,
+            ctrlKey: false
+        })
         const menu = screen.getByRole("menu")
         fireEvent.click(within(menu).getByRole("menuitem", { name: "Sora" }))
         expect(useGitLogStore.getState().filters.author).toBe("Sora")
@@ -319,17 +332,40 @@ describe("LogTab filters", () => {
 
     it("Date dropdown maps labels to filters.since", async () => {
         await renderLog()
-        fireEvent.click(screen.getByRole("button", { name: "Date filter" }))
+        fireEvent.pointerDown(screen.getByRole("button", { name: "Date filter" }), {
+            button: 0,
+            ctrlKey: false
+        })
         fireEvent.click(screen.getByRole("menuitem", { name: "Last 7 days" }))
         expect(useGitLogStore.getState().filters.since).toBe("7 days ago")
 
-        fireEvent.click(screen.getByRole("button", { name: "Date filter" }))
+        fireEvent.pointerDown(screen.getByRole("button", { name: "Date filter" }), {
+            button: 0,
+            ctrlKey: false
+        })
         fireEvent.click(screen.getByRole("menuitem", { name: "Last 30 days" }))
         expect(useGitLogStore.getState().filters.since).toBe("30 days ago")
 
-        fireEvent.click(screen.getByRole("button", { name: "Date filter" }))
+        fireEvent.pointerDown(screen.getByRole("button", { name: "Date filter" }), {
+            button: 0,
+            ctrlKey: false
+        })
         fireEvent.click(screen.getByRole("menuitem", { name: "All" }))
         expect(useGitLogStore.getState().filters.since).toBe(null)
+    })
+
+    it("closes filter menus with Escape, preserves the filter, and restores trigger focus", async () => {
+        await renderLog()
+        const trigger = screen.getByRole("button", { name: "Date filter" })
+        trigger.focus()
+        fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+        const menu = screen.getByRole("menu")
+
+        fireEvent.keyDown(menu, { key: "Escape" })
+
+        await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument())
+        expect(useGitLogStore.getState().filters.since).toBeNull()
+        expect(trigger).toHaveFocus()
     })
 
     it("reuses authors after a repository A → B → A switch without a third scan", async () => {

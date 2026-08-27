@@ -116,6 +116,54 @@ describe("herdr attention model", () => {
     expect(useHerdrStore.getState().attentionItems()).toHaveLength(0)
   })
 
+  it("retains a supplied event execution origin on the current Agent projection", () => {
+    useHerdrStore.getState().applySnapshot("default", {
+      herdrSessionId: "default",
+      protocol: 19,
+      version: "0.8.2",
+      spaces: [{ id: "w1", label: "Main", order: 0, focused: true }],
+      tabs: [],
+      terminals: [{ terminalId: "term-1", paneId: "w1:p1", workspaceId: "w1" }],
+      agents: [
+        {
+          id: "term-1",
+          name: "Pi",
+          status: "working",
+          workspaceId: "w1",
+          paneId: "w1:p1",
+          terminalId: "term-1",
+          sessionName: "default"
+        }
+      ],
+      focusedWorkspaceId: "w1",
+      raw: {}
+    })
+    useHerdrStore.getState().applySubscriptionEvent("default", {
+      type: "subscribed",
+      subscriptionId: "sub-1"
+    })
+    useHerdrStore.getState().applySubscriptionEvent("default", {
+      type: "agent_status_changed",
+      subscriptionId: "sub-1",
+      paneId: "w1:p1",
+      workspaceId: "w1",
+      agentStatus: "working",
+      executionOrigin: { kind: "wsl", distribution: "Ubuntu" },
+      stateLabels: {}
+    })
+
+    const snapshot = useHerdrStore.getState().runtimesBySession.default!.snapshot!
+    expect(snapshot.agents[0]).toMatchObject({
+      id: "term-1",
+      terminalId: "term-1",
+      executionOrigin: { kind: "wsl", distribution: "Ubuntu" }
+    })
+    expect(snapshot.terminals[0]?.executionOrigin).toEqual({
+      kind: "wsl",
+      distribution: "Ubuntu"
+    })
+  })
+
   it("isolates attention across named sessions", () => {
     useHerdrStore.getState().applySubscriptionEvent("default", {
       type: "subscribed",

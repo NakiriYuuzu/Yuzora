@@ -9,8 +9,11 @@ import {
   previewReload as nativePreviewReload,
 } from "@/lib/ipc"
 import type { DevServerInfo } from "@/lib/types"
+import { enqueueNativePreviewOperation } from "@/preview/nativePreviewQueue"
 import { isLocalPreviewUrl, usePreviewStore } from "@/state/previewStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+
+export { enqueueNativePreviewOperation } from "@/preview/nativePreviewQueue"
 
 export interface PreviewCommandTarget {
   workspacePath: string
@@ -20,14 +23,6 @@ export interface PreviewCommandTarget {
 
 const completed = (): ContextMenuCommandOutcome => "completed"
 const cancelled = (): ContextMenuCommandOutcome => "cancelled"
-
-let nativePreviewQueue: Promise<void> = Promise.resolve()
-
-export function enqueueNativePreviewOperation<T>(operation: () => Promise<T>): Promise<T> {
-  const queued = nativePreviewQueue.then(operation, operation)
-  nativePreviewQueue = queued.then(() => undefined, () => undefined)
-  return queued
-}
 
 export function previewTargetIsCurrent(target: PreviewCommandTarget): boolean {
   if (useWorkspaceStore.getState().workspacePath !== target.workspacePath) return false

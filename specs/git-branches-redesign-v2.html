@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yuzora Git Branches Redesign v2</title>
+<style>
+:root{
+  color-scheme:light;
+  --paper-0:#fff;--paper-1:#fbfaf6;--paper-2:#f4f1ea;--paper-3:#ebe7dd;
+  --ink-0:#1b1a17;--ink-1:#2e2c28;--ink-2:#57534b;--ink-3:#8a857a;--ink-4:#b6b0a3;
+  --line-1:rgba(27,26,23,.10);--line-2:rgba(27,26,23,.16);
+  --accent:#86b81f;--accent-ink:#5f8c1e;--active:rgba(134,184,31,.13);--hover:rgba(27,26,23,.045);
+  --danger:#c2293f;--danger-soft:rgba(194,41,63,.09);--blue:#2456cc;--blue-soft:#e8eefc;--amber:#9a6512;--amber-soft:#fbf0db;--mint:#178a63;--mint-soft:#e8f5ef;
+  --shadow-xs:0 1px 2px rgba(27,26,23,.07);--shadow-xl:0 24px 70px rgba(27,26,23,.18);
+  --sans:"Hanken Grotesk",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --serif:Newsreader,Georgia,"Times New Roman",serif;
+  --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:#eeece5;color:var(--ink-1);font-family:var(--sans);font-size:14px}
+button,input{font:inherit;color:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.45}
+button:focus-visible,input:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.shell{display:grid;grid-template-columns:360px minmax(690px,1fr);min-height:100vh}
+.notes{padding:36px 30px;overflow:auto;border-right:1px solid var(--line-1);background:rgba(251,250,246,.88)}
+.kicker{font:700 10px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--accent-ink)}
+h1{margin:12px 0 11px;font:500 32px/1.03 var(--serif);letter-spacing:-.026em;color:var(--ink-0)}
+.lede{margin:0;color:var(--ink-2);font-size:12.5px;line-height:1.65}
+.verdict{margin-top:20px;padding:13px 14px;border:1px solid rgba(134,184,31,.38);border-radius:11px;background:var(--active)}
+.verdict strong{display:block;margin-bottom:5px;color:var(--ink-0);font-size:12px}.verdict p{margin:0;color:var(--ink-2);font-size:11px;line-height:1.55}
+.heading{margin:24px 0 8px;font:700 9.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+.taxonomy{display:grid;gap:6px}.tax-row{display:grid;grid-template-columns:78px 1fr;align-items:center;gap:9px;padding:8px 9px;border:1px solid var(--line-1);border-radius:9px;background:rgba(255,255,255,.7);font-size:10.5px;color:var(--ink-2)}
+.pill{justify-self:start;padding:3px 6px;border-radius:999px;font:700 8.5px/1 var(--mono);white-space:nowrap}.pill.current{background:var(--active);color:var(--accent-ink)}.pill.gone{background:var(--amber-soft);color:var(--amber)}.pill.local{background:var(--paper-2);color:var(--ink-3)}.pill.tag{background:var(--blue-soft);color:var(--blue)}
+.scope{margin-top:22px;border-top:1px solid var(--line-1)}.scope-row{display:grid;grid-template-columns:72px 1fr;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-1);font-size:10.5px;line-height:1.48}.scope-row b{font:650 9px/1.45 var(--mono);color:var(--ink-3)}.scope-row span{color:var(--ink-2)}
+.state-lab{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.state-lab button{height:27px;padding:0 8px;border:1px solid var(--line-1);border-radius:7px;background:var(--paper-0);font-size:9.5px;font-weight:650}.state-lab button.on{border-color:rgba(134,184,31,.48);background:var(--active);color:var(--accent-ink)}
+.dto{margin-top:20px;padding:12px;border:1px solid var(--line-1);border-radius:10px;background:var(--paper-0);font:500 9.5px/1.65 var(--mono);color:var(--ink-2)}.dto em{font-style:normal;color:var(--accent-ink)}
+.stage{position:relative;display:grid;place-items:center;min-height:100vh;padding:42px 32px;background-image:radial-gradient(rgba(27,26,23,.11) .65px,transparent .65px);background-size:16px 16px;overflow:auto}
+.demo{display:grid;grid-template-columns:250px 340px;gap:18px;align-items:start}.demo-title{grid-column:1/-1;display:flex;align-items:end;justify-content:space-between;margin-bottom:-7px;color:var(--ink-3);font-size:9.5px}.demo-title strong{font:600 16px/1 var(--serif);color:var(--ink-1)}
+.sidebar{width:250px;height:710px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line-2);border-radius:14px;background:var(--paper-1);box-shadow:var(--shadow-xl)}
+.side-head{padding:8px;border-bottom:1px solid var(--line-1)}.branch-trigger{position:relative;width:100%;min-height:52px;padding:8px 30px 8px 9px;border:1px solid rgba(134,184,31,.36);border-radius:10px;background:var(--paper-0);text-align:left;box-shadow:var(--shadow-xs)}.branch-trigger:hover{background:var(--paper-2)}
+.branch-primary{display:flex;align-items:center;gap:7px;min-width:0}.git-icon{color:var(--accent-ink);font-size:14px}.branch-current{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:650 10.5px/1.25 var(--mono);color:var(--ink-0)}.trigger-chev{position:absolute;right:10px;top:10px;color:var(--ink-3)}.branch-secondary{display:flex;align-items:center;gap:5px;margin-top:5px;min-width:0;font:550 9px/1.2 var(--mono);color:var(--ink-3)}.branch-secondary .up{color:var(--blue)}.branch-secondary .down{color:#c8521f}.branch-secondary .track{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.change-summary{display:flex;align-items:center;gap:6px;margin:7px 2px 0;color:var(--ink-3);font-size:9.5px}.change-summary b{font:650 9.5px/1 var(--mono);color:var(--ink-2)}.change-summary .conf{color:var(--danger)}
+.changes{flex:1;min-height:0;overflow:auto;padding:7px 6px}.change-group{margin-bottom:6px}.change-head{display:flex;align-items:center;height:27px;padding:0 3px;gap:5px;font-size:9px;font-weight:700;letter-spacing:.065em;text-transform:uppercase;color:var(--ink-3)}.tri{display:grid;place-items:center;width:16px;height:16px;border:1px solid var(--line-2);border-radius:5px;background:var(--paper-0)}.change-head span:nth-child(3){font:550 9px/1 var(--mono);color:var(--ink-4)}.change-head button{margin-left:auto;border:0;background:transparent;color:var(--accent-ink);font-size:8.5px;font-weight:650}
+.file{display:flex;align-items:center;height:31px;margin:1px 0;padding:0 6px;border-radius:8px;gap:6px}.file:hover{background:var(--hover)}.file.selected{background:var(--active)}.box{display:grid;place-items:center;width:17px;height:17px;border:1px solid var(--line-2);border-radius:5px;background:var(--paper-0);font-size:9px;color:#fff}.file.selected .box{border-color:var(--accent-ink);background:var(--accent-ink)}.file.selected .box:after{content:"✓"}.file-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;font-weight:600}.file-path{max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 8.5px/1 var(--mono);color:var(--ink-4)}
+.bulk{display:flex;align-items:center;gap:4px;padding:6px 7px;border-top:1px solid var(--line-1);background:var(--paper-0)}.bulk b{min-width:0;flex:1;padding-left:3px;font:650 9.5px/1 var(--mono)}.bulk button{height:27px;padding:0 7px;border:1px solid var(--line-1);border-radius:7px;background:var(--paper-1);font-size:8.8px;font-weight:650}.bulk .primary{background:var(--ink-1);color:var(--paper-0)}
+.commit{padding:8px;border-top:1px solid var(--line-1)}.commit label{display:block;margin-bottom:4px;font-size:8.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}.commit textarea{width:100%;min-height:48px;padding:7px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);resize:none;font-size:10.5px}.commit-actions{display:grid;grid-template-columns:1fr auto auto;gap:5px;margin-top:5px}.commit-actions button{height:28px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font-size:9px;font-weight:650}.commit-actions .dark{background:var(--ink-1);color:#fff}
+.popover{width:340px;height:520px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line-2);border-radius:14px;background:rgba(255,255,255,.97);box-shadow:var(--shadow-xl);backdrop-filter:blur(18px)}
+.pop-head{display:flex;align-items:center;gap:8px;padding:11px 12px 9px}.pop-head strong{min-width:0;flex:1;font:600 15px/1 var(--serif);color:var(--ink-0)}.pop-head button{height:26px;padding:0 9px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font-size:10px;font-weight:650}.pop-head button:hover{background:var(--paper-2)}
+.search{display:flex;align-items:center;height:34px;margin:0 9px 8px;padding:0 10px;border:1px solid var(--line-1);border-radius:9px;background:var(--paper-1)}.search span{margin-right:7px;color:var(--ink-4)}.search input{min-width:0;flex:1;border:0;outline:0;background:transparent;font:500 10.5px/1 var(--mono)}.search kbd{padding:2px 4px;border:1px solid var(--line-1);border-radius:4px;background:var(--paper-0);font:600 8px/1 var(--mono);color:var(--ink-3)}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:0 9px 8px}.tab{height:29px;border:0;border-radius:8px;background:transparent;font-size:10px;font-weight:650;color:var(--ink-3)}.tab:hover{background:var(--hover)}.tab.active{background:var(--paper-2);color:var(--ink-0);box-shadow:inset 0 0 0 1px var(--line-1)}.tab small{margin-left:3px;font:550 8.5px/1 var(--mono);color:var(--ink-4)}
+.results-meta{display:flex;align-items:center;justify-content:space-between;padding:0 13px 5px;font-size:8.5px;color:var(--ink-4)}
+.ref-list{flex:1;min-height:0;overflow:auto;padding:0 7px 8px;scrollbar-width:thin;scrollbar-color:var(--ink-4) transparent}.ref-group{margin-bottom:5px}.group-head{display:flex;align-items:center;height:26px;padding:0 8px;font:700 8.5px/1 var(--mono);letter-spacing:.05em;color:var(--ink-3)}.group-head .group-count{margin-left:5px;color:var(--ink-4)}
+.ref-row{position:relative;display:flex;align-items:center;gap:7px;min-height:36px;padding:4px 7px;border-radius:9px}.ref-row:hover,.ref-row.active{background:var(--hover)}.ref-row.active{box-shadow:inset 0 0 0 1px var(--line-1)}.ref-symbol{display:grid;place-items:center;width:19px;color:var(--ink-4);font-size:11px}.ref-main{min-width:0;flex:1}.ref-name{display:flex;align-items:center;min-width:0;gap:5px}.leaf{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 10.5px/1.2 var(--mono);color:var(--ink-1)}.full-name{display:none}.ref-sub{display:flex;align-items:center;gap:5px;margin-top:3px;min-width:0;font-size:8.5px;color:var(--ink-4)}.ref-sub .upstream{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+.status{flex:0 0 auto;padding:3px 5px;border-radius:999px;font:700 7.8px/1 var(--mono);white-space:nowrap}.status.current{background:var(--active);color:var(--accent-ink)}.status.gone{background:var(--amber-soft);color:var(--amber)}.status.local{background:var(--paper-2);color:var(--ink-3)}.status.tracked{background:var(--mint-soft);color:var(--mint)}.sync{display:flex;gap:3px;font:650 8.5px/1 var(--mono);white-space:nowrap}.sync .up{color:var(--blue)}.sync .down{color:#c8521f}
+.row-action{display:none;height:25px;padding:0 7px;border:1px solid var(--line-1);border-radius:7px;background:var(--paper-0);font-size:8.5px;font-weight:650;white-space:nowrap}.ref-row.active .row-action,.ref-row:focus-within .row-action{display:block}.row-action:hover{background:var(--paper-2)}
+mark{padding:0;background:rgba(134,184,31,.24);color:inherit;border-radius:2px}
+.tag-date{font:500 8.5px/1 var(--mono);color:var(--ink-4)}
+.empty{display:grid;place-items:center;height:150px;padding:20px;text-align:center;color:var(--ink-3);font-size:10.5px}.empty strong{display:block;margin-bottom:4px;color:var(--ink-2)}
+.notice{display:none;margin:0 9px 7px;padding:7px 9px;border:1px solid rgba(194,41,63,.18);border-radius:8px;background:var(--danger-soft);font-size:9px;line-height:1.4;color:var(--danger)}.notice.show{display:block}
+.new-branch{padding:7px 9px;border-top:1px solid var(--line-1)}.new-branch button,.new-branch input{width:100%;height:30px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font-size:10px}.new-branch button{text-align:left;padding:0 9px;font-weight:650}.new-branch input{padding:0 9px;font-family:var(--mono);outline:0}.from-tag{display:none;margin-bottom:5px;font-size:8.5px;color:var(--ink-3)}.from-tag.show{display:block}.from-tag b{font-family:var(--mono);color:var(--blue)}
+.actions{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:7px 9px;border-top:1px solid var(--line-1)}.actions button{height:29px;border:1px solid var(--line-1);border-radius:8px;background:var(--paper-0);font-size:9.5px;font-weight:650}.actions button:hover{background:var(--paper-2)}
+.confirm{position:absolute;inset:0;display:none;place-items:center;background:rgba(27,26,23,.28);backdrop-filter:blur(2px);z-index:4}.confirm.show{display:grid}.confirm-card{width:245px;padding:17px;border:1px solid var(--line-2);border-radius:12px;background:var(--paper-0);box-shadow:var(--shadow-xl)}.confirm-card strong{display:block;font:600 15px/1.2 var(--serif);color:var(--ink-0)}.confirm-card p{margin:7px 0 12px;font-size:10px;line-height:1.5;color:var(--ink-3)}.confirm-actions{display:flex;justify-content:flex-end;gap:5px}.confirm-actions button{height:28px;padding:0 9px;border:1px solid var(--line-1);border-radius:7px;background:var(--paper-0);font-size:9px;font-weight:650}.confirm-actions .primary{background:var(--ink-1);color:#fff}
+.prototype-controls{grid-column:1/-1;display:flex;justify-content:flex-end;gap:6px;margin-top:-8px}.prototype-controls button{height:27px;padding:0 8px;border:1px solid rgba(27,26,23,.12);border-radius:7px;background:rgba(255,255,255,.82);font-size:8.8px;font-weight:650;color:var(--ink-3);backdrop-filter:blur(8px)}.prototype-controls button.on{border-color:rgba(134,184,31,.45);background:var(--active);color:var(--accent-ink)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:1050px){.shell{grid-template-columns:1fr}.notes{border-right:0;border-bottom:1px solid var(--line-1)}.stage{min-height:780px}}@media(max-width:680px){.notes{padding:27px 20px}.stage{display:block;padding:25px 10px}.demo{grid-template-columns:1fr;justify-items:center}.demo-title,.prototype-controls{grid-column:1;width:min(340px,100%)}.sidebar{display:none}.popover{width:min(340px,calc(100vw - 20px))}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="notes">
+    <div class="kicker">Oracle decision · Branches v2</div>
+    <h1>名稱要能辨識，狀態要能判斷。</h1>
+    <p class="lede">目前的 288px branch list 同時保留不可見的 Checkout 寬度，又用尾端截斷砍掉最關鍵的 leaf。Oracle 建議改成 340px Command-in-Popover，以 Local／Remote／Tags segments、prefix grouping 與狀態 badges 解決根因。</p>
+    <div class="verdict"><strong>強適配：Command-in-Popover</strong><p>保留高頻切換的空間錨定，不升級成沉重的管理 Dialog。搜尋只作用於當前分類，開啟即 focus。</p></div>
+
+    <div class="heading">分類＝Git Tags ＋ Status tags</div>
+    <div class="taxonomy">
+      <div class="tax-row"><span class="pill current">Current</span><span>目前 branch；不顯示 Checkout。</span></div>
+      <div class="tax-row"><span class="pill gone">Gone</span><span>upstream 已刪除，不再誤顯示為同步。</span></div>
+      <div class="tax-row"><span class="pill local">Local</span><span>沒有 upstream，尚未發佈。</span></div>
+      <div class="tax-row"><span class="pill tag">Git Tag</span><span>第三個 refs segment，支援 detached checkout 與從 tag 建 branch。</span></div>
+    </div>
+
+    <div class="scope">
+      <div class="scope-row"><b>Long names</b><span>第一段 prefix 分組；row 顯示 leaf。搜尋時攤平完整名稱並高亮命中，title／aria 保留全名。</span></div>
+      <div class="scope-row"><b>Geometry</b><span>340px、max 92vw、最高 min(68vh, 520px)，side=bottom、collision padding 12px。</span></div>
+      <div class="scope-row"><b>Segments</b><span>Local、Remote、Tags。沒有 Recent／Favorites，避免新增 persistence 與臆測功能。</span></div>
+      <div class="scope-row"><b>Remote</b><span>依 remote 分組；已有 local upstream 時標記 Tracked。Prototype 採明確「Checkout as local」。</span></div>
+      <div class="scope-row"><b>Tags</b><span>只提供 detached checkout、從 tag 建 branch、copy name；不加入 delete／push tag。</span></div>
+    </div>
+
+    <div class="heading">Prototype state</div>
+    <div class="state-lab">
+      <button id="toggle-dirty">Dirty tabs</button>
+      <button id="toggle-busy">Busy / stale</button>
+      <button id="toggle-detached">Detached HEAD</button>
+    </div>
+
+    <div class="dto"><em>v1 DTO</em><br>BranchInfo + <b>gone: boolean</b><br>BranchList + <b>tags: TagInfo[]</b><br>TagInfo { name, date }<br><br><em>v1 commands</em><br>git_checkout_detached(root, rev)<br>git_create_branch(root, name, startPoint?)</div>
+  </aside>
+
+  <main class="stage">
+    <div class="demo">
+      <div class="demo-title"><span><strong>Approved B sidebar + Branches v2</strong><br>Selection-first remains unchanged</span><span>340px Command-in-Popover</span></div>
+
+      <section class="sidebar" aria-label="Git sidebar">
+        <header class="side-head">
+          <button class="branch-trigger" id="branch-trigger" aria-expanded="true">
+            <span class="branch-primary"><span class="git-icon">⑂</span><span class="branch-current" id="trigger-name">feature/repository-bound-git-history-pagination</span></span>
+            <span class="trigger-chev">⌄</span>
+            <span class="branch-secondary" id="trigger-sub"><span class="up">↑2</span><span class="down">↓1</span><span>·</span><span class="track">origin/feature/repository-bound-git-history-pagination</span></span>
+          </button>
+          <div class="change-summary"><b>8 個變更</b><span>·</span><span class="conf">1 個衝突</span></div>
+        </header>
+        <div class="changes">
+          <div class="change-group"><div class="change-head"><span class="tri"></span><span>已暫存</span><span>2</span><button>全部取消</button></div><div class="file selected"><span class="box"></span><span class="file-name">GitNavContent.tsx</span><span class="file-path">src/app/</span></div><div class="file"><span class="box"></span><span class="file-name">styles.css</span><span class="file-path">src/</span></div></div>
+          <div class="change-group"><div class="change-head"><span class="tri"></span><span>未暫存</span><span>4</span><button>全部暫存</button></div><div class="file selected"><span class="box"></span><span class="file-name">BranchPopover.tsx</span><span class="file-path">src/git/</span></div><div class="file selected"><span class="box"></span><span class="file-name">git_service.rs</span><span class="file-path">src-tauri/</span></div><div class="file"><span class="box"></span><span class="file-name">uiStore.ts</span><span class="file-path">src/state/</span></div></div>
+          <div class="change-group"><div class="change-head"><span class="tri"></span><span>未追蹤</span><span>2</span><button>全部暫存</button></div><div class="file"><span class="box"></span><span class="file-name">branches-v2.html</span><span class="file-path">specs/</span></div></div>
+        </div>
+        <div class="bulk"><b>已選 3</b><button class="primary">暫存</button><button>取消</button><button>×</button></div>
+        <footer class="commit"><label>提交訊息</label><textarea placeholder="提交訊息…"></textarea><div class="commit-actions"><button class="dark">提交 2</button><button>檢視</button><button>⌫</button></div></footer>
+      </section>
+
+      <section class="popover" id="popover" aria-label="Git Branches">
+        <div class="pop-head"><span class="git-icon">⑂</span><strong>Git Branches</strong><button id="fetch-btn">↻ Fetch</button></div>
+        <label class="search"><span>⌕</span><span class="sr-only">搜尋</span><input id="search-input" placeholder="搜尋目前分類…" autocomplete="off"><kbd>Esc</kbd></label>
+        <div class="tabs" role="tablist">
+          <button class="tab active" role="tab" data-tab="local">Local <small>8</small></button>
+          <button class="tab" role="tab" data-tab="remote">Remote <small>7</small></button>
+          <button class="tab" role="tab" data-tab="tags">Tags <small>5</small></button>
+        </div>
+        <div class="results-meta"><span id="result-label">Local branches</span><span id="result-count">8 items</span></div>
+        <div class="notice" id="notice"></div>
+        <div class="ref-list" id="ref-list" role="listbox" aria-label="Git refs"></div>
+        <div class="new-branch"><div class="from-tag" id="from-tag">從 <b></b> 建立</div><button id="new-branch-btn">＋ New branch…</button><input id="new-branch-input" hidden placeholder="branch/name"></div>
+        <div class="actions"><button data-op="fetch">Fetch</button><button data-op="pull">Pull</button><button data-op="push">Push</button></div>
+        <div class="confirm" id="confirm"><div class="confirm-card"><strong>Checkout tag?</strong><p id="confirm-copy">這會進入 detached HEAD。你可以稍後從這個 tag 建立 branch。</p><div class="confirm-actions"><button id="confirm-cancel">取消</button><button class="primary" id="confirm-ok">Checkout</button></div></div></div>
+      </section>
+
+      <div class="prototype-controls"><button id="open-popover" class="on">Popover open</button><button id="clear-search">Clear search</button></div>
+    </div>
+  </main>
+</div>
+<script>
+(() => {
+  const data = {
+    local: [
+      {name:'feature/repository-bound-git-history-pagination', current:true, upstream:'origin/feature/repository-bound-git-history-pagination', ahead:2, behind:1},
+      {name:'feature/git-sidebar-selection-and-bulk-actions', upstream:'origin/feature/git-sidebar-selection-and-bulk-actions', ahead:4, behind:0},
+      {name:'feature/git-tags-command-popover-redesign', upstream:null, ahead:0, behind:0},
+      {name:'feature/ultra-long-enterprise-workspace-history-synchronization-flow', upstream:'origin/feature/ultra-long-enterprise-workspace-history-synchronization-flow', ahead:0, behind:0},
+      {name:'fix/diff-modal-cache-generation-race', upstream:'origin/fix/diff-modal-cache-generation-race', ahead:0, behind:2},
+      {name:'fix/worktree-symlink-security-boundary', upstream:null, ahead:0, behind:0},
+      {name:'release/0.0.7', upstream:'origin/release/0.0.7', ahead:0, behind:0, gone:true},
+      {name:'main', upstream:'origin/main', ahead:0, behind:0}
+    ],
+    remote: [
+      {name:'origin/feature/repository-bound-git-history-pagination', tracked:true},
+      {name:'origin/feature/git-sidebar-selection-and-bulk-actions', tracked:true},
+      {name:'origin/feature/ultra-long-enterprise-workspace-history-synchronization-flow'},
+      {name:'origin/fix/diff-modal-cache-generation-race', tracked:true},
+      {name:'origin/release/0.0.7'},
+      {name:'origin/main', tracked:true},
+      {name:'upstream/main'}
+    ],
+    tags: [
+      {name:'v0.0.7',date:'2 天前'},
+      {name:'v0.0.7-rc.2',date:'5 天前'},
+      {name:'release/desktop-preview-2026-08',date:'11 天前'},
+      {name:'checkpoint/before-git-redesign',date:'3 週前'},
+      {name:'v0.0.6',date:'1 個月前'}
+    ]
+  };
+  let activeTab='local', query='', activeIndex=0, dirty=false, blocked=false, detached=false, pendingTag=null, fromTag=null;
+  const list=document.querySelector('#ref-list'), input=document.querySelector('#search-input'), notice=document.querySelector('#notice');
+
+  const esc=s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const highlight=(text,q)=>{if(!q)return esc(text);const i=text.toLowerCase().indexOf(q.toLowerCase());if(i<0)return esc(text);return esc(text.slice(0,i))+'<mark>'+esc(text.slice(i,i+q.length))+'</mark>'+esc(text.slice(i+q.length));};
+  const groupsFor=items=>{
+    if(query)return [{prefix:'搜尋結果',items}];
+    const map=new Map();
+    items.forEach(item=>{const slash=item.name.indexOf('/');const prefix=slash>0?item.name.slice(0,slash+1):'其他';if(!map.has(prefix))map.set(prefix,[]);map.get(prefix).push(item)});
+    return [...map].map(([prefix,items])=>({prefix,items}));
+  };
+  function filtered(){return data[activeTab].filter(x=>x.name.toLowerCase().includes(query.toLowerCase()));}
+  function syncHtml(item){if(activeTab!=='local')return '';if(item.gone)return '<span class="status gone">Gone</span>';const bits=[];if(item.ahead)bits.push('<span class="up">↑'+item.ahead+'</span>');if(item.behind)bits.push('<span class="down">↓'+item.behind+'</span>');return bits.length?'<span class="sync">'+bits.join('')+'</span>':'';}
+  function localStatus(item){if(item.current)return '<span class="status current">Current</span>';if(item.gone)return '';if(!item.upstream)return '<span class="status local">Local</span>';return '';}
+  function rowHtml(item,index){
+    const full=item.name;let shown=full,sub='';
+    if(!query&&activeTab==='local'){const slash=full.indexOf('/');if(slash>0)shown=full.slice(slash+1);sub=item.upstream||'No upstream';}
+    if(!query&&activeTab==='remote'){const slash=full.indexOf('/');if(slash>0)shown=full.slice(slash+1);sub=item.tracked?'Tracked by local branch':'Remote branch';}
+    if(activeTab==='tags')sub=item.date;
+    const symbol=activeTab==='local'?'⑂':activeTab==='remote'?'◎':'◇';
+    const status=activeTab==='local'?localStatus(item):activeTab==='remote'&&item.tracked?'<span class="status tracked">Tracked</span>':'';
+    const action=activeTab==='local'?(item.current?'':'Checkout'):activeTab==='remote'?'Checkout as local':'Checkout';
+    return '<div class="ref-row '+(index===activeIndex?'active':'')+'" role="option" aria-selected="'+(index===activeIndex)+'" tabindex="'+(index===activeIndex?'0':'-1')+'" data-index="'+index+'" data-name="'+esc(full)+'" title="'+esc(full)+'"><span class="ref-symbol">'+symbol+'</span><span class="ref-main"><span class="ref-name"><span class="leaf">'+highlight(shown,query)+'</span>'+status+'</span><span class="ref-sub">'+(activeTab==='tags'?'<span class="tag-date">'+esc(sub)+'</span>':'<span class="upstream">'+highlight(query?full:sub,query)+'</span>')+'</span></span>'+syncHtml(item)+(action?'<button class="row-action">'+action+'</button>':'')+'</div>';
+  }
+  function render(){
+    const items=filtered();activeIndex=Math.max(0,Math.min(activeIndex,Math.max(0,items.length-1)));
+    document.querySelector('#result-label').textContent=activeTab==='local'?'Local branches':activeTab==='remote'?'Remote branches':'Git tags';
+    document.querySelector('#result-count').textContent=(query?items.length+' / ':'')+data[activeTab].length+' items';
+    if(!items.length){list.innerHTML='<div class="empty"><div><strong>沒有符合的 refs</strong>嘗試不同關鍵字，或切換分類。</div></div>';return;}
+    let index=0;list.innerHTML=groupsFor(items).map(g=>'<section class="ref-group"><div class="group-head">'+esc(g.prefix)+' <span class="group-count">'+g.items.length+'</span></div>'+g.items.map(item=>rowHtml(item,index++)).join('')+'</section>').join('');
+    [...list.querySelectorAll('.ref-row')].forEach(row=>{
+      row.addEventListener('click',e=>{activeIndex=Number(row.dataset.index);render();if(e.target.classList.contains('row-action'))activate(row.dataset.name)});
+      row.addEventListener('dblclick',()=>activate(row.dataset.name));
+      row.addEventListener('keydown',e=>keyNav(e,row));
+    });
+  }
+  function showNotice(text,danger=true){notice.textContent=text;notice.classList.toggle('show',!!text);notice.style.color=danger?'var(--danger)':'var(--accent-ink)';notice.style.background=danger?'var(--danger-soft)':'var(--active)';}
+  function activate(name){
+    if(blocked){showNotice('Git 正在更新或狀態已過期；目前只能瀏覽與複製名稱。');return;}
+    if(activeTab==='local'){
+      const item=data.local.find(x=>x.name===name);if(item?.current){showNotice('已經位於目前 branch。',false);return;}if(dirty){showNotice('請先儲存未儲存的編輯內容，再切換 branch。');return;}showNotice('已切換到 '+name,false);
+    } else if(activeTab==='remote'){
+      if(dirty){showNotice('請先儲存未儲存的編輯內容，再建立 tracking branch。');return;}showNotice('將明確建立 local tracking branch：'+name,false);
+    } else {pendingTag=name;document.querySelector('#confirm-copy').textContent='Checkout '+name+' 會進入 detached HEAD。你也可以取消並從這個 tag 建立 branch。';document.querySelector('#confirm').classList.add('show');}
+  }
+  function keyNav(e,row){const items=[...list.querySelectorAll('.ref-row')];let next=activeIndex;if(e.key==='ArrowDown')next=Math.min(items.length-1,activeIndex+1);if(e.key==='ArrowUp')next=Math.max(0,activeIndex-1);if(e.key==='Home')next=0;if(e.key==='End')next=items.length-1;if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();activeIndex=next;render();list.querySelector('[data-index="'+next+'"]').focus();}if(e.key==='Enter'){e.preventDefault();activate(row.dataset.name);}if(e.key==='Escape'){if(query){query='';input.value='';render();}else document.querySelector('#popover').style.visibility='hidden';}}
+  document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));tab.classList.add('active');activeTab=tab.dataset.tab;activeIndex=0;query='';input.value='';showNotice('');render();}));
+  input.addEventListener('input',()=>{query=input.value.trim();activeIndex=0;render();});
+  input.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){e.preventDefault();list.querySelector('.ref-row')?.focus();}if(e.key==='Escape'){if(input.value){input.value='';query='';render();}else document.querySelector('#popover').style.visibility='hidden';}});
+  document.querySelector('#branch-trigger').addEventListener('click',()=>{const p=document.querySelector('#popover');p.style.visibility=p.style.visibility==='hidden'?'visible':'hidden';input.focus();});
+  document.querySelector('#open-popover').addEventListener('click',e=>{const p=document.querySelector('#popover');const open=p.style.visibility!=='hidden';p.style.visibility=open?'hidden':'visible';e.currentTarget.classList.toggle('on',!open);if(!open)input.focus();});
+  document.querySelector('#clear-search').addEventListener('click',()=>{input.value='';query='';render();input.focus();});
+  document.querySelector('#confirm-cancel').addEventListener('click',()=>{document.querySelector('#confirm').classList.remove('show');fromTag=pendingTag;pendingTag=null;document.querySelector('#from-tag').classList.add('show');document.querySelector('#from-tag b').textContent=fromTag;document.querySelector('#new-branch-btn').click();});
+  document.querySelector('#confirm-ok').addEventListener('click',()=>{document.querySelector('#confirm').classList.remove('show');detached=true;document.querySelector('#trigger-name').textContent='detached @ '+pendingTag;document.querySelector('#trigger-sub').innerHTML='<span style="color:var(--amber)">Detached HEAD</span>';showNotice('已 detached checkout '+pendingTag,false);pendingTag=null;});
+  document.querySelector('#new-branch-btn').addEventListener('click',()=>{document.querySelector('#new-branch-btn').hidden=true;const field=document.querySelector('#new-branch-input');field.hidden=false;field.value=fromTag?'release/'+fromTag.replace(/^v/,''):'';field.focus();});
+  document.querySelector('#new-branch-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.value.trim()){showNotice('將建立 '+e.target.value.trim()+(fromTag?' from '+fromTag:''),false);e.target.hidden=true;document.querySelector('#new-branch-btn').hidden=false;document.querySelector('#from-tag').classList.remove('show');fromTag=null;}if(e.key==='Escape'){e.target.hidden=true;document.querySelector('#new-branch-btn').hidden=false;}});
+  document.querySelector('#toggle-dirty').addEventListener('click',e=>{dirty=!dirty;e.currentTarget.classList.toggle('on',dirty);showNotice(dirty?'已模擬：存在未儲存分頁。':'',true);});
+  document.querySelector('#toggle-busy').addEventListener('click',e=>{blocked=!blocked;e.currentTarget.classList.toggle('on',blocked);document.querySelectorAll('.actions button,#fetch-btn,#new-branch-btn').forEach(b=>b.disabled=blocked);showNotice(blocked?'Git 狀態正在更新：mutation 已停用，但搜尋／瀏覽仍可用。':'',true);});
+  document.querySelector('#toggle-detached').addEventListener('click',e=>{detached=!detached;e.currentTarget.classList.toggle('on',detached);document.querySelector('#trigger-name').textContent=detached?'detached @ a8d61bf':'feature/repository-bound-git-history-pagination';document.querySelector('#trigger-sub').innerHTML=detached?'<span style="color:var(--amber)">Detached HEAD</span>':'<span class="up">↑2</span><span class="down">↓1</span><span>·</span><span class="track">origin/feature/repository-bound-git-history-pagination</span>';});
+  document.querySelectorAll('.actions button,#fetch-btn').forEach(b=>b.addEventListener('click',()=>showNotice(b.textContent.trim()+' 已排入安全的 repository-bound operation。',false)));
+  render();setTimeout(()=>input.focus(),100);
+})();
+</script>
+</body>
+</html>

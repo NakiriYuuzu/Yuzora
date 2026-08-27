@@ -229,6 +229,48 @@ it("以齒輪設定按鈕取代 Y avatar", () => {
 })
 
 describe("WorkspaceRail Spaces list", () => {
+  it("enables first-Space creation with workspace.create even when workspace.focus is unavailable", () => {
+    seedSpaces()
+    const capabilities = useHerdrStore.getState().capabilities!
+    useHerdrStore.setState({
+      selectedSpaceId: null,
+      selectedSpaceBySession: { default: null },
+      snapshot: {
+        ...useHerdrStore.getState().snapshot!,
+        spaces: []
+      },
+      capabilities: {
+        ...capabilities,
+        api: { ...capabilities.api, workspaceFocus: false, workspaceCreate: true }
+      }
+    })
+
+    renderRail()
+
+    expect(screen.getByTestId("rail-new-space")).toBeEnabled()
+  })
+
+  it("exposes the first-Space capability reason when creation is disabled", () => {
+    seedSpaces()
+    const capabilities = useHerdrStore.getState().capabilities!
+    useHerdrStore.setState({
+      capabilities: {
+        ...capabilities,
+        api: {
+          ...capabilities.api,
+          workspaceCreate: false,
+          reason: "Herdr workspace.create unavailable"
+        }
+      }
+    })
+
+    renderRail()
+
+    const button = screen.getByTestId("rail-new-space")
+    expect(button).toBeDisabled()
+    expect(button).toHaveAccessibleName("Herdr workspace.create unavailable")
+  })
+
   it("uses Compact B geometry with centered tiles and a narrow local scrollbar", () => {
     seedSpaces()
     const { container } = renderRail()

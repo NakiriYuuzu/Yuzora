@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.8-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.9--beta.1-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -140,6 +140,9 @@ cargo check          # Rust 檢查
 bun install
 bun run tauri:build
 ```
+
+本機建置會刻意停用 updater 產物與 release 簽章，因此不需要 production secrets。
+官方 macOS 安裝檔只會在受保護的 release workflow 中完成 Developer ID 簽章與 notarization；各平台 gate 詳見 `docs/operations.md`。
 
 > README 與[官方網站](https://nakiriyuuzu.github.io/Yuzora/)中的產品動畫與截圖，
 > 均由 [`site-remotion/`](site-remotion/) 內的 [Remotion](https://www.remotion.dev) 專案程式化渲染，

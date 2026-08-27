@@ -354,10 +354,31 @@ mod tests {
     use crate::herdr_limits::MAX_NDJSON_LINE_BYTES;
     use interprocess::local_socket::traits::Listener as _;
 
+    // Framing tests transfer several 1 MiB lines. This deliberately separates
+    // their functional I/O allowance from the short deadline assertions below.
+    const FUNCTIONAL_FRAME_IO_DEADLINE: Duration = Duration::from_secs(15);
+
     fn local_pair(label: &str) -> (LocalListener, PathBuf) {
         let path = unique_local_socket_path(label);
         let listener = bind_local_listener(&path).expect("bind local listener");
         (listener, path)
+    }
+
+    fn connect_framing_test_client(advertised: &str) -> LocalStream {
+        connect_local_stream(advertised, Instant::now() + FUNCTIONAL_FRAME_IO_DEADLINE)
+            .expect("connect framing test client")
+    }
+
+    fn read_framing_test_line(
+        client: &mut LocalStream,
+        pending: &mut Vec<u8>,
+    ) -> Result<Option<String>, BoundedNdjsonReadError> {
+        read_local_ndjson_line(
+            client,
+            pending,
+            Some(Instant::now() + FUNCTIONAL_FRAME_IO_DEADLINE),
+            MAX_NDJSON_LINE_BYTES,
+        )
     }
 
     #[test]
@@ -575,29 +596,16 @@ mod tests {
                 .unwrap();
         });
 
-        let mut client =
-            connect_local_stream(&advertised, Instant::now() + Duration::from_secs(2)).unwrap();
+        let mut client = connect_framing_test_client(&advertised);
         let mut pending = Vec::new();
-        let ok = read_local_ndjson_line(
-            &mut client,
-            &mut pending,
-            Some(Instant::now() + Duration::from_secs(2)),
-            MAX_NDJSON_LINE_BYTES,
-        )
-        .unwrap()
-        .unwrap();
+        let ok = read_framing_test_line(&mut client, &mut pending)
+            .unwrap()
+            .unwrap();
         assert_eq!(ok.len(), MAX_NDJSON_LINE_BYTES + 1);
 
-        let mut client =
-            connect_local_stream(&advertised, Instant::now() + Duration::from_secs(2)).unwrap();
+        let mut client = connect_framing_test_client(&advertised);
         let mut pending = Vec::new();
-        let over_err = read_local_ndjson_line(
-            &mut client,
-            &mut pending,
-            Some(Instant::now() + Duration::from_secs(2)),
-            MAX_NDJSON_LINE_BYTES,
-        )
-        .unwrap_err();
+        let over_err = read_framing_test_line(&mut client, &mut pending).unwrap_err();
         assert!(
             matches!(
                 over_err,
@@ -606,16 +614,9 @@ mod tests {
             "{over_err:?}"
         );
 
-        let mut client =
-            connect_local_stream(&advertised, Instant::now() + Duration::from_secs(2)).unwrap();
+        let mut client = connect_framing_test_client(&advertised);
         let mut pending = Vec::new();
-        let utf8_err = read_local_ndjson_line(
-            &mut client,
-            &mut pending,
-            Some(Instant::now() + Duration::from_secs(2)),
-            MAX_NDJSON_LINE_BYTES,
-        )
-        .unwrap_err();
+        let utf8_err = read_framing_test_line(&mut client, &mut pending).unwrap_err();
         assert!(
             matches!(
                 utf8_err,
@@ -624,16 +625,9 @@ mod tests {
             "{utf8_err:?}"
         );
 
-        let mut client =
-            connect_local_stream(&advertised, Instant::now() + Duration::from_secs(2)).unwrap();
+        let mut client = connect_framing_test_client(&advertised);
         let mut pending = Vec::new();
-        let unterminated = read_local_ndjson_line(
-            &mut client,
-            &mut pending,
-            Some(Instant::now() + Duration::from_secs(2)),
-            MAX_NDJSON_LINE_BYTES,
-        )
-        .unwrap_err();
+        let unterminated = read_framing_test_line(&mut client, &mut pending).unwrap_err();
         assert!(
             matches!(
                 unterminated,

@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuGroup,
+    DropdownMenuItem,
+    DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu"
 
 import type { CommitFileChange } from "@/lib/types"
 import { logUserAction } from "@/features/logs/userAction"
@@ -9,6 +16,7 @@ import { gitCheckout, gitCherryPick } from "@/lib/ipc"
 import { useGitLogStore } from "@/state/gitLogStore"
 import { useGitStore } from "@/state/gitStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { cn } from "@/lib/utils"
 import { LogGraph } from "@/workbench/git/LogGraph"
 import { CommitDetails } from "@/workbench/git/CommitDetails"
 
@@ -19,6 +27,7 @@ const QUERY_DEBOUNCE_MS = 250
 function ChevronDown() {
     return (
         <svg
+            data-icon="inline-end"
             width="12"
             height="12"
             viewBox="0 0 24 24"
@@ -34,9 +43,8 @@ function ChevronDown() {
     )
 }
 
-// §2 L750-757 frost-glass filter dropdown. Kept as a lightweight
-// absolutely-positioned menu (matching the prototype) rather than a portalled
-// Radix menu so it stays trivially testable and self-contained.
+// §2 L750-757 frost-glass filter dropdown. Radix owns keyboard dismissal,
+// focus return, outside-click handling, and menu semantics.
 function FilterDropdown({
     field,
     value,
@@ -50,59 +58,45 @@ function FilterDropdown({
 }) {
     const { t } = useTranslation("menus")
     const [open, setOpen] = useState(false)
-    const ref = useRef<HTMLDivElement | null>(null)
-
-    useEffect(() => {
-        if (!open) return
-        function onDown(e: MouseEvent) {
-            if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-        }
-        document.addEventListener("mousedown", onDown)
-        return () => document.removeEventListener("mousedown", onDown)
-    }, [open])
 
     return (
-        <div className="relative" ref={ref}>
-            <button
-                type="button"
-                aria-label={t("logTab.fieldFilterAriaLabel", { field })}
-                aria-haspopup="menu"
-                aria-expanded={open}
-                onClick={() => setOpen((v) => !v)}
-                className="flex h-[28px] cursor-pointer items-center gap-[5px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[10px] text-[11.5px] text-(--ink-1) transition-colors hover:bg-(--paper-1)"
-            >
-                <span className="text-(--ink-3)">{field}:</span>
-                {value}
-                <ChevronDown />
-            </button>
-            {open && (
-                <div
-                    role="menu"
-                    className="yz-pop absolute left-0 top-[32px] z-30 w-[150px] rounded-[11px] border border-(--line-2) bg-(--frost-light) p-[5px] shadow-[var(--shadow-xl)] backdrop-blur-[20px]"
+        <DropdownMenu open={open} onOpenChange={setOpen}>
+            <DropdownMenuTrigger asChild>
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label={t("logTab.fieldFilterAriaLabel", { field })}
+                    className="flex h-[28px] cursor-pointer items-center gap-[5px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[10px] text-[11.5px] text-(--ink-1) transition-colors hover:bg-(--paper-1)"
                 >
+                    <span className="text-(--ink-3)">{field}:</span>
+                    {value}
+                    <ChevronDown />
+                </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+                align="start"
+                className="yz-pop w-[150px] rounded-[11px] border-(--line-2) bg-(--frost-light) p-[5px] shadow-[var(--shadow-xl)] backdrop-blur-[20px]"
+            >
+                <DropdownMenuGroup>
                     {options.map((opt) => {
                         const active = opt.label === value
                         return (
-                            <button
+                            <DropdownMenuItem
                                 key={opt.key}
-                                type="button"
-                                role="menuitem"
-                                onClick={() => {
-                                    onSelect(opt.key)
-                                    setOpen(false)
-                                }}
-                                className={
-                                    "flex h-[30px] w-full items-center gap-[8px] rounded-[8px] px-[11px] text-left text-[12px] text-(--ink-1) transition-colors hover:bg-(--yz-hover) " +
-                                    (active ? "bg-(--yz-active) font-semibold" : "font-medium")
-                                }
+                                onSelect={() => onSelect(opt.key)}
+                                className={cn(
+                                    "h-[30px] gap-[8px] rounded-[8px] px-[11px] text-[12px] text-(--ink-1) focus:bg-(--yz-hover)",
+                                    active ? "bg-(--yz-active) font-semibold" : "font-medium"
+                                )}
                             >
                                 {opt.label}
-                            </button>
+                            </DropdownMenuItem>
                         )
                     })}
-                </div>
-            )}
-        </div>
+                </DropdownMenuGroup>
+            </DropdownMenuContent>
+        </DropdownMenu>
     )
 }
 

@@ -153,6 +153,21 @@ beforeEach(() => {
 })
 
 describe("HerdrAgentInspector", () => {
+  it("displays a Herdr-projected WSL origin badge", async () => {
+    ipc.get.mockResolvedValue(details("w1:p1", "Agent"))
+    ipc.read.mockResolvedValue(readResult("w1:p1", "output"))
+
+    render(
+      <HerdrAgentInspector
+        open
+        onOpenChange={() => undefined}
+        agent={{ ...agent("w1:p1", "Agent"), executionOrigin: { kind: "wsl", distribution: "Ubuntu" } }}
+      />
+    )
+
+    expect(await screen.findByTestId("herdr-inspector-origin")).toHaveTextContent("WSL · Ubuntu")
+  })
+
   it("ignores an older response after the selected agent changes", async () => {
     const oldGet = deferred<HerdrAgentDetails>()
     const oldRead = deferred<HerdrAgentReadResult>()

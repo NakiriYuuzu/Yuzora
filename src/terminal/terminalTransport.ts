@@ -67,6 +67,16 @@ export interface TerminalTransport {
   scroll?(delta: number): Promise<void>
   release(): Promise<void>
   /**
+   * Clear the active connector without sending a backend release. Component
+   * teardown must release through the attachment registry exactly once.
+   */
+  detach?(): void
+  /**
+   * Clear the active connector generation without backend release so a caller
+   * can transfer release ownership to the attachment registry before reopening.
+   */
+  detachSession?(): string | null
+  /**
    * Permanent teardown. Later open/takeControl/resync reopen paths must no-op
    * and any late open result must be released without re-registering attachments.
    */
@@ -179,9 +189,14 @@ export interface HerdrTerminalTransportOptions {
   onPaneId?: (paneId: string | null | undefined) => void
 }
 
+export interface HerdrTerminalTransport extends TerminalTransport {
+  detach(): void
+  detachSession(): string | null
+}
+
 export function createHerdrTerminalTransport(
   options: HerdrTerminalTransportOptions
-): TerminalTransport {
+): HerdrTerminalTransport {
   const {
     terminalId,
     paneId = null,
@@ -312,6 +327,20 @@ export function createHerdrTerminalTransport(
       const direction = delta < 0 ? "up" : "down"
       const lines = Math.max(1, Math.abs(Math.trunc(delta)))
       await herdrTerminalScroll(sessionId, direction, lines)
+    },
+    detach() {
+      disposed = true
+      openGeneration += 1
+      eventHandler = null
+      sessionId = null
+      lastSeq = null
+    },
+    detachSession() {
+      openGeneration += 1
+      const id = sessionId
+      sessionId = null
+      lastSeq = null
+      return id
     },
     async release() {
       openGeneration += 1

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { listen } from "@tauri-apps/api/event"
 import { Download, FileText, RefreshCw, Trash2 } from "lucide-react"
 
@@ -80,15 +81,15 @@ const BADGE_TONE: Record<"ok" | "warn" | "err" | "idle", string> = {
 function statusBadge(
   info: LspServerInfo | undefined,
   initialized: boolean,
-): { text: string; tone: "ok" | "warn" | "err" | "idle"; detail?: string } {
-  if (!info) return { text: "尚未啟動", tone: "idle" }
+): { key: string; tone: "ok" | "warn" | "err" | "idle"; detail?: string } {
+  if (!info) return { key: "notStarted", tone: "idle" }
   const s = info.status
-  if (s.status === "missing") return { text: "未安裝", tone: "err", detail: s.installHint }
-  if (s.status === "crashed") return { text: "已崩潰", tone: "err", detail: s.reason }
+  if (s.status === "missing") return { key: "missing", tone: "err", detail: s.installHint }
+  if (s.status === "crashed") return { key: "crashed", tone: "err", detail: s.reason }
   if (s.status === "stopped") {
-    return info.path ? { text: "已安裝", tone: "ok" } : { text: "已停止", tone: "idle" }
+    return info.path ? { key: "installed", tone: "ok" } : { key: "stopped", tone: "idle" }
   }
-  return initialized ? { text: "就緒", tone: "ok" } : { text: "啟動中", tone: "warn" }
+  return initialized ? { key: "ready", tone: "ok" } : { key: "starting", tone: "warn" }
 }
 
 /**
@@ -126,9 +127,14 @@ function LspLanguageCard({
   onInstall: () => void
   onRedetect: () => void
 }) {
+  const { t } = useTranslation("workbench")
   const ref = useRef<HTMLDivElement>(null)
   const openSettings = useUiStore((s) => s.openSettings)
   const badge = statusBadge(info, initialized)
+  const badgeDetail = badge.detail?.replace(
+    /（完整性驗證失敗，請重新安裝：.*）$/u,
+    ` (${t("settings.lsp.integrityFailure")})`,
+  )
   const installing = progress != null
   const ready = badge.tone === "ok"
   const failed = info?.status.status === "crashed"
@@ -157,28 +163,28 @@ function LspLanguageCard({
             BADGE_TONE[badge.tone]
           )}
         >
-          {badge.text}
+          {t(`settings.lsp.status.${badge.key}`)}
         </span>
       </div>
 
       <dl className="mt-[10px] flex flex-col gap-[6px]">
         <div className="flex items-center justify-between gap-[10px]">
-          <dt className="shrink-0 text-[11px] text-(--ink-3)">使用中伺服器</dt>
+          <dt className="shrink-0 text-[11px] text-(--ink-3)">{t("settings.lsp.activeServer")}</dt>
           <dd className="truncate font-mono text-[11.5px] text-(--ink-1)">
-            {activeServer ?? "預設"}
+            {activeServer ?? t("settings.lsp.defaultServer")}
           </dd>
         </div>
         {info?.path && (
           <div className="flex items-center justify-between gap-[10px]">
-            <dt className="shrink-0 text-[11px] text-(--ink-3)">執行檔路徑</dt>
+            <dt className="shrink-0 text-[11px] text-(--ink-3)">{t("settings.lsp.executablePath")}</dt>
             <dd className="truncate font-mono text-[11px] text-(--ink-2)">{info.path}</dd>
           </div>
         )}
       </dl>
 
       <div className="mt-[10px]">
-        <div className="mb-[6px] text-[11px] text-(--ink-3)">伺服器</div>
-        <div role="radiogroup" aria-label={`${label} 伺服器`} className="flex flex-wrap gap-[6px]">
+        <div className="mb-[6px] text-[11px] text-(--ink-3)">{t("settings.lsp.server")}</div>
+        <div role="radiogroup" aria-label={t("settings.lsp.serverGroup", { label })} className="flex flex-wrap gap-[6px]">
           {profiles.map((p) => {
             const single = profiles.length === 1
             const selected = p.id === activeProfile
@@ -205,15 +211,15 @@ function LspLanguageCard({
         </div>
       </div>
 
-      {badge.detail && (
+      {badgeDetail && (
         <div className="mt-[9px] rounded-[8px] bg-(--yz-sunk) px-[9px] py-[7px] font-mono text-[11px] leading-[1.5] text-(--ink-2)">
-          {badge.detail}
+          {badgeDetail}
         </div>
       )}
 
       {info?.lastStartupLog && (
         <details className="mt-[9px]">
-          <summary className="cursor-pointer text-[11px] text-(--ink-3)">最近啟動記錄</summary>
+          <summary className="cursor-pointer text-[11px] text-(--ink-3)">{t("settings.lsp.recentStartupLog")}</summary>
           <ScrollArea className="mt-[6px] rounded-[8px] bg-(--yz-sunk)" orientation="horizontal" focusable>
             <pre className="px-[9px] py-[7px] font-mono text-[10.5px] leading-[1.5] whitespace-pre-wrap text-(--ink-2)">
               {info.lastStartupLog}
@@ -230,7 +236,7 @@ function LspLanguageCard({
 
       {progress && (
         <div className="mt-[9px] text-[11px] text-(--ink-2)">
-          安裝中 · {progress.phase}
+          {t("settings.lsp.installProgress", { phase: progress.phase })}
           {progress.percent != null && ` · ${progress.percent}%`}
           {progress.message && <span className="text-(--ink-3)"> · {progress.message}</span>}
         </div>
@@ -251,7 +257,7 @@ function LspLanguageCard({
             className="flex h-[28px] items-center gap-[6px] rounded-[8px] bg-(--yz-solid) px-[11px] text-[11.5px] font-semibold text-(--ink-0) shadow-(--shadow-xs) transition-colors hover:bg-(--yz-hover) disabled:opacity-60"
           >
             <Download className="size-[12px]" aria-hidden="true" />
-            {installing ? "安裝中…" : "一鍵安裝"}
+            {installing ? t("settings.lsp.installing") : t("settings.lsp.install")}
           </button>
         )}
         <button
@@ -260,7 +266,7 @@ function LspLanguageCard({
           className="flex h-[28px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[11px] text-[11.5px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
         >
           <RefreshCw className="size-[12px]" aria-hidden="true" />
-          重新偵測
+          {t("settings.lsp.redetect")}
         </button>
         {failed && (
           <button
@@ -269,7 +275,7 @@ function LspLanguageCard({
             className="flex h-[28px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[11px] text-[11.5px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
           >
             <FileText className="size-[12px]" aria-hidden="true" />
-            檢視 logs
+            {t("settings.lsp.viewLogs")}
           </button>
         )}
       </div>
@@ -285,6 +291,7 @@ function LspLanguageCard({
  * cross the scope boundary. The persisted config comes from lspConfigGet.
  */
 export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
+  const { t } = useTranslation("workbench")
   const servers = useLspStore((s) => s.servers)
   const initializedMap = useLspStore((s) => s.initialized)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
@@ -526,14 +533,14 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
     <div className="flex flex-col gap-[14px]">
       <div className="flex flex-col">
         <ToggleRow
-          label="儲存時自動格式化"
-          sub="透過語言伺服器在存檔時套用格式化"
+          label={t("settings.lsp.formatOnSave")}
+          sub={t("settings.lsp.formatOnSaveSub")}
           checked={formatOnSave}
           onCheckedChange={toggleFormatOnSave}
         />
         <ToggleRow
-          label="JSON-RPC 追蹤"
-          sub="將 LSP 通訊寫入追蹤檔（重啟後自動關閉）"
+          label={t("settings.lsp.jsonRpcTrace")}
+          sub={t("settings.lsp.jsonRpcTraceSub")}
           checked={trace}
           onCheckedChange={toggleTrace}
         />
@@ -541,7 +548,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
 
       {stale.length > 0 && (
         <div data-testid="lsp-stale">
-          <SettingCard label="失效的工作區覆寫" sub="Overrides whose workspace no longer exists">
+          <SettingCard label={t("settings.lsp.staleOverrides")} sub={t("settings.lsp.staleOverridesSub")}>
             <div className="flex flex-col gap-[8px]">
               {stale.map((ws) => (
                 <div key={ws} className="flex items-center justify-between gap-[10px]">
@@ -555,7 +562,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
                       disabled={!workspacePath}
                       className="flex h-[26px] items-center rounded-[8px] border border-(--line-1) px-[9px] text-[11px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover) disabled:opacity-50"
                     >
-                      重新綁定至目前工作區
+                      {t("settings.lsp.rebindCurrent")}
                     </button>
                     <button
                       type="button"
@@ -563,7 +570,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
                       className="flex h-[26px] items-center gap-[5px] rounded-[8px] border border-(--line-1) px-[9px] text-[11px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
                     >
                       <Trash2 className="size-[11px]" aria-hidden="true" />
-                      清除
+                      {t("settings.lsp.clear")}
                     </button>
                   </div>
                 </div>
@@ -573,16 +580,16 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
         </div>
       )}
 
-      <SettingCard label="伺服器設定範圍" sub="Where a server choice is saved">
+      <SettingCard label={t("settings.lsp.scope")} sub={t("settings.lsp.scopeSub")}>
         <div
           role="radiogroup"
-          aria-label="伺服器設定範圍"
+          aria-label={t("settings.lsp.scope")}
           className="flex gap-[4px] rounded-[10px] bg-(--paper-2) p-[3px]"
         >
           {(
             [
-              { id: "workspace", label: "此工作區" },
-              { id: "global", label: "全域" },
+              { id: "workspace", label: t("settings.lsp.workspace") },
+              { id: "global", label: t("settings.lsp.global") },
             ] as const
           ).map((option) => {
             const disabled = option.id === "workspace" && !workspacePath

@@ -27,6 +27,12 @@ export type HerdrScrollDirection = "up" | "down"
 
 export type HerdrAgentStatus = "idle" | "working" | "blocked" | "done" | "unknown"
 
+/** Presentation-only execution metadata supplied by Herdr. */
+export interface HerdrExecutionOrigin {
+  kind: "wsl"
+  distribution?: string
+}
+
 export type HerdrConnectionState =
   | "idle"
   | "connecting"
@@ -80,6 +86,10 @@ export interface HerdrApiCapability {
   paneClose: boolean
   layoutExport: boolean
   layoutSetSplitRatio: boolean
+  /** Server-advertised Agent manifest catalog. */
+  agentManifests?: boolean
+  /** Starts a validated manifest kind in a freshly-created pane. */
+  agentStart?: boolean
   agentGet: boolean
   agentRead: boolean
   eventsSubscribe: boolean
@@ -178,6 +188,35 @@ export interface HerdrAgentReadResult {
   tooLarge?: boolean
 }
 
+export interface HerdrAgentCatalogEntry {
+  agent: string
+  source: string
+  sourceKind: string
+  activeVersion?: string | null
+  warning?: string | null
+  /** Advisory Yuzora-process PATH detection; Herdr remains launch authority. */
+  detectedBinaryPath?: string | null
+  /** Backend-owned allowlist; callers send only a boolean opt-in. */
+  bypassFlags: string[]
+}
+
+export interface HerdrAgentCreateRequest {
+  sessionName?: string | null
+  workspaceId: string
+  kind: string
+  bypassPermissions?: boolean | null
+}
+
+export interface HerdrAgentCreateResult {
+  name: string
+  kind: string
+  terminalId: string
+  paneId: string
+  tabId: string
+  workspaceId: string
+  title?: string | null
+}
+
 export type HerdrSubscriptionEvent =
   | { type: "subscribed"; subscriptionId: string }
   | {
@@ -189,6 +228,8 @@ export type HerdrSubscriptionEvent =
       agent?: string | null
       displayAgent?: string | null
       title?: string | null
+      /** Raw optional event metadata; normalize before projecting it into UI state. */
+      executionOrigin?: unknown
       stateLabels: Record<string, string>
     }
   | {
@@ -325,6 +366,8 @@ export interface HerdrAgentInfo {
   sessionName?: string | null
   /** Owning Space label for ADE Agents list. */
   spaceLabel?: string | null
+  /** Presentation-only Agent execution location; never part of resource identity. */
+  executionOrigin?: HerdrExecutionOrigin
 }
 
 export interface HerdrTerminalInfo {
@@ -335,6 +378,8 @@ export interface HerdrTerminalInfo {
   title?: string | null
   cwd?: string | null
   status?: HerdrAgentStatus | null
+  /** Presentation-only Agent execution location for this pane. */
+  executionOrigin?: HerdrExecutionOrigin
 }
 
 /** Persistent Herdr tab with a representative pane/terminal for opening its page. */

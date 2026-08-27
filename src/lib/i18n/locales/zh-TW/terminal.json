@@ -33,6 +33,10 @@
   "profileWslDistro": "WSL：{{distro}}",
   "noSessions": "尚無終端機工作階段",
   "emptyDescription": "開啟新的終端機，在這裡執行指令。",
+  "noWorkspaceTitle": "選擇資料夾以啟動終端機",
+  "noWorkspaceDescription": "終端機會在已開啟的工作區執行。請選擇本機資料夾繼續。",
+  "openFolderForTerminal": "開啟資料夾並建立終端機",
+  "noWorkspaceOpenError": "所選資料夾未能開啟為工作區。",
   "tabLimitReached": "Yuzora 在所有工作區合計已開啟 {{limit}} 個終端機分頁，已達上限。請先在任一工作區關閉一個分頁，再開新的。",
   "targetOpen": {
     "action": "從終端機開啟",

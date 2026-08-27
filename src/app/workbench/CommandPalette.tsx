@@ -29,6 +29,7 @@ import {
   dialogMinSize,
 } from "@/components/ui/dialog"
 import { MODES, type Mode } from "@/app/modes"
+import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents"
 import { useOverlayPresence } from "@/state/overlayStore"
 import { useHerdrStore } from "@/state/herdrStore"
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
@@ -49,6 +50,8 @@ interface CommandPaletteProps {
 
 const ITEM_CLASS =
   "h-[42px] gap-[13px] rounded-[12px]! px-[13px] transition-colors duration-100 data-selected:bg-(--yz-active)"
+const HERDR_PALETTE_SPACE_LIMIT = 64
+const HERDR_PALETTE_AGENT_LIMIT = 128
 
 /**
  * Command palette — design reference 5.9. Global ⌘K / Ctrl+K toggle. VSCode-style
@@ -79,18 +82,40 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   const togglePreviewTab = useWorkspaceStore((s) => s.togglePreviewTab)
   const requestReveal = useWorkspaceStore((s) => s.requestReveal)
   const herdrSnapshot = useHerdrStore((s) => s.snapshot)
+  const selectedHerdrSessionName = useHerdrStore((s) => s.selectedSessionName)
   const selectedHerdrSpaceId = useHerdrStore((s) => s.selectedSpaceId)
   const canCreateHerdrTerminal = useHerdrStore((s) => s.canCreateTerminal())
+  const canMutateHerdrSession = useHerdrStore((s) => s.canMutateSelectedSession())
   const canFocusHerdrTab = useHerdrStore((s) => s.canFocusSelectedTab())
   const createHerdrTerminal = useHerdrStore((s) => s.createTerminalInSelectedSpace)
+  const activateHerdrSpace = useHerdrStore((s) => s.activateSpace)
   const activateHerdrTab = useHerdrStore((s) => s.activateTab)
-  const herdrTabs =
-    herdrSnapshot?.tabs.filter((tab) => tab.workspaceId === selectedHerdrSpaceId) ?? []
-
+  const activateHerdrAgent = useHerdrStore((s) => s.activateAgent)
   const isCommandMode = search.startsWith(">")
   const commandFilter = (isCommandMode ? search.slice(1) : search).trim().toLowerCase()
-  const matchesCommand = (label: string) =>
-    commandFilter === "" || label.toLowerCase().includes(commandFilter)
+  const matchesCommand = (...searchableValues: string[]) =>
+    commandFilter === "" ||
+    searchableValues.some((value) => value.toLowerCase().includes(commandFilter))
+  const herdrTabs =
+    herdrSnapshot?.tabs.filter((tab) => tab.workspaceId === selectedHerdrSpaceId) ?? []
+  const herdrSpaces = (herdrSnapshot?.spaces ?? [])
+    .filter((space) => matchesCommand(
+      t("commandPalette.openHerdrSpace", { name: space.label }),
+      space.id
+    ))
+    .slice(0, HERDR_PALETTE_SPACE_LIMIT)
+  const herdrAgents = sortHerdrAgentsByUrgency(herdrSnapshot?.agents ?? [])
+    .filter((agent) => agent.tabId ? canFocusHerdrTab : canMutateHerdrSession)
+    .filter((agent) => matchesCommand(
+      t("commandPalette.openHerdrAgent", {
+        name: agent.title ?? agent.name,
+        status: agent.status
+      }),
+      agent.id,
+      agent.spaceLabel ?? agent.workspaceId
+    ))
+    .slice(0, HERDR_PALETTE_AGENT_LIMIT)
+
   // ">" is command-only; any other query of at least 2 chars also runs a
   // workspace search (the 2-char floor keeps a single keystroke from scanning
   // the whole tree — mirrored in useWorkspaceSearch).
@@ -196,6 +221,46 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
           className: ITEM_CLASS,
         }))
       : []),
+    ...(canMutateHerdrSession && selectedHerdrSessionName
+      ? herdrSpaces.map((space) => ({
+          value: `${t("commandPalette.openHerdrSpace", { name: space.label })} ${space.id}`,
+          label: t("commandPalette.openHerdrSpace", { name: space.label }),
+          icon: WaypointsIcon,
+          onSelect: () => {
+            setPaletteOpen(false)
+            void activateHerdrSpace({
+              sessionName: selectedHerdrSessionName,
+              workspaceId: space.id,
+              path: space.path
+            })
+          },
+          className: ITEM_CLASS
+        }))
+      : []),
+    ...herdrAgents.map((agent) => {
+      const label = t("commandPalette.openHerdrAgent", {
+        name: agent.title ?? agent.name,
+        status: agent.status
+      })
+      return {
+        value: `${label} ${agent.id} ${agent.spaceLabel ?? agent.workspaceId}`,
+        label,
+        icon: BotIcon,
+        onSelect: () => {
+          setPaletteOpen(false)
+          void activateHerdrAgent(agent).then(async (activation) => {
+            if (!activation.ok && !activation.cancelled) {
+              await showActionError(
+                label,
+                activation.error ??
+                  i18n.t("commandPalette.openHerdrAgentFailed", { ns: "workbench" })
+              )
+            }
+          })
+        },
+        className: ITEM_CLASS
+      }
+    }),
     {
       value: t("commandPalette.settings"),
       label: t("commandPalette.settings"),
@@ -207,7 +272,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       className: "h-[42px] gap-3",
     },
   ]
-  const visibleCommands = commands.filter((c) => matchesCommand(c.label))
+  const visibleCommands = commands.filter((c) => matchesCommand(c.label, c.value))
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {

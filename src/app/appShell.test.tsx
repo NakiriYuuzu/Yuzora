@@ -314,8 +314,8 @@ describe("AppShell", () => {
       render(<AppShell />)
 
       expect(document.documentElement.classList.contains("dark")).toBe(true)
-      expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-        JSON.stringify({ theme: "auto" })
+    expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
+      JSON.stringify({ theme: "auto", accent: "lime" })
       )
     } finally {
       matchMediaSpy.mockRestore()
@@ -331,8 +331,36 @@ describe("AppShell", () => {
 
     expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "dark" })
+      JSON.stringify({ theme: "dark", accent: "lime" })
     )
+  })
+
+  it("切換 accent 後立即套用完整 token 並持久化", async () => {
+    render(<AppShell />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    const dialog = await screen.findByRole("dialog")
+    fireEvent.click(within(dialog).getByRole("radio", { name: "blue" }))
+
+    expect(document.documentElement.style.getPropertyValue("--yz-accent")).toBe("#2f6bff")
+    expect(document.documentElement.style.getPropertyValue("--yz-accent-rgb")).toBe("47, 107, 255")
+    expect(document.documentElement.style.getPropertyValue("--yz-accent-ink")).toBe("#2456cc")
+    expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
+      JSON.stringify({ theme: "auto", accent: "blue" })
+    )
+  })
+
+  it("重啟時從持久化 appearance 還原 accent", () => {
+    localStorage.setItem(
+      APPEARANCE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ theme: "light", accent: "violet" })
+    )
+
+    render(<AppShell />)
+
+    expect(document.documentElement.style.getPropertyValue("--yz-accent")).toBe("#7b5bff")
+    expect(document.documentElement.style.getPropertyValue("--yz-accent-rgb")).toBe("123, 91, 255")
+    expect(document.documentElement.style.getPropertyValue("--yz-accent-ink")).toBe("#5d3fd3")
   })
 
   it("可在 Settings 關閉切換專案時移至最上方並立即持久化", async () => {

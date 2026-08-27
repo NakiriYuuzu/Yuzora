@@ -112,6 +112,11 @@ const clipboardMock = vi.hoisted(() => ({
     writeText: vi.fn()
 }))
 
+const navigatorClipboardMock = vi.hoisted(() => ({
+    readText: vi.fn(),
+    writeText: vi.fn()
+}))
+
 const imeMock = vi.hoisted(() => {
     const state = { disposables: [] as Array<{ dispose: ReturnType<typeof vi.fn> }> }
     return {
@@ -188,6 +193,12 @@ beforeEach(() => {
     useTerminalSettingsStore.setState({ fontSize: 12, imeAnchorMode: "cursor" })
     clipboardMock.readText.mockResolvedValue("")
     clipboardMock.writeText.mockResolvedValue(undefined)
+    navigatorClipboardMock.readText.mockResolvedValue("")
+    navigatorClipboardMock.writeText.mockResolvedValue(undefined)
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+        value: navigatorClipboardMock,
+        configurable: true
+    })
     resizeObservers.length = 0
 
     globalThis.ResizeObserver = class {
@@ -481,6 +492,24 @@ describe("TerminalSession", () => {
         expect(ipcMock.ptyWrite).not.toHaveBeenCalled()
     })
 
+    it("falls back to the browser clipboard when the Tauri copy command rejects", async () => {
+        clipboardMock.writeText.mockRejectedValueOnce(new Error("clipboard plugin unavailable"))
+        render(<TerminalSession workspace="/w" sessionId="pty-copy-fallback" active={false} />)
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        const term = xtermMock.state.terminals[0]
+        term.selection = "fallback selection"
+        const event = new KeyboardEvent("keydown", {
+            key: "c",
+            cancelable: true,
+            metaKey: true
+        })
+
+        expect(term.emitKey(event)).toBe(false)
+        await waitFor(() => {
+            expect(navigatorClipboardMock.writeText).toHaveBeenCalledWith("fallback selection")
+        })
+    })
+
     it("keeps Ctrl+C available to the shell when no text is selected", async () => {
         render(<TerminalSession workspace="/w" sessionId="pty-interrupt" active={false} />)
         await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
@@ -509,6 +538,24 @@ describe("TerminalSession", () => {
         })
         expect(event.defaultPrevented).toBe(true)
         expect(xtermMock.state.terminals[0].paste).toHaveBeenCalledWith("clipboard payload")
+    })
+
+    it("falls back to the browser clipboard when the Tauri paste command rejects", async () => {
+        clipboardMock.readText.mockRejectedValueOnce(new Error("clipboard plugin unavailable"))
+        navigatorClipboardMock.readText.mockResolvedValueOnce("fallback paste")
+        render(<TerminalSession workspace="/w" sessionId="pty-paste-fallback" active={false} />)
+        await waitFor(() => expect(ipcMock.ptyOpen).toHaveBeenCalledTimes(1))
+        const event = new KeyboardEvent("keydown", {
+            key: "v",
+            cancelable: true,
+            ctrlKey: true
+        })
+
+        expect(xtermMock.state.terminals[0].emitKey(event)).toBe(false)
+        await waitFor(() => {
+            expect(ipcMock.ptyWrite).toHaveBeenCalledWith("pty-paste-fallback", "fallback paste")
+        })
+        expect(navigatorClipboardMock.readText).toHaveBeenCalledTimes(1)
     })
 
     it("renders exited state and invokes onExit when the pty exits", async () => {

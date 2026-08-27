@@ -1,11 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { HerdrTerminalEvent } from "@/lib/herdrTypes"
+import type { HerdrCapabilities, HerdrTerminalEvent } from "@/lib/herdrTypes"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 const xtermMock = vi.hoisted(() => {
   type DataHandler = (data: string) => void
+  type KeyHandler = (event: KeyboardEvent) => boolean
 
   const state = {
     terminals: [] as TerminalMock[]
@@ -15,7 +16,9 @@ const xtermMock = vi.hoisted(() => {
     options: Record<string, unknown>
     cols = 80
     rows = 24
+    selection = ""
     dataHandler: DataHandler | null = null
+    keyHandler: KeyHandler | null = null
     writeParsedHandler: (() => void) | null = null
     writeParsedDisposable = { dispose: vi.fn() }
     linkProvider: { provideLinks: (y: number, cb: (links: unknown) => void) => void } | null = null
@@ -54,6 +57,9 @@ const xtermMock = vi.hoisted(() => {
     write = vi.fn((_data: string, onProcessed?: () => void) => onProcessed?.())
     focus = vi.fn()
     reset = vi.fn()
+    hasSelection = vi.fn(() => this.selection.length > 0)
+    getSelection = vi.fn(() => this.selection)
+    paste = vi.fn((text: string) => this.dataHandler?.(text))
     dispose = vi.fn()
     loadAddon = vi.fn((addon: { activate?: (terminal: TerminalMock) => void }) => {
       addon.activate?.(this)
@@ -66,6 +72,12 @@ const xtermMock = vi.hoisted(() => {
       this.dataHandler = handler
       return { dispose: vi.fn() }
     })
+    attachCustomKeyEventHandler = vi.fn((handler: KeyHandler) => {
+      this.keyHandler = handler
+    })
+    emitKey(event: KeyboardEvent) {
+      return this.keyHandler?.(event) ?? true
+    }
     customWheelEventHandler: ((event: WheelEvent) => boolean) | null = null
     attachCustomWheelEventHandler = vi.fn((handler: (event: WheelEvent) => boolean) => {
       this.customWheelEventHandler = handler
@@ -107,6 +119,18 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: xtermMock.FitAddon
 }))
+
+const clipboardMock = vi.hoisted(() => ({
+  readText: vi.fn(),
+  writeText: vi.fn()
+}))
+
+const navigatorClipboardMock = vi.hoisted(() => ({
+  readText: vi.fn(),
+  writeText: vi.fn()
+}))
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => clipboardMock)
 
 vi.mock("@/terminal/terminalImeHandling", () => ({
   installTerminalImeHandling: vi.fn(() => ({ dispose: vi.fn() }))
@@ -186,17 +210,71 @@ import { isMacPlatform } from "@/lib/platform"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
+const terminalControlCapabilities = {
+  binaryPath: "/bin/herdr",
+  binarySource: {
+    configured: "global",
+    resolved: "global",
+    available: true,
+    path: "/bin/herdr",
+    reason: null,
+    restartRequired: false
+  },
+  server: { running: true },
+  api: {
+    snapshot: true,
+    ping: true,
+    tabCreate: true,
+    workspaceFocus: true,
+    workspaceCreate: true,
+    workspaceRename: true,
+    workspaceClose: true,
+    tabRename: true,
+    tabClose: true,
+    tabFocus: true,
+    tabMove: false,
+    paneFocus: true,
+    paneRename: true,
+    paneSplit: true,
+    paneZoom: true,
+    paneSwap: true,
+    paneClose: true,
+    layoutExport: false,
+    layoutSetSplitRatio: false,
+    agentGet: false,
+    agentRead: false,
+    eventsSubscribe: false,
+    worktreeList: false,
+    methods: [],
+    reason: null
+  },
+  terminal: {
+    observe: true,
+    control: true,
+    takeover: true,
+    input: true,
+    resize: true,
+    scroll: true,
+    release: true,
+    create: true,
+    reason: null
+  },
+  events: { status: "deferred" }
+} satisfies HerdrCapabilities
+
 function seedSessions(
   sessions: Array<{ name: string; default: boolean; running: boolean }>
 ) {
   useHerdrStore.setState({
     ...herdrInitialState,
     attachments: new Map(),
+    selectedSessionName: sessions.find((session) => session.default)?.name ?? sessions[0]?.name ?? null,
     sessions: sessions.map((s) => ({
       ...s,
       sessionDir: `/tmp/${s.name}`,
       socketPath: `/tmp/${s.name}.sock`
-    }))
+    })),
+    capabilities: terminalControlCapabilities
   })
 }
 
@@ -225,6 +303,17 @@ function frame(seq: number, text: string, full = false): HerdrTerminalEvent {
   }
 }
 
+beforeEach(() => {
+  clipboardMock.readText.mockResolvedValue("")
+  clipboardMock.writeText.mockResolvedValue(undefined)
+  navigatorClipboardMock.readText.mockResolvedValue("")
+  navigatorClipboardMock.writeText.mockResolvedValue(undefined)
+  Object.defineProperty(globalThis.navigator, "clipboard", {
+    value: navigatorClipboardMock,
+    configurable: true
+  })
+})
+
 describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
   beforeEach(() => {
     cleanup()
@@ -237,6 +326,26 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("does not open a control connector before exact runtime capabilities are known", async () => {
+    useHerdrStore.setState({ capabilities: null })
+
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Terminal control is unavailable for this Herdr server."
+      )
+    })
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
   })
 
   it("honors onProcessed so two separate flushes both reach xterm", async () => {
@@ -378,6 +487,164 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
   })
 })
 
+describe("HerdrTerminalPage clipboard", () => {
+  beforeEach(() => {
+    cleanup()
+    xtermMock.reset()
+    herdrIpcMock.reset()
+    herdrIpcMock.herdrTerminalOpen.mockClear()
+    herdrIpcMock.herdrTerminalInput.mockClear()
+    clipboardMock.readText.mockClear()
+    clipboardMock.writeText.mockClear()
+    seedSessions([{ name: "default", default: true, running: true }])
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it("preserves setup paste when control arrives before open readiness", async () => {
+    clipboardMock.readText.mockResolvedValue("setup clipboard payload")
+    let completeOpen: () => void = () => {
+      throw new Error("Expected a pending Herdr terminal open")
+    }
+    herdrIpcMock.herdrTerminalOpen.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        completeOpen = () => resolve({
+          sessionId: "sess-1",
+          target: "term-1",
+          mode: "control",
+          role: "controller",
+          cols: 80,
+          rows: 24,
+          takeover: true
+        })
+      })
+    )
+
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      ctrlKey: true,
+      cancelable: true
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await waitFor(() => expect(clipboardMock.readText).toHaveBeenCalledTimes(1))
+    expect(term.paste).not.toHaveBeenCalled()
+
+    await act(async () => completeOpen())
+
+    await waitFor(() => {
+      expect(term.paste).toHaveBeenCalledWith("setup clipboard payload")
+    })
+  })
+
+  it.each([
+    ["Ctrl", { ctrlKey: true }],
+    ["Cmd", { metaKey: true }]
+  ])("copies a selection with %s+C", async (_label, modifier) => {
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    term.selection = "selected Herdr text"
+    const event = new KeyboardEvent("keydown", {
+      key: "c",
+      cancelable: true,
+      ...modifier
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await waitFor(() => {
+      expect(clipboardMock.writeText).toHaveBeenCalledWith("selected Herdr text")
+    })
+    expect(event.defaultPrevented).toBe(true)
+    expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["Ctrl", { ctrlKey: true }],
+    ["Cmd", { metaKey: true }]
+  ])("pastes clipboard text with %s+V", async (_label, modifier) => {
+    clipboardMock.readText.mockResolvedValue("Herdr clipboard payload")
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      cancelable: true,
+      ...modifier
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await waitFor(() => {
+      expect(term.paste).toHaveBeenCalledWith("Herdr clipboard payload")
+    })
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it("drops observer paste rather than replaying it after Take Control", async () => {
+    clipboardMock.readText.mockResolvedValue("observer clipboard payload")
+    herdrIpcMock.herdrTerminalOpen.mockResolvedValueOnce({
+      sessionId: "sess-observer",
+      target: "term-1",
+      mode: "observe",
+      role: "observer",
+      cols: 80,
+      rows: 24,
+      takeover: false
+    })
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      ctrlKey: true,
+      cancelable: true
+    })
+
+    expect(term.emitKey(event)).toBe(false)
+    await act(async () => Promise.resolve())
+    expect(clipboardMock.readText).not.toHaveBeenCalled()
+    expect(term.paste).not.toHaveBeenCalled()
+
+    fireEvent.click(await screen.findByTestId("herdr-take-control"))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+
+    expect(term.paste).not.toHaveBeenCalled()
+  })
+})
+
 describe("HerdrTerminalPage server-owned scrolling", () => {
   beforeEach(() => {
     cleanup()
@@ -391,6 +658,24 @@ describe("HerdrTerminalPage server-owned scrolling", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("disables xterm local scrollback for server-owned frames", async () => {
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="live"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+
+    expect(xtermMock.state.terminals[0].options).toMatchObject({
+      scrollback: 0,
+      scrollOnUserInput: false,
+      smoothScrollDuration: 0
+    })
   })
 
   it("forwards normalized wheel rows to the Herdr control connector", async () => {
@@ -624,14 +909,14 @@ describe("HerdrTerminalPage stopped session gate", () => {
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
 
     act(() => {
-      seedSessions([{ name: "work", default: true, running: false }])
+      replaceSessionInventory([{ name: "work", default: true, running: false }])
     })
 
     await waitFor(() => {
       expect(screen.getByTestId("herdr-terminal-stopped")).toBeInTheDocument()
     })
     await waitFor(() => {
-      expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalled()
+      expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
     })
     // No additional open after stop.
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
@@ -650,6 +935,58 @@ describe("HerdrTerminalPage dispose races", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("releases exactly once when stale-page registry cleanup races leaf unmount", async () => {
+    seedSessions([{ name: "default", default: true, running: true }])
+    const { unmount } = render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const attachmentKey = "yuzora://herdr/default/term-1::term-1"
+    await waitFor(() => expect(useHerdrStore.getState().attachments.has(attachmentKey)).toBe(true))
+
+    const staleCleanup = useHerdrStore.getState().releaseAttachment(attachmentKey)
+    unmount()
+    await staleCleanup
+
+    expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
+    expect(useHerdrStore.getState().attachments.size).toBe(0)
+  })
+
+  it("releases exactly once per connector generation across Take Control and unmount", async () => {
+    seedSessions([{ name: "default", default: true, running: true }])
+    herdrIpcMock.herdrTerminalOpen.mockResolvedValueOnce({
+      sessionId: "sess-observer",
+      target: "term-1",
+      mode: "observe",
+      role: "observer",
+      cols: 80,
+      rows: 24,
+      takeover: false
+    })
+    const { unmount } = render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        terminalId="term-1"
+        active
+        visible
+      />
+    )
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(await screen.findByTestId("herdr-take-control"))
+
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+    expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
+
+    unmount()
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(2))
   })
 
   it("resync release completing after unmount cannot reopen a hidden connector", async () => {
@@ -689,6 +1026,7 @@ describe("HerdrTerminalPage dispose races", () => {
     })
 
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+    expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
     expect(useHerdrStore.getState().attachments.size).toBe(0)
   })
 })
@@ -712,7 +1050,7 @@ function seedNamedRuntime() {
     },
     runtimesBySession: {
       work: {
-        capabilities: null,
+        capabilities: terminalControlCapabilities,
         snapshot: {
           herdrSessionId: "work",
           protocol: 19,

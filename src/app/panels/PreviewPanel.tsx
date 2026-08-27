@@ -105,6 +105,18 @@ function portUrl(port: number): string {
   return `http://localhost:${port}`
 }
 
+function normalizePreviewUrl(rawUrl: string): string {
+  const schemeLessHostWithPort = /^(?:[^:/?#\s]+|\[[0-9a-f:.]+\]):\d+(?:[/?#]|$)/i
+    .test(rawUrl)
+  if (!schemeLessHostWithPort && /^[a-z][a-z0-9+.-]*:/i.test(rawUrl)) return rawUrl
+  const scheme = /^(?:localhost|127\.0\.0\.1)(?=[:/]|$)/i.test(rawUrl) ? "http" : "https"
+  return `${scheme}://${rawUrl}`
+}
+
+function reportPreviewReloadError(error: unknown): Promise<void> {
+  return showActionError(i18n.t("previewPanel.reload", { ns: "panels" }), error)
+}
+
 function localhostPort(rawUrl: string | null): number | null {
   if (!rawUrl) return null
   try {
@@ -161,8 +173,11 @@ export function PreviewPanel() {
   const [localError, setLocalError] = useState<string | null>(null)
 
   const overlayOpen = useAnyOverlayOpen()
+  const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
+  const [urlError, setUrlError] = useState<string | null>(null)
   const webviewHostRef = useRef<HTMLDivElement | null>(null)
+  const previewVisibleRef = useRef(previewVisible)
   const consumedNativeNavigationRef = useRef<{ url: string; token: number } | null>(null)
 
   const status = devServer?.status ?? null
@@ -187,6 +202,11 @@ export function PreviewPanel() {
   const isAttemptLive = (attemptWorkspace: string, attempt: number) =>
     attemptWorkspace === useWorkspaceStore.getState().workspacePath
     && attempt === usePreviewStore.getState().attemptForWorkspace(attemptWorkspace)
+
+  useEffect(() => {
+    setUrlDraft(null)
+    setUrlError(null)
+  }, [workspace])
 
   useEffect(() => {
     if (!workspace || !devServer || devServer.status.status !== "running") return
@@ -217,13 +237,19 @@ export function PreviewPanel() {
     }
     const host = webviewHostRef.current
     if (!host) return
-    const rect = host.getBoundingClientRect()
     const targetUrl = nav.url
     const requestToken = usePreviewStore.getState().beginNativeOpenRequest(workspace, targetUrl)
     let cancelled = false
     void enqueueNativePreviewOperation(async () => {
       if (!usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) return
       try {
+        const currentHost = webviewHostRef.current
+        if (!currentHost) {
+          usePreviewStore.getState().closeNativeSession()
+          usePreviewStore.getState().settleNativeRequest(requestToken)
+          return
+        }
+        const rect = currentHost.getBoundingClientRect()
         await previewOpenUrl(targetUrl, rect.left, rect.top, rect.width, rect.height)
       } catch (error) {
         if (usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) {
@@ -235,7 +261,7 @@ export function PreviewPanel() {
             reportedError = new Error(`${String(error)}; preview cleanup failed: ${String(cleanupError)}`)
           }
           usePreviewStore.getState().settleNativeRequest(requestToken)
-          if (!cancelled) await showActionError(tp("previewPanel.reload"), reportedError)
+          if (!cancelled) await reportPreviewReloadError(reportedError)
         }
         return
       }
@@ -270,10 +296,7 @@ export function PreviewPanel() {
       // The Rust child webview is a singleton. Closing it invalidates whichever
       // workspace owned the proof ledger, including an external -> other-workspace
       // local transition where `workspace` is no longer the previous owner.
-      requestNativePreviewClose(
-        workspace,
-        (error) => showActionError(tp("previewPanel.reload"), error)
-      )
+      requestNativePreviewClose(workspace, reportPreviewReloadError)
     }
   }, [external, workspace])
   useEffect(() => {
@@ -285,12 +308,22 @@ export function PreviewPanel() {
   // Track the placeholder's bounds so the native layer stays glued to it as the
   // panel resizes (nav width, terminal drawer, responsive-frame toggle, window).
   useEffect(() => {
-    if (!isTauri() || !external) return
+    if (!isTauri() || !external || !workspace || !nav.url) return
     const host = webviewHostRef.current
     if (!host) return
+    const targetWorkspace = workspace
+    const targetUrl = nav.url
     const update = () => {
-      const rect = host.getBoundingClientRect()
-      void previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+      void enqueueNativePreviewOperation(async () => {
+        if (
+          useWorkspaceStore.getState().workspacePath !== targetWorkspace
+          || usePreviewStore.getState().navForWorkspace(targetWorkspace).url !== targetUrl
+        ) return
+        const currentHost = webviewHostRef.current
+        if (!currentHost) return
+        const rect = currentHost.getBoundingClientRect()
+        await previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+      })
     }
     const observer = new ResizeObserver(update)
     observer.observe(host)
@@ -299,37 +332,51 @@ export function PreviewPanel() {
       observer.disconnect()
       window.removeEventListener("resize", update)
     }
-  }, [external])
+  }, [external, nav.url, workspace])
 
   // Visibility gate: show the webview only when the preview is the visible
   // foreground — Files mode, no overlay open (the webview paints above every DOM
   // overlay). Recompute bounds on show so it doesn't flash at a stale position.
   // Browser preview tab is hosted on the shared ADE/Files editor surface.
-  const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
   useEffect(() => {
-    if (!isTauri() || !external) return
-    if (previewVisible) {
-      const host = webviewHostRef.current
-      if (host) {
-        const rect = host.getBoundingClientRect()
-        void previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+    previewVisibleRef.current = previewVisible
+  }, [previewVisible])
+  useEffect(() => {
+    if (!isTauri() || !external || !workspace || !nav.url) return
+    const targetWorkspace = workspace
+    const targetUrl = nav.url
+    void enqueueNativePreviewOperation(async () => {
+      if (
+        useWorkspaceStore.getState().workspacePath !== targetWorkspace
+        || usePreviewStore.getState().navForWorkspace(targetWorkspace).url !== targetUrl
+      ) return
+      const shouldShow = previewVisibleRef.current
+      if (shouldShow) {
+        const host = webviewHostRef.current
+        if (host) {
+          const rect = host.getBoundingClientRect()
+          await previewSetBounds(rect.left, rect.top, rect.width, rect.height)
+        }
       }
-      void previewSetVisible(true)
-    } else {
-      void previewSetVisible(false)
-    }
-  }, [external, previewVisible])
+      await previewSetVisible(shouldShow)
+    })
+  }, [external, nav.url, previewVisible, workspace])
 
   const submitUrl = () => {
     if (!workspace || urlDraft === null) return
     const raw = urlDraft.trim()
     if (!raw) {
       setUrlDraft(null)
+      setUrlError(null)
       return
     }
-    const scheme = /^(localhost|127\.0\.0\.1)(:|\/|$)/.test(raw) ? "http" : "https"
-    const normalized = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `${scheme}://${raw}`
-    if (usePreviewStore.getState().navigate(workspace, normalized)) setUrlDraft(null)
+    const normalized = normalizePreviewUrl(raw)
+    if (usePreviewStore.getState().navigate(workspace, normalized)) {
+      setUrlDraft(null)
+      setUrlError(null)
+      return
+    }
+    setUrlError(tp("previewPanel.urlSchemeError"))
   }
 
   const runToolbarCommand = async (
@@ -719,20 +766,28 @@ export function PreviewPanel() {
 
         <input
           aria-label={tp("previewPanel.urlLabel")}
+          aria-invalid={urlError ? true : undefined}
+          aria-describedby={urlError ? "preview-url-error" : undefined}
           value={urlDraft ?? nav.url ?? ""}
           placeholder={tp("previewPanel.urlPlaceholder")}
           disabled={!workspace}
           spellCheck={false}
           autoComplete="off"
-          onChange={(event) => setUrlDraft(event.currentTarget.value)}
+          onChange={(event) => {
+            setUrlDraft(event.currentTarget.value)
+            setUrlError(null)
+          }}
           onFocus={(event) => event.currentTarget.select()}
-          onBlur={() => setUrlDraft(null)}
+          onBlur={() => {
+            if (!urlError) setUrlDraft(null)
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault()
               submitUrl()
             } else if (event.key === "Escape") {
               setUrlDraft(null)
+              setUrlError(null)
               event.currentTarget.blur()
             }
           }}
@@ -797,6 +852,16 @@ export function PreviewPanel() {
           {status ? statusLabel(status) : t("noDevServer")}
         </span>
       </div>
+
+      {urlError ? (
+        <div
+          id="preview-url-error"
+          role="alert"
+          className="shrink-0 border-b border-[#f0c4c4] bg-[#fff1f1] px-[10px] py-[5px] text-[11px] text-[#b4232a]"
+        >
+          {urlError}
+        </div>
+      ) : null}
 
       {portOverrideHint ? (
         <div

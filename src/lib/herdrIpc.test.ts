@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import {
+  herdrAgentCatalog,
+  herdrAgentCreate,
   herdrAgentGet,
   herdrAgentRead,
   herdrBinarySourceGet,
@@ -104,6 +106,47 @@ describe("herdrIpc native interaction wrappers", () => {
         }
       },
       { cmd: "herdr_events_release", args: { subscriptionId: "sub-1" } }
+    ])
+  })
+
+  it("invokes Agent catalog/create commands without exposing raw argv", async () => {
+    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+      if (cmd === "herdr_agent_catalog") return []
+      return {
+        name: "codex",
+        kind: "codex",
+        terminalId: "term-2",
+        paneId: "pane-2",
+        tabId: "tab-2",
+        workspaceId: "ws-1",
+        title: "codex"
+      }
+    })
+
+    await herdrAgentCatalog("work")
+    await herdrAgentCreate({
+      sessionName: "work",
+      workspaceId: "ws-1",
+      kind: "codex",
+      bypassPermissions: true
+    })
+
+    expect(calls).toEqual([
+      {
+        cmd: "herdr_agent_catalog",
+        args: { sessionName: "work" }
+      },
+      {
+        cmd: "herdr_agent_create",
+        args: {
+          sessionName: "work",
+          workspaceId: "ws-1",
+          kind: "codex",
+          bypassPermissions: true
+        }
+      }
     ])
   })
 

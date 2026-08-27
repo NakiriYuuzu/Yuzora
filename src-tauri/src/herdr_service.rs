@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 use crate::herdr_limits::{
     bound_agent_text, bound_optional_json, bounded_ipc, ensure_ipc_bound, parse_herdr_cli_stdout,
     read_bounded_bytes, read_bounded_ndjson_line, validate_json_complexity,
-    validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH,
-    MAX_NDJSON_LINE_BYTES, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
+    validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_AGENT_MANIFEST_COUNT,
+    MAX_LAYOUT_DEPTH, MAX_NDJSON_LINE_BYTES, MAX_SESSION_COUNT, MAX_STATE_LABELS,
+    MAX_WORKTREE_COUNT,
 };
 use crate::herdr_transport::{connect_local_stream, read_local_ndjson_line, write_local_all_until};
 use crate::process_kill;
@@ -41,6 +42,8 @@ const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const AGENT_READ_MIN_LINES: u32 = 20;
 const AGENT_READ_MAX_LINES: u32 = 500;
+const AGENT_START_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+const AGENT_START_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(not(test))]
 const HERDR_CLI_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(test)]
@@ -160,9 +163,39 @@ pub struct HerdrAgentReadResult {
     pub too_large: bool,
 }
 
+/// One server-advertised Agent kind, enriched with advisory host PATH detection.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrAgentCatalogEntry {
+    pub agent: String,
+    pub source: String,
+    pub source_kind: String,
+    pub active_version: Option<String>,
+    pub warning: Option<String>,
+    pub detected_binary_path: Option<String>,
+    pub bypass_flags: Vec<String>,
+}
+
+/// Transactional result of `tab.create` followed by schema-gated `agent.start`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrAgentCreateResult {
+    pub name: String,
+    pub kind: String,
+    pub terminal_id: String,
+    pub pane_id: String,
+    pub tab_id: String,
+    pub workspace_id: String,
+    pub title: Option<String>,
+}
+
 /// Events delivered over the Tauri Channel for `herdr_events_subscribe`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum HerdrSubscriptionEvent {
     #[serde(rename = "subscribed")]
     Subscribed { subscription_id: String },
@@ -175,6 +208,8 @@ pub enum HerdrSubscriptionEvent {
         agent: Option<String>,
         display_agent: Option<String>,
         title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        execution_origin: Option<serde_json::Value>,
         state_labels: HashMap<String, String>,
     },
     #[serde(rename = "pane_exited")]
@@ -248,6 +283,10 @@ pub struct HerdrApiCapability {
     pub pane_close: bool,
     pub layout_export: bool,
     pub layout_set_split_ratio: bool,
+    /// Server-advertised Agent manifest catalog.
+    pub agent_manifests: bool,
+    /// Starts a validated manifest kind in a freshly-created pane.
+    pub agent_start: bool,
     /// Read-only `agent.get` (explicit pane/name target).
     pub agent_get: bool,
     /// Read-only `agent.read` (explicit pane/name target).
@@ -1117,6 +1156,8 @@ impl HerdrManager {
                 pane_close: false,
                 layout_export: false,
                 layout_set_split_ratio: false,
+                agent_manifests: false,
+                agent_start: false,
                 agent_get: false,
                 agent_read: false,
                 events_subscribe: false,
@@ -1375,7 +1416,6 @@ impl HerdrManager {
     }
 
     /// Create a new tab (and root pane/terminal) via public `tab.create`.
-    /// Create a new tab (and root pane/terminal) via public `tab.create`.
     /// Convenience wrapper used by the existing terminal-create IPC surface.
     pub fn create_terminal(
         &self,
@@ -1384,6 +1424,168 @@ impl HerdrManager {
         title: Option<String>,
     ) -> Result<HerdrTerminalCreateResult, String> {
         self.tab_create(session_name, workspace_id, title, None, true)
+    }
+
+    /// Server-advertised Agent kinds, enriched with advisory PATH detection.
+    /// PATH misses do not hide or disable a manifest: the selected Herdr server
+    /// remains authoritative and validates the actual launch on `agent.start`.
+    pub fn agent_catalog(
+        &self,
+        session_name: Option<&str>,
+    ) -> Result<Vec<HerdrAgentCatalogEntry>, String> {
+        let response = self.call_checked_api(
+            session_name,
+            |api| api.agent_manifests,
+            "server.agent_manifests",
+            serde_json::json!({}),
+            "herdr server.agent_manifests unavailable",
+        )?;
+        bounded_ipc(parse_agent_manifest_response(response)?)
+    }
+
+    /// Transactional New Agent flow adapted from herdrm: create a fresh tab,
+    /// start one validated manifest kind, retry only fresh-shell/name races,
+    /// and close only the tab created by this failed transaction.
+    pub fn agent_create(
+        &self,
+        session_name: Option<&str>,
+        workspace_id: String,
+        kind: String,
+        bypass_permissions: bool,
+    ) -> Result<HerdrAgentCreateResult, String> {
+        if workspace_id.trim().is_empty() {
+            return Err("workspace_id is required".into());
+        }
+        let caps = self.cached_capabilities_for_session(session_name);
+        if !caps.api.tab_close {
+            return Err(caps.api.reason.unwrap_or_else(|| {
+                "herdr tab.close is required for failed New Agent rollback".into()
+            }));
+        }
+        let kind = validate_agent_kind(&kind)?.to_string();
+        let catalog = self.agent_catalog(session_name)?;
+        if !catalog.iter().any(|entry| entry.agent == kind) {
+            return Err(format!("herdr agent manifest not found: {kind}"));
+        }
+
+        let created = self.tab_create(
+            session_name,
+            Some(workspace_id),
+            Some(kind.clone()),
+            None,
+            true,
+        )?;
+        let args = if bypass_permissions {
+            agent_bypass_flags(&kind)
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        match self.start_agent_in_fresh_pane(session_name, &created, &kind, &args) {
+            Ok(name) => Ok(HerdrAgentCreateResult {
+                name,
+                kind,
+                terminal_id: created.terminal_id,
+                pane_id: created.pane_id,
+                tab_id: created.tab_id,
+                workspace_id: created.workspace_id,
+                title: created.title,
+            }),
+            Err(error) => {
+                let cleanup = self.tab_close(session_name, created.tab_id);
+                Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup_error) => {
+                        format!("{error}; failed to close the newly-created tab: {cleanup_error}")
+                    }
+                })
+            }
+        }
+    }
+
+    fn start_agent_in_fresh_pane(
+        &self,
+        session_name: Option<&str>,
+        created: &HerdrTerminalCreateResult,
+        kind: &str,
+        args: &[String],
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + AGENT_START_RETRY_TIMEOUT;
+        let mut name = kind.to_string();
+        let mut retried_name = false;
+        loop {
+            let result = self.call_checked_api(
+                session_name,
+                |api| api.agent_start,
+                "agent.start",
+                serde_json::json!({
+                    "name": name,
+                    "kind": kind,
+                    "pane_id": created.pane_id,
+                    "args": args,
+                }),
+                "herdr agent.start unavailable",
+            );
+            match result {
+                Ok(response) => {
+                    parse_agent_started_response(response, &created.pane_id)?;
+                    return Ok(name);
+                }
+                Err(error) if error.starts_with("agent_pane_busy:") => {
+                    if Instant::now() >= deadline
+                        || !self.created_pane_shell_is_initializing(session_name, created)
+                        || Instant::now() >= deadline
+                    {
+                        return Err(error);
+                    }
+                    std::thread::sleep(AGENT_START_RETRY_INTERVAL);
+                }
+                Err(error) if error.starts_with("agent_name_taken:") && !retried_name => {
+                    retried_name = true;
+                    let suffix = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed) & 0xffff;
+                    name = format!("{kind}-{suffix:04x}");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn created_pane_shell_is_initializing(
+        &self,
+        session_name: Option<&str>,
+        created: &HerdrTerminalCreateResult,
+    ) -> bool {
+        let pane = self.call_checked_api(
+            session_name,
+            |api| api.methods.iter().any(|method| method == "pane.get"),
+            "pane.get",
+            serde_json::json!({ "pane_id": created.pane_id }),
+            "herdr pane.get unavailable",
+        );
+        let Ok(pane) = pane else {
+            return false;
+        };
+        if !pane_get_matches_created_terminal(&pane, created) {
+            return false;
+        }
+
+        let process_info = self.call_checked_api(
+            session_name,
+            |api| {
+                api.methods
+                    .iter()
+                    .any(|method| method == "pane.process_info")
+            },
+            "pane.process_info",
+            serde_json::json!({ "pane_id": created.pane_id }),
+            "herdr pane.process_info unavailable",
+        );
+        process_info.ok().is_some_and(|response| {
+            pane_process_info_shows_shell_initialization(&response, &created.pane_id)
+        })
     }
 
     /// Public `tab.create` with full protocol-19 params.
@@ -2932,6 +3134,7 @@ fn parse_subscription_event_line(
             .get("title")
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        execution_origin: data.get("execution_origin").cloned(),
         state_labels,
     }))
 }
@@ -3060,6 +3263,247 @@ fn parse_agent_read_response(response: serde_json::Value) -> Result<HerdrAgentRe
     })
 }
 
+fn parse_agent_manifest_response(
+    response: serde_json::Value,
+) -> Result<Vec<HerdrAgentCatalogEntry>, String> {
+    let result = response
+        .get("result")
+        .ok_or_else(|| "agent manifest response missing result".to_string())?;
+    let result_type = required_wire_str(result, "type")?;
+    if result_type != "agent_manifest_status" {
+        return Err(format!(
+            "unexpected server.agent_manifests result type: {result_type}"
+        ));
+    }
+    let manifests = result
+        .get("manifests")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "agent manifest response missing manifests".to_string())?;
+    if manifests.len() > MAX_AGENT_MANIFEST_COUNT {
+        return Err(HerdrProtocolError::TooComplex("agent_manifests").into());
+    }
+
+    let mut entries = Vec::with_capacity(manifests.len());
+    let mut seen = HashSet::new();
+    for manifest in manifests {
+        let agent = required_wire_str(manifest, "agent")?;
+        validate_agent_kind(&agent)?;
+        if !seen.insert(agent.clone()) {
+            return Err(format!("duplicate herdr agent manifest: {agent}"));
+        }
+        let source = required_wire_str(manifest, "source")?;
+        let source_kind = required_wire_str(manifest, "source_kind")?;
+        let detected_binary_path = which_binary(agent_binary_name(&agent));
+        entries.push(HerdrAgentCatalogEntry {
+            bypass_flags: agent_bypass_flags(&agent)
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect(),
+            agent,
+            source,
+            source_kind,
+            active_version: manifest
+                .get("active_version")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            warning: manifest
+                .get("warning")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            detected_binary_path,
+        });
+    }
+    Ok(entries)
+}
+
+fn parse_agent_started_response(
+    response: serde_json::Value,
+    expected_pane_id: &str,
+) -> Result<(), String> {
+    let result = response
+        .get("result")
+        .ok_or_else(|| "agent.start response missing result".to_string())?;
+    let result_type = required_wire_str(result, "type")?;
+    if result_type != "agent_started" {
+        return Err(format!("unexpected agent.start result type: {result_type}"));
+    }
+    let agent = result
+        .get("agent")
+        .ok_or_else(|| "agent.start response missing agent".to_string())?;
+    let pane_id = required_wire_str(agent, "pane_id")?;
+    if pane_id != expected_pane_id {
+        return Err(format!(
+            "agent.start returned pane {pane_id} for requested pane {expected_pane_id}"
+        ));
+    }
+    Ok(())
+}
+
+fn pane_get_matches_created_terminal(
+    response: &serde_json::Value,
+    created: &HerdrTerminalCreateResult,
+) -> bool {
+    let Some(result) = response.get("result") else {
+        return false;
+    };
+    if result.get("type").and_then(|value| value.as_str()) != Some("pane_info") {
+        return false;
+    }
+    let Some(pane) = result.get("pane") else {
+        return false;
+    };
+    pane.get("pane_id").and_then(|value| value.as_str()) == Some(created.pane_id.as_str())
+        && pane.get("terminal_id").and_then(|value| value.as_str())
+            == Some(created.terminal_id.as_str())
+        && pane.get("tab_id").and_then(|value| value.as_str()) == Some(created.tab_id.as_str())
+        && pane.get("workspace_id").and_then(|value| value.as_str())
+            == Some(created.workspace_id.as_str())
+}
+
+fn pane_process_info_shows_shell_initialization(
+    response: &serde_json::Value,
+    expected_pane_id: &str,
+) -> bool {
+    let Some(result) = response.get("result") else {
+        return false;
+    };
+    if result.get("type").and_then(|value| value.as_str()) != Some("pane_process_info") {
+        return false;
+    }
+    let Some(process_info) = result.get("process_info") else {
+        return false;
+    };
+    if process_info.get("pane_id").and_then(|value| value.as_str()) != Some(expected_pane_id) {
+        return false;
+    }
+    let Some(shell_pid) = process_info
+        .get("shell_pid")
+        .and_then(|value| value.as_u64())
+    else {
+        return false;
+    };
+    if process_info
+        .get("foreground_process_group_id")
+        .and_then(|value| value.as_u64())
+        != Some(shell_pid)
+    {
+        return false;
+    }
+    process_info
+        .get("foreground_processes")
+        .and_then(|value| value.as_array())
+        .is_some_and(|processes| {
+            processes.iter().any(|process| {
+                if process.get("pid").and_then(|value| value.as_u64()) != Some(shell_pid) {
+                    return false;
+                }
+                process
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(is_pane_shell_process_name)
+                    || process
+                        .get("argv")
+                        .and_then(|value| value.as_array())
+                        .and_then(|argv| argv.first())
+                        .and_then(|value| value.as_str())
+                        .is_some_and(is_pane_shell_process_name)
+            })
+        })
+}
+
+fn is_pane_shell_process_name(value: &str) -> bool {
+    let name = value
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(value)
+        .trim_start_matches('-')
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(
+        name,
+        "sh" | "bash"
+            | "dash"
+            | "zsh"
+            | "fish"
+            | "ksh"
+            | "mksh"
+            | "csh"
+            | "tcsh"
+            | "elvish"
+            | "xonsh"
+            | "nu"
+            | "pwsh"
+            | "powershell"
+            | "cmd"
+    )
+}
+
+fn validate_agent_kind(kind: &str) -> Result<&str, String> {
+    let kind = kind.trim();
+    if kind.is_empty() || kind.len() > 64 {
+        return Err("agent kind must contain 1 to 64 characters".into());
+    }
+    if !kind
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("agent kind contains unsupported characters".into());
+    }
+    Ok(kind)
+}
+
+fn agent_binary_name(kind: &str) -> &str {
+    if kind == "cursor" {
+        "cursor-agent"
+    } else {
+        kind
+    }
+}
+
+fn agent_bypass_flags(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "claude" => &["--dangerously-skip-permissions"],
+        "codex" => &["--dangerously-bypass-approvals-and-sandbox"],
+        "grok" => &["--always-approve"],
+        "gemini" => &["--yolo"],
+        "opencode" => &["--auto"],
+        "cursor" => &["--force"],
+        "copilot" => &["--allow-all-tools"],
+        _ => &[],
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_executable_extensions(raw: Option<&str>) -> Vec<String> {
+    let raw = raw
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(".EXE;.CMD;.BAT;.COM");
+    let mut seen = HashSet::new();
+    raw.split(';')
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let normalized = if trimmed.starts_with('.') {
+                trimmed.to_string()
+            } else {
+                format!(".{trimmed}")
+            };
+            if normalized.len() < 2
+                || normalized.len() > 16
+                || !normalized[1..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric())
+            {
+                return None;
+            }
+            let key = normalized.to_ascii_lowercase();
+            seen.insert(key).then_some(normalized)
+        })
+        .collect()
+}
+
 fn which_binary(command: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -3069,7 +3513,8 @@ fn which_binary(command: &str) -> Option<String> {
         }
         #[cfg(windows)]
         {
-            for ext in [".exe", ".cmd"] {
+            let pathext = std::env::var("PATHEXT").ok();
+            for ext in windows_executable_extensions(pathext.as_deref()) {
                 let candidate = dir.join(format!("{command}{ext}"));
                 if is_executable(&candidate) {
                     return Some(candidate.to_string_lossy().into_owned());
@@ -3457,8 +3902,12 @@ const IMPLEMENTED_API_METHODS: &[&str] = &[
     "pane.zoom",
     "pane.swap",
     "pane.close",
+    "pane.get",
+    "pane.process_info",
     "layout.export",
     "layout.set_split_ratio",
+    "server.agent_manifests",
+    "agent.start",
     "agent.get",
     "agent.read",
     "events.subscribe",
@@ -3502,6 +3951,8 @@ fn clear_api_method_flags(api: &mut HerdrApiCapability) {
     api.pane_close = false;
     api.layout_export = false;
     api.layout_set_split_ratio = false;
+    api.agent_manifests = false;
+    api.agent_start = false;
     api.agent_get = false;
     api.agent_read = false;
     api.events_subscribe = false;
@@ -3570,6 +4021,8 @@ fn apply_schema_method_flags(
     api.pane_close = has("pane.close");
     api.layout_export = has("layout.export");
     api.layout_set_split_ratio = has("layout.set_split_ratio");
+    api.agent_manifests = has("server.agent_manifests");
+    api.agent_start = has("agent.start");
     api.agent_get = has("agent.get");
     api.agent_read = has("agent.read");
     api.events_subscribe = has("events.subscribe");
@@ -3864,15 +4317,30 @@ fn parse_tab_created_response(
         .get("tab_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "tab_created missing tab_id".to_string())?
-        .to_string();
-    let workspace_id = root_pane
-        .get("workspace_id")
-        .or_else(|| tab.get("workspace_id"))
+        .ok_or_else(|| "tab_created missing tab_id".to_string())?;
+    let root_tab_id = root_pane
+        .get("tab_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "tab_created missing workspace_id".to_string())?
-        .to_string();
+        .ok_or_else(|| "tab_created root_pane missing tab_id".to_string())?;
+    if root_tab_id != tab_id {
+        return Err("tab_created root_pane tab_id does not match tab".into());
+    }
+    let tab_workspace_id = tab
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "tab_created tab missing workspace_id".to_string())?;
+    let root_workspace_id = root_pane
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "tab_created root_pane missing workspace_id".to_string())?;
+    if root_workspace_id != tab_workspace_id {
+        return Err("tab_created root_pane workspace_id does not match tab".into());
+    }
+    let tab_id = tab_id.to_string();
+    let workspace_id = root_workspace_id.to_string();
     let title = root_pane
         .get("title")
         .or_else(|| root_pane.get("label"))
@@ -4238,6 +4706,39 @@ pub async fn herdr_terminal_create(
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         manager.create_terminal(session_name.as_deref(), workspace_id, title)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_agent_catalog(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+) -> Result<Vec<HerdrAgentCatalogEntry>, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.agent_catalog(session_name.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_agent_create(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+    workspace_id: String,
+    kind: String,
+    bypass_permissions: Option<bool>,
+) -> Result<HerdrAgentCreateResult, String> {
+    let manager = state.0.clone();
+    let bypass_permissions = bypass_permissions.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.agent_create(
+            session_name.as_deref(),
+            workspace_id,
+            kind,
+            bypass_permissions,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4790,6 +5291,74 @@ mod tests {
     }
 
     #[test]
+    fn parse_tab_created_response_rejects_cross_tab_or_workspace_identity() {
+        let response = |root_tab_id: &str, root_workspace_id: &str| {
+            serde_json::json!({
+                "id": "1",
+                "result": {
+                    "type": "tab_created",
+                    "tab": {
+                        "tab_id": "tab_9",
+                        "workspace_id": "ws_1",
+                        "label": "Shell"
+                    },
+                    "root_pane": {
+                        "pane_id": "pane_9",
+                        "terminal_id": "term_9",
+                        "workspace_id": root_workspace_id,
+                        "tab_id": root_tab_id
+                    }
+                }
+            })
+        };
+        assert_eq!(
+            parse_tab_created_response(response("tab_existing", "ws_1")).unwrap_err(),
+            "tab_created root_pane tab_id does not match tab"
+        );
+        assert_eq!(
+            parse_tab_created_response(response("tab_9", "ws_other")).unwrap_err(),
+            "tab_created root_pane workspace_id does not match tab"
+        );
+    }
+
+    #[test]
+    fn pane_process_info_requires_the_created_pane_shell_in_foreground() {
+        let response = |foreground_process_group_id: u64, name: &str| {
+            serde_json::json!({
+                "result": {
+                    "type": "pane_process_info",
+                    "process_info": {
+                        "pane_id": "pane_9",
+                        "shell_pid": 42,
+                        "foreground_process_group_id": foreground_process_group_id,
+                        "foreground_processes": [{
+                            "pid": foreground_process_group_id,
+                            "name": name,
+                            "argv": [name]
+                        }]
+                    }
+                }
+            })
+        };
+        assert!(pane_process_info_shows_shell_initialization(
+            &response(42, "pwsh.exe"),
+            "pane_9"
+        ));
+        assert!(!pane_process_info_shows_shell_initialization(
+            &response(99, "vim"),
+            "pane_9"
+        ));
+        assert!(!pane_process_info_shows_shell_initialization(
+            &response(42, "opencode"),
+            "pane_9"
+        ));
+        assert!(!pane_process_info_shows_shell_initialization(
+            &response(42, "pwsh.exe"),
+            "pane_other"
+        ));
+    }
+
+    #[test]
     fn apply_status_json_gates_server_fields() {
         let mut caps = HerdrCapabilities {
             binary_path: Some("/bin/herdr".into()),
@@ -4841,6 +5410,8 @@ mod tests {
                 pane_close: false,
                 layout_export: false,
                 layout_set_split_ratio: false,
+                agent_manifests: false,
+                agent_start: false,
                 agent_get: false,
                 agent_read: false,
                 events_subscribe: false,
@@ -5123,6 +5694,574 @@ mod tests {
         assert_eq!(read.source, HerdrReadSource::RecentUnwrapped);
         assert!(!read.too_large);
         assert!(!read.truncated);
+    }
+
+    #[test]
+    fn agent_manifest_parser_enriches_catalog_and_rejects_duplicates() {
+        let catalog = parse_agent_manifest_response(serde_json::json!({
+            "result": {
+                "type": "agent_manifest_status",
+                "manifests": [
+                    {
+                        "agent": "codex",
+                        "source": "bundled",
+                        "source_kind": "bundled",
+                        "active_version": "2026.07.18.1"
+                    },
+                    {
+                        "agent": "cursor",
+                        "source": "bundled",
+                        "source_kind": "bundled",
+                        "warning": "preview"
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog[0].agent, "codex");
+        assert_eq!(
+            catalog[0].bypass_flags,
+            vec!["--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert_eq!(catalog[1].warning.as_deref(), Some("preview"));
+        assert_eq!(agent_binary_name("cursor"), "cursor-agent");
+
+        let duplicate = parse_agent_manifest_response(serde_json::json!({
+            "result": {
+                "type": "agent_manifest_status",
+                "manifests": [
+                    { "agent": "pi", "source": "bundled", "source_kind": "bundled" },
+                    { "agent": "pi", "source": "local", "source_kind": "local" }
+                ]
+            }
+        }));
+        assert!(duplicate.unwrap_err().contains("duplicate"));
+        assert!(validate_agent_kind("../codex").is_err());
+    }
+
+    #[test]
+    fn agent_started_parser_pins_the_created_pane() {
+        let response = serde_json::json!({
+            "result": {
+                "type": "agent_started",
+                "agent": { "pane_id": "w1:p1" },
+                "argv": ["codex"]
+            }
+        });
+        assert!(parse_agent_started_response(response.clone(), "w1:p1").is_ok());
+        assert!(parse_agent_started_response(response, "w1:p2")
+            .unwrap_err()
+            .contains("requested pane"));
+    }
+
+    #[test]
+    fn windows_pathext_parser_keeps_safe_unique_extensions() {
+        assert_eq!(
+            windows_executable_extensions(Some(".EXE;.CMD;.exe;BAT;.;.PS1-evil")),
+            vec![".EXE", ".CMD", ".BAT"]
+        );
+        assert_eq!(
+            windows_executable_extensions(None),
+            vec![".EXE", ".CMD", ".BAT", ".COM"]
+        );
+    }
+
+    #[test]
+    fn schema_flags_expose_only_advertised_agent_creation_methods() {
+        let mut api = HerdrApiCapability {
+            snapshot: false,
+            ping: false,
+            tab_create: false,
+            workspace_focus: false,
+            workspace_create: false,
+            workspace_rename: false,
+            workspace_close: false,
+            tab_rename: false,
+            tab_close: false,
+            tab_focus: false,
+            tab_move: false,
+            pane_focus: false,
+            pane_rename: false,
+            pane_split: false,
+            pane_zoom: false,
+            pane_swap: false,
+            pane_close: false,
+            layout_export: false,
+            layout_set_split_ratio: false,
+            agent_manifests: false,
+            agent_start: false,
+            agent_get: false,
+            agent_read: false,
+            events_subscribe: false,
+            worktree_list: false,
+            methods: Vec::new(),
+            schema_protocol: None,
+            schema_version: None,
+            reason: None,
+        };
+        let methods = HashSet::from([
+            "session.snapshot".to_string(),
+            "tab.create".to_string(),
+            "server.agent_manifests".to_string(),
+            "agent.start".to_string(),
+        ]);
+        apply_schema_method_flags(&mut api, &methods, false);
+        assert!(api.agent_manifests);
+        assert!(api.agent_start);
+        assert!(api.methods.contains(&"server.agent_manifests".to_string()));
+        assert!(api.methods.contains(&"agent.start".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_uses_manifest_tab_and_start_as_one_bounded_transaction() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut methods = Vec::new();
+            for _ in 0..7 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(request.trim()).unwrap();
+                let method = request["method"].as_str().unwrap().to_string();
+                methods.push(method.clone());
+                let response = match method.as_str() {
+                    "ping" => serde_json::json!({
+                        "id": request["id"],
+                        "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+                    }),
+                    "server.agent_manifests" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                    "tab.create" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "tab_created",
+                            "tab": {
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1",
+                                "label": "codex"
+                            },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                    "agent.start" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "agent_started",
+                            "agent": { "pane_id": "w1:p2" },
+                            "argv": ["codex"]
+                        }
+                    }),
+                    other => panic!("unexpected method: {other}"),
+                };
+                writeln!(stream, "{response}").unwrap();
+            }
+            methods
+        });
+
+        let binary = dir.path().join("herdr");
+        let script = format!(
+            r#"#!/bin/sh
+set -e
+if [ "$1" = "session" ]; then
+  printf '%s\n' '{{"sessions":[{{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"{}"}}]}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  printf '%s\n' '{{"client":{{"version":"0.8.0","protocol":19,"binary":"FAKE"}},"server":{{"status":"running","running":true,"version":"0.8.0","protocol":19,"compatible":true,"socket":"{}"}}}}'
+  exit 0
+fi
+printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.close","server.agent_manifests","agent.start"]}}'
+"#,
+            socket.display(),
+            socket.display()
+        );
+        fs::write(&binary, script).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+
+        let manager = HerdrManager::with_binary(binary);
+        let created = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap();
+        assert_eq!(created.name, "codex");
+        assert_eq!(created.pane_id, "w1:p2");
+        assert_eq!(created.terminal_id, "term-2");
+        assert_eq!(
+            server.join().unwrap(),
+            vec![
+                "ping",
+                "ping",
+                "server.agent_manifests",
+                "ping",
+                "tab.create",
+                "ping",
+                "agent.start"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_closes_only_the_new_tab_when_agent_start_fails() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create-rollback.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut methods = Vec::new();
+            let mut closed_tab_id = None;
+            for _ in 0..9 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(request.trim()).unwrap();
+                let method = request["method"].as_str().unwrap().to_string();
+                methods.push(method.clone());
+                let response = match method.as_str() {
+                    "ping" => serde_json::json!({
+                        "id": request["id"],
+                        "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+                    }),
+                    "server.agent_manifests" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                    "tab.create" => serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "tab_created",
+                            "tab": {
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1",
+                                "label": "codex"
+                            },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                    "agent.start" => serde_json::json!({
+                        "id": request["id"],
+                        "error": {
+                            "code": "agent_start_failed",
+                            "message": "codex exited before startup"
+                        }
+                    }),
+                    "tab.close" => {
+                        closed_tab_id = request["params"]["tab_id"].as_str().map(ToOwned::to_owned);
+                        serde_json::json!({
+                            "id": request["id"],
+                            "result": { "type": "tab_closed" }
+                        })
+                    }
+                    other => panic!("unexpected method: {other}"),
+                };
+                writeln!(stream, "{response}").unwrap();
+            }
+            (methods, closed_tab_id)
+        });
+
+        let status = format!(
+            r#"{{"client":{{"version":"0.8.0","protocol":19,"binary":"FAKE"}},"server":{{"status":"running","running":true,"version":"0.8.0","protocol":19,"compatible":true,"socket":"{}"}}}}"#,
+            socket.display()
+        );
+        let sessions = format!(
+            r#"{{"sessions":[{{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"{}"}}]}}"#,
+            socket.display()
+        );
+        let binary = write_fake_herdr_with_sessions(
+            dir.path(),
+            &status,
+            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.close","server.agent_manifests","agent.start"]}"#,
+            &sessions,
+        );
+
+        let manager = HerdrManager::with_binary(binary);
+        let error = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap_err();
+        assert_eq!(error, "agent_start_failed: codex exited before startup");
+        let (methods, closed_tab_id) = server.join().unwrap();
+        assert_eq!(closed_tab_id.as_deref(), Some("w1:t2"));
+        assert_eq!(
+            methods,
+            vec![
+                "ping",
+                "ping",
+                "server.agent_manifests",
+                "ping",
+                "tab.create",
+                "ping",
+                "agent.start",
+                "ping",
+                "tab.close"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_retries_busy_only_for_the_pinned_initializing_shell_and_one_name_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create-retry.sock");
+        let pong = || {
+            serde_json::json!({
+                "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+            })
+        };
+        let server = spawn_scripted_api_server(
+            &socket,
+            vec![
+                ("ping", pong()),
+                ("ping", pong()),
+                (
+                    "server.agent_manifests",
+                    serde_json::json!({
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "tab.create",
+                    serde_json::json!({
+                        "result": {
+                            "type": "tab_created",
+                            "tab": { "tab_id": "w1:t2", "workspace_id": "w1", "label": "codex" },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "error": { "code": "agent_pane_busy", "message": "shell is initializing" }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "pane.get",
+                    serde_json::json!({
+                        "result": {
+                            "type": "pane_info",
+                            "pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "pane.process_info",
+                    serde_json::json!({
+                        "result": {
+                            "type": "pane_process_info",
+                            "process_info": {
+                                "pane_id": "w1:p2",
+                                "shell_pid": 42,
+                                "foreground_process_group_id": 42,
+                                "foreground_processes": [{
+                                    "pid": 42,
+                                    "name": "pwsh.exe",
+                                    "argv": ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"]
+                                }]
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "error": { "code": "agent_name_taken", "message": "name already exists" }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "result": {
+                            "type": "agent_started",
+                            "agent": { "pane_id": "w1:p2" },
+                            "argv": ["codex"]
+                        }
+                    }),
+                ),
+            ],
+        );
+        let binary = write_agent_test_binary(dir.path(), &socket, true);
+
+        let manager = HerdrManager::with_binary(binary);
+        let created = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap();
+        assert!(created.name.starts_with("codex-"));
+        let requests = server.join().unwrap();
+        let start_names = requests
+            .iter()
+            .filter(|request| request["method"] == "agent.start")
+            .map(|request| request["params"]["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(start_names, vec!["codex", "codex", created.name.as_str()]);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "ping",
+                "ping",
+                "server.agent_manifests",
+                "ping",
+                "tab.create",
+                "ping",
+                "agent.start",
+                "ping",
+                "pane.get",
+                "ping",
+                "pane.process_info",
+                "ping",
+                "agent.start",
+                "ping",
+                "agent.start"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_create_busy_fails_closed_when_the_created_terminal_identity_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-create-replaced-terminal.sock");
+        let pong = || {
+            serde_json::json!({
+                "result": { "type": "pong", "version": "0.8.0", "protocol": 19 }
+            })
+        };
+        let server = spawn_scripted_api_server(
+            &socket,
+            vec![
+                ("ping", pong()),
+                ("ping", pong()),
+                (
+                    "server.agent_manifests",
+                    serde_json::json!({
+                        "result": {
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                { "agent": "codex", "source": "bundled", "source_kind": "bundled" }
+                            ]
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "tab.create",
+                    serde_json::json!({
+                        "result": {
+                            "type": "tab_created",
+                            "tab": { "tab_id": "w1:t2", "workspace_id": "w1", "label": "codex" },
+                            "root_pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-2",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "agent.start",
+                    serde_json::json!({
+                        "error": { "code": "agent_pane_busy", "message": "pane is occupied" }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "pane.get",
+                    serde_json::json!({
+                        "result": {
+                            "type": "pane_info",
+                            "pane": {
+                                "pane_id": "w1:p2",
+                                "terminal_id": "term-replaced",
+                                "tab_id": "w1:t2",
+                                "workspace_id": "w1"
+                            }
+                        }
+                    }),
+                ),
+                ("ping", pong()),
+                (
+                    "tab.close",
+                    serde_json::json!({
+                        "result": { "type": "tab_closed" }
+                    }),
+                ),
+            ],
+        );
+        let binary = write_agent_test_binary(dir.path(), &socket, true);
+
+        let manager = HerdrManager::with_binary(binary);
+        let error = manager
+            .agent_create(Some("default"), "w1".into(), "codex".into(), false)
+            .unwrap_err();
+        assert_eq!(error, "agent_pane_busy: pane is occupied");
+        let requests = server.join().unwrap();
+        assert!(!requests
+            .iter()
+            .any(|request| request["method"] == "pane.process_info"));
+        let close = requests
+            .iter()
+            .find(|request| request["method"] == "tab.close")
+            .unwrap();
+        assert_eq!(close["params"]["tab_id"], "w1:t2");
     }
 
     #[test]
@@ -5410,7 +6549,7 @@ mod tests {
     fn parse_subscription_event_line_reads_agent_status_changed() {
         let event = parse_subscription_event_line(
             "sub-1",
-            r#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"done","title":"Review"}}"#,
+            r#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"done","title":"Review","execution_origin":{"kind":"wsl","distribution":"Ubuntu"}}}"#,
         )
         .unwrap()
         .unwrap();
@@ -5419,14 +6558,53 @@ mod tests {
                 pane_id,
                 agent_status,
                 title,
+                execution_origin,
                 ..
             } => {
                 assert_eq!(pane_id, "w1:p1");
                 assert_eq!(agent_status, "done");
                 assert_eq!(title.as_deref(), Some("Review"));
+                assert_eq!(
+                    execution_origin,
+                    Some(serde_json::json!({"kind": "wsl", "distribution": "Ubuntu"}))
+                );
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn subscription_event_serializes_agent_status_changed_with_camel_case_fields() {
+        let event = HerdrSubscriptionEvent::AgentStatusChanged {
+            subscription_id: "sub-1".to_owned(),
+            pane_id: "w1:p1".to_owned(),
+            workspace_id: "w1".to_owned(),
+            agent_status: "working".to_owned(),
+            agent: Some("pi".to_owned()),
+            display_agent: Some("Pi".to_owned()),
+            title: Some("Review".to_owned()),
+            execution_origin: Some(serde_json::json!({
+                "kind": "wsl",
+                "distribution": "Ubuntu"
+            })),
+            state_labels: HashMap::from([("working".to_owned(), "Working".to_owned())]),
+        };
+
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "type": "agent_status_changed",
+                "subscriptionId": "sub-1",
+                "paneId": "w1:p1",
+                "workspaceId": "w1",
+                "agentStatus": "working",
+                "agent": "pi",
+                "displayAgent": "Pi",
+                "title": "Review",
+                "executionOrigin": { "kind": "wsl", "distribution": "Ubuntu" },
+                "stateLabels": { "working": "Working" }
+            })
+        );
     }
 
     #[test]
@@ -5535,6 +6713,79 @@ exit 2
         perms.set_mode(0o755);
         fs::set_permissions(&path, perms).unwrap();
         path
+    }
+
+    #[cfg(unix)]
+    fn write_agent_test_binary(dir: &Path, socket: &Path, probe_methods: bool) -> PathBuf {
+        let socket_path = socket.to_string_lossy();
+        let status = serde_json::json!({
+            "client": { "version": "0.8.0", "protocol": 19, "binary": "FAKE" },
+            "server": {
+                "status": "running",
+                "running": true,
+                "version": "0.8.0",
+                "protocol": 19,
+                "compatible": true,
+                "socket": socket_path
+            }
+        })
+        .to_string();
+        let mut methods = vec![
+            "session.snapshot",
+            "tab.create",
+            "tab.close",
+            "server.agent_manifests",
+            "agent.start",
+        ];
+        if probe_methods {
+            methods.extend(["pane.get", "pane.process_info"]);
+        }
+        let schema = serde_json::json!({
+            "protocol": 19,
+            "schema_version": 1,
+            "methods": methods
+        })
+        .to_string();
+        let sessions = serde_json::json!({
+            "sessions": [{
+                "name": "default",
+                "default": true,
+                "running": true,
+                "session_dir": "/tmp/default",
+                "socket_path": socket_path
+            }]
+        })
+        .to_string();
+        write_fake_herdr_with_sessions(dir, &status, &schema, &sessions)
+    }
+
+    #[cfg(unix)]
+    fn spawn_scripted_api_server(
+        socket: &Path,
+        script: Vec<(&'static str, serde_json::Value)>,
+    ) -> std::thread::JoinHandle<Vec<serde_json::Value>> {
+        use std::os::unix::net::UnixListener;
+
+        let listener = UnixListener::bind(socket).unwrap();
+        std::thread::spawn(move || {
+            let mut requests = Vec::with_capacity(script.len());
+            for (expected_method, mut response) in script {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(request.trim()).unwrap();
+                assert_eq!(request["method"].as_str(), Some(expected_method));
+                response
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("id".into(), request["id"].clone());
+                writeln!(stream, "{response}").unwrap();
+                requests.push(request);
+            }
+            requests
+        })
     }
 
     #[cfg(unix)]

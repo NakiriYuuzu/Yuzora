@@ -21,6 +21,7 @@ pub const MAX_WORKSPACE_COUNT: usize = 512;
 pub const MAX_TAB_COUNT: usize = 2048;
 pub const MAX_PANE_COUNT: usize = 4096;
 pub const MAX_AGENT_COUNT: usize = 4096;
+pub const MAX_AGENT_MANIFEST_COUNT: usize = 256;
 pub const MAX_WORKTREE_COUNT: usize = 512;
 pub const MAX_STATE_LABELS: usize = 64;
 
@@ -65,6 +66,7 @@ impl HerdrProtocolError {
                 "tabs" => "Herdr snapshot tab count exceeds the limit",
                 "panes" => "Herdr snapshot pane count exceeds the limit",
                 "agents" => "Herdr snapshot agent count exceeds the limit",
+                "agent_manifests" => "Herdr agent manifest count exceeds the limit",
                 "layouts" => "Herdr snapshot layout count exceeds the limit",
                 "sessions" => "Herdr session count exceeds the limit",
                 "worktrees" => "Herdr worktree count exceeds the limit",

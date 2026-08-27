@@ -11,12 +11,50 @@ import { groupRowsByRun, shortRunId, UNKNOWN_RUN } from "@/features/logs/runGrou
 import type { LogRecord, SanitizeSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { SettingCard, SettingsTextInput } from "./settingsPrimitives"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 // 必須與 Rust 的 logging::VALID_KINDS 一致，否則新 kind 的 record 永遠篩不出來。
 const LOG_KIND_OPTIONS = ["debug", "user_action", "audit", "app_lifecycle"]
 const LOG_LEVEL_OPTIONS = ["debug", "info", "warn", "error"]
 const LOG_QUERY_LIMIT = 500
+const LOG_RESULT_PAGE_SIZE = 50
+
+function isValidIsoTimestamp(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return true
+
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed)
+  if (dateOnly) {
+    return isValidCalendarDate(dateOnly[1], dateOnly[2], dateOnly[3])
+  }
+
+  const datetimeLocal = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?$/.exec(trimmed)
+  if (datetimeLocal) {
+    return isValidCalendarDate(datetimeLocal[1], datetimeLocal[2], datetimeLocal[3])
+      && isValidTime(datetimeLocal[4], datetimeLocal[5], datetimeLocal[6])
+  }
+
+  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(trimmed)
+  return rfc3339 !== null
+    && isValidCalendarDate(rfc3339[1], rfc3339[2], rfc3339[3])
+    && isValidTime(rfc3339[4], rfc3339[5], rfc3339[6])
+    && (rfc3339[7] === undefined || Number(rfc3339[7]) <= 23)
+    && (rfc3339[8] === undefined || Number(rfc3339[8]) <= 59)
+}
+
+function isValidCalendarDate(yearText: string, monthText: string, dayText: string): boolean {
+  const year = Number(yearText)
+  const month = Number(monthText)
+  const day = Number(dayText)
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1]
+}
+
+function isValidTime(hourText: string, minuteText: string, secondText = "0"): boolean {
+  return Number(hourText) <= 23 && Number(minuteText) <= 59 && Number(secondText) <= 59
+}
 
 function toggleFilterValue(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
@@ -93,6 +131,13 @@ export function LogsSection({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [verbose, setVerbose] = useState(false)
+  const [resultPage, setResultPage] = useState(0)
+  const sinceError = isValidIsoTimestamp(since)
+    ? null
+    : t("settings.logs.timeInvalid", { field: "since" })
+  const untilError = isValidIsoTimestamp(until)
+    ? null
+    : t("settings.logs.timeInvalid", { field: "until" })
 
   useEffect(() => {
     let alive = true
@@ -101,7 +146,7 @@ export function LogsSection({
         if (alive) setSources(items)
       })
       .catch((e) => {
-        if (alive) setError(`log_sources 失敗：${String(e)}`)
+        if (alive) setError(t("settings.logs.sourcesFailed", { error: String(e) }))
       })
     return () => {
       alive = false
@@ -127,6 +172,10 @@ export function LogsSection({
   }, [initialSource, openNonce])
 
   useEffect(() => {
+    if (!isValidIsoTimestamp(since) || !isValidIsoTimestamp(until)) {
+      setLoading(false)
+      return
+    }
     let alive = true
     const timer = setTimeout(() => {
       const filters = buildLogFilters({ selectedKinds, selectedLevels, source, text, since, until })
@@ -136,12 +185,14 @@ export function LogsSection({
         .then((records) => {
           if (!alive) return
           setRows(records)
+          setResultPage(0)
+          setExpanded({})
           // run 分組是從**這一批結果**導出的，因此每次重新查詢都必須清掉 run
           // 篩選：留著上一批的 run id 會讓畫面變成空清單，而使用者看不出原因。
           setRunFilter(null)
         })
         .catch((e) => {
-          if (alive) setError(`log_query 失敗：${String(e)}`)
+          if (alive) setError(t("settings.logs.queryFailed", { error: String(e) }))
         })
         .finally(() => {
           if (alive) setLoading(false)
@@ -158,6 +209,12 @@ export function LogsSection({
   const runGroups = groupRowsByRun(rows)
   const visibleRows =
     runFilter === null ? rows : rows.filter((row) => (row.run_id ?? UNKNOWN_RUN) === runFilter)
+  const resultPageCount = Math.max(1, Math.ceil(visibleRows.length / LOG_RESULT_PAGE_SIZE))
+  const activeResultPage = Math.min(resultPage, resultPageCount - 1)
+  const pageRows = visibleRows.slice(
+    activeResultPage * LOG_RESULT_PAGE_SIZE,
+    (activeResultPage + 1) * LOG_RESULT_PAGE_SIZE
+  )
 
   // Copy 與 Export 走同一條 Rust redaction（log_sanitize_lines / log_export），
   // sanitize checkbox 對兩者的語意一致。
@@ -165,21 +222,20 @@ export function LogsSection({
     setError(null)
     setNotice(null)
     try {
-      // 複製畫面上看得到的那些 rows——套了 run 篩選卻複製到全部，會與使用者
-      // 眼前的內容不符。
+      // 複製目前結果頁看得到的 rows；run 篩選與分頁都必須反映在 clipboard。
       const payload = sanitize
-        ? (await logSanitizeLines(visibleRows.map((row) => JSON.stringify(row)))).map(
+        ? (await logSanitizeLines(pageRows.map((row) => JSON.stringify(row)))).map(
             parseRedactedRow
           )
-        : visibleRows
+        : pageRows
       await writeText(JSON.stringify(payload, null, 2))
       setNotice(
         sanitize
-          ? `已複製 ${visibleRows.length} rows（已 sanitize）`
-          : `已複製 ${visibleRows.length} rows（raw，未 sanitize）`
+          ? t("settings.logs.copiedSanitized", { count: pageRows.length })
+          : t("settings.logs.copiedRaw", { count: pageRows.length })
       )
     } catch (e) {
-      setError(`Copy 失敗：${String(e)}`)
+      setError(t("settings.logs.copyFailed", { error: String(e) }))
     }
   }
 
@@ -189,7 +245,7 @@ export function LogsSection({
     setSanitizeSummary(null)
     try {
       const dest = await save({
-        title: "Export logs bundle",
+        title: t("settings.logs.exportDialogTitle"),
         defaultPath: "Yuzora-logs.zip",
         filters: [{ name: "ZIP", extensions: ["zip"] }],
         canCreateDirectories: true,
@@ -197,9 +253,9 @@ export function LogsSection({
       if (!dest) return
       const exported = await logExport(dest, sanitize)
       setSanitizeSummary(exported.summary)
-      setNotice(`已匯出：${exported.path}`)
+      setNotice(t("settings.logs.exported", { path: exported.path }))
     } catch (e) {
-      setError(`Export bundle 失敗：${String(e)}`)
+      setError(t("settings.logs.exportFailed", { error: String(e) }))
     }
   }
 
@@ -209,9 +265,9 @@ export function LogsSection({
     try {
       const dir = await join(await homeDir(), ".yuzora", "logs")
       await openPath(dir)
-      setNotice(`已開啟 logs folder：${dir}`)
+      setNotice(t("settings.logs.openedFolder", { path: dir }))
     } catch (e) {
-      setError(`Open logs folder 失敗：${String(e)}`)
+      setError(t("settings.logs.openFolderFailed", { error: String(e) }))
     }
   }
 
@@ -220,19 +276,19 @@ export function LogsSection({
     setError(null)
     try {
       await setLogLevel(next ? "debug" : "info")
-      setNotice(next ? "已開啟 verbose logging（debug 會落盤）" : "已關閉 verbose logging")
+      setNotice(next ? t("settings.logs.verboseEnabled") : t("settings.logs.verboseDisabled"))
     } catch (e) {
       setVerbose(!next) // 失敗回滾 UI
-      setError(`設定 log level 失敗：${String(e)}`)
+      setError(t("settings.logs.logLevelFailed", { error: String(e) }))
     }
   }
 
   return (
     <div className="flex flex-col gap-[14px]">
-      <SettingCard label="篩選" sub="log_query filters">
+      <SettingCard label={t("settings.logs.filters")} sub={t("settings.logs.filtersSub")}>
         <div className="flex flex-col gap-[12px]">
           <div className="grid grid-cols-2 gap-[12px]">
-            <div role="group" aria-label="kind 篩選" className="flex flex-col gap-[6px]">
+            <div role="group" aria-label={t("settings.logs.kindFilter")} className="flex flex-col gap-[6px]">
               <span className="text-[11.5px] font-medium text-(--ink-2)">kind</span>
               <div className="flex flex-wrap gap-[6px]">
                 {LOG_KIND_OPTIONS.map((kind) => {
@@ -257,7 +313,7 @@ export function LogsSection({
               </div>
             </div>
 
-            <div role="group" aria-label="level 篩選" className="flex flex-col gap-[6px]">
+            <div role="group" aria-label={t("settings.logs.levelFilter")} className="flex flex-col gap-[6px]">
               <span className="text-[11.5px] font-medium text-(--ink-2)">level</span>
               <div className="flex flex-wrap gap-[6px]">
                 {LOG_LEVEL_OPTIONS.map((level) => {
@@ -285,14 +341,14 @@ export function LogsSection({
 
           <div className="grid grid-cols-2 gap-[12px]">
             <label className="flex flex-col gap-[6px]">
-              <span className="text-[11.5px] font-medium text-(--ink-2)">source</span>
+              <span className="text-[11.5px] font-medium text-(--ink-2)">{t("settings.logs.source")}</span>
               <select
-                aria-label="source 篩選"
+                aria-label={t("settings.logs.sourceFilter")}
                 value={source}
                 onChange={(event) => setSource(event.currentTarget.value)}
                 className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent)"
               >
-                <option value="">全部 sources</option>
+                <option value="">{t("settings.logs.allSources")}</option>
                 {sources.map((item) => (
                   <option key={item} value={item}>
                     {item}
@@ -302,12 +358,12 @@ export function LogsSection({
             </label>
 
             <label className="flex flex-col gap-[6px]">
-              <span className="text-[11.5px] font-medium text-(--ink-2)">文字搜尋</span>
+              <span className="text-[11.5px] font-medium text-(--ink-2)">{t("settings.logs.textSearch")}</span>
               <input
-                aria-label="文字搜尋"
+                aria-label={t("settings.logs.textSearch")}
                 type="search"
                 value={text}
-                placeholder="event 或 message"
+                placeholder={t("settings.logs.textSearchPlaceholder")}
                 onChange={(event) => setText(event.currentTarget.value)}
                 className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent)"
               />
@@ -320,18 +376,22 @@ export function LogsSection({
               value={since}
               placeholder="2026-01-02T00:00:00+08:00"
               onChange={setSince}
+              error={sinceError}
+              errorId="logs-since-error"
             />
             <SettingsTextInput
               label="until"
               value={until}
               placeholder="2026-01-03T00:00:00+08:00"
               onChange={setUntil}
+              error={untilError}
+              errorId="logs-until-error"
             />
           </div>
         </div>
       </SettingCard>
 
-      <SettingCard label="動作" sub="Copy / Export bundle / Open logs folder">
+      <SettingCard label={t("settings.logs.actions")} sub={t("settings.logs.actionsSub")}>
         <div className="flex flex-wrap items-center gap-[8px]">
           <button
             type="button"
@@ -340,7 +400,7 @@ export function LogsSection({
             className="flex h-[28px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[11px] text-[11.5px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover) disabled:opacity-50"
           >
             <Copy className="size-[12px]" aria-hidden="true" />
-            Copy
+            {t("settings.logs.copy")}
           </button>
           <button
             type="button"
@@ -348,7 +408,7 @@ export function LogsSection({
             className="flex h-[28px] items-center gap-[6px] rounded-[8px] bg-(--yz-solid) px-[11px] text-[11.5px] font-semibold text-(--ink-0) shadow-(--shadow-xs) transition-colors hover:bg-(--yz-hover)"
           >
             <Download className="size-[12px]" aria-hidden="true" />
-            Export bundle
+            {t("settings.logs.exportBundle")}
           </button>
           <button
             type="button"
@@ -356,7 +416,7 @@ export function LogsSection({
             className="flex h-[28px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[11px] text-[11.5px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
           >
             <FolderOpen className="size-[12px]" aria-hidden="true" />
-            Open logs folder
+            {t("settings.logs.openLogsFolder")}
           </button>
           <label className="flex h-[28px] items-center gap-[7px] text-[11.5px] text-(--ink-2)">
             <input
@@ -365,7 +425,7 @@ export function LogsSection({
               onChange={(event) => void toggleVerbose(event.currentTarget.checked)}
               className="size-[13px] accent-(--yz-accent)"
             />
-            Verbose logging (debug)
+            {t("settings.logs.verboseLogging")}
           </label>
           <label className="ml-auto flex h-[28px] items-center gap-[7px] text-[11.5px] text-(--ink-2)">
             <input
@@ -377,7 +437,7 @@ export function LogsSection({
               }}
               className="size-[13px] accent-(--yz-accent)"
             />
-            sanitize
+            {t("settings.logs.sanitize")}
           </label>
         </div>
         {sanitize ? (
@@ -426,13 +486,19 @@ export function LogsSection({
       </SettingCard>
 
       <SettingCard
-        label="結果"
-        sub={loading ? "載入中..." : `${visibleRows.length} / ${rows.length} rows · ${runGroups.length} runs`}
+        label={t("settings.logs.results")}
+        sub={loading
+          ? t("settings.logs.loading")
+          : t("settings.logs.resultSummary", {
+              visible: visibleRows.length,
+              total: rows.length,
+              runs: runGroups.length,
+            })}
       >
         {runGroups.length > 0 && (
           <div
             role="group"
-            aria-label="app run 分組"
+            aria-label={t("settings.logs.runGroups")}
             data-testid="logs-run-groups"
             className="mb-[10px] flex flex-wrap gap-[6px]"
           >
@@ -445,7 +511,11 @@ export function LogsSection({
                   aria-pressed={active}
                   data-testid={`logs-run-group-${group.runId}`}
                   title={`${group.runId}\n${group.startedAt} → ${group.endedAt}`}
-                  onClick={() => setRunFilter(active ? null : group.runId)}
+                  onClick={() => {
+                    setRunFilter(active ? null : group.runId)
+                    setResultPage(0)
+                    setExpanded({})
+                  }}
                   className={cn(
                     "h-[26px] rounded-[8px] border px-[9px] font-mono text-[11px] transition-colors",
                     active
@@ -459,32 +529,68 @@ export function LogsSection({
             })}
           </div>
         )}
+        {resultPageCount > 1 ? (
+          <div className="mb-[10px] flex items-center justify-end gap-[8px]">
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              aria-label={t("settings.logs.previousPage")}
+              disabled={activeResultPage === 0}
+              onClick={() => setResultPage((page) => Math.max(0, page - 1))}
+              className="h-[26px] rounded-[8px] border border-(--line-1) px-[9px] text-[11px] text-(--ink-2) disabled:opacity-50"
+            >
+              {t("settings.logs.previous")}
+            </Button>
+            <span className="text-[11px] text-(--ink-3)">
+              {t("settings.logs.pageStatus", {
+                page: activeResultPage + 1,
+                pages: resultPageCount,
+              })}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              aria-label={t("settings.logs.nextPage")}
+              disabled={activeResultPage >= resultPageCount - 1}
+              onClick={() => setResultPage((page) => Math.min(resultPageCount - 1, page + 1))}
+              className="h-[26px] rounded-[8px] border border-(--line-1) px-[9px] text-[11px] text-(--ink-2) disabled:opacity-50"
+            >
+              {t("settings.logs.next")}
+            </Button>
+          </div>
+        ) : null}
         <ScrollArea
           orientation="horizontal"
           className="w-full"
-          contentClassName="flex flex-col gap-[7px]"
         >
+          <div role="list" aria-label={t("settings.logs.resultsList")} className="flex flex-col gap-[7px]">
           {visibleRows.length === 0 && !loading && (
             <div className="rounded-[8px] bg-(--yz-sunk) px-[10px] py-[12px] text-[11.5px] text-(--ink-3)">
-              沒有符合 filters 的 logs。
+              {t("settings.logs.noMatches")}
             </div>
           )}
-          {visibleRows.map((row, index) => {
-            const key = `${row.timestamp}:${row.source}:${row.event}:${index}`
+          {pageRows.map((row, index) => {
+            const resultIndex = activeResultPage * LOG_RESULT_PAGE_SIZE + index
+            const key = `${row.timestamp}:${row.source}:${row.event}:${resultIndex}`
             const isExpanded = expanded[key] === true
             return (
-              <div key={key} className="rounded-[10px] border border-(--line-1) bg-(--paper-0)">
+              <div role="listitem" key={key} className="rounded-[10px] border border-(--line-1) bg-(--paper-0)">
                 <button
                   type="button"
                   data-testid={`log-row-${row.event}`}
-                  aria-label={`${isExpanded ? "收合" : "展開"} metadata ${row.event}`}
+                  aria-label={t(
+                    isExpanded ? "settings.logs.collapseMetadata" : "settings.logs.expandMetadata",
+                    { event: row.event }
+                  )}
                   onClick={() => setExpanded((prev) => ({ ...prev, [key]: !isExpanded }))}
                   className="grid w-full grid-cols-[minmax(88px,1.3fr)_62px_40px_56px_52px_minmax(64px,1fr)_minmax(77px,1.4fr)] items-center gap-[8px] px-[10px] py-[8px] text-left text-[11px] text-(--ink-2) transition-colors hover:bg-(--yz-hover)"
                 >
                   <span className="truncate font-mono text-(--ink-3)">{row.timestamp}</span>
                   <span
                     data-testid={`log-row-run-${row.event}`}
-                    title={row.run_id ?? "pre-#40 record（無 run id）"}
+                    title={row.run_id ?? t("settings.logs.legacyRun")}
                     className="truncate font-mono text-(--ink-3)"
                   >
                     {row.run_id ? shortRunId(row.run_id) : UNKNOWN_RUN}
@@ -507,6 +613,7 @@ export function LogsSection({
               </div>
             )
           })}
+          </div>
         </ScrollArea>
       </SettingCard>
     </div>

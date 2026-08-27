@@ -129,6 +129,79 @@ describe("normalizeHerdrSnapshot", () => {
     expect(normalized.focusedTerminalId).toBe("term_1")
   })
 
+  it("normalizes only truthful WSL execution origins without changing Agent identity", () => {
+    const overlong = "x".repeat(129)
+    const normalized = normalizeHerdrSnapshot({
+      protocol: 19,
+      version: "0.8.2",
+      snapshot: {
+        agents: [
+          { terminal_id: "native", pane_id: "p-native", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "native" } },
+          { terminal_id: "absent", pane_id: "p-absent", workspace_id: "w", agent_status: "idle" },
+          { terminal_id: "valid", pane_id: "p-valid", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: "  Ubuntu  " } },
+          { terminal_id: "missing", pane_id: "p-missing", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl" } },
+          { terminal_id: "hostile", pane_id: "p-hostile", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: "Ubuntu\nspoof" } },
+          { terminal_id: "overlong", pane_id: "p-overlong", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: overlong } },
+          { terminal_id: "pane-origin", pane_id: "p-pane", workspace_id: "w", agent_status: "idle" }
+        ],
+        panes: [
+          { terminal_id: "pane-term", pane_id: "p-pane", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: "Debian" } }
+        ]
+      }
+    })
+    const byId = new Map(normalized.agents.map((agent) => [agent.id, agent]))
+
+    expect(byId.get("native")?.executionOrigin).toBeUndefined()
+    expect(byId.get("absent")?.executionOrigin).toBeUndefined()
+    expect(byId.get("valid")).toMatchObject({
+      id: "valid",
+      paneId: "p-valid",
+      workspaceId: "w",
+      executionOrigin: { kind: "wsl", distribution: "Ubuntu" }
+    })
+    expect(byId.get("missing")?.executionOrigin).toEqual({ kind: "wsl" })
+    expect(byId.get("hostile")?.executionOrigin).toEqual({ kind: "wsl" })
+    expect(byId.get("overlong")?.executionOrigin).toEqual({ kind: "wsl" })
+    expect(byId.get("pane-origin")?.executionOrigin).toEqual({
+      kind: "wsl",
+      distribution: "Debian"
+    })
+    expect(normalized.terminals[0]?.executionOrigin).toEqual({
+      kind: "wsl",
+      distribution: "Debian"
+    })
+  })
+
+  it("uses pane WSL origin only when the Agent origin is absent", () => {
+    const normalized = normalizeHerdrSnapshot({
+      protocol: 19,
+      version: "0.8.2",
+      snapshot: {
+        agents: [
+          { terminal_id: "absent", pane_id: "p-absent", workspace_id: "w", agent_status: "idle" },
+          { terminal_id: "native", pane_id: "p-native", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "native" } },
+          { terminal_id: "unknown", pane_id: "p-unknown", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "other" } },
+          { terminal_id: "malformed", pane_id: "p-malformed", workspace_id: "w", agent_status: "idle", execution_origin: "wsl" }
+        ],
+        panes: [
+          { terminal_id: "absent-pane", pane_id: "p-absent", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: "Ubuntu" } },
+          { terminal_id: "native-pane", pane_id: "p-native", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: "Debian" } },
+          { terminal_id: "unknown-pane", pane_id: "p-unknown", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: "Fedora" } },
+          { terminal_id: "malformed-pane", pane_id: "p-malformed", workspace_id: "w", agent_status: "idle", execution_origin: { kind: "wsl", distribution: "Alpine" } }
+        ]
+      }
+    })
+    const byId = new Map(normalized.agents.map((agent) => [agent.id, agent]))
+
+    expect(byId.get("absent")?.executionOrigin).toEqual({
+      kind: "wsl",
+      distribution: "Ubuntu"
+    })
+    expect(byId.get("native")?.executionOrigin).toBeUndefined()
+    expect(byId.get("unknown")?.executionOrigin).toBeUndefined()
+    expect(byId.get("malformed")?.executionOrigin).toBeUndefined()
+  })
+
   it("tolerates empty or malformed payload", () => {
     const empty = normalizeHerdrSnapshot({
       protocol: 19,

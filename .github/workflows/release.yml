@@ -6,39 +6,177 @@ on:
     types: [completed]
     branches: [main]
 
+# Repository code is always executed with read-only contents access. Only the
+# no-checkout tag/assembly/metadata-upload/publish jobs opt into contents: write.
 permissions:
-  contents: write
+  contents: read
 
-# A release PR merge can only publish once its exact main push CI succeeds.
-# Serialize runs so two main commits cannot race to claim the same version tag.
+# Serialize releases so two successful main commits cannot claim one tag.
 concurrency:
   group: release-main
   cancel-in-progress: false
 
 jobs:
   guard:
-    name: Main CI / version consistency
+    name: Main CI / release channel
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       source_sha: ${{ steps.release.outputs.source_sha }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      channel: ${{ steps.release.outputs.channel }}
+      is_beta: ${{ steps.release.outputs.is_beta }}
       should_build: ${{ steps.release.outputs.should_build }}
       should_publish_existing: ${{ steps.release.outputs.should_publish_existing }}
+      should_create_tag: ${{ steps.release.outputs.should_create_tag }}
+      release_notes_b64: ${{ steps.release.outputs.release_notes_b64 }}
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout@releases/v4 backport-fix commit (#2524), verified upstream.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      # oven-sh/setup-bun@v2.2.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
-      - name: Validate updater signing inputs
+      - name: Resolve release target
+        id: release
+        shell: bash
+        # Read-only token: this checked-out source job never receives contents: write.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          if [ "$CHECKED_OUT_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::checked out $CHECKED_OUT_SHA instead of successful main CI SHA $SOURCE_SHA"
+            exit 1
+          fi
+
+          VERSION="$(jq -er '.version' package.json)"
+          CHANNEL="$(bun -e 'import { assertReleaseVersion } from "./scripts/release-version.ts"; console.log(assertReleaseVersion(process.argv[1]))' "$VERSION")"
+          TAG_NAME="v${VERSION}"
+          IS_BETA=false
+          if [ "$CHANNEL" = "beta" ]; then IS_BETA=true; fi
+          RELEASE_RESPONSE="$(mktemp)"
+          TAG_RESPONSE="$(mktemp)"
+          TAG_OBJECT_RESPONSE="$(mktemp)"
+          RELEASE_NOTES_FILE="$(mktemp)"
+          trap 'rm -f "$RELEASE_RESPONSE" "$TAG_RESPONSE" "$TAG_OBJECT_RESPONSE" "$RELEASE_NOTES_FILE"' EXIT
+
+          api_response_is_404() {
+            grep -Eq '^HTTP/[^ ]+ 404( |$)' <<<"$1"
+          }
+
+          # Release state comes first: a matching-channel published release is
+          # immutable and must safely skip later unrelated main commits.
+          RELEASE_JSON="null"
+          set +e
+          gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" >"$RELEASE_RESPONSE" 2>&1
+          RELEASE_STATUS=$?
+          set -e
+          if [ "$RELEASE_STATUS" -eq 0 ]; then
+            RAW_RELEASE_JSON="$(sed -n '/^{/,$p' "$RELEASE_RESPONSE")"
+            if ! jq -e \
+              '(.draft | type) == "boolean" and (.prerelease | type) == "boolean"' \
+              <<<"$RAW_RELEASE_JSON" >/dev/null; then
+              echo "::error::GitHub Release state is missing boolean draft/prerelease flags"
+              exit 1
+            fi
+            RELEASE_JSON="$(jq -c \
+              '{isDraft: .draft, isPrerelease: .prerelease}' \
+              <<<"$RAW_RELEASE_JSON")"
+          elif ! api_response_is_404 "$(cat "$RELEASE_RESPONSE")"; then
+            cat "$RELEASE_RESPONSE" >&2
+            echo "::error::could not resolve GitHub Release state for ${TAG_NAME}"
+            exit 1
+          fi
+
+          TAG_SHA=""
+          set +e
+          gh api --include "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}" >"$TAG_RESPONSE" 2>&1
+          TAG_STATUS=$?
+          set -e
+          if [ "$TAG_STATUS" -eq 0 ]; then
+            TAG_REF_JSON="$(sed -n '/^{/,$p' "$TAG_RESPONSE")"
+            TAG_OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_REF_JSON")"
+            TAG_OBJECT_SHA="$(jq -er '.object.sha' <<<"$TAG_REF_JSON")"
+            if [ "$TAG_OBJECT_TYPE" = "tag" ]; then
+              set +e
+              gh api --include "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}" >"$TAG_OBJECT_RESPONSE" 2>&1
+              TAG_OBJECT_STATUS=$?
+              set -e
+              if [ "$TAG_OBJECT_STATUS" -ne 0 ]; then
+                cat "$TAG_OBJECT_RESPONSE" >&2
+                echo "::error::could not resolve annotated Git tag object for ${TAG_NAME}"
+                exit 1
+              fi
+              TAG_OBJECT_JSON="$(sed -n '/^{/,$p' "$TAG_OBJECT_RESPONSE")"
+              TAG_OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_OBJECT_JSON")"
+              TAG_SHA="$(jq -er '.object.sha' <<<"$TAG_OBJECT_JSON")"
+            else
+              TAG_SHA="$TAG_OBJECT_SHA"
+            fi
+            if [ "$TAG_OBJECT_TYPE" != "commit" ]; then
+              echo "::error::${TAG_NAME} does not resolve to a commit"
+              exit 1
+            fi
+          elif ! api_response_is_404 "$(cat "$TAG_RESPONSE")"; then
+            cat "$TAG_RESPONSE" >&2
+            echo "::error::could not resolve Git tag state for ${TAG_NAME}"
+            exit 1
+          fi
+
+          STATE_INPUT="$(jq -cn \
+            --arg channel "$CHANNEL" \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg tagSha "$TAG_SHA" \
+            --argjson release "$RELEASE_JSON" \
+            '{channel:$channel,sourceSha:$sourceSha,tagSha:(if $tagSha == "" then null else $tagSha end),release:$release}')"
+          RESOLUTION="$(YUZORA_RELEASE_STATE="$STATE_INPUT" bun scripts/release-state.ts)"
+          SHOULD_BUILD="$(jq -er '.shouldBuild' <<<"$RESOLUTION")"
+          SHOULD_PUBLISH_EXISTING="$(jq -er '.shouldPublishExisting' <<<"$RESOLUTION")"
+          SHOULD_CREATE_TAG=false
+          if [ "$SHOULD_BUILD" = "true" ] && [ -z "$TAG_SHA" ]; then
+            SHOULD_CREATE_TAG=true
+          fi
+          # release-notes.ts writes the actual CHANGELOG section only when an
+          # output path is supplied; stdout is deliberately a verifier status.
+          bun scripts/release-notes.ts "$TAG_NAME" "$RELEASE_NOTES_FILE"
+          RELEASE_NOTES_B64="$(base64 -w0 < "$RELEASE_NOTES_FILE")"
+
+          {
+            echo "source_sha=${SOURCE_SHA}"
+            echo "tag_name=${TAG_NAME}"
+            echo "channel=${CHANNEL}"
+            echo "is_beta=${IS_BETA}"
+            echo "should_build=${SHOULD_BUILD}"
+            echo "should_publish_existing=${SHOULD_PUBLISH_EXISTING}"
+            echo "should_create_tag=${SHOULD_CREATE_TAG}"
+            echo "release_notes_b64=${RELEASE_NOTES_B64}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag and product versions
+        run: >-
+          GITHUB_REF_NAME="${{ steps.release.outputs.tag_name }}"
+          bun run check:version
+
+      - name: Verify user-facing release notes
+        run: bun scripts/release-notes.ts "${{ steps.release.outputs.tag_name }}"
+
+      - name: Validate stable updater signing inputs
+        if: steps.release.outputs.is_beta != 'true'
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -53,218 +191,504 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve release target
-        id: release
+      - name: Verify stable updater release contract
+        if: steps.release.outputs.is_beta != 'true'
+        run: bun run check:updater-release
+
+      - name: Verify beta prerelease contract
+        if: steps.release.outputs.is_beta == 'true'
+        run: bun run check:beta-release
+
+  create-tag:
+    name: Create annotated release tag
+    needs: guard
+    if: needs.guard.outputs.should_create_tag == 'true'
+    runs-on: ubuntu-latest
+    # No checkout and no repository-controlled code execute in this write job.
+    permissions:
+      contents: write
+    steps:
+      - name: Create annotated tag from verified main commit
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
         run: |
           set -euo pipefail
-
-          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          if [ "$CHECKED_OUT_SHA" != "$SOURCE_SHA" ]; then
-            echo "::error::checked out $CHECKED_OUT_SHA instead of successful main CI SHA $SOURCE_SHA"
-            exit 1
-          fi
-
-          VERSION="$(jq -er '.version' package.json)"
-          TAG_NAME="v${VERSION}"
-          SHOULD_BUILD=false
-          SHOULD_PUBLISH_EXISTING=false
-
-          git fetch --force --tags origin
-          if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
-            TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG_NAME}")"
-            if RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft 2>/dev/null)"; then
-              if [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ]; then
-                SHOULD_PUBLISH_EXISTING=true
-                echo "Found draft ${TAG_NAME} at ${TAG_SHA}; verify and publish it after this guard."
-              else
-                echo "${TAG_NAME} is already published; this main commit does not create another release."
-              fi
-            elif [ "$TAG_SHA" = "$SOURCE_SHA" ]; then
-              SHOULD_BUILD=true
-              echo "Found ${TAG_NAME} at this exact main CI SHA without a Release; resume its build."
-            else
-              echo "::error::${TAG_NAME} exists at ${TAG_SHA} but has no GitHub Release"
-              exit 1
-            fi
-          else
-            SHOULD_BUILD=true
-            echo "No ${TAG_NAME} exists; create it from successful main CI SHA ${SOURCE_SHA}."
-          fi
-
-          {
-            echo "source_sha=${SOURCE_SHA}"
-            echo "tag_name=${TAG_NAME}"
-            echo "should_build=${SHOULD_BUILD}"
-            echo "should_publish_existing=${SHOULD_PUBLISH_EXISTING}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Verify tag and product versions
-        run: >-
-          GITHUB_REF_NAME="${{ steps.release.outputs.tag_name }}"
-          bun run check:version
-
-      - name: Verify user-facing release notes
-        run: bun scripts/release-notes.ts "${{ steps.release.outputs.tag_name }}"
-
-      - name: Verify updater release contract
-        run: bun run check:updater-release
-
-      - name: Create release tag from verified main commit
-        if: steps.release.outputs.should_build == 'true'
-        shell: bash
-        env:
-          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
-          TAG_NAME: ${{ steps.release.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-
-          if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
-            TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG_NAME}")"
-            if [ "$TAG_SHA" != "$SOURCE_SHA" ]; then
-              echo "::error::${TAG_NAME} moved to ${TAG_SHA}; expected ${SOURCE_SHA}"
-              exit 1
-            fi
-            exit 0
-          fi
-
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git tag -a "$TAG_NAME" "$SOURCE_SHA" -m "Yuzora ${TAG_NAME}"
-          git push origin "refs/tags/${TAG_NAME}"
+          TAG_OBJECT_SHA="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" \
+            -f tag="$TAG_NAME" \
+            -f message="Yuzora ${TAG_NAME}" \
+            -f object="$SOURCE_SHA" \
+            -f type=commit \
+            --jq '.sha')"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG_NAME}" \
+            -f sha="$TAG_OBJECT_SHA" >/dev/null
 
   build:
-    needs: guard
-    if: needs.guard.outputs.should_build == 'true'
+    name: Build ${{ matrix.label }} installers
+    needs: [guard, create-tag]
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      needs.guard.outputs.should_build == 'true' &&
+      (needs.create-tag.result == 'success' || needs.create-tag.result == 'skipped')
+    runs-on: ${{ matrix.platform }}
+    # Repository build hooks receive no contents-write token.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: "--target universal-apple-darwin"
-            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
-          - platform: windows-latest
-            args: ""
-            rust-targets: ""
-    runs-on: ${{ matrix.platform }}
+          - label: macOS universal
+            artifact_name: macos
+            platform: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            build_args: --target universal-apple-darwin
+          - label: Windows x86-64
+            artifact_name: windows
+            platform: windows-latest
+            rust_targets: ""
+            build_args: ""
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout@releases/v4 backport-fix commit (#2524), verified upstream.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ needs.guard.outputs.source_sha }}
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      # oven-sh/setup-bun@v2.2.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
-      - uses: dtolnay/rust-toolchain@stable
+      # dtolnay/rust-toolchain action pinned; release compiler pinned below.
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
-          targets: ${{ matrix.rust-targets }}
+          toolchain: 1.96.0
+          targets: ${{ matrix.rust_targets }}
 
-      - uses: Swatinem/rust-cache@v2
+      # Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Extract user-facing release notes
-        id: release-notes
+      - name: Import Developer ID Application certificate
+        if: matrix.artifact_name == 'macos'
         shell: bash
-        run: |
-          bun scripts/release-notes.ts "${{ needs.guard.outputs.tag_name }}" release-notes.md
-          {
-            echo 'body<<YUZORA_RELEASE_NOTES'
-            cat release-notes.md
-            echo 'YUZORA_RELEASE_NOTES'
-          } >> "$GITHUB_OUTPUT"
-
-      - uses: tauri-apps/tauri-action@v0
-        id: tauri
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for variable in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID; do
+            if [ -z "${!variable:-}" ]; then
+              echo "::error::${variable} is required for every released macOS installer"
+              exit 1
+            fi
+          done
+          case "$APPLE_SIGNING_IDENTITY" in
+            "Developer ID Application:"*) ;;
+            *)
+              echo "::error::APPLE_SIGNING_IDENTITY must name a Developer ID Application identity"
+              exit 1
+              ;;
+          esac
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/yuzora-developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/yuzora-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          ORIGINAL_KEYCHAIN="$(security default-keychain -d user | sed -E 's/^[[:space:]]*\"([^\"]+)\".*/\1/')"
+
+          {
+            echo "YUZORA_MACOS_CERTIFICATE_PATH=${CERTIFICATE_PATH}"
+            echo "YUZORA_MACOS_KEYCHAIN=${KEYCHAIN_PATH}"
+            echo "YUZORA_MACOS_ORIGINAL_KEYCHAIN=${ORIGINAL_KEYCHAIN}"
+          } >> "$GITHUB_ENV"
+
+          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep -Fq -- "\"${APPLE_SIGNING_IDENTITY}\""; then
+            echo "::error::configured Developer ID Application identity was not imported"
+            exit 1
+          fi
+
+      - name: Build signed and notarized stable macOS installers
+        if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
+        shell: bash
+        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # ---- macOS 簽章／notarization（Phase 2：補上 secrets 即自動生效）----
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          tagName: ${{ needs.guard.outputs.tag_name }}
-          releaseName: "Yuzora ${{ needs.guard.outputs.tag_name }}"
-          releaseBody: ${{ steps.release-notes.outputs.body }}
-          # Matrix jobs share a draft while assets are incomplete. The publish
-          # job removes draft status only after every platform and metadata gate.
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: false
-          tauriScript: bun tauri
-          args: ${{ matrix.args }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION")"
+          bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
-      # 產品頁「直接下載」用的固定檔名別名（方案 A）：
-      # tauri-action 的產物檔名含版本號，這裡把主要安裝檔以不變的檔名
-      # 再上傳一份到同一個暫態 draft release，讓
-      # releases/latest/download/<固定檔名> 永久有效。
-      # 檔名若要變更，須同步修改 site/index.html 的下載連結。
-      - name: Upload fixed-name alias assets
+      - name: Build stable Windows installers
+        if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'windows'
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
-          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          # Windows 的 jq.exe 輸出 CRLF，殘留的 \r 會讓 case 樣式永不匹配而靜默跳過
-          echo "$ARTIFACTS" | jq -r '.[]' | tr -d '\r' | while read -r f; do
-            case "$f" in
-              *.dmg)       alias="Yuzora-macos-universal.dmg" ;;
-              *setup.exe)  alias="Yuzora-windows-x64-setup.exe" ;;
-              *.msi)       alias="Yuzora-windows-x64.msi" ;;
-              *)           continue ;;
-            esac
-            echo "upload $f -> $alias"
-            curl -sf -X POST \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"$f" \
-              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${alias}" > /dev/null
-          done
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION")"
+          bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
-  finalize-updater-metadata:
-    name: Finalize updater metadata
-    needs: [guard, build]
+      - name: Build signed and notarized beta macOS installers
+        if: needs.guard.outputs.is_beta == 'true' && matrix.artifact_name == 'macos'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
+          bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
+
+      - name: Build unsigned beta Windows installers
+        if: needs.guard.outputs.is_beta == 'true' && matrix.artifact_name == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.guard.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
+          bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
+
+      - name: Verify macOS Developer ID signature, Gatekeeper, and notarization
+        if: matrix.artifact_name == 'macos'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+          APPS=("$BUNDLE_DIR"/macos/*.app)
+          DMGS=("$BUNDLE_DIR"/dmg/*.dmg)
+          if [ "${#APPS[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one macOS app bundle, found ${#APPS[@]}"
+            exit 1
+          fi
+          if [ "${#DMGS[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one macOS DMG, found ${#DMGS[@]}"
+            exit 1
+          fi
+          APP_PATH="${APPS[0]}"
+          DMG_PATH="${DMGS[0]}"
+
+          codesign --verify --deep --strict --verbose=4 "$APP_PATH"
+          SIGNATURE_INFO="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+          grep -Fq "Authority=Developer ID Application:" <<<"$SIGNATURE_INFO" || {
+            echo "::error::macOS app is not signed with Developer ID Application"
+            exit 1
+          }
+          grep -Fq "TeamIdentifier=${APPLE_TEAM_ID}" <<<"$SIGNATURE_INFO" || {
+            echo "::error::macOS app TeamIdentifier does not match APPLE_TEAM_ID"
+            exit 1
+          }
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          xcrun stapler validate "$DMG_PATH"
+
+      - name: Remove temporary macOS signing keychain
+        if: always() && matrix.artifact_name == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLEANUP_STATUS=0
+          if [ -n "${YUZORA_MACOS_ORIGINAL_KEYCHAIN:-}" ]; then
+            security default-keychain -s "$YUZORA_MACOS_ORIGINAL_KEYCHAIN" || CLEANUP_STATUS=$?
+          fi
+          if [ -n "${YUZORA_MACOS_KEYCHAIN:-}" ] && [ -f "$YUZORA_MACOS_KEYCHAIN" ]; then
+            security delete-keychain "$YUZORA_MACOS_KEYCHAIN" || CLEANUP_STATUS=$?
+          fi
+          if [ -n "${YUZORA_MACOS_CERTIFICATE_PATH:-}" ]; then
+            rm -f "$YUZORA_MACOS_CERTIFICATE_PATH" || CLEANUP_STATUS=$?
+          fi
+          exit "$CLEANUP_STATUS"
+
+      - name: Collect verified local installer artifacts
+        shell: bash
+        env:
+          IS_BETA: ${{ needs.guard.outputs.is_beta }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p release-assets
+
+          copy_exactly_one() {
+            local description="$1"
+            shift
+            local files=("$@")
+            if [ "${#files[@]}" -ne 1 ]; then
+              echo "::error::expected exactly one ${description}, found ${#files[@]}"
+              printf '%s\n' "${files[@]:-}" >&2
+              exit 1
+            fi
+            cp "${files[0]}" release-assets/
+          }
+
+          if [ "${{ matrix.artifact_name }}" = "macos" ]; then
+            BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+            copy_exactly_one "macOS DMG" "$BUNDLE_DIR"/dmg/*.dmg
+            if [ "$IS_BETA" = "true" ]; then
+              if find "$BUNDLE_DIR" -type f -name '*.sig' -print -quit | grep -q .; then
+                echo "::error::Beta build unexpectedly produced an updater signature"
+                exit 1
+              fi
+            else
+              copy_exactly_one "macOS updater archive" "$BUNDLE_DIR"/macos/*.app.tar.gz
+              copy_exactly_one "macOS updater signature" "$BUNDLE_DIR"/macos/*.app.tar.gz.sig
+            fi
+          else
+            BUNDLE_DIR="src-tauri/target/release/bundle"
+            copy_exactly_one "Windows NSIS installer" "$BUNDLE_DIR"/nsis/*setup.exe
+            copy_exactly_one "Windows MSI installer" "$BUNDLE_DIR"/msi/*.msi
+            if [ "$IS_BETA" = "true" ]; then
+              if find "$BUNDLE_DIR" -type f -name '*.sig' -print -quit | grep -q .; then
+                echo "::error::Beta build unexpectedly produced an updater signature"
+                exit 1
+              fi
+            else
+              copy_exactly_one "Windows MSI updater signature" "$BUNDLE_DIR"/msi/*.msi.sig
+              copy_exactly_one "Windows NSIS updater signature" "$BUNDLE_DIR"/nsis/*setup.exe.sig
+            fi
+          fi
+
+      # actions/upload-artifact@v4.6.2
+      - name: Upload local release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: yuzora-release-build-${{ matrix.artifact_name }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble-draft:
+    name: Assemble draft release from build artifacts
+    needs: [guard, create-tag, build]
     if: >-
       always() &&
       needs.guard.result == 'success' &&
-      (
-        (
-          needs.guard.outputs.should_build == 'true' &&
-          needs.build.result == 'success'
-        ) ||
-        (
-          needs.guard.outputs.should_publish_existing == 'true' &&
-          needs.build.result == 'skipped'
-        )
-      )
+      needs.guard.outputs.should_build == 'true' &&
+      needs.build.result == 'success' &&
+      (needs.create-tag.result == 'success' || needs.create-tag.result == 'skipped')
     runs-on: ubuntu-latest
+    # No checkout and no repository-controlled code execute in this write job.
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      # actions/download-artifact@v4.3.0
+      - name: Download validated installer artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: yuzora-release-build-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create or repair draft and upload versioned assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          IS_BETA: ${{ needs.guard.outputs.is_beta }}
+          RESUME_EXISTING_DRAFT: ${{ needs.guard.outputs.should_publish_existing }}
+          RELEASE_NOTES_B64: ${{ needs.guard.outputs.release_notes_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md
+
+          # Validate the complete local handoff before creating or mutating a
+          # GitHub Release, so deterministic artifact errors leave no new draft.
+          mapfile -t ASSETS < <(find release-artifacts -maxdepth 1 -type f -print | sort)
+          [ "${#ASSETS[@]}" -gt 0 ] || { echo "::error::no build artifacts found"; exit 1; }
+          ALIAS_ASSETS=()
+          if [ "$IS_BETA" = "true" ]; then
+            [ "${#ASSETS[@]}" -eq 3 ] || { echo "::error::Beta requires exactly three installers"; exit 1; }
+            for asset in "${ASSETS[@]}"; do
+              case "$(basename "$asset")" in
+                *.dmg|*setup.exe|*.msi) ;;
+                *) echo "::error::unexpected Beta artifact $(basename "$asset")"; exit 1 ;;
+              esac
+            done
+          else
+            DMG="$(find release-artifacts -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+            SETUP="$(find release-artifacts -maxdepth 1 -type f -name '*setup.exe' -print -quit)"
+            MSI="$(find release-artifacts -maxdepth 1 -type f -name '*.msi' -print -quit)"
+            for pair in \
+              "$DMG:Yuzora-macos-universal.dmg" \
+              "$SETUP:Yuzora-windows-x64-setup.exe" \
+              "$MSI:Yuzora-windows-x64.msi"; do
+              source="${pair%%:*}"
+              alias="${pair#*:}"
+              [ -n "$source" ] && [ -f "$source" ] || { echo "::error::missing stable alias source"; exit 1; }
+              cp "$source" "$alias"
+              ALIAS_ASSETS+=("$alias")
+            done
+          fi
+
+          RELEASE_VIEW_ERROR="$(mktemp)"
+          trap 'rm -f "$RELEASE_VIEW_ERROR"' EXIT
+          if RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease 2>"$RELEASE_VIEW_ERROR")"; then
+            [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ] || {
+              echo "::error::existing release must remain a draft"
+              exit 1
+            }
+            [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" = "$IS_BETA" ] || {
+              echo "::error::existing draft channel changed after guard"
+              exit 1
+            }
+            gh release edit "$TAG_NAME" --title "Yuzora ${TAG_NAME}" --notes-file release-notes.md
+            EXPECTED_RELEASE_NOTES="$(cat release-notes.md)"
+            ACTUAL_RELEASE_NOTES="$(gh release view "$TAG_NAME" --json body --jq '.body')"
+            [ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ] || {
+              echo "::error::repaired draft notes do not match guard-verified notes"
+              exit 1
+            }
+          else
+            if [ "$RESUME_EXISTING_DRAFT" = "true" ]; then
+              cat "$RELEASE_VIEW_ERROR" >&2
+              echo "::error::guard-verified draft disappeared before assembly"
+              exit 1
+            fi
+            CREATE_ARGS=(--draft --title "Yuzora ${TAG_NAME}" --notes-file release-notes.md)
+            if [ "$IS_BETA" = "true" ]; then CREATE_ARGS+=(--prerelease); fi
+            gh release create "$TAG_NAME" "${CREATE_ARGS[@]}"
+          fi
+
+          gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber
+          for alias in "${ALIAS_ASSETS[@]}"; do
+            gh release upload "$TAG_NAME" "$alias" --clobber
+          done
+
+  prepare-updater-metadata:
+    name: Prepare stable updater metadata
+    needs: [guard, create-tag, build, assemble-draft]
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      needs.guard.outputs.is_beta != 'true' &&
+      needs.guard.outputs.should_build == 'true' &&
+      needs.build.result == 'success' &&
+      needs.assemble-draft.result == 'success'
+    runs-on: ubuntu-latest
+    # Repository metadata code has only read access; upload is a later no-checkout job.
+    permissions:
+      contents: read
+    steps:
+      # actions/checkout@releases/v4 backport-fix commit (#2524), verified upstream.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ needs.guard.outputs.source_sha }}
-      - uses: oven-sh/setup-bun@v2
+          persist-credentials: false
+      # oven-sh/setup-bun@v2.2.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
-          bun-version: latest
-      - name: Remove unsupported Linux release assets
+          bun-version: 1.3.14
+      - name: Download read-only updater signatures and asset inventory
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.guard.outputs.tag_name }}
         run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release view "$TAG_NAME" --json assets --jq '.assets[].name' > release-assets/asset-names.txt
+          gh release download "$TAG_NAME" \
+            --pattern '*.app.tar.gz.sig' \
+            --pattern '*.msi.sig' \
+            --dir release-assets
+      - name: Generate and validate stable updater metadata
+        shell: bash
+        env:
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bun scripts/release-notes.ts "$TAG_NAME" release-notes.md
+          bun scripts/prepare-updater-metadata.ts \
+            "$TAG_NAME" "$REPOSITORY" release-notes.md \
+            release-assets/asset-names.txt release-assets updater-release/latest.json
+      # actions/upload-artifact@v4.6.2
+      - name: Upload finalized updater metadata for write-only publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: yuzora-release-updater-metadata
+          path: updater-release/latest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  upload-updater-metadata:
+    name: Upload finalized stable updater metadata
+    needs: [guard, prepare-updater-metadata]
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      needs.prepare-updater-metadata.result == 'success'
+    runs-on: ubuntu-latest
+    # No checkout and no repository-controlled code execute in this write job.
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # actions/download-artifact@v4.3.0
+      - name: Download finalized metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: yuzora-release-updater-metadata
+          path: updater-release
+      - name: Replace metadata and remove unsupported draft assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: |
+          set -euo pipefail
           gh release view "$TAG_NAME" --json assets --jq '.assets[].name' | while read -r asset; do
             case "$asset" in
               Yuzora-linux-*|*.AppImage|*.AppImage.sig|*.deb|*.deb.sig|*.rpm|*.rpm.sig)
@@ -272,45 +696,39 @@ jobs:
                 ;;
             esac
           done
-      - name: Download generated updater metadata
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
-        run: |
-          mkdir -p updater-release
-          gh release download "$TAG_NAME" --pattern latest.json --dir updater-release
-      - name: Enforce MSI-only Windows updater metadata
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          YUZORA_RELEASE_TAG: ${{ needs.guard.outputs.tag_name }}
-        run: bun scripts/finalize-updater-metadata.ts updater-release/latest.json
-      - name: Replace generated updater metadata
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
-        run: gh release upload "$TAG_NAME" updater-release/latest.json --clobber
+          gh release upload "$TAG_NAME" updater-release/latest.json --clobber
 
   publish-release:
-    name: Publish verified release
-    needs: [guard, build, finalize-updater-metadata]
+    name: Publish verified stable release
+    needs: [guard, upload-updater-metadata]
     if: >-
       always() &&
       needs.guard.result == 'success' &&
-      needs.finalize-updater-metadata.result == 'success' &&
-      (
-        (
-          needs.guard.outputs.should_build == 'true' &&
-          needs.build.result == 'success'
-        ) ||
-        (
-          needs.guard.outputs.should_publish_existing == 'true' &&
-          needs.build.result == 'skipped'
-        )
-      )
+      needs.guard.outputs.is_beta != 'true' &&
+      needs.upload-updater-metadata.result == 'success'
     runs-on: ubuntu-latest
+    # No checkout and no repository-controlled code execute in this write job.
+    permissions:
+      contents: write
     env:
       GH_REPO: ${{ github.repository }}
     steps:
+      - name: Synchronize and verify release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          RELEASE_NOTES_B64: ${{ needs.guard.outputs.release_notes_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md
+          EXPECTED_RELEASE_NOTES="$(cat release-notes.md)"
+          gh release edit "$TAG_NAME" --notes-file release-notes.md
+          ACTUAL_RELEASE_NOTES="$(gh release view "$TAG_NAME" --json body --jq '.body')"
+          [ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ] || {
+            echo "::error::release notes do not match guard-verified notes"
+            exit 1
+          }
       - name: Verify release assets and updater metadata
         shell: bash
         env:
@@ -318,95 +736,157 @@ jobs:
           TAG_NAME: ${{ needs.guard.outputs.tag_name }}
         run: |
           set -euo pipefail
-
-          RELEASE_JSON="$(gh release view "$TAG_NAME" \
-            --json isDraft,isPrerelease,body,assets)"
-
-          if [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" != "true" ]; then
-            echo "::error::${TAG_NAME} must be draft before automated publication"
-            exit 1
-          fi
-          if [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" != "false" ]; then
-            echo "::error::${TAG_NAME} must not be a prerelease"
-            exit 1
-          fi
-          if ! jq -e '.body | type == "string" and test("[^[:space:]]")' \
-            <<<"$RELEASE_JSON" >/dev/null; then
-            echo "::error::${TAG_NAME} release notes are empty"
-            exit 1
-          fi
-
-          ASSET_NAMES="$(jq -r '.assets[].name' <<<"$RELEASE_JSON")"
-          for expected in \
-            Yuzora-macos-universal.dmg \
-            Yuzora-windows-x64-setup.exe \
-            Yuzora-windows-x64.msi \
-            latest.json; do
-            if ! grep -Fxq "$expected" <<<"$ASSET_NAMES"; then
-              echo "::error::${TAG_NAME} is missing ${expected}"
-              exit 1
-            fi
-          done
-          if grep -Eq '(^Yuzora-linux-|\.AppImage(\.sig)?$|\.deb(\.sig)?$|\.rpm(\.sig)?$)' \
-            <<<"$ASSET_NAMES"; then
-            echo "::error::${TAG_NAME} contains an unsupported Linux release asset"
-            exit 1
-          fi
-
-          TMP_DIR="$(mktemp -d)"
-          trap 'rm -f "$TMP_DIR/latest.json"; rmdir "$TMP_DIR"' EXIT
+          RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease,body,assets)"
+          [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ] || { echo "::error::release must be draft"; exit 1; }
+          [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" = "false" ] || { echo "::error::stable release must not be prerelease"; exit 1; }
+          jq -e '.body | type == "string" and test("[^[:space:]]")' <<<"$RELEASE_JSON" >/dev/null || { echo "::error::release notes are empty"; exit 1; }
+          mapfile -t ASSET_NAMES < <(jq -r '.assets[].name' <<<"$RELEASE_JSON" | sort)
+          TMP_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP_DIR"' EXIT
           gh release download "$TAG_NAME" --pattern latest.json --dir "$TMP_DIR"
-
-          if [ "$(jq -r '.version' "$TMP_DIR/latest.json")" != "${TAG_NAME#v}" ]; then
-            echo "::error::latest.json version does not match ${TAG_NAME}"
-            exit 1
-          fi
-          if ! jq -e '.notes | type == "string" and test("[^[:space:]]")' \
-            "$TMP_DIR/latest.json" >/dev/null; then
-            echo "::error::latest.json notes are empty"
-            exit 1
-          fi
-
+          [ "$(jq -r '.version' "$TMP_DIR/latest.json")" = "${TAG_NAME#v}" ] || { echo "::error::latest.json version mismatch"; exit 1; }
+          jq -e '.notes | type == "string" and test("[^[:space:]]")' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::latest.json notes empty"; exit 1; }
           for key in darwin-aarch64 darwin-x86_64 windows-x86_64; do
-            if ! jq -e --arg key "$key" '
-              .platforms[$key] != null
-              and (.platforms[$key].url | type == "string" and length > 0)
-              and (.platforms[$key].signature | type == "string" and length > 0)
-            ' "$TMP_DIR/latest.json" >/dev/null; then
-              echo "::error::latest.json is missing a valid ${key} updater entry"
-              exit 1
-            fi
+            jq -e --arg key "$key" '.platforms[$key] != null and (.platforms[$key].url | type == "string" and length > 0) and (.platforms[$key].signature | type == "string" and length > 0)' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::invalid $key updater entry"; exit 1; }
           done
-          if jq -e '.platforms | keys[] | select(startswith("linux-"))' \
-            "$TMP_DIR/latest.json" >/dev/null; then
-            echo "::error::latest.json still contains an unsupported Linux updater entry"
-            exit 1
-          fi
+          jq -e '.platforms | keys[] | select(startswith("linux-"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::Linux updater entry present"; exit 1; } || true
+          jq -e '.platforms | keys[] | select(test("windows-.*-nsis"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::NSIS updater entry present"; exit 1; } || true
+          jq -e '.platforms["windows-x86_64"].url | endswith(".msi")' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::Windows OTA must use MSI"; exit 1; }
 
-          if jq -e '.platforms | keys[] | select(test("windows-.*-nsis"))' \
-            "$TMP_DIR/latest.json" >/dev/null; then
-            echo "::error::latest.json still contains a Windows NSIS updater entry"
-            exit 1
-          fi
-          if ! jq -e '
-            .platforms["windows-x86_64"].url
-            | endswith(".msi")
-          ' "$TMP_DIR/latest.json" >/dev/null; then
-            echo "::error::Windows updater metadata must use MSI"
-            exit 1
-          fi
+          VERSION="${TAG_NAME#v}"
+          find_single_asset() {
+            local label="$1"
+            local pattern="$2"
+            local matches=()
+            local asset
+            for asset in "${ASSET_NAMES[@]}"; do
+              if [[ "$asset" == $pattern ]]; then matches+=("$asset"); fi
+            done
+            [ "${#matches[@]}" -eq 1 ] || {
+              echo "::error::expected exactly one ${label}, found ${#matches[@]}" >&2
+              exit 1
+            }
+            printf '%s' "${matches[0]}"
+          }
 
-      - name: Publish verified release
+          DMG_NAME="$(find_single_asset "versioned macOS DMG" "Yuzora_${VERSION}_*.dmg")"
+          SETUP_NAME="$(find_single_asset "versioned Windows setup EXE" "Yuzora_${VERSION}_*-setup.exe")"
+          MAC_ARCHIVE_URL="$(jq -r '.platforms["darwin-aarch64"].url' "$TMP_DIR/latest.json")"
+          MAC_ARCHIVE_NAME="${MAC_ARCHIVE_URL##*/}"
+          WINDOWS_MSI_URL="$(jq -r '.platforms["windows-x86_64"].url' "$TMP_DIR/latest.json")"
+          WINDOWS_MSI_NAME="${WINDOWS_MSI_URL##*/}"
+          [[ "$MAC_ARCHIVE_NAME" == "Yuzora_${VERSION}_"*.app.tar.gz ]] || { echo "::error::macOS updater asset name/version mismatch"; exit 1; }
+          [[ "$WINDOWS_MSI_NAME" == "Yuzora_${VERSION}_"*.msi ]] || { echo "::error::Windows updater asset name/version mismatch"; exit 1; }
+
+          EXPECTED_ASSETS=(
+            "$DMG_NAME"
+            "$SETUP_NAME"
+            "${SETUP_NAME}.sig"
+            "$MAC_ARCHIVE_NAME"
+            "${MAC_ARCHIVE_NAME}.sig"
+            "$WINDOWS_MSI_NAME"
+            "${WINDOWS_MSI_NAME}.sig"
+            "Yuzora-macos-universal.dmg"
+            "Yuzora-windows-x64-setup.exe"
+            "Yuzora-windows-x64.msi"
+            "latest.json"
+          )
+          mapfile -t EXPECTED_ASSET_NAMES < <(printf '%s\n' "${EXPECTED_ASSETS[@]}" | sort -u)
+          [ "${#EXPECTED_ASSET_NAMES[@]}" -eq "${#EXPECTED_ASSETS[@]}" ] || { echo "::error::stable asset allowlist contains duplicate names"; exit 1; }
+          if ! diff -u \
+            <(printf '%s\n' "${EXPECTED_ASSET_NAMES[@]}") \
+            <(printf '%s\n' "${ASSET_NAMES[@]}"); then
+            echo "::error::unexpected stable release assets; exact allowlist mismatch"
+            exit 1
+          fi
+      - name: Publish verified stable release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.guard.outputs.tag_name }}
         run: gh release edit "$TAG_NAME" --draft=false --prerelease=false --latest
+      - name: Confirm stable publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: gh release view "$TAG_NAME" --json isDraft,isPrerelease,publishedAt --jq 'select(.isDraft == false and .isPrerelease == false and .publishedAt != null)'
 
-      - name: Confirm publication
+  publish-beta-release:
+    name: Publish verified beta prerelease
+    needs: [guard, assemble-draft]
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      needs.guard.outputs.is_beta == 'true' &&
+      needs.guard.outputs.should_build == 'true' &&
+      needs.assemble-draft.result == 'success'
+    runs-on: ubuntu-latest
+    # No checkout and no repository-controlled code execute in this write job.
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Synchronize and verify release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          RELEASE_NOTES_B64: ${{ needs.guard.outputs.release_notes_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md
+          EXPECTED_RELEASE_NOTES="$(cat release-notes.md)"
+          gh release edit "$TAG_NAME" --notes-file release-notes.md
+          ACTUAL_RELEASE_NOTES="$(gh release view "$TAG_NAME" --json body --jq '.body')"
+          [ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ] || {
+            echo "::error::release notes do not match guard-verified notes"
+            exit 1
+          }
+      - name: Verify beta release assets
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.guard.outputs.tag_name }}
         run: |
-          gh release view "$TAG_NAME" \
-            --json isDraft,isPrerelease,publishedAt \
-            --jq 'select(.isDraft == false and .isPrerelease == false and .publishedAt != null)'
+          set -euo pipefail
+          RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease,body,assets)"
+          [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ] || { echo "::error::beta release must be draft"; exit 1; }
+          [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" = "true" ] || { echo "::error::beta release must be prerelease"; exit 1; }
+          jq -e '.body | type == "string" and test("[^[:space:]]")' <<<"$RELEASE_JSON" >/dev/null || { echo "::error::release notes are empty"; exit 1; }
+          VERSION="${TAG_NAME#v}"
+          mapfile -t ASSET_NAMES < <(jq -r '.assets[].name' <<<"$RELEASE_JSON")
+          ASSET_COUNT="${#ASSET_NAMES[@]}"
+          [ "$ASSET_COUNT" -eq 3 ] || { echo "::error::beta release must contain exactly three manual installers"; exit 1; }
+          DMG_COUNT=0
+          SETUP_COUNT=0
+          MSI_COUNT=0
+          for asset in "${ASSET_NAMES[@]}"; do
+            case "$asset" in
+              "Yuzora_${VERSION}_"?*.dmg)
+                DMG_COUNT=$((DMG_COUNT + 1))
+                ;;
+              "Yuzora_${VERSION}_"?*-setup.exe)
+                SETUP_COUNT=$((SETUP_COUNT + 1))
+                ;;
+              "Yuzora_${VERSION}_"?*.msi)
+                MSI_COUNT=$((MSI_COUNT + 1))
+                ;;
+              *)
+                echo "::error::unexpected beta asset: $asset"
+                exit 1
+                ;;
+            esac
+          done
+          [ "$DMG_COUNT" -eq 1 ] && [ "$SETUP_COUNT" -eq 1 ] && [ "$MSI_COUNT" -eq 1 ] || {
+            echo "::error::beta release must contain exactly one versioned DMG, setup EXE, and MSI"
+            exit 1
+          }
+      - name: Publish verified beta prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false --prerelease=true
+      - name: Confirm beta publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: gh release view "$TAG_NAME" --json isDraft,isPrerelease,publishedAt --jq 'select(.isDraft == false and .isPrerelease == true and .publishedAt != null)'

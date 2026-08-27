@@ -1,6 +1,7 @@
 import { create } from "zustand"
 
 import {
+  herdrAgentCreate,
   herdrCapabilities,
   herdrSessions,
   herdrSnapshot,
@@ -12,7 +13,11 @@ import {
   herdrWorkspaceFocus,
   herdrWorktreeList
 } from "@/lib/herdrIpc"
-import { HERDR_LIVE_SESSION_ID, normalizeHerdrSnapshot } from "@/lib/herdrNormalize"
+import {
+  HERDR_LIVE_SESSION_ID,
+  normalizeHerdrExecutionOrigin,
+  normalizeHerdrSnapshot
+} from "@/lib/herdrNormalize"
 import type {
   HerdrAgentInfo,
   HerdrAgentStatus,
@@ -64,6 +69,11 @@ export type HerdrCreateTerminalResult = {
   paneId?: string | null
   tabId?: string | null
   title?: string | null
+}
+
+export type HerdrCreateAgentResult = HerdrCreateTerminalResult & {
+  name: string
+  kind: string
 }
 
 export type HerdrActivationResult =
@@ -121,15 +131,24 @@ interface HerdrState {
   releaseAttachmentsForPage: (pagePath: string) => Promise<void>
   releaseAllAttachments: () => Promise<void>
   createTerminalInSelectedSpace: () => Promise<HerdrCreateTerminalResult | null>
+  createAgentInSelectedSpace: (
+    kind: string,
+    bypassPermissions: boolean
+  ) => Promise<HerdrCreateAgentResult | null>
   createSpaceFromFolder: (
     cwd: string,
     label?: string | null
   ) => Promise<HerdrActivationResult & { space?: HerdrSpaceInfo | null }>
   canCreateTerminal: () => boolean
+  canCreateAgent: () => boolean
+  /** workspace.create is intentionally independent of workspace.focus for empty sessions. */
+  canCreateSpace: () => boolean
   canMutateSelectedSession: () => boolean
   canFocusSelectedTab: () => boolean
   canMoveSelectedTab: () => boolean
   createTerminalBlockedReason: () => string | null
+  createAgentBlockedReason: () => string | null
+  createSpaceBlockedReason: () => string | null
   mutationBlockedReason: () => string | null
   spaces: () => HerdrSpaceInfo[]
   agents: () => HerdrAgentInfo[]
@@ -323,6 +342,9 @@ const worktreeInventoryRequestedGeneration = new Map<string, number>()
 const snapshotGeneration = new Map<string, number>()
 const tabActivationGeneration = new Map<string, number>()
 const tabActivationTail = new Map<string, Promise<void>>()
+/** One create transaction per named session prevents duplicate first Spaces/Agents. */
+const spaceCreationInFlight = new Set<string>()
+const agentCreationInFlight = new Set<string>()
 let sessionSelectionGeneration = 0
 
 async function acquireTabActivation(sessionName: string): Promise<() => void> {
@@ -830,7 +852,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         ...current,
         mode,
         role,
-        takeover: mode === "control" ? current.takeover || true : false
+        takeover: mode === "control" ? current.takeover : false
       })
       return { attachments }
     })
@@ -896,6 +918,27 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     return Boolean(caps?.api.tabCreate && caps.terminal.create)
   },
 
+  canCreateAgent() {
+    if (!get().canCreateTerminal()) return false
+    const api = get().capabilities?.api
+    return Boolean(api?.agentManifests && api.agentStart && api.tabClose)
+  },
+
+  canCreateSpace() {
+    const state = get()
+    const sessionName = state.selectedSessionName
+    const session = state.selectedSession()
+    if (!sessionName || (session && !session.running)) return false
+    const caps = state.capabilities
+    const previousSpace = state.selectedSpaceBySession[sessionName] ?? null
+    return Boolean(
+      caps?.server.running &&
+      caps.api.snapshot &&
+      caps.api.workspaceCreate &&
+      (!previousSpace || caps.api.workspaceFocus)
+    )
+  },
+
   mutationBlockedReason() {
     const session = get().selectedSession()
     if (session && !session.running) {
@@ -913,6 +956,39 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       get().capabilities?.api.reason ??
       "Herdr tab.create unavailable"
     )
+  },
+
+  createAgentBlockedReason() {
+    if (get().canCreateAgent()) return null
+    return (
+      get().createTerminalBlockedReason() ??
+      get().capabilities?.api.reason ??
+      "Herdr server.agent_manifests/agent.start unavailable"
+    )
+  },
+
+  createSpaceBlockedReason() {
+    if (get().canCreateSpace()) return null
+    const state = get()
+    const session = state.selectedSession()
+    if (!state.selectedSessionName) {
+      return i18n.t("herdrNav.selectSessionFirst", { ns: "workbench" })
+    }
+    if (session && !session.running) {
+      return i18n.t("herdrNav.sessionStopped", { ns: "workbench", name: session.name })
+    }
+    const caps = state.capabilities
+    const previousSpace = state.selectedSpaceBySession[state.selectedSessionName] ?? null
+    if (
+      previousSpace &&
+      caps?.server.running &&
+      caps.api.snapshot &&
+      caps.api.workspaceCreate &&
+      !caps.api.workspaceFocus
+    ) {
+      return "Herdr workspace.focus unavailable"
+    }
+    return caps?.api.reason ?? "Herdr workspace.create unavailable"
   },
 
   async createTerminalInSelectedSpace() {
@@ -946,111 +1022,142 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     }
   },
 
+  async createAgentInSelectedSpace(kind, bypassPermissions) {
+    const { selectedSpaceId, selectedSessionName } = get()
+    if (!selectedSpaceId || !selectedSessionName || !get().canCreateAgent()) return null
+    if (agentCreationInFlight.has(selectedSessionName)) {
+      set((state) =>
+        withRuntime(state, selectedSessionName, {
+          errorMessage: i18n.t("herdrNav.agentCreationInProgress", { ns: "workbench" })
+        })
+      )
+      return null
+    }
+
+    agentCreationInFlight.add(selectedSessionName)
+    try {
+      const created = await herdrAgentCreate({
+        sessionName: selectedSessionName,
+        workspaceId: selectedSpaceId,
+        kind,
+        bypassPermissions
+      })
+      set((state) => withRuntime(state, selectedSessionName, { errorMessage: null }))
+      void get().refreshSnapshot(selectedSessionName)
+      return {
+        herdrSessionId: selectedSessionName,
+        workspaceId: created.workspaceId,
+        terminalId: created.terminalId,
+        paneId: created.paneId,
+        tabId: created.tabId,
+        title: created.title?.trim() || created.kind,
+        name: created.name,
+        kind: created.kind
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set((state) => withRuntime(state, selectedSessionName, { errorMessage: message }))
+      return null
+    } finally {
+      agentCreationInFlight.delete(selectedSessionName)
+    }
+  },
+
   async createSpaceFromFolder(cwd, label) {
     const stateBefore = get()
     const sessionName = stateBefore.selectedSessionName
-    if (!sessionName || !get().canMutateSelectedSession()) {
+    if (!sessionName || !get().canCreateSpace()) {
       return {
         ok: false,
-        error: get().mutationBlockedReason() ?? "herdr workspace.create unavailable"
+        error: get().createSpaceBlockedReason() ?? "Herdr workspace.create unavailable"
       }
     }
-    const caps = get().capabilities
-    if (!caps?.api.workspaceCreate) {
-      const message = caps?.api.reason ?? "herdr workspace.create unavailable"
-      set((state) => withRuntime(state, sessionName, { errorMessage: message }))
-      return { ok: false, error: message }
-    }
-
-    const previousSession = stateBefore.selectedSessionName
-    const previousSpace =
-      previousSession != null
-        ? stateBefore.selectedSpaceBySession[previousSession] ?? null
-        : null
-    const currentWorkspace = useWorkspaceStore.getState().workspacePath
-    const needsWorkspaceSwitch = Boolean(cwd && !pathsMatch(cwd, currentWorkspace))
-
-    // 1) Unsaved preflight BEFORE any workspace.create / selection mutation.
-    if (needsWorkspaceSwitch) {
-      const proceed = await confirmDiscardingUnsaved({
-        title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
-        description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
-        saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
-      })
-      if (!proceed) {
-        return { ok: false, cancelled: true }
+    if (spaceCreationInFlight.has(sessionName)) {
+      return {
+        ok: false,
+        error: i18n.t("herdrNav.createSpaceInProgress", { ns: "workbench" })
       }
     }
-
-    // 2) Create (+ focus) Herdr Space only after preflight.
-    let created
+    spaceCreationInFlight.add(sessionName)
     try {
-      created = await herdrWorkspaceCreate({
-        sessionName,
-        cwd,
-        label: label ?? null,
-        focus: true
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      set((state) => withRuntime(state, sessionName, { errorMessage: message }))
-      return { ok: false, error: message }
-    }
+      const previousSpace = stateBefore.selectedSpaceBySession[sessionName] ?? null
+      const currentWorkspace = useWorkspaceStore.getState().workspacePath
+      const needsWorkspaceSwitch = Boolean(cwd && !pathsMatch(cwd, currentWorkspace))
 
-    // 3) Preapproved local Yuzora switch (no second unsaved guard).
-    if (needsWorkspaceSwitch) {
+      // Do not mutate Herdr before resolving potentially unsaved local edits.
+      if (needsWorkspaceSwitch) {
+        const proceed = await confirmDiscardingUnsaved({
+          title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
+          description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
+          saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
+        })
+        if (!proceed) return { ok: false, cancelled: true }
+      }
+
+      let created
       try {
-        const opened = await openWorkspaceAtPath(cwd, { skipUnsavedGuard: true })
-        if (opened === false) {
-          if (previousSession && previousSpace) {
-            await herdrWorkspaceFocus({
-              sessionName: previousSession,
-              workspaceId: previousSpace
-            }).catch(() => undefined)
-          }
-          // Do not commit the new Space selection.
-          void get().refreshSnapshot(sessionName)
-          return { ok: false, cancelled: true }
-        }
+        created = await herdrWorkspaceCreate({
+          sessionName,
+          cwd,
+          label: label ?? null,
+          focus: true
+        })
       } catch (error) {
-        if (previousSession && previousSpace) {
-          await herdrWorkspaceFocus({
-            sessionName: previousSession,
-            workspaceId: previousSpace
-          }).catch(() => undefined)
-        }
-        void get().refreshSnapshot(sessionName)
         const message = error instanceof Error ? error.message : String(error)
         set((state) => withRuntime(state, sessionName, { errorMessage: message }))
         return { ok: false, error: message }
       }
-    }
 
-    // 4) The workspace-created root terminal inherits the opened folder name.
-    if (created.tabId) {
-      const terminalLabel =
-        label?.trim() || cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || created.label
-      await herdrTabRename({
-        sessionName,
-        tabId: created.tabId,
-        label: terminalLabel
-      }).catch(() => undefined)
-    }
+      const rollbackFocus = async () => {
+        if (!previousSpace) return
+        await herdrWorkspaceFocus({ sessionName, workspaceId: previousSpace }).catch(() => undefined)
+      }
+      if (needsWorkspaceSwitch) {
+        try {
+          const opened = await openWorkspaceAtPath(cwd, { skipUnsavedGuard: true })
+          if (opened === false) {
+            await rollbackFocus()
+            void get().refreshSnapshot(sessionName)
+            return { ok: false, cancelled: true }
+          }
+        } catch (error) {
+          await rollbackFocus()
+          void get().refreshSnapshot(sessionName)
+          const message = error instanceof Error ? error.message : String(error)
+          set((state) => withRuntime(state, sessionName, { errorMessage: message }))
+          return { ok: false, error: message }
+        }
+      }
 
-    // 5) Commit selection only after success.
-    await get().refreshSnapshot(sessionName)
-    get().setSelectedSpaceId(created.workspaceId)
-    set((state) => withRuntime(state, sessionName, { errorMessage: null }))
-    const space =
-      get().spaces().find((item) => item.id === created.workspaceId) ??
-      ({
-        id: created.workspaceId,
-        label: created.label,
-        order: 0,
-        focused: true,
-        path: created.path ?? cwd
-      } satisfies HerdrSpaceInfo)
-    return { ok: true, space }
+      if (created.tabId) {
+        const terminalLabel =
+          label?.trim() || cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || created.label
+        await herdrTabRename({ sessionName, tabId: created.tabId, label: terminalLabel }).catch(
+          () => undefined
+        )
+      }
+
+      // A mutation may have succeeded even when follow-up state fails. Never
+      // pretend success or create a speculative local Space in that case.
+      if (!(await get().refreshSnapshot(sessionName))) {
+        const message = i18n.t("herdrNav.createSpaceAppliedButRefreshFailed", { ns: "workbench" })
+        set((state) => withRuntime(state, sessionName, { errorMessage: message }))
+        return { ok: false, error: message }
+      }
+      const space = runtimeOf(get(), sessionName).snapshot?.spaces.find(
+        (item) => item.id === created.workspaceId
+      )
+      if (!space) {
+        const message = i18n.t("herdrNav.createSpaceMissingAfterRefresh", { ns: "workbench" })
+        set((state) => withRuntime(state, sessionName, { errorMessage: message }))
+        return { ok: false, error: message }
+      }
+      get().setSelectedSpaceId(created.workspaceId)
+      set((state) => withRuntime(state, sessionName, { errorMessage: null }))
+      return { ok: true, space }
+    } finally {
+      spaceCreationInFlight.delete(sessionName)
+    }
   },
 
   spaces() {
@@ -1539,12 +1646,33 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
     const kind = attentionKindForStatus(event.agentStatus)
     const key = herdrAttentionKey(sessionName, event.paneId)
+    const eventSuppliesExecutionOrigin = Object.hasOwn(event, "executionOrigin")
+    const executionOrigin = normalizeHerdrExecutionOrigin(event.executionOrigin)
     set((state) => {
       const attentionByKey = new Map(state.attentionByKey)
+      const runtime = state.runtimesBySession[sessionName]
+      const snapshot = runtime?.snapshot
+      const baseSnapshot = runtime?.baseSnapshot
+      const patchExecutionOrigin = (source: HerdrSnapshot): HerdrSnapshot => ({
+        ...source,
+        agents: source.agents.map((agent) =>
+          agent.paneId === event.paneId ? { ...agent, executionOrigin } : agent
+        ),
+        terminals: source.terminals.map((terminal) =>
+          terminal.paneId === event.paneId ? { ...terminal, executionOrigin } : terminal
+        )
+      })
+      const snapshotPatch =
+        eventSuppliesExecutionOrigin && (snapshot || baseSnapshot)
+          ? withRuntime(state, sessionName, {
+              ...(snapshot ? { snapshot: patchExecutionOrigin(snapshot) } : {}),
+              ...(baseSnapshot ? { baseSnapshot: patchExecutionOrigin(baseSnapshot) } : {})
+            })
+          : {}
       if (!kind) {
         // Idle/working clear temporary unknown/done/blocked attention for this pane.
         attentionByKey.delete(key)
-        return { attentionByKey, eventsHealthy: true }
+        return { ...snapshotPatch, attentionByKey, eventsHealthy: true }
       }
       const previous = attentionByKey.get(key)
       attentionByKey.set(key, {
@@ -1561,7 +1689,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         seen: kind === "done" ? (previous?.seen ?? false) : false,
         updatedAt: Date.now()
       })
-      return { attentionByKey, eventsHealthy: true }
+      return { ...snapshotPatch, attentionByKey, eventsHealthy: true }
     })
   },
 

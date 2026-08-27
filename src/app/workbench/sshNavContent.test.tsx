@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 
 vi.mock("@/lib/ipc", () => ({
   sshConnect: vi.fn(),
@@ -168,5 +168,23 @@ describe("SshNavContent inline delete confirm", () => {
     expect(screen.queryByLabelText("Confirm removing web")).not.toBeInTheDocument()
     expect(screen.getByLabelText("Remove web")).toBeInTheDocument()
     expect(screen.getByText("Edit SSH host")).toBeInTheDocument()
+  })
+})
+
+describe("SshNavContent authentication choice", () => {
+  it("exposes password and key file as a correctly named radio group", () => {
+    render(<SshNavContent />)
+
+    fireEvent.click(screen.getByRole("button", { name: "New host" }))
+    const group = screen.getByRole("radiogroup", { name: "Authentication" })
+    const password = within(group).getByRole("radio", { name: "Password" })
+    const keyFile = within(group).getByRole("radio", { name: "Key file" })
+
+    expect(password).toHaveAttribute("aria-checked", "true")
+    expect(keyFile).toHaveAttribute("aria-checked", "false")
+    fireEvent.click(keyFile)
+    expect(password).toHaveAttribute("aria-checked", "false")
+    expect(keyFile).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText("Private key path")).toBeInTheDocument()
   })
 })

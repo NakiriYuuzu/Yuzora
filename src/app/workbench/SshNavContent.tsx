@@ -15,6 +15,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
@@ -332,20 +333,20 @@ function NewHostDialog({
           <Field label={t("ssh.fieldUser")}>
             <Input value={user} onChange={(e) => setUser(e.target.value)} placeholder={t("ssh.userPlaceholder")} />
           </Field>
-          <Field label={t("ssh.fieldAuthentication")}>
-            <div className="flex gap-[6px]">
-              <AuthChoice
-                label={t("ssh.authPassword")}
-                active={authKind === "password"}
-                onClick={() => setAuthKind("password")}
-              />
-              <AuthChoice
-                label={t("ssh.authKeyFile")}
-                active={authKind === "key"}
-                onClick={() => setAuthKind("key")}
-              />
-            </div>
-          </Field>
+          <div className="flex flex-col gap-[4px]">
+            <span id="ssh-auth-kind-label" className="text-[11px] font-medium text-(--ink-3)">
+              {t("ssh.fieldAuthentication")}
+            </span>
+            <RadioGroup
+              aria-labelledby="ssh-auth-kind-label"
+              value={authKind}
+              onValueChange={(value) => setAuthKind(value as "password" | "key")}
+              className="grid grid-cols-2 gap-[6px]"
+            >
+              <AuthChoice value="password" label={t("ssh.authPassword")} />
+              <AuthChoice value="key" label={t("ssh.authKeyFile")} />
+            </RadioGroup>
+          </div>
           {authKind === "key" ? (
             <Field label={t("ssh.fieldPrivateKeyPath")}>
               <div className="flex gap-[6px]">
@@ -455,26 +456,23 @@ function Field({
 }
 
 function AuthChoice({
+  value,
   label,
-  active,
-  onClick
 }: {
+  value: "password" | "key"
   label: string
-  active: boolean
-  onClick: () => void
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <RadioGroupItem
+      value={value}
       className={cn(
-        "flex-1 rounded-[8px] border px-[10px] py-[6px] text-[12px] font-medium transition-colors",
-        active
-          ? "border-(--yz-accent) bg-(--yz-solid) text-(--ink-1)"
-          : "border-(--line-1) text-(--ink-3) hover:bg-(--yz-hover)"
+        "aspect-auto h-auto w-full rounded-[8px] px-[10px] py-[6px] text-[12px] font-medium transition-colors",
+        "border-(--line-1) text-(--ink-3) hover:bg-(--yz-hover)",
+        "data-[state=checked]:border-(--yz-accent) data-[state=checked]:bg-(--yz-solid) data-[state=checked]:text-(--ink-1)",
+        "[&_[data-slot=radio-group-indicator]]:hidden"
       )}
     >
       {label}
-    </button>
+    </RadioGroupItem>
   )
 }

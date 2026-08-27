@@ -67,6 +67,7 @@ vi.mock("@xterm/xterm", () => {
     dispose = vi.fn()
     loadAddon = vi.fn()
     onData = vi.fn(() => ({ dispose: vi.fn() }))
+    attachCustomKeyEventHandler = vi.fn()
     attachCustomWheelEventHandler = vi.fn()
     registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }))
   }
@@ -105,15 +106,69 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalRelease: vi.fn().mockResolvedValue(undefined),
   herdrPaneFocus: vi.fn().mockResolvedValue(undefined),
   herdrLayoutExport: (args: unknown) => layoutMock.export(args),
-  herdrLayoutSetSplitRatio: (args: { path: boolean[]; ratio: number }) =>
-    layoutMock.setRatio(args)
+  herdrLayoutSetSplitRatio: vi.fn((args: { path: boolean[]; ratio: number }) =>
+    layoutMock.setRatio(args))
 }))
 
 import { herdrAttachmentKey } from "@/lib/herdrPages"
-import { herdrTerminalOpen, herdrTerminalRelease } from "@/lib/herdrIpc"
+import { herdrLayoutSetSplitRatio, herdrTerminalOpen, herdrTerminalRelease } from "@/lib/herdrIpc"
 import { HerdrTerminalPage } from "./HerdrTerminalPage"
 
-function seed() {
+function layoutCapabilities(layoutSetSplitRatio: boolean) {
+  return {
+    binaryPath: "/bin/herdr",
+    binarySource: {
+      configured: "global" as const,
+      resolved: "global" as const,
+      available: true,
+      path: "/bin/herdr",
+      reason: null,
+      restartRequired: false
+    },
+    server: { running: true },
+    api: {
+      snapshot: true,
+      ping: true,
+      tabCreate: true,
+      workspaceFocus: true,
+      workspaceCreate: true,
+      workspaceRename: true,
+      workspaceClose: true,
+      tabRename: true,
+      tabClose: true,
+      tabFocus: true,
+      tabMove: false,
+      paneFocus: true,
+      paneRename: true,
+      paneSplit: true,
+      paneZoom: true,
+      paneSwap: true,
+      paneClose: true,
+      layoutExport: true,
+      layoutSetSplitRatio,
+      agentGet: false,
+      agentRead: false,
+      eventsSubscribe: false,
+      worktreeList: false,
+      methods: ["layout.export"],
+      reason: null
+    },
+    terminal: {
+      observe: true,
+      control: true,
+      takeover: true,
+      input: true,
+      resize: true,
+      scroll: true,
+      release: true,
+      create: true,
+      reason: null
+    },
+    events: { status: "deferred" as const }
+  }
+}
+
+function seed(layoutSetSplitRatio = true) {
   useHerdrStore.setState({
     ...herdrInitialState,
     attachments: new Map(),
@@ -128,6 +183,7 @@ function seed() {
       }
     ],
     selectedSessionName: "default",
+    capabilities: layoutCapabilities(layoutSetSplitRatio),
     snapshot: {
       herdrSessionId: "default",
       protocol: 19,
@@ -151,6 +207,7 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     seed()
     layoutMock.export.mockClear()
     layoutMock.setRatio.mockClear()
+    vi.mocked(herdrLayoutSetSplitRatio).mockClear()
     vi.mocked(herdrTerminalOpen).mockClear()
     vi.mocked(herdrTerminalRelease).mockClear()
   })
@@ -224,7 +281,7 @@ describe("HerdrTerminalPage BSP layout surface", () => {
       },
       runtimesBySession: {
         default: {
-          capabilities: null,
+          capabilities: layoutCapabilities(true),
           snapshot: defaultSnapshot,
           worktreeInventory: null,
           connectionState: "ready",
@@ -246,6 +303,83 @@ describe("HerdrTerminalPage BSP layout surface", () => {
 
     await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
     expect(screen.queryByTestId("herdr-leaf-missing-terminal")).not.toBeInTheDocument()
+  })
+
+  it("keeps multi-pane layout visible but makes split separators inert when this runtime cannot set ratios", async () => {
+    seed(false)
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        terminalId="t1"
+        herdrTabId="tab-1"
+        pagePath="yuzora://herdr/default/t1"
+        active
+        visible
+      />
+    )
+
+    const handle = await screen.findByTestId("herdr-split-handle-root")
+    expect(screen.getByTestId("herdr-split-root")).toBeInTheDocument()
+    expect(handle).toHaveAttribute("aria-disabled", "true")
+    expect(handle).not.toHaveAttribute("tabindex")
+    expect(handle).toHaveClass("pointer-events-none")
+    expect(screen.getByTestId("herdr-split-resize-unavailable")).toHaveTextContent(
+      "Pane resizing is unavailable",
+    )
+
+    expect(vi.mocked(herdrLayoutSetSplitRatio)).not.toHaveBeenCalled()
+  })
+
+  it("does not open a connector when the exact runtime reports terminal control unavailable", async () => {
+    const capabilities = useHerdrStore.getState().capabilities!
+    useHerdrStore.setState({
+      capabilities: {
+        ...capabilities,
+        terminal: {
+          ...capabilities.terminal,
+          control: false,
+          takeover: false,
+          input: false,
+          resize: false,
+          scroll: false,
+          release: false,
+          reason: "verified control plane unavailable"
+        }
+      }
+    })
+
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        terminalId="t1"
+        herdrTabId="tab-1"
+        pagePath="yuzora://herdr/default/t1"
+        active
+        visible
+      />
+    )
+
+    await screen.findByTestId("herdr-split-root")
+    expect(vi.mocked(herdrTerminalOpen)).not.toHaveBeenCalled()
+    expect(screen.getByRole("status")).toHaveTextContent("verified control plane unavailable")
+  })
+
+  it("keeps split resizing enabled when the exact runtime supports layout.set_split_ratio", async () => {
+    render(
+      <HerdrTerminalPage
+        herdrSessionId="default"
+        terminalId="t1"
+        herdrTabId="tab-1"
+        pagePath="yuzora://herdr/default/t1"
+        active
+        visible
+      />
+    )
+
+    const handle = await screen.findByTestId("herdr-split-handle-root")
+    expect(handle).toHaveAttribute("tabindex", "0")
+    expect(handle).not.toHaveAttribute("aria-disabled")
+    expect(handle).not.toHaveClass("pointer-events-none")
   })
 
   it("does not write split ratio during initial hydration", async () => {
@@ -300,7 +434,7 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
     unmount()
     await waitFor(() => {
-      expect(vi.mocked(herdrTerminalRelease).mock.calls.length).toBeGreaterThanOrEqual(3)
+      expect(vi.mocked(herdrTerminalRelease)).toHaveBeenCalledTimes(3)
     })
     expect(useHerdrStore.getState().attachments.size).toBe(0)
   })

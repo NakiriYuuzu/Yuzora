@@ -2,6 +2,35 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.9-beta.1] - 2026-08-24
+
+### 新增
+
+- ADE 可從 HERDR 公告的 Agent catalog 在所選 Space 直接啟動 Agent，支援明確選擇已驗證的 bypass-permissions 旗標；建立失敗時只清理由本次操作新建的 tab。
+- 命令面板可依 blocked、done、working、unknown、idle 的優先順序搜尋並跳至 HERDR Agents，也可快速切換 Spaces。
+- Terminal 複製／貼上同時支援快捷鍵與系統 Clipboard event；當 Tauri clipboard service 暫時不可用時會改用 WebView clipboard fallback，尚未取得控制權的 HERDR terminal 不會把貼上內容送入 server。
+
+### 改善
+
+- Windows 版只會連線 Windows-native HERDR；Yuzora 會如實顯示 HERDR snapshot 與事件回報的所有 Agent 身分與狀態，並依 Windows `PATHEXT` 診斷 `.exe`、`.cmd`、`.bat`、`.com` Agent 啟動器，但實際啟動仍由 HERDR 驗證。
+- New Agent 遇到新 pane 尚在初始化時，只會在 terminal、tab、Space 身分維持一致且前景程序仍是 shell 時短暫重試；若 pane 已被其他程序接管則會安全停止並回收本次新建 tab。
+- HERDR 沒有任何 Space、連線失敗、停止或不可用時，ADE 會提供建立 Space 與開啟本機資料夾的明確入口；本機 Terminal 沒有 workspace 時會開啟資料夾選擇器，不再靜默無反應。
+- 建立第一個 Space 僅要求 `workspace.create`，並在後續 snapshot 驗證成功才回報完成；終端連線、split resize 與接管控制都會依 HERDR capabilities 安全停用。
+- Native Preview child webview 的開啟、尺寸、可見性與關閉操作會依最新工作區、overlay 與 focus 狀態序列化，避免 preview 蓋住應用程式 dialog 或回到過期位置。
+
+### 修正
+
+- 修正外觀主題色無法即時套用與保存、English 設定頁仍混入繁體中文，以及 Logs 大量結果缺少可存取分頁與無效日期提示的問題。
+- 修正 Agent Inspector 缺少可發現入口與鍵盤關閉後未回焦、Git 使用者／日期篩選選單無法以 Escape 正常取消的問題。
+- 修正 Preview 拒絕危險 URL scheme 時沒有錯誤提示，以及 external child webview 在切換 Space 或關閉分頁後可能殘留的問題。
+- 修正 SSH 驗證方式的可存取名稱互換、首次連線 host key 無法接受或拒絕後長時間卡住，以及 SFTP 刪除缺少遠端路徑安全檢查的問題。
+
+### 已知限制
+
+- 此為 Beta GitHub Pre-release，僅供手動下載測試；不會成為 Latest Release、不提供 OTA、不會更新 stable `latest.json` 或產品頁固定下載連結。
+- Windows-native HERDR 透過 `wsl.exe` 啟動的互動式 Linux shell，不保證能讓 HERDR 看見其隱藏的 Linux descendant Agent process；Yuzora 不會以自行推測的 Agent 身分取代 HERDR 回報。
+- 正式發布的 macOS 安裝檔會由 fail-closed workflow 完成 Developer ID 簽章與 notarization；Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
+
 ## [0.0.8] - 2026-08-15
 
 ### 新增

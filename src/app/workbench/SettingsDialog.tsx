@@ -31,6 +31,7 @@ import {
   dialogMinSize,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   getLanguagePreference,
@@ -65,12 +66,19 @@ export type {
 
 import type { ThemePreference } from "./settingsStorage"
 import type { TrustedWorkspace } from "@/lib/types"
+import {
+  ACCENT_THEMES,
+  DEFAULT_ACCENT_PREFERENCE,
+  type AccentPreference,
+} from "@/theme/accent"
 
 interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   theme: ThemePreference
   onThemeChange: (theme: ThemePreference) => void
+  accent?: AccentPreference
+  onAccentChange?: (accent: AccentPreference) => void
   // Optional target applied whenever the dialog opens (or the target changes
   // while open): jump to a section and, for the LSP pane, focus a language card.
   // openSettings("lsp","python") drives these through AppShell (uiStore).
@@ -138,15 +146,10 @@ const SECTIONS: { id: SectionId; icon: LucideIcon }[] = [
   { id: "about", icon: Info },
 ]
 
-// Reference §2.5 accent table (rgb/solid/ink). Only "lime" is selected here —
-// accent switching itself is out of scope (brief §"不在範圍").
-const ACCENT_SWATCHES: { id: string; solid: string }[] = [
-  { id: "lime", solid: "#86b81f" },
-  { id: "blue", solid: "#2f6bff" },
-  { id: "violet", solid: "#7b5bff" },
-  { id: "coral", solid: "#ff6b54" },
-  { id: "amber", solid: "#e0a11f" },
-]
+const ACCENT_SWATCHES = Object.entries(ACCENT_THEMES).map(([id, palette]) => ({
+  id: id as AccentPreference,
+  solid: palette.solid,
+}))
 
 /**
  * Settings dialog — design reference settings modal: frost surface, header
@@ -161,6 +164,8 @@ export function SettingsDialog({
   onOpenChange,
   theme,
   onThemeChange,
+  accent = DEFAULT_ACCENT_PREFERENCE,
+  onAccentChange = () => {},
   initialSection,
   initialLanguage,
   openNonce,
@@ -363,30 +368,26 @@ export function SettingsDialog({
                 </SettingCard>
 
                 <SettingCard label={tw("settings.accentColor")}>
-                  <div
-                    role="radiogroup"
+                  <RadioGroup
                     aria-label={tw("settings.accentColor")}
+                    value={accent}
+                    onValueChange={(value) => onAccentChange(value as AccentPreference)}
                     className="flex items-center gap-[11px]"
                   >
                     {ACCENT_SWATCHES.map((swatch) => {
-                      const isSelected = swatch.id === "lime"
+                      const isSelected = swatch.id === accent
                       return (
-                        <button
+                        <RadioGroupItem
                           key={swatch.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={isSelected}
+                          value={swatch.id}
                           aria-label={swatch.id}
-                          onClick={() => {
-                            /* no-op placeholder — accent switching lands in a later task */
-                          }}
                           style={{
                             backgroundColor: swatch.solid,
                             boxShadow: isSelected
                               ? `0 0 0 2px var(--paper-0), 0 0 0 4px ${swatch.solid}`
                               : "var(--shadow-xs)",
                           }}
-                          className="flex size-[30px] shrink-0 items-center justify-center rounded-full transition-[transform,box-shadow] duration-150 ease-(--ease-spring) hover:scale-[1.12]"
+                          className="flex size-[30px] shrink-0 items-center justify-center rounded-full border-0 transition-[transform,box-shadow] duration-150 ease-(--ease-spring) hover:scale-[1.12] [&_[data-slot=radio-group-indicator]]:hidden"
                         >
                           {isSelected && (
                             <Check
@@ -394,10 +395,10 @@ export function SettingsDialog({
                               aria-hidden="true"
                             />
                           )}
-                        </button>
+                        </RadioGroupItem>
                       )
                     })}
-                  </div>
+                  </RadioGroup>
                 </SettingCard>
 
                 <SettingCard label={tw("settings.language")}>

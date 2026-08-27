@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { RefObject } from "react"
 import { useTranslation } from "react-i18next"
 
 import { AnsiText } from "@/app/workbench/AnsiText"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -14,6 +16,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { herdrAgentGet, herdrAgentRead } from "@/lib/herdrIpc"
+import { formatHerdrExecutionOrigin } from "@/lib/herdrNormalize"
 import type {
   HerdrAgentDetails,
   HerdrAgentInfo,
@@ -33,11 +36,13 @@ const SOURCES: HerdrReadSource[] = [
 export function HerdrAgentInspector({
   open,
   onOpenChange,
-  agent
+  agent,
+  returnFocusRef,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   agent: HerdrAgentInfo | null
+  returnFocusRef?: RefObject<HTMLButtonElement | null>
 }) {
   const { t } = useTranslation("workbench")
   const sessions = useHerdrStore((s) => s.sessions)
@@ -106,6 +111,7 @@ export function HerdrAgentInspector({
     }
   }, [load])
 
+  const originLabel = formatHerdrExecutionOrigin(agent?.executionOrigin)
   const disabledReason = stopped
     ? t("herdrInspector.sessionStopped")
     : !canInspect
@@ -116,16 +122,33 @@ export function HerdrAgentInspector({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-<DialogContent
+      <DialogContent
         resizeId="herdr-agent-inspector"
         minSize={dialogMinSize(480, 320)}
         className="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+        onCloseAutoFocus={(event) => {
+          const trigger = returnFocusRef?.current
+          if (!trigger) return
+          event.preventDefault()
+          trigger.focus()
+        }}
       >
         <DialogHeader className="border-b border-(--line-1) px-[20px] py-[16px]">
           <DialogTitle>{t("herdrInspector.title")}</DialogTitle>
-          <DialogDescription>
-            {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
-          </DialogDescription>
+          <div className="flex items-center gap-[8px]">
+            <DialogDescription>
+              {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
+            </DialogDescription>
+            {originLabel && (
+              <Badge
+                variant="outline"
+                data-testid="herdr-inspector-origin"
+                className="h-[18px] border-(--line-2) px-[6px] text-[9px] font-normal text-(--ink-3)"
+              >
+                {originLabel}
+              </Badge>
+            )}
+          </div>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-[12px] px-[20px] py-[16px]">

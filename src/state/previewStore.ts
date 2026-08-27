@@ -1,7 +1,8 @@
 import { create } from "zustand"
 
-import { previewRevoke } from "../lib/ipc"
+import { previewClose, previewRevoke } from "../lib/ipc"
 import type { DevServerInfo } from "../lib/types"
+import { enqueueNativePreviewOperation } from "../preview/nativePreviewQueue"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "./workspaceStore"
 
 type ResponsiveFrame = "full" | "mobile"
@@ -440,12 +441,34 @@ function previewTabIsOpen(groups: { tabs: { path: string; kind?: string }[] }[])
     )
 }
 
+function closeNativePreviewForOwner(workspacePath: string | null): void {
+    const state = usePreviewStore.getState()
+    const owner = state.nativeSession?.workspacePath
+        ?? (state.nativeRequest?.kind === "open" ? state.nativeRequest.workspacePath : null)
+    if (!owner || (workspacePath !== null && owner !== workspacePath)) return
+
+    const token = state.beginNativeCloseRequest(workspacePath)
+    void enqueueNativePreviewOperation(async () => {
+        try {
+            await previewClose()
+        } finally {
+            const latest = usePreviewStore.getState()
+            if (latest.nativeRequestIsCurrent(token)) {
+                latest.closeNativeSession(owner)
+                latest.settleNativeRequest(token)
+            }
+        }
+    }).catch(() => undefined)
+}
+
 useWorkspaceStore.subscribe((state, previous) => {
     if (state.workspacePath !== previous.workspacePath) {
         usePreviewStore.getState().revokeStaticPreview()
+        closeNativePreviewForOwner(previous.workspacePath)
         return
     }
     if (previewTabIsOpen(previous.groups) && !previewTabIsOpen(state.groups)) {
         usePreviewStore.getState().revokeStaticPreview()
+        closeNativePreviewForOwner(state.workspacePath)
     }
 })

@@ -582,7 +582,11 @@ struct CheckOutcome {
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 enum SshHostKeyPrompt {
     New {
         challenge_id: String,
@@ -1412,6 +1416,7 @@ impl SshManager {
     }
 
     async fn sftp_remove(&self, session_id: &str, path: &str, is_dir: bool) -> Result<(), String> {
+        reject_unsafe_remote_leaf(path)?;
         let sftp = self.ensure_sftp(session_id).await?;
         if is_dir {
             sftp.remove_dir(path.to_string())
@@ -2324,6 +2329,52 @@ mod tests {
             SAMPLE_FINGERPRINT,
         );
         assert_eq!(eval, HostKeyEval::New);
+    }
+
+    #[test]
+    fn host_key_prompt_serializes_frontend_field_names() {
+        let new_prompt = serde_json::to_value(SshHostKeyPrompt::New {
+            challenge_id: "challenge-1".into(),
+            host: "example.com".into(),
+            port: 22,
+            endpoint: "example.com:22".into(),
+            algorithm: "ssh-ed25519".into(),
+            fingerprint: SAMPLE_FINGERPRINT.into(),
+        })
+        .unwrap();
+        assert_eq!(new_prompt["challengeId"], "challenge-1");
+        assert!(new_prompt.get("challenge_id").is_none());
+
+        let changed_prompt = serde_json::to_value(SshHostKeyPrompt::Changed {
+            host: "example.com".into(),
+            port: 22,
+            endpoint: "example.com:22".into(),
+            algorithm: "ssh-ed25519".into(),
+            fingerprint: "SHA256:new".into(),
+            previous_fingerprint: "SHA256:old".into(),
+        })
+        .unwrap();
+        assert_eq!(changed_prompt["previousFingerprint"], "SHA256:old");
+        assert!(changed_prompt.get("previous_fingerprint").is_none());
+    }
+
+    #[tokio::test]
+    async fn sftp_remove_rejects_unsafe_remote_leaf_before_session_lookup() {
+        let manager = SshManager::for_test();
+        for path in [
+            "/home/u/../.ssh/config",
+            "/home/u/foo\\bar",
+            "/home/u/C:foo",
+            "/home/u/",
+        ] {
+            assert_eq!(
+                manager
+                    .sftp_remove("missing-session", path, false)
+                    .await
+                    .unwrap_err(),
+                PathCapabilityError::UnsafeLeaf.as_code()
+            );
+        }
     }
 
     #[tokio::test]

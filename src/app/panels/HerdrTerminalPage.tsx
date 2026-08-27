@@ -33,6 +33,10 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
+import {
+  installTerminalClipboardHandling,
+  type TerminalClipboardController
+} from "@/terminal/terminalClipboard"
 import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
 import {
   TerminalOutputQueue,
@@ -175,7 +179,26 @@ export function HerdrTerminalPage({
   )
   const sessionCanConnect = sessionRunning === true
   const sessionIsStopped = sessionRunning === false
+  const canSetSplitRatio = Boolean(
+    sessionCanConnect &&
+      targetCapabilities?.server.running &&
+      targetCapabilities.api.layoutSetSplitRatio
+  )
+  const terminalConnectorCapabilitiesAllowControl = Boolean(
+    targetCapabilities?.server.running &&
+      targetCapabilities.terminal.control &&
+      targetCapabilities.terminal.takeover &&
+      targetCapabilities.terminal.input &&
+      targetCapabilities.terminal.resize &&
+      targetCapabilities.terminal.scroll &&
+      targetCapabilities.terminal.release
+  )
   const [hasConnectedSession, setHasConnectedSession] = useState(sessionCanConnect)
+  const canOpenTerminalConnector = Boolean(
+    !sessionIsStopped &&
+      (sessionCanConnect || hasConnectedSession) &&
+      terminalConnectorCapabilitiesAllowControl
+  )
 
   const resolvedTabId = useMemo(() => {
     if (herdrTabId) return herdrTabId
@@ -200,6 +223,7 @@ export function HerdrTerminalPage({
   const suppressRatioWriteRef = useRef(true)
   const ratioTimersRef = useRef<Map<string, number>>(new Map())
   const lastWrittenRatioRef = useRef<Map<string, number>>(new Map())
+  const canSetSplitRatioRef = useRef(canSetSplitRatio)
   const layoutLoadGenerationRef = useRef(0)
   const updateHerdrPageTabId = useWorkspaceStore((s) => s.updateHerdrPageTabId)
 
@@ -240,9 +264,9 @@ export function HerdrTerminalPage({
       setLayoutError(null)
       setHasConnectedSession(true)
       setSurfaceSessionRunning(true)
-      // Allow ratio writes only after this hydration settles.
+      // Allow ratio writes only after hydration when the server advertises it.
       window.setTimeout(() => {
-        if (generation === layoutLoadGenerationRef.current) {
+        if (generation === layoutLoadGenerationRef.current && canSetSplitRatio) {
           suppressRatioWriteRef.current = false
         }
       }, 0)
@@ -262,7 +286,8 @@ export function HerdrTerminalPage({
     sessionCanConnect,
     sessionIsStopped,
     sessionNameArg,
-    hasConnectedSession
+    hasConnectedSession,
+    canSetSplitRatio
   ])
 
   useEffect(() => {
@@ -286,6 +311,18 @@ export function HerdrTerminalPage({
     }
   }, [])
 
+  useEffect(() => {
+    canSetSplitRatioRef.current = canSetSplitRatio
+    if (canSetSplitRatio) {
+      suppressRatioWriteRef.current = false
+      return
+    }
+    suppressRatioWriteRef.current = true
+    for (const timer of ratioTimersRef.current.values()) window.clearTimeout(timer)
+    ratioTimersRef.current.clear()
+    lastWrittenRatioRef.current.clear()
+  }, [canSetSplitRatio])
+
   const paneToTerminal = useMemo(() => {
     const map = new Map<string, string>()
     for (const term of snapshot?.terminals ?? []) {
@@ -299,7 +336,7 @@ export function HerdrTerminalPage({
 
   const onSplitRatioChanged = useCallback(
     (splitPath: boolean[], ratio: number) => {
-      if (suppressRatioWriteRef.current) return
+      if (suppressRatioWriteRef.current || !canSetSplitRatio) return
       if (!sessionCanConnect) return
       if (!(ratio >= 0 && ratio <= 1)) return
       const key = pathKey(splitPath)
@@ -309,6 +346,7 @@ export function HerdrTerminalPage({
       if (existing !== undefined) window.clearTimeout(existing)
       const timer = window.setTimeout(() => {
         ratioTimersRef.current.delete(key)
+        if (!canSetSplitRatioRef.current) return
         lastWrittenRatioRef.current.set(key, ratio)
         const generation = layoutLoadGenerationRef.current
         void herdrLayoutSetSplitRatio({
@@ -329,7 +367,7 @@ export function HerdrTerminalPage({
       }, RATIO_DEBOUNCE_MS)
       ratioTimersRef.current.set(key, timer)
     },
-    [sessionCanConnect, sessionNameArg, layout?.tabId, resolvedTabId, paneId]
+    [canSetSplitRatio, sessionCanConnect, sessionNameArg, layout?.tabId, resolvedTabId, paneId]
   )
 
   const sessionGuidance = sessionIsStopped
@@ -338,13 +376,16 @@ export function HerdrTerminalPage({
       })
     : sessionRunning === null
       ? t("herdrNav.connecting")
-      : null
+      : sessionCanConnect && !canOpenTerminalConnector
+        ? targetCapabilities?.terminal.reason ?? t("herdrTerminal.connectorUnavailable")
+        : null
 
   const layoutPaneIds = useMemo(
     () => (layout ? collectPaneIds(layout.root) : []),
     [layout]
   )
   const focusedPaneId = layout?.focusedPaneId ?? layoutPaneIds[0] ?? null
+  const splitResizeUnavailable = Boolean(layout && layoutPaneIds.length > 1 && !canSetSplitRatio)
   const expectedAttachmentCount = layout ? Math.max(1, layoutPaneIds.length) : 1
   const pageAttachments = Array.from(attachments.values()).filter(
     (record) => record.pagePath === pagePath
@@ -413,6 +454,7 @@ export function HerdrTerminalPage({
           pagePath={pagePath}
           herdrSessionId={herdrSessionId}
           sessionRunningOverride={surfaceSessionRunning}
+          connectorEnabledOverride={canOpenTerminalConnector}
           terminalId={leafTerminalId}
           paneId={leafPaneId}
           label={node.label ?? null}
@@ -440,7 +482,7 @@ export function HerdrTerminalPage({
         data-testid={`herdr-split-${pathKey(path) || "root"}`}
         data-direction={node.direction}
         onLayoutChanged={(nextLayout, meta) => {
-          if (!meta.isUserInteraction) return
+          if (!canSetSplitRatio || !meta.isUserInteraction) return
           const firstId = `${groupId}-first`
           const secondId = `${groupId}-second`
           const first = nextLayout[firstId]
@@ -454,7 +496,13 @@ export function HerdrTerminalPage({
         <ResizablePanel id={`${groupId}-first`} defaultSize={firstPct} minSize={10}>
           {renderNode(node.first, [...path, false], leafActive)}
         </ResizablePanel>
-        <ResizableHandle withHandle />
+        <ResizableHandle
+          withHandle
+          disabled={!canSetSplitRatio}
+          aria-disabled={!canSetSplitRatio}
+          id={`herdr-split-handle-${pathKey(path) || "root"}`}
+          className={!canSetSplitRatio ? "pointer-events-none cursor-default opacity-50" : undefined}
+        />
         <ResizablePanel id={`${groupId}-second`} defaultSize={secondPct} minSize={10}>
           {renderNode(node.second, [...path, true], leafActive)}
         </ResizablePanel>
@@ -467,6 +515,7 @@ export function HerdrTerminalPage({
       pagePath={pagePath}
       herdrSessionId={herdrSessionId}
       sessionRunningOverride={surfaceSessionRunning}
+      connectorEnabledOverride={canOpenTerminalConnector}
       terminalId={terminalId}
       paneId={paneId}
       label={null}
@@ -493,6 +542,7 @@ export function HerdrTerminalPage({
       pagePath={pagePath}
       herdrSessionId={herdrSessionId}
       sessionRunningOverride={surfaceSessionRunning}
+      connectorEnabledOverride={canOpenTerminalConnector}
       terminalId={terminalId}
       paneId={paneId}
       label={null}
@@ -555,6 +605,15 @@ export function HerdrTerminalPage({
           {sessionGuidance}
         </div>
       )}
+      {splitResizeUnavailable && (
+        <div
+          role="status"
+          data-testid="herdr-split-resize-unavailable"
+          className="pointer-events-none absolute bottom-2 left-2 max-w-[70%] truncate rounded-[4px] border border-(--term-line) bg-(--term-bar) px-[8px] py-[4px] text-[11px] text-(--term-fg2)"
+        >
+          {t("herdrTerminal.splitResizeUnavailable")}
+        </div>
+      )}
       {layoutError && sessionCanConnect && !layout && (
         <div
           role="status"
@@ -572,6 +631,7 @@ interface HerdrTerminalLeafProps {
   pagePath: string
   herdrSessionId: string
   sessionRunningOverride?: boolean | null
+  connectorEnabledOverride?: boolean
   terminalId: string
   paneId?: string | null
   label?: string | null
@@ -590,6 +650,7 @@ function HerdrTerminalLeaf({
   pagePath,
   herdrSessionId,
   sessionRunningOverride,
+  connectorEnabledOverride,
   terminalId,
   paneId = null,
   label = null,
@@ -629,7 +690,7 @@ function HerdrTerminalLeaf({
   const sessionRunning = sessionRunningOverride ?? inventorySessionRunning
   const sessionCanConnect = !forceDisconnected && sessionRunning === true
   const sessionIsStopped = forceDisconnected || sessionRunning === false
-  const connectorEnabled = sessionCanConnect
+  const connectorEnabled = connectorEnabledOverride ?? sessionCanConnect
   const updatePaneId = useWorkspaceStore((s) => s.updateHerdrPagePaneId)
   const registerAttachment = useHerdrStore((s) => s.registerAttachment)
   const updateAttachmentPaneId = useHerdrStore((s) => s.updateAttachmentPaneId)
@@ -642,6 +703,7 @@ function HerdrTerminalLeaf({
   const observerRef = useRef<ResizeObserver | null>(null)
   const themeObserverRef = useRef<MutationObserver | null>(null)
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
+  const clipboardRef = useRef<TerminalClipboardController | null>(null)
   const outputQueueRef = useRef<TerminalOutputQueue | null>(null)
   const lastOutputSeqRef = useRef<number | null>(null)
   const disposedRef = useRef(false)
@@ -685,11 +747,19 @@ function HerdrTerminalLeaf({
       cursorBlink: true,
       fontSize,
       theme: { ...buildXtermTheme(currentMode()) },
-      disableStdin: false
+      disableStdin: false,
+      scrollback: 0,
+      scrollOnUserInput: false,
+      smoothScrollDuration: 0
     })
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(container)
+    if (activeRef.current) safeFocus(term)
+    clipboardRef.current = installTerminalClipboardHandling(term, {
+      canPaste: () =>
+        !disposedRef.current && openReadyRef.current && Boolean(transportRef.current?.canWrite())
+    })
     term.attachCustomWheelEventHandler((event) => {
       const transport = transportRef.current
       if (
@@ -754,6 +824,8 @@ function HerdrTerminalLeaf({
         openReadyRef.current = false
         observerRef.current?.disconnect()
         themeObserverRef.current?.disconnect()
+        clipboardRef.current?.dispose()
+        clipboardRef.current = null
         parsedDisposable?.dispose()
         container.removeEventListener("mouseleave", resetTargetHover)
         window.removeEventListener("blur", resetTargetHover)
@@ -844,14 +916,18 @@ function HerdrTerminalLeaf({
       if (event.type === "resync") {
         setStatusMessage(event.message)
         outputQueueRef.current?.push(`\r\n[Herdr resync: ${event.message}]\r\n`)
-        void transport.release().then(() => {
-          if (disposedRef.current || transport.isDisposed?.()) return
-          return transport.open({
-            cols: lastSizeRef.current.cols,
-            rows: lastSizeRef.current.rows,
-            onEvent: handleEvent
+        transport.detachSession()
+        void useHerdrStore
+          .getState()
+          .releaseAttachment(attachmentKey)
+          .then(() => {
+            if (disposedRef.current || transport.isDisposed?.()) return
+            return transport.open({
+              cols: lastSizeRef.current.cols,
+              rows: lastSizeRef.current.rows,
+              onEvent: handleEvent
+            })
           })
-        })
         return
       }
       if (event.type === "error") {
@@ -864,6 +940,9 @@ function HerdrTerminalLeaf({
         setRole(event.role)
         updateAttachmentMode(attachmentKey, event.mode, event.role)
         term.options.disableStdin = event.mode !== "control"
+        if (event.mode === "control" && openReadyRef.current) {
+          clipboardRef.current?.flushPendingPaste()
+        }
       }
     }
 
@@ -876,6 +955,7 @@ function HerdrTerminalLeaf({
       .then(() => {
         if (disposedRef.current) return
         openReadyRef.current = true
+        clipboardRef.current?.flushPendingPaste()
         // ResizablePanel can report a tiny provisional width during the first
         // layout pass. Fit and publish the authoritative viewport once the
         // connector is ready and the browser has painted the BSP surface.
@@ -921,6 +1001,8 @@ function HerdrTerminalLeaf({
       observerRef.current?.disconnect()
       themeObserverRef.current?.disconnect()
       dataDisposableRef.current?.dispose()
+      clipboardRef.current?.dispose()
+      clipboardRef.current = null
       parsedDisposable?.dispose()
       container.removeEventListener("mouseleave", resetTargetHover)
       window.removeEventListener("blur", resetTargetHover)
@@ -928,13 +1010,9 @@ function HerdrTerminalLeaf({
       targetOpenRef.current = null
       outputQueueRef.current?.dispose()
       unregisterTerminalOutputQueue(attachmentKey)
-      const transportToDispose = transport
+      transport.detach()
       transportRef.current = null
-      void useHerdrStore
-        .getState()
-        .releaseAttachment(attachmentKey)
-        .then(() => transportToDispose.dispose?.() ?? transportToDispose.release())
-        .catch(() => undefined)
+      void useHerdrStore.getState().releaseAttachment(attachmentKey).catch(() => undefined)
       term.dispose()
       termRef.current = null
       fitRef.current = null
@@ -948,10 +1026,9 @@ function HerdrTerminalLeaf({
     if (!transport) return
     openReadyRef.current = false
     if (termRef.current) termRef.current.options.disableStdin = true
-    void releaseAttachment(attachmentKey)
-      .then(() => transport.dispose?.() ?? transport.release())
-      .catch(() => undefined)
+    transport.detach()
     transportRef.current = null
+    void releaseAttachment(attachmentKey).catch(() => undefined)
   }, [sessionIsStopped, attachmentKey, releaseAttachment])
 
   useEffect(() => {
@@ -986,10 +1063,19 @@ function HerdrTerminalLeaf({
     if (transportRef.current?.isDisposed?.()) return
     setTakingControl(true)
     try {
-      await transportRef.current?.takeControl?.()
-      if (disposedRef.current || transportRef.current?.isDisposed?.()) return
-      const nextMode = transportRef.current?.getControlMode?.() ?? "control"
-      const nextRole = transportRef.current?.getRole?.() ?? "controller"
+      const transport = transportRef.current
+      if (!transport) return
+      transport.detachSession()
+      await releaseAttachment(attachmentKey)
+      if (
+        disposedRef.current ||
+        transportRef.current !== transport ||
+        transport.isDisposed?.()
+      ) return
+      await transport.takeControl?.()
+      if (disposedRef.current || transport.isDisposed?.()) return
+      const nextMode = transport.getControlMode?.() ?? "control"
+      const nextRole = transport.getRole?.() ?? "controller"
       setControlMode(nextMode)
       setRole(nextRole)
       updateAttachmentMode(attachmentKey, nextMode, nextRole)
@@ -1001,7 +1087,14 @@ function HerdrTerminalLeaf({
     } finally {
       setTakingControl(false)
     }
-  }, [attachmentKey, connectorEnabled, controlMode, takingControl, updateAttachmentMode])
+  }, [
+    attachmentKey,
+    connectorEnabled,
+    controlMode,
+    releaseAttachment,
+    takingControl,
+    updateAttachmentMode
+  ])
 
   const leafContextMenu = contextMenuHandler({
     kind: "herdrPane",

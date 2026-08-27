@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { applyAccentPreference, type AccentPreference } from "@/theme/accent"
 
 const DEFAULT_NAV_WIDTH = 266
 const MIN_NAV_WIDTH = 220
@@ -68,7 +69,8 @@ export function AppShell() {
   const paletteOpenRequest = useUiStore((s) => s.paletteOpenRequest)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [theme, setTheme] = useState<ThemePreference>(() => loadAppearanceSettings().theme)
+  const [appearance, setAppearance] = useState(loadAppearanceSettings)
+  const { theme, accent } = appearance
   const [navWidth, setNavWidth] = useState(DEFAULT_NAV_WIDTH)
   const [navResizing, setNavResizing] = useState(false)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -137,8 +139,6 @@ export function AppShell() {
   useEffect(() => {
     const root = document.documentElement
 
-    saveAppearanceSettings({ theme })
-
     // Native window chrome (border hairline, traffic-light backdrop) must
     // follow the app theme, not the OS — a dark system theme otherwise draws
     // a dark frame around the light UI.
@@ -171,6 +171,14 @@ export function AppShell() {
 
     root.classList.toggle("dark", theme === "dark")
   }, [theme])
+
+  useEffect(() => {
+    applyAccentPreference(accent)
+  }, [accent])
+
+  useEffect(() => {
+    saveAppearanceSettings(appearance)
+  }, [appearance])
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -277,8 +285,13 @@ export function AppShell() {
   }
 
   const handleThemeChange = (next: ThemePreference) => {
-    setTheme(next)
+    setAppearance((current) => ({ ...current, theme: next }))
     void logUserAction("theme_change", `Switched to ${next} theme`, { theme: next })
+  }
+
+  const handleAccentChange = (next: AccentPreference) => {
+    setAppearance((current) => ({ ...current, accent: next }))
+    void logUserAction("accent_change", `Switched to ${next} accent`, { accent: next })
   }
 
   // ADE shares the editor surface (mixed file/preview/herdr-terminal pages);
@@ -405,6 +418,8 @@ export function AppShell() {
         onOpenChange={setSettingsOpen}
         theme={theme}
         onThemeChange={handleThemeChange}
+        accent={accent}
+        onAccentChange={handleAccentChange}
         initialSection={settingsSection ?? undefined}
         initialLanguage={settingsLanguage ?? undefined}
         openNonce={settingsNonce}

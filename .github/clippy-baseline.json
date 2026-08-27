@@ -807,14 +807,14 @@
   {
     "code": "clippy::manual_repeat_n",
     "file": "src/herdr_service.rs",
-    "line": 5728,
+    "line": 6979,
     "message": "this `repeat().take()` can be written more concisely",
     "count": 1
   },
   {
     "code": "clippy::manual_repeat_n",
     "file": "src/herdr_service.rs",
-    "line": 6152,
+    "line": 7403,
     "message": "this `repeat().take()` can be written more concisely",
     "count": 1
   },
@@ -891,35 +891,35 @@
   {
     "code": "clippy::too_many_arguments",
     "file": "src/ssh_service.rs",
-    "line": 1427,
+    "line": 1432,
     "message": "this function has too many arguments (9/7)",
     "count": 2
   },
   {
     "code": "clippy::collapsible_if",
     "file": "src/ssh_service.rs",
-    "line": 1511,
+    "line": 1516,
     "message": "this `if` statement can be collapsed",
     "count": 2
   },
   {
     "code": "clippy::too_many_arguments",
     "file": "src/ssh_service.rs",
-    "line": 1966,
+    "line": 1971,
     "message": "this function has too many arguments (9/7)",
     "count": 2
   },
   {
     "code": "clippy::needless_borrow",
     "file": "src/ssh_service.rs",
-    "line": 2761,
+    "line": 2812,
     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
     "count": 1
   },
   {
     "code": "clippy::manual_contains",
     "file": "src/ssh_service.rs",
-    "line": 2775,
+    "line": 2826,
     "message": "using `contains()` instead of `iter().any()` is more efficient",
     "count": 1
   },

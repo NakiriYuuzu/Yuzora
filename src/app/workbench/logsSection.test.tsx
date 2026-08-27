@@ -131,6 +131,42 @@ describe("LogsSection sanitize", () => {
     expect(JSON.parse(copied)).toEqual([JSON.parse(redactedLine)])
   })
 
+  it("copies only the 50 rows shown on the active results page", async () => {
+    queryResult = Array.from({ length: 100 }, (_, index) => ({
+      ...sensitiveRow,
+      event: `event_${index}`,
+      message: `message ${index}`,
+      metadata: { index },
+    }))
+    render(<LogsSection />)
+
+    expect(await screen.findByText("Page 1 of 2")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Next results page" }))
+    expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }))
+
+    await waitFor(() => expect(sanitizeCalls).toHaveLength(1))
+    expect(sanitizeCalls[0]).toHaveLength(50)
+    const copiedEvents = sanitizeCalls[0].map((line) => JSON.parse(line).event)
+    expect(copiedEvents).toEqual(
+      Array.from({ length: 50 }, (_, index) => `event_${index + 50}`),
+    )
+    expect(screen.getByRole("status")).toHaveTextContent("Copied 50 rows (sanitized)")
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+    const rawEvents = (JSON.parse(writeText.mock.calls[1][0]) as Array<{ event: string }>).map(
+      (row) => row.event,
+    )
+    expect(rawEvents).toEqual(
+      Array.from({ length: 50 }, (_, index) => `event_${index + 50}`),
+    )
+    expect(screen.getByRole("status")).toHaveTextContent("Copied 50 rows (raw, not sanitized)")
+  })
+
   // AC 7：sanitize 失敗時 fail-closed——絕不 fallback 成 raw
   it("never falls back to raw rows when log_sanitize_lines rejects", async () => {
     sanitizeFails = true
@@ -139,7 +175,7 @@ describe("LogsSection sanitize", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy" }))
 
     const alert = await screen.findByRole("alert")
-    expect(alert.textContent).toContain("Copy 失敗")
+    expect(alert.textContent).toContain("Copy failed")
     expect(sanitizeCalls).toEqual([[JSON.stringify(sensitiveRow)]])
     expect(writeText).not.toHaveBeenCalled()
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
@@ -149,7 +185,7 @@ describe("LogsSection sanitize", () => {
   it("copies raw rows without calling log_sanitize_lines when sanitize is off", async () => {
     await renderWithRows()
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
     fireEvent.click(screen.getByRole("button", { name: "Copy" }))
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
@@ -164,7 +200,7 @@ describe("LogsSection sanitize", () => {
 
     expect(screen.queryByTestId("logs-raw-mode-warning")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
 
     const warning = screen.getByTestId("logs-raw-mode-warning")
     expect(warning).toHaveAttribute("role", "note")
@@ -207,8 +243,8 @@ describe("LogsSection sanitize", () => {
     fireEvent.click(screen.getByRole("button", { name: "Export bundle" }))
     await screen.findByTestId("logs-sanitize-counts")
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
-    fireEvent.click(screen.getByRole("checkbox", { name: "sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sanitize" }))
 
     expect(screen.getByTestId("logs-sanitize-preview")).toBeInTheDocument()
     expect(screen.queryByTestId("logs-sanitize-counts")).not.toBeInTheDocument()
@@ -250,6 +286,25 @@ const runRows = [
     event: "app_start",
     message: "app run started",
     metadata: {},
+  },
+]
+
+const collidingRows = [
+  {
+    ...runRows[0],
+    timestamp: "2026-01-02T06:00:00+08:00",
+    run_id: "20260102T060000Z-aaaaaaaa",
+    event: "shared_event",
+    message: "same visible identity",
+    metadata: { owner: "run-a" },
+  },
+  {
+    ...runRows[0],
+    timestamp: "2026-01-02T06:00:00+08:00",
+    run_id: "20260102T060000Z-bbbbbbbb",
+    event: "shared_event",
+    message: "same visible identity",
+    metadata: { owner: "run-b" },
   },
 ]
 
@@ -322,6 +377,48 @@ describe("LogsSection run grouping", () => {
     await waitFor(() =>
       expect(screen.getAllByTestId("log-row-acp_spawn")).toHaveLength(2)
     )
+  })
+
+  it("切換 run filter 時不把同位置 row 的 expanded state 帶到另一個 run", async () => {
+    queryResult = collidingRows
+    render(<LogsSection />)
+    await screen.findByTestId("logs-run-groups")
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Expand metadata shared_event" })[0])
+    expect(await screen.findByText(/"owner": "run-a"/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("logs-run-group-20260102T060000Z-bbbbbbbb"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("log-row-run-shared_event").textContent).toBe("bbbbbbbb")
+    )
+    expect(
+      screen.getByRole("button", { name: "Expand metadata shared_event" }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/"owner": "run-b"/)).not.toBeInTheDocument()
+  })
+
+  it("新 query 結果落地時不把舊結果的 expanded state 帶到同位置 row", async () => {
+    queryResult = [collidingRows[0]]
+    render(<LogsSection />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Expand metadata shared_event" }))
+    expect(await screen.findByText(/"owner": "run-a"/)).toBeInTheDocument()
+
+    queryResult = [
+      {
+        ...collidingRows[0],
+        message: "replacement result",
+        metadata: { owner: "replacement" },
+      },
+    ]
+    fireEvent.click(screen.getByRole("button", { name: "audit" }))
+
+    expect(await screen.findByText("replacement result")).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Expand metadata shared_event" }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/"owner": "replacement"/)).not.toBeInTheDocument()
   })
 
   it("每一列顯示所屬 run 的短代號，歷史 record 顯示 —", async () => {

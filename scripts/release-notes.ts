@@ -1,7 +1,8 @@
 import { extractReleaseNotes } from "../src/lib/releaseNotes"
+import { versionFromTag } from "./release-version"
 
 export function releaseNotesForTag(changelog: string, tag: string): string {
-  const version = tag.replace(/^v/, "")
+  const version = versionFromTag(tag)
   const notes = extractReleaseNotes(changelog, version)
   if (!notes) throw new Error(`CHANGELOG.md must include version ${version}`)
   return notes

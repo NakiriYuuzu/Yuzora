@@ -33,6 +33,10 @@
   "profileWslDistro": "WSL: {{distro}}",
   "noSessions": "No terminal sessions yet",
   "emptyDescription": "Open a new terminal to run commands here.",
+  "noWorkspaceTitle": "Choose a folder to start a terminal",
+  "noWorkspaceDescription": "Terminals run in an opened workspace. Choose a local folder to continue.",
+  "openFolderForTerminal": "Open folder and create terminal",
+  "noWorkspaceOpenError": "The selected folder did not open as a workspace.",
   "tabLimitReached": "Yuzora already has {{limit}} terminal tabs open across all workspaces, which is the maximum. Close a tab in any workspace before opening another.",
   "targetOpen": {
     "action": "Open from terminal",
