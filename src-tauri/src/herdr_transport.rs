@@ -494,13 +494,14 @@ mod tests {
 
     #[test]
     fn reader_keeps_partial_bytes_across_short_deadlines() {
+        let prefix = b"{\"ok\":";
         let (listener, path) = local_pair("resume");
         let advertised = path.to_string_lossy().into_owned();
         let (prefix_ready_tx, prefix_ready_rx) = std::sync::mpsc::sync_channel(0);
         let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
         let server = thread::spawn(move || {
             let mut stream = listener.accept().expect("accept");
-            stream.write_all(b"{\"ok\":").unwrap();
+            stream.write_all(prefix).unwrap();
             prefix_ready_tx.send(()).expect("report prefix");
             resume_rx.recv().expect("release remainder");
             stream.write_all(b"true}\n").unwrap();
@@ -510,6 +511,20 @@ mod tests {
             .expect("connect");
         prefix_ready_rx.recv().expect("prefix ready");
         let mut pending = Vec::new();
+        let prefix_deadline = Instant::now() + Duration::from_secs(2);
+        let mut buffer = [0u8; READ_CHUNK_BYTES];
+        while pending.len() < prefix.len() {
+            assert!(
+                Instant::now() < prefix_deadline,
+                "prefix should become readable"
+            );
+            match poll_local_stream_read(&mut client, &mut buffer).expect("poll prefix") {
+                LocalStreamRead::Data(read) => pending.extend_from_slice(&buffer[..read]),
+                LocalStreamRead::Pending => sleep_until(Some(prefix_deadline)),
+                LocalStreamRead::Closed => panic!("stream closed before prefix"),
+            }
+        }
+        assert_eq!(pending.as_slice(), prefix);
         let first = read_local_ndjson_line(
             &mut client,
             &mut pending,
