@@ -10,9 +10,10 @@ import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents"
 import { formatHerdrExecutionOrigin } from "@/lib/herdrNormalize"
-import type { HerdrAgentInfo, HerdrAgentStatus, HerdrNamedSession } from "@/lib/herdrTypes"
+import type { HerdrAgentInfo, HerdrAgentStatus } from "@/lib/herdrTypes"
 import { workspacePathBasename } from "@/lib/paths"
 import { pickWorkspace } from "@/lib/workspaceActions"
 import { cn } from "@/lib/utils"
@@ -81,10 +82,10 @@ export function HerdrNavContent() {
   const hasNoSpaces = Boolean(snapshot && snapshot.spaces.length === 0)
   const visibleError = actionError ?? errorMessage
 
-  const onSelectSession = (session: HerdrNamedSession) => {
+  const onSelectSession = (sessionName: string) => {
     // HerdrBridge is the single focus-restoration owner so a user-closed page
     // is not reopened while the runtime focus key remains unchanged.
-    void selectSession(session.name)
+    void selectSession(sessionName)
   }
 
   const openAgent = async (agent: HerdrAgentInfo) => {
@@ -167,31 +168,30 @@ export function HerdrNavContent() {
   }
 
   const sessionTabs = sessions.length > 0 && (
-    <div
-      role="tablist"
-      aria-label={t("herdrNav.sessionsHeading")}
-      className="flex shrink-0 flex-wrap gap-[6px] px-[2px]"
+    <Tabs
+      value={selectedSessionName ?? ""}
+      onValueChange={onSelectSession}
+      className="shrink-0 gap-0"
     >
-      {sessions.map((session) => {
-        const selected = session.name === selectedSessionName
-        return (
-          <button
+      <TabsList
+        aria-label={t("herdrNav.sessionsHeading")}
+        className="w-full shrink-0 flex-wrap justify-start gap-[6px] rounded-none bg-transparent p-0 px-[2px] group-data-horizontal/tabs:h-auto"
+      >
+        {sessions.map((session) => (
+          <TabsTrigger
             key={session.name}
             type="button"
-            role="tab"
+            value={session.name}
             data-testid={`herdr-session-${session.name}`}
-            aria-selected={selected}
             title={
               session.running
                 ? session.socketPath
                 : t("herdrNav.sessionStoppedTitle", { name: session.name })
             }
-            onClick={() => onSelectSession(session)}
             className={cn(
-              "rounded-full border px-[10px] py-[4px] text-[11px] font-medium transition-colors",
-              selected
-                ? "border-(--yz-accent)/50 bg-(--yz-active) text-(--ink-0)"
-                : "border-(--line-2) text-(--ink-3) hover:bg-(--yz-hover)",
+              "h-auto flex-none rounded-full border border-(--line-2) px-[10px] py-[4px] text-[11px] font-medium text-(--ink-3) hover:bg-(--yz-hover) hover:text-(--ink-3) dark:text-(--ink-3) dark:hover:text-(--ink-3)",
+              "data-[state=active]:border-(--yz-accent)/50 data-[state=active]:bg-(--yz-active) data-[state=active]:text-(--ink-0) data-[state=active]:shadow-none data-[state=active]:hover:bg-(--yz-active) data-[state=active]:hover:text-(--ink-0)",
+              "dark:data-[state=active]:border-(--yz-accent)/50 dark:data-[state=active]:bg-(--yz-active) dark:data-[state=active]:text-(--ink-0) dark:data-[state=active]:hover:text-(--ink-0)",
               !session.running && "opacity-70"
             )}
           >
@@ -201,10 +201,10 @@ export function HerdrNavContent() {
                 {t("herdrNav.stoppedBadge")}
               </span>
             )}
-          </button>
-        )
-      })}
-    </div>
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   )
 
   if (

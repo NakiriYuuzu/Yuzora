@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { HerdrNavContent } from "@/app/workbench/HerdrNavContent"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
@@ -199,12 +199,32 @@ describe("HerdrNavContent", () => {
     useHerdrStore.setState(readyState())
     render(<HerdrNavContent />)
 
-    expect(screen.getByTestId("herdr-session-default")).toBeInTheDocument()
-    expect(screen.getByTestId("herdr-session-work")).toBeInTheDocument()
+    const tablist = screen.getByRole("tablist")
+    const defaultTab = screen.getByTestId("herdr-session-default")
+    const workTab = screen.getByTestId("herdr-session-work")
+    expect(tablist.parentElement).toHaveAttribute("data-slot", "tabs")
+    expect(tablist).toHaveAttribute("data-slot", "tabs-list")
+    expect(defaultTab).toHaveAttribute("data-slot", "tabs-trigger")
+    expect(workTab).toHaveAttribute("data-slot", "tabs-trigger")
+    expect(workTab).toBeEnabled()
     expect(screen.getByText("Agents")).toBeInTheDocument()
     expect(screen.queryByText("Spaces")).toBeNull()
     expect(screen.queryByTestId("herdr-space-ws-1")).toBeNull()
     expect(screen.getByText("Main")).toBeInTheDocument() // owning Space label
+  })
+
+  it("moves focus and selects named Sessions with ArrowRight", async () => {
+    const selectSession = vi.fn().mockResolvedValue(undefined)
+    useHerdrStore.setState(readyState({ selectSession }))
+    render(<HerdrNavContent />)
+    const defaultTab = screen.getByTestId("herdr-session-default")
+    const workTab = screen.getByTestId("herdr-session-work")
+
+    act(() => defaultTab.focus())
+    fireEvent.keyDown(defaultTab, { key: "ArrowRight" })
+
+    await waitFor(() => expect(workTab).toHaveFocus())
+    expect(selectSession).toHaveBeenCalledWith("work")
   })
 
   it("projects Herdr-reported WSL origin as a compact Agent badge", () => {
@@ -404,7 +424,7 @@ describe("HerdrNavContent", () => {
 
       expect(screen.getByTestId("herdr-session-default")).toBeInTheDocument()
       expect(screen.getByTestId("herdr-session-work")).toHaveAttribute("aria-selected", "true")
-      fireEvent.click(screen.getByTestId("herdr-session-default"))
+      fireEvent.mouseDown(screen.getByTestId("herdr-session-default"), { button: 0 })
       expect(selectSession).toHaveBeenCalledWith("default")
       expect(screen.getByTestId("herdr-unavailable-open-local-folder")).toBeEnabled()
     }

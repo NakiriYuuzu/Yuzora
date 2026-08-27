@@ -119,8 +119,14 @@ export function HerdrNewAgentDialog({
   }, [loadCatalog, open])
 
   const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && creating) return
     if (!nextOpen) setBypassPermissions(false)
     onOpenChange(nextOpen)
+  }
+
+  const closeAfterSuccess = () => {
+    setBypassPermissions(false)
+    onOpenChange(false)
   }
 
   const onStart = async () => {
@@ -146,7 +152,7 @@ export function HerdrNewAgentDialog({
         tabId: created.tabId,
         title: created.title ?? created.kind
       })
-      handleOpenChange(false)
+      closeAfterSuccess()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally {

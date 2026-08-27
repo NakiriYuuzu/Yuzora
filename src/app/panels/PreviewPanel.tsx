@@ -105,6 +105,18 @@ function portUrl(port: number): string {
   return `http://localhost:${port}`
 }
 
+function normalizePreviewUrl(rawUrl: string): string {
+  const schemeLessHostWithPort = /^(?:[^:/?#\s]+|\[[0-9a-f:.]+\]):\d+(?:[/?#]|$)/i
+    .test(rawUrl)
+  if (!schemeLessHostWithPort && /^[a-z][a-z0-9+.-]*:/i.test(rawUrl)) return rawUrl
+  const scheme = /^(?:localhost|127\.0\.0\.1)(?=[:/]|$)/i.test(rawUrl) ? "http" : "https"
+  return `${scheme}://${rawUrl}`
+}
+
+function reportPreviewReloadError(error: unknown): Promise<void> {
+  return showActionError(i18n.t("previewPanel.reload", { ns: "panels" }), error)
+}
+
 function localhostPort(rawUrl: string | null): number | null {
   if (!rawUrl) return null
   try {
@@ -249,7 +261,7 @@ export function PreviewPanel() {
             reportedError = new Error(`${String(error)}; preview cleanup failed: ${String(cleanupError)}`)
           }
           usePreviewStore.getState().settleNativeRequest(requestToken)
-          if (!cancelled) await showActionError(tp("previewPanel.reload"), reportedError)
+          if (!cancelled) await reportPreviewReloadError(reportedError)
         }
         return
       }
@@ -273,7 +285,7 @@ export function PreviewPanel() {
     return () => {
       cancelled = true
     }
-  }, [external, nativeNavigationSync, nav.url, tp, workspace])
+  }, [external, nativeNavigationSync, nav.url, workspace])
 
   // Close the webview when the preview is no longer showing an external URL, and
   // on unmount (the panel unmounts when another tab becomes active — a stray
@@ -284,12 +296,9 @@ export function PreviewPanel() {
       // The Rust child webview is a singleton. Closing it invalidates whichever
       // workspace owned the proof ledger, including an external -> other-workspace
       // local transition where `workspace` is no longer the previous owner.
-      requestNativePreviewClose(
-        workspace,
-        (error) => showActionError(tp("previewPanel.reload"), error)
-      )
+      requestNativePreviewClose(workspace, reportPreviewReloadError)
     }
-  }, [external, tp, workspace])
+  }, [external, workspace])
   useEffect(() => {
     return () => {
       if (isTauri()) requestNativePreviewClose(null)
@@ -361,8 +370,7 @@ export function PreviewPanel() {
       setUrlError(null)
       return
     }
-    const scheme = /^(localhost|127\.0\.0\.1)(:|\/|$)/.test(raw) ? "http" : "https"
-    const normalized = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `${scheme}://${raw}`
+    const normalized = normalizePreviewUrl(raw)
     if (usePreviewStore.getState().navigate(workspace, normalized)) {
       setUrlDraft(null)
       setUrlError(null)

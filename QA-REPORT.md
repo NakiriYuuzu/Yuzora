@@ -1,19 +1,20 @@
 # Yuzora 上線前唯讀 QA 驗收報告
 
-> 狀態：原始唯讀驗收、使用者授權的 remediation 與 release review 回歸均已完成。QA-001～QA-033 共 33 個 findings，其中 32 個實際缺陷已修復；QA-019 經 upstream API 證明為 false positive，並已修正誤導性的 provenance 註解與加入 contract。所有外部簽章、平台、review 與權限條件仍誠實列為 BLOCKED。
+> 狀態：原始唯讀驗收與第五輪 remediation 已完成本機回歸。QA-001～QA-037 共 37 個 findings；36 個實際缺陷均已修復，QA-019 經 upstream API 證明為 false positive。新 exact-head CI、candidate artifacts 與 GUI 回歸尚待完成；所有外部簽章、平台、review 與權限條件仍誠實列為 BLOCKED。
 
 ## 1. 執行摘要
 
 - 測試開始：2026-08-26 00:52:49 +08:00（Asia/Taipei）
 - 測試環境：macOS 26.6.1（25G76）、Apple arm64、Bun 1.3.14、rustc/cargo 1.96.0
-- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；latest remote PR head／本輪 remediation baseline `38a445aad3155011b4c13b1c5bfcef1509cfa9d2` 加本報告所列 15-file patch
+- 測試來源：原始 QA baseline `d97fb7a5724669394abeb11360eef7330e332d06`；latest remote PR head／本輪 remediation baseline `a57c7b43ed79a842a677f06cc32c6bef5016735d` 加本報告所列 7-file patch
 - 產品版本：`0.0.9-beta.1`（`package.json` 與 `src-tauri/tauri.conf.json` 一致）
 - 原始驗收結束：2026-08-26 09:48:24 +08:00（01:20:36 曾因 QA-009 暫停；經使用者明確要求後續測完成）
 - Post-review 修復回歸與本機候選驗收結束：2026-08-26 23:32:41 +08:00
 - QA-028～QA-033 follow-up remediation完整本機驗證結束：2026-08-27 09:35:28 +08:00
+- QA-034～QA-037 follow-up remediation完整本機驗證結束：2026-08-27 10:20:06 +08:00
 - 整體結論：**NO-GO**
-- 功能總數／通過／失敗／阻塞／未測試：**96／79／0／17／0**
-- Repository 可處理問題：**32／32 個實際缺陷已修復；QA-019 的 invalid-ref 前提已證偽。QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／新 exact-head workflow run 阻擋。**
+- 功能總數／通過／失敗／阻塞／未測試：**100／83／0／17／0**
+- Repository 可處理問題：**36／36 個實際缺陷已修復；QA-019 的 invalid-ref 前提已證偽。QA-003 的 release workflow contract PASS，但實際簽章候選仍受外部憑證／新 exact-head workflow run 阻擋。**
 - 上線阻擋問題摘要：
   - QA-003（P1 release gate）：Stable／Beta macOS workflow 已改為 fail-closed Developer ID signing、notarization、strict `codesign`、`spctl` 與 app／DMG stapler validation；本機沒有 Apple credentials，尚未取得實際 signed／notarized candidate，因此仍不可發布。
   - GitHub secret inventory 只有 `TAURI_SIGNING_PRIVATE_KEY` 與其 password；六項 Apple secrets 仍缺。`main` 未啟用 branch protection，repository rulesets 為空；release-sensitive patch 尚待 maintainer review 與明確 merge 授權。
@@ -22,11 +23,11 @@
 
 ### 修復驗證摘要
 
-- 上一個13-file remediation隔離 build：`/private/tmp/yuzora-ops.LSCoT2/cargo-target/release/bundle/macos/Yuzora.app`；DMG SHA-256 `97ad88de36c798473abdbe36bd1dedea4888c9efde4e52927ae32c641230d680`，`hdiutil verify` PASS；bundle `0.0.9-beta.1`／`dev.yuuzu.yuzora`／arm64，按 local candidate contract 為 ad-hoc、無 TeamIdentifier。本輪15-file patch的新 exact-head candidate尚待 push／CI，不把舊包當成最終 acceptance。
-- Frontend：typecheck PASS；lint PASS（0 errors，49 既有 warnings）；180 files／2,463 tests PASS；production build PASS（3,105.77 kB chunk warning保留）。
+- 上一個 authoritative exact head `a57c7b43ed79a842a677f06cc32c6bef5016735d` 的 run `33030685194` 七個 jobs全部成功；macOS DMG SHA-256 `eb5c57d1b5cbe7aee0eff81a4dc042ba82699c97b575da64e9f19330ae5a4c53`、Windows NSIS `fe98abe547e39c0bc115067c211f9628f4dc76c153c9e60825ad7b48ae4de51b`、MSI `6a6e82744e1f95b6a6fb6559df20bf22988b189ec70e3fda0fac7a0ac14c3504`；DMG verify、version／bundle ID／universal architecture、HERDR／ConPTY pins與Beta artifact boundary均 PASS。該候選已被 QA-034～QA-037 的7-file修復 supersede，不能當最終 acceptance；新 exact-head candidate尚待 push／CI。
+- Frontend：typecheck PASS；lint PASS（0 errors，49 既有 warnings）；完整 suite第一次與 fresh Rust compile並行時有2個 timing failure，分離後相鄰重跑57/57與完整180 files／2,475 tests均 PASS；repository外 production build PASS（3,106.39 kB chunk warning保留）。
 - Rust：`cargo check --locked --all-targets`、fmt、exact clippy baseline PASS；891 unit tests PASS、1 ignored；DB integration 1 PASS、1 ignored。
-- Release：version／notes／Beta／Stable preflight PASS；release 7 files／45 tests、actionlint v1.7.7與YAML parse PASS；UI targeted 5 files／80 tests PASS；先前 `bun run tauri:build` 在 repository 外 code 0。
-- Computer Use：僅用 bundled `@oai/sky` 操作 exact `/private/tmp/yuzora-ops.LSCoT2/.../Yuzora.app`。新增回歸包含 `>` Space／Agent 搜尋與 keyboard flow、Logs date-only／datetime-local／RFC3339／非法日曆時間、50-row paging／expanded-state isolation、accent persistence／restore；Git menu、Preview、SSH smoke 亦 PASS。no-snapshot session、large inventory cap 與 execution-origin refresh 以 deterministic tests 覆蓋，未偽稱實機重現。
+- Release：version／notes／Beta／Stable preflight PASS；release 7 files／45 tests、actionlint v1.7.7（download SHA-256 `2693315b9093aeacb4ebd91a993fea54fc215057bf0da2659056b4bc033873db`）與YAML parse PASS；QA-034～QA-037 targeted 6 files／88 tests PASS。
+- Computer Use：僅用 bundled `@oai/sky` 操作 run `33030685194` 的 exact macOS candidate；啟動／Quit／重啟、HERDR default session與 workspace restore、Agent Inspector／Escape focus return、Terminal paste不重複、Logs page-2 sanitized／raw Copy 50 rows、query／run-filter expansion reset與restart persistence均 PASS。該 candidate已被 current patch supersede；最新 candidate GUI仍待 CI產生後重驗，未使用 Orca。
 
 ### 模型與委派紀錄
 
@@ -135,6 +136,10 @@
 | 94 Partial draft recovery | same-SHA draft、partial upload、notes／channel drift | PASS | local artifacts在 draft mutation前驗證；雙平台重建、notes讀回比對、versioned／alias `--clobber`、無 skipped bypass；release 45/45 PASS。 |
 | 95 Logs Copy current page | page 2、sanitized／raw、100 rows | PASS | 兩種模式只複製 `pageRows` 的 event_50～event_99，notice為 50 rows；Logs adjacent 33/33 PASS。 |
 | 96 macOS watcher batch ordering | root prelude、late `b.txt`、5s deadline | PASS | CI flake已 deterministic重現；測試逐批等待目標事件，exact targeted PASS；新 exact-head CI仍待 patch push後確認。 |
+| 97 HERDR Sessions shared Tabs | named sessions、arrow-key navigation、shared primitive | PASS | 改由既有 `Tabs`／`TabsList`／`TabsTrigger` controlled composition；shared `data-slot`、stopped-enabled與 ArrowRight roving focus／selection回歸通過；HERDR Nav＋New Agent定向 21/21 PASS。新 exact-head CI／candidate GUI仍待完成。 |
+| 98 Preview scheme-less host:port | `localhost:5173`、`devbox:3000`、`example.com:8080` | PASS | host:port在 generic scheme判定前正規化；localhost／127.0.0.1補 `http://`，其他 host補 `https://`，明確 HTTP(S)保留，ftp／file／javascript仍拒絕。相鄰 Preview 4 files／67 tests PASS；新 exact-head candidate GUI待完成。 |
+| 99 Preview language-change stability | external native preview、locale切換 | PASS | native open／close error path改用 module-stable、呼叫時讀取最新 locale的 reporter，translator不再是 navigation effect dependency；語言切換不重開且 pending error採最新翻譯。相鄰 Preview 4 files／67 tests PASS；candidate GUI待完成。 |
+| 100 New Agent creation dismissal | pending create、Escape／close／outside | PASS | pending期間忽略 `onOpenChange(false)`，成功時以明確 close path關閉；Escape／Close／outside、成功與失敗回歸已覆蓋，HERDR Nav＋New Agent定向 21/21 PASS。新 exact-head CI／candidate GUI仍待完成。 |
 
 ## 3. 問題清單
 
@@ -741,6 +746,70 @@
 - **對上線的影響**：產品 watcher未證實故障，但 required macOS CI為紅燈，PR不可進入候選／merge gate。
 - **已知暫時解法**：單純 rerun可能碰巧通過但會保留不穩定 gate，不視為修復。
 
+### QA-034 — HERDR named Sessions 未使用 shared Tabs
+
+- **Bug ID**：QA-034
+- **嚴重度**：P1
+- **修復狀態**：**FIXED／LOCAL REGRESSION PASS；待新 exact-head CI／candidate GUI**
+- **問題標題**：Sessions switcher以原生 buttons自行實作 tablist，缺少 shared primitive與 Radix鍵盤語意
+- **受影響功能**：ADE → HERDR Sessions、鍵盤方向鍵、focus／selection可用性、shadcn component contract
+- **前置條件**：HERDR inventory包含兩個以上 named sessions。
+- **完整重現步驟**：1. 開啟 ADE。2. 以 Tab聚焦 Sessions。3. 使用方向鍵切換。4. 檢查 DOM／AX primitive與 shared component slot。
+- **預期結果**：由 `@/components/ui/tabs` 的 `TabsList`／`TabsTrigger` 組合，保留 selection並具 Radix arrow-key focus behavior。
+- **實際結果**：原實作以自訂 `role="tablist"` 與 native `<button role="tab">` 建構；現已改用 shared `Tabs` composition，保留 stopped session 可選並通過 ArrowRight focus／selection回歸。
+- **重現率**：100% source／component contract。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3868112341`（thread `PRRT_kwDOTWXJt86cq8Xw`）；`bun run test src/app/workbench/herdrNavContent.test.tsx src/app/workbench/HerdrNewAgentDialog.test.tsx --reporter=dot` → 21/21 PASS。
+- **對上線的影響**：named Sessions 的基本鍵盤操作與 project-wide UI contract不一致，屬 accessibility／release review blocker。
+- **已知暫時解法**：不再需要；仍須以新 exact-head candidate實機確認 keyboard／視覺行為。
+
+### QA-035 — Preview 把 scheme-less host:port 誤判為 unsupported scheme
+
+- **Bug ID**：QA-035
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／LOCAL REGRESSION PASS；待新 exact-head CI／candidate GUI**
+- **問題標題**：`localhost:5173`／`example.com:8080` 未補 `http://`，常見 preview address無法導覽
+- **受影響功能**：Preview URL輸入、native child webview、local dev server navigation
+- **前置條件**：輸入以字母開頭、含 port但不含 `://` 的 host。
+- **完整重現步驟**：1. 開啟 Preview。2. 輸入 `localhost:5173`。3. 送出導覽。4. 對 `example.com:8080` 重複。
+- **預期結果**：兩者正規化為 `http://...`；明確 `http:`／`https:` 保留，真正 unsupported schemes仍拒絕。
+- **實際結果**：原本一般 scheme regex把 hostname前綴視為 protocol；現已先辨識 host:port，`localhost:5173`／`127.0.0.1:4173/path`／`devbox:3000`／`example.com:8080/docs`均正規化成功，明確 HTTP(S)保留且 ftp／file／javascript仍拒絕。
+- **重現率**：100% deterministic normalization path。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3868112343`（thread `PRRT_kwDOTWXJt86cq8Xx`）；`bun run test src/app/panels/previewPanel.test.tsx src/preview src/state/previewStore.test.ts --reporter=dot` → 4 files／67 tests PASS。
+- **對上線的影響**：最常見的 local preview輸入失效，造成可發現主流程 regression。
+- **已知暫時解法**：不再需要；仍須以新 exact-head candidate確認實際 native／iframe導覽。
+
+### QA-036 — 語言切換會重載 external native Preview
+
+- **Bug ID**：QA-036
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／LOCAL REGRESSION PASS；待新 exact-head CI／candidate GUI**
+- **問題標題**：translator function identity改變觸發 native-open effect，無關 locale切換重新導覽既有 child webview
+- **受影響功能**：Preview external HTTP(S)、language setting、history與頁內狀態
+- **前置條件**：external native preview已開啟，使用者切換 UI語言。
+- **完整重現步驟**：1. 導覽 external URL。2. 在頁內建立可觀察 state。3. 切換語言。4. 觀察 `previewOpenUrl`呼叫與 child webview。
+- **預期結果**：只更新 Yuzora翻譯；workspace／URL未變時不重新導覽 native webview。
+- **實際結果**：原本 `tp` 位於 native navigation effect dependency；現已改用 module-stable reporter並在錯誤發生時由 `i18n.t`取得最新 locale，語言切換後 `previewOpenUrl`仍只呼叫一次，pending open error也使用切換後語言。
+- **重現率**：100% deterministic component dependency regression。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3868112345`（thread `PRRT_kwDOTWXJt86cq8Xy`）；相鄰 Preview 4 files／67 tests PASS，包含 locale切換不重開與 pending error最新翻譯回歸。
+- **對上線的影響**：語言設定可丟失 preview頁內工作狀態，且 history無法反映實際 reload。
+- **已知暫時解法**：不再需要；仍須以新 exact-head candidate檢查真實 child webview頁內 state。
+
+### QA-037 — New Agent 建立中仍可關閉 dialog
+
+- **Bug ID**：QA-037
+- **嚴重度**：P2
+- **修復狀態**：**FIXED／LOCAL REGRESSION PASS；待新 exact-head CI／candidate GUI**
+- **問題標題**：Start後 Cancel雖 disabled，Escape／close／outside仍可 dismiss，但 create transaction繼續
+- **受影響功能**：HERDR New Agent dialog、pending mutation、取消與使用者狀態一致性
+- **前置條件**：`createAgent`尚未 resolve。
+- **完整重現步驟**：1. 開啟 New Agent。2. 填入合法值並按 Start。3. 在 promise pending時按 Escape、close或點外部。4. 讓 create成功。
+- **預期結果**：pending期間所有 dismissal被拒絕，或 transaction明確取消；dialog不可消失後又開啟新 Agent terminal。
+- **實際結果**：原本 Radix仍可呼叫 `onOpenChange(false)`；現已在 `creating` 期間拒絕 close request，成功後由明確的 success path關閉，失敗時保留 dialog並恢復 Start。
+- **重現率**：100% deterministic pending-promise regression。
+- **錯誤訊息、日誌或畫面證據**：PR discussion `r3868112347`（thread `PRRT_kwDOTWXJt86cq8X0`）；pending Escape／Close／outside、success與failure deterministic regression均 PASS；HERDR Nav＋New Agent定向 21/21 PASS。
+- **對上線的影響**：取消／關閉 affordance與實際 mutation分離，可造成非預期 Agent process／terminal。
+- **已知暫時解法**：不再需要；新 exact-head candidate若無安全可控的長時間 create fixture，人工 pending-dismiss情境維持 BLOCKED並以 deterministic test作主要證據。
+
 ## 4. 未完成與受阻項目
 
 | 未測試功能 | 阻礙原因 | 所需條件 | 殘餘風險 |
@@ -772,18 +841,18 @@
 
 - 原始 QA 結束時間：2026-08-26 09:48:24 +08:00；當時 `git status --short` 只有 `?? QA-REPORT.md`。
 - 使用者其後明確要求修復所有問題；第一批 remediation 已依授權形成 `f8e8d17c1cd4df34a71ba3d360ed0b3f19cbf2d5`、`183ff004a6772f7d1439c97d6c11bb1d2e380b47` 與 `bf82126649a0f2d44415caf7526f15a3eb1d5757` 並 push 至同一 release branch。
-- `bf821266…` 後的 review與 exact-head CI共觸發 QA-017～QA-033；本輪追加修復狀態為 15 個 source／test／workflow／operations modifications 加 `QA-REPORT.md`，沒有 staged changes，全部可追溯至 findings或其必要回歸／文件同步。
-- 最新本機核對時間：2026-08-27 09:35:28 +08:00；local／remote baseline均為 `38a445aad3155011b4c13b1c5bfcef1509cfa9d2`；`git diff --check` PASS；`git diff --cached --name-only` 無輸出；status只含本報告列出的15-file patch加 `QA-REPORT.md`。
-- 最新 build source、Cargo target、app與 DMG位於 `/private/tmp/yuzora-ops.LSCoT2`；最新 build 未寫 repository `dist/` 或 `src-tauri/target/`。
+- `bf821266…` 後的 review與 exact-head CI觸發 QA-017～QA-033；15-file follow-up已形成並推送 `a57c7b43ed79a842a677f06cc32c6bef5016735d`。其 exact-head run `33030685194` 七個 jobs與兩平台候選均完成後，review再新增 QA-034～QA-037；目前7-file patch全部可追溯至這四項 findings與必要回歸／報告證據。
+- 最新本機核對時間：2026-08-27 10:20:06 +08:00；local／remote baseline均為 `a57c7b43ed79a842a677f06cc32c6bef5016735d`；`git diff --check` PASS；`git diff --cached --name-only` 無輸出；status只含 `QA-REPORT.md` 與六個 QA-034～QA-037 source／test檔。
+- 本輪 frontend build source與 Cargo target位於 repository外 `/private/tmp/yuzora-gates.t8CO0L`；上一個 downloaded exact candidate位於 `/private/tmp/yuzora-rc-33030685194.kwBNOb`。本輪驗證未寫 repository `dist/` 或 `src-tauri/target/`。
 - QA-009 早期 historical ignored-artifact event 保留原狀，沒有清理、刪除或還原；修復階段未再重現。
 - `git check-ignore -v dist src-tauri/target` 證實兩者分別由 root `.gitignore:17` 與 `src-tauri/.gitignore:3` 排除。
 - localhost sshd 已停止、兩個 clone app 已關閉；本輪新增的 `127.0.0.1:48222` known-host test record已移除，原有兩筆正式 fingerprint 內容保持不變。
-- 最新 packaged Yuzora 已以 exact app path正常 Quit；matching process不存在，lime／Follow system已還原並跨重啟確認。
+- run `33030685194` packaged Yuzora已以 exact app path正常 Quit、matching process不存在且 DMG已卸載；該包已被 current patch supersede。
 
 ### Git 寫入確認
 
 - 原始唯讀 QA 階段未執行 `git add`、`git commit` 或 `git push`；使用者後續明確要求修復並執行 `docs/operations.md` 後，才在授權範圍內提交／推送上述 remediation。
-- 本次 post-review patch在本報告內容定稿時尚未 staged／committed／pushed；後續 operations只會明確 stage本報告列出的 16 個檔案。最終 commit SHA、push、exact-head CI與 candidates屬定稿後事件，以 PR #83／Issue #84留言為權威證據。
+- 本次 QA-034～QA-037 patch在本報告內容定稿時尚未 staged／committed／pushed；後續 operations只會明確 stage本報告列出的7個檔案。最終 commit SHA、push、exact-head CI與 candidates屬定稿後事件，以 PR #83／Issue #84留言為權威證據。
 - 全程未執行 reset、restore、clean、stash、force push、branch rewrite、tag、merge或 Publish；沒有刪除、還原或隱藏其他 worktree changes。
 
 ## 驗收事件與證據紀錄
@@ -838,3 +907,7 @@
 - 2026-08-27：PR head `38a445aad…` 新一輪review記錄QA-028～QA-032。四個 inline threads與一個review-body finding均以deterministic red→green修復；同時補足 observer async clipboard race與「local artifacts先驗證、後建立draft」contract。
 - 2026-08-27：初步 targeted回歸：UI 5 files／80 tests、release 7 files／45 tests、watcher exact test、version／notes／Beta／Stable contracts、actionlint v1.7.7、Ruby YAML parse與`git diff --check`全部PASS；完整 suite與新 exact-head CI仍依後續事件更新。
 - 2026-08-27 09:35:28 +08:00：完整本機gate完成。Frontend typecheck、lint（0 errors／49既有warnings）、180 files／2,463 tests與production build PASS；Rust fmt、check、exact 251-diagnostic Clippy baseline、891 unit tests／1 ignored與SQLite integration 1 PASS／1 ignored；staging area仍為空。新 exact-head CI／candidate與bundled Computer Use驗收尚待PR branch更新後執行。
+- 2026-08-27：follow-up形成並推送 exact head `a57c7b43ed79a842a677f06cc32c6bef5016735d`；CI run `33030685194` 的 frontend、三平台 Rust、real database integration與 macOS／Windows candidates七個 jobs全部成功。下載後驗證 DMG／NSIS／MSI SHA-256、DMG integrity、universal architecture、version／bundle ID、MSI ProductVersion、HERDR／ConPTY pins與無 updater／`.sig`／`latest.json`／stable alias的Beta candidate boundary均 PASS。
+- 2026-08-27：以 bundled Computer Use驗收 run `33030685194` exact macOS candidate；launch／Quit／restart、HERDR restore、Agent Inspector focus、Terminal paste once-only、Logs page-2 Copy與expanded-state replacement均 PASS；exact process歸零、DMG卸載。`sky.paste`雖回 clipboard handshake timeout，畫面與terminal marker證明內容只貼入／執行一次，記為工具限制。
+- 2026-08-27：PR對 `a57c7b43…` 新增四條 unresolved findings，記錄 QA-034～QA-037；前一組 artifacts因此立即 supersede。Sessions改用 shared Tabs並加入ArrowRight回歸；Preview修正 scheme-less host:port與locale-stable native navigation；New Agent pending期間阻擋 Escape／Close／outside dismissal。
+- 2026-08-27 10:20:06 +08:00：QA-034～QA-037本機gate完成。定向 HERDR 21/21、Preview相鄰4 files／67 tests、合計6 files／88 tests PASS；typecheck、targeted ESLint（0 errors／1既有 warning）與diff-check PASS。完整 frontend第一次與 fresh Rust compile並行時2個 timing tests失敗，資源分離後57/57及完整180 files／2,475 tests均 PASS；repository外 production build PASS。Rust fmt／check／exact 251-diagnostic Clippy、891 unit tests／1 ignored、SQLite integration與release 7 files／45 tests、version／notes／Beta／Stable contract、actionlint v1.7.7、YAML parse均 PASS。新 exact-head CI／candidate仍待 branch更新。

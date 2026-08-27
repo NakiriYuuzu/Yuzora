@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import i18n from "@/lib/i18n"
@@ -218,7 +218,25 @@ describe("PreviewPanel error path", () => {
     ).toBeInTheDocument()
   })
 
-  it.each(["file:///etc/passwd", "javascript:alert(1)"])(
+  it.each([
+    ["localhost:5173", "http://localhost:5173"],
+    ["127.0.0.1:4173/path", "http://127.0.0.1:4173/path"],
+    ["devbox:3000", "https://devbox:3000"],
+    ["example.com:8080/docs", "https://example.com:8080/docs"],
+    ["http://example.com:8080", "http://example.com:8080"],
+    ["https://example.com:8080", "https://example.com:8080"],
+  ])("normalizes %s to %s", (inputUrl, expectedUrl) => {
+    render(<PreviewPanel />)
+    const input = screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))
+
+    fireEvent.change(input, { target: { value: inputUrl } })
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe(expectedUrl)
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it.each(["ftp://example.com", "file:///etc/passwd", "javascript:alert(1)"])(
     "keeps %s out of navigation and exposes an accessible error",
     async (unsafeUrl) => {
       usePreviewStore.getState().navigate("/workspace", "http://localhost:5173")
@@ -276,6 +294,64 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
     opening.resolve(undefined)
     await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(false))
     expect(ipcMocks.previewSetVisible).not.toHaveBeenCalledWith(true)
+  })
+
+  it("does not reopen an external preview when the app language changes", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const originalLanguage = i18n.resolvedLanguage ?? i18n.language
+    const nextLanguage = originalLanguage === "zh-TW" ? "en" : "zh-TW"
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    const { unmount } = render(<PreviewPanel />)
+
+    try {
+      await waitFor(() => expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
+        .toBe("https://example.com"))
+
+      await act(async () => {
+        await i18n.changeLanguage(nextLanguage)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+
+      expect(screen.getByRole("button", {
+        name: i18n.t("previewPanel.reload", { ns: "panels" }),
+      })).toBeInTheDocument()
+      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1)
+    } finally {
+      unmount()
+      await act(async () => {
+        await i18n.changeLanguage(originalLanguage)
+      })
+    }
+  })
+
+  it("uses the latest language when a pending native open reports an error", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const originalLanguage = i18n.resolvedLanguage ?? i18n.language
+    const nextLanguage = originalLanguage === "zh-TW" ? "en" : "zh-TW"
+    const opening = deferred<void>()
+    ipcMocks.previewOpenUrl.mockImplementationOnce(() => opening.promise)
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    const { unmount } = render(<PreviewPanel />)
+
+    try {
+      await waitFor(() => expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        await i18n.changeLanguage(nextLanguage)
+      })
+      opening.reject(new Error("native open failed"))
+
+      await waitFor(() => expect(ipcMocks.showActionError).toHaveBeenCalledWith(
+        i18n.t("previewPanel.reload", { ns: "panels" }),
+        expect.objectContaining({ message: "native open failed" })
+      ))
+      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1)
+    } finally {
+      unmount()
+      await act(async () => {
+        await i18n.changeLanguage(originalLanguage)
+      })
+    }
   })
 
   it("hides the native webview while an app-owned message dialog is open", async () => {

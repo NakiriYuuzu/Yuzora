@@ -14,6 +14,16 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const createAgent = vi.fn()
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 beforeEach(() => {
   useUiStore.setState(uiInitialState)
   useWorkspaceStore.setState({
@@ -97,6 +107,66 @@ it("loads the manifest catalog, keeps bypass opt-in off by default, and opens th
       .some((tab) => tab.kind === "herdr-terminal" && tab.herdrTabId === "tab-2")
   ).toBe(true)
   expect(onOpenChange).toHaveBeenCalledWith(false)
+})
+
+it("does not dismiss through Escape, Close, or outside interaction while creation is pending", async () => {
+  const creation = deferred<{
+    herdrSessionId: string
+    workspaceId: string
+    terminalId: string
+    paneId: string
+    tabId: string
+    title: string
+    name: string
+    kind: string
+  }>()
+  createAgent.mockReturnValueOnce(creation.promise)
+  const onOpenChange = vi.fn()
+  render(<HerdrNewAgentDialog open onOpenChange={onOpenChange} />)
+
+  await screen.findByText("codex")
+  fireEvent.click(screen.getByRole("button", { name: "Start Agent" }))
+  expect(await screen.findByRole("button", { name: "Starting Agent…" })).toBeDisabled()
+
+  fireEvent.keyDown(document, { key: "Escape" })
+  fireEvent.click(screen.getByRole("button", { name: "Close" }))
+  const overlay = document.querySelector<HTMLElement>('[data-slot="dialog-overlay"]')
+  expect(overlay).not.toBeNull()
+  fireEvent.pointerDown(overlay!)
+  fireEvent.click(overlay!)
+
+  expect(onOpenChange).not.toHaveBeenCalled()
+
+  await act(async () => {
+    creation.resolve({
+      herdrSessionId: "default",
+      workspaceId: "w1",
+      terminalId: "term-pending",
+      paneId: "pane-pending",
+      tabId: "tab-pending",
+      title: "codex",
+      name: "codex",
+      kind: "codex"
+    })
+    await creation.promise
+  })
+
+  await waitFor(() => expect(onOpenChange).toHaveBeenCalledTimes(1))
+  expect(onOpenChange).toHaveBeenLastCalledWith(false)
+})
+
+it("keeps the dialog open and restores Start after creation fails", async () => {
+  createAgent.mockRejectedValueOnce(new Error("agent spawn failed"))
+  const onOpenChange = vi.fn()
+  render(<HerdrNewAgentDialog open onOpenChange={onOpenChange} />)
+
+  await screen.findByText("codex")
+  fireEvent.click(screen.getByRole("button", { name: "Start Agent" }))
+
+  expect(await screen.findByText("agent spawn failed")).toBeInTheDocument()
+  expect(screen.getByRole("dialog")).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start Agent" })).toBeEnabled()
+  expect(onOpenChange).not.toHaveBeenCalled()
 })
 
 it("keeps server-advertised kinds selectable when Yuzora PATH detection misses", async () => {
