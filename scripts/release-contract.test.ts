@@ -147,6 +147,25 @@ describe("release workflow contracts", () => {
     }
   })
 
+  it("requires stable publication to reject every asset outside its exact allowlist", () => {
+    const result = spawnSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow, verifyStableReleaseContract } from "./scripts/release-contract.ts";
+        const workflow = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        const verify = workflow.jobs["publish-release"].steps.find(
+          (step) => step.name === "Verify release assets and updater metadata"
+        );
+        verify.run = verify.run.replace("EXPECTED_ASSETS=(", "REMOVED_EXACT_ALLOWLIST=(");
+        verifyStableReleaseContract(workflow);
+      `],
+      { encoding: "utf8" }
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("exact asset allowlist")
+  })
+
   it("rebuilds and idempotently reassembles a same-SHA partial draft", () => {
     const workflow = releaseWorkflow()
     const assemble = workflow.jobs["assemble-draft"]

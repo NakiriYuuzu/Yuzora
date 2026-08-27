@@ -493,9 +493,7 @@ jobs:
               fi
             else
               copy_exactly_one "Windows MSI updater signature" "$BUNDLE_DIR"/msi/*.msi.sig
-              for signature in "$BUNDLE_DIR"/nsis/*setup.exe.sig; do
-                [ -e "$signature" ] && cp "$signature" release-assets/
-              done
+              copy_exactly_one "Windows NSIS updater signature" "$BUNDLE_DIR"/nsis/*setup.exe.sig
             fi
           fi
 
@@ -742,13 +740,7 @@ jobs:
           [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ] || { echo "::error::release must be draft"; exit 1; }
           [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" = "false" ] || { echo "::error::stable release must not be prerelease"; exit 1; }
           jq -e '.body | type == "string" and test("[^[:space:]]")' <<<"$RELEASE_JSON" >/dev/null || { echo "::error::release notes are empty"; exit 1; }
-          ASSET_NAMES="$(jq -r '.assets[].name' <<<"$RELEASE_JSON")"
-          for expected in Yuzora-macos-universal.dmg Yuzora-windows-x64-setup.exe Yuzora-windows-x64.msi latest.json; do
-            grep -Fxq "$expected" <<<"$ASSET_NAMES" || { echo "::error::missing ${expected}"; exit 1; }
-          done
-          if grep -Eq '(^Yuzora-linux-|\.AppImage(\.sig)?$|\.deb(\.sig)?$|\.rpm(\.sig)?$)' <<<"$ASSET_NAMES"; then
-            echo "::error::release contains unsupported Linux asset"; exit 1
-          fi
+          mapfile -t ASSET_NAMES < <(jq -r '.assets[].name' <<<"$RELEASE_JSON" | sort)
           TMP_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP_DIR"' EXIT
           gh release download "$TAG_NAME" --pattern latest.json --dir "$TMP_DIR"
           [ "$(jq -r '.version' "$TMP_DIR/latest.json")" = "${TAG_NAME#v}" ] || { echo "::error::latest.json version mismatch"; exit 1; }
@@ -759,6 +751,53 @@ jobs:
           jq -e '.platforms | keys[] | select(startswith("linux-"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::Linux updater entry present"; exit 1; } || true
           jq -e '.platforms | keys[] | select(test("windows-.*-nsis"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::NSIS updater entry present"; exit 1; } || true
           jq -e '.platforms["windows-x86_64"].url | endswith(".msi")' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::Windows OTA must use MSI"; exit 1; }
+
+          VERSION="${TAG_NAME#v}"
+          find_single_asset() {
+            local label="$1"
+            local pattern="$2"
+            local matches=()
+            local asset
+            for asset in "${ASSET_NAMES[@]}"; do
+              if [[ "$asset" == $pattern ]]; then matches+=("$asset"); fi
+            done
+            [ "${#matches[@]}" -eq 1 ] || {
+              echo "::error::expected exactly one ${label}, found ${#matches[@]}" >&2
+              exit 1
+            }
+            printf '%s' "${matches[0]}"
+          }
+
+          DMG_NAME="$(find_single_asset "versioned macOS DMG" "Yuzora_${VERSION}_*.dmg")"
+          SETUP_NAME="$(find_single_asset "versioned Windows setup EXE" "Yuzora_${VERSION}_*-setup.exe")"
+          MAC_ARCHIVE_URL="$(jq -r '.platforms["darwin-aarch64"].url' "$TMP_DIR/latest.json")"
+          MAC_ARCHIVE_NAME="${MAC_ARCHIVE_URL##*/}"
+          WINDOWS_MSI_URL="$(jq -r '.platforms["windows-x86_64"].url' "$TMP_DIR/latest.json")"
+          WINDOWS_MSI_NAME="${WINDOWS_MSI_URL##*/}"
+          [[ "$MAC_ARCHIVE_NAME" == "Yuzora_${VERSION}_"*.app.tar.gz ]] || { echo "::error::macOS updater asset name/version mismatch"; exit 1; }
+          [[ "$WINDOWS_MSI_NAME" == "Yuzora_${VERSION}_"*.msi ]] || { echo "::error::Windows updater asset name/version mismatch"; exit 1; }
+
+          EXPECTED_ASSETS=(
+            "$DMG_NAME"
+            "$SETUP_NAME"
+            "${SETUP_NAME}.sig"
+            "$MAC_ARCHIVE_NAME"
+            "${MAC_ARCHIVE_NAME}.sig"
+            "$WINDOWS_MSI_NAME"
+            "${WINDOWS_MSI_NAME}.sig"
+            "Yuzora-macos-universal.dmg"
+            "Yuzora-windows-x64-setup.exe"
+            "Yuzora-windows-x64.msi"
+            "latest.json"
+          )
+          mapfile -t EXPECTED_ASSET_NAMES < <(printf '%s\n' "${EXPECTED_ASSETS[@]}" | sort -u)
+          [ "${#EXPECTED_ASSET_NAMES[@]}" -eq "${#EXPECTED_ASSETS[@]}" ] || { echo "::error::stable asset allowlist contains duplicate names"; exit 1; }
+          if ! diff -u \
+            <(printf '%s\n' "${EXPECTED_ASSET_NAMES[@]}") \
+            <(printf '%s\n' "${ASSET_NAMES[@]}"); then
+            echo "::error::unexpected stable release assets; exact allowlist mismatch"
+            exit 1
+          fi
       - name: Publish verified stable release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

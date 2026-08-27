@@ -1,7 +1,8 @@
 import { Lock } from "lucide-react"
 
-import { cn } from "@/lib/utils"
+import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
+import { cn } from "@/lib/utils"
 
 /** Design reference settings card: --yz-panel surface, 13px radius. */
 export function SettingCard({
@@ -121,7 +122,7 @@ export function SettingsTextInput({
   return (
     <label className="flex flex-col gap-[6px]">
       <span className="text-[11.5px] font-medium text-(--ink-2)">{label}</span>
-      <input
+      <Input
         aria-label={label}
         type={type}
         value={value}
@@ -130,10 +131,7 @@ export function SettingsTextInput({
         aria-invalid={error ? true : undefined}
         aria-describedby={error ? errorId : undefined}
         onChange={(event) => onChange(event.currentTarget.value)}
-        className={cn(
-          "h-[30px] rounded-[8px] border bg-(--paper-0) px-[9px] font-mono text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) disabled:cursor-not-allowed disabled:opacity-60",
-          error ? "border-destructive" : "border-(--line-1) focus:border-(--yz-accent)"
-        )}
+        className="h-[30px] px-[9px] font-mono text-[11.5px] md:text-[11.5px]"
       />
       {error ? (
         <span id={errorId} role="alert" className="text-[11px] text-destructive">

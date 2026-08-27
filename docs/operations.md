@@ -400,7 +400,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 Publish 前 workflow 自動驗證：
 
 - Release 仍是 draft、不是 prerelease，且 release body 非空。
-- 三個固定檔名別名與 `latest.json` 齊全。
+- Release asset inventory 必須精確等於本輪重建的 versioned DMG、NSIS setup EXE、MSI、macOS／NSIS／MSI updater signatures、三個固定檔名別名與 `latest.json`；updater archive／MSI名稱由已驗證 metadata 綁定，任一額外、重複或缺少 asset 都會 fail closed。
 - `latest.json.version` 與 tag 相同，notes 非空。
 - `darwin-aarch64`、`darwin-x86_64`、`windows-x86_64` 都有非空 URL 與 signature。
 - 不含 Linux 或 Windows NSIS updater key、不含 Linux 固定別名資產，且 Windows OTA URL 使用 `.msi`。

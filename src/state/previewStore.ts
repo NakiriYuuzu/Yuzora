@@ -449,8 +449,6 @@ function closeNativePreviewForOwner(workspacePath: string | null): void {
 
     const token = state.beginNativeCloseRequest(workspacePath)
     void enqueueNativePreviewOperation(async () => {
-        const current = usePreviewStore.getState()
-        if (!current.nativeRequestIsCurrent(token)) return
         try {
             await previewClose()
         } finally {

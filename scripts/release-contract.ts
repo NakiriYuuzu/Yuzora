@@ -292,7 +292,8 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(collect.run, "nsis/*setup.exe") &&
       includes(collect.run, "msi/*.msi") &&
       includes(collect.run, "*.app.tar.gz.sig") &&
-      includes(collect.run, "*.msi.sig"),
+      includes(collect.run, "*.msi.sig") &&
+      includes(collect.run, 'copy_exactly_one "Windows NSIS updater signature"'),
     "build must validate Tauri CLI macOS universal and Windows NSIS/MSI/updater output paths"
   )
 
@@ -527,7 +528,19 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
       includes(publish.if, "needs.upload-updater-metadata.result == 'success'"),
     "stable publish must require final updater metadata upload"
   )
-  const publishStep = stepByName(steps(publish, "jobs.publish-release"), "Publish verified stable release")
+  const publishSteps = steps(publish, "jobs.publish-release")
+  const verifyAssets = stepByName(publishSteps, "Verify release assets and updater metadata")
+  assert(
+    includes(verifyAssets.run, "find_single_asset") &&
+      includes(verifyAssets.run, "EXPECTED_ASSETS=(") &&
+      includes(verifyAssets.run, '"${SETUP_NAME}.sig"') &&
+      includes(verifyAssets.run, '"${MAC_ARCHIVE_NAME}.sig"') &&
+      includes(verifyAssets.run, '"${WINDOWS_MSI_NAME}.sig"') &&
+      includes(verifyAssets.run, "diff -u") &&
+      includes(verifyAssets.run, "unexpected stable release assets; exact allowlist mismatch"),
+    "stable publish must use an exact asset allowlist"
+  )
+  const publishStep = stepByName(publishSteps, "Publish verified stable release")
   assert(
     includes(publishStep.run, "--draft=false") &&
       includes(publishStep.run, "--prerelease=false") &&

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import type { DevServerInfo } from "../lib/types"
+import { enqueueNativePreviewOperation } from "../preview/nativePreviewQueue"
 import {
     isLocalPreviewUrl,
     previewFrameModeFor,
@@ -360,5 +361,30 @@ describe("usePreviewStore", () => {
         await new Promise((resolve) => setTimeout(resolve, 0))
         expect(calls.some((call) => call.cmd === "preview_close")).toBe(true)
         expect(usePreviewStore.getState().nativeSession).toBeNull()
+    })
+
+    it("still physically closes a departing native preview when reset invalidates its queued request", async () => {
+        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+        })
+        useWorkspaceStore.setState({ workspacePath: "/ws/a" })
+        usePreviewStore.getState().recordNativeOpen("/ws/a", "https://example.com")
+
+        let releaseQueue!: () => void
+        const blockingOperation = enqueueNativePreviewOperation(
+            () => new Promise<void>((resolve) => {
+                releaseQueue = resolve
+            })
+        )
+        await Promise.resolve()
+
+        useWorkspaceStore.getState().setWorkspace("/ws/b")
+        usePreviewStore.getState().reset()
+        releaseQueue()
+        await blockingOperation
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(calls.some((call) => call.cmd === "preview_close")).toBe(true)
     })
 })
