@@ -8336,7 +8336,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora"
-version = "0.0.9-beta.2"
+version = "0.0.9-beta.3"
 dependencies = [
  "base64 0.23.1",
  "chrono",

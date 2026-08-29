@@ -2,6 +2,17 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.9-beta.3] - 2026-08-30
+
+### 修正
+
+- 修正啟動 Yuzora 時不會同步啟動 HERDR 的問題；若所選 global 或內附 managed HERDR server 尚未運行，Yuzora 會啟動 headless server 並等待就緒，既有 server 則直接沿用。
+
+### 已知限制
+
+- macOS Beta 沒有 Developer ID 發行者身分、notarization 或 Gatekeeper 信任，首次開啟時可能被警告或阻擋；只應從 Yuzora 官方 GitHub Pre-release 下載。
+- Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
+
 ## [0.0.9-beta.2] - 2026-08-28
 
 ### 改善

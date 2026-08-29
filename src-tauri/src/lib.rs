@@ -221,6 +221,9 @@ pub fn run() {
             let herdr_config_dir = app.path().app_data_dir()?.join("herdr");
             let herdr_resource_dir = app.path().resource_dir().ok();
             herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir);
+            if let Err(error) = herdr_manager.ensure_server_running_on_startup() {
+                eprintln!("herdr server startup failed: {error}");
+            }
             app.manage(herdr_service::HerdrState(herdr_manager));
             // The main window starts hidden (tauri.conf `visible: false`) so the
             // native chrome never flashes the OS theme before the persisted
@@ -454,6 +457,26 @@ pub fn run() {
 
 #[cfg(test)]
 mod command_inventory_tests {
+    #[test]
+    fn app_startup_launches_resolved_herdr_server() {
+        let source = include_str!("lib.rs");
+        let run_source = source.split("#[cfg(test)]").next().unwrap();
+        let configure = run_source
+            .find("herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir)")
+            .expect("startup must configure Herdr paths");
+        let launch = run_source
+            .find("herdr_manager.ensure_server_running_on_startup()")
+            .expect("startup must launch the resolved Herdr server");
+        let manage = run_source
+            .find("app.manage(herdr_service::HerdrState(herdr_manager))")
+            .expect("startup must register Herdr state");
+
+        assert!(
+            configure < launch && launch < manage,
+            "Herdr must resolve its configured or managed binary before startup and register state afterward"
+        );
+    }
+
     #[test]
     fn app_exit_inventory_runs_bounded_database_shutdown_once() {
         let source = include_str!("lib.rs");

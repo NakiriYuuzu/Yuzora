@@ -156,7 +156,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - Beta 只接受 `X.Y.Z-beta.N`；不以 `rc`、build metadata 或其他自訂 suffix 表示 Beta。
 - Beta 不得更新 stable `latest.json`、`releases/latest` 或產品頁固定下載入口。
 - Beta 只發布供手動下載的 installer，必須停用 updater artifacts，不產生 `latest.json` 或 updater `.sig`，也不存取 updater 或 Apple signing secrets。Beta macOS installer 刻意 unsigned，必須在 release notes 揭露 Gatekeeper 警告、缺少 notarization 與無法驗證發行者身分的風險；不得將 Beta assets 升級為 Stable 或固定下載別名。
-- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 都停用 updater artifacts並清空 updater endpoints；Beta macOS 另以 `--no-sign` 停用 OS signing，Stable build 則保留 OS signing、updater signing、stable endpoint 與 updater artifacts。
+- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9-beta.3`（`0.0.2307`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 都停用 updater artifacts並清空 updater endpoints；Beta macOS 另以 `--no-sign` 停用 OS signing，Stable build 則保留 OS signing、updater signing、stable endpoint 與 updater artifacts。
 - PR candidate 是未簽章、未發布的 Actions artifact，用於 merge 前驗證；它不是 Beta Release。
 - `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持 updater signing、macOS Developer ID signing／notarization、metadata、固定下載別名與 `--latest`；Beta 使用獨立 no-updater／no-sign build／publish path，固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
 
@@ -284,6 +284,7 @@ gh run download "${RUN_ID}" \
 - Command Prompt、Windows PowerShell、PowerShell 7 能依設定與單次選擇啟動。
 - WSL default 與已安裝 distro 能啟動，Windows／UNC workspace 的 cwd 轉換正確。
 - Herdr 沒有任何 Space、連線失敗或不可用時，ADE 必須仍提供 Open Local Folder escape；本機 Terminal 在沒有 workspace 時必須開啟 folder picker，不可 silent no-op。
+- 在隔離且啟動前沒有 running server 的 HERDR 測試環境啟動 Yuzora，必須以實際 resolved global／managed binary 自動啟動 `herdr server` 並等待 ready；已有 server 時必須沿用，不可建立 duplicate server。
 - Windows-native HERDR 0.8.0 running session 可透過 named pipe 完成 snapshot、schema-gated mutation 與 `events.subscribe`；停止、不相容或缺少 method 時仍需顯示真實 unavailable 原因。若 pane 透過 `wsl.exe` 進入互動式 Linux shell，不得假定 HERDR 能看見其中的 Linux descendant Agent。
 - Windows installer 必須包含 `herdr/windows-x86_64/herdr.exe` 與同版 ConPTY runtime。PATH 存在 Herdr 時使用全域版本；暫時移除 PATH 版本並重啟後，必須自動解析到 Yuzora-managed protocol-19 binary，且診斷顯示 `configured=global`、`resolved=default` 與實際 managed path。
 - HERDR 診斷與工作區信任介面不顯示 Windows `\\?\` verbatim prefix，且信任授權／撤銷仍作用於原始 canonical path identity。
