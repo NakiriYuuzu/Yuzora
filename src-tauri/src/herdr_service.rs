@@ -1,8 +1,9 @@
 //! Herdr runtime lane: public NDJSON API + official terminal session connectors.
 //!
 //! Authority is the selected installed `herdr` binary (discover/interrogate at
-//! runtime). Never hardcode a protocol number, stop a Herdr server, or kill
-//! Herdr panes — only Yuzora-owned connector children are released/terminated.
+//! runtime). Never hardcode a protocol number, stop an existing Herdr server,
+//! or kill Herdr panes — only Yuzora-owned connector children and a failed
+//! server child started by this process are released/terminated.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -744,6 +745,8 @@ pub struct HerdrManager {
     active_source: Mutex<HerdrBinarySource>,
     /// Diagnostic retained when the persisted preference cannot be trusted.
     binary_source_config_error: Mutex<Option<String>>,
+    /// Detailed failure from the automatic default-server startup attempt.
+    startup_error: Mutex<Option<String>>,
     /// Serializes atomic preference replacement and matching in-memory updates.
     binary_source_write_lock: Mutex<()>,
     /// Capability documents are expensive to discover because they spawn the
@@ -798,6 +801,7 @@ impl HerdrManager {
             configured_source: Mutex::new(HerdrBinarySource::Global),
             active_source: Mutex::new(HerdrBinarySource::Global),
             binary_source_config_error: Mutex::new(None),
+            startup_error: Mutex::new(None),
             binary_source_write_lock: Mutex::new(()),
             capability_cache: Mutex::new(HashMap::new()),
             capability_probe_lock: Mutex::new(()),
@@ -819,54 +823,101 @@ impl HerdrManager {
     /// The server is intentionally detached and remains independent of Yuzora's
     /// connector-child cleanup on app exit.
     pub fn ensure_server_running_on_startup(&self) -> Result<bool, String> {
-        let binary = self
-            .resolve_binary()
-            .ok_or_else(|| "herdr binary is unavailable for startup".to_string())?;
-        if query_herdr_server_running(&binary)? {
-            return Ok(false);
-        }
+        self.ensure_server_running_with_timeouts(
+            HERDR_STARTUP_TIMEOUT,
+            HERDR_STARTUP_STATUS_TIMEOUT,
+            HERDR_STARTUP_POLL_INTERVAL,
+        )
+    }
 
-        let mut command = Command::new(&binary);
-        command
-            .arg("server")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        process_kill::configure_background_process(&mut command);
-        let mut child = command.spawn().map_err(|error| {
-            format!(
-                "failed to launch Herdr server from {}: {error}",
-                binary.display()
-            )
-        })?;
-        let deadline = Instant::now() + HERDR_STARTUP_TIMEOUT;
+    fn ensure_server_running_with_timeouts(
+        &self,
+        startup_timeout: Duration,
+        status_timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<bool, String> {
+        let result = (|| -> Result<bool, String> {
+            let binary = self
+                .resolve_binary()
+                .ok_or_else(|| "herdr binary is unavailable for startup".to_string())?;
+            if query_herdr_server_running(&binary, status_timeout)? {
+                return Ok(false);
+            }
 
-        loop {
-            let last_probe = match query_herdr_server_running(&binary) {
-                Ok(true) => return Ok(true),
-                Ok(false) => "server has not reported running".to_string(),
-                Err(error) => error,
+            let mut command = Command::new(&binary);
+            command
+                .arg("server")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            process_kill::configure_background_process(&mut command);
+            let mut child = command.spawn().map_err(|error| {
+                format!(
+                    "failed to launch Herdr server from {}: {error}",
+                    binary.display()
+                )
+            })?;
+            let deadline = Instant::now() + startup_timeout;
+            let timeout_error = |child: &mut Child, last_probe: &str| {
+                let message = format!(
+                    "Herdr server did not become ready within {}s; {last_probe}",
+                    startup_timeout.as_secs_f64()
+                );
+                match process_kill::terminate_direct_child_and_reap(child) {
+                    Ok(()) => message,
+                    Err(error) => {
+                        format!("{message}; failed to terminate startup child: {error}")
+                    }
+                }
             };
 
-            if let Some(status) = child
-                .try_wait()
-                .map_err(|error| format!("failed to inspect Herdr server process: {error}"))?
-            {
-                if query_herdr_server_running(&binary).unwrap_or(false) {
-                    return Ok(true);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(timeout_error(&mut child, "server has not reported running"));
                 }
-                return Err(format!(
-                    "Herdr server exited before becoming ready ({status}); {last_probe}"
-                ));
+                let probe_timeout = status_timeout.min(remaining);
+                let last_probe = match query_herdr_server_running(&binary, probe_timeout) {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => "server has not reported running".to_string(),
+                    Err(error) => error,
+                };
+
+                let child_status = match child.try_wait() {
+                    Ok(status) => status,
+                    Err(error) => {
+                        let message = format!("failed to inspect Herdr server process: {error}");
+                        return Err(
+                            match process_kill::terminate_direct_child_and_reap(&mut child) {
+                                Ok(()) => message,
+                                Err(cleanup_error) => {
+                                    format!("{message}; failed to terminate startup child: {cleanup_error}")
+                                }
+                            },
+                        );
+                    }
+                };
+                if let Some(status) = child_status {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if !remaining.is_zero()
+                        && query_herdr_server_running(&binary, status_timeout.min(remaining))
+                            .unwrap_or(false)
+                    {
+                        return Ok(true);
+                    }
+                    return Err(format!(
+                        "Herdr server exited before becoming ready ({status}); {last_probe}"
+                    ));
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(timeout_error(&mut child, &last_probe));
+                }
+                std::thread::sleep(poll_interval.min(remaining));
             }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "Herdr server did not become ready within {}s; {last_probe}",
-                    HERDR_STARTUP_TIMEOUT.as_secs()
-                ));
-            }
-            std::thread::sleep(HERDR_STARTUP_POLL_INTERVAL);
-        }
+        })();
+        *self.startup_error.lock().unwrap() = result.as_ref().err().cloned();
+        result
     }
 
     #[cfg(test)]
@@ -1246,8 +1297,24 @@ impl HerdrManager {
                 reason: Some("herdr events.subscribe unavailable".into()),
             },
         };
+        let startup_error = if session_name.is_none() {
+            self.startup_error.lock().unwrap().clone()
+        } else {
+            None
+        };
+        let apply_startup_error = |caps: &mut HerdrCapabilities| {
+            if !caps.server.running {
+                if let Some(error) = startup_error.as_deref() {
+                    let reason = format!("herdr automatic startup failed: {error}");
+                    caps.api.reason = Some(reason.clone());
+                    caps.terminal.reason = Some(reason.clone());
+                    caps.events.reason = Some(reason);
+                }
+            }
+        };
 
         let Some(binary) = binary_path else {
+            apply_startup_error(&mut caps);
             return caps;
         };
 
@@ -1261,6 +1328,7 @@ impl HerdrManager {
                 // the wrong runtime namespace.
                 caps.api.reason = Some(err.clone());
                 caps.terminal.reason = Some(err);
+                apply_startup_error(&mut caps);
                 return caps;
             }
         };
@@ -1397,6 +1465,8 @@ impl HerdrManager {
             schema_methods.contains("events.subscribe"),
             session_stopped,
         );
+
+        apply_startup_error(&mut caps);
 
         caps
     }
@@ -4192,13 +4262,8 @@ fn collect_method_consts(value: &serde_json::Value, out: &mut HashSet<String>) {
     }
 }
 
-fn query_herdr_server_running(binary: &Path) -> Result<bool, String> {
-    let status = run_herdr_json_with_session_timeout(
-        binary,
-        &["status", "--json"],
-        None,
-        HERDR_STARTUP_STATUS_TIMEOUT,
-    )?;
+fn query_herdr_server_running(binary: &Path, timeout: Duration) -> Result<bool, String> {
+    let status = run_herdr_json_with_session_timeout(binary, &["status", "--json"], None, timeout)?;
     Ok(status_reports_server_running(&status))
 }
 
@@ -6826,6 +6891,71 @@ exit 2
         path
     }
 
+    #[cfg(unix)]
+    fn write_fake_herdr_startup_exit(dir: &Path) -> PathBuf {
+        let path = dir.join("herdr");
+        fs::write(
+            &path,
+            r#"#!/bin/sh
+set -e
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  printf '%s\n' '{"server":{"status":"not_running","running":false,"version":null,"protocol":null,"compatible":null,"socket":null}}'
+  exit 0
+fi
+if [ "$1" = "server" ] && [ -z "${2:-}" ]; then
+  exit 23
+fi
+if [ "$1" = "session" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' '{"sessions":[{"name":"default","default":true,"running":false,"session_dir":"/tmp/herdr-default","socket_path":"/tmp/herdr.sock"}]}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "schema" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' '{"protocol":19,"schema_version":1,"methods":[]}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 2
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn write_fake_herdr_startup_hang(dir: &Path) -> PathBuf {
+        let path = dir.join("herdr");
+        fs::write(
+            &path,
+            r#"#!/bin/sh
+set -e
+base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+pid_file="$base/server.pid"
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  if [ -f "$pid_file" ]; then
+    sleep 5
+    : > "$base/probe.completed"
+  fi
+  printf '%s\n' '{"server":{"status":"not_running","running":false,"version":null,"protocol":null,"compatible":null,"socket":null}}'
+  exit 0
+fi
+if [ "$1" = "server" ] && [ -z "${2:-}" ]; then
+  printf '%s\n' "$$" > "$pid_file"
+  exec sleep 30
+fi
+echo "unexpected args: $*" >&2
+exit 2
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
     #[test]
     #[cfg(unix)]
     fn startup_launches_resolved_headless_server_and_waits_until_ready() {
@@ -6858,6 +6988,68 @@ exit 2
 
         assert!(!started, "an already-running Herdr server must be reused");
         assert!(!dir.path().join("server.invoked").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn startup_failure_is_retained_in_capability_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = write_fake_herdr_startup_exit(dir.path());
+        let manager = HerdrManager::with_binary(binary);
+
+        let error = manager.ensure_server_running_on_startup().unwrap_err();
+        assert!(error.contains("exited before becoming ready"));
+
+        let caps = manager.capabilities();
+        for reason in [
+            caps.api.reason.as_deref(),
+            caps.terminal.reason.as_deref(),
+            caps.events.reason.as_deref(),
+        ] {
+            let reason = reason.expect("failed startup must remain user-visible");
+            assert!(reason.contains("herdr automatic startup failed"));
+            assert!(reason.contains(&error), "diagnostic must retain: {error}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn startup_timeout_bounds_probe_and_reaps_spawned_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = write_fake_herdr_startup_hang(dir.path());
+        let manager = HerdrManager::with_binary(binary);
+
+        let error = manager
+            .ensure_server_running_with_timeouts(
+                Duration::from_millis(250),
+                Duration::from_secs(30),
+                Duration::from_millis(10),
+            )
+            .unwrap_err();
+
+        assert!(error.contains("did not become ready"));
+        assert!(
+            !dir.path().join("probe.completed").exists(),
+            "a readiness probe must be stopped at the startup deadline"
+        );
+        let pid = fs::read_to_string(dir.path().join("server.pid"))
+            .unwrap()
+            .trim()
+            .to_string();
+        let alive = Command::new("kill")
+            .args(["-0", &pid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if alive {
+            let _ = Command::new("kill")
+                .args(["-9", &pid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        assert!(!alive, "timed-out startup child {pid} must be reaped");
     }
 
     #[cfg(unix)]
