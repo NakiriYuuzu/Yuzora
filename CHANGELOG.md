@@ -6,7 +6,7 @@
 
 ### 修正
 
-- 修正啟動 Yuzora 時不會同步啟動 HERDR 的問題；若所選 global 或內附 managed HERDR server 尚未運行，Yuzora 會啟動 headless server 並等待就緒，既有 server 則直接沿用。
+- 修正啟動 Yuzora 時不會同步啟動 HERDR 的問題；若所選 global 或內附 managed HERDR server 尚未運行，Yuzora 會啟動 headless server 並等待就緒，既有 server 則直接沿用。封裝版本在 Tauri 無法回報資源目錄時，也會從 app 執行檔安全還原內附 HERDR 的位置。
 
 ### 已知限制
 

@@ -41,6 +41,33 @@ pub mod workspace_trust;
 
 const DATABASE_SHUTDOWN_THREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
+#[cfg(any(target_os = "macos", test))]
+fn macos_resource_dir_from_executable(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    executable
+        .parent()?
+        .parent()?
+        .join("Resources")
+        .canonicalize()
+        .ok()
+}
+
+fn packaged_resource_dir_from_current_exe() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        macos_resource_dir_from_executable(&executable)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        executable.parent()?.canonicalize().ok()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = executable;
+        None
+    }
+}
+
 #[derive(Debug)]
 enum DatabaseShutdownThreadError {
     SpawnFailed(String),
@@ -219,7 +246,11 @@ pub fn run() {
             app.manage(path_capability::SelectedPathState::new());
             let herdr_manager = std::sync::Arc::new(herdr_service::HerdrManager::new());
             let herdr_config_dir = app.path().app_data_dir()?.join("herdr");
-            let herdr_resource_dir = app.path().resource_dir().ok();
+            let herdr_resource_dir = app
+                .path()
+                .resource_dir()
+                .ok()
+                .or_else(packaged_resource_dir_from_current_exe);
             herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir);
             if let Err(error) = herdr_manager.ensure_server_running_on_startup() {
                 eprintln!("herdr server startup failed: {error}");
@@ -458,9 +489,28 @@ pub fn run() {
 #[cfg(test)]
 mod command_inventory_tests {
     #[test]
+    fn macos_packaged_resource_fallback_uses_contents_resources() {
+        let bundle = tempfile::tempdir().unwrap();
+        let contents = bundle.path().join("Yuzora.app/Contents");
+        let executable = contents.join("MacOS/yuzora");
+        let resources = contents.join("Resources");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(&executable, []).unwrap();
+
+        assert_eq!(
+            super::macos_resource_dir_from_executable(&executable),
+            Some(resources.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
     fn app_startup_launches_resolved_herdr_server() {
         let source = include_str!("lib.rs");
         let run_source = source.split("#[cfg(test)]").next().unwrap();
+        let resource_fallback = run_source
+            .find(".or_else(packaged_resource_dir_from_current_exe)")
+            .expect("packaged startup must recover the managed Herdr resource directory");
         let configure = run_source
             .find("herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir)")
             .expect("startup must configure Herdr paths");
@@ -472,7 +522,7 @@ mod command_inventory_tests {
             .expect("startup must register Herdr state");
 
         assert!(
-            configure < launch && launch < manage,
+            resource_fallback < configure && configure < launch && launch < manage,
             "Herdr must resolve its configured or managed binary before startup and register state afterward"
         );
     }
