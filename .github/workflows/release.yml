@@ -279,7 +279,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Import Developer ID Application certificate
-        if: matrix.artifact_name == 'macos'
+        if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -298,7 +298,7 @@ jobs:
             APPLE_PASSWORD \
             APPLE_TEAM_ID; do
             if [ -z "${!variable:-}" ]; then
-              echo "::error::${variable} is required for every released macOS installer"
+              echo "::error::${variable} is required for every stable macOS installer"
               exit 1
             fi
           done
@@ -371,20 +371,15 @@ jobs:
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION")"
           bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
-      - name: Build signed and notarized beta macOS installers
+      - name: Build unsigned beta macOS installers
         if: needs.guard.outputs.is_beta == 'true' && matrix.artifact_name == 'macos'
         shell: bash
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           VERSION="${{ needs.guard.outputs.tag_name }}"
           VERSION="${VERSION#v}"
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
-          bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
+          bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
       - name: Build unsigned beta Windows installers
         if: needs.guard.outputs.is_beta == 'true' && matrix.artifact_name == 'windows'
@@ -397,7 +392,7 @@ jobs:
           bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
       - name: Verify macOS Developer ID signature, Gatekeeper, and notarization
-        if: matrix.artifact_name == 'macos'
+        if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
         shell: bash
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -433,7 +428,7 @@ jobs:
           xcrun stapler validate "$DMG_PATH"
 
       - name: Remove temporary macOS signing keychain
-        if: always() && matrix.artifact_name == 'macos'
+        if: always() && needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
         shell: bash
         run: |
           set -euo pipefail

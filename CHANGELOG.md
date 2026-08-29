@@ -2,6 +2,17 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.9-beta.2] - 2026-08-28
+
+### 改善
+
+- macOS Beta 改為不需 Apple Developer Program 憑證的 unsigned 安裝檔；Stable 版仍保留 Developer ID 簽章與 notarization 要求。
+
+### 已知限制
+
+- macOS Beta 沒有 Developer ID 發行者身分、notarization 或 Gatekeeper 信任，首次開啟時可能被警告或阻擋；只應從 Yuzora 官方 GitHub Pre-release 下載。
+- Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
+
 ## [0.0.9-beta.1] - 2026-08-24
 
 ### 新增
