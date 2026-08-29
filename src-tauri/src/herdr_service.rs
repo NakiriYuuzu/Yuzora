@@ -57,7 +57,7 @@ const HERDR_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const HERDR_STARTUP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const HERDR_STARTUP_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
-const HERDR_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const HERDR_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 // ── Public DTOs (Yuzora IPC, camelCase) ─────────────────────────────────────
 
