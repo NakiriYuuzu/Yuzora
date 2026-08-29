@@ -19,17 +19,20 @@ function compareMsiVersions(left: string, right: string): number {
 describe("release MSI build config", () => {
   it("uses exactly three fields with monotonic beta and stable ordering", () => {
     const legacy = "0.0.8";
-    const beta = releaseMsiProductVersion("0.0.9-beta.1");
+    const beta1 = releaseMsiProductVersion("0.0.9-beta.1");
+    const beta2 = releaseMsiProductVersion("0.0.9-beta.2");
     const stable = releaseMsiProductVersion("0.0.9");
     const nextBeta = releaseMsiProductVersion("0.0.10-beta.1");
 
-    expect(beta).toBe("0.0.2305");
+    expect(beta1).toBe("0.0.2305");
+    expect(beta2).toBe("0.0.2306");
     expect(stable).toBe("0.0.2559");
-    for (const version of [beta, stable, nextBeta]) {
+    for (const version of [beta1, beta2, stable, nextBeta]) {
       expect(version.split(".")).toHaveLength(3);
     }
-    expect(compareMsiVersions(legacy, beta)).toBeLessThan(0);
-    expect(compareMsiVersions(beta, stable)).toBeLessThan(0);
+    expect(compareMsiVersions(legacy, beta1)).toBeLessThan(0);
+    expect(compareMsiVersions(beta1, beta2)).toBeLessThan(0);
+    expect(compareMsiVersions(beta2, stable)).toBeLessThan(0);
     expect(compareMsiVersions(stable, nextBeta)).toBeLessThan(0);
   });
 
@@ -39,10 +42,10 @@ describe("release MSI build config", () => {
   });
 
   it("generates a numeric WiX override without changing stable updater behavior", () => {
-    expect(releaseMsiBuildConfig("0.0.9-beta.1", true)).toEqual({
+    expect(releaseMsiBuildConfig("0.0.9-beta.2", true)).toEqual({
       bundle: {
         createUpdaterArtifacts: false,
-        windows: { wix: { version: "0.0.2305" } },
+        windows: { wix: { version: "0.0.2306" } },
       },
       plugins: { updater: { endpoints: [] } },
     });

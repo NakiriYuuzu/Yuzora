@@ -322,7 +322,7 @@ describe("release workflow contracts", () => {
 
     const beta = run(
       "verifyBetaReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Build signed and notarized beta macOS installers").run = "bun tauri build --ci"; verifyBetaReleaseContract(release, ci);`
+      `release.jobs.build.steps.find((step) => step.name === "Build unsigned beta macOS installers").run = "bun tauri build --ci --no-sign"; verifyBetaReleaseContract(release, ci);`
     )
     expect(beta.status).not.toBe(0)
     expect(beta.stderr).toContain("generated no-updater numeric WiX version override")
@@ -335,7 +335,7 @@ describe("release workflow contracts", () => {
     expect(candidate.stderr).toContain("release candidates must use the generated no-updater numeric WiX version override")
   })
 
-  it("requires every released macOS installer to be Developer ID signed, notarized, and fail-closed verified", () => {
+  it("keeps stable macOS fail-closed while requiring beta macOS to remain unsigned", () => {
     const run = (contract: string, mutation: string) => spawnSync(
       "bun",
       ["-e", `
@@ -354,12 +354,12 @@ describe("release workflow contracts", () => {
     expect(missingImport.status).not.toBe(0)
     expect(missingImport.stderr).toContain("import and verify a Developer ID Application")
 
-    const unsignedBeta = run(
+    const signedBeta = run(
       "verifyBetaReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Build signed and notarized beta macOS installers").run += " --no-sign"; verifyBetaReleaseContract(release, ci);`
+      `release.jobs.build.steps.find((step) => step.name === "Build unsigned beta macOS installers").run = release.jobs.build.steps.find((step) => step.name === "Build unsigned beta macOS installers").run.replace(" --no-sign", ""); verifyBetaReleaseContract(release, ci);`
     )
-    expect(unsignedBeta.status).not.toBe(0)
-    expect(unsignedBeta.stderr).toContain("without disabling Developer ID signing")
+    expect(signedBeta.status).not.toBe(0)
+    expect(signedBeta.stderr).toContain("must disable OS and updater signing")
 
     const noGatekeeper = run(
       "verifyStableReleaseContract",

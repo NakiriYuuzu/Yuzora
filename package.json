@@ -1,7 +1,7 @@
 {
   "name": "yuzora",
   "private": true,
-  "version": "0.0.9-beta.1",
+  "version": "0.0.9-beta.2",
   "type": "module",
   "scripts": {
     "dev": "vite",

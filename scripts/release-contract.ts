@@ -379,12 +379,14 @@ function verifyAppleNotarizationEnvironment(step: UnknownRecord, label: string):
   }
 }
 
-function verifyMacOsDistributionContract(workflow: Workflow): void {
+function verifyStableMacOsDistributionContract(workflow: Workflow): void {
   const buildSteps = steps(jobFor(workflow, "build"), "jobs.build")
+  const stableMacOsCondition =
+    "needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'"
   const importCertificate = stepByName(buildSteps, "Import Developer ID Application certificate")
   assert(
-    importCertificate.if === "matrix.artifact_name == 'macos'",
-    "Developer ID certificate import must run only on the macOS release runner"
+    importCertificate.if === stableMacOsCondition,
+    "Developer ID certificate import must run only for stable macOS releases"
   )
   const importEnv = record(importCertificate.env, "Developer ID certificate import env")
   for (const name of [
@@ -415,8 +417,8 @@ function verifyMacOsDistributionContract(workflow: Workflow): void {
     "Verify macOS Developer ID signature, Gatekeeper, and notarization"
   )
   assert(
-    verifyDistribution.if === "matrix.artifact_name == 'macos'",
-    "macOS distribution verification must run only on the macOS release runner"
+    verifyDistribution.if === stableMacOsCondition,
+    "Developer ID distribution verification must run only for stable macOS releases"
   )
   const verificationEnv = record(verifyDistribution.env, "macOS distribution verification env")
   assert(
@@ -435,10 +437,9 @@ function verifyMacOsDistributionContract(workflow: Workflow): void {
 
   const cleanup = stepByName(buildSteps, "Remove temporary macOS signing keychain")
   assert(
-    includes(cleanup.if, "always()") &&
-      includes(cleanup.if, "matrix.artifact_name == 'macos'") &&
+    cleanup.if === `always() && ${stableMacOsCondition}` &&
       includes(cleanup.run, "security delete-keychain"),
-    "macOS signing credentials must be removed from the temporary runner keychain even after failure"
+    "stable macOS signing credentials must be removed from the temporary runner keychain even after failure"
   )
 }
 
@@ -449,7 +450,7 @@ function verifyReleaseWorkflowHardening(workflow: Workflow): void {
   verifyReleaseStateNormalization(workflow)
   verifyReleaseNotesHandoff(workflow)
   verifyArtifactBoundary(workflow)
-  verifyMacOsDistributionContract(workflow)
+  verifyStableMacOsDistributionContract(workflow)
 }
 
 export function verifyStableReleaseContract(workflow: Workflow): void {
@@ -569,20 +570,20 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
 
   const build = jobFor(workflow, "build")
   const buildSteps = steps(build, "jobs.build")
-  const betaBuild = stepByName(buildSteps, "Build signed and notarized beta macOS installers")
+  const betaBuild = stepByName(buildSteps, "Build unsigned beta macOS installers")
   assert(
     includes(betaBuild.if, "needs.guard.outputs.is_beta == 'true'") &&
       includes(betaBuild.if, "matrix.artifact_name == 'macos'"),
     "beta macOS build must be platform- and channel-gated"
   )
-  verifyAppleNotarizationEnvironment(betaBuild, "beta macOS build")
   assert(
     !JSON.stringify(betaBuild.env ?? {}).includes("TAURI_SIGNING_PRIVATE_KEY") &&
       !JSON.stringify(betaBuild.env ?? {}).includes("GITHUB_TOKEN") &&
-      !includes(betaBuild.run, "--no-sign") &&
+      !JSON.stringify(betaBuild.env ?? {}).includes("APPLE_") &&
+      includes(betaBuild.run, "--no-sign") &&
       includes(betaBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
       includes(betaBuild.run, '--config "$RELEASE_BUILD_CONFIG"'),
-    "beta macOS build must use the generated no-updater numeric WiX version override without disabling Developer ID signing"
+    "beta macOS build must disable OS and updater signing while using the generated no-updater numeric WiX version override"
   )
 
   const betaWindowsBuild = stepByName(buildSteps, "Build unsigned beta Windows installers")
