@@ -127,6 +127,92 @@ function Assert-PluginPayload {
     }
 }
 
+function Invoke-NativeCommand {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments
+    )
+    $previousErrorActionPreference = $ErrorActionPreference
+    $output = @()
+    $exitCode = -1
+    try {
+        # Windows PowerShell 5.1 turns native stderr into ErrorRecord objects.
+        # Expected non-zero commands must remain observable instead of becoming
+        # terminating errors under the verifier's fail-closed preference.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Executable @Arguments 2>&1)
+        if ($null -ne $LASTEXITCODE) { $exitCode = [int]$LASTEXITCODE }
+    } catch {
+        $output += $_
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return [pscustomobject]@{
+        exitCode = $exitCode
+        text = (@($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+    }
+}
+
+function Test-HerdrServerReady {
+    param([string]$HerdrPath)
+    $result = Invoke-NativeCommand -Executable $HerdrPath -Arguments @('status', '--json')
+    if ($result.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.text)) {
+        return $false
+    }
+    try {
+        $status = $result.text | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    $server = $status.PSObject.Properties['server']
+    if ($null -eq $server) { return $false }
+    $running = $server.Value.PSObject.Properties['running']
+    return ($null -ne $running -and [bool]$running.Value)
+}
+
+function Start-IsolatedHerdrServer {
+    param([string]$HerdrPath)
+    $process = Start-Process -FilePath $HerdrPath -ArgumentList @('server') `
+        -WindowStyle Hidden -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (Test-HerdrServerReady -HerdrPath $HerdrPath) {
+            return $process
+        }
+        if ($process.HasExited) {
+            Fail-Verification "isolated Herdr server exited $($process.ExitCode) before becoming ready"
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $process.HasExited) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    Fail-Verification 'isolated Herdr server did not become ready within 15 seconds'
+}
+
+function Stop-IsolatedHerdrServer {
+    param(
+        [string]$HerdrPath,
+        $Process
+    )
+    $result = Invoke-NativeCommand -Executable $HerdrPath -Arguments @('server', 'stop')
+    if ($result.exitCode -ne 0) {
+        Fail-Verification "isolated Herdr server stop failed (exit $($result.exitCode)): $($result.text)"
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (-not (Test-HerdrServerReady -HerdrPath $HerdrPath)) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (Test-HerdrServerReady -HerdrPath $HerdrPath) {
+        Fail-Verification 'isolated Herdr server remained ready after stop'
+    }
+    if ($null -ne $Process -and -not $Process.HasExited -and -not $Process.WaitForExit(5000)) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        Fail-Verification 'isolated Herdr server process did not exit after stop'
+    }
+}
+
 function Invoke-BundledHelper {
     param(
         $Payload,
@@ -134,12 +220,13 @@ function Invoke-BundledHelper {
         [string]$Action,
         [bool]$ExpectSuccess
     )
-    $output = @(
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $Payload.helperPath `
-            -Action $Action -HerdrPath $Payload.herdrPath 2>&1
+    $powershell = Join-Path $PSHOME 'powershell.exe'
+    $result = Invoke-NativeCommand -Executable $powershell -Arguments @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $Payload.helperPath, '-Action', $Action, '-HerdrPath', $Payload.herdrPath
     )
-    $exitCode = $LASTEXITCODE
-    $text = @($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+    $exitCode = $result.exitCode
+    $text = $result.text
     if ($ExpectSuccess -and $exitCode -ne 0) {
         Fail-Verification "$($Payload.label) helper $Action failed (exit $exitCode): $text"
     }
@@ -202,9 +289,34 @@ if ($null -eq $sevenZip) {
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yuzora-wsl-plugin-" + [Guid]::NewGuid().ToString('N'))
 $msiRoot = Join-Path $tempRoot 'msi'
 $nsisRoot = Join-Path $tempRoot 'nsis'
-New-Item -ItemType Directory -Path $msiRoot, $nsisRoot -Force | Out-Null
+$isolationConfigRoot = Join-Path $tempRoot 'xdg-config'
+$isolationStateRoot = Join-Path $tempRoot 'xdg-state'
+New-Item -ItemType Directory -Path $msiRoot, $nsisRoot, $isolationConfigRoot, $isolationStateRoot -Force | Out-Null
 $msiPayload = $null
 $nsisPayload = $null
+$serverProcess = $null
+$environmentNames = @(
+    'XDG_CONFIG_HOME',
+    'XDG_STATE_HOME',
+    'HERDR_CONFIG_PATH',
+    'HERDR_SESSION',
+    'HERDR_SOCKET_PATH',
+    'HERDR_CLIENT_SOCKET_PATH'
+)
+$previousEnvironment = @{}
+foreach ($name in $environmentNames) {
+    $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+[Environment]::SetEnvironmentVariable('XDG_CONFIG_HOME', $isolationConfigRoot, 'Process')
+[Environment]::SetEnvironmentVariable('XDG_STATE_HOME', $isolationStateRoot, 'Process')
+[Environment]::SetEnvironmentVariable(
+    'HERDR_SOCKET_PATH',
+    (Join-Path $tempRoot 'isolated-herdr.sock'),
+    'Process'
+)
+foreach ($name in @('HERDR_CONFIG_PATH', 'HERDR_SESSION', 'HERDR_CLIENT_SOCKET_PATH')) {
+    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+}
 
 try {
     $msiArgs = @(
@@ -225,6 +337,7 @@ try {
 
     $msiPayload = Assert-PluginPayload -Label 'MSI' -ExtractedRoot $msiRoot -SourceRoot $resolvedSourceRoot
     $nsisPayload = Assert-PluginPayload -Label 'NSIS' -ExtractedRoot $nsisRoot -SourceRoot $resolvedSourceRoot
+    $serverProcess = Start-IsolatedHerdrServer -HerdrPath $msiPayload.herdrPath
 
     $initial = Invoke-BundledHelper -Payload $msiPayload -Action status -ExpectSuccess $true
     Assert-OwnedStatus -Label 'initial registry' -Status $initial -Linked $false
@@ -249,6 +362,8 @@ try {
     $nsisUnlinked = Invoke-BundledHelper -Payload $nsisPayload -Action unlink -ExpectSuccess $true
     Assert-OwnedStatus -Label 'NSIS unlink' -Status $nsisUnlinked -Linked $false
 
+    Stop-IsolatedHerdrServer -HerdrPath $msiPayload.herdrPath -Process $serverProcess
+    $serverProcess = $null
     Write-Output (@($msiPayload, $nsisPayload) | ConvertTo-Json -Compress)
 } finally {
     foreach ($payload in @($msiPayload, $nsisPayload)) {
@@ -261,6 +376,19 @@ try {
         } catch {
             [Console]::Error.WriteLine("cleanup warning: $($_.Exception.Message)")
         }
+    }
+    if ($null -ne $serverProcess) {
+        try {
+            [void](Invoke-NativeCommand -Executable $msiPayload.herdrPath -Arguments @('server', 'stop'))
+        } catch {
+            [Console]::Error.WriteLine("server cleanup warning: $($_.Exception.Message)")
+        }
+        if (-not $serverProcess.HasExited) {
+            Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    foreach ($name in $environmentNames) {
+        [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process')
     }
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

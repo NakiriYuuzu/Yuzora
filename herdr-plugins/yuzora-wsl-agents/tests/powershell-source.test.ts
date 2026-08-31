@@ -12,6 +12,10 @@ const manage = readFileSync(join(root, "scripts/manage-adapters.ps1"), "utf8")
 const manageBundled = readFileSync(join(root, "scripts/manage-bundled-plugin.ps1"), "utf8")
 const powershellRuntime = readFileSync(join(root, "tests/powershell-runtime.ps1"), "utf8")
 const runWindows = readFileSync(join(root, "tests/run-windows.ps1"), "utf8")
+const windowsBundleVerifier = readFileSync(
+  join(root, "..", "..", "scripts/verify-windows-bundled-wsl-plugin.ps1"),
+  "utf8"
+)
 
 describe("PowerShell orchestration source", () => {
   it("fail-closed strips every HERDR_SOCKET_PATH WSLENV entry", () => {
@@ -127,10 +131,10 @@ $cfg = Get-YuzoraPluginConfig
 if ($cfg.linuxCwdPolicy -ne 'workspace') { throw "policy $($cfg.linuxCwdPolicy)" }
 if ($cfg.defaultDistro -ne 'Ubuntu') { throw "distro $($cfg.defaultDistro)" }
 if (($cfg.enabledAgents -join ',') -ne 'pi') { throw 'agents' }
-$env:HERDR_PLUGIN_CONTEXT_JSON = '{"workspace_cwd":"C:\\repo"}'
+$env:HERDR_PLUGIN_CONTEXT_JSON = @{ workspace_cwd = 'C:\\repo' } | ConvertTo-Json -Compress
 $fromWorkspace = Get-WorkspacePathFromContext
 if ($fromWorkspace -ne 'C:\\repo') { throw "workspace $fromWorkspace" }
-$env:HERDR_PLUGIN_CONTEXT_JSON = '{"focused_pane_cwd":"C:\\pane"}'
+$env:HERDR_PLUGIN_CONTEXT_JSON = @{ focused_pane_cwd = 'C:\\pane' } | ConvertTo-Json -Compress
 $fromPane = Get-WorkspacePathFromContext
 if ($fromPane -ne 'C:\\pane') { throw "pane $fromPane" }
 Write-Output 'PASS'
@@ -232,6 +236,13 @@ Write-Output 'PASS'
     expect(manageBundled).toContain("Test-OwnsRegistration")
     expect(manageBundled).toContain("ConvertTo-Json -Compress")
     expect(manageBundled).not.toMatch(/Remove-Item|Delete\(/)
+    expect(windowsBundleVerifier).toContain("function Invoke-NativeCommand")
+    expect(windowsBundleVerifier).toContain("$ErrorActionPreference = 'Continue'")
+    expect(windowsBundleVerifier).toContain("Start-IsolatedHerdrServer")
+    expect(windowsBundleVerifier).toContain("Stop-IsolatedHerdrServer")
+    expect(windowsBundleVerifier).toContain("'XDG_CONFIG_HOME'")
+    expect(windowsBundleVerifier).toContain("'HERDR_SOCKET_PATH'")
+    expect(windowsBundleVerifier).not.toContain("& powershell.exe")
 
     if (process.platform === "win32") return
     const work = mkdtempSync(join(tmpdir(), "yuzora-wsl-bundled-helper-"))
@@ -293,5 +304,5 @@ fi
     const refusedUnlink = run("unlink")
     expect(refusedUnlink.status).not.toBe(0)
     expect(refusedUnlink.stderr).toContain("refusing to unlink")
-  })
+  }, 20_000)
 })
