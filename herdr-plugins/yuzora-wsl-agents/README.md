@@ -24,8 +24,16 @@ Yuzora `0.0.9-beta.3` Windows MSI/NSIS installers bundle this runtime package at
 <Yuzora resource root>\herdr-plugins\yuzora-wsl-agents
 ```
 
-Bundling does **not** silently register the plugin or modify any WSL distro. With
-Yuzora running, resolve the exact installed path and explicitly link it:
+Bundling does **not** silently register the plugin or modify any WSL distro at
+startup. On Windows, the explicit **Settings → Herdr → WSL Pi integration**
+switch performs the ownership-safe link + Pi adapter install transaction and
+reverses it on disable. Transactions are serialized in the backend. Automatic
+enable requires an unlinked Plugin id and no owned adapter in any installed
+distro; an existing incomplete owned registration must be turned off before it
+can be enabled again. Disable scans every installed distro, removes only files
+with the exact ownership marker, and unlinks only after all targets report
+absent. The manual commands below remain available for recovery and operator
+verification:
 
 ```powershell
 $yuzoraExe = (Get-Process yuzora | Select-Object -First 1).Path

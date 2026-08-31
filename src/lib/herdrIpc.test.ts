@@ -22,7 +22,9 @@ import {
   herdrTabRename,
   herdrWorkspaceClose,
   herdrWorkspaceRename,
-  herdrWorktreeList
+  herdrWorktreeList,
+  herdrWslIntegrationGet,
+  herdrWslIntegrationSet
 } from "./herdrIpc"
 
 afterEach(() => {
@@ -46,6 +48,17 @@ describe("herdrIpc native interaction wrappers", () => {
       }
       if (cmd === "herdr_binary_source_set") {
         return { configured: "default", restartRequired: true }
+      }
+      if (cmd === "herdr_wsl_integration_get" || cmd === "herdr_wsl_integration_set") {
+        return {
+          platformSupported: true,
+          bundleAvailable: true,
+          active: cmd === "herdr_wsl_integration_set",
+          linked: cmd === "herdr_wsl_integration_set",
+          enabled: cmd === "herdr_wsl_integration_set",
+          ownsRegistration: cmd === "herdr_wsl_integration_set",
+          adapterStatus: cmd === "herdr_wsl_integration_set" ? "current" : "absent"
+        }
       }
       if (cmd === "herdr_agent_get") {
         return {
@@ -76,6 +89,8 @@ describe("herdrIpc native interaction wrappers", () => {
 
     await herdrBinarySourceGet()
     await herdrBinarySourceSet("default")
+    await herdrWslIntegrationGet()
+    await herdrWslIntegrationSet(true)
     await herdrAgentGet({ sessionName: "work", target: "w1:p1" })
     await herdrAgentRead({
       sessionName: "work",
@@ -90,6 +105,8 @@ describe("herdrIpc native interaction wrappers", () => {
     expect(calls).toEqual([
       { cmd: "herdr_binary_source_get", args: {} },
       { cmd: "herdr_binary_source_set", args: { source: "default" } },
+      { cmd: "herdr_wsl_integration_get", args: {} },
+      { cmd: "herdr_wsl_integration_set", args: { enabled: true } },
       {
         cmd: "herdr_agent_get",
         args: { sessionName: "work", target: "w1:p1" }

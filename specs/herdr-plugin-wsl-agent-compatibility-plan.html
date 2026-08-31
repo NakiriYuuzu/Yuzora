@@ -443,7 +443,7 @@
               <tr><td>Execution origin</td><td><strong>MVP 不新增／不恢復</strong></td><td>若 Herdr wire 未提供權威欄位，Yuzora 不自行製造 <code>execution_origin</code>。</td></tr>
               <tr><td>Unknown Attention</td><td><strong>保留現行行為</strong></td><td>不因 WSL adapter 靜音或降級 global unknown Attention。</td></tr>
               <tr><td>New Agent dialog</td><td><strong>仍只啟動 Herdr manifest kind</strong></td><td>Plugin 不能註冊新的 <code>agent start --kind</code>；不得把 WSL entrypoint 偽裝進 catalog。</td></tr>
-              <tr><td>Windows delivery</td><td><strong>Bundled Experimental，明確 link</strong></td><td>MSI／NSIS 以 individual resource mappings 內附 exact 10-file runtime allowlist；不封裝其他 adapters／scripts、tests 或開發 lib，不在 app startup 自動註冊或修改 WSL home。</td></tr>
+              <tr><td>Windows delivery</td><td><strong>Bundled Experimental，Settings 明確啟用</strong></td><td>MSI／NSIS 以 individual resource mappings 內附 exact 10-file runtime allowlist；不封裝其他 adapters／scripts、tests 或開發 lib。Herdr 設定的 WSL Pi 開關以 backend lock 序列化 ownership-safe link＋adapter install；pre-linked inactive registration 不自動 repair，disable 掃描所有 installed distros 並在 exact owned adapter 全部 absent 後才 unlink。app startup 仍不自動註冊或修改 WSL home。</td></tr>
               <tr><td>Security boundary</td><td><strong>同 Windows 使用者信任模型</strong></td><td>Herdr v0.8.2 report API 無 pane-scoped token；MVP 不宣稱對抗同使用者惡意 spoof。</td></tr>
             </tbody>
           </table>
@@ -455,7 +455,7 @@
                 <li>掃描 WSL <code>/proc</code>、Windows process tree 或 terminal output。</li>
                 <li>WSL Herdr provider、runtime target、socket relay、distro discovery UI。</li>
                 <li>OSC 21337 lifecycle authority、Herdr core fork、custom resume command。</li>
-                <li>為 Plugin 建立 Yuzora 專用 Settings／對話框；先以 Herdr Plugin actions／CLI 操作。</li>
+                <li>WSL distro discovery／config editor 與任意 adapter catalog；第一版 Settings 只提供 Pi-only enable／disable transaction，distro 仍由 Herdr Plugin config 決定。</li>
                 <li>Claude／Codex installer、action、adapter、test 與 Windows 驗收（延後 follow-up）。</li>
                 <li>Yuzora 可見的 native session／thread identity、<code>report-agent-session</code>、resume command 或 metadata token 投影。</li>
                 <li>把 Claude／Codex 無法證明的狀態硬標成 working／blocked。</li>
@@ -467,7 +467,7 @@
             <div>
               <ul>
                 <li>初版 plugin 與 Yuzora 同 repo 共置，Windows installer 以 Tauri resource map 封裝 runtime allowlist；日後拆成獨立 repo 不改 runtime contract。</li>
-                <li>Installer activation 維持 explicit opt-in；bundled helper 只管理 exact bundled root，遇同 id 的其他 registration fail closed。</li>
+                <li>Installer activation 維持 explicit opt-in；Herdr 設定的 WSL Pi 開關與 bundled helper 都只管理 exact bundled root，遇同 id 的其他 registration fail closed。</li>
                 <li>目標 Windows 為 Windows 11＋WSL2，啟用 WSLInterop，且可從 WSL 執行 <code>.exe</code>。</li>
                 <li>Plugin runtime 使用 Windows PowerShell 5.1 相容語法，不要求使用者另裝 Bun／Node／Rust。</li>
                 <li>Agent adapter 使用專屬檔名與 marker，不覆寫 Herdr 官方 Windows-home integration。</li>

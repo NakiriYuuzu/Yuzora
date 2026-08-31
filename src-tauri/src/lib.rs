@@ -18,6 +18,7 @@ pub mod git_watch;
 mod herdr_limits;
 pub mod herdr_service;
 mod herdr_transport;
+pub mod herdr_wsl_service;
 pub mod logging;
 pub mod lsp_adapters;
 pub mod lsp_config;
@@ -425,6 +426,8 @@ pub fn run() {
             herdr_service::herdr_layout_set_split_ratio,
             herdr_service::herdr_binary_source_get,
             herdr_service::herdr_binary_source_set,
+            herdr_wsl_service::herdr_wsl_integration_get,
+            herdr_wsl_service::herdr_wsl_integration_set,
             herdr_service::herdr_agent_get,
             herdr_service::herdr_agent_read,
             herdr_service::herdr_events_subscribe,
@@ -611,6 +614,8 @@ mod command_inventory_tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
+            "herdr_wsl_service::herdr_wsl_integration_get",
+            "herdr_wsl_service::herdr_wsl_integration_set",
             "herdr_service::herdr_agent_catalog",
             "herdr_service::herdr_agent_create",
             "herdr_service::herdr_agent_get",

@@ -3723,7 +3723,7 @@ fn run_herdr_json_with_session_timeout(
     parse_herdr_cli_stdout(&stdout).map_err(String::from)
 }
 
-fn wait_bounded_child(
+pub(crate) fn wait_bounded_child(
     child: &mut Child,
     process_tree: &mut process_kill::ProcessTreeGuard,
     timeout: Duration,
@@ -8745,6 +8745,8 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
+            "herdr_wsl_service::herdr_wsl_integration_get",
+            "herdr_wsl_service::herdr_wsl_integration_set",
             "herdr_service::herdr_agent_get",
             "herdr_service::herdr_agent_read",
             "herdr_service::herdr_events_subscribe",
@@ -8885,5 +8887,12 @@ sys.stderr.buffer.write(b"\xff\xfe")
             let _ = pid;
             false
         }
+    }
+}
+
+#[cfg(windows)]
+impl HerdrManager {
+    pub(crate) fn resource_dir_path(&self) -> Option<PathBuf> {
+        self.resource_dir.lock().unwrap().clone()
     }
 }

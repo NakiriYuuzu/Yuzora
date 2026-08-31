@@ -674,7 +674,9 @@ Yuzora 不會停止使用者既有的 Herdr server。升級前仍 running 的 0.
   scripts\
 ```
 
-安裝／啟動 Yuzora **不得**自動註冊 Plugin，也不得修改 WSL home。使用者需明確執行 bundled helper。Yuzora 執行中可用下列方式解析 MSI／NSIS 的實際 resource root：
+安裝／啟動 Yuzora **不得**自動註冊 Plugin，也不得修改 WSL home。Windows 使用者可在 **設定 → Herdr → WSL Pi 整合**明確開啟；Yuzora 會以目前實際使用的 Windows-native Herdr 執行 exact bundled-root link，再同步安裝 Pi adapter。Backend 以 process-wide lock 序列化整個 status→mutation→verification／rollback transaction。自動 enable 只允許「尚未 link，且所有 installed distros 的 owned adapter 都是 absent」；若已有 owned registration 但未完整 active，必須先用關閉開關清理，禁止覆寫或自動修復既有狀態。若新安裝失敗，只回滾本次新建資源；adapter 無法確認全部 absent 時保留 registration 供 recovery。若另一個 root 已擁有相同 Plugin id 則零 mutation fail closed。關閉前需先關閉 Plugin-managed WSL panes；關閉開關會掃描所有 installed distros、只移除 exact owned marker，並在全部回報 `uninstalled absent` 後才 unlink。
+
+下列 bundled helper 仍保留作為 recovery 與驗收入口。Yuzora 執行中可用下列方式解析 MSI／NSIS 的實際 resource root：
 
 ```powershell
 $yuzoraExe = (Get-Process yuzora | Select-Object -First 1).Path
@@ -748,8 +750,9 @@ Exact Windows candidate 另需驗證：
 1. MSI 與 NSIS 安裝後都存在上述 manifest／README／adapters／scripts；不得包含 `tests/` 或開發期 `lib/`。
 2. 所有由 WSL 執行或安裝的 adapter files（`adapters/install.sh`、`adapters/common/herdr-wsl-report`、`adapters/pi/yuzora-herdr-wsl.ts`）必須為 LF-only；installer verifier 需直接拒絕任何 CR byte，不能只以 Windows checkout source hash 相等作為通過依據。TypeScript extension 同樣受此約束，因 ownership sentinel 使用 exact line matching；CRLF 會使 install／status／uninstall 誤判為 drifted。
 3. 從**安裝後 resource path**執行 helper `status → link → status`，結果顯示 `ownsRegistration=true`；不得以 source checkout 的 link 代替。
-4. 已由不同 root 註冊同 id 時，candidate helper 的 link／unlink 都 fail closed。
-5. Reporter timeout regression 必須連續觸發 idle → working → idle → shutdown，證明每次 retry 前 reporter process group 已完整回收；Windows exact candidate 另需在 WSLInterop 下確認沒有殘留 reporter、`herdr.exe` client 或相應 child process。僅檢查 Pi 最終退出不足以通過。
-6. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。
+4. Herdr 設定的 WSL Pi 開關必須以 backend mutex 序列化同一個 exact-root link＋adapter install transaction；pre-linked inactive registration 不得自動 repair。關閉與新安裝 rollback 必須對所有 installed distros 先驗證 `uninstalled absent` 再 unlink；任何 distro drift／失敗時保留 registration。已由不同 root 註冊同 id 時，UI 與 helper 都必須零 mutation fail closed。
+5. Agent 區域的 default named-session trigger 必須顯示目前實際解析的 Herdr 來源與版本（Global 或 Yuzora-managed），並在 diagnostic title 保留 named session 與實際 binary path；不可只顯示 `default`。
+6. Reporter timeout regression 必須連續觸發 idle → working → idle → shutdown，證明每次 retry 前 reporter process group 已完整回收；Windows exact candidate 另需在 WSLInterop 下確認沒有殘留 reporter、`herdr.exe` client 或相應 child process。僅檢查 Pi 最終退出不足以通過。
+7. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。
 
 若驗收需從 current source 建立 Windows Yuzora UI，除 Rust MSVC 與 Visual Studio 2022 Build Tools／Windows SDK 外，還必須讓 NASM 位於非互動 build process 的 `PATH`（目前 `aws-lc-sys` Windows build 會在缺少 NASM 時 fail closed）。透過 WebView2 CDP 收集可存檔的 AX tree／截圖時，只能使用 evidence-only Tauri config 的 `additionalBrowserArgs`；不得把 remote-debugging port 寫入正式產品 config 或 release build。

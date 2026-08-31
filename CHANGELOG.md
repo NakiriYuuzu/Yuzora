@@ -6,10 +6,11 @@
 
 ### 新增
 
-- Windows 安裝檔內附 Experimental 的 Pi-only `Yuzora WSL Agents` Plugin。使用者可明確 link 封裝路徑、在指定 WSL distro 安裝 adapter，並從 Plugin-managed pane 啟動 Pi，讓 Windows-native HERDR 的 snapshot／events 投影 live identity 與 working／idle／blocked 狀態。
+- Windows 安裝檔內附 Experimental 的 Pi-only `Yuzora WSL Agents` Plugin。Herdr 設定新增明確的 WSL Pi 整合開關；開啟時會以序列化 transaction ownership-safe 地 link 內附 Plugin並在設定的 WSL distro 安裝 adapter，關閉時掃描所有 installed distros、只移除 exact owned files，全部 absent 後才 unlink。既有不完整 registration 不會被自動覆寫。Plugin-managed pane 內的 Pi 可讓 Windows-native HERDR snapshot／events 投影 live identity 與 working／idle／blocked 狀態。
 
 ### 改善
 
+- Agent 區域的預設 Session 標籤改為顯示實際使用的 Herdr 來源與版本（全域或 Yuzora-managed），不再只顯示容易混淆的 `default`。
 - macOS 與 Windows 的 Yuzora-managed HERDR 更新為官方 Stable `v0.8.2`／protocol 20；Windows 內附正式 Stable package 與完整 ConPTY runtime，不再使用舊 protocol-19 preview package。
 
 ### 修正
@@ -21,7 +22,7 @@
 ### 已知限制
 
 - 升級前仍在執行的 HERDR 0.8.0／protocol-19 default 或 named server 不會被 Yuzora 自動停止。0.8.2 client 會明確拒絕不相容 server；請先保存工作，再停止並以新 binary 重啟每個受影響的 HERDR session。
-- WSL Plugin 不會自動啟用或修改 Linux home，只支援 Plugin-managed panes 與 Pi live identity／state；任意手動 `wsl.exe` pane、Claude／Codex、native Pi session resume，以及 Agent prompt/start/attach control 均不在本次保證。HERDR Runtime 為 Stable，但 Windows Plugin surface 仍是 Experimental。
+- WSL Plugin 預設維持停用，Yuzora 啟動時不會修改 Linux home；只有使用者在 Herdr 設定明確開啟 WSL Pi 整合時才會執行安裝。整合只支援 Plugin-managed panes 與 Pi live identity／state；任意手動 `wsl.exe` pane、Claude／Codex、native Pi session resume，以及 Agent prompt/start/attach control 均不在本次保證。HERDR Runtime 為 Stable，但 Windows Plugin surface 仍是 Experimental。
 - macOS Beta 沒有 Developer ID 發行者身分、notarization 或 Gatekeeper 信任，首次開啟時可能被警告或阻擋；只應從 Yuzora 官方 GitHub Pre-release 下載。
 - Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
 

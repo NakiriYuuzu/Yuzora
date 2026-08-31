@@ -76,6 +76,9 @@ describe("PowerShell orchestration source", () => {
     expect(common).toContain("[void]$failed.Add([string]$distro)")
     expect(manage).toContain("Get-ConfiguredDistroNames")
     expect(manage).toContain("Invoke-AdapterActionAcrossDistros")
+    expect(manage).toContain("[switch]$AllInstalledDistros")
+    expect(manage).toContain("$inventory = @(Get-WslDistroInventory)")
+    expect(manage).toContain("Fail-Closed 'AllInstalledDistros is allowed only for status or uninstall'")
 
     const script = `
 $ErrorActionPreference = 'Stop'

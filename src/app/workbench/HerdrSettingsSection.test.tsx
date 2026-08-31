@@ -3,12 +3,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const ipc = vi.hoisted(() => ({
   get: vi.fn(),
-  set: vi.fn()
+  set: vi.fn(),
+  wslGet: vi.fn(),
+  wslSet: vi.fn()
+}))
+
+const platform = vi.hoisted(() => ({
+  isWindows: vi.fn()
 }))
 
 vi.mock("@/lib/herdrIpc", () => ({
   herdrBinarySourceGet: ipc.get,
-  herdrBinarySourceSet: ipc.set
+  herdrBinarySourceSet: ipc.set,
+  herdrWslIntegrationGet: ipc.wslGet,
+  herdrWslIntegrationSet: ipc.wslSet
+}))
+
+vi.mock("@/lib/platform", () => ({
+  isWindowsPlatform: platform.isWindows
 }))
 
 import { HerdrSettingsSection } from "./HerdrSettingsSection"
@@ -31,6 +43,22 @@ beforeEach(() => {
     restartRequired: true
   })
   ipc.set.mockReset()
+  ipc.wslGet.mockReset().mockResolvedValue({
+    platformSupported: true,
+    bundleAvailable: true,
+    active: false,
+    linked: false,
+    enabled: false,
+    ownsRegistration: false,
+    adapterStatus: "unknown",
+    pluginVersion: "0.1.0",
+    bundledPath: String.raw`C:\Program Files\Yuzora\herdr-plugins\yuzora-wsl-agents`,
+    linkedPath: null,
+    herdrPath: String.raw`C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
+    reason: null
+  })
+  ipc.wslSet.mockReset()
+  platform.isWindows.mockReset().mockReturnValue(false)
 })
 
 describe("HerdrSettingsSection", () => {
@@ -77,6 +105,107 @@ describe("HerdrSettingsSection", () => {
       "true"
     )
     expect(screen.getAllByText(/using Yuzora-managed Herdr/)).not.toHaveLength(0)
+  })
+
+  it("installs and removes the bundled WSL Plugin from an explicit Windows setting", async () => {
+    platform.isWindows.mockReturnValue(true)
+    ipc.wslSet
+      .mockResolvedValueOnce({
+        platformSupported: true,
+        bundleAvailable: true,
+        active: true,
+        linked: true,
+        enabled: true,
+        ownsRegistration: true,
+        adapterStatus: "current",
+        pluginVersion: "0.1.0",
+        reason: null
+      })
+      .mockResolvedValueOnce({
+        platformSupported: true,
+        bundleAvailable: true,
+        active: false,
+        linked: false,
+        enabled: false,
+        ownsRegistration: false,
+        adapterStatus: "absent",
+        pluginVersion: null,
+        reason: null
+      })
+
+    render(<HerdrSettingsSection />)
+
+    const wsl = await screen.findByRole("switch", { name: /WSL Pi|WSL.*Pi/ })
+    expect(wsl).not.toBeChecked()
+    expect(screen.getByText(/Experimental|實驗/)).toBeInTheDocument()
+
+    wsl.click()
+    await waitFor(() => expect(ipc.wslSet).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(wsl).toBeChecked())
+    expect(screen.getByTestId("herdr-wsl-status")).toHaveTextContent("0.1.0")
+
+    wsl.click()
+    await waitFor(() => expect(ipc.wslSet).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(wsl).not.toBeChecked())
+  })
+
+  it("represents an existing inactive owned registration as removable, not repairable", async () => {
+    platform.isWindows.mockReturnValue(true)
+    ipc.wslGet.mockResolvedValue({
+      platformSupported: true,
+      bundleAvailable: true,
+      active: false,
+      linked: true,
+      enabled: false,
+      ownsRegistration: true,
+      adapterStatus: "outdated",
+      pluginVersion: "0.1.0",
+      reason: null
+    })
+    ipc.wslSet.mockResolvedValue({
+      platformSupported: true,
+      bundleAvailable: true,
+      active: false,
+      linked: false,
+      enabled: false,
+      ownsRegistration: false,
+      adapterStatus: "absent",
+      pluginVersion: null,
+      reason: null
+    })
+
+    render(<HerdrSettingsSection />)
+
+    const wsl = await screen.findByRole("switch", { name: /WSL Pi|WSL.*Pi/ })
+    expect(wsl).toBeChecked()
+    expect(screen.getByTestId("herdr-wsl-status")).toHaveTextContent(/clean up|清理/)
+    wsl.click()
+    await waitFor(() => expect(ipc.wslSet).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(wsl).not.toBeChecked())
+  })
+
+  it("fails closed when another root owns the WSL Plugin id", async () => {
+    platform.isWindows.mockReturnValue(true)
+    ipc.wslGet.mockResolvedValue({
+      platformSupported: true,
+      bundleAvailable: true,
+      active: false,
+      linked: true,
+      enabled: true,
+      ownsRegistration: false,
+      adapterStatus: "unknown",
+      linkedPath: String.raw`C:\foreign\yuzora-wsl-agents`,
+      reason: "Plugin id yuzora-wsl-agents is registered from another root"
+    })
+
+    render(<HerdrSettingsSection />)
+
+    const wsl = await screen.findByRole("switch", { name: /WSL Pi|WSL.*Pi/ })
+    expect(wsl).toBeDisabled()
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      String.raw`C:\foreign\yuzora-wsl-agents`
+    )
+    expect(ipc.wslSet).not.toHaveBeenCalled()
   })
 
   it("normalizes verbatim Windows diagnostic paths without mutating the DTO", async () => {

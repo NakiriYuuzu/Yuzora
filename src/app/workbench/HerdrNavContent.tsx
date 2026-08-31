@@ -1,6 +1,6 @@
 import { Bot, FolderOpen, FolderPlus, Info, Plus } from "lucide-react"
 import type { CSSProperties } from "react"
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { open } from "@tauri-apps/plugin-dialog"
 
@@ -11,8 +11,13 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents"
-import type { HerdrAgentInfo, HerdrAgentStatus } from "@/lib/herdrTypes"
-import { workspacePathBasename } from "@/lib/paths"
+import { herdrBinarySourceGet } from "@/lib/herdrIpc"
+import type {
+  HerdrAgentInfo,
+  HerdrAgentStatus,
+  HerdrBinarySourceInfo
+} from "@/lib/herdrTypes"
+import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 import { pickWorkspace } from "@/lib/workspaceActions"
 import { cn } from "@/lib/utils"
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
@@ -39,6 +44,7 @@ export function HerdrNavContent() {
   const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
   const selectSession = useHerdrStore((s) => s.selectSession)
   const connectionState = useHerdrStore((s) => s.connectionState)
+  const capabilities = useHerdrStore((s) => s.capabilities)
   const errorMessage = useHerdrStore((s) => s.errorMessage)
   const snapshot = useHerdrStore((s) => s.snapshot)
   const selectedSpaceId = useHerdrStore((s) => s.selectedSpaceId)
@@ -62,6 +68,7 @@ export function HerdrNavContent() {
   const [onboardingBusy, setOnboardingBusy] = useState(false)
   const onboardingBusyRef = useRef(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [binarySourceInfo, setBinarySourceInfo] = useState<HerdrBinarySourceInfo | null>(null)
   const attentionByKey = useHerdrStore((s) => s.attentionByKey)
   const attentionItems = useMemo(() => {
     const selected = selectedSessionName
@@ -73,12 +80,39 @@ export function HerdrNavContent() {
     () => sortHerdrAgentsByUrgency(snapshot?.agents ?? []),
     [snapshot?.agents]
   )
+
+  useEffect(() => {
+    let active = true
+    void herdrBinarySourceGet()
+      .then((info) => {
+        if (active) setBinarySourceInfo(info)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
   const herdrSessionId = selectedSessionName ?? snapshot?.herdrSessionId
   const stopped = connectionState === "stopped"
   const createDisabled =
     !selectedSpaceId || creating || !herdrSessionId || !canCreateTerminal || stopped
   const hasNoSpaces = Boolean(snapshot && snapshot.spaces.length === 0)
   const visibleError = actionError ?? errorMessage
+  const effectiveBinarySource = binarySourceInfo ?? capabilities?.binarySource ?? null
+  const runtimeSource =
+    effectiveBinarySource?.resolved ??
+    effectiveBinarySource?.active ??
+    effectiveBinarySource?.configured ??
+    null
+  const runtimeVersion =
+    effectiveBinarySource?.version ?? capabilities?.binaryVersion ?? snapshot?.version ?? null
+  const runtimeVersionSuffix = runtimeVersion ? ` ${runtimeVersion}` : ""
+  const runtimeLabel = runtimeSource === "global"
+    ? t("herdrNav.globalRuntime", { version: runtimeVersionSuffix })
+    : runtimeSource === "default"
+      ? t("herdrNav.managedRuntime", { version: runtimeVersionSuffix })
+      : t("herdrNav.runtime", { version: runtimeVersionSuffix })
+  const runtimePath = effectiveBinarySource?.path ?? capabilities?.binaryPath ?? null
 
   const onSelectSession = (sessionName: string) => {
     // HerdrBridge is the single focus-restoration owner so a user-closed page
@@ -175,32 +209,45 @@ export function HerdrNavContent() {
         aria-label={t("herdrNav.sessionsHeading")}
         className="w-full shrink-0 flex-wrap justify-start gap-[6px] rounded-none bg-transparent p-0 px-[2px] group-data-horizontal/tabs:h-auto"
       >
-        {sessions.map((session) => (
-          <TabsTrigger
-            key={session.name}
-            type="button"
-            value={session.name}
-            data-testid={`herdr-session-${session.name}`}
-            title={
-              session.running
-                ? session.socketPath
-                : t("herdrNav.sessionStoppedTitle", { name: session.name })
-            }
-            className={cn(
-              "h-auto flex-none rounded-full border border-(--line-2) px-[10px] py-[4px] text-[11px] font-medium text-(--ink-3) hover:bg-(--yz-hover) hover:text-(--ink-3) dark:text-(--ink-3) dark:hover:text-(--ink-3)",
-              "data-[state=active]:border-(--yz-accent)/50 data-[state=active]:bg-(--yz-active) data-[state=active]:text-(--ink-0) data-[state=active]:shadow-none data-[state=active]:hover:bg-(--yz-active) data-[state=active]:hover:text-(--ink-0)",
-              "dark:data-[state=active]:border-(--yz-accent)/50 dark:data-[state=active]:bg-(--yz-active) dark:data-[state=active]:text-(--ink-0) dark:data-[state=active]:hover:text-(--ink-0)",
-              !session.running && "opacity-70"
-            )}
-          >
-            <span>{session.name}</span>
-            {!session.running && (
-              <span className="ml-[4px] text-[10px] text-(--ink-4)">
-                {t("herdrNav.stoppedBadge")}
-              </span>
-            )}
-          </TabsTrigger>
-        ))}
+        {sessions.map((session) => {
+          const displayName = session.default ? runtimeLabel : session.name
+          const title = session.default
+            ? [
+                runtimeLabel,
+                t("herdrNav.runtimeSessionTitle", { name: session.name }),
+                runtimePath ? workspacePathForDisplay(runtimePath) : null,
+                session.running
+                  ? null
+                  : t("herdrNav.sessionStoppedTitle", { name: session.name })
+              ]
+                .filter(Boolean)
+                .join("\n")
+            : session.running
+              ? session.socketPath
+              : t("herdrNav.sessionStoppedTitle", { name: session.name })
+          return (
+            <TabsTrigger
+              key={session.name}
+              type="button"
+              value={session.name}
+              data-testid={`herdr-session-${session.name}`}
+              title={title}
+              className={cn(
+                "h-auto flex-none rounded-full border border-(--line-2) px-[10px] py-[4px] text-[11px] font-medium text-(--ink-3) hover:bg-(--yz-hover) hover:text-(--ink-3) dark:text-(--ink-3) dark:hover:text-(--ink-3)",
+                "data-[state=active]:border-(--yz-accent)/50 data-[state=active]:bg-(--yz-active) data-[state=active]:text-(--ink-0) data-[state=active]:shadow-none data-[state=active]:hover:bg-(--yz-active) data-[state=active]:hover:text-(--ink-0)",
+                "dark:data-[state=active]:border-(--yz-accent)/50 dark:data-[state=active]:bg-(--yz-active) dark:data-[state=active]:text-(--ink-0) dark:data-[state=active]:hover:text-(--ink-0)",
+                !session.running && "opacity-70"
+              )}
+            >
+              <span>{displayName}</span>
+              {!session.running && (
+                <span className="ml-[4px] text-[10px] text-(--ink-4)">
+                  {t("herdrNav.stoppedBadge")}
+                </span>
+              )}
+            </TabsTrigger>
+          )
+        })}
       </TabsList>
     </Tabs>
   )
