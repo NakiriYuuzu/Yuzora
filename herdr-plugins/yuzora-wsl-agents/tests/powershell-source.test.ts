@@ -16,6 +16,7 @@ const windowsBundleVerifier = readFileSync(
   join(root, "..", "..", "scripts/verify-windows-bundled-wsl-plugin.ps1"),
   "utf8"
 )
+const gitAttributes = readFileSync(join(root, "..", "..", ".gitattributes"), "utf8")
 
 describe("PowerShell orchestration source", () => {
   it("fail-closed strips every HERDR_SOCKET_PATH WSLENV entry", () => {
@@ -242,6 +243,16 @@ Write-Output 'PASS'
     expect(windowsBundleVerifier).toContain("Stop-IsolatedHerdrServer")
     expect(windowsBundleVerifier).toContain("$ExpectedHerdrVersion = '0.8.2'")
     expect(windowsBundleVerifier).toContain("$ExpectedHerdrProtocol = 20")
+    expect(windowsBundleVerifier).toContain("function Assert-LfOnlyPosixFiles")
+    expect(windowsBundleVerifier).toContain("POSIX file contains a CR byte")
+    expect(windowsBundleVerifier).toContain("'adapters\\install.sh'")
+    expect(windowsBundleVerifier).toContain("'adapters\\common\\herdr-wsl-report'")
+    expect(gitAttributes).toContain(
+      "herdr-plugins/yuzora-wsl-agents/adapters/install.sh text eol=lf"
+    )
+    expect(gitAttributes).toContain(
+      "herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report text eol=lf"
+    )
     expect(windowsBundleVerifier).toContain("'status', 'client', '--json'")
     expect(windowsBundleVerifier).toContain("packaged Herdr version is not $ExpectedHerdrVersion")
     expect(windowsBundleVerifier).toContain("packaged Herdr protocol is not $ExpectedHerdrProtocol")

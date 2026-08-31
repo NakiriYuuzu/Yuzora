@@ -745,8 +745,9 @@ P8 由**使用者**在 Windows 11／WSL2 執行；repo-local authority path 為 
 Exact Windows candidate 另需驗證：
 
 1. MSI 與 NSIS 安裝後都存在上述 manifest／README／adapters／scripts；不得包含 `tests/` 或開發期 `lib/`。
-2. 從**安裝後 resource path**執行 helper `status → link → status`，結果顯示 `ownsRegistration=true`；不得以 source checkout 的 link 代替。
-3. 已由不同 root 註冊同 id 時，candidate helper 的 link／unlink 都 fail closed。
-4. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。
+2. `adapters/install.sh` 與 `adapters/common/herdr-wsl-report` 必須為 LF-only；installer verifier 需直接拒絕任何 CR byte，不能只以 Windows checkout source hash 相等作為通過依據。
+3. 從**安裝後 resource path**執行 helper `status → link → status`，結果顯示 `ownsRegistration=true`；不得以 source checkout 的 link 代替。
+4. 已由不同 root 註冊同 id 時，candidate helper 的 link／unlink 都 fail closed。
+5. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。
 
 若驗收需從 current source 建立 Windows Yuzora UI，除 Rust MSVC 與 Visual Studio 2022 Build Tools／Windows SDK 外，還必須讓 NASM 位於非互動 build process 的 `PATH`（目前 `aws-lc-sys` Windows build 會在缺少 NASM 時 fail closed）。透過 WebView2 CDP 收集可存檔的 AX tree／截圖時，只能使用 evidence-only Tauri config 的 `additionalBrowserArgs`；不得把 remote-debugging port 寫入正式產品 config 或 release build。
