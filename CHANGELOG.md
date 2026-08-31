@@ -14,7 +14,7 @@
 
 ### 修正
 
-- 修正 Windows 安裝檔內的 WSL Pi adapter／reporter 腳本可能使用 CRLF，導致 Linux `sh` 在安裝 adapter 時立即失敗、Plugin pane 已開啟但 Agents 無法投影的問題。
+- 修正 Windows 安裝檔內的 WSL Pi adapter extension、installer 與 reporter 可能使用 CRLF，導致 adapter 安裝失敗或被誤判為 drifted、Plugin pane 已開啟但 Agents 無法可靠投影與回滾的問題。
 - 修正啟動 Yuzora 時不會同步啟動 HERDR 的問題；若所選 global 或內附 managed HERDR server 尚未運行，Yuzora 會啟動 headless server 並等待就緒，既有 server 則直接沿用。封裝版本在 Tauri 無法回報資源目錄時，也會從 app 執行檔安全還原內附 HERDR 的位置。
 
 ### 已知限制

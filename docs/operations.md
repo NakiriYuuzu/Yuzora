@@ -745,7 +745,7 @@ P8 由**使用者**在 Windows 11／WSL2 執行；repo-local authority path 為 
 Exact Windows candidate 另需驗證：
 
 1. MSI 與 NSIS 安裝後都存在上述 manifest／README／adapters／scripts；不得包含 `tests/` 或開發期 `lib/`。
-2. `adapters/install.sh` 與 `adapters/common/herdr-wsl-report` 必須為 LF-only；installer verifier 需直接拒絕任何 CR byte，不能只以 Windows checkout source hash 相等作為通過依據。
+2. 所有由 WSL 執行或安裝的 adapter files（`adapters/install.sh`、`adapters/common/herdr-wsl-report`、`adapters/pi/yuzora-herdr-wsl.ts`）必須為 LF-only；installer verifier 需直接拒絕任何 CR byte，不能只以 Windows checkout source hash 相等作為通過依據。TypeScript extension 同樣受此約束，因 ownership sentinel 使用 exact line matching；CRLF 會使 install／status／uninstall 誤判為 drifted。
 3. 從**安裝後 resource path**執行 helper `status → link → status`，結果顯示 `ownsRegistration=true`；不得以 source checkout 的 link 代替。
 4. 已由不同 root 註冊同 id 時，candidate helper 的 link／unlink 都 fail closed。
 5. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。

@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest"
 const pluginRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const installer = join(pluginRoot, "adapters/install.sh")
 const reporter = join(pluginRoot, "adapters/common/herdr-wsl-report")
+const adapter = join(pluginRoot, "adapters/pi/yuzora-herdr-wsl.ts")
 const LOCK_BACKENDS = new Set(["python3", "python", "flock", "node", "nodejs"])
 
 function resolveCommand(name: string): string | null {
@@ -71,12 +72,14 @@ function runInstall(
 }
 
 describe("in-distro POSIX installer", () => {
-  it("ships WSL-executed POSIX entrypoints with LF-only newlines", () => {
-    for (const path of [installer, reporter]) {
+  it("ships WSL-consumed adapter files with LF-only newlines", () => {
+    for (const path of [installer, reporter, adapter]) {
       const bytes = readFileSync(path)
       expect(bytes.includes(13), `${path} contains a CR byte`).toBe(false)
       expect(bytes.includes(10), `${path} contains no LF newline`).toBe(true)
-      expect(bytes.subarray(0, 10).toString("ascii")).toBe("#!/bin/sh\n")
+    }
+    for (const path of [installer, reporter]) {
+      expect(readFileSync(path).subarray(0, 10).toString("ascii")).toBe("#!/bin/sh\n")
     }
   })
 

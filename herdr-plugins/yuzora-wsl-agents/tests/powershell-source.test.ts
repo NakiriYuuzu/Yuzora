@@ -243,15 +243,19 @@ Write-Output 'PASS'
     expect(windowsBundleVerifier).toContain("Stop-IsolatedHerdrServer")
     expect(windowsBundleVerifier).toContain("$ExpectedHerdrVersion = '0.8.2'")
     expect(windowsBundleVerifier).toContain("$ExpectedHerdrProtocol = 20")
-    expect(windowsBundleVerifier).toContain("function Assert-LfOnlyPosixFiles")
-    expect(windowsBundleVerifier).toContain("POSIX file contains a CR byte")
+    expect(windowsBundleVerifier).toContain("function Assert-LfOnlyWslFiles")
+    expect(windowsBundleVerifier).toContain("WSL-consumed file contains a CR byte")
     expect(windowsBundleVerifier).toContain("'adapters\\install.sh'")
     expect(windowsBundleVerifier).toContain("'adapters\\common\\herdr-wsl-report'")
+    expect(windowsBundleVerifier).toContain("'adapters\\pi\\yuzora-herdr-wsl.ts'")
     expect(gitAttributes).toContain(
       "herdr-plugins/yuzora-wsl-agents/adapters/install.sh text eol=lf"
     )
     expect(gitAttributes).toContain(
       "herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report text eol=lf"
+    )
+    expect(gitAttributes).toContain(
+      "herdr-plugins/yuzora-wsl-agents/adapters/pi/yuzora-herdr-wsl.ts text eol=lf"
     )
     expect(windowsBundleVerifier).toContain("'status', 'client', '--json'")
     expect(windowsBundleVerifier).toContain("packaged Herdr version is not $ExpectedHerdrVersion")

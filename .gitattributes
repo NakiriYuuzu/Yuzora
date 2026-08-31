@@ -1,3 +1,4 @@
 src-tauri/resources/herdr/LICENSE-HERDR.txt text eol=lf
 herdr-plugins/yuzora-wsl-agents/adapters/install.sh text eol=lf
 herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report text eol=lf
+herdr-plugins/yuzora-wsl-agents/adapters/pi/yuzora-herdr-wsl.ts text eol=lf

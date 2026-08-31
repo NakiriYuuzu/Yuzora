@@ -11,9 +11,10 @@ $ErrorActionPreference = 'Stop'
 $PluginId = 'yuzora-wsl-agents'
 $ExpectedHerdrVersion = '0.8.2'
 $ExpectedHerdrProtocol = 20
-$ExpectedPosixFiles = @(
+$ExpectedWslLfFiles = @(
     'adapters\common\herdr-wsl-report',
-    'adapters\install.sh'
+    'adapters\install.sh',
+    'adapters\pi\yuzora-herdr-wsl.ts'
 )
 $ExpectedFiles = @(
     'README.md',
@@ -89,19 +90,19 @@ function Assert-PowerShellSyntax {
     }
 }
 
-function Assert-LfOnlyPosixFiles {
+function Assert-LfOnlyWslFiles {
     param(
         [string]$Label,
         [string]$PluginRoot
     )
-    foreach ($relativePath in $ExpectedPosixFiles) {
+    foreach ($relativePath in $ExpectedWslLfFiles) {
         $path = Join-Path $PluginRoot $relativePath
         $bytes = [System.IO.File]::ReadAllBytes($path)
         if ([Array]::IndexOf($bytes, [byte]13) -ge 0) {
-            Fail-Verification "$Label POSIX file contains a CR byte: $relativePath"
+            Fail-Verification "$Label WSL-consumed file contains a CR byte: $relativePath"
         }
         if ([Array]::IndexOf($bytes, [byte]10) -lt 0) {
-            Fail-Verification "$Label POSIX file contains no LF newline: $relativePath"
+            Fail-Verification "$Label WSL-consumed file contains no LF newline: $relativePath"
         }
     }
 }
@@ -124,7 +125,7 @@ function Assert-PluginPayload {
     $pluginRoot = Split-Path -Parent $manifests[0].FullName
     $actualFiles = @(Get-RelativeFileInventory -Root $pluginRoot)
     Assert-ExactInventory -Label $Label -Actual $actualFiles
-    Assert-LfOnlyPosixFiles -Label $Label -PluginRoot $pluginRoot
+    Assert-LfOnlyWslFiles -Label $Label -PluginRoot $pluginRoot
     Assert-PowerShellSyntax -Label $Label -PluginRoot $pluginRoot
 
     foreach ($relativePath in $ExpectedFiles) {
