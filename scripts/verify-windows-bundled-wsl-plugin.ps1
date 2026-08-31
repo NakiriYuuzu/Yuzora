@@ -9,6 +9,8 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $PluginId = 'yuzora-wsl-agents'
+$ExpectedHerdrVersion = '0.8.2'
+$ExpectedHerdrProtocol = 20
 $ExpectedFiles = @(
     'README.md',
     'adapters\common\herdr-wsl-report',
@@ -118,11 +120,32 @@ function Assert-PluginPayload {
     if (-not (Test-Path -LiteralPath $herdrPath -PathType Leaf)) {
         Fail-Verification "$Label is missing adjacent Yuzora-managed herdr.exe"
     }
+    $identityResult = Invoke-NativeCommand -Executable $herdrPath -Arguments @(
+        'status', 'client', '--json'
+    )
+    if ($identityResult.exitCode -ne 0) {
+        Fail-Verification "$Label packaged Herdr identity failed (exit $($identityResult.exitCode)): $($identityResult.text)"
+    }
+    try {
+        $identity = $identityResult.text | ConvertFrom-Json
+    } catch {
+        Fail-Verification "$Label packaged Herdr identity returned invalid JSON: $($identityResult.text)"
+    }
+    $versionProperty = $identity.PSObject.Properties['version']
+    $protocolProperty = $identity.PSObject.Properties['protocol']
+    if ($null -eq $versionProperty -or [string]$versionProperty.Value -ne $ExpectedHerdrVersion) {
+        Fail-Verification "$Label packaged Herdr version is not $ExpectedHerdrVersion"
+    }
+    if ($null -eq $protocolProperty -or [int]$protocolProperty.Value -ne $ExpectedHerdrProtocol) {
+        Fail-Verification "$Label packaged Herdr protocol is not $ExpectedHerdrProtocol"
+    }
     return [pscustomobject]@{
         label = $Label
         pluginRoot = $pluginRoot
         helperPath = (Join-Path $pluginRoot 'scripts\manage-bundled-plugin.ps1')
         herdrPath = $herdrPath
+        herdrVersion = [string]$versionProperty.Value
+        herdrProtocol = [int]$protocolProperty.Value
         requiredFiles = $ExpectedFiles.Count
     }
 }
