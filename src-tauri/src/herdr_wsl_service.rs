@@ -896,7 +896,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_powershell_51_emits_non_ascii_output_as_utf8() {
-        let output = run_powershell("Write-Output 'C:\\\\使用者\\\\Yuzora'", &[]).unwrap();
+        let output = run_powershell(r"Write-Output 'C:\使用者\Yuzora'", &[]).unwrap();
         assert_eq!(output.stdout.trim(), r"C:\使用者\Yuzora");
     }
 
