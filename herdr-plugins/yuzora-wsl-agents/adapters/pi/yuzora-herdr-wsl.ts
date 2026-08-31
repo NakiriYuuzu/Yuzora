@@ -8,12 +8,13 @@
 // ui_prompt_start/ui_prompt_end events added for blocking user prompts. Transport is
 // the POSIX CLI reporter. Native Pi session ids are log-only diagnostics and are never sent to Herdr.
 
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
 const SOURCE = "yuzora:wsl:pi"
 const AGENT = "pi"
+const REPORTER_REAP_TIMEOUT_MS = 1000
 const HERDR_ENV = process.env.HERDR_ENV
 const paneId = process.env.HERDR_PANE_ID
 
@@ -42,7 +43,10 @@ type PiHost = {
   events?: {
     on?: (event: string, handler: (data?: BlockedPayload) => void) => void
   }
-  on: (event: string, handler: (event: unknown, ctx?: SessionContext) => void) => void
+  on: (
+    event: string,
+    handler: (event: unknown, ctx?: SessionContext) => void | Promise<void>
+  ) => void
 }
 
 function enabled() {
@@ -70,43 +74,123 @@ function logSessionDiagnostic(id: unknown, path: unknown) {
   )
 }
 
-function runReporter(args: string[], timeoutMs: number): Promise<boolean> {
+type ReporterAttempt = {
+  delivered: boolean
+  reaped: boolean
+}
+
+function killReporterProcessTree(child: ChildProcess) {
+  const pid = child.pid
+  if (pid && process.platform !== "win32") {
+    try {
+      process.kill(-pid, "SIGKILL")
+      return
+    } catch {
+      // Fall back to the direct child below. A detached POSIX reporter normally
+      // owns the process group, including its WSLInterop herdr.exe proxy.
+    }
+  }
+  try {
+    child.kill("SIGKILL")
+  } catch {
+    // The bounded reap timer below activates the circuit breaker if close never arrives.
+  }
+}
+
+function runReporter(args: string[], timeoutMs: number): Promise<ReporterAttempt> {
   return new Promise((resolve) => {
     let done = false
-    const finish = (ok: boolean) => {
+    let spawned = false
+    let cleanupStarted = false
+    let timedOut = false
+    const timers: {
+      timeout?: ReturnType<typeof setTimeout>
+      reap?: ReturnType<typeof setTimeout>
+    } = {}
+    const finish = (result: ReporterAttempt) => {
       if (done) return
       done = true
-      resolve(ok)
+      if (timers.timeout) clearTimeout(timers.timeout)
+      if (timers.reap) clearTimeout(timers.reap)
+      resolve(result)
     }
-    const child = spawn(reporterPath(), args, {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: process.env
+
+    let child: ChildProcess
+    try {
+      child = spawn(reporterPath(), args, {
+        // Reporter diagnostics were never consumed; an unread pipe can block
+        // the shell before it reaches its own bounded failure path.
+        stdio: ["ignore", "ignore", "ignore"],
+        env: process.env,
+        // The adapter runs inside WSL. A dedicated process group lets timeout
+        // cleanup include the reporter shell and its Windows herdr.exe proxy.
+        detached: process.platform !== "win32"
+      })
+    } catch {
+      finish({ delivered: false, reaped: true })
+      return
+    }
+
+    const beginCleanup = () => {
+      if (cleanupStarted || done) return
+      cleanupStarted = true
+      timedOut = true
+      killReporterProcessTree(child)
+      // Never resolve a timeout as retryable until the owned child has closed.
+      // If SIGKILL cannot be confirmed, fail closed and disable future reports.
+      timers.reap = setTimeout(() => {
+        finish({ delivered: false, reaped: false })
+      }, REPORTER_REAP_TIMEOUT_MS)
+      timers.reap.unref()
+    }
+
+    child.once("spawn", () => {
+      spawned = true
     })
-    const timer = setTimeout(() => {
-      child.kill()
-      finish(false)
-    }, timeoutMs)
-    timer.unref()
-    child.on("error", () => {
-      clearTimeout(timer)
-      finish(false)
+    child.once("error", () => {
+      if (!spawned) {
+        finish({ delivered: false, reaped: true })
+        return
+      }
+      beginCleanup()
     })
-    child.on("exit", (code) => {
-      clearTimeout(timer)
-      finish(code === 0)
+    child.once("close", (code) => {
+      finish({ delivered: !timedOut && code === 0, reaped: true })
     })
+
+    timers.timeout = setTimeout(beginCleanup, timeoutMs)
+    timers.timeout.unref()
   })
 }
 
+let reporterDisabled = false
+let reporterDisableLogged = false
+
+function disableReporterAfterCleanupFailure() {
+  reporterDisabled = true
+  if (reporterDisableLogged) return
+  reporterDisableLogged = true
+  process.stderr.write(
+    "[yuzora-herdr-wsl] reporter cleanup could not be confirmed; lifecycle reporting disabled for this Pi process\n"
+  )
+}
+
 async function invokeReporter(args: string[]) {
+  if (reporterDisabled) return
   const joined = args.join(" ")
   const sessionCmd = ["report-agent", "session"].join("-")
   if (joined.includes(sessionCmd) || /--agent-session(?:-id|-path)/.test(joined)) {
     process.stderr.write("[yuzora-herdr-wsl] refused session identity report\n")
     return
   }
-  if (await runReporter(args, 500)) return
-  await runReporter(args, 1500)
+  const first = await runReporter(args, 500)
+  if (!first.reaped) {
+    disableReporterAfterCleanupFailure()
+    return
+  }
+  if (first.delivered) return
+  const second = await runReporter(args, 1500)
+  if (!second.reaped) disableReporterAfterCleanupFailure()
 }
 
 type QueuedState = {
@@ -117,10 +201,24 @@ type QueuedState = {
 
 let sendInFlight = false
 let queued: QueuedState | undefined
+let drainWaiters: Array<() => void> = []
 
 function queue(next: QueuedState) {
   queued = next
   if (!sendInFlight) void drain()
+}
+
+function waitForDrain(): Promise<void> {
+  if (!sendInFlight && !queued) return Promise.resolve()
+  return new Promise((resolve) => {
+    drainWaiters.push(resolve)
+  })
+}
+
+function resolveDrainWaiters() {
+  const waiters = drainWaiters
+  drainWaiters = []
+  for (const resolve of waiters) resolve()
 }
 
 async function drain() {
@@ -140,7 +238,11 @@ async function drain() {
     }
   } finally {
     sendInFlight = false
-    if (queued) void drain()
+    if (queued) {
+      void drain()
+    } else {
+      resolveDrainWaiters()
+    }
   }
 }
 
@@ -166,6 +268,7 @@ export default function (pi: PiHost) {
   }
 
   function publishState(force = false) {
+    if (released) return
     const next = desiredState()
     if (!force && next.state === lastState && next.message === lastMessage) return
     lastState = next.state
@@ -238,13 +341,13 @@ export default function (pi: PiHost) {
     publishState()
   })
 
-  const release = () => {
+  pi.on("session_shutdown", async () => {
     if (released || !rootSession) return
     released = true
+    rootSession = false
     queue({ kind: "release" })
-  }
-  process.on("beforeExit", release)
-  process.on("exit", release)
+    await waitForDrain()
+  })
 }
 
 export const __test__ = {

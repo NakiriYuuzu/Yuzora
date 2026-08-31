@@ -737,6 +737,7 @@ herdr plugin config-dir yuzora-wsl-agents
 - `HERDR_SOCKET_PATH` 是 Windows named-pipe marker。Launcher 必須 case-insensitive 刪除既有 `WSLENV` 中該名（含任何 flags）。Win32→WSL 只傳 `YUZORA_HERDR_SOCKET_PATH/u`。僅啟動 Windows `herdr.exe` 的 child env 可設 `HERDR_SOCKET_PATH/w`。
 - PowerShell 以 `-NoProfile -ExecutionPolicy Bypass` 啟動；GPO 禁止 Bypass 時 plugin 無法執行。
 - **Open WSL Pi** 以固定的 `bash -lic 'exec pi'` 載入 distro 使用者的 login／interactive PATH（Linuxbrew 等 profile-managed 安裝需要）；target distro 必須有 Bash。命令不含 workspace／使用者輸入。
+- Pi extension 的 reporter child 必須使用獨立 POSIX process group，且不得留下未讀取的 stderr pipe。Timeout 只有在 reporter group 已確認退出後才能重試；若 bounded reap 無法確認，該 Pi process 必須停用後續 lifecycle report。正常退出／reload／session replacement 一律使用 Pi `session_shutdown` await release，不得從 `process.exit` handler 啟動非同步 child。
 
 ### Windows 驗收
 
@@ -748,6 +749,7 @@ Exact Windows candidate 另需驗證：
 2. 所有由 WSL 執行或安裝的 adapter files（`adapters/install.sh`、`adapters/common/herdr-wsl-report`、`adapters/pi/yuzora-herdr-wsl.ts`）必須為 LF-only；installer verifier 需直接拒絕任何 CR byte，不能只以 Windows checkout source hash 相等作為通過依據。TypeScript extension 同樣受此約束，因 ownership sentinel 使用 exact line matching；CRLF 會使 install／status／uninstall 誤判為 drifted。
 3. 從**安裝後 resource path**執行 helper `status → link → status`，結果顯示 `ownsRegistration=true`；不得以 source checkout 的 link 代替。
 4. 已由不同 root 註冊同 id 時，candidate helper 的 link／unlink 都 fail closed。
-5. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。
+5. Reporter timeout regression 必須連續觸發 idle → working → idle → shutdown，證明每次 retry 前 reporter process group 已完整回收；Windows exact candidate 另需在 WSLInterop 下確認沒有殘留 reporter、`herdr.exe` client 或相應 child process。僅檢查 Pi 最終退出不足以通過。
+6. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。
 
 若驗收需從 current source 建立 Windows Yuzora UI，除 Rust MSVC 與 Visual Studio 2022 Build Tools／Windows SDK 外，還必須讓 NASM 位於非互動 build process 的 `PATH`（目前 `aws-lc-sys` Windows build 會在缺少 NASM 時 fail closed）。透過 WebView2 CDP 收集可存檔的 AX tree／截圖時，只能使用 evidence-only Tauri config 的 `additionalBrowserArgs`；不得把 remote-debugging port 寫入正式產品 config 或 release build。
