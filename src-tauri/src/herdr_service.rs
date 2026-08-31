@@ -218,8 +218,6 @@ pub enum HerdrSubscriptionEvent {
         agent: Option<String>,
         display_agent: Option<String>,
         title: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        execution_origin: Option<serde_json::Value>,
         state_labels: HashMap<String, String>,
     },
     #[serde(rename = "pane_exited")]
@@ -840,7 +838,14 @@ impl HerdrManager {
             let binary = self
                 .resolve_binary()
                 .ok_or_else(|| "herdr binary is unavailable for startup".to_string())?;
-            if query_herdr_server_running(&binary, status_timeout)? {
+            let existing = query_herdr_server_startup_status(&binary, status_timeout)?;
+            if existing.running {
+                if existing.compatible == Some(false) {
+                    return Err(
+                        "running Herdr server is protocol incompatible; stop and restart every affected Herdr session with the selected binary"
+                            .to_string(),
+                    );
+                }
                 return Ok(false);
             }
 
@@ -3267,7 +3272,6 @@ fn parse_subscription_event_line(
             .get("title")
             .and_then(|v| v.as_str())
             .map(str::to_string),
-        execution_origin: data.get("execution_origin").cloned(),
         state_labels,
     }))
 }
@@ -4262,9 +4266,26 @@ fn collect_method_consts(value: &serde_json::Value, out: &mut HashSet<String>) {
     }
 }
 
-fn query_herdr_server_running(binary: &Path, timeout: Duration) -> Result<bool, String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HerdrServerStartupStatus {
+    running: bool,
+    compatible: Option<bool>,
+}
+
+fn query_herdr_server_startup_status(
+    binary: &Path,
+    timeout: Duration,
+) -> Result<HerdrServerStartupStatus, String> {
     let status = run_herdr_json_with_session_timeout(binary, &["status", "--json"], None, timeout)?;
-    Ok(status_reports_server_running(&status))
+    let server = status.get("server").unwrap_or(&status);
+    Ok(HerdrServerStartupStatus {
+        running: status_reports_server_running(&status),
+        compatible: server.get("compatible").and_then(|value| value.as_bool()),
+    })
+}
+
+fn query_herdr_server_running(binary: &Path, timeout: Duration) -> Result<bool, String> {
+    Ok(query_herdr_server_startup_status(binary, timeout)?.running)
 }
 
 fn status_reports_server_running(status: &serde_json::Value) -> bool {
@@ -6691,7 +6712,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
     fn parse_subscription_event_line_reads_agent_status_changed() {
         let event = parse_subscription_event_line(
             "sub-1",
-            r#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"done","title":"Review","execution_origin":{"kind":"wsl","distribution":"Ubuntu"}}}"#,
+            r#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"done","title":"Review"}}"#,
         )
         .unwrap()
         .unwrap();
@@ -6700,16 +6721,11 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
                 pane_id,
                 agent_status,
                 title,
-                execution_origin,
                 ..
             } => {
                 assert_eq!(pane_id, "w1:p1");
                 assert_eq!(agent_status, "done");
                 assert_eq!(title.as_deref(), Some("Review"));
-                assert_eq!(
-                    execution_origin,
-                    Some(serde_json::json!({"kind": "wsl", "distribution": "Ubuntu"}))
-                );
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -6725,10 +6741,6 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             agent: Some("pi".to_owned()),
             display_agent: Some("Pi".to_owned()),
             title: Some("Review".to_owned()),
-            execution_origin: Some(serde_json::json!({
-                "kind": "wsl",
-                "distribution": "Ubuntu"
-            })),
             state_labels: HashMap::from([("working".to_owned(), "Working".to_owned())]),
         };
 
@@ -6743,7 +6755,6 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
                 "agent": "pi",
                 "displayAgent": "Pi",
                 "title": "Review",
-                "executionOrigin": { "kind": "wsl", "distribution": "Ubuntu" },
                 "stateLabels": { "working": "Working" }
             })
         );
@@ -6868,8 +6879,10 @@ base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ready="$base/server.ready"
 invoked="$base/server.invoked"
 if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
-  if [ -f "$ready" ]; then
-    printf '%s\n' '{"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":19,"compatible":true,"socket":"/tmp/herdr-fake.sock"}}'
+  if [ -f "$ready" ] && [ -f "$base/server.incompatible" ]; then
+    printf '%s\n' '{"server":{"status":"running","running":true,"version":"0.8.0","protocol":19,"compatible":false,"socket":"/tmp/herdr-fake.sock"}}'
+  elif [ -f "$ready" ]; then
+    printf '%s\n' '{"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":20,"compatible":true,"socket":"/tmp/herdr-fake.sock"}}'
   else
     printf '%s\n' '{"server":{"status":"not_running","running":false,"version":null,"protocol":null,"compatible":null,"socket":null}}'
   fi
@@ -6988,6 +7001,27 @@ exit 2
 
         assert!(!started, "an already-running Herdr server must be reused");
         assert!(!dir.path().join("server.invoked").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn startup_rejects_an_existing_incompatible_server_without_stopping_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = write_fake_herdr_startup(dir.path());
+        fs::write(dir.path().join("server.ready"), "").unwrap();
+        fs::write(dir.path().join("server.incompatible"), "").unwrap();
+        let manager = HerdrManager::with_binary(binary);
+
+        let error = manager.ensure_server_running_on_startup().unwrap_err();
+
+        assert!(error.contains("protocol incompatible"));
+        assert!(error.contains("stop and restart every affected Herdr session"));
+        assert!(dir.path().join("server.ready").exists());
+        assert!(!dir.path().join("server.invoked").exists());
+        assert_eq!(
+            manager.startup_error.lock().unwrap().as_deref(),
+            Some(error.as_str())
+        );
     }
 
     #[test]

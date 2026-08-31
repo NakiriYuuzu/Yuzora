@@ -300,6 +300,30 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(collect.run, 'copy_exactly_one "Windows NSIS updater signature"'),
     "build must validate Tauri CLI macOS universal and Windows NSIS/MSI/updater output paths"
   )
+  const verifyWindowsPowerShell = stepByName(
+    buildSteps,
+    "Verify Windows PowerShell 5.1 plugin runtime"
+  )
+  assert(
+    verifyWindowsPowerShell.if === "matrix.artifact_name == 'windows'" &&
+      verifyWindowsPowerShell.shell === "powershell" &&
+      includes(
+        verifyWindowsPowerShell.run,
+        "herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1"
+      ),
+    "release builds must exercise plugin byte-decoding fixtures in Windows PowerShell 5.1"
+  )
+  const verifyWindowsPlugin = stepByName(
+    buildSteps,
+    "Verify Windows bundled WSL plugin payload"
+  )
+  assert(
+    verifyWindowsPlugin.if === "matrix.artifact_name == 'windows'" &&
+      verifyWindowsPlugin.shell === "powershell" &&
+      includes(verifyWindowsPlugin.run, "scripts/verify-windows-bundled-wsl-plugin.ps1") &&
+      includes(verifyWindowsPlugin.run, "src-tauri/target/release/bundle"),
+    "release builds must use Windows PowerShell 5.1 to extract both installers and verify the bundled WSL plugin allowlist"
+  )
 
   const assemble = jobFor(workflow, "assemble-draft")
   const assembleUpload = stepByName(
@@ -564,6 +588,18 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
       includes(resolve.run, "bun scripts/release-state.ts"),
     "guard must classify releases through the tested release state machine"
   )
+  const resolveEnv = record(resolve.env, "beta release target env")
+  assert(
+    resolveEnv.BETA_ACCEPTED_TREE_SHA ===
+      "${{ vars.YUZORA_BETA_ACCEPTED_TREE_SHA }}" &&
+      resolveEnv.BETA_ACCEPTANCE_URL === "${{ vars.YUZORA_BETA_ACCEPTANCE_URL }}" &&
+      includes(resolve.run, '[ "$IS_BETA" = "true" ] && [ "$SHOULD_BUILD" = "true" ]') &&
+      includes(resolve.run, 'git rev-parse "${SOURCE_SHA}^{tree}"') &&
+      includes(resolve.run, "YUZORA_BETA_ACCEPTED_TREE_SHA must be the accepted PR candidate tree SHA") &&
+      includes(resolve.run, '[ "$BETA_ACCEPTED_TREE_SHA" != "$SOURCE_TREE_SHA" ]') &&
+      includes(resolve.run, "YUZORA_BETA_ACCEPTANCE_URL must reference the recorded Yuzora candidate acceptance evidence"),
+    "new beta builds must require a human acceptance attestation tied to the exact candidate tree"
+  )
   const betaContract = stepByName(guardSteps, "Verify beta prerelease contract")
   assert(betaContract.if === "steps.release.outputs.is_beta == 'true'", "beta contract must only run for beta")
   assert(betaContract.run === "bun run check:beta-release", "beta contract command changed")
@@ -629,17 +665,48 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
       includes(candidate.if, "github.event_name == 'pull_request'"),
     "release candidates must run only for release pull requests"
   )
-  const branchCheck = stepByName(steps(candidate, "release candidate"), "Verify release candidate branch matches product version")
+  const candidateSteps = steps(candidate, "release candidate")
+  const branchCheck = stepByName(
+    candidateSteps,
+    "Verify release candidate branch matches product version"
+  )
   assert(
     includes(branchCheck.run, '"$HEAD_REF" != "release/v${VERSION}"'),
     "candidate installers must require the exact release/v<product-version> branch"
   )
-  const candidateBuild = stepByName(steps(candidate, "release candidate"), "Build unsigned release candidate")
+  const candidateBuild = stepByName(candidateSteps, "Build unsigned release candidate")
   assert(
     includes(candidateBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
       includes(candidateBuild.run, '--config "$RELEASE_BUILD_CONFIG"') &&
       includes(candidateBuild.run, "--no-sign"),
     "release candidates must use the generated no-updater numeric WiX version override for every channel"
+  )
+  const verifyCandidatePowerShell = stepByName(
+    candidateSteps,
+    "Verify Windows PowerShell 5.1 plugin runtime"
+  )
+  assert(
+    verifyCandidatePowerShell.if === "runner.os == 'Windows'" &&
+      verifyCandidatePowerShell.shell === "powershell" &&
+      includes(
+        verifyCandidatePowerShell.run,
+        "herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1"
+      ),
+    "Windows release candidates must exercise plugin byte-decoding fixtures in Windows PowerShell 5.1"
+  )
+  const verifyCandidateWindowsPlugin = stepByName(
+    candidateSteps,
+    "Verify Windows bundled WSL plugin payload"
+  )
+  assert(
+    verifyCandidateWindowsPlugin.if === "runner.os == 'Windows'" &&
+      verifyCandidateWindowsPlugin.shell === "powershell" &&
+      includes(
+        verifyCandidateWindowsPlugin.run,
+        "scripts/verify-windows-bundled-wsl-plugin.ps1"
+      ) &&
+      includes(verifyCandidateWindowsPlugin.run, "src-tauri/target/release/bundle"),
+    "Windows release candidates must use Windows PowerShell 5.1 to extract MSI and NSIS and verify the bundled WSL plugin allowlist"
   )
 
   verifyCiLinuxDependencySetup(ci)

@@ -121,7 +121,11 @@ Windows `.msi` 安裝檔與歷史版本見 [GitHub Releases](https://github.com/
 | Terminal | xterm.js ＋本機 pty ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
-Yuzora 會優先使用 PATH 安裝的 HERDR binary；偵測不到時，會自動改用 macOS／Windows 安裝檔內附且固定版本的 Yuzora-managed binary。關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會隱式啟動或終止 HERDR server、panes 或 agents。
+Yuzora 會優先使用 PATH 安裝的 HERDR binary；偵測不到時，會自動改用 macOS／Windows 安裝檔內附且固定版本的 Yuzora-managed binary。關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會終止 HERDR server、panes 或 agents。
+
+### Experimental Windows WSL Pi Plugin
+
+Windows `0.0.9-beta.3` 安裝檔會在 App resource 內附 Pi-only 的 `Yuzora WSL Agents` Plugin，但**不會自動啟用**。使用者必須明確 link 封裝路徑、設定目標 WSL distro，並透過 HERDR Plugin actions 安裝 adapter。只支援 Plugin-managed panes。Yuzora 只消費 HERDR snapshot／events 的 live identity 與 state；不解析 terminal、不推斷 Linux process、不投影 Pi native session id，也不保證 resume／control。HERDR `v0.8.2` Runtime 為 Stable，但 Windows Plugin surface 與本整合仍為 Experimental。既有 running protocol-19 server 必須由使用者明確停止並重啟；Yuzora 升級時不會 kill。詳見 [`herdr-plugins/yuzora-wsl-agents/README.md`](herdr-plugins/yuzora-wsl-agents/README.md)。
 
 ## 開發
 

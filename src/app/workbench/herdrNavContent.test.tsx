@@ -227,27 +227,6 @@ describe("HerdrNavContent", () => {
     expect(selectSession).toHaveBeenCalledWith("work")
   })
 
-  it("projects Herdr-reported WSL origin as a compact Agent badge", () => {
-    const state = readyState()
-    useHerdrStore.setState(
-      readyState({
-        snapshot: {
-          ...state.snapshot,
-          agents: [
-            {
-              ...state.snapshot.agents[0],
-              executionOrigin: { kind: "wsl", distribution: "Ubuntu" }
-            }
-          ]
-        }
-      })
-    )
-
-    render(<HerdrNavContent />)
-
-    expect(screen.getByTestId("herdr-agent-origin-ag-1")).toHaveTextContent("WSL · Ubuntu")
-  })
-
   it("exposes a discoverable per-agent Inspector action without replacing row focus", async () => {
     useHerdrStore.setState(readyState())
 

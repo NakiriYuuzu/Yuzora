@@ -32,9 +32,8 @@ export interface HerdrResourceTarget {
 }
 
 export const HERDR_RESOURCE_VERSION = {
-  baseVersion: "0.8.0",
-  protocol: 19,
-  windowsBuildId: "2026-08-04-d78e3d3b5126",
+  baseVersion: "0.8.2",
+  protocol: 20,
   licenseSha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 } as const
 
@@ -42,39 +41,39 @@ export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = {
   "macos-aarch64": {
     id: "macos-aarch64",
     destination: "macos-aarch64",
-    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.0/herdr-macos-aarch64",
-    archiveSha256: "d53a9f93fccfdfcc55632927bf51002f5add0aa7990bcdf508ffbd84ac658178",
+    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-macos-aarch64",
+    archiveSha256: "a5d4f4d504d8b309c91f811050559300faba31258425f53c50852fc96f6ae574",
     format: "binary",
     files: [
       {
         path: "herdr",
-        sha256: "d53a9f93fccfdfcc55632927bf51002f5add0aa7990bcdf508ffbd84ac658178"
+        sha256: "a5d4f4d504d8b309c91f811050559300faba31258425f53c50852fc96f6ae574"
       }
     ]
   },
   "macos-x86_64": {
     id: "macos-x86_64",
     destination: "macos-x86_64",
-    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.0/herdr-macos-x86_64",
-    archiveSha256: "77cb5afd6c8fcaaaf3bc28e474ec01c209331ad08094e20d7f8aa9b0bb78d649",
+    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-macos-x86_64",
+    archiveSha256: "ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1",
     format: "binary",
     files: [
       {
         path: "herdr",
-        sha256: "77cb5afd6c8fcaaaf3bc28e474ec01c209331ad08094e20d7f8aa9b0bb78d649"
+        sha256: "ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1"
       }
     ]
   },
   "windows-x86_64": {
     id: "windows-x86_64",
     destination: "windows-x86_64",
-    url: "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-04-d78e3d3b5126/herdr-windows-x86_64.zip",
-    archiveSha256: "b1d288118848ecd3ef33532a34506edc53a38a416057aee5b7fe1de4188a16fc",
+    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-windows-x86_64.zip",
+    archiveSha256: "0ab3d0fe1434d55757997542b978c771d642987bb15a7130f4160f0db38821d5",
     format: "zip",
     files: [
       {
         path: "herdr.exe",
-        sha256: "6f470da358d6713b6bebab922ffb1f5fe1d3d288cc6f374c7dca1b4a9837a542"
+        sha256: "467682cdb5fa482c54897c6b9c96a5300a3516a72ef70ec3d009e16fadb131b3"
       },
       {
         path: "conpty/arm64/OpenConsole.exe",

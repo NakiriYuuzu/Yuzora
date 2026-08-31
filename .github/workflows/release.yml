@@ -55,6 +55,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          BETA_ACCEPTED_TREE_SHA: ${{ vars.YUZORA_BETA_ACCEPTED_TREE_SHA }}
+          BETA_ACCEPTANCE_URL: ${{ vars.YUZORA_BETA_ACCEPTANCE_URL }}
         run: |
           set -euo pipefail
 
@@ -147,6 +149,24 @@ jobs:
           RESOLUTION="$(YUZORA_RELEASE_STATE="$STATE_INPUT" bun scripts/release-state.ts)"
           SHOULD_BUILD="$(jq -r 'if (.shouldBuild | type) == "boolean" then .shouldBuild else error("shouldBuild must be boolean") end' <<<"$RESOLUTION")"
           SHOULD_PUBLISH_EXISTING="$(jq -r 'if (.shouldPublishExisting | type) == "boolean" then .shouldPublishExisting else error("shouldPublishExisting must be boolean") end' <<<"$RESOLUTION")"
+
+          if [ "$IS_BETA" = "true" ] && [ "$SHOULD_BUILD" = "true" ]; then
+            SOURCE_TREE_SHA="$(git rev-parse "${SOURCE_SHA}^{tree}")"
+            if ! [[ "${BETA_ACCEPTED_TREE_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::YUZORA_BETA_ACCEPTED_TREE_SHA must be the accepted PR candidate tree SHA"
+              exit 1
+            fi
+            if [ "$BETA_ACCEPTED_TREE_SHA" != "$SOURCE_TREE_SHA" ]; then
+              echo "::error::beta acceptance tree $BETA_ACCEPTED_TREE_SHA does not match release tree $SOURCE_TREE_SHA"
+              exit 1
+            fi
+            if ! [[ "${BETA_ACCEPTANCE_URL:-}" =~ ^https://github\.com/NakiriYuuzu/Yuzora/(pull|issues)/[0-9]+([?#].*)?$ ]]; then
+              echo "::error::YUZORA_BETA_ACCEPTANCE_URL must reference the recorded Yuzora candidate acceptance evidence"
+              exit 1
+            fi
+            echo "::notice::beta candidate acceptance attested at ${BETA_ACCEPTANCE_URL} for tree ${SOURCE_TREE_SHA}"
+          fi
+
           SHOULD_CREATE_TAG=false
           if [ "$SHOULD_BUILD" = "true" ] && [ -z "$TAG_SHA" ]; then
             SHOULD_CREATE_TAG=true
@@ -278,6 +298,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify Windows PowerShell 5.1 plugin runtime
+        if: matrix.artifact_name == 'windows'
+        shell: powershell
+        run: ./herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1
+
       - name: Import Developer ID Application certificate
         if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
         shell: bash
@@ -390,6 +415,11 @@ jobs:
           VERSION="${VERSION#v}"
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
           bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
+
+      - name: Verify Windows bundled WSL plugin payload
+        if: matrix.artifact_name == 'windows'
+        shell: powershell
+        run: ./scripts/verify-windows-bundled-wsl-plugin.ps1 -BundleDir "src-tauri/target/release/bundle"
 
       - name: Verify macOS Developer ID signature, Gatekeeper, and notarization
         if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'

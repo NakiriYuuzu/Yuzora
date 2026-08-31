@@ -49,36 +49,6 @@ function asAgentStatus(value: unknown): HerdrAgentStatus {
 }
 
 /**
- * Normalize optional presentation metadata without allowing it to affect any
- * Herdr resource identity, routing, or workspace-path decisions.
- */
-export function normalizeHerdrExecutionOrigin(value: unknown) {
-  const origin = asRecord(value)
-  if (origin?.kind !== "wsl") return undefined
-
-  const rawDistribution = origin.distribution
-  if (typeof rawDistribution !== "string") return { kind: "wsl" } as const
-  const distribution = rawDistribution.trim()
-  const characters = Array.from(distribution)
-  const hasControlCharacter = characters.some((character) => {
-    const codePoint = character.codePointAt(0) ?? 0
-    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
-  })
-  if (!distribution || characters.length > 128 || hasControlCharacter) {
-    return { kind: "wsl" } as const
-  }
-  return { kind: "wsl", distribution } as const
-}
-
-/** Format normalized presentation metadata for a compact Agent badge. */
-export function formatHerdrExecutionOrigin(
-  origin: ReturnType<typeof normalizeHerdrExecutionOrigin>
-): string | null {
-  if (!origin) return null
-  return origin.distribution ? `WSL · ${origin.distribution}` : "WSL"
-}
-
-/**
  * Normalize raw Herdr `session.snapshot` payload into ADE Spaces/Agents/Panes.
  * Unknown / extra wire fields are ignored defensively.
  */
@@ -148,14 +118,6 @@ export function normalizeHerdrSnapshot(
   }
   spaces.sort((a, b) => a.order - b.order)
 
-  const paneExecutionOrigins = new Map<string, ReturnType<typeof normalizeHerdrExecutionOrigin>>()
-  for (const paneValue of panesRaw) {
-    const pane = asRecord(paneValue)
-    const paneId = pane ? asString(pane.pane_id) : null
-    const executionOrigin = pane ? normalizeHerdrExecutionOrigin(pane.execution_origin) : undefined
-    if (paneId && executionOrigin) paneExecutionOrigins.set(paneId, executionOrigin)
-  }
-
   const agents: HerdrAgentInfo[] = []
   for (let i = 0; i < agentsRaw.length; i++) {
     const agent = asRecord(agentsRaw[i])
@@ -185,10 +147,7 @@ export function normalizeHerdrSnapshot(
         asString(agent.terminal_title) ??
         asString(agent.name),
       displayAgent: asString(agent.display_agent) ?? asString(agent.agent),
-      focused: asBool(agent.focused),
-      executionOrigin: Object.hasOwn(agent, "execution_origin")
-        ? normalizeHerdrExecutionOrigin(agent.execution_origin)
-        : paneExecutionOrigins.get(paneId)
+      focused: asBool(agent.focused)
     })
   }
 
@@ -210,8 +169,7 @@ export function normalizeHerdrSnapshot(
         asString(pane.terminal_title_stripped) ??
         asString(pane.terminal_title),
       cwd: asString(pane.cwd) ?? asString(pane.foreground_cwd),
-      status: asAgentStatus(pane.agent_status),
-      executionOrigin: normalizeHerdrExecutionOrigin(pane.execution_origin)
+      status: asAgentStatus(pane.agent_status)
     })
   }
 

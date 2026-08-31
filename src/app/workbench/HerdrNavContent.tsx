@@ -7,12 +7,10 @@ import { open } from "@tauri-apps/plugin-dialog"
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { HerdrNewAgentDialog } from "@/app/workbench/HerdrNewAgentDialog"
 import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents"
-import { formatHerdrExecutionOrigin } from "@/lib/herdrNormalize"
 import type { HerdrAgentInfo, HerdrAgentStatus } from "@/lib/herdrTypes"
 import { workspacePathBasename } from "@/lib/paths"
 import { pickWorkspace } from "@/lib/workspaceActions"
@@ -463,7 +461,6 @@ function AgentRow({
 }) {
   const { t } = useTranslation("workbench")
   const spaceLabel = agent.spaceLabel ?? agent.workspaceId
-  const originLabel = formatHerdrExecutionOrigin(agent.executionOrigin)
   const resolvedSession = agent.sessionName ?? sessionName ?? ""
   const name = agent.title ?? agent.name
   return (
@@ -501,18 +498,7 @@ function AgentRow({
           <span className="block truncate text-[12.5px] font-medium">
             {name}
           </span>
-          <span className="flex min-w-0 items-center gap-[5px] text-[10px] text-(--ink-4)">
-            <span className="truncate">{spaceLabel}</span>
-            {originLabel && (
-              <Badge
-                variant="outline"
-                data-testid={`herdr-agent-origin-${agent.id}`}
-                className="h-[18px] border-(--line-2) px-[6px] text-[9px] font-normal text-(--ink-3)"
-              >
-                {originLabel}
-              </Badge>
-            )}
-          </span>
+          <span className="block truncate text-[10px] text-(--ink-4)">{spaceLabel}</span>
         </span>
         <span className="shrink-0 font-mono text-[10px] text-(--ink-4)">{agent.status}</span>
       </button>

@@ -3,7 +3,6 @@ import type { RefObject } from "react"
 import { useTranslation } from "react-i18next"
 
 import { AnsiText } from "@/app/workbench/AnsiText"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -16,7 +15,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { herdrAgentGet, herdrAgentRead } from "@/lib/herdrIpc"
-import { formatHerdrExecutionOrigin } from "@/lib/herdrNormalize"
 import type {
   HerdrAgentDetails,
   HerdrAgentInfo,
@@ -111,7 +109,6 @@ export function HerdrAgentInspector({
     }
   }, [load])
 
-  const originLabel = formatHerdrExecutionOrigin(agent?.executionOrigin)
   const disabledReason = stopped
     ? t("herdrInspector.sessionStopped")
     : !canInspect
@@ -135,20 +132,9 @@ export function HerdrAgentInspector({
       >
         <DialogHeader className="border-b border-(--line-1) px-[20px] py-[16px]">
           <DialogTitle>{t("herdrInspector.title")}</DialogTitle>
-          <div className="flex items-center gap-[8px]">
-            <DialogDescription>
-              {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
-            </DialogDescription>
-            {originLabel && (
-              <Badge
-                variant="outline"
-                data-testid="herdr-inspector-origin"
-                className="h-[18px] border-(--line-2) px-[6px] text-[9px] font-normal text-(--ink-3)"
-              >
-                {originLabel}
-              </Badge>
-            )}
-          </div>
+          <DialogDescription>
+            {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-[12px] px-[20px] py-[16px]">

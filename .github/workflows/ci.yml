@@ -152,6 +152,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify Windows PowerShell 5.1 plugin runtime
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1
+
       - name: Verify release candidate branch matches product version
         shell: bash
         env:
@@ -170,6 +175,11 @@ jobs:
           VERSION="$(jq -er '.version' package.json)"
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
           bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build-args }}
+
+      - name: Verify Windows bundled WSL plugin payload
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/verify-windows-bundled-wsl-plugin.ps1 -BundleDir "src-tauri/target/release/bundle"
 
       - name: Upload release candidate
         uses: actions/upload-artifact@v4

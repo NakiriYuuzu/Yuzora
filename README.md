@@ -124,6 +124,10 @@ The Windows `.msi` installer and past versions live on [GitHub Releases](https:/
 
 Yuzora prefers a PATH-installed HERDR binary and automatically falls back to the pinned Yuzora-managed binary bundled with macOS and Windows builds. On startup it reuses an existing resolved HERDR server or launches a detached `herdr server` and waits for it to become ready. Closing pages or the app releases only Yuzora's connector children; it does not terminate the HERDR server, panes or agents.
 
+### Experimental Windows WSL Pi plugin
+
+Windows `0.0.9-beta.3` installers bundle the Pi-only `Yuzora WSL Agents` plugin under the app resource directory. It is **not enabled automatically**: users explicitly link the packaged path, configure target WSL distros, and install the adapter through HERDR plugin actions. Only plugin-managed panes are supported. Yuzora consumes HERDR snapshot/events for live identity and state; it does not parse terminal output, infer Linux processes, project native Pi session ids, or provide resume/control guarantees. HERDR `v0.8.2` is Stable, while its Windows plugin surface and this integration remain Experimental. Existing running protocol-19 servers must be stopped and restarted explicitly; Yuzora never kills them during upgrade. See [`herdr-plugins/yuzora-wsl-agents/README.md`](herdr-plugins/yuzora-wsl-agents/README.md).
+
 ## Development
 
 ```bash
