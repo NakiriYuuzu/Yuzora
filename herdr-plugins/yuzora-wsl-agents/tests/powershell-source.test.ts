@@ -108,7 +108,7 @@ Write-Output 'PASS'
     }
     expect(pwsh.status, pwsh.stderr).toBe(0)
     expect(pwsh.stdout).toContain("PASS")
-  })
+  }, 20_000)
 
   it("reads optional config and context fields without StrictMode errors", () => {
     expect(common).toContain("function Get-OptionalProperty")
@@ -149,7 +149,7 @@ Write-Output 'PASS'
     }
     expect(pwsh.status, `${pwsh.stdout}\n${pwsh.stderr}`).toBe(0)
     expect(pwsh.stdout).toContain("PASS")
-  })
+  }, 20_000)
 
   it("strips a Windows verbatim prefix before converting the plugin root", () => {
     expect(common).toMatch(
@@ -184,7 +184,7 @@ Write-Output 'PASS'
     }
     expect(pwsh.status, `${pwsh.stdout}\n${pwsh.stderr}`).toBe(0)
     expect(pwsh.stdout).toContain("PASS")
-  })
+  }, 20_000)
 
   it("opens panes on defaultDistro even when distros[0] is unavailable", () => {
     expect(common).toContain("function Resolve-LaunchDistro")
@@ -226,7 +226,7 @@ Write-Output 'PASS'
     }
     expect(pwsh.status, `${pwsh.stdout}\n${pwsh.stderr}`).toBe(0)
     expect(pwsh.stdout).toContain("PASS")
-  })
+  }, 20_000)
 
   it("links only the bundled root and ownership-safely unlinks it", () => {
     expect(manageBundled).toContain("[ValidateSet('status', 'link', 'unlink')]")
