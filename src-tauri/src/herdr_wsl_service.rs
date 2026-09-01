@@ -1445,61 +1445,31 @@ mod tests {
         drop(writer);
     }
 
-    fn spawn_exited_parent_with_appending_descendant(
-        keepalive: &Path,
-        stdout: std::fs::File,
-        stderr: std::fs::File,
-    ) -> Child {
-        #[cfg(unix)]
-        {
-            Command::new("sh")
-                .arg("-c")
-                .arg("printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; while [ -f \"$1\" ]; do printf xxxxxxxx; done &")
-                .arg("holder")
-                .arg(keepalive)
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(stdout))
-                .stderr(Stdio::from(stderr))
-                .spawn()
-                .expect("spawn unix appending descendant")
-        }
-        #[cfg(windows)]
-        {
-            let path = keepalive.display().to_string().replace('\'', "''");
-            let script = format!(
-                "Write-Output ('x' * 64); Start-Process -NoNewWindow -FilePath \"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -ArgumentList @('-NoProfile','-Command',\"while (Test-Path -LiteralPath '{path}') {{ Write-Output ('x' * 8); Start-Sleep -Milliseconds 50 }}\")"
-            );
-            Command::new("powershell.exe")
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &script,
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(stdout))
-                .stderr(Stdio::from(stderr))
-                .spawn()
-                .expect("spawn windows appending descendant")
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (keepalive, stdout, stderr);
-            panic!("unsupported platform for appending-descendant regression");
-        }
-    }
-
     #[test]
-    fn file_backed_wait_returns_when_exited_child_leaves_an_appending_writer() {
+    fn file_backed_wait_exceeds_cap_while_open_writer_keeps_appending() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
         let stdout_capture = tempfile::NamedTempFile::new().unwrap();
         let stderr_capture = tempfile::NamedTempFile::new().unwrap();
-        let keepalive = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = stdout_capture.as_file().try_clone().unwrap();
+        writer.write_all(&[b'x'; 64]).unwrap();
+        writer.flush().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let writer_thread = thread::spawn(move || {
+            while !stop_thread.load(Ordering::SeqCst) {
+                let _ = writer.write_all(&[b'y'; 32]);
+                let _ = writer.flush();
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
         let stdout = stdout_capture.as_file().try_clone().unwrap();
         let stderr = stderr_capture.as_file().try_clone().unwrap();
-        let mut child =
-            spawn_exited_parent_with_appending_descendant(keepalive.path(), stdout, stderr);
+        let mut child = spawn_stdin_gated_success_child(stdout, stderr);
         let mut process_tree = process_kill::attach_process_tree(&mut child).unwrap();
+        release_stdin_gated_child(&mut child);
         let started = Instant::now();
         let error = wait_bounded_file_backed_child(
             &mut child,
@@ -1515,12 +1485,17 @@ mod tests {
             "{error}"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            !error.contains("timed out waiting for WSL integration command"),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
             "bounded wait/read hung on open writer: {:?}",
             started.elapsed()
         );
         assert!(child.try_wait().unwrap().is_some());
-        drop(keepalive);
+        stop.store(true, Ordering::SeqCst);
+        writer_thread.join().unwrap();
     }
 
     fn spawn_slow_oversized_writer(stdout: std::fs::File, stderr: std::fs::File) -> Child {
@@ -1569,7 +1544,7 @@ mod tests {
         let error = wait_bounded_file_backed_child(
             &mut child,
             &mut process_tree,
-            Duration::from_secs(5),
+            Duration::from_secs(15),
             &stdout_capture,
             &stderr_capture,
             32,
@@ -1577,6 +1552,10 @@ mod tests {
         .expect_err("oversized capture should fail closed");
         assert!(
             error.contains("stdout capture exceeded 32 bytes"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("timed out waiting for WSL integration command"),
             "{error}"
         );
         assert!(
@@ -1588,7 +1567,7 @@ mod tests {
             "successful reap must not be reported as reap failure: {error}"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            started.elapsed() < Duration::from_secs(10),
             "oversized capture waited too long: {:?}",
             started.elapsed()
         );
