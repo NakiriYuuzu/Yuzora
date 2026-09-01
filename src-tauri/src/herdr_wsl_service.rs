@@ -9,19 +9,21 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 #[cfg(windows)]
 use std::ffi::OsString;
 #[cfg(any(windows, test))]
+use std::io::Read;
+#[cfg(any(windows, test))]
 use std::path::{Path, PathBuf};
+#[cfg(any(windows, test))]
+use std::process::Child;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-#[cfg(windows)]
-use std::time::Duration;
+#[cfg(any(windows, test))]
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use crate::herdr_limits::MAX_NDJSON_LINE_BYTES;
-#[cfg(windows)]
-use crate::herdr_service::wait_bounded_child;
 use crate::herdr_service::{HerdrManager, HerdrState};
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use crate::process_kill;
 
 #[cfg(any(windows, test))]
@@ -293,18 +295,189 @@ fn format_process_failure(
     }
 }
 
+/// Capture helper/adapter output through temp files instead of pipes.
+///
+/// Windows PowerShell can leave a descendant or console host holding an
+/// inherited stdout/stderr pipe after the direct child exits.
+/// `wait_bounded_child` then joins reader threads that never see EOF, so
+/// Settings `herdr_wsl_integration_get` hangs past `COMMAND_TIMEOUT`.
+/// File-backed capture remains readable while a writer handle is still open.
+#[cfg(any(windows, test))]
+fn capture_len(capture: &tempfile::NamedTempFile, label: &str) -> Result<u64, String> {
+    capture
+        .as_file()
+        .metadata()
+        .map(|metadata| metadata.len())
+        .map_err(|error| format!("failed to stat {label} capture: {error}"))
+}
+
+#[cfg(any(windows, test))]
+fn oversized_capture_label(
+    stdout_capture: &tempfile::NamedTempFile,
+    stderr_capture: &tempfile::NamedTempFile,
+    max_bytes: usize,
+) -> Result<Option<&'static str>, String> {
+    let max = max_bytes as u64;
+    if capture_len(stdout_capture, "stdout")? > max {
+        Ok(Some("stdout"))
+    } else if capture_len(stderr_capture, "stderr")? > max {
+        Ok(Some("stderr"))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(any(windows, test))]
+fn capture_exceeded_error(label: &str, max_bytes: usize) -> String {
+    format!("{label} capture exceeded {max_bytes} bytes")
+}
+
+#[cfg(any(windows, test))]
+fn append_oversized_context(base: String, oversized: Option<&str>, max_bytes: usize) -> String {
+    match oversized {
+        Some(label) => format!("{base}; {}", capture_exceeded_error(label, max_bytes)),
+        None => base,
+    }
+}
+
+#[cfg(any(windows, test))]
+fn read_capped_capture(
+    capture: &tempfile::NamedTempFile,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let file = capture
+        .reopen()
+        .map_err(|error| format!("failed to reopen {label} capture: {error}"))?;
+    let len = file
+        .metadata()
+        .map_err(|error| format!("failed to stat {label} capture: {error}"))?
+        .len();
+    if len > max_bytes as u64 {
+        return Err(capture_exceeded_error(label, max_bytes));
+    }
+    let mut limited = file.take((max_bytes as u64).saturating_add(1));
+    let mut bytes = Vec::with_capacity(max_bytes.saturating_add(1));
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read {label} capture: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(capture_exceeded_error(label, max_bytes));
+    }
+    Ok(bytes)
+}
+
+#[cfg(any(windows, test))]
+fn wait_bounded_file_backed_child(
+    child: &mut Child,
+    process_tree: &mut process_kill::ProcessTreeGuard,
+    timeout: Duration,
+    stdout_capture: &tempfile::NamedTempFile,
+    stderr_capture: &tempfile::NamedTempFile,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, Vec<u8>, std::process::ExitStatus), String> {
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let mut wait_error = None;
+    let mut cleanup_error = None;
+    let mut oversized = None;
+    let mut size_error = None;
+    loop {
+        match oversized_capture_label(stdout_capture, stderr_capture, max_bytes) {
+            Ok(Some(label)) => {
+                oversized = Some(label);
+                cleanup_error = process_kill::terminate_process_tree(child, process_tree).err();
+                break;
+            }
+            Err(error) => {
+                size_error = Some(error);
+                cleanup_error = process_kill::terminate_process_tree(child, process_tree).err();
+                break;
+            }
+            Ok(None) => match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() >= deadline => {
+                    timed_out = true;
+                    cleanup_error = process_kill::terminate_process_tree(child, process_tree).err();
+                    break;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(error) => {
+                    wait_error = Some(error);
+                    cleanup_error = process_kill::terminate_process_tree(child, process_tree).err();
+                    break;
+                }
+            },
+        }
+    }
+    let status = process_kill::reap_process_tree(child, process_tree);
+    if let Some(error) = cleanup_error {
+        return Err(append_oversized_context(
+            format!("process-tree cleanup failed: {error}"),
+            oversized,
+            max_bytes,
+        ));
+    }
+    let status = status.map_err(|error| {
+        append_oversized_context(format!("reap failed: {error}"), oversized, max_bytes)
+    })?;
+    if let Some(error) = wait_error {
+        return Err(append_oversized_context(
+            format!("wait failed: {error}"),
+            oversized,
+            max_bytes,
+        ));
+    }
+    if let Some(error) = size_error {
+        return Err(error);
+    }
+    if let Some(label) = oversized {
+        return Err(capture_exceeded_error(label, max_bytes));
+    }
+    let stdout = read_capped_capture(stdout_capture, max_bytes, "stdout")?;
+    let stderr = read_capped_capture(stderr_capture, max_bytes, "stderr")?;
+    if timed_out {
+        return Err("timed out waiting for WSL integration command".into());
+    }
+    Ok((stdout, stderr, status))
+}
+
 #[cfg(windows)]
 fn run_bounded_program(
     program: &Path,
     args: &[OsString],
     envs: &[(OsString, OsString)],
 ) -> Result<ProcessOutput, String> {
+    let stdout_capture = tempfile::NamedTempFile::new().map_err(|error| {
+        format!(
+            "failed to create stdout capture for {}: {error}",
+            program.display()
+        )
+    })?;
+    let stderr_capture = tempfile::NamedTempFile::new().map_err(|error| {
+        format!(
+            "failed to create stderr capture for {}: {error}",
+            program.display()
+        )
+    })?;
+    let stdout = stdout_capture.as_file().try_clone().map_err(|error| {
+        format!(
+            "failed to clone stdout capture for {}: {error}",
+            program.display()
+        )
+    })?;
+    let stderr = stderr_capture.as_file().try_clone().map_err(|error| {
+        format!(
+            "failed to clone stderr capture for {}: {error}",
+            program.display()
+        )
+    })?;
     let mut command = Command::new(program);
     command
         .args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -319,10 +492,12 @@ fn run_bounded_program(
             program.display()
         )
     })?;
-    let (stdout, stderr, status) = wait_bounded_child(
+    let (stdout, stderr, status) = wait_bounded_file_backed_child(
         &mut child,
         &mut process_tree,
         COMMAND_TIMEOUT,
+        &stdout_capture,
+        &stderr_capture,
         MAX_NDJSON_LINE_BYTES,
     )?;
     let stdout = decode_process_text(stdout, &format!("{} stdout", program.display()))?;
@@ -746,6 +921,7 @@ pub async fn herdr_wsl_integration_set(
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1039,6 +1215,338 @@ mod tests {
             thread.join().unwrap();
         }
         assert_eq!(maximum.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn file_backed_capture_reads_bytes_while_a_writer_handle_remains_open() {
+        use std::io::Write;
+
+        let capture = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = capture.as_file().try_clone().unwrap();
+        writer.write_all(b"still-open\n").unwrap();
+        writer.flush().unwrap();
+        let bytes = read_capped_capture(&capture, 64, "stdout").unwrap();
+        assert_eq!(&bytes, b"still-open\n");
+        drop(writer);
+    }
+
+    #[test]
+    fn file_backed_capture_rejects_output_past_the_byte_cap() {
+        use std::io::Write;
+
+        let capture = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = capture.as_file().try_clone().unwrap();
+        writer.write_all(&[b'x'; 8]).unwrap();
+        writer.flush().unwrap();
+        let error = read_capped_capture(&capture, 4, "stdout").unwrap_err();
+        assert!(error.contains("exceeded"), "{error}");
+    }
+
+    #[test]
+    fn capture_len_uses_open_handle_metadata() {
+        use std::io::Write;
+
+        let capture = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = capture.as_file().try_clone().unwrap();
+        writer.write_all(&[b'x'; 8]).unwrap();
+        writer.flush().unwrap();
+        assert_eq!(capture_len(&capture, "stdout").unwrap(), 8);
+        assert_eq!(
+            oversized_capture_label(&capture, &capture, 4).unwrap(),
+            Some("stdout")
+        );
+        assert_eq!(
+            oversized_capture_label(&capture, &capture, 8).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn read_capped_capture_returns_without_waiting_for_open_writer_to_close() {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let capture = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = capture.as_file().try_clone().unwrap();
+        writer.write_all(&[b'x'; 64]).unwrap();
+        writer.flush().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let writer_thread = thread::spawn(move || {
+            while !stop_thread.load(Ordering::SeqCst) {
+                let _ = writer.write_all(&[b'y'; 32]);
+                let _ = writer.flush();
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let started = Instant::now();
+        let error = read_capped_capture(&capture, 32, "stdout").unwrap_err();
+        assert!(
+            error.contains("stdout capture exceeded 32 bytes"),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "bounded read waited for writer close: {:?}",
+            started.elapsed()
+        );
+        stop.store(true, Ordering::SeqCst);
+        writer_thread.join().unwrap();
+    }
+
+    #[test]
+    fn oversized_wait_preserves_cleanup_and_reap_failure_precedence() {
+        assert_eq!(
+            append_oversized_context(
+                "process-tree cleanup failed: boom".into(),
+                Some("stdout"),
+                32
+            ),
+            "process-tree cleanup failed: boom; stdout capture exceeded 32 bytes"
+        );
+        assert_eq!(
+            append_oversized_context("reap failed: gone".into(), Some("stderr"), 8),
+            "reap failed: gone; stderr capture exceeded 8 bytes"
+        );
+        assert_eq!(
+            append_oversized_context("wait failed: closed".into(), Some("stdout"), 4),
+            "wait failed: closed; stdout capture exceeded 4 bytes"
+        );
+        assert_eq!(
+            append_oversized_context("process-tree cleanup failed: boom".into(), None, 32),
+            "process-tree cleanup failed: boom"
+        );
+        assert_eq!(
+            capture_exceeded_error("stdout", 32),
+            "stdout capture exceeded 32 bytes"
+        );
+    }
+
+    fn spawn_output_holder_with_lingering_descendant(
+        keepalive: &Path,
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    ) -> Child {
+        #[cfg(unix)]
+        {
+            Command::new("sh")
+                .arg("-c")
+                .arg("printf 'ready\\n'; while [ -f \"$1\" ]; do sleep 0.05; done &")
+                .arg("holder")
+                .arg(keepalive)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .expect("spawn unix output holder")
+        }
+        #[cfg(windows)]
+        {
+            let path = keepalive.display().to_string().replace('\'', "''");
+            let script = format!(
+                "Write-Output 'ready'; Start-Process -NoNewWindow -FilePath \"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -ArgumentList @('-NoProfile','-Command',\"while (Test-Path -LiteralPath '{path}') {{ Start-Sleep -Milliseconds 50 }}\")"
+            );
+            Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &script,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .expect("spawn windows output holder")
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (keepalive, stdout, stderr);
+            panic!("unsupported platform for descendant-handle regression");
+        }
+    }
+
+    #[test]
+    fn file_backed_wait_returns_after_child_exits_while_descendant_holds_output() {
+        let stdout_capture = tempfile::NamedTempFile::new().unwrap();
+        let stderr_capture = tempfile::NamedTempFile::new().unwrap();
+        let keepalive = tempfile::NamedTempFile::new().unwrap();
+        let stdout = stdout_capture.as_file().try_clone().unwrap();
+        let stderr = stderr_capture.as_file().try_clone().unwrap();
+        let mut child =
+            spawn_output_holder_with_lingering_descendant(keepalive.path(), stdout, stderr);
+        let mut process_tree = process_kill::attach_process_tree(&mut child).unwrap();
+        let started = Instant::now();
+        let (stdout, _stderr, status) = wait_bounded_file_backed_child(
+            &mut child,
+            &mut process_tree,
+            Duration::from_secs(5),
+            &stdout_capture,
+            &stderr_capture,
+            4096,
+        )
+        .expect("file-backed wait");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "file-backed wait hung: {:?}",
+            started.elapsed()
+        );
+        assert!(status.success(), "{status:?}");
+        let decoded = decode_process_text(stdout, "stdout").unwrap();
+        assert!(decoded.contains("ready"), "{decoded:?}");
+        drop(keepalive);
+    }
+
+    fn spawn_exited_parent_with_appending_descendant(
+        keepalive: &Path,
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    ) -> Child {
+        #[cfg(unix)]
+        {
+            Command::new("sh")
+                .arg("-c")
+                .arg("printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; while [ -f \"$1\" ]; do printf xxxxxxxx; done &")
+                .arg("holder")
+                .arg(keepalive)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .expect("spawn unix appending descendant")
+        }
+        #[cfg(windows)]
+        {
+            let path = keepalive.display().to_string().replace('\'', "''");
+            let script = format!(
+                "Write-Output ('x' * 64); Start-Process -NoNewWindow -FilePath \"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -ArgumentList @('-NoProfile','-Command',\"while (Test-Path -LiteralPath '{path}') {{ Write-Output ('x' * 8); Start-Sleep -Milliseconds 50 }}\")"
+            );
+            Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &script,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .expect("spawn windows appending descendant")
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (keepalive, stdout, stderr);
+            panic!("unsupported platform for appending-descendant regression");
+        }
+    }
+
+    #[test]
+    fn file_backed_wait_returns_when_exited_child_leaves_an_appending_writer() {
+        let stdout_capture = tempfile::NamedTempFile::new().unwrap();
+        let stderr_capture = tempfile::NamedTempFile::new().unwrap();
+        let keepalive = tempfile::NamedTempFile::new().unwrap();
+        let stdout = stdout_capture.as_file().try_clone().unwrap();
+        let stderr = stderr_capture.as_file().try_clone().unwrap();
+        let mut child =
+            spawn_exited_parent_with_appending_descendant(keepalive.path(), stdout, stderr);
+        let mut process_tree = process_kill::attach_process_tree(&mut child).unwrap();
+        let started = Instant::now();
+        let error = wait_bounded_file_backed_child(
+            &mut child,
+            &mut process_tree,
+            Duration::from_secs(5),
+            &stdout_capture,
+            &stderr_capture,
+            32,
+        )
+        .expect_err("appending writer past the cap should fail closed");
+        assert!(
+            error.contains("stdout capture exceeded 32 bytes"),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "bounded wait/read hung on open writer: {:?}",
+            started.elapsed()
+        );
+        assert!(child.try_wait().unwrap().is_some());
+        drop(keepalive);
+    }
+
+    fn spawn_slow_oversized_writer(stdout: std::fs::File, stderr: std::fs::File) -> Child {
+        #[cfg(unix)]
+        {
+            Command::new("yes")
+                .arg("xxxxxxxx")
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .expect("spawn unix oversized writer")
+        }
+        #[cfg(windows)]
+        {
+            Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "while ($true) { Write-Output 'xxxxxxxx'; Start-Sleep -Milliseconds 50 }",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .expect("spawn windows oversized writer")
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (stdout, stderr);
+            panic!("unsupported platform for oversized-output regression");
+        }
+    }
+
+    #[test]
+    fn file_backed_wait_terminates_early_when_capture_exceeds_cap() {
+        let stdout_capture = tempfile::NamedTempFile::new().unwrap();
+        let stderr_capture = tempfile::NamedTempFile::new().unwrap();
+        let stdout = stdout_capture.as_file().try_clone().unwrap();
+        let stderr = stderr_capture.as_file().try_clone().unwrap();
+        let mut child = spawn_slow_oversized_writer(stdout, stderr);
+        let mut process_tree = process_kill::attach_process_tree(&mut child).unwrap();
+        let started = Instant::now();
+        let error = wait_bounded_file_backed_child(
+            &mut child,
+            &mut process_tree,
+            Duration::from_secs(5),
+            &stdout_capture,
+            &stderr_capture,
+            32,
+        )
+        .expect_err("oversized capture should fail closed");
+        assert!(
+            error.contains("stdout capture exceeded 32 bytes"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("process-tree cleanup failed"),
+            "successful terminate must not be reported as cleanup failure: {error}"
+        );
+        assert!(
+            !error.contains("reap failed"),
+            "successful reap must not be reported as reap failure: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "oversized capture waited too long: {:?}",
+            started.elapsed()
+        );
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[cfg(not(windows))]
