@@ -547,7 +547,11 @@
     "sessionStoppedTitle": "Session {{name}} 未運行",
     "sessionStopped": "Session「{{name}}」未運行。請用 `herdr session attach {{name}}` 啟動。",
     "stoppedNoAgents": "此 session 已停止，尚無 agent",
-    "attentionHeading": "需要注意"
+    "attentionHeading": "需要注意",
+    "globalRuntime": "全域 Herdr{{version}}",
+    "managedRuntime": "Yuzora-managed Herdr{{version}}",
+    "runtime": "Herdr{{version}}",
+    "runtimeSessionTitle": "Session：{{name}}"
   },
   "herdrTerminal": {
     "defaultTitle": "Herdr 終端機",
@@ -610,7 +614,27 @@
     "unavailable": "不可用",
     "reason": "原因",
     "configurationError": "已儲存的二進位來源設定無法信任：{{error}}",
-    "defaultUnavailable": "內建的 Herdr 資源無法使用。請重新安裝 Yuzora，或在重啟前檢查二進位診斷。"
+    "defaultUnavailable": "內建的 Herdr 資源無法使用。請重新安裝 Yuzora，或在重啟前檢查二進位診斷。",
+    "wslIntegration": "WSL Pi 整合",
+    "wslIntegrationSub": "明確啟用後，Yuzora 會 link 內附 Plugin，並在 Herdr 設定的 WSL distro 安裝 Pi adapter；關閉前請先關閉 Plugin-managed WSL panes，再由開關依 ownership 規則安全回滾。WSL 仍不是第二個 Herdr runtime。",
+    "experimental": "Experimental",
+    "wslLoading": "正在檢查 Plugin 與 adapter 狀態…",
+    "wslUnavailable": "無法取得 WSL Plugin 狀態。",
+    "wslInstalling": "正在 link Plugin 並安裝 Pi adapter…",
+    "wslRemoving": "正在卸載 Pi adapter 並 unlink Plugin…",
+    "wslReady": "已啟用 Plugin {{version}}，WSL Pi adapter 為 current。",
+    "wslDisabled": "尚未啟用；Yuzora 啟動時不會自動修改 WSL。",
+    "wslNeedsRecovery": "Plugin registration 已存在，但 adapter 狀態為 {{status}}。請先關閉開關完成清理，再重新啟用。",
+    "wslForeignRegistration": "Plugin id 已由其他路徑註冊，為避免覆寫而停用此設定：{{path}}",
+    "wslAdapterStatus": {
+      "unknown": "未知",
+      "current": "current",
+      "absent": "absent",
+      "drifted": "drifted",
+      "outdated": "outdated",
+      "missingPrerequisite": "缺少 prerequisite",
+      "mixed": "不同 distro 狀態不一致"
+    }
   },
   "workspaceTrust": {
     "title": "要信任這個 workspace 嗎？",

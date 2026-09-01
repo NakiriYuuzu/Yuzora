@@ -1,0 +1,126 @@
+id = "yuzora-wsl-agents"
+name = "Yuzora WSL Agents"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "Experimental Windows-only plugin that opens plugin-managed WSL panes and installs a Pi adapter which reports live identity/state through Windows herdr.exe. Native Pi session ids stay in adapter logs and are not resumable."
+platforms = ["windows"]
+
+[[startup]]
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/check-status.ps1"
+]
+
+[[actions]]
+id = "install-pi"
+title = "Install Pi WSL adapter"
+description = "Install the plugin-owned Pi adapter inside configured WSL distros using an in-distro POSIX installer."
+contexts = ["global", "workspace"]
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/manage-adapters.ps1",
+  "-Action",
+  "install"
+]
+
+[[actions]]
+id = "status"
+title = "WSL adapter status"
+description = "Check Pi adapter install status per configured distro. Does not modify files."
+contexts = ["global", "workspace", "pane"]
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/check-status.ps1"
+]
+
+[[actions]]
+id = "open-wsl-shell"
+title = "Open WSL shell"
+description = "Open a plugin-managed WSL shell pane. Does not intercept existing or manual wsl.exe panes."
+contexts = ["workspace", "pane"]
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/open-pane.ps1",
+  "-Kind",
+  "open-shell"
+]
+
+[[actions]]
+id = "open-pi"
+title = "Open WSL Pi"
+description = "Open a plugin-managed WSL pane and start Pi. Identity/state are reported with source yuzora:wsl:pi."
+contexts = ["workspace", "pane"]
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/open-pane.ps1",
+  "-Kind",
+  "open-pi"
+]
+
+[[actions]]
+id = "uninstall-pi"
+title = "Uninstall Pi WSL adapter"
+description = "Remove plugin-owned Pi adapter files from configured WSL distros. Leaves official Herdr integrations untouched."
+contexts = ["global", "workspace"]
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/manage-adapters.ps1",
+  "-Action",
+  "uninstall"
+]
+
+[[panes]]
+id = "wsl-shell"
+title = "WSL"
+description = "Plugin-managed WSL shell. Not a second Herdr runtime."
+placement = "tab"
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/open-pane.ps1",
+  "-Kind",
+  "shell"
+]
+
+[[panes]]
+id = "wsl-pi"
+title = "WSL Pi"
+description = "Plugin-managed WSL pane that launches Pi."
+placement = "tab"
+command = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "scripts/open-pane.ps1",
+  "-Kind",
+  "pi"
+]

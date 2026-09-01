@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises"
+import { access, readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -19,13 +19,29 @@ afterEach(() => {
 })
 
 describe("prepare Herdr resources", () => {
-  it("pins protocol-19 Herdr resources for both released desktop platforms", () => {
+  it("pins protocol-20 Herdr v0.8.2 Stable resources for both released desktop platforms", () => {
     expect(HERDR_RESOURCE_VERSION).toEqual({
-      baseVersion: "0.8.0",
-      protocol: 19,
-      windowsBuildId: "2026-08-04-d78e3d3b5126",
+      baseVersion: "0.8.2",
+      protocol: 20,
       licenseSha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     })
+    expect(HERDR_RESOURCE_TARGETS["macos-aarch64"].url).toContain("/v0.8.2/")
+    expect(HERDR_RESOURCE_TARGETS["macos-x86_64"].url).toContain("/v0.8.2/")
+    expect(HERDR_RESOURCE_TARGETS["windows-x86_64"].url).toBe(
+      "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-windows-x86_64.zip"
+    )
+    expect(HERDR_RESOURCE_TARGETS["windows-x86_64"].url).not.toMatch(/preview-/)
+    expect(HERDR_RESOURCE_TARGETS["windows-x86_64"].files.map((file) => file.path).sort()).toEqual(
+      [
+        "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+        "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md",
+        "conpty/arm64/OpenConsole.exe",
+        "conpty/conpty.dll",
+        "conpty/herdr-conpty.json",
+        "conpty/x64/OpenConsole.exe",
+        "herdr.exe"
+      ].sort()
+    )
     expect(resourceTargetIdsForHost("darwin")).toEqual(["macos-aarch64", "macos-x86_64"])
     expect(resourceTargetIdsForHost("win32")).toEqual(["windows-x86_64"])
     expect(zipExtractionToolForPlatform("win32")).toBe("powershell")
@@ -85,6 +101,72 @@ describe("prepare Herdr resources", () => {
     expect(windows.bundle.resources).toMatchObject({
       "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/"
     })
+
+    const pluginResources = Object.fromEntries(
+      Object.entries(windows.bundle.resources).filter(([, target]) =>
+        String(target).startsWith("herdr-plugins/yuzora-wsl-agents/")
+      )
+    )
+    expect(pluginResources).toEqual({
+      "../herdr-plugins/yuzora-wsl-agents/herdr-plugin.toml":
+        "herdr-plugins/yuzora-wsl-agents/herdr-plugin.toml",
+      "../herdr-plugins/yuzora-wsl-agents/README.md":
+        "herdr-plugins/yuzora-wsl-agents/README.md",
+      "../herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report":
+        "herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report",
+      "../herdr-plugins/yuzora-wsl-agents/adapters/install.sh":
+        "herdr-plugins/yuzora-wsl-agents/adapters/install.sh",
+      "../herdr-plugins/yuzora-wsl-agents/adapters/pi/yuzora-herdr-wsl.ts":
+        "herdr-plugins/yuzora-wsl-agents/adapters/pi/yuzora-herdr-wsl.ts",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/check-status.ps1":
+        "herdr-plugins/yuzora-wsl-agents/scripts/check-status.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/common.ps1":
+        "herdr-plugins/yuzora-wsl-agents/scripts/common.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/manage-adapters.ps1":
+        "herdr-plugins/yuzora-wsl-agents/scripts/manage-adapters.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/manage-bundled-plugin.ps1":
+        "herdr-plugins/yuzora-wsl-agents/scripts/manage-bundled-plugin.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/open-pane.ps1":
+        "herdr-plugins/yuzora-wsl-agents/scripts/open-pane.ps1"
+    })
+    expect(Object.keys(pluginResources).join("\n")).not.toMatch(/\/tests\/|\/lib\//)
+    expect(Object.keys(pluginResources)).toHaveLength(10)
+    for (const source of Object.keys(pluginResources)) {
+      await expect(access(resolve(repositoryRoot, "src-tauri", source))).resolves.toBeUndefined()
+    }
+  })
+
+  it("verifies the bundled plugin inside both Windows installer formats", async () => {
+    const verifier = await readFile(
+      resolve(repositoryRoot, "scripts/verify-windows-bundled-wsl-plugin.ps1"),
+      "utf8"
+    )
+    expect(verifier).toContain("msiexec.exe")
+    expect(verifier).toContain("7z.exe")
+    expect(verifier).toContain("MSI administrative extraction")
+    expect(verifier).toContain("NSIS 7-Zip extraction")
+    for (const required of [
+      "herdr-plugin.toml",
+      "README.md",
+      "adapters\\common\\herdr-wsl-report",
+      "adapters\\install.sh",
+      "adapters\\pi\\yuzora-herdr-wsl.ts",
+      "scripts\\manage-bundled-plugin.ps1",
+      "scripts\\open-pane.ps1"
+    ]) {
+      expect(verifier).toContain(required)
+    }
+    expect(verifier).toContain("Compare-Object -ReferenceObject $ExpectedFiles")
+    expect(verifier).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256")
+    expect(verifier).toContain("Get-FileHash -LiteralPath $bundledPath -Algorithm SHA256")
+    expect(verifier).toContain("System.Management.Automation.Language.Parser")
+    expect(verifier).toContain("[ref]$tokens")
+    expect(verifier).toContain("[ref]$parseErrors")
+    expect(verifier).toContain("expected Windows PowerShell 5.1")
+    expect(verifier).toContain("Invoke-BundledHelper -Payload $msiPayload -Action link")
+    expect(verifier).toContain("already registered from another root")
+    expect(verifier).toContain("refusing to unlink")
+    expect(verifier).toContain("Remove-Item -LiteralPath $tempRoot")
   })
 
   it("accepts only the exact pinned archive shape", () => {

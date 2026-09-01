@@ -2,7 +2,17 @@
   "bundle": {
     "resources": {
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
-      "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/"
+      "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/",
+      "../herdr-plugins/yuzora-wsl-agents/herdr-plugin.toml": "herdr-plugins/yuzora-wsl-agents/herdr-plugin.toml",
+      "../herdr-plugins/yuzora-wsl-agents/README.md": "herdr-plugins/yuzora-wsl-agents/README.md",
+      "../herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report": "herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report",
+      "../herdr-plugins/yuzora-wsl-agents/adapters/install.sh": "herdr-plugins/yuzora-wsl-agents/adapters/install.sh",
+      "../herdr-plugins/yuzora-wsl-agents/adapters/pi/yuzora-herdr-wsl.ts": "herdr-plugins/yuzora-wsl-agents/adapters/pi/yuzora-herdr-wsl.ts",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/check-status.ps1": "herdr-plugins/yuzora-wsl-agents/scripts/check-status.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/common.ps1": "herdr-plugins/yuzora-wsl-agents/scripts/common.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/manage-adapters.ps1": "herdr-plugins/yuzora-wsl-agents/scripts/manage-adapters.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/manage-bundled-plugin.ps1": "herdr-plugins/yuzora-wsl-agents/scripts/manage-bundled-plugin.ps1",
+      "../herdr-plugins/yuzora-wsl-agents/scripts/open-pane.ps1": "herdr-plugins/yuzora-wsl-agents/scripts/open-pane.ps1"
     }
   }
 }

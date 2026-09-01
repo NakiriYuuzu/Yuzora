@@ -547,7 +547,11 @@
     "sessionStoppedTitle": "Session {{name}} is not running",
     "sessionStopped": "Session \"{{name}}\" is not running. Start it with `herdr session attach {{name}}`.",
     "stoppedNoAgents": "No agents while this session is stopped",
-    "attentionHeading": "Needs attention"
+    "attentionHeading": "Needs attention",
+    "globalRuntime": "Global Herdr{{version}}",
+    "managedRuntime": "Yuzora-managed Herdr{{version}}",
+    "runtime": "Herdr{{version}}",
+    "runtimeSessionTitle": "Session: {{name}}"
   },
   "herdrTerminal": {
     "defaultTitle": "Herdr terminal",
@@ -610,7 +614,27 @@
     "unavailable": "Unavailable",
     "reason": "Reason",
     "configurationError": "The saved binary-source preference could not be trusted: {{error}}",
-    "defaultUnavailable": "The bundled Herdr resource is unavailable. Reinstall Yuzora or review the binary diagnostics before restarting."
+    "defaultUnavailable": "The bundled Herdr resource is unavailable. Reinstall Yuzora or review the binary diagnostics before restarting.",
+    "wslIntegration": "WSL Pi integration",
+    "wslIntegrationSub": "When explicitly enabled, Yuzora links the bundled Plugin and installs its Pi adapter in the WSL distros configured by Herdr. Close Plugin-managed WSL panes before turning it off; the switch then performs the ownership-safe rollback. WSL is not a second Herdr runtime.",
+    "experimental": "Experimental",
+    "wslLoading": "Checking Plugin and adapter status…",
+    "wslUnavailable": "WSL Plugin status is unavailable.",
+    "wslInstalling": "Linking the Plugin and installing the Pi adapter…",
+    "wslRemoving": "Uninstalling the Pi adapter and unlinking the Plugin…",
+    "wslReady": "Plugin {{version}} is enabled and the WSL Pi adapter is current.",
+    "wslDisabled": "Not enabled; Yuzora startup does not modify WSL.",
+    "wslNeedsRecovery": "A Plugin registration exists, but the adapter is {{status}}. Turn it off to clean up before enabling it again.",
+    "wslForeignRegistration": "Another path owns this Plugin id, so Yuzora will not overwrite it: {{path}}",
+    "wslAdapterStatus": {
+      "unknown": "unknown",
+      "current": "current",
+      "absent": "absent",
+      "drifted": "drifted",
+      "outdated": "outdated",
+      "missingPrerequisite": "missing prerequisite",
+      "mixed": "mixed across distros"
+    }
   },
   "workspaceTrust": {
     "title": "Trust this workspace?",

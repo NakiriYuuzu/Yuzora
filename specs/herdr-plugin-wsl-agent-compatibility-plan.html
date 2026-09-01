@@ -1,0 +1,1009 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Herdr Plugin × WSL Agent Compatibility — Implementation Plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #071018;
+      --panel: #0d1722;
+      --panel-2: #111e2b;
+      --line: #223549;
+      --line-strong: #35526d;
+      --text: #e9f2fb;
+      --muted: #9db0c2;
+      --cyan: #60d8ff;
+      --cyan-2: #19a7d8;
+      --green: #75e0a7;
+      --amber: #f7c76d;
+      --red: #ff8c96;
+      --violet: #bda6ff;
+      --shadow: 0 18px 45px rgba(0, 0, 0, .28);
+      --radius: 18px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(25, 167, 216, .18), transparent 30rem),
+        radial-gradient(circle at 92% 12%, rgba(189, 166, 255, .12), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font: 15px/1.65 var(--sans);
+    }
+    a { color: var(--cyan); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    code, pre { font-family: var(--mono); }
+    code {
+      padding: .12rem .34rem;
+      border: 1px solid rgba(96, 216, 255, .16);
+      border-radius: 6px;
+      background: rgba(96, 216, 255, .07);
+      color: #ccefff;
+      font-size: .92em;
+    }
+    pre {
+      margin: 0;
+      padding: 16px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #07121c;
+      color: #d8e8f5;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    h1, h2, h3, h4 { line-height: 1.22; letter-spacing: -.02em; }
+    h1 { margin: 0; font-size: clamp(2.3rem, 6vw, 5.2rem); max-width: 13ch; }
+    h2 { margin: 0 0 16px; font-size: clamp(1.55rem, 3vw, 2.35rem); }
+    h3 { margin: 0 0 10px; font-size: 1.2rem; }
+    h4 { margin: 18px 0 8px; font-size: 1rem; color: #d5e6f4; }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 8px 0 0; padding-left: 1.25rem; }
+    li + li { margin-top: 5px; }
+    .layout { max-width: 1480px; margin: 0 auto; padding: 24px; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 670px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(430px, .95fr);
+      gap: 36px;
+      align-items: center;
+      padding: clamp(30px, 6vw, 82px);
+      border: 1px solid var(--line-strong);
+      border-radius: 26px;
+      background: linear-gradient(145deg, rgba(17, 30, 43, .97), rgba(7, 16, 24, .95));
+      box-shadow: var(--shadow);
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -30% auto auto 48%;
+      width: 580px;
+      height: 580px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(96, 216, 255, .16), transparent 68%);
+      pointer-events: none;
+    }
+    .hero-copy, .hero-visual { position: relative; z-index: 1; }
+    .eyebrow {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 18px;
+      color: var(--cyan);
+      font: 700 .78rem/1 var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .lede { max-width: 62ch; margin: 22px 0; color: #c1d2df; font-size: 1.05rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 22px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(7, 18, 28, .72);
+      color: #caddE9;
+      font-size: .82rem;
+    }
+    .chip strong { color: var(--text); }
+    .hero-visual {
+      border: 1px solid rgba(96, 216, 255, .2);
+      border-radius: 22px;
+      background: rgba(3, 11, 17, .68);
+      padding: 16px;
+      box-shadow: inset 0 0 70px rgba(96, 216, 255, .05);
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .meta {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(13, 23, 34, .78);
+    }
+    .meta span { display: block; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
+    .meta b { display: block; margin-top: 5px; color: #f2f7fb; font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; }
+    .page-grid {
+      display: grid;
+      grid-template-columns: 265px minmax(0, 1fr);
+      gap: 22px;
+      margin-top: 24px;
+      align-items: start;
+    }
+    nav {
+      position: sticky;
+      top: 18px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(8, 18, 27, .88);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow);
+    }
+    nav strong { display: block; margin-bottom: 10px; color: #fff; }
+    nav a {
+      display: block;
+      padding: 7px 9px;
+      border-radius: 8px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .86rem;
+    }
+    nav a:hover { background: rgba(96, 216, 255, .08); color: var(--cyan); }
+    main { min-width: 0; }
+    section {
+      margin-bottom: 22px;
+      padding: clamp(20px, 3.6vw, 38px);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(155deg, rgba(13, 23, 34, .97), rgba(8, 18, 27, .96));
+      box-shadow: var(--shadow);
+    }
+    .grid-2, .grid-3, .grid-4 { display: grid; gap: 14px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-2);
+    }
+    .card p:last-child { margin-bottom: 0; }
+    .label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 9px;
+      color: var(--muted);
+      font: 700 .75rem/1 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      font: 700 .74rem/1 var(--mono);
+      white-space: nowrap;
+    }
+    .go { color: #bdf5d3; background: rgba(117, 224, 167, .12); border: 1px solid rgba(117, 224, 167, .32); }
+    .conditional { color: #ffe4a9; background: rgba(247, 199, 109, .1); border: 1px solid rgba(247, 199, 109, .3); }
+    .no { color: #ffc5ca; background: rgba(255, 140, 150, .1); border: 1px solid rgba(255, 140, 150, .3); }
+    .info { color: #c9f1ff; background: rgba(96, 216, 255, .1); border: 1px solid rgba(96, 216, 255, .3); }
+    .callout {
+      margin: 14px 0;
+      padding: 14px 16px;
+      border-left: 4px solid var(--cyan);
+      border-radius: 10px;
+      background: rgba(96, 216, 255, .07);
+      color: #c8d9e6;
+    }
+    .callout.warn { border-color: var(--amber); background: rgba(247, 199, 109, .08); }
+    .callout.bad { border-color: var(--red); background: rgba(255, 140, 150, .08); }
+    .callout.good { border-color: var(--green); background: rgba(117, 224, 167, .08); }
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: .9rem; }
+    th, td { padding: 11px 12px; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { background: #101e2a; color: #d9e9f5; font-size: .78rem; letter-spacing: .05em; text-transform: uppercase; }
+    td { color: #c4d3df; }
+    tr:nth-child(even) td { background: rgba(255,255,255,.013); }
+    details {
+      margin-top: 13px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(7, 18, 28, .65);
+    }
+    summary {
+      cursor: pointer;
+      padding: 14px 16px;
+      color: #e3edf5;
+      font-weight: 700;
+    }
+    details > div { padding: 0 16px 17px; color: #c4d3df; }
+    .phase {
+      display: grid;
+      grid-template-columns: 100px minmax(0, 1fr);
+      gap: 18px;
+      padding: 20px 0;
+      border-top: 1px solid var(--line);
+    }
+    .phase:first-of-type { border-top: 0; padding-top: 4px; }
+    .phase-no {
+      display: grid;
+      place-items: center;
+      width: 76px;
+      height: 76px;
+      border: 1px solid rgba(96, 216, 255, .36);
+      border-radius: 20px;
+      background: linear-gradient(145deg, rgba(96, 216, 255, .16), rgba(96, 216, 255, .04));
+      color: var(--cyan);
+      font: 800 1.35rem/1 var(--mono);
+    }
+    .phase h3 { margin-top: 1px; }
+    .checks { list-style: none; padding: 0; }
+    .checks li { position: relative; padding-left: 24px; }
+    .checks li::before { content: "□"; position: absolute; left: 0; top: 0; color: var(--cyan); font-family: var(--mono); }
+    .file-list { columns: 2; column-gap: 30px; }
+    .file-list li { break-inside: avoid; }
+    .owner {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font: 700 .68rem/1 var(--mono);
+      background: rgba(189, 166, 255, .11);
+      color: #d9ccff;
+      border: 1px solid rgba(189, 166, 255, .28);
+    }
+    .matrix td:first-child { width: 3.2rem; text-align: center; font-family: var(--mono); color: var(--cyan); }
+    .matrix td:last-child { width: 25%; }
+    .small { color: var(--muted); font-size: .84rem; }
+    .strike { text-decoration: line-through; color: #8091a0; }
+    footer { padding: 12px 4px 50px; color: var(--muted); text-align: center; font-size: .8rem; }
+    @media (max-width: 1060px) {
+      .hero { grid-template-columns: 1fr; }
+      .page-grid { grid-template-columns: 1fr; }
+      nav { position: static; columns: 2; }
+      nav strong { column-span: all; }
+      .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid-3, .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 680px) {
+      .layout { padding: 12px; }
+      .hero { min-height: auto; padding: 28px 20px; }
+      .meta-grid, .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+      .phase { grid-template-columns: 1fr; }
+      .phase-no { width: 58px; height: 58px; border-radius: 15px; }
+      .file-list { columns: 1; }
+      nav { columns: 1; }
+      section { padding: 21px 17px; }
+    }
+    @media print {
+      :root { color-scheme: light; --bg: #fff; --panel: #fff; --panel-2: #f7fafc; --line: #cad5df; --line-strong: #9fb0c0; --text: #17212b; --muted: #526272; --cyan: #006d93; --green: #087843; --amber: #995d00; --red: #aa2632; --violet: #6547b6; --shadow: none; }
+      body { background: #fff; color: var(--text); }
+      .layout { max-width: none; padding: 0; }
+      .hero, section, nav, .card, details, .meta { background: #fff !important; box-shadow: none; }
+      .hero { min-height: auto; page-break-after: always; }
+      .page-grid { display: block; }
+      nav { display: none; }
+      section { break-inside: avoid-page; }
+      code { color: #004e6a; background: #f1f7fa; }
+      pre { background: #f6f8fa; color: #17212b; }
+      a { color: #005e7c; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <header class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">Implementation Plan · Specs · Proposed</div>
+        <h1>Herdr Plugin × WSL Agent Compatibility</h1>
+        <p class="lede">
+          以 Windows-native Herdr 作為唯一 Host Runtime，僅由 Herdr Plugin 建立可追蹤的 WSL pane；
+          MVP 只裝 Pi adapter，經官方 <code>pane report-agent</code> 回報 live identity 與 state。
+          Native Pi session id 僅 adapter log；Yuzora 維持純粹消費 snapshot／events，不解析 terminal、不跨 namespace 猜測 Agent。
+        </p>
+        <div class="chips">
+          <span class="chip"><strong>目標</strong> Herdr v0.8.2 Stable</span>
+          <span class="chip"><strong>Protocol</strong> 20</span>
+          <span class="chip"><strong>MVP</strong> Plugin-managed · Pi-only</span>
+          <span class="chip"><strong>Windows gate</strong> 使用者實機驗收</span>
+        </div>
+      </div>
+      <figure class="hero-visual" aria-label="Windows-native Herdr、Plugin-managed WSL pane、Agent adapters 與 Yuzora snapshot/event consumer 的信任路徑圖">
+        <svg viewBox="0 0 760 560" role="img" aria-labelledby="archTitle archDesc" style="display:block;width:100%;height:auto">
+          <title id="archTitle">唯一 Host Runtime 與 WSL Agent 自報架構</title>
+          <desc id="archDesc">Windows-native Herdr 透過 plugin 建立 WSL pane，WSL agent adapter 呼叫 Windows herdr.exe 回報，Yuzora 只讀 snapshot 和 events。</desc>
+          <defs>
+            <linearGradient id="g1" x1="0" x2="1"><stop stop-color="#18354a"/><stop offset="1" stop-color="#102030"/></linearGradient>
+            <linearGradient id="g2" x1="0" x2="1"><stop stop-color="#143d37"/><stop offset="1" stop-color="#102928"/></linearGradient>
+            <linearGradient id="g3" x1="0" x2="1"><stop stop-color="#342b55"/><stop offset="1" stop-color="#1c1c35"/></linearGradient>
+            <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#60d8ff"/></marker>
+          </defs>
+          <rect x="34" y="48" width="692" height="464" rx="30" fill="#07131d" stroke="#29445a"/>
+          <text x="68" y="88" fill="#8ea9bc" font-family="ui-monospace,monospace" font-size="15" letter-spacing="2">WINDOWS HOST BOUNDARY</text>
+          <rect x="78" y="118" width="252" height="122" rx="20" fill="url(#g1)" stroke="#60d8ff" stroke-opacity=".55"/>
+          <text x="104" y="158" fill="#eaf7ff" font-family="system-ui,sans-serif" font-size="24" font-weight="700">Windows-native Herdr</text>
+          <text x="104" y="188" fill="#9fb8c9" font-family="ui-monospace,monospace" font-size="14">Named session · protocol 20</text>
+          <text x="104" y="214" fill="#9fb8c9" font-family="ui-monospace,monospace" font-size="14">snapshot · events · report API</text>
+          <rect x="430" y="118" width="252" height="122" rx="20" fill="url(#g3)" stroke="#bda6ff" stroke-opacity=".6"/>
+          <text x="456" y="158" fill="#f2edff" font-family="system-ui,sans-serif" font-size="24" font-weight="700">Yuzora ADE</text>
+          <text x="456" y="188" fill="#baaee2" font-family="ui-monospace,monospace" font-size="14">typed IPC → store → UI</text>
+          <text x="456" y="214" fill="#baaee2" font-family="ui-monospace,monospace" font-size="14">consumer only · no inference</text>
+          <path d="M 330 162 C 370 136, 392 136, 430 162" fill="none" stroke="#60d8ff" stroke-width="3" marker-end="url(#arrow)" filter="url(#glow)"/>
+          <path d="M 430 205 C 390 232, 370 232, 330 205" fill="none" stroke="#75e0a7" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <text x="360" y="139" fill="#8fdfff" font-family="ui-monospace,monospace" font-size="12">snapshot/events</text>
+          <rect x="78" y="294" width="604" height="168" rx="24" fill="url(#g2)" stroke="#75e0a7" stroke-opacity=".45"/>
+          <text x="104" y="330" fill="#bdf5d3" font-family="ui-monospace,monospace" font-size="14" letter-spacing="1.6">PLUGIN-MANAGED WSL PANE</text>
+          <rect x="105" y="352" width="150" height="76" rx="15" fill="#0b1d24" stroke="#3f7181"/>
+          <text x="126" y="380" fill="#eef9ff" font-family="system-ui,sans-serif" font-size="18" font-weight="700">PowerShell wrapper</text>
+          <text x="126" y="406" fill="#91b1bf" font-family="ui-monospace,monospace" font-size="12">WSLENV · distro · cwd</text>
+          <rect x="304" y="352" width="150" height="76" rx="15" fill="#0b1d24" stroke="#3f7181"/>
+          <text x="336" y="380" fill="#eef9ff" font-family="system-ui,sans-serif" font-size="18" font-weight="700">WSL adapter</text>
+          <text x="344" y="406" fill="#91b1bf" font-family="ui-monospace,monospace" font-size="12">Pi MVP only</text>
+          <rect x="503" y="352" width="150" height="76" rx="15" fill="#0b1d24" stroke="#3f7181"/>
+          <text x="533" y="380" fill="#eef9ff" font-family="system-ui,sans-serif" font-size="18" font-weight="700">herdr.exe</text>
+          <text x="526" y="406" fill="#91b1bf" font-family="ui-monospace,monospace" font-size="12">WSLInterop → pipe</text>
+          <path d="M 255 390 L 304 390" stroke="#75e0a7" stroke-width="3" marker-end="url(#arrow)"/>
+          <path d="M 454 390 L 503 390" stroke="#75e0a7" stroke-width="3" marker-end="url(#arrow)"/>
+          <path d="M 578 352 C 578 285, 250 285, 205 240" fill="none" stroke="#60d8ff" stroke-width="3" marker-end="url(#arrow)"/>
+          <text x="364" y="277" fill="#8fdfff" font-family="ui-monospace,monospace" font-size="12">pane.report-agent · release-agent</text>
+          <path d="M 42 490 L 714 490" stroke="#1f3545" stroke-dasharray="6 7"/>
+          <text x="68" y="535" fill="#ffb9c0" font-family="ui-monospace,monospace" font-size="13">NO second Herdr runtime · NO terminal parsing · NO generic wsl.exe interception</text>
+        </svg>
+      </figure>
+    </header>
+
+    <div class="meta-grid" aria-label="plan metadata">
+      <div class="meta"><span>Generated</span><b>2026-08-30 11:26 +0800</b></div>
+      <div class="meta"><span>Agent / Model</span><b>pi · yuuzu-router/gpt-5.6-sol</b></div>
+      <div class="meta"><span>Session</span><b>01a04ec8-9215-769f-a1dd-03fb32ba572b</b></div>
+      <div class="meta"><span>Base</span><b>release/v0.0.9-beta.3 · 53f53e3</b></div>
+    </div>
+
+    <div class="page-grid">
+      <nav aria-label="目錄">
+        <strong>目錄</strong>
+        <a href="#summary">01 · 執行摘要</a>
+        <a href="#decisions">02 · 已定邊界</a>
+        <a href="#architecture">03 · 目標架構</a>
+        <a href="#contract">04 · Runtime 契約</a>
+        <a href="#files">05 · 檔案與套件配置</a>
+        <a href="#phases">06 · 實作階段</a>
+        <a href="#testing">07 · 自動化驗證</a>
+        <a href="#windows">08 · Windows 驗收</a>
+        <a href="#risks">09 · 風險與緩解</a>
+        <a href="#release">10 · 發布與回滾</a>
+        <a href="#references">11 · 依據與追溯</a>
+      </nav>
+
+      <main>
+        <section id="summary">
+          <div class="label">01 · Executive summary</div>
+          <h2>先升 Stable，再做 Plugin-managed WSL 相容層</h2>
+          <div class="grid-3">
+            <div class="card">
+              <span class="status go">GO</span>
+              <h3>Pi WSL live identity／state</h3>
+              <p>Plugin 建立 pane、Pi adapter 經 <code>herdr.exe pane report-agent</code> 回報 <code>working</code>／<code>idle</code>／<code>blocked</code>。Yuzora 只投影 snapshot／events 既有 identity 與 state；Pi native session id 僅寫 adapter log，不進 Yuzora DTO，也不可 resume。</p>
+            </div>
+            <div class="card">
+              <span class="status conditional">DEFERRED</span>
+              <h3>Claude／Codex</h3>
+              <p>已拍板延後。本輪不交付 Claude／Codex installer、action、adapter、test 或驗收；不得把延後項目標成 PASS。</p>
+            </div>
+            <div class="card">
+              <span class="status no">NO-GO</span>
+              <h3>透明相容任意 WSL pane</h3>
+              <p>Plugin v1 無 spawn interceptor、跨 WSL process observation 或新 Agent kind；任意手動 <code>wsl.exe</code> pane 不列入第一版承諾。</p>
+            </div>
+          </div>
+          <div class="callout good">
+            <strong>計畫核心：</strong>在 Yuzora repo 內新增 <code>herdr-plugins/yuzora-wsl-agents/</code>，並依使用者決策 B 將 runtime allowlist 封裝進 <code>0.0.9-beta.3</code> Windows MSI／NSIS。
+            安裝或啟動 Yuzora 不自動註冊 Plugin；使用者由 bundled helper 明確 link exact resource path。Yuzora runtime 不新增 bridge service；只保留既有 <code>session.snapshot</code>、<code>events.subscribe</code> 與 typed consumer seam，不新增 metadata／session DTO。
+          </div>
+          <div class="callout warn">
+            <strong>版本條件：</strong>Plugin 以官方 Herdr <code>v0.8.2</code> Stable／protocol 20 為最低版本；managed binary、Windows Stable ZIP、完整 ConPTY runtime 與封裝驗證必須同步更新。舊 protocol 19 server 不得半連線。
+          </div>
+          <p class="small">此文件是實作與發布計畫。Windows 11／WSL2 實機結果在使用者簽核前一律標示未驗證。Oracle／Scout 修正與使用者決策 D1=A、D2=Pi-only、D3=B（Windows installer bundled Experimental）已鎖定於下節；實作追蹤見 GitHub Issue #90。</p>
+        </section>
+
+        <section id="decisions">
+          <div class="label">02 · Scope &amp; non-goals</div>
+          <h2>已定責任邊界</h2>
+          <table>
+            <thead><tr><th>主題</th><th>決定</th><th>理由</th></tr></thead>
+            <tbody>
+              <tr><td>Host Runtime</td><td><strong>僅 Windows-native Herdr</strong></td><td>WSL 是 pane workload；不得啟動第二個 WSL Herdr runtime。</td></tr>
+              <tr><td>可支援 pane</td><td><strong>僅 Plugin entrypoint 建立</strong></td><td>Plugin 可控制自身 pane 的 argv／env；無法攔截既有或手動 <code>wsl.exe</code>。</td></tr>
+              <tr><td>Agent authority</td><td><strong>WSL agent adapter 主動自報</strong></td><td>Windows process tree 看不到 WSL Linux Agent；terminal/screen 推論被禁止。</td></tr>
+              <tr><td>Transport</td><td><strong>WSLInterop 執行 Windows <code>herdr.exe</code></strong></td><td>沿用官方 CLI，讓 Windows process 連 named pipe；不引入 npiperelay／localhost bridge。</td></tr>
+              <tr><td>Source ID</td><td><code>yuzora:wsl:pi</code></td><td>不冒充官方 <code>herdr:pi</code>。Claude／Codex custom source 延後。</td></tr>
+              <tr><td>Yuzora consumer</td><td><strong>snapshot/events only</strong></td><td>不讀 Plugin files、不解析 terminal、不推斷 distro 或 Agent；不新增 metadata／session DTO。</td></tr>
+              <tr><td>Native session</td><td><strong>adapter-log only</strong></td><td>Custom source 無法形成 Herdr persisted <code>agent_session</code>；<code>report-agent-session</code> 不在 MVP 驗收。Pi session id 可寫 log，不可投影、不可 resume。</td></tr>
+              <tr><td>Execution origin</td><td><strong>MVP 不新增／不恢復</strong></td><td>若 Herdr wire 未提供權威欄位，Yuzora 不自行製造 <code>execution_origin</code>。</td></tr>
+              <tr><td>Unknown Attention</td><td><strong>保留現行行為</strong></td><td>不因 WSL adapter 靜音或降級 global unknown Attention。</td></tr>
+              <tr><td>New Agent dialog</td><td><strong>仍只啟動 Herdr manifest kind</strong></td><td>Plugin 不能註冊新的 <code>agent start --kind</code>；不得把 WSL entrypoint 偽裝進 catalog。</td></tr>
+              <tr><td>Windows delivery</td><td><strong>Bundled Experimental，Settings 明確啟用</strong></td><td>MSI／NSIS 以 individual resource mappings 內附 exact 10-file runtime allowlist；不封裝其他 adapters／scripts、tests 或開發 lib。Herdr 設定的 WSL Pi 開關以 backend lock 序列化 ownership-safe link＋adapter install；pre-linked inactive registration 不自動 repair，disable 掃描所有 installed distros 並在 exact owned adapter 全部 absent 後才 unlink。app startup 仍不自動註冊或修改 WSL home。</td></tr>
+              <tr><td>Security boundary</td><td><strong>同 Windows 使用者信任模型</strong></td><td>Herdr v0.8.2 report API 無 pane-scoped token；MVP 不宣稱對抗同使用者惡意 spoof。</td></tr>
+            </tbody>
+          </table>
+          <details open>
+            <summary>明確不在第一版範圍</summary>
+            <div>
+              <ul>
+                <li>任意既有 pane 內手動執行 <code>wsl.exe</code> 的透明偵測。</li>
+                <li>掃描 WSL <code>/proc</code>、Windows process tree 或 terminal output。</li>
+                <li>WSL Herdr provider、runtime target、socket relay、distro discovery UI。</li>
+                <li>OSC 21337 lifecycle authority、Herdr core fork、custom resume command。</li>
+                <li>WSL distro discovery／config editor 與任意 adapter catalog；第一版 Settings 只提供 Pi-only enable／disable transaction，distro 仍由 Herdr Plugin config 決定。</li>
+                <li>Claude／Codex installer、action、adapter、test 與 Windows 驗收（延後 follow-up）。</li>
+                <li>Yuzora 可見的 native session／thread identity、<code>report-agent-session</code>、resume command 或 metadata token 投影。</li>
+                <li>把 Claude／Codex 無法證明的狀態硬標成 working／blocked。</li>
+              </ul>
+            </div>
+          </details>
+          <details>
+            <summary>本計畫採用的假設</summary>
+            <div>
+              <ul>
+                <li>初版 plugin 與 Yuzora 同 repo 共置，Windows installer 以 Tauri resource map 封裝 runtime allowlist；日後拆成獨立 repo 不改 runtime contract。</li>
+                <li>Installer activation 維持 explicit opt-in；Herdr 設定的 WSL Pi 開關與 bundled helper 都只管理 exact bundled root，遇同 id 的其他 registration fail closed。</li>
+                <li>目標 Windows 為 Windows 11＋WSL2，啟用 WSLInterop，且可從 WSL 執行 <code>.exe</code>。</li>
+                <li>Plugin runtime 使用 Windows PowerShell 5.1 相容語法，不要求使用者另裝 Bun／Node／Rust。</li>
+                <li>Agent adapter 使用專屬檔名與 marker，不覆寫 Herdr 官方 Windows-home integration。</li>
+                <li>Windows plugin 仍是 Herdr 官方 Preview 等級，因此 Yuzora 對外也標為 Experimental，直到使用者驗收通過。</li>
+                <li>開發期以 <code>herdr plugin link</code> 為準；PowerShell 啟動需 <code>-NoProfile -ExecutionPolicy Bypass</code>，企業 GPO 鎖定環境列入 known limitation。</li>
+              </ul>
+            </div>
+          </details>
+        </section>
+
+        <section id="architecture">
+          <div class="label">03 · Target architecture</div>
+          <h2>單向投影，不建立第二條狀態真相</h2>
+          <div class="grid-2">
+            <div class="card">
+              <h3>控制面</h3>
+              <ol>
+                <li>Herdr plugin action 讀取 plugin config 與 focused context。</li>
+                <li>Action 經 <code>HERDR_BIN_PATH plugin pane open</code> 開啟 plugin-owned pane。</li>
+                <li>PowerShell wrapper 選定 distro／Linux cwd，fail-closed 清理 <code>WSLENV</code> 後 exec <code>wsl.exe</code>。</li>
+                <li>Adapter manager 只 orchestrate；Pi hook 的實際檔案操作由 <code>wsl.exe -d &lt;distro&gt; -- sh</code> 在 distro 內執行。</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>資料面</h3>
+              <ol>
+                <li>WSL Agent hook 取得 launch-time pane identity。</li>
+                <li>共用 reporter 經 translated <code>HERDR_BIN_PATH</code> 啟動 Windows <code>herdr.exe</code>。</li>
+                <li>CLI 連到 owning named session，MVP 只呼叫 <code>report-agent</code> 與 <code>release-agent</code>。</li>
+                <li>Yuzora 只從 snapshot／events 收到 agent projection。</li>
+              </ol>
+            </div>
+          </div>
+          <div class="callout">
+            <strong>關鍵 routing：</strong>先不分大小寫刪除既有 <code>WSLENV</code> 中所有 <code>HERDR_SOCKET_PATH</code> entries／flags，再把 Windows socket marker 改名傳入 <code>YUZORA_HERDR_SOCKET_PATH/u</code>。
+            reporter 僅在啟動 Windows <code>herdr.exe</code> 的該次 child env 暫時還原 <code>HERDR_SOCKET_PATH</code>，並以 <code>HERDR_SOCKET_PATH/w</code> 回傳 Windows process。
+          </div>
+          <h3>依賴順序</h3>
+          <svg viewBox="0 0 1040 260" role="img" aria-label="實作階段依賴圖" style="width:100%;height:auto;margin-top:8px;border:1px solid var(--line);border-radius:16px;background:#07121c;padding:12px">
+            <defs><marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#60d8ff"/></marker></defs>
+            <g font-family="ui-monospace,monospace" font-size="13" text-anchor="middle">
+              <g fill="#102434" stroke="#3e6882"><rect x="20" y="88" width="135" height="72" rx="14"/><text x="87" y="117" fill="#eaf6ff">P0</text><text x="87" y="140" fill="#9fc0d2">baseline</text></g>
+              <g fill="#102434" stroke="#3e6882"><rect x="190" y="88" width="135" height="72" rx="14"/><text x="257" y="117" fill="#eaf6ff">P1</text><text x="257" y="140" fill="#9fc0d2">Herdr 0.8.2</text></g>
+              <g fill="#102434" stroke="#3e6882"><rect x="360" y="88" width="135" height="72" rx="14"/><text x="427" y="117" fill="#eaf6ff">P2</text><text x="427" y="140" fill="#9fc0d2">plugin shell</text></g>
+              <g fill="#123128" stroke="#4f9b73"><rect x="530" y="22" width="155" height="72" rx="14"/><text x="607" y="51" fill="#eafff2">P3</text><text x="607" y="74" fill="#a9d9bd">launcher</text></g>
+              <g fill="#123128" stroke="#4f9b73"><rect x="530" y="154" width="155" height="72" rx="14"/><text x="607" y="183" fill="#eafff2">P4</text><text x="607" y="206" fill="#a9d9bd">installer</text></g>
+              <g fill="#30294a" stroke="#7660b4"><rect x="720" y="88" width="135" height="72" rx="14"/><text x="787" y="117" fill="#f2edff">P5–P7</text><text x="787" y="140" fill="#c8bdf0">adapters + UI</text></g>
+              <g fill="#3a2d16" stroke="#a87524"><rect x="890" y="88" width="130" height="72" rx="14"/><text x="955" y="117" fill="#fff2d6">P8–P9</text><text x="955" y="140" fill="#e8c98f">manual gate</text></g>
+              <path d="M155 124 H190" stroke="#60d8ff" stroke-width="3" marker-end="url(#a2)"/><path d="M325 124 H360" stroke="#60d8ff" stroke-width="3" marker-end="url(#a2)"/><path d="M495 112 C512 93 514 70 530 60" fill="none" stroke="#60d8ff" stroke-width="3" marker-end="url(#a2)"/><path d="M495 136 C512 157 514 180 530 188" fill="none" stroke="#60d8ff" stroke-width="3" marker-end="url(#a2)"/><path d="M685 60 C704 72 707 94 720 108" fill="none" stroke="#60d8ff" stroke-width="3" marker-end="url(#a2)"/><path d="M685 190 C704 177 707 153 720 140" fill="none" stroke="#60d8ff" stroke-width="3" marker-end="url(#a2)"/><path d="M855 124 H890" stroke="#60d8ff" stroke-width="3" marker-end="url(#a2)"/>
+            </g>
+          </svg>
+        </section>
+
+        <section id="contract">
+          <div class="label">04 · Runtime contracts</div>
+          <h2>環境、source、seq 與 lifecycle 契約</h2>
+          <h3>Win32 → WSL 環境傳遞</h3>
+          <table>
+            <thead><tr><th>變數</th><th>WSLENV entry</th><th>用途</th><th>限制</th></tr></thead>
+            <tbody>
+              <tr><td><code>HERDR_ENV</code></td><td><code>HERDR_ENV/u</code></td><td>啟用 adapter gate</td><td>必須等於 <code>1</code>。</td></tr>
+              <tr><td><code>HERDR_PANE_ID</code></td><td><code>HERDR_PANE_ID/u</code></td><td>launch-time pane alias</td><td>跨 workspace move 後仍使用 launch id。</td></tr>
+              <tr><td><code>HERDR_TAB_ID</code></td><td><code>HERDR_TAB_ID/u</code></td><td>診斷／metadata</td><td>不作為 report target。</td></tr>
+              <tr><td><code>HERDR_WORKSPACE_ID</code></td><td><code>HERDR_WORKSPACE_ID/u</code></td><td>診斷／顯示</td><td>不自行改寫 Yuzora ownership。</td></tr>
+              <tr><td><code>HERDR_BIN_PATH</code></td><td><code>HERDR_BIN_PATH/up</code></td><td>轉成 <code>/mnt/c/.../herdr.exe</code></td><td>僅 Win32→WSL，避免回傳路徑再翻譯。</td></tr>
+              <tr><td><code>YUZORA_HERDR_SOCKET_PATH</code></td><td><code>YUZORA_HERDR_SOCKET_PATH/u</code></td><td>保存 owning named-session marker</td><td>不可讓 stock Linux hook 誤認成 Unix socket。</td></tr>
+              <tr><td><code>YUZORA_WSL_DISTRO</code></td><td><code>YUZORA_WSL_DISTRO/u</code></td><td>顯示與診斷</td><td>不由 Yuzora consumer 推斷。</td></tr>
+            </tbody>
+          </table>
+          <div class="callout bad"><strong>禁止與 fail-closed 規則：</strong>Herdr plugin pane 會強制注入 raw <code>HERDR_SOCKET_PATH</code>。Launcher 必須<strong>不分大小寫</strong>刪除既有 <code>WSLENV</code> 中每一個 <code>HERDR_SOCKET_PATH</code> entry（無 flag 或任何 flags），再只加入 Win32→WSL 的 <code>YUZORA_HERDR_SOCKET_PATH/u</code>。原始 named-pipe marker 不得進入 WSL stock hook；只在啟動 Windows <code>herdr.exe</code> 的 child env 暫時設 <code>HERDR_SOCKET_PATH</code> 並附加 <code>HERDR_SOCKET_PATH/w</code>。</div>
+
+          <h3>Reporter child invocation</h3>
+          <pre><code># 概念契約；實作由共用 reporter 封裝，不讓各 adapter 重複拼接。
+HERDR_SOCKET_PATH="$YUZORA_HERDR_SOCKET_PATH" \
+WSLENV="$(merge_wslenv "$WSLENV" 'HERDR_SOCKET_PATH/w')" \
+"$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" \
+  --source yuzora:wsl:pi \
+  --agent pi \
+  --state working \
+  --seq "$SEQ"</code></pre>
+
+          <h3>Sequence 契約</h3>
+          <ul>
+            <li><code>seq</code> 對每個 <code>(named-session marker, pane launch id, source)</code> 單調遞增。</li>
+            <li>共用 reporter 以 <code>max(epochMillis, persisted + 1)</code> 產生下一值，以 <code>flock</code> 原子寫入 <code>$XDG_RUNTIME_DIR</code> 或 <code>~/.cache/yuzora-herdr-wsl/</code>。</li>
+            <li>同一 hook process 內再加 local counter，避免同毫秒 collision。</li>
+            <li>不把 API 回傳 <code>ok</code> 視為 seq 已被接受；trace log 保留 source／pane／candidate seq，Windows 驗收比對 snapshot。stale rejection 最多重試一次較高 seq。</li>
+          </ul>
+
+          <h3>Agent 能力分級</h3>
+          <table>
+            <thead><tr><th>Agent</th><th>本輪範圍</th><th>State policy</th><th>Native session</th><th>Exit</th></tr></thead>
+            <tbody>
+              <tr><td>Pi</td><td>MVP：live identity + state</td><td>依 Pi lifecycle event 映射 working／idle／blocked；source 固定 <code>yuzora:wsl:pi</code>。不呼叫 <code>report-agent-session</code>。</td><td>若 hook 提供 Pi session id，只寫 adapter log。Yuzora 不投影、不持久化、不 resume。Report API 沒有 resume command 欄位。</td><td>hook <code>release-agent</code>；pane 結束由 Herdr 自清。<code>pane.exited</code> cleanup 為 optional，只清 plugin seq／state 檔。</td></tr>
+              <tr><td>Claude</td><td>延後 follow-up</td><td>本輪不實作 installer／adapter／action／驗收。</td><td>不承諾。</td><td>不在本輪。</td></tr>
+              <tr><td>Codex</td><td>延後 follow-up</td><td>本輪不實作 TOML／hooks.json merge 或 adapter。</td><td>不承諾。</td><td>不在本輪。</td></tr>
+            </tbody>
+          </table>
+          <p class="small">Custom source 可驅動 <code>report-agent</code>，但 v0.8.2 <code>session_ref_from_report</code> 只接受官方 <code>herdr:*</code> allowlist；<code>yuzora:wsl:pi</code> 無法形成 persisted <code>agent_session</code>。文件與 UI 不得宣稱官方 integration 等價，也不得把 API <code>ok</code> 當成 session 已持久化。</p>
+        </section>
+
+        <section id="files">
+          <div class="label">05 · File map</div>
+          <h2>預計修改與新增檔案</h2>
+          <div class="grid-2">
+            <div class="card">
+              <h3>Yuzora 現有檔案</h3>
+              <ul class="file-list">
+                <li><code>scripts/prepare-herdr-resources.ts</code></li>
+                <li><code>scripts/prepare-herdr-resources.test.ts</code></li>
+                <li><code>src-tauri/tauri.windows.conf.json</code>（逐檔封裝 exact 10-file Plugin runtime allowlist）</li>
+                <li><code>README.md</code>、<code>README.zh-TW.md</code>、<code>CHANGELOG.md</code></li>
+                <li><code>src-tauri/src/herdr_transport.rs</code>（僅當 version comment／test 真的需要）</li>
+                <li><code>docs/operations.md</code>（後續文件波次）</li>
+                <li><code>.yuuzu/CONTEXT.html</code>（後續文件波次）</li>
+                <li>現有 dirty Herdr consumer 檔案本輪<strong>不得</strong>為 plugin 新增 session／metadata DTO</li>
+              </ul>
+              <div class="callout warn"><strong>不做 blanket replacement：</strong>大量 <code>0.8.0</code>／protocol 19 fixture 是相容性測試，不因 bundle 升級就全改；只更新「版本 pin／release expectation」測試。</div>
+            </div>
+            <div class="card">
+              <h3>新 Plugin package</h3>
+              <ul class="file-list">
+                <li><code>herdr-plugins/yuzora-wsl-agents/herdr-plugin.toml</code></li>
+                <li><code>.../README.md</code></li>
+                <li><code>.../scripts/common.ps1</code></li>
+                <li><code>.../scripts/open-pane.ps1</code></li>
+                <li><code>.../scripts/manage-adapters.ps1</code></li>
+                <li><code>.../scripts/manage-bundled-plugin.ps1</code>（status／link／exact-root unlink）</li>
+                <li><code>.../scripts/check-status.ps1</code></li>
+                <li><code>.../adapters/common/herdr-wsl-report</code></li>
+                <li><code>.../adapters/pi/yuzora-herdr-wsl.ts</code></li>
+                <li><code>.../adapters/install.sh</code>（in-distro POSIX installer；Windows 只 orchestrate）</li>
+                <li class="strike"><code>.../adapters/claude/</code> 與 <code>.../adapters/codex/</code>（延後）</li>
+                <li><code>.../tests/*.test.ts</code></li>
+                <li><code>.../tests/run-windows.ps1</code></li>
+                <li><code>.../fixtures/</code></li>
+              </ul>
+            </div>
+          </div>
+          <details>
+            <summary>Plugin manifest 目標形狀</summary>
+            <div>
+              <ul>
+                <li><code>id = "yuzora-wsl-agents"</code>、<code>version = "0.1.0"</code>、<code>min_herdr_version = "0.8.2"</code>、<code>platforms = ["windows"]</code>。</li>
+                <li><code>[[startup]]</code> 僅做非破壞性 status check；不得當 supervised daemon。</li>
+                <li><code>[[actions]]</code> MVP：Install Pi adapter、Status、Open WSL shell、Open Pi、Uninstall Pi adapter。Claude／Codex action 延後。</li>
+                <li><code>[[panes]]</code>：PowerShell wrapper；MVP 固定 WSL shell 與 Pi entrypoint。argv 必須含 <code>-NoProfile -ExecutionPolicy Bypass</code>；不接受任意 user shell string。</li>
+                <li><code>[[events]] on = "pane.exited"</code> 為 optional：最多清 plugin seq／state 檔。不得以它取代 reporter <code>release-agent</code> 或 Herdr pane lifecycle。</li>
+                <li>Beta installer 從 <code>&lt;resource root&gt;\herdr-plugins\yuzora-wsl-agents</code> 明確 link；不得在 app startup 自動註冊。</li>
+                <li>開發期仍用 source checkout <code>herdr plugin link</code>；不要依賴 GitHub subdir install clone 整個 Yuzora repo。</li>
+              </ul>
+            </div>
+          </details>
+          <details>
+            <summary>Dirty working tree 邊界</summary>
+            <div>
+              <p>計畫建立時有 14 個 unstaged 路徑，包含 <code>herdr_service.rs</code>、<code>herdrTypes.ts</code>、<code>herdrNormalize.ts</code>、<code>herdrStore.ts</code> 與兩份已刪設計文件。實作者在 Phase 0 必須先建立「保留／排除／重做」清單；不得覆蓋現有變更，也不得自行恢復 <code>execution_origin</code>。</p>
+              <p><code>QA-REPORT.md</code> 目前亦為 dirty；Windows 驗收前不寫入 release 證據。</p>
+            </div>
+          </details>
+        </section>
+
+        <section id="phases">
+          <div class="label">06 · Implementation phases</div>
+          <h2>九階段實作與驗收順序</h2>
+
+          <div class="phase">
+            <div class="phase-no">P0</div>
+            <div>
+              <h3>凍結基線與釐清 dirty tree</h3>
+              <p><span class="owner">實作者</span></p>
+              <ul class="checks">
+                <li>記錄 branch、base SHA、selected Herdr binary 與目前 14 個 unstaged 路徑。</li>
+                <li>逐一檢查相關 dirty diff，確認 optional <code>execution_origin</code> 與被刪研究／設計文件的最終意圖。</li>
+                <li>建立本計畫的 change boundary：哪些既有 dirty 行必須保留、哪些路徑本輪完全不碰。</li>
+                <li>確認目前 <code>bun run typecheck</code> baseline 為 PASS；若後續失敗可歸因。</li>
+              </ul>
+              <p><strong>完成條件：</strong>所有相關 dirty 檔案都有明確 ownership；未獲確認前不進入修改。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P1</div>
+            <div>
+              <h3>升級 Yuzora-managed Herdr 至 v0.8.2 Stable</h3>
+              <p><span class="owner">實作者</span></p>
+              <ul class="checks">
+                <li>更新 macOS arm64／x86_64 與 Windows x86_64 至同一官方 <code>v0.8.2</code> release；移除 Windows preview URL。</li>
+                <li>以 GitHub release digest 與解壓後 exact file inventory 固定資產；Windows 保留完整 ConPTY runtime。</li>
+                <li>更新 <code>HERDR_RESOURCE_VERSION</code> 為 <code>baseVersion: "0.8.2"</code>、<code>protocol: 20</code>。</li>
+                <li>驗證 terminal observe／control 仍由 selected binary 提供，沒有 protocol 19 hardcode；必要時才調整 transport。</li>
+                <li>記錄並回歸 0.8.2 行為變化：<code>agent.prompt</code> 在 blocked 時回 <code>agent_blocked</code>；<code>agent start</code> 等待 shell／interactive ready；<code>pane.current</code> 解析 calling pane；headless fallback <code>80×24 → 120×40</code>。</li>
+                <li>更新 operations 說明：19↔20 不相容、升級後須重啟舊 named-session server、Stable／Preview 分流。</li>
+                <li>只更新 pin expectations；保留用來測舊 schema／compatibility 的 0.8.0 fixtures。</li>
+              </ul>
+              <p><strong>完成條件：</strong>managed asset tests、Rust Herdr tests、typecheck 全部通過；本機可證明 bundled binary <code>--version=0.8.2</code>、schema protocol 20。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P2</div>
+            <div>
+              <h3>建立 Windows-only Plugin package</h3>
+              <p><span class="owner">實作者</span></p>
+              <ul class="checks">
+                <li>新增 <code>herdr-plugins/yuzora-wsl-agents/</code> 與 v1 manifest，最低 Herdr <code>0.8.2</code>。</li>
+                <li>定義 versioned config schema：default distro、distros、enabled agents（MVP 僅 <code>pi</code>）、optional Linux cwd policy。</li>
+                <li>所有 runtime script 相容 Windows PowerShell 5.1；manifest argv 含 <code>-NoProfile -ExecutionPolicy Bypass</code>。企業 GPO 鎖定 ExecutionPolicy 列入 known limitation。</li>
+                <li>Startup 只檢查狀態並寫 plugin log，不自動修改 WSL home。</li>
+                <li>Actions 與 panes 均以固定 argv 組裝；使用者輸入永不拼進 shell string。</li>
+              </ul>
+              <p><strong>完成條件：</strong>Herdr v0.8.2 可 link/install manifest；Windows-only filter 與 min-version gate 正確。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P3</div>
+            <div>
+              <h3>Plugin-managed WSL pane launcher</h3>
+              <p><span class="owner">實作者</span></p>
+              <ul class="checks">
+                <li>從 <code>HERDR_PLUGIN_CONTEXT_JSON</code> 取 focused workspace/cwd，但不把 context pane id 當新 pane identity。</li>
+                <li>以 config 選 distro；UNC workspace 必須匹配 distro，Windows path 透過 target distro 的 <code>wslpath</code> 轉換。</li>
+                <li>Fail-closed 清理 <code>WSLENV</code>：不分大小寫刪除所有 <code>HERDR_SOCKET_PATH</code> entries／flags，保留其他 entries 並去重，再追加 Win32→WSL contract 與 <code>YUZORA_HERDR_SOCKET_PATH/u</code>。</li>
+                <li>把 Windows socket marker 複製到 alias <code>YUZORA_HERDR_SOCKET_PATH</code>；不把 raw <code>HERDR_SOCKET_PATH</code> 傳入 WSL。僅 reporter child 暫時設 <code>HERDR_SOCKET_PATH/w</code>。</li>
+                <li>MVP 只提供 WSL shell 與 Pi 固定 entrypoint；不接受任意 user string，也不開放 Claude／Codex entrypoint。</li>
+                <li>失敗時顯示明確 distro／cwd／binary／interop 錯誤，不 fallback 到另一 distro。</li>
+              </ul>
+              <p><strong>完成條件：</strong>fixture tests 證明 WSLENV merge、Unicode／space path、UNC mismatch 與 missing distro 均 fail closed。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P4</div>
+            <div>
+              <h3>Per-distro adapter install／status／uninstall</h3>
+              <p><span class="owner">實作者</span></p>
+              <ul class="checks">
+                <li>以 <code>wsl.exe --list --quiet</code> 取得 inventory；處理 UTF-16LE／NUL，重用與 Yuzora backend 同等解析 fixture。</li>
+                <li>Windows 只 orchestrate：以 <code>wsl.exe -d &lt;distro&gt; -- sh</code> 在 distro 內執行 POSIX installer。禁止 PowerShell 透過 <code>\\wsl.localhost</code> 直接改 Linux home／chmod。</li>
+                <li>MVP 只安裝 Pi 專屬 extension 檔名與 version marker；不編輯 Claude <code>settings.json</code> 或 Codex <code>config.toml</code>／<code>hooks.json</code>。</li>
+                <li>每個 adapter 寫入 version marker／checksum；status 分辨 absent、current、outdated、drifted。</li>
+                <li>Uninstall 只刪 plugin-owned files／marker；重複執行為 no-op；plugin uninstall 前文件要求先跑 adapter uninstall。</li>
+                <li>多 distro 逐一回報，不因單一 distro offline 就覆蓋其他結果。</li>
+              </ul>
+              <p><strong>完成條件：</strong>temp-home fixture 能 round-trip install → status current → uninstall → no residue，且不破壞既有 hook。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P5</div>
+            <div>
+              <h3>共用 reporter 與 Pi lifecycle adapter</h3>
+              <p><span class="owner">實作者</span></p>
+              <ul class="checks">
+                <li>新增共用 reporter，集中 env validation、named-session routing、seq、retry、logging 與 CLI argv。</li>
+                <li>從 Herdr v0.8.2 官方 Pi integration 的 event mapping 衍生，保留 license／來源註記，但 transport 改為 CLI reporter。</li>
+                <li>回報 <code>yuzora:wsl:pi</code>、agent <code>pi</code>、working／idle／blocked。不呼叫 <code>report-agent-session</code>；不新增 Yuzora metadata／session DTO。</li>
+                <li>若 Pi hook 提供 native session id，只寫 adapter log，明確標 non-resumable。不得把它當成 Yuzora 或 Herdr persisted session。</li>
+                <li>報告失敗不可阻止 Pi；採有限 retry／queue，不輪詢、不在每個 token/output 事件 spawn <code>herdr.exe</code>。seq 用 <code>flock</code>；stale rejection 最多重試一次。</li>
+                <li>正常 exit 呼叫 <code>release-agent</code>；crash 時由 pane lifecycle 收斂，不建立 daemon。</li>
+              </ul>
+              <p><strong>完成條件：</strong>adapter unit harness 能重播事件序列，證明 state transitions、seq 與 release argv 精確；測試不得要求 Yuzora 顯示 session id。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P6</div>
+            <div>
+              <h3>Claude／Codex 延後 follow-up</h3>
+              <p><span class="owner">不在本輪</span></p>
+              <ul class="checks">
+                <li>本輪不新增 Claude／Codex adapter、installer、action、fixture 或 Windows 驗收。</li>
+                <li>後續若重開，仍須使用 custom source、in-distro POSIX file ops，且不得冒充官方 <code>herdr:*</code>。</li>
+                <li>後續若重開，仍不得把 native session 當成 Yuzora 投影或 resume 能力。</li>
+                <li>W11／W12 維持 <strong>DEFERRED</strong>，不得標 PASS／UNVERIFIED 混充完成。</li>
+              </ul>
+              <p><strong>完成條件：</strong>spec／plugin manifest／測試清單都明確排除 Claude／Codex；沒有半成品 hook 殘留。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P7</div>
+            <div>
+              <h3>Yuzora consumer regression 與文件同步</h3>
+              <p><span class="owner">實作者</span></p>
+              <ul class="checks">
+                <li>增加 snapshot／event fixture：custom source Pi、<code>unknown</code> state、release／pane exit。不新增 tokens／agent_session／execution_origin 欄位。</li>
+                <li>驗證 <code>HerdrBridge → herdrStore → Agent UI/Attention</code> 只讀既有 wire truth；unknown Attention 維持現行行為。</li>
+                <li>不把 plugin entrypoint塞入 <code>HerdrNewAgentDialog</code> manifest catalog。</li>
+                <li>更新 <code>.yuuzu/CONTEXT.html</code>：Plugin-managed WSL pane 是允許的 adapter pattern；任意 WSL pane 仍不支援。</li>
+                <li>更新 <code>docs/operations.md</code>：install、config、status、open、uninstall、known limitations。</li>
+                <li>ADR-0002 只有在責任邊界改變時才更新；若實作符合既有決策，不製造重複 ADR。</li>
+              </ul>
+              <p><strong>完成條件：</strong>typecheck、store/normalize/attention tests 全通過；code review 可逐行證明沒有 terminal parse 或 process inference。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P8</div>
+            <div>
+              <h3>Windows 11／WSL2 實機驗收</h3>
+              <p><span class="owner">使用者</span></p>
+              <ul class="checks">
+                <li>使用者依本文件「Windows 驗收矩陣」執行 Herdr Stable、plugin、WSLENV、Pi-only lifecycle、named session routing、crash、multi-distro 與 uninstall 測試。Claude／Codex 列為 DEFERRED。</li>
+                <li>每個 case 提供命令輸出、Herdr snapshot/event 節錄、Yuzora 畫面與 plugin log。</li>
+                <li>失敗 case 回傳完整 evidence；實作者只依證據修正，不自行宣稱 Windows PASS。</li>
+              </ul>
+              <p><strong>完成條件：</strong>使用者簽署 PASS／Conditional PASS／FAIL；沒有簽核就不得進入 Stable support statement。</p>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="phase-no">P9</div>
+            <div>
+              <h3>發布、支援矩陣與回滾</h3>
+              <p><span class="owner">實作者 + 使用者核准</span></p>
+              <ul class="checks">
+                <li>Plugin 以 <code>0.x</code> Experimental 隨 Windows Beta installer 封裝；列出最低 Herdr、Windows、WSL 與 agent 版本。</li>
+                <li>Installer inventory 必須與 exact 10-file allowlist 完全相等並逐檔比對 source SHA-256；任何額外 adapter／script／test／lib 都 fail closed。</li>
+                <li>Windows candidate／Release job 以 Windows PowerShell 5.1 執行 UTF-8／UTF-16LE byte fixtures、解析 packaged scripts，並從 MSI／NSIS extracted resource path 做 status／link／foreign-root refusal／unlink。</li>
+                <li>README 區分 Stable Herdr runtime 與 Preview plugin surface，不把 preview 能力標成 stable。</li>
+                <li>Bundled helper 對 exact root 提供 status／link／unlink；不自動註冊，不覆寫同 id 的其他 source。</li>
+                <li>提供 reinstall 更新流程；Herdr v1 無 plugin update，不暗示自動更新。</li>
+                <li>回滾順序：關閉 plugin panes → uninstall WSL adapters → disable/uninstall plugin → 保留 Yuzora snapshot/event consumer。</li>
+                <li>只有 P8 證據完成後，才更新 QA／changelog／release notes。</li>
+                <li>Beta merge 前設定 accepted candidate tree SHA 與本 repository evidence URL；Release Guard 在 tag 前精確比對 successful-main tree，未 attested 或 tree drift 一律停止。</li>
+              </ul>
+              <p><strong>完成條件：</strong>安裝與回滾文件可由另一位工程師照做，且不需知道內部 bridge 實作。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="testing">
+          <div class="label">07 · Automated verification</div>
+          <h2>實作者負責的非 Windows 與自動化測試</h2>
+          <div class="grid-2">
+            <div class="card">
+              <h3>必跑命令</h3>
+              <pre><code>bun run typecheck
+bun run lint
+bun test scripts/prepare-herdr-resources.test.ts
+bun test herdr-plugins/yuzora-wsl-agents/tests
+bun test src/lib/herdrNormalize.test.ts \
+  src/state/herdrStore.test.ts \
+  src/state/herdrAttention.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml \
+  --lib herdr_service::tests
+cargo test --manifest-path src-tauri/Cargo.toml \
+  --lib herdr_transport::tests
+bash -n herdr-plugins/yuzora-wsl-agents/adapters/common/herdr-wsl-report
+bash -n herdr-plugins/yuzora-wsl-agents/adapters/install.sh</code></pre>
+            </div>
+            <div class="card">
+              <h3>Fixture 覆蓋</h3>
+              <ul>
+                <li>WSL distro list：shipped PowerShell 直接讀 <code>StandardOutput.BaseStream</code> raw bytes；Windows PowerShell 5.1 fixture 覆蓋 UTF-8、UTF-8 BOM、UTF-16LE BOM／NUL、空輸出。</li>
+                <li>CWD：Windows drive、verbatim prefix、<code>\\wsl.localhost</code>、<code>\\wsl$</code>、space、CJK、distro mismatch。</li>
+                <li>WSLENV：case-insensitive deny-list 刪除所有 <code>HERDR_SOCKET_PATH</code> entries／flags，再去重並追加 alias／child-only <code>/w</code>。</li>
+                <li>Config：schema version、unknown keys、invalid distro、path traversal。</li>
+                <li>Install：in-distro POSIX Pi installer round-trip、既有 hooks 不被覆寫、重複 install、drift、uninstall。</li>
+                <li>Reporter：missing env、custom source、named session marker、seq restart、flock、stale retry、timeout、release。不含 <code>report-agent-session</code>。</li>
+                <li>Agent events：Pi complete live state lifecycle；不得把 session id 當 Yuzora fixture 欄位。</li>
+                <li>Yuzora：custom source 不需新增 wire type；unknown state 維持現行 Attention 行為。</li>
+                <li>Packaging：Windows resource map 為 exact allowlist，source path 全部存在，且不含 <code>tests/</code>／<code>lib/</code>。</li>
+                <li>Bundled helper：status JSON、same-root idempotent link、foreign-root link／unlink refusal、exact-root unlink。</li>
+              </ul>
+            </div>
+          </div>
+          <div class="callout warn"><strong>不以 macOS 假裝 Windows 驗收：</strong>PowerShell／ConPTY／named pipe／WSLInterop 的真實相容性只能由 P8 實機證據判定。自動化 fixture 只驗證 deterministic logic 與 command construction。</div>
+        </section>
+
+        <section id="windows">
+          <div class="label">08 · User-owned manual gate</div>
+          <h2>Windows 11／WSL2 驗收矩陣</h2>
+          <p>執行者：<strong>使用者</strong>。每一列須留下 evidence；未執行視為 <span class="status conditional">UNVERIFIED</span>。</p>
+          <table class="matrix">
+            <thead><tr><th>#</th><th>案例</th><th>預期結果</th><th>最低證據</th></tr></thead>
+            <tbody>
+              <tr><td>W01</td><td>Yuzora managed Herdr v0.8.2 Stable</td><td><code>--version=0.8.2</code>、schema/snapshot protocol 20；Windows 不再使用 preview asset。</td><td>版本輸出＋resource inventory。</td></tr>
+              <tr><td>W02</td><td>舊 protocol 19 named session</td><td>新 client 明確拒絕／提示重啟；重啟後 protocol 20 正常，不半連線。</td><td>錯誤訊息＋重啟後 status。</td></tr>
+              <tr><td>W03</td><td>Bundled Plugin inventory／link</td><td>Exact MSI／NSIS 安裝後 payload 等於逐檔 allowlist 且 hashes 對 source；helper <code>status → link → status</code> 顯示 exact root ownership，manifest／actions／min-version gate 正確。</td><td>兩種 installer inventory／hash＋PowerShell 5.1 helper JSON＋<code>herdr plugin list</code>。</td></tr>
+              <tr><td>W04</td><td>Pi adapter install/status</td><td>指定 distro 顯示 Pi current；既有 user Pi hooks 未被覆寫。Claude／Codex 檔案不得被本輪 installer 改寫。</td><td>status 輸出＋before/after diff。</td></tr>
+              <tr><td>W05</td><td>WSL pane env</td><td>WSL 內有 pane/tab/workspace/bin alias；<code>HERDR_BIN_PATH</code> 為可執行 <code>/mnt/*/herdr.exe</code>；無 raw <code>HERDR_SOCKET_PATH</code>；有 <code>YUZORA_HERDR_SOCKET_PATH</code>。</td><td><code>env | sort</code> 與 <code>WSLENV</code> 遮蔽敏感值後輸出。</td></tr>
+              <tr><td>W06</td><td>Named-session round-trip</td><td>從 WSL 呼叫 Windows <code>herdr.exe</code> 的 report 進入 owning session，而非 default session。</td><td>兩個 named session snapshot 對照。</td></tr>
+              <tr><td>W07</td><td>Pi：start → idle</td><td>Yuzora Agents 顯示 Pi live identity 與 idle；pane ownership 正確。不要求顯示 distro 或 native session。</td><td>snapshot agent record＋Yuzora 截圖。</td></tr>
+              <tr><td>W08</td><td>Pi：prompt → working → idle</td><td>events 即時更新，不需 manual refresh，無 duplicate agent。</td><td>event log＋畫面錄影或連續截圖。</td></tr>
+              <tr><td>W09</td><td>Pi：permission／blocked</td><td>Herdr/Yuzora 顯示 blocked；解除後回 working/idle；Attention 行為正確。</td><td>event sequence＋Attention 截圖。</td></tr>
+              <tr><td>W10</td><td>Pi session id 僅 log</td><td>Adapter log 可記錄 Pi session id（若 hook 提供）；Yuzora UI／DTO 不顯示、不持久化、不可 resume。不呼叫 <code>report-agent-session</code>。</td><td>adapter log＋證明 Yuzora 無 session 欄位。</td></tr>
+              <tr><td>W11</td><td>Claude lifecycle</td><td><strong>DEFERRED</strong>。本輪不執行、不標 PASS。</td><td>不適用。</td></tr>
+              <tr><td>W12</td><td>Codex lifecycle</td><td><strong>DEFERRED</strong>。本輪不執行、不標 PASS。</td><td>不適用。</td></tr>
+              <tr><td>W13</td><td>Windows drive cwd</td><td><code>C:\...</code> 安全轉為 target distro Linux path；space/CJK 正確。</td><td>pane cwd＋<code>pwd</code>。</td></tr>
+              <tr><td>W14</td><td>WSL UNC cwd</td><td><code>\\wsl.localhost\Distro\...</code> 轉為 Linux cwd；distro mismatch fail closed。</td><td>成功與失敗案例輸出。</td></tr>
+              <tr><td>W15</td><td>Pane move／alias</td><td>跨 workspace move 後 launch-time pane id 仍能 report 到同一 runtime，不生成第二筆 agent。</td><td>move 前後 snapshot。</td></tr>
+              <tr><td>W16</td><td>Agent crash／Ctrl+C</td><td>reporter 不拖死 agent；pane 存在時狀態不偽造 done，pane 結束後 projection 消失。</td><td>plugin/adapter log＋snapshot。</td></tr>
+              <tr><td>W17</td><td>Herdr server restart</td><td>Windows 無 live handoff；按文件重啟後 plugin status 提示正確，舊 pane 行為不被誤稱 seamless。</td><td>restart timeline＋status。</td></tr>
+              <tr><td>W18</td><td>Multi-distro</td><td>兩個 distro adapters 狀態分離；Pi session 不跨 distro；一個 offline 不抹掉另一個。</td><td>兩 distro status＋snapshot。</td></tr>
+              <tr><td>W19</td><td>普通手動 WSL pane</td><td>未由 plugin 開啟時不承諾 identity；Yuzora 不從 title／terminal 猜 Agent。</td><td>證明沒有 false positive。</td></tr>
+              <tr><td>W20</td><td>Uninstall／reinstall</td><td>Adapters 精準移除、user hooks 保留、殘留 adapter no-op；reinstall 後恢復 current。</td><td>before/after tree＋status。</td></tr>
+              <tr><td>W21</td><td>Bundled registration ownership</td><td>同 id 指向另一 root 時，candidate helper link／unlink 皆 fail closed；exact bundled root rollback 可安全 unlink。</td><td>foreign-root refusal＋final <code>plugin list</code>。</td></tr>
+            </tbody>
+          </table>
+          <details open>
+            <summary>使用者回報模板</summary>
+            <div>
+              <pre><code>Windows build:
+WSL version / distro:
+Yuzora commit / build:
+Herdr version / protocol / channel:
+Plugin version:
+Case ID:
+Result: PASS | CONDITIONAL | FAIL
+Commands and output:
+Snapshot / event excerpt:
+Yuzora screenshot or recording:
+Plugin / adapter log:
+Notes / reproduction:</code></pre>
+            </div>
+          </details>
+        </section>
+
+        <section id="risks">
+          <div class="label">09 · Risks</div>
+          <h2>主要風險與 fail-safe</h2>
+          <table>
+            <thead><tr><th>風險</th><th>影響</th><th>緩解</th><th>停止條件</th></tr></thead>
+            <tbody>
+              <tr><td>Herdr Windows Plugin 仍屬 preview</td><td>action/pane 行為可能 regress</td><td>min version gate、0.x Experimental、實機 matrix、保留 CLI fallback。</td><td>Plugin pane 無法穩定啟動或 context/env 不一致。</td></tr>
+              <tr><td>Protocol 19→20 不相容</td><td>舊 server／新 client 無法連線</td><td>binary/connector 同步、明確 restart runbook、不自動殺 server。</td><td>任何半連線、silent fallback 或跨版本混用。</td></tr>
+              <tr><td>Named-session routing 錯誤</td><td>report 進入 default 或其他 session</td><td>socket marker alias＋child-only <code>HERDR_SOCKET_PATH/w</code>；雙 session manual test。</td><td>W06 任一次 routing 錯誤。</td></tr>
+              <tr><td>seq stale／replay</td><td>新狀態被舊高 seq 壓住</td><td>persistent monotonic seq；logs；不信任 API <code>ok</code> 等於 accepted。</td><td>重啟 adapter 後 state 無法更新。</td></tr>
+              <tr><td>同使用者 spoof</td><td>任意本地 process 可對其他 pane 自報</td><td>誠實揭露 same-user trust；custom source；不宣稱 security isolation；提 upstream token/ACL。</td><td>產品需求升級為 hostile-local-user model。</td></tr>
+              <tr><td>Custom source 無 persisted session</td><td>誤把 API ok 當 resume／Yuzora session</td><td>MVP 不呼叫 <code>report-agent-session</code>；session id 僅 log；文件明確 non-resumable。</td><td>任何 Yuzora DTO／UI 出現 native session 或 resume 宣稱。</td></tr>
+              <tr><td>Config merge 破壞 user files</td><td>Agent 無法啟動或其他 hooks 消失</td><td>Windows 只 orchestrate；in-distro POSIX installer；Pi-only marker files；idempotent uninstall。</td><td>installer 透過 UNC 直接改 Linux home，或改寫 Claude／Codex 檔。</td></tr>
+              <tr><td>WSL UNC／Unicode path</td><td>錯 cwd 或 command injection</td><td>argv-only、固定 shell fragment、distro match、fixture＋實機。</td><td>必須拼接未轉義 user shell string。</td></tr>
+              <tr><td>Plugin uninstall 無 hook</td><td>WSL adapter 殘留</td><td>明確先 uninstall adapters；殘留 adapter 在缺少 Herdr env 時 no-op。</td><td>殘留 hook 會阻止 Agent 或造成錯誤。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="release">
+          <div class="label">10 · Release &amp; rollback</div>
+          <h2>先 Experimental，Windows 證據後再擴大承諾</h2>
+          <div class="grid-3">
+            <div class="card">
+              <span class="status info">ALPHA</span>
+              <h3>Pi-only PoC</h3>
+              <p>Plugin-managed pane、default distro、Pi lifecycle；只供開發者 link 測試。</p>
+            </div>
+            <div class="card">
+              <span class="status conditional">DEFERRED</span>
+              <h3>Claude／Codex follow-up</h3>
+              <p>不在本輪。後續才評估 conservative adapters；仍不得宣稱 resume 或官方 source 等價。</p>
+            </div>
+            <div class="card">
+              <span class="status go">SUPPORTED</span>
+              <h3>Evidence-gated</h3>
+              <p>只有使用者完成 P8 且對指定版本矩陣簽核後，才可在 Yuzora release notes 宣稱支援。</p>
+            </div>
+          </div>
+          <h3>回滾順序</h3>
+          <ol>
+            <li>結束 Plugin 建立的 WSL Agent panes。</li>
+            <li>執行 Plugin action／script 對所有 configured distros 卸載 adapters。</li>
+            <li>檢查 status 為 absent，確認 user-owned hooks 未被移除。</li>
+            <li>Disable／uninstall Herdr plugin；config/state 可保留供故障分析。</li>
+            <li>Yuzora 保持 Windows-native Herdr snapshot/event consumer；不恢復舊 bridge。</li>
+            <li>若回滾 Herdr 0.8.2，必須把所有 client/server 同步回 protocol 19 並重啟；不得只回滾單一平台。</li>
+          </ol>
+          <div class="callout"><strong>發布命名：</strong>Herdr Runtime 可稱 <code>v0.8.2 Stable</code>；本 Plugin 在官方 Windows plugin surface 尚為 preview 時，只能稱 <code>Experimental Plugin</code>，兩者不得混寫。</div>
+        </section>
+
+        <section id="references">
+          <div class="label">11 · Traceability</div>
+          <h2>權威依據與研究追溯</h2>
+          <div class="grid-2">
+            <div class="card">
+              <h3>Repo authority</h3>
+              <ul>
+                <li><a href="../.yuuzu/CONTEXT.html"><code>.yuuzu/CONTEXT.html</code></a></li>
+                <li><a href="../.yuuzu/adr/0002-windows-native-herdr-with-wsl-shell-agents.html"><code>ADR-0002</code></a></li>
+                <li><code>scripts/prepare-herdr-resources.ts</code></li>
+                <li><code>src-tauri/src/herdr_service.rs</code></li>
+                <li><code>src-tauri/src/pty_service.rs</code></li>
+                <li><code>src/lib/herdrNormalize.ts</code></li>
+                <li><code>src/state/herdrStore.ts</code></li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Official sources</h3>
+              <ul>
+                <li><a href="https://github.com/herdrdev/herdr/releases/tag/v0.8.2">Herdr v0.8.2 release</a></li>
+                <li><a href="https://herdr.dev/docs/plugins/">Herdr Plugins</a></li>
+                <li><a href="https://herdr.dev/docs/integrations/">Herdr Integrations</a></li>
+                <li><a href="https://herdr.dev/docs/socket-api/">Herdr Socket API</a></li>
+                <li><a href="https://herdr.dev/docs/agents/">Herdr Agents</a></li>
+                <li><a href="https://devblogs.microsoft.com/commandline/share-environment-vars-between-wsl-and-windows/">Microsoft WSLENV</a></li>
+              </ul>
+            </div>
+          </div>
+          <details>
+            <summary>Research artifacts used</summary>
+            <div>
+              <ul>
+                <li><code>.../outputs/103a210c-7051-4dd3-b3ea-b650e6270f9e/herdr/research-latest-version.md</code></li>
+                <li><code>.../outputs/103a210c-7051-4dd3-b3ea-b650e6270f9e/herdr/research-windows-wsl.md</code></li>
+                <li><code>.../outputs/5eedfd13-14f0-40b0-bd87-3df899024928/herdr-plugin/research-plugin-api.md</code></li>
+                <li><code>.../outputs/5eedfd13-14f0-40b0-bd87-3df899024928/herdr-plugin/research-bridge-feasibility.md</code></li>
+                <li><code>.../outputs/5eedfd13-14f0-40b0-bd87-3df899024928/herdr-plugin/scout-yuzora-consumer.md</code></li>
+              </ul>
+            </div>
+          </details>
+          <details>
+            <summary>Definition of Done</summary>
+            <div>
+              <ol>
+                <li>Yuzora bundle 全平台固定官方 Herdr v0.8.2 Stable／protocol 20，無 Windows preview pin。</li>
+                <li>Plugin 僅建立自己擁有的 WSL panes；普通手動 WSL pane 不被誤判。</li>
+                <li>Pi 在 Windows 11／WSL2 實機上完成 live identity、working／idle／blocked、release 投影；native session id 僅 adapter log。</li>
+                <li>Claude／Codex 明確 DEFERRED，不標 PASS。</li>
+                <li>Yuzora 沒有 terminal parse、process-tree inference、第二個 Herdr runtime 或自製 bridge daemon。</li>
+                <li>Install／status／uninstall 對多 distro 可重入、可回滾，不破壞 user-owned configs。</li>
+                <li>自動化測試全通過，P8 每一個必測 case 有使用者 evidence 與簽核。</li>
+                <li>Windows MSI／NSIS 都封裝 exact 10-file Plugin runtime allowlist、逐檔 hash 相符，並由 installed resource path 完成 link／rollback evidence。</li>
+                <li>Beta Release Guard 的 accepted tree／evidence pointer 與 exact candidate 相符；任何 candidate drift 會 fail closed。</li>
+                <li>Stable／Preview／Experimental 名稱正確，文件不超賣。</li>
+              </ol>
+            </div>
+          </details>
+        </section>
+      </main>
+    </div>
+
+    <footer>
+      Revised 2026-08-31 after Oracle/scout + D1=A / D2=Pi-only / D3=B bundled Experimental · tracked by Issue #90
+    </footer>
+  </div>
+</body>
+</html>

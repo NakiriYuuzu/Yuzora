@@ -410,7 +410,7 @@ pub fn attach_process_tree(child: &mut Child) -> io::Result<ProcessTreeGuard> {
     )
 }
 
-fn terminate_direct_child_and_reap(child: &mut Child) -> io::Result<()> {
+pub(crate) fn terminate_direct_child_and_reap(child: &mut Child) -> io::Result<()> {
     if child.try_wait()?.is_none() {
         if let Err(error) = child.kill() {
             if child.try_wait()?.is_none() {

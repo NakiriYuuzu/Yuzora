@@ -9,6 +9,10 @@ import { useUiStore } from "@/state/uiStore"
 import { open } from "@tauri-apps/plugin-dialog"
 import { pickWorkspace } from "@/lib/workspaceActions"
 
+const ipc = vi.hoisted(() => ({
+  binarySourceGet: vi.fn()
+}))
+
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn()
 }))
@@ -18,6 +22,7 @@ vi.mock("@/lib/workspaceActions", () => ({
 }))
 
 vi.mock("@/lib/herdrIpc", () => ({
+  herdrBinarySourceGet: ipc.binarySourceGet,
   herdrSessions: vi.fn(),
   herdrCapabilities: vi.fn(),
   herdrSnapshot: vi.fn(),
@@ -189,13 +194,23 @@ describe("HerdrNavContent", () => {
     useUiStore.setState({ mode: "ade" })
     vi.mocked(open).mockReset()
     vi.mocked(pickWorkspace).mockReset()
+    ipc.binarySourceGet.mockReset().mockResolvedValue({
+      configured: "global" as const,
+      active: "global" as const,
+      resolved: "global" as const,
+      available: true,
+      path: "/bin/herdr",
+      version: "0.8.2",
+      protocol: 20,
+      restartRequired: false
+    })
     useWorkspaceStore.setState({
       groups: [{ tabs: [], activePath: null }],
       activeGroupIndex: 0
     })
   })
 
-  it("renders Session tabs + Agents only (no Spaces section)", () => {
+  it("renders Session tabs + Agents only (no Spaces section)", async () => {
     useHerdrStore.setState(readyState())
     render(<HerdrNavContent />)
 
@@ -205,12 +220,56 @@ describe("HerdrNavContent", () => {
     expect(tablist.parentElement).toHaveAttribute("data-slot", "tabs")
     expect(tablist).toHaveAttribute("data-slot", "tabs-list")
     expect(defaultTab).toHaveAttribute("data-slot", "tabs-trigger")
+    await waitFor(() => expect(defaultTab).toHaveTextContent("Global Herdr 0.8.2"))
+    expect(defaultTab).not.toHaveTextContent(/^default$/i)
+    expect(defaultTab.getAttribute("title")).toContain("/bin/herdr")
     expect(workTab).toHaveAttribute("data-slot", "tabs-trigger")
     expect(workTab).toBeEnabled()
     expect(screen.getByText("Agents")).toBeInTheDocument()
     expect(screen.queryByText("Spaces")).toBeNull()
     expect(screen.queryByTestId("herdr-space-ws-1")).toBeNull()
     expect(screen.getByText("Main")).toBeInTheDocument() // owning Space label
+  })
+
+  it("shows the effective Yuzora-managed Herdr identity instead of the default session label", async () => {
+    ipc.binarySourceGet.mockResolvedValue({
+      configured: "global" as const,
+      active: "global" as const,
+      resolved: "default" as const,
+      available: true,
+      path: String.raw`C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
+      version: "0.8.2",
+      protocol: 20,
+      restartRequired: false
+    })
+    const state = readyState()
+    useHerdrStore.setState(
+      readyState({
+        capabilities: {
+          ...state.capabilities,
+          binaryPath: String.raw`C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
+          binaryVersion: "0.8.2",
+          binarySource: {
+            configured: "global" as const,
+            active: "global" as const,
+            resolved: "default" as const,
+            available: true,
+            path: String.raw`C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
+            reason: "Herdr was not found on PATH; using Yuzora-managed Herdr",
+            restartRequired: false
+          }
+        }
+      })
+    )
+
+    render(<HerdrNavContent />)
+
+    const defaultTab = screen.getByTestId("herdr-session-default")
+    await waitFor(() => expect(defaultTab).toHaveTextContent("Yuzora-managed Herdr 0.8.2"))
+    expect(defaultTab).not.toHaveTextContent(/^default$/i)
+    expect(defaultTab.getAttribute("title")).toContain(
+      String.raw`C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`
+    )
   })
 
   it("moves focus and selects named Sessions with ArrowRight", async () => {
@@ -225,27 +284,6 @@ describe("HerdrNavContent", () => {
 
     await waitFor(() => expect(workTab).toHaveFocus())
     expect(selectSession).toHaveBeenCalledWith("work")
-  })
-
-  it("projects Herdr-reported WSL origin as a compact Agent badge", () => {
-    const state = readyState()
-    useHerdrStore.setState(
-      readyState({
-        snapshot: {
-          ...state.snapshot,
-          agents: [
-            {
-              ...state.snapshot.agents[0],
-              executionOrigin: { kind: "wsl", distribution: "Ubuntu" }
-            }
-          ]
-        }
-      })
-    )
-
-    render(<HerdrNavContent />)
-
-    expect(screen.getByTestId("herdr-agent-origin-ag-1")).toHaveTextContent("WSL · Ubuntu")
   })
 
   it("exposes a discoverable per-agent Inspector action without replacing row focus", async () => {
@@ -389,16 +427,31 @@ describe("HerdrNavContent", () => {
     expect(useUiStore.getState().mode).toBe("files")
   })
 
-  it("keeps the local-folder escape available for a stopped session without a snapshot", async () => {
+  it("keeps the local-folder escape and app-global Herdr identity for a stopped session without a snapshot", async () => {
     useHerdrStore.setState({
       ...herdrInitialState,
       attachments: new Map(),
+      sessions: [
+        {
+          name: "default",
+          default: true,
+          running: false,
+          sessionDir: "/tmp/default",
+          socketPath: "/tmp/default.sock"
+        }
+      ],
+      selectedSessionName: "default",
       connectionState: "stopped",
       errorMessage: "Herdr session is stopped"
     })
     vi.mocked(pickWorkspace).mockResolvedValue(true)
 
     render(<HerdrNavContent />)
+    const runtimeTab = screen.getByTestId("herdr-session-default")
+    await waitFor(() => expect(runtimeTab).toHaveTextContent("Global Herdr 0.8.2"))
+    expect(runtimeTab.getAttribute("title")).toContain("Session: default")
+    expect(runtimeTab.getAttribute("title")).toContain("/bin/herdr")
+    expect(runtimeTab.getAttribute("title")).toContain("not running")
     fireEvent.click(screen.getByTestId("herdr-unavailable-open-local-folder"))
 
     await vi.waitFor(() => expect(vi.mocked(pickWorkspace)).toHaveBeenCalledTimes(1))

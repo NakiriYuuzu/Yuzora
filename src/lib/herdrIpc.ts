@@ -40,7 +40,8 @@ import type {
   HerdrWorkspaceCreateRequest,
   HerdrWorkspaceCreateResult,
   HerdrWorkspaceRenameRequest,
-  HerdrWorktreeListResult
+  HerdrWorktreeListResult,
+  HerdrWslIntegrationInfo
 } from "./herdrTypes"
 
 /**
@@ -330,6 +331,16 @@ export function herdrBinarySourceSet(
   source: HerdrBinarySource
 ): Promise<HerdrBinarySourceSetResult> {
   return invoke("herdr_binary_source_set", { source })
+}
+
+export function herdrWslIntegrationGet(): Promise<HerdrWslIntegrationInfo> {
+  return invoke("herdr_wsl_integration_get")
+}
+
+export function herdrWslIntegrationSet(
+  enabled: boolean
+): Promise<HerdrWslIntegrationInfo> {
+  return invoke("herdr_wsl_integration_set", { enabled })
 }
 
 export function herdrAgentGet(args: {

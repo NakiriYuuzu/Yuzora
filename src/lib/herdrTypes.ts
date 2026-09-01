@@ -27,12 +27,6 @@ export type HerdrScrollDirection = "up" | "down"
 
 export type HerdrAgentStatus = "idle" | "working" | "blocked" | "done" | "unknown"
 
-/** Presentation-only execution metadata supplied by Herdr. */
-export interface HerdrExecutionOrigin {
-  kind: "wsl"
-  distribution?: string
-}
-
 export type HerdrConnectionState =
   | "idle"
   | "connecting"
@@ -142,6 +136,31 @@ export interface HerdrBinarySourceSetResult {
   restartRequired: boolean
 }
 
+export type HerdrWslAdapterStatus =
+  | "unknown"
+  | "current"
+  | "absent"
+  | "drifted"
+  | "outdated"
+  | "missingPrerequisite"
+  | "mixed"
+
+/** Explicit Windows-only activation state for the bundled Experimental Plugin. */
+export interface HerdrWslIntegrationInfo {
+  platformSupported: boolean
+  bundleAvailable: boolean
+  active: boolean
+  linked: boolean
+  enabled: boolean
+  ownsRegistration: boolean
+  adapterStatus: HerdrWslAdapterStatus
+  pluginVersion?: string | null
+  bundledPath?: string | null
+  linkedPath?: string | null
+  herdrPath?: string | null
+  reason?: string | null
+}
+
 /** Nested capability document from `herdr_capabilities`. */
 export interface HerdrCapabilities {
   binaryPath?: string | null
@@ -228,8 +247,6 @@ export type HerdrSubscriptionEvent =
       agent?: string | null
       displayAgent?: string | null
       title?: string | null
-      /** Raw optional event metadata; normalize before projecting it into UI state. */
-      executionOrigin?: unknown
       stateLabels: Record<string, string>
     }
   | {
@@ -366,8 +383,6 @@ export interface HerdrAgentInfo {
   sessionName?: string | null
   /** Owning Space label for ADE Agents list. */
   spaceLabel?: string | null
-  /** Presentation-only Agent execution location; never part of resource identity. */
-  executionOrigin?: HerdrExecutionOrigin
 }
 
 export interface HerdrTerminalInfo {
@@ -378,8 +393,6 @@ export interface HerdrTerminalInfo {
   title?: string | null
   cwd?: string | null
   status?: HerdrAgentStatus | null
-  /** Presentation-only Agent execution location for this pane. */
-  executionOrigin?: HerdrExecutionOrigin
 }
 
 /** Persistent Herdr tab with a representative pane/terminal for opening its page. */

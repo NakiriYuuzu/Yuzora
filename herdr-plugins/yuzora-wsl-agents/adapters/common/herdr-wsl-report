@@ -1,0 +1,299 @@
+#!/bin/sh
+# YUZORA_WSL_ADAPTER=pi
+# Yuzora WSL Herdr reporter. Invokes Windows herdr.exe via WSLInterop.
+# Native Pi session ids stay in adapter logs and are never sent to Herdr.
+set -eu
+
+SOURCE="yuzora:wsl:pi"
+AGENT="pi"
+
+usage() {
+  printf 'usage: herdr-wsl-report report-agent --state STATE [--message TEXT]\n' >&2
+  printf '       herdr-wsl-report release-agent\n' >&2
+  exit 2
+}
+
+trim() {
+  printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+now_ms() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import time; print(int(time.time()*1000))'
+    return
+  fi
+  if command -v node >/dev/null 2>&1; then
+    node -e 'process.stdout.write(String(Date.now()))'
+    return
+  fi
+  echo $(($(date +%s) * 1000))
+}
+
+hash_key() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -d' ' -f1
+    return
+  fi
+  printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+}
+
+split_wslenv() {
+  printf '%s' "$1" | tr ':' '\n'
+}
+
+deny_socket_entries() {
+  split_wslenv "$1" | while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    name=$(printf '%s' "$entry" | cut -d/ -f1 | tr '[:lower:]' '[:upper:]')
+    if [ "$name" = "HERDR_SOCKET_PATH" ]; then
+      continue
+    fi
+    printf '%s\n' "$entry"
+  done
+}
+
+merge_wslenv_child() {
+  existing=$1
+  addition=$2
+  tmp=$(mktemp)
+  deny_socket_entries "$existing" >"$tmp"
+  printf '%s\n' "$addition" >>"$tmp"
+  # last occurrence of each NAME wins
+  awk -F/ '
+    {
+      key=toupper($1)
+      order[key]=NR
+      line[key]=$0
+    }
+    END {
+      n=asort(order, sorted)
+      # asort may be missing; fallback below
+    }
+  ' "$tmp" >/dev/null 2>&1 || true
+  # portable last-wins without gawk asort
+  printf '%s\n' "$(
+    awk -F/ '
+      {
+        key=toupper($1)
+        if (!(key in seen)) { i++; order[i]=key }
+        seen[key]=$0
+      }
+      END {
+        for (j = 1; j <= i; j++) print seen[order[j]]
+      }
+    ' "$tmp"
+  )" | paste -sd: -
+  rm -f "$tmp"
+}
+
+hold_seq_lock_for_tests() {
+  if [ -n "${YUZORA_HERDR_WSL_LOCK_HELD_FILE:-}" ]; then
+    printf 'held\n' >"$YUZORA_HERDR_WSL_LOCK_HELD_FILE"
+  fi
+  case "${YUZORA_HERDR_WSL_LOCK_HOLD_MS:-}" in
+    ''|0) return 0 ;;
+    *[!0-9]*) return 0 ;;
+  esac
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,time; time.sleep(int(os.environ["YUZORA_HERDR_WSL_LOCK_HOLD_MS"])/1000)'
+  else
+    sleep 1
+  fi
+}
+
+compute_next_seq_value() {
+  file=$1
+  persisted=0
+  if [ -f "$file" ]; then
+    persisted=$(tr -cd '0-9' <"$file")
+    [ -n "$persisted" ] || persisted=0
+  fi
+  now=$(now_ms)
+  seq=$now
+  if [ "$persisted" -ge "$seq" ]; then
+    seq=$((persisted + 1))
+  fi
+  if [ "$seq" -le "$persisted" ]; then
+    seq=$((persisted + 1))
+  fi
+  printf '%s' "$seq" >"$file.tmp.$$"
+  mv "$file.tmp.$$" "$file"
+  hold_seq_lock_for_tests
+  printf '%s' "$seq"
+}
+
+seq_dir() {
+  if [ -n "${YUZORA_HERDR_WSL_SEQ_DIR:-}" ]; then
+    printf '%s' "$YUZORA_HERDR_WSL_SEQ_DIR"
+    return
+  fi
+  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    printf '%s' "$XDG_RUNTIME_DIR/yuzora-herdr-wsl"
+    return
+  fi
+  printf '%s' "${HOME:-/tmp}/.cache/yuzora-herdr-wsl"
+}
+
+have_seq_lock_backend() {
+  command -v python3 >/dev/null 2>&1 && return 0
+  command -v flock >/dev/null 2>&1 && return 0
+  return 1
+}
+
+missing_seq_lock_backend() {
+  printf 'herdr-wsl-report: missing seq lock backend (need python3 or flock); no-op\n' >&2
+}
+
+# Exclusive seq lock via an OS-owned file descriptor. Process exit (including
+# SIGKILL) releases fcntl/flock. There is no mkdir fallback: a leftover
+# directory lock would block later reports after a crash.
+next_seq() {
+  marker=$1
+  pane=$2
+  source=$3
+  if ! have_seq_lock_backend; then
+    missing_seq_lock_backend
+    return 1
+  fi
+  dir=$(seq_dir)
+  mkdir -p "$dir"
+  key=$(hash_key "$marker|$pane|$source")
+  file="$dir/seq-$key"
+  lock="$dir/seq-$key.lock"
+  : >>"$lock"
+
+  if command -v python3 >/dev/null 2>&1; then
+    YUZORA_HERDR_SEQ_FILE=$file python3 - "$lock" <<'PY'
+import fcntl, os, sys, time
+
+lock_path = sys.argv[1]
+seq_path = os.environ["YUZORA_HERDR_SEQ_FILE"]
+hold_ms = os.environ.get("YUZORA_HERDR_WSL_LOCK_HOLD_MS", "")
+held_file = os.environ.get("YUZORA_HERDR_WSL_LOCK_HELD_FILE", "")
+
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)
+try:
+    persisted = 0
+    try:
+        raw = open(seq_path, "r", encoding="utf-8").read()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        persisted = int(digits) if digits else 0
+    except FileNotFoundError:
+        persisted = 0
+    now = int(time.time() * 1000)
+    seq = now if now > persisted else persisted + 1
+    if seq <= persisted:
+        seq = persisted + 1
+    tmp = "%s.tmp.%s" % (seq_path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(str(seq))
+    os.replace(tmp, seq_path)
+    if held_file:
+        with open(held_file, "w", encoding="utf-8") as handle:
+            handle.write("held\n")
+    if hold_ms.isdigit() and int(hold_ms) > 0:
+        time.sleep(int(hold_ms) / 1000.0)
+    sys.stdout.write(str(seq))
+finally:
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+PY
+    return
+  fi
+
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$lock"
+    flock 9
+    compute_next_seq_value "$file"
+    exec 9>&-
+    return
+  fi
+
+  missing_seq_lock_backend
+  return 1
+}
+
+run_herdr() {
+  bin=$1
+  shift
+  marker=$YUZORA_HERDR_SOCKET_PATH
+  child_wslenv=$(merge_wslenv_child "${WSLENV:-}" "HERDR_SOCKET_PATH/w")
+  HERDR_SOCKET_PATH=$marker WSLENV=$child_wslenv "$bin" "$@"
+}
+
+invoke_with_retry() {
+  bin=$1
+  pane=$2
+  mode=$3
+  state=${4:-}
+  message=${5:-}
+  if ! have_seq_lock_backend; then
+    missing_seq_lock_backend
+    return 1
+  fi
+  attempt=1
+  while [ "$attempt" -le 2 ]; do
+    seq=$(next_seq "$YUZORA_HERDR_SOCKET_PATH" "$pane" "$SOURCE") || return 1
+    set -- pane
+    if [ "$mode" = "release" ]; then
+      set -- pane release-agent "$pane" --source "$SOURCE" --agent "$AGENT" --seq "$seq"
+    else
+      set -- pane report-agent "$pane" --source "$SOURCE" --agent "$AGENT" --state "$state" --seq "$seq"
+      if [ -n "$message" ]; then
+        set -- "$@" --message "$message"
+      fi
+    fi
+    joined=$(printf '%s ' "$@")
+    case "$joined" in
+      *report-agent-session*|*--agent-session-id*|*--agent-session-path*)
+        printf 'herdr-wsl-report: refused to emit session identity\n' >&2
+        exit 1
+        ;;
+    esac
+    if run_herdr "$bin" "$@"; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  printf 'herdr-wsl-report: herdr.exe failed after retry seq=%s pane=%s source=%s\n' \
+    "${seq:-?}" "$pane" "$SOURCE" >&2
+  return 1
+}
+
+if [ "${HERDR_ENV:-}" != "1" ]; then
+  exit 0
+fi
+
+pane=$(trim "${HERDR_PANE_ID:-}")
+bin=$(trim "${HERDR_BIN_PATH:-}")
+marker=$(trim "${YUZORA_HERDR_SOCKET_PATH:-}")
+[ -n "$pane" ] || { printf 'herdr-wsl-report: HERDR_PANE_ID missing\n' >&2; exit 1; }
+[ -n "$bin" ] || { printf 'herdr-wsl-report: HERDR_BIN_PATH missing\n' >&2; exit 1; }
+[ -n "$marker" ] || { printf 'herdr-wsl-report: YUZORA_HERDR_SOCKET_PATH missing\n' >&2; exit 1; }
+[ -x "$bin" ] || [ -f "$bin" ] || { printf 'herdr-wsl-report: HERDR_BIN_PATH not executable: %s\n' "$bin" >&2; exit 1; }
+
+cmd=${1:-}
+[ -n "$cmd" ] || usage
+shift || true
+
+state=""
+message=""
+if [ "$cmd" = "report-agent" ]; then
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --state) state=${2:-}; shift 2 ;;
+      --message) message=${2:-}; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  case "$state" in
+    working|idle|blocked|unknown) ;;
+    *) printf 'herdr-wsl-report: invalid state %s\n' "$state" >&2; exit 2 ;;
+  esac
+  invoke_with_retry "$bin" "$pane" report "$state" "$message" || exit 0
+elif [ "$cmd" = "release-agent" ]; then
+  invoke_with_retry "$bin" "$pane" release || exit 0
+else
+  usage
+fi

@@ -15,7 +15,6 @@ import {
 } from "@/lib/herdrIpc"
 import {
   HERDR_LIVE_SESSION_ID,
-  normalizeHerdrExecutionOrigin,
   normalizeHerdrSnapshot
 } from "@/lib/herdrNormalize"
 import type {
@@ -1646,33 +1645,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
     const kind = attentionKindForStatus(event.agentStatus)
     const key = herdrAttentionKey(sessionName, event.paneId)
-    const eventSuppliesExecutionOrigin = Object.hasOwn(event, "executionOrigin")
-    const executionOrigin = normalizeHerdrExecutionOrigin(event.executionOrigin)
     set((state) => {
       const attentionByKey = new Map(state.attentionByKey)
-      const runtime = state.runtimesBySession[sessionName]
-      const snapshot = runtime?.snapshot
-      const baseSnapshot = runtime?.baseSnapshot
-      const patchExecutionOrigin = (source: HerdrSnapshot): HerdrSnapshot => ({
-        ...source,
-        agents: source.agents.map((agent) =>
-          agent.paneId === event.paneId ? { ...agent, executionOrigin } : agent
-        ),
-        terminals: source.terminals.map((terminal) =>
-          terminal.paneId === event.paneId ? { ...terminal, executionOrigin } : terminal
-        )
-      })
-      const snapshotPatch =
-        eventSuppliesExecutionOrigin && (snapshot || baseSnapshot)
-          ? withRuntime(state, sessionName, {
-              ...(snapshot ? { snapshot: patchExecutionOrigin(snapshot) } : {}),
-              ...(baseSnapshot ? { baseSnapshot: patchExecutionOrigin(baseSnapshot) } : {})
-            })
-          : {}
       if (!kind) {
         // Idle/working clear temporary unknown/done/blocked attention for this pane.
         attentionByKey.delete(key)
-        return { ...snapshotPatch, attentionByKey, eventsHealthy: true }
+        return { attentionByKey, eventsHealthy: true }
       }
       const previous = attentionByKey.get(key)
       attentionByKey.set(key, {
@@ -1689,7 +1667,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         seen: kind === "done" ? (previous?.seen ?? false) : false,
         updatedAt: Date.now()
       })
-      return { ...snapshotPatch, attentionByKey, eventsHealthy: true }
+      return { attentionByKey, eventsHealthy: true }
     })
   },
 

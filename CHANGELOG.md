@@ -2,6 +2,30 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.9-beta.3] - 2026-08-30
+
+### 新增
+
+- Windows 安裝檔內附 Experimental 的 Pi-only `Yuzora WSL Agents` Plugin。Herdr 設定新增明確的 WSL Pi 整合開關；開啟時會以序列化 transaction ownership-safe 地 link 內附 Plugin並在設定的 WSL distro 安裝 adapter，關閉時掃描所有 installed distros、只移除 exact owned files，全部 absent 後才 unlink。既有不完整 registration 不會被自動覆寫。Plugin-managed pane 內的 Pi 可讓 Windows-native HERDR snapshot／events 投影 live identity 與 working／idle／blocked 狀態。
+
+### 改善
+
+- Agent 區域的預設 Session 標籤改為顯示實際使用的 Herdr 來源與版本（全域或 Yuzora-managed），不再只顯示容易混淆的 `default`。
+- macOS 與 Windows 的 Yuzora-managed HERDR 更新為官方 Stable `v0.8.2`／protocol 20；Windows 內附正式 Stable package 與完整 ConPTY runtime，不再使用舊 protocol-19 preview package。
+
+### 修正
+
+- 修正 Windows 安裝檔內的 WSL Pi adapter extension、installer 與 reporter 可能使用 CRLF，導致 adapter 安裝失敗或被誤判為 drifted、Plugin pane 已開啟但 Agents 無法可靠投影與回滾的問題。
+- 修正 WSL Pi lifecycle reporter 逾時後可能只終止 shell、遺留其 child process 並立即重試，造成跨狀態切換持續累積程序與記憶體的問題；現在會完整回收 reporter process group，無法確認回收時則停止後續回報。
+- 修正啟動 Yuzora 時不會同步啟動 HERDR 的問題；若所選 global 或內附 managed HERDR server 尚未運行，Yuzora 會啟動 headless server 並等待就緒，既有 server 則直接沿用。封裝版本在 Tauri 無法回報資源目錄時，也會從 app 執行檔安全還原內附 HERDR 的位置。
+
+### 已知限制
+
+- 升級前仍在執行的 HERDR 0.8.0／protocol-19 default 或 named server 不會被 Yuzora 自動停止。0.8.2 client 會明確拒絕不相容 server；請先保存工作，再停止並以新 binary 重啟每個受影響的 HERDR session。
+- WSL Plugin 預設維持停用，Yuzora 啟動時不會修改 Linux home；只有使用者在 Herdr 設定明確開啟 WSL Pi 整合時才會執行安裝。整合只支援 Plugin-managed panes 與 Pi live identity／state；任意手動 `wsl.exe` pane、Claude／Codex、native Pi session resume，以及 Agent prompt/start/attach control 均不在本次保證。HERDR Runtime 為 Stable，但 Windows Plugin surface 仍是 Experimental。
+- macOS Beta 沒有 Developer ID 發行者身分、notarization 或 Gatekeeper 信任，首次開啟時可能被警告或阻擋；只應從 Yuzora 官方 GitHub Pre-release 下載。
+- Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
+
 ## [0.0.9-beta.2] - 2026-08-28
 
 ### 改善
