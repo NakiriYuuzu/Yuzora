@@ -137,7 +137,9 @@ export function HerdrSettingsSection() {
       ? t("herdrSettings.wslInstalling")
       : t("herdrSettings.wslRemoving")
     : !wslInfo
-      ? t("herdrSettings.wslLoading")
+      ? wslError
+        ? t("herdrSettings.wslUnavailable")
+        : t("herdrSettings.wslLoading")
       : wslInfo.active
         ? t("herdrSettings.wslReady", {
             version: wslInfo.pluginVersion ?? "—"

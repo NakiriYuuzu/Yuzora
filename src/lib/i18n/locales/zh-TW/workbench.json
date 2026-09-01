@@ -619,6 +619,7 @@
     "wslIntegrationSub": "明確啟用後，Yuzora 會 link 內附 Plugin，並在 Herdr 設定的 WSL distro 安裝 Pi adapter；關閉前請先關閉 Plugin-managed WSL panes，再由開關依 ownership 規則安全回滾。WSL 仍不是第二個 Herdr runtime。",
     "experimental": "Experimental",
     "wslLoading": "正在檢查 Plugin 與 adapter 狀態…",
+    "wslUnavailable": "無法取得 WSL Plugin 狀態。",
     "wslInstalling": "正在 link Plugin 並安裝 Pi adapter…",
     "wslRemoving": "正在卸載 Pi adapter 並 unlink Plugin…",
     "wslReady": "已啟用 Plugin {{version}}，WSL Pi adapter 為 current。",

@@ -184,6 +184,23 @@ describe("HerdrSettingsSection", () => {
     await waitFor(() => expect(wsl).not.toBeChecked())
   })
 
+  it("shows an unavailable status when WSL integration status cannot be loaded", async () => {
+    platform.isWindows.mockReturnValue(true)
+    ipc.wslGet.mockRejectedValue(new Error("powershell.exe stderr returned non-UTF-8 output"))
+
+    render(<HerdrSettingsSection />)
+
+    const status = await screen.findByTestId("herdr-wsl-status")
+    await waitFor(() => {
+      expect(status).toHaveTextContent(/unavailable|無法取得/)
+    })
+    expect(status).not.toHaveTextContent(/Checking|正在檢查/)
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "powershell.exe stderr returned non-UTF-8 output"
+    )
+    expect(screen.getByRole("switch", { name: /WSL Pi|WSL.*Pi/ })).toBeDisabled()
+  })
+
   it("fails closed when another root owns the WSL Plugin id", async () => {
     platform.isWindows.mockReturnValue(true)
     ipc.wslGet.mockResolvedValue({

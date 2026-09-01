@@ -619,6 +619,7 @@
     "wslIntegrationSub": "When explicitly enabled, Yuzora links the bundled Plugin and installs its Pi adapter in the WSL distros configured by Herdr. Close Plugin-managed WSL panes before turning it off; the switch then performs the ownership-safe rollback. WSL is not a second Herdr runtime.",
     "experimental": "Experimental",
     "wslLoading": "Checking Plugin and adapter status…",
+    "wslUnavailable": "WSL Plugin status is unavailable.",
     "wslInstalling": "Linking the Plugin and installing the Pi adapter…",
     "wslRemoving": "Uninstalling the Pi adapter and unlinking the Plugin…",
     "wslReady": "Plugin {{version}} is enabled and the WSL Pi adapter is current.",

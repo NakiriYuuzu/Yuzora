@@ -273,25 +273,32 @@ fn encode_powershell_command(script: &str) -> String {
     STANDARD.encode(bytes)
 }
 
-#[cfg(windows)]
-fn format_process_failure(
-    program: &Path,
-    status: std::process::ExitStatus,
-    stderr: &str,
-) -> String {
+/// Decode helper/adapter streams after the process has exited.
+///
+/// Successful PowerShell 5.1 can emit a CLIXML progress record on stderr in the
+/// console code page before the UTF-8 prelude runs. That stderr is unused on
+/// success, so it must not fail the command. Failed commands still decode
+/// stderr strictly for the error detail.
+#[cfg(any(windows, test))]
+fn finalize_bounded_program_output(
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    success: bool,
+    program_display: &str,
+    exit_code: i32,
+) -> Result<String, String> {
+    let stdout = decode_process_text(stdout, &format!("{program_display} stdout"))?;
+    if success {
+        return Ok(stdout);
+    }
+    let stderr = decode_process_text(stderr, &format!("{program_display} stderr"))?;
     let detail = stderr.trim();
     if detail.is_empty() {
-        format!(
-            "{} exited with code {}",
-            program.display(),
-            status.code().unwrap_or(-1)
-        )
+        Err(format!("{program_display} exited with code {exit_code}"))
     } else {
-        format!(
-            "{} exited with code {}: {detail}",
-            program.display(),
-            status.code().unwrap_or(-1)
-        )
+        Err(format!(
+            "{program_display} exited with code {exit_code}: {detail}"
+        ))
     }
 }
 
@@ -500,11 +507,13 @@ fn run_bounded_program(
         &stderr_capture,
         MAX_NDJSON_LINE_BYTES,
     )?;
-    let stdout = decode_process_text(stdout, &format!("{} stdout", program.display()))?;
-    let stderr = decode_process_text(stderr, &format!("{} stderr", program.display()))?;
-    if !status.success() {
-        return Err(format_process_failure(program, status, &stderr));
-    }
+    let stdout = finalize_bounded_program_output(
+        stdout,
+        stderr,
+        status.success(),
+        &program.display().to_string(),
+        status.code().unwrap_or(-1),
+    )?;
     Ok(ProcessOutput { stdout })
 }
 
@@ -1051,6 +1060,44 @@ mod tests {
         let mut bytes = vec![0xff, 0xfe];
         bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
         assert_eq!(decode_process_text(bytes, "stdout").unwrap(), text);
+    }
+
+    #[test]
+    fn successful_command_ignores_non_utf8_stderr() {
+        let stdout = br#"{"pluginId":"yuzora-wsl-agents"}"#.to_vec();
+        let stderr = b"#< CLIXML\x80\x81".to_vec();
+        let output =
+            finalize_bounded_program_output(stdout, stderr, true, "powershell.exe", 0).unwrap();
+        assert_eq!(output, r#"{"pluginId":"yuzora-wsl-agents"}"#);
+    }
+
+    #[test]
+    fn failed_command_still_requires_strict_stderr_decode() {
+        let error = finalize_bounded_program_output(
+            br#"{"ok":true}"#.to_vec(),
+            b"#< CLIXML\x80\x81".to_vec(),
+            false,
+            "powershell.exe",
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("powershell.exe stderr returned non-UTF-8 output"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn failed_command_includes_decoded_stderr_detail() {
+        let error = finalize_bounded_program_output(
+            b"out".to_vec(),
+            b"boom\n".to_vec(),
+            false,
+            "powershell.exe",
+            1,
+        )
+        .unwrap_err();
+        assert_eq!(error, "powershell.exe exited with code 1: boom");
     }
 
     #[test]
