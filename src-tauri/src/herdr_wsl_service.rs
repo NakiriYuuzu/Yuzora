@@ -1323,61 +1323,60 @@ mod tests {
         );
     }
 
-    fn spawn_output_holder_with_lingering_descendant(
-        keepalive: &Path,
-        stdout: std::fs::File,
-        stderr: std::fs::File,
-    ) -> Child {
+    fn spawn_stdin_gated_success_child(stdout: std::fs::File, stderr: std::fs::File) -> Child {
         #[cfg(unix)]
         {
             Command::new("sh")
-                .arg("-c")
-                .arg("printf 'ready\\n'; while [ -f \"$1\" ]; do sleep 0.05; done &")
-                .arg("holder")
-                .arg(keepalive)
-                .stdin(Stdio::null())
+                .args(["-c", "read _ || true"])
+                .stdin(Stdio::piped())
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
                 .spawn()
-                .expect("spawn unix output holder")
+                .expect("spawn unix stdin-gated success child")
         }
         #[cfg(windows)]
         {
-            let path = keepalive.display().to_string().replace('\'', "''");
-            let script = format!(
-                "Write-Output 'ready'; Start-Process -NoNewWindow -FilePath \"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -ArgumentList @('-NoProfile','-Command',\"while (Test-Path -LiteralPath '{path}') {{ Start-Sleep -Milliseconds 50 }}\")"
-            );
-            Command::new("powershell.exe")
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &script,
-                ])
-                .stdin(Stdio::null())
+            Command::new("cmd.exe")
+                .args(["/q", "/d", "/c", "set /p _= & exit /b 0"])
+                .stdin(Stdio::piped())
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
                 .spawn()
-                .expect("spawn windows output holder")
+                .expect("spawn windows stdin-gated success child")
         }
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = (keepalive, stdout, stderr);
-            panic!("unsupported platform for descendant-handle regression");
+            let _ = (stdout, stderr);
+            panic!("unsupported platform for open-writer regression");
         }
     }
 
+    fn release_stdin_gated_child(child: &mut Child) {
+        use std::io::Write;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .expect("stdin-gated child must have piped stdin");
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+        drop(stdin);
+    }
+
     #[test]
-    fn file_backed_wait_returns_after_child_exits_while_descendant_holds_output() {
+    fn file_backed_wait_returns_after_child_exits_while_writer_handle_remains_open() {
+        use std::io::Write;
+
         let stdout_capture = tempfile::NamedTempFile::new().unwrap();
         let stderr_capture = tempfile::NamedTempFile::new().unwrap();
-        let keepalive = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = stdout_capture.as_file().try_clone().unwrap();
+        writer.write_all(b"ready\n").unwrap();
+        writer.flush().unwrap();
         let stdout = stdout_capture.as_file().try_clone().unwrap();
         let stderr = stderr_capture.as_file().try_clone().unwrap();
-        let mut child =
-            spawn_output_holder_with_lingering_descendant(keepalive.path(), stdout, stderr);
+        let mut child = spawn_stdin_gated_success_child(stdout, stderr);
         let mut process_tree = process_kill::attach_process_tree(&mut child).unwrap();
+        release_stdin_gated_child(&mut child);
         let started = Instant::now();
         let (stdout, _stderr, status) = wait_bounded_file_backed_child(
             &mut child,
@@ -1396,7 +1395,7 @@ mod tests {
         assert!(status.success(), "{status:?}");
         let decoded = decode_process_text(stdout, "stdout").unwrap();
         assert!(decoded.contains("ready"), "{decoded:?}");
-        drop(keepalive);
+        drop(writer);
     }
 
     fn spawn_exited_parent_with_appending_descendant(
