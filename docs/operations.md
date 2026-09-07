@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> 最後查證：2026-08-31。
+> Runtime／payload 流程更新：2026-09-07（目前工作樹，尚未發布）；其他發布流程最後查證：2026-08-31。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
@@ -60,12 +60,13 @@ Required CI checks：
 
 ---
 
-## 3. 三條 GitHub Actions workflow
+## 3. GitHub Actions workflows
 
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows PowerShell 5.1 與 installer payload gate |
+| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows Unix runtime installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、Stable macOS Developer ID signing／notarization、Beta macOS unsigned 建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
+| Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 四平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest；產出 `host-<target>` artifacts |
 | Pages    | `.github/workflows/deploy-pages.yml` | `main` 上 `site/**` 變更；手動 dispatch | 將 `site/` 部署到 GitHub Pages                                                                                                                                          |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
@@ -74,7 +75,7 @@ Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可�
 
 ### CI 重要特性
 
-- Frontend 與 release jobs 固定使用 Bun `1.3.14`，Rust compile、database、candidate 與 Release jobs 固定使用 Rust `1.96.0`；升級任一 toolchain 時需在同一個 PR 更新 CI、candidate、Release workflow 與 exact Clippy baseline，再搭配 `@typescript/native` typecheck 驗證。
+- Host helper workflow 的 Bun 尚未固定版本；Frontend 與 release jobs 固定使用 Bun `1.3.14`，Rust compile、database、candidate 與 Release jobs 固定使用 Rust `1.96.0`；升級任一 toolchain 時需在同一個 PR 更新 CI、candidate、Release workflow 與 exact Clippy baseline，再搭配 `@typescript/native` typecheck 驗證。
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
@@ -277,17 +278,17 @@ gh run download "${RUN_ID}" \
 
 需要 macOS 候選檔時，將 artifact name 改為 `yuzora-release-candidate-macos-universal`。
 
-使用者至少要在本次受影響平台驗證 acceptance criteria。Windows terminal／IME 版本至少包括：
+使用者至少要在本次受影響平台驗證 acceptance criteria。單一 runtime 改造必須使用新產出的候選安裝檔，舊 Windows-native beta.3 證據不可代替：
 
-- Microsoft Pinyin 中文 composition、replacement、commit 不重複也不遺失。
-- Command Prompt、Windows PowerShell、PowerShell 7 能依設定與單次選擇啟動。
-- WSL default 與已安裝 distro 能啟動，Windows／UNC workspace 的 cwd 轉換正確。
-- Herdr 沒有任何 Space、連線失敗或不可用時，ADE 必須仍提供 Open Local Folder escape；本機 Terminal 在沒有 workspace 時必須開啟 folder picker，不可 silent no-op。
-- 在隔離且啟動前沒有 running server 的 HERDR 測試環境啟動 Yuzora，必須以實際 resolved global／managed binary 自動啟動 `herdr server` 並等待 ready；已有 server 時必須沿用，不可建立 duplicate server。
-- Windows-native HERDR 0.8.2 running session 可透過 named pipe 完成 snapshot、schema-gated mutation 與 `events.subscribe`；停止、不相容或缺少 method 時仍需顯示真實 unavailable 原因。若 pane 透過 `wsl.exe` 進入互動式 Linux shell，不得假定 HERDR 能看見其中的 Linux descendant Agent；Plugin-managed WSL Pi 驗收見 `.yuuzu/eval/herdr-wsl-plugin-windows.html`。
-- Windows installer 必須包含 `herdr/windows-x86_64/herdr.exe` 與同版 ConPTY runtime。PATH 存在 Herdr 時使用全域版本；暫時移除 PATH 版本並重啟後，必須自動解析到 Yuzora-managed protocol-20 binary，且診斷顯示 `configured=global`、`resolved=default` 與實際 managed path。
-- HERDR 診斷與工作區信任介面不顯示 Windows `\\?\` verbatim prefix，且信任授權／撤銷仍作用於原始 canonical path identity。
-- 一般 shell 與 TUI 模式的 IME anchor／輸入位置可接受。
+- Windows 至少兩個 WSL2 發行版；原生 macOS／Linux、SSH macOS／Linux及純 SFTP 分別記錄結果。
+- Windows 工作區的 HERDR、Agent、Terminal、Files、Git、LSP 全部在選定 WSL 執行；Windows 磁碟路徑由該 distro 的 `wslpath` 轉換。
+- 沒有 Space 或 HERDR 不相容時，共用新增資料夾入口仍可使用；未連線的近期資料夾導回原主機登入與原根目錄。
+- 使用主機 discovery 的 socket；跨主機同名 Session、terminal、路徑、信任與事件不互相污染。Agent cwd 不得覆寫 Files 根目錄。
+- MSI／NSIS 包含四平台 Unix runtime、manifest 及受控清理工具；不得含 Windows HERDR、ConPTY runtime 或 WSL Agent Plugin。從 installer 解包驗證，不以 source inventory 代替。
+- Pi／Claude／Codex 的 prompt、working／idle／blocked、observe／control／takeover及重連；官方 native Session restore 與 layout restore 分開記錄。
+- 遠端編輯／安全儲存、Git diff／worktree、LSP、Preview WebSocket、DB tunnel／TLS hostname／SQLite／取消，及 SFTP 版本衝突與部分傳輸失敗。
+- Microsoft Pinyin composition／replacement／commit、一般 shell 與 TUI 的 IME anchor及快速輸入不可遺失或重複。
+- 重連不重送 terminal input、Git 寫入或 SQL；關閉 terminal 不斷開共用 SSH；退出 App 釋放自身 helper／connector／tunnel，保留 HERDR／Agent／WSL。
 
 驗證結果必須寫入 PR comment 或 review，包含平台、installer hash、結果與已知限制。只有使用者明確表示「驗證通過」並授權 merge，maintainer／agent 才能 merge。CI 全綠、artifact 存在或 reviewer 沒有留言，都不能推定為使用者核准。
 
@@ -645,114 +646,66 @@ site/downloads.js
 
 ---
 
-## 13. Herdr WSL Plugin（Experimental，Pi-only）
+## 13. 單一 Unix Runtime 與 Remote Provider
 
-Windows 版 Yuzora 只連線 **Windows-native Herdr**。WSL 不是第二個 Herdr Runtime。跨環境 Pi 相容由 Herdr Plugin `herdr-plugins/yuzora-wsl-agents/` 提供；Yuzora 只消費 snapshot／events，不解析 terminal、不維護 bridge、不恢復 `execution_origin`。
+本節描述目前改造工作樹；**尚未達完整替代版發行門檻**。架構依 ADR-0003 single Unix runtime；分項驗收與未完成矩陣見 [實作檢查點](html/yuzora-runtime-provider-implementation-2026-09-06.html)。歷史 Windows-native Plugin 操作已移除，不能對新安裝包執行舊 link／adapter enable 流程。
 
-區分兩個通道：
+### 主機設定與診斷
 
-| 通道 | 目前狀態 |
-| --- | --- |
-| Herdr Runtime | 官方 `v0.8.2` Stable／protocol 20 |
-| Windows Plugin／WSL Pi adapter | **Experimental**（Herdr Windows plugin surface 仍為 preview） |
+- 「新增資料夾 → 本地／遠端」使用共用主機清單。Windows 本地選 WSL2；SSH 沿用密碼／金鑰及 host-key 驗證。純 SFTP 不要求 helper。
+- 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。初始相容基準為 HERDR 0.8.2／protocol 20，仍須 schema／capability 檢查。
+- 本地 HERDR 使用 Unix socket；SSH 使用 direct-streamlocal；WSL 由 `wsl.exe --distribution … --exec` 啟動 helper，不需 sshd。Named Session socket 從來源主機 discovery 取得，不拼接猜測。
+- 版本不相容時先記錄 hostId、session、實際 binary／socket、版本及錯誤。不要自動停止既有 server；需重啟時由使用者先保存該主機上的工作。
+- SSH／WSL 身分變更必須重新驗證；顯示名稱變更不改 hostId。保留 dirty buffer，重連確認外部 revision 後才能儲存。
 
-本 Plugin 只支援 **Plugin-managed panes**。任意手動 `wsl.exe` pane 不承諾 Agent identity。首版只做 Pi（source `yuzora:wsl:pi`）。Claude／Codex adapters／installers **延後**。
+### Payload 建置與驗證
 
-### Protocol 19 → 20 遷移
+四個 target：`linux-x86_64`、`linux-aarch64`、`macos-x86_64`、`macos-aarch64`。在對應架構 runner 執行，例如 Linux x86-64：
 
-Yuzora 不會停止使用者既有的 Herdr server。升級前仍 running 的 0.8.0／protocol-19 default 或 named session，會被 0.8.2 client 明確判定 incompatible；Yuzora startup 只顯示「stop and restart every affected Herdr session」診斷，不會偷偷沿用、kill 或重啟。先保存 pane 工作，再逐一以舊 client 停止受影響 session，確認沒有需要保留的 live pane，最後用選定的 0.8.2 binary 重啟並驗證 status／schema protocol 20。W02 必須保存拒絕訊息與重啟後 evidence。
-
-### Beta 安裝檔封裝與明確啟用
-
-`0.0.9-beta.3` Windows MSI／NSIS 只封裝 runtime allowlist，不封裝 `tests/` 或開發期 `lib/`：
-
-```text
-<Yuzora resource root>\herdr-plugins\yuzora-wsl-agents\
-  herdr-plugin.toml
-  README.md
-  adapters\
-  scripts\
+```bash
+bun run host:prepare linux-x86_64
 ```
 
-安裝／啟動 Yuzora **不得**自動註冊 Plugin，也不得修改 WSL home。Windows 使用者可在 **設定 → Herdr → WSL Pi 整合**明確開啟；Yuzora 會以目前實際使用的 Windows-native Herdr 執行 exact bundled-root link，再同步安裝 Pi adapter。Backend 以 process-wide lock 序列化整個 status→mutation→verification／rollback transaction。自動 enable 只允許「尚未 link，且所有 installed distros 的 owned adapter 都是 absent」；若已有 owned registration 但未完整 active，必須先用關閉開關清理，禁止覆寫或自動修復既有狀態。若新安裝失敗，只回滾本次新建資源；adapter 無法確認全部 absent 時保留 registration 供 recovery。若另一個 root 已擁有相同 Plugin id 則零 mutation fail closed。關閉前需先關閉 Plugin-managed WSL panes；關閉開關會掃描所有 installed distros、只移除 exact owned marker，並在全部回報 `uninstalled absent` 後才 unlink。
+CI 的 `host-artifacts` reusable job 產出四個 `host-<target>` artifacts；candidate／Release 合併下載至 `src-tauri/resources/host/`，再執行：
 
-下列 bundled helper 仍保留作為 recovery 與驗收入口。Yuzora 執行中可用下列方式解析 MSI／NSIS 的實際 resource root：
+```bash
+bun run runtime:verify
+cargo fmt --manifest-path src-tauri/host/Cargo.toml -- --check
+cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path src-tauri/host/Cargo.toml
+```
+
+每個 target 包含 `yuzora-host`、官方 `herdr` 與 `<target>.json` manifest，另含 HERDR license。Release reusable build 明確使用 guard 的 `source_sha`；不可混用其他 source tree 的 helper。
+
+Windows 安裝包建置後，在具備 verifier 所需解包工具的 Windows 環境驗證：
 
 ```powershell
-$yuzoraExe = (Get-Process yuzora | Select-Object -First 1).Path
-$appRoot = Split-Path -Parent $yuzoraExe
-$pluginRoot = Join-Path $appRoot 'herdr-plugins\yuzora-wsl-agents'
-$helper = Join-Path $pluginRoot 'scripts\manage-bundled-plugin.ps1'
-$herdr = Join-Path $appRoot 'herdr\windows-x86_64\herdr.exe'
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -Action status -HerdrPath $herdr
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -Action link -HerdrPath $herdr
+./scripts/verify-windows-runtime-payload.ps1 -BundleDir "src-tauri/target/release/bundle"
 ```
 
-Helper 優先使用 PATH 上的 `herdr.exe`，找不到時使用相鄰的 `herdr\windows-x86_64\herdr.exe`。同一路徑重複 link 為 idempotent；若 `yuzora-wsl-agents` 已由另一個 checkout／GitHub source 註冊，link 與 unlink 都必須 fail closed，不得覆寫或移除他人 registration。
+本機 debug build 改用 `debug/bundle`。需 Rust MSVC、Visual Studio Build Tools／Windows SDK及 build process PATH 中的 NASM。只有 verifier 和實際安裝後 GUI 都通過才完成 Windows gate。macOS GUI 啟動前等 build exit 0，退出舊 App，核對執行中 executable 與 bundle inode／hash；產物版本字串相同不能證明是同一 build。
 
-即使 `herdr` 不在 PATH，也可用 bundled CLI 執行 config／actions：
+### 舊版清理與遷移
+
+先預覽 `src-tauri/resources/legacy-cleanup/` 工具的結果，再套用。Windows 必須在移除舊安裝目錄前保留可驗證的 manifest 與既有 HERDR binary：
 
 ```powershell
-& $herdr plugin config-dir yuzora-wsl-agents
-& $herdr plugin action invoke yuzora-wsl-agents.install-pi
-& $herdr plugin action invoke yuzora-wsl-agents.open-pi
+./cleanup-windows-registration.ps1 -LegacyResourceRoot "<舊版資源根目錄>" -HerdrPath "<既有 herdr.exe>"
+# 確認預覽中的 exact owned registration 後，使用相同參數加 -Apply。
 ```
 
-### Source checkout 開發安裝（link，不要 GitHub subdir install）
+各 WSL distro 內先預覽：
 
-GitHub `OWNER/REPO/SUBDIR` install 會 clone 整個 Yuzora repo。開發請用：
-
-```text
-herdr plugin link C:\path\to\yuzora\herdr-plugins\yuzora-wsl-agents
-herdr plugin config-dir yuzora-wsl-agents
+```bash
+sh cleanup-wsl-adapter.sh "$HOME/.pi/agent"
+# 確認預覽後：
+sh cleanup-wsl-adapter.sh --apply "$HOME/.pi/agent"
 ```
 
-`config.json` 範例：
+自訂 `PI_CODING_AGENT_DIR` 時傳入實際 Agent 目錄。工具只處理符合雜湊／receipt／registration root 的 Yuzora 檔案，修改過的內容保留；不刪官方 integration、使用者 hooks、外部 runtime 或 session。Windows helper 不啟停 HERDR，未執行時保留狀態並停止清理。不得以刪除整個 `.pi`／HERDR／WSL 目錄作為替代。
 
-```json
-{
-  "schemaVersion": 1,
-  "defaultDistro": "Ubuntu",
-  "distros": ["Ubuntu"],
-  "enabledAgents": ["pi"],
-  "linuxCwdPolicy": "workspace"
-}
-```
+舊 SSH 主機遷入共用清單；旧 Windows 工作區需明確綁定 WSL。保留歷史 session，不推測 Agent Session ID，不宣稱搬移執行中的程序。
 
-接著依序執行 Plugin actions：
+### 發布前證據
 
-1. **Install Pi WSL adapter** — Windows 只 orchestrate；實際檔案由 `wsl.exe -d <distro> -- sh adapters/install.sh` 寫入 distro home。只安裝 plugin-owned Pi files（`yuzora-herdr-wsl.ts`、reporter、marker），不覆寫官方 `herdr-agent-state.ts`，也不改 Claude／Codex 設定。
-2. **WSL adapter status** — 唯讀檢查；startup 同樣只做 status。
-3. **Open WSL Pi** 或 **Open WSL shell** — 建立 plugin-owned pane。
-4. **Uninstall Pi WSL adapter** — 只刪 plugin-owned files；重複執行為 no-op。
-
-回滾：關閉 plugin panes → invoke `yuzora-wsl-agents.uninstall-pi` → bundled helper `-Action unlink`。Helper 只允許移除 exact bundled root；Yuzora snapshot／event consumer 保持不變。
-
-### 回報契約（不可超賣）
-
-- Adapter 只呼叫 `pane report-agent`／`release-agent`。Pi `agent_start`／`agent_settled` 投影 working／idle。Pi ≥ 0.84.4 的 `ui_prompt_start`／`ui_prompt_end` 可投影一般 blocking UI prompt；較舊 Pi 沒有這兩個事件，只能由既有整合明確 emit `herdr:blocked` event-bus 相容事件，否則不得從畫面猜 blocked。**禁止** `report-agent-session`、`--agent-session-id`、`--agent-session-path`。
-- Custom source 無法建立 Herdr persisted `agent_session`，不可 resume。
-- Native Pi session id 若 hook 提供，只寫 adapter log（需遮蔽），**不**投影到 Yuzora DTO／UI。
-- Same-user trust：任何同 Windows 使用者行程都可能對其他 pane 自報；不宣稱 pane-scoped 安全隔離。
-- Custom report 只提供 live identity／state projection，不繞過 Herdr 的 foreground-process ownership guard。Windows process inventory 只看見 Plugin PowerShell／`wsl.exe` 邊界時，`herdr agent prompt/start/attach` 可能回 `agent_not_ready`；這些 Agent control APIs 不屬於 MVP 保證。Herdr v0.8.2 Windows 亦不支援 direct `terminal attach`，需附加完整 named-session client 互動。驗收提示可由使用者、完整 Herdr client 或 pane-level input 送出，Yuzora 仍不得自行控制或解析 terminal。
-- `HERDR_SOCKET_PATH` 是 Windows named-pipe marker。Launcher 必須 case-insensitive 刪除既有 `WSLENV` 中該名（含任何 flags）。Win32→WSL 只傳 `YUZORA_HERDR_SOCKET_PATH/u`。僅啟動 Windows `herdr.exe` 的 child env 可設 `HERDR_SOCKET_PATH/w`。
-- PowerShell 以 `-NoProfile -ExecutionPolicy Bypass` 啟動；GPO 禁止 Bypass 時 plugin 無法執行。
-- **Open WSL Pi** 以固定的 `bash -lic 'exec pi'` 載入 distro 使用者的 login／interactive PATH（Linuxbrew 等 profile-managed 安裝需要）；target distro 必須有 Bash。命令不含 workspace／使用者輸入。
-- Pi extension 的 reporter child 必須使用獨立 POSIX process group，且不得留下未讀取的 stderr pipe。Timeout 只有在 reporter group 已確認退出後才能重試；若 bounded reap 無法確認，該 Pi process 必須停用後續 lifecycle report。正常退出／reload／session replacement 一律使用 Pi `session_shutdown` await release，不得從 `process.exit` handler 啟動非同步 child。
-
-### Windows 驗收
-
-P8 由**使用者**在 Windows 11／WSL2 執行；repo-local authority path 為 `.yuuzu/eval/herdr-wsl-plugin-windows.html`（該目錄不隨 Git 發布）。每一列需要 snapshot／event／log 證據。W11／W12（Claude／Codex）標 DEFERRED。PR 可先準備 Experimental release notes，但 merge／發布前必須完成 P8 簽核；任何情況都不得寫成 Stable support statement。macOS fixture 與自動化測試不能當作 ConPTY／named pipe／WSLInterop PASS。
-
-Exact Windows candidate 另需驗證：
-
-1. MSI 與 NSIS 安裝後都存在上述 manifest／README／adapters／scripts；不得包含 `tests/` 或開發期 `lib/`。
-2. 所有由 WSL 執行或安裝的 adapter files（`adapters/install.sh`、`adapters/common/herdr-wsl-report`、`adapters/pi/yuzora-herdr-wsl.ts`）必須為 LF-only；installer verifier 需直接拒絕任何 CR byte，不能只以 Windows checkout source hash 相等作為通過依據。TypeScript extension 同樣受此約束，因 ownership sentinel 使用 exact line matching；CRLF 會使 install／status／uninstall 誤判為 drifted。
-3. 從**安裝後 resource path**執行 helper `status → link → status`，結果顯示 `ownsRegistration=true`；不得以 source checkout 的 link 代替。
-4. Herdr 設定的 WSL Pi 開關必須以 backend mutex 序列化同一個 exact-root link＋adapter install transaction；pre-linked inactive registration 不得自動 repair。關閉與新安裝 rollback 必須對所有 installed distros 先驗證 `uninstalled absent` 再 unlink；任何 distro drift／失敗時保留 registration。已由不同 root 註冊同 id 時，UI 與 helper 都必須零 mutation fail closed。
-5. Agent 區域的 default named-session trigger 必須顯示目前實際解析的 Herdr 來源與版本（Global 或 Yuzora-managed），並在 diagnostic title 保留 named session 與實際 binary path；不可只顯示 `default`。
-6. Reporter timeout regression 必須連續觸發 idle → working → idle → shutdown，證明每次 retry 前 reporter process group 已完整回收；Windows exact candidate 另需在 WSLInterop 下確認沒有殘留 reporter、`herdr.exe` client 或相應 child process。僅檢查 Pi 最終退出不足以通過。
-7. 完整完成 adapter install、Open WSL Pi、snapshot／event／UI evidence 後，先 uninstall adapter，再由 candidate helper unlink；最後 `plugin list` 無 bundled registration。
-
-若驗收需從 current source 建立 Windows Yuzora UI，除 Rust MSVC 與 Visual Studio 2022 Build Tools／Windows SDK 外，還必須讓 NASM 位於非互動 build process 的 `PATH`（目前 `aws-lc-sys` Windows build 會在缺少 NASM 時 fail closed）。透過 WebView2 CDP 收集可存檔的 AX tree／截圖時，只能使用 evidence-only Tauri config 的 `additionalBrowserArgs`；不得把 remote-debugging port 寫入正式產品 config 或 release build。
+記錄 source commit／tree、平台、installer SHA256、四平台 manifest、測試命令與結果、GUI acceptance及未完成項目。工作樹未提交時只能記錄本機 checkpoint，遠端舊 PR 的綠燈與 candidate 不涵蓋新修改。完整矩陣未通過前，不設定 accepted-tree attestation、不 merge、不發布；沿用第 5 節的使用者候選驗證與明確 merge 核准流程。

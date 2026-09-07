@@ -150,6 +150,16 @@
     "connect": "Connect"
   },
   "database": {
+    "sqliteSource": "Database file location",
+    "sqliteWorkspace": "Source workspace folder",
+    "sqliteRemoteDescription": "Enter an existing, trusted workspace on this host. SQLite queries run there; SFTP-only connections cannot run queries.",
+    "chooseRemoteSqlite": "Choose a remote SQLite file",
+    "sqliteBrowsing": "Loading files…",
+    "sqliteBrowseFailed": "Cannot browse this workspace. Check the folder path and reconnect the host.",
+    "viaHost": "Connect through",
+    "viaHostDirect": "This computer",
+    "viaHostMissing": "Unavailable host: {{host}}",
+    "viaHostDescription": "Choose a configured host to reach its database network. TLS verifies the database hostname entered below.",
     "emptyTitle": "No database connections",
     "emptyDescription": "Add a connection to browse its tables",
     "forgetConnection": "Forget {{name}}",
@@ -475,7 +485,9 @@
       "scope": "Server setting scope",
       "scopeSub": "Where a server choice is saved",
       "workspace": "This workspace",
-      "global": "Global"
+      "global": "Global",
+      "hostDefault": "This host default",
+      "cancelInstall": "Cancel install"
     },
     "theme": "Theme",
     "themeLight": "Light",
@@ -554,6 +566,7 @@
     "runtimeSessionTitle": "Session: {{name}}"
   },
   "herdrTerminal": {
+    "inputPaused": "Input paused because delivery could not be completed. Reopen this terminal and check the last command before typing again.",
     "defaultTitle": "Herdr terminal",
     "observer": "Observer",
     "controller": "Controller",
@@ -615,26 +628,7 @@
     "reason": "Reason",
     "configurationError": "The saved binary-source preference could not be trusted: {{error}}",
     "defaultUnavailable": "The bundled Herdr resource is unavailable. Reinstall Yuzora or review the binary diagnostics before restarting.",
-    "wslIntegration": "WSL Pi integration",
-    "wslIntegrationSub": "When explicitly enabled, Yuzora links the bundled Plugin and installs its Pi adapter in the WSL distros configured by Herdr. Close Plugin-managed WSL panes before turning it off; the switch then performs the ownership-safe rollback. WSL is not a second Herdr runtime.",
-    "experimental": "Experimental",
-    "wslLoading": "Checking Plugin and adapter status…",
-    "wslUnavailable": "WSL Plugin status is unavailable.",
-    "wslInstalling": "Linking the Plugin and installing the Pi adapter…",
-    "wslRemoving": "Uninstalling the Pi adapter and unlinking the Plugin…",
-    "wslReady": "Plugin {{version}} is enabled and the WSL Pi adapter is current.",
-    "wslDisabled": "Not enabled; Yuzora startup does not modify WSL.",
-    "wslNeedsRecovery": "A Plugin registration exists, but the adapter is {{status}}. Turn it off to clean up before enabling it again.",
-    "wslForeignRegistration": "Another path owns this Plugin id, so Yuzora will not overwrite it: {{path}}",
-    "wslAdapterStatus": {
-      "unknown": "unknown",
-      "current": "current",
-      "absent": "absent",
-      "drifted": "drifted",
-      "outdated": "outdated",
-      "missingPrerequisite": "missing prerequisite",
-      "mixed": "mixed across distros"
-    }
+    "wslRuntime": "Windows workspaces run entirely in WSL2. Use Add Folder to select a distribution and set up its runtime."
   },
   "workspaceTrust": {
     "title": "Trust this workspace?",

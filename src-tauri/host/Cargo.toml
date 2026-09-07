@@ -1,0 +1,47 @@
+[package]
+name = "yuzora-host"
+version = "0.0.9-beta.3"
+edition = "2021"
+publish = false
+
+[dependencies]
+interprocess = "=2.4.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "net", "sync", "time"] }
+sha2 = "0.11.0"
+base64 = "0.23"
+rand = "0.10.2"
+libc = "0.2"
+encoding_rs = "0.8"
+ignore = "0.4"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+notify = "8.2.0"
+tempfile = "3"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+flate2 = "1"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "hooks"] }
+tiny_http = "0.12.0"
+scraper = "0.23"
+
+secrecy = { version = "0.10.3", features = ["serde"] }
+zeroize = "1.9.0"
+tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
+tiberius = { version = "0.12.3", path = "../vendor/tiberius-0.12.3-yuzora", default-features = false, features = ["tds73", "rustls", "chrono"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
+tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
+webpki-roots = "1.0.8"
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+uuid = { version = "1", default-features = false, features = ["v4"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+
+[dev-dependencies]
+ureq = "3.3.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }

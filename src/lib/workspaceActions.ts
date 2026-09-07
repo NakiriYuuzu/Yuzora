@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog"
+import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
 
 import { clearAll } from "@/editor/documentRegistry"
 import { logUserAction } from "@/features/logs/userAction"
@@ -6,11 +6,15 @@ import i18n from "@/lib/i18n"
 import { allowWorkspaceAssetScope, openWorkspace, startWatch } from "@/lib/ipc"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
-import { loadWorkspaceSessionEntry } from "@/state/workspaceSession"
+import { loadWorkspaceSessionEntry, saveWorkspaceSession, type WorkspaceSessionEntry } from "@/state/workspaceSession"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { isImagePath } from "@/workbench/ImageView"
+import { isWindowsPlatform } from "./platform"
+import { parseRemoteFilePath } from "./runtimeIdentity"
 
 export interface OpenWorkspaceOptions {
+    /** Drop a delayed restore before it replaces a newer user workspace. */
+    shouldOpen?: () => boolean
     // #60 T4c：預設從 per-workspace session map 立即還原 tabs。冷啟還原
     // （SessionRestoreBridge）自己帶逐檔存在性驗證再開分頁，傳 false 關掉
     // 這裡的還原，避免失效檔案的分頁被搶先開出來。
@@ -35,6 +39,16 @@ async function openWorkspaceAtPathWithOutcome(
     path: string,
     options?: OpenWorkspaceOptions
 ): Promise<boolean> {
+    if (options?.shouldOpen && !options.shouldOpen()) return false
+    let migratedSession: WorkspaceSessionEntry | null = null
+    if (isWindowsPlatform() && !parseRemoteFilePath(path)) {
+        const bound = await chooseWorkspaceFolder({ legacyWindowsPath: path })
+        if (!bound) return false
+        if (!parseRemoteFilePath(bound)) throw new Error("Select a WSL2 workspace")
+        const { bindWindowsWorkspace } = await import("./windowsWorkspaceMigration")
+        migratedSession = await bindWindowsWorkspace(path, bound)
+        path = bound
+    }
     // Guard unsaved work before discarding the current workspace's buffers.
     // Restore-on-launch runs with no workspace and no tabs open (SessionRestore
     // only fires when workspacePath is null), so there are never dirty tabs then
@@ -49,12 +63,14 @@ async function openWorkspaceAtPathWithOutcome(
     }
 
     const opened = await openWorkspace(path)
+    if (options?.shouldOpen && !options.shouldOpen()) return false
     const canonical = opened.canonicalPath
     // #60 T4c：切回曾開過的 workspace 要還原它的 tabs。entry 必須在
     // setWorkspace 之前讀出——SessionRestoreBridge 的存檔訂閱會對 store 轉場
     // 做出反應，先讀確保不受任何寫入競態影響。
     const sessionEntry =
-        options?.restoreSessionTabs === false ? null : loadWorkspaceSessionEntry(canonical)
+        options?.restoreSessionTabs === false ? null : loadWorkspaceSessionEntry(canonical) ?? migratedSession
+    if (migratedSession && sessionEntry === migratedSession) saveWorkspaceSession({ workspacePath: canonical, ...migratedSession })
     clearAll()
     const workspace = useWorkspaceStore.getState()
     workspace.setWorkspace(canonical, opened.capabilityId)
@@ -83,7 +99,7 @@ async function openWorkspaceAtPathWithOutcome(
             workspace.setActiveTab(0, sessionEntry.activePath)
         }
     }
-    void startWatch(canonical)
+    void startWatch(canonical).catch((error) => console.warn("workspace watcher failed", error))
     void logUserAction("open_workspace", `open workspace ${canonical}`)
     useRecentWorkspacesStore.getState().record(canonical)
     return true
@@ -103,7 +119,12 @@ export async function openWorkspaceAtPath(
  * surrounding UI (e.g. a popover).
  */
 export async function pickWorkspace(): Promise<boolean> {
-    const selected = await open({ directory: true, multiple: false })
+    const selected = await chooseWorkspaceFolder()
     if (typeof selected !== "string") return false
     return openWorkspaceAtPathWithOutcome(selected)
+}
+
+export async function pickRemoteWorkspace(): Promise<boolean> {
+    const selected = await chooseWorkspaceFolder({ initialLocation: "remote" })
+    return typeof selected === "string" && openWorkspaceAtPathWithOutcome(selected)
 }

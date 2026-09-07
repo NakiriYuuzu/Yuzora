@@ -2,27 +2,30 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
-## [0.0.9-beta.3] - 2026-08-30
+## [0.0.9-beta.3] - 2026-09-07
 
 ### 新增
 
-- Windows 安裝檔內附 Experimental 的 Pi-only `Yuzora WSL Agents` Plugin。Herdr 設定新增明確的 WSL Pi 整合開關；開啟時會以序列化 transaction ownership-safe 地 link 內附 Plugin並在設定的 WSL distro 安裝 adapter，關閉時掃描所有 installed distros、只移除 exact owned files，全部 absent 後才 unlink。既有不完整 registration 不會被自動覆寫。Plugin-managed pane 內的 Pi 可讓 Windows-native HERDR snapshot／events 投影 live identity 與 working／idle／blocked 狀態。
+- Windows 工作區改用 WSL2；每個工作區的 Agent、終端機、檔案、Git 與語言服務在同一個 Linux 環境執行。
+- 共用新增資料夾入口支援本地、SSH 完整工作區及純 SFTP，並以主機標示區分近期資料夾與文件。
+- 多台主機的 Agent 與 Attention 可集中查看；遠端工作區提供編輯、安全儲存、Git／worktree、語言服務、Preview 與 SQLite。
+- SFTP 支援直接編輯與手動上傳／下載，儲存前確認遠端版本。
 
 ### 改善
 
-- Agent 區域的預設 Session 標籤改為顯示實際使用的 Herdr 來源與版本（全域或 Yuzora-managed），不再只顯示容易混淆的 `default`。
-- macOS 與 Windows 的 Yuzora-managed HERDR 更新為官方 Stable `v0.8.2`／protocol 20；Windows 內附正式 Stable package 與完整 ConPTY runtime，不再使用舊 protocol-19 preview package。
+- 使用官方 HERDR 0.8.2／protocol 20；主機工具安裝於使用者版本目錄，保留既有 runtime。
+- 斷線保留未儲存內容，重連重新確認檔案狀態；關閉 Yuzora 保留 HERDR、Agent 與 WSL。
 
 ### 修正
 
-- 修正 Windows 安裝檔內的 WSL Pi adapter extension、installer 與 reporter 可能使用 CRLF，導致 adapter 安裝失敗或被誤判為 drifted、Plugin pane 已開啟但 Agents 無法可靠投影與回滾的問題。
-- 修正 WSL Pi lifecycle reporter 逾時後可能只終止 shell、遺留其 child process 並立即重試，造成跨狀態切換持續累積程序與記憶體的問題；現在會完整回收 reporter process group，無法確認回收時則停止後續回報。
-- 修正啟動 Yuzora 時不會同步啟動 HERDR 的問題；若所選 global 或內附 managed HERDR server 尚未運行，Yuzora 會啟動 headless server 並等待就緒，既有 server 則直接沿用。封裝版本在 Tauri 無法回報資源目錄時，也會從 app 執行檔安全還原內附 HERDR 的位置。
+- 修正近期遠端資料夾在未連線時無法開啟，以及切換主機後收到舊目錄結果的問題。
+- 修正 Linux 讀取檔案誤觸發外部修改、過期語言診斷中斷服務，以及遠端終端機快速輸入漏字的問題。
 
 ### 已知限制
 
-- 升級前仍在執行的 HERDR 0.8.0／protocol-19 default 或 named server 不會被 Yuzora 自動停止。0.8.2 client 會明確拒絕不相容 server；請先保存工作，再停止並以新 binary 重啟每個受影響的 HERDR session。
-- WSL Plugin 預設維持停用，Yuzora 啟動時不會修改 Linux home；只有使用者在 Herdr 設定明確開啟 WSL Pi 整合時才會執行安裝。整合只支援 Plugin-managed panes 與 Pi live identity／state；任意手動 `wsl.exe` pane、Claude／Codex、native Pi session resume，以及 Agent prompt/start/attach control 均不在本次保證。HERDR Runtime 為 Stable，但 Windows Plugin surface 仍是 Experimental。
+- 此候選版完整平台與 Agent 驗收尚未完成，尚不可標示為完整替代版；正式發布前必須完成候選安裝包驗證。
+- 舊 Windows 工作區需重新綁定 WSL2。舊 session 資料保留，執行中程序不會跨環境搬移；Agent 原生還原依官方整合支援。
+- 不相容的既有 HERDR server 不會自動停止或重啟，請先保存工作再處理版本遷移。
 - macOS Beta 沒有 Developer ID 發行者身分、notarization 或 Gatekeeper 信任，首次開啟時可能被警告或阻擋；只應從 Yuzora 官方 GitHub Pre-release 下載。
 - Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
 

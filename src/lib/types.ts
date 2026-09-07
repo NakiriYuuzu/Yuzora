@@ -369,10 +369,13 @@ export interface PostgresTransportFields {
 // Write-only connection input used behind the Rust profile/Test Connection
 // authority. No renderer-facing command can register this config directly;
 // passwords are sent in-flight only and are NEVER persisted anywhere.
+export interface DbSqliteWorkspace { hostId: string; canonicalPath: string }
+
 export type DbOpenConfig =
-    | { kind: "sqlite"; path: string }
+    | { kind: "sqlite"; path: string; workspace?: DbSqliteWorkspace }
     | ({
           kind: "postgres"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -381,6 +384,7 @@ export type DbOpenConfig =
       } & PostgresTransportFields)
     | {
           kind: "mssql"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -406,9 +410,10 @@ export type DbResultSessionId = DbOpaqueId<"resultSession">
 /** Non-secret connection address. Passwords are accepted only by write-only
  * request contracts and can never appear in a returned descriptor. */
 export type DbProfileTarget =
-    | { kind: "sqlite"; path: string }
+    | { kind: "sqlite"; path: string; workspace?: DbSqliteWorkspace }
     | ({
           kind: "postgres"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -416,6 +421,7 @@ export type DbProfileTarget =
       } & PostgresTransportFields)
     | {
           kind: "mssql"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -440,6 +446,7 @@ export function postgresInsecureExceptionMatches(
 }
 
 export interface PostgresTransportIdentity {
+    viaHost?: string
     transportMode: PostgresTransportMode
     host: string
     port: number
@@ -451,7 +458,8 @@ export function postgresTransportIdentityMatches(
     left: PostgresTransportIdentity,
     right: PostgresTransportIdentity
 ): boolean {
-    return left.transportMode === right.transportMode
+    return (left.viaHost ?? null) === (right.viaHost ?? null)
+        && left.transportMode === right.transportMode
         && left.host === right.host
         && left.port === right.port
         && left.user === right.user
@@ -571,6 +579,7 @@ export interface DbProfileUpdateRequest {
     transportChallengeId?: string | null
 }
 export interface DbPostgresTransportChallengeRequest {
+    viaHost?: string
     transportMode: PostgresTransportMode
     host: string
     port: number
@@ -578,6 +587,7 @@ export interface DbPostgresTransportChallengeRequest {
     database: string
 }
 export interface DbPostgresTransportChallenge {
+    viaHost?: string
     challengeId: string
     transportMode: PostgresTransportMode
     host: string

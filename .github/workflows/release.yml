@@ -246,12 +246,22 @@ jobs:
             -f ref="refs/tags/${TAG_NAME}" \
             -f sha="$TAG_OBJECT_SHA" >/dev/null
 
+  host-artifacts:
+    needs: guard
+    if: needs.guard.outputs.should_build == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/host.yml
+    with:
+      source-ref: ${{ needs.guard.outputs.source_sha }}
+
   build:
     name: Build ${{ matrix.label }} installers
-    needs: [guard, create-tag]
+    needs: [guard, create-tag, host-artifacts]
     if: >-
       always() &&
       needs.guard.result == 'success' &&
+      needs.host-artifacts.result == 'success' &&
       needs.guard.outputs.should_build == 'true' &&
       (needs.create-tag.result == 'success' || needs.create-tag.result == 'skipped')
     runs-on: ${{ matrix.platform }}
@@ -298,10 +308,15 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Verify Windows PowerShell 5.1 plugin runtime
-        if: matrix.artifact_name == 'windows'
-        shell: powershell
-        run: ./herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1
+      - name: Download Unix host runtimes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: host-*
+          merge-multiple: true
+          path: src-tauri/resources/host/
+
+      - name: Verify Unix host runtime payloads
+        run: bun run runtime:verify
 
       - name: Import Developer ID Application certificate
         if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
@@ -416,10 +431,10 @@ jobs:
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
           bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build_args }}
 
-      - name: Verify Windows bundled WSL plugin payload
+      - name: Verify Windows Unix runtime payload
         if: matrix.artifact_name == 'windows'
         shell: powershell
-        run: ./scripts/verify-windows-bundled-wsl-plugin.ps1 -BundleDir "src-tauri/target/release/bundle"
+        run: ./scripts/verify-windows-runtime-payload.ps1 -BundleDir "src-tauri/target/release/bundle"
 
       - name: Verify macOS Developer ID signature, Gatekeeper, and notarization
         if: needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'
@@ -547,7 +562,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      # actions/download-artifact@v4.3.0
+      # actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093.3.0
       - name: Download validated installer artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -701,7 +716,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      # actions/download-artifact@v4.3.0
+      # actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093.3.0
       - name: Download finalized metadata
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:

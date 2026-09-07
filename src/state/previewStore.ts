@@ -13,6 +13,7 @@ export interface StaticPreviewSession {
     workspace: string
     token: string
     url: string
+    sourcePath?: string
 }
 
 export interface PreviewNavState {
@@ -70,7 +71,7 @@ interface PreviewState {
     reload: (workspace: string) => void
     setFrame: (workspace: string, frame: ResponsiveFrame) => void
     staticPreview: StaticPreviewSession | null
-    openStaticPreview: (workspace: string, session: { token: string; url: string }) => boolean
+    openStaticPreview: (workspace: string, session: { token: string; url: string; sourcePath?: string }) => boolean
     revokeStaticPreview: () => void
     reset: () => void
 }
@@ -409,7 +410,8 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
             staticPreview: {
                 workspace,
                 token: session.token,
-                url: session.url
+                url: session.url,
+                ...(session.sourcePath ? { sourcePath: session.sourcePath } : {})
             }
         })
         const opened = get().navigate(workspace, session.url)

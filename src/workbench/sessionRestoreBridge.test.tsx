@@ -5,6 +5,10 @@ import indexHtml from "../../index.html?raw"
 import { getDocument } from "@/editor/documentRegistry"
 import { allowWorkspaceAssetScope } from "@/lib/ipc"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
+import { isWindowsPlatform } from "@/lib/platform"
+import { remoteFilePath } from "@/lib/runtimeIdentity"
+import { rememberRemoteWorkspace } from "@/state/remoteWorkspaceRegistry"
+import { useSshStore, type SshSessionState } from "@/state/sshStore"
 import { SessionRestoreBridge } from "@/workbench/SessionRestoreBridge"
 import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
 import {
@@ -23,6 +27,7 @@ vi.mock("@/lib/workspaceActions", () => ({
   openWorkspaceAtPath: vi.fn(),
   pickWorkspace: vi.fn()
 }))
+vi.mock("@/lib/platform", () => ({ isWindowsPlatform: vi.fn(() => false) }))
 
 vi.mock("@/editor/documentRegistry", () => ({
   getDocument: vi.fn()
@@ -66,8 +71,10 @@ function mockOpenResolves() {
 }
 
 beforeEach(() => {
+  vi.mocked(isWindowsPlatform).mockReturnValue(false)
   installLocalStorage()
   localStorage.clear()
+  useSshStore.setState({ sessions: {} })
   useWorkspaceStore.setState({
     workspacePath: null,
     groups: [{ tabs: [], activePath: null }],
@@ -121,6 +128,28 @@ describe("SessionRestoreBridge splash 退場", () => {
 
     await waitFor(() => expect(splashDismissed(el)).toBe(true))
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
+  it("defers legacy Windows binding until an explicit reopen and preserves its tabs", async () => {
+    vi.mocked(isWindowsPlatform).mockReturnValue(true)
+    const legacy = { workspacePath: "C:\\project", tabs: ["C:\\project\\main.ts"], activePath: "C:\\project\\main.ts" }
+    saveWorkspaceSession(legacy)
+    const el = insertSplash()
+    render(<SessionRestoreBridge />)
+    await waitFor(() => expect(splashDismissed(el)).toBe(true))
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(loadWorkspaceSession()).toEqual(legacy)
+  })
+
+  it("keeps an offline host's recorded tabs available for reopening", async () => {
+    const root = remoteFilePath("offline", "/project")
+    const session = { workspacePath: root, tabs: [root + "/main.ts"], activePath: root + "/main.ts" }
+    saveWorkspaceSession(session)
+    vi.mocked(openWorkspaceAtPath).mockRejectedValue(new Error("disconnected"))
+    const el = insertSplash()
+    render(<SessionRestoreBridge />)
+    await waitFor(() => expect(splashDismissed(el)).toBe(true))
+    expect(loadWorkspaceSession()).toEqual(session)
   })
 
   it("有 session 時等還原 settle 才退場 splash", async () => {
@@ -197,6 +226,30 @@ describe("SessionRestoreBridge splash 退場", () => {
 })
 
 describe("SessionRestoreBridge 還原", () => {
+  it("restores on the owning host connection and ignores unrelated host updates", async () => {
+    const root = remoteFilePath("waiting", "/project")
+    saveWorkspaceSession({ workspacePath: root, tabs: [root + "/main.ts"], activePath: null })
+    rememberRemoteWorkspace(root, "sftp")
+    mockOpenResolves()
+    render(<SessionRestoreBridge />)
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    act(() => useSshStore.setState({ sessions: { other: { sessionId: "other-1" } as SshSessionState } }))
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    await waitFor(() => expect(openWorkspaceAtPath).toHaveBeenCalledTimes(1))
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith(root, { shouldOpen: expect.any(Function) })
+  })
+
+  it("does not replace the user's workspace when the deferred host connects", () => {
+    const root = remoteFilePath("waiting", "/project")
+    saveWorkspaceSession({ workspacePath: root, tabs: [root + "/main.ts"], activePath: null })
+    rememberRemoteWorkspace(root, "sftp")
+    render(<SessionRestoreBridge />)
+    act(() => useWorkspaceStore.getState().setWorkspace("/chosen"))
+    act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
   it("有 session 時開啟 workspace、還原分頁與 active", async () => {
     saveWorkspaceSession(SESSION)
     mockOpenResolves()

@@ -15,6 +15,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { herdrAgentGet, herdrAgentRead } from "@/lib/herdrIpc"
+import { findRuntimeSession } from "@/lib/herdrProvider"
 import type {
   HerdrAgentDetails,
   HerdrAgentInfo,
@@ -59,7 +60,7 @@ export function HerdrAgentInspector({
   const target = agent?.paneId ?? null
   const stopped = useMemo(() => {
     if (!sessionName) return true
-    const session = sessions.find((item) => item.name === sessionName)
+    const session = findRuntimeSession(sessions, sessionName)
     return session ? !session.running : true
   }, [sessionName, sessions])
 

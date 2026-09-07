@@ -36,7 +36,7 @@
     "cmStageSelected": "暫存所選項目",
     "cmUnstageSelected": "取消暫存所選項目",
     "cmRollbackSelected": "回復所選項目…",
-    "cmOpenSsh": "開啟 SSH 終端機",
+    "cmOpenSsh": "連線至主機",
     "cmOpenSftp": "開啟 SFTP 瀏覽器",
     "cmCopyAddr": "複製主機位址",
     "cmCopyDbAddress": "複製資料庫位址",

@@ -61,23 +61,27 @@ it("serializes concurrent sends: a later message never reaches lspSend before th
     expect(lspSend).toHaveBeenNthCalledWith(2, "/ws", "typescript", '{"v":4}')
 })
 
-it("a rejected send does not stall the chain — later messages still go out", async () => {
+it("a rejected send drops queued changes and reports failure once", async () => {
     lspSend.mockRejectedValueOnce(new Error("pipe full")).mockResolvedValue(undefined)
-    const h = createTauriTransport("/ws", "typescript")
+    const failed = vi.fn()
+    const h = createTauriTransport("/ws", "typescript", failed)
     h.transport.send('{"v":1}')
     h.transport.send('{"v":2}')
     await settle()
     await settle()
-    expect(lspSend).toHaveBeenCalledTimes(2)
-    expect(lspSend).toHaveBeenNthCalledWith(2, "/ws", "typescript", '{"v":2}')
+    expect(lspSend).toHaveBeenCalledTimes(1)
+    expect(failed).toHaveBeenCalledExactlyOnceWith("Error: pipe full")
+    h.transport.send('{"v":3}')
+    await settle()
+    expect(lspSend).toHaveBeenCalledTimes(1)
 })
 
-it("sends still go out (and stay ordered) when lspStart rejected", async () => {
+it("does not send into a failed startup", async () => {
     lspStart.mockRejectedValue(new Error("no adapter"))
     const h = createTauriTransport("/ws", "typescript")
     h.transport.send('{"v":1}')
     await settle()
-    expect(lspSend).toHaveBeenCalledWith("/ws", "typescript", '{"v":1}')
+    expect(lspSend).not.toHaveBeenCalled()
 })
 
 it("dispatches incoming messages to subscribed handlers, and stops after unsubscribe", () => {
@@ -118,4 +122,42 @@ it("info resolves to the LspServerInfo returned by lspStart", async () => {
     lspStart.mockResolvedValue(info)
     const h = createTauriTransport("/ws", "typescript")
     await expect(h.info).resolves.toBe(info)
+})
+
+it("bounds queued messages while startup is pending and drops late completion", async () => {
+    let started!: (info: unknown) => void
+    lspStart.mockReturnValue(new Promise((resolve) => { started = resolve }))
+    const failed = vi.fn()
+    const h = createTauriTransport("/ws", "typescript", failed)
+    for (let i = 0; i < 129; i++) h.transport.send("{}")
+    expect(failed).toHaveBeenCalledExactlyOnceWith("LSP send queue limit exceeded")
+    started({ language: "typescript" })
+    await settle()
+    expect(lspSend).not.toHaveBeenCalled()
+})
+
+it("bounds UTF-8 bytes as well as message count", async () => {
+    const failed = vi.fn()
+    const h = createTauriTransport("/ws", "typescript", failed)
+    h.transport.send("字".repeat(3 * 1024 * 1024))
+    await settle()
+    expect(failed).toHaveBeenCalledOnce()
+    expect(lspSend).not.toHaveBeenCalled()
+})
+
+it("dispose clears queued changes and ignores late server output", async () => {
+    let sent!: () => void
+    lspSend.mockReturnValue(new Promise<void>((resolve) => { sent = resolve }))
+    const h = createTauriTransport("/ws", "typescript")
+    const handler = vi.fn()
+    h.transport.subscribe(handler)
+    h.transport.send("first")
+    h.transport.send("second")
+    await settle()
+    h.dispose()
+    sent()
+    lspStart.mock.calls[0][2]("late")
+    await settle()
+    expect(lspSend).toHaveBeenCalledTimes(1)
+    expect(handler).not.toHaveBeenCalled()
 })

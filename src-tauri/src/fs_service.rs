@@ -93,6 +93,11 @@ where
 }
 
 #[tauri::command(async)]
+pub fn workspace_canonical_path(path: String) -> Result<String, String> {
+    canonicalize_workspace(&path)
+}
+
+#[tauri::command(async)]
 pub fn open_workspace(
     path: String,
     state: tauri::State<'_, crate::path_capability::WorkspacePathState>,

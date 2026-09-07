@@ -1,4 +1,5 @@
 import i18n from "@/lib/i18n"
+import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import { getViewEntry } from "@/editor/viewRegistry"
 import {
   herdrPaneClose,
@@ -223,12 +224,8 @@ function previewUrlAvailability(
 
 function herdrSessionRuntime(sessionName: string) {
   const state = useHerdrStore.getState()
-  const session =
-    state.sessions.find((item) => item.name === sessionName) ??
-    (sessionName === "live"
-      ? state.sessions.find((item) => item.default) ?? state.sessions[0]
-      : null)
-  const resolvedName = session?.name ?? sessionName
+  const session = findRuntimeSession(state.sessions, sessionName)
+  const resolvedName = sessionScope(session) ?? sessionName
   const runtime = state.runtimesBySession[resolvedName]
   const capabilities =
     runtime?.capabilities ??

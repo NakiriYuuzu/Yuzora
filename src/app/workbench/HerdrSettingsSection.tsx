@@ -1,28 +1,15 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldError,
-  FieldLabel
-} from "@/components/ui/field"
-import { Switch } from "@/components/ui/switch"
-import {
   herdrBinarySourceGet,
-  herdrBinarySourceSet,
-  herdrWslIntegrationGet,
-  herdrWslIntegrationSet
+  herdrBinarySourceSet
 } from "@/lib/herdrIpc"
 import { isWindowsPlatform } from "@/lib/platform"
 import type {
   HerdrBinarySource,
-  HerdrBinarySourceInfo,
-  HerdrWslAdapterStatus,
-  HerdrWslIntegrationInfo
+  HerdrBinarySourceInfo
 } from "@/lib/herdrTypes"
 import { workspacePathForDisplay } from "@/lib/paths"
 
@@ -45,11 +32,9 @@ export function HerdrSettingsSection() {
   const [pending, setPending] = useState<HerdrBinarySource | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [restartRequired, setRestartRequired] = useState(false)
-  const [wslInfo, setWslInfo] = useState<HerdrWslIntegrationInfo | null>(null)
-  const [wslPending, setWslPending] = useState<boolean | null>(null)
-  const [wslError, setWslError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (windows) return
     let active = true
     void herdrBinarySourceGet()
       .then((next) => {
@@ -60,23 +45,6 @@ export function HerdrSettingsSection() {
       .catch((err) => {
         if (!active) return
         setError(err instanceof Error ? err.message : String(err))
-      })
-    return () => {
-      active = false
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!windows) return
-    let active = true
-    void herdrWslIntegrationGet()
-      .then((next) => {
-        if (!active) return
-        setWslInfo(next)
-      })
-      .catch((err) => {
-        if (!active) return
-        setWslError(err instanceof Error ? err.message : String(err))
       })
     return () => {
       active = false
@@ -98,57 +66,12 @@ export function HerdrSettingsSection() {
     }
   }
 
-  const onToggleWsl = async (enabled: boolean) => {
-    setWslPending(enabled)
-    setWslError(null)
-    try {
-      setWslInfo(await herdrWslIntegrationSet(enabled))
-    } catch (err) {
-      setWslError(err instanceof Error ? err.message : String(err))
-      try {
-        setWslInfo(await herdrWslIntegrationGet())
-      } catch {
-        // Keep the last trustworthy status alongside the mutation error.
-      }
-    } finally {
-      setWslPending(null)
-    }
-  }
-
   const configured = info?.configured ?? "global"
   const active = info?.resolved ?? info?.active ?? info?.configured ?? null
   const configuredAvailable = info
     ? (info.configuredAvailable ?? (info.configured === active ? info.available : false))
     : false
-  const wslConflict = Boolean(wslInfo?.linked && !wslInfo.ownsRegistration)
-  const wslDisabled =
-    wslPending !== null ||
-    !wslInfo ||
-    !wslInfo.platformSupported ||
-    !wslInfo.bundleAvailable ||
-    wslConflict
-  const adapterStatus = wslInfo?.adapterStatus ?? "unknown"
-
-  const formatAdapterStatus = (status: HerdrWslAdapterStatus) =>
-    t(`herdrSettings.wslAdapterStatus.${status}`)
-
-  const wslStatus = wslPending !== null
-    ? wslPending
-      ? t("herdrSettings.wslInstalling")
-      : t("herdrSettings.wslRemoving")
-    : !wslInfo
-      ? wslError
-        ? t("herdrSettings.wslUnavailable")
-        : t("herdrSettings.wslLoading")
-      : wslInfo.active
-        ? t("herdrSettings.wslReady", {
-            version: wslInfo.pluginVersion ?? "—"
-          })
-        : wslInfo.linked && wslInfo.ownsRegistration
-          ? t("herdrSettings.wslNeedsRecovery", {
-              status: formatAdapterStatus(adapterStatus)
-            })
-          : t("herdrSettings.wslDisabled")
+  if (windows) return <p className="text-sm text-muted-foreground">{t("herdrSettings.wslRuntime")}</p>
 
   return (
     <div className="flex flex-col gap-[14px]">
@@ -192,44 +115,6 @@ export function HerdrSettingsSection() {
         )}
       </div>
 
-      {windows && (
-        <div className="rounded-[12px] border border-(--line-1) bg-(--paper-0) px-[14px] py-[12px]">
-          <Field
-            orientation="horizontal"
-            data-disabled={wslDisabled || undefined}
-            data-invalid={Boolean(wslError || wslInfo?.reason) || undefined}
-          >
-            <FieldContent>
-              <FieldLabel htmlFor="herdr-wsl-integration">
-                {t("herdrSettings.wslIntegration")}
-                <Badge variant="outline">{t("herdrSettings.experimental")}</Badge>
-              </FieldLabel>
-              <FieldDescription>{t("herdrSettings.wslIntegrationSub")}</FieldDescription>
-              <FieldDescription role="status" data-testid="herdr-wsl-status">
-                {wslStatus}
-              </FieldDescription>
-            </FieldContent>
-            <Switch
-              id="herdr-wsl-integration"
-              aria-label={t("herdrSettings.wslIntegration")}
-              aria-invalid={Boolean(wslError || wslInfo?.reason)}
-              checked={Boolean(wslInfo?.linked && wslInfo.ownsRegistration)}
-              disabled={wslDisabled}
-              onCheckedChange={(checked) => void onToggleWsl(checked)}
-            />
-          </Field>
-          {wslConflict && (
-            <FieldError className="mt-[8px]">
-              {t("herdrSettings.wslForeignRegistration", {
-                path: wslInfo?.linkedPath ?? "—"
-              })}
-            </FieldError>
-          )}
-          {!wslConflict && (wslError || wslInfo?.reason) && (
-            <FieldError className="mt-[8px]">{wslError ?? wslInfo?.reason}</FieldError>
-          )}
-        </div>
-      )}
 
       <div className="rounded-[12px] border border-(--line-1) bg-(--paper-0) px-[14px] py-[12px] text-[12px]">
         <div className="font-semibold text-(--ink-1)">{t("herdrSettings.diagnostics")}</div>

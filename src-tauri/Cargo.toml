@@ -18,6 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+yuzora-host = { path = "host" }
 # `unstable` unlocks the multiwebview API (Window::add_child) the preview panel
 # uses to overlay an external-URL browser webview over the panel region (P3).
 tauri = { version = "2", features = ["unstable", "protocol-asset"] }

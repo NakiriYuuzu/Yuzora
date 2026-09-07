@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     convertFileSrc: vi.fn((path: string) => `asset://localhost/${encodeURIComponent(path)}`)
 }))
 vi.mock("@/lib/ipc", () => ({
+    readFileBase64: vi.fn(),
     openFile: vi.fn(async () => ({ kind: "binary", size: 245760 }))
 }))
 vi.mock("../editor/EditorPane", () => ({
@@ -23,6 +24,9 @@ vi.mock("@/app/panels/PreviewPanel", () => ({
 
 import { ImageView, isImagePath } from "./ImageView"
 import { EditorArea } from "./EditorArea"
+import { readFileBase64 } from "@/lib/ipc"
+import { convertFileSrc } from "@tauri-apps/api/core"
+import { remoteFilePath } from "@/lib/runtimeIdentity"
 
 function loadImage(width: number, height: number) {
     const img = screen.getByTestId("image-view-img") as HTMLImageElement
@@ -62,6 +66,21 @@ describe("isImagePath", () => {
 })
 
 describe("ImageView", () => {
+    it("loads a bounded remote image and ignores a previous host's late response", async () => {
+        let complete!: (file: { data: string; size: number }) => void
+        vi.mocked(readFileBase64).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+        const first = remoteFilePath("a", "/ws/logo.png")
+        const second = remoteFilePath("b", "/ws/logo.png")
+        const view = render(<ImageView path={first} />)
+        vi.mocked(readFileBase64).mockResolvedValueOnce({ data: "bmV3", size: 3 })
+        view.rerender(<ImageView path={second} />)
+        const img = await screen.findByTestId("image-view-img")
+        expect(img).toHaveAttribute("src", "data:image/png;base64,bmV3")
+        await act(async () => { complete({ data: "b2xk", size: 3 }) })
+        expect(img).toHaveAttribute("src", "data:image/png;base64,bmV3")
+        expect(convertFileSrc).not.toHaveBeenCalled()
+        expect(readFileBase64).toHaveBeenCalledWith(second, 8 * 1024 * 1024)
+    })
     it("以 asset URL 載圖；onLoad 後狀態列顯示尺寸、檔案大小與縮放比", async () => {
         render(<ImageView path="/ws/logo.png" />)
 
@@ -72,7 +91,7 @@ describe("ImageView", () => {
 
         const meta = await screen.findByTestId("image-view-meta")
         expect(meta.textContent).toContain("1024×768")
-        expect(meta.textContent).toContain("240.0 KB")
+        await waitFor(() => expect(meta.textContent).toContain("240.0 KB"))
         expect(meta.textContent).toMatch(/\d+%/)
     })
 

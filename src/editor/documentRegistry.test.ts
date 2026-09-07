@@ -6,10 +6,103 @@ import {
     dropDocument,
     renameDocument,
     reloadDocument,
-    documentGeneration
+    documentGeneration,
+    clearAll
 } from "./documentRegistry"
+import { useWorkspaceStore } from "../state/workspaceStore"
+import type { OpenFileResult } from "../lib/types"
+import { registerRuntimeWorkspace, saveRemoteFile } from "../lib/remoteFiles"
 
-afterEach(() => clearMocks())
+afterEach(() => { clearMocks(); clearAll(); useWorkspaceStore.setState({ workspacePath: null }) })
+
+test("overlapping native workspaces isolate document content and late pane cleanup", async () => {
+    const path = "/repo/nested/shared.ts"
+    mockIPC(() => ({ kind: "full", content: "disk", size: 4 }))
+    useWorkspaceStore.setState({ workspacePath: "/repo" })
+    await getDocument(path)
+    const previousGeneration = documentGeneration(path)
+    updateBuffer(path, "parent edit", previousGeneration)
+    useWorkspaceStore.setState({ workspacePath: "/repo/nested" })
+    expect((await getDocument(path)).result).toMatchObject({ content: "disk" })
+    updateBuffer(path, "late parent cleanup", previousGeneration, "/repo")
+    expect((await getDocument(path)).result).toMatchObject({ content: "disk" })
+    useWorkspaceStore.setState({ workspacePath: "/repo" })
+    expect((await getDocument(path)).result).toMatchObject({ content: "parent edit" })
+})
+
+test("a pending read cannot repopulate a cleared workspace cache", async () => {
+    let finish!: (value: OpenFileResult) => void
+    mockIPC(() => new Promise<OpenFileResult>((resolve) => { finish = resolve }))
+    const pending = getDocument("/repo/pending.ts")
+    clearAll()
+    finish({ kind: "full", content: "stale", size: 5, lineEnding: "lf" })
+    await expect(pending).rejects.toThrow("workspace changed")
+    mockIPC(() => ({ kind: "full", content: "new", size: 3 }))
+    expect((await getDocument("/repo/pending.ts")).result).toMatchObject({ content: "new" })
+})
+
+test("a slow reload preserves edits made while the remote read is pending", async () => {
+    const path = "/repo/slow.ts"
+    mockIPC(() => ({ kind: "full", content: "before", size: 6, lineEnding: "lf" }))
+    await getDocument(path)
+    const generation = documentGeneration(path)
+    let finish!: (value: OpenFileResult) => void
+    mockIPC(() => new Promise<OpenFileResult>((resolve) => { finish = resolve }))
+    const reload = reloadDocument(path)
+    updateBuffer(path, "my new edits", generation)
+    expect((await getDocument(path)).result).toMatchObject({ content: "my new edits" })
+    finish({ kind: "full", content: "external", size: 8, lineEnding: "lf" })
+    await expect(reload).rejects.toThrow("changed during reload")
+    expect(documentGeneration(path)).toBe(generation)
+    expect((await getDocument(path)).result).toMatchObject({ content: "my new edits" })
+})
+
+test("an older reload cannot replace a newer accepted document", async () => {
+    const path = "/repo/order.ts"
+    mockIPC(() => ({ kind: "full", content: "before", size: 6, lineEnding: "lf" }))
+    await getDocument(path)
+    let finish!: (value: OpenFileResult) => void
+    mockIPC(() => new Promise<OpenFileResult>((resolve) => { finish = resolve }))
+    const old = reloadDocument(path)
+    mockIPC(() => ({ kind: "full", content: "newer", size: 5, lineEnding: "lf" }))
+    await reloadDocument(path)
+    finish({ kind: "full", content: "older", size: 5, lineEnding: "lf" })
+    await expect(old).rejects.toThrow("changed during reload")
+    expect((await getDocument(path)).result).toMatchObject({ content: "newer" })
+})
+
+test("competing remote reloads commit only the revision of the accepted buffer", async () => {
+    const owner = { hostId: "registry-reload-race", generation: 1 }
+    const pending: ((value: unknown) => void)[] = []
+    let deferred = false
+    let writtenRevision: unknown
+    mockIPC((_command, payload) => {
+        const { operation } = payload as { operation: { method: string; params: { revision?: string } } }
+        if (operation.method === "workspaceOpen") return { canonicalPath: "/project", capabilityId: "workspace" }
+        if (operation.method === "filesWrite") {
+            writtenRevision = operation.params.revision
+            return { revision: "saved" }
+        }
+        if (deferred) return new Promise((resolve) => pending.push(resolve))
+        return { file: { kind: "full", content: "before", size: 6, lineEnding: "lf" }, revision: "before" }
+    })
+    const root = await registerRuntimeWorkspace(owner, "/project", () => true)
+    useWorkspaceStore.setState({ workspacePath: root })
+    const path = root + "/file.txt"
+    await getDocument(path)
+    deferred = true
+    const first = reloadDocument(path)
+    const second = reloadDocument(path)
+    // The remote import and IPC entry are asynchronous.
+    while (pending.length < 2) await new Promise((resolve) => setTimeout(resolve, 0))
+    pending[0]({ file: { kind: "full", content: "accepted", size: 8, lineEnding: "lf" }, revision: "accepted-revision" })
+    pending[1]({ file: { kind: "full", content: "discarded", size: 9, lineEnding: "lf" }, revision: "unseen-revision" })
+    await first
+    await expect(second).rejects.toThrow("changed during reload")
+    expect((await getDocument(path)).result).toMatchObject({ content: "accepted" })
+    await saveRemoteFile(path, "my edits")
+    expect(writtenRevision).toBe("accepted-revision")
+})
 
 test("renameDocument 把快取移到新 key，新 path getDocument 命中快取（不再走 IPC），舊 path miss", async () => {
     let calls = 0

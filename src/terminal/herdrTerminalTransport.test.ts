@@ -428,3 +428,104 @@ describe("createLocalPtyTransport", () => {
     expect(ptyOpen).toHaveBeenCalled()
   })
 })
+
+describe("bounded Herdr input delivery", () => {
+  beforeEach(() => {
+    vi.mocked(herdrTerminalOpen).mockReset().mockResolvedValue({
+      sessionId: "input-session", target: "input-terminal", mode: "control",
+      role: "controller", cols: 80, rows: 24, takeover: true
+    })
+    vi.mocked(herdrTerminalInput).mockReset().mockResolvedValue(undefined)
+    vi.mocked(herdrTerminalRelease).mockReset().mockResolvedValue(undefined)
+  })
+  function delayed() {
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail })
+    return { promise, resolve, reject }
+  }
+  async function open() {
+    const transport = createHerdrTerminalTransport({ terminalId: "input-terminal" })
+    const onEvent = vi.fn()
+    await transport.open({ cols: 80, rows: 24, onEvent })
+    return { transport, onEvent }
+  }
+
+  it("coalesces a typing burst behind one in-flight request without dropping or reordering text", async () => {
+    const first = delayed()
+    vi.mocked(herdrTerminalInput).mockReturnValueOnce(first.promise)
+    const { transport } = await open()
+    const head = transport.write("node ")
+    await vi.waitFor(() => expect(herdrTerminalInput).toHaveBeenCalledOnce())
+    const text = "/home/ubuntu/中文 workspace/" + "path/".repeat(100) + "server.cjs\r"
+    const tail = [...text].map((character) => transport.write(character))
+    expect(herdrTerminalInput).toHaveBeenCalledOnce()
+    first.resolve()
+    await Promise.all([head, ...tail])
+    expect(herdrTerminalInput).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(herdrTerminalInput).mock.calls.map((args) => args[1]).join("")).toBe("node " + text)
+  })
+
+  it("surfaces an uncertain delivery and never sends the queued Enter", async () => {
+    const first = delayed()
+    vi.mocked(herdrTerminalInput).mockReturnValueOnce(first.promise)
+    const { transport, onEvent } = await open()
+    const head = transport.write("pending command")
+    await vi.waitFor(() => expect(herdrTerminalInput).toHaveBeenCalledOnce())
+    const tail = transport.write("\r")
+    const settled = Promise.allSettled([head, tail])
+    first.reject(new Error("stream-response-unavailable"))
+    expect((await settled).every((result) => result.status === "rejected")).toBe(true)
+    expect(herdrTerminalInput).toHaveBeenCalledOnce()
+    expect(transport.canWrite()).toBe(false)
+    expect(onEvent).toHaveBeenCalledWith({ type: "error", message: "terminal-input-failed" })
+    await transport.write("ignored")
+    expect(herdrTerminalInput).toHaveBeenCalledOnce()
+  })
+
+  it("discards old unsent input and ignores a late failure after opening another connector", async () => {
+    const first = delayed()
+    vi.mocked(herdrTerminalInput).mockReturnValueOnce(first.promise)
+    const { transport, onEvent } = await open()
+    const head = transport.write("old command")
+    await vi.waitFor(() => expect(herdrTerminalInput).toHaveBeenCalledOnce())
+    const tail = transport.write("\r")
+    const old = Promise.allSettled([head, tail])
+    await transport.release()
+    vi.mocked(herdrTerminalOpen).mockResolvedValueOnce({
+      sessionId: "new-session", target: "input-terminal", mode: "control",
+      role: "controller", cols: 80, rows: 24, takeover: true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent })
+    await transport.write("new command")
+    first.reject(new Error("old connection closed"))
+    await old
+    expect(herdrTerminalInput).toHaveBeenCalledTimes(2)
+    expect(herdrTerminalInput).toHaveBeenLastCalledWith("new-session", "new command", null)
+    expect(transport.canWrite()).toBe(true)
+    expect(onEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }))
+  })
+
+  it("bounds UTF-8 bytes and discards the unsent tail on overflow", async () => {
+    const first = delayed()
+    vi.mocked(herdrTerminalInput).mockReturnValueOnce(first.promise)
+    const { transport, onEvent } = await open()
+    const head = transport.write("pending")
+    await vi.waitFor(() => expect(herdrTerminalInput).toHaveBeenCalledOnce())
+    const tail = transport.write("\r")
+    await expect(transport.write("中".repeat(90_000))).rejects.toThrow("terminal-input-limit")
+    expect(transport.canWrite()).toBe(false)
+    expect(onEvent).toHaveBeenCalledWith({ type: "error", message: "terminal-input-limit" })
+    first.resolve()
+    await Promise.all([head, tail])
+    expect(herdrTerminalInput).toHaveBeenCalledOnce()
+  })
+
+  it("drops input when the connector is disposed before its first send", async () => {
+    const { transport } = await open()
+    const pending = transport.write("never execute\r")
+    await transport.dispose?.()
+    await pending
+    expect(herdrTerminalInput).not.toHaveBeenCalled()
+  })
+})

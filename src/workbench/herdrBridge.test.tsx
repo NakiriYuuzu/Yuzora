@@ -6,6 +6,7 @@ import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { HerdrBridge } from "./HerdrBridge"
 import { shouldPollHerdrSnapshots } from "./herdrBridgePolicy"
+import { remoteFilePath } from "@/lib/runtimeIdentity"
 
 const initialWorkspaceState = useWorkspaceStore.getState()
 const initialHerdrState = useHerdrStore.getState()
@@ -253,6 +254,47 @@ describe("HerdrBridge attachment reconciliation", () => {
     })
 
     await waitFor(() => expect(restoreFocusedState).toHaveBeenCalledTimes(2))
+  })
+
+  it.each([
+    ["another native folder", "/tmp/chosen", "/tmp/agent-cwd", false],
+    ["missing Space root", "/tmp/chosen", undefined, false],
+    ["the same native folder", "/tmp/chosen", "/tmp/chosen", true],
+    ["another host with the same path", remoteFilePath("host-a", "/tmp/chosen"), remoteFilePath("host-b", "/tmp/chosen"), false],
+    ["the same remote folder", remoteFilePath("host-a", "/tmp/chosen"), remoteFilePath("host-a", "/tmp/chosen"), true]
+  ])("preserves hydrated workspace identity when snapshot targets %s", async (_label, workspacePath, root, shouldRestore) => {
+    const restoreFocusedState = vi.fn(async () => ({ ok: true as const }))
+    const snapshot = {
+      herdrSessionId: "default", protocol: 20, version: "0.8.2",
+      spaces: [{ id: "w1", label: "Test", order: 1, focused: true, path: root }],
+      agents: [], tabs: [], terminals: [],
+      focusedWorkspaceId: "w1", focusedTabId: "w1:t1", raw: {}
+    }
+    useWorkspaceStore.setState({ sessionRestoreReady: false, workspacePath: null })
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      selectedSessionName: "default",
+      runtimesBySession: {
+        default: { capabilities: null, snapshot, worktreeInventory: null, connectionState: "ready", errorMessage: null }
+      },
+      refreshSessions: vi.fn(async () => undefined),
+      restoreFocusedState,
+      releaseAllAttachments: vi.fn(async () => undefined)
+    })
+    render(<HerdrBridge />)
+    await act(async () => {
+      useWorkspaceStore.setState({ sessionRestoreReady: true, workspacePath })
+    })
+    expect(restoreFocusedState).toHaveBeenCalledTimes(shouldRestore ? 1 : 0)
+    // Reconnect snapshots must apply the same workspace guard.
+    await act(async () => {
+      const state = useHerdrStore.getState()
+      useHerdrStore.setState({ runtimesBySession: {
+        default: { ...state.runtimesBySession.default!, snapshot: { ...snapshot, focusedTabId: "w1:t2" } }
+      } })
+    })
+    expect(restoreFocusedState).toHaveBeenCalledTimes(shouldRestore ? 2 : 0)
+    expect(useWorkspaceStore.getState().workspacePath).toBe(workspacePath)
   })
 
   it("keeps composite leaf attachments while their owning page is open", async () => {

@@ -8,16 +8,24 @@ vi.mock("@/lib/ipc", () => ({
     sftpRename: vi.fn(),
     sftpRemove: vi.fn(),
     sftpUpload: vi.fn(),
-    sftpDownload: vi.fn()
+    sftpDownload: vi.fn(),
+    sftpTransferTree: vi.fn(),
+    sftpFileRevision: vi.fn(async () => null),
+    sftpTransferPrepare: vi.fn(async () => `xfer-${crypto.randomUUID()}`),
+    sftpTransferCancel: vi.fn(async () => {})
 }))
 
 import {
     sftpDownload,
+    sftpFileRevision,
+    sftpTransferPrepare,
+    sftpTransferCancel,
     sftpListDir,
     sftpMkdir,
     sftpRemove,
     sftpRename,
-    sftpUpload
+    sftpUpload,
+    sftpTransferTree
 } from "@/lib/ipc"
 import type { SftpEntry, SftpListing } from "@/lib/types"
 import {
@@ -27,6 +35,7 @@ import {
     useSftpStore
 } from "./sftpStore"
 import { useSshStore } from "./sshStore"
+import { useAppDialogStore } from "./appDialogStore"
 
 const mockList = vi.mocked(sftpListDir)
 const mockMkdir = vi.mocked(sftpMkdir)
@@ -177,6 +186,79 @@ describe("sftpStore remote browsing", () => {
 })
 
 describe("sftpStore transfers", () => {
+    it("drops a late listing from a previous session or a superseded navigation", async () => {
+        connectHost()
+        let finish!: (listing: SftpListing) => void
+        mockList.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+        const first = useSftpStore.getState().listRemote(HOST, "/old")
+        mockList.mockResolvedValueOnce(listing("/current", []))
+        await useSftpStore.getState().listRemote(HOST, "/current")
+        finish(listing("/old", []))
+        await first
+        expect(useSftpStore.getState().remote[HOST].cwd).toBe("/current")
+        mockList.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+        const replaced = useSftpStore.getState().listRemote(HOST, "/previous-session")
+        useSshStore.setState({ sessions: {} })
+        finish(listing("/previous-session", []))
+        await replaced
+        expect(useSftpStore.getState().remote[HOST].cwd).toBe("/current")
+    })
+
+    it("requires overwrite confirmation and sends the exact checked revision", async () => {
+        connectHost()
+        vi.mocked(sftpFileRevision).mockResolvedValueOnce("checked-revision")
+        const uploading = useSftpStore.getState().upload(HOST, { kind: "selected", capabilityId: "picked", name: "file" })
+        await vi.waitFor(() => expect(useAppDialogStore.getState().pending).not.toBeNull())
+        expect(mockUpload).not.toHaveBeenCalled()
+        useAppDialogStore.getState().respond(true)
+        await uploading
+        expect(mockUpload).toHaveBeenCalledWith("sess-1", expect.any(String), { kind: "selected", capabilityId: "picked", name: "file" }, "/home/u", "checked-revision")
+    })
+
+    it("declining an overwrite preserves the source capability and releases the transfer reservation", async () => {
+        connectHost()
+        vi.mocked(sftpFileRevision).mockResolvedValueOnce("checked-revision")
+        const uploading = useSftpStore.getState().upload(HOST, { kind: "selected", capabilityId: "picked", name: "file" })
+        await vi.waitFor(() => expect(useAppDialogStore.getState().pending).not.toBeNull())
+        useAppDialogStore.getState().respond(false)
+        await uploading
+        expect(mockUpload).not.toHaveBeenCalled()
+        const [id, transfer] = Object.entries(useSftpStore.getState().transfers)[0]
+        expect(transfer).toMatchObject({ done: true, error: "sftp-transfer-cancelled" })
+        expect(sftpTransferCancel).toHaveBeenCalledWith("sess-1", id)
+    })
+
+    it("cancels the owning session and ignores late or cross-session progress", async () => {
+        connectHost()
+        let fail!: (error: string) => void
+        mockDownload.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+        const downloading = useSftpStore.getState().download(HOST, file("data.csv"), { capabilityId: "dest", leaf: "data.csv" })
+        await vi.waitFor(() => expect(mockDownload).toHaveBeenCalled())
+        const id = mockDownload.mock.calls[0][1]
+        useSftpStore.getState().applyProgress({ sessionId: "different-host", transferId: id, transferred: 99, total: 100, done: true })
+        expect(useSftpStore.getState().transfers[id]).toMatchObject({ done: false, transferred: 0 })
+        useSftpStore.getState().applyProgress({ sessionId: "sess-1", transferId: id, transferred: 50, total: 100, done: false })
+        await useSftpStore.getState().cancelTransfer(id)
+        expect(sftpTransferCancel).toHaveBeenCalledWith("sess-1", id)
+        fail("sftp-transfer-cancelled")
+        await downloading
+        useSftpStore.getState().applyProgress({ sessionId: "sess-1", transferId: id, transferred: 100, total: 100, done: true })
+        expect(useSftpStore.getState().transfers[id]).toMatchObject({ done: true, transferred: 50, error: "sftp-transfer-cancelled" })
+    })
+
+    it("releases a reservation returned after reset without starting a transfer", async () => {
+        connectHost()
+        let finish!: (id: string) => void
+        vi.mocked(sftpTransferPrepare).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+        const downloading = useSftpStore.getState().download(HOST, file("data.csv"), { capabilityId: "dest", leaf: "data.csv" })
+        useSftpStore.getState().reset()
+        finish("late")
+        await downloading
+        expect(sftpTransferCancel).toHaveBeenCalledWith("sess-1", "late")
+        expect(mockDownload).not.toHaveBeenCalled()
+        expect(useSftpStore.getState().transfers).toEqual({})
+    })
+
     it("upload registers a transfer, calls sftp_upload with the remote cwd, and refreshes", async () => {
         connectHost("/home/u")
         mockUpload.mockResolvedValueOnce(undefined)
@@ -240,7 +322,7 @@ describe("sftpStore transfers", () => {
         useSftpStore.setState({
             transfers: {
                 x1: {
-                    hostId: HOST,
+                    hostId: HOST, sessionId: "sess-1",
                     direction: "download",
                     name: "f",
                     transferred: 0,
@@ -265,7 +347,7 @@ describe("sftpStore transfers", () => {
     it("clearTransfer drops the entry", () => {
         useSftpStore.setState({
             transfers: {
-                x1: { hostId: HOST, direction: "upload", name: "f", transferred: 0, total: 0, done: true, error: null }
+                x1: { hostId: HOST, sessionId: "sess-1", direction: "upload", name: "f", transferred: 0, total: 0, done: true, error: null }
             }
         })
         useSftpStore.getState().clearTransfer("x1")
@@ -284,9 +366,27 @@ describe("sftpStore openSftp", () => {
         })
         const id = useSshStore.getState().hosts[0].id
         useSftpStore.getState().openSftp(id)
-        expect(useSftpStore.getState().activeTab).toBe("sftp")
+        expect(useSftpStore.getState().panelOpen).toBe(true)
         expect(useSshStore.getState().activeHostId).toBe(id)
         // Password host → begins the connect flow (pending auth prompt).
         expect(useSshStore.getState().pendingAuthHostId).toBe(id)
+    })
+})
+
+describe("SFTP folder transfer ownership", () => {
+    it("keeps Cancel bound to the original session and never replays a folder transfer", async () => {
+        connectHost("/home/u")
+        let fail!: (error: Error) => void
+        vi.mocked(sftpTransferTree).mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+        const transfer = useSftpStore.getState().transferTree(HOST, "selected-tree", "upload", "/home/u", "folder")
+        await vi.waitFor(() => expect(sftpTransferTree).toHaveBeenCalledOnce())
+        const [id] = Object.keys(useSftpStore.getState().transfers)
+        useSshStore.setState((s) => ({ sessions: { ...s.sessions, [HOST]: { ...s.sessions[HOST], sessionId: "replacement" } } }))
+        await useSftpStore.getState().cancelTransfer(id)
+        expect(sftpTransferCancel).toHaveBeenCalledWith("sess-1", id)
+        fail(new Error("sftp-transfer-cancelled"))
+        await transfer
+        expect(sftpTransferTree).toHaveBeenCalledOnce()
+        expect(useSftpStore.getState().transfers[id]).toMatchObject({ done: true, error: "sftp-transfer-cancelled" })
     })
 })

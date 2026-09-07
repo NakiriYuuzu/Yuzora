@@ -24,6 +24,7 @@ export function WorkspaceTrustHost() {
     const workspacePath = useWorkspaceStore((state) => state.workspacePath)
     const prompt = useWorkspaceTrustStore((state) => state.prompt)
     const lastError = useWorkspaceTrustStore((state) => state.lastError)
+    const confirming = useWorkspaceTrustStore((state) => state.confirming)
     const trustRevision = useWorkspaceTrustStore((state) => state.trustRevision)
     const confirmPrompt = useWorkspaceTrustStore((state) => state.confirmPrompt)
     const cancelPrompt = useWorkspaceTrustStore((state) => state.cancelPrompt)
@@ -44,6 +45,13 @@ export function WorkspaceTrustHost() {
                 if (cancelled || !granted) return
                 if (useWorkspaceStore.getState().workspacePath !== workspacePath) return
                 await useGitStore.getState().detect(workspacePath)
+                if (useWorkspaceStore.getState().workspacePath === workspacePath) {
+                    const lsp = await import("@/lsp/lspManager")
+                    await lsp.restartWorkspace(
+                        workspacePath,
+                        () => useWorkspaceStore.getState().workspacePath === workspacePath
+                    )
+                }
             } catch {
                 // Status / grant errors stay in the trust store.
             }
@@ -121,7 +129,13 @@ export function WorkspaceTrustHost() {
                 ) : null}
                 <AlertDialogFooter>
                     <AlertDialogCancel>{t("workspaceTrust.cancel")}</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void confirmPrompt()}>
+                    <AlertDialogAction
+                        disabled={confirming}
+                        onClick={(event) => {
+                            event.preventDefault()
+                            void confirmPrompt()
+                        }}
+                    >
                         {execute ? t("workspaceTrust.runCommand") : t("workspaceTrust.grant")}
                     </AlertDialogAction>
                 </AlertDialogFooter>

@@ -7,13 +7,13 @@ import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 import { FilesNavContent } from "@/app/workbench/FilesNavContent"
 import { GitNavContent } from "@/app/workbench/GitNavContent"
 import { HerdrNavContent } from "@/app/workbench/HerdrNavContent"
-import { SshNavContent } from "@/app/workbench/SshNavContent"
 import { canonicalPathKey, workspacePathForDisplay } from "@/lib/paths"
 import { shortcutLabel } from "@/lib/platform"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation"
+import { WorkspaceHostBadge } from "@/workbench/WorkspaceHostBadge"
 
 interface ProjectNavPanelProps {
   mode: Mode
@@ -56,6 +56,7 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
         <div className="min-w-0 flex-1">
           <p className="truncate font-serif text-[20px] font-medium text-(--ink-1)">{project.name}</p>
           <p className="truncate text-[11px] text-(--ink-3)">{displayPath}</p>
+          {workspacePath && <WorkspaceHostBadge path={workspacePath} />}
         </div>
         {workspacePath && (
           <button
@@ -133,11 +134,6 @@ export function ProjectNavPanel({ mode, onModeChange, onOpenPalette }: ProjectNa
         {mode === "database" && (
           <div data-testid="nav-mode-content-database" className="h-full min-h-[120px]">
             <DatabaseNavContent />
-          </div>
-        )}
-        {mode === "ssh" && (
-          <div data-testid="nav-mode-content-ssh" className="h-full min-h-[120px]">
-            <SshNavContent />
           </div>
         )}
         {mode === "ade" && (

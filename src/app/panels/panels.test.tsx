@@ -12,6 +12,7 @@ import { initialGitState, useGitStore } from "@/state/gitStore"
 import { usePreviewStore } from "@/state/previewStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { useSftpStore } from "@/state/sftpStore"
 
 const ipcMocks = vi.hoisted(() => ({
   requestDevServerAuthorization: vi.fn(),
@@ -184,28 +185,16 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
     expect(screen.getByText("Database connections are not configured")).toBeInTheDocument()
   })
 
-  it("shows the ssh nav and main entry states, and switches the SFTP/SSH tabs", () => {
+  it("opens SFTP transfers from Files without a separate SSH mode", () => {
+    useSftpStore.getState().setPanelOpen(false)
     render(<AppShell />)
-    switchMode("SSH")
-
-    const nav = screen.getByTestId("nav-mode-content-ssh")
-    expect(within(nav).getByText("No hosts yet")).toBeInTheDocument()
-    expect(within(nav).getByRole("button", { name: "New host" })).toBeInTheDocument()
-
-    // SSH is the default tab (FEAT-2): with no active session the main region
-    // shows the no-session empty state.
-    expect(screen.getByText("No active session")).toBeInTheDocument()
-
-    // Radix's Tabs.Trigger switches on mousedown (not click) — see
-    // @radix-ui/react-tabs's Trigger, which wires activation to onMouseDown
-    // (plus onKeyDown/onFocus). fireEvent.click alone never fires that
-    // handler, so tab-switching assertions use mouseDown here.
-    const viewSwitcher = screen.getByRole("tablist", { name: "SFTP or SSH" })
-    fireEvent.mouseDown(within(viewSwitcher).getByRole("tab", { name: "SFTP" }))
-
-    // SFTP tab with no active host shows the "not connected" browser prompt (F5).
-    expect(screen.getByText("Not connected")).toBeInTheDocument()
-    expect(screen.queryByText("No active session")).not.toBeInTheDocument()
+    switchMode("Files")
+    expect(screen.queryByRole("tab", { name: "SSH" })).not.toBeInTheDocument()
+    const nav = screen.getByTestId("nav-mode-content-files")
+    fireEvent.click(within(nav).getByRole("button", { name: i18n.t("hosts:transfers") }))
+    expect(useSftpStore.getState().panelOpen).toBe(true)
+    expect(screen.getByTestId("main-surface")).toBeInTheDocument()
+    useSftpStore.getState().setPanelOpen(false)
   })
 
   it("shows the ADE nav entry state (Herdr Spaces/Agents)", () => {

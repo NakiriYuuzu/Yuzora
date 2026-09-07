@@ -32,6 +32,7 @@ import {
 import type { DevServerCandidate, DevServerInfo, DevServerStatus } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { PreviewFrame } from "@/preview/PreviewFrame"
+import { useRemotePreviewUrl } from "@/preview/useRemotePreviewUrl"
 import {
   enqueueNativePreviewOperation,
   goBackPreview,
@@ -186,6 +187,7 @@ export function PreviewPanel() {
   // in the iframe. Native Back/Forward is used only while previewStore can prove
   // that the current child-webview session owns the adjacent external URL.
   const external = !!nav.url && !isLocalPreviewUrl(nav.url)
+  const renderedPreview = useRemotePreviewUrl(workspace, nav.url, staticPreview?.url === nav.url, nav.reloadNonce)
   const nativeNavigationSync = workspace ? nativeNavigationSyncs[workspace] ?? null : null
   const previewTarget: PreviewCommandTarget | null = workspace ? {
     workspacePath: workspace,
@@ -530,9 +532,11 @@ export function PreviewPanel() {
                 data-testid="preview-webview-host"
                 className="min-h-0 flex-1 bg-white"
               />
+            ) : renderedPreview.error ? (
+              <p role="alert" className="p-4 text-sm text-destructive">{renderedPreview.error}</p>
             ) : (
               <PreviewFrame
-                url={nav.url}
+                url={renderedPreview.url}
                 reloadNonce={nav.reloadNonce}
                 mode={previewFrameModeFor(nav.url, staticPreview)}
               />

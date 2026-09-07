@@ -6,6 +6,7 @@ pub mod db_profiles;
 pub mod db_query_worker;
 pub mod db_result_session;
 pub mod db_service;
+mod db_transport;
 pub mod dev_server_detect;
 pub mod env_path;
 pub mod file_content;
@@ -15,10 +16,15 @@ pub mod git_oid;
 pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
-mod herdr_limits;
 pub mod herdr_service;
-mod herdr_transport;
-pub mod herdr_wsl_service;
+pub mod host_bootstrap;
+mod host_git;
+mod host_herdr;
+pub mod host_service;
+mod host_sqlite;
+pub mod host_streams;
+pub mod host_tunnels;
+pub mod host_wsl;
 pub mod logging;
 pub mod lsp_adapters;
 pub mod lsp_config;
@@ -35,6 +41,9 @@ pub mod pty_service;
 pub mod run_context;
 pub mod run_summary;
 pub mod search_service;
+pub mod sftp_edit;
+mod sftp_transfer;
+mod sftp_tree;
 pub mod ssh_service;
 pub mod watcher;
 pub mod workspace_path_index;
@@ -145,6 +154,8 @@ fn shutdown_database_runtime_on_dedicated_thread(
 pub fn run() {
     // 先套用持久化的 log level 門檻，確保啟動最早期的寫入（含 env_path）也受門檻約束
     logging::apply_persisted_log_level();
+    yuzora_host::db_logging::set_sink(logging::write_global);
+    git_service::configure_logging();
     // GUI（Finder/Dock）啟動的 .app 只拿到 launchd 預設 PATH，撈不到 homebrew/nvm/
     // bun。必須在任何 tauri::Builder／執行緒 spawn 之前跑，set_var("PATH") 才安全。
     env_path::fix_gui_path();
@@ -179,13 +190,9 @@ pub fn run() {
                 .build(),
         )
         .manage(watcher::WatcherState::default())
-        .manage(git_service::GitServiceState(std::sync::Arc::new(
-            std::sync::Mutex::new(None),
-        )))
+        .manage(host_service::HostState::default())
+        .manage(git_service::GitServiceState::default())
         .manage(workspace_trust::WorkspaceTrustState::production())
-        .manage(git_watch::GitWatchState(std::sync::Arc::new(
-            std::sync::Mutex::new(None),
-        )))
         .manage(search_service::SearchState(std::sync::Arc::new(
             std::sync::atomic::AtomicU64::new(0),
         )))
@@ -200,6 +207,7 @@ pub fn run() {
         )))
         .manage(path_capability::WorkspacePathState::new())
         .manage(path_capability::DownloadDestinationState::new())
+        .manage(sftp_tree::TreeState::default())
         .setup(|app| {
             use tauri::{Emitter, Manager};
             #[cfg(desktop)]
@@ -213,10 +221,15 @@ pub fn run() {
                 .state::<db_result_session::ResultSessionState>()
                 .inner()
                 .clone();
+            app.manage(ssh_service::SshState(std::sync::Arc::new(
+                ssh_service::SshManager::new(app.handle().clone()),
+            )));
             app.manage(db_profiles::DatabaseProfileState::production(
                 profile_repository_path,
                 database_state,
                 result_sessions,
+                app.state::<host_service::HostState>().0.clone(),
+                app.state::<ssh_service::SshState>().0.clone(),
             ));
             // Windows stub / bind 失敗回 Err → 降級：manage AskpassState(None)，四個 remote
             // command 經 begin_operation 取空 env（git 仍可用系統 credential helper）。務必 manage，
@@ -233,16 +246,13 @@ pub fn run() {
                 }
             }
             app.manage(lsp_service::LspState(std::sync::Arc::new(
-                lsp_service::LspManager::new(app.handle().clone()),
+                lsp_service::new_manager(app.handle().clone()),
             )));
             app.manage(pty_service::PtyState(std::sync::Arc::new(
                 pty_service::PtyManager::new(app.handle().clone()),
             )));
             app.manage(process_service::ProcessState(std::sync::Arc::new(
-                process_service::ProcessManager::new(app.handle().clone()),
-            )));
-            app.manage(ssh_service::SshState(std::sync::Arc::new(
-                ssh_service::SshManager::new(app.handle().clone()),
+                process_service::create_manager(app.handle().clone()),
             )));
             app.manage(path_capability::SelectedPathState::new());
             let herdr_manager = std::sync::Arc::new(herdr_service::HerdrManager::new());
@@ -278,8 +288,27 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            host_service::host_connect,
+            host_service::host_request,
+            host_service::host_disconnect,
+            host_streams::host_stream_open,
+            host_streams::host_stream_command,
+            host_streams::host_stream_close,
+            host_tunnels::host_tunnel_open,
+            host_tunnels::host_tunnel_close,
+            host_bootstrap::host_probe,
+            host_bootstrap::host_prepare,
+            host_wsl::host_wsl_distributions,
+            host_wsl::host_wsl_path,
+            sftp_edit::sftp_open_file,
+            sftp_edit::sftp_create_file,
+            sftp_edit::sftp_read_file_base64,
+            sftp_edit::sftp_save_file,
+            sftp_edit::sftp_file_revision,
+            sftp_edit::ssh_session_alive,
             asset_scope::allow_workspace_asset_scope,
             fs_service::open_workspace,
+            fs_service::workspace_canonical_path,
             fs_service::list_dir,
             fs_service::open_file,
             fs_service::is_openable_file,
@@ -297,6 +326,7 @@ pub fn run() {
             logging::get_log_level,
             logging::set_log_level,
             watcher::start_watch,
+            watcher::stop_watch,
             workspace_path_index::workspace_path_index,
             search_service::search_workspace,
             db_service::db_list_tables,
@@ -334,6 +364,7 @@ pub fn run() {
             workspace_trust::workspace_trust_grant,
             workspace_trust::workspace_trust_revoke,
             git_service::git_detect,
+            git_service::git_close_workspace,
             git_service::git_bootstrap,
             git_service::git_status_cmd,
             git_service::git_stage,
@@ -392,9 +423,13 @@ pub fn run() {
             ssh_service::sftp_rename,
             ssh_service::sftp_remove,
             ssh_service::sftp_upload,
+            ssh_service::sftp_transfer_prepare,
+            ssh_service::sftp_transfer_cancel,
             ssh_service::sftp_download,
             path_capability::sftp_pick_selected_path,
             path_capability::sftp_pick_download_destination,
+            sftp_tree::sftp_pick_tree,
+            sftp_tree::sftp_transfer_tree,
             herdr_service::herdr_sessions,
             herdr_service::herdr_capabilities,
             herdr_service::herdr_snapshot,
@@ -426,8 +461,6 @@ pub fn run() {
             herdr_service::herdr_layout_set_split_ratio,
             herdr_service::herdr_binary_source_get,
             herdr_service::herdr_binary_source_set,
-            herdr_wsl_service::herdr_wsl_integration_get,
-            herdr_wsl_service::herdr_wsl_integration_set,
             herdr_service::herdr_agent_get,
             herdr_service::herdr_agent_read,
             herdr_service::herdr_events_subscribe,
@@ -452,8 +485,10 @@ pub fn run() {
                 app.state::<process_service::ProcessState>().0.kill_all();
                 app.state::<lsp_service::LspState>().0.stop_all();
                 git_service::kill_all_processes();
+                app.state::<host_service::HostState>().0.disconnect_all();
                 app.state::<ssh_service::SshState>().0.kill_all();
                 app.state::<path_capability::SelectedPathState>().clear();
+                app.state::<sftp_tree::TreeState>().clear();
                 app.state::<path_capability::WorkspacePathState>().clear();
                 app.state::<path_capability::DownloadDestinationState>()
                     .clear();
@@ -614,8 +649,6 @@ mod command_inventory_tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
-            "herdr_wsl_service::herdr_wsl_integration_get",
-            "herdr_wsl_service::herdr_wsl_integration_set",
             "herdr_service::herdr_agent_catalog",
             "herdr_service::herdr_agent_create",
             "herdr_service::herdr_agent_get",

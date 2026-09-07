@@ -19,9 +19,25 @@ export interface TransportHandle {
     info: Promise<LspServerInfo>
 }
 
-export function createTauriTransport(workspace: string, language: string): TransportHandle {
+export function createTauriTransport(workspace: string, language: string, onFailure?: (reason: string) => void): TransportHandle {
     const handlers = new Set<(value: string) => void>()
+    let disposed = false
+    let sending = false
+    let queuedBytes = 0
+    const queue: Array<{ message: string; bytes: number }> = []
+    const clear = () => {
+        disposed = true
+        handlers.clear()
+        queue.length = 0
+        queuedBytes = 0
+    }
+    const fail = (reason: string) => {
+        if (disposed) return
+        clear()
+        onFailure?.(reason)
+    }
     const dispatch = (message: string) => {
+        if (disposed) return
         for (const handler of handlers) handler(message)
     }
 
@@ -29,7 +45,7 @@ export function createTauriTransport(workspace: string, language: string): Trans
     // Guard against a floating unhandled rejection when nobody consumes `info`
     // (e.g. lspStart fails and the caller ignores the handle). Consumers can
     // still await `info` — multiple handlers all fire.
-    info.catch(() => {})
+    info.catch((error) => fail(String(error)))
 
     // Ordering guarantee (#56 review fix): lsp_send / lsp_start are async
     // commands since T2 — each invoke runs on its own blocking-pool task, so
@@ -39,20 +55,43 @@ export function createTauriTransport(workspace: string, language: string): Trans
     // the server's document state. Serialize per transport: every send waits
     // for the previous one (and for lspStart, so initialize can't overtake
     // server startup) to settle before invoking.
-    let sendChain: Promise<unknown> = info.catch(() => {})
+    const drain = async () => {
+        if (sending || disposed) return
+        sending = true
+        try {
+            await info
+            while (!disposed && queue.length > 0) {
+                const next = queue[0]
+                await lspSend(workspace, language, next.message)
+                if (disposed) break
+                queue.shift()
+                queuedBytes -= next.bytes
+            }
+        } catch (error) {
+            // A lost didChange makes all subsequent offsets invalid. Clear the
+            // bounded queue and require a fresh initialize/didOpen on restart.
+            fail(String(error))
+        } finally {
+            sending = false
+        }
+    }
 
     const transport: Transport = {
         send(message: string) {
-            // Swallow send failures per link: once the server process is gone
-            // every send would otherwise raise an unhandled rejection storm —
-            // and a stuck chain would drop all later messages. Status surfaces
-            // separately via lsp:server-status (W7).
-            sendChain = sendChain
-                .then(() => lspSend(workspace, language, message))
-                .catch(() => {})
+            if (disposed) return
+            const maxMessage = 8 * 1024 * 1024
+            if (message.length > maxMessage) { fail("LSP message limit exceeded"); return }
+            const bytes = new TextEncoder().encode(message).byteLength
+            if (bytes > maxMessage || queuedBytes + bytes > 16 * 1024 * 1024 || queue.length >= 128) {
+                fail("LSP send queue limit exceeded")
+                return
+            }
+            queue.push({ message, bytes })
+            queuedBytes += bytes
+            void drain()
         },
         subscribe(handler: (value: string) => void) {
-            handlers.add(handler)
+            if (!disposed) handlers.add(handler)
         },
         unsubscribe(handler: (value: string) => void) {
             handlers.delete(handler)
@@ -62,7 +101,7 @@ export function createTauriTransport(workspace: string, language: string): Trans
     return {
         transport,
         dispose() {
-            handlers.clear()
+            clear()
         },
         info
     }

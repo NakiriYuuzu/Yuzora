@@ -7,6 +7,8 @@
     "dev": "vite",
     "dev:tauri": "vite --mode tauri",
     "build": "bun run typecheck && vite build",
+    "runtime:verify": "bun scripts/verify-host-resources.ts",
+    "host:prepare": "bun scripts/prepare-host-resources.ts",
     "herdr:prepare": "bun scripts/prepare-herdr-resources.ts",
     "preview": "vite preview",
     "tauri": "tauri",

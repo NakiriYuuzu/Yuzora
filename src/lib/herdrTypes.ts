@@ -44,6 +44,9 @@ export type HerdrPaneZoomMode = "toggle" | "on" | "off"
 /** Named persistent Herdr session from `herdr session list --json`. */
 export interface HerdrNamedSession {
   name: string
+  runtimeId?: string
+  hostId?: string
+  hostLabel?: string
   default: boolean
   running: boolean
   sessionDir: string
@@ -134,31 +137,6 @@ export interface HerdrBinarySourceInfo {
 export interface HerdrBinarySourceSetResult {
   configured: HerdrBinarySource
   restartRequired: boolean
-}
-
-export type HerdrWslAdapterStatus =
-  | "unknown"
-  | "current"
-  | "absent"
-  | "drifted"
-  | "outdated"
-  | "missingPrerequisite"
-  | "mixed"
-
-/** Explicit Windows-only activation state for the bundled Experimental Plugin. */
-export interface HerdrWslIntegrationInfo {
-  platformSupported: boolean
-  bundleAvailable: boolean
-  active: boolean
-  linked: boolean
-  enabled: boolean
-  ownsRegistration: boolean
-  adapterStatus: HerdrWslAdapterStatus
-  pluginVersion?: string | null
-  bundledPath?: string | null
-  linkedPath?: string | null
-  herdrPath?: string | null
-  reason?: string | null
 }
 
 /** Nested capability document from `herdr_capabilities`. */
@@ -630,6 +608,8 @@ export interface HerdrLayoutSetSplitRatioRequest {
 }
 
 export interface HerdrSessionRuntime {
+  eventsHealthy?: boolean
+  eventsSubscriptionId?: string | null
   capabilities: HerdrCapabilities | null
   snapshot: HerdrSnapshot | null
   /** Undecorated normalized snapshot used as the authoritative projection base. */

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, render, waitFor } from "@testing-library/react"
 import type { EditorView } from "@codemirror/view"
+import { undo, undoDepth } from "@codemirror/commands"
+import { notifyWorkspaceLsp } from "../lsp/workspaceLifecycle"
 
 import { useWorkspaceStore } from "../state/workspaceStore"
 
@@ -153,6 +155,41 @@ afterEach(() => {
 })
 
 describe("EditorPane LSP integration", () => {
+    it("retains the dirty document, selection and undo when LSP reconnects", async () => {
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() => expect(registerView).toHaveBeenCalled())
+        await flushMount()
+        const view = registerView.mock.calls[0][1] as EditorView
+        act(() => {
+            view.dispatch({ changes: { from: 0, insert: "// unsaved\n" }, selection: { anchor: 4 } })
+        })
+        const text = view.state.doc.toString()
+        const depth = undoDepth(view.state)
+        act(() => { notifyWorkspaceLsp("/w", false); notifyWorkspaceLsp("/w", true) })
+        await flushMount()
+        expect(registerView).toHaveBeenCalledTimes(1)
+        expect(getDocument).toHaveBeenCalledTimes(1)
+        expect(view.state.doc.toString()).toBe(text)
+        expect(view.state.selection.main.anchor).toBe(4)
+        expect(undoDepth(view.state)).toBe(depth)
+        expect(saveFile).not.toHaveBeenCalled()
+        act(() => { expect(undo(view)).toBe(true) })
+        expect(view.state.doc.toString()).toBe("const x = 1\n")
+    })
+
+    it("discards an old LSP mount that resolves after a newer reconnect", async () => {
+        const old = makeDeferred<{ managed: typeof managed; extensions: [] }>()
+        lspExtensionsForFile.mockReturnValueOnce(old.promise)
+        render(<EditorPane path={PATH} groupIndex={0} />)
+        await waitFor(() => expect(lspExtensionsForFile).toHaveBeenCalledTimes(1))
+        act(() => { notifyWorkspaceLsp("/w", true) })
+        await flushMount()
+        updateViewMetadata.mockClear()
+        old.resolve({ managed: { ...managed, capabilities: { documentFormattingProvider: false } }, extensions: [] })
+        await flushMount()
+        expect(updateViewMetadata).not.toHaveBeenCalled()
+    })
+
     it("registers clicked-view metadata as checking, then updates from the existing LSP capability", async () => {
         render(<EditorPane path={PATH} groupIndex={0} />)
         await waitFor(() =>

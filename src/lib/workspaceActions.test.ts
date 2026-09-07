@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 
 const openPicker = vi.hoisted(() => vi.fn())
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openPicker }))
+vi.mock("@/state/folderPickerStore", () => ({ chooseWorkspaceFolder: openPicker }))
 vi.mock("@/lib/ipc", () => ({
     openWorkspace: vi.fn(),
     startWatch: vi.fn().mockResolvedValue(undefined),
@@ -81,6 +81,18 @@ test("有 dirty 分頁：cancel → 不開新工作區、workspace 不變", asyn
     expect(openWorkspace).not.toHaveBeenCalled()
     expect(saveDirtyTab).not.toHaveBeenCalled()
     expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+})
+
+test("drops a delayed restore when the user opens a workspace during canonicalization", async () => {
+    useWorkspaceStore.setState({ workspacePath: null, groups: [{ tabs: [], activePath: null }] })
+    let finish!: (value: Awaited<ReturnType<typeof openWorkspace>>) => void
+    vi.mocked(openWorkspace).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const opening = openWorkspaceAtPath("/restore", { shouldOpen: () => !useWorkspaceStore.getState().workspacePath })
+    await Promise.resolve()
+    useWorkspaceStore.getState().setWorkspace("/chosen")
+    finish({ canonicalPath: "/restore", capabilityId: "late" })
+    expect(await opening).toBe(false)
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/chosen")
 })
 
 test("有 dirty 分頁：discard → 不存檔、直接開新工作區", async () => {

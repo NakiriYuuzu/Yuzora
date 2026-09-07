@@ -960,7 +960,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             authKind: "password"
         })
         runLegacyContextMenuAction("sshhost", "cmOpenSftp", { hostId: host.id })
-        expect(useSftpStore.getState().activeTab).toBe("sftp")
+        expect(useSftpStore.getState().panelOpen).toBe(true)
         expect(useSshStore.getState().activeHostId).toBe(host.id)
         // Password host → begins the connect flow rather than silently no-op'ing.
         expect(useSshStore.getState().pendingAuthHostId).toBe(host.id)

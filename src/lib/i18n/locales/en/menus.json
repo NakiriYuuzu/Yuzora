@@ -36,7 +36,7 @@
     "cmStageSelected": "Stage Selected",
     "cmUnstageSelected": "Unstage Selected",
     "cmRollbackSelected": "Rollback Selected…",
-    "cmOpenSsh": "Open SSH terminal",
+    "cmOpenSsh": "Connect to host",
     "cmOpenSftp": "Open SFTP browser",
     "cmCopyAddr": "Copy host address",
     "cmCopyDbAddress": "Copy database address",

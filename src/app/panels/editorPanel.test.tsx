@@ -100,18 +100,17 @@ describe("Files mode entry states", () => {
 
     const mainSurface = screen.getByTestId("main-surface")
     const editorState = screen.getByText("Open a project to start editing")
-    const sshState = screen.getByText(i18n.t("sshPanel.noSessionTitle", { ns: "panels" }))
     const projectNav = screen.getByLabelText("Project navigation")
     expect(mainSurface.style.minHeight).toBe("44px")
 
-    for (const mode of ["Git", "Database", "SSH", "Files"]) {
+    for (const mode of ["Git", "Database", "Files"]) {
       fireEvent.click(within(projectNav).getByRole("tab", { name: mode }))
       expect(screen.getByTestId("main-surface")).toBe(mainSurface)
       expect(mainSurface.style.minHeight).toBe("44px")
     }
 
     expect(screen.getByText("Open a project to start editing")).toBe(editorState)
-    expect(screen.getByText(i18n.t("sshPanel.noSessionTitle", { ns: "panels" }))).toBe(sshState)
+    expect(within(projectNav).queryByRole("tab", { name: "SSH" })).not.toBeInTheDocument()
   })
 
   it("rail hide/show keeps the mounted Terminal session and ratio state intact", () => {

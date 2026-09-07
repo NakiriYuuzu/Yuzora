@@ -13,6 +13,9 @@ const ipcMocks = vi.hoisted(() => ({
     workspaceTrustExecutionChallenge: vi.fn()
 }))
 
+const lspMocks = vi.hoisted(() => ({ restartWorkspace: vi.fn().mockResolvedValue(undefined) }))
+vi.mock("@/lsp/lspManager", () => lspMocks)
+
 vi.mock("@/lib/ipc", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@/lib/ipc")>()),
     workspaceTrustStatus: (...args: unknown[]) => ipcMocks.workspaceTrustStatus(...args),
@@ -22,18 +25,21 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
 }))
 
 beforeEach(() => {
+    useWorkspaceTrustStore.getState().cancelPrompt()
     useWorkspaceStore.setState({ workspacePath: null })
     useWorkspaceTrustStore.setState({
         statusByPath: {},
         trustedWorkspaces: [],
         trustRevision: 0,
         prompt: null,
-        lastError: null
+        lastError: null,
+        confirming: false
     })
     useWorkspaceTrustStore.getState().cancelPrompt()
     ipcMocks.workspaceTrustStatus.mockReset()
     ipcMocks.workspaceTrustGrant.mockReset()
     ipcMocks.workspaceTrustExecutionChallenge.mockReset()
+    lspMocks.restartWorkspace.mockClear()
     vi.spyOn(useGitStore.getState(), "detect").mockResolvedValue()
 })
 
@@ -127,6 +133,26 @@ it("grants workspace trust for a detected repo and retries git detect", async ()
     fireEvent.click(screen.getByRole("button", { name: i18n.t("workspaceTrust.grant", { ns: "workbench" }) }))
     await waitFor(() => expect(ipcMocks.workspaceTrustGrant).toHaveBeenCalledWith("grant-1"))
     await waitFor(() => expect(useGitStore.getState().detect).toHaveBeenCalledWith("/workspace"))
+    await waitFor(() => expect(lspMocks.restartWorkspace).toHaveBeenCalledWith("/workspace", expect.any(Function)))
+})
+
+it("keeps the dialog open and displays asynchronous grant failures", async () => {
+    ipcMocks.workspaceTrustStatus.mockResolvedValue({
+        state: "untrusted", canonicalPath: "/workspace", challengeId: "grant-retry", repoPresent: true
+    })
+    let fail!: (reason: Error) => void
+    ipcMocks.workspaceTrustGrant.mockReturnValue(new Promise((_resolve, reject) => { fail = reject }))
+    useWorkspaceStore.setState({ workspacePath: "/workspace" })
+    render(<WorkspaceTrustHost />)
+    await screen.findByRole("alertdialog")
+    const confirm = screen.getByRole("button", { name: i18n.t("workspaceTrust.grant", { ns: "workbench" }) })
+    fireEvent.click(confirm)
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument()
+    expect(confirm).toBeDisabled()
+    fail(new Error("host-request-limit"))
+    expect(await screen.findByText("host-request-limit")).toBeInTheDocument()
+    expect(confirm).toBeEnabled()
+    expect(useGitStore.getState().detect).not.toHaveBeenCalled()
 })
 
 it("dismisses a stale prompt when switching to a different already-trusted workspace", async () => {

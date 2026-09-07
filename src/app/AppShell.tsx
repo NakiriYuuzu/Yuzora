@@ -7,7 +7,6 @@ import { type Mode } from "@/app/modes"
 import { DatabasePanel } from "@/app/panels/DatabasePanel"
 import { EditorPanel } from "@/app/panels/EditorPanel"
 import { GitPanel } from "@/app/panels/GitPanel"
-import { SshPanel } from "@/app/panels/SshPanel"
 import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { ContextMenu } from "@/app/workbench/ContextMenu"
 import { DiffModal } from "@/workbench/git/DiffModal"
@@ -388,11 +387,7 @@ export function AppShell() {
               </div>
               {mode === "git" && <GitPanel />}
               {mode === "database" && <DatabasePanel />}
-              {/* SshPanel stays mounted (CSS-hidden) so a live SSH terminal —
-                  and its xterm scrollback — survive leaving SSH mode. */}
-              <div className={mode === "ssh" ? "contents" : "hidden"}>
-                <SshPanel />
-              </div>
+
             </div>
 
             <TerminalDrawer

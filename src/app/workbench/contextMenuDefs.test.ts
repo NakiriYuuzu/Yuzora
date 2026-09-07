@@ -12,6 +12,7 @@ import type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contex
 import i18n from "@/lib/i18n"
 import { registerView, unregisterView, updateViewMetadata } from "@/editor/viewRegistry"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { useFolderPickerStore } from "@/state/folderPickerStore"
 import { useTerminalStore } from "@/state/terminalStore"
 import { clearGitSnapshots, initialGitState, useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
@@ -163,8 +164,9 @@ describe("CONTEXT_MENU_DEFS", () => {
     expect(commandFor(request, "cmNewProject")).toBeNull()
     const command = commandFor(request, "cmOpenWorkspace")
     expect(command?.label(request)).toBe("Open workspace…")
-    mockIPC((cmd) => cmd === "plugin:dialog|open" ? null : undefined)
-    expect(await command?.executor(request)).toBe("cancelled")
+    const pending = command?.executor(request)
+    useFolderPickerStore.getState().finish?.(null)
+    expect(await pending).toBe("cancelled")
   })
 
   it("recent workspace menu edits presentation or forgets only the recent entry", async () => {
@@ -724,7 +726,7 @@ describe("CONTEXT_MENU_DEFS", () => {
 
     useSshStore.getState().cancelPendingAuth()
     expect(await commandFor(request, "cmOpenSftp")?.executor(request)).toBe("completed")
-    expect(useSftpStore.getState().activeTab).toBe("sftp")
+    expect(useSftpStore.getState().panelOpen).toBe(true)
     expect(useSshStore.getState().activeHostId).toBe(clicked.id)
     expect(useSshStore.getState().pendingAuthHostId).toBe(clicked.id)
 

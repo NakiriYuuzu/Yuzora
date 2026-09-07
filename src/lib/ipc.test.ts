@@ -215,9 +215,12 @@ test("sftp upload/download send tagged source and dest dir + leaf", async () => 
             "sftp_upload",
             {
                 sessionId: "sess-1",
-                transferId: "xfer-1",
-                source: { kind: "workspace", workspaceId: "ws-opaque", relativePath: "a.txt" },
-                remoteDir: "/home/u"
+                request: {
+                    transferId: "xfer-1",
+                    source: { kind: "workspace", workspaceId: "ws-opaque", relativePath: "a.txt" },
+                    remoteDir: "/home/u",
+                    expectedRevision: null
+                }
             }
         ],
         [

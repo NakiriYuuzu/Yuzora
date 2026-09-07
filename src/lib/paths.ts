@@ -1,3 +1,5 @@
+import { parseRemoteFilePath, remoteFilePath } from "./runtimeIdentity"
+
 // cwd 必須是絕對路徑才可用來 spawn agent：posix 以 "/" 開頭、Windows 磁碟機開頭
 // （C:\ 或 C:/），或 Windows 的 UNC／verbatim 前綴（\\server\share、\\?\C:\…）。
 // 後者是 std::fs::canonicalize 在 Windows 回傳 workspacePath 的實際形式，漏掉會讓
@@ -16,6 +18,8 @@ export function firstAbsolutePath(...paths: (string | null | undefined)[]): stri
  * the operational path kept in state or passed to IPC.
  */
 export function workspacePathForDisplay(path: string): string {
+  const remote = parseRemoteFilePath(path)
+  if (remote) return remote.path
   if (/^[\\/]{2}\?[\\/]UNC[\\/]/i.test(path)) {
     const separator = path.startsWith("\\") ? "\\" : "/"
     return separator + separator + path.slice(8)
@@ -80,6 +84,8 @@ export function canonicalPathKey(
   path: string,
   style: "auto" | "windows" = "auto"
 ): string {
+  const remote = parseRemoteFilePath(path)
+  if (remote) return path
   const windows = style === "windows" || isWindowsPath(path)
   const normalized = normalizedPath(path, windows)
   return windows ? normalized.toLowerCase() : normalized
@@ -179,6 +185,14 @@ function comparisonSegment(value: string, windows: boolean): string {
 }
 
 function relativeSuffix(root: string, path: string): string | null {
+  const remoteRoot = parseRemoteFilePath(root)
+  const remotePath = parseRemoteFilePath(path)
+  if (remoteRoot || remotePath) {
+    if (!remoteRoot || !remotePath || remoteRoot.hostId !== remotePath.hostId || remoteRoot.workspaceRoot !== remotePath.workspaceRoot) return null
+    if (remoteRoot.path === remotePath.path) return ""
+    const prefix = remoteRoot.path.endsWith("/") ? remoteRoot.path : remoteRoot.path + "/"
+    return remotePath.path.startsWith(prefix) ? remotePath.path.slice(prefix.length) : null
+  }
   const windows = isWindowsPath(root) || isWindowsPath(path)
   const rootParts = segmentedPath(root, windows)
   const pathParts = segmentedPath(path, windows)
@@ -233,6 +247,11 @@ function splitSegments(path: string): string[] {
  * Does not rewrite the operational path to a display form.
  */
 export function nativePathJoin(dir: string, name: string): string {
+  const remote = parseRemoteFilePath(dir)
+  if (remote) {
+    if (remote.workspaceRoot === null) throw new Error("Remote document requires workspace binding")
+    return remoteFilePath(remote.hostId, `${remote.path.replace(/\/$/, "")}/${name.replace(/^\/+/, "")}`, remote.workspaceRoot)
+  }
   if (!name) return dir
   if (!dir) return name
   const sep = preferredSeparator(dir)
@@ -256,6 +275,12 @@ export function nativePathJoin(dir: string, name: string): string {
  * Supports POSIX, drive letters, UNC shares, and Windows verbatim prefixes.
  */
 export function nativePathParent(path: string): string {
+  const remote = parseRemoteFilePath(path)
+  if (remote) {
+    const parent = remote.path.replace(/\/$/, "").slice(0, remote.path.replace(/\/$/, "").lastIndexOf("/")) || "/"
+    if (remote.workspaceRoot === null) throw new Error("Remote document requires workspace binding")
+    return remoteFilePath(remote.hostId, parent, remote.workspaceRoot)
+  }
   if (!path) return path
   const sep = preferredSeparator(path)
   const trimmed = stripTrailingSeparators(path)

@@ -3498,3 +3498,23 @@ describe("approved owner-tagged database regression seams", () => {
             .toMatchObject({ transactionMayBeOpen: false })
     })
 })
+
+describe("SQLite source workspace identity", () => {
+    it("keeps identical database paths separate across hosts and overlapping workspaces", async () => {
+        const path = "/project/nested/data.sqlite"
+        const workspaces = [
+            { hostId: "host-a", canonicalPath: "/project" },
+            { hostId: "host-b", canonicalPath: "/project" },
+            { hostId: "host-a", canonicalPath: "/project/nested" }
+        ]
+        for (const workspace of workspaces) await useDbStore.getState().openConfig({ kind: "sqlite", path, workspace })
+        const saved = useDbStore.getState().saved
+        expect(saved).toHaveLength(3)
+        expect(new Set(saved.map((entry) => entry.targetKey)).size).toBe(3)
+        expect(saved.map((entry) => entry.workspace)).toEqual(workspaces)
+        expect(mockProfileCreate.mock.calls.map(([request]) => request.target)).toEqual(workspaces.map((workspace) => ({ kind: "sqlite", path, workspace })))
+        expect(mockProfileCreate.mock.calls.every(([request]) => request.credential === null)).toBe(true)
+        await useDbStore.getState().updateSaved(saved[0].id, { kind: "sqlite", path, workspace: workspaces[1] })
+        expect(useDbStore.getState().saved.find((entry) => entry.id === saved[0].id)?.workspace).toEqual(workspaces[1])
+    })
+})

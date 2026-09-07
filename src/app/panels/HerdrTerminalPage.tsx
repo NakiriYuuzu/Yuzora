@@ -18,6 +18,7 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
+import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import {
   herdrLayoutExport,
   herdrLayoutSetSplitRatio,
@@ -26,6 +27,7 @@ import {
 import type {
   HerdrLayoutDescription,
   HerdrLayoutNode,
+  HerdrNamedSession,
   HerdrTerminalMode,
   HerdrTerminalRole
 } from "@/lib/herdrTypes"
@@ -101,21 +103,20 @@ function terminalSize(term: Terminal): { cols: number; rows: number } {
 
 /** Resolve legacy `live` to the concrete default named session. */
 function resolveSessionName(
-  sessions: Array<{ name: string; default: boolean }>,
+  sessions: HerdrNamedSession[],
   herdrSessionId: string
 ): string | null {
   if (herdrSessionId !== "live") return herdrSessionId
-  return (sessions.find((s) => s.default) ?? sessions[0])?.name ?? null
+  return sessionScope(findRuntimeSession(sessions, herdrSessionId))
 }
 
 /** Resolve named session running flag; `live` maps to the default session entry. */
 function resolveSessionRunning(
-  sessions: Array<{ name: string; default: boolean; running: boolean }>,
+  sessions: HerdrNamedSession[],
   herdrSessionId: string
 ): boolean | null {
   if (sessions.length === 0) return null
-  const resolvedName = resolveSessionName(sessions, herdrSessionId)
-  const match = sessions.find((s) => s.name === resolvedName)
+  const match = findRuntimeSession(sessions, herdrSessionId)
   return match?.running ?? null
 }
 
@@ -252,7 +253,8 @@ export function HerdrTerminalPage({
       setLayoutReady(true)
       return
     }
-    setLayoutReady(false)
+    // Keep the existing terminal mounted while refreshing topology, including
+    // the single-pane fallback. Replacing it with a loader releases its owner.
     try {
       const next = await herdrLayoutExport({
         sessionName: sessionNameArg,
@@ -618,6 +620,7 @@ export function HerdrTerminalPage({
         <div
           role="status"
           data-testid="herdr-layout-fallback"
+          title={layoutError}
           className="pointer-events-none absolute bottom-2 left-2 max-w-[70%] truncate rounded-[4px] border border-(--term-line) bg-(--term-bar) px-[8px] py-[4px] text-[11px] text-(--term-fg2)"
         >
           {t("herdrTerminal.legacyLayout")}
@@ -931,8 +934,10 @@ function HerdrTerminalLeaf({
         return
       }
       if (event.type === "error") {
-        setStatusMessage(event.message)
-        outputQueueRef.current?.push(`\r\n[Herdr: ${event.message}]\r\n`)
+        const message = event.message === "terminal-input-limit" || event.message === "terminal-input-failed"
+          ? t("herdrTerminal.inputPaused") : event.message
+        setStatusMessage(message)
+        outputQueueRef.current?.push(`\r\n[Herdr: ${message}]\r\n`)
         return
       }
       if (event.type === "control") {

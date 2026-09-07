@@ -1,4 +1,5 @@
-import { Channel, invoke } from "@tauri-apps/api/core"
+import { Channel } from "@tauri-apps/api/core"
+import { invokeHerdr as invoke } from "./herdrProvider"
 
 import type {
   HerdrAgentCatalogEntry,
@@ -40,8 +41,7 @@ import type {
   HerdrWorkspaceCreateRequest,
   HerdrWorkspaceCreateResult,
   HerdrWorkspaceRenameRequest,
-  HerdrWorktreeListResult,
-  HerdrWslIntegrationInfo
+  HerdrWorktreeListResult
 } from "./herdrTypes"
 
 /**
@@ -333,16 +333,6 @@ export function herdrBinarySourceSet(
   return invoke("herdr_binary_source_set", { source })
 }
 
-export function herdrWslIntegrationGet(): Promise<HerdrWslIntegrationInfo> {
-  return invoke("herdr_wsl_integration_get")
-}
-
-export function herdrWslIntegrationSet(
-  enabled: boolean
-): Promise<HerdrWslIntegrationInfo> {
-  return invoke("herdr_wsl_integration_set", { enabled })
-}
-
 export function herdrAgentGet(args: {
   sessionName?: string | null
   target: string
@@ -373,12 +363,14 @@ export function herdrAgentRead(args: {
 
 export function herdrEventsSubscribe(args: {
   sessionName?: string | null
+  paneIds?: string[]
   onEvent: (event: HerdrSubscriptionEvent) => void
 }): Promise<string> {
   const ch = new Channel<HerdrSubscriptionEvent>()
   ch.onmessage = args.onEvent
   return invoke("herdr_events_subscribe", {
     sessionName: args.sessionName ?? null,
+    paneIds: args.paneIds ?? [],
     onEvent: ch
   })
 }

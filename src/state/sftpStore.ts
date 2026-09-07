@@ -2,19 +2,20 @@ import { create } from "zustand"
 
 import {
     sftpDownload,
+    sftpFileRevision,
+    sftpTransferPrepare,
+    sftpTransferCancel,
     sftpListDir,
     sftpMkdir,
     sftpRemove,
     sftpRename,
-    sftpUpload
+    sftpUpload,
+    sftpTransferTree
 } from "@/lib/ipc"
 import type { SftpDownloadDest, SftpEntry, SftpProgressEvent, SftpUploadSource } from "@/lib/types"
 import { useSshStore } from "./sshStore"
-
-// Which pane of the SSH panel is showing. cmOpenSftp flips this to "sftp" so the
-// context-menu entry lands the user on the browser; the SSH terminal tab stays
-// the default.
-type SshPanelTab = "ssh" | "sftp"
+import { requestAppConfirmation } from "./appDialogStore"
+import i18n from "@/lib/i18n"
 
 export interface RemotePaneState {
     cwd: string
@@ -27,6 +28,8 @@ type TransferDirection = "upload" | "download"
 
 export interface TransferState {
     hostId: string
+    sessionId: string
+    cancelling?: boolean
     direction: TransferDirection
     name: string
     transferred: number
@@ -36,13 +39,13 @@ export interface TransferState {
 }
 
 interface SftpStore {
-    activeTab: SshPanelTab
+    panelOpen: boolean
     /** Remote listing per host id (the SFTP subsystem rides the host's session). */
     remote: Record<string, RemotePaneState>
-    /** In-flight / finished transfers keyed by the front-end-minted transferId. */
+    /** In-flight / finished transfers keyed by the backend reservation. */
     transfers: Record<string, TransferState>
 
-    setActiveTab: (tab: SshPanelTab) => void
+    setPanelOpen: (open: boolean) => void
     /** cmOpenSftp entry point: reveal the SFTP tab and (re)connect the host. */
     openSftp: (hostId: string) => void
     listRemote: (hostId: string, path: string) => Promise<void>
@@ -53,8 +56,10 @@ interface SftpStore {
     // destDir（可選）：拖放到遠端資料夾 row 時的目標目錄；預設遠端 cwd。
     upload: (hostId: string, source: SftpUploadSource, destDir?: string) => Promise<void>
     download: (hostId: string, entry: SftpEntry, dest: SftpDownloadDest) => Promise<void>
+    transferTree: (hostId: string, selectionId: string, direction: TransferDirection, remotePath: string, name: string) => Promise<void>
     applyProgress: (evt: SftpProgressEvent) => void
     clearTransfer: (transferId: string) => void
+    cancelTransfer: (transferId: string) => Promise<void>
     reset: () => void
 }
 
@@ -95,20 +100,30 @@ function sessionIdOf(hostId: string): string | null {
     return useSshStore.getState().sessions[hostId]?.sessionId ?? null
 }
 
+async function reserveTransfer(sessionId: string): Promise<{ id: string; error: string | null }> {
+    try { return { id: await sftpTransferPrepare(sessionId), error: null } }
+    catch (error) { return { id: newTransferId(), error: String(error) } }
+}
+
+const listings = new Map<string, symbol>()
+let transferEpoch = 0
+
 export const useSftpStore = create<SftpStore>()((set, get) => ({
-    activeTab: "ssh",
+    panelOpen: false,
     remote: {},
     transfers: {},
 
-    setActiveTab: (tab) => set({ activeTab: tab }),
+    setPanelOpen: (open) => set({ panelOpen: open }),
 
     openSftp: (hostId) => {
-        set({ activeTab: "sftp" })
+        set({ panelOpen: true })
         useSshStore.getState().setActiveHost(hostId)
         useSshStore.getState().beginConnect(hostId)
     },
 
     listRemote: async (hostId, path) => {
+        const token = Symbol(hostId)
+        listings.set(hostId, token)
         const sessionId = sessionIdOf(hostId)
         if (!sessionId) {
             set((s) => ({
@@ -137,6 +152,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         }))
         try {
             const listing = await sftpListDir(sessionId, path)
+            if (listings.get(hostId) !== token || sessionIdOf(hostId) !== sessionId) return
             set((s) => ({
                 remote: {
                     ...s.remote,
@@ -149,6 +165,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
                 }
             }))
         } catch (e) {
+            if (listings.get(hostId) !== token || sessionIdOf(hostId) !== sessionId) return
             set((s) => ({
                 remote: {
                     ...s.remote,
@@ -175,6 +192,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         const cwd = get().remote[hostId]?.cwd
         if (!sessionId || cwd === undefined) return
         await sftpMkdir(sessionId, remoteJoin(cwd, name))
+        if (sessionIdOf(hostId) !== sessionId) return
         await get().listRemote(hostId, cwd)
     },
 
@@ -183,6 +201,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         const cwd = get().remote[hostId]?.cwd
         if (!sessionId || cwd === undefined) return
         await sftpRename(sessionId, entry.path, remoteJoin(cwd, newName))
+        if (sessionIdOf(hostId) !== sessionId) return
         await get().listRemote(hostId, cwd)
     },
 
@@ -190,7 +209,8 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         const sessionId = sessionIdOf(hostId)
         const cwd = get().remote[hostId]?.cwd
         if (!sessionId || cwd === undefined) return
-        await sftpRemove(sessionId, entry.path, entry.isDir)
+        await sftpRemove(sessionId, entry.path, entry.isDir && !entry.isSymlink)
+        if (sessionIdOf(hostId) !== sessionId) return
         await get().listRemote(hostId, cwd)
     },
 
@@ -201,37 +221,53 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         // first listing resolves, and remoteJoin("", name) would target the remote
         // root "/" instead of the real home directory.
         if (!sessionId || !cwd) return
-        const transferId = newTransferId()
+        const epoch = transferEpoch
+        const reservation = await reserveTransfer(sessionId)
+        if (epoch !== transferEpoch) { if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined); return }
+        const transferId = reservation.id
         const name = source.kind === "workspace" ? baseName(source.relativePath) : source.name
         set((s) => ({
             transfers: {
                 ...s.transfers,
                 [transferId]: {
                     hostId,
+                    sessionId,
                     direction: "upload",
                     name,
                     transferred: 0,
                     total: 0,
-                    done: false,
-                    error: null
+                    done: !!reservation.error,
+                    error: reservation.error
                 }
             }
         }))
+        if (reservation.error) return
         try {
-            await sftpUpload(sessionId, transferId, source, cwd)
+            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
+            const expectedRevision = await sftpFileRevision(sessionId, remoteJoin(cwd, name), transferId)
+            if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
+            if (expectedRevision !== null && !await requestAppConfirmation({
+                title: i18n.t("panels:sshPanel.sftpOverwriteRemoteTitle"),
+                description: i18n.t("panels:sshPanel.sftpOverwriteRemoteConfirm", { name }),
+                kind: "warning"
+            })) throw new Error("sftp-transfer-cancelled")
+            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
+            if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
+            await sftpUpload(sessionId, transferId, source, cwd, expectedRevision)
             get().applyProgress({ sessionId, transferId, transferred: 0, total: 0, done: true })
             // Refresh the pane the user is looking at — uploading into a folder
             // row (destDir) must not navigate the view into that folder.
             const viewCwd = get().remote[hostId]?.cwd
-            if (viewCwd) await get().listRemote(hostId, viewCwd)
+            if (viewCwd && sessionIdOf(hostId) === sessionId) await get().listRemote(hostId, viewCwd)
         } catch (e) {
+            await sftpTransferCancel(sessionId, transferId).catch(() => undefined)
             set((s) => {
                 const prev = s.transfers[transferId]
                 if (!prev) return {}
                 return {
                     transfers: {
                         ...s.transfers,
-                        [transferId]: { ...prev, done: true, error: String(e) }
+                        [transferId]: { ...prev, done: true, error: e instanceof Error ? e.message : String(e) }
                     }
                 }
             })
@@ -241,34 +277,70 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
     download: async (hostId, entry, dest) => {
         const sessionId = sessionIdOf(hostId)
         if (!sessionId) return
-        const transferId = newTransferId()
+        const epoch = transferEpoch
+        const reservation = await reserveTransfer(sessionId)
+        if (epoch !== transferEpoch) { if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined); return }
+        const transferId = reservation.id
         set((s) => ({
             transfers: {
                 ...s.transfers,
                 [transferId]: {
                     hostId,
+                    sessionId,
                     direction: "download",
                     name: entry.name,
                     transferred: 0,
                     total: entry.size,
-                    done: false,
-                    error: null
+                    done: !!reservation.error,
+                    error: reservation.error
                 }
             }
         }))
+        if (reservation.error) return
         try {
+            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
             await sftpDownload(sessionId, transferId, entry.path, dest)
             get().applyProgress({ sessionId, transferId, transferred: 0, total: 0, done: true })
         } catch (e) {
+            await sftpTransferCancel(sessionId, transferId).catch(() => undefined)
             set((s) => {
                 const prev = s.transfers[transferId]
                 if (!prev) return {}
                 return {
                     transfers: {
                         ...s.transfers,
-                        [transferId]: { ...prev, done: true, error: String(e) }
+                        [transferId]: { ...prev, done: true, error: e instanceof Error ? e.message : String(e) }
                     }
                 }
+            })
+        }
+    },
+
+    transferTree: async (hostId, selectionId, direction, remotePath, name) => {
+        const sessionId = sessionIdOf(hostId)
+        if (!sessionId) return
+        const epoch = transferEpoch
+        const reservation = await reserveTransfer(sessionId)
+        if (epoch !== transferEpoch) {
+            if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined)
+            return
+        }
+        const transferId = reservation.id
+        set((s) => ({ transfers: { ...s.transfers, [transferId]: {
+            hostId, sessionId, direction, name, transferred: 0, total: 0, done: !!reservation.error, error: reservation.error
+        } } }))
+        if (reservation.error) return
+        try {
+            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
+            const result = await sftpTransferTree(sessionId, { selectionId, transferId, direction, remotePath, name })
+            get().applyProgress({ sessionId, transferId, transferred: result.bytes, total: result.bytes, done: true })
+            const cwd = get().remote[hostId]?.cwd
+            if (direction === "upload" && cwd && sessionIdOf(hostId) === sessionId) await get().listRemote(hostId, cwd)
+        } catch (error) {
+            await sftpTransferCancel(sessionId, transferId).catch(() => undefined)
+            set((s) => {
+                const previous = s.transfers[transferId]
+                return previous ? { transfers: { ...s.transfers, [transferId]: { ...previous, done: true, error: String(error instanceof Error ? error.message : error) } } } : {}
             })
         }
     },
@@ -276,13 +348,13 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
     applyProgress: (evt) => {
         set((s) => {
             const prev = s.transfers[evt.transferId]
-            if (!prev) return {}
+            if (!prev || prev.sessionId !== evt.sessionId || prev.done) return {}
             return {
                 transfers: {
                     ...s.transfers,
                     [evt.transferId]: {
                         ...prev,
-                        transferred: evt.transferred,
+                        transferred: Math.max(prev.transferred, evt.transferred),
                         // A terminal tick carries total 0 (upload) — keep the known total.
                         total: evt.total > 0 ? evt.total : prev.total,
                         done: evt.done || prev.done
@@ -294,10 +366,27 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
 
     clearTransfer: (transferId) =>
         set((s) => {
+            if (!s.transfers[transferId]?.done) return {}
             const transfers = { ...s.transfers }
             delete transfers[transferId]
             return { transfers }
         }),
 
-    reset: () => set({ activeTab: "ssh", remote: {}, transfers: {} })
+    cancelTransfer: async (transferId) => {
+        const transfer = get().transfers[transferId]
+        if (!transfer || transfer.done || transfer.cancelling) return
+        set((s) => ({ transfers: { ...s.transfers, [transferId]: { ...transfer, cancelling: true } } }))
+        try { await sftpTransferCancel(transfer.sessionId, transferId) }
+        catch {
+            // Completion can race Cancel; the running operation owns its outcome.
+            set((s) => s.transfers[transferId] ? { transfers: { ...s.transfers, [transferId]: { ...s.transfers[transferId], cancelling: false } } } : {})
+        }
+    },
+
+    reset: () => {
+        transferEpoch++
+        listings.clear()
+        for (const [id, transfer] of Object.entries(get().transfers)) if (!transfer.done) void sftpTransferCancel(transfer.sessionId, id).catch(() => undefined)
+        set({ panelOpen: false, remote: {}, transfers: {} })
+    }
 }))

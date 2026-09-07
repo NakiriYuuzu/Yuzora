@@ -2,14 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/lib/ipc", () => ({
     sshConnect: vi.fn(),
-    sshDisconnect: vi.fn()
+    sshDisconnect: vi.fn(),
+    sshSessionAlive: vi.fn()
 }))
 
-import { sshConnect, sshDisconnect } from "@/lib/ipc"
+import { sshConnect, sshDisconnect, sshSessionAlive } from "@/lib/ipc"
 import { SSH_HOSTS_STORAGE_KEY, loadSshHosts, useSshStore, type NewSshHost } from "./sshStore"
 
 const mockConnect = vi.mocked(sshConnect)
 const mockDisconnect = vi.mocked(sshDisconnect)
+const mockAlive = vi.mocked(sshSessionAlive)
 
 // The Bun-hosted test runtime injects an empty `localStorage` global with no
 // Storage methods; install a minimal in-memory Storage so persistence runs for
@@ -60,6 +62,7 @@ beforeEach(() => {
         fingerprint: "SHA256:abc"
     }))
     mockDisconnect.mockResolvedValue(undefined)
+    mockAlive.mockResolvedValue(true)
     useSshStore.setState({ hosts: [], sessions: {}, activeHostId: null, pendingAuthHostId: null })
 })
 
@@ -99,7 +102,7 @@ describe("useSshStore host book", () => {
 })
 
 describe("useSshStore updateHost", () => {
-    it("edits the descriptor in place and persists it", () => {
+    it("rekeys endpoint changes so old workspaces cannot inherit a different authority", () => {
         const host = useSshStore.getState().addHost(passwordHost)
         useSshStore.getState().updateHost(host.id, {
             ...passwordHost,
@@ -107,10 +110,11 @@ describe("useSshStore updateHost", () => {
             host: "new.example.com",
             port: 2200
         })
-        const updated = useSshStore.getState().hosts.find((h) => h.id === host.id)!
+        const updated = useSshStore.getState().hosts[0]
+        expect(updated.id).not.toBe(host.id)
         expect(updated).toEqual({
             ...passwordHost,
-            id: host.id,
+            id: updated.id,
             name: "renamed",
             host: "new.example.com",
             port: 2200
@@ -118,17 +122,12 @@ describe("useSshStore updateHost", () => {
         expect(loadSshHosts()).toEqual([updated])
     })
 
-    it("re-sanitizes auth-dependent fields when the auth kind changes", () => {
+    it("re-sanitizes auth-dependent fields when credentials change", () => {
         const host = useSshStore.getState().addHost(keyHost)
-        // key → password: the now-irrelevant keyPath must be dropped.
-        useSshStore.getState().updateHost(host.id, { ...passwordHost, name: keyHost.name })
-        const asPassword = useSshStore.getState().hosts.find((h) => h.id === host.id)!
-        expect(asPassword.authKind).toBe("password")
-        expect(asPassword.keyPath).toBeUndefined()
-        // password → key: keyPath is restored.
+        useSshStore.getState().updateHost(host.id, { ...keyHost, authKind: "password", keyPath: undefined })
+        expect(useSshStore.getState().hosts[0].keyPath).toBeUndefined()
         useSshStore.getState().updateHost(host.id, keyHost)
-        const asKey = useSshStore.getState().hosts.find((h) => h.id === host.id)!
-        expect(asKey.keyPath).toBe("/home/u/.ssh/id_ed25519")
+        expect(useSshStore.getState().hosts[0].keyPath).toBe(keyHost.keyPath)
     })
 
     it("leaves a live session untouched (editing a connected host does not disconnect)", async () => {
@@ -250,13 +249,29 @@ describe("useSshStore connection lifecycle", () => {
         })
     })
 
-    it("markExit disconnects the session matching a sessionId", async () => {
+    it("shell exit preserves an authenticated transport and its other channels", async () => {
         const host = useSshStore.getState().addHost(passwordHost)
         await useSshStore.getState().connect(host.id, "pw")
         useSshStore.getState().markExit("sess-1")
-        const session = useSshStore.getState().sessions[host.id]
-        expect(session.status).toBe("disconnected")
-        expect(session.sessionId).toBeNull()
+        await Promise.resolve()
+        expect(useSshStore.getState().sessions[host.id].status).toBe("connected")
+        expect(mockDisconnect).not.toHaveBeenCalled()
+        mockAlive.mockResolvedValueOnce(false)
+        useSshStore.getState().markExit("sess-1")
+        await Promise.resolve()
+        expect(useSshStore.getState().sessions[host.id].status).toBe("disconnected")
+    })
+
+    it("retires an in-flight connection after a host is removed", async () => {
+        let complete!: (result: { sessionId: string; fingerprint: string }) => void
+        mockConnect.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+        const host = useSshStore.getState().addHost(passwordHost)
+        const connecting = useSshStore.getState().connect(host.id, "pw")
+        useSshStore.getState().removeHost(host.id)
+        complete({ sessionId: "stale", fingerprint: "fingerprint" })
+        await connecting
+        expect(useSshStore.getState().sessions[host.id]).toBeUndefined()
+        expect(mockDisconnect).toHaveBeenCalledWith("stale")
     })
 
     it("cancelPendingAuth clears the pending prompt", () => {

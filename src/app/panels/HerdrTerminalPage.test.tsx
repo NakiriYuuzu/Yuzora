@@ -328,6 +328,29 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     cleanup()
   })
 
+  it.each(["ssh-linux", "wsl-ubuntu"])("opens the scoped %s Session even when local default is stopped", async (hostId) => {
+    const scope = JSON.stringify([hostId, "default"])
+    seedSessions([{ name: "default", default: true, running: false }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      sessions: [local, { ...local, hostId, runtimeId: scope, running: true }]
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="same-terminal" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledWith(expect.objectContaining({ sessionName: scope, target: "same-terminal" })))
+    expect(screen.queryByTestId("herdr-terminal-stopped")).toBeNull()
+  })
+
+  it("never borrows a running local default for a stopped remote Session", async () => {
+    const scope = JSON.stringify(["ssh-stopped", "default"])
+    seedSessions([{ name: "default", default: true, running: true }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({ selectedSessionName: scope, sessions: [local, { ...local, hostId: "ssh-stopped", runtimeId: scope, running: false }] })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="same-terminal" active visible />)
+    await waitFor(() => expect(screen.getByTestId("herdr-terminal-stopped")).toBeInTheDocument())
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
+  })
+
   it("does not open a control connector before exact runtime capabilities are known", async () => {
     useHerdrStore.setState({ capabilities: null })
 
@@ -811,6 +834,23 @@ describe("HerdrTerminalPage stopped session gate", () => {
     expect(xtermMock.state.terminals).toEqual([term])
     expect(term.dispose).not.toHaveBeenCalled()
     expect(herdrIpcMock.herdrTerminalRelease).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the fallback connector mounted while a topology refresh awaits layout", async () => {
+    const { herdrLayoutExport } = await import("@/lib/herdrIpc")
+    seedSessions([{ name: "work", default: false, running: true }])
+    render(<HerdrTerminalPage herdrSessionId="work" terminalId="term-1" active visible />)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    const term = xtermMock.state.terminals[0]
+    let rejectLayout!: (error: Error) => void
+    vi.mocked(herdrLayoutExport).mockImplementationOnce(() => new Promise((_, reject) => { rejectLayout = reject }))
+    await act(async () => { useHerdrStore.getState().bumpTopologyRevision() })
+    expect(screen.queryByTestId("herdr-layout-loading")).toBeNull()
+    expect(term.dispose).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalRelease).not.toHaveBeenCalled()
+    await act(async () => { rejectLayout(new Error("layout still unavailable")) })
+    expect(xtermMock.state.terminals).toEqual([term])
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
   })
 

@@ -10,6 +10,7 @@ import {
   lspConfigStale,
   lspDetectServer,
   lspInstallServer,
+  lspCancelInstall,
   lspSetTrace,
 } from "@/lib/ipc"
 import type {
@@ -20,6 +21,9 @@ import type {
 } from "@/lib/types"
 import { workspacePathForDisplay } from "@/lib/paths"
 import { cn } from "@/lib/utils"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
+import { remoteLspTraceEnabled } from "@/lib/remoteLsp"
+import { Button } from "@/components/ui/button"
 import { FORMAT_ON_SAVE_STORAGE_KEY } from "@/editor/EditorPane"
 import { useLspStore } from "@/state/lspStore"
 import { useUiStore } from "@/state/uiStore"
@@ -111,6 +115,7 @@ function LspLanguageCard({
   activeProfile,
   onSetProfile,
   onInstall,
+  onCancel,
   onRedetect,
 }: {
   language: LspLanguage
@@ -125,6 +130,7 @@ function LspLanguageCard({
   activeProfile: string | undefined
   onSetProfile: (id: string) => void
   onInstall: () => void
+  onCancel?: () => void
   onRedetect: () => void
 }) {
   const { t } = useTranslation("workbench")
@@ -249,6 +255,7 @@ function LspLanguageCard({
       )}
 
       <div className="mt-[11px] flex items-center gap-[8px]">
+        {installing && onCancel && <Button variant="outline" size="sm" onClick={onCancel}>{t("settings.lsp.cancelInstall")}</Button>}
         {!ready && (
           <button
             type="button"
@@ -296,12 +303,24 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   const initializedMap = useLspStore((s) => s.initialized)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
-  const [config, setConfig] = useState<LspConfig | null>(null)
-  const [stale, setStale] = useState<string[]>([])
+  const hostWorkspace = workspacePath && parseRemoteFilePath(workspacePath) ? workspacePath : undefined
+  const hostRef = useRef(hostWorkspace)
+  hostRef.current = hostWorkspace
+  const [settingsView, setSettingsView] = useState<{ context?: string; config: LspConfig | null; stale: string[] }>({ config: null, stale: [] })
+  const config = settingsView.context === hostWorkspace ? settingsView.config : null
+  const stale = settingsView.context === hostWorkspace ? settingsView.stale : []
+  const setConfig = (config: LspConfig) => {
+    if (hostRef.current === hostWorkspace) setSettingsView((previous) => ({ context: hostWorkspace, config, stale: previous.context === hostWorkspace ? previous.stale : [] }))
+  }
+  const setStale = (update: (stale: string[]) => string[]) => {
+    if (hostRef.current === hostWorkspace) setSettingsView((previous) => previous.context === hostWorkspace ? { ...previous, stale: update(previous.stale) } : previous)
+  }
   // Trace lives in uiStore (in-memory, not persisted) so it survives this pane
   // unmounting/remounting on dialog close — a section-local useState would reset
   // to off and desync from the Rust side (A-F4). App restart naturally clears it.
-  const trace = useUiStore((s) => s.traceEnabled)
+  const nativeTrace = useUiStore((s) => s.traceEnabled)
+  const [remoteTrace, setRemoteTrace] = useState<Record<string, boolean>>({})
+  const trace = hostWorkspace ? (remoteTrace[hostWorkspace] ?? remoteLspTraceEnabled(hostWorkspace)) : nativeTrace
   const setTrace = useUiStore((s) => s.setTraceEnabled)
   // Monotonic id for trace requests: a late reject only reverts when it is still
   // the latest request, so a superseded toggle isn't clobbered by a stale one
@@ -318,27 +337,27 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   const detectBatchGenRef = useRef(0)
   const detectLanguageGenRef = useRef<Partial<Record<LspLanguage, number>>>({})
   const detectionWorkspace = scope === "workspace" && workspacePath ? workspacePath : null
-  const currentViewKey = `${scope}:${detectionWorkspace ?? ""}`
+  const currentViewKey = `${hostWorkspace ?? "native"}:${scope}:${detectionWorkspace ?? ""}`
   const currentViewKeyRef = useRef(currentViewKey)
   currentViewKeyRef.current = currentViewKey
+  const progressKey = (language: string, view = currentViewKey) => `${view}\0${language}`
   const [detectedView, setDetectedView] = useState<{
     key: string
     servers: Partial<Record<LspLanguage, LspServerInfo>>
   }>({ key: currentViewKey, servers: {} })
   const detectedServers = detectedView.key === currentViewKey ? detectedView.servers : {}
 
-  // Pull the persisted config + stale-override list once the pane opens.
-  const refreshConfig = () => {
-    void Promise.all([lspConfigGet(), lspConfigStale()])
-      .then(([cfg, st]) => {
-        setConfig(cfg)
-        setStale(st)
-      })
-      .catch(() => {
-        /* config read failure leaves the last-known values; cards still render */
-      })
-  }
-  useEffect(refreshConfig, [])
+  const configGeneration = useRef(0)
+  const refreshConfig = useCallback(() => {
+    const generation = ++configGeneration.current
+    const reads = hostWorkspace
+      ? [lspConfigGet(hostWorkspace), lspConfigStale(hostWorkspace)] as const
+      : [lspConfigGet(), lspConfigStale()] as const
+    void Promise.all(reads).then(([config, stale]) => {
+      if (generation === configGeneration.current && hostRef.current === hostWorkspace) setSettingsView({ context: hostWorkspace, config, stale })
+    }).catch(() => {})
+  }, [hostWorkspace])
+  useEffect(refreshConfig, [refreshConfig])
 
   const detectServers = useCallback(() => {
     const batchGeneration = ++detectBatchGenRef.current
@@ -349,7 +368,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
     for (const { id: language } of LSP_LANGUAGES) {
       const languageGeneration = (detectLanguageGenRef.current[language] ?? 0) + 1
       detectLanguageGenRef.current[language] = languageGeneration
-      void lspDetectServer(workspace, language)
+      void (hostWorkspace ? lspDetectServer(workspace, language, hostWorkspace) : lspDetectServer(workspace, language))
         .then((info) => {
           if (
             batchGeneration === detectBatchGenRef.current &&
@@ -370,7 +389,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
         })
         .catch(() => {})
     }
-  }, [currentViewKey, scope, workspacePath])
+  }, [currentViewKey, scope, workspacePath, hostWorkspace])
 
   // Probe every curated language when Settings opens or its effective scope
   // changes. Invalidating the generation in cleanup prevents a late result from
@@ -388,8 +407,9 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   // button disabled or hide the real error (A-F1); other phases reflect progress.
   useEffect(() => {
     const unlisten = listen<LspInstallProgress>("lsp:install-progress", (e) => {
+      if (hostRef.current) return
       const terminal = e.payload.phase === "done" || e.payload.phase === "error"
-      setInstalling((prev) => ({ ...prev, [e.payload.language]: terminal ? null : e.payload }))
+      setInstalling((prev) => ({ ...prev, [`${currentViewKeyRef.current}\0${e.payload.language}`]: terminal ? null : e.payload }))
     })
     return () => {
       unlisten.then((fn) => fn()).catch(() => {})
@@ -424,7 +444,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   async function setProfile(language: LspLanguage, id: string) {
     const ws = scope === "workspace" ? workspacePath : null
     try {
-      const cfg = await lspConfigSetServer(ws, language, id)
+      const cfg = await (hostWorkspace ? lspConfigSetServer(ws, language, id, hostWorkspace) : lspConfigSetServer(ws, language, id))
       setConfig(cfg)
     } catch {
       /* ignore — leave the current selection; user can retry */
@@ -437,16 +457,18 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
     // sufficient stale-result guard.
     const wsAtRequest = scope === "workspace" && workspacePath ? workspacePath : null
     const viewKeyAtRequest = currentViewKey
-    setInstallError((p) => ({ ...p, [language]: null }))
+    setInstallError((p) => ({ ...p, [progressKey(language)]: null }))
     setInstalling((p) => ({
       ...p,
-      [language]: { language, phase: "download", percent: null, message: null },
+      [progressKey(language)]: { language, phase: "download", percent: null, message: null },
     }))
     try {
       // Pass the raw current workspace (canonicalization is Rust-side) so the
       // install resolves the workspace override, not just the global default
       // (W6A-F1); null when no workspace is open = global resolve.
-      const info = await lspInstallServer(wsAtRequest, language)
+      const info = await (hostWorkspace ? lspInstallServer(wsAtRequest, language, hostWorkspace, (progress) => {
+        if (viewKeyAtRequest === currentViewKeyRef.current) setInstalling((previous) => ({ ...previous, [progressKey(language, viewKeyAtRequest)]: progress }))
+      }) : lspInstallServer(wsAtRequest, language))
       if (viewKeyAtRequest === currentViewKeyRef.current) {
         // Installation completion is newer evidence than any earlier probe for
         // this language. Invalidate only that language so a late pre-install
@@ -464,10 +486,10 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
       }
     } catch (e) {
       if (viewKeyAtRequest === currentViewKeyRef.current) {
-        setInstallError((p) => ({ ...p, [language]: String(e) }))
+        setInstallError((p) => ({ ...p, [progressKey(language, viewKeyAtRequest)]: String(e) }))
       }
     } finally {
-      setInstalling((p) => ({ ...p, [language]: null }))
+      setInstalling((previous) => Object.fromEntries(Object.entries(previous).filter(([key]) => key !== progressKey(language, viewKeyAtRequest))))
     }
   }
 
@@ -478,10 +500,10 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
 
   async function clearStale(ws: string) {
     try {
-      const cfg = await lspConfigClearStale(ws)
+      const cfg = await (hostWorkspace ? lspConfigClearStale(ws, hostWorkspace) : lspConfigClearStale(ws))
       setConfig(cfg)
     } catch {
-      /* ignore — leave the entry so the user can retry */
+      return // Preserve the entry when the host rejects removal.
     }
     setStale((prev) => prev.filter((w) => w !== ws))
   }
@@ -497,7 +519,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
         try {
           await lspConfigSetServer(workspacePath, language, serverId)
         } catch {
-          /* skip a mapping that no longer resolves; still clear below */
+          return // Retain the source mapping if any host write failed.
         }
       }
     }
@@ -517,15 +539,16 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
   // UI never claims a trace state the backend rejected — and the rejection is
   // caught, not left unhandled (A-F3).
   async function toggleTrace(next: boolean) {
-    const prev = useUiStore.getState().traceEnabled
+    const prev = trace
     const gen = ++traceGenRef.current
-    setTrace(next)
+    const updateTrace = (enabled: boolean) => hostWorkspace ? setRemoteTrace((previous) => ({ ...previous, [hostWorkspace]: enabled })) : setTrace(enabled)
+    updateTrace(next)
     try {
-      await lspSetTrace(next)
+      await (hostWorkspace ? lspSetTrace(next, hostWorkspace) : lspSetTrace(next))
     } catch {
       // Only revert if this is still the latest request — a superseded toggle's
       // late reject must not clobber a newer value (R2A-F1).
-      if (gen === traceGenRef.current) setTrace(prev)
+      if (gen === traceGenRef.current) updateTrace(prev)
     }
   }
 
@@ -589,7 +612,7 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
           {(
             [
               { id: "workspace", label: t("settings.lsp.workspace") },
-              { id: "global", label: t("settings.lsp.global") },
+              { id: "global", label: t(hostWorkspace ? "settings.lsp.hostDefault" : "settings.lsp.global") },
             ] as const
           ).map((option) => {
             const disabled = option.id === "workspace" && !workspacePath
@@ -630,12 +653,13 @@ export function LspSection({ targetLanguage }: { targetLanguage?: string }) {
               ? (initializedMap[lang.id] ?? false)
               : false
           }
-          progress={installing[lang.id] ?? null}
-          error={installError[lang.id] ?? null}
+          progress={installing[progressKey(lang.id)] ?? null}
+          error={installError[progressKey(lang.id)] ?? null}
           profiles={LSP_PROFILES[lang.id]}
           activeProfile={activeProfile(lang.id)}
           onSetProfile={(id) => void setProfile(lang.id, id)}
           onInstall={() => void handleInstall(lang.id)}
+          onCancel={hostWorkspace ? () => lspCancelInstall(hostWorkspace, lang.id) : undefined}
           onRedetect={redetect}
         />
       ))}

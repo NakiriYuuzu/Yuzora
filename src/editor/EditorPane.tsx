@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { EditorState, StateEffect } from "@codemirror/state"
+import { Compartment, EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { FileX2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
@@ -14,6 +14,7 @@ import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useEditorSettingsStore } from "../state/editorSettingsStore"
+import { subscribeWorkspaceLsp } from "../lsp/workspaceLifecycle"
 import { SpecialFileView } from "./SpecialFileView"
 import type { OpenFileResult } from "../lib/types"
 import { fileGradeOf } from "../lib/types"
@@ -76,6 +77,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
     // unhandled rejection。documentRegistry 不快取失敗，關閉重開分頁即重試。
     const [loadError, setLoadError] = useState(false)
     const markDirty = useWorkspaceStore((s) => s.markDirty)
+    const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const markExternallyModified = useWorkspaceStore((s) => s.markExternallyModified)
     const hydrateLineEnding = useWorkspaceStore((s) => s.hydrateLineEnding)
     const pendingReveal = useWorkspaceStore((s) => s.pendingReveal)
@@ -108,6 +110,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
 
     useEffect(() => {
         let disposed = false
+        let unsubscribeLsp: (() => void) | undefined
         const generation = documentGeneration(path)
         // Intercept clicks on links inside hover/completion tooltips (H3). sanitizeHtml
         // keeps <a href> in server markdown (and FORBID target forces in-place
@@ -183,11 +186,13 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
             // change landing while the doc load awaited is honoured; the reactive
             // effects below then carry any later change into this live view.
             const editorSettings = useEditorSettingsStore.getState()
+            const lspCompartment = new Compartment()
             const state = EditorState.create({
                 doc: content,
                 extensions: [
                     ...buildExtensions(path, flags, () => markDirty(path, true), save, editorSettings.minimap),
-                    conflictMarkers()
+                    conflictMarkers(),
+                    lspCompartment.of([])
                 ]
             })
             const view = new EditorView({ state, parent: containerRef.current! })
@@ -203,18 +208,17 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
                 revealLine(view, reveal.line, reveal.focus ?? true)
                 useWorkspaceStore.getState().consumeReveal()
             }
-            // Async LSP mount (R1): the no-LSP view above is fully live first.
-            // lspExtensionsForFile is the single gating source — it returns null for
-            // non-full grades / unsupported types / no workspace / missing server, and
-            // otherwise waits for the initialize handshake (A0) before returning the
-            // ManagedClient (save needs it for flush + format gating) plus the assembled
-            // extensions. They are merged with appendConfig (leaves the existing config
-            // untouched, safer than reconfigure), re-checking the view wasn't
-            // disposed/replaced while awaiting.
-            void (async () => {
+            // Replace only LSP extensions on reconnect; retain the dirty document,
+            // selection and undo history in the existing EditorView.
+            let lspGeneration = 0
+            const mountLsp = async () => {
+                const currentGeneration = ++lspGeneration
+                managedRef.current = null
+                view.dispatch({ effects: lspCompartment.reconfigure([]) })
+                updateViewMetadata(path, view, { formatter: "checking", formatDocument: undefined })
                 try {
-                    const result = await lspExtensionsForFile(path, fileGradeOf(r, content))
-                    if (disposed || viewRef.current !== view) return
+                    const result = await lspExtensionsForFile(path, fileGradeOf(r, view.state.doc.toString()))
+                    if (disposed || viewRef.current !== view || currentGeneration !== lspGeneration) return
                     if (!result) {
                         updateViewMetadata(path, view, {
                             formatter: "unsupported",
@@ -223,7 +227,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
                         return
                     }
                     managedRef.current = result.managed
-                    view.dispatch({ effects: StateEffect.appendConfig.of(result.extensions) })
+                    view.dispatch({ effects: lspCompartment.reconfigure(result.extensions) })
                     const formatter = result.managed.capabilities?.documentFormattingProvider
                         ? "available"
                         : "unsupported"
@@ -234,19 +238,29 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
                                 view,
                                 result.managed,
                                 path,
-                                () => !disposed && viewRef.current === view
+                                () => !disposed && viewRef.current === view && currentGeneration === lspGeneration
                             )
                             : undefined
                     })
                 } catch {
-                    if (!disposed && viewRef.current === view) {
+                    if (!disposed && viewRef.current === view && currentGeneration === lspGeneration) {
                         updateViewMetadata(path, view, {
                             formatter: "unsupported",
                             formatDocument: undefined
                         })
                     }
                 }
-            })()
+            }
+            const workspace = useWorkspaceStore.getState().workspacePath
+            if (workspace) unsubscribeLsp = subscribeWorkspaceLsp(workspace, (restart) => {
+                if (disposed || viewRef.current !== view) return
+                if (restart) { void mountLsp(); return }
+                lspGeneration++
+                managedRef.current = null
+                view.dispatch({ effects: lspCompartment.reconfigure([]) })
+                updateViewMetadata(path, view, { formatter: "unsupported", formatDocument: undefined })
+            })
+            void mountLsp()
         }).catch(() => {
             // openFile rejected (file deleted/moved/unreadable) — or, defensively,
             // the mount body above threw. Surface the error state instead of a
@@ -255,10 +269,11 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
         })
         return () => {
             disposed = true
+            unsubscribeLsp?.()
             document.removeEventListener("click", onTooltipLinkClick, true)
             const view = viewRef.current
             if (view) {
-                updateBuffer(path, view.state.doc.toString(), generation)
+                updateBuffer(path, view.state.doc.toString(), generation, workspacePath)
                 // Pass this pane's own view so a split group that reused the path
                 // isn't unregistered out from under it (m4).
                 unregisterView(path, view)
@@ -267,7 +282,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
             viewRef.current = null
             managedRef.current = null
         }
-    }, [path, groupIndex, markDirty, markExternallyModified, hydrateLineEnding])
+    }, [path, groupIndex, workspacePath, markDirty, markExternallyModified, hydrateLineEnding])
 
     // Jump to a requested line once the pane for its file is mounted. The view
     // is created asynchronously above, so a request that lands before creation

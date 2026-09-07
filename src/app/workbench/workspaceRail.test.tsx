@@ -11,11 +11,11 @@ import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore, uiInitialState } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn()
+vi.mock("@/state/folderPickerStore", () => ({
+  chooseWorkspaceFolder: vi.fn()
 }))
 
-import { open } from "@tauri-apps/plugin-dialog"
+import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
 
 const MAC_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
@@ -186,7 +186,7 @@ beforeEach(() => {
   useWorkspaceStore.setState({ workspacePath: "/Users/tester/projects/yuzora" })
   useRecentWorkspacesStore.setState({ list: [], presentations: {} })
   useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
-  vi.mocked(open).mockReset()
+  vi.mocked(chooseWorkspaceFolder).mockReset()
 })
 
 afterEach(() => {
@@ -681,12 +681,13 @@ describe("WorkspaceRail Spaces list", () => {
     useHerdrStore.setState({
       createSpaceFromFolder
     })
-    vi.mocked(open).mockResolvedValue("/tmp/new")
+    vi.mocked(chooseWorkspaceFolder).mockResolvedValue("/tmp/new")
 
     renderRail()
     fireEvent.click(screen.getByTestId("rail-new-space"))
     await waitFor(() => {
       expect(createSpaceFromFolder).toHaveBeenCalledWith("/tmp/new", "new")
+      expect(chooseWorkspaceFolder).toHaveBeenCalledWith({ runtimeHostId: "local" })
     })
   })
 

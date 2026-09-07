@@ -1,45 +1,4 @@
-// M2 Task 7: .git state watcher → emit git:state-changed
-
-use notify::RecursiveMode;
-use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
-use std::path::Path;
-use std::time::Duration;
-
-pub type GitWatcher = Debouncer<notify::RecommendedWatcher>;
-
-/// 內層以 `Arc` 共享：`git_detect` 的 State 落地整段移進 blocking thread
-///（closure 是 `'static`，靠 clone Arc 帶進去；理由見 `git_service::commit_detect_result`）。
-pub struct GitWatchState(pub std::sync::Arc<std::sync::Mutex<Option<GitWatcher>>>);
-
-/// 監看 `<root>/.git`（NonRecursive）＋ `<root>/.git/refs`（Recursive，若存在）。
-/// 500ms debounce；任何事件直接 on_change()（.git 內就是我們要的，不過濾）。
-pub fn build_git_watcher(
-    git_dir: &Path,
-    on_change: impl Fn() + Send + 'static,
-) -> Result<Debouncer<notify::RecommendedWatcher>, String> {
-    let mut debouncer = new_debouncer(
-        Duration::from_millis(500),
-        move |res: DebounceEventResult| {
-            // .git 內任何事件都是我們要的，不看事件內容。
-            if res.is_ok() {
-                on_change();
-            }
-        },
-    )
-    .map_err(|e| format!("git watcher init failed: {e}"))?;
-    debouncer
-        .watcher()
-        .watch(git_dir, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("git watch failed: {e}"))?;
-    let refs_dir = git_dir.join("refs");
-    if refs_dir.is_dir() {
-        debouncer
-            .watcher()
-            .watch(&refs_dir, RecursiveMode::Recursive)
-            .map_err(|e| format!("git refs watch failed: {e}"))?;
-    }
-    Ok(debouncer)
-}
+pub use yuzora_host::git_watch::{build_git_watcher, build_repository_watcher, GitWatcher};
 
 #[cfg(test)]
 mod tests {

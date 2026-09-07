@@ -1,44 +1,14 @@
-use notify::RecursiveMode;
-use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use std::path::Path;
-use std::time::Duration;
-
-pub type WatcherHandle = Debouncer<notify::RecommendedWatcher>;
-
-pub fn is_ignored_path(path: &Path) -> bool {
-    path.components()
-        .any(|c| matches!(c.as_os_str().to_str(), Some(".git") | Some("node_modules")))
-}
-
-pub fn build_watcher(
-    root: &Path,
-    on_change: impl Fn(Vec<String>) + Send + 'static,
-) -> Result<WatcherHandle, String> {
-    let mut debouncer = new_debouncer(
-        Duration::from_millis(300),
-        move |res: DebounceEventResult| {
-            if let Ok(events) = res {
-                let paths: Vec<String> = events
-                    .into_iter()
-                    .filter(|e| !is_ignored_path(&e.path))
-                    .map(|e| e.path.to_string_lossy().into_owned())
-                    .collect();
-                if !paths.is_empty() {
-                    on_change(paths);
-                }
-            }
-        },
-    )
-    .map_err(|e| format!("watcher init failed: {e}"))?;
-    debouncer
-        .watcher()
-        .watch(root, RecursiveMode::Recursive)
-        .map_err(|e| format!("watch failed: {e}"))?;
-    Ok(debouncer)
-}
-
+pub use yuzora_host::watcher::{build_watcher, is_ignored_path, WatcherHandle};
 #[derive(Default)]
 pub struct WatcherState(pub std::sync::Mutex<WatcherSlot>);
+
+#[tauri::command]
+pub fn stop_watch(state: tauri::State<'_, WatcherState>) -> Result<(), String> {
+    let (_, previous) = state.0.lock().map_err(|e| e.to_string())?.begin();
+    drop(previous);
+    Ok(())
+}
 
 /// 單一 active watcher 的槽位。async 化後 `start_watch` 的 `build_watcher`
 /// 在 blocking pool 真並發（前端 fire-and-forget），完成順序不再等於呼叫

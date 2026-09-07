@@ -1,7 +1,8 @@
 import { FolderPlus, PanelLeft, Plus, Settings } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { open } from "@tauri-apps/plugin-dialog"
+import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
+import { parseRuntimeScope } from "@/lib/herdrProvider"
 
 import { cn } from "@/lib/utils"
 import {
@@ -125,7 +126,7 @@ export function WorkspaceRail({
     if (createSpaceDisabled || !selectedSessionName) return
     setCreating(true)
     try {
-      const selected = await open({ directory: true, multiple: false })
+      const selected = await chooseWorkspaceFolder({ runtimeHostId: parseRuntimeScope(selectedSessionName).hostId })
       if (typeof selected !== "string") return
       const label = workspacePathBasename(selected)
       // Single guarded transaction: unsaved preflight → workspace.create →

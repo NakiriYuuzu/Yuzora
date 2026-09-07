@@ -6,15 +6,15 @@ import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useUiStore } from "@/state/uiStore"
-import { open } from "@tauri-apps/plugin-dialog"
+import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
 import { pickWorkspace } from "@/lib/workspaceActions"
 
 const ipc = vi.hoisted(() => ({
   binarySourceGet: vi.fn()
 }))
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn()
+vi.mock("@/state/folderPickerStore", () => ({
+  chooseWorkspaceFolder: vi.fn()
 }))
 
 vi.mock("@/lib/workspaceActions", () => ({
@@ -192,7 +192,7 @@ describe("HerdrNavContent", () => {
     useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
     useTextInputDialogStore.setState({ pending: null })
     useUiStore.setState({ mode: "ade" })
-    vi.mocked(open).mockReset()
+    vi.mocked(chooseWorkspaceFolder).mockReset()
     vi.mocked(pickWorkspace).mockReset()
     ipc.binarySourceGet.mockReset().mockResolvedValue({
       configured: "global" as const,
@@ -229,6 +229,21 @@ describe("HerdrNavContent", () => {
     expect(screen.queryByText("Spaces")).toBeNull()
     expect(screen.queryByTestId("herdr-space-ws-1")).toBeNull()
     expect(screen.getByText("Main")).toBeInTheDocument() // owning Space label
+  })
+
+  it("never labels a remote default Session with the local binary path", async () => {
+    const remoteScope = JSON.stringify(["oracle", "default"])
+    const state = readyState()
+    const remoteCaps = { ...state.capabilities, binaryPath: "/home/ubuntu/.local/herdr", binaryVersion: "0.8.2", binarySource: { configured: "global", active: "global", resolved: "global", path: "/home/ubuntu/.local/herdr", version: "0.8.2" } }
+    useHerdrStore.setState(readyState({
+      sessions: [...state.sessions, { ...state.sessions[0], hostId: "oracle", hostLabel: "Oracle", runtimeId: remoteScope, socketPath: "/home/ubuntu/.config/herdr/herdr.sock" }],
+      runtimesBySession: { [remoteScope]: { capabilities: remoteCaps, snapshot: null } }
+    }))
+    render(<HerdrNavContent />)
+    await waitFor(() => expect(ipc.binarySourceGet).toHaveBeenCalled())
+    const remote = screen.getByRole("tab", { name: /Oracle/ })
+    expect(remote.getAttribute("title")).toContain("/home/ubuntu/.local/herdr")
+    expect(remote.getAttribute("title")).not.toContain("/bin/herdr")
   })
 
   it("shows the effective Yuzora-managed Herdr identity instead of the default session label", async () => {
@@ -358,7 +373,7 @@ describe("HerdrNavContent", () => {
         createSpaceFromFolder
       })
     )
-    vi.mocked(open).mockResolvedValue("/Users/tester/first-space")
+    vi.mocked(chooseWorkspaceFolder).mockResolvedValue("/Users/tester/first-space")
 
     render(<HerdrNavContent />)
 
@@ -370,7 +385,7 @@ describe("HerdrNavContent", () => {
       expect(createSpaceFromFolder).toHaveBeenCalledTimes(1)
     })
     expect(createSpaceFromFolder).toHaveBeenCalledWith("/Users/tester/first-space", "first-space")
-    expect(vi.mocked(open)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(chooseWorkspaceFolder)).toHaveBeenCalledTimes(1)
   })
 
   it("opens a local folder from zero-Space onboarding and visibly switches to Files", async () => {

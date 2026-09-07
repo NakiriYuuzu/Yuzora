@@ -6,6 +6,11 @@ import { dismissSplash } from "@/lib/splash"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { isImagePath } from "@/workbench/ImageView"
 import { isHerdrPagePath } from "@/lib/herdrPages"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
+import { isWindowsPlatform } from "@/lib/platform"
+import { useHostStore } from "@/state/hostStore"
+import { useSshStore } from "@/state/sshStore"
+import { loadRemoteWorkspaces } from "@/state/remoteWorkspaceRegistry"
 import {
     clearWorkspaceSession,
     isPersistableSessionPath,
@@ -33,12 +38,53 @@ export function SessionRestoreBridge() {
     useEffect(() => {
         const store = useWorkspaceStore.getState()
         const session = loadWorkspaceSession()
-        if (store.workspacePath || !session) {
+        if (store.workspacePath || !session || (isWindowsPlatform() && !parseRemoteFilePath(session.workspacePath))) {
             // Nothing to restore — open the save gate immediately.
             restoredRef.current = true
             store.markSessionRestoreReady()
             dismissSplash()
             return
+        }
+
+        const remote = parseRemoteFilePath(session.workspacePath)
+        if (remote) {
+            // A network connection never owns the startup splash. Subscribe to
+            // this exact host, then restore once per connection generation.
+            restoredRef.current = true
+            store.markSessionRestoreReady()
+            dismissSplash()
+            let cancelled = false
+            let busy = false
+            let attempted: string | null = null
+            const access = loadRemoteWorkspaces()[session.workspacePath]
+            const connectionKey = () => {
+                if (access === "runtime") {
+                    const owner = useHostStore.getState().hosts[remote.hostId]?.connection?.owner
+                    return owner ? `runtime:${owner.generation}` : null
+                }
+                if (access === "sftp") return useSshStore.getState().sessions[remote.hostId]?.sessionId ?? null
+                return null
+            }
+            const retry = () => {
+                const key = connectionKey()
+                if (cancelled || busy || !key || attempted === key || useWorkspaceStore.getState().workspacePath) return
+                attempted = key
+                busy = true
+                restoredRef.current = false
+                void openWorkspaceAtPath(session.workspacePath, {
+                    // Keep recorded remote tabs even when one file cannot be
+                    // read yet. The editor shows its source error on demand.
+                    shouldOpen: () => !cancelled && connectionKey() === key && !useWorkspaceStore.getState().workspacePath
+                }).catch((error) => console.warn("remote session restore deferred", error)).finally(() => {
+                    busy = false
+                    restoredRef.current = true
+                    retry()
+                })
+            }
+            const stopRuntime = useHostStore.subscribe(retry)
+            const stopSsh = useSshStore.subscribe(retry)
+            retry()
+            return () => { cancelled = true; stopRuntime(); stopSsh() }
         }
 
         let cancelled = false
@@ -91,8 +137,11 @@ export function SessionRestoreBridge() {
                     ws.setActiveTab(0, session.activePath)
                 }
             } catch {
-                // Workspace folder moved/deleted — drop the stale session.
-                clearWorkspaceSession()
+                // A remote host can still be connecting during startup. Keep
+                // its tabs for a later reopen; absence of a connection is not
+                // evidence that the source folder was deleted. Legacy Windows
+                // records likewise survive until the user binds a WSL host.
+                if (!parseRemoteFilePath(session.workspacePath) && !isWindowsPlatform()) clearWorkspaceSession()
             } finally {
                 unsubscribeGuard()
                 if (!cancelled) {

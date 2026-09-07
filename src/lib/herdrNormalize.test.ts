@@ -3,6 +3,20 @@ import { describe, expect, it } from "vitest"
 import { HERDR_LIVE_SESSION_ID, normalizeHerdrSnapshot } from "./herdrNormalize"
 
 describe("normalizeHerdrSnapshot", () => {
+  it("never adopts agent or pane cwd as the workspace root", () => {
+    const normalized = normalizeHerdrSnapshot({
+      protocol: 20,
+      version: "0.8.2",
+      snapshot: {
+        workspaces: [{ workspace_id: "ws" }],
+        agents: [{ workspace_id: "ws", pane_id: "p", cwd: "C:/plugins/yuzora-wsl-agents" }],
+        panes: [{ workspace_id: "ws", pane_id: "p", cwd: "/home/yuuzu", foreground_cwd: "/tmp" }]
+      }
+    })
+    expect(normalized.spaces[0].path).toBeNull()
+    expect(normalized.terminals[0].cwd).toBe("/home/yuuzu")
+  })
+
   it("maps workspaces/agents/panes and ignores unknown fields", () => {
     const normalized = normalizeHerdrSnapshot({
       protocol: 19,

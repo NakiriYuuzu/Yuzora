@@ -67,22 +67,6 @@ export function normalizeHerdrSnapshot(
   const focusedTabId = asString(root.focused_tab_id)
   const focusedPaneId = asString(root.focused_pane_id)
 
-  // Protocol 19 workspace summaries do not expose cwd/path. Derive the Space
-  // path from its agent/pane launch cwd so selecting another Space can also
-  // switch Yuzora's project context. Prefer `cwd` over mutable foreground_cwd.
-  const fallbackSpacePaths = new Map<string, string>()
-  for (const values of [agentsRaw, panesRaw]) {
-    for (const value of values) {
-      const item = asRecord(value)
-      if (!item) continue
-      const workspaceId = asString(item.workspace_id)
-      const path = asString(item.cwd) ?? asString(item.foreground_cwd)
-      if (workspaceId && path && !fallbackSpacePaths.has(workspaceId)) {
-        fallbackSpacePaths.set(workspaceId, path)
-      }
-    }
-  }
-
   const spaces: HerdrSpaceInfo[] = []
   for (let i = 0; i < workspaces.length; i++) {
     const ws = asRecord(workspaces[i])
@@ -92,12 +76,12 @@ export function normalizeHerdrSnapshot(
     const order = asNumber(ws.number) ?? i
     const worktreeRec = asRecord(ws.worktree)
     const snapshotProvenance = spaceProvenanceFromSnapshotWorktree(worktreeRec)
-    // Protocol 19 path fallback: worktree.checkout_path → path/cwd → agent/pane cwd.
+    // Only workspace-owned metadata defines the project root. An agent's cwd
+    // can be an integration directory or a subdirectory after `cd`.
     const path =
       snapshotProvenance.path ??
       asString(ws.path) ??
       asString(ws.cwd) ??
-      fallbackSpacePaths.get(id) ??
       null
     spaces.push({
       id,

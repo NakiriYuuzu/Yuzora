@@ -1,8 +1,11 @@
+import { sessionScope } from "@/lib/herdrProvider"
+import { LOCAL_HOST_ID } from "@/lib/runtimeIdentity"
 import { Bot, FolderOpen, FolderPlus, Info, Plus } from "lucide-react"
 import type { CSSProperties } from "react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { open } from "@tauri-apps/plugin-dialog"
+import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
+import { parseRuntimeScope } from "@/lib/herdrProvider"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { HerdrNewAgentDialog } from "@/app/workbench/HerdrNewAgentDialog"
@@ -47,14 +50,13 @@ export function HerdrNavContent() {
   const capabilities = useHerdrStore((s) => s.capabilities)
   const errorMessage = useHerdrStore((s) => s.errorMessage)
   const snapshot = useHerdrStore((s) => s.snapshot)
+  const runtimes = useHerdrStore((s) => s.runtimesBySession)
   const selectedSpaceId = useHerdrStore((s) => s.selectedSpaceId)
   const createTerminalInSelectedSpace = useHerdrStore((s) => s.createTerminalInSelectedSpace)
   const createSpaceFromFolder = useHerdrStore((s) => s.createSpaceFromFolder)
   const canCreateTerminal = useHerdrStore((s) => s.canCreateTerminal())
   const canCreateAgent = useHerdrStore((s) => s.canCreateAgent())
   const canCreateSpace = useHerdrStore((s) => s.canCreateSpace())
-  const canMutate = useHerdrStore((s) => s.canMutateSelectedSession())
-  const canFocusTab = useHerdrStore((s) => s.canFocusSelectedTab())
   const createBlockedReason = useHerdrStore((s) => s.createTerminalBlockedReason())
   const createAgentBlockedReason = useHerdrStore((s) => s.createAgentBlockedReason())
   const createSpaceBlockedReason = useHerdrStore((s) => s.createSpaceBlockedReason())
@@ -71,15 +73,21 @@ export function HerdrNavContent() {
   const [binarySourceInfo, setBinarySourceInfo] = useState<HerdrBinarySourceInfo | null>(null)
   const attentionByKey = useHerdrStore((s) => s.attentionByKey)
   const attentionItems = useMemo(() => {
-    const selected = selectedSessionName
     return Array.from(attentionByKey.values())
-      .filter((item) => (!selected || item.sessionName === selected) && !(item.kind === "done" && item.seen))
+      .filter((item) => !(item.kind === "done" && item.seen))
       .sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [attentionByKey, selectedSessionName])
+  }, [attentionByKey])
   const agents = useMemo(
-    () => sortHerdrAgentsByUrgency(snapshot?.agents ?? []),
-    [snapshot?.agents]
+    () => sortHerdrAgentsByUrgency(Object.keys(runtimes).length
+      ? Object.entries(runtimes).flatMap(([scope, runtime]) => (runtime.snapshot?.agents ?? []).map((agent) => ({ ...agent, sessionName: scope })))
+      : (snapshot?.agents ?? []).map((agent) => ({ ...agent, sessionName: agent.sessionName ?? selectedSessionName }))),
+    [runtimes, snapshot?.agents, selectedSessionName]
   )
+  const canActivateAgent = (agent: HerdrAgentInfo) => {
+    const scope = agent.sessionName ?? selectedSessionName
+    const caps = scope ? runtimes[scope]?.capabilities ?? (scope === selectedSessionName ? capabilities : null) : null
+    return !!agent.terminalId && !!caps?.server.running && !!caps.api.workspaceFocus && (!agent.tabId || !!caps.api.tabFocus)
+  }
 
   useEffect(() => {
     let active = true
@@ -98,21 +106,7 @@ export function HerdrNavContent() {
     !selectedSpaceId || creating || !herdrSessionId || !canCreateTerminal || stopped
   const hasNoSpaces = Boolean(snapshot && snapshot.spaces.length === 0)
   const visibleError = actionError ?? errorMessage
-  const effectiveBinarySource = binarySourceInfo ?? capabilities?.binarySource ?? null
-  const runtimeSource =
-    effectiveBinarySource?.resolved ??
-    effectiveBinarySource?.active ??
-    effectiveBinarySource?.configured ??
-    null
-  const runtimeVersion =
-    effectiveBinarySource?.version ?? capabilities?.binaryVersion ?? snapshot?.version ?? null
-  const runtimeVersionSuffix = runtimeVersion ? ` ${runtimeVersion}` : ""
-  const runtimeLabel = runtimeSource === "global"
-    ? t("herdrNav.globalRuntime", { version: runtimeVersionSuffix })
-    : runtimeSource === "default"
-      ? t("herdrNav.managedRuntime", { version: runtimeVersionSuffix })
-      : t("herdrNav.runtime", { version: runtimeVersionSuffix })
-  const runtimePath = effectiveBinarySource?.path ?? capabilities?.binaryPath ?? null
+
 
   const onSelectSession = (sessionName: string) => {
     // HerdrBridge is the single focus-restoration owner so a user-closed page
@@ -121,7 +115,7 @@ export function HerdrNavContent() {
   }
 
   const openAgent = async (agent: HerdrAgentInfo) => {
-    if (stopped || !canMutate) return
+    if (!canActivateAgent(agent)) return
     setActionError(null)
     const result = await activateAgent(agent)
     if (!result.ok) {
@@ -169,7 +163,7 @@ export function HerdrNavContent() {
     setOnboardingBusy(true)
     setActionError(null)
     try {
-      const selected = await open({ directory: true, multiple: false })
+      const selected = await chooseWorkspaceFolder({ runtimeHostId: parseRuntimeScope(selectedSessionName!).hostId })
       if (typeof selected !== "string") return
       const result = await createSpaceFromFolder(selected, workspacePathBasename(selected))
       if (!result.ok && !result.cancelled) {
@@ -210,6 +204,25 @@ export function HerdrNavContent() {
         className="w-full shrink-0 flex-wrap justify-start gap-[6px] rounded-none bg-transparent p-0 px-[2px] group-data-horizontal/tabs:h-auto"
       >
         {sessions.map((session) => {
+          const scope = sessionScope(session)!
+          const local = parseRuntimeScope(scope).hostId === LOCAL_HOST_ID
+          const sessionRuntime = runtimes[scope]
+          const sessionCaps = sessionRuntime?.capabilities ?? (scope === selectedSessionName ? capabilities : null)
+          const effectiveBinarySource = (local ? binarySourceInfo : null) ?? sessionCaps?.binarySource ?? null
+          const runtimeSource =
+            effectiveBinarySource?.resolved ??
+            effectiveBinarySource?.active ??
+            effectiveBinarySource?.configured ??
+            null
+          const runtimeVersion =
+            effectiveBinarySource?.version ?? sessionCaps?.binaryVersion ?? sessionRuntime?.snapshot?.version ?? null
+          const runtimeVersionSuffix = runtimeVersion ? ` ${runtimeVersion}` : ""
+          const runtimeLabel = runtimeSource === "global"
+            ? t("herdrNav.globalRuntime", { version: runtimeVersionSuffix })
+            : runtimeSource === "default"
+              ? t("herdrNav.managedRuntime", { version: runtimeVersionSuffix })
+              : t("herdrNav.runtime", { version: runtimeVersionSuffix })
+          const runtimePath = effectiveBinarySource?.path ?? sessionCaps?.binaryPath ?? null
           const displayName = session.default ? runtimeLabel : session.name
           const title = session.default
             ? [
@@ -227,9 +240,9 @@ export function HerdrNavContent() {
               : t("herdrNav.sessionStoppedTitle", { name: session.name })
           return (
             <TabsTrigger
-              key={session.name}
+              key={sessionScope(session)}
               type="button"
-              value={session.name}
+              value={sessionScope(session)!}
               data-testid={`herdr-session-${session.name}`}
               title={title}
               className={cn(
@@ -239,7 +252,7 @@ export function HerdrNavContent() {
                 !session.running && "opacity-70"
               )}
             >
-              <span>{displayName}</span>
+              <span>{session.hostLabel ? `${session.hostLabel} · ${displayName}` : displayName}</span>
               {!session.running && (
                 <span className="ml-[4px] text-[10px] text-(--ink-4)">
                   {t("herdrNav.stoppedBadge")}
@@ -322,7 +335,7 @@ export function HerdrNavContent() {
       )}
 
       <ScrollArea className="min-h-0 flex-1" viewportClassName="py-[4px]">
-        {hasNoSpaces ? (
+        {hasNoSpaces && agents.length === 0 ? (
           <div
             data-testid="herdr-zero-space-onboarding"
             className="flex min-h-full flex-col items-center justify-center gap-[14px] px-[8px] py-[16px]"
@@ -371,16 +384,16 @@ export function HerdrNavContent() {
               <>
                 <SectionLabel>{t("herdrNav.attentionHeading")}</SectionLabel>
                 {attentionItems.map((item) => {
-                  const agent = agents.find((candidate) => candidate.paneId === item.paneId) ?? null
+                  const agent = agents.find((candidate) => candidate.sessionName === item.sessionName && candidate.paneId === item.paneId) ?? null
                   return (
                     <Button
                       key={item.key}
                       type="button"
                       variant="ghost"
                       data-testid={`herdr-attention-${item.paneId}`}
-                      disabled={!agent || stopped || !canMutate}
+                      disabled={!agent || !canActivateAgent(agent)}
                       title={
-                        !agent || stopped || !canMutate
+                        !agent || !canActivateAgent(agent)
                           ? mutationBlockedReason ?? t("herdrNav.actionUnavailable")
                           : undefined
                       }
@@ -414,11 +427,8 @@ export function HerdrNavContent() {
                   key={`${agent.sessionName ?? herdrSessionId}:${agent.id}`}
                   agent={agent}
                   sessionName={herdrSessionId}
-                  disabled={
-                    stopped ||
-                    !agent.terminalId ||
-                    (agent.tabId ? !canFocusTab : !canMutate)
-                  }
+                  disabled={!canActivateAgent(agent)}
+                  hostLabel={sessions.find((session) => sessionScope(session) === agent.sessionName)?.hostLabel}
                   onSelect={() => void openAgent(agent)}
                   onInspect={(trigger) => {
                     inspectorTriggerRef.current = trigger
@@ -498,16 +508,18 @@ function AgentRow({
   disabled,
   onInspect,
   onSelect,
-  sessionName
+  sessionName,
+  hostLabel
 }: {
   agent: HerdrAgentInfo
   disabled?: boolean
   onInspect: (trigger: HTMLButtonElement) => void
   onSelect: () => void
   sessionName?: string | null
+  hostLabel?: string
 }) {
   const { t } = useTranslation("workbench")
-  const spaceLabel = agent.spaceLabel ?? agent.workspaceId
+  const spaceLabel = [hostLabel, agent.spaceLabel ?? agent.workspaceId].filter(Boolean).join(" · ")
   const resolvedSession = agent.sessionName ?? sessionName ?? ""
   const name = agent.title ?? agent.name
   return (

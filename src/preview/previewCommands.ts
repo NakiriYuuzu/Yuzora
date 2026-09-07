@@ -189,7 +189,11 @@ export async function openPreviewExternally(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
-  await openUrl(target.url)
+  const staticSession = usePreviewStore.getState().staticPreview
+  const url = staticSession?.url === target.url ? target.url
+    : (await import("./remotePreviewUrl")).remotePreviewDisplayUrl(target.workspacePath, target.url)
+  if (!previewTargetHasUrl(target)) return cancelled()
+  await openUrl(url)
   return completed()
 }
 

@@ -11,10 +11,14 @@ import { ExternalChangeResolver, maybeInterceptSave } from "./ExternalChangeReso
 
 const showActionError = vi.fn(async (_action: string, _error: unknown) => undefined)
 
-vi.mock("../lib/ipc", () => ({
-    openFile: vi.fn(),
-    saveFile: vi.fn(async () => 0)
-}))
+vi.mock("../lib/ipc", () => {
+    const openFile = vi.fn()
+    return {
+        openFile,
+        openFileSnapshot: async (path: string) => ({ result: await openFile(path), accept: () => {} }),
+        saveFile: vi.fn(async () => 0)
+    }
+})
 
 vi.mock("../lib/actionFeedback", () => ({
     showActionError: (action: string, error: unknown) => showActionError(action, error)

@@ -36,6 +36,8 @@ import { herdrTabMove } from "@/lib/herdrIpc"
 import { herdrInsertIndexForProjectedDrop } from "@/lib/workbenchTabReorder"
 import { showActionError } from "@/lib/actionFeedback"
 import { requestAppConfirmation } from "@/state/appDialogStore"
+import { WorkspaceHostBadge } from "./WorkspaceHostBadge"
+import { parseRuntimeScope } from "@/lib/herdrProvider"
 
 export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
@@ -461,6 +463,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             )}
                             <span className="max-w-[140px] truncate">{tab.name}</span>
                         </button>
+                        <WorkspaceHostBadge path={tab.kind === "preview" ? workspacePath ?? undefined : previewTabSourcePath(tab) ?? tab.path} hostId={tab.kind === "herdr-terminal" ? parseRuntimeScope(herdrSessionName).hostId : undefined} />
                         {isFileTab(tab) && tab.externallyModified && (
                             <span
                                 role="button"

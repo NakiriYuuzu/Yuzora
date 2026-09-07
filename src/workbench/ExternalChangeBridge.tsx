@@ -25,14 +25,26 @@ export function ExternalChangeBridge() {
             const plan = handleExternalChange(e.payload.paths, allTabs, recentlySaved.snapshot())
             for (const path of plan.markModified) s.markExternallyModified(path, true)
             for (const path of plan.reload) {
-                // Settle the external-modified flag on BOTH outcomes. A reload
-                // whose getDocument→openFile rejects (the file was deleted out
-                // from under the tab) must still flip a workspaceStore field so
-                // subscribers (e.g. StatusBar) re-render and converge; the trailing
-                // catch also keeps the chain from floating an unhandled rejection.
-                void reloadDocument(path)
-                    .then(() => s.markExternallyModified(path, false))
-                    .catch(() => s.markExternallyModified(path, false))
+                const originalTabs = allTabs.filter((tab) => tab.path === path)
+                const liveTabs = () => {
+                    const live = useWorkspaceStore.getState()
+                    return live.workspacePath === s.workspacePath
+                        ? live.groups.flatMap((group) => group.tabs).filter((tab) => tab.path === path)
+                        : []
+                }
+                // Object identity also detects edit-then-save while the remote
+                // read is in flight, even when dirty has already returned false.
+                const canApply = () => {
+                    const tabs = liveTabs()
+                    return tabs.length > 0 && tabs.length === originalTabs.length
+                        && tabs.every((tab) => !tab.dirty && originalTabs.includes(tab))
+                }
+                void reloadDocument(path, canApply)
+                    .then(() => { if (liveTabs().length) s.markExternallyModified(path, false) })
+                    .catch(() => {
+                        const tabs = liveTabs()
+                        if (tabs.length) s.markExternallyModified(path, tabs.some((tab) => tab.dirty))
+                    })
             }
         })
         return () => {

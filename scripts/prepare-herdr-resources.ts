@@ -10,7 +10,7 @@ import {
   stat,
   writeFile
 } from "node:fs/promises"
-import { basename, dirname, join, relative, resolve, sep } from "node:path"
+import { dirname, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
@@ -27,7 +27,6 @@ export interface HerdrResourceTarget {
   destination: string
   url: string
   archiveSha256: string
-  format: "binary" | "zip"
   files: ResourceFile[]
 }
 
@@ -38,12 +37,25 @@ export const HERDR_RESOURCE_VERSION = {
 } as const
 
 export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = {
+  "linux-aarch64": {
+    id: "linux-aarch64",
+    destination: "linux-aarch64",
+    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-linux-aarch64",
+    archiveSha256: "f55610658e1c2e0d2aaef730b4b2ab885f7f8ba00285ab372bfb14f2e3d5b40d",
+    files: [{ path: "herdr", sha256: "f55610658e1c2e0d2aaef730b4b2ab885f7f8ba00285ab372bfb14f2e3d5b40d" }]
+  },
+  "linux-x86_64": {
+    id: "linux-x86_64",
+    destination: "linux-x86_64",
+    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-linux-x86_64",
+    archiveSha256: "976150a14d490c94b243ea2e1a7eb2dfb67f12e36b182db90936f6728e6aecf4",
+    files: [{ path: "herdr", sha256: "976150a14d490c94b243ea2e1a7eb2dfb67f12e36b182db90936f6728e6aecf4" }]
+  },
   "macos-aarch64": {
     id: "macos-aarch64",
     destination: "macos-aarch64",
     url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-macos-aarch64",
     archiveSha256: "a5d4f4d504d8b309c91f811050559300faba31258425f53c50852fc96f6ae574",
-    format: "binary",
     files: [
       {
         path: "herdr",
@@ -56,48 +68,10 @@ export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = {
     destination: "macos-x86_64",
     url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-macos-x86_64",
     archiveSha256: "ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1",
-    format: "binary",
     files: [
       {
         path: "herdr",
         sha256: "ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1"
-      }
-    ]
-  },
-  "windows-x86_64": {
-    id: "windows-x86_64",
-    destination: "windows-x86_64",
-    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-windows-x86_64.zip",
-    archiveSha256: "0ab3d0fe1434d55757997542b978c771d642987bb15a7130f4160f0db38821d5",
-    format: "zip",
-    files: [
-      {
-        path: "herdr.exe",
-        sha256: "467682cdb5fa482c54897c6b9c96a5300a3516a72ef70ec3d009e16fadb131b3"
-      },
-      {
-        path: "conpty/arm64/OpenConsole.exe",
-        sha256: "ed7622fd0d3bedc9ab9f122f5e58edf0def9e7999224f52dd395ba9f54edbe09"
-      },
-      {
-        path: "conpty/x64/OpenConsole.exe",
-        sha256: "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160"
-      },
-      {
-        path: "conpty/conpty.dll",
-        sha256: "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8"
-      },
-      {
-        path: "conpty/herdr-conpty.json",
-        sha256: "c8f499ad82c568e737d6bc7d0b583e3785d2f43af3d2c0cebb856076690533f5"
-      },
-      {
-        path: "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
-        sha256: "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b"
-      },
-      {
-        path: "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md",
-        sha256: "e7fbaadee6ab20c28b87730a510ee5f5815d8fb4bd88d1d54d282dc2a74c0726"
       }
     ]
   }
@@ -105,30 +79,8 @@ export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = {
 
 export function resourceTargetIdsForHost(platform: NodeJS.Platform): string[] {
   if (platform === "darwin") return ["macos-aarch64", "macos-x86_64"]
-  if (platform === "win32") return ["windows-x86_64"]
+  if (platform === "win32" || platform === "linux") return ["linux-aarch64", "linux-x86_64"]
   throw new Error(`Yuzora does not build desktop Herdr resources on ${platform}`)
-}
-
-export function validateArchiveEntries(entries: string[], expectedFiles: string[]): void {
-  const files = entries
-    .map((entry) => entry.replaceAll("\\", "/").replace(/^\.\//, ""))
-    .filter((entry) => entry.length > 0 && !entry.endsWith("/"))
-  for (const entry of files) {
-    if (
-      entry.startsWith("/") ||
-      /^[A-Za-z]:\//.test(entry) ||
-      entry.split("/").some((part) => part === "..")
-    ) {
-      throw new Error(`Herdr archive contains an unsafe path: ${entry}`)
-    }
-  }
-  const actual = [...new Set(files)].sort()
-  const expected = [...expectedFiles].sort()
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(
-      `Herdr archive contents changed: expected ${expected.join(", ")}; received ${actual.join(", ")}`
-    )
-  }
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -143,6 +95,7 @@ async function listFiles(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true })
   const files: string[] = []
   for (const entry of entries) {
+    if (entry.name === ".gitkeep") continue
     const path = join(current, entry.name)
     if (entry.isDirectory()) files.push(...(await listFiles(root, path)))
     else if (entry.isFile()) files.push(relative(root, path).split(sep).join("/"))
@@ -226,71 +179,7 @@ async function download(target: HerdrResourceTarget): Promise<Uint8Array> {
   return bytes
 }
 
-function runTar(args: string[], cwd: string): string {
-  const result = Bun.spawnSync(["tar", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
-  if (result.exitCode !== 0) {
-    throw new Error(`tar ${args[0]} failed: ${result.stderr.toString().trim()}`)
-  }
-  return result.stdout.toString()
-}
-
-function runWindowsPowerShell(script: string, archivePath: string, destination?: string): string {
-  const result = Bun.spawnSync(
-    ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-    {
-      env: {
-        ...process.env,
-        YUZORA_HERDR_ARCHIVE: archivePath,
-        YUZORA_HERDR_DESTINATION: destination ?? ""
-      },
-      stdout: "pipe",
-      stderr: "pipe"
-    }
-  )
-  if (result.exitCode !== 0) {
-    throw new Error(`PowerShell ZIP operation failed: ${result.stderr.toString().trim()}`)
-  }
-  return result.stdout.toString()
-}
-
-export function zipExtractionToolForPlatform(
-  platform: NodeJS.Platform
-): "powershell" | "tar" {
-  return platform === "win32" ? "powershell" : "tar"
-}
-
-function listZipEntries(archivePath: string, stagingRoot: string): string[] {
-  if (zipExtractionToolForPlatform(process.platform) === "powershell") {
-    const script = `
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$archive = [System.IO.Compression.ZipFile]::OpenRead($env:YUZORA_HERDR_ARCHIVE)
-try {
-  foreach ($entry in $archive.Entries) { [Console]::Out.WriteLine($entry.FullName) }
-} finally {
-  $archive.Dispose()
-}
-`
-    return runWindowsPowerShell(script, archivePath).split(/\r?\n/)
-  }
-  return runTar(["-tf", basename(archivePath)], stagingRoot).split(/\r?\n/)
-}
-
-function extractZip(archivePath: string, stagingRoot: string, destination: string): void {
-  if (zipExtractionToolForPlatform(process.platform) === "powershell") {
-    const script = `
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::ExtractToDirectory(
-  $env:YUZORA_HERDR_ARCHIVE,
-  $env:YUZORA_HERDR_DESTINATION
-)
-`
-    runWindowsPowerShell(script, archivePath, join(stagingRoot, destination))
-    return
-  }
-  runTar(["-xf", basename(archivePath), "-C", destination], stagingRoot)
-}
-
-async function prepareTarget(root: string, target: HerdrResourceTarget): Promise<void> {
+export async function prepareTarget(root: string, target: HerdrResourceTarget): Promise<void> {
   if (await targetIsValid(root, target)) {
     console.log(`Herdr resource ${target.id} is already verified`)
     return
@@ -299,24 +188,13 @@ async function prepareTarget(root: string, target: HerdrResourceTarget): Promise
   await mkdir(root, { recursive: true })
   const stagingRoot = await mkdtemp(join(root, ".prepare-"))
   const stagingTarget = join(stagingRoot, target.destination)
-  const archivePath = join(stagingRoot, basename(new URL(target.url).pathname))
   try {
     const bytes = await download(target)
     await mkdir(stagingTarget, { recursive: true })
-    if (target.format === "binary") {
-      const output = join(stagingTarget, target.files[0].path)
-      await mkdir(dirname(output), { recursive: true })
-      await writeFile(output, bytes)
-      await chmod(output, 0o755)
-    } else {
-      await writeFile(archivePath, bytes)
-      const entries = listZipEntries(archivePath, stagingRoot)
-      validateArchiveEntries(
-        entries,
-        target.files.map((file) => file.path)
-      )
-      extractZip(archivePath, stagingRoot, target.destination)
-    }
+    const output = join(stagingTarget, target.files[0].path)
+    await mkdir(dirname(output), { recursive: true })
+    await writeFile(output, bytes)
+    await chmod(output, 0o755)
 
     if (!(await targetIsValid(stagingRoot, target))) {
       throw new Error(`prepared Herdr resource ${target.id} failed file verification`)

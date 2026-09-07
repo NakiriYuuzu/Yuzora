@@ -38,6 +38,10 @@ import {
   DialogTitle
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Field as FormField, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { SqliteLocationFields } from "./SqliteLocationFields"
+import { useHostStore } from "@/state/hostStore"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { dbObjectRefKey } from "@/lib/databaseSql"
 import { dbPostgresTransportChallenge, dbTestConnection } from "@/lib/ipc"
@@ -986,13 +990,14 @@ function defaultPort(kind: DbKind): number {
 
 function savedProfileTarget(entry: SavedDbConnection): DbProfileTarget | null {
   if (entry.kind === "sqlite") {
-    return entry.path ? { kind: "sqlite", path: entry.path } : null
+    return entry.path ? { kind: "sqlite", path: entry.path, ...(entry.workspace ? { workspace: entry.workspace } : {}) } : null
   }
   if (!entry.host || !entry.port || !entry.database || !entry.user) return null
   if (entry.kind === "postgres") {
     return {
       kind: "postgres",
       host: entry.host,
+      ...(entry.viaHost ? { viaHost: entry.viaHost } : {}),
       port: entry.port,
       database: entry.database,
       user: entry.user,
@@ -1002,6 +1007,7 @@ function savedProfileTarget(entry: SavedDbConnection): DbProfileTarget | null {
   return {
     kind: "mssql",
     host: entry.host,
+      ...(entry.viaHost ? { viaHost: entry.viaHost } : {}),
     port: entry.port,
     database: entry.database,
     user: entry.user,
@@ -1011,9 +1017,10 @@ function savedProfileTarget(entry: SavedDbConnection): DbProfileTarget | null {
 
 function sameProfileTarget(left: DbProfileTarget, right: DbProfileTarget): boolean {
   if (left.kind !== right.kind) return false
-  if (left.kind === "sqlite" && right.kind === "sqlite") return left.path === right.path
+  if (left.kind === "sqlite" && right.kind === "sqlite") return left.path === right.path && left.workspace?.hostId === right.workspace?.hostId && left.workspace?.canonicalPath === right.workspace?.canonicalPath
   if (left.kind === "postgres" && right.kind === "postgres") {
-    return left.host === right.host
+    return (left.viaHost ?? null) === (right.viaHost ?? null)
+      && left.host === right.host
       && left.port === right.port
       && left.database === right.database
       && left.user === right.user
@@ -1024,7 +1031,8 @@ function sameProfileTarget(left: DbProfileTarget, right: DbProfileTarget): boole
       && !!left.trustServerCertAcknowledged === !!right.trustServerCertAcknowledged
   }
   if (left.kind === "mssql" && right.kind === "mssql") {
-    return left.host === right.host
+    return (left.viaHost ?? null) === (right.viaHost ?? null)
+      && left.host === right.host
       && left.port === right.port
       && left.database === right.database
       && left.user === right.user
@@ -1060,7 +1068,10 @@ function NewConnectionDialog({
   const lockConnFields = reconnectEntry !== null
   const [kind, setKind] = useState<DbKind>(prefill?.kind ?? "sqlite")
   const [path, setPath] = useState(prefill?.path ?? "")
+  const [sqliteWorkspace, setSqliteWorkspace] = useState(prefill?.workspace)
   const [host, setHost] = useState(prefill?.host ?? "")
+  const [viaHost, setViaHost] = useState(prefill?.viaHost ?? "")
+  const hosts = useHostStore((s) => s.configs)
   const [port, setPort] = useState(prefill ? String(prefill.port ?? defaultPort(prefill.kind)) : String(defaultPort("sqlite")))
   const [database, setDatabase] = useState(prefill?.database ?? "")
   const [user, setUser] = useState(prefill?.user ?? "")
@@ -1122,10 +1133,11 @@ function NewConnectionDialog({
 
   const portNum = Number.parseInt(port, 10)
   const draftTarget: DbProfileTarget = kind === "sqlite"
-    ? { kind: "sqlite", path: path.trim() }
+    ? { kind: "sqlite", path: path.trim(), ...(sqliteWorkspace ? { workspace: sqliteWorkspace } : {}) }
     : kind === "postgres"
       ? {
           kind: "postgres",
+          ...(viaHost ? { viaHost } : {}),
           host: host.trim(),
           port: portNum,
           database: database.trim(),
@@ -1152,6 +1164,7 @@ function NewConnectionDialog({
         }
       : {
           kind: "mssql",
+          ...(viaHost ? { viaHost } : {}),
           host: host.trim(),
           port: portNum,
           database: database.trim(),
@@ -1170,7 +1183,7 @@ function NewConnectionDialog({
     && password.length === 0
   const validConfig =
     (kind === "sqlite"
-      ? path.trim().length > 0
+      ? path.trim().length > 0 && (!sqliteWorkspace || (path.trim().startsWith("/") && sqliteWorkspace.canonicalPath.startsWith("/")))
       : host.trim().length > 0 &&
         database.trim().length > 0 &&
         user.trim().length > 0 &&
@@ -1186,6 +1199,7 @@ function NewConnectionDialog({
       if (!current) return current
       if (
         current.transportMode === transportMode
+        && (current.viaHost ?? "") === viaHost
         && current.host === host.trim()
         && current.port === portNum
         && current.user === user.trim()
@@ -1195,7 +1209,7 @@ function NewConnectionDialog({
       }
       return null
     })
-  }, [transportMode, host, portNum, user, database])
+  }, [transportMode, host, portNum, user, database, viaHost])
 
   async function browseSqlite() {
     try {
@@ -1217,6 +1231,7 @@ function NewConnectionDialog({
   function acknowledgedPostgresTarget(mode: PostgresTransportMode): Extract<DbProfileTarget, { kind: "postgres" }> {
     return {
       kind: "postgres",
+      ...(viaHost ? { viaHost } : {}),
       host: host.trim(),
       port: portNum,
       database: database.trim(),
@@ -1335,6 +1350,7 @@ function NewConnectionDialog({
     try {
       const issued = await dbPostgresTransportChallenge({
         transportMode: decision.mode,
+        ...(viaHost ? { viaHost } : {}),
         host: host.trim(),
         port: portNum,
         user: user.trim(),
@@ -1495,25 +1511,35 @@ function NewConnectionDialog({
           )}
 
           {kind === "sqlite" ? (
-            <div className="flex flex-col gap-[4px]">
-              <label htmlFor="database-file-path" className="text-[11px] font-medium text-(--ink-3)">
-                {t("database.fieldFile")}
-              </label>
-              <div className="flex gap-[6px]">
-                <Input
-                  id="database-file-path"
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                  placeholder={t("database.filePlaceholder")}
-                  className="flex-1"
-                />
-                <Button type="button" variant="outline" onClick={() => void browseSqlite()}>
-                  {t("database.browse")}
-                </Button>
-              </div>
-            </div>
+            <SqliteLocationFields path={path} onPathChange={setPath} workspace={sqliteWorkspace} onWorkspaceChange={setSqliteWorkspace} disabled={lockConnFields || busy || testBusy} onBrowseLocal={() => void browseSqlite()} />
           ) : (
             <>
+              <FieldGroup>
+                <FormField>
+                  <FieldLabel htmlFor="database-via-host">{t("database.viaHost")}</FieldLabel>
+                  <Select
+                    value={viaHost ? `host:${viaHost}` : "direct"}
+                    disabled={lockConnFields || busy || testBusy}
+                    onValueChange={(value) => {
+                      setViaHost(value === "direct" ? "" : value.slice(5))
+                      setTransportChallenge(null)
+                      setTransportMode("verifyFull")
+                      setInsecureException(null)
+                      setTrustServerCertAcknowledged(false)
+                    }}
+                  >
+                    <SelectTrigger id="database-via-host"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="direct">{t("database.viaHostDirect")}</SelectItem>
+                        {Object.values(hosts).map((entry) => <SelectItem key={entry.hostId} value={`host:${entry.hostId}`}>{entry.label}</SelectItem>)}
+                        {viaHost && !hosts[viaHost] && <SelectItem value={`host:${viaHost}`} disabled>{t("database.viaHostMissing", { host: viaHost })}</SelectItem>}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>{t("database.viaHostDescription")}</FieldDescription>
+                </FormField>
+              </FieldGroup>
               <div className="flex gap-[8px]">
                 <Field label={t("database.fieldHost")} className="flex-1">
                   <Input

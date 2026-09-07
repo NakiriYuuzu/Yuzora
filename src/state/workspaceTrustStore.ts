@@ -37,6 +37,7 @@ interface WorkspaceTrustStore {
     trustRevision: number
     prompt: WorkspaceTrustPrompt | null
     lastError: string | null
+    confirming: boolean
     refreshStatus: (path: string) => Promise<WorkspaceTrustStatus>
     refreshList: () => Promise<TrustedWorkspace[]>
     revokeWorkspace: (canonicalPath: string) => Promise<TrustedWorkspace[]>
@@ -72,6 +73,7 @@ export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => 
     trustRevision: 0,
     prompt: null,
     lastError: null,
+    confirming: false,
 
     refreshStatus: async (path) => {
         const status = await workspaceTrustStatus(path)
@@ -113,6 +115,7 @@ export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => 
                 canonicalPath: status.canonicalPath,
                 repoPresent: status.repoPresent === true
             },
+            confirming: false,
             lastError: null
         })
         return new Promise((resolve) => {
@@ -134,6 +137,7 @@ export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => 
                 command: challenge.command,
                 grantsTrust: challenge.grantsTrust
             },
+            confirming: false,
             lastError: null
         })
         return new Promise((resolve) => {
@@ -143,15 +147,19 @@ export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => 
 
     confirmPrompt: async () => {
         const prompt = get().prompt
-        if (!prompt) return
-        set({ prompt: null, lastError: null })
+        if (!prompt || get().confirming) return
         if (prompt.kind === "execute") {
+            set({ prompt: null, lastError: null })
             settleExecution(prompt.challengeId)
             return
         }
+        set({ confirming: true, lastError: null })
         try {
             const status = await workspaceTrustGrant(prompt.challengeId)
+            if (get().prompt !== prompt) return
             set((current) => ({
+                prompt: null,
+                confirming: false,
                 lastError: null,
                 statusByPath: {
                     ...current.statusByPath,
@@ -160,17 +168,33 @@ export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => 
             }))
             settleWorkspace(status.state === "trusted")
         } catch (error) {
+            if (get().prompt !== prompt) return
+            // A failed response may have consumed the challenge. Re-read its
+            // status, never replay the grant, and keep failures visible.
+            const status = await workspaceTrustStatus(prompt.canonicalPath).catch(() => null)
+            if (get().prompt !== prompt) return
+            if (status?.state === "trusted") {
+                set((current) => ({
+                    prompt: null,
+                    confirming: false,
+                    lastError: null,
+                    statusByPath: { ...current.statusByPath, [prompt.canonicalPath]: status }
+                }))
+                settleWorkspace(true)
+                return
+            }
             set({
+                confirming: false,
+                prompt: status?.challengeId ? { ...prompt, challengeId: status.challengeId } : prompt,
                 lastError: error instanceof Error ? error.message : String(error)
             })
-            settleWorkspace(false)
         }
     },
 
     cancelPrompt: () => {
         const prompt = get().prompt
         if (!prompt) return
-        set({ prompt: null, lastError: null })
+        set({ prompt: null, lastError: null, confirming: false })
         if (prompt.kind === "workspace") settleWorkspace(false)
         else settleExecution(null)
     }

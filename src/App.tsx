@@ -1,4 +1,7 @@
+import { SftpHost, SshAuthenticationHost } from "@/workbench/SftpHost";
 import { AppShell } from "@/app/AppShell";
+import { FolderPickerHost } from "@/workbench/FolderPickerHost";
+import { HostConnectionsBridge } from "@/workbench/HostConnectionsBridge";
 import { ExternalChangeBridge } from "@/workbench/ExternalChangeBridge";
 import { ExternalChangeResolver } from "@/workbench/ExternalChangeResolver";
 import { GitBridge } from "@/workbench/GitBridge";
@@ -21,6 +24,8 @@ function App() {
   return (
     <>
       <AppShell />
+      <FolderPickerHost />
+      <HostConnectionsBridge />
       <ExternalChangeBridge />
       <ExternalChangeResolver />
       <GitBridge />
@@ -31,6 +36,8 @@ function App() {
       <ProcessBridge />
       <SshBridge />
       <SshHostKeyHost />
+      <SftpHost />
+      <SshAuthenticationHost />
       <PerfBridge />
       <AskpassHost />
       <WorkspaceTrustHost />

@@ -1,4 +1,4 @@
-import { LSPClient, serverDiagnostics } from "@codemirror/lsp-client"
+import { LSPClient } from "@codemirror/lsp-client"
 import type { Extension } from "@codemirror/state"
 import type { EditorView } from "@codemirror/view"
 import DOMPurify from "dompurify"
@@ -14,6 +14,8 @@ import { offsetOf } from "./diagnosticsPull"
 import { createTauriTransport } from "./transport"
 import type { TransportHandle } from "./transport"
 import { YuzoraWorkspace, pathToUri } from "./workspace"
+import { notifyWorkspaceLsp } from "./workspaceLifecycle"
+import { guardedServerDiagnostics } from "./pushDiagnostics"
 
 // Minimal structural view of the LSP ServerCapabilities we consume. The full
 // type lives in vscode-languageserver-protocol, a transitive dependency we do
@@ -101,9 +103,15 @@ async function startClient(
     key: string,
     isCurrent: () => boolean
 ): Promise<ManagedClient | null> {
-    const handle = createTauriTransport(workspace, language)
-
-    let info: LspServerInfo
+    let info: LspServerInfo | undefined
+    const handle = createTauriTransport(workspace, language, (reason) => {
+        if (!isCurrent()) return
+        stopWorkspace(workspace)
+        if (info && workspace === useWorkspaceStore.getState().workspacePath) {
+            useLspStore.getState().setServerInfo({ ...info, status: { status: "crashed", reason } })
+            useLspStore.getState().setInitialized(language, false)
+        }
+    })
     try {
         info = await handle.info
     } catch {
@@ -157,7 +165,7 @@ async function startClient(
         // through LSPPlugin.create. A server that pushes diagnostics
         // (typescript-language-server) renders through this; a pull-only server
         // (rust-analyzer) is served by the gated linter in assembleLspExtensions.
-        extensions: [serverDiagnostics()]
+        extensions: [guardedServerDiagnostics()]
     })
     client.connect(handle.transport)
 
@@ -185,7 +193,7 @@ async function startClient(
 
 // Tears down every client belonging to a workspace and asks the Rust side to
 // stop its processes. Called on workspace switch (LspBridge).
-export function stopWorkspace(workspace: string): void {
+function clearWorkspaceClients(workspace: string): void {
     const prefix = workspace + SEP
     for (const key of [...clients.keys()]) {
         if (!key.startsWith(prefix)) continue
@@ -195,7 +203,18 @@ export function stopWorkspace(workspace: string): void {
         clients.delete(key)
         handles.delete(key)
     }
+    notifyWorkspaceLsp(workspace, false)
+}
+
+export function stopWorkspace(workspace: string): void {
+    clearWorkspaceClients(workspace)
     void lspStopWorkspace(workspace).catch(() => {})
+}
+
+export async function restartWorkspace(workspace: string, isCurrent: () => boolean): Promise<void> {
+    clearWorkspaceClients(workspace)
+    await lspStopWorkspace(workspace)
+    if (isCurrent()) notifyWorkspaceLsp(workspace, true)
 }
 
 // Format-on-save gating (A7: default OFF, opt-in via Settings — T12). Formatting

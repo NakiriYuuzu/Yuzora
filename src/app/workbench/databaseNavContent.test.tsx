@@ -50,6 +50,7 @@ import {
   dbPostgresTransportChallenge
 } from "@/lib/ipc"
 import { useDbStore } from "@/state/dbStore"
+import { useHostStore } from "@/state/hostStore"
 import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 
 const mockList = vi.mocked(dbListTables)
@@ -158,7 +159,7 @@ function profilesFromStore(): DbProfileDescriptor[] {
         descriptorId: saved.id as DbProfileDescriptor["descriptorId"],
         configGeneration: saved.configGeneration ?? 1,
         name: saved.name,
-        target: { kind: "sqlite" as const, path: saved.path },
+        target: { kind: "sqlite" as const, path: saved.path, ...(saved.workspace ? { workspace: saved.workspace } : {}) },
         credentialState: saved.credentialState ?? "notRequired" as const
       }]
     }
@@ -232,6 +233,7 @@ async function fillNewPostgresForm(password: string): Promise<void> {
 }
 
 beforeEach(() => {
+  useHostStore.setState({ configs: {}, hosts: {} })
   installLocalStorage()
   localStorage.clear()
   useDbStore.getState().reset()
@@ -967,6 +969,45 @@ describe("DatabaseNavContent saved connections", () => {
     expect(screen.getByText("Database")).toBeInTheDocument()
     expect(screen.getByText("Password")).toBeInTheDocument()
     expect(screen.getByText("Verify certificate and hostname")).toBeInTheDocument()
+  })
+
+  it("saves a network profile through the selected host and preserves that route in the saved descriptor", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    useHostStore.setState({ configs: { "host-a": { hostId: "host-a", label: "Linux build host", kind: "ssh", helper: "/bin/helper", binary: "/bin/herdr" } } })
+    render(<DatabaseNavContent />)
+    await fillNewPostgresForm("fixture")
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Connect through" }), { key: "ArrowDown" })
+    const hostOption = await screen.findByRole("option", { name: "Linux build host" })
+    fireEvent.keyDown(hostOption, { key: "Enter" })
+    fireEvent.click(screen.getByText("Test connection"))
+    await waitFor(() => expect(mockTestConnection).toHaveBeenCalledWith(expect.objectContaining({ target: expect.objectContaining({ viaHost: "host-a", host: "db.example", port: 5432, transportMode: "verifyFull" }) })))
+    expect(mockProfileCreate).not.toHaveBeenCalled()
+    // Route selection is retained when the test completes; saving uses the same target.
+    await waitFor(() => expect(screen.getByText("Save and Connect")).not.toBeDisabled())
+    fireEvent.click(screen.getByText("Save and Connect"))
+    await waitFor(() => expect(mockProfileCreate).toHaveBeenCalledWith(expect.objectContaining({ target: expect.objectContaining({ viaHost: "host-a" }) })))
+    await waitFor(() => expect(useDbStore.getState().saved.some((entry) => entry.viaHost === "host-a")).toBe(true))
+    expect(JSON.stringify(useDbStore.getState().saved)).not.toContain('"password"')
+  })
+
+  it("tests and saves SQLite on its selected source host and workspace", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    useHostStore.setState({ configs: { "host-a": { hostId: "host-a", label: "Linux build host", kind: "ssh", helper: "/bin/helper", binary: "/bin/herdr" } } })
+    render(<DatabaseNavContent />)
+    fireEvent.click(screen.getByText("New connection…"))
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Database file location" }), { key: "ArrowDown" })
+    fireEvent.keyDown(await screen.findByRole("option", { name: "Linux build host" }), { key: "Enter" })
+    expect(screen.getByText("Save and Connect")).toBeDisabled()
+    fireEvent.change(screen.getByLabelText("Source workspace folder"), { target: { value: "/project" } })
+    fireEvent.change(screen.getByLabelText("File"), { target: { value: "/project/data.sqlite" } })
+    const target = { kind: "sqlite", path: "/project/data.sqlite", workspace: { hostId: "host-a", canonicalPath: "/project" } }
+    fireEvent.click(screen.getByText("Test connection"))
+    await waitFor(() => expect(mockTestConnection).toHaveBeenCalledWith(expect.objectContaining({ target, credential: null })))
+    await waitFor(() => expect(screen.getByText("Save and Connect")).not.toBeDisabled())
+    fireEvent.click(screen.getByText("Save and Connect"))
+    await waitFor(() => expect(mockProfileCreate).toHaveBeenCalledWith(expect.objectContaining({ target, credential: null })))
+    await waitFor(() => expect(useDbStore.getState().saved[0]?.workspace).toEqual(target.workspace))
+    expect(mockOpenFileDialog).not.toHaveBeenCalled()
   })
 
   it("treats a cancelled SQLite picker as a no-op but surfaces a rejected picker safely", async () => {

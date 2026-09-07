@@ -89,8 +89,8 @@ describe("release workflow contracts", () => {
     const workflow = releaseWorkflow()
     const ghReleaseJobs = Object.entries(workflow.jobs)
       .filter(([, job]) =>
-        !job.steps.some((step) => step.uses?.startsWith("actions/checkout@")) &&
-        job.steps.some((step) => /\bgh release\b/.test(step.run ?? ""))
+        !(job.steps ?? []).some((step) => step.uses?.startsWith("actions/checkout@")) &&
+        (job.steps ?? []).some((step) => /\bgh release\b/.test(step.run ?? ""))
       )
       .map(([name]) => name)
 
@@ -370,45 +370,20 @@ describe("release workflow contracts", () => {
     expect(result.stderr).toContain("human acceptance attestation")
   })
 
-  it("requires exact Windows candidates and releases to verify the bundled WSL plugin payload", () => {
+  it("requires candidates and releases to verify Unix runtime payloads", () => {
     const workflow = releaseWorkflow()
-    const runtimeVerifier = workflow.jobs.build.steps.find(
-      (step) => step.name === "Verify Windows PowerShell 5.1 plugin runtime"
-    )
-    expect(runtimeVerifier).toMatchObject({
-      if: "matrix.artifact_name == 'windows'",
-      shell: "powershell"
-    })
-    expect(runtimeVerifier?.run).toContain(
-      "herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1"
-    )
-
-    const releaseVerifier = workflow.jobs.build.steps.find(
-      (step) => step.name === "Verify Windows bundled WSL plugin payload"
-    )
-    expect(releaseVerifier).toMatchObject({
-      if: "matrix.artifact_name == 'windows'",
-      shell: "powershell"
-    })
-    expect(releaseVerifier?.run).toContain(
-      "scripts/verify-windows-bundled-wsl-plugin.ps1"
-    )
-
-    const result = spawnSync(
-      "bun",
-      ["-e", `
-        import { parseReleaseWorkflow, verifyBetaReleaseContract } from "./scripts/release-contract.ts";
-        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
-        const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
-        ci.jobs["release-candidate"].steps.find(
-          (step) => step.name === "Verify Windows bundled WSL plugin payload"
-        ).run = "true";
-        verifyBetaReleaseContract(release, ci);
-      `],
-      { encoding: "utf8" }
-    )
+    const verifier = workflow.jobs.build.steps.find((step) => step.name === "Verify Windows Unix runtime payload")
+    expect(verifier).toMatchObject({ if: "matrix.artifact_name == 'windows'", shell: "powershell" })
+    expect(verifier?.run).toContain("scripts/verify-windows-runtime-payload.ps1")
+    const result = spawnSync("bun", ["-e", `
+      import { parseReleaseWorkflow, verifyBetaReleaseContract } from "./scripts/release-contract.ts";
+      const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+      const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+      ci.jobs["release-candidate"].steps.find((step) => step.name === "Verify Windows Unix runtime payload").run = "true";
+      verifyBetaReleaseContract(release, ci);
+    `], { encoding: "utf8" })
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("verify the bundled WSL plugin allowlist")
+    expect(result.stderr).toContain("Windows installers must verify Unix runtime payloads")
   })
 
   it("keeps stable macOS fail-closed while requiring beta macOS to remain unsigned", () => {

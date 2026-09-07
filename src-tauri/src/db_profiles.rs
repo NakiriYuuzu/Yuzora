@@ -107,6 +107,8 @@ const TRANSPORT_CHALLENGE_TTL: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostgresTransportChallengeDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_host: Option<String>,
     pub challenge_id: String,
     pub transport_mode: PostgresTransportMode,
     pub host: String,
@@ -119,6 +121,8 @@ pub struct PostgresTransportChallengeDto {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostgresTransportChallengeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_host: Option<String>,
     pub transport_mode: PostgresTransportMode,
     pub host: String,
     pub port: u16,
@@ -127,6 +131,7 @@ pub struct PostgresTransportChallengeRequest {
 }
 
 struct TransportChallenge {
+    via_host: Option<String>,
     id: String,
     mode: PostgresTransportMode,
     host: String,
@@ -163,6 +168,7 @@ impl PostgresTransportChallengeRegistry {
         }
         self.sweep();
         let challenge = TransportChallenge {
+            via_host: request.via_host.clone(),
             id: format!("pg-chal-{}", uuid::Uuid::new_v4()),
             mode: request.transport_mode,
             host: request.host.clone(),
@@ -172,6 +178,7 @@ impl PostgresTransportChallengeRegistry {
             expires: Instant::now() + TRANSPORT_CHALLENGE_TTL,
         };
         let dto = PostgresTransportChallengeDto {
+            via_host: challenge.via_host.clone(),
             challenge_id: challenge.id.clone(),
             transport_mode: challenge.mode,
             host: challenge.host.clone(),
@@ -248,6 +255,7 @@ fn now_ms() -> u64 {
 fn challenge_matches_target(challenge: &TransportChallenge, target: &ProfileTarget) -> bool {
     match target {
         ProfileTarget::Postgres {
+            via_host,
             host,
             port,
             user,
@@ -255,7 +263,8 @@ fn challenge_matches_target(challenge: &TransportChallenge, target: &ProfileTarg
             transport_mode,
             ..
         } => {
-            challenge.mode == *transport_mode
+            challenge.via_host == *via_host
+                && challenge.mode == *transport_mode
                 && challenge.host == *host
                 && challenge.port == *port
                 && challenge.user == *user
@@ -268,6 +277,7 @@ fn challenge_matches_target(challenge: &TransportChallenge, target: &ProfileTarg
 fn strip_postgres_attestation(target: ProfileTarget) -> ProfileTarget {
     match target {
         ProfileTarget::Postgres {
+            via_host,
             host,
             port,
             database,
@@ -275,6 +285,7 @@ fn strip_postgres_attestation(target: ProfileTarget) -> ProfileTarget {
             transport_mode,
             ..
         } => ProfileTarget::Postgres {
+            via_host,
             host,
             port,
             database,
@@ -291,6 +302,7 @@ fn same_postgres_identity(left: &ProfileTarget, right: &ProfileTarget) -> bool {
     match (left, right) {
         (
             ProfileTarget::Postgres {
+                via_host: via_a,
                 host: host_a,
                 port: port_a,
                 user: user_a,
@@ -299,6 +311,7 @@ fn same_postgres_identity(left: &ProfileTarget, right: &ProfileTarget) -> bool {
                 ..
             },
             ProfileTarget::Postgres {
+                via_host: via_b,
                 host: host_b,
                 port: port_b,
                 user: user_b,
@@ -307,7 +320,8 @@ fn same_postgres_identity(left: &ProfileTarget, right: &ProfileTarget) -> bool {
                 ..
             },
         ) => {
-            host_a == host_b
+            via_a == via_b
+                && host_a == host_b
                 && port_a == port_b
                 && user_a == user_b
                 && database_a == database_b
@@ -320,6 +334,7 @@ fn same_postgres_identity(left: &ProfileTarget, right: &ProfileTarget) -> bool {
 fn apply_backend_postgres_authorization(target: ProfileTarget) -> ProfileTarget {
     match target {
         ProfileTarget::Postgres {
+            via_host,
             host,
             port,
             database,
@@ -328,6 +343,7 @@ fn apply_backend_postgres_authorization(target: ProfileTarget) -> ProfileTarget 
             ..
         } => match transport_mode {
             PostgresTransportMode::VerifyFull => ProfileTarget::Postgres {
+                via_host,
                 host,
                 port,
                 database,
@@ -344,6 +360,7 @@ fn apply_backend_postgres_authorization(target: ProfileTarget) -> ProfileTarget 
                     database.clone(),
                 );
                 ProfileTarget::Postgres {
+                    via_host,
                     host,
                     port,
                     database,
@@ -354,6 +371,7 @@ fn apply_backend_postgres_authorization(target: ProfileTarget) -> ProfileTarget 
                 }
             }
             PostgresTransportMode::EncryptedTrustServerCert => ProfileTarget::Postgres {
+                via_host,
                 host,
                 port,
                 database,
@@ -2380,14 +2398,71 @@ type DatabaseOpenFuture<'a> = Pin<
 
 trait DatabaseConnectionOpener: Send + Sync {
     fn open(&self, config: DbOpenConfig) -> DatabaseOpenFuture<'_>;
+    fn open_with_identity(
+        &self,
+        config: DbOpenConfig,
+        _identity: db_service::ConnectionIdentity,
+    ) -> DatabaseOpenFuture<'_> {
+        self.open(config)
+    }
 }
 
 #[derive(Default)]
+#[cfg(test)]
 struct ProductionDatabaseConnectionOpener;
 
+#[cfg(test)]
 impl DatabaseConnectionOpener for ProductionDatabaseConnectionOpener {
     fn open(&self, config: DbOpenConfig) -> DatabaseOpenFuture<'_> {
         Box::pin(db_service::open_unregistered(config))
+    }
+}
+
+struct HostDatabaseConnectionOpener {
+    hosts: Arc<crate::host_service::HostManager>,
+    ssh: Arc<crate::ssh_service::SshManager>,
+}
+impl DatabaseConnectionOpener for HostDatabaseConnectionOpener {
+    fn open(&self, config: DbOpenConfig) -> DatabaseOpenFuture<'_> {
+        self.open_with_identity(
+            config,
+            db_service::ConnectionIdentity {
+                descriptor_id: DescriptorId(format!("probe-{}", uuid::Uuid::new_v4())),
+                connection_id: ConnectionId(db_service::next_conn_id()),
+                connection_generation: ConnectionGeneration(uuid::Uuid::new_v4().to_string()),
+            },
+        )
+    }
+    fn open_with_identity(
+        &self,
+        config: DbOpenConfig,
+        identity: db_service::ConnectionIdentity,
+    ) -> DatabaseOpenFuture<'_> {
+        Box::pin(async move {
+            if let DbOpenConfig::Sqlite {
+                workspace: Some(workspace),
+                path,
+            } = config
+            {
+                return crate::host_sqlite::open(&self.hosts, &self.ssh, workspace, path, identity)
+                    .await;
+            }
+            let Some((via, host, port)) = config.route() else {
+                return db_service::open_unregistered(config).await;
+            };
+            let tunnel = crate::db_transport::DatabaseTunnel::open(
+                &self.hosts,
+                self.ssh.clone(),
+                via,
+                yuzora_host::tunnel::Endpoint {
+                    host: host.into(),
+                    port,
+                },
+            )
+            .await
+            .map_err(|_| db_service::DatabaseOperationalError::connection_failed())?;
+            db_service::open_unregistered_via(config, Some(Box::new(tunnel))).await
+        })
     }
 }
 
@@ -2434,6 +2509,8 @@ impl DatabaseProfileState {
         repository_path: PathBuf,
         database_state: DbState,
         result_sessions: ResultSessionState,
+        hosts: Arc<crate::host_service::HostManager>,
+        ssh: Arc<crate::ssh_service::SshManager>,
     ) -> Self {
         let runtime = ProfileRuntimeRegistry::default();
         let closer: Arc<dyn DatabaseLifecycleCloser> = Arc::new(RegisteredProfileCloser {
@@ -2451,7 +2528,7 @@ impl DatabaseProfileState {
             runtime,
             database_state,
             result_sessions,
-            opener: Arc::new(ProductionDatabaseConnectionOpener),
+            opener: Arc::new(HostDatabaseConnectionOpener { hosts, ssh }),
         }
     }
 
@@ -2558,7 +2635,7 @@ impl DatabaseProfileState {
         ProfileError {
             code,
             message: error.message,
-            error: error.error,
+            error: error.error.map(|error| *error),
         }
     }
 
@@ -2615,8 +2692,11 @@ impl DatabaseProfileState {
     ) -> Result<DbOpenConfig, ProfileError> {
         authorize_postgres_target(&target)?;
         match target {
-            ProfileTarget::Sqlite { path } => Ok(DbOpenConfig::Sqlite { path }),
+            ProfileTarget::Sqlite { path, workspace } => {
+                Ok(DbOpenConfig::Sqlite { path, workspace })
+            }
             ProfileTarget::Postgres {
+                via_host,
                 host,
                 port,
                 database,
@@ -2627,6 +2707,7 @@ impl DatabaseProfileState {
             } => {
                 let password = Self::required_secret(secret)?;
                 Ok(DbOpenConfig::Postgres {
+                    via_host,
                     host,
                     port,
                     database,
@@ -2638,6 +2719,7 @@ impl DatabaseProfileState {
                 })
             }
             ProfileTarget::Mssql {
+                via_host,
                 host,
                 port,
                 database,
@@ -2646,6 +2728,7 @@ impl DatabaseProfileState {
             } => {
                 let password = Self::required_secret(secret)?;
                 Ok(DbOpenConfig::Mssql {
+                    via_host,
                     host,
                     port,
                     database,
@@ -2763,14 +2846,6 @@ impl DatabaseProfileState {
                 return Err(error);
             }
         };
-        let handle = match self.opener.open(config).await {
-            Ok(handle) => handle,
-            Err(open_error) => {
-                let error = Self::connection_error(open_error);
-                reservation_guard.fail(error.clone());
-                return Err(error);
-            }
-        };
         let connection_id = ConnectionId(db_service::next_conn_id());
         let connection = LiveConnection {
             descriptor_id: descriptor_id.clone(),
@@ -2782,6 +2857,18 @@ impl DatabaseProfileState {
             descriptor_id: descriptor_id.clone(),
             connection_id,
             connection_generation: connection.connection_generation.clone(),
+        };
+        let handle = match self
+            .opener
+            .open_with_identity(config, identity.clone())
+            .await
+        {
+            Ok(handle) => handle,
+            Err(open_error) => {
+                let error = Self::connection_error(open_error);
+                reservation_guard.fail(error.clone());
+                return Err(error);
+            }
         };
         let actor = Arc::new(crate::db_connection_actor::ProductionConnectionActor::new(
             identity.clone(),
@@ -2852,7 +2939,12 @@ impl DatabaseProfileState {
         };
         let config = Self::open_config(target, secret)?;
         let started = Instant::now();
-        let server_version = db_service::test_unregistered(config)
+        let handle = self
+            .opener
+            .open(config)
+            .await
+            .map_err(Self::connection_error)?;
+        let server_version = db_service::probe_unregistered(handle)
             .await
             .map_err(Self::connection_error)?;
         Ok(TestConnectionResult {
@@ -3445,6 +3537,7 @@ mod tests {
             .create(ProfileCreateRequest {
                 name: "Deferred SQLite".to_string(),
                 target: ProfileTarget::Sqlite {
+                    workspace: None,
                     path: path.to_string_lossy().into_owned(),
                 },
                 credential: None,
@@ -3582,6 +3675,7 @@ mod tests {
                 descriptor_id: descriptor_id.clone(),
                 name: "Deferred SQLite moved".to_string(),
                 target: ProfileTarget::Sqlite {
+                    workspace: None,
                     path: replacement.path().to_string_lossy().into_owned(),
                 },
                 replacement_credential: None,
@@ -3901,6 +3995,7 @@ mod tests {
             config_generation: 1,
             name: "Local".to_string(),
             target: ProfileTarget::Sqlite {
+                workspace: None,
                 path: "/tmp/local.sqlite".to_string(),
             },
             credential_state: CredentialState::NotRequired,
@@ -3962,6 +4057,7 @@ mod tests {
             .create(ProfileCreateRequest {
                 name: "Local".to_string(),
                 target: ProfileTarget::Sqlite {
+                    workspace: None,
                     path: "/tmp/first.sqlite".to_string(),
                 },
                 credential: None,
@@ -3974,6 +4070,7 @@ mod tests {
                 descriptor_id: created.descriptor_id,
                 name: "Local moved".to_string(),
                 target: ProfileTarget::Sqlite {
+                    workspace: None,
                     path: "/tmp/second.sqlite".to_string(),
                 },
                 replacement_credential: None,
@@ -4316,6 +4413,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_connection_uses_the_selected_opener_without_registering_an_actor() {
+        let sqlite_file = tempfile::NamedTempFile::new().unwrap();
+        let (opener, started, release) = DeferredProductionPathOpener::new();
+        let (state, profile) = deferred_sqlite_state(sqlite_file.path(), opener.clone());
+        let running = state.clone();
+        let probe = tokio::spawn(async move {
+            running
+                .test_connection(TestConnectionRequest::Saved {
+                    descriptor_id: profile.descriptor_id,
+                })
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), started)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opener.calls.load(Ordering::SeqCst), 1);
+        assert!(state.database_state.0.lock().unwrap().is_empty());
+        release.send(()).unwrap();
+        assert!(probe.await.unwrap().unwrap().server_version.is_some());
+        assert!(state.database_state.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_connection_is_ephemeral_and_never_registers_a_live_handle() {
         let repository = Arc::new(FakeProfileRepository::default());
         let vault = Arc::new(TestVault::default());
@@ -4340,6 +4461,7 @@ mod tests {
         let result = state
             .test_connection(TestConnectionRequest::Ephemeral {
                 target: ProfileTarget::Sqlite {
+                    workspace: None,
                     path: sqlite_file.path().to_string_lossy().into_owned(),
                 },
                 credential: None,
@@ -4402,6 +4524,7 @@ mod tests {
             state
                 .test_connection(TestConnectionRequest::Ephemeral {
                     target: ProfileTarget::Sqlite {
+                        workspace: None,
                         path: missing.to_string_lossy().into_owned(),
                     },
                     credential: None,
@@ -5828,6 +5951,7 @@ mod tests {
 
         let challenge_id = profiles
             .issue_transport_challenge(PostgresTransportChallengeRequest {
+                via_host: None,
                 transport_mode: PostgresTransportMode::InsecurePlaintext,
                 host: "db.example".into(),
                 port: 5432,
@@ -5949,6 +6073,7 @@ mod tests {
         );
         let challenge_id = profiles
             .issue_transport_challenge(PostgresTransportChallengeRequest {
+                via_host: None,
                 transport_mode: PostgresTransportMode::EncryptedTrustServerCert,
                 host: "db.example".into(),
                 port: 5432,
@@ -6004,6 +6129,7 @@ mod tests {
     fn issue_plain(profiles: &DatabaseProfiles) -> String {
         profiles
             .issue_transport_challenge(PostgresTransportChallengeRequest {
+                via_host: None,
                 transport_mode: PostgresTransportMode::InsecurePlaintext,
                 host: "db.example".into(),
                 port: 5432,
@@ -6085,6 +6211,38 @@ mod tests {
                 .code,
             ProfileErrorCode::PostgresTransportChallengeMismatch
         );
+    }
+
+    #[test]
+    fn postgres_transport_challenge_and_saved_attestation_do_not_cross_tunnel_hosts() {
+        let (profiles, _, _, _) = harness();
+        let challenge_id = issue_plain(&profiles);
+        let mut tunneled = plaintext_target();
+        if let ProfileTarget::Postgres { via_host, .. } = &mut tunneled {
+            *via_host = Some("host-a".into());
+        }
+        assert_eq!(
+            profiles
+                .create(ProfileCreateRequest {
+                    name: "Tunneled".into(),
+                    target: tunneled.clone(),
+                    credential: Some(CredentialInput {
+                        password: SecretString::from(SENTINEL)
+                    }),
+                    transport_challenge_id: Some(challenge_id),
+                })
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::PostgresTransportChallengeMismatch
+        );
+        let mut other = tunneled.clone();
+        if let ProfileTarget::Postgres { via_host, .. } = &mut other {
+            *via_host = Some("host-b".into());
+        }
+        assert!(!same_postgres_identity(&tunneled, &other));
+        let normalized = apply_backend_postgres_authorization(tunneled.clone());
+        assert!(same_postgres_identity(&normalized, &tunneled));
+        assert!(normalized.postgres_transport_authorized());
     }
 
     #[test]

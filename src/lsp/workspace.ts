@@ -12,10 +12,12 @@ import type { DocumentLineEnding, LspLanguage } from "../lib/types"
 import { normalizeDocumentLineEndings, serializeDocumentLineEndings } from "../editor/lineEndings"
 import { getView } from "../editor/viewRegistry"
 import { useWorkspaceStore } from "../state/workspaceStore"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 
 // --- path <-> file URI ---------------------------------------------------
 // Yuzora tracks files by absolute filesystem path; LSP tracks them by URI.
 export function pathToUri(path: string): string {
+    if (parseRemoteFilePath(path)) return path
     let normalized = path.replace(/\\/g, "/")
     if (normalized.toLowerCase().startsWith("//?/unc/")) {
         normalized = `//${normalized.slice("//?/UNC/".length)}`
@@ -36,6 +38,7 @@ export function pathToUri(path: string): string {
 }
 
 export function uriToPath(uri: string): string {
+    if (parseRemoteFilePath(uri)) return uri
     const hasFileScheme = uri.startsWith("file://")
     const schemeBody = hasFileScheme ? uri.slice("file://".length) : uri
     const body = hasFileScheme && schemeBody && !schemeBody.startsWith("/")

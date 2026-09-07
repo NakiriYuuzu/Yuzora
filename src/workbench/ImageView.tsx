@@ -5,7 +5,8 @@ import { convertFileSrc } from "@tauri-apps/api/core"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { openFile } from "@/lib/ipc"
+import { openFile, readFileBase64 } from "@/lib/ipc"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 
 // Binary raster formats the WebView can decode natively. SVG is intentionally
@@ -47,8 +48,11 @@ export function ImageView({ path }: { path: string }) {
     const [byteSize, setByteSize] = useState<number | null>(null)
     const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null)
     const [loadError, setLoadError] = useState(false)
+    const [remoteImage, setRemoteImage] = useState<{ path: string; src: string } | null>(null)
 
-    const src = useMemo(() => convertFileSrc(path), [path])
+    const src = useMemo(() => parseRemoteFilePath(path)
+        ? remoteImage?.path === path ? remoteImage.src : undefined
+        : convertFileSrc(path), [path, remoteImage])
     const name = workspacePathBasename(path)
 
     // File size comes from the existing open_file metadata path (binary kind
@@ -57,7 +61,18 @@ export function ImageView({ path }: { path: string }) {
     useEffect(() => {
         let disposed = false
         setByteSize(null)
-        void openFile(path)
+        setLoadError(false)
+        setDims(null)
+        setRemoteImage(null)
+        if (parseRemoteFilePath(path)) {
+            void readFileBase64(path, 8 * 1024 * 1024).then((file) => {
+                if (disposed) return
+                const extension = workspacePathBasename(path).split(".").pop()!.toLowerCase()
+                const mime = extension === "jpg" ? "jpeg" : extension === "ico" ? "x-icon" : extension
+                setRemoteImage({ path, src: `data:image/${mime};base64,${file.data}` })
+                setByteSize(file.size)
+            }).catch(() => { if (!disposed) setLoadError(true) })
+        } else void openFile(path)
             .then((result) => {
                 if (!disposed && typeof result.size === "number") setByteSize(result.size)
             })
@@ -151,7 +166,8 @@ export function ImageView({ path }: { path: string }) {
                 viewportRef={containerRef}
                 contentClassName="flex min-h-full min-w-full items-center justify-center"
             >
-                <img
+                {src && <img
+                    key={path}
                     src={src}
                     alt={name}
                     draggable={false}
@@ -171,7 +187,7 @@ export function ImageView({ path }: { path: string }) {
                         setDims({ w: img.naturalWidth, h: img.naturalHeight })
                     }}
                     onError={() => setLoadError(true)}
-                />
+                />}
             </ScrollArea>
             <div className="flex h-[26px] shrink-0 items-center gap-[10px] border-t border-(--line-1) bg-(--paper-0) px-[10px] font-mono text-[11px] text-(--ink-3)">
                 <span data-testid="image-view-meta" className="truncate">

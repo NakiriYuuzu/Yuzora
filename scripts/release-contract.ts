@@ -18,6 +18,13 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 function steps(job: UnknownRecord, label: string): UnknownRecord[] {
+  if (label === "jobs.host-artifacts" && job.uses === "./.github/workflows/host.yml") {
+    assert(job.steps === undefined && job.secrets === undefined, "host artifacts must not inherit secrets or define steps")
+    assert(contentsPermission(job, label) === "read", "host artifacts must use contents: read")
+    const options = record(job.with, "host artifacts source")
+    assert(options["source-ref"] === "${{ needs.guard.outputs.source_sha }}", "host artifacts must build the verified release source")
+    return []
+  }
   assert(Array.isArray(job.steps), `${label}.steps are required`)
   return job.steps.map((step, index) => record(step, `${label}.steps[${index}]`))
 }
@@ -300,30 +307,7 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(collect.run, 'copy_exactly_one "Windows NSIS updater signature"'),
     "build must validate Tauri CLI macOS universal and Windows NSIS/MSI/updater output paths"
   )
-  const verifyWindowsPowerShell = stepByName(
-    buildSteps,
-    "Verify Windows PowerShell 5.1 plugin runtime"
-  )
-  assert(
-    verifyWindowsPowerShell.if === "matrix.artifact_name == 'windows'" &&
-      verifyWindowsPowerShell.shell === "powershell" &&
-      includes(
-        verifyWindowsPowerShell.run,
-        "herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1"
-      ),
-    "release builds must exercise plugin byte-decoding fixtures in Windows PowerShell 5.1"
-  )
-  const verifyWindowsPlugin = stepByName(
-    buildSteps,
-    "Verify Windows bundled WSL plugin payload"
-  )
-  assert(
-    verifyWindowsPlugin.if === "matrix.artifact_name == 'windows'" &&
-      verifyWindowsPlugin.shell === "powershell" &&
-      includes(verifyWindowsPlugin.run, "scripts/verify-windows-bundled-wsl-plugin.ps1") &&
-      includes(verifyWindowsPlugin.run, "src-tauri/target/release/bundle"),
-    "release builds must use Windows PowerShell 5.1 to extract both installers and verify the bundled WSL plugin allowlist"
-  )
+  verifyRuntimePayloadSteps(buildSteps, "matrix.artifact_name == 'windows'")
 
   const assemble = jobFor(workflow, "assemble-draft")
   const assembleUpload = stepByName(
@@ -681,33 +665,7 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
       includes(candidateBuild.run, "--no-sign"),
     "release candidates must use the generated no-updater numeric WiX version override for every channel"
   )
-  const verifyCandidatePowerShell = stepByName(
-    candidateSteps,
-    "Verify Windows PowerShell 5.1 plugin runtime"
-  )
-  assert(
-    verifyCandidatePowerShell.if === "runner.os == 'Windows'" &&
-      verifyCandidatePowerShell.shell === "powershell" &&
-      includes(
-        verifyCandidatePowerShell.run,
-        "herdr-plugins/yuzora-wsl-agents/tests/powershell-runtime.ps1"
-      ),
-    "Windows release candidates must exercise plugin byte-decoding fixtures in Windows PowerShell 5.1"
-  )
-  const verifyCandidateWindowsPlugin = stepByName(
-    candidateSteps,
-    "Verify Windows bundled WSL plugin payload"
-  )
-  assert(
-    verifyCandidateWindowsPlugin.if === "runner.os == 'Windows'" &&
-      verifyCandidateWindowsPlugin.shell === "powershell" &&
-      includes(
-        verifyCandidateWindowsPlugin.run,
-        "scripts/verify-windows-bundled-wsl-plugin.ps1"
-      ) &&
-      includes(verifyCandidateWindowsPlugin.run, "src-tauri/target/release/bundle"),
-    "Windows release candidates must use Windows PowerShell 5.1 to extract MSI and NSIS and verify the bundled WSL plugin allowlist"
-  )
+  verifyRuntimePayloadSteps(candidateSteps, "runner.os == 'Windows'")
 
   verifyCiLinuxDependencySetup(ci)
 }
@@ -724,4 +682,14 @@ function verifyCiLinuxDependencySetup(ci: Workflow): void {
       `${jobName} must use the bounded canonical-mirror Linux dependency installer`
     )
   }
+}
+
+function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], windowsCondition: string): void {
+  const download = stepByName(buildSteps, "Download Unix host runtimes")
+  const options = record(download.with, "runtime download options")
+  assert(download.uses === "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" && options.pattern === "host-*" && options["merge-multiple"] === true && options.path === "src-tauri/resources/host/", "installers must consume all four Unix runtime artifacts")
+  assert(includes(stepByName(buildSteps, "Verify Unix host runtime payloads").run, "bun run runtime:verify"), "installers must verify Unix runtime manifests and hashes before building")
+  const verify = stepByName(buildSteps, "Verify Windows Unix runtime payload")
+  assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify Unix runtime payloads extracted from MSI and NSIS")
+  assert(!buildSteps.some((step) => includes(step.run, "yuzora-wsl-agents")), "legacy WSL plugin must not run during installer builds")
 }
