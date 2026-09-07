@@ -399,6 +399,11 @@ async fn install_stream_requires_host_trust_and_eof_cancels_without_replacing_pr
     )
     .unwrap();
     std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Exercise login-env capture without importing the runner account's npm
+    // ahead of our cancellation fixture (macOS /etc/zprofile runs path_helper).
+    let shell = bin.join("fixture-shell");
+    std::fs::write(&shell, "#!/bin/sh\nexec /bin/sh -c \"$2\"\n").unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
     let previous = home.path().join(".yuzora/servers/npm/pyright/previous");
     std::fs::create_dir_all(previous.parent().unwrap()).unwrap();
     std::fs::write(&previous, "keep previous installation").unwrap();
@@ -434,6 +439,7 @@ async fn install_stream_requires_host_trust_and_eof_cancels_without_replacing_pr
             .arg("--stream")
             .env("HOME", home.path())
             .env("PATH", &bin)
+            .env("SHELL", &shell)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

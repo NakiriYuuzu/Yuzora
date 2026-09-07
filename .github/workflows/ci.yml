@@ -38,6 +38,10 @@ jobs:
   # Secret Service smoke tests still require user-session runners on each OS.
   rust-compile:
     name: Rust compile (${{ matrix.label }})
+    # Compile/test jobs do not build installers. Candidate jobs retain and
+    # verify the real resources downloaded from host-artifacts.
+    env:
+      TAURI_CONFIG: '{"bundle":{"resources":[]}}'
     strategy:
       fail-fast: false
       matrix:
@@ -201,6 +205,8 @@ jobs:
 
   database-integration:
     name: Real database integration (Linux x86-64)
+    env:
+      TAURI_CONFIG: '{"bundle":{"resources":[]}}'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:

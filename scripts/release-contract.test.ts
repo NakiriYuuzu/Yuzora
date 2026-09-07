@@ -370,6 +370,20 @@ describe("release workflow contracts", () => {
     expect(result.stderr).toContain("human acceptance attestation")
   })
 
+  it("omits payloads only from compile/test jobs, never installer jobs", () => {
+    const ci = JSON.parse(execFileSync("bun", ["-e", `
+      import { parseReleaseWorkflow } from "./scripts/release-contract.ts";
+      console.log(JSON.stringify(parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text())));
+    `], { encoding: "utf8" })) as ParsedReleaseWorkflow
+    for (const name of ["rust-compile", "database-integration"]) {
+      expect(JSON.parse(ci.jobs[name].env!.TAURI_CONFIG)).toEqual({ bundle: { resources: [] } })
+    }
+    for (const job of [ci.jobs["release-candidate"], releaseWorkflow().jobs.build]) {
+      expect(job.env?.TAURI_CONFIG).toBeUndefined()
+      expect(job.steps.some((step) => step.run === "bun run runtime:verify")).toBe(true)
+    }
+  })
+
   it("requires candidates and releases to verify Unix runtime payloads", () => {
     const workflow = releaseWorkflow()
     const verifier = workflow.jobs.build.steps.find((step) => step.name === "Verify Windows Unix runtime payload")

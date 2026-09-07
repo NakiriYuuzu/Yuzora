@@ -1088,7 +1088,9 @@ mod tests {
         let (tmp, store) = temp_store();
         let workspace = make_workspace(&tmp, "repo");
         store.grant_for_tests(workspace.to_str().unwrap());
-        fs::remove_dir_all(&workspace).unwrap();
+        // Keep the original inode allocated: unlink/recreate may reuse it,
+        // which does not exercise a different filesystem identity.
+        fs::rename(&workspace, tmp.path().join("original-repo")).unwrap();
         fs::create_dir_all(&workspace).unwrap();
         let status = store.status(workspace.to_str().unwrap()).unwrap();
         assert_eq!(status.state, "invalid");

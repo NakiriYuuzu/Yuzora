@@ -8025,6 +8025,12 @@ mod tests {
                 DbHandle::Sqlite(connection) => {
                     let connection = connection.lock().unwrap();
                     let mut statement = connection.prepare(SQLITE_CANCELLATION_PROBE).unwrap();
+                    let _cancellation = SqliteCancellationGuard::install(
+                        &connection,
+                        worker_actor.clone(),
+                        lease.clone(),
+                    )
+                    .unwrap();
                     started_tx.send(()).unwrap();
                     statement.query_row([], |row| row.get::<_, i64>(0))
                 }
