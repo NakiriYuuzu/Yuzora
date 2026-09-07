@@ -5648,10 +5648,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             socket.display(),
             socket.display()
         );
-        fs::write(&binary, script).unwrap();
-        let mut permissions = fs::metadata(&binary).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&binary, permissions).unwrap();
+        write_executable_fixture(&binary, &script);
 
         let manager = HerdrManager::with_binary(binary);
         let created = manager
@@ -6438,6 +6435,26 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
     }
 
     #[cfg(unix)]
+    fn write_executable_fixture(path: &Path, script: &str) {
+        // Another parallel test can fork while fs::write holds a writable FD,
+        // inheriting it until exec and causing Linux ETXTBSY. Open the file only
+        // in a dedicated child and wait for that writer to exit before execution.
+        let mut writer = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "fixture-writer"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
+    }
+
+    #[cfg(unix)]
     fn write_fake_herdr_with(dir: &Path, status_json: &str, schema_json: &str) -> PathBuf {
         write_fake_herdr_with_sessions(
             dir,
@@ -6507,17 +6524,14 @@ exit 2
             status = status_json,
             schema = schema_json,
         );
-        fs::write(&path, script).unwrap();
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).unwrap();
+        write_executable_fixture(&path, &script);
         path
     }
 
     #[cfg(unix)]
     fn write_fake_herdr_startup(dir: &Path) -> PathBuf {
         let path = dir.join("herdr");
-        fs::write(
+        write_executable_fixture(
             &path,
             r#"#!/bin/sh
 set -e
@@ -6542,18 +6556,14 @@ fi
 echo "unexpected args: $*" >&2
 exit 2
 "#,
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).unwrap();
+        );
         path
     }
 
     #[cfg(unix)]
     fn write_fake_herdr_startup_exit(dir: &Path) -> PathBuf {
         let path = dir.join("herdr");
-        fs::write(
+        write_executable_fixture(
             &path,
             r#"#!/bin/sh
 set -e
@@ -6575,18 +6585,14 @@ fi
 echo "unexpected args: $*" >&2
 exit 2
 "#,
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).unwrap();
+        );
         path
     }
 
     #[cfg(unix)]
     fn write_fake_herdr_startup_hang(dir: &Path) -> PathBuf {
         let path = dir.join("herdr");
-        fs::write(
+        write_executable_fixture(
             &path,
             r#"#!/bin/sh
 set -e
@@ -6607,11 +6613,7 @@ fi
 echo "unexpected args: $*" >&2
 exit 2
 "#,
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).unwrap();
+        );
         path
     }
 
@@ -7258,10 +7260,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             socket.display(),
             count_file.display()
         );
-        fs::write(&binary, script).unwrap();
-        let mut permissions = fs::metadata(&binary).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&binary, permissions).unwrap();
+        write_executable_fixture(&binary, &script);
         let mgr = HerdrManager::with_binary(binary);
 
         assert!(
