@@ -664,6 +664,8 @@ site/downloads.js
 
 Helper 程序測試使用隔離的 shell／npm fixture，避免 CI runner 的 login profile 改寫測試 PATH；工作區替換測試保留原 inode，確保測到不同的檔案系統身分；SQLite 取消測試沿用正式查詢的 pre-step cancellation guard。
 
+DB helper 若因資源上限退出，request broken pipe 與 response EOF 使用相同的既有 `valueTooLarge` 分類；不可因兩個 pipe 的關閉順序不同而變成一般 `helperIo`。程序停止測試必須確認實際 exit status，stdout 的完成訊息不代表程序已退出。
+
 ### Payload 建置與驗證
 
 四個 target：`linux-x86_64`、`linux-aarch64`、`macos-x86_64`、`macos-aarch64`。在對應架構 runner 執行，例如 Linux x86-64：

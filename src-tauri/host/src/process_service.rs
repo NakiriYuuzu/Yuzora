@@ -765,7 +765,7 @@ mod tests {
             .collect()
     }
 
-    fn poll_until<F: Fn() -> bool>(timeout: Duration, f: F) -> bool {
+    fn poll_until<F: FnMut() -> bool>(timeout: Duration, mut f: F) -> bool {
         let start = Instant::now();
         while start.elapsed() < timeout {
             if f() {
@@ -868,6 +868,18 @@ mod tests {
             .unwrap()
             .iter()
             .any(|line| line == "done")));
+        // stdout delivery happens before exit; wait for the actual child
+        // status while preventing the watcher from publishing it first.
+        let shared = mgr.ready_server(workspace).unwrap();
+        {
+            let mut guard = shared.child.lock().unwrap();
+            if let Some(child) = guard.child.as_mut() {
+                assert!(poll_until(Duration::from_secs(3), || child
+                    .try_wait()
+                    .unwrap()
+                    .is_some()));
+            }
+        }
         mgr.stop(workspace).unwrap();
 
         assert!(poll_until(Duration::from_secs(3), || terminal_events(

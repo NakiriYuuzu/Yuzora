@@ -437,15 +437,9 @@ where
         writer
             .write_all(&len.to_be_bytes())
             .await
-            .map_err(|error| worker_error("helperIo", &error.to_string()))?;
-        writer
-            .write_all(&body)
-            .await
-            .map_err(|error| worker_error("helperIo", &error.to_string()))?;
-        writer
-            .flush()
-            .await
-            .map_err(|error| worker_error("helperIo", &error.to_string()))
+            .map_err(helper_io_error)?;
+        writer.write_all(&body).await.map_err(helper_io_error)?;
+        writer.flush().await.map_err(helper_io_error)
     }
     .await;
     body.zeroize();
@@ -508,18 +502,26 @@ where
     decoded
 }
 
+// A child that exits before consuming a request can close either pipe first.
+// Use the same bounded-helper termination classification on both directions.
+fn helper_io_error(error: std::io::Error) -> DatabaseError {
+    match error.kind() {
+        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof => {
+            value_too_large_error()
+        }
+        _ => worker_error("helperIo", &error.to_string()),
+    }
+}
+
 async fn read_len_prefixed<R>(reader: &mut R) -> Result<Vec<u8>, DatabaseError>
 where
     R: AsyncRead + Unpin,
 {
     let mut header = [0u8; 4];
-    reader.read_exact(&mut header).await.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::UnexpectedEof {
-            value_too_large_error()
-        } else {
-            worker_error("helperIo", &error.to_string())
-        }
-    })?;
+    reader
+        .read_exact(&mut header)
+        .await
+        .map_err(helper_io_error)?;
     let len = u32::from_be_bytes(header) as usize;
     if len == 0 || len > MAX_HELPER_FRAME_BYTES {
         return Err(value_too_large_error());
@@ -528,7 +530,7 @@ where
     reader
         .read_exact(&mut body)
         .await
-        .map_err(|error| worker_error("helperIo", &error.to_string()))?;
+        .map_err(helper_io_error)?;
     Ok(body)
 }
 
@@ -1071,6 +1073,22 @@ mod tests {
         });
         let error = read_frame(&mut client).await.unwrap_err();
         assert_eq!(error.code.as_deref(), Some("helperProtocol"));
+    }
+
+    #[tokio::test]
+    async fn closed_request_pipe_has_the_same_classification_as_response_eof() {
+        let (mut client, server) = duplex(64);
+        drop(server);
+        let error = write_frame(&mut client, &WorkerResponse::ValueTooLarge)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("valueTooLarge"));
+        assert_eq!(
+            helper_io_error(std::io::ErrorKind::PermissionDenied.into())
+                .code
+                .as_deref(),
+            Some("helperIo")
+        );
     }
 
     #[tokio::test]
