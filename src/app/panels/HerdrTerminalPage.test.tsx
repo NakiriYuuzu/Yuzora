@@ -1214,6 +1214,7 @@ describe("HerdrTerminalPage target opening", () => {
     expect(useContextMenuStore.getState().request?.kind).toBe("herdrPane")
     useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
 
+    await waitFor(() => expect(xtermMock.state.terminals).toHaveLength(1))
     const term = xtermMock.state.terminals[0]
     term.bufferLines = [{ text: "https://example.com/docs" }]
     let links: Array<{
