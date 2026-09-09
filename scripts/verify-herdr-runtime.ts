@@ -13,7 +13,7 @@ const binary = await realpath(process.argv[2])
 const root = await realpath(await mkdtemp("/tmp/yz-h9-"))
 const session = "contract-smoke"
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("HERDR_") && !["ENV", "BASH_ENV"].includes(key)))
-Object.assign(env, { XDG_CONFIG_HOME: join(root, "cfg"), XDG_STATE_HOME: join(root, "state"), XDG_RUNTIME_DIR: join(root, "run"), HERDR_CONFIG_PATH: join(root, "config.toml"), SHELL: "/bin/sh" })
+Object.assign(env, { XDG_CONFIG_HOME: join(root, "cfg"), XDG_STATE_HOME: join(root, "state"), XDG_RUNTIME_DIR: join(root, "run"), HERDR_CONFIG_PATH: join(root, "config.toml"), HISTFILE: join(root, "shell-history"), SHELL: "/bin/sh" })
 const children: ChildProcessWithoutNullStreams[] = []
 const sockets: Socket[] = []
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
