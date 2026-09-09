@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   fetchWithRetry,
+  archiveExtractionCommand,
   HERDR_RESOURCE_TARGETS,
   HERDR_RESOURCE_VERSION,
   resourceTargetIdsForHost
@@ -17,6 +18,11 @@ afterEach(() => {
 })
 
 describe("prepare Herdr resources", () => {
+  it("uses Windows inbox zip-capable tar even when Git Bash shadows PATH", () => {
+    expect(archiveExtractionCommand("win32", "D:\\staging dir\\archive.zip", "D:\\staging dir\\runtime", "C:\\Windows")).toEqual(["C:\\Windows\\System32\\tar.exe", "-xf", "D:\\staging dir\\archive.zip", "-C", "D:\\staging dir\\runtime"])
+    expect(() => archiveExtractionCommand("win32", "archive.zip", "runtime")).toThrow("SystemRoot")
+    expect(archiveExtractionCommand("darwin", "/tmp/archive.zip", "/tmp/runtime")).toEqual(["unzip", "-q", "/tmp/archive.zip", "-d", "/tmp/runtime"])
+  })
   it("pins protocol-22 Herdr v0.9.0 Stable resources for both released desktop platforms", () => {
     expect(HERDR_RESOURCE_VERSION).toEqual({
       baseVersion: "0.9.0",

@@ -11,7 +11,7 @@ import {
   stat,
   writeFile
 } from "node:fs/promises"
-import { dirname, join, relative, resolve, sep } from "node:path"
+import { dirname, join, relative, resolve, sep, win32 } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
@@ -41,6 +41,14 @@ export function resourceTargetIdsForHost(platform: NodeJS.Platform): string[] {
   if (platform === "win32") return ["windows-x86_64"]
   if (platform === "linux") return ["linux-aarch64", "linux-x86_64"]
   throw new Error(`Yuzora does not build desktop Herdr resources on ${platform}`)
+}
+
+export function archiveExtractionCommand(platform: NodeJS.Platform, archive: string, destination: string, systemRoot?: string): string[] {
+  if (platform !== "win32") return ["unzip", "-q", archive, "-d", destination]
+  if (!systemRoot || !win32.isAbsolute(systemRoot)) throw new Error("Windows SystemRoot must identify the system archive tool")
+  // Git Bash can put GNU tar first on PATH; it treats a drive colon as a remote
+  // archive and does not support this zip. Use the Windows inbox bsdtar.
+  return [win32.join(systemRoot, "System32", "tar.exe"), "-xf", archive, "-C", destination]
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -155,9 +163,7 @@ export async function prepareTarget(root: string, target: HerdrResourceTarget): 
       // Only extract the archive after its pinned upstream digest has matched.
       const archive = join(stagingRoot, "archive.zip")
       await writeFile(archive, bytes)
-      const unpack = Bun.spawn(process.platform === "win32"
-        ? ["tar.exe", "-xf", archive, "-C", stagingTarget]
-        : ["unzip", "-q", archive, "-d", stagingTarget], { stdout: "inherit", stderr: "inherit" })
+      const unpack = Bun.spawn(archiveExtractionCommand(process.platform, archive, stagingTarget, process.env.SystemRoot), { stdout: "inherit", stderr: "inherit" })
       if (await unpack.exited !== 0) throw new Error(`Herdr archive extraction failed: ${target.id}`)
     } else {
       const output = join(stagingTarget, target.files[0].path)
