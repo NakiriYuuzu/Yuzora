@@ -15,6 +15,7 @@ on:
       - 'src-tauri/vendor/tiberius-0.12.3-yuzora/**'
       - 'scripts/prepare-host-resources*'
       - 'scripts/prepare-herdr-resources*'
+      - 'scripts/verify-herdr-runtime.ts'
       - '.github/workflows/host.yml'
 
 permissions:
@@ -50,6 +51,9 @@ jobs:
       - run: cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings
       - run: cargo test --locked --manifest-path src-tauri/host/Cargo.toml
       - run: bun scripts/prepare-host-resources.ts ${{ matrix.target }}
+      - name: Verify isolated HERDR runtime contract
+        timeout-minutes: 3
+        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/${{ matrix.target }}/herdr
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: host-${{ matrix.target }}

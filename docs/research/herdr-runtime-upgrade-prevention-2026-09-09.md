@@ -116,6 +116,8 @@ managed policy 可在 app 升級後比較 bundled manifest identity，先顯示�
 
 此表是待執行的驗收計畫；研究本身未操作任何使用者 runtime 或執行 browser/E2E。
 
+後續實作：經使用者授權，`scripts/verify-herdr-runtime.ts` 已在本機 macOS ARM 以官方 0.9.0 binary 通過隔離 runtime E2E，並加入四平台 helper workflow 的 payload 上傳前 gate。涵蓋 schema／status、訂閱後 snapshot、live event、terminal observe／control、實際輸入與 resize。它使用獨立 XDG roots／named Session，不涵蓋以下矩陣的既有 host 遷移、mixed-version 或使用者工作存續案例；四平台結果以對應 CI run 為準。
+
 | 場景 | 必須觀察的結果 |
 |---|---|
 | 舊 managed 0.8.2 client＋0.9.0 server | 明確 incompatible、呈現 20/22，保留 server、pane 與 Session |
