@@ -26,6 +26,12 @@
   "stopped": "Server 已停止 · 顯示上次資料",
   "stale": "資料尚未更新 · 不代表即時狀態",
   "empty": "此 Session 尚無 Space。",
+  "windowsHost": "Windows 本機",
+  "localHost": "本機",
+  "firstTerminalHint": "選擇此主機上的資料夾，建立 Space 並開啟第一個 terminal。",
+  "firstTerminal": "選擇資料夾並開啟 terminal",
+  "openingTerminal": "正在開啟 terminal…",
+  "sessionChanged": "Session 已變更，請在目標主機重新選擇資料夾。",
   "emptyWorktrees": "數量為 0 的 worktree 尚無 Agent。",
   "status": {
     "working": "工作中",

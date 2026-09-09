@@ -26,6 +26,12 @@
   "stopped": "Server stopped · showing last known data",
   "stale": "Data has not refreshed · status is not live",
   "empty": "No Spaces in this Session.",
+  "windowsHost": "Windows local",
+  "localHost": "Local",
+  "firstTerminalHint": "Choose a folder on this host to create a Space and open its first terminal.",
+  "firstTerminal": "Choose folder and open terminal",
+  "openingTerminal": "Opening terminal…",
+  "sessionChanged": "The Session changed. Choose the folder again on the intended host.",
   "emptyWorktrees": "Worktrees with a count of 0 have no Agents yet.",
   "status": {
     "working": "Working",

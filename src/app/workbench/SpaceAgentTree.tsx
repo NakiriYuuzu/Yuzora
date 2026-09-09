@@ -26,7 +26,9 @@ import { useRecentWorkspacesStore } from "@/state/recentWorkspaces";
 import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents";
 import type { HerdrAgentInfo, HerdrSpaceInfo } from "@/lib/herdrTypes";
 import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider";
-import { spacePresentationKey } from "./spaceTreeIdentity";
+import { spacePresentationKey, runtimeSessionLabel } from "./spaceTreeIdentity";
+import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
+import { workspacePathBasename } from "@/lib/paths";
 import { HerdrLauncher } from "./HerdrLauncher";
 import { SpaceAppearanceDialog } from "./SpaceAppearanceDialog";
 import { SpaceCharacter } from "./SpaceCharacter";
@@ -73,6 +75,7 @@ export function SpaceAgentTree() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [inspected, setInspected] = useState<HerdrAgentInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [creatingSpace, setCreatingSpace] = useState(false);
   // All is a view filter, never a runtime Session name or process context.
   const [requestedScope, setScopeSession] = useState<string | null>(null);
   const scopeSession = sessions.some((item) => item.name === requestedScope) ? requestedScope : null;
@@ -121,8 +124,32 @@ export function SpaceAgentTree() {
   }
   function sessionLabel(name: string) {
     const named = rawSessions.find((item) => sessionScope(item) === name);
-    return [named?.hostLabel, named?.name ?? parseRuntimeScope(name).sessionName]
-      .filter(Boolean).join(" · ");
+    return runtimeSessionLabel(name, named);
+  }
+  async function createSpace(sessionName: string) {
+    if (creatingSpace) return;
+    setCreatingSpace(true);
+    setError(null);
+    try {
+      if (useHerdrStore.getState().selectedSessionName !== sessionName)
+        await useHerdrStore.getState().selectSession(sessionName);
+      const state = useHerdrStore.getState();
+      if (state.selectedSessionName !== sessionName || !state.canCreateSpace())
+        throw new Error(state.createSpaceBlockedReason() ?? t("openFailed"));
+      const path = await chooseWorkspaceFolder({ runtimeHostId: parseRuntimeScope(sessionName).hostId });
+      if (typeof path !== "string") return;
+      // The folder belongs to the requested host, even if selection changed while the picker was open.
+      if (useHerdrStore.getState().selectedSessionName !== sessionName)
+        throw new Error(t("sessionChanged"));
+      const result = await useHerdrStore.getState().createSpaceFromFolder(path, workspacePathBasename(path));
+      if (!result.ok && !result.cancelled)
+        throw new Error(result.error ?? t("openFailed"));
+      if (result.ok) setScopeSession(sessionName);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setCreatingSpace(false);
+    }
   }
 
   const roots = useMemo(
@@ -393,6 +420,8 @@ export function SpaceAgentTree() {
     <div className="space-tree-panel">
       <HerdrLauncher
         scope={scopeSession}
+        onCreateSpace={createSpace}
+        creatingSpace={creatingSpace}
         onScopeChange={(name) => {
           setScopeSession(name);
           setSelectedAgent(null);
@@ -698,6 +727,14 @@ export function SpaceAgentTree() {
           .map((item) => (
             <div key={item.name} className="space-tree-empty [overflow-wrap:anywhere]" role="status">
               <p>{sessionLabel(item.name)}: {sessionNotice(item.name) ?? t("empty")}</p>
+              {!sessionNotice(item.name) && runtimes[item.name]?.capabilities?.api.workspaceCreate && runtimes[item.name]?.capabilities?.terminal.create && (
+                <>
+                  <p>{t("firstTerminalHint")}</p>
+                  <Button variant="outline" size="sm" className="h-auto whitespace-normal" disabled={creatingSpace} onClick={() => void createSpace(item.name)}>
+                    {creatingSpace ? t("openingTerminal") : t("firstTerminal")}
+                  </Button>
+                </>
+              )}
               {needsRepair(item.name) && <Button variant="outline" size="sm" onClick={() => repairHost(item.name)}>{t("repairHost")}</Button>}
             </div>
           ))}

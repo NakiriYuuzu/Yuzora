@@ -23,17 +23,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useHerdrStore } from "@/state/herdrStore";
-import { sessionScope, parseRuntimeScope } from "@/lib/herdrProvider";
-import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
+import { sessionScope } from "@/lib/herdrProvider";
 import { pickWorkspace } from "@/lib/workspaceActions";
-import { workspacePathBasename } from "@/lib/paths";
+import { runtimeSessionLabel } from "./spaceTreeIdentity";
 
 export function HerdrLauncher({
   scope,
   onScopeChange,
+  onCreateSpace,
+  creatingSpace,
 }: {
   scope: string | null;
   onScopeChange: (scope: string | null) => void;
+  onCreateSpace: (sessionName: string) => Promise<void>;
+  creatingSpace: boolean;
 }) {
   const { t } = useTranslation("spaceTree");
   const { t: tw } = useTranslation("workbench");
@@ -44,13 +47,12 @@ export function HerdrLauncher({
   );
   const canCreateTerminal = useHerdrStore((s) => s.canCreateTerminal());
   const canCreateSpace = useHerdrStore((s) => s.canCreateSpace());
+  const ready = useHerdrStore((s) => s.connectionState === "ready" && !s.errorMessage && s.capabilities?.server.compatible !== false);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
   const label = (id: string) => {
     const session = sessions.find((x) => sessionScope(x) === id);
-    return session
-      ? [session.hostLabel, session.name].filter(Boolean).join(" · ")
-      : parseRuntimeScope(id).sessionName;
+    return runtimeSessionLabel(id, session);
   };
   async function run(action: () => Promise<unknown>) {
     if (busy) return;
@@ -115,9 +117,13 @@ export function HerdrLauncher({
               <Separator />
               <DropdownMenuGroup>
                 <DropdownMenuItem
-                  disabled={busy || !space || !canCreateTerminal}
+                  disabled={busy || creatingSpace || !ready || !selected || !canCreateTerminal || (!space && !canCreateSpace)}
                   onSelect={() =>
                     void run(async () => {
+                      if (!space && selected) {
+                        await onCreateSpace(selected);
+                        return;
+                      }
                       const created = await useHerdrStore
                         .getState()
                         .createTerminalInSelectedSpace();
@@ -157,24 +163,11 @@ export function HerdrLauncher({
                   {t("openFolder")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  disabled={busy || !selected || !canCreateSpace}
+                  disabled={busy || creatingSpace || !ready || !selected || !canCreateSpace}
                   onSelect={() =>
                     void run(async () => {
                       if (!selected) return;
-                      const path = await chooseWorkspaceFolder({
-                        runtimeHostId: parseRuntimeScope(selected).hostId,
-                      });
-                      if (typeof path !== "string") return;
-                      const result = await useHerdrStore
-                        .getState()
-                        .createSpaceFromFolder(
-                          path,
-                          workspacePathBasename(path),
-                        );
-                      if (!result.ok && !result.cancelled)
-                        throw new Error(
-                          result.error ?? tw("herdrNav.createFailedUnknown"),
-                        );
+                      await onCreateSpace(selected);
                     })
                   }
                 >
