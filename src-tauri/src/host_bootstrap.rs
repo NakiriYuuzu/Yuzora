@@ -160,7 +160,11 @@ fn validate_manifest(manifest: &Manifest, target: &str) -> Result<(), String> {
     {
         return Err("invalid-host-artifact-path".into());
     }
-    if manifest.herdr.version != "0.8.2" || manifest.herdr.protocol != 20 {
+    let release: serde_json::Value = serde_json::from_str(include_str!("../herdr-runtime.json"))
+        .expect("bundled HERDR release manifest must be valid JSON");
+    if release["baseVersion"].as_str() != Some(manifest.herdr.version.as_str())
+        || release["protocol"].as_u64() != Some(u64::from(manifest.herdr.protocol))
+    {
         return Err("herdr-artifact-version-mismatch".into());
     }
     for hash in [&manifest.helper.sha256, &manifest.herdr.sha256] {
@@ -365,6 +369,24 @@ pub async fn host_prepare(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn deployment_rejects_a_stale_herdr_even_when_the_app_version_matches() {
+        let mut manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "protocol": PROTOCOL_VERSION,
+            "version": env!("CARGO_PKG_VERSION"),
+            "target": "linux-x86_64",
+            "helper": {"path": "linux-x86_64/yuzora-host", "sha256": "a".repeat(64)},
+            "herdr": {"path": "linux-x86_64/herdr", "sha256": "b".repeat(64), "version": "0.8.2", "protocol": 20}
+        })).unwrap();
+        assert_eq!(
+            validate_manifest(&manifest, "linux-x86_64").unwrap_err(),
+            "herdr-artifact-version-mismatch"
+        );
+        manifest.herdr.version = "0.9.0".into();
+        manifest.herdr.protocol = 22;
+        validate_manifest(&manifest, "linux-x86_64").unwrap();
+    }
+
     #[tokio::test]
     async fn deployment_is_verified_idempotent_and_does_not_replace_existing_bytes() {
         let home = tempfile::tempdir().unwrap();

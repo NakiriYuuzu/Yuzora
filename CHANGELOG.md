@@ -17,7 +17,7 @@
 
 ### 改善
 
-- 使用官方 HERDR 0.8.2／protocol 20；主機工具安裝於使用者版本目錄，保留既有 runtime。
+- 升級官方 HERDR 至 0.9.0／protocol 22，支援連回已執行的 0.9.0 server；主機工具安裝於使用者版本目錄，保留既有 runtime。
 - 斷線保留未儲存內容，重連重新確認檔案狀態；關閉 Yuzora 保留 HERDR、Agent 與 WSL。
 - 側欄與 Session 選單只呈現仍在執行的 Sessions；外部建立的 Space／Agent 可直接開啟終端機，不再要求先綁定檔案資料夾。
 - Git 檔案可直接開啟大型並排差異檢視，並以狀態色與文字區分修改、未追蹤、已暫存及刪除。
@@ -36,6 +36,8 @@
 - 修正取消資料夾選擇後，背景 Session 更新反覆開啟選擇器或擅自切換資料夾的問題。
 - 修正手動輸入 Windows 路徑的 WSL 轉換，以及切換主機／發行版後套用過期瀏覽結果的問題；其他發行版的 WSL 路徑會明確拒絕。
 - 終端分頁的關閉按鈕現在會關閉對應 HERDR tab；操作失敗時保留分頁並顯示錯誤，不會只隱藏畫面。
+- 修正 HERDR 不相容或快照讀取失敗時仍顯示「已載入快照／尚無 Space」；現在顯示 client／server 版本、protocol、選用路徑與恢復說明，主機與 Session 使用可讀名稱。
+- 更新主機工具時保留原本的 managed HERDR 選擇，並在事件訂閱建立後重新讀取快照，避免遺漏連線期間的變更。
 
 ### 已知限制
 
@@ -43,6 +45,7 @@
 - Beta 僅供手動下載，不提供 OTA，也不會取代 Stable Latest。HERDR／Browser 分頁的釘選狀態僅在本次應用程式工作階段保留。
 - 舊 Windows 工作區需重新綁定 WSL2。舊 session 資料保留，執行中程序不會跨環境搬移；Agent 原生還原依官方整合支援。
 - 不相容的既有 HERDR server 不會自動停止或重啟，請先保存工作再處理版本遷移。
+- 已設定的 WSL／SSH 主機保留原 binary 路徑；升級後請從「新增資料夾」選取該主機，確認使用 Yuzora 隨附 HERDR，按「更新主機工具」套用新版 client。此操作不會自動停止既有 server。
 - macOS Beta 沒有 Developer ID 發行者身分、notarization 或 Gatekeeper 信任，首次開啟時可能被警告或阻擋；只應從 Yuzora 官方 GitHub Pre-release 下載。
 - Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
 

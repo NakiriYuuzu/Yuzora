@@ -217,7 +217,12 @@ function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,in
   const [entries,setEntries]=useState<FileNode[]>([])
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState<string|null>(null)
-  const [managed,setManaged]=useState(false)
+  const [managed,setManaged]=useState(() => {
+    const saved=useHostStore.getState().configs[hostId]
+    return !!saved && saved.helper.includes("/.local/share/yuzora/runtimes/")
+      && saved.helper.endsWith("/yuzora-host")
+      && saved.binary===saved.helper.slice(0,-"yuzora-host".length)+"herdr"
+  })
   const owner=host?.connection?.owner
   const browseGeneration=useRef(0)
   useEffect(() => {
@@ -272,9 +277,9 @@ function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,in
     finally {setBusy(false)}
   }
   return <FieldGroup>
+    <Field orientation="horizontal"><Checkbox id={`managed-${hostId}`} checked={managed} onCheckedChange={(value)=>setManaged(value===true)} /><FieldLabel htmlFor={`managed-${hostId}`}>{t("managedRuntime")}</FieldLabel></Field>
     {!owner ? <>
       <p>{t("setupDescription")}</p>
-      <Field orientation="horizontal"><Checkbox id={`managed-${hostId}`} checked={managed} onCheckedChange={(value)=>setManaged(value===true)} /><FieldLabel htmlFor={`managed-${hostId}`}>{t("managedRuntime")}</FieldLabel></Field>
       <Button disabled={busy || host?.connecting} onClick={()=>void setup()}>{busy ? t("settingUp"):t("setupHost")}</Button>
     </> : <>
       <Field><FieldLabel htmlFor="runtime-folder">{t("folder")}</FieldLabel><div className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" id="runtime-folder" value={path || host?.connection?.hello.home || ""} onChange={(event)=>changePath(event.target.value)} /><Button variant="outline" disabled={busy} onClick={()=>void browse()}>{t("browse")}</Button></div></Field>

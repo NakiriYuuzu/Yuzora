@@ -658,7 +658,12 @@ site/downloads.js
 ### 主機設定與診斷
 
 - 「新增資料夾 → 本地／遠端」使用共用主機清單。Windows 本地選 WSL2；SSH 沿用密碼／金鑰及 host-key 驗證。純 SFTP 不要求 helper。
-- 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。初始相容基準為 HERDR 0.8.2／protocol 20，仍須 schema／capability 檢查。
+- 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。相容基準為 HERDR 0.9.0／private protocol 22，仍須 schema／capability 檢查。
+- 官方版本、protocol、四平台 URL／SHA-256 與 license digest 統一放在 `src-tauri/herdr-runtime.json`，由準備腳本與 native manifest guard 共用；更新該檔會觸發 helper workflow。升級時核對官方 release assets 的 digest、實際 binary schema 與 method／subscription fixtures，不能只改 protocol 數字。
+- 已保存的 WSL／SSH host 仍使用其原 binary／helper 路徑，不會因重新安裝桌面程式而自動部署。從「新增資料夾」選取原主機，確認「使用 Yuzora 隨附的 HERDR」選擇，再按「更新主機工具」；更新會保留原 managed 來源選擇，使用新版本目錄並保留舊檔。這是明確的使用者操作，不是全面自動更新。
+- 0.9.0 的 `server.compatible` 仍代表 private protocol 相容；`endpoint_compatible` 與 endpoint generation 是另一套契約，不可用來放寬現有 terminal connector gate。`restart_needed` 不是必須停止 server 的命令；client 比 server 舊時，先更新 client，保留正在執行的 Sessions。
+- 0.9.0 新事件訂閱只接收 live events；Yuzora 在 subscription acknowledgement 後補讀快照，涵蓋 bootstrap snapshot 與訂閱之間的變更。
+- HERDR 升級候選需在原本受影響的 WSL／SSH host 驗證：client／server versions、protocols、socket、舊 managed 設定更新、既有程序存續、snapshot／events／terminal observe／control／input／resize。另見 `docs/research/herdr-runtime-upgrade-prevention-2026-09-09.md` 的長期方案與驗證矩陣。
 - 本地 HERDR 使用 Unix socket；SSH 使用 direct-streamlocal；WSL 由 `wsl.exe --distribution … --exec` 啟動 helper，不需 sshd。Named Session socket 從來源主機 discovery 取得，不拼接猜測。
 - 版本不相容時先記錄 hostId、session、實際 binary／socket、版本及錯誤。不要自動停止既有 server；需重啟時由使用者先保存該主機上的工作。
 - SSH／WSL 身分變更必須重新驗證；顯示名稱變更不改 hostId。保留 dirty buffer，重連確認外部 revision 後才能儲存。

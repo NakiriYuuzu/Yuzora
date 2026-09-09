@@ -85,6 +85,15 @@ export function SpaceAgentTree() {
   );
   function sessionNotice(name: string) {
     const runtime = runtimes[name];
+    const caps = runtime?.capabilities;
+    if (caps?.server.compatible === false) {
+      return `${t("incompatibleDetail", {
+        clientVersion: caps.binaryVersion ?? "—",
+        clientProtocol: caps.binaryProtocol ?? "—",
+        serverVersion: caps.server.version ?? "—",
+        serverProtocol: caps.server.protocol ?? "—",
+      })} ${t("binaryDetail", { path: caps.binaryPath ?? "—" })} ${t("incompatibleRecovery")}`;
+    }
     if (runtime?.connectionState === "unsupported")
       return runtime.errorMessage ?? t("stale");
     if (
@@ -92,9 +101,20 @@ export function SpaceAgentTree() {
       runtime?.capabilities?.server.running === false
     )
       return t("stopped");
+    if (runtime?.errorMessage)
+      return runtime.snapshot
+        ? `${t("stale")} ${runtime.errorMessage}`
+        : runtime.errorMessage;
+    if (!runtime || runtime.connectionState === "idle" || runtime.connectionState === "connecting")
+      return t("loading");
     if (runtime?.connectionState !== "ready" || !runtime?.snapshot)
       return t("stale");
     return null;
+  }
+  function sessionLabel(name: string) {
+    const named = rawSessions.find((item) => sessionScope(item) === name);
+    return [named?.hostLabel, named?.name ?? parseRuntimeScope(name).sessionName]
+      .filter(Boolean).join(" · ");
   }
 
   const roots = useMemo(
@@ -371,7 +391,11 @@ export function SpaceAgentTree() {
         }}
       />
       <div className="tree-browse-toolbar">
-        <span>{scopeSession === null ? t("allHint") : t("loaded")}</span>
+        <span>{scopeSession === null ? t("allHint")
+          : !sessionNotice(scopeSession) ? t("loaded")
+          : runtimes[scopeSession]?.snapshot ? t("stale")
+          : !runtimes[scopeSession] || ["idle", "connecting"].includes(runtimes[scopeSession].connectionState) ? t("loading")
+          : t("unavailable")}</span>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -391,7 +415,7 @@ export function SpaceAgentTree() {
         </Button>
       </div>
       {scopeSession !== null && sessionNotice(scopeSession) && (
-        <p className="space-tree-notice" role="status">
+        <p className="space-tree-notice [overflow-wrap:anywhere]" role="status">
           {sessionNotice(scopeSession)}
         </p>
       )}
@@ -457,7 +481,7 @@ export function SpaceAgentTree() {
 
         <div
           role="tree"
-          aria-label={t("treeLabel", { session: scopeSession ?? "All" })}
+          aria-label={t("treeLabel", { session: scopeSession === null ? "All" : sessionLabel(scopeSession) })}
           aria-description={t("navigationHint")}
           className="space-agent-tree"
           data-design="replica-space-agent-tree"
@@ -658,12 +682,13 @@ export function SpaceAgentTree() {
             );
           })}
         </div>
-        {!roots.length && <p className="space-tree-empty">{t("empty")}</p>}
+        {!shownSessions.length && <p className="space-tree-empty">{t("noRunningSessions")}</p>}
         {shownSessions
           .filter((item) => !runtimes[item.name]?.snapshot?.spaces.length)
+          .filter(() => scopeSession === null || !sessionNotice(scopeSession))
           .map((item) => (
-            <p key={item.name} className="space-tree-empty" role="status">
-              {item.name}: {sessionNotice(item.name) ?? t("empty")}
+            <p key={item.name} className="space-tree-empty [overflow-wrap:anywhere]" role="status">
+              {sessionLabel(item.name)}: {sessionNotice(item.name) ?? t("empty")}
             </p>
           ))}
         {visible.filter(

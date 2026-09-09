@@ -80,5 +80,11 @@
   "loaded": "已載入快照",
   "refreshSessions": "重新整理 Sessions",
   "attention": "需要注意",
-  "inspectAgent": "檢視 Agent：{{name}}"
+  "inspectAgent": "檢視 Agent：{{name}}",
+  "loading": "載入中",
+  "unavailable": "快照不可用",
+  "noRunningSessions": "目前沒有執行中的 Session。",
+  "incompatibleDetail": "HERDR client {{clientVersion}}（protocol {{clientProtocol}}）與 server {{serverVersion}}（protocol {{serverProtocol}}）不相容。",
+  "binaryDetail": "使用路徑：{{path}}。",
+  "incompatibleRecovery": "請從新增資料夾選取此主機，使用「更新主機工具」更新 client；保留執行中的 Session，確認相容版本後再處理 server。"
 }

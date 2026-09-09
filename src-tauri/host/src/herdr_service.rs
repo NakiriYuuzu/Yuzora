@@ -815,7 +815,7 @@ impl HerdrManager {
             if existing.running {
                 if existing.compatible == Some(false) {
                     return Err(
-                        "running Herdr server is protocol incompatible; stop and restart every affected Herdr session with the selected binary"
+                        "running Herdr server is protocol incompatible; update or select a compatible Herdr client while preserving running sessions"
                             .to_string(),
                     );
                 }
@@ -3007,7 +3007,7 @@ pub fn subscription_request(id: &str, pane_ids: &[String]) -> Result<serde_json:
             ]
         }
     });
-    // Official protocol 20 has no wildcard agent-status selector. Snapshot pane
+    // Official protocol 22 has no wildcard agent-status selector. Snapshot pane
     // IDs scope these subscriptions; the client replaces them when panes change.
     let subscriptions = request["params"]["subscriptions"].as_array_mut().unwrap();
     for pane_id in pane_ids.iter().collect::<std::collections::BTreeSet<_>>() {
@@ -3923,6 +3923,9 @@ fn collect_schema_methods(schema: &serde_json::Value) -> HashSet<String> {
 }
 
 fn looks_like_api_method(name: &str) -> bool {
+    if name == "ping" {
+        return true;
+    }
     let mut parts = name.split('.');
     match (parts.next(), parts.next(), parts.next()) {
         (Some(ns), Some(method), None) => {
@@ -5181,10 +5184,23 @@ mod tests {
     }
 
     #[test]
-    fn subscriptions_match_official_protocol20_required_fields() {
-        // Extracted from the bundled official 0.8.2 `api schema --json`.
+    fn implemented_methods_exist_in_official_protocol22_schema() {
+        // Method inventory extracted from the pinned 0.9.0 `api schema --json`.
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/herdr-0.9.0-methods.json"))
+                .unwrap();
+        assert_eq!(schema["protocol"], 22);
+        let methods = collect_schema_methods(&schema);
+        for method in IMPLEMENTED_API_METHODS {
+            assert!(methods.contains(*method), "official schema lacks {method}");
+        }
+    }
+
+    #[test]
+    fn subscriptions_match_official_protocol22_required_fields() {
+        // Extracted from the bundled official 0.9.0 `api schema --json`.
         let schema: serde_json::Value = serde_json::from_str(include_str!(
-            "../tests/fixtures/herdr-0.8.2-subscriptions.json"
+            "../tests/fixtures/herdr-0.9.0-subscriptions.json"
         ))
         .unwrap();
         let request =
@@ -5658,7 +5674,7 @@ exit 2
         let error = manager.ensure_server_running_on_startup().unwrap_err();
 
         assert!(error.contains("protocol incompatible"));
-        assert!(error.contains("stop and restart every affected Herdr session"));
+        assert!(error.contains("preserving running sessions"));
         assert!(dir.path().join("server.ready").exists());
         assert!(!dir.path().join("server.invoked").exists());
         assert_eq!(

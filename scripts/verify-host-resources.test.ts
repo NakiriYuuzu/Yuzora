@@ -18,7 +18,7 @@ it("blocks missing targets, version drift, changed helper bytes, and Windows exe
       await mkdir(join(root, target))
       await writeFile(join(root, target, "yuzora-host"), helper)
       await writeFile(join(root, target, "herdr"), "fixture")
-      const artifact: HostArtifact = { protocol: 1, version: "0.0.9-beta.3", target, helper: { path: `${target}/yuzora-host`, sha256: createHash("sha256").update(helper).digest("hex") }, herdr: { path: `${target}/herdr`, sha256: HERDR_RESOURCE_TARGETS[target].files[0].sha256, version: "0.8.2", protocol: 20 } }
+      const artifact: HostArtifact = { protocol: 1, version: "0.0.9-beta.3", target, helper: { path: `${target}/yuzora-host`, sha256: createHash("sha256").update(helper).digest("hex") }, herdr: { path: `${target}/herdr`, sha256: HERDR_RESOURCE_TARGETS[target].files[0].sha256, version: "0.9.0", protocol: 22 } }
       artifacts.push(artifact)
       await writeFile(join(root, `${target}.json`), JSON.stringify(artifact))
     }

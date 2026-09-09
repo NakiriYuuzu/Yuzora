@@ -66,6 +66,18 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
+it.each([true, false])("preserves the saved managed=%s binary choice when updating host tools", async (managed) => {
+  const directory = "/home/test/.local/share/yuzora/runtimes/old-linux-x86_64-hash"
+  useHostStore.setState({ configs: { [server.id]: { hostId: server.id, label: server.name, kind: "ssh", helper: `${directory}/yuzora-host`, binary: managed ? `${directory}/herdr` : "/usr/local/bin/herdr" } } })
+  connected(server)
+  runtimeConnected(server.id)
+  useFolderPickerStore.setState({ runtimeHostId: server.id })
+  const setup = vi.spyOn(useHostStore.getState(), "setup").mockResolvedValue(connection(server.id))
+  render(<FolderPickerHost />)
+  fireEvent.click(screen.getByRole("button", { name: "Update host tools" }))
+  await waitFor(() => expect(setup).toHaveBeenCalledWith(server.id, server.name, { kind: "ssh", sessionId: "transport-a" }, managed))
+})
+
 it("routes an offline SSH runtime recent folder through its key login and preserves its root", async () => {
   const uri = recent(server.id)
   mount(); selectRecent()

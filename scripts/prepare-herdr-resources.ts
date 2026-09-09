@@ -1,3 +1,4 @@
+import runtimeManifest from "../src-tauri/herdr-runtime.json"
 import { createHash } from "node:crypto"
 import {
   chmod,
@@ -30,52 +31,9 @@ export interface HerdrResourceTarget {
   files: ResourceFile[]
 }
 
-export const HERDR_RESOURCE_VERSION = {
-  baseVersion: "0.8.2",
-  protocol: 20,
-  licenseSha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
-} as const
-
-export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = {
-  "linux-aarch64": {
-    id: "linux-aarch64",
-    destination: "linux-aarch64",
-    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-linux-aarch64",
-    archiveSha256: "f55610658e1c2e0d2aaef730b4b2ab885f7f8ba00285ab372bfb14f2e3d5b40d",
-    files: [{ path: "herdr", sha256: "f55610658e1c2e0d2aaef730b4b2ab885f7f8ba00285ab372bfb14f2e3d5b40d" }]
-  },
-  "linux-x86_64": {
-    id: "linux-x86_64",
-    destination: "linux-x86_64",
-    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-linux-x86_64",
-    archiveSha256: "976150a14d490c94b243ea2e1a7eb2dfb67f12e36b182db90936f6728e6aecf4",
-    files: [{ path: "herdr", sha256: "976150a14d490c94b243ea2e1a7eb2dfb67f12e36b182db90936f6728e6aecf4" }]
-  },
-  "macos-aarch64": {
-    id: "macos-aarch64",
-    destination: "macos-aarch64",
-    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-macos-aarch64",
-    archiveSha256: "a5d4f4d504d8b309c91f811050559300faba31258425f53c50852fc96f6ae574",
-    files: [
-      {
-        path: "herdr",
-        sha256: "a5d4f4d504d8b309c91f811050559300faba31258425f53c50852fc96f6ae574"
-      }
-    ]
-  },
-  "macos-x86_64": {
-    id: "macos-x86_64",
-    destination: "macos-x86_64",
-    url: "https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-macos-x86_64",
-    archiveSha256: "ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1",
-    files: [
-      {
-        path: "herdr",
-        sha256: "ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1"
-      }
-    ]
-  }
-}
+const { targets, ...version } = runtimeManifest
+export const HERDR_RESOURCE_VERSION = version
+export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = targets
 
 export function resourceTargetIdsForHost(platform: NodeJS.Platform): string[] {
   if (platform === "darwin") return ["macos-aarch64", "macos-x86_64"]

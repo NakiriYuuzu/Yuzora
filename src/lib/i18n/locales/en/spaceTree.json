@@ -80,5 +80,11 @@
   "loaded": "Loaded snapshot",
   "refreshSessions": "Refresh sessions",
   "attention": "Attention",
-  "inspectAgent": "Inspect Agent: {{name}}"
+  "inspectAgent": "Inspect Agent: {{name}}",
+  "loading": "Loading",
+  "unavailable": "Snapshot unavailable",
+  "noRunningSessions": "No running Sessions.",
+  "incompatibleDetail": "HERDR client {{clientVersion}} (protocol {{clientProtocol}}) is incompatible with server {{serverVersion}} (protocol {{serverProtocol}}).",
+  "binaryDetail": "Selected binary: {{path}}.",
+  "incompatibleRecovery": "Select this host in Add Folder and use Update Host Tools to update the client. Keep running Sessions; verify compatible versions before changing the server."
 }

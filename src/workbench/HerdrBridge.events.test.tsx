@@ -113,6 +113,20 @@ afterEach(() => {
 })
 
 describe("HerdrBridge event ownership", () => {
+  it("takes a fresh snapshot after the live-only subscription is acknowledged", async () => {
+    let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
+    eventIpc.subscribe.mockImplementation(async ({ onEvent }: { onEvent: (event: HerdrSubscriptionEvent) => void }) => {
+      callback = onEvent
+      return "sub-live-only"
+    })
+    render(<HerdrBridge />)
+    await waitFor(() => expect(callback).toBeDefined())
+    const refresh = useHerdrStore.getState().refreshSnapshot
+    const before = vi.mocked(refresh).mock.calls.length
+    act(() => callback?.({ type: "subscribed", subscriptionId: "sub-live-only" }))
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(before + 1), { timeout: 700 })
+  })
+
   it("replaces per-pane selectors only when pane membership changes and drops the old callback", async () => {
     const callbacks: Array<(event: HerdrSubscriptionEvent) => void> = []
     eventIpc.subscribe.mockImplementation(async ({ onEvent }: { onEvent: (event: HerdrSubscriptionEvent) => void }) => {

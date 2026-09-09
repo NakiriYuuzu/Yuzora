@@ -138,6 +138,9 @@ export function HerdrBridge() {
             if (event.type === "subscribed") {
               entry.subscriptionId = event.subscriptionId
               entry.attempts = 0
+              // Protocol 22 subscriptions start with live events. Reconcile after
+              // acknowledgement to cover changes since the bootstrap snapshot.
+              scheduleRefresh(entry)
             } else if (!entry.subscriptionId || event.subscriptionId !== entry.subscriptionId) return
             useHerdrStore.getState().applySubscriptionEvent(entry.scope, event)
             if (event.type === "disconnected" || event.type === "error") {
