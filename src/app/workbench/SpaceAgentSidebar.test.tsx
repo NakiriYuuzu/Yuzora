@@ -17,6 +17,6 @@ it("offers terminal creation and only running sessions, without Agent creation",
   fireEvent.keyDown(screen.getByRole("button", { name: "Herdr Session: All" }), { key: "Enter" })
   expect(await screen.findByRole("menuitem", { name: "New terminal" })).toBeInTheDocument()
   expect(screen.queryByRole("menuitem", { name: "New Herdr Agent" })).not.toBeInTheDocument()
-  expect(screen.getByRole("menuitemradio", { name: "running" })).toBeInTheDocument()
+  expect(screen.getByRole("menuitemradio", { name: "Local · running" })).toBeInTheDocument()
   expect(screen.queryByRole("menuitemradio", { name: /stopped/ })).not.toBeInTheDocument()
 })
