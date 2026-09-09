@@ -155,6 +155,16 @@ fn merge_path(shell: &OsStr, inherited: Option<&OsStr>) -> OsString {
     std::env::join_paths(paths).unwrap_or_default()
 }
 
+fn is_trusted_path_entry(path: &Path) -> bool {
+    path.is_absolute()
+        && path.components().all(|part| {
+            !matches!(
+                part,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,14 +232,4 @@ mod tests {
             "/nvm/bin:/bin:/usr/bin"
         );
     }
-}
-
-fn is_trusted_path_entry(path: &Path) -> bool {
-    path.is_absolute()
-        && path.components().all(|part| {
-            !matches!(
-                part,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
 }
