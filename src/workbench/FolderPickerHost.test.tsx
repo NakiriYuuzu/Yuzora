@@ -11,6 +11,9 @@ vi.mock("@/lib/hostIpc", () => ({ requestHost: vi.fn(), wslDistributions: vi.fn(
 vi.mock("@/lib/remoteFiles", () => ({ registerRuntimeWorkspace: vi.fn(), registerSftpWorkspace: vi.fn() }))
 vi.mock("@/app/panels/SftpPanel", () => ({ SftpPanel: () => null }))
 
+import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore"
+import { useUiStore } from "@/state/uiStore"
+import { open } from "@tauri-apps/plugin-dialog"
 import { FolderPickerHost } from "./FolderPickerHost"
 import { SshAuthenticationHost } from "./SftpHost"
 import { useFolderPickerStore } from "@/state/folderPickerStore"
@@ -54,6 +57,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  useRuntimePreferencesStore.setState({ wslEnabled: false })
   const values = new Map<string, string>()
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } })
   vi.mocked(isWindowsPlatform).mockReturnValue(false)
@@ -67,7 +71,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 it.each([true, false])("preserves the saved managed=%s binary choice when updating host tools", async (managed) => {
-  const directory = "/home/test/.local/share/yuzora/runtimes/old-linux-x86_64-hash"
+  const directory = `/home/test/.local/share/yuzora/runtimes/old-linux-x86_64-${"a".repeat(64)}`
   useHostStore.setState({ configs: { [server.id]: { hostId: server.id, label: server.name, kind: "ssh", helper: `${directory}/yuzora-host`, binary: managed ? `${directory}/herdr` : "/usr/local/bin/herdr" } } })
   connected(server)
   runtimeConnected(server.id)
@@ -75,7 +79,7 @@ it.each([true, false])("preserves the saved managed=%s binary choice when updati
   const setup = vi.spyOn(useHostStore.getState(), "setup").mockResolvedValue(connection(server.id))
   render(<FolderPickerHost />)
   fireEvent.click(screen.getByRole("button", { name: "Update host tools" }))
-  await waitFor(() => expect(setup).toHaveBeenCalledWith(server.id, server.name, { kind: "ssh", sessionId: "transport-a" }, managed))
+  await waitFor(() => expect(setup).toHaveBeenCalledWith(server.id, server.name, { kind: "ssh", sessionId: "transport-a" }, managed ? { source: "default" } : { source: "custom", customPath: "/usr/local/bin/herdr" }))
 })
 
 it("routes an offline SSH runtime recent folder through its key login and preserves its root", async () => {
@@ -167,6 +171,7 @@ it("does not reuse an earlier host's delayed SFTP listing after switching hosts"
 })
 
 function wslConfig() {
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   useHostStore.setState({ configs: { "wsl-a": { hostId: "wsl-a", label: "Ubuntu", kind: "wsl", distro: "Ubuntu", helper: "/helper", binary: "/herdr" } } })
   recent("wsl-a")
 }
@@ -187,7 +192,7 @@ it("selects the discovered WSL identity and original root instead of the default
   mount(); selectRecent()
   fireEvent.click(await screen.findByRole("button", { name: "Set up this host" }))
   await waitFor(() => expect(screen.getByLabelText("Remote folder")).toHaveValue(root))
-  expect(setup).toHaveBeenCalledWith("wsl-a", "Ubuntu", { kind: "wsl", distro: "Ubuntu" }, false)
+  expect(setup).toHaveBeenCalledWith("wsl-a", "Ubuntu", { kind: "wsl", distro: "Ubuntu" }, { source: "custom", customPath: "/herdr" })
   expect(finish).not.toHaveBeenCalled()
 })
 
@@ -208,6 +213,7 @@ it("keeps an unavailable WSL recent folder open on macOS or Linux", () => {
 })
 
 function mountWslRuntime() {
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   runtimeConnected("wsl-a")
   useHostStore.setState({ configs: { "wsl-a": { hostId: "wsl-a", label: "Ubuntu", kind: "wsl", distro: "Ubuntu", helper: "/helper", binary: "/herdr" } } })
   useFolderPickerStore.setState({ runtimeHostId: "wsl-a" })
@@ -255,4 +261,23 @@ it("discards a pending Windows conversion after switching WSL distributions", as
   expect(requestHost).not.toHaveBeenCalled()
   expect(finish).not.toHaveBeenCalled()
   expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled()
+})
+
+it("opens Windows native folders without discovering or converting WSL paths", async () => {
+  vi.mocked(isWindowsPlatform).mockReturnValue(true)
+  vi.mocked(open).mockResolvedValue("C:\\native-project")
+  mount()
+  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
+  await waitFor(() => expect(finish).toHaveBeenCalledWith("C:\\native-project"))
+  expect(wslDistributions).not.toHaveBeenCalled()
+  expect(wslPath).not.toHaveBeenCalled()
+})
+it("directs disabled WSL to settings without starting discovery", () => {
+  vi.mocked(isWindowsPlatform).mockReturnValue(true)
+  useFolderPickerStore.setState({ initialLocation: "wsl" })
+  mount()
+  expect(screen.getByText("Enable WSL in Settings → HERDR first.")).toBeInTheDocument()
+  expect(wslDistributions).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole("button", { name: "Manage this host" }))
+  expect(useUiStore.getState().settingsSection).toBe("herdr")
 })

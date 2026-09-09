@@ -87,7 +87,7 @@ describe("herdrIpc native interaction wrappers", () => {
 
     expect(calls).toEqual([
       { cmd: "herdr_binary_source_get", args: {} },
-      { cmd: "herdr_binary_source_set", args: { source: "default" } },
+      { cmd: "herdr_binary_source_set", args: { source: "default", customPath: null } },
       {
         cmd: "herdr_agent_get",
         args: { sessionName: "work", target: "w1:p1" }

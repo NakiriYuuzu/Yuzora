@@ -306,9 +306,14 @@ export function herdrBinarySourceGet(): Promise<HerdrBinarySourceInfo> {
 }
 
 export function herdrBinarySourceSet(
-  source: HerdrBinarySource
+  source: HerdrBinarySource,
+  customPath?: string
 ): Promise<HerdrBinarySourceSetResult> {
-  return invoke("herdr_binary_source_set", { source })
+  return invoke("herdr_binary_source_set", { source, customPath: customPath ?? null })
+}
+
+export function herdrBinarySourceCheck(source: HerdrBinarySource, customPath?: string): Promise<import("./herdrTypes").RuntimeBinaryCheck> {
+  return invoke("herdr_binary_source_check", { source, customPath: customPath ?? null })
 }
 
 export function herdrAgentGet(args: {

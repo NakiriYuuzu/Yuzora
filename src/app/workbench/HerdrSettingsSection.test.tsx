@@ -1,134 +1,90 @@
-import { render, screen, waitFor } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
-
-const ipc = vi.hoisted(() => ({
-  get: vi.fn(),
-  set: vi.fn()
-}))
-
-const platform = vi.hoisted(() => ({
-  isWindows: vi.fn()
-}))
-
-vi.mock("@/lib/herdrIpc", () => ({
-  herdrBinarySourceGet: ipc.get,
-  herdrBinarySourceSet: ipc.set
-}))
-
-vi.mock("@/lib/platform", () => ({
-  isWindowsPlatform: platform.isWindows
-}))
-
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore"
+import { useHostStore } from "@/state/hostStore"
+import { useUiStore } from "@/state/uiStore"
+import { useSshStore } from "@/state/sshStore"
+import type { RuntimeBinaryCheck } from "@/lib/herdrTypes"
+const ipc = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), check: vi.fn(), distros: vi.fn(), remote: vi.fn(), copy: vi.fn() }))
+vi.mock("@/lib/herdrIpc", () => ({ herdrBinarySourceGet: ipc.get, herdrBinarySourceSet: ipc.set, herdrBinarySourceCheck: ipc.check }))
+vi.mock("@/lib/hostIpc", () => ({ checkHostRuntime: ipc.remote, wslDistributions: ipc.distros }))
+vi.mock("@/lib/platform", () => ({ isWindowsPlatform: () => true }))
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: ipc.copy }))
 import { HerdrSettingsSection } from "./HerdrSettingsSection"
-
+const check: RuntimeBinaryCheck = { reportedBinary: null, binary: "C:\\Yuzora\\herdr.exe", clientVersion: "0.9.0", clientProtocol: 22, schemaProtocol: 22, missingMethods: [], canApply: true, sessions: [{ name: "default", running: true, serverVersion: "0.9.0", serverProtocol: 22, compatible: true, socket: "native.sock" }] }
 beforeEach(() => {
-  ipc.get.mockReset().mockResolvedValue({
-    configured: "default",
-    active: "global",
-    resolved: "global",
-    available: true,
-    path: "/Users/me/.local/bin/herdr",
-    version: "0.8.0",
-    protocol: 19,
-    configuredAvailable: false,
-    configuredPath: null,
-    configuredReason: "This build does not include a managed Herdr binary",
-    configuredVersion: null,
-    configuredProtocol: null,
-    configurationError: null,
-    restartRequired: true
-  })
-  ipc.set.mockReset()
-  platform.isWindows.mockReset().mockReturnValue(false)
+  vi.resetAllMocks()
+  const values = new Map<string, string>()
+  vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) })
+  useRuntimePreferencesStore.setState({ wslEnabled: false })
+  useHostStore.setState({ configs: {}, hosts: {} })
+  useSshStore.setState({ hosts: [], sessions: {} })
+  useUiStore.setState({ settingsHostId: null })
+  ipc.get.mockResolvedValue({ configured: "default", active: "global", available: true, path: "C:\\installed\\herdr.exe", version: "0.8.2", protocol: 20, configuredPath: "C:\\Yuzora\\herdr.exe", restartRequired: true })
+  ipc.check.mockResolvedValue(check)
+  ipc.distros.mockResolvedValue([{ hostId: "wsl-a", name: "Ubuntu", version: 2 }])
+  ipc.copy.mockResolvedValue(undefined)
 })
-
-describe("HerdrSettingsSection", () => {
-  it("separates active and configured-target diagnostics", async () => {
-    render(<HerdrSettingsSection />)
-
-    const global = await screen.findByRole("button", { name: /Global|全域/ })
-    const managed = screen.getByRole("button", { name: /Yuzora-managed/i })
-    expect(global).toHaveAttribute("aria-pressed", "false")
-    expect(managed).toHaveAttribute("aria-pressed", "true")
-    expect(screen.getByText("/Users/me/.local/bin/herdr")).toBeInTheDocument()
-    expect(screen.getByText("0.8.0")).toBeInTheDocument()
-    expect(screen.getByText("19")).toBeInTheDocument()
-    expect(
-      screen.getAllByText(/does not include a managed Herdr binary|尚未內建 managed Herdr binary/)
-    ).not.toHaveLength(0)
-    await waitFor(() => expect(ipc.get).toHaveBeenCalledTimes(1))
-  })
-
-  it("shows the effective managed source when global falls back", async () => {
-    ipc.get.mockResolvedValue({
-      configured: "global",
-      active: "global",
-      resolved: "default",
-      available: true,
-      path: String.raw`C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
-      reason: "Herdr was not found on PATH; using Yuzora-managed Herdr",
-      version: "0.8.0-preview.2026-08-04-d78e3d3b5126",
-      protocol: 19,
-      configuredAvailable: true,
-      configuredPath: String.raw`C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
-      configuredReason: "Herdr was not found on PATH; using Yuzora-managed Herdr",
-      configuredVersion: "0.8.0-preview.2026-08-04-d78e3d3b5126",
-      configuredProtocol: 19,
-      configurationError: null,
-      restartRequired: false
-    })
-
-    render(<HerdrSettingsSection />)
-
-    expect(await screen.findByText("default", { selector: "dd" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /Global|全域/ })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    )
-    expect(screen.getAllByText(/using Yuzora-managed Herdr/)).not.toHaveLength(0)
-  })
-
-  it("directs Windows to host setup without probing a native HERDR binary", () => {
-    platform.isWindows.mockReturnValue(true)
-    render(<HerdrSettingsSection />)
-    expect(screen.getByText(/WSL2/)).toBeInTheDocument()
-    expect(screen.queryByRole("switch")).not.toBeInTheDocument()
-    expect(ipc.get).not.toHaveBeenCalled()
-  })
-
-  it("normalizes verbatim Windows diagnostic paths without mutating the DTO", async () => {
-    const fixture = {
-      configured: "default",
-      active: "global",
-      resolved: "global",
-      available: true,
-      path: String.raw`\\?\C:\Users\me\.local\bin\herdr.exe`,
-      version: "0.8.0",
-      protocol: 19,
-      configuredAvailable: false,
-      configuredPath: null,
-      configuredReason: String.raw`Yuzora-managed Herdr binary is unavailable at \\?\C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`,
-      configuredVersion: null,
-      configuredProtocol: null,
-      configurationError: null,
-      restartRequired: true
-    }
-    ipc.get.mockResolvedValue(fixture)
-
-    render(<HerdrSettingsSection />)
-
-    expect(
-      await screen.findByText(String.raw`C:\Users\me\.local\bin\herdr.exe`)
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(
-        String.raw`Yuzora-managed Herdr binary is unavailable at C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`
-      )
-    ).toBeInTheDocument()
-    expect(screen.queryByText(/\\\?\\/)).not.toBeInTheDocument()
-    expect(fixture.path).toBe(String.raw`\\?\C:\Users\me\.local\bin\herdr.exe`)
-    expect(fixture.configuredReason).toBe(
-      String.raw`Yuzora-managed Herdr binary is unavailable at \\?\C:\Program Files\Yuzora\herdr\windows-x86_64\herdr.exe`
-    )
-  })
+afterEach(() => vi.unstubAllGlobals())
+it("shows the active Windows client and saved target, and discovers WSL only after opt-in", async () => {
+  render(<HerdrSettingsSection />)
+  expect(await screen.findByText("C:\\installed\\herdr.exe")).toBeInTheDocument()
+  expect(screen.getByText("0.8.2 · protocol 20")).toBeInTheDocument()
+  expect(screen.getByText("C:\\Yuzora\\herdr.exe")).toBeInTheDocument()
+  expect(screen.getByRole("switch")).not.toBeChecked()
+  expect(ipc.distros).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole("switch"))
+  await waitFor(() => expect(ipc.distros).toHaveBeenCalledOnce())
+})
+it("blocks applying a mismatched client without changing the saved source", async () => {
+  ipc.check.mockResolvedValue({ ...check, canApply: false, clientVersion: "0.8.2", clientProtocol: 20, sessions: [{ ...check.sessions[0], compatible: false }] })
+  render(<HerdrSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  expect(await screen.findByText("Cannot apply this selection")).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Apply source" })).toBeDisabled()
+  expect(screen.getByText("Server: 0.9.0 · protocol 22")).toBeInTheDocument()
+  expect(ipc.set).not.toHaveBeenCalled()
+})
+it("rechecks on apply and reports a backend rejection without claiming success", async () => {
+  ipc.set.mockRejectedValue(new Error("server changed during check"))
+  render(<HerdrSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  const apply = screen.getByRole("button", { name: "Apply source" })
+  await waitFor(() => expect(apply).toBeEnabled())
+  fireEvent.click(apply)
+  expect(await screen.findByText(/server changed during check/)).toBeInTheDocument()
+  expect(ipc.set).toHaveBeenCalledWith("default", undefined)
+  expect(ipc.get).toHaveBeenCalledOnce()
+})
+it("targets a disabled WSL host without probing its binary", () => {
+  useUiStore.setState({ settingsHostId: "wsl-a" })
+  useHostStore.setState({ configs: { "wsl-a": { hostId: "wsl-a", label: "Ubuntu", kind: "wsl", distro: "Ubuntu", binary: "/old/herdr", helper: "/helper" } } })
+  render(<HerdrSettingsSection />)
+  expect(screen.getByText("WSL HERDR is disabled")).toBeInTheDocument()
+  expect(ipc.remote).not.toHaveBeenCalled()
+  expect(ipc.get).not.toHaveBeenCalled()
+})
+it("shows old selected WSL client separately from the new managed candidate and copies both", async () => {
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
+  useUiStore.setState({ settingsHostId: "wsl-a" })
+  useHostStore.setState({ configs: { "wsl-a": { hostId: "wsl-a", label: "Ubuntu", kind: "wsl", distro: "Ubuntu", binary: "/old/herdr", helper: "/helper", selection: { source: "default" } } } })
+  ipc.remote.mockImplementation((_id, _target, selection) => Promise.resolve({ binary: selection.customPath ?? "/new/herdr", managedVersion: "0.9.0", managedProtocol: 22, artifactIdentity: "new", requiresInstall: false, check: selection.source === "custom" ? { ...check, binary: "/old/herdr", clientVersion: "0.8.2", clientProtocol: 20, canApply: false } : { ...check, binary: "/new/herdr" } }))
+  render(<HerdrSettingsSection />)
+  fireEvent.click(screen.getByRole("button", { name: "Check / detect again" }))
+  expect(await screen.findByText("0.8.2 · protocol 20")).toBeInTheDocument()
+  expect(screen.getByText("0.9.0 · protocol 22")).toBeInTheDocument()
+  expect(screen.getByText("Host tool update available")).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }))
+  await waitFor(() => expect(ipc.copy).toHaveBeenCalledOnce())
+  expect(JSON.parse(ipc.copy.mock.calls[0][0])).toMatchObject({ hostId: "wsl-a", current: { check: { binary: "/old/herdr", clientProtocol: 20 } }, target: { check: { binary: "/new/herdr", clientProtocol: 22 } } })
+})
+it("ignores a delayed check after changing the selected host", async () => {
+  let resolve!: (result: RuntimeBinaryCheck) => void
+  ipc.check.mockReturnValue(new Promise(done => { resolve = done }))
+  const mounted = render(<HerdrSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  act(() => useUiStore.setState({ settingsHostId: "unknown" }))
+  await act(async () => resolve(check))
+  expect(screen.queryByRole("button", { name: "Apply source" })).not.toBeInTheDocument()
+  mounted.unmount()
 })

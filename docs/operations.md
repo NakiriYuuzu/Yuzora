@@ -64,7 +64,7 @@ Required CI checks：
 
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows Unix runtime installer payload gate |
+| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生／Unix host installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、Stable macOS Developer ID signing／notarization、Beta macOS unsigned 建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 四平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Pages    | `.github/workflows/deploy-pages.yml` | `main` 上 `site/**` 變更；手動 dispatch | 將 `site/` 部署到 GitHub Pages                                                                                                                                          |
@@ -282,12 +282,12 @@ gh run download "${RUN_ID}" \
 
 beta.3 的產品範圍依已接受的 ADR-0004：Terminal 統一使用 HERDR，Agent 由使用者在 Terminal 手動啟動；移除獨立本機／SSH terminal、shell profiles、新增 Agent 表單及 LSP。Browser 保留網站導覽與遠端 loopback forwarding，移除靜態 Preview server／Dev Server 管理。驗收時確認移除入口不再出現，同時確認保留的檔案編輯、Git、SSH／SFTP 與 Database 功能仍正常：
 
-- Windows 至少兩個 WSL2 發行版；原生 macOS／Linux、SSH macOS／Linux及純 SFTP 分別記錄結果。
-- Windows 工作區的 HERDR、Agent、Terminal、Files、Git 全部在選定 WSL 執行；Windows 磁碟路徑（含手動輸入）由該 distro 的 `wslpath` 轉換，另一發行版的 WSL UNC 路徑必須拒絕。切換主機／發行版或取消選擇器後，過期結果不得改變新選擇。
+- Windows 原生 HERDR 與設定啟用後至少兩個 WSL2 發行版；原生 macOS／Linux、SSH macOS／Linux及純 SFTP 分別記錄結果。
+- Windows 本機工作區使用原生 HERDR，無需 WSL；只有明確選取 WSL 的工作區在該發行版執行 HERDR、Agent、Terminal、Files、Git。Windows 磁碟路徑（含手動輸入）由該 distro 的 `wslpath` 轉換，另一發行版的 WSL UNC 路徑必須拒絕。切換主機／發行版或取消選擇器後，過期結果不得改變新選擇。
 - 沒有 Space 或 HERDR 不相容時，共用新增資料夾入口仍可使用；未連線的近期資料夾導回原主機登入與原根目錄。
 - 取消資料夾選擇後，背景 snapshot 不得再次彈窗或擅自開啟工作區；主動點選沒有 Files 根目錄的外部 Space／Agent，仍可開啟其 Terminal Sessions 並保留原 Files 工作區。
 - 使用主機 discovery 的 socket；跨主機同名 Session、terminal、路徑、信任與事件不互相污染。Agent cwd 不得覆寫 Files 根目錄。
-- MSI／NSIS 包含四平台 Unix runtime、manifest 及受控清理工具；不得含 Windows HERDR、ConPTY runtime 或 WSL Agent Plugin。從 installer 解包驗證，不以 source inventory 代替。
+- MSI／NSIS 包含四平台 Unix runtime、manifest 及受控清理工具；另含固定版本 Windows HERDR、ConPTY 與授權檔，逐檔核對 lockfile 雜湊；不得含 WSL Agent Plugin 或散落在核准原生目錄之外的舊 HERDR／ConPTY。從 installer 解包驗證，不以 source inventory 代替。
 - 在 HERDR Terminal 手動啟動 Pi／Claude／Codex，驗證 prompt、working／idle／blocked、observe／control／takeover及重連；官方 native Session restore 與 layout restore 分開記錄。停止的 Sessions 不再出現在側欄／Session 選單，但保留 runtime 資料。
 - 遠端編輯／安全儲存、Git diff／worktree、Browser 導覽／歷史／WebSocket forwarding、DB tunnel／TLS hostname／SQLite／取消，及 SFTP 版本衝突與部分傳輸失敗。
 - 新版雙側欄、Space／Agent 切換、Inspector、窄視窗資料夾選擇器、Git 並排 diff、Markdown 文件／原始碼切換與安全回退、檔案釘選重啟恢復、設定搜尋／主題與資源用量。HERDR／Browser 釘選只驗證本次應用程式工作階段。
@@ -651,20 +651,23 @@ site/downloads.js
 
 ---
 
-## 13. 單一 Unix Runtime 與 Remote Provider
+## 13. 原生 Runtime 與 Remote Provider
 
-本節描述目前改造工作樹；**尚未達完整替代版發行門檻**。架構依 ADR-0003 single Unix runtime；分項驗收與未完成矩陣見 [實作檢查點](html/yuzora-runtime-provider-implementation-2026-09-06.html)。歷史 Windows-native Plugin 操作已移除，不能對新安裝包執行舊 link／adapter enable 流程。
+本節描述目前改造工作樹；**尚未達完整替代版發行門檻**。主機路由依 ADR-0005 Windows 原生與 opt-in WSL 決策；分項驗收與未完成矩陣見 [實作檢查點](html/yuzora-runtime-provider-implementation-2026-09-06.html)。歷史 Windows-native Plugin 操作已移除，不能對新安裝包執行舊 link／adapter enable 流程。
 
 ### 主機設定與診斷
 
-- 「新增資料夾 → 本地／遠端」使用共用主機清單。Windows 本地選 WSL2；SSH 沿用密碼／金鑰及 host-key 驗證。純 SFTP 不要求 helper。
+- 「新增資料夾 → Windows 本機／WSL／遠端」分開執行環境。WSL 預設關閉，須在「設定 → HERDR」啟用才探索或自動連線；關閉只釋放 Yuzora helper，保留設定與執行中 Session。SSH 沿用密碼／金鑰及 host-key 驗證。純 SFTP 不要求 helper。
 - 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。相容基準為 HERDR 0.9.0／private protocol 22，仍須 schema／capability 檢查。
-- 官方版本、protocol、四平台 URL／SHA-256 與 license digest 統一放在 `src-tauri/herdr-runtime.json`，由準備腳本與 native manifest guard 共用；更新該檔會觸發 helper workflow。升級時核對官方 release assets 的 digest、實際 binary schema 與 method／subscription fixtures，不能只改 protocol 數字。
-- 已保存的 WSL／SSH host 仍使用其原 binary／helper 路徑，不會因重新安裝桌面程式而自動部署。從「新增資料夾」選取原主機，確認「使用 Yuzora 隨附的 HERDR」選擇，再按「更新主機工具」；更新會保留原 managed 來源選擇，使用新版本目錄並保留舊檔。這是明確的使用者操作，不是全面自動更新。
+- 官方版本、protocol、五平台 URL／SHA-256 與 license digest 統一放在 `src-tauri/herdr-runtime.json`，由準備腳本與 native manifest guard 共用；更新該檔會觸發 helper workflow。升級時核對官方 release assets 的 digest、實際 binary schema 與 method／subscription fixtures，不能只改 protocol 數字。
+- 已保存的 WSL／SSH host 仍使用其原 binary／helper 路徑，不會因重新安裝桌面程式而自動部署。從「設定 → HERDR」選取原主機，選擇 Yuzora 管理／主機已安裝／自訂完整路徑，按「檢查／重新偵測」後套用；來源政策與實際 binary／helper 路徑分開保存，更新使用新版本目錄並保留舊檔。這是明確的使用者操作，不是全面自動更新。
+- 設定頁分別顯示目前 client 與目標來源；診斷包括 exact binary、client／schema protocol，以及 default 與所有執行中 Session 的 server version／protocol／compatible／socket。錯誤中的「修復此主機」直接定位主機設定，可複製目前與目標診斷。
+- 已安裝版本找不到時不回退管理版本。保存前重新驗證相容性；驗證失敗保留原設定。原生來源變更保存後需重新啟動 **Yuzora** 才生效，並顯示待生效路徑；不停止或重啟 HERDR server。
+- WSL server 顯示 0.9.0 不表示 client 已升級：若保存路徑仍指向舊管理目錄，實際 client 可能是 0.8.2／protocol 20。必須使用設定顯示的完整路徑查 `status --json`，不能拿另一個 PATH binary 的版本代替。
 - 0.9.0 的 `server.compatible` 仍代表 private protocol 相容；`endpoint_compatible` 與 endpoint generation 是另一套契約，不可用來放寬現有 terminal connector gate。`restart_needed` 不是必須停止 server 的命令；client 比 server 舊時，先更新 client，保留正在執行的 Sessions。
 - 0.9.0 新事件訂閱只接收 live events；Yuzora 在 subscription acknowledgement 後補讀快照，涵蓋 bootstrap snapshot 與訂閱之間的變更。
 - HERDR 升級候選需在原本受影響的 WSL／SSH host 驗證：client／server versions、protocols、socket、舊 managed 設定更新、既有程序存續、snapshot／events／terminal observe／control／input／resize。另見 `docs/research/herdr-runtime-upgrade-prevention-2026-09-09.md` 的長期方案與驗證矩陣。
-- 本地 HERDR 使用 Unix socket；SSH 使用 direct-streamlocal；WSL 由 `wsl.exe --distribution … --exec` 啟動 helper，不需 sshd。Named Session socket 從來源主機 discovery 取得，不拼接猜測。
+- Windows 本機使用 HERDR 官方 named pipe，macOS／Linux 本機使用 Unix socket；SSH 使用 direct-streamlocal；WSL 由 `wsl.exe --distribution … --exec` 啟動 helper，不需 sshd。Named Session socket 從來源主機 discovery 取得，不拼接猜測。
 - 版本不相容時先記錄 hostId、session、實際 binary／socket、版本及錯誤。不要自動停止既有 server；需重啟時由使用者先保存該主機上的工作。
 - SSH／WSL 身分變更必須重新驗證；顯示名稱變更不改 hostId。保留 dirty buffer，重連確認外部 revision 後才能儲存。
 
@@ -674,7 +677,7 @@ site/downloads.js
 
 Helper 程序測試使用隔離的 shell／npm fixture，避免 CI runner 的 login profile 改寫測試 PATH；工作區替換測試保留原 inode，確保測到不同的檔案系統身分；SQLite 取消測試沿用正式查詢的 pre-step cancellation guard。
 
-Host helper workflow 在上傳四平台 payload 前執行 `bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/<target>/herdr`。測試使用暫存 XDG roots 與獨立 named Session，驗證實際 bundled binary 的版本／protocol／method schema、subscription ack 後讀取 snapshot、live workspace event、官方 terminal observer／controller、輸入與 resize，最後只停止自身建立的 Session。此 gate 不代表 Yuzora UI、既有 host 路徑遷移、混合版本 server 或原 Windows／WSL 工作存續已驗收；本機執行 E2E 仍須遵循當次使用者授權。
+Host helper workflow 在上傳四平台 payload 前執行 `bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/<target>/herdr`。測試使用暫存 XDG roots 與獨立 named Session，驗證實際 bundled binary 的版本／protocol／method schema、subscription ack 後讀取 snapshot、live workspace event、官方 terminal observer／controller、輸入與 resize，最後只停止自身建立的 Session。Windows candidate／Release 也以原生 HERDR 執行相同契約測試，額外隔離 APPDATA／LOCALAPPDATA，驗證 named pipe 與 PowerShell 終端；不修改 HOME。此 gate 不代表 Yuzora UI、既有 host 路徑遷移、混合版本 server 或原 Windows／WSL 工作存續已驗收；本機執行 E2E 仍須遵循當次使用者授權。
 
 DB helper 若因資源上限退出，request broken pipe 與 response EOF 使用相同的既有 `valueTooLarge` 分類；不可因兩個 pipe 的關閉順序不同而變成一般 `helperIo`。程序停止測試必須確認實際 exit status，stdout 的完成訊息不代表程序已退出。
 
@@ -724,7 +727,7 @@ sh cleanup-wsl-adapter.sh --apply "$HOME/.pi/agent"
 
 自訂 `PI_CODING_AGENT_DIR` 時傳入實際 Agent 目錄。工具只處理符合雜湊／receipt／registration root 的 Yuzora 檔案，修改過的內容保留；不刪官方 integration、使用者 hooks、外部 runtime 或 session。Windows helper 不啟停 HERDR，未執行時保留狀態並停止清理。不得以刪除整個 `.pi`／HERDR／WSL 目錄作為替代。
 
-舊 SSH 主機遷入共用清單；旧 Windows 工作區需明確綁定 WSL。保留歷史 session，不推測 Agent Session ID，不宣稱搬移執行中的程序。
+舊 SSH 主機遷入共用清單；Windows 本機工作區直接恢復，既有 WSL 工作區保留發行版身分，停用時延後恢復。保留歷史 session，不推測 Agent Session ID，不宣稱搬移執行中的程序。
 
 ### 發布前證據
 

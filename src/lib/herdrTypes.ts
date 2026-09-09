@@ -7,7 +7,27 @@
 export type HerdrEventsStatus = "deferred" | "available" | "unavailable"
 
 /** App-global Herdr binary preference. */
-export type HerdrBinarySource = "global" | "default"
+export type HerdrBinarySource = "global" | "default" | "custom"
+
+export interface HerdrRuntimeSelection { source: HerdrBinarySource; customPath?: string }
+export interface RuntimeSessionCheck {
+  name: string
+  running: boolean
+  serverVersion: string | null
+  serverProtocol: number | null
+  compatible: boolean | null
+  socket: string | null
+}
+export interface RuntimeBinaryCheck {
+  binary: string
+  reportedBinary: string | null
+  clientVersion: string
+  clientProtocol: number
+  schemaProtocol: number
+  missingMethods: string[]
+  sessions: RuntimeSessionCheck[]
+  canApply: boolean
+}
 
 export type HerdrReadSource =
   | "visible"
@@ -113,6 +133,7 @@ export interface HerdrEventsCapability {
 }
 
 export interface HerdrBinarySourceInfo {
+  customPath?: string | null
   configured: HerdrBinarySource
   active?: HerdrBinarySource | null
   resolved?: HerdrBinarySource | null

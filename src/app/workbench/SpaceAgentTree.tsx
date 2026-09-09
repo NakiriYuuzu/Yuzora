@@ -20,6 +20,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector";
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation";
 import { useHerdrStore } from "@/state/herdrStore";
+import { useUiStore } from "@/state/uiStore";
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces";
 
 import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents";
@@ -83,6 +84,13 @@ export function SpaceAgentTree() {
   const shownSessions = sessions.filter(
     (item) => scopeSession === null || item.name === scopeSession,
   );
+  function repairHost(name?: string) {
+    useUiStore.getState().openSettings("herdr", { hostId: name ? parseRuntimeScope(name).hostId : undefined });
+  }
+  function needsRepair(name: string) {
+    const runtime = runtimes[name];
+    return runtime?.capabilities?.server.compatible === false || runtime?.connectionState === "unsupported" || !!runtime?.errorMessage;
+  }
   function sessionNotice(name: string) {
     const runtime = runtimes[name];
     const caps = runtime?.capabilities;
@@ -415,9 +423,10 @@ export function SpaceAgentTree() {
         </Button>
       </div>
       {scopeSession !== null && sessionNotice(scopeSession) && (
-        <p className="space-tree-notice [overflow-wrap:anywhere]" role="status">
-          {sessionNotice(scopeSession)}
-        </p>
+        <div className="space-tree-notice [overflow-wrap:anywhere]" role="status">
+          <p>{sessionNotice(scopeSession)}</p>
+          {needsRepair(scopeSession) && <Button variant="outline" size="sm" onClick={() => repairHost(scopeSession)}>{t("repairHost")}</Button>}
+        </div>
       )}
       {error && (
         <p className="space-tree-notice" role="alert">
@@ -682,14 +691,15 @@ export function SpaceAgentTree() {
             );
           })}
         </div>
-        {!shownSessions.length && <p className="space-tree-empty">{t("noRunningSessions")}</p>}
+        {!shownSessions.length && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
         {shownSessions
           .filter((item) => !runtimes[item.name]?.snapshot?.spaces.length)
           .filter(() => scopeSession === null || !sessionNotice(scopeSession))
           .map((item) => (
-            <p key={item.name} className="space-tree-empty [overflow-wrap:anywhere]" role="status">
-              {sessionLabel(item.name)}: {sessionNotice(item.name) ?? t("empty")}
-            </p>
+            <div key={item.name} className="space-tree-empty [overflow-wrap:anywhere]" role="status">
+              <p>{sessionLabel(item.name)}: {sessionNotice(item.name) ?? t("empty")}</p>
+              {needsRepair(item.name) && <Button variant="outline" size="sm" onClick={() => repairHost(item.name)}>{t("repairHost")}</Button>}
+            </div>
           ))}
         {visible.filter(
           (node) =>

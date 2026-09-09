@@ -1,14 +1,29 @@
 import { invoke } from "./ipc"
 import type { ConnectionOwner } from "./runtimeIdentity"
+import type { HerdrRuntimeSelection, RuntimeBinaryCheck } from "./herdrTypes"
 
 export type HostTarget = { kind: "local" } | { kind: "wsl"; distro: string } | { kind: "ssh"; sessionId: string }
 export interface ConnectedHost {
   owner: ConnectionOwner
   hello: { protocol: number; version: string; os: string; arch: string; home: string; methods: string[] }
 }
-export interface PreparedHost { connection: ConnectedHost; binary: string; helper: string }
+export interface PreparedHost { connection: ConnectedHost; binary: string; helper: string; artifactIdentity: string }
+export interface HostRuntimeCheck {
+  binary: string
+  installedBinary: string | null
+  managedVersion: string
+  managedProtocol: number
+  artifactIdentity: string
+  requiresInstall: boolean
+  check: RuntimeBinaryCheck | null
+}
 export interface WslDistribution { hostId: string; name: string; version: number }
-export function prepareHost(hostId: string, target: HostTarget, useManagedHerdr = false): Promise<PreparedHost> { return invoke("host_prepare", { hostId, target, useManagedHerdr }) }
+export function prepareHost(hostId: string, target: HostTarget, selection: HerdrRuntimeSelection = { source: "default" }): Promise<PreparedHost> {
+  return invoke("host_prepare", { hostId, target, source: selection.source, customPath: selection.customPath ?? null })
+}
+export function checkHostRuntime(hostId: string, target: HostTarget, selection: HerdrRuntimeSelection): Promise<HostRuntimeCheck> {
+  return invoke("host_runtime_check", { hostId, target, source: selection.source, customPath: selection.customPath ?? null })
+}
 export function wslDistributions(): Promise<WslDistribution[]> { return invoke("host_wsl_distributions") }
 export function wslPath(hostId: string, distro: string, path: string): Promise<string> { return invoke("host_wsl_path", { hostId, distro, path }) }
 

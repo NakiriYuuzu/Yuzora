@@ -79,14 +79,17 @@ pub struct HerdrCapabilities {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum HerdrBinarySource {
-    #[default]
     Global,
+    #[default]
     Default,
+    Custom,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrBinarySourceInfo {
+    #[serde(default)]
+    pub custom_path: Option<String>,
     /// Preference persisted for the next app start.
     pub configured: HerdrBinarySource,
     /// Source frozen for the current process.
@@ -710,6 +713,8 @@ pub struct HerdrManager {
     configured_source: Mutex<HerdrBinarySource>,
     /// Source actively used by this process (frozen after first configure).
     active_source: Mutex<HerdrBinarySource>,
+    configured_custom_path: Mutex<Option<PathBuf>>,
+    active_custom_path: Mutex<Option<PathBuf>>,
     /// Diagnostic retained when the persisted preference cannot be trusted.
     binary_source_config_error: Mutex<Option<String>>,
     /// Detailed failure from the automatic default-server startup attempt.
@@ -766,8 +771,10 @@ impl HerdrManager {
             socket_override: Mutex::new(None),
             config_dir: Mutex::new(None),
             resource_dir: Mutex::new(None),
-            configured_source: Mutex::new(HerdrBinarySource::Global),
-            active_source: Mutex::new(HerdrBinarySource::Global),
+            configured_source: Mutex::new(HerdrBinarySource::Default),
+            active_source: Mutex::new(HerdrBinarySource::Default),
+            configured_custom_path: Mutex::new(None),
+            active_custom_path: Mutex::new(None),
             binary_source_config_error: Mutex::new(None),
             startup_error: Mutex::new(None),
             binary_source_write_lock: Mutex::new(()),
@@ -783,6 +790,8 @@ impl HerdrManager {
         let loaded = load_binary_source_preference(&config_dir);
         *self.configured_source.lock().unwrap() = loaded.source;
         *self.active_source.lock().unwrap() = loaded.source;
+        *self.configured_custom_path.lock().unwrap() = loaded.custom_path.clone();
+        *self.active_custom_path.lock().unwrap() = loaded.custom_path;
         *self.binary_source_config_error.lock().unwrap() = loaded.error;
         self.capability_cache.lock().unwrap().clear();
     }
@@ -968,12 +977,7 @@ impl HerdrManager {
 
     #[cfg(test)]
     pub fn set_config_dir_for_test(&self, dir: PathBuf) {
-        *self.config_dir.lock().unwrap() = Some(dir.clone());
-        let loaded = load_binary_source_preference(&dir);
-        *self.configured_source.lock().unwrap() = loaded.source;
-        *self.active_source.lock().unwrap() = loaded.source;
-        *self.binary_source_config_error.lock().unwrap() = loaded.error;
-        self.capability_cache.lock().unwrap().clear();
+        self.configure_paths(dir, None);
     }
 
     pub fn binary_source_info(&self) -> HerdrBinarySourceInfo {
@@ -988,9 +992,17 @@ impl HerdrManager {
         }
         let configured = *self.configured_source.lock().unwrap();
         let active = *self.active_source.lock().unwrap();
+        let custom_path = self.configured_custom_path.lock().unwrap().clone();
+        let active_custom_path = self.active_custom_path.lock().unwrap().clone();
+        let restart_required = configured != active || custom_path != active_custom_path;
         let (active_path, resolved, active_reason) = self.resolve_binary_selection(active);
-        let (configured_path, _configured_resolved, configured_reason) = if configured == active {
+        let (configured_path, _configured_resolved, configured_reason) = if !restart_required {
             (active_path.clone(), resolved, active_reason.clone())
+        } else if configured == HerdrBinarySource::Custom {
+            match checked_custom_binary(custom_path.as_deref()) {
+                Ok(path) => (Some(path), Some(configured), None),
+                Err(error) => (None, None, Some(error)),
+            }
         } else {
             self.resolve_binary_selection(configured)
         };
@@ -998,7 +1010,7 @@ impl HerdrManager {
             .as_deref()
             .map(probe_binary_identity)
             .unwrap_or((None, None));
-        let (configured_version, configured_protocol) = if configured == active {
+        let (configured_version, configured_protocol) = if !restart_required {
             (version.clone(), protocol)
         } else {
             configured_path
@@ -1007,6 +1019,7 @@ impl HerdrManager {
                 .unwrap_or((None, None))
         };
         HerdrBinarySourceInfo {
+            custom_path: custom_path.map(|path| path.to_string_lossy().into_owned()),
             configured,
             active,
             resolved,
@@ -1021,7 +1034,7 @@ impl HerdrManager {
             configured_version,
             configured_protocol,
             configuration_error: self.binary_source_config_error.lock().unwrap().clone(),
-            restart_required: configured != active,
+            restart_required,
         }
     }
 
@@ -1029,25 +1042,58 @@ impl HerdrManager {
         *self.configured_source.lock().unwrap()
     }
 
-    /// Persist preference. Active process keeps its current binary until restart.
+    pub fn check_binary_source(
+        &self,
+        source: HerdrBinarySource,
+        custom_path: Option<String>,
+    ) -> Result<crate::herdr_runtime::RuntimeBinaryCheck, String> {
+        let binary = if source == HerdrBinarySource::Custom {
+            checked_custom_binary(custom_path.as_deref().map(Path::new))?
+        } else {
+            let (path, reason) = self.resolve_binary_for_source(source);
+            path.ok_or_else(|| reason.unwrap_or_else(|| "herdr-unavailable".into()))?
+        };
+        crate::herdr_runtime::inspect_local(binary)
+    }
+
     pub fn set_binary_source(
         &self,
         source: HerdrBinarySource,
     ) -> Result<HerdrBinarySourceSetResult, String> {
+        self.set_binary_source_with_path(source, None)
+    }
+
+    /// Validate every running Session before persisting. Existing connectors keep
+    /// their client until Yuzora restarts; this never stops a HERDR server.
+    pub fn set_binary_source_with_path(
+        &self,
+        source: HerdrBinarySource,
+        custom_path: Option<String>,
+    ) -> Result<HerdrBinarySourceSetResult, String> {
+        let _write_guard = self.binary_source_write_lock.lock().unwrap();
+        self.check_binary_source(source, custom_path.clone())?
+            .require_compatible()?;
+        let custom_path = if source == HerdrBinarySource::Custom {
+            custom_path.map(PathBuf::from)
+        } else {
+            None
+        };
         let config_dir = self
             .config_dir
             .lock()
             .unwrap()
             .clone()
-            .ok_or_else(|| "herdr config directory is not configured".to_string())?;
-        let _write_guard = self.binary_source_write_lock.lock().unwrap();
-        save_binary_source_preference(&config_dir, source)?;
+            .ok_or("herdr config directory is not configured")?;
+        save_binary_source_preference(&config_dir, source, custom_path.as_deref())?;
         *self.configured_source.lock().unwrap() = source;
+        *self.configured_custom_path.lock().unwrap() = custom_path.clone();
         *self.binary_source_config_error.lock().unwrap() = None;
         let active = *self.active_source.lock().unwrap();
+        let restart_required =
+            source != active || custom_path != *self.active_custom_path.lock().unwrap();
         Ok(HerdrBinarySourceSetResult {
             configured: source,
-            restart_required: source != active,
+            restart_required,
         })
     }
 
@@ -1059,37 +1105,22 @@ impl HerdrManager {
         self.resolve_binary_selection(active).0
     }
 
-    /// Resolve a user's source preference into the executable used by this
-    /// process. Global is the automatic policy: prefer PATH, then use the
-    /// bundled Yuzora-managed binary. Explicit managed selection stays strict.
+    /// Resolve exactly the chosen source. An installed selection never falls
+    /// back to a managed binary when PATH changes.
     fn resolve_binary_selection(
         &self,
         source: HerdrBinarySource,
     ) -> (Option<PathBuf>, Option<HerdrBinarySource>, Option<String>) {
-        let has_explicit_override = self.binary_override.lock().unwrap().is_some();
-        let primary = self.resolve_binary_for_source(source);
-        let managed =
-            if source == HerdrBinarySource::Global && primary.0.is_none() && !has_explicit_override
-            {
-                self.resolve_binary_for_source(HerdrBinarySource::Default)
-            } else {
-                (None, None)
-            };
-        select_binary_resolution(source, has_explicit_override, primary, managed)
+        let (path, reason) = self.resolve_binary_for_source(source);
+        let resolved = path.as_ref().map(|_| source);
+        (path, resolved, reason)
     }
 
-    /// Strict lookup for one source. Automatic fallback belongs only in
-    /// `resolve_binary_selection`, keeping explicit managed diagnostics honest.
+    /// Resolve only the selected source; missing installed tools never fall back.
     fn resolve_binary_for_source(
         &self,
         source: HerdrBinarySource,
     ) -> (Option<PathBuf>, Option<String>) {
-        if cfg!(windows) && self.remote.is_none() {
-            return (
-                None,
-                Some("select-wsl-runtime: Windows workspaces require a WSL2 host".into()),
-            );
-        }
         if let Some(path) = self.binary_override.lock().unwrap().clone() {
             if is_executable(&path) {
                 return (Some(path), None);
@@ -1103,6 +1134,12 @@ impl HerdrManager {
             );
         }
         match source {
+            HerdrBinarySource::Custom => {
+                match checked_custom_binary(self.active_custom_path.lock().unwrap().as_deref()) {
+                    Ok(path) => (Some(path), None),
+                    Err(error) => (None, Some(error)),
+                }
+            }
             HerdrBinarySource::Global => match which_binary("herdr").map(PathBuf::from) {
                 Some(path) => (Some(path), None),
                 None => (None, Some("Herdr was not found on PATH".into())),
@@ -2810,44 +2847,22 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
 
 // ── Binary / API helpers ────────────────────────────────────────────────────
 
-fn select_binary_resolution(
-    source: HerdrBinarySource,
-    has_explicit_override: bool,
-    primary: (Option<PathBuf>, Option<String>),
-    managed: (Option<PathBuf>, Option<String>),
-) -> (Option<PathBuf>, Option<HerdrBinarySource>, Option<String>) {
-    let (primary_path, primary_reason) = primary;
-    if primary_path.is_some() {
-        return (primary_path, Some(source), primary_reason);
+fn checked_custom_binary(path: Option<&Path>) -> Result<PathBuf, String> {
+    let path = path.ok_or("herdr-custom-path-required")?;
+    if !path.is_absolute() || !is_executable(path) {
+        return Err(format!(
+            "herdr-custom-path-not-executable: {}",
+            path.display()
+        ));
     }
-    if source != HerdrBinarySource::Global || has_explicit_override {
-        return (None, None, primary_reason);
-    }
-
-    let (managed_path, managed_reason) = managed;
-    if managed_path.is_some() {
-        return (
-            managed_path,
-            Some(HerdrBinarySource::Default),
-            Some("Herdr was not found on PATH; using Yuzora-managed Herdr".into()),
-        );
-    }
-    let primary_reason =
-        primary_reason.unwrap_or_else(|| "Herdr was not found on PATH".to_string());
-    let managed_reason =
-        managed_reason.unwrap_or_else(|| "Yuzora-managed Herdr is unavailable".to_string());
-    (
-        None,
-        None,
-        Some(format!(
-            "{primary_reason}; Yuzora-managed fallback is also unavailable: {managed_reason}"
-        )),
-    )
+    Ok(path.to_path_buf())
 }
 
 fn managed_binary_path(resource_dir: &Path) -> PathBuf {
     let os = if cfg!(target_os = "macos") {
         "macos"
+    } else if cfg!(windows) {
+        "windows"
     } else {
         "linux"
     };
@@ -2859,7 +2874,7 @@ fn managed_binary_path(resource_dir: &Path) -> PathBuf {
     resource_dir
         .join("herdr")
         .join(format!("{os}-{arch}"))
-        .join("herdr")
+        .join(if cfg!(windows) { "herdr.exe" } else { "herdr" })
 }
 
 fn binary_source_config_path(config_dir: &Path) -> PathBuf {
@@ -2868,64 +2883,66 @@ fn binary_source_config_path(config_dir: &Path) -> PathBuf {
 
 struct BinarySourcePreferenceLoad {
     source: HerdrBinarySource,
+    custom_path: Option<PathBuf>,
     error: Option<String>,
 }
 
 fn load_binary_source_preference(config_dir: &Path) -> BinarySourcePreferenceLoad {
     let path = binary_source_config_path(config_dir);
+    let fallback = |error| BinarySourcePreferenceLoad {
+        source: HerdrBinarySource::Default,
+        custom_path: None,
+        error,
+    };
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return BinarySourcePreferenceLoad {
-                source: HerdrBinarySource::Global,
-                error: None,
-            };
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return fallback(None),
         Err(error) => {
-            return BinarySourcePreferenceLoad {
-                source: HerdrBinarySource::Global,
-                error: Some(format!(
-                    "failed to read Herdr binary-source preference at {}: {error}",
-                    path.display()
-                )),
-            };
+            return fallback(Some(format!(
+                "failed to read Herdr binary-source preference at {}: {error}",
+                path.display()
+            )))
         }
     };
-    let value = match serde_json::from_str::<serde_json::Value>(&raw) {
+    let value: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(value) => value,
         Err(error) => {
-            return BinarySourcePreferenceLoad {
-                source: HerdrBinarySource::Global,
-                error: Some(format!(
-                    "invalid Herdr binary-source preference at {}: {error}",
-                    path.display()
-                )),
-            };
+            return fallback(Some(format!(
+                "invalid Herdr binary-source preference at {}: {error}",
+                path.display()
+            )))
         }
     };
-    match value.get("binarySource").and_then(|v| v.as_str()) {
-        Some("global") => BinarySourcePreferenceLoad {
-            source: HerdrBinarySource::Global,
-            error: None,
-        },
-        Some("default") => BinarySourcePreferenceLoad {
-            source: HerdrBinarySource::Default,
-            error: None,
-        },
-        other => BinarySourcePreferenceLoad {
-            source: HerdrBinarySource::Global,
-            error: Some(format!(
-                "unknown Herdr binarySource {:?} in {}",
-                other,
+    let source = match value.get("binarySource").and_then(|v| v.as_str()) {
+        Some("global") => HerdrBinarySource::Global,
+        Some("default") => HerdrBinarySource::Default,
+        Some("custom") => HerdrBinarySource::Custom,
+        other => {
+            return fallback(Some(format!(
+                "unknown Herdr binarySource {other:?} in {}",
                 path.display()
-            )),
-        },
+            )))
+        }
+    };
+    let custom_path = value
+        .get("customPath")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from);
+    if source == HerdrBinarySource::Custom && !custom_path.as_deref().is_some_and(Path::is_absolute)
+    {
+        return fallback(Some("invalid Herdr custom binary path".into()));
+    }
+    BinarySourcePreferenceLoad {
+        source,
+        custom_path,
+        error: None,
     }
 }
 
 fn save_binary_source_preference(
     config_dir: &Path,
     source: HerdrBinarySource,
+    custom_path: Option<&Path>,
 ) -> Result<(), String> {
     fs::create_dir_all(config_dir)
         .map_err(|e| format!("failed to create herdr config dir: {e}"))?;
@@ -2934,7 +2951,9 @@ fn save_binary_source_preference(
         "binarySource": match source {
             HerdrBinarySource::Global => "global",
             HerdrBinarySource::Default => "default",
-        }
+            HerdrBinarySource::Custom => "custom",
+        },
+        "customPath": custom_path.map(|path| path.to_string_lossy().into_owned())
     });
     let body = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
     let mut temp = tempfile::NamedTempFile::new_in(config_dir)
@@ -3885,7 +3904,7 @@ fn apply_schema_method_flags(
 /// - top-level `methods: [...]`
 /// - `schemas` object keys that look like `namespace.method`
 /// - JSON Schema `const` values under request unions / subcommands
-fn collect_schema_methods(schema: &serde_json::Value) -> HashSet<String> {
+pub(crate) fn collect_schema_methods(schema: &serde_json::Value) -> HashSet<String> {
     let mut methods = HashSet::new();
 
     if let Some(arr) = schema.get("methods").and_then(|v| v.as_array()) {
@@ -4663,6 +4682,7 @@ mod tests {
             binary_protocol: None,
             channel: None,
             binary_source: HerdrBinarySourceInfo {
+                custom_path: None,
                 configured: HerdrBinarySource::Global,
                 active: HerdrBinarySource::Global,
                 resolved: Some(HerdrBinarySource::Global),
@@ -4829,26 +4849,77 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    #[cfg(unix)]
+    fn write_source_fixture(dir: &Path, compatible: bool) -> PathBuf {
+        let binary = dir.join("herdr-fixture");
+        let status = serde_json::json!({"client":{"version":"0.9.0","protocol":22},"server":{"running":true,"version":"0.9.0","protocol":22,"compatible":compatible,"socket":"/preserved.sock"}});
+        let schema = serde_json::json!({"protocol":22,"methods":["session.snapshot","events.subscribe","tab.create"]});
+        fs::write(&binary, format!("#!/bin/sh\ncase \"$1\" in\nsession) printf '%s\\n' '{{\"sessions\":[{{\"name\":\"default\",\"running\":true}}]}}';;\nstatus) printf '%s\\n' '{status}';;\napi) printf '%s\\n' '{schema}';;\n*) exit 9;;\nesac\n")).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        binary
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn binary_source_preference_persists_without_hot_swap() {
+    fn verified_custom_source_persists_without_hot_swapping_the_active_client() {
         let dir = tempfile::tempdir().unwrap();
+        let binary = write_source_fixture(dir.path(), true);
         let mgr = HerdrManager::new();
-        mgr.set_config_dir_for_test(dir.path().to_path_buf());
-        assert_eq!(mgr.get_binary_source(), HerdrBinarySource::Global);
-        let result = mgr.set_binary_source(HerdrBinarySource::Default).unwrap();
-        assert_eq!(result.configured, HerdrBinarySource::Default);
+        mgr.set_config_dir_for_test(dir.path().join("config"));
+        let result = mgr
+            .set_binary_source_with_path(
+                HerdrBinarySource::Custom,
+                Some(binary.to_string_lossy().into_owned()),
+            )
+            .unwrap();
         assert!(result.restart_required);
-        // Active process remains on Global until restart/reconfigure.
         assert_eq!(
             *mgr.active_source.lock().unwrap(),
-            HerdrBinarySource::Global
+            HerdrBinarySource::Default
+        );
+        assert_eq!(
+            mgr.binary_source_info().configured_path.as_deref(),
+            binary.to_str()
         );
         let reloaded = HerdrManager::new();
-        reloaded.set_config_dir_for_test(dir.path().to_path_buf());
-        assert_eq!(reloaded.get_binary_source(), HerdrBinarySource::Default);
+        reloaded.set_config_dir_for_test(dir.path().join("config"));
+        assert_eq!(reloaded.resolve_binary().as_deref(), Some(binary.as_path()));
+        assert!(!reloaded.binary_source_info().restart_required);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incompatible_source_does_not_overwrite_a_valid_saved_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good");
+        let bad = dir.path().join("bad");
+        fs::create_dir_all(&good).unwrap();
+        fs::create_dir_all(&bad).unwrap();
+        let good_binary = write_source_fixture(&good, true);
+        let bad_binary = write_source_fixture(&bad, false);
+        let config = dir.path().join("config");
+        let mgr = HerdrManager::new();
+        mgr.set_config_dir_for_test(config.clone());
+        mgr.set_binary_source_with_path(
+            HerdrBinarySource::Custom,
+            Some(good_binary.to_string_lossy().into_owned()),
+        )
+        .unwrap();
+        let before = fs::read(binary_source_config_path(&config)).unwrap();
+        assert!(mgr
+            .set_binary_source_with_path(
+                HerdrBinarySource::Custom,
+                Some(bad_binary.to_string_lossy().into_owned())
+            )
+            .unwrap_err()
+            .contains("runtime-incompatible"));
         assert_eq!(
-            *reloaded.active_source.lock().unwrap(),
-            HerdrBinarySource::Default
+            fs::read(binary_source_config_path(&config)).unwrap(),
+            before
+        );
+        assert_eq!(
+            mgr.binary_source_info().custom_path.as_deref(),
+            good_binary.to_str()
         );
     }
 
@@ -4858,78 +4929,27 @@ mod tests {
         fs::write(binary_source_config_path(dir.path()), "{not-json").unwrap();
         let mgr = HerdrManager::new();
         mgr.set_config_dir_for_test(dir.path().to_path_buf());
-        let info = mgr.binary_source_info();
-        assert_eq!(info.configured, HerdrBinarySource::Global);
-        assert!(info
+        assert!(mgr
+            .binary_source_info()
             .configuration_error
-            .as_deref()
-            .unwrap_or("")
+            .unwrap()
             .contains("invalid Herdr binary-source preference"));
     }
 
     #[test]
-    fn configured_default_reports_target_unavailable_before_restart() {
+    fn unavailable_managed_source_cannot_be_saved() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = HerdrManager::new();
         mgr.set_config_dir_for_test(dir.path().to_path_buf());
-        mgr.set_binary_source(HerdrBinarySource::Default).unwrap();
-        let info = mgr.binary_source_info();
-        assert_eq!(info.active, HerdrBinarySource::Global);
-        assert_eq!(info.configured, HerdrBinarySource::Default);
-        assert!(info.restart_required);
-        assert!(!info.configured_available);
-        assert!(info
-            .configured_reason
-            .as_deref()
-            .unwrap_or("")
-            .contains(if cfg!(windows) {
-                "select-wsl-runtime"
-            } else {
-                "managed"
-            }));
+        assert!(mgr.set_binary_source(HerdrBinarySource::Default).is_err());
+        assert!(!binary_source_config_path(dir.path()).exists());
+        assert!(!mgr.binary_source_info().configured_available);
     }
 
     #[test]
-    fn missing_global_binary_falls_back_to_yuzora_managed() {
-        let managed = PathBuf::from("/bundled/herdr");
-        let (path, resolved, reason) = select_binary_resolution(
-            HerdrBinarySource::Global,
-            false,
-            (None, Some("Herdr was not found on PATH".into())),
-            (Some(managed.clone()), None),
-        );
-        assert_eq!(path, Some(managed));
-        assert_eq!(resolved, Some(HerdrBinarySource::Default));
-        assert!(reason.unwrap().contains("using Yuzora-managed"));
-    }
-
-    #[test]
-    fn missing_global_and_managed_binaries_report_both_failures() {
-        let (path, resolved, reason) = select_binary_resolution(
-            HerdrBinarySource::Global,
-            false,
-            (None, Some("Herdr was not found on PATH".into())),
-            (None, Some("managed binary missing".into())),
-        );
-        assert!(path.is_none());
-        assert!(resolved.is_none());
-        let reason = reason.unwrap();
-        assert!(reason.contains("not found on PATH"), "{reason}");
-        assert!(reason.contains("managed binary missing"), "{reason}");
-    }
-
-    #[test]
-    fn default_binary_source_does_not_silently_fall_back_to_global() {
-        let mgr = HerdrManager::new();
-        *mgr.active_source.lock().unwrap() = HerdrBinarySource::Default;
-        *mgr.configured_source.lock().unwrap() = HerdrBinarySource::Default;
-        let (path, reason) = mgr.resolve_binary_for_source(HerdrBinarySource::Default);
-        assert!(path.is_none());
-        assert!(reason.unwrap().contains(if cfg!(windows) {
-            "select-wsl-runtime"
-        } else {
-            "managed"
-        }));
+    fn custom_source_requires_an_absolute_executable_path() {
+        assert!(checked_custom_binary(Some(Path::new("relative/herdr"))).is_err());
+        assert!(checked_custom_binary(None).is_err());
     }
 
     #[cfg(unix)]

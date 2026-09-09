@@ -1,28 +1,42 @@
 import { create } from "zustand"
-import { connectHost, disconnectHost, prepareHost, requestHost } from "@/lib/hostIpc"
+import { checkHostRuntime, connectHost, disconnectHost, prepareHost, requestHost } from "@/lib/hostIpc"
 import type { ConnectedHost, HostTarget } from "@/lib/hostIpc"
 import { registerRuntimeHost, unregisterRuntimeHost } from "@/lib/herdrProvider"
 import { useSshStore } from "./sshStore"
+import { useRuntimePreferencesStore } from "./runtimePreferencesStore"
+import type { HerdrRuntimeSelection } from "@/lib/herdrTypes"
 
-interface HostConfig { hostId: string; label: string; kind: "ssh" | "wsl"; distro?: string; helper: string; binary: string }
+export interface HostConfig { hostId: string; label: string; kind: "ssh" | "wsl"; distro?: string; helper: string; binary: string; selection?: HerdrRuntimeSelection; artifactIdentity?: string; verifiedAt?: number }
+export function selectionForHost(config?: HostConfig): HerdrRuntimeSelection {
+  if (config?.selection) return config.selection
+  if (!config) return { source: "default" }
+  const managed = config.binary.match(/^(.*\/\.local\/share\/yuzora\/runtimes\/[^/]+-(?:linux|macos)-(?:aarch64|x86_64)-[a-f0-9]{64})\/herdr$/)
+  return managed && config.helper === managed[1] + "/yuzora-host" ? { source: "default" } : { source: "custom", customPath: config.binary }
+}
 interface HostStatus { connection: ConnectedHost | null; connecting: boolean; error: string | null; target: HostTarget; attempt: number; retryAt: number }
-const STORAGE = "yuzora.runtime.hosts.v1"
+const STORAGE = "yuzora.runtime.hosts.v2"
 function load(): Record<string, HostConfig> {
   try {
-    const rows: unknown = JSON.parse(window.localStorage.getItem(STORAGE) ?? "[]")
+    const rows: unknown = JSON.parse(window.localStorage.getItem(STORAGE) ?? window.localStorage.getItem("yuzora.runtime.hosts.v1") ?? "[]")
     if (!Array.isArray(rows)) return {}
     return Object.fromEntries(rows.slice(0, 32).flatMap((row: Partial<HostConfig>) => {
       if (!row || typeof row.hostId !== "string" || typeof row.label !== "string" || typeof row.helper !== "string" || typeof row.binary !== "string") return []
       if (row.kind !== "ssh" && row.kind !== "wsl") return []
       if (row.kind === "wsl" && typeof row.distro !== "string") return []
-      return [[row.hostId, { hostId:row.hostId, label:row.label, kind:row.kind, distro:row.distro, helper:row.helper, binary:row.binary }]]
+      const config: HostConfig = { hostId:row.hostId, label:row.label, kind:row.kind, distro:row.distro, helper:row.helper, binary:row.binary }
+      if (row.selection?.source === "default" || row.selection?.source === "global") config.selection = { source: row.selection.source }
+      else if (row.selection?.source === "custom" && typeof row.selection.customPath === "string") config.selection = { source: "custom", customPath: row.selection.customPath }
+      config.selection = selectionForHost(config)
+      if (typeof row.artifactIdentity === "string" && /^[a-f0-9]{64}$/.test(row.artifactIdentity)) config.artifactIdentity = row.artifactIdentity
+      if (typeof row.verifiedAt === "number") config.verifiedAt = row.verifiedAt
+      return [[row.hostId, config]]
     }))
   } catch { return {} }
 }
 interface HostState {
   configs: Record<string, HostConfig>
   hosts: Record<string, HostStatus>
-  setup: (hostId: string, label: string, target: HostTarget, useManaged?: boolean) => Promise<ConnectedHost>
+  setup: (hostId: string, label: string, target: HostTarget, selection?: HerdrRuntimeSelection) => Promise<ConnectedHost>
   reconcile: () => void
   disconnect: (hostId: string) => Promise<void>
 }
@@ -48,6 +62,7 @@ export const useHostStore = create<HostState>((set, get) => {
   const current = (hostId: string, token: HostOperation, target: HostTarget, config?: HostConfig) =>
     pending.get(hostId) === token && !paused.has(hostId)
     && (!config || get().configs[hostId] === config)
+    && (target.kind !== "wsl" || useRuntimePreferencesStore.getState().wslEnabled)
     && (target.kind !== "ssh" || useSshStore.getState().sessions[hostId]?.sessionId === target.sessionId)
   const update = (hostId: string, status: HostStatus) =>
     set((state) => ({ hosts: { ...state.hosts, [hostId]: status } }))
@@ -63,8 +78,9 @@ export const useHostStore = create<HostState>((set, get) => {
   }
   return {
     configs: load(), hosts: {},
-    async setup(hostId, label, target, useManaged = false) {
+    async setup(hostId, label, target, selection = { source: "default" }) {
       if (target.kind === "local") throw new Error("Native hosts already use the local runtime")
+      if (target.kind === "wsl" && !useRuntimePreferencesStore.getState().wslEnabled) throw new Error("wsl-runtime-disabled-open-settings")
       const background = pending.get(hostId)
       if (background?.kind === "setup") throw new Error("Host setup is already in progress")
       paused.delete(hostId)
@@ -72,26 +88,32 @@ export const useHostStore = create<HostState>((set, get) => {
       // the previous operation release its resources before replacing them.
       const token = begin(hostId, "setup")
       let preparedConnection: ConnectedHost | null = null
+      const previous = get().hosts[hostId]
+      let connectionWasClosed = false
       try {
         await background?.settled
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
-        await close(hostId)
+        const inspection = await checkHostRuntime(hostId, target, selection)
+        if (inspection.check && !inspection.check.canApply) throw new Error("runtime-incompatible: " + JSON.stringify(inspection.check))
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
-        update(hostId, { connection: null, connecting: true, error: null, target, attempt: 0, retryAt: 0 })
-        const prepared = await prepareHost(hostId, target, useManaged)
+        update(hostId, { connection: previous?.connection ?? null, connecting: true, error: null, target, attempt: 0, retryAt: 0 })
+        const prepared = await prepareHost(hostId, target, selection)
         preparedConnection = prepared.connection
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
-        const config: HostConfig = { hostId, label, kind: target.kind, ...(target.kind === "wsl" ? { distro: target.distro } : {}), binary: prepared.binary, helper: prepared.helper }
+        connectionWasClosed = true
+        await close(hostId)
+        if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
+        const config: HostConfig = { hostId, label, kind: target.kind, ...(target.kind === "wsl" ? { distro: target.distro } : {}), binary: prepared.binary, helper: prepared.helper, selection: { ...selection }, artifactIdentity: prepared.artifactIdentity, verifiedAt: Date.now() }
         const configs = { ...get().configs, [hostId]: config }
         window.localStorage.setItem(STORAGE, JSON.stringify(Object.values(configs)))
-        registerRuntimeHost(prepared.connection, prepared.binary, label)
+        registerRuntimeHost(prepared.connection, prepared.binary, label, target.kind)
         set({ configs })
         update(hostId, { connection: prepared.connection, connecting: false, error: null, target, attempt: 0, retryAt: 0 })
         restoreFiles(prepared.connection)
         return prepared.connection
       } catch (error) {
         if (preparedConnection) await disconnectHost(preparedConnection.owner).catch(() => undefined)
-        if (current(hostId, token, target)) update(hostId, { connection: null, connecting: false, error: String(error), target, attempt: 1, retryAt: Date.now() + 4000 })
+        if (current(hostId, token, target)) update(hostId, { connection: !connectionWasClosed ? previous?.connection ?? null : null, connecting: false, error: String(error), target, attempt: 1, retryAt: Date.now() + 4000 })
         throw error
       } finally { done(hostId, token) }
     },
@@ -105,6 +127,10 @@ export const useHostStore = create<HostState>((set, get) => {
     reconcile() {
       for (let config of Object.values(get().configs)) {
         const hostId = config.hostId
+        if (config.kind === "wsl" && !useRuntimePreferencesStore.getState().wslEnabled) {
+          if (get().hosts[hostId]?.connection) void close(hostId)
+          continue
+        }
         if (pending.has(hostId) || paused.has(hostId)) continue
         const descriptor = useSshStore.getState().hosts.find((host) => host.id === hostId)
         if (config.kind === "ssh" && descriptor && descriptor.name !== config.label) {
@@ -113,7 +139,7 @@ export const useHostStore = create<HostState>((set, get) => {
           set({ configs })
           try { window.localStorage.setItem(STORAGE, JSON.stringify(Object.values(configs))) } catch { /* Keep the current display name in memory. */ }
           const connection = get().hosts[hostId]?.connection
-          if (connection) registerRuntimeHost(connection, config.binary, config.label)
+          if (connection) registerRuntimeHost(connection, config.binary, config.label, config.kind)
         }
         const sshSession = useSshStore.getState().sessions[hostId]
         const target: HostTarget | null = config.kind === "wsl"
@@ -143,7 +169,7 @@ export const useHostStore = create<HostState>((set, get) => {
               await disconnectHost(opened.owner).catch(() => undefined)
               return
             }
-            registerRuntimeHost(opened, config.binary, config.label)
+            registerRuntimeHost(opened, config.binary, config.label, config.kind)
             update(hostId, { connection: opened, connecting: false, error: null, target, attempt: 0, retryAt: 0 })
             restoreFiles(opened)
           } catch (error) {

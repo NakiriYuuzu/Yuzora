@@ -2,10 +2,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { ConnectedHost } from "@/lib/hostIpc"
 
 const mocks = vi.hoisted(() => ({
-  prepare: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), request: vi.fn(), register: vi.fn(), unregister: vi.fn(),
+  check: vi.fn(), prepare: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), request: vi.fn(), register: vi.fn(), unregister: vi.fn(),
   ssh: { sessions: {} as Record<string, { sessionId: string; status: string }>, hosts: [] as Array<{ id: string; name: string }> }
 }))
-vi.mock("@/lib/hostIpc", () => ({ prepareHost: mocks.prepare, connectHost: mocks.connect, disconnectHost: mocks.disconnect, requestHost: mocks.request }))
+vi.mock("@/lib/hostIpc", () => ({ checkHostRuntime: mocks.check, prepareHost: mocks.prepare, connectHost: mocks.connect, disconnectHost: mocks.disconnect, requestHost: mocks.request }))
 vi.mock("@/lib/herdrProvider", () => ({ registerRuntimeHost: mocks.register, unregisterRuntimeHost: mocks.unregister }))
 vi.mock("./sshStore", () => ({ useSshStore: { getState: () => mocks.ssh } }))
 
@@ -21,6 +21,7 @@ beforeEach(() => {
   mocks.ssh.hosts = []
   mocks.disconnect.mockResolvedValue(undefined)
   mocks.request.mockResolvedValue({})
+  mocks.check.mockResolvedValue({ check: { canApply: true }, requiresInstall: false })
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -83,7 +84,7 @@ it("updates a display name without reconnecting or changing runtime identity", a
   mocks.ssh.hosts = [{ id: "host", name: "Renamed" }]
   useHostStore.getState().reconcile()
   expect(useHostStore.getState().configs.host.label).toBe("Renamed")
-  expect(mocks.register).toHaveBeenCalledWith(connected, "/herdr", "Renamed")
+  expect(mocks.register).toHaveBeenCalledWith(connected, "/herdr", "Renamed", "ssh")
   expect(mocks.connect).not.toHaveBeenCalled()
   expect(mocks.disconnect).not.toHaveBeenCalled()
 })
@@ -136,7 +137,7 @@ it("releases a late background reconnect before preparing updated tools", async 
   expect(mocks.prepare).not.toHaveBeenCalled()
   release.resolve()
   await expect(setup).resolves.toEqual(host(2))
-  expect(mocks.register).toHaveBeenCalledExactlyOnceWith(host(2), "/herdr", "Server")
+  expect(mocks.register).toHaveBeenCalledExactlyOnceWith(host(2), "/herdr", "Server", "ssh")
 })
 
 it("cancels a queued setup without deploying or reviving the host", async () => {
@@ -154,4 +155,41 @@ it("cancels a queued setup without deploying or reviving the host", async () => 
   expect(useHostStore.getState().hosts.host.connection).toBeNull()
   useHostStore.getState().reconcile()
   expect(mocks.connect).not.toHaveBeenCalled()
+})
+
+it("preserves the existing connection and configuration when a candidate is incompatible", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const connected = host()
+  useHostStore.setState({ configs: { host: config }, hosts: { host: { connection: connected, connecting: false, error: null, target: { kind: "ssh", sessionId: "ssh-1" }, attempt: 0, retryAt: 0 } } })
+  mocks.check.mockResolvedValue({ check: { canApply: false } })
+  await expect(useHostStore.getState().setup("host", "Server", { kind: "ssh", sessionId: "ssh-1" }, { source: "global" })).rejects.toThrow("runtime-incompatible")
+  expect(mocks.prepare).not.toHaveBeenCalled()
+  expect(mocks.disconnect).not.toHaveBeenCalled()
+  expect(useHostStore.getState().configs.host).toBe(config)
+  expect(useHostStore.getState().hosts.host.connection).toBe(connected)
+})
+it("keeps WSL dormant by default and disconnects only the helper when disabled", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
+  const wsl = { ...config, kind: "wsl" as const, distro: "Ubuntu" }
+  useHostStore.setState({ configs: { host: wsl } })
+  useHostStore.getState().reconcile()
+  expect(mocks.connect).not.toHaveBeenCalled()
+  await expect(useHostStore.getState().setup("host", "Ubuntu", { kind: "wsl", distro: "Ubuntu" })).rejects.toThrow("wsl-runtime-disabled")
+  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  mocks.connect.mockResolvedValue(host())
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(useHostStore.getState().hosts.host.connection).toEqual(host()))
+  useRuntimePreferencesStore.getState().setWslEnabled(false)
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(host().owner))
+  expect(useHostStore.getState().configs.host).toEqual(wsl)
+  expect(mocks.request).not.toHaveBeenCalled()
+})
+it("migrates old managed paths while preserving explicitly installed and custom policies", async () => {
+  const { selectionForHost } = await import("./hostStore")
+  const directory = `/home/test/.local/share/yuzora/runtimes/0.0.9-beta.3-linux-x86_64-${"a".repeat(64)}`
+  expect(selectionForHost({ ...config, binary: `${directory}/herdr`, helper: `${directory}/yuzora-host` })).toEqual({ source: "default" })
+  expect(selectionForHost({ ...config, binary: "/usr/bin/herdr" })).toEqual({ source: "custom", customPath: "/usr/bin/herdr" })
+  expect(selectionForHost({ ...config, selection: { source: "global" } })).toEqual({ source: "global" })
 })

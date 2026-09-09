@@ -434,9 +434,24 @@ pub async fn herdr_binary_source_get(
 pub async fn herdr_binary_source_set(
     state: tauri::State<'_, HerdrState>,
     source: HerdrBinarySource,
+    custom_path: Option<String>,
 ) -> Result<HerdrBinarySourceSetResult, String> {
     let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || manager.set_binary_source(source))
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.set_binary_source_with_path(source, custom_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_binary_source_check(
+    state: tauri::State<'_, HerdrState>,
+    source: HerdrBinarySource,
+    custom_path: Option<String>,
+) -> Result<yuzora_host::herdr_runtime::RuntimeBinaryCheck, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.check_binary_source(source, custom_path))
         .await
         .map_err(|e| e.to_string())?
 }

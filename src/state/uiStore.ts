@@ -14,6 +14,7 @@ import {
 
 type SettingsTargetOptions = {
     source?: string
+    hostId?: string
 }
 
 export type GitPanelTab = "log" | "local" | "console"
@@ -57,6 +58,7 @@ interface UiState {
     settingsOpen: boolean                      // Settings 對話框開關（單一真相，AppShell 訂閱）
     settingsSection: string | null             // 開啟時鎖定的 section（null＝預設/記憶上次）
     settingsLogSource: string | null           // Logs section 要預填的 source（null＝全部 sources）
+    settingsHostId: string | null
     // 每次 openSettings ++1。相同 target 連開（primitive 不變、zustand 短路）時，用它讓
     // SettingsDialog 的 sync effect 仍能重新觸發，把手動切走的 section 拉回目標。
     settingsNonce: number
@@ -96,6 +98,7 @@ export const uiInitialState = {
     settingsOpen: false,
     settingsSection: null,
     settingsLogSource: null,
+    settingsHostId: null,
     settingsNonce: 0,
     projectEditorPath: null,
     recentWorkspaceRemovedNotice: null as { name: string } | null,
@@ -330,6 +333,7 @@ export const useUiStore = create<UiState>()((set) => ({
                 settingsOpen: true,
                 settingsSection: section ?? null,
                 settingsLogSource: source ?? null,
+                settingsHostId: target?.hostId ?? null,
                 settingsNonce: s.settingsNonce + 1
             }
         }),

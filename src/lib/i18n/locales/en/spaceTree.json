@@ -86,5 +86,7 @@
   "noRunningSessions": "No running Sessions.",
   "incompatibleDetail": "HERDR client {{clientVersion}} (protocol {{clientProtocol}}) is incompatible with server {{serverVersion}} (protocol {{serverProtocol}}).",
   "binaryDetail": "Selected binary: {{path}}.",
-  "incompatibleRecovery": "Select this host in Add Folder and use Update Host Tools to update the client. Keep running Sessions; verify compatible versions before changing the server."
+  "incompatibleRecovery": "Use Repair this host to check the exact client path and update its source. Preserve running Sessions.",
+  "repairHost": "Repair this host",
+  "runtimeSettings": "HERDR settings"
 }

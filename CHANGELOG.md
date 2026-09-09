@@ -6,7 +6,8 @@
 
 ### 新增
 
-- Windows 工作區改用 WSL2；每個工作區的 Agent、終端機、檔案與 Git 在選定的 Linux 環境執行。
+- Windows 支援原生 HERDR；可在設定中啟用 WSL，再為資料夾選取 Linux 發行版。每個工作區的終端機、檔案與 Git 在所選主機執行。
+- HERDR 設定可管理各主機的隨附、已安裝或自訂版本，檢查相容性、更新工具並複製診斷；錯誤提供直接修復主機的入口。
 - 共用新增資料夾入口支援本地、SSH 完整工作區及純 SFTP，並以主機標示區分近期資料夾與文件。
 - 新版工作面以 Space／Agent 側欄集中呈現多台主機的 Agent 與 Attention，Files／Git 工具側欄可獨立收合；遠端工作區提供編輯、安全儲存、Git／worktree、Browser 與 SQLite。
 - SFTP 支援直接編輯與手動上傳／下載，儲存前確認遠端版本。

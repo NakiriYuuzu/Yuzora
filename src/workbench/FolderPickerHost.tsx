@@ -8,7 +8,7 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Checkbox } from "@/components/ui/checkbox"
+import { RuntimeSourceFields } from "@/app/workbench/RuntimeSourceFields"
 import { HostList } from "@/app/workbench/HostList"
 import { useFolderPickerStore } from "@/state/folderPickerStore"
 import { useSshStore } from "@/state/sshStore"
@@ -18,7 +18,9 @@ import type { FileNode, SftpListing, WorkspaceOpenResult } from "@/lib/types"
 import { requestHost, wslDistributions, wslPath } from "@/lib/hostIpc"
 import type { HostTarget, WslDistribution } from "@/lib/hostIpc"
 import { isWindowsPlatform } from "@/lib/platform"
-import { useHostStore } from "@/state/hostStore"
+import { selectionForHost, useHostStore } from "@/state/hostStore"
+import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore"
+import { useUiStore } from "@/state/uiStore"
 import { LOCAL_HOST_ID, parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { loadRemoteWorkspaces } from "@/state/remoteWorkspaceRegistry"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
@@ -49,8 +51,9 @@ function FolderPickerDialog() {
   const browseGeneration = useRef(0)
   const session = activeHostId ? sessions[activeHostId] : null
   const windows = isWindowsPlatform()
-  const nativePicker = location === "local" && !windows
-  const runtimePicker = (location === "local" && windows) || (location === "remote" && access === "runtime")
+  const wslEnabled = useRuntimePreferencesStore(state => state.wslEnabled)
+  const nativePicker = location === "local"
+  const runtimePicker = location === "wsl" || (location === "remote" && access === "runtime")
 
   useEffect(() => {
     setListing(null); setPath(recent?.hostId === activeHostId ? recent.path : "."); setError(null); setBusy(false)
@@ -66,13 +69,14 @@ function FolderPickerDialog() {
       const connected = access === "runtime"
         ? useHostStore.getState().hosts[resource.hostId]?.connection
         : sessions[resource.hostId]?.status === "connected"
-      if (connected) { finish?.(uri); return }
       if (config?.kind === "wsl") {
         if (!windows) { setError(t("recentHostUnavailable")); return }
+        if (connected && wslEnabled) { finish?.(uri); return }
         setRecent({ ...resource, uri })
-        setLocation("local")
+        setLocation("wsl")
         return
       }
+      if (connected) { finish?.(uri); return }
       if (!hosts.some((host) => host.id === resource.hostId)) { setError(t("recentHostUnavailable")); return }
       setRecent({ ...resource, uri })
       setLocation("remote")
@@ -120,15 +124,15 @@ function FolderPickerDialog() {
 
   if (runtimeHostId && runtimeHostId !== LOCAL_HOST_ID) {
     const runtimeSession = sessions[runtimeHostId]
-    const target: HostTarget | null = runtimeConfig?.kind === "wsl" && runtimeConfig.distro
-      ? { kind: "wsl", distro: runtimeConfig.distro }
+    const target: HostTarget | null = runtimeConfig?.kind === "wsl"
+      ? wslEnabled && runtimeConfig.distro ? { kind: "wsl", distro: runtimeConfig.distro } : null
       : runtimeSession?.status === "connected" && runtimeSession.sessionId
         ? { kind: "ssh", sessionId: runtimeSession.sessionId } : null
     return <Dialog open onOpenChange={(next) => { if (!next) finish?.(null) }}>
       <DialogContent className="flex max-h-[calc(100dvh-2rem)] min-h-0 flex-col overflow-hidden sm:max-w-[640px]">
         <DialogHeader className="shrink-0 pr-6 [overflow-wrap:anywhere]"><DialogTitle>{t("addFolder")}</DialogTitle><DialogDescription>{runtimeConfig?.label ?? runtimeHostId}</DialogDescription></DialogHeader>
         <ScrollArea className="min-h-0 min-w-0 flex-1" viewportClassName="[&>div]:!block" contentClassName="flex min-w-0 flex-col gap-4 p-1 [overflow-wrap:anywhere]">
-        {target ? <RuntimeFolderPicker hostId={runtimeHostId} label={runtimeConfig?.label ?? runtimeHostId} target={target} onChoose={(path) => finish?.(path)} /> : <p role="alert">{t("runtimeDisconnected")}</p>}
+        {target ? <RuntimeFolderPicker hostId={runtimeHostId} label={runtimeConfig?.label ?? runtimeHostId} target={target} onChoose={(path) => finish?.(path)} /> : <><p role="alert">{t(runtimeConfig?.kind === "wsl" && !wslEnabled ? "wslDisabled" : "runtimeDisconnected")}</p><RuntimeSettingsLink hostId={runtimeHostId} /></>}
         </ScrollArea>
         <DialogFooter className="shrink-0"><Button variant="outline" onClick={() => finish?.(null)}>{t("cancel")}</Button></DialogFooter>
       </DialogContent>
@@ -140,10 +144,10 @@ function FolderPickerDialog() {
       <DialogContent className="flex max-h-[calc(100dvh-2rem)] min-h-0 flex-col overflow-hidden sm:max-w-[640px]">
         <DialogHeader className="shrink-0 pr-6 [overflow-wrap:anywhere]"><DialogTitle>{t("addFolder")}</DialogTitle><DialogDescription>{t("description")}</DialogDescription></DialogHeader>
         <ScrollArea className="min-h-0 min-w-0 flex-1" viewportClassName="[&>div]:!block" contentClassName="flex min-w-0 flex-col gap-4 p-1 [overflow-wrap:anywhere]">
-        {!runtimeHostId && <Tabs value={location} onValueChange={(value) => { if (value === "local" || value === "remote") setLocation(value) }}>
-          <TabsList><TabsTrigger value="local">{t("local")}</TabsTrigger><TabsTrigger value="remote">{t("remote")}</TabsTrigger></TabsList>
+        {!runtimeHostId && <Tabs value={location} onValueChange={(value) => { if (value === "local" || value === "remote" || value === "wsl") setLocation(value) }}>
+          <TabsList><TabsTrigger value="local">{t(windows ? "windowsNative" : "local")}</TabsTrigger>{windows && <TabsTrigger value="wsl">WSL</TabsTrigger>}<TabsTrigger value="remote">{t("remote")}</TabsTrigger></TabsList>
         </Tabs>}
-        {location === "local" ? windows ? <WslFolderPicker key={recent?.uri} initialHostId={recent?.hostId} initialPath={recent?.path} legacyWindowsPath={legacyWindowsPath} onChoose={(path) => finish?.(path)} /> : <p>{t("localDescription")}</p> : <FieldGroup>
+        {location === "local" ? <p>{t("localDescription")}</p> : location === "wsl" ? wslEnabled ? <WslFolderPicker key={recent?.uri} initialHostId={recent?.hostId} initialPath={recent?.path} legacyWindowsPath={legacyWindowsPath} onChoose={(path) => finish?.(path)} /> : <><p>{t("wslDisabled")}</p><RuntimeSettingsLink hostId={recent?.hostId} /></> : <FieldGroup>
           <HostList />
           {session?.status === "connecting" && <p role="status">{t("connecting")}</p>}
           {session?.error && <p role="alert">{session.error}</p>}
@@ -166,6 +170,14 @@ function FolderPickerDialog() {
       </DialogContent>
     </Dialog>
   </>
+}
+
+function RuntimeSettingsLink({ hostId }: { hostId?: string }) {
+  const { t } = useTranslation("hosts")
+  return <Button variant="outline" onClick={() => {
+    useFolderPickerStore.getState().finish?.(null)
+    useUiStore.getState().openSettings("herdr", { hostId })
+  }}>{t("manageHost")}</Button>
 }
 
 function RecentWorkspaceFolders({ onChoose }: { onChoose: (path: string) => void }) {
@@ -217,12 +229,7 @@ function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,in
   const [entries,setEntries]=useState<FileNode[]>([])
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState<string|null>(null)
-  const [managed,setManaged]=useState(() => {
-    const saved=useHostStore.getState().configs[hostId]
-    return !!saved && saved.helper.includes("/.local/share/yuzora/runtimes/")
-      && saved.helper.endsWith("/yuzora-host")
-      && saved.binary===saved.helper.slice(0,-"yuzora-host".length)+"herdr"
-  })
+  const [selection,setSelection]=useState(() => selectionForHost(useHostStore.getState().configs[hostId]))
   const owner=host?.connection?.owner
   const browseGeneration=useRef(0)
   useEffect(() => {
@@ -235,7 +242,7 @@ function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,in
   }
   async function setup() {
     setBusy(true);setError(null);setDirectory(null);setEntries([])
-    try {const connection=await useHostStore.getState().setup(hostId,label,target,managed);setPath(initialPath ?? connection.hello.home)}
+    try {const connection=await useHostStore.getState().setup(hostId,label,target,selection);setPath(initialPath ?? connection.hello.home)}
     catch(error) {setError(String(error))}
     finally {setBusy(false)}
   }
@@ -277,7 +284,8 @@ function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,in
     finally {setBusy(false)}
   }
   return <FieldGroup>
-    <Field orientation="horizontal"><Checkbox id={`managed-${hostId}`} checked={managed} onCheckedChange={(value)=>setManaged(value===true)} /><FieldLabel htmlFor={`managed-${hostId}`}>{t("managedRuntime")}</FieldLabel></Field>
+    <RuntimeSourceFields value={selection} onChange={setSelection} disabled={busy || host?.connecting} />
+    <RuntimeSettingsLink hostId={hostId} />
     {!owner ? <>
       <p>{t("setupDescription")}</p>
       <Button disabled={busy || host?.connecting} onClick={()=>void setup()}>{busy ? t("settingUp"):t("setupHost")}</Button>

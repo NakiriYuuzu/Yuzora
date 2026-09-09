@@ -30,5 +30,8 @@
   "transfers": "SFTP 傳輸",
   "manageHosts": "管理主機",
   "bindLegacyWindows": "請為舊資料夾 {{path}} 選擇 WSL2 主機。既有 Windows session 紀錄會保留。",
-  "bindWindowsFolder": "在 WSL 尋找此資料夾"
+  "bindWindowsFolder": "在 WSL 尋找此資料夾",
+  "windowsNative": "Windows 本機",
+  "wslDisabled": "請先到設定 → HERDR 啟用 WSL。",
+  "manageHost": "管理此主機"
 }

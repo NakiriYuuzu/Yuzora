@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use yuzora_host::herdr_runtime::{inspect_documents, session_names, RuntimeBinaryCheck};
+use yuzora_host::herdr_service::HerdrBinarySource;
 use yuzora_host::protocol::{Operation, PROTOCOL_VERSION};
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
@@ -53,6 +55,7 @@ pub struct PreparedHost {
     pub connection: ConnectedHost,
     pub binary: String,
     pub helper: String,
+    pub artifact_identity: String,
 }
 
 pub(crate) async fn execute(
@@ -287,6 +290,127 @@ pub async fn host_probe(
     probe(&target, &ssh.0).await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostRuntimeCheck {
+    pub binary: String,
+    pub installed_binary: Option<String>,
+    pub managed_version: String,
+    pub managed_protocol: u32,
+    pub artifact_identity: String,
+    pub requires_install: bool,
+    pub check: Option<RuntimeBinaryCheck>,
+}
+
+fn select_host_binary(
+    info: &HostProbe,
+    source: HerdrBinarySource,
+    custom_path: Option<&str>,
+    directory: &str,
+) -> Result<String, String> {
+    let binary = match source {
+        HerdrBinarySource::Default => format!(
+            "{}/.local/share/yuzora/runtimes/{directory}/herdr",
+            info.home
+        ),
+        HerdrBinarySource::Global => info
+            .installed_herdr
+            .clone()
+            .ok_or("herdr-not-found-on-selected-host")?,
+        HerdrBinarySource::Custom => custom_path.ok_or("herdr-custom-path-required")?.to_string(),
+    };
+    if !binary.starts_with('/') || binary.contains('\0') {
+        return Err("herdr-host-path-must-be-absolute".into());
+    }
+    Ok(binary)
+}
+
+async fn runtime_metadata(
+    target: &HostTarget,
+    ssh: &SshManager,
+    binary: &str,
+    session: &str,
+    command: &str,
+) -> Result<serde_json::Value, String> {
+    let script = format!(
+        "HERDR_SESSION={} {} {command}",
+        shell_quote(session)?,
+        shell_quote(binary)?
+    );
+    let bytes = execute(target, Some(ssh), &script, &[]).await?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("invalid-runtime-json: {error}"))
+}
+
+async fn inspect_host_binary(
+    target: &HostTarget,
+    ssh: &SshManager,
+    binary: &str,
+) -> Result<RuntimeBinaryCheck, String> {
+    let schema = runtime_metadata(target, ssh, binary, "default", "api schema --json").await?;
+    let sessions = runtime_metadata(target, ssh, binary, "default", "session list --json").await?;
+    let mut statuses = Vec::new();
+    for name in session_names(&sessions)? {
+        let status = runtime_metadata(target, ssh, binary, &name, "status --json").await?;
+        statuses.push((name, status));
+    }
+    inspect_documents(binary.to_string(), schema, statuses)
+}
+
+#[tauri::command]
+pub async fn host_runtime_check(
+    app: tauri::AppHandle,
+    ssh: tauri::State<'_, SshState>,
+    host_id: String,
+    target: HostTarget,
+    source: HerdrBinarySource,
+    custom_path: Option<String>,
+) -> Result<HostRuntimeCheck, String> {
+    if let HostTarget::Wsl { distro } = &target {
+        crate::host_wsl::verify_identity(&host_id, distro).await?;
+    }
+    let info = probe(&target, &ssh.0).await?;
+    let platform = format!("{}-{}", info.os, info.arch);
+    let bytes = tokio::fs::read(resource_root(&app)?.join(format!("{platform}.json")))
+        .await
+        .map_err(|_| format!("host-artifact-unavailable: {platform}"))?;
+    if bytes.len() > 16384 {
+        return Err("host-manifest-too-large".into());
+    }
+    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    validate_manifest(&manifest, &platform)?;
+    let artifact_identity = hash(&bytes);
+    let directory = format!("{}-{platform}-{artifact_identity}", manifest.version);
+    let binary = select_host_binary(&info, source, custom_path.as_deref(), &directory)?;
+    let exists = execute(
+        &target,
+        Some(&ssh.0),
+        &format!(
+            "if test -x {}; then printf yes; else printf no; fi",
+            shell_quote(&binary)?
+        ),
+        &[],
+    )
+    .await?
+        == b"yes";
+    if !exists && source != HerdrBinarySource::Default {
+        return Err(format!("herdr-not-executable-on-selected-host: {binary}"));
+    }
+    let check = if exists {
+        Some(inspect_host_binary(&target, &ssh.0, &binary).await?)
+    } else {
+        None
+    };
+    Ok(HostRuntimeCheck {
+        binary,
+        installed_binary: info.installed_herdr,
+        managed_version: manifest.herdr.version,
+        managed_protocol: manifest.herdr.protocol,
+        artifact_identity,
+        requires_install: !exists,
+        check,
+    })
+}
+
 #[tauri::command]
 pub async fn host_prepare(
     app: tauri::AppHandle,
@@ -294,7 +418,8 @@ pub async fn host_prepare(
     ssh: tauri::State<'_, SshState>,
     host_id: String,
     target: HostTarget,
-    use_managed_herdr: bool,
+    source: HerdrBinarySource,
+    custom_path: Option<String>,
 ) -> Result<PreparedHost, String> {
     if let HostTarget::Wsl { distro } = &target {
         crate::host_wsl::verify_identity(&host_id, distro).await?;
@@ -328,9 +453,8 @@ pub async fn host_prepare(
         &manifest.helper.sha256,
     )
     .await?;
-    let binary = if let Some(binary) = info.installed_herdr.filter(|_| !use_managed_herdr) {
-        binary
-    } else {
+    let binary = select_host_binary(&info, source, custom_path.as_deref(), &directory)?;
+    if source == HerdrBinarySource::Default {
         deploy_file(
             &target,
             Some(&ssh.0),
@@ -340,8 +464,13 @@ pub async fn host_prepare(
             &herdr_bytes,
             &manifest.herdr.sha256,
         )
+        .await?;
+    }
+    // Recheck the actual chosen binary and every running Session before replacing
+    // the helper connection or allowing the frontend to persist new paths.
+    inspect_host_binary(&target, &ssh.0, &binary)
         .await?
-    };
+        .require_compatible()?;
     let connection = state
         .0
         .connect(host_id, target, helper.clone(), &ssh.0)
@@ -363,12 +492,44 @@ pub async fn host_prepare(
         connection,
         binary,
         helper,
+        artifact_identity: hash(&manifest_bytes),
     })
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn host_source_is_explicit_and_missing_installed_does_not_fall_back() {
+        let probe = HostProbe {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            home: "/home/user".into(),
+            installed_herdr: None,
+        };
+        assert_eq!(
+            select_host_binary(&probe, HerdrBinarySource::Default, None, "candidate").unwrap(),
+            "/home/user/.local/share/yuzora/runtimes/candidate/herdr"
+        );
+        assert!(select_host_binary(&probe, HerdrBinarySource::Global, None, "candidate").is_err());
+        assert!(select_host_binary(
+            &probe,
+            HerdrBinarySource::Custom,
+            Some("C:\\herdr.exe"),
+            "candidate"
+        )
+        .is_err());
+        assert_eq!(
+            select_host_binary(
+                &probe,
+                HerdrBinarySource::Custom,
+                Some("/opt/herdr"),
+                "candidate"
+            )
+            .unwrap(),
+            "/opt/herdr"
+        );
+    }
     #[test]
     fn deployment_rejects_a_stale_herdr_even_when_the_app_version_matches() {
         let mut manifest: Manifest = serde_json::from_value(serde_json::json!({

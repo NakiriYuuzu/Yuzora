@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $targets = @('linux-aarch64', 'linux-x86_64', 'macos-aarch64', 'macos-x86_64')
 $sourceRoot = Join-Path $PSScriptRoot '..\src-tauri\resources\host'
 $cleanupRoot = Join-Path $PSScriptRoot '..\src-tauri\resources\legacy-cleanup'
+$runtimeLock = Get-Content -Raw (Join-Path $PSScriptRoot '..\src-tauri\herdr-runtime.json') | ConvertFrom-Json
 
 function Get-OneFile([string]$Pattern) {
     $files = @(Get-ChildItem -Path $Pattern -File)
@@ -13,8 +14,20 @@ function Get-OneFile([string]$Pattern) {
 
 function Assert-Payload([string]$Root) {
     $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File)
+    $nativeBinaries = @($files | Where-Object { $_.FullName -match '[\\/]herdr[\\/]windows-x86_64[\\/]herdr.exe$' })
+    if ($nativeBinaries.Count -ne 1) { throw 'Expected exactly one native Windows HERDR payload' }
+    $nativeRoot = Split-Path -Parent $nativeBinaries[0].FullName
+    $nativeExpected = @($runtimeLock.targets.'windows-x86_64'.files | ForEach-Object { $_.path.Replace('/', '\') })
+    $nativeActual = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse -File | ForEach-Object { $_.FullName.Substring($nativeRoot.Length + 1).Replace('/', '\') })
+    if (@(Compare-Object ($nativeExpected | Sort-Object) ($nativeActual | Sort-Object) -CaseSensitive).Count -ne 0) { throw 'Unexpected native runtime inventory' }
+    foreach ($entry in $runtimeLock.targets.'windows-x86_64'.files) {
+        if ((Get-FileHash -LiteralPath (Join-Path $nativeRoot $entry.path) -Algorithm SHA256).Hash -ne $entry.sha256) { throw "Native runtime hash mismatch: $($entry.path)" }
+    }
+    $license = Join-Path (Split-Path -Parent $nativeRoot) 'LICENSE-HERDR.txt'
+    if ((Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash -ne $runtimeLock.licenseSha256) { throw 'Native HERDR license mismatch' }
     foreach ($file in $files) {
-        if ($file.Name -in @('herdr.exe', 'OpenConsole.exe', 'conpty.dll', 'herdr-plugin.toml', 'yuzora-herdr-wsl.ts')) {
+        $approvedNative = $file.FullName.StartsWith($nativeRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($file.Name -in @('herdr-plugin.toml', 'yuzora-herdr-wsl.ts') -or (!$approvedNative -and $file.Name -in @('herdr.exe', 'OpenConsole.exe', 'conpty.dll'))) {
             throw "Legacy runtime must not be bundled: $($file.FullName)"
         }
     }
@@ -53,7 +66,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed: $LASTEXITCODE" }
     Assert-Payload $msiRoot
     Assert-Payload $nsisRoot
-    Write-Output 'MSI and NSIS contain verified Unix runtime payloads with no Windows HERDR bridge'
+    Write-Output 'MSI and NSIS contain pinned native Windows HERDR and verified Unix host payloads; no legacy WSL plugin'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

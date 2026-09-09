@@ -25,9 +25,9 @@ describe("prepare Herdr resources", () => {
     })
     expect(HERDR_RESOURCE_TARGETS["macos-aarch64"].url).toContain("/v0.9.0/")
     expect(HERDR_RESOURCE_TARGETS["macos-x86_64"].url).toContain("/v0.9.0/")
-    expect(Object.keys(HERDR_RESOURCE_TARGETS).sort()).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64"])
+    expect(Object.keys(HERDR_RESOURCE_TARGETS).sort()).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64", "windows-x86_64"])
     expect(resourceTargetIdsForHost("darwin")).toEqual(["macos-aarch64", "macos-x86_64"])
-    expect(resourceTargetIdsForHost("win32")).toEqual(["linux-aarch64", "linux-x86_64"])
+    expect(resourceTargetIdsForHost("win32")).toEqual(["windows-x86_64"])
     expect(resourceTargetIdsForHost("linux")).toEqual(["linux-aarch64", "linux-x86_64"])
 
   })
@@ -80,6 +80,8 @@ describe("prepare Herdr resources", () => {
       "resources/herdr/macos-x86_64/": "herdr/macos-x86_64/"
     })
     expect(windows.bundle.resources).toEqual({
+      "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/",
+      "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/host/": "host/",
       "resources/legacy-cleanup/": "legacy-cleanup/"
     })

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SpaceAgentTree } from "./SpaceAgentTree";
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore";
 import type { HerdrCapabilities, HerdrSessionRuntime, HerdrSnapshot } from "@/lib/herdrTypes";
+import { useUiStore } from "@/state/uiStore";
 import i18n from "@/lib/i18n";
 
 const scope = '["wsl:{test-distro}:1000","default"]';
@@ -35,6 +36,9 @@ it("shows incompatible client and server identities without claiming loaded or e
   expect(document.body).toHaveTextContent("protocol 20");
   expect(document.body).toHaveTextContent("protocol 22");
   expect(document.body).toHaveTextContent("/managed/herdr");
+  fireEvent.click(screen.getByRole("button", { name: "修復此主機" }));
+  expect(useUiStore.getState().settingsHostId).toBe("wsl:{test-distro}:1000");
+  expect(useUiStore.getState().settingsSection).toBe("herdr");
   expect(document.body).not.toHaveTextContent(scope);
 });
 it.each(["idle", "connecting"] as const)("does not describe %s as an empty successful snapshot", state => {

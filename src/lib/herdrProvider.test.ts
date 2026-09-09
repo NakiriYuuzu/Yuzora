@@ -78,3 +78,20 @@ describe("host runtime routing", () => {
     expect(calls).toBe(0)
   })
 })
+
+it("does not invoke WSL calls or streams while its preference is disabled", async () => {
+  const { useRuntimePreferencesStore } = await import("@/state/runtimePreferencesStore")
+  useRuntimePreferencesStore.setState({ wslEnabled: false })
+  registerRuntimeHost(host("wsl-disabled"), "/wsl/herdr", "Ubuntu", "wsl")
+  const calls: string[] = []
+  mockIPC(command => { calls.push(command); return [session] })
+  try {
+    expect(await invokeHerdr("herdr_sessions")).not.toContainEqual(expect.objectContaining({ hostId: "wsl-disabled" }))
+    expect(calls).toEqual(["herdr_sessions", "host_request", "host_request"])
+    calls.length = 0
+    const sessionName = runtimeKey({ hostId: "wsl-disabled", sessionName: "default" })
+    await expect(invokeHerdr("herdr_snapshot", { sessionName })).rejects.toThrow("wsl-runtime-disabled")
+    await expect(invokeHerdr("herdr_terminal_open", { sessionName })).rejects.toThrow("wsl-runtime-disabled")
+    expect(calls).toEqual([])
+  } finally { unregisterRuntimeHost(host("wsl-disabled").owner) }
+})

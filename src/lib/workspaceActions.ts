@@ -6,11 +6,9 @@ import i18n from "@/lib/i18n"
 import { allowWorkspaceAssetScope, openWorkspace, startWatch } from "@/lib/ipc"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
-import { loadWorkspaceSessionEntry, saveWorkspaceSession, type WorkspaceSessionEntry } from "@/state/workspaceSession"
+import { loadWorkspaceSessionEntry } from "@/state/workspaceSession"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { isImagePath } from "@/workbench/ImageView"
-import { isWindowsPlatform } from "./platform"
-import { parseRemoteFilePath } from "./runtimeIdentity"
 
 export interface OpenWorkspaceOptions {
     /** Drop a delayed restore before it replaces a newer user workspace. */
@@ -40,15 +38,6 @@ async function openWorkspaceAtPathWithOutcome(
     options?: OpenWorkspaceOptions
 ): Promise<boolean> {
     if (options?.shouldOpen && !options.shouldOpen()) return false
-    let migratedSession: WorkspaceSessionEntry | null = null
-    if (isWindowsPlatform() && !parseRemoteFilePath(path)) {
-        const bound = await chooseWorkspaceFolder({ legacyWindowsPath: path })
-        if (!bound) return false
-        if (!parseRemoteFilePath(bound)) throw new Error("Select a WSL2 workspace")
-        const { bindWindowsWorkspace } = await import("./windowsWorkspaceMigration")
-        migratedSession = await bindWindowsWorkspace(path, bound)
-        path = bound
-    }
     // Guard unsaved work before discarding the current workspace's buffers.
     // Restore-on-launch runs with no workspace and no tabs open (SessionRestore
     // only fires when workspacePath is null), so there are never dirty tabs then
@@ -69,8 +58,7 @@ async function openWorkspaceAtPathWithOutcome(
     // setWorkspace 之前讀出——SessionRestoreBridge 的存檔訂閱會對 store 轉場
     // 做出反應，先讀確保不受任何寫入競態影響。
     const sessionEntry =
-        options?.restoreSessionTabs === false ? null : loadWorkspaceSessionEntry(canonical) ?? migratedSession
-    if (migratedSession && sessionEntry === migratedSession) saveWorkspaceSession({ workspacePath: canonical, ...migratedSession })
+        options?.restoreSessionTabs === false ? null : loadWorkspaceSessionEntry(canonical)
     clearAll()
     const workspace = useWorkspaceStore.getState()
     workspace.setWorkspace(canonical, opened.capabilityId)

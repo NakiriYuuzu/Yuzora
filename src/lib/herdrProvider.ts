@@ -3,9 +3,10 @@ import type { ConnectedHost } from "./hostIpc"
 import type { HerdrNamedSession, HerdrSubscriptionEvent, HerdrTerminalEvent } from "./herdrTypes"
 import { LOCAL_HOST_ID, parseRemoteFilePath, runtimeKey, sameConnection } from "./runtimeIdentity"
 import type { ConnectionOwner, RuntimeKey } from "./runtimeIdentity"
-import { isWindowsPlatform } from "./platform"
+import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore"
 
 interface RuntimeHost {
+  kind: "wsl" | "ssh"
   owner: ConnectionOwner
   binary: string
   label: string
@@ -35,10 +36,10 @@ export function parseRuntimeScope(scope: string): RuntimeKey {
   return key
 }
 
-export function registerRuntimeHost(host: ConnectedHost, binary: string, label: string): void {
+export function registerRuntimeHost(host: ConnectedHost, binary: string, label: string, kind: "wsl" | "ssh" = "ssh"): void {
   if (host.owner.hostId === LOCAL_HOST_ID) throw new Error("Local runtime identity is reserved")
   const previous = hosts.get(host.owner.hostId)
-  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, sessions: previous?.sessions ?? [] })
+  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [] })
 }
 
 export function unregisterRuntimeHost(owner: ConnectionOwner): void {
@@ -61,6 +62,7 @@ export async function canonicalRuntimeWorkspace(scope: string, path: string): Pr
   if (remote && remote.hostId !== key.hostId) throw new Error("Workspace belongs to a different runtime host")
   const host = hosts.get(key.hostId)
   if (!host) throw new Error("Runtime host is disconnected")
+  ensureCurrent(host)
   const { registerRuntimeWorkspace } = await import("./remoteFiles")
   const uri = await registerRuntimeWorkspace(host.owner, remote?.path ?? path, () => hosts.get(key.hostId) === host)
   ensureCurrent(host)
@@ -72,6 +74,7 @@ export class StaleRuntimeResponse extends Error {
 }
 
 function ensureCurrent(host: RuntimeHost): void {
+  if (host.kind === "wsl" && !useRuntimePreferencesStore.getState().wslEnabled) throw new Error("wsl-runtime-disabled-open-settings")
   if (hosts.get(host.owner.hostId) !== host) throw new StaleRuntimeResponse()
 }
 
@@ -95,13 +98,14 @@ type StreamEvent =
   | { type: "closed"; streamId: string; owner: ConnectionOwner; reason: string }
 
 async function openStream<T>(host: RuntimeHost, sessionName: string, command: string, args: Record<string, unknown>): Promise<T> {
+  ensureCurrent(host)
   const terminal = command === "herdr_terminal_open"
   const output = args.onEvent as Channel<HerdrTerminalEvent | HerdrSubscriptionEvent>
   const channel = new Channel<StreamEvent>()
   let closed = false
   const identity = (id: string) => JSON.stringify([host.owner.hostId, host.owner.generation, id])
   channel.onmessage = (message) => {
-    if (hosts.get(host.owner.hostId) !== host) return
+    if (hosts.get(host.owner.hostId) !== host || (host.kind === "wsl" && !useRuntimePreferencesStore.getState().wslEnabled)) return
     const owner = message.type === "frame" ? message.frame.owner : message.owner
     if (!sameConnection(owner, host.owner)) return
     const id = identity(message.streamId)
@@ -125,7 +129,7 @@ async function openStream<T>(host: RuntimeHost, sessionName: string, command: st
       : { kind: "events", binary: host.binary, sessionName, paneIds: args.paneIds ?? [] },
     onEvent: channel
   })
-  if (hosts.get(host.owner.hostId) !== host) {
+  if (hosts.get(host.owner.hostId) !== host || (host.kind === "wsl" && !useRuntimePreferencesStore.getState().wslEnabled)) {
     await nativeInvoke("host_stream_close", { owner: host.owner, streamId: opened.streamId }).catch(() => undefined)
     throw new StaleRuntimeResponse()
   }
@@ -138,9 +142,9 @@ async function openStream<T>(host: RuntimeHost, sessionName: string, command: st
 /** Central routing boundary shared by every typed HERDR wrapper. */
 export async function invokeHerdr<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   if (command === "herdr_sessions") {
-    const remote = [...hosts.values()]
+    const remote = [...hosts.values()].filter(host => host.kind !== "wsl" || useRuntimePreferencesStore.getState().wslEnabled)
     const results = await Promise.allSettled([
-      isWindowsPlatform() ? Promise.resolve([] as HerdrNamedSession[]) : nativeInvoke<HerdrNamedSession[]>(command),
+      nativeInvoke<HerdrNamedSession[]>(command),
       ...remote.map(async (host) => {
         const sessions = await hostCall<HerdrNamedSession[]>(host, command)
         host.sessions = sessions.map((session) => ({ ...session, hostId: host.owner.hostId, hostLabel: host.label, runtimeId: runtimeKey({ hostId: host.owner.hostId, sessionName: session.name }) }))

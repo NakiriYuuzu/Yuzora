@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { mkdtemp, mkdir, writeFile, realpath, rm } from "node:fs/promises"
-import { join } from "node:path"
+import { join, relative, isAbsolute } from "node:path"
+import { tmpdir } from "node:os"
 import { createConnection, type Socket } from "node:net"
 import { createInterface } from "node:readline"
 import { HERDR_RESOURCE_VERSION } from "./prepare-herdr-resources"
@@ -10,10 +11,13 @@ import methodFixture from "../src-tauri/host/tests/fixtures/herdr-0.9.0-methods.
 check(process.argv[2], "usage: bun scripts/verify-herdr-runtime.ts /absolute/path/to/herdr")
 const binary = await realpath(process.argv[2])
 // Keep Unix socket paths below macOS's length limit, including the session suffix.
-const root = await realpath(await mkdtemp("/tmp/yz-h9-"))
+const windows = process.platform === "win32"
+const shell = windows ? "pwsh.exe" : "/bin/sh"
+const root = await realpath(await mkdtemp(join(windows ? tmpdir() : "/tmp", "yz-h9-")))
 const session = "contract-smoke"
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("HERDR_") && !["ENV", "BASH_ENV"].includes(key)))
-Object.assign(env, { XDG_CONFIG_HOME: join(root, "cfg"), XDG_STATE_HOME: join(root, "state"), XDG_RUNTIME_DIR: join(root, "run"), HERDR_CONFIG_PATH: join(root, "config.toml"), HISTFILE: join(root, "shell-history"), SHELL: "/bin/sh" })
+Object.assign(env, { XDG_CONFIG_HOME: join(root, "cfg"), XDG_STATE_HOME: join(root, "state"), XDG_RUNTIME_DIR: join(root, "run"), HERDR_CONFIG_PATH: join(root, "config.toml"), HISTFILE: join(root, "shell-history"), SHELL: shell })
+if (windows) Object.assign(env, { APPDATA: join(root, "cfg"), LOCALAPPDATA: join(root, "state") })
 const children: ChildProcessWithoutNullStreams[] = []
 const sockets: Socket[] = []
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -66,7 +70,7 @@ try {
 [remote]
 manage_ssh_config = false
 [terminal]
-default_shell = "/bin/sh"
+default_shell = "${shell}"
 shell_mode = "non_login"
 [session]
 resume_agents_on_restore = false
@@ -93,9 +97,11 @@ manifest_check = false
   check(status.client.version === HERDR_RESOURCE_VERSION.baseVersion, "unexpected client version")
   check(status.server.version === HERDR_RESOURCE_VERSION.baseVersion, "unexpected server version")
   check(status.client.protocol === HERDR_RESOURCE_VERSION.protocol && status.server.protocol === HERDR_RESOURCE_VERSION.protocol, "status protocol mismatch")
-  check(typeof status.server.socket === "string" && status.server.socket.startsWith(root + "/"), "refuse a socket outside the isolated test root")
+  check(typeof status.server.socket === "string", "missing isolated socket marker")
+  const socketRelative = relative(root, status.server.socket)
+  check(socketRelative.length > 0 && !isAbsolute(socketRelative) && socketRelative !== ".." && !socketRelative.startsWith("..\\") && !socketRelative.startsWith("../"), "refuse a socket outside the isolated test root")
   console.log(`Started isolated Session ${session} at ${status.server.socket}`)
-  const socketPath = status.server.socket
+  const socketPath = windows ? "\\\\.\\pipe\\" + status.server.socket : status.server.socket
   async function connect() {
     const socket = createConnection(socketPath)
     sockets.push(socket)
@@ -135,7 +141,8 @@ manifest_check = false
   controller.stderr.resume()
   const control = collect(controller.stdout)
   await control(row => row.type === "terminal.frame")
-  controller.stdin.write(JSON.stringify({ type: "terminal.input", text: "printf 'YUZORA_%s\\n' 'RUNTIME_OK'\n" }) + "\n")
+  const input = windows ? "Write-Output ('YUZORA_' + 'RUNTIME_OK')\r" : "printf 'YUZORA_%s\\n' 'RUNTIME_OK'\n"
+  controller.stdin.write(JSON.stringify({ type: "terminal.input", text: input }) + "\n")
   await control(row => row.type === "terminal.frame" && typeof row.bytes === "string" && Buffer.from(row.bytes, "base64").toString().includes("YUZORA_RUNTIME_OK"))
   controller.stdin.write(JSON.stringify({ type: "terminal.resize", cols: 100, rows: 30 }) + "\n")
   await control(row => row.type === "terminal.frame" && row.width === 100 && row.height === 30)
@@ -147,6 +154,11 @@ manifest_check = false
   try { if (server) await command(["session", "stop", session, "--json"]) }
   finally {
     for (const child of children) if (child.exitCode === null) child.kill()
+    // Windows keeps executable and working-directory handles until process exit.
+    await Promise.all(children.filter(child => child.exitCode === null && child.signalCode === null).map(child => new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, 3000)
+      child.once("close", () => { clearTimeout(timer); resolve() })
+    })))
     await rm(root, { recursive: true, force: true })
   }
 }

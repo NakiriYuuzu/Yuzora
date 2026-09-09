@@ -28,6 +28,7 @@ export interface HerdrResourceTarget {
   destination: string
   url: string
   archiveSha256: string
+  format?: string
   files: ResourceFile[]
 }
 
@@ -37,7 +38,8 @@ export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = targe
 
 export function resourceTargetIdsForHost(platform: NodeJS.Platform): string[] {
   if (platform === "darwin") return ["macos-aarch64", "macos-x86_64"]
-  if (platform === "win32" || platform === "linux") return ["linux-aarch64", "linux-x86_64"]
+  if (platform === "win32") return ["windows-x86_64"]
+  if (platform === "linux") return ["linux-aarch64", "linux-x86_64"]
   throw new Error(`Yuzora does not build desktop Herdr resources on ${platform}`)
 }
 
@@ -149,10 +151,20 @@ export async function prepareTarget(root: string, target: HerdrResourceTarget): 
   try {
     const bytes = await download(target)
     await mkdir(stagingTarget, { recursive: true })
-    const output = join(stagingTarget, target.files[0].path)
-    await mkdir(dirname(output), { recursive: true })
-    await writeFile(output, bytes)
-    await chmod(output, 0o755)
+    if (target.format === "zip") {
+      // Only extract the archive after its pinned upstream digest has matched.
+      const archive = join(stagingRoot, "archive.zip")
+      await writeFile(archive, bytes)
+      const unpack = Bun.spawn(process.platform === "win32"
+        ? ["tar.exe", "-xf", archive, "-C", stagingTarget]
+        : ["unzip", "-q", archive, "-d", stagingTarget], { stdout: "inherit", stderr: "inherit" })
+      if (await unpack.exited !== 0) throw new Error(`Herdr archive extraction failed: ${target.id}`)
+    } else {
+      const output = join(stagingTarget, target.files[0].path)
+      await mkdir(dirname(output), { recursive: true })
+      await writeFile(output, bytes)
+      await chmod(output, 0o755)
+    }
 
     if (!(await targetIsValid(stagingRoot, target))) {
       throw new Error(`prepared Herdr resource ${target.id} failed file verification`)

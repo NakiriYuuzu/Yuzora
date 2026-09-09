@@ -386,18 +386,18 @@ describe("release workflow contracts", () => {
 
   it("requires candidates and releases to verify Unix runtime payloads", () => {
     const workflow = releaseWorkflow()
-    const verifier = workflow.jobs.build.steps.find((step) => step.name === "Verify Windows Unix runtime payload")
+    const verifier = workflow.jobs.build.steps.find((step) => step.name === "Verify Windows native and Unix runtime payloads")
     expect(verifier).toMatchObject({ if: "matrix.artifact_name == 'windows'", shell: "powershell" })
     expect(verifier?.run).toContain("scripts/verify-windows-runtime-payload.ps1")
     const result = spawnSync("bun", ["-e", `
       import { parseReleaseWorkflow, verifyBetaReleaseContract } from "./scripts/release-contract.ts";
       const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
       const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
-      ci.jobs["release-candidate"].steps.find((step) => step.name === "Verify Windows Unix runtime payload").run = "true";
+      ci.jobs["release-candidate"].steps.find((step) => step.name === "Verify Windows native and Unix runtime payloads").run = "true";
       verifyBetaReleaseContract(release, ci);
     `], { encoding: "utf8" })
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain("Windows installers must verify Unix runtime payloads")
+    expect(result.stderr).toContain("Windows installers must verify native and Unix runtime payloads")
   })
 
   it("keeps stable macOS fail-closed while requiring beta macOS to remain unsigned", () => {

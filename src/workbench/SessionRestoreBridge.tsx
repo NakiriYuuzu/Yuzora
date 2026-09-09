@@ -7,7 +7,6 @@ import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { isImagePath } from "@/workbench/ImageView"
 import { isHerdrPagePath } from "@/lib/herdrPages"
 import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
-import { isWindowsPlatform } from "@/lib/platform"
 import { useHostStore } from "@/state/hostStore"
 import { useSshStore } from "@/state/sshStore"
 import { loadRemoteWorkspaces } from "@/state/remoteWorkspaceRegistry"
@@ -38,7 +37,7 @@ export function SessionRestoreBridge() {
     useEffect(() => {
         const store = useWorkspaceStore.getState()
         const session = loadWorkspaceSession()
-        if (store.workspacePath || !session || (isWindowsPlatform() && !parseRemoteFilePath(session.workspacePath))) {
+        if (store.workspacePath || !session) {
             // Nothing to restore — open the save gate immediately.
             restoredRef.current = true
             store.markSessionRestoreReady()
@@ -140,9 +139,8 @@ export function SessionRestoreBridge() {
             } catch {
                 // A remote host can still be connecting during startup. Keep
                 // its tabs for a later reopen; absence of a connection is not
-                // evidence that the source folder was deleted. Legacy Windows
-                // records likewise survive until the user binds a WSL host.
-                if (!parseRemoteFilePath(session.workspacePath) && !isWindowsPlatform()) clearWorkspaceSession()
+                // evidence that the source folder was deleted.
+                if (!parseRemoteFilePath(session.workspacePath)) clearWorkspaceSession()
             } finally {
                 unsubscribeGuard()
                 if (!cancelled) {

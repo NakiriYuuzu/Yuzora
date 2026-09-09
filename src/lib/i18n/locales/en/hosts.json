@@ -30,5 +30,8 @@
   "transfers": "SFTP transfers",
   "manageHosts": "Manage hosts",
   "bindLegacyWindows": "Select a WSL2 host for the legacy folder {{path}}. Existing Windows session records are preserved.",
-  "bindWindowsFolder": "Locate this folder in WSL"
+  "bindWindowsFolder": "Locate this folder in WSL",
+  "windowsNative": "Windows native",
+  "wslDisabled": "Enable WSL in Settings → HERDR first.",
+  "manageHost": "Manage this host"
 }

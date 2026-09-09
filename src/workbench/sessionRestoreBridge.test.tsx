@@ -130,14 +130,14 @@ describe("SessionRestoreBridge splash 退場", () => {
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
   })
 
-  it("defers legacy Windows binding until an explicit reopen and preserves its tabs", async () => {
+  it("restores native Windows folders directly and preserves their tabs", async () => {
     vi.mocked(isWindowsPlatform).mockReturnValue(true)
     const legacy = { workspacePath: "C:\\project", tabs: ["C:\\project\\main.ts"], activePath: "C:\\project\\main.ts" }
     saveWorkspaceSession(legacy)
     const el = insertSplash()
     render(<SessionRestoreBridge />)
     await waitFor(() => expect(splashDismissed(el)).toBe(true))
-    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("C:\\project", expect.anything())
     expect(loadWorkspaceSession()).toEqual(legacy)
   })
 

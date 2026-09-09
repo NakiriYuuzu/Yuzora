@@ -190,7 +190,11 @@ jobs:
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
           bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build-args }}
 
-      - name: Verify Windows Unix runtime payload
+      - name: Verify isolated native Windows HERDR contract
+        if: runner.os == 'Windows'
+        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe
+
+      - name: Verify Windows native and Unix runtime payloads
         if: runner.os == 'Windows'
         shell: powershell
         run: ./scripts/verify-windows-runtime-payload.ps1 -BundleDir "src-tauri/target/release/bundle"

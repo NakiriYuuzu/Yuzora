@@ -689,7 +689,9 @@ function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], window
   const options = record(download.with, "runtime download options")
   assert(download.uses === "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" && options.pattern === "host-*" && options["merge-multiple"] === true && options.path === "src-tauri/resources/host/", "installers must consume all four Unix runtime artifacts")
   assert(includes(stepByName(buildSteps, "Verify Unix host runtime payloads").run, "bun run runtime:verify"), "installers must verify Unix runtime manifests and hashes before building")
-  const verify = stepByName(buildSteps, "Verify Windows Unix runtime payload")
-  assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify Unix runtime payloads extracted from MSI and NSIS")
+  const verify = stepByName(buildSteps, "Verify Windows native and Unix runtime payloads")
+  assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify native and Unix runtime payloads extracted from MSI and NSIS")
+  const smoke = stepByName(buildSteps, "Verify isolated native Windows HERDR contract")
+  assert(smoke.if === windowsCondition && smoke.run === "bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe", "Windows installers must pass the isolated native runtime contract")
   assert(!buildSteps.some((step) => includes(step.run, "yuzora-wsl-agents")), "legacy WSL plugin must not run during installer builds")
 }
