@@ -281,3 +281,19 @@ it("directs disabled WSL to settings without starting discovery", () => {
   fireEvent.click(screen.getByRole("button", { name: "Manage this host" }))
   expect(useUiStore.getState().settingsSection).toBe("herdr")
 })
+
+it("keeps the chosen WSL workspace valid after the folder dialog closes", async () => {
+  const uri = remoteFilePath("wsl-a", "/selected")
+  vi.mocked(registerRuntimeWorkspace).mockResolvedValueOnce(uri)
+  vi.mocked(requestHost).mockImplementation(async (_owner, operation) => operation.method === "workspaceOpen" ? { capabilityId: "browse", canonicalPath: "/selected" } : [])
+  const view = mountWslRuntime()
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
+  await waitFor(() => expect(finish).toHaveBeenCalledWith(uri))
+  const isConnectionCurrent = vi.mocked(registerRuntimeWorkspace).mock.calls.at(-1)![2]
+  view.unmount()
+  expect(isConnectionCurrent()).toBe(true)
+  useHostStore.setState({ hosts: {} })
+  expect(isConnectionCurrent()).toBe(false)
+})

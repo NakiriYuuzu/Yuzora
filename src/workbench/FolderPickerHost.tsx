@@ -269,7 +269,7 @@ function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,in
     setBusy(true);setError(null)
     const generation=browseGeneration.current
     const current=()=>generation===browseGeneration.current && useHostStore.getState().hosts[hostId]?.connection?.owner===owner
-    try {const selected=await registerRuntimeWorkspace(owner,directory,current);if(current())onChoose(selected)}
+    try {const selected=await registerRuntimeWorkspace(owner,directory,()=>useHostStore.getState().hosts[hostId]?.connection?.owner===owner);if(current())onChoose(selected)}
     catch(error) {if(current())setError(String(error))}
     finally {if(current())setBusy(false)}
   }
