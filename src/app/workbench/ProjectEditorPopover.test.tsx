@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import { ProjectEditorPopover } from "@/app/workbench/ProjectEditorPopover"
-import { ProjectNavPanel } from "@/app/workbench/ProjectNavPanel"
 import i18n from "@/lib/i18n"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
@@ -29,11 +28,9 @@ describe("ProjectEditorPopover", () => {
     useUiStore.getState().openProjectEditor(PATH)
     render(
       <>
-        <ProjectNavPanel mode="database" onModeChange={() => {}} onOpenPalette={() => {}} />
         <ProjectEditorPopover />
       </>
     )
-    const nav = within(screen.getByLabelText("Project navigation"))
 
     fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), {
       target: { value: "Studio" },
@@ -41,8 +38,6 @@ describe("ProjectEditorPopover", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use ⚡ as project icon" }))
     fireEvent.click(screen.getByRole("button", { name: "Use Ocean as project color" }))
 
-    expect(nav.getByText("Studio")).toBeInTheDocument()
-    expect(nav.getByText("⚡")).toBeInTheDocument()
     expect(useRecentWorkspacesStore.getState().presentationFor(PATH)).toEqual({
       name: "Studio",
       glyph: "⚡",
@@ -52,7 +47,6 @@ describe("ProjectEditorPopover", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close project editor" }))
 
     expect(screen.queryByRole("dialog", { name: "Edit project" })).toBeNull()
-    expect(nav.getByText("Studio")).toBeInTheDocument()
     expect(useRecentWorkspacesStore.getState().presentationFor(PATH)?.name).toBe("Studio")
   })
 

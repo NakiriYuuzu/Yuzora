@@ -1,0 +1,36 @@
+{
+  "title": "設定",
+  "subtitle": "讓工作環境更合你的習慣。",
+  "search": "搜尋設定",
+  "searchPlaceholder": "搜尋設定、字級、Shell…",
+  "clearSearch": "清除搜尋",
+  "categories": "設定分類",
+  "localPreferences": "工作環境偏好",
+  "groups": {
+    "personal": "個人化",
+    "workspace": "開發環境",
+    "application": "應用程式"
+  },
+  "theme": "主題",
+  "themes": {
+    "light": "淺色",
+    "dark": "深色",
+    "auto": "跟隨系統"
+  },
+  "themeHint": "立即套用。系統模式會跟隨裝置的外觀設定。",
+  "palettes": {
+    "lime": "青檸",
+    "blue": "海藍",
+    "violet": "紫羅蘭",
+    "coral": "珊瑚",
+    "amber": "琥珀"
+  },
+  "paletteHint": "主題色同步套用至背景、側欄、選單與控制項。各 Space 的角色與配色仍可獨立編輯。",
+  "resultsTitle": "搜尋設定",
+  "resultsCount": "「{{query}}」找到 {{count}} 個分類與設定項目",
+  "noResults": "找不到這項設定",
+  "noResultsHint": "試試「字級」、「終端機」或「Git」，也可以從左側分類瀏覽。",
+  "editorPreview": "編輯器字級預覽",
+  "editorSample": "以目前字級閱讀程式碼與繁體中文。",
+  "preferencesHint": "主題與字型變更會立即套用；服務操作請使用各項設定的控制項。"
+}

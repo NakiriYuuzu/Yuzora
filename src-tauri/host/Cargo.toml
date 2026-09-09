@@ -21,13 +21,8 @@ dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 notify = "8.2.0"
 tempfile = "3"
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-flate2 = "1"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks"] }
-tiny_http = "0.12.0"
-scraper = "0.23"
 
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.9.0"
@@ -41,7 +36,6 @@ uuid = { version = "1", default-features = false, features = ["v4"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 [dev-dependencies]
-ureq = "3.3.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }

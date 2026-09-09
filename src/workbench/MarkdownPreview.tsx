@@ -199,7 +199,7 @@ export function renderMarkdown(src: string): string {
     // FORBID_TAGS：form／表單控件可提交導航離開 webview（R2-7）；map／area 為
     // image map 導航元素，其 closest("a") 為 null 會逃逸 anchor 攔截（R3-1）；
     // style 跟在內容後可存活 sanitize；即使 preview 是 in-flow pane，全域 CSS 仍
-    // 可藏匿整個 app（R9-1）。清單與 lspManager.ts 逐字同步。
+    // 可藏匿整個 app（R9-1）。
     return DOMPurify.sanitize(md.renderer.render(tokens, md.options, {}), {
         FORBID_ATTR: ["target", "usemap", "style", "class"],
         FORBID_TAGS: ["form", "input", "button", "select", "textarea", "dialog", "map", "area", "style"]
@@ -222,9 +222,11 @@ function bufferContent(path: string, result: OpenFileResult): string {
 }
 
 export const MarkdownPreview = memo(function MarkdownPreview({
-    sourcePath
+    sourcePath,
+    embedded = false
 }: {
     sourcePath: string
+    embedded?: boolean
 }) {
     const [result, setResult] = useState<OpenFileResult | null>(null)
     const [content, setContent] = useState("")
@@ -483,7 +485,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             className="markdown-preview flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-(--paper-0)"
         >
             <MarkdownPreviewProse />
-            <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-(--line-1) px-[14px]">
+            {!embedded && <div className="flex h-[38px] shrink-0 items-center justify-between border-b border-(--line-1) px-[14px]">
                 <span className="text-[11px] font-semibold tracking-wide text-(--ink-3) uppercase">
                     Preview
                 </span>
@@ -507,7 +509,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
                         <path d="M18 6 6 18M6 6l12 12" />
                     </svg>
                 </button>
-            </div>
+            </div>}
             {body}
         </aside>
     )

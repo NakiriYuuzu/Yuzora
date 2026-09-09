@@ -73,9 +73,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 const ipcMock = vi.hoisted(() => ({
     sshConnect: vi.fn(),
     sshDisconnect: vi.fn(),
-    sshOpenShell: vi.fn(),
-    sshWrite: vi.fn(),
-    sshResize: vi.fn(),
     listDir: vi.fn(),
     sftpListDir: vi.fn(),
     sftpMkdir: vi.fn(),
@@ -161,17 +158,11 @@ beforeEach(() => {
     vi.clearAllMocks()
     globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
 
-    // Not reset per-test: sessionIds must stay unique across the whole file
-    // because the SshTerminalSession module's `openedShells` guard is a
-    // module-level singleton keyed by sessionId, not reset between tests.
     ipcMock.sshConnect.mockImplementation(async () => {
         sessionSeq += 1
         return { sessionId: `sess-${sessionSeq}`, fingerprint: `SHA256:host-${sessionSeq}` }
     })
     ipcMock.sshDisconnect.mockResolvedValue(undefined)
-    ipcMock.sshOpenShell.mockResolvedValue(undefined)
-    ipcMock.sshWrite.mockResolvedValue(undefined)
-    ipcMock.sshResize.mockResolvedValue(undefined)
     ipcMock.listDir.mockResolvedValue([])
     ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
     ipcMock.sftpMkdir.mockResolvedValue(undefined)
@@ -251,16 +242,6 @@ describe("SftpPanel fingerprint display", () => {
         const dismiss = await screen.findByRole("button", { name: "Dismiss host key notice" })
         fireEvent.click(dismiss)
         expect(screen.queryByText(new RegExp(fingerprintB))).not.toBeInTheDocument()
-    })
-})
-
-describe("SFTP connection ownership", () => {
-    it("switches hosts without opening SSH shells", async () => {
-        const { hostA } = await connectTwoHosts()
-        render(<SftpPanel />)
-        act(() => useSshStore.getState().setActiveHost(hostA.id))
-        expect(ipcMock.sshOpenShell).not.toHaveBeenCalled()
-        expect(ipcMock.sshDisconnect).not.toHaveBeenCalled()
     })
 })
 

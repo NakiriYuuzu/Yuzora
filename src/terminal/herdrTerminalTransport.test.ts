@@ -8,13 +8,6 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalRelease: vi.fn()
 }))
 
-vi.mock("@/lib/ipc", () => ({
-  ptyOpen: vi.fn(),
-  ptyWrite: vi.fn(),
-  ptyResize: vi.fn(),
-  ptyClose: vi.fn()
-}))
-
 import {
   herdrTerminalInput,
   herdrTerminalOpen,
@@ -22,11 +15,9 @@ import {
   herdrTerminalResize,
   herdrTerminalScroll
 } from "@/lib/herdrIpc"
-import { ptyClose, ptyOpen, ptyWrite } from "@/lib/ipc"
 import type { HerdrTerminalEvent } from "@/lib/herdrTypes"
 import {
   createHerdrTerminalTransport,
-  createLocalPtyTransport,
   normalizeTerminalWheelRows
 } from "./terminalTransport"
 
@@ -397,37 +388,6 @@ describe("createHerdrTerminalTransport", () => {
     expect(herdrTerminalOpen).not.toHaveBeenCalled()
     expect(transport.canWrite()).toBe(false)
   })
-
-describe("createLocalPtyTransport", () => {
-  beforeEach(() => {
-    vi.mocked(ptyOpen).mockReset()
-    vi.mocked(ptyWrite).mockReset()
-    vi.mocked(ptyClose).mockReset()
-  })
-
-  it("wraps existing pty open/write/close", async () => {
-    vi.mocked(ptyOpen).mockResolvedValue({
-      sessionId: "pty-1",
-      shell: "/bin/zsh",
-      cols: 80,
-      rows: 24
-    } as never)
-    vi.mocked(ptyWrite).mockResolvedValue(undefined)
-    vi.mocked(ptyClose).mockResolvedValue(undefined)
-
-    const transport = createLocalPtyTransport({
-      workspace: "/w",
-      sessionId: "pty-1"
-    })
-    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
-    expect(transport.canWrite()).toBe(true)
-    await transport.write("x")
-    expect(ptyWrite).toHaveBeenCalledWith("pty-1", "x")
-    await transport.release()
-    expect(ptyClose).toHaveBeenCalledWith("pty-1")
-    expect(ptyOpen).toHaveBeenCalled()
-  })
-})
 
 describe("bounded Herdr input delivery", () => {
   beforeEach(() => {

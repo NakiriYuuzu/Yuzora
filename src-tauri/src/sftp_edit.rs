@@ -261,11 +261,3 @@ pub async fn sftp_save_file(
 ) -> Result<String, String> {
     save_remote(&state.0, &session_id, &path, &content, &expected_revision).await
 }
-
-#[tauri::command]
-pub async fn ssh_session_alive(
-    state: tauri::State<'_, crate::ssh_service::SshState>,
-    session_id: String,
-) -> Result<bool, String> {
-    Ok(state.0.session_alive(&session_id).await)
-}

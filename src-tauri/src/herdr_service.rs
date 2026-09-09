@@ -132,39 +132,6 @@ pub async fn herdr_terminal_create(
 }
 
 #[tauri::command]
-pub async fn herdr_agent_catalog(
-    state: tauri::State<'_, HerdrState>,
-    session_name: Option<String>,
-) -> Result<Vec<HerdrAgentCatalogEntry>, String> {
-    let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || manager.agent_catalog(session_name.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn herdr_agent_create(
-    state: tauri::State<'_, HerdrState>,
-    session_name: Option<String>,
-    workspace_id: String,
-    kind: String,
-    bypass_permissions: Option<bool>,
-) -> Result<HerdrAgentCreateResult, String> {
-    let manager = state.0.clone();
-    let bypass_permissions = bypass_permissions.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.agent_create(
-            session_name.as_deref(),
-            workspace_id,
-            kind,
-            bypass_permissions,
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
 pub async fn herdr_workspace_focus(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,

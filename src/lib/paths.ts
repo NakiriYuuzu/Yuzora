@@ -9,10 +9,6 @@ export function isAbsolutePath(path: string | null | undefined): path is string 
   return path.startsWith("/") || path.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(path)
 }
 
-export function firstAbsolutePath(...paths: (string | null | undefined)[]): string | null {
-  return paths.find(isAbsolutePath) ?? null
-}
-
 /**
  * Derive user-facing text from a canonical workspace path without changing
  * the operational path kept in state or passed to IPC.
@@ -77,7 +73,7 @@ function normalizedPath(path: string, windows: boolean): string {
  * Comparison-only identity for canonical paths. Unambiguous Windows drive,
  * backslash-UNC, and verbatim paths are case-insensitive; POSIX paths,
  * including implementation-defined `//...` paths, remain case-sensitive.
- * `style: "windows"` is reserved for matching an LSP `file://host/...` path
+ * `style: "windows"` is reserved for matching a decoded `file://host/...` path
  * against a known Windows UNC operational path.
  */
 export function canonicalPathKey(

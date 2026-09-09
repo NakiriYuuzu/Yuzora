@@ -23,11 +23,13 @@ export const WORKSPACE_SESSION_MAX_WORKSPACES = 20
 export interface WorkspaceSession {
     workspacePath: string
     tabs: string[]
+    pinnedPaths?: string[]
     activePath: string | null
 }
 
 export interface WorkspaceSessionEntry {
     tabs: string[]
+    pinnedPaths?: string[]
     activePath: string | null
 }
 
@@ -91,7 +93,9 @@ export function sanitizeSessionPaths(
 }
 
 function sanitizeEntry(entry: WorkspaceSessionEntry): WorkspaceSessionEntry {
-    return sanitizeSessionPaths(entry.tabs, entry.activePath)
+    const result = sanitizeSessionPaths(entry.tabs, entry.activePath)
+    const pinnedPaths = Array.isArray(entry.pinnedPaths) ? entry.pinnedPaths.filter((path) => result.tabs.includes(path)) : []
+    return pinnedPaths.length ? { ...result, pinnedPaths } : result
 }
 
 function sanitizeFile(file: WorkspaceSessionFileV2): WorkspaceSessionFileV2 {
@@ -151,14 +155,15 @@ export function loadWorkspaceSession(): WorkspaceSession | null {
     return {
         workspacePath: file.lastWorkspacePath,
         tabs: entry?.tabs ?? [],
-        activePath: entry?.activePath ?? null
+        activePath: entry?.activePath ?? null,
+        ...(entry?.pinnedPaths?.length ? { pinnedPaths: entry.pinnedPaths } : {})
     }
 }
 
 /** The recorded tabs for one workspace — used when switching back to it. */
 export function loadWorkspaceSessionEntry(workspacePath: string): WorkspaceSessionEntry | null {
     const entry = readFile().workspaces[workspacePath]
-    return entry ? { tabs: entry.tabs, activePath: entry.activePath } : null
+    return entry ? { ...entry } : null
 }
 
 export function saveWorkspaceSession(session: WorkspaceSession): void {
@@ -166,10 +171,7 @@ export function saveWorkspaceSession(session: WorkspaceSession): void {
         const file = readFile()
         // Delete-then-set moves the key to the end of insertion order (LRU touch).
         delete file.workspaces[session.workspacePath]
-        file.workspaces[session.workspacePath] = sanitizeSessionPaths(
-            session.tabs,
-            session.activePath
-        )
+        file.workspaces[session.workspacePath] = sanitizeEntry(session)
         file.lastWorkspacePath = session.workspacePath
         const keys = Object.keys(file.workspaces)
         while (keys.length > WORKSPACE_SESSION_MAX_WORKSPACES) {

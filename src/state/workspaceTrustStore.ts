@@ -1,7 +1,6 @@
 import { create } from "zustand"
 
 import {
-    workspaceTrustExecutionChallenge,
     workspaceTrustGrant,
     workspaceTrustList,
     workspaceTrustRevoke,
@@ -9,7 +8,6 @@ import {
 } from "@/lib/ipc"
 import type {
     TrustedWorkspace,
-    WorkspaceExecutionChallenge,
     WorkspaceTrustStatus
 } from "@/lib/types"
 
@@ -20,16 +18,8 @@ export type WorkspaceTrustPrompt =
           canonicalPath: string
           repoPresent: boolean
       }
-    | {
-          kind: "execute"
-          challengeId: string
-          canonicalPath: string
-          command: string
-          grantsTrust: boolean
-      }
 
 type WorkspaceResolver = (granted: boolean) => void
-type ExecutionResolver = (challengeId: string | null) => void
 
 interface WorkspaceTrustStore {
     statusByPath: Record<string, WorkspaceTrustStatus>
@@ -42,13 +32,11 @@ interface WorkspaceTrustStore {
     refreshList: () => Promise<TrustedWorkspace[]>
     revokeWorkspace: (canonicalPath: string) => Promise<TrustedWorkspace[]>
     requestWorkspaceGrant: (status: WorkspaceTrustStatus) => Promise<boolean>
-    requestExecution: (path: string, command: string) => Promise<string | null>
     confirmPrompt: () => Promise<void>
     cancelPrompt: () => void
 }
 
 let workspaceResolver: WorkspaceResolver | null = null
-let executionResolver: ExecutionResolver | null = null
 
 function settleWorkspace(granted: boolean): void {
     const resolve = workspaceResolver
@@ -56,15 +44,8 @@ function settleWorkspace(granted: boolean): void {
     resolve?.(granted)
 }
 
-function settleExecution(challengeId: string | null): void {
-    const resolve = executionResolver
-    executionResolver = null
-    resolve?.(challengeId)
-}
-
 function supersedePending(): void {
     settleWorkspace(false)
-    settleExecution(null)
 }
 
 export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => ({
@@ -123,36 +104,9 @@ export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => 
         })
     },
 
-    requestExecution: async (path, command) => {
-        const challenge: WorkspaceExecutionChallenge = await workspaceTrustExecutionChallenge(
-            path,
-            command
-        )
-        supersedePending()
-        set({
-            prompt: {
-                kind: "execute",
-                challengeId: challenge.challengeId,
-                canonicalPath: challenge.canonicalPath,
-                command: challenge.command,
-                grantsTrust: challenge.grantsTrust
-            },
-            confirming: false,
-            lastError: null
-        })
-        return new Promise((resolve) => {
-            executionResolver = resolve
-        })
-    },
-
     confirmPrompt: async () => {
         const prompt = get().prompt
         if (!prompt || get().confirming) return
-        if (prompt.kind === "execute") {
-            set({ prompt: null, lastError: null })
-            settleExecution(prompt.challengeId)
-            return
-        }
         set({ confirming: true, lastError: null })
         try {
             const status = await workspaceTrustGrant(prompt.challengeId)
@@ -195,14 +149,6 @@ export const useWorkspaceTrustStore = create<WorkspaceTrustStore>((set, get) => 
         const prompt = get().prompt
         if (!prompt) return
         set({ prompt: null, lastError: null, confirming: false })
-        if (prompt.kind === "workspace") settleWorkspace(false)
-        else settleExecution(null)
+        settleWorkspace(false)
     }
 }))
-
-export function requestDevServerAuthorization(
-    path: string,
-    command: string
-): Promise<string | null> {
-    return useWorkspaceTrustStore.getState().requestExecution(path, command)
-}

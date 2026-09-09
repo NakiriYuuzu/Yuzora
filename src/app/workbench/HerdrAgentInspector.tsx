@@ -3,6 +3,7 @@ import type { RefObject } from "react"
 import { useTranslation } from "react-i18next"
 
 import { AnsiText } from "@/app/workbench/AnsiText"
+import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -51,6 +52,15 @@ export function HerdrAgentInspector({
   const [source, setSource] = useState<HerdrReadSource>("recent")
   const [format, setFormat] = useState<HerdrReadFormat>("text")
   const [lines, setLines] = useState(120)
+  const [linesDraft, setLinesDraft] = useState("120")
+  const commitLines = () => {
+    const parsed = Number(linesDraft)
+    const next = linesDraft.trim() && Number.isFinite(parsed)
+      ? Math.min(500, Math.max(20, Math.trunc(parsed)))
+      : 120
+    setLinesDraft(String(next))
+    setLines(next)
+  }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const requestGenerationRef = useRef(0)
@@ -199,15 +209,19 @@ export function HerdrAgentInspector({
                 <label className="text-[11px] text-(--ink-3)" htmlFor="herdr-read-lines">
                   {t("herdrInspector.lines")}
                 </label>
-                <input
+                <Input
                   id="herdr-read-lines"
                   type="number"
                   min={20}
                   max={500}
-                  value={lines}
-                  onChange={(event) => {
-                    const next = Number(event.target.value)
-                    setLines(Number.isFinite(next) ? Math.min(500, Math.max(20, next)) : 120)
+                  value={linesDraft}
+                  onChange={(event) => setLinesDraft(event.target.value)}
+                  onBlur={commitLines}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault()
+                      commitLines()
+                    }
                   }}
                   className="h-[30px] w-[72px] rounded-[8px] border border-(--line-2) bg-(--paper-0) px-[8px] text-[12px]"
                 />

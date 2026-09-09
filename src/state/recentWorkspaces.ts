@@ -3,6 +3,7 @@
 // read/write mirrors sshStore's persistence shape (no persist middleware): the
 // store is the authoritative in-memory copy, localStorage the durable mirror.
 
+import { sanitizeSpaceCharacter, type SpaceCharacterConfig } from "@/app/workbench/space-character"
 import { create } from "zustand"
 
 import { canonicalPathKey } from "@/lib/paths"
@@ -25,6 +26,8 @@ const RECENT_WORKSPACE_COLOR_IDS = [
 export type RecentWorkspaceColor = typeof RECENT_WORKSPACE_COLOR_IDS[number]
 
 export interface RecentWorkspacePresentation {
+    avatarMode?: "character" | "glyph"
+    character?: SpaceCharacterConfig
     name?: string
     glyph?: string
     color?: RecentWorkspaceColor
@@ -88,6 +91,10 @@ function sanitizePresentation(value: unknown): RecentWorkspacePresentation | und
         presentation.color = candidate.color as RecentWorkspaceColor
     }
 
+    if (candidate.avatarMode === "character" || candidate.avatarMode === "glyph") presentation.avatarMode = candidate.avatarMode
+    const character = sanitizeSpaceCharacter(candidate.character)
+    if (character) presentation.character = character
+
     return Object.keys(presentation).length > 0 ? presentation : undefined
 }
 
@@ -101,7 +108,7 @@ export function loadRecentWorkspacePresentations(): RecentWorkspacePresentations
         const presentations: RecentWorkspacePresentations = {}
         for (const [path, value] of Object.entries(parsed)) {
             const presentation = sanitizePresentation(value)
-            if (presentation) presentations[canonicalPathKey(path)] = presentation
+            if (presentation) presentations[path.startsWith("space:") ? path : canonicalPathKey(path)] = presentation
         }
         return presentations
     } catch {
@@ -177,10 +184,10 @@ export const useRecentWorkspacesStore = create<RecentWorkspacesStore>()((set, ge
         set({ moveOpenedWorkspaceToTop: enabled })
     },
 
-    presentationFor: (path) => get().presentations[canonicalPathKey(path)],
+    presentationFor: (path) => get().presentations[path.startsWith("space:") ? path : canonicalPathKey(path)],
 
     updatePresentation: (path, patch) => {
-        const key = canonicalPathKey(path)
+        const key = path.startsWith("space:") ? path : canonicalPathKey(path)
         const presentation = sanitizePresentation({
             ...get().presentations[key],
             ...patch

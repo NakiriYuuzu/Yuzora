@@ -35,32 +35,7 @@ pub struct Request {
     deny_unknown_fields
 )]
 pub enum Operation {
-    DevServerDetect {
-        workspace: String,
-        extra_ports: Option<Vec<u16>>,
-    },
-    DevServerAuthorize {
-        workspace: String,
-        command: String,
-        challenge_id: String,
-    },
-    PreviewCreate {
-        workspace: String,
-        path: String,
-    },
-    PreviewRevoke {
-        workspace: String,
-        token: String,
-    },
     Hello,
-    LspConfig {
-        workspace: String,
-        call: crate::lsp_command::LspConfigCommand,
-    },
-    LspDetect {
-        workspace: String,
-        language: String,
-    },
     Trust {
         call: crate::trust_command::TrustCommand,
     },
@@ -110,9 +85,6 @@ pub enum Operation {
         workspace: String,
         path: String,
         max_bytes: u64,
-    },
-    FilesIndex {
-        workspace: String,
     },
     HerdrDiscover {
         binary: String,
@@ -166,14 +138,8 @@ pub struct Hello {
 pub fn methods() -> Vec<String> {
     [
         "hello",
-        "devServerDetect",
-        "devServerAuthorize",
-        "previewCreate",
-        "previewRevoke",
         "tcpTunnel",
         "sqlite",
-        "lspDetect",
-        "lspConfig",
         "trust",
         "git",
         "workspaceAuthorize",
@@ -186,7 +152,6 @@ pub fn methods() -> Vec<String> {
         "filesRename",
         "filesDelete",
         "filesReadBase64",
-        "filesIndex",
         "herdrDiscover",
         "herdrRequest",
         "herdrCall",

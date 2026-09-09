@@ -22,7 +22,7 @@ import { useHostStore } from "@/state/hostStore"
 import { LOCAL_HOST_ID, parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { loadRemoteWorkspaces } from "@/state/remoteWorkspaceRegistry"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
-import { workspacePathForDisplay } from "@/lib/paths"
+import { isWindowsPath, workspacePathForDisplay } from "@/lib/paths"
 import { WorkspaceHostBadge } from "./WorkspaceHostBadge"
 
 export function FolderPickerHost() {
@@ -90,7 +90,7 @@ function FolderPickerDialog() {
     const current = () => generation === browseGeneration.current
       && useSshStore.getState().activeHostId === activeHostId
       && useSshStore.getState().sessions[activeHostId!]?.sessionId === sessionId
-    setBusy(true); setError(null)
+    setBusy(true); setError(null); setListing(null)
     try {
       const result = await sftpListDir(sessionId, remotePath)
       if (!current()) return
@@ -100,6 +100,11 @@ function FolderPickerDialog() {
   }
 
   async function choose() {
+    const generation = browseGeneration.current
+    const sessionId = session?.sessionId
+    const current = () => generation === browseGeneration.current
+      && useSshStore.getState().activeHostId === activeHostId
+      && useSshStore.getState().sessions[activeHostId!]?.sessionId === sessionId
     setBusy(true); setError(null)
     try {
       if (location === "local") {
@@ -107,7 +112,7 @@ function FolderPickerDialog() {
         if (typeof selected === "string") finish?.(selected)
       } else if (activeHostId && listing) {
         const selected = await registerSftpWorkspace(activeHostId, listing.cwd)
-        finish?.(selected)
+        if (current()) finish?.(selected)
       }
     } catch (cause) { setError(String(cause)) }
     finally { setBusy(false) }
@@ -120,18 +125,21 @@ function FolderPickerDialog() {
       : runtimeSession?.status === "connected" && runtimeSession.sessionId
         ? { kind: "ssh", sessionId: runtimeSession.sessionId } : null
     return <Dialog open onOpenChange={(next) => { if (!next) finish?.(null) }}>
-      <DialogContent>
-        <DialogHeader><DialogTitle>{t("addFolder")}</DialogTitle><DialogDescription>{runtimeConfig?.label ?? runtimeHostId}</DialogDescription></DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] min-h-0 flex-col overflow-hidden sm:max-w-[640px]">
+        <DialogHeader className="shrink-0 pr-6 [overflow-wrap:anywhere]"><DialogTitle>{t("addFolder")}</DialogTitle><DialogDescription>{runtimeConfig?.label ?? runtimeHostId}</DialogDescription></DialogHeader>
+        <ScrollArea className="min-h-0 min-w-0 flex-1" viewportClassName="[&>div]:!block" contentClassName="flex min-w-0 flex-col gap-4 p-1 [overflow-wrap:anywhere]">
         {target ? <RuntimeFolderPicker hostId={runtimeHostId} label={runtimeConfig?.label ?? runtimeHostId} target={target} onChoose={(path) => finish?.(path)} /> : <p role="alert">{t("runtimeDisconnected")}</p>}
-        <DialogFooter><Button variant="outline" onClick={() => finish?.(null)}>{t("cancel")}</Button></DialogFooter>
+        </ScrollArea>
+        <DialogFooter className="shrink-0"><Button variant="outline" onClick={() => finish?.(null)}>{t("cancel")}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   }
 
   return <>
     <Dialog open onOpenChange={(next) => { if (!next) finish?.(null) }}>
-      <DialogContent>
-        <DialogHeader><DialogTitle>{t("addFolder")}</DialogTitle><DialogDescription>{t("description")}</DialogDescription></DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] min-h-0 flex-col overflow-hidden sm:max-w-[640px]">
+        <DialogHeader className="shrink-0 pr-6 [overflow-wrap:anywhere]"><DialogTitle>{t("addFolder")}</DialogTitle><DialogDescription>{t("description")}</DialogDescription></DialogHeader>
+        <ScrollArea className="min-h-0 min-w-0 flex-1" viewportClassName="[&>div]:!block" contentClassName="flex min-w-0 flex-col gap-4 p-1 [overflow-wrap:anywhere]">
         {!runtimeHostId && <Tabs value={location} onValueChange={(value) => { if (value === "local" || value === "remote") setLocation(value) }}>
           <TabsList><TabsTrigger value="local">{t("local")}</TabsTrigger><TabsTrigger value="remote">{t("remote")}</TabsTrigger></TabsList>
         </Tabs>}
@@ -143,17 +151,18 @@ function FolderPickerDialog() {
           {session?.status === "connected" && session.sessionId && activeHostId && access === "runtime" && <RuntimeFolderPicker key={`${activeHostId}:${recent?.uri ?? ""}`} initialPath={recent?.hostId === activeHostId ? recent.path : undefined} hostId={activeHostId} label={hosts.find((host) => host.id === activeHostId)?.name ?? activeHostId} target={{kind:"ssh",sessionId:session.sessionId}} onChoose={(path) => finish?.(path)} />}
           {session?.status === "connected" && access === "sftp" && <Field>
             <FieldLabel htmlFor="remote-folder-path">{t("folder")}</FieldLabel>
-            <div className="flex gap-2"><Input id="remote-folder-path" value={path} onChange={(event) => setPath(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void browse() }} /><Button variant="outline" disabled={busy} onClick={() => void browse()}>{t("browse")}</Button></div>
-            {listing && <ScrollArea className="h-48"><div className="flex flex-col gap-1">
+            <div className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" id="remote-folder-path" value={path} onChange={(event) => { browseGeneration.current++; setPath(event.target.value); setListing(null); setBusy(false) }} onKeyDown={(event) => { if (event.key === "Enter") void browse() }} /><Button variant="outline" disabled={busy} onClick={() => void browse()}>{t("browse")}</Button></div>
+            {listing && <ScrollArea className="h-48 min-w-0" viewportClassName="[&>div]:!block"><div className="flex flex-col gap-1">
               {listing.cwd !== "/" && <Button variant="ghost" disabled={busy} onClick={() => void browse(`${listing.cwd}/..`)}>..</Button>}
-              {listing.entries.filter((entry) => entry.isDir && !entry.isSymlink && entry.nameSafe).map((entry) => <Button key={entry.path} variant="ghost" className="justify-start" disabled={busy} onClick={() => void browse(entry.path)}><Folder data-icon="inline-start" />{entry.name}</Button>)}
+              {listing.entries.filter((entry) => entry.isDir && !entry.isSymlink && entry.nameSafe).map((entry) => <Button key={entry.path} variant="ghost" className="w-full min-w-0 justify-start" disabled={busy} onClick={() => void browse(entry.path)}><Folder data-icon="inline-start" /><span className="truncate">{entry.name}</span></Button>)}
             </div></ScrollArea>}
             <p>{t("sftpDescription")}</p>
           </Field>}
         </FieldGroup>}
         {error && <p role="alert">{error}</p>}
         {!runtimeHostId && <RecentWorkspaceFolders onChoose={chooseRecent} />}
-        <DialogFooter><Button variant="outline" onClick={() => finish?.(null)}>{t("cancel")}</Button>{!runtimePicker && <Button disabled={busy || (!nativePicker && !listing)} onClick={() => void choose()}><FolderOpen data-icon="inline-start" />{t("openFolder")}</Button>}</DialogFooter>
+        </ScrollArea>
+        <DialogFooter className="shrink-0"><Button variant="outline" onClick={() => finish?.(null)}>{t("cancel")}</Button>{!runtimePicker && <Button disabled={busy || (!nativePicker && !listing)} onClick={() => void choose()}><FolderOpen data-icon="inline-start" />{t("openFolder")}</Button>}</DialogFooter>
       </DialogContent>
     </Dialog>
   </>
@@ -165,8 +174,8 @@ function RecentWorkspaceFolders({ onChoose }: { onChoose: (path: string) => void
   if (!recent.length) return null
   return <Field>
     <FieldLabel>{t("recentFolders")}</FieldLabel>
-    <ScrollArea className="max-h-40"><div className="flex flex-col gap-1">
-      {recent.slice(0, 10).map((path) => <Button key={path} variant="ghost" className="justify-start" onClick={() => onChoose(path)}>
+    <ScrollArea className="max-h-40 min-w-0" viewportClassName="[&>div]:!block"><div className="flex flex-col gap-1">
+      {recent.slice(0, 10).map((path) => <Button key={path} variant="ghost" className="w-full min-w-0 justify-start" onClick={() => onChoose(path)}>
         <Folder data-icon="inline-start" /><span className="min-w-0 flex-1 truncate">{workspacePathForDisplay(path)}</span><WorkspaceHostBadge path={path} />
       </Button>)}
     </div></ScrollArea>
@@ -186,14 +195,21 @@ function WslFolderPicker({onChoose,legacyWindowsPath,initialHostId,initialPath}:
   return <FieldGroup>
     <p>{t("wslDescription")}</p>
     {legacyWindowsPath && <p>{t("bindLegacyWindows", { path: legacyWindowsPath })}</p>}
-    <ScrollArea className="max-h-40"><div className="flex flex-col gap-2">{distros.map((distro) => <Button key={distro.hostId} disabled={distro.version!==2} variant={selected?.hostId===distro.hostId ? "secondary":"outline"} onClick={() => setSelected(distro)}>{distro.name} · WSL{distro.version}</Button>)}</div></ScrollArea>
+    <ScrollArea className="max-h-40 min-w-0" viewportClassName="[&>div]:!block"><div className="flex flex-col gap-2">{distros.map((distro) => <Button key={distro.hostId} disabled={distro.version!==2} variant={selected?.hostId===distro.hostId ? "secondary":"outline"} onClick={() => setSelected(distro)}><span className="truncate">{distro.name} · WSL{distro.version}</span></Button>)}</div></ScrollArea>
     {distros.length===0 && <p>{t("wslEmpty")}</p>}
     {error && <p role="alert">{error}</p>}
     {selected && <RuntimeFolderPicker key={selected.hostId} initialPath={selected.hostId===initialHostId ? initialPath : undefined} hostId={selected.hostId} label={selected.name} target={{kind:"wsl",distro:selected.name}} legacyWindowsPath={legacyWindowsPath} onChoose={onChoose} />}
   </FieldGroup>
 }
 
-function RuntimeFolderPicker({hostId,label,target,onChoose,legacyWindowsPath,initialPath}:{hostId:string;label:string;target:HostTarget;onChoose:(path:string)=>void;legacyWindowsPath?:string;initialPath?:string}) {
+interface RuntimeFolderPickerProps {hostId:string;label:string;target:HostTarget;onChoose:(path:string)=>void;legacyWindowsPath?:string;initialPath?:string}
+
+function RuntimeFolderPicker(props:RuntimeFolderPickerProps) {
+  const owner=useHostStore((state)=>state.hosts[props.hostId]?.connection?.owner)
+  return <RuntimeFolderBrowser key={JSON.stringify(owner ?? null)} {...props} />
+}
+
+function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,initialPath}:RuntimeFolderPickerProps) {
   const {t}=useTranslation("hosts")
   const host=useHostStore((state)=>state.hosts[hostId])
   const [path,setPath]=useState(initialPath ?? "")
@@ -203,6 +219,15 @@ function RuntimeFolderPicker({hostId,label,target,onChoose,legacyWindowsPath,ini
   const [error,setError]=useState<string|null>(null)
   const [managed,setManaged]=useState(false)
   const owner=host?.connection?.owner
+  const browseGeneration=useRef(0)
+  useEffect(() => {
+    const counter=browseGeneration
+    return () => { counter.current++ }
+  },[])
+  function changePath(value:string) {
+    browseGeneration.current++
+    setPath(value);setDirectory(null);setEntries([]);setBusy(false)
+  }
   async function setup() {
     setBusy(true);setError(null);setDirectory(null);setEntries([])
     try {const connection=await useHostStore.getState().setup(hostId,label,target,managed);setPath(initialPath ?? connection.hello.home)}
@@ -211,30 +236,38 @@ function RuntimeFolderPicker({hostId,label,target,onChoose,legacyWindowsPath,ini
   }
   async function browse(selected=path || host?.connection?.hello.home) {
     if (!owner || !selected) return
-    setBusy(true);setError(null)
+    const generation=++browseGeneration.current
+    const current=()=>generation===browseGeneration.current && useHostStore.getState().hosts[hostId]?.connection?.owner===owner
+    setBusy(true);setError(null);setDirectory(null);setEntries([])
     try {
+      if (target.kind==="wsl" && isWindowsPath(selected)) selected=await wslPath(hostId,target.distro,selected)
+      if (!current()) return
       const opened=await requestHost<WorkspaceOpenResult>(owner,{method:"workspaceOpen",params:{path:selected}})
       try {
+        if (!current()) return
         const rows=await requestHost<FileNode[]>(owner,{method:"filesList",params:{workspace:opened.capabilityId,path:""}})
-        if (useHostStore.getState().hosts[hostId]?.connection?.owner !== owner) return
+        if (!current()) return
         setEntries(rows);setDirectory(opened.canonicalPath);setPath(opened.canonicalPath)
       } finally {await requestHost(owner,{method:"workspaceClose",params:{workspace:opened.capabilityId}}).catch(()=>undefined)}
-    } catch(error) {setError(String(error))}
-    finally {setBusy(false)}
+    } catch(error) {if(current())setError(String(error))}
+    finally {if(current())setBusy(false)}
   }
   async function choose() {
     if (!owner || !directory) return
     setBusy(true);setError(null)
-    try {onChoose(await registerRuntimeWorkspace(owner,directory, () => useHostStore.getState().hosts[hostId]?.connection?.owner === owner))}
-    catch(error) {setError(String(error))}
-    finally {setBusy(false)}
+    const generation=browseGeneration.current
+    const current=()=>generation===browseGeneration.current && useHostStore.getState().hosts[hostId]?.connection?.owner===owner
+    try {const selected=await registerRuntimeWorkspace(owner,directory,current);if(current())onChoose(selected)}
+    catch(error) {if(current())setError(String(error))}
+    finally {if(current())setBusy(false)}
   }
   async function chooseWindowsFolder() {
     if (target.kind!=="wsl" || !owner) return
+    const generation=browseGeneration.current
     setBusy(true);setError(null)
     try {
       const selected=legacyWindowsPath ?? await open({directory:true,multiple:false})
-      if (typeof selected==="string") await browse(await wslPath(hostId,target.distro,selected))
+      if (typeof selected==="string" && generation===browseGeneration.current && useHostStore.getState().hosts[hostId]?.connection?.owner === owner) await browse(selected)
     } catch(error) {setError(String(error))}
     finally {setBusy(false)}
   }
@@ -244,11 +277,11 @@ function RuntimeFolderPicker({hostId,label,target,onChoose,legacyWindowsPath,ini
       <Field orientation="horizontal"><Checkbox id={`managed-${hostId}`} checked={managed} onCheckedChange={(value)=>setManaged(value===true)} /><FieldLabel htmlFor={`managed-${hostId}`}>{t("managedRuntime")}</FieldLabel></Field>
       <Button disabled={busy || host?.connecting} onClick={()=>void setup()}>{busy ? t("settingUp"):t("setupHost")}</Button>
     </> : <>
-      <Field><FieldLabel htmlFor="runtime-folder">{t("folder")}</FieldLabel><div className="flex gap-2"><Input id="runtime-folder" value={path || host?.connection?.hello.home || ""} onChange={(event)=>setPath(event.target.value)} /><Button variant="outline" disabled={busy} onClick={()=>void browse()}>{t("browse")}</Button></div></Field>
+      <Field><FieldLabel htmlFor="runtime-folder">{t("folder")}</FieldLabel><div className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" id="runtime-folder" value={path || host?.connection?.hello.home || ""} onChange={(event)=>changePath(event.target.value)} /><Button variant="outline" disabled={busy} onClick={()=>void browse()}>{t("browse")}</Button></div></Field>
       {target.kind==="wsl" && <Button variant="outline" disabled={busy} onClick={()=>void chooseWindowsFolder()}>{t(legacyWindowsPath ? "bindWindowsFolder" : "windowsFolder")}</Button>}
-      {directory && <ScrollArea className="h-48"><div className="flex flex-col gap-1">
+      {directory && <ScrollArea className="h-48 min-w-0" viewportClassName="[&>div]:!block"><div className="flex flex-col gap-1">
         {directory!=="/" && <Button variant="ghost" disabled={busy} onClick={()=>void browse(`${directory}/..`)}>..</Button>}
-        {entries.filter((entry)=>entry.isDir && entry.kind!=="symlink").map((entry)=><Button key={entry.path} variant="ghost" className="justify-start" disabled={busy} onClick={()=>void browse(`${directory.replace(/\/$/,"")}/${entry.name}`)}><Folder data-icon="inline-start" />{entry.name}</Button>)}
+        {entries.filter((entry)=>entry.isDir && entry.kind!=="symlink").map((entry)=><Button key={entry.path} variant="ghost" className="w-full min-w-0 justify-start" disabled={busy} onClick={()=>void browse(`${directory.replace(/\/$/,"")}/${entry.name}`)}><Folder data-icon="inline-start" /><span className="truncate">{entry.name}</span></Button>)}
       </div></ScrollArea>}
       <Button disabled={busy || !directory} onClick={()=>void choose()}><FolderOpen data-icon="inline-start" />{t("openFolder")}</Button>
       <Button variant="outline" disabled={busy || host?.connecting} onClick={()=>void setup()}>{t("updateHostTools")}</Button>

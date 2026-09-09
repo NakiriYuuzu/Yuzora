@@ -1,6 +1,6 @@
 /// 讀檔前只 sniff 前 1KB（做法借自 Zed 的 FILE_ANALYSIS_BYTES）
 pub const FILE_ANALYSIS_BYTES: usize = 1024;
-/// <= 此值：full（LSP、syntax 全開）。Spike B 校準。
+/// <= 此值：full（完整編輯與 syntax）。Spike B 校準。
 pub const FULL_FEATURE_MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// > 此值：too large，不載入。Spike B 校準。
 pub const HARD_CAP_BYTES: u64 = 50 * 1024 * 1024;

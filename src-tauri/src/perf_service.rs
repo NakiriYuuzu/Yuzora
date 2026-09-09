@@ -1,15 +1,12 @@
 // F1 performance monitor: sample the app process *and* every descendant it owns
-// (ACP wrappers, Pi/Claude agents, terminal shells, LSP servers, …).
+// (host helpers, HERDR connectors, and browser helpers).
 //
 // A persistent `System` lives in Tauri managed state so successive
 // `perf_snapshot` calls (driven by the 2s frontend poll) are spaced far enough
 // apart to satisfy sysinfo's minimum CPU update interval.
 //
 // 聚合方式走 OS 的 parent → child 關係（#22），而不是各子系統的 registry：
-// Yuzora 的子行程分散在五個 module，其中 ACP 與 process_service 沒有常駐可讀的
-// pid 欄位；而且 Pi 這類 agent 是「wrapper → 真正的 agent」兩層結構，registry
-// 只知道第一層。改由 process table 做 BFS 可以自動涵蓋孫層以下，也不必動任何
-// 子系統。
+// 由 process table 做 BFS，涵蓋所有 Yuzora 擁有的子孫程序。
 //
 // 已知限制（best-effort，本設計不處理）：Windows 上若子行程被 re-parent（例如
 // conhost 的特殊情形）就會逸出這棵樹；macOS 的 WKWebView WebContent/GPU helper
@@ -46,7 +43,7 @@ pub struct PerfSnapshot {
     pub webview_memory_bytes: u64,
     pub webview_count: u32,
     /// #22 定義的 Yuzora-owned descendants **扣掉** webview 那組：ACP wrapper、
-    /// agent、terminal shell、LSP server⋯，以及分類不出來的 process。
+    /// host helper、HERDR connector⋯，以及分類不出來的 process。
     ///
     /// 不變式：`app + webview + managed_tools == 總量`、
     /// `webview_count + managed_tools_count == descendant_count`。分類判斷不到的

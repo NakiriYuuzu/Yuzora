@@ -5,6 +5,7 @@ import "./lib/i18n";
 import { installTauriEventUnlistenGuard } from "./lib/tauriEventUnlistenGuard";
 import App from "./App";
 import "./styles.css";
+import "./theme/system-tone.css";
 
 installTauriEventUnlistenGuard();
 

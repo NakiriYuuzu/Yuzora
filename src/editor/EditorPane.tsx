@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Compartment, EditorState } from "@codemirror/state"
+import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { FileX2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
@@ -7,24 +7,15 @@ import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
 import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
 import { getDocument, updateBuffer, documentGeneration } from "./documentRegistry"
-import { registerView, unregisterView, updateViewMetadata } from "./viewRegistry"
+import { registerView, unregisterView } from "./viewRegistry"
 import { maybeInterceptSave } from "../workbench/ExternalChangeResolver"
 import { saveFile } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useEditorSettingsStore } from "../state/editorSettingsStore"
-import { subscribeWorkspaceLsp } from "../lsp/workspaceLifecycle"
 import { SpecialFileView } from "./SpecialFileView"
 import type { OpenFileResult } from "../lib/types"
-import { fileGradeOf } from "../lib/types"
-import {
-    formatEditorDocument,
-    flushPendingChanges,
-    shouldFormatOnSave,
-    lspExtensionsForFile
-} from "../lsp/lspManager"
-import type { ManagedClient } from "../lsp/lspManager"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { workspacePathForDisplay } from "@/lib/paths"
@@ -32,45 +23,10 @@ import { serializeDocumentLineEndings } from "./lineEndings"
 import { showDocumentSaveError, showMixedLineEndingSaveError } from "./saveDocument"
 import "./editor.css"
 
-// Format-on-save is opt-in and default OFF (A7). The switch is persisted under
-// this localStorage key; the Settings UI that writes it lands in T12 (wave 5) and
-// shares this exact key. Read fresh on every save so a toggle takes effect at once.
-export const FORMAT_ON_SAVE_STORAGE_KEY = "yuzora.lsp.formatOnSave.v1"
-
-function loadFormatOnSave(): boolean {
-    try {
-        return localStorage.getItem(FORMAT_ON_SAVE_STORAGE_KEY) === "true"
-    } catch {
-        // localStorage unavailable (private mode / quota): treat as disabled.
-        return false
-    }
-}
-
-// textDocument/formatting on save, gated by capability + the user setting. Returns
-// early (a resolved promise) whenever formatting is off or unavailable so the save
-// path is untouched. Applied as a single transaction into the view before saveFile
-// reads the doc, mirroring codeActions.applyWorkspaceEdit's offset mapping.
-async function applyFormatOnSave(
-    view: EditorView,
-    managed: ManagedClient,
-    path: string,
-    isLive: () => boolean
-): Promise<void> {
-    if (!shouldFormatOnSave(managed.capabilities, loadFormatOnSave())) return
-    try {
-        await formatEditorDocument(view, managed, path, isLive, false)
-    } catch {
-        // Server rejected / timed out — save the un-formatted text rather than block.
-    }
-}
-
-export function EditorPane({ path, groupIndex }: { path: string; groupIndex: number }) {
+export function EditorPane({ path, groupIndex, onReady }: { path: string; groupIndex: number; onReady?: (view: EditorView, save: () => void, editable: boolean) => void }) {
     const { t } = useTranslation("panels")
     const containerRef = useRef<HTMLDivElement>(null)
     const viewRef = useRef<EditorView | null>(null)
-    // The ManagedClient (with capabilities) for this pane's file, set once the
-    // async LSP mount resolves. Needed by save for flush + format-on-save gating.
-    const managedRef = useRef<ManagedClient | null>(null)
     const [result, setResult] = useState<OpenFileResult | null>(null)
     // T4 覆核修正：getDocument 失敗（檔案已刪／不可讀——workspace 切換還原不驗
     // 證存在性，此路徑常態可達）時的錯誤兜底。沒有它，分頁是永久空白 pane＋
@@ -95,8 +51,8 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
         } catch {
             // no-op under jsdom
         }
-        // Focus the editor so a requestReveal-driven navigation (go-to-definition,
-        // find-references, symbol jump) lands the caret in the view (R3). Search-
+        // Focus the editor so a requestReveal-driven navigation lands the caret in
+        // the view (R3). Search-
         // result clicks pass focus:false to stay reveal-only, keeping focus on the
         // results list (A4). Guarded because jsdom's focus has no layout to act on.
         if (focus) {
@@ -110,20 +66,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
 
     useEffect(() => {
         let disposed = false
-        let unsubscribeLsp: (() => void) | undefined
         const generation = documentGeneration(path)
-        // Intercept clicks on links inside hover/completion tooltips (H3). sanitizeHtml
-        // keeps <a href> in server markdown (and FORBID target forces in-place
-        // navigation), so a click would navigate the whole Tauri webview away from the
-        // SPA. Capture-phase on document so we preempt the browser's default navigation
-        // for every pane. (Opening the URL in an external browser is a future task.)
-        const onTooltipLinkClick = (event: MouseEvent) => {
-            const target = event.target
-            if (target instanceof Element && target.closest(".cm-tooltip a[href]")) {
-                event.preventDefault()
-            }
-        }
-        document.addEventListener("click", onTooltipLinkClick, true)
         void getDocument(path).then((entry) => {
             if (disposed) return
             setResult(entry.result)
@@ -143,17 +86,7 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
                 if (maybeInterceptSave(path)) return
                 const view = viewRef.current
                 if (!view) return
-                // Flush any debounced didChange so a formatting request (and the
-                // server's view of the file) sees the just-typed text (R4).
-                const managed = managedRef.current
-                if (managed) flushPendingChanges(managed)
-                // Format-on-save needs to know this exact view is still the pane's
-                // live view when its async request resolves (F4).
-                const isLive = () => viewRef.current === view
-                const formatted = managed
-                    ? applyFormatOnSave(view, managed, path, isLive)
-                    : Promise.resolve()
-                void formatted
+                void Promise.resolve()
                     .then(() => {
                         const lineEnding =
                             useWorkspaceStore.getState().getLineEnding(path) ??
@@ -186,13 +119,11 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
             // change landing while the doc load awaited is honoured; the reactive
             // effects below then carry any later change into this live view.
             const editorSettings = useEditorSettingsStore.getState()
-            const lspCompartment = new Compartment()
             const state = EditorState.create({
                 doc: content,
                 extensions: [
                     ...buildExtensions(path, flags, () => markDirty(path, true), save, editorSettings.minimap),
-                    conflictMarkers(),
-                    lspCompartment.of([])
+                    conflictMarkers()
                 ]
             })
             const view = new EditorView({ state, parent: containerRef.current! })
@@ -200,67 +131,14 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
             viewRef.current = view
             registerView(path, view, {
                 groupIndex,
-                readonly: flags.readonly,
-                formatter: "checking"
+                readonly: flags.readonly
             })
+            onReady?.(view, save, r.kind === "full" && r.lineEnding !== "mixed")
             const reveal = useWorkspaceStore.getState().pendingReveal
             if (reveal && reveal.path === path) {
                 revealLine(view, reveal.line, reveal.focus ?? true)
                 useWorkspaceStore.getState().consumeReveal()
             }
-            // Replace only LSP extensions on reconnect; retain the dirty document,
-            // selection and undo history in the existing EditorView.
-            let lspGeneration = 0
-            const mountLsp = async () => {
-                const currentGeneration = ++lspGeneration
-                managedRef.current = null
-                view.dispatch({ effects: lspCompartment.reconfigure([]) })
-                updateViewMetadata(path, view, { formatter: "checking", formatDocument: undefined })
-                try {
-                    const result = await lspExtensionsForFile(path, fileGradeOf(r, view.state.doc.toString()))
-                    if (disposed || viewRef.current !== view || currentGeneration !== lspGeneration) return
-                    if (!result) {
-                        updateViewMetadata(path, view, {
-                            formatter: "unsupported",
-                            formatDocument: undefined
-                        })
-                        return
-                    }
-                    managedRef.current = result.managed
-                    view.dispatch({ effects: lspCompartment.reconfigure(result.extensions) })
-                    const formatter = result.managed.capabilities?.documentFormattingProvider
-                        ? "available"
-                        : "unsupported"
-                    updateViewMetadata(path, view, {
-                        formatter,
-                        formatDocument: formatter === "available"
-                            ? () => formatEditorDocument(
-                                view,
-                                result.managed,
-                                path,
-                                () => !disposed && viewRef.current === view && currentGeneration === lspGeneration
-                            )
-                            : undefined
-                    })
-                } catch {
-                    if (!disposed && viewRef.current === view && currentGeneration === lspGeneration) {
-                        updateViewMetadata(path, view, {
-                            formatter: "unsupported",
-                            formatDocument: undefined
-                        })
-                    }
-                }
-            }
-            const workspace = useWorkspaceStore.getState().workspacePath
-            if (workspace) unsubscribeLsp = subscribeWorkspaceLsp(workspace, (restart) => {
-                if (disposed || viewRef.current !== view) return
-                if (restart) { void mountLsp(); return }
-                lspGeneration++
-                managedRef.current = null
-                view.dispatch({ effects: lspCompartment.reconfigure([]) })
-                updateViewMetadata(path, view, { formatter: "unsupported", formatDocument: undefined })
-            })
-            void mountLsp()
         }).catch(() => {
             // openFile rejected (file deleted/moved/unreadable) — or, defensively,
             // the mount body above threw. Surface the error state instead of a
@@ -269,8 +147,6 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
         })
         return () => {
             disposed = true
-            unsubscribeLsp?.()
-            document.removeEventListener("click", onTooltipLinkClick, true)
             const view = viewRef.current
             if (view) {
                 updateBuffer(path, view.state.doc.toString(), generation, workspacePath)
@@ -280,9 +156,8 @@ export function EditorPane({ path, groupIndex }: { path: string; groupIndex: num
             }
             view?.destroy()
             viewRef.current = null
-            managedRef.current = null
         }
-    }, [path, groupIndex, workspacePath, markDirty, markExternallyModified, hydrateLineEnding])
+    }, [path, groupIndex, workspacePath, markDirty, markExternallyModified, hydrateLineEnding, onReady])
 
     // Jump to a requested line once the pane for its file is mounted. The view
     // is created asynchronously above, so a request that lands before creation

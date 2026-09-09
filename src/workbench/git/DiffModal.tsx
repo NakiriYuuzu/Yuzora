@@ -1,3 +1,4 @@
+import { gitFileNameStyle } from "./fileRows"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
@@ -35,14 +36,14 @@ import { DiffFilesToggle } from "@/workbench/git/DiffFilesToggle"
 
 // §5 gitBadge palette (design L3206-3210) — reused for the file-list rows.
 const BADGE_COLORS: Record<string, { fg: string; bg: string }> = {
-    M: { fg: "#2456cc", bg: "var(--blue-soft)" },
-    A: { fg: "#178a63", bg: "var(--mint-soft)" },
-    D: { fg: "#c2293f", bg: "var(--danger-soft)" },
-    R: { fg: "#9a6512", bg: "var(--amber-soft)" },
-    C: { fg: "#9a6512", bg: "var(--amber-soft)" },
-    "?": { fg: "#6b6760", bg: "var(--paper-3)" },
-    "!": { fg: "#c2293f", bg: "var(--danger-soft)" },
-    U: { fg: "#6b6760", bg: "var(--paper-3)" }
+    M: { fg: "var(--git-file-modified)", bg: "var(--blue-soft)" },
+    A: { fg: "var(--git-file-staged)", bg: "var(--mint-soft)" },
+    D: { fg: "var(--git-file-deleted)", bg: "var(--paper-3)" },
+    R: { fg: "var(--git-file-untracked)", bg: "var(--amber-soft)" },
+    C: { fg: "var(--git-file-untracked)", bg: "var(--amber-soft)" },
+    "?": { fg: "var(--git-file-untracked)", bg: "var(--amber-soft)" },
+    "!": { fg: "var(--git-file-conflict)", bg: "var(--danger-soft)" },
+    U: { fg: "var(--git-file-deleted)", bg: "var(--paper-3)" }
 }
 
 function badgeChar(status: string): string {
@@ -165,7 +166,7 @@ function DiffFileOption({
         >
             <FileBadge badge={row.badge} />
             <span className="min-w-0 flex-1 truncate">
-                <span className={"text-[12px] " + (selected ? "font-semibold text-(--ink-0)" : "font-medium text-(--ink-1)")}>
+                <span style={gitFileNameStyle(row.badge, row.side === "staged")} className={"text-[12px] " + (selected ? "font-semibold text-(--ink-0)" : "font-medium text-(--ink-1)")}>
                     {name}
                 </span>
                 {sideLabel && <span className="ml-[6px] text-[10px] font-semibold text-(--ink-3)">{sideLabel}</span>}
@@ -260,7 +261,7 @@ export function DiffModal() {
     // from the previous heldSource session derives to expanded on the next open*.
     // Mount-time onCollapse (0px first resize) must not stamp this generation.
     const [filesPanel, setFilesPanel] = useState({ sourceGeneration: -1, collapsed: false })
-    const filesCollapsed = filesPanel.sourceGeneration === sourceGeneration && filesPanel.collapsed
+    const filesCollapsed = filesPanel.sourceGeneration !== sourceGeneration || filesPanel.collapsed
     const filesPanelRef = useRef<PanelImperativeHandle>(null)
     const filePanelContentRef = useRef<HTMLDivElement>(null)
     const expandFilesRef = useRef<HTMLButtonElement>(null)
@@ -338,7 +339,7 @@ export function DiffModal() {
 
     useLayoutEffect(() => {
         if (!open) return
-        filesPanelRef.current?.expand()
+        filesPanelRef.current?.collapse()
     }, [open, sourceGeneration])
 
     useLayoutEffect(() => {
@@ -520,7 +521,7 @@ export function DiffModal() {
                         <ResizablePanel
                             id="diff-files"
                             panelRef={filesPanelRef}
-                            defaultSize="24"
+                            defaultSize="0"
                             minSize="15"
                             maxSize="40"
                             collapsible
@@ -630,13 +631,13 @@ export function DiffModal() {
                                         <>
                                             <span
                                                 className="shrink-0 font-mono text-[11px] font-semibold"
-                                                style={{ color: "#178a63" }}
+                                                style={{ color: "var(--git-file-staged)" }}
                                             >
                                                 +{stats.added}
                                             </span>
                                             <span
                                                 className="shrink-0 font-mono text-[11px] font-semibold"
-                                                style={{ color: "#c2293f" }}
+                                                style={{ color: "var(--git-file-conflict)" }}
                                             >
                                                 −{stats.deleted}
                                             </span>

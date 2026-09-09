@@ -1,16 +1,16 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { getVersion } from "@tauri-apps/api/app"
 import changelogMarkdown from "../../../CHANGELOG.md?raw"
 import {
   Check,
+  Search,
+  ArrowRight,
   Code,
   Droplet,
   FileText,
   GitBranch,
   Info,
-  MonitorPlay,
-  Server,
   Shield,
   TerminalSquare,
   Bot,
@@ -18,7 +18,14 @@ import {
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
-import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
+import { Tabs,TabsList,TabsTrigger,TabsContent } from "@/components/ui/tabs"
+import { FieldGroup } from "@/components/ui/field"
+import { InputGroup,InputGroupInput,InputGroupAddon,InputGroupButton } from "@/components/ui/input-group"
+import { Empty,EmptyHeader,EmptyTitle,EmptyDescription,EmptyContent } from "@/components/ui/empty"
+import { SettingsThemePicker } from "./SettingsThemePicker"
+import { SETTINGS_GROUPS,settingsSearchResults,type SettingsSectionId } from "./settings-search"
+import "./settings-modern.css"
 import { extractReleaseNotes, parseReleaseNoteLines } from "@/lib/releaseNotes"
 import {
   Dialog,
@@ -49,16 +56,12 @@ import { SettingCard, Segmented, ToggleRow } from "./settingsPrimitives"
 import { HerdrSettingsSection } from "@/app/workbench/HerdrSettingsSection"
 import { GitSection } from "./GitSection"
 import { TerminalSection } from "./TerminalSection"
-import { PreviewSection } from "./PreviewSection"
 import { LogsSection } from "./LogsSection"
-import { LspSection } from "./LspSection"
 
 // Re-export the storage-layer public API so external importers (and tests) keep
 // resolving these symbols through this module after the file split.
 export {
   TERMINAL_SETTINGS_STORAGE_KEY,
-  PREVIEW_SETTINGS_STORAGE_KEY,
-  loadPreviewSettings,
 } from "./settingsStorage"
 export type {
   ThemePreference,
@@ -79,11 +82,12 @@ interface SettingsDialogProps {
   onThemeChange: (theme: ThemePreference) => void
   accent?: AccentPreference
   onAccentChange?: (accent: AccentPreference) => void
+  leftSidebarBackground?: boolean
+  rightSidebarBackground?: boolean
+  onSidebarBackgroundChange?: (side: "left" | "right", enabled: boolean) => void
   // Optional target applied whenever the dialog opens (or the target changes
-  // while open): jump to a section and, for the LSP pane, focus a language card.
-  // openSettings("lsp","python") drives these through AppShell (uiStore).
+  // while open).
   initialSection?: string
-  initialLanguage?: string
   // Bumped by every openSettings call. A dep of the sync effect so re-issuing the
   // SAME target (after the user manually navigated away) still re-applies it —
   // identical section/language primitives alone wouldn't re-fire the effect.
@@ -117,30 +121,18 @@ function ReleaseNotes({ markdown }: { markdown: string }) {
   )
 }
 
-type SectionId =
-  | "appearance"
-  | "editor"
-  | "safety"
-  | "git"
-  | "lsp"
-  | "logs"
-  | "terminal"
-  | "preview"
-  | "herdr"
-  | "about"
+type SectionId = SettingsSectionId
 
-// Design reference settings nav (§ settingsNav): three panes with icon rows.
+// Settings category icons; grouping is owned by SETTINGS_GROUPS.
 // Labels/sub-copy live in the "workbench" i18n namespace under
 // settings.sections.<id>.{label,sub} (looked up by id at render time — see
 // SettingsDialog below), so this array only carries the id → icon mapping.
 const SECTIONS: { id: SectionId; icon: LucideIcon }[] = [
   { id: "appearance", icon: Droplet },
   { id: "editor", icon: Code },
-  { id: "lsp", icon: Server },
   { id: "logs", icon: FileText },
   { id: "terminal", icon: TerminalSquare },
   { id: "herdr", icon: Bot },
-  { id: "preview", icon: MonitorPlay },
   { id: "safety", icon: Shield },
   { id: "git", icon: GitBranch },
   { id: "about", icon: Info },
@@ -152,12 +144,10 @@ const ACCENT_SWATCHES = Object.entries(ACCENT_THEMES).map(([id, palette]) => ({
 }))
 
 /**
- * Settings dialog — design reference settings modal: frost surface, header
- * with avatar, 198px left nav (Appearance / Editor / LSP / Safety / Git +
- * version footer) and a scrollable card pane. Theme + the LSP and Git panes are
- * live; the remaining controls hold local placeholder state until their features
- * land. The dialog remembers the last section across opens, but an external
- * target (initialSection/initialLanguage, from openSettings) overrides it.
+ * Settings: grouped navigation, search and a scrollable settings pane.
+ * Existing stores and native services retain their original behavior.
+ * The dialog remembers the last section across opens, but an external
+ * target (initialSection, from openSettings) overrides it.
  */
 export function SettingsDialog({
   open,
@@ -166,15 +156,23 @@ export function SettingsDialog({
   onThemeChange,
   accent = DEFAULT_ACCENT_PREFERENCE,
   onAccentChange = () => {},
+  leftSidebarBackground = true,
+  rightSidebarBackground = true,
+  onSidebarBackgroundChange = () => {},
   initialSection,
-  initialLanguage,
   openNonce,
 }: SettingsDialogProps) {
   const { t } = useTranslation("common")
   const { t: tw } = useTranslation("workbench")
   const { t: tu } = useTranslation("updates")
+  const { t: td } = useTranslation("settingsDemo")
+  const [query,setQuery] = useState("")
+  const [jumpTarget,setJumpTarget] = useState<string|null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const previousFocusRef = useRef<HTMLElement|null>(null)
+  const searchResults = query.trim() ? settingsSearchResults(query,tw) : []
   const [section, setSection] = useState<SectionId>("appearance")
-  const [targetLanguage, setTargetLanguage] = useState<string | undefined>(undefined)
   const [language, setLanguage] = useState<LanguagePreference>(getLanguagePreference)
   const fontSize = useEditorSettingsStore((s) => s.fontSize)
   const setFontSize = useEditorSettingsStore((s) => s.setFontSize)
@@ -226,16 +224,31 @@ export function SettingsDialog({
   // the remembered section (rail/palette path).
   useEffect(() => {
     if (!open) return
+    setQuery("")
+    setJumpTarget(null)
     const match = SECTIONS.find((s) => s.id === initialSection)
     if (match) setSection(match.id)
-    setTargetLanguage(initialLanguage)
-  }, [open, initialSection, initialLanguage, openNonce])
+  }, [open, initialSection, openNonce])
 
-  // Manual section nav: switch section and drop any external language highlight
-  // (A-F5 — otherwise re-entering the LSP pane keeps the last targeted card lit).
+  // Manual section nav clears the current search target.
   const selectSection = (id: SectionId) => {
     setSection(id)
-    setTargetLanguage(undefined)
+    setQuery("")
+    setJumpTarget(null)
+  }
+
+  useEffect(()=>{
+    if(!open || query || !jumpTarget)return
+    const target=Array.from(contentRef.current?.querySelectorAll<HTMLElement>("[data-settings-label]")??[]).find(item=>item.dataset.settingsLabel===jumpTarget)
+    if(!target){contentRef.current?.focus();return}
+    target.scrollIntoView?.({block:"center"})
+    const control=target.querySelector<HTMLElement>('[aria-checked="true"]')??target.querySelector<HTMLElement>('button,input,select,textarea,[tabindex="0"]')
+    if(control)control.focus({preventScroll:true})
+    else contentRef.current?.focus({preventScroll:true})
+  },[open,section,query,jumpTarget])
+  function openSearchResult(result:typeof searchResults[number]) {
+    setSection(result.section);setQuery("");setJumpTarget(result.target)
+    if(!result.target)requestAnimationFrame(()=>contentRef.current?.focus())
   }
 
   // Persist the display-language choice and switch i18next immediately (live,
@@ -267,139 +280,79 @@ export function SettingsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         resizeId="settings"
-        minSize={dialogMinSize(520, 320)}
+        minSize={dialogMinSize(640, 440)}
         showCloseButton={false}
-        className="yz-diffin flex min-h-0 flex-col gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 [backdrop-filter:var(--blur-frost)]"
+        className="settings-modern"
+        data-design="settings"
+        data-design-label={td("title")}
+        onOpenAutoFocus={event=>{event.preventDefault();previousFocusRef.current=document.activeElement as HTMLElement;searchRef.current?.focus()}}
+        onCloseAutoFocus={event=>{event.preventDefault();previousFocusRef.current?.focus()}}
+        onEscapeKeyDown={event=>{if(query){event.preventDefault();setQuery('');searchRef.current?.focus()}}}
+        onKeyDownCapture={event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==="f"){event.preventDefault();event.stopPropagation();searchRef.current?.focus();searchRef.current?.select()}}}
       >
-        <div className="flex shrink-0 items-center gap-[11px] border-b border-(--line-1) px-[20px] py-[15px]">
-          <span
-            aria-hidden="true"
-            className="flex size-[32px] shrink-0 items-center justify-center rounded-full bg-[image:var(--grad-dusk)] text-[13px] font-semibold text-white shadow-(--shadow-xs)"
-          >
-            Y
-          </span>
-          <div className="min-w-0 flex-1">
-            <DialogTitle className="font-serif text-[18px] leading-[1.1] font-semibold text-(--ink-0)">
-              {tw("settings.dialogTitle")}
-            </DialogTitle>
-            <DialogDescription className="mt-[1px] text-[11px] text-(--ink-3)">
-              {tw("settings.dialogDescription")}
-            </DialogDescription>
-          </div>
-          <DialogClose
-            aria-label={tw("settings.closeSettings")}
-            className="flex size-[28px] shrink-0 items-center justify-center rounded-[8px] text-(--ink-3) transition-colors hover:bg-(--paper-2) hover:text-(--ink-1)"
-          >
-            <X className="size-[16px]" aria-hidden="true" />
-          </DialogClose>
-        </div>
-
-        <div className="flex min-h-0 flex-1">
-          <aside
-            data-testid="settings-sidebar"
-            className="flex w-[198px] min-h-0 shrink-0 flex-col border-r border-(--line-1) bg-(--yz-panel)"
-          >
-            <ScrollArea
-              data-testid="settings-sidebar-scroll"
-              className="min-h-0 flex-1"
-              viewportClassName="px-[11px] pt-[14px] pb-[8px]"
-              contentClassName="flex flex-col gap-0"
-            >
-              {SECTIONS.map(({ id, icon: Icon }) => {
-                const isActive = id === section
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    aria-pressed={isActive}
-                    onClick={() => selectSection(id)}
-                    className={cn(
-                      "flex h-[37px] w-full shrink-0 items-center gap-[9px] rounded-[9px] px-[11px] text-[13px] tracking-[-0.01em] transition-all duration-[130ms] ease-(--ease-out)",
-                      isActive
-                        ? "bg-(--yz-solid) font-semibold text-(--ink-0) shadow-(--shadow-xs)"
-                        : "font-medium text-(--ink-2) hover:bg-(--yz-hover)"
-                    )}
-                  >
-                    <span className="flex size-[22px] shrink-0 items-center justify-center">
-                      <Icon className="size-[15px]" aria-hidden="true" />
-                    </span>
-                    <span className="min-w-0 flex-1 text-left">{tw(`settings.sections.${id}.label`)}</span>
-                  </button>
-                )
-              })}
+        <header className="settings-topbar">
+          <div className="settings-heading"><DialogTitle>{td("title")}</DialogTitle><DialogDescription>{td("subtitle")}</DialogDescription></div>
+          <InputGroup className="settings-search" data-design="settings-search" data-design-label={td("search")}>
+            <InputGroupAddon><Search aria-hidden="true"/></InputGroupAddon>
+            <InputGroupInput ref={searchRef} aria-label={td("search")} placeholder={td("searchPlaceholder")} value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{
+              if(event.key==='Enter'&&searchResults[0]&&!event.nativeEvent.isComposing){event.preventDefault();openSearchResult(searchResults[0])}
+            }}/>
+            {query&&<InputGroupAddon align="inline-end"><InputGroupButton aria-label={td("clearSearch")} size="icon-xs" onClick={()=>{setQuery('');searchRef.current?.focus()}}><X aria-hidden="true"/></InputGroupButton></InputGroupAddon>}
+          </InputGroup>
+          <DialogClose asChild><Button variant="ghost" size="icon-sm" aria-label={tw("settings.closeSettings")}><X aria-hidden="true"/></Button></DialogClose>
+        </header>
+        <Tabs orientation="vertical" value={section} onValueChange={value=>selectSection(value as SectionId)} className="settings-layout">
+          <aside data-testid="settings-sidebar" className="settings-sidebar" data-design="settings-navigation" data-design-label={td("categories")}>
+            <div className="settings-app-identity"><span aria-hidden="true">y.</span><div><strong>Yuzora</strong><small>{td("localPreferences")}</small></div></div>
+            <ScrollArea data-testid="settings-sidebar-scroll" className="settings-nav-scroll min-h-0 flex-1">
+              <TabsList aria-label={td("categories")} className="settings-nav-list">
+                {SETTINGS_GROUPS.map(group=><div key={group.id} className="settings-nav-group">
+                  <span className="settings-nav-group-label">{td(`groups.${group.id}`)}</span>
+                  {group.sections.map(id=>{const Icon=SECTIONS.find(item=>item.id===id)!.icon;return <TabsTrigger key={id} value={id}><Icon aria-hidden="true"/><span>{tw(`settings.sections.${id}.label`)}</span></TabsTrigger>})}
+                </div>)}
+              </TabsList>
             </ScrollArea>
-            <div
-              data-testid="settings-sidebar-footer"
-              className="flex shrink-0 items-center gap-[7px] border-t border-(--line-1) px-[21px] py-[10px]"
-            >
-              <span
-                aria-hidden="true"
-                className="size-[6px] shrink-0 rounded-full bg-(--yz-accent)"
-              />
-              <span className="font-mono text-[10px] text-(--ink-3)">
-                {appVersion
-                  ? tw("settings.appVersionValue", { version: appVersion })
-                  : tw("settings.appName")}
-              </span>
-            </div>
+            <div data-testid="settings-sidebar-footer" className="settings-sidebar-footer shrink-0"><Badge variant="outline">Yuzora</Badge><span>{appVersion ? tw("settings.appVersionValue", { version: appVersion }) : tw("settings.appName")}</span></div>
           </aside>
-
-          <ScrollArea className="min-w-0 flex-1" viewportClassName="px-[26px] pt-[22px] pb-[26px]" focusable>
-            <h3 className="font-serif text-[17px] leading-[1.1] font-semibold text-(--ink-0)">
-              {tw(`settings.sections.${active.id}.label`)}
-            </h3>
-            <div className="mt-[3px] mb-[18px] text-[11.5px] text-(--ink-3)">
-              {tw(`settings.sections.${active.id}.sub`)}
-            </div>
+          <div className="settings-main">
+            <ScrollArea key={query.trim()?'search':section} className="settings-content-scroll" viewportClassName="settings-content-viewport" focusable>
+              {query.trim()?<div className="settings-search-results">
+                <div className="settings-page-heading"><h3>{td("resultsTitle")}</h3><p role="status">{td("resultsCount",{count:searchResults.length,query})}</p></div>
+                {searchResults.length?<div className="settings-result-list">{searchResults.map(result=><Button key={result.key} variant="ghost" className="settings-result" onClick={()=>openSearchResult(result)}><span><small>{result.category}</small><strong>{result.label}</strong></span><ArrowRight aria-hidden="true"/></Button>)}</div>:<Empty><EmptyHeader><EmptyTitle>{td("noResults")}</EmptyTitle><EmptyDescription>{td("noResultsHint")}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" onClick={()=>{setQuery('');searchRef.current?.focus()}}>{td("clearSearch")}</Button></EmptyContent></Empty>}
+              </div>:<TabsContent value={section} ref={contentRef} className="settings-page" tabIndex={0} data-design="settings-content" data-design-label={tw(`settings.sections.${section}.label`)}>
+                <div className="settings-page-heading"><span className="settings-page-eyebrow">{td(`groups.${SETTINGS_GROUPS.find(group=>group.sections.some(id=>id===section))!.id}`)}</span><h3>{tw(`settings.sections.${active.id}.label`)}</h3><p>{tw(`settings.sections.${active.id}.sub`)}</p></div>
 
             {section === "appearance" && (
-              <div className="flex flex-col gap-[14px]">
+              <FieldGroup className="settings-fields">
                 <SettingCard label={tw("settings.theme")}>
-                  <Segmented
-                    label={tw("settings.theme")}
-                    options={[
-                      { id: "light", label: tw("settings.themeLight") },
-                      { id: "dark", label: tw("settings.themeDark") },
-                      { id: "auto", label: tw("settings.themeAuto") },
-                    ]}
-                    value={theme}
-                    onChange={(id) => onThemeChange(id as ThemePreference)}
-                  />
+                  <SettingsThemePicker value={theme} onChange={onThemeChange}/>
+                  <p className="settings-inline-hint">{td("themeHint")}</p>
                 </SettingCard>
 
                 <SettingCard label={tw("settings.accentColor")}>
-                  <RadioGroup
-                    aria-label={tw("settings.accentColor")}
-                    value={accent}
-                    onValueChange={(value) => onAccentChange(value as AccentPreference)}
-                    className="flex items-center gap-[11px]"
-                  >
-                    {ACCENT_SWATCHES.map((swatch) => {
-                      const isSelected = swatch.id === accent
-                      return (
-                        <RadioGroupItem
-                          key={swatch.id}
-                          value={swatch.id}
-                          aria-label={swatch.id}
-                          style={{
-                            backgroundColor: swatch.solid,
-                            boxShadow: isSelected
-                              ? `0 0 0 2px var(--paper-0), 0 0 0 4px ${swatch.solid}`
-                              : "var(--shadow-xs)",
-                          }}
-                          className="flex size-[30px] shrink-0 items-center justify-center rounded-full border-0 transition-[transform,box-shadow] duration-150 ease-(--ease-spring) hover:scale-[1.12] [&_[data-slot=radio-group-indicator]]:hidden"
-                        >
-                          {isSelected && (
-                            <Check
-                              className="size-[15px] text-white [&_path]:stroke-[3]"
-                              aria-hidden="true"
-                            />
-                          )}
-                        </RadioGroupItem>
-                      )
-                    })}
+                  <RadioGroup aria-label={tw("settings.accentColor")} value={accent} onValueChange={value=>onAccentChange(value as AccentPreference)} className="settings-palette">
+                    {ACCENT_SWATCHES.map(swatch=><label key={swatch.id} className="settings-palette-choice" data-selected={accent===swatch.id}>
+                      <RadioGroupItem value={swatch.id} aria-label={td(`palettes.${swatch.id}`)} style={{backgroundColor:swatch.solid}} className="settings-palette-swatch"><Check aria-hidden="true"/></RadioGroupItem>
+                      <span>{td(`palettes.${swatch.id}`)}</span>
+                    </label>)}
                   </RadioGroup>
+                  <p className="settings-inline-hint">{td("paletteHint")}</p>
                 </SettingCard>
+
+                <div className="flex flex-col">
+                  <ToggleRow
+                    label={tw("settings.leftSidebarBackground")}
+                    sub={tw("settings.leftSidebarBackgroundSub")}
+                    checked={leftSidebarBackground}
+                    onCheckedChange={enabled => onSidebarBackgroundChange("left", enabled)}
+                  />
+                  <ToggleRow
+                    label={tw("settings.rightSidebarBackground")}
+                    sub={tw("settings.rightSidebarBackgroundSub")}
+                    checked={rightSidebarBackground}
+                    onCheckedChange={enabled => onSidebarBackgroundChange("right", enabled)}
+                  />
+                </div>
 
                 <SettingCard label={tw("settings.language")}>
                   <Segmented
@@ -422,11 +375,11 @@ export function SettingsDialog({
                     onCheckedChange={setMoveOpenedWorkspaceToTop}
                   />
                 </div>
-              </div>
+              </FieldGroup>
             )}
 
             {section === "editor" && (
-              <div className="flex flex-col gap-[14px]">
+              <FieldGroup className="settings-fields">
                 <SettingCard label={tw("settings.editorFontSize")} sub={tw("settings.editorFontSizeSub")}>
                   <Segmented
                     label={tw("settings.editorFontSize")}
@@ -436,9 +389,8 @@ export function SettingsDialog({
                   />
                 </SettingCard>
 
-                {/* Format-on-save + the language-server list are owned by the LSP
-                    pane (real, persisted / live) — the editor pane keeps only the
-                    editor-surface toggle. */}
+                <div className="settings-editor-preview" aria-label={td("editorPreview")} style={{fontSize}}><div><span>workspace.ts</span><span>{fontSize}px · JetBrains Mono</span></div><pre><code><span>1  </span>const workspace = "Yuzora";{"\n"}<span>2  </span>// {td("editorSample")}{"\n"}<span>3  </span>await agent.read();</code></pre></div>
+
                 <div className="flex flex-col">
                   <ToggleRow
                     label={tw("settings.showMinimap")}
@@ -447,7 +399,7 @@ export function SettingsDialog({
                     onCheckedChange={setMinimap}
                   />
                 </div>
-              </div>
+              </FieldGroup>
             )}
 
             {section === "safety" && (
@@ -463,9 +415,6 @@ export function SettingsDialog({
               />
             )}
 
-            {section === "lsp" && <LspSection targetLanguage={targetLanguage} />}
-
-
             {section === "logs" && (
               <LogsSection initialSource={settingsLogSource ?? undefined} openNonce={openNonce} />
             )}
@@ -473,8 +422,6 @@ export function SettingsDialog({
             {section === "terminal" && <TerminalSection />}
 
             {section === "herdr" && <HerdrSettingsSection />}
-
-            {section === "preview" && <PreviewSection />}
 
             {section === "git" && <GitSection />}
 
@@ -593,8 +540,11 @@ export function SettingsDialog({
                 </SettingCard>
               </div>
             )}
-          </ScrollArea>
-        </div>
+              </TabsContent>}
+            </ScrollArea>
+            <footer className="settings-content-footer"><Info aria-hidden="true"/><span>{td("preferencesHint")}</span></footer>
+          </div>
+        </Tabs>
       </DialogContent>
       <Dialog open={installConfirmationOpen} onOpenChange={setInstallConfirmationOpen}>
 <DialogContent

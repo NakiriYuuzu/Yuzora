@@ -1,16 +1,9 @@
 import { requestHost, type HostOperation } from "./hostIpc"
 import { connectedWorkspaceOwners, runtimeWorkspaceService } from "./remoteFiles"
 import { parseRemoteFilePath, remoteFilePath, sameConnection } from "./runtimeIdentity"
-import type { WorkspaceTrustStatus, WorkspaceTrustChallenge, WorkspaceExecutionChallenge, TrustedWorkspace } from "./types"
+import type { WorkspaceTrustStatus, TrustedWorkspace } from "./types"
 
 const challenges = new Map<string, { raw: string; service: ReturnType<typeof runtimeWorkspaceService> }>()
-export function consumeRemoteExecutionChallenge(id: string, workspace: string) {
-  const challenge = challenges.get(id)
-  if (!challenge || challenge.service.uri !== workspace) throw new Error("Remote execution challenge expired or belongs to another workspace")
-  challenges.delete(id)
-  challenge.service.assertCurrent()
-  return challenge
-}
 function project<T extends { canonicalPath?: string; challengeId?: string }>(value: T, service: ReturnType<typeof runtimeWorkspaceService>): T {
   const result = { ...value }
   if (result.canonicalPath) result.canonicalPath = remoteFilePath(service.owner.hostId, result.canonicalPath, service.root)
@@ -43,20 +36,6 @@ export async function requestWorkspace<T>(service: ReturnType<typeof runtimeWork
 export async function remoteTrustStatus(path: string): Promise<WorkspaceTrustStatus> {
   const service = runtimeWorkspaceService(path)
   const value = await requestWorkspace<WorkspaceTrustStatus>(service, { method: "trust", params: { call: { action: "status", workspace: service.capabilityId } } })
-  service.assertCurrent()
-  return project(value, service)
-}
-
-export async function remoteTrustChallenge(path: string): Promise<WorkspaceTrustChallenge> {
-  const service = runtimeWorkspaceService(path)
-  const value = await requestWorkspace<WorkspaceTrustChallenge>(service, { method: "trust", params: { call: { action: "challenge", workspace: service.capabilityId } } })
-  service.assertCurrent()
-  return project(value, service)
-}
-
-export async function remoteExecutionChallenge(path: string, command: string): Promise<WorkspaceExecutionChallenge> {
-  const service = runtimeWorkspaceService(path)
-  const value = await requestWorkspace<WorkspaceExecutionChallenge>(service, { method: "trust", params: { call: { action: "executionChallenge", workspace: service.capabilityId, command } } })
   service.assertCurrent()
   return project(value, service)
 }

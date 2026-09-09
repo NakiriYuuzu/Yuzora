@@ -83,10 +83,6 @@ export interface HerdrApiCapability {
   paneClose: boolean
   layoutExport: boolean
   layoutSetSplitRatio: boolean
-  /** Server-advertised Agent manifest catalog. */
-  agentManifests?: boolean
-  /** Starts a validated manifest kind in a freshly-created pane. */
-  agentStart?: boolean
   agentGet: boolean
   agentRead: boolean
   eventsSubscribe: boolean
@@ -183,35 +179,6 @@ export interface HerdrAgentReadResult {
   truncated: boolean
   /** True when Yuzora refused to deliver the full agent text (over 512 KiB). */
   tooLarge?: boolean
-}
-
-export interface HerdrAgentCatalogEntry {
-  agent: string
-  source: string
-  sourceKind: string
-  activeVersion?: string | null
-  warning?: string | null
-  /** Advisory Yuzora-process PATH detection; Herdr remains launch authority. */
-  detectedBinaryPath?: string | null
-  /** Backend-owned allowlist; callers send only a boolean opt-in. */
-  bypassFlags: string[]
-}
-
-export interface HerdrAgentCreateRequest {
-  sessionName?: string | null
-  workspaceId: string
-  kind: string
-  bypassPermissions?: boolean | null
-}
-
-export interface HerdrAgentCreateResult {
-  name: string
-  kind: string
-  terminalId: string
-  paneId: string
-  tabId: string
-  workspaceId: string
-  title?: string | null
 }
 
 export type HerdrSubscriptionEvent =

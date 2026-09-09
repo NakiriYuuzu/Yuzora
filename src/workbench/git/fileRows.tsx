@@ -1,3 +1,4 @@
+import "./gitFileColors.css"
 import type { WorktreeDiffFile } from "@/state/diffModalStore"
 import type { GitStatus } from "@/lib/types"
 
@@ -11,13 +12,13 @@ import type { GitStatus } from "@/lib/types"
 // §5 gitBadge colours (dc.html L3207-3208). Untracked shows "?" and conflicted
 // "!" (git-convention chars; §5 has no dedicated entry for either).
 const BADGE_COLORS: Record<string, { fg: string; bg: string }> = {
-    M: { fg: "#2456cc", bg: "var(--blue-soft)" },
-    A: { fg: "#178a63", bg: "var(--mint-soft)" },
-    D: { fg: "#c2293f", bg: "var(--danger-soft)" },
-    R: { fg: "#9a6512", bg: "var(--amber-soft)" },
-    "?": { fg: "#6b6760", bg: "var(--paper-3)" },
-    "!": { fg: "#c2293f", bg: "var(--danger-soft)" },
-    U: { fg: "#6b6760", bg: "var(--paper-3)" }
+    M: { fg: "var(--git-file-modified)", bg: "var(--blue-soft)" },
+    A: { fg: "var(--git-file-staged)", bg: "var(--mint-soft)" },
+    D: { fg: "var(--git-file-deleted)", bg: "var(--paper-3)" },
+    R: { fg: "var(--git-file-untracked)", bg: "var(--amber-soft)" },
+    "?": { fg: "var(--git-file-untracked)", bg: "var(--amber-soft)" },
+    "!": { fg: "var(--git-file-conflict)", bg: "var(--danger-soft)" },
+    U: { fg: "var(--git-file-deleted)", bg: "var(--paper-3)" }
 }
 
 // §5: normalise a raw git status letter to a single badge char. Unknown → "U".
@@ -53,4 +54,31 @@ export function worktreeFilesFrom(status: GitStatus | null): WorktreeDiffFile[] 
         ...status.untracked.map((path) => ({ path, origPath: null, status: "?", staged: false })),
         ...status.conflicted.map((e) => ({ path: e.path, origPath: e.origPath, status: "!", staged: false }))
     ]
+}
+
+/** One palette for changes, diff files and explorer file names. */
+export function gitFileNameStyle(status: string, staged = false) {
+    const code = status.charAt(0).toUpperCase()
+    if (code === "D") return { color: "var(--git-file-deleted)", fontWeight: 400 }
+    if (code === "?") return { color: "var(--git-file-untracked)", fontWeight: 650 }
+    if (staged || code === "A") return { color: "var(--git-file-staged)", fontWeight: 500 }
+    if (code === "!") return { color: "var(--git-file-conflict)", fontWeight: 600 }
+    return { color: "var(--git-file-modified)", fontWeight: 500 }
+}
+
+const fileMetadataBySnapshot = new WeakMap<GitStatus, ReadonlyMap<string, WorktreeDiffFile>>()
+const noFileMetadata: ReadonlyMap<string, WorktreeDiffFile> = new Map()
+
+/** Status snapshots are immutable: build once per snapshot, then O(1) per tree row. */
+export function worktreeFileMetadata(status: GitStatus | null): ReadonlyMap<string, WorktreeDiffFile> {
+    if (!status) return noFileMetadata
+    const cached = fileMetadataBySnapshot.get(status)
+    if (cached) return cached
+    const files = new Map<string, WorktreeDiffFile>()
+    for (const file of worktreeFilesFrom(status)) {
+        // Preserve the existing first-match priority, including partially staged paths.
+        if (!files.has(file.path)) files.set(file.path, file)
+    }
+    fileMetadataBySnapshot.set(status, files)
+    return files
 }

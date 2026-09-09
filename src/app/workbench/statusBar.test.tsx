@@ -6,12 +6,10 @@ import { useContextMenuStore } from "@/state/contextMenuStore";
 import { initialGitState, useGitStore } from "@/state/gitStore";
 import { markdownPreviewPath } from "@/lib/markdownPreviewTab";
 import { useWorkspaceStore } from "@/state/workspaceStore";
-import { useLspStore } from "@/state/lspStore";
-import { usePreviewStore } from "@/state/previewStore";
 import { SAMPLING_WINDOW, usePerfStore } from "@/state/perfStore";
 import { useUiStore } from "@/state/uiStore";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
-import type { DocumentLineEnding, GitStatus, LspServerInfo } from "@/lib/types";
+import type { DocumentLineEnding, GitStatus } from "@/lib/types";
 
 // StatusBar reads the active file's grade through the documentRegistry cache; the
 // mock lets each test control that grade without an openFile IPC. documentGeneration
@@ -40,39 +38,19 @@ function makeStatus(): GitStatus {
   };
 }
 
-function makeServer(over: Partial<LspServerInfo> = {}): LspServerInfo {
-  return {
-    workspace: "/w",
-    language: "python",
-    serverId: "Pyright",
-    command: "pyright-langserver",
-    path: null,
-    status: { status: "starting" },
-    lastStartupLog: null,
-    lastError: null,
-    restartCount: 0,
-    ...over,
-  };
-}
-
-function openPython(lineEnding: DocumentLineEnding = "lf") {
+function openFile(lineEnding: DocumentLineEnding = "lf") {
   useWorkspaceStore.setState({
     workspacePath: "/w",
-    groups: [
-      {
-        tabs: [
-          {
-            path: "/w/a.py",
-            name: "a.py",
-            dirty: false,
-            externallyModified: false,
-            lineEnding,
-            lineEndingGeneration: 0,
-          },
-        ],
-        activePath: "/w/a.py",
-      },
-    ],
+    groups: [{
+      activePath: "/w/a.ts",
+      tabs: [{
+        path: "/w/a.ts",
+        name: "a.ts",
+        dirty: false,
+        externallyModified: false,
+        lineEnding,
+      }],
+    }],
   });
 }
 
@@ -82,8 +60,6 @@ describe("StatusBar", () => {
     // Merge (not replace) so the store keeps its actions; initialGitState
     // resets every data field the branch segment reads.
     useGitStore.setState(initialGitState);
-    useLspStore.getState().reset();
-    usePreviewStore.getState().reset();
     usePerfStore.getState().reset();
     // Replace with the captured snapshot so a spied openSettings never leaks.
     useUiStore.setState(initialUiState, true);
@@ -93,154 +69,6 @@ describe("StatusBar", () => {
     vi.mocked(documentGeneration).mockReturnValue(0);
   });
 
-  it("Ready 態顯示 server 名與 Ready", async () => {
-    openPython();
-    useLspStore.setState({
-      servers: { python: makeServer() },
-      initialized: { python: true },
-    });
-
-    render(<StatusBar />);
-
-    expect(await screen.findByText(/Python · Pyright Ready/)).toBeInTheDocument();
-  });
-
-  it("Starting 態顯示 server 名與 Starting 且不可點擊", async () => {
-    openPython();
-    // status starting + not initialized → starting (spawned, handshake pending).
-    useLspStore.setState({
-      servers: { python: makeServer() },
-      initialized: {},
-    });
-
-    render(<StatusBar />);
-
-    expect(await screen.findByText(/Python · Pyright Starting/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Python/ })).not.toBeInTheDocument();
-  });
-
-  it("Missing 態可點擊並開啟 LSP 設定對應語言", async () => {
-    const openSettings = vi.fn();
-    useUiStore.setState({ openSettings });
-    openPython();
-    useLspStore.setState({
-      servers: {
-        python: makeServer({
-          status: { status: "missing", installHint: "npm i -g pyright" },
-        }),
-      },
-    });
-
-    render(<StatusBar />);
-
-    const btn = await screen.findByRole("button", { name: /Python · Pyright Missing/ });
-    expect(btn.getAttribute("title")).toContain("npm i -g pyright");
-    fireEvent.click(btn);
-    expect(openSettings).toHaveBeenCalledWith("lsp", "python");
-  });
-
-  it("Failed 態可點擊且 title 含 stderr 摘要", async () => {
-    const openSettings = vi.fn();
-    useUiStore.setState({ openSettings });
-    openPython();
-    useLspStore.setState({
-      servers: {
-        python: makeServer({
-          status: { status: "crashed", reason: "boom" },
-          lastError: "spawn pyright ENOENT",
-        }),
-      },
-    });
-
-    render(<StatusBar />);
-
-    const btn = await screen.findByRole("button", { name: /Python · Pyright Failed/ });
-    expect(btn.getAttribute("title")).toContain("spawn pyright ENOENT");
-    fireEvent.click(btn);
-    expect(openSettings).toHaveBeenCalledWith("lsp", "python");
-  });
-
-  it("大檔 grade 顯示 Syntax only（無 server 名、不可點擊）", async () => {
-    vi.mocked(getDocument).mockResolvedValue({
-      result: { kind: "tooLarge", size: 20_000_000 },
-    });
-    openPython();
-    // A live-looking server proves the grade downgrade wins over process state.
-    useLspStore.setState({
-      servers: { python: makeServer() },
-      initialized: { python: true },
-    });
-
-    render(<StatusBar />);
-
-    expect(await screen.findByText(/Python · Syntax only/)).toBeInTheDocument();
-    expect(screen.queryByText(/Pyright/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Python/ })).not.toBeInTheDocument();
-  });
-
-  it("getDocument reject 時退回 Syntax only（不樂觀顯示 LSP 態、不可點擊）", async () => {
-    // A stale tab whose file was deleted: the read rejects. The segment must not
-    // fall back to an optimistic full grade (which would render a clickable state).
-    vi.mocked(getDocument).mockRejectedValue(new Error("gone"));
-    openPython();
-    useLspStore.setState({
-      servers: {
-        python: makeServer({
-          status: { status: "missing", installHint: "npm i -g pyright" },
-        }),
-      },
-    });
-
-    render(<StatusBar />);
-
-    expect(await screen.findByText(/Python · Syntax only/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Python/ })).not.toBeInTheDocument();
-  });
-
-  it("同路徑 reload 後依 documentGeneration 重新推導 grade", async () => {
-    openPython();
-    useLspStore.setState({
-      servers: { python: makeServer() },
-      initialized: { python: true },
-    });
-
-    render(<StatusBar />);
-    expect(await screen.findByText(/Python · Pyright Ready/)).toBeInTheDocument();
-
-    // External reload of the same path: generation bumps and the file now grades
-    // tooLarge. The reload flow flips a workspaceStore field, re-rendering the bar
-    // so it reads the new generation and re-runs the grade effect.
-    vi.mocked(getDocument).mockResolvedValue({
-      result: { kind: "tooLarge", size: 20_000_000 },
-    });
-    vi.mocked(documentGeneration).mockReturnValue(1);
-    act(() => {
-      useWorkspaceStore.getState().hydrateLineEnding("/w/a.py", undefined, 1);
-      useWorkspaceStore.getState().markExternallyModified("/w/a.py", true);
-    });
-
-    expect(await screen.findByText(/Python · Syntax only/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Line ending:/ })).not.toBeInTheDocument();
-  });
-
-  it("非 LSP 語言檔顯示 Lang · Syntax only", async () => {
-    useWorkspaceStore.setState({
-      workspacePath: "/w",
-      groups: [
-        {
-          tabs: [
-            { path: "/w/data.json", name: "data.json", dirty: false, externallyModified: false },
-          ],
-          activePath: "/w/data.json",
-        },
-      ],
-    });
-
-    render(<StatusBar />);
-
-    expect(await screen.findByText(/JSON · Syntax only/)).toBeInTheDocument();
-  });
-
   it("無開啟檔案時顯示提示", () => {
     render(<StatusBar />);
 
@@ -248,7 +76,7 @@ describe("StatusBar", () => {
   });
 
   it("editable active file 顯示目前換行格式與 radio selection", async () => {
-    openPython("lf");
+    openFile("lf");
     render(<StatusBar />);
 
     const trigger = screen.getByRole("button", { name: "Line ending: LF" });
@@ -304,7 +132,7 @@ describe("StatusBar", () => {
     ["crlf", "Use LF", "lf"],
     ["mixed", "Use LF", "lf"],
   ] as const)("從 %s 選擇 %s 會更新 metadata 並標記 dirty", async (from, option, target) => {
-    openPython(from);
+    openFile(from);
     render(<StatusBar />);
     const label = from === "mixed" ? "Mixed" : from.toUpperCase();
     fireEvent.pointerDown(
@@ -320,7 +148,7 @@ describe("StatusBar", () => {
   });
 
   it("選擇相同格式為 no-op，不標記 dirty", async () => {
-    openPython("lf");
+    openFile("lf");
     render(<StatusBar />);
     fireEvent.pointerDown(
       screen.getByRole("button", { name: "Line ending: LF" }),
@@ -335,7 +163,7 @@ describe("StatusBar", () => {
   });
 
   it("Mixed trigger 沒有 radio selection，且可用鍵盤選擇 CRLF 並把 focus 還給 trigger", async () => {
-    openPython("mixed");
+    openFile("mixed");
     render(<StatusBar />);
     const trigger = screen.getByRole("button", { name: "Line ending: Mixed" });
     trigger.focus();
@@ -379,34 +207,6 @@ describe("StatusBar", () => {
     act(() => useWorkspaceStore.getState().openPreviewTab());
     rerender(<StatusBar />);
     expect(screen.queryByRole("button", { name: /Line ending:/ })).not.toBeInTheDocument();
-  });
-
-  it("dev server running 時在中段顯示 port chip", () => {
-    useWorkspaceStore.setState({ workspacePath: "/w" });
-    usePreviewStore.getState().setDevServer({
-      workspace: "/w",
-      command: "bun run dev",
-      port: 5173,
-      status: { status: "running", port: 5173 },
-    });
-
-    render(<StatusBar />);
-
-    expect(screen.getByText("Dev 5173")).toBeInTheDocument();
-  });
-
-  it("dev server 非 running 時隱藏 port chip", () => {
-    useWorkspaceStore.setState({ workspacePath: "/w" });
-    usePreviewStore.getState().setDevServer({
-      workspace: "/w",
-      command: "bun run dev",
-      port: 5173,
-      status: { status: "exited", code: 0 },
-    });
-
-    render(<StatusBar />);
-
-    expect(screen.queryByText(/Dev 5173/)).not.toBeInTheDocument();
   });
 
   it("右鍵狀態列開啟 status 選單", () => {

@@ -1,10 +1,8 @@
-import { canonicalRuntimeWorkspace, parseRuntimeScope, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
+import { canonicalRuntimeWorkspace, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
 import { bindWorkspaceRoot, projectWorkspaceRoots } from "@/lib/herdrWorkspaceRoots"
-import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
 import { create } from "zustand"
 
 import {
-  herdrAgentCreate,
   herdrCapabilities,
   herdrSessions,
   herdrSnapshot,
@@ -73,11 +71,6 @@ export type HerdrCreateTerminalResult = {
   title?: string | null
 }
 
-export type HerdrCreateAgentResult = HerdrCreateTerminalResult & {
-  name: string
-  kind: string
-}
-
 export type HerdrActivationResult =
   | { ok: true }
   | { ok: false; cancelled?: boolean; error?: string }
@@ -133,23 +126,17 @@ interface HerdrState {
   releaseAttachmentsForPage: (pagePath: string) => Promise<void>
   releaseAllAttachments: () => Promise<void>
   createTerminalInSelectedSpace: () => Promise<HerdrCreateTerminalResult | null>
-  createAgentInSelectedSpace: (
-    kind: string,
-    bypassPermissions: boolean
-  ) => Promise<HerdrCreateAgentResult | null>
   createSpaceFromFolder: (
     cwd: string,
     label?: string | null
   ) => Promise<HerdrActivationResult & { space?: HerdrSpaceInfo | null }>
   canCreateTerminal: () => boolean
-  canCreateAgent: () => boolean
   /** workspace.create is intentionally independent of workspace.focus for empty sessions. */
   canCreateSpace: () => boolean
   canMutateSelectedSession: () => boolean
   canFocusSelectedTab: () => boolean
   canMoveSelectedTab: () => boolean
   createTerminalBlockedReason: () => string | null
-  createAgentBlockedReason: () => string | null
   createSpaceBlockedReason: () => string | null
   mutationBlockedReason: () => string | null
   spaces: () => HerdrSpaceInfo[]
@@ -348,7 +335,6 @@ const tabActivationGeneration = new Map<string, number>()
 const tabActivationTail = new Map<string, Promise<void>>()
 /** One create transaction per named session prevents duplicate first Spaces/Agents. */
 const spaceCreationInFlight = new Set<string>()
-const agentCreationInFlight = new Set<string>()
 let sessionSelectionGeneration = 0
 
 async function acquireTabActivation(sessionName: string): Promise<() => void> {
@@ -427,7 +413,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       ...projectSelected(state, sessionName),
       selectedSpaceId: state.selectedSpaceBySession[sessionName] ?? null
     }))
-    // Switching sessions must not close pages / TerminalDrawer — only selection changes.
+    // Switching sessions must not close pages — only selection changes.
     if (session.running) {
       await get().bootstrap(sessionName)
     } else {
@@ -926,12 +912,6 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     return Boolean(caps?.api.tabCreate && caps.terminal.create)
   },
 
-  canCreateAgent() {
-    if (!get().canCreateTerminal()) return false
-    const api = get().capabilities?.api
-    return Boolean(api?.agentManifests && api.agentStart && api.tabClose)
-  },
-
   canCreateSpace() {
     const state = get()
     const sessionName = state.selectedSessionName
@@ -963,15 +943,6 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       get().capabilities?.terminal.reason ??
       get().capabilities?.api.reason ??
       "Herdr tab.create unavailable"
-    )
-  },
-
-  createAgentBlockedReason() {
-    if (get().canCreateAgent()) return null
-    return (
-      get().createTerminalBlockedReason() ??
-      get().capabilities?.api.reason ??
-      "Herdr server.agent_manifests/agent.start unavailable"
     )
   },
 
@@ -1027,47 +998,6 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       const message = error instanceof Error ? error.message : String(error)
       set((state) => withRuntime(state, selectedSessionName, { errorMessage: message }))
       return null
-    }
-  },
-
-  async createAgentInSelectedSpace(kind, bypassPermissions) {
-    const { selectedSpaceId, selectedSessionName } = get()
-    if (!selectedSpaceId || !selectedSessionName || !get().canCreateAgent()) return null
-    if (agentCreationInFlight.has(selectedSessionName)) {
-      set((state) =>
-        withRuntime(state, selectedSessionName, {
-          errorMessage: i18n.t("herdrNav.agentCreationInProgress", { ns: "workbench" })
-        })
-      )
-      return null
-    }
-
-    agentCreationInFlight.add(selectedSessionName)
-    try {
-      const created = await herdrAgentCreate({
-        sessionName: selectedSessionName,
-        workspaceId: selectedSpaceId,
-        kind,
-        bypassPermissions
-      })
-      set((state) => withRuntime(state, selectedSessionName, { errorMessage: null }))
-      void get().refreshSnapshot(selectedSessionName)
-      return {
-        herdrSessionId: selectedSessionName,
-        workspaceId: created.workspaceId,
-        terminalId: created.terminalId,
-        paneId: created.paneId,
-        tabId: created.tabId,
-        title: created.title?.trim() || created.kind,
-        name: created.name,
-        kind: created.kind
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      set((state) => withRuntime(state, selectedSessionName, { errorMessage: message }))
-      return null
-    } finally {
-      agentCreationInFlight.delete(selectedSessionName)
     }
   },
 
@@ -1213,10 +1143,8 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     }
 
-    if (!path) {
-      path = await chooseWorkspaceFolder({ runtimeHostId: parseRuntimeScope(sessionName).hostId })
-      if (!path) return { ok: false, cancelled: true }
-    }
+    // External HERDR Spaces may have terminals without a bound file root.
+    // Focus those terminals without opening or replacing the Files workspace.
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(path && !pathsMatch(path, currentWorkspace))
 
@@ -1234,8 +1162,10 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
     // 2) Focus Herdr Space on the target running session.
     try {
-      path = await canonicalRuntimeWorkspace(sessionName, path)
-      bindWorkspaceRoot(sessionName, workspaceId, path)
+      if (path) {
+        path = await canonicalRuntimeWorkspace(sessionName, path)
+        bindWorkspaceRoot(sessionName, workspaceId, path)
+      }
       await herdrWorkspaceFocus({ sessionName, workspaceId })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1304,6 +1234,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     })
 
     const focusedSnapshot = get().runtimesBySession[sessionName]?.snapshot
+    if (focusedSnapshot?.focusedWorkspaceId === workspaceId) {
+      useWorkspaceStore.getState().hydrateHerdrPagesFromSnapshot(
+        focusedSnapshot,
+        sessionScope(get().sessions.find((item) => item.default && !item.hostId))
+      )
+    }
     const activeTab = focusedSnapshot?.tabs.find(
       (tab) => tab.workspaceId === workspaceId && tab.id === focusedSnapshot.focusedTabId
     )
@@ -1323,6 +1259,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         )
       }
     }
+    useUiStore.getState().setMode("ade")
     return { ok: true }
   },
 
@@ -1353,12 +1290,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     }
 
     let space = runtime.snapshot?.spaces.find((item) => item.id === tab.workspaceId)
-    if (space && !space.path) {
-      const path = await chooseWorkspaceFolder({ runtimeHostId: parseRuntimeScope(sessionName).hostId })
-      if (!path) return { ok: false, cancelled: true }
-      space = { ...space, path }
-    }
-    if (!space?.path) return { ok: false, error: i18n.t("rootRequired", { ns: "hosts" }) }
+    if (!space) return { ok: false, error: "Herdr Space is unavailable" }
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(space?.path && !pathsMatch(space.path, currentWorkspace))
 
@@ -1406,10 +1338,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
 
       try {
-        const path = await canonicalRuntimeWorkspace(sessionName, space.path!)
-        if (!isLatestActivation()) return { ok: false, cancelled: true }
-        space = { ...space, path }
-        bindWorkspaceRoot(sessionName, tab.workspaceId, path)
+        if (space.path) {
+          const path = await canonicalRuntimeWorkspace(sessionName, space.path)
+          if (!isLatestActivation()) return { ok: false, cancelled: true }
+          space = { ...space, path }
+          bindWorkspaceRoot(sessionName, tab.workspaceId, path)
+        }
         await herdrWorkspaceFocus({ sessionName, workspaceId: tab.workspaceId })
         if (!isLatestActivation()) return { ok: false, cancelled: true }
         await herdrTabFocus({ sessionName, tabId: tab.id })

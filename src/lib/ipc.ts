@@ -9,20 +9,12 @@ import { invokeNativeGit, closeNativeGitWorkspace } from "./nativeGit"
 // `platform.ts` (which owns `isTauri`).
 export { invoke }
 
-export function sshSessionAlive(sessionId: string): Promise<boolean> {
-    return invoke("ssh_session_alive", { sessionId })
-}
-
 import type {
     FileNode,
     WorkspaceOpenResult,
-    WorkspacePathIndexResult,
     OpenFileResult,
-    GitEnvironment,
     GitBootstrapResult,
     WorkspaceTrustStatus,
-    WorkspaceTrustChallenge,
-    WorkspaceExecutionChallenge,
     TrustedWorkspace,
     GitStatus,
     BranchList,
@@ -33,17 +25,6 @@ import type {
     CommitDetail,
     AuthorEntry,
     FileAtRevResult,
-    LspServerInfo,
-    LspConfig,
-    LspInstallProgress,
-    PtyActivity,
-    PtyEvent,
-    PtyOutputMetrics,
-    PtySessionInfo,
-    TerminalProfile,
-    TerminalCwdStrategy,
-    DevServerDetect,
-    DevServerInfo,
     DbTable,
     DbColumn,
     DbDescriptorId,
@@ -111,11 +92,6 @@ export function openWorkspace(path: string): Promise<WorkspaceOpenResult> {
 export function listDir(path: string): Promise<FileNode[]> {
     if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.listRemoteDir(path))
     return invoke("list_dir", { path })
-}
-
-export function workspacePathIndex(workspace: string): Promise<WorkspacePathIndexResult> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteFiles").then((remote) => remote.indexRemoteWorkspace(workspace))
-    return invoke("workspace_path_index", { workspace })
 }
 
 export function openFile(path: string): Promise<OpenFileResult> {
@@ -199,10 +175,6 @@ export function gitCloseWorkspace(path: string): void {
     if (!parseRemoteFilePath(path)) closeNativeGitWorkspace(path)
 }
 
-export function gitDetect(path: string): Promise<GitEnvironment> {
-    return invokeGit("git_detect", { path })
-}
-
 // #57 T3：冷開 workspace 的 git 首載——一趟完成 detect→(status‖branches)，
 // 消除 detect 先行寫 State、status/branches 才能發的結構性 waterfall。
 // 細粒度 gitStatus/gitBranches 保留給後續 refresh。
@@ -218,19 +190,6 @@ export function workspaceTrustStatus(path: string): Promise<WorkspaceTrustStatus
 export async function workspaceTrustList(): Promise<TrustedWorkspace[]> {
     const [local, remote] = await Promise.all([invoke<TrustedWorkspace[]>("workspace_trust_list"), import("./remoteTrust").then((remote) => remote.remoteTrustList())])
     return [...local, ...remote]
-}
-
-export function workspaceTrustChallenge(path: string): Promise<WorkspaceTrustChallenge> {
-    if (parseRemoteFilePath(path)) return import("./remoteTrust").then((remote) => remote.remoteTrustChallenge(path))
-    return invoke("workspace_trust_challenge", { path })
-}
-
-export function workspaceTrustExecutionChallenge(
-    path: string,
-    command: string
-): Promise<WorkspaceExecutionChallenge> {
-    if (parseRemoteFilePath(path)) return import("./remoteTrust").then((remote) => remote.remoteExecutionChallenge(path, command))
-    return invoke("workspace_trust_execution_challenge", { path, command })
 }
 
 export function workspaceTrustGrant(challengeId: string): Promise<WorkspaceTrustStatus> {
@@ -387,169 +346,6 @@ export function searchWorkspace(
     })
 }
 
-export function ptyOpen(
-    workspace: string,
-    sessionId: string,
-    shell: string | null,
-    shellArgs: string[] | undefined,
-    cwdStrategy: TerminalCwdStrategy,
-    cols: number,
-    rows: number,
-    onEvent: (e: PtyEvent) => void
-): Promise<PtySessionInfo> {
-    const ch = new Channel<PtyEvent>()
-    ch.onmessage = onEvent
-    return invoke("pty_open", {
-        workspace,
-        sessionId,
-        shell,
-        shellArgs,
-        cwdStrategy,
-        cols,
-        rows,
-        onEvent: ch
-    })
-}
-
-export function ptyListProfiles(): Promise<TerminalProfile[]> {
-    return invoke("pty_list_profiles")
-}
-
-export function ptyWrite(sessionId: string, data: string): Promise<void> {
-    return invoke("pty_write", { sessionId, data })
-}
-
-export function ptyResize(sessionId: string, cols: number, rows: number): Promise<void> {
-    return invoke("pty_resize", { sessionId, cols, rows })
-}
-
-export function ptyActivity(sessionId: string): Promise<PtyActivity> {
-    return invoke("pty_activity", { sessionId })
-}
-
-export function ptyOutputMetrics(sessionId: string): Promise<PtyOutputMetrics | null> {
-    return invoke("pty_output_metrics", { sessionId })
-}
-
-export function ptyClose(sessionId: string): Promise<void> {
-    return invoke("pty_close", { sessionId })
-}
-
-export function ptyCloseWorkspace(workspace: string): Promise<void> {
-    return invoke("pty_close_workspace", { workspace })
-}
-
-export function devServerDetect(workspace: string, extraPorts?: number[]): Promise<DevServerDetect> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteDevServer").then((remote) => remote.detectRemoteDevServer(workspace, extraPorts))
-    return invoke("dev_server_detect", { workspace, extraPorts })
-}
-
-export function devServerStart(
-    workspace: string,
-    command: string,
-    port: number | null,
-    onOutput: (line: string) => void,
-    challengeId: string
-): Promise<DevServerInfo> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteDevServer").then((remote) => remote.startRemoteDevServer(workspace, command, port, onOutput, challengeId))
-    const ch = new Channel<string>()
-    ch.onmessage = onOutput
-    return invoke("dev_server_start", { workspace, command, port, challengeId, onOutput: ch })
-}
-
-export function devServerStop(workspace: string): Promise<void> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteDevServer").then((remote) => remote.stopRemoteDevServer(workspace))
-    return invoke("dev_server_stop", { workspace })
-}
-
-export function devServerStopWorkspace(workspace: string): Promise<void> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteDevServer").then((remote) => remote.stopRemoteDevServer(workspace))
-    return invoke("dev_server_stop_workspace", { workspace })
-}
-
-export function lspStart(
-    workspace: string,
-    language: string,
-    onMessage: (msg: string) => void
-): Promise<LspServerInfo> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteLsp").then((remote) => remote.startRemoteLsp(workspace, language, onMessage))
-    const ch = new Channel<string>()
-    ch.onmessage = onMessage
-    return invoke("lsp_start", { workspace, language, onMessage: ch })
-}
-
-export function lspSend(workspace: string, language: string, message: string): Promise<void> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteLsp").then((remote) => remote.sendRemoteLsp(workspace, language, message))
-    return invoke("lsp_send", { workspace, language, message })
-}
-
-export function lspStopWorkspace(workspace: string): Promise<void> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteLsp").then((remote) => remote.stopRemoteLsp(workspace))
-    return invoke("lsp_stop_workspace", { workspace })
-}
-
-export function lspStatus(workspace: string): Promise<LspServerInfo[]> {
-    if (parseRemoteFilePath(workspace)) return import("./remoteLsp").then((remote) => remote.remoteLspStatus(workspace))
-    return invoke("lsp_status", { workspace })
-}
-
-export function lspDetectServer(
-    workspace: string | null,
-    language: string,
-    hostWorkspace?: string
-): Promise<LspServerInfo> {
-    if (hostWorkspace) return import("./remoteLspConfig").then((remote) => remote.remoteLspConfigDetect(hostWorkspace, language, workspace === null))
-    if (workspace && parseRemoteFilePath(workspace)) return import("./remoteLsp").then((remote) => remote.detectRemoteLsp(workspace, language))
-    return invoke("lsp_detect_server", { workspace, language })
-}
-
-export function lspConfigGet(hostWorkspace?: string): Promise<LspConfig> {
-    if (hostWorkspace) return import("./remoteLspConfig").then((remote) => remote.remoteLspConfigGet(hostWorkspace))
-    return invoke("lsp_config_get")
-}
-
-export function lspConfigSetServer(
-    workspace: string | null,
-    language: string,
-    serverId: string,
-    hostWorkspace?: string
-): Promise<LspConfig> {
-    const remoteWorkspace = hostWorkspace ?? (workspace && parseRemoteFilePath(workspace) ? workspace : undefined)
-    if (remoteWorkspace) return import("./remoteLspConfig").then((remote) => remote.remoteLspConfigSet(remoteWorkspace, workspace, language, serverId))
-    return invoke("lsp_config_set_server", { workspace, language, serverId })
-}
-
-export function lspConfigStale(hostWorkspace?: string): Promise<string[]> {
-    if (hostWorkspace) return import("./remoteLspConfig").then((remote) => remote.remoteLspConfigStale(hostWorkspace))
-    return invoke("lsp_config_stale")
-}
-
-export function lspConfigClearStale(workspace: string, hostWorkspace?: string): Promise<LspConfig> {
-    if (hostWorkspace || parseRemoteFilePath(workspace)) return import("./remoteLspConfig").then((remote) => remote.remoteLspConfigClear(hostWorkspace ?? workspace, workspace))
-    return invoke("lsp_config_clear_stale", { workspace })
-}
-
-export function lspSetTrace(enabled: boolean, hostWorkspace?: string): Promise<void> {
-    if (hostWorkspace) return import("./remoteLsp").then((remote) => remote.setRemoteLspTrace(hostWorkspace, enabled))
-    return invoke("lsp_set_trace", { enabled })
-}
-
-
-export function lspInstallServer(
-    workspace: string | null,
-    language: string,
-    hostWorkspace?: string,
-    onProgress?: (event: LspInstallProgress) => void
-): Promise<LspServerInfo> {
-    const remoteWorkspace = hostWorkspace ?? (workspace && parseRemoteFilePath(workspace) ? workspace : undefined)
-    if (remoteWorkspace) return import("./remoteLspInstall").then((remote) => remote.installRemoteLsp(remoteWorkspace, workspace, language, onProgress))
-    return invoke("lsp_install_server", { workspace, language })
-}
-
-export function lspCancelInstall(context: string, language: string): void {
-    void import("./remoteLspInstall").then((remote) => remote.cancelRemoteLspInstall(context, language))
-}
-
 
 
 
@@ -662,18 +458,6 @@ export function sshHostKeyRespond(
     return invoke("ssh_host_key_respond", { challengeId, accept, endpoint, fingerprint })
 }
 
-export function sshOpenShell(sessionId: string, cols: number, rows: number): Promise<void> {
-    return invoke("ssh_open_shell", { sessionId, cols, rows })
-}
-
-export function sshWrite(sessionId: string, data: string): Promise<void> {
-    return invoke("ssh_write", { sessionId, data })
-}
-
-export function sshResize(sessionId: string, cols: number, rows: number): Promise<void> {
-    return invoke("ssh_resize", { sessionId, cols, rows })
-}
-
 export function sshDisconnect(sessionId: string): Promise<void> {
     return invoke("ssh_disconnect", { sessionId })
 }
@@ -758,36 +542,15 @@ export function perfSnapshot(): Promise<PerfSnapshot | null> {
     return invoke("perf_snapshot")
 }
 
-// --- Preview (P3): isolated static session + external-URL child webview ---
-export type PreviewSession = {
-    token: string
-    url: string
-    sourcePath?: string
-}
-
-export function previewCreate(path: string): Promise<PreviewSession> {
-    if (parseRemoteFilePath(path)) return import("./remotePreview").then((remote) => remote.createRemotePreview(path))
-    return invoke("preview_create", { path })
-}
-
-export function previewRevoke(token: string): Promise<void> {
-    if (token.startsWith("host-preview:")) return import("./remotePreview").then((remote) => remote.revokeRemotePreview(token))
-    return invoke("preview_revoke", { token })
-}
-
-export async function previewStopAll(): Promise<void> {
-    await (await import("./remotePreview")).stopRemotePreviews()
-    return invoke("preview_stop_all")
-}
-
 export function previewOpenUrl(
     url: string,
     x: number,
     y: number,
     width: number,
-    height: number
+    height: number,
+    sessionId?: string
 ): Promise<void> {
-    return invoke("preview_open_url", { url, x, y, width, height })
+    return invoke("preview_open_url", { url, x, y, width, height, sessionId })
 }
 
 export function previewSetBounds(
@@ -807,12 +570,16 @@ export function previewClose(): Promise<void> {
     return invoke("preview_close")
 }
 
-export function previewBack(): Promise<void> {
-    return invoke("preview_back")
+export function previewBack(sessionId?: string): Promise<void> {
+    return invoke("preview_back", { sessionId })
 }
 
-export function previewForward(): Promise<void> {
-    return invoke("preview_forward")
+export function previewForward(sessionId?: string): Promise<void> {
+    return invoke("preview_forward", { sessionId })
+}
+
+export function previewNavigationState(sessionId: string): Promise<import("@/state/previewStore").PreviewNativeNavigationSnapshot> {
+    return invoke("preview_navigation_state", { sessionId })
 }
 
 export function previewReload(): Promise<void> {

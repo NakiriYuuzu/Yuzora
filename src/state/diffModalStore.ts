@@ -62,16 +62,14 @@ interface DiffModalState {
     close: () => void
 }
 
-// mode is NOT reset on close — the unified/split preference sticks across opens
-// (matches the Local changes tab keeping its own toggle). close() clears source
+// Every new review opens side by side. close() clears source
 // so the modal has nothing stale to render while animating out.
 export const useDiffModalStore = create<DiffModalState>((set) => ({
     open: false,
     source: null,
     activeIndex: 0,
     sourceGeneration: 0,
-    // Product default is split; a user toggle remains sticky for the session
-    // because open/close paths intentionally leave `mode` alone.
+    // Switching mode affects only the current review.
     mode: "split",
     openWorktree: (repositoryRoot, files, active) => {
         const idx =
@@ -82,6 +80,7 @@ export const useDiffModalStore = create<DiffModalState>((set) => ({
                   : -1
         set((state) => ({
             open: true,
+            mode: "split",
             source: { type: "worktree", repositoryRoot, files },
             activeIndex: idx >= 0 ? idx : 0,
             sourceGeneration: state.sourceGeneration + 1
@@ -90,6 +89,7 @@ export const useDiffModalStore = create<DiffModalState>((set) => ({
     openCommit: (repositoryRoot, commit, activeIndex = 0) =>
         set((state) => ({
             open: true,
+            mode: "split",
             source: {
                 type: "commit",
                 repositoryRoot,
@@ -105,6 +105,7 @@ export const useDiffModalStore = create<DiffModalState>((set) => ({
     openText: (title, original, modified) =>
         set((state) => ({
             open: true,
+            mode: "split",
             source: { type: "text", title, original, modified },
             activeIndex: 0,
             sourceGeneration: state.sourceGeneration + 1

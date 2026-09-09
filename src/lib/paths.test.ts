@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest"
 
 import {
   canonicalPathKey,
-  firstAbsolutePath,
   isAbsolutePath,
   isSafeLeafName,
   isSameOrDescendantPath,
@@ -40,18 +39,6 @@ describe("isAbsolutePath", () => {
     expect(isAbsolutePath("")).toBe(false)
     expect(isAbsolutePath(null)).toBe(false)
     expect(isAbsolutePath(undefined)).toBe(false)
-  })
-})
-
-describe("firstAbsolutePath", () => {
-  it("returns the first absolute candidate in order", () => {
-    expect(firstAbsolutePath(".", null, "/workspace", "/other")).toBe("/workspace")
-    expect(firstAbsolutePath(null, "C:\\repo")).toBe("C:\\repo")
-  })
-
-  it("returns null when no candidate is absolute", () => {
-    expect(firstAbsolutePath(".", "workspace", null, undefined)).toBeNull()
-    expect(firstAbsolutePath()).toBeNull()
   })
 })
 

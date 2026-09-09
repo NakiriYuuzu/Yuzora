@@ -1,0 +1,22 @@
+{
+  "title": "資源用量",
+  "close": "關閉資源用量",
+  "scope": "僅觀測 Yuzora App 與其持有的子行程；未涵蓋所有外部 Herdr 行程及遠端主機。",
+  "memory": "記憶體",
+  "categorySummary": "分類記憶體用量",
+  "category": {
+    "app": "App 本體",
+    "webview": "WebView",
+    "tools": "受管工具"
+  },
+  "largestFirst": "用量由高至低",
+  "sortLabel": "用量排序",
+  "categoryList": "資源分類",
+  "noSample": "目前沒有可用樣本，未知用量不代表零。",
+  "processCount_other": "{{count}} 個行程",
+  "noShare": "占比不適用",
+  "share": "總量的 {{value}}%",
+  "detailLimit": "目前提供分類用量，尚無逐行程明細或工作區歸屬資料。",
+  "measurement": "RSS 使用十進位 MB；CPU 以單核心為 100%，可超過 100%。",
+  "sampling": "近期 {{attempts}} 次：{{failures}} 次失敗 · {{empty}} 次空樣本 · {{skipped}} 次因無焦點略過。"
+}

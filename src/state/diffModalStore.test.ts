@@ -155,3 +155,16 @@ describe("diffModalStore", () => {
         })
     })
 })
+
+ it("resets split for every new worktree, commit and text review", () => {
+    const store = useDiffModalStore.getState()
+    store.setMode("unified")
+    store.openWorktree("/w", [wtFile("a.ts")])
+    expect(useDiffModalStore.getState().mode).toBe("split")
+    store.setMode("unified")
+    store.openCommit("/w", { hash: "h", shortHash: "h", subject: "s", parents: [], files: [cf("a.ts")] })
+    expect(useDiffModalStore.getState().mode).toBe("split")
+    store.setMode("unified")
+    store.openText("text", { kind: "full", content: "a" }, { kind: "full", content: "b" })
+    expect(useDiffModalStore.getState().mode).toBe("split")
+ })

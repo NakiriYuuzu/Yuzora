@@ -4,10 +4,10 @@ import { useHostStore } from "@/state/hostStore"
 import { acquireRemotePreviewUrl, needsRemotePreviewTunnel } from "./remotePreviewUrl"
 
 /** A mounted preview owns its tunnel; source navigation remains host-relative. */
-export function useRemotePreviewUrl(workspace: string | null, sourceUrl: string | null, staticSession: boolean, reloadNonce: number) {
+export function useRemotePreviewUrl(workspace: string | null, sourceUrl: string | null, reloadNonce: number) {
   const hostId = workspace ? parseRemoteFilePath(workspace)?.hostId : undefined
   const connection = useHostStore((state) => hostId ? state.hosts[hostId]?.connection : null)
-  const remote = !staticSession && needsRemotePreviewTunnel(workspace, sourceUrl)
+  const remote = needsRemotePreviewTunnel(workspace, sourceUrl)
   const [result, setResult] = useState<{ key: string; url: string | null; error: string | null } | null>(null)
   const key = JSON.stringify([workspace, sourceUrl, connection?.owner.generation, reloadNonce])
   useEffect(() => {

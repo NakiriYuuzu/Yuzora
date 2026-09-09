@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
+import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
 
 import { isTauri } from "@/lib/platform"
 import { getCurrentWindow } from "@tauri-apps/api/window"
@@ -11,26 +15,26 @@ import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { ContextMenu } from "@/app/workbench/ContextMenu"
 import { DiffModal } from "@/workbench/git/DiffModal"
 import { ProjectEditorPopover } from "@/app/workbench/ProjectEditorPopover"
-import { ProjectNavPanel } from "@/app/workbench/ProjectNavPanel"
+import { SpaceAgentSidebar } from "@/app/workbench/SpaceAgentSidebar"
+import { WorkspaceToolsPanel, type WorkspaceTool } from "@/app/workbench/WorkspaceToolsPanel"
+import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 import { SettingsDialog, type ThemePreference } from "@/app/workbench/SettingsDialog"
 import { loadAppearanceSettings, saveAppearanceSettings } from "@/app/workbench/settingsStorage"
 import { StatusBar } from "@/app/workbench/StatusBar"
-import { TerminalDrawer } from "@/app/workbench/TerminalDrawer"
-import { WorkspaceRail } from "@/app/workbench/WorkspaceRail"
+import { useSftpStore } from "@/state/sftpStore"
 import { logUserAction } from "@/features/logs/userAction"
 import i18n from "@/lib/i18n"
-import { devServerStopWorkspace, ptyCloseWorkspace } from "@/lib/ipc"
-import { showsNativeTrafficLights } from "@/lib/platform"
+import { showsNativeTrafficLights, shortcutLabel } from "@/lib/platform"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { useUpdateStore } from "@/state/updateStore"
-import { cn } from "@/lib/utils"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
-import { useWorkspaceStore } from "@/state/workspaceStore"
 import { applyAccentPreference, type AccentPreference } from "@/theme/accent"
+import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
+import "./workbench/workbench-shell.css"
 
-const DEFAULT_NAV_WIDTH = 266
-const MIN_NAV_WIDTH = 220
+const DEFAULT_NAV_WIDTH = 288
+const MIN_NAV_WIDTH = 256
 const MAX_NAV_WIDTH = 420
 
 // Below this window width the nav panel auto-collapses so the editor keeps a
@@ -47,6 +51,7 @@ const NAV_AUTO_COLLAPSE_WIDTH = 880
  * preference drives the `dark` class on <html> (Settings → Appearance).
  */
 export function AppShell() {
+  const { t } = useTranslation("workbenchShell")
   const mode = useUiStore((s) => s.mode)
   const setMode = useUiStore((s) => s.setMode)
   // Settings open/target is a single source of truth in uiStore so the global
@@ -54,12 +59,9 @@ export function AppShell() {
   // status-bar entry) drives one place instead of chrome-local state.
   const settingsOpen = useUiStore((s) => s.settingsOpen)
   const settingsSection = useUiStore((s) => s.settingsSection)
-  const settingsLanguage = useUiStore((s) => s.settingsLanguage)
   const settingsNonce = useUiStore((s) => s.settingsNonce)
   const openSettings = useUiStore((s) => s.openSettings)
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen)
-  const terminalOpen = useUiStore((s) => s.terminalOpen)
-  const toggleTerminal = useUiStore((s) => s.toggleTerminal)
   // Context menu dispatch (contextMenuStore) lives outside the React tree and
   // can't reach navCollapsed/paletteOpen (local state below) directly — it
   // bumps these nonces instead; the effects further down translate a change
@@ -67,13 +69,23 @@ export function AppShell() {
   const sidebarToggleRequest = useUiStore((s) => s.sidebarToggleRequest)
   const paletteOpenRequest = useUiStore((s) => s.paletteOpenRequest)
   const [navCollapsed, setNavCollapsed] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(() => window.innerWidth >= 1200)
+  const [toolsWidth, setToolsWidth] = useState(264)
+  const [resizingSidebar, setResizingSidebar] = useState<"spaces" | "tools" | null>(null)
+  const [checkoutTool, setCheckoutTool] = useState<WorkspaceTool>("files")
+  const [databaseVisited, setDatabaseVisited] = useState(mode === "database")
+  const [gitVisited, setGitVisited] = useState(mode === "git")
+  const leftToggleRef = useRef<HTMLButtonElement>(null)
+  const rightToggleRef = useRef<HTMLButtonElement>(null)
+  const lastWorkMode = useRef<Mode>("ade")
+  const toolsDragRef = useRef<{ x: number; width: number } | null>(null)
+  const previousDualWidth = useRef(window.innerWidth >= 1200)
+  const toolsAutoCollapsed = useRef(window.innerWidth < 1200)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [appearance, setAppearance] = useState(loadAppearanceSettings)
-  const { theme, accent } = appearance
+  const { theme, accent, leftSidebarBackground, rightSidebarBackground } = appearance
   const [navWidth, setNavWidth] = useState(DEFAULT_NAV_WIDTH)
-  const [navResizing, setNavResizing] = useState(false)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
-  const workspaceStackRef = useRef<HTMLDivElement>(null)
   // Whether the current collapse was applied automatically (narrow window) vs.
   // by the user, and the last-seen narrow/wide side, so auto-collapse only fires
   // on threshold crossings and only auto-expand undoes an auto-collapse.
@@ -87,11 +99,55 @@ export function AppShell() {
   // The window starts hidden (tauri.conf `visible: false`) so the native
   // chrome never paints the OS theme before the persisted preference applies.
   const windowShownRef = useRef(false)
+  const toolsVisible = toolsOpen && mode !== "database"
+
+  useEffect(() => {
+    if (mode === "database") setDatabaseVisited(true)
+    else lastWorkMode.current = mode
+    if (mode === "git") { setGitVisited(true); setCheckoutTool("git") }
+  }, [mode])
+
+  const toggleLeft = () => {
+    navAutoCollapsedRef.current = false
+    if (navCollapsed && window.innerWidth < 1200) setToolsOpen(false)
+    setNavCollapsed(value => !value)
+    leftToggleRef.current?.focus()
+  }
+  const toggleTools = () => {
+    toolsAutoCollapsed.current = false
+    if (mode === "database") {
+      setMode("files")
+      setToolsOpen(true)
+      if (window.innerWidth < 1200) setNavCollapsed(true)
+      rightToggleRef.current?.focus()
+      return
+    }
+    if (!toolsOpen && window.innerWidth < 1200) setNavCollapsed(true)
+    setToolsOpen(value => !value)
+    rightToggleRef.current?.focus()
+  }
+
+  useEffect(() => {
+    const resize = () => {
+      const wide = window.innerWidth >= 1200
+      if (wide === previousDualWidth.current) return
+      previousDualWidth.current = wide
+      if (!wide) {
+        if (document.getElementById("workbench-tools")?.contains(document.activeElement)) rightToggleRef.current?.focus()
+        setToolsOpen(open => { if (open) toolsAutoCollapsed.current = true; return false })
+      } else if (toolsAutoCollapsed.current) {
+        toolsAutoCollapsed.current = false
+        setToolsOpen(true)
+      }
+    }
+    window.addEventListener("resize", resize)
+    return () => window.removeEventListener("resize", resize)
+  }, [])
 
   const onNavResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId)
+    setResizingSidebar("spaces")
     navDragRef.current = { startX: event.clientX, startWidth: navWidth }
-    setNavResizing(true)
   }
 
   const onNavResizePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -102,8 +158,8 @@ export function AppShell() {
 
   const onNavResizePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
     navDragRef.current = null
-    setNavResizing(false)
-    event.currentTarget.releasePointerCapture(event.pointerId)
+    setResizingSidebar(null)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
   // Reflow, don't zoom: the chrome keeps a fixed density at every window size and
@@ -116,6 +172,7 @@ export function AppShell() {
       if (narrow === prevNarrowRef.current) return
       prevNarrowRef.current = narrow
       if (narrow) {
+        if (document.getElementById("workbench-spaces")?.contains(document.activeElement)) leftToggleRef.current?.focus()
         setNavCollapsed((collapsed) => {
           if (collapsed) return collapsed
           navAutoCollapsedRef.current = true
@@ -183,18 +240,19 @@ export function AppShell() {
     const handler = (event: KeyboardEvent) => {
       if (event.key === "`" && event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault()
-        toggleTerminal()
+        void openNewTerminalTab()
       }
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [toggleTerminal])
+  }, [])
 
   // cmHideSidebar (context menu) → same effect as the rail's manual toggle.
   useEffect(() => {
     if (sidebarToggleRequest === sidebarToggleHandledRef.current) return
     sidebarToggleHandledRef.current = sidebarToggleRequest
     navAutoCollapsedRef.current = false
+    leftToggleRef.current?.focus()
     setNavCollapsed((collapsed) => !collapsed)
   }, [sidebarToggleRequest])
 
@@ -246,17 +304,6 @@ export function AppShell() {
           event.preventDefault()
           return
         }
-        const workspace = useWorkspaceStore.getState().workspacePath
-        if (!workspace) return
-        // Awaited (not fire-and-forget) so cleanup completes before destroy;
-        // rejections are logged rather than swallowed — a leaked pty/conhost
-        // (issue #19) is otherwise invisible — but must not escape either.
-        await ptyCloseWorkspace(workspace).catch((err) => {
-          console.warn("pty_close_workspace on window close failed:", err)
-        })
-        await devServerStopWorkspace(workspace).catch((err) => {
-          console.warn("dev_server_stop_workspace on window close failed:", err)
-        })
       })
       .then((nextUnlisten) => {
         if (disposed) {
@@ -296,6 +343,7 @@ export function AppShell() {
   // ADE shares the editor surface (mixed file/preview/herdr-terminal pages);
   // keep the shared 44px floor rather than the old AgentZone 280px card floor.
   const mainSurfaceMinHeight = 44
+  const nativeTrafficLights = showsNativeTrafficLights()
 
   return (
     <div
@@ -303,100 +351,74 @@ export function AppShell() {
       className="relative flex h-screen w-screen flex-col overflow-hidden font-sans text-[13px] text-(--ink-1)"
       style={{ background: "var(--yz-bg)" }}
     >
-      {/* Title band along the window top: the whole strip drags the window
-          (the overlay title bar's own mouse handling is swallowed by the
-          webview). Starts at left-20 (80px) to leave the native traffic
-          lights' hit-region (tauri.conf.json trafficLightPosition x:7,y:15,
-          buttons span roughly x=7..59) clickable instead of drag-swallowed.
-          The content row below shifts down by the same 20px so panels clear
-          the buttons. */}
-      {showsNativeTrafficLights() && (
-        <div aria-hidden="true" data-tauri-drag-region className="absolute left-20 right-0 top-0 z-50 h-[20px]" />
-      )}
-
-      <div className={cn("flex min-h-0 flex-1", showsNativeTrafficLights() && "pt-[20px]")}>
-        <WorkspaceRail
-          navCollapsed={navCollapsed}
-          onToggleNav={() => {
-            // A manual toggle overrides the automatic narrow-window behaviour.
-            navAutoCollapsedRef.current = false
-            setNavCollapsed((collapsed) => !collapsed)
-          }}
-          onOpenSettings={handleOpenSettings}
-          terminalOpen={terminalOpen}
-          onToggleTerminalDrawer={toggleTerminal}
-        />
-
-        {/* Design reference navStyle: the panel stays mounted and collapses
-            via width 280ms spring + opacity 200ms ease-out; inert blocks
-            focus/interaction while hidden. Width transition is suppressed
-            while the workspace-area resize handle is actively dragging so
-            the panel tracks the pointer 1:1 instead of chasing it. */}
-        <div
-          aria-hidden={navCollapsed}
-          inert={navCollapsed}
-          className={cn(
-            "flex min-h-0 shrink-0 overflow-hidden",
-            !navResizing && "transition-[width,opacity] duration-[280ms] ease-(--ease-spring)"
-          )}
-          style={{
-            width: navCollapsed ? 0 : navWidth,
-            opacity: navCollapsed ? 0 : 1,
-          }}
-        >
-          <ProjectNavPanel
-            mode={mode}
-            onModeChange={handleModeChange}
-            onOpenPalette={() => setPaletteOpen(true)}
-          />
-        </div>
-
-        <div className="flex min-w-0 flex-1 pt-[8px] pr-[8px] pb-[8px]">
-          {/* Resize handle lives on the workspace side (like TerminalDrawer's
-              own drag handle) rather than floating between the two panels.
-              Kept mounted (as inert spacing) while the nav is collapsed so
-              the workspace area's left inset stays consistent either way. */}
-          <div
-            onPointerDown={!navCollapsed ? onNavResizePointerDown : undefined}
-            onPointerMove={!navCollapsed ? onNavResizePointerMove : undefined}
-            onPointerUp={!navCollapsed ? onNavResizePointerUp : undefined}
-            title={!navCollapsed ? "Drag to resize" : undefined}
-            className={cn(
-              "flex w-[10px] shrink-0 items-center justify-center",
-              !navCollapsed && "cursor-col-resize"
-            )}
-          >
-            {!navCollapsed && <div className="h-[34px] w-[3px] rounded-full bg-(--line-2)" />}
-          </div>
-
-          <div
-            ref={workspaceStackRef}
-            className="flex min-h-0 min-w-0 flex-1 flex-col transition-[gap] duration-[280ms] ease-(--ease-spring)"
-            style={{ gap: terminalOpen ? 10 : 0 }}
-          >
-            <div
-              data-testid="main-surface"
-              className="flex min-h-0 flex-1 flex-col gap-[10px]"
-              style={{ minHeight: mainSurfaceMinHeight }}
-            >
-              {/* EditorPanel hosts mixed typed pages (file / preview / herdr-terminal).
-                  Stays mounted (CSS-hidden) across mode switches so unsaved edits,
-                  undo history, and open Herdr terminal pages survive leaving ADE/Files. */}
-              <div className={mode === "files" || mode === "ade" ? "contents" : "hidden"}>
-                <EditorPanel />
+      <div className="workbench-window-grip" data-tauri-drag-region title={t("windowDragHint")} />
+      <div className="workbench-body" data-resizing={resizingSidebar ?? undefined} data-native-lights={nativeTrafficLights} data-left-collapsed={navCollapsed} data-right-collapsed={!toolsVisible}>
+        <Button ref={leftToggleRef} variant="ghost" size="icon-sm" className="workbench-edge-toggle workbench-left-toggle" data-expanded={!navCollapsed} style={{left:navCollapsed ? (nativeTrafficLights ? 102 : 17) : navWidth - 33}} aria-label={t(navCollapsed ? "showSpaces" : "hideSpaces")} title={t(navCollapsed ? "showSpaces" : "hideSpaces")} aria-expanded={!navCollapsed} aria-controls="workbench-spaces" onClick={toggleLeft}>{navCollapsed ? <PanelLeftOpen /> : <PanelLeft />}</Button>
+        <Button ref={rightToggleRef} variant="ghost" size="icon-sm" className="workbench-edge-toggle workbench-right-toggle" aria-label={t(toolsVisible ? "hideTools" : "showTools")} title={t(toolsVisible ? "hideTools" : "showTools")} aria-expanded={toolsVisible} aria-controls="workbench-tools" onClick={toggleTools}>{toolsVisible ? <PanelRight /> : <PanelRightOpen />}</Button>
+        {nativeTrafficLights && navCollapsed && <span className="workbench-collapsed-native-controls" aria-hidden="true" data-tauri-drag-region />}
+        <aside id="workbench-spaces" aria-label={t("sidebar")} aria-hidden={navCollapsed} inert={navCollapsed} data-collapsed={navCollapsed} data-background={leftSidebarBackground} className="workbench-spaces" style={{width:navCollapsed ? 0 : navWidth}}>
+          <div className="workbench-spaces-surface" style={{width:navWidth}}>
+            <div className="workbench-sidebar-chrome" data-tauri-drag-region>
+              {nativeTrafficLights && <span className="workbench-native-controls" aria-hidden="true" />}
+              <div className="workbench-title" data-tauri-drag-region>
+                <span className="workbench-logomark" aria-hidden="true" data-tauri-drag-region>y.</span>
+                <strong data-tauri-drag-region>Yuzora</strong>
               </div>
-              {mode === "git" && <GitPanel />}
-              {mode === "database" && <DatabasePanel />}
-
+              <span className="workbench-toggle-space" aria-hidden="true" />
             </div>
-
-            <TerminalDrawer
-              visible={terminalOpen}
-              containerRef={workspaceStackRef}
-              mainSurfaceMinHeight={mainSurfaceMinHeight}
-            />
+            <div id="workbench-spaces-content" className="workbench-sidebar-content" aria-hidden={navCollapsed} inert={navCollapsed}>
+            <nav className="workbench-sidebar-navigation" aria-label={t("sharedTools")}>
+              <Button variant="ghost" className="workbench-sidebar-search" aria-label={t("search")} onClick={() => setPaletteOpen(true)}>
+                <Search data-icon="inline-start" /><span>{t("searchShort")}</span><span className="workbench-sidebar-shortcut" aria-hidden="true">{shortcutLabel("mod-k")}</span>
+              </Button>
+              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t(mode === "database" ? "backToWork" : "workspace")} aria-pressed={mode !== "database"} onClick={() => handleModeChange(lastWorkMode.current)}>
+                <PanelsTopLeft data-icon="inline-start" /><span>{t("workspace")}</span>
+              </Button>
+              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("database")} aria-pressed={mode === "database"} onClick={() => handleModeChange(mode === "database" ? lastWorkMode.current : "database")}>
+                <Database data-icon="inline-start" /><span>{t("database")}</span>
+              </Button>
+              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("remoteTools")} onClick={() => useSftpStore.getState().setPanelOpen(true)}>
+                <Server data-icon="inline-start" /><span>{t("remoteTools")}</span>
+              </Button>
+            </nav>
+            <Separator className="workbench-sidebar-divider" />
+            <div className="workbench-sidebar-heading"><strong>{t("spacesAndAgents")}</strong></div>
+            <SpaceAgentSidebar />
+            <footer className="workbench-sidebar-footer">
+              <Separator className="workbench-sidebar-divider" />
+              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("settings")} onClick={handleOpenSettings}><Settings data-icon="inline-start" /><span>{t("settings")}</span></Button>
+            </footer>
+            </div>
+          </div>
+        </aside>
+        <div role="separator" tabIndex={navCollapsed ? -1 : 0} aria-hidden={navCollapsed} inert={navCollapsed} data-collapsed={navCollapsed} aria-label={t("resizeSpaces")} aria-orientation="vertical" aria-valuenow={navWidth} aria-valuemin={MIN_NAV_WIDTH} aria-valuemax={MAX_NAV_WIDTH} className="workbench-resize-handle" onPointerDown={onNavResizePointerDown} onPointerMove={onNavResizePointerMove} onPointerUp={onNavResizePointerUp} onPointerCancel={onNavResizePointerUp} onLostPointerCapture={() => {navDragRef.current=null;setResizingSidebar(null)}} onKeyDown={event => {
+          const next = event.key === "Home" ? MIN_NAV_WIDTH : event.key === "End" ? MAX_NAV_WIDTH : event.key === "ArrowLeft" ? navWidth-16 : event.key === "ArrowRight" ? navWidth+16 : null
+          if(next!==null){event.preventDefault();setNavWidth(Math.min(MAX_NAV_WIDTH,Math.max(MIN_NAV_WIDTH,next)))}
+        }}><span /></div>
+        <div className="workbench-workspace" data-utility-row={(mode === "git" || mode === "database") && (navCollapsed || !toolsVisible)}>
+          <div data-testid="main-surface" className="workbench-main-surface" style={{minHeight:mainSurfaceMinHeight}}>
+            <div hidden={mode!=="files" && mode!=="ade"} inert={mode!=="files" && mode!=="ade"} className="workbench-mode-surface"><EditorPanel /></div>
+            {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface"><GitPanel /></div>}
+            {(databaseVisited || mode === "database") && <div hidden={mode!=="database"} inert={mode!=="database"} className="workbench-database-surface">
+              <aside aria-label={t("databaseConnections")} className="workbench-database-nav"><DatabaseNavContent /></aside><div className="workbench-database-main"><DatabasePanel /></div>
+            </div>}
           </div>
         </div>
+        <div role="separator" tabIndex={toolsVisible ? 0 : -1} aria-hidden={!toolsVisible} inert={!toolsVisible} data-collapsed={!toolsVisible} aria-label={t("resizeTools")} aria-orientation="vertical" aria-valuenow={toolsWidth} aria-valuemin={224} aria-valuemax={420} className="workbench-resize-handle" onPointerDown={event => {event.currentTarget.setPointerCapture(event.pointerId);setResizingSidebar("tools");toolsDragRef.current={x:event.clientX,width:toolsWidth}}} onPointerMove={event => {const drag=toolsDragRef.current;if(drag)setToolsWidth(Math.min(420,Math.max(224,drag.width+drag.x-event.clientX)))}} onPointerUp={event => {toolsDragRef.current=null;setResizingSidebar(null);if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId)}} onPointerCancel={() => {toolsDragRef.current=null;setResizingSidebar(null)}} onLostPointerCapture={() => {toolsDragRef.current=null;setResizingSidebar(null)}} onKeyDown={event => {
+          const next=event.key === "Home" ? 224 : event.key === "End" ? 420 : event.key === "ArrowLeft" ? toolsWidth+16 : event.key === "ArrowRight" ? toolsWidth-16 : null
+          if(next!==null){event.preventDefault();setToolsWidth(Math.min(420,Math.max(224,next)))}
+        }}><span /></div>
+        <aside id="workbench-tools" aria-label={t("tools")} aria-hidden={!toolsVisible} inert={!toolsVisible} data-collapsed={!toolsVisible} data-background={rightSidebarBackground} className="workbench-tools" style={{width:toolsVisible ? toolsWidth : 0}}>
+          <div className="workbench-tools-surface" style={{width:toolsWidth}}>
+            <div className="workbench-sidebar-heading workbench-tools-chrome" data-tauri-drag-region>
+              <strong data-tauri-drag-region>{t("tools")}</strong>
+              <span className="workbench-toggle-space" aria-hidden="true" />
+            </div>
+            <div id="workbench-tools-content" className="workbench-sidebar-content" aria-hidden={!toolsVisible} inert={!toolsVisible}>
+              <WorkspaceToolsPanel tool={checkoutTool} onToolChange={tool => {setCheckoutTool(tool);if(mode === "database" || (mode === "git" && tool === "files"))handleModeChange("files")}} onOpenGraph={() => handleModeChange("git")} />
+            </div>
+          </div>
+        </aside>
       </div>
 
       <StatusBar />
@@ -415,8 +437,13 @@ export function AppShell() {
         onThemeChange={handleThemeChange}
         accent={accent}
         onAccentChange={handleAccentChange}
+        leftSidebarBackground={leftSidebarBackground}
+        rightSidebarBackground={rightSidebarBackground}
+        onSidebarBackgroundChange={(side, enabled) => setAppearance(current => ({
+          ...current,
+          [side === "left" ? "leftSidebarBackground" : "rightSidebarBackground"]: enabled,
+        }))}
         initialSection={settingsSection ?? undefined}
-        initialLanguage={settingsLanguage ?? undefined}
         openNonce={settingsNonce}
       />
 

@@ -94,6 +94,7 @@ async function openWorkspaceAtPathWithOutcome(
         // 不在這裡 await（unsavedGuard 已保證切換時沒有 dirty buffer）。
         for (const tabPath of sessionEntry.tabs) {
             workspace.openTab(tabPath, 0)
+            if (sessionEntry.pinnedPaths?.includes(tabPath)) workspace.toggleTabPinned(0, tabPath)
         }
         if (sessionEntry.activePath && sessionEntry.tabs.includes(sessionEntry.activePath)) {
             workspace.setActiveTab(0, sessionEntry.activePath)

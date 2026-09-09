@@ -6,11 +6,11 @@ import { save } from "@tauri-apps/plugin-dialog"
 import { openPath } from "@tauri-apps/plugin-opener"
 import { Copy, Download, FolderOpen } from "lucide-react"
 
-import { getLogLevel, logExport, logQuery, logSanitizeLines, logSources, setLogLevel, type LogQueryFilters } from "@/features/logs/logQuery"
+import { getLogEnabled, getLogLevel, logExport, logQuery, logSanitizeLines, logSources, setLogEnabled, setLogLevel, type LogQueryFilters } from "@/features/logs/logQuery"
 import { groupRowsByRun, shortRunId, UNKNOWN_RUN } from "@/features/logs/runGroups"
 import type { LogRecord, SanitizeSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { SettingCard, SettingsTextInput } from "./settingsPrimitives"
+import { SettingCard, SettingsTextInput, ToggleRow } from "./settingsPrimitives"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -131,6 +131,9 @@ export function LogsSection({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [verbose, setVerbose] = useState(false)
+  const [recordingEnabled, setRecordingEnabled] = useState<boolean | null>(null)
+  const [savingRecording, setSavingRecording] = useState(false)
+  const [recordingError, setRecordingError] = useState<string | null>(null)
   const [resultPage, setResultPage] = useState(0)
   const sinceError = isValidIsoTimestamp(since)
     ? null
@@ -155,17 +158,20 @@ export function LogsSection({
 
   useEffect(() => {
     let alive = true
-    void getLogLevel()
-      .then((level) => {
-        if (alive) setVerbose(level === "debug")
+    void Promise.all([getLogEnabled(), getLogLevel()])
+      .then(([enabled, level]) => {
+        if (!alive) return
+        setRecordingEnabled(enabled)
+        setVerbose(level === "debug")
+        setRecordingError(null)
       })
-      .catch(() => {
-        /* 讀不到就維持預設關閉 */
+      .catch((e) => {
+        if (alive) setRecordingError(t("settings.logs.recordingLoadFailed", { error: String(e) }))
       })
     return () => {
       alive = false
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     setSource(initialSource ?? "")
@@ -272,6 +278,7 @@ export function LogsSection({
   }
 
   async function toggleVerbose(next: boolean) {
+    setSavingRecording(true)
     setVerbose(next)
     setError(null)
     try {
@@ -280,11 +287,38 @@ export function LogsSection({
     } catch (e) {
       setVerbose(!next) // 失敗回滾 UI
       setError(t("settings.logs.logLevelFailed", { error: String(e) }))
+    } finally {
+      setSavingRecording(false)
+    }
+  }
+
+  async function toggleRecording(next: boolean) {
+    setSavingRecording(true)
+    setRecordingError(null)
+    setNotice(null)
+    try {
+      await setLogEnabled(next)
+      setRecordingEnabled(next)
+      setNotice(t(next ? "settings.logs.recordingEnabled" : "settings.logs.recordingDisabled"))
+    } catch (e) {
+      setRecordingError(t("settings.logs.recordingSaveFailed", { error: String(e) }))
+    } finally {
+      setSavingRecording(false)
     }
   }
 
   return (
     <div className="flex flex-col gap-[14px]">
+      <SettingCard label={t("settings.logs.recording")}>
+        <ToggleRow
+          label={t("settings.logs.recording")}
+          sub={t("settings.logs.recordingSub")}
+          checked={recordingEnabled === true}
+          disabled={recordingEnabled === null || savingRecording}
+          onCheckedChange={(next) => void toggleRecording(next)}
+        />
+        {recordingError && <p role="alert">{recordingError}</p>}
+      </SettingCard>
       <SettingCard label={t("settings.logs.filters")} sub={t("settings.logs.filtersSub")}>
         <div className="flex flex-col gap-[12px]">
           <div className="grid grid-cols-2 gap-[12px]">
@@ -422,6 +456,7 @@ export function LogsSection({
             <input
               type="checkbox"
               checked={verbose}
+              disabled={recordingEnabled !== true || savingRecording}
               onChange={(event) => void toggleVerbose(event.currentTarget.checked)}
               className="size-[13px] accent-(--yz-accent)"
             />

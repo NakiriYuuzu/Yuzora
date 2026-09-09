@@ -45,7 +45,7 @@ pub fn build_watcher(
                 return;
             }
             // Linux inotify reports reads/opens/closes too. Forwarding those
-            // causes file reload -> LSP didOpen -> read -> reload feedback loops.
+            // causes file reload -> read -> reload feedback loops.
             if matches!(event.kind, EventKind::Access(_)) {
                 return;
             }

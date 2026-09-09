@@ -41,7 +41,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       herdrSessionId: "default",
       protocol: 19,
       version: "0.8.0",
-      spaces: [{ id: "ws-1", label: "Main", order: 1, focused: true }],
+      spaces: [{ id: "ws-1", label: "Main", path: "/tmp/main", order: 1, focused: true }],
       agents: [],
       tabs: [
         {
@@ -65,7 +65,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       raw: {}
     }
 
-    useWorkspaceStore.setState({ sessionRestoreReady: true })
+    useWorkspaceStore.setState({ sessionRestoreReady: true, workspacePath: "/tmp/main" })
     // Focus restoration is runtime state recovery, not conditional presentation.
     useUiStore.setState({ mode: "files" })
     useHerdrStore.setState({
@@ -178,7 +178,7 @@ describe("HerdrBridge attachment reconciliation", () => {
     ).toBe(true)
   })
 
-  it("retries a cancelled cold-start focus restore instead of accepting an empty Intro result", async () => {
+  it("retries a cancelled focus restore inside the hydrated workspace", async () => {
     const restoreFocusedState = vi
       .fn()
       .mockResolvedValueOnce({ ok: false as const, cancelled: true as const })
@@ -194,7 +194,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       herdrSessionId: "default",
       protocol: 19,
       version: "0.8.0",
-      spaces: [{ id: "ws-1", label: "Main", order: 1, focused: true }],
+      spaces: [{ id: "ws-1", label: "Main", path: "/tmp/main", order: 1, focused: true }],
       agents: [],
       tabs: [{
         id: "tab-1",
@@ -215,7 +215,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       focusedPaneId: "pane-1",
       raw: {}
     }
-    useWorkspaceStore.setState({ sessionRestoreReady: true })
+    useWorkspaceStore.setState({ sessionRestoreReady: true, workspacePath: "/tmp/main" })
     useHerdrStore.setState({
       ...herdrInitialState,
       sessions: [session],
@@ -257,6 +257,8 @@ describe("HerdrBridge attachment reconciliation", () => {
   })
 
   it.each([
+    ["a runtime-only folder before any workspace is opened", null, "/tmp/herdr-only", false],
+    ["a runtime-only Space without a root", null, undefined, false],
     ["another native folder", "/tmp/chosen", "/tmp/agent-cwd", false],
     ["missing Space root", "/tmp/chosen", undefined, false],
     ["the same native folder", "/tmp/chosen", "/tmp/chosen", true],

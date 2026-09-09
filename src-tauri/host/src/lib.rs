@@ -1,9 +1,6 @@
 //! Host-owned operations, shared by the desktop and the standalone stdio helper.
 pub mod cancellation;
 pub mod content;
-pub mod dev_server_detect;
-#[cfg(unix)]
-mod dev_server_stream;
 pub mod file_content;
 #[cfg(unix)]
 pub mod files;
@@ -23,10 +20,7 @@ mod herdr_transport;
 #[cfg(unix)]
 pub mod login_env;
 pub mod path_capability;
-pub mod preview_resource_policy;
-pub mod preview_server;
 pub mod process_kill;
-pub mod process_service;
 pub mod protocol;
 #[cfg(unix)]
 pub mod server;
@@ -38,7 +32,6 @@ pub mod trust_command;
 pub mod tunnel;
 pub mod watcher;
 pub mod wire;
-pub mod workspace_path_index;
 pub mod workspace_trust;
 
 pub mod search;
@@ -46,20 +39,6 @@ pub mod search;
 mod search_stream;
 
 pub mod log_event;
-pub mod lsp_adapters;
-pub mod lsp_catalog;
-pub mod lsp_command;
-pub mod lsp_config;
-pub mod lsp_download;
-pub mod lsp_framing;
-pub mod lsp_install_verification;
-pub mod lsp_plan;
-pub mod lsp_service;
-
-#[cfg(unix)]
-mod lsp_install_stream;
-#[cfg(unix)]
-mod lsp_stream;
 
 #[cfg(unix)]
 pub mod stdio;

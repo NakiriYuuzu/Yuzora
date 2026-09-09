@@ -15,14 +15,6 @@ where
         .map_err(|e| format!("git blocking task failed: {e}"))?
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitDetectionDto {
-    #[serde(flatten)]
-    environment: GitEnvironment,
-    workspace_generation: u64,
-}
-
 #[tauri::command]
 pub async fn git_close_workspace(
     state: tauri::State<'_, GitServiceState>,
@@ -42,7 +34,7 @@ pub struct GitStateChangedEvent {
     pub workspace_root: String,
 }
 
-/// detect → watcher 建立 → State 落地的共用核心（`git_detect`／`git_bootstrap`）。
+/// detect → watcher 建立 → State 落地的共用核心（`git_bootstrap`）。
 /// 整段必須在 blocking thread 執行：git 子行程與 watcher 建立本來就 blocking；
 /// repo state 鎖也可能被長時操作持有（見 `with_requested_repo_blocking`，
 /// push/pull 至多 120s），在 async body 直接 lock 會 park 共用的 tokio worker
@@ -82,6 +74,11 @@ fn detect_trusted_environment(
     path: &str,
     detect: impl FnOnce() -> Result<GitEnvironment, String>,
 ) -> Result<GitEnvironment, String> {
+    // A non-repository has no Git operation to authorize. Use the same
+    // filesystem-only probe as the trust prompt, without spawning Git.
+    if Path::new(path).is_dir() && !crate::workspace_trust::project_repo_presence(path) {
+        return Ok(GitEnvironment::NotARepo);
+    }
     let identity = trust.require_trusted(path)?;
     let env = detect()?;
     if let GitEnvironment::Ready { root, .. } = &env {
@@ -90,30 +87,24 @@ fn detect_trusted_environment(
     Ok(env)
 }
 
-#[tauri::command]
-pub async fn git_detect(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, GitServiceState>,
-    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
-    path: String,
-) -> Result<GitDetectionDto, String> {
-    let generation = state.0.begin(&path)?;
-    let repo_shared = state.0.clone();
-    let trust = trust.inner().clone();
-    let environment = run_blocking(move || {
-        let result = detect_trusted_environment(&trust, &path, || {
-            detect_commit_and_watch(app, &repo_shared, generation, &path)
-        });
-        if result.is_err() {
-            repo_shared.close(&path, generation)?;
+fn detect_trusted_and_finish(
+    trust: &crate::workspace_trust::WorkspaceTrustState,
+    registry: &yuzora_host::git_registry::GitRegistry,
+    generation: u64,
+    path: &str,
+    detect: impl FnOnce() -> Result<GitEnvironment, String>,
+) -> Result<GitEnvironment, String> {
+    let result = detect_trusted_environment(trust, path, detect);
+    match &result {
+        Ok(environment) if !matches!(environment, GitEnvironment::Ready { .. }) => {
+            // The filesystem-only empty state bypasses detect_commit_and_watch.
+            // Finish its generation too, releasing prior authority and watcher.
+            registry.finish(path, generation, environment, None)?;
         }
-        result
-    })
-    .await?;
-    Ok(GitDetectionDto {
-        environment,
-        workspace_generation: generation,
-    })
+        Err(_) => registry.close(path, generation)?,
+        _ => {}
+    }
+    result
 }
 
 /// T3（#57）：冷開 workspace 的 git 首載單趟快照。environment 非 Ready 時
@@ -191,13 +182,9 @@ pub async fn git_bootstrap(
     let repo_shared = state.0.clone();
     let trust = trust.inner().clone();
     let env = run_blocking(move || {
-        let result = detect_trusted_environment(&trust, &path, || {
+        detect_trusted_and_finish(&trust, &repo_shared, generation, &path, || {
             detect_commit_and_watch(app, &repo_shared, generation, &path)
-        });
-        if result.is_err() {
-            repo_shared.close(&path, generation)?;
-        }
-        result
+        })
     })
     .await?;
     let root = match &env {
@@ -342,7 +329,7 @@ pub(crate) fn with_requested_repo<T>(
 }
 
 /// `with_requested_repo` 的 async 包裝：整段（含持鎖比對）移進 blocking thread，
-/// 保留「compare + mutation 相對 `git_detect` 切換 repo 原子」的語意——鎖不跨
+/// 保留「compare + mutation 相對 `git_bootstrap` 切換 repo 原子」的語意——鎖不跨
 /// `.await`，而是連同 mutation 一起在 blocking closure 內持有。
 pub(crate) async fn with_requested_repo_blocking<T>(
     state: &GitServiceState,
@@ -2395,6 +2382,123 @@ mod tests {
         )
         .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "5");
+    }
+
+    #[test]
+    fn nonrepo_redetection_releases_repository_and_watcher() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("repo");
+        let marker = folder.join(".git");
+        std::fs::create_dir_all(&marker).unwrap();
+        let path = folder.to_str().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let registry = yuzora_host::git_registry::GitRegistry::default();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let token = Dropped(dropped.clone());
+        let watcher = yuzora_host::git_watch::build_git_watcher(&marker, move || {
+            let _ = &token;
+        })
+        .unwrap();
+        let ready = registry.begin(path).unwrap();
+        registry
+            .finish(
+                path,
+                ready,
+                &GitEnvironment::Ready {
+                    root: path.into(),
+                    version: "test".into(),
+                },
+                Some(watcher),
+            )
+            .unwrap();
+        assert!(registry.with_repository(path, |_| Ok(())).is_ok());
+        std::fs::remove_dir(&marker).unwrap();
+        let generation = registry.begin(path).unwrap();
+        let environment = detect_trusted_and_finish(&trust, &registry, generation, path, || {
+            panic!("non-repository detection must not execute git")
+        })
+        .unwrap();
+        assert!(matches!(environment, GitEnvironment::NotARepo));
+        assert!(registry.with_repository(path, |_| Ok(())).is_err());
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "the old watcher callback must be dropped"
+        );
+    }
+
+    #[test]
+    fn stale_nonrepo_detection_preserves_new_repository_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("plain");
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.to_str().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let registry = yuzora_host::git_registry::GitRegistry::default();
+        let stale = registry.begin(path).unwrap();
+        let current = registry.begin(path).unwrap();
+        registry
+            .finish(
+                path,
+                current,
+                &GitEnvironment::Ready {
+                    root: path.into(),
+                    version: "test".into(),
+                },
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            detect_trusted_and_finish(&trust, &registry, stale, path, || {
+                panic!("non-repository detection must not execute git")
+            })
+            .unwrap(),
+            GitEnvironment::NotARepo
+        ));
+        assert!(registry.with_repository(path, |_| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn untrusted_plain_folder_detects_empty_state_without_running_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            tmp.path().join("workspace-trust.json"),
+        );
+        let folder = tmp.path().join("plain-folder");
+        std::fs::create_dir(&folder).unwrap();
+        let environment = detect_trusted_environment(&trust, folder.to_str().unwrap(), || {
+            panic!("non-repository detection must not execute git")
+        })
+        .expect("a plain folder should have a non-repository empty state");
+        assert!(matches!(environment, GitEnvironment::NotARepo));
+    }
+
+    #[test]
+    fn untrusted_nested_repository_detection_still_requires_trust() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(
+            tmp.path().join("workspace-trust.json"),
+        );
+        let repo = tmp.path().join("repo");
+        let nested = repo.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(repo.join(".git"), "gitdir: ../worktree-metadata").unwrap();
+        let result = detect_trusted_environment(&trust, nested.to_str().unwrap(), || {
+            panic!("untrusted repository must not execute git")
+        });
+        match result {
+            Err(error) => assert!(error.contains("untrustedWorkspace")),
+            Ok(_) => panic!("repository detection must still require trust"),
+        }
     }
 
     #[test]

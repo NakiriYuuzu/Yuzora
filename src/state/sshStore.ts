@@ -1,6 +1,6 @@
 import { create } from "zustand"
 
-import { sshConnect, sshDisconnect, sshSessionAlive } from "@/lib/ipc"
+import { sshConnect, sshDisconnect } from "@/lib/ipc"
 import type { SshAuthInput, SshAuthKind } from "@/lib/types"
 
 // Persisted host book. Secrets (password / key passphrase) are NEVER stored —
@@ -59,8 +59,6 @@ interface SshStore {
     cancelPendingAuth: () => void
     disconnect: (id: string) => Promise<void>
     setActiveHost: (id: string) => void
-    /** Check transport health when a shell exits, preserving other channels. */
-    markExit: (sessionId: string) => void
     reset: () => void
 }
 
@@ -290,18 +288,6 @@ export const useSshStore = create<SshStore>()((set, get) => ({
         set({ activeHostId: id })
     },
 
-    markExit: (sessionId) => {
-        // A shell EOF is not a transport disconnect. SFTP/helper channels may
-        // still be active on the same authenticated SSH connection.
-        void sshSessionAlive(sessionId).then((alive) => {
-            if (alive) return
-            set((s) => {
-                const entry = Object.values(s.sessions).find((item) => item.sessionId === sessionId)
-                if (!entry) return {}
-                return { sessions: { ...s.sessions, [entry.hostId]: { ...entry, status: "disconnected", sessionId: null } } }
-            })
-        }).catch(() => undefined)
-    },
 
     reset: () =>
         set({ hosts: loadSshHosts(), sessions: {}, activeHostId: null, pendingAuthHostId: null })

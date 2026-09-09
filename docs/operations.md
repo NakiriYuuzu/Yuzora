@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 流程更新：2026-09-07（目前工作樹，尚未發布）；其他發布流程最後查證：2026-08-31。
+> Runtime／payload 與產品驗收範圍更新：2026-09-09（beta.3 目前工作樹，尚未發布）；其他發布流程最後查證：2026-08-31。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
@@ -278,17 +278,22 @@ gh run download "${RUN_ID}" \
 
 需要 macOS 候選檔時，將 artifact name 改為 `yuzora-release-candidate-macos-universal`。
 
-使用者至少要在本次受影響平台驗證 acceptance criteria。單一 runtime 改造必須使用新產出的候選安裝檔，舊 Windows-native beta.3 證據不可代替：
+使用者至少要在本次受影響平台驗證 acceptance criteria。單一 runtime 改造與新版介面必須使用包含最終變更的新候選安裝檔；舊 Windows-native beta.3 證據及 PR #92 先前 head 的候選檔不可代替。
+
+beta.3 的產品範圍依已接受的 ADR-0004：Terminal 統一使用 HERDR，Agent 由使用者在 Terminal 手動啟動；移除獨立本機／SSH terminal、shell profiles、新增 Agent 表單及 LSP。Browser 保留網站導覽與遠端 loopback forwarding，移除靜態 Preview server／Dev Server 管理。驗收時確認移除入口不再出現，同時確認保留的檔案編輯、Git、SSH／SFTP 與 Database 功能仍正常：
 
 - Windows 至少兩個 WSL2 發行版；原生 macOS／Linux、SSH macOS／Linux及純 SFTP 分別記錄結果。
-- Windows 工作區的 HERDR、Agent、Terminal、Files、Git、LSP 全部在選定 WSL 執行；Windows 磁碟路徑由該 distro 的 `wslpath` 轉換。
+- Windows 工作區的 HERDR、Agent、Terminal、Files、Git 全部在選定 WSL 執行；Windows 磁碟路徑（含手動輸入）由該 distro 的 `wslpath` 轉換，另一發行版的 WSL UNC 路徑必須拒絕。切換主機／發行版或取消選擇器後，過期結果不得改變新選擇。
 - 沒有 Space 或 HERDR 不相容時，共用新增資料夾入口仍可使用；未連線的近期資料夾導回原主機登入與原根目錄。
+- 取消資料夾選擇後，背景 snapshot 不得再次彈窗或擅自開啟工作區；主動點選沒有 Files 根目錄的外部 Space／Agent，仍可開啟其 Terminal Sessions 並保留原 Files 工作區。
 - 使用主機 discovery 的 socket；跨主機同名 Session、terminal、路徑、信任與事件不互相污染。Agent cwd 不得覆寫 Files 根目錄。
 - MSI／NSIS 包含四平台 Unix runtime、manifest 及受控清理工具；不得含 Windows HERDR、ConPTY runtime 或 WSL Agent Plugin。從 installer 解包驗證，不以 source inventory 代替。
-- Pi／Claude／Codex 的 prompt、working／idle／blocked、observe／control／takeover及重連；官方 native Session restore 與 layout restore 分開記錄。
-- 遠端編輯／安全儲存、Git diff／worktree、LSP、Preview WebSocket、DB tunnel／TLS hostname／SQLite／取消，及 SFTP 版本衝突與部分傳輸失敗。
+- 在 HERDR Terminal 手動啟動 Pi／Claude／Codex，驗證 prompt、working／idle／blocked、observe／control／takeover及重連；官方 native Session restore 與 layout restore 分開記錄。停止的 Sessions 不再出現在側欄／Session 選單，但保留 runtime 資料。
+- 遠端編輯／安全儲存、Git diff／worktree、Browser 導覽／歷史／WebSocket forwarding、DB tunnel／TLS hostname／SQLite／取消，及 SFTP 版本衝突與部分傳輸失敗。
+- 新版雙側欄、Space／Agent 切換、Inspector、窄視窗資料夾選擇器、Git 並排 diff、Markdown 文件／原始碼切換與安全回退、檔案釘選重啟恢復、設定搜尋／主題與資源用量。HERDR／Browser 釘選只驗證本次應用程式工作階段。
+- 關閉 Log 記錄後立即停止新增，重啟後設定維持；重新開啟可繼續記錄，既有 Log 仍可查閱／匯出。
 - Microsoft Pinyin composition／replacement／commit、一般 shell 與 TUI 的 IME anchor及快速輸入不可遺失或重複。
-- 重連不重送 terminal input、Git 寫入或 SQL；關閉 terminal 不斷開共用 SSH；退出 App 釋放自身 helper／connector／tunnel，保留 HERDR／Agent／WSL。
+- 重連不重送 terminal input、Git 寫入或 SQL；終端分頁「×」成功關閉對應 HERDR tab 後才移除畫面，失敗時保留分頁並顯示錯誤，且不斷開共用 SSH。退出 App 釋放自身 helper／connector／tunnel，保留 HERDR／Agent／WSL。
 
 驗證結果必須寫入 PR comment 或 review，包含平台、installer hash、結果與已知限制。只有使用者明確表示「驗證通過」並授權 merge，maintainer／agent 才能 merge。CI 全綠、artifact 存在或 reviewer 沒有留言，都不能推定為使用者核准。
 

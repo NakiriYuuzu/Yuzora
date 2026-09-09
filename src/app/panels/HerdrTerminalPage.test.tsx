@@ -1,3 +1,5 @@
+import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
+import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -326,6 +328,41 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("does not steal focus when a naming dialog is pending before its portal mounts", async () => {
+    void useTextInputDialogStore.getState().request({ title: "Name", label: "Name", confirmLabel: "Save" })
+    try {
+      render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+      await waitFor(() => expect(xtermMock.state.terminals.length).toBeGreaterThan(0))
+      expect(xtermMock.state.terminals[0].focus).not.toHaveBeenCalled()
+    } finally {
+      useTextInputDialogStore.getState().respond(null)
+    }
+  })
+
+  it("blocks focus and terminal input while any mounted modal is open", async () => {
+    const view = render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active={false} visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalled())
+    const modal = document.createElement("div")
+    modal.setAttribute("aria-modal", "true")
+    document.body.append(modal)
+    try {
+      const term = xtermMock.state.terminals[0]
+      term.focus.mockClear()
+      view.rerender(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+      expect(term.focus).not.toHaveBeenCalled()
+      const calls = vi.mocked(installTerminalImeHandling).mock.calls
+      const sendInput = calls[calls.length - 1][1]
+      herdrIpcMock.herdrTerminalInput.mockClear()
+      sendInput("qa_focus_probe")
+      expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
+      modal.remove()
+      sendInput("after_modal")
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalled())
+    } finally {
+      modal.remove()
+    }
   })
 
   it.each(["ssh-linux", "wsl-ubuntu"])("opens the scoped %s Session even when local default is stopped", async (hostId) => {

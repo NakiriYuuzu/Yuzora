@@ -20,7 +20,7 @@ import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { rememberRemoteWorkspace } from "@/state/remoteWorkspaceRegistry"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
 import { isWindowsPlatform } from "@/lib/platform"
-import { requestHost, wslDistributions } from "@/lib/hostIpc"
+import { requestHost, wslDistributions, wslPath } from "@/lib/hostIpc"
 import { sftpListDir, sshConnect } from "@/lib/ipc"
 import { registerRuntimeWorkspace, registerSftpWorkspace } from "@/lib/remoteFiles"
 
@@ -193,4 +193,54 @@ it("keeps an unavailable WSL recent folder open on macOS or Linux", () => {
   expect(screen.getByRole("alert")).toHaveTextContent("host is unavailable")
   expect(finish).not.toHaveBeenCalled()
   expect(sshConnect).not.toHaveBeenCalled()
+})
+
+function mountWslRuntime() {
+  runtimeConnected("wsl-a")
+  useHostStore.setState({ configs: { "wsl-a": { hostId: "wsl-a", label: "Ubuntu", kind: "wsl", distro: "Ubuntu", helper: "/helper", binary: "/herdr" } } })
+  useFolderPickerStore.setState({ runtimeHostId: "wsl-a" })
+  return mount()
+}
+
+it("converts a pasted Windows path in the selected WSL distro before browsing", async () => {
+  const windowsPath = "C:\\專案 files\\app"
+  vi.mocked(wslPath).mockResolvedValue("/mnt/c/專案 files/app")
+  vi.mocked(requestHost).mockImplementation(async (_owner, operation) => operation.method === "workspaceOpen" ? { capabilityId: "browse", canonicalPath: "/mnt/c/專案 files/app" } : [])
+  mountWslRuntime()
+  fireEvent.change(screen.getByLabelText("Remote folder"), { target: { value: windowsPath } })
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  expect(wslPath).toHaveBeenCalledWith("wsl-a", "Ubuntu", windowsPath)
+  expect(requestHost).toHaveBeenCalledWith(connection("wsl-a").owner, { method: "workspaceOpen", params: { path: "/mnt/c/專案 files/app" } })
+})
+
+it("invalidates the browsed directory when the runtime reconnects or the path changes", async () => {
+  vi.mocked(requestHost).mockImplementation(async (_owner, operation) => operation.method === "workspaceOpen" ? { capabilityId: "browse", canonicalPath: "/old" } : [])
+  mountWslRuntime()
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  fireEvent.change(screen.getByLabelText("Remote folder"), { target: { value: "/new" } })
+  expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled()
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  act(() => { useHostStore.setState(state => ({ hosts: { ...state.hosts, "wsl-a": { ...state.hosts["wsl-a"], connection: { ...connection("wsl-a"), owner: { hostId: "wsl-a", generation: 2 } } } } })) })
+  expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled()
+})
+
+it("discards a pending Windows conversion after switching WSL distributions", async () => {
+  const conversion = deferred<string>()
+  vi.mocked(wslPath).mockReturnValue(conversion.promise)
+  mountWslRuntime()
+  fireEvent.change(screen.getByLabelText("Remote folder"), { target: { value: "C:\\project" } })
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  expect(wslPath).toHaveBeenCalledWith("wsl-a", "Ubuntu", "C:\\project")
+  act(() => {
+    runtimeConnected("wsl-b")
+    useHostStore.setState(state => ({ configs: { ...state.configs, "wsl-b": { hostId: "wsl-b", label: "Debian", kind: "wsl", distro: "Debian", helper: "/helper", binary: "/herdr" } } }))
+    useFolderPickerStore.setState({ runtimeHostId: "wsl-b" })
+  })
+  await act(async () => conversion.resolve("/mnt/c/project"))
+  expect(requestHost).not.toHaveBeenCalled()
+  expect(finish).not.toHaveBeenCalled()
+  expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled()
 })

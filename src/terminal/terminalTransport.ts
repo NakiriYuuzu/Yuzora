@@ -1,14 +1,5 @@
-/**
- * Transport seam shared by local PTY sessions and Herdr terminal pages.
- * xterm / FitAddon / IME / theme stay in the session component; only IO lives here.
- */
+/** Transport seam for Herdr terminal pages. */
 
-import {
-  ptyClose,
-  ptyOpen,
-  ptyResize,
-  ptyWrite
-} from "@/lib/ipc"
 import {
   herdrTerminalInput,
   herdrTerminalOpen,
@@ -21,7 +12,6 @@ import type {
   HerdrTerminalMode,
   HerdrTerminalRole
 } from "@/lib/herdrTypes"
-import type { PtyEvent, TerminalCwdStrategy } from "@/lib/types"
 
 export type TerminalTransportOutputEvent = {
   type: "output"
@@ -89,66 +79,6 @@ export interface TerminalTransport {
   isDisposed?(): boolean
   /** Reopen the same target in control mode with takeover after explicit user action. */
   takeControl?(): Promise<void>
-}
-
-export interface LocalPtyTransportOptions {
-  workspace: string
-  sessionId: string
-  shell?: string | null
-  shellArgs?: string[]
-  cwdStrategy?: TerminalCwdStrategy
-}
-
-export function createLocalPtyTransport(options: LocalPtyTransportOptions): TerminalTransport {
-  const {
-    workspace,
-    sessionId,
-    shell = null,
-    shellArgs,
-    cwdStrategy = "native"
-  } = options
-  let opened = false
-
-  return {
-    async open({ cols, rows, onEvent }) {
-      const handle = (event: PtyEvent) => {
-        if (event.type === "output") {
-          onEvent({
-            type: "output",
-            data: event.data,
-            seq: event.seq,
-            droppedBytes: event.droppedBytes,
-            truncated: event.truncated
-          })
-          return
-        }
-        onEvent({ type: "exit", code: event.code })
-      }
-      await ptyOpen(
-        workspace,
-        sessionId,
-        shell,
-        shellArgs,
-        cwdStrategy,
-        cols,
-        rows,
-        handle
-      )
-      opened = true
-    },
-    write(data) {
-      return ptyWrite(sessionId, data)
-    },
-    resize(cols, rows) {
-      return ptyResize(sessionId, cols, rows)
-    },
-    async release() {
-      if (!opened) return
-      opened = false
-      await ptyClose(sessionId)
-    },
-    canWrite: () => true
-  }
 }
 
 function decodeFrameBytes(bytesBase64: string): string {

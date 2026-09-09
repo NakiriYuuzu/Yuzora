@@ -6,11 +6,8 @@ import {
     isOpenableFile,
     saveFile,
     listDir,
-    workspacePathIndex,
-    gitDetect,
     gitBootstrap,
     workspaceTrustStatus,
-    workspaceTrustExecutionChallenge,
     workspaceTrustGrant,
     workspaceTrustList,
     workspaceTrustRevoke,
@@ -38,27 +35,6 @@ import {
     gitCommitDetail,
     gitLogAuthors,
     gitFileAtRev,
-    ptyOpen,
-    ptyWrite,
-    ptyResize,
-    ptyOutputMetrics,
-    ptyClose,
-    ptyCloseWorkspace,
-    devServerDetect,
-    devServerStart,
-    devServerStop,
-    devServerStopWorkspace,
-    lspStart,
-    lspSend,
-    lspStopWorkspace,
-    lspStatus,
-    lspDetectServer,
-    lspConfigGet,
-    lspConfigSetServer,
-    lspConfigStale,
-    lspConfigClearStale,
-    lspSetTrace,
-    lspInstallServer,
     dbProfileList,
     dbProfileImportLegacy,
     dbProfileCreate,
@@ -77,9 +53,6 @@ import {
     dbResultPagePrevious,
     dbResultPageNext,
     dbResultSessionRelease,
-    previewCreate,
-    previewRevoke,
-    previewStopAll,
     sftpPickSelectedPath,
     sftpPickDownloadDestination,
     sftpUpload,
@@ -87,14 +60,7 @@ import {
     sshHostKeyRespond
 } from "./ipc"
 import { languageFromPath, fileGradeOf, MAX_LINE_LEN_SYNTAX_OFF } from "./types"
-import type {
-    SearchEvent,
-    LspServerInfo,
-    LspConfig,
-    OpenFileResult,
-    PtyEvent,
-    DevServerStatus
-} from "./types"
+import type { SearchEvent, OpenFileResult } from "./types"
 import type {
     DbConnectionGeneration,
     DbConnectionId,
@@ -113,18 +79,6 @@ import type {
     DbSaveAndConnectOutcome,
     DbStatementExecutionId
 } from "./types"
-
-const sampleServerInfo: LspServerInfo = {
-    workspace: "/w",
-    language: "typescript",
-    serverId: "typescript-language-server",
-    command: "typescript-language-server --stdio",
-    path: "/usr/bin/typescript-language-server",
-    status: { status: "starting" },
-    lastStartupLog: null,
-    lastError: null,
-    restartCount: 0
-}
 
 afterEach(() => clearMocks())
 
@@ -235,39 +189,10 @@ test("sftp upload/download send tagged source and dest dir + leaf", async () => 
     ])
 })
 
-test("workspacePathIndex uses a typed request/response without a search channel", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return {
-            workspace: "/w",
-            entries: [{ relativePath: "src/a.ts", canonicalPath: "/w/src/a.ts" }],
-            truncated: false
-        }
-    })
-
-    await expect(workspacePathIndex("/w")).resolves.toEqual({
-        workspace: "/w",
-        entries: [{ relativePath: "src/a.ts", canonicalPath: "/w/src/a.ts" }],
-        truncated: false
-    })
-    expect(seen).toEqual([["workspace_path_index", { workspace: "/w" }]])
-})
-
 test("languageFromPath 依副檔名判斷", () => {
     expect(languageFromPath("/a/b.ts")).toBe("TypeScript")
     expect(languageFromPath("/a/b.rs")).toBe("Rust")
     expect(languageFromPath("/a/b.unknown")).toBe("Plain Text")
-})
-
-it("gitDetect forwards path and returns environment", async () => {
-    mockIPC((cmd, payload) => {
-        expect(cmd).toBe("git_detect")
-        expect((payload as { path: string }).path).toBe("/w")
-        return { status: "ready", root: "/w", version: "2.40.0" }
-    })
-    const env = await gitDetect("/w")
-    expect(env).toEqual({ status: "ready", root: "/w", version: "2.40.0" })
 })
 
 // #57 T3：git 面板首載單趟完成——bootstrap 一次回齊 environment＋status＋branches
@@ -294,17 +219,6 @@ it("workspace trust commands forward challenge payloads", async () => {
         if (cmd === "workspace_trust_status") {
             return { state: "untrusted", challengeId: "c1", canonicalPath: "/w", repoPresent: true }
         }
-        if (cmd === "workspace_trust_execution_challenge") {
-            return {
-                challengeId: "c2",
-                canonicalPath: "/w",
-                command: "bun run dev",
-                commandDigest: "abc",
-                grantsTrust: true,
-                trusted: false,
-                expiresAt: 1
-            }
-        }
         if (cmd === "workspace_trust_list") {
             return [{ canonicalPath: "/w", fsIdentity: "id", grantedAt: "2026-01-01T00:00:00Z" }]
         }
@@ -314,10 +228,6 @@ it("workspace trust commands forward challenge payloads", async () => {
         return { state: "trusted", canonicalPath: "/w" }
     })
     await expect(workspaceTrustStatus("/w")).resolves.toMatchObject({ state: "untrusted" })
-    await expect(workspaceTrustExecutionChallenge("/w", "bun run dev")).resolves.toMatchObject({
-        challengeId: "c2",
-        command: "bun run dev"
-    })
     await expect(workspaceTrustGrant("c1")).resolves.toMatchObject({ state: "trusted" })
     await expect(workspaceTrustList()).resolves.toEqual([
         { canonicalPath: "/w", fsIdentity: "id", grantedAt: "2026-01-01T00:00:00Z" }
@@ -325,7 +235,6 @@ it("workspace trust commands forward challenge payloads", async () => {
     await expect(workspaceTrustRevoke("/w")).resolves.toEqual([])
     expect(seen).toEqual([
         ["workspace_trust_status", { path: "/w" }],
-        ["workspace_trust_execution_challenge", { path: "/w", command: "bun run dev" }],
         ["workspace_trust_grant", { challengeId: "c1" }],
         ["workspace_trust_list", {}],
         ["workspace_trust_revoke", { canonicalPath: "/w" }]
@@ -621,298 +530,6 @@ it("searchWorkspace forwards args and streams channel events", async () => {
     const events: SearchEvent[] = []
     await searchWorkspace("/w", "q", false, (e) => events.push(e))
     expect(events).toEqual([{ type: "done", truncated: false, fileCount: 0 }])
-})
-
-it("lspStart forwards args, wires channel, and returns server info", async () => {
-    mockIPC((cmd, payload) => {
-        expect(cmd).toBe("lsp_start")
-        const p = payload as {
-            workspace: string
-            language: string
-            onMessage: { onmessage: (msg: string) => void }
-        }
-        expect(p.workspace).toBe("/w")
-        expect(p.language).toBe("typescript")
-        p.onMessage.onmessage("{}")
-        return sampleServerInfo
-    })
-    const msgs: string[] = []
-    const info = await lspStart("/w", "typescript", (m) => msgs.push(m))
-    expect(msgs).toEqual(["{}"])
-    expect(info.serverId).toBe("typescript-language-server")
-})
-
-it("ptyOpen forwards args, wires channel, and returns session info", async () => {
-    mockIPC((cmd, payload) => {
-        expect(cmd).toBe("pty_open")
-        const p = payload as {
-            workspace: string
-            sessionId: string
-            shell: string | null
-            shellArgs: string[] | undefined
-            cwdStrategy: "native" | "wsl"
-            cols: number
-            rows: number
-            onEvent: { onmessage: (event: PtyEvent) => void }
-        }
-        expect(p.workspace).toBe("/w")
-        expect(p.sessionId).toBe("pty-1")
-        expect(p.shell).toBeNull()
-        expect(p.shellArgs).toEqual(["-c", "echo ok"])
-        expect(p.cwdStrategy).toBe("native")
-        expect(p.cols).toBe(120)
-        expect(p.rows).toBe(32)
-        p.onEvent.onmessage({ type: "output", data: "ready\n", seq: 0, droppedBytes: 0, truncated: false })
-        return { sessionId: "pty-1", workspace: "/w", shell: "/bin/zsh", cols: 120, rows: 32 }
-    })
-    const events: PtyEvent[] = []
-    const info = await ptyOpen("/w", "pty-1", null, ["-c", "echo ok"], "native", 120, 32, (event) =>
-        events.push(event)
-    )
-    expect(events).toEqual([
-        { type: "output", data: "ready\n", seq: 0, droppedBytes: 0, truncated: false }
-    ])
-    expect(info.sessionId).toBe("pty-1")
-})
-
-it("ptyWrite forwards session id and data", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await ptyWrite("pty-1", "pwd\n")
-    expect(seen[0]).toEqual(["pty_write", { sessionId: "pty-1", data: "pwd\n" }])
-})
-
-it("ptyOutputMetrics forwards session id and returns the camelCase snapshot", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return { outputBytes: 4096, queueDepth: 128, droppedBytes: 32 }
-    })
-    const metrics = await ptyOutputMetrics("pty-1")
-    expect(seen[0]).toEqual(["pty_output_metrics", { sessionId: "pty-1" }])
-    expect(metrics).toEqual({ outputBytes: 4096, queueDepth: 128, droppedBytes: 32 })
-})
-
-it("ptyResize forwards dimensions", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await ptyResize("pty-1", 100, 28)
-    expect(seen[0]).toEqual(["pty_resize", { sessionId: "pty-1", cols: 100, rows: 28 }])
-})
-
-it("ptyClose forwards session id", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await ptyClose("pty-1")
-    expect(seen[0]).toEqual(["pty_close", { sessionId: "pty-1" }])
-})
-
-it("ptyCloseWorkspace forwards workspace", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await ptyCloseWorkspace("/w")
-    expect(seen[0]).toEqual(["pty_close_workspace", { workspace: "/w" }])
-})
-
-it("devServerDetect forwards workspace and extra ports then returns candidates", async () => {
-    mockIPC((cmd, payload) => {
-        expect(cmd).toBe("dev_server_detect")
-        expect(payload).toEqual({ workspace: "/w", extraPorts: [6000] })
-        return {
-            candidates: [{ scriptName: "dev", command: "vite", likelyPort: 5173 }],
-            runningPorts: [5173]
-        }
-    })
-    const detect = await devServerDetect("/w", [6000])
-    expect(detect.candidates[0].scriptName).toBe("dev")
-    expect(detect.runningPorts).toEqual([5173])
-})
-
-it("devServerStart forwards args, wires channel, and returns server info", async () => {
-    mockIPC((cmd, payload) => {
-        expect(cmd).toBe("dev_server_start")
-        const p = payload as {
-            workspace: string
-            command: string
-            port: number | null
-            challengeId: string
-            onOutput: { onmessage: (line: string) => void }
-        }
-        expect(p.workspace).toBe("/w")
-        expect(p.command).toBe("bun run dev")
-        expect(p.port).toBeNull()
-        expect(p.challengeId).toBe("challenge-1")
-        p.onOutput.onmessage("Local: http://localhost:5173")
-        return {
-            workspace: "/w",
-            command: "bun run dev",
-            port: null,
-            status: { status: "starting" }
-        }
-    })
-    const lines: string[] = []
-    const info = await devServerStart("/w", "bun run dev", null, (line) => lines.push(line), "challenge-1")
-    expect(lines).toEqual(["Local: http://localhost:5173"])
-    expect(info.status.status).toBe("starting")
-})
-
-it("devServerStop forwards workspace", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await devServerStop("/w")
-    expect(seen[0]).toEqual(["dev_server_stop", { workspace: "/w" }])
-})
-
-it("devServerStopWorkspace forwards workspace", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await devServerStopWorkspace("/w")
-    expect(seen[0]).toEqual(["dev_server_stop_workspace", { workspace: "/w" }])
-})
-
-it("narrows pty and dev-server discriminated unions", () => {
-    function ptyText(event: PtyEvent): string {
-        if (event.type === "output") return event.data
-        return String(event.code ?? "none")
-    }
-    function serverText(status: DevServerStatus): string {
-        if (status.status === "running") return String(status.port ?? "auto")
-        if (status.status === "failed") return status.reason
-        if (status.status === "exited") return String(status.code ?? "none")
-        return status.status
-    }
-
-    expect(ptyText({ type: "output", data: "ok", seq: 3, droppedBytes: 0, truncated: false })).toBe("ok")
-    expect(ptyText({ type: "exit", code: null })).toBe("none")
-    expect(serverText({ status: "running", port: 5173 })).toBe("5173")
-    expect(serverText({ status: "failed", reason: "missing script" })).toBe("missing script")
-    expect(serverText({ status: "exited", code: null })).toBe("none")
-    expect(serverText({ status: "starting" })).toBe("starting")
-})
-
-it("lspSend forwards workspace, language and message", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await lspSend("/w", "python", "{\"jsonrpc\":\"2.0\"}")
-    expect(seen[0]).toEqual([
-        "lsp_send",
-        { workspace: "/w", language: "python", message: "{\"jsonrpc\":\"2.0\"}" }
-    ])
-})
-
-it("lspStopWorkspace forwards workspace", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await lspStopWorkspace("/w")
-    expect(seen[0]).toEqual(["lsp_stop_workspace", { workspace: "/w" }])
-})
-
-it("lspStatus forwards workspace and returns server list", async () => {
-    mockIPC((cmd, payload) => {
-        expect(cmd).toBe("lsp_status")
-        expect((payload as { workspace: string }).workspace).toBe("/w")
-        return [sampleServerInfo]
-    })
-    const list = await lspStatus("/w")
-    expect(list[0].language).toBe("typescript")
-})
-
-it("lspDetectServer forwards nullable workspace and language", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return sampleServerInfo
-    })
-
-    await expect(lspDetectServer(null, "typescript")).resolves.toEqual(sampleServerInfo)
-    expect(seen).toEqual([
-        ["lsp_detect_server", { workspace: null, language: "typescript" }]
-    ])
-})
-
-it("lspConfigGet returns config", async () => {
-    const config: LspConfig = {
-        defaults: { typescript: "typescript-language-server" },
-        workspaces: { "/w": { python: "pyright" } }
-    }
-    mockIPC((cmd) => {
-        expect(cmd).toBe("lsp_config_get")
-        return config
-    })
-    const c = await lspConfigGet()
-    expect(c.defaults.typescript).toBe("typescript-language-server")
-})
-
-it("lspConfigSetServer forwards workspace, language and serverId", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return { defaults: {}, workspaces: {} }
-    })
-    await lspConfigSetServer("/w", "rust", "rust-analyzer")
-    expect(seen[0]).toEqual([
-        "lsp_config_set_server",
-        { workspace: "/w", language: "rust", serverId: "rust-analyzer" }
-    ])
-})
-
-it("lspConfigSetServer forwards null workspace for defaults", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return { defaults: {}, workspaces: {} }
-    })
-    await lspConfigSetServer(null, "rust", "rust-analyzer")
-    expect(seen[0]).toEqual([
-        "lsp_config_set_server",
-        { workspace: null, language: "rust", serverId: "rust-analyzer" }
-    ])
-})
-
-it("lspConfigStale returns stale workspace list", async () => {
-    mockIPC((cmd) => {
-        expect(cmd).toBe("lsp_config_stale")
-        return ["/w"]
-    })
-    expect(await lspConfigStale()).toEqual(["/w"])
-})
-
-it("lspConfigClearStale forwards workspace", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return { defaults: {}, workspaces: {} }
-    })
-    await lspConfigClearStale("/w")
-    expect(seen[0]).toEqual(["lsp_config_clear_stale", { workspace: "/w" }])
-})
-
-it("lspSetTrace forwards enabled flag", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
-    await lspSetTrace(true)
-    expect(seen[0]).toEqual(["lsp_set_trace", { enabled: true }])
-})
-
-it("lspInstallServer forwards workspace and language and returns server info", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return sampleServerInfo
-    })
-    const info = await lspInstallServer("/w", "typescript")
-    expect(seen[0]).toEqual(["lsp_install_server", { workspace: "/w", language: "typescript" }])
-    expect(info.serverId).toBe("typescript-language-server")
-})
-
-it("lspInstallServer forwards null workspace for a global install", async () => {
-    const seen: unknown[] = []
-    mockIPC((cmd, payload) => {
-        seen.push([cmd, payload])
-        return sampleServerInfo
-    })
-    await lspInstallServer(null, "python")
-    expect(seen[0]).toEqual(["lsp_install_server", { workspace: null, language: "python" }])
 })
 
 it("fileGradeOf returns veryLongLine for full content with an over-long line", () => {
@@ -1266,31 +883,5 @@ describe("database v2 IPC contract seams", () => {
             ["db_result_page", { request: { owner: resultOwner, direction: "next" } }],
             ["db_result_session_release", { owner: resultOwner }]
         ])
-    })
-})
-
-describe("preview session ipc", () => {
-    afterEach(() => clearMocks())
-
-    it("forwards create/revoke/stop-all without a parent-directory serve contract", async () => {
-        const seen: unknown[] = []
-        mockIPC((cmd, payload) => {
-            seen.push([cmd, payload])
-            if (cmd === "preview_create") {
-                return { token: "ab".repeat(32), url: "http://127.0.0.1:4599/token/index.html" }
-            }
-        })
-        await expect(previewCreate("/w/site/index.html")).resolves.toEqual({
-            token: "ab".repeat(32),
-            url: "http://127.0.0.1:4599/token/index.html"
-        })
-        await previewRevoke("ab".repeat(32))
-        await previewStopAll()
-        expect(seen).toEqual([
-            ["preview_create", { path: "/w/site/index.html" }],
-            ["preview_revoke", { token: "ab".repeat(32) }],
-            ["preview_stop_all", {}]
-        ])
-        expect("previewServe" in ipcModule).toBe(false)
     })
 })

@@ -35,3 +35,11 @@ export function getLogLevel(): Promise<string> {
 export function setLogLevel(level: string): Promise<void> {
   return invoke("set_log_level", { level })
 }
+
+export function getLogEnabled(): Promise<boolean> {
+  return invoke("get_log_enabled")
+}
+
+export function setLogEnabled(enabled: boolean): Promise<void> {
+  return invoke("set_log_enabled", { enabled })
+}

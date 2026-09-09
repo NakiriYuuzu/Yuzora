@@ -1,10 +1,12 @@
 import { Lock } from "lucide-react"
+import { useId } from "react"
 
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import { cn } from "@/lib/utils"
+import { Field,FieldContent,FieldDescription,FieldError,FieldLabel,FieldLegend,FieldSet } from "@/components/ui/field"
+import { ToggleGroup,ToggleGroupItem } from "@/components/ui/toggle-group"
 
-/** Design reference settings card: --yz-panel surface, 13px radius. */
+/** A labelled, flat settings section; the public helper name is retained. */
 export function SettingCard({
   label,
   sub,
@@ -15,13 +17,11 @@ export function SettingCard({
   children: React.ReactNode
 }) {
   return (
-    <div className="rounded-[13px] border border-(--line-1) bg-(--yz-panel) p-[14px]">
-      <div className={cn("text-[12.5px] font-medium text-(--ink-1)", !sub && "mb-[9px]")}>
-        {label}
-      </div>
-      {sub && <div className="mt-[2px] mb-[9px] text-[11px] text-(--ink-3)">{sub}</div>}
-      {children}
-    </div>
+    <FieldSet className="settings-section-block" data-settings-label={label}>
+      <FieldLegend>{label}</FieldLegend>
+      {sub && <FieldDescription>{sub}</FieldDescription>}
+      <div className="settings-section-controls">{children}</div>
+    </FieldSet>
   )
 }
 
@@ -38,32 +38,28 @@ export function Segmented({
   onChange: (id: string) => void
 }) {
   return (
-    <div
+    <ToggleGroup
+      type="single"
       role="radiogroup"
       aria-label={label}
-      className="flex gap-[4px] rounded-[10px] bg-(--paper-2) p-[3px]"
+      value={value}
+      onValueChange={id=>{if(id)onChange(id)}}
+      className="settings-segmented"
     >
       {options.map((option) => {
-        const active = option.id === value
         return (
-          <button
+          <ToggleGroupItem
             key={option.id}
-            type="button"
+            value={option.id}
             role="radio"
-            aria-checked={active}
-            onClick={() => onChange(option.id)}
-            className={cn(
-              "flex h-[28px] flex-1 items-center justify-center rounded-[8px] text-[11.5px] transition-all duration-[140ms] ease-(--ease-out)",
-              active
-                ? "bg-(--yz-solid) font-semibold text-(--ink-0) shadow-(--shadow-xs)"
-                : "font-medium text-(--ink-3) hover:text-(--ink-1)"
-            )}
+            aria-checked={option.id === value}
+            type="button"
           >
             {option.label}
-          </button>
+          </ToggleGroupItem>
         )
       })}
-    </div>
+    </ToggleGroup>
   )
 }
 
@@ -72,31 +68,37 @@ export function ToggleRow({
   label,
   sub,
   locked,
+  disabled,
   checked,
   onCheckedChange,
 }: {
   label: string
   sub: string
   locked?: boolean
+  disabled?: boolean
   checked: boolean
   onCheckedChange: (checked: boolean) => void
 }) {
+  const id=useId()
   return (
-    <div className="flex items-center gap-[12px] border-b border-(--line-1) px-[6px] py-[13px]">
-      <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
-        <span className="flex items-center gap-[6px] text-[13px] font-medium text-(--ink-1)">
+    <Field orientation="horizontal" className="settings-toggle-row" data-settings-label={label}>
+      <FieldContent>
+        <FieldLabel htmlFor={id}>
           {label}
           {locked && <Lock className="size-[11px] shrink-0 text-[#c2293f]" aria-hidden="true" />}
-        </span>
-        <span className="text-[11px] leading-[1.45] text-(--ink-3)">{sub}</span>
-      </div>
+        </FieldLabel>
+        <FieldDescription id={`${id}-hint`}>{sub}</FieldDescription>
+      </FieldContent>
       <Switch
+        id={id}
+        aria-describedby={`${id}-hint`}
         checked={checked}
+        disabled={disabled}
         onCheckedChange={onCheckedChange}
         aria-label={label}
         className="yz-switch"
       />
-    </div>
+    </Field>
   )
 }
 
@@ -119,10 +121,12 @@ export function SettingsTextInput({
   error?: string | null
   errorId?: string
 }) {
+  const id=useId()
   return (
-    <label className="flex flex-col gap-[6px]">
-      <span className="text-[11.5px] font-medium text-(--ink-2)">{label}</span>
+    <Field data-invalid={!!error} data-disabled={disabled} className="settings-text-field">
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
       <Input
+        id={id}
         aria-label={label}
         type={type}
         value={value}
@@ -131,13 +135,13 @@ export function SettingsTextInput({
         aria-invalid={error ? true : undefined}
         aria-describedby={error ? errorId : undefined}
         onChange={(event) => onChange(event.currentTarget.value)}
-        className="h-[30px] px-[9px] font-mono text-[11.5px] md:text-[11.5px]"
+        className="font-mono"
       />
       {error ? (
-        <span id={errorId} role="alert" className="text-[11px] text-destructive">
+        <FieldError id={errorId} role="alert">
           {error}
-        </span>
+        </FieldError>
       ) : null}
-    </label>
+    </Field>
   )
 }

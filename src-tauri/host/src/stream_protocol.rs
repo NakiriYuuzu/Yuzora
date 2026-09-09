@@ -15,25 +15,9 @@ pub const STREAM_QUEUE_CAPACITY: usize = 8;
     deny_unknown_fields
 )]
 pub enum StreamConfig {
-    DevServer {
-        workspace: String,
-        path: String,
-        command: String,
-        port: Option<u16>,
-        challenge_id: String,
-    },
-    LspInstall {
-        path: String,
-        language: String,
-        global: bool,
-    },
     Git {
         path: String,
         repository_root: String,
-    },
-    Lsp {
-        path: String,
-        language: String,
     },
     Search {
         path: String,
@@ -68,12 +52,6 @@ pub enum StreamConfig {
     deny_unknown_fields
 )]
 pub enum StreamCommand {
-    LspTrace {
-        enabled: bool,
-    },
-    LspMessage {
-        message: String,
-    },
     Open {
         config: StreamConfig,
     },
@@ -119,27 +97,9 @@ impl StreamRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StreamPayload {
-    DevServerStatus {
-        info: crate::process_service::DevServerInfo,
-    },
-    DevServerOutput {
-        text: String,
-    },
-    LspInstallProgress {
-        event: crate::lsp_download::LspInstallProgress,
-    },
-    LspInstalled {
-        outcome: Outcome,
-    },
     #[serde(rename_all = "camelCase")]
     Git {
         workspace_root: String,
-    },
-    Lsp {
-        message: String,
-    },
-    LspStatus {
-        info: crate::lsp_service::LspServerInfo,
     },
     Search {
         event: crate::search::SearchEvent,

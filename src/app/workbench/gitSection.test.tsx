@@ -60,7 +60,7 @@ describe("GitSection localization", () => {
     expect(screen.getByText(unavailable)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: redetect })).toBeInTheDocument()
     expect(screen.getAllByText(remote).length).toBeGreaterThan(0)
-    expect(screen.getByRole("button", { name: probe })).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: probe })).toBeInTheDocument()
     expect(screen.getByText(interval)).toBeInTheDocument()
     expect(screen.getByText(seconds)).toBeInTheDocument()
     expect(screen.queryByText(reason)).not.toBeInTheDocument()

@@ -7,7 +7,6 @@ pub mod db_query_worker;
 pub mod db_result_session;
 pub mod db_service;
 mod db_transport;
-pub mod dev_server_detect;
 pub mod env_path;
 pub mod file_content;
 pub mod fs_service;
@@ -26,18 +25,10 @@ pub mod host_streams;
 pub mod host_tunnels;
 pub mod host_wsl;
 pub mod logging;
-pub mod lsp_adapters;
-pub mod lsp_config;
-pub mod lsp_download;
-pub mod lsp_service;
 pub mod path_capability;
 pub mod perf_service;
-pub mod preview_resource_policy;
-pub mod preview_server;
 pub mod preview_webview;
 pub mod process_kill;
-pub mod process_service;
-pub mod pty_service;
 pub mod run_context;
 pub mod run_summary;
 pub mod search_service;
@@ -46,7 +37,6 @@ mod sftp_transfer;
 mod sftp_tree;
 pub mod ssh_service;
 pub mod watcher;
-pub mod workspace_path_index;
 pub mod workspace_trust;
 
 const DATABASE_SHUTDOWN_THREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
@@ -201,7 +191,6 @@ pub fn run() {
         .manage(perf_service::PerfState(std::sync::Mutex::new(
             sysinfo::System::new(),
         )))
-        .manage(preview_server::PreviewServerState::new())
         .manage(preview_webview::PreviewWebviewState(std::sync::Mutex::new(
             None,
         )))
@@ -245,15 +234,6 @@ pub fn run() {
                     app.manage(askpass::AskpassState(None));
                 }
             }
-            app.manage(lsp_service::LspState(std::sync::Arc::new(
-                lsp_service::new_manager(app.handle().clone()),
-            )));
-            app.manage(pty_service::PtyState(std::sync::Arc::new(
-                pty_service::PtyManager::new(app.handle().clone()),
-            )));
-            app.manage(process_service::ProcessState(std::sync::Arc::new(
-                process_service::create_manager(app.handle().clone()),
-            )));
             app.manage(path_capability::SelectedPathState::new());
             let herdr_manager = std::sync::Arc::new(herdr_service::HerdrManager::new());
             let herdr_config_dir = app.path().app_data_dir()?.join("herdr");
@@ -305,7 +285,6 @@ pub fn run() {
             sftp_edit::sftp_read_file_base64,
             sftp_edit::sftp_save_file,
             sftp_edit::sftp_file_revision,
-            sftp_edit::ssh_session_alive,
             asset_scope::allow_workspace_asset_scope,
             fs_service::open_workspace,
             fs_service::workspace_canonical_path,
@@ -325,9 +304,10 @@ pub fn run() {
             logging::log_sanitize_lines,
             logging::get_log_level,
             logging::set_log_level,
+            logging::get_log_enabled,
+            logging::set_log_enabled,
             watcher::start_watch,
             watcher::stop_watch,
-            workspace_path_index::workspace_path_index,
             search_service::search_workspace,
             db_service::db_list_tables,
             db_service::db_table_columns,
@@ -347,10 +327,8 @@ pub fn run() {
             db_profiles::db_test_connection,
             db_profiles::db_postgres_transport_challenge,
             perf_service::perf_snapshot,
-            preview_server::preview_create,
-            preview_server::preview_revoke,
-            preview_server::preview_stop_all,
             preview_webview::preview_open_url,
+            preview_webview::preview_navigation_state,
             preview_webview::preview_set_bounds,
             preview_webview::preview_set_visible,
             preview_webview::preview_close,
@@ -359,11 +337,8 @@ pub fn run() {
             preview_webview::preview_reload,
             workspace_trust::workspace_trust_status,
             workspace_trust::workspace_trust_list,
-            workspace_trust::workspace_trust_challenge,
-            workspace_trust::workspace_trust_execution_challenge,
             workspace_trust::workspace_trust_grant,
             workspace_trust::workspace_trust_revoke,
-            git_service::git_detect,
             git_service::git_close_workspace,
             git_service::git_bootstrap,
             git_service::git_status_cmd,
@@ -389,34 +364,8 @@ pub fn run() {
             git_log::git_log_authors,
             git_log::git_file_at_rev,
             askpass::askpass_respond,
-            lsp_service::lsp_start,
-            lsp_service::lsp_send,
-            lsp_service::lsp_stop_workspace,
-            lsp_service::lsp_status,
-            lsp_service::lsp_detect_server,
-            lsp_service::lsp_config_get,
-            lsp_service::lsp_config_set_server,
-            lsp_service::lsp_config_stale,
-            lsp_service::lsp_config_clear_stale,
-            lsp_service::lsp_set_trace,
-            lsp_download::lsp_install_server,
-            pty_service::pty_list_profiles,
-            pty_service::pty_open,
-            pty_service::pty_write,
-            pty_service::pty_resize,
-            pty_service::pty_activity,
-            pty_service::pty_output_metrics,
-            pty_service::pty_close,
-            pty_service::pty_close_workspace,
-            dev_server_detect::dev_server_detect,
-            process_service::dev_server_start,
-            process_service::dev_server_stop,
-            process_service::dev_server_stop_workspace,
             ssh_service::ssh_connect,
             ssh_service::ssh_host_key_respond,
-            ssh_service::ssh_open_shell,
-            ssh_service::ssh_write,
-            ssh_service::ssh_resize,
             ssh_service::ssh_disconnect,
             ssh_service::sftp_list_dir,
             ssh_service::sftp_mkdir,
@@ -439,8 +388,6 @@ pub fn run() {
             herdr_service::herdr_terminal_scroll,
             herdr_service::herdr_terminal_release,
             herdr_service::herdr_terminal_create,
-            herdr_service::herdr_agent_catalog,
-            herdr_service::herdr_agent_create,
             herdr_service::herdr_workspace_focus,
             herdr_service::herdr_workspace_create,
             herdr_service::herdr_workspace_rename,
@@ -481,9 +428,6 @@ pub fn run() {
                 if !graceful_exit_recorded.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     logging::record_graceful_exit();
                 }
-                app.state::<pty_service::PtyState>().0.kill_all();
-                app.state::<process_service::ProcessState>().0.kill_all();
-                app.state::<lsp_service::LspState>().0.stop_all();
                 git_service::kill_all_processes();
                 app.state::<host_service::HostState>().0.disconnect_all();
                 app.state::<ssh_service::SshState>().0.kill_all();
@@ -497,7 +441,6 @@ pub fn run() {
                 app.state::<herdr_service::HerdrState>()
                     .0
                     .release_all_connectors();
-                app.state::<preview_server::PreviewServerState>().stop_all();
                 if !database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     let database_profiles = app
                         .state::<db_profiles::DatabaseProfileState>()
@@ -570,15 +513,11 @@ mod command_inventory_tests {
         let source = include_str!("lib.rs");
         for required in [
             "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
-            "app.state::<pty_service::PtyState>().0.kill_all()",
-            "app.state::<process_service::ProcessState>().0.kill_all()",
-            "app.state::<lsp_service::LspState>().0.stop_all()",
             "git_service::kill_all_processes()",
             "app.state::<ssh_service::SshState>().0.kill_all()",
             "app.state::<path_capability::SelectedPathState>().clear()",
             "app.state::<herdr_service::HerdrState>()",
             "release_all_connectors()",
-            "app.state::<preview_server::PreviewServerState>().stop_all()",
             "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
             "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
             "recv_timeout(DATABASE_SHUTDOWN_THREAD_TIMEOUT)",
@@ -596,7 +535,7 @@ mod command_inventory_tests {
         }
         let run_source = source.split("#[cfg(test)]").next().unwrap();
         let child_cleanup = run_source
-            .find("app.state::<pty_service::PtyState>().0.kill_all()")
+            .find("git_service::kill_all_processes()")
             .unwrap();
         let database_shutdown = run_source
             .rfind("shutdown_database_runtime_on_dedicated_thread(database_profiles)")
@@ -649,8 +588,6 @@ mod command_inventory_tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
-            "herdr_service::herdr_agent_catalog",
-            "herdr_service::herdr_agent_create",
             "herdr_service::herdr_agent_get",
             "herdr_service::herdr_agent_read",
             "herdr_service::herdr_events_subscribe",

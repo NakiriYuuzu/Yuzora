@@ -163,38 +163,10 @@ pub async fn host_stream_open(
     state: tauri::State<'_, HostState>,
     ssh: tauri::State<'_, crate::ssh_service::SshState>,
     owner: ConnectionOwner,
-    mut config: StreamConfig,
+    config: StreamConfig,
     on_event: tauri::ipc::Channel<HostStreamEvent>,
 ) -> Result<HostStreamOpened, String> {
     let connection = state.0.connection(&owner)?;
-    if let StreamConfig::DevServer {
-        workspace,
-        path,
-        command,
-        port: _,
-        challenge_id,
-    } = &mut config
-    {
-        // There is no public IPC route around this exact-command authorization.
-        // The proof is consumed by the same helper that issued the challenge.
-        let authorized = connection
-            .request(yuzora_host::protocol::Operation::DevServerAuthorize {
-                workspace: workspace.clone(),
-                command: command.clone(),
-                challenge_id: challenge_id.clone(),
-            })
-            .await?;
-        state.0.connection(&owner)?;
-        *path = authorized["canonicalPath"]
-            .as_str()
-            .ok_or("invalid-execution-authority")?
-            .into();
-        *command = authorized["command"]
-            .as_str()
-            .ok_or("invalid-execution-authority")?
-            .into();
-        challenge_id.clear();
-    }
     let _permit = connection
         .stream_openings
         .try_acquire()

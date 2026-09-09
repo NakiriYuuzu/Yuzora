@@ -13,24 +13,13 @@ export function wslDistributions(): Promise<WslDistribution[]> { return invoke("
 export function wslPath(hostId: string, distro: string, path: string): Promise<string> { return invoke("host_wsl_path", { hostId, distro, path }) }
 
 export type HostOperation =
-  | { method: "devServerDetect"; params: { workspace: string; extra_ports: number[] | null } }
-  | { method: "previewCreate"; params: { workspace: string; path: string } }
-  | { method: "previewRevoke"; params: { workspace: string; token: string } }
   | { method: "hello" }
   | { method: "workspaceAuthorize"; params: { workspace: string } }
-  | { method: "lspDetect"; params: { workspace: string; language: string } }
-  | { method: "lspConfig"; params: { workspace: string; call:
-      | { action: "get" | "stale" }
-      | { action: "detect"; language: string; global: boolean }
-      | { action: "set"; language: string; serverId: string; global: boolean }
-      | { action: "clearStale"; path: string }
-    } }
   | { method: "trust"; params: { call:
-      | { action: "status" | "challenge"; workspace: string }
+      | { action: "status"; workspace: string }
       | { action: "list" }
       | { action: "grant"; challenge: string }
       | { action: "revoke"; path: string }
-      | { action: "executionChallenge"; workspace: string; command: string }
     } }
   | { method: "git"; params: { workspace: string; repository_root: string | null; call: { command: string; args?: Record<string, unknown> } } }
   | { method: "workspaceOpen"; params: { path: string } }
@@ -40,7 +29,6 @@ export type HostOperation =
   | { method: "filesCreate"; params: { workspace: string; path: string; directory: boolean } }
   | { method: "filesRename"; params: { workspace: string; from: string; to: string } }
   | { method: "filesDelete"; params: { workspace: string; path: string } }
-  | { method: "filesIndex"; params: { workspace: string } }
   | { method: "filesReadBase64"; params: { workspace: string; path: string; max_bytes: number } }
   | { method: "herdrDiscover"; params: { binary: string } }
   | { method: "herdrRequest"; params: { socket: string; request: unknown } }

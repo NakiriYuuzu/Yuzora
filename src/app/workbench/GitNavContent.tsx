@@ -25,7 +25,7 @@ import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { BranchPopover } from "@/workbench/git/BranchPopover"
 import { splitPath } from "@/workbench/git/diffLoad"
-import { GitBadge, worktreeFilesFrom } from "@/workbench/git/fileRows"
+import { GitBadge, gitFileNameStyle, worktreeFilesFrom } from "@/workbench/git/fileRows"
 import { openGitChangeContextMenu } from "@/workbench/git/gitChangeContextMenu"
 import {
     buildGitChangeModel,
@@ -497,8 +497,11 @@ function SidebarFileRow({
                 type="button"
                 aria-pressed={selected}
                 title={row.path}
-                onClick={onSelect}
-                onDoubleClick={onOpenDiff}
+                onClick={(event) => {
+                    onSelect(event)
+                    if (!event.shiftKey && !isGitToggleModifier(event)) onOpenDiff()
+                }}
+                onDoubleClick={(event) => { if (!event.shiftKey && !isGitToggleModifier(event)) onOpenDiff() }}
                 onKeyDown={(event) => {
                     if (event.key === " ") {
                         event.preventDefault()
@@ -518,7 +521,7 @@ function SidebarFileRow({
                 onContextMenu={onContextMenu}
                 className="flex min-w-0 flex-1 items-center gap-[6px] rounded-[5px] text-left outline-none focus-visible:ring-2 focus-visible:ring-(--yz-accent)"
             >
-                <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-(--ink-1)">{name}</span>
+                <span style={gitFileNameStyle(row.badge, row.staged)} className="min-w-0 flex-1 truncate text-[11.5px]">{name}</span>
                 {dir && <span className="min-w-0 max-w-[42%] truncate text-[9.5px] text-(--ink-4)" title={dir}>{dir}</span>}
             </button>
             <Button

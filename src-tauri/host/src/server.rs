@@ -85,8 +85,6 @@ pub struct HostServer {
     trust: Option<crate::workspace_trust::WorkspaceTrustState>,
     git: Arc<Mutex<crate::git_command::HostGit>>,
     cancelled: Arc<AtomicBool>,
-    preview: Arc<crate::preview_server::PreviewServerState>,
-    preview_owners: HashMap<String, String>,
 }
 
 impl Drop for HostServer {
@@ -149,84 +147,6 @@ impl HostServer {
 
     async fn dispatch(&mut self, operation: Operation) -> Result<Value, String> {
         match operation {
-            Operation::DevServerDetect {
-                workspace,
-                extra_ports,
-            } => {
-                let path = self.files.canonical_root(&workspace)?.to_owned();
-                if extra_ports.as_ref().is_some_and(|ports| ports.len() > 64) {
-                    return Err("too-many-probe-ports".into());
-                }
-                tokio::task::spawn_blocking(move || {
-                    serde_json::to_value(crate::dev_server_detect::detect_workspace(
-                        &path,
-                        extra_ports.as_deref(),
-                    )?)
-                    .map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            }
-            Operation::DevServerAuthorize {
-                workspace,
-                command,
-                challenge_id,
-            } => {
-                let path = self.files.canonical_root(&workspace)?;
-                let authorized = self
-                    .trust
-                    .as_ref()
-                    .ok_or("host-trust-unavailable")?
-                    .0
-                    .authorize_execution(path, &command, &challenge_id)?;
-                Ok(
-                    json!({"canonicalPath": authorized.canonical_path, "command": authorized.command}),
-                )
-            }
-            Operation::PreviewCreate { workspace, path } => {
-                if self.preview_owners.len() >= 64 {
-                    return Err("preview-session-limit".into());
-                }
-                let path = self.files.preview_path(&workspace, &path)?;
-                let preview = self.preview.clone();
-                let session = tokio::task::spawn_blocking(move || {
-                    preview.create_session(path.to_str().ok_or("path-not-utf8")?)
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-                self.preview_owners.insert(session.token.clone(), workspace);
-                serde_json::to_value(session).map_err(|e| e.to_string())
-            }
-            Operation::PreviewRevoke { workspace, token } => {
-                if self
-                    .preview_owners
-                    .get(&token)
-                    .is_some_and(|owner| owner != &workspace)
-                {
-                    return Err("preview-owner-mismatch".into());
-                }
-                self.preview_owners.remove(&token);
-                self.preview.revoke_session(&token);
-                Ok(Value::Null)
-            }
-            Operation::LspConfig { workspace, call } => {
-                let path = self.files.canonical_root(&workspace)?.to_owned();
-                tokio::task::spawn_blocking(move || call.execute(&path))
-                    .await
-                    .map_err(|e| e.to_string())?
-            }
-            Operation::LspDetect {
-                workspace,
-                language,
-            } => {
-                let path = self.files.canonical_root(&workspace)?.to_owned();
-                tokio::task::spawn_blocking(move || {
-                    let info = crate::lsp_service::detect_host_server(&path, &language)?;
-                    serde_json::to_value(info).map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            }
             Operation::Trust { call } => call.execute(
                 &self.files,
                 self.trust.as_ref().ok_or("host-trust-unavailable")?,
@@ -274,14 +194,6 @@ impl HostServer {
             .map_err(|e| e.to_string()),
             Operation::WorkspaceOpen { path } => self.files.open(&path),
             Operation::WorkspaceClose { workspace } => {
-                self.preview_owners.retain(|token, owner| {
-                    if owner == &workspace {
-                        self.preview.revoke_session(token);
-                        false
-                    } else {
-                        true
-                    }
-                });
                 self.git
                     .lock()
                     .map_err(|e| e.to_string())?
@@ -290,19 +202,6 @@ impl HostServer {
                 Ok(Value::Null)
             }
             Operation::FilesList { workspace, path } => self.files.list(&workspace, &path),
-            Operation::FilesIndex { workspace } => {
-                let root = self.files.canonical_root(&workspace)?.to_owned();
-                let value = tokio::task::spawn_blocking(move || {
-                    crate::workspace_path_index::build_workspace_path_index(
-                        root.into(),
-                        crate::workspace_path_index::WORKSPACE_PATH_INDEX_CAP,
-                    )
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-                self.files.canonical_root(&workspace)?;
-                serde_json::to_value(value).map_err(|e| e.to_string())
-            }
             Operation::FilesCreate {
                 workspace,
                 path,

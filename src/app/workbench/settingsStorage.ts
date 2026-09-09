@@ -1,9 +1,4 @@
-import { isWindowsPlatform } from "@/lib/platform"
-import type { TerminalProfile, TerminalProfileKind } from "@/lib/types"
-import {
-  EMPTY_CUSTOM_TERMINAL_PROFILE,
-  SYSTEM_TERMINAL_PROFILE,
-} from "@/terminal/terminalProfiles"
+import { normalizeTerminalFontFamily, type TerminalFontFamily } from "@/terminal/terminalFonts"
 import type { TerminalImeAnchorMode } from "@/terminal/terminalImePositioning"
 import {
   DEFAULT_ACCENT_PREFERENCE,
@@ -12,7 +7,6 @@ import {
 } from "@/theme/accent"
 
 export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
-export const PREVIEW_SETTINGS_STORAGE_KEY = "yuzora:preview-settings"
 export const APPEARANCE_SETTINGS_STORAGE_KEY = "yuzora:appearance-settings"
 
 export type ThemePreference = "light" | "dark" | "auto"
@@ -20,28 +14,21 @@ export type ThemePreference = "light" | "dark" | "auto"
 export interface AppearanceSettings {
   theme: ThemePreference
   accent: AccentPreference
+  leftSidebarBackground: boolean
+  rightSidebarBackground: boolean
 }
 
 export interface TerminalSettings {
-  defaultProfile: TerminalProfile
-  customProfile: TerminalProfile
   imeAnchorMode: TerminalImeAnchorMode
   fontSize: number
-}
-
-export interface PreviewSettings {
-  command: string
-  port: string
-}
-
-const DEFAULT_PREVIEW_SETTINGS: PreviewSettings = {
-  command: "",
-  port: "",
+  fontFamily: TerminalFontFamily
 }
 
 const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   theme: "auto",
   accent: DEFAULT_ACCENT_PREFERENCE,
+  leftSidebarBackground: true,
+  rightSidebarBackground: true,
 }
 
 const VALID_THEME_PREFERENCES: ThemePreference[] = ["light", "dark", "auto"]
@@ -66,36 +53,11 @@ export function writeJsonSetting<T extends object>(key: string, value: T): void 
 }
 
 export function loadTerminalSettings(): TerminalSettings {
-  type StoredTerminalSettings = Partial<TerminalSettings> & {
-    shellPath?: unknown
-    shellArgs?: unknown
-  }
-  const stored = readJsonSetting<StoredTerminalSettings>(TERMINAL_SETTINGS_STORAGE_KEY, {})
-  const legacyShell = typeof stored.shellPath === "string" ? stored.shellPath.trim() : ""
-  const legacyArgs = typeof stored.shellArgs === "string"
-    ? stored.shellArgs.trim().split(/\s+/).filter(Boolean)
-    : []
-  const hasLegacyProfile = legacyShell.length > 0 || legacyArgs.length > 0
-  const legacyProfile: TerminalProfile = {
-    ...EMPTY_CUSTOM_TERMINAL_PROFILE,
-    shell: legacyShell,
-    args: legacyArgs,
-  }
-  const customProfile = normalizeTerminalProfile(
-    stored.customProfile,
-    hasLegacyProfile ? legacyProfile : EMPTY_CUSTOM_TERMINAL_PROFILE,
-    "custom",
-  )
-  const defaultProfile = normalizeTerminalProfile(
-    stored.defaultProfile,
-    hasLegacyProfile ? legacyProfile : SYSTEM_TERMINAL_PROFILE,
-  )
-
+  const stored = readJsonSetting<Partial<TerminalSettings>>(TERMINAL_SETTINGS_STORAGE_KEY, {})
   return {
-    defaultProfile,
-    customProfile,
     imeAnchorMode: stored.imeAnchorMode === "tui" ? "tui" : "cursor",
     fontSize: normalizeTerminalFontSize(stored.fontSize),
+    fontFamily: normalizeTerminalFontFamily(stored.fontFamily),
   }
 }
 
@@ -113,46 +75,6 @@ export function normalizeTerminalFontSize(value: unknown): number {
   )
 }
 
-const TERMINAL_PROFILE_KINDS: TerminalProfileKind[] = [
-  "system",
-  "cmd",
-  "powershell",
-  "wsl",
-  "custom",
-]
-
-function normalizeTerminalProfile(
-  value: unknown,
-  fallback: TerminalProfile,
-  forcedKind?: TerminalProfileKind,
-): TerminalProfile {
-  if (!value || typeof value !== "object") return { ...fallback, args: [...fallback.args] }
-  const profile = value as Partial<TerminalProfile>
-  if (
-    typeof profile.id !== "string"
-    || typeof profile.name !== "string"
-    || typeof profile.shell !== "string"
-    || !Array.isArray(profile.args)
-    || !profile.args.every((arg) => typeof arg === "string")
-    || !TERMINAL_PROFILE_KINDS.includes(profile.kind as TerminalProfileKind)
-  ) {
-    return { ...fallback, args: [...fallback.args] }
-  }
-  return {
-    id: forcedKind === "custom" ? "custom" : profile.id,
-    name: profile.name,
-    shell: profile.shell.trim(),
-    args: [...profile.args],
-    kind: forcedKind ?? profile.kind!,
-    cwdStrategy:
-      profile.cwdStrategy === "wsl" && isWindowsPlatform() ? "wsl" : "native",
-  }
-}
-
-export function loadPreviewSettings(): PreviewSettings {
-  return readJsonSetting(PREVIEW_SETTINGS_STORAGE_KEY, DEFAULT_PREVIEW_SETTINGS)
-}
-
 export function loadAppearanceSettings(): AppearanceSettings {
   const settings = readJsonSetting<Partial<AppearanceSettings>>(APPEARANCE_SETTINGS_STORAGE_KEY, {})
   return {
@@ -162,6 +84,12 @@ export function loadAppearanceSettings(): AppearanceSettings {
     accent: isAccentPreference(settings.accent)
       ? settings.accent
       : DEFAULT_APPEARANCE_SETTINGS.accent,
+    leftSidebarBackground: typeof settings.leftSidebarBackground === "boolean"
+      ? settings.leftSidebarBackground
+      : DEFAULT_APPEARANCE_SETTINGS.leftSidebarBackground,
+    rightSidebarBackground: typeof settings.rightSidebarBackground === "boolean"
+      ? settings.rightSidebarBackground
+      : DEFAULT_APPEARANCE_SETTINGS.rightSidebarBackground,
   }
 }
 

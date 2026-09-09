@@ -3,15 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("@/lib/ipc", () => ({
     sshConnect: vi.fn(),
     sshDisconnect: vi.fn(),
-    sshSessionAlive: vi.fn()
 }))
 
-import { sshConnect, sshDisconnect, sshSessionAlive } from "@/lib/ipc"
+import { sshConnect, sshDisconnect } from "@/lib/ipc"
 import { SSH_HOSTS_STORAGE_KEY, loadSshHosts, useSshStore, type NewSshHost } from "./sshStore"
 
 const mockConnect = vi.mocked(sshConnect)
 const mockDisconnect = vi.mocked(sshDisconnect)
-const mockAlive = vi.mocked(sshSessionAlive)
 
 // The Bun-hosted test runtime injects an empty `localStorage` global with no
 // Storage methods; install a minimal in-memory Storage so persistence runs for
@@ -62,7 +60,6 @@ beforeEach(() => {
         fingerprint: "SHA256:abc"
     }))
     mockDisconnect.mockResolvedValue(undefined)
-    mockAlive.mockResolvedValue(true)
     useSshStore.setState({ hosts: [], sessions: {}, activeHostId: null, pendingAuthHostId: null })
 })
 
@@ -247,19 +244,6 @@ describe("useSshStore connection lifecycle", () => {
             status: "connected",
             sessionId: "sess-1"
         })
-    })
-
-    it("shell exit preserves an authenticated transport and its other channels", async () => {
-        const host = useSshStore.getState().addHost(passwordHost)
-        await useSshStore.getState().connect(host.id, "pw")
-        useSshStore.getState().markExit("sess-1")
-        await Promise.resolve()
-        expect(useSshStore.getState().sessions[host.id].status).toBe("connected")
-        expect(mockDisconnect).not.toHaveBeenCalled()
-        mockAlive.mockResolvedValueOnce(false)
-        useSshStore.getState().markExit("sess-1")
-        await Promise.resolve()
-        expect(useSshStore.getState().sessions[host.id].status).toBe("disconnected")
     })
 
     it("retires an in-flight connection after a host is removed", async () => {

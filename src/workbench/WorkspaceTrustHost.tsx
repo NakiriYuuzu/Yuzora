@@ -11,8 +11,6 @@ import {
     AlertDialogHeader,
     AlertDialogTitle
 } from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { workspacePathForDisplay } from "@/lib/paths"
 import { useGitStore } from "@/state/gitStore"
 import { useOverlayPresence } from "@/state/overlayStore"
@@ -45,13 +43,6 @@ export function WorkspaceTrustHost() {
                 if (cancelled || !granted) return
                 if (useWorkspaceStore.getState().workspacePath !== workspacePath) return
                 await useGitStore.getState().detect(workspacePath)
-                if (useWorkspaceStore.getState().workspacePath === workspacePath) {
-                    const lsp = await import("@/lsp/lspManager")
-                    await lsp.restartWorkspace(
-                        workspacePath,
-                        () => useWorkspaceStore.getState().workspacePath === workspacePath
-                    )
-                }
             } catch {
                 // Status / grant errors stay in the trust store.
             }
@@ -62,7 +53,6 @@ export function WorkspaceTrustHost() {
     }, [workspacePath, trustRevision])
 
     const open = prompt !== null
-    const execute = prompt?.kind === "execute" ? prompt : null
 
     return (
         <AlertDialog
@@ -74,12 +64,10 @@ export function WorkspaceTrustHost() {
             <AlertDialogContent>
                 <AlertDialogHeader>
                     <AlertDialogTitle>
-                        {execute ? t("workspaceTrust.executeTitle") : t("workspaceTrust.title")}
+                        {t("workspaceTrust.title")}
                     </AlertDialogTitle>
                     <AlertDialogDescription>
-                        {execute
-                            ? t("workspaceTrust.executeDescription")
-                            : t("workspaceTrust.description")}
+                        {t("workspaceTrust.description")}
                     </AlertDialogDescription>
                 </AlertDialogHeader>
                 {prompt ? (
@@ -92,36 +80,6 @@ export function WorkspaceTrustHost() {
                                 {workspacePathForDisplay(prompt.canonicalPath)}
                             </p>
                         </div>
-                        {execute ? (
-                            <div>
-                                <div className="mb-[4px] flex items-center justify-between gap-[8px]">
-                                    <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-(--ink-3)">
-                                        {t("workspaceTrust.commandLabel")}
-                                    </p>
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-[22px] px-[8px] text-[11px]"
-                                        aria-label={t("workspaceTrust.copyCommand")}
-                                        onClick={() => void navigator.clipboard.writeText(execute.command)}
-                                    >
-                                        {t("workspaceTrust.copyCommand")}
-                                    </Button>
-                                </div>
-                                <ScrollArea className="max-h-[140px] rounded-[8px] border border-(--line-1) bg-(--yz-sunk)">
-                                    <pre
-                                        data-testid="workspace-trust-command"
-                                        className="p-[8px] font-mono text-[12px] text-(--ink-1) whitespace-pre-wrap break-all"
-                                    >
-                                        {execute.command}
-                                    </pre>
-                                </ScrollArea>
-                                <p className="mt-[8px] text-[12px] text-(--ink-3)">
-                                    {t("workspaceTrust.connectExistingHint")}
-                                </p>
-                            </div>
-                        ) : null}
                         {lastError ? (
                             <p className="text-[12px] text-[#b4232a]">{lastError}</p>
                         ) : null}
@@ -136,7 +94,7 @@ export function WorkspaceTrustHost() {
                             void confirmPrompt()
                         }}
                     >
-                        {execute ? t("workspaceTrust.runCommand") : t("workspaceTrust.grant")}
+                        {t("workspaceTrust.grant")}
                     </AlertDialogAction>
                 </AlertDialogFooter>
             </AlertDialogContent>

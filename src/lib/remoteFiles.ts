@@ -2,7 +2,7 @@ import { invoke, sftpListDir } from "./ipc"
 import { requestHost } from "./hostIpc"
 import type { ConnectionOwner } from "./runtimeIdentity"
 import { parseRemoteFilePath, remoteFilePath, sameConnection } from "./runtimeIdentity"
-import type { FileNode, OpenFileResult, WorkspaceOpenResult, WorkspacePathIndexResult } from "./types"
+import type { FileNode, OpenFileResult, WorkspaceOpenResult } from "./types"
 import { useSshStore } from "@/state/sshStore"
 import { Channel } from "@tauri-apps/api/core"
 import { emit } from "@tauri-apps/api/event"
@@ -105,11 +105,7 @@ export async function reconnectRemoteWorkspaces(owner: ConnectionOwner, isCurren
     }
     if (!isCurrent()) return
     await notifyChanges(workspace, [workspace.root])
-    const lsp = await import("@/lsp/lspManager")
-    if (!isCurrent() || workspaces.get(uri) !== workspace) return
-    await lsp.restartWorkspace(uri, () => isCurrent() && workspaces.get(uri) === workspace)
     if (activeWatch?.uri === uri) await startRemoteWatch(uri)
-    if (isCurrent()) await (await import("./remotePreview")).restoreRemotePreview(uri).catch((error) => console.warn("remote preview reconnect failed", error))
   }
 }
 
@@ -270,15 +266,6 @@ export async function deleteRemotePath(workspaceUri: string, uri: string): Promi
   }
   assertBackend(uri, backend)
   for (const path of revisions.keys()) if (path === uri || path.startsWith(uri + "/")) revisions.delete(path)
-}
-
-export async function indexRemoteWorkspace(uri: string): Promise<WorkspacePathIndexResult> {
-  const { workspace } = resolve(uri)
-  const backend = workspace.backend
-  if (backend.kind !== "runtime") return { workspace: uri, entries: [], truncated: true }
-  const result = await requestHost<WorkspacePathIndexResult>(backend.owner, { method: "filesIndex", params: { workspace: backend.capabilityId } })
-  assertBackend(uri, backend)
-  return { ...result, workspace: remoteFilePath(workspace.hostId, result.workspace, workspace.root), entries: result.entries.map((entry) => ({ ...entry, canonicalPath: remoteFilePath(workspace.hostId, entry.canonicalPath, workspace.root) })) }
 }
 
 export async function readRemoteBase64(uri: string, maxBytes: number): Promise<{ data: string; size: number }> {

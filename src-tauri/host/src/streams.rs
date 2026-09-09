@@ -66,32 +66,6 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let StreamCommand::Open { config } = first.operation else {
         return Err("stream-open-required".into());
     };
-    if let StreamConfig::DevServer {
-        path,
-        command,
-        port,
-        ..
-    } = config
-    {
-        return crate::dev_server_stream::serve(
-            input, output, owner, first.id, path, command, port,
-        )
-        .await;
-    }
-    if let StreamConfig::LspInstall {
-        path,
-        language,
-        global,
-    } = config
-    {
-        return crate::lsp_install_stream::serve(
-            input, output, owner, first.id, path, language, global,
-        )
-        .await;
-    }
-    if let StreamConfig::Lsp { path, language } = config {
-        return crate::lsp_stream::serve(input, output, owner, first.id, path, language).await;
-    }
     if let StreamConfig::Search {
         path,
         query,
@@ -183,12 +157,7 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         }
         let binary = match &config {
             StreamConfig::Terminal { binary, .. } | StreamConfig::Events { binary, .. } => binary,
-            StreamConfig::Files { .. }
-            | StreamConfig::Search { .. }
-            | StreamConfig::Lsp { .. }
-            | StreamConfig::Git { .. }
-            | StreamConfig::LspInstall { .. }
-            | StreamConfig::DevServer { .. } => {
+            StreamConfig::Files { .. } | StreamConfig::Search { .. } | StreamConfig::Git { .. } => {
                 unreachable!()
             }
         };
@@ -198,12 +167,7 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             HerdrManager::with_binary(binary.into())
         }));
         let (id, value, terminal) = match config {
-            StreamConfig::Files { .. }
-            | StreamConfig::Search { .. }
-            | StreamConfig::Lsp { .. }
-            | StreamConfig::Git { .. }
-            | StreamConfig::LspInstall { .. }
-            | StreamConfig::DevServer { .. } => {
+            StreamConfig::Files { .. } | StreamConfig::Search { .. } | StreamConfig::Git { .. } => {
                 unreachable!()
             }
             StreamConfig::Terminal {

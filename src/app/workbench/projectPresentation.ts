@@ -1,3 +1,4 @@
+import { DEFAULT_SPACE_CHARACTER } from "./space-character"
 import { workspacePathBasename } from "@/lib/paths"
 import type {
   RecentWorkspaceColor,
@@ -47,7 +48,7 @@ export function resolveProjectPresentation(
   const glyph = presentation?.glyph?.trim() || name.trim().charAt(0).toUpperCase() || "P"
   const color = PROJECT_COLOR_OPTIONS.find((option) => option.id === presentation?.color)
     ?? DEFAULT_COLOR
-  return { name, glyph, color }
+  return { name, glyph, color, avatarMode: presentation?.avatarMode ?? (presentation?.glyph ? "glyph" : "character"), character: presentation?.character ?? DEFAULT_SPACE_CHARACTER }
 }
 
 export function projectGlyphOptions(name: string): string[] {

@@ -2,13 +2,9 @@ import type { EditorView } from "@codemirror/view"
 
 import { canonicalPathKey, isWindowsPath } from "../lib/paths"
 
-type FormatterState = "checking" | "available" | "unsupported"
-
 export interface EditorViewMetadata {
     groupIndex: number
     readonly: boolean
-    formatter: FormatterState
-    formatDocument?: () => Promise<boolean>
 }
 
 export interface RegisteredEditorView extends EditorViewMetadata {
@@ -19,7 +15,7 @@ export interface RegisteredEditorView extends EditorViewMetadata {
 }
 
 // Operational Windows paths register only an explicit Windows alias key. An
-// LSP UNC URI decodes to `//host/share/...`, which is
+// A remote UNC path can decode to `//host/share/...`, which is
 // ambiguous with a case-sensitive POSIX double-slash path: exact POSIX lookup
 // wins, and only a view registered from unambiguous Windows syntax participates
 // in the fallback Windows alias lookup.
@@ -48,7 +44,7 @@ function lookupKeys(path: string): string[] {
     if (isWindowsPath(path)) return [windowsAliasKey(path)]
 
     const keys = [automaticViewKey(path)]
-    // A forward-slash `//host/share/...` path can come from an LSP UNC URI.
+    // A forward-slash `//host/share/...` path can come from a remote UNC path.
     // Prefer an exact POSIX registration, then fall back to a registered
     // Windows UNC operational path only when no exact POSIX entry exists.
     if (path.startsWith("//")) keys.push(windowsAliasKey(path))
@@ -71,24 +67,9 @@ export function registerView(
     const entry: RegisteredEditorView = {
         view,
         groupIndex: metadata.groupIndex ?? -1,
-        readonly: metadata.readonly ?? false,
-        formatter: metadata.formatter ?? "unsupported",
-        formatDocument: metadata.formatDocument
+        readonly: metadata.readonly ?? false
     }
     for (const key of registrationKeys(path)) views.set(key, entry)
-}
-
-export function updateViewMetadata(
-    path: string,
-    view: EditorView,
-    metadata: Partial<EditorViewMetadata>
-): void {
-    const current = findViewEntry(path)
-    if (!current || current.view !== view) return
-    const updated = { ...current, ...metadata, view }
-    for (const [key, entry] of views) {
-        if (entry === current) views.set(key, updated)
-    }
 }
 
 export function unregisterView(path: string, view?: EditorView): void {

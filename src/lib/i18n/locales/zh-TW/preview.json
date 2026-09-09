@@ -1,22 +1,5 @@
 {
-  "devServerLabel": "Dev server 覆寫",
-  "devServerDescription": "需要手動指定時，這裡的 command 與 port 會成為 preview 啟動 dev server 的優先來源。",
-  "noDevServer": "無 dev server",
-  "emptyTitle": "啟動或連接 dev server",
-  "emptyDescription": "dev server 執行後，preview 會顯示在這裡。",
-  "start": "啟動 dev server",
-  "detecting": "偵測中…",
-  "noCandidates": "找不到可啟動的 dev server",
-  "settingsHint": "請在 Settings 的 Preview 區塊設定 dev server command 與 port。",
-  "portOccupied": "偵測到 port 已被使用",
-  "connectExisting": "連接現有 server",
-  "connectExistingHint": "連線到已在執行的 localhost server 不會執行專案程式碼。",
-  "alternatePort": "替代 port",
-  "startChangedPort": "切換 port 後啟動",
-  "retryDetect": "重新偵測",
-  "failedTitle": "dev server 啟動失敗",
-  "retryStart": "重試啟動",
-  "exitedTitle": "dev server 已停止",
-  "staticCreateFailed": "無法預覽這個檔案。",
-  "staticCreateTooLarge": "預覽檔案過多，無法安全開啟。"
+  "emptyTitle": "開啟網站",
+  "emptyDescription": "在網址列輸入網站位址。",
+  "browserFrameTitle": "瀏覽器"
 }

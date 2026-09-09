@@ -3,10 +3,11 @@ import { RefreshCw } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
+import { Input } from "@/components/ui/input"
+import { Field,FieldGroup,FieldLabel } from "@/components/ui/field"
 import { useGitStore, type RemoteCheckMode } from "@/state/gitStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import { SettingCard } from "./settingsPrimitives"
+import { SettingCard,Segmented } from "./settingsPrimitives"
 
 /**
  * Git pane — detection state card + remote-check card. Reads the live git
@@ -60,7 +61,7 @@ export function GitSection() {
       : "2.24"
 
   return (
-    <div className="flex flex-col gap-[14px]">
+    <FieldGroup className="settings-fields">
       <SettingCard
         label={t("gitSettings.detectionLabel")}
         sub={t("gitSettings.detectionDescription")}
@@ -120,36 +121,13 @@ export function GitSection() {
         label={t("gitSettings.remoteCheckLabel")}
         sub={t("gitSettings.remoteCheckDescription")}
       >
-        <div
-          role="group"
-          aria-label={t("gitSettings.remoteCheckAriaLabel")}
-          className="flex gap-[4px] rounded-[10px] bg-(--paper-2) p-[3px]"
-        >
-          {remoteCheckModes.map((option) => {
-            const active = option.id === remoteCheck.mode
-            return (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setRemoteCheck({ ...remoteCheck, mode: option.id })}
-                className={cn(
-                  "flex h-[28px] flex-1 items-center justify-center rounded-[8px] text-[11.5px] transition-all duration-[140ms] ease-(--ease-out)",
-                  active
-                    ? "bg-(--yz-solid) font-semibold text-(--ink-0) shadow-(--shadow-xs)"
-                    : "font-medium text-(--ink-3) hover:text-(--ink-1)"
-                )}
-              >
-                {option.label}
-              </button>
-            )
-          })}
-        </div>
+        <Segmented label={t("gitSettings.remoteCheckAriaLabel")} options={remoteCheckModes} value={remoteCheck.mode} onChange={mode=>setRemoteCheck({...remoteCheck,mode:mode as RemoteCheckMode})}/>
 
-        <label className="mt-[12px] flex items-center justify-between gap-[10px]">
-          <span className="text-[12px] text-(--ink-2)">{t("gitSettings.intervalLabel")}</span>
+        <Field orientation="horizontal" className="mt-4 items-center">
+          <FieldLabel htmlFor="settings-git-interval">{t("gitSettings.intervalLabel")}</FieldLabel>
           <span className="flex items-center gap-[6px]">
-            <input
+            <Input
+              id="settings-git-interval"
               type="number"
               min={30}
               value={intervalText}
@@ -159,8 +137,8 @@ export function GitSection() {
             />
             <span className="text-[11px] text-(--ink-3)">{t("gitSettings.seconds")}</span>
           </span>
-        </label>
+        </Field>
       </SettingCard>
-    </div>
+    </FieldGroup>
   )
 }

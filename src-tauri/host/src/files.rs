@@ -77,14 +77,6 @@ impl WorkspaceFiles {
         Ok(&self.get(id)?.canonical)
     }
 
-    pub fn preview_path(&self, id: &str, relative: &str) -> Result<std::path::PathBuf, String> {
-        let workspace = self.get(id)?;
-        workspace
-            .root
-            .open_file(&SafeRelativePath::parse(relative)?)?;
-        Ok(Path::new(&workspace.canonical).join(relative))
-    }
-
     pub fn create(&self, id: &str, path: &str, directory: bool) -> Result<Value, String> {
         let root = &self.get(id)?.root;
         let relative = SafeRelativePath::parse(path)?;

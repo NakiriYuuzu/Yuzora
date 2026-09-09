@@ -1,3 +1,4 @@
+import { terminalFontStack } from "@/terminal/terminalFonts"
 import {
   useCallback,
   useEffect,
@@ -32,6 +33,7 @@ import type {
   HerdrTerminalRole
 } from "@/lib/herdrTypes"
 import { useHerdrStore } from "@/state/herdrStore"
+import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
@@ -86,7 +88,14 @@ function safeFit(fitAddon: FitAddon): void {
   }
 }
 
+function terminalModalOpen(): boolean {
+  // The request exists before React mounts the dialog portal.
+  return useTextInputDialogStore.getState().pending !== null
+    || document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open]') !== null
+}
+
 function safeFocus(term: Terminal): void {
+  if (terminalModalOpen()) return
   try {
     term.focus()
   } catch {
@@ -430,6 +439,18 @@ export function HerdrTerminalPage({
     pagePath
   })
 
+  const zoomedPaneId = layout?.zoomed && focusedPaneId && layoutPaneIds.includes(focusedPaneId)
+    ? focusedPaneId
+    : null
+  const containsZoomedPane = (node: HerdrLayoutNode): boolean => node.type === "pane"
+    ? node.paneId === zoomedPaneId
+    : containsZoomedPane(node.first) || containsZoomedPane(node.second)
+  const zoomPanelStyle = (node: HerdrLayoutNode): CSSProperties | undefined => !zoomedPaneId
+    ? undefined
+    : containsZoomedPane(node)
+      ? { position: "absolute", inset: 0, width: "100%", height: "100%" }
+      : { display: "none" }
+
   const renderNode = (
     node: HerdrLayoutNode,
     path: boolean[],
@@ -462,7 +483,7 @@ export function HerdrTerminalPage({
           label={node.label ?? null}
           title={node.label ?? title}
           active={leafActive && (!focusedPaneId || leafPaneId === focusedPaneId)}
-          visible={visible}
+          visible={visible && (!zoomedPaneId || leafPaneId === zoomedPaneId)}
           focusedPaneId={focusedPaneId}
           tabId={layout?.tabId ?? resolvedTabId}
           workspaceId={layout?.workspaceId ?? null}
@@ -480,11 +501,11 @@ export function HerdrTerminalPage({
       <ResizablePanelGroup
         id={groupId}
         orientation={orientation}
-        className="h-full w-full"
+        className="relative h-full w-full"
         data-testid={`herdr-split-${pathKey(path) || "root"}`}
         data-direction={node.direction}
         onLayoutChanged={(nextLayout, meta) => {
-          if (!canSetSplitRatio || !meta.isUserInteraction) return
+          if (zoomedPaneId || !canSetSplitRatio || !meta.isUserInteraction) return
           const firstId = `${groupId}-first`
           const secondId = `${groupId}-second`
           const first = nextLayout[firstId]
@@ -495,17 +516,18 @@ export function HerdrTerminalPage({
           onSplitRatioChanged(path, first / total)
         }}
       >
-        <ResizablePanel id={`${groupId}-first`} defaultSize={firstPct} minSize={10}>
+        <ResizablePanel id={`${groupId}-first`} defaultSize={firstPct} minSize={10} style={zoomPanelStyle(node.first)}>
           {renderNode(node.first, [...path, false], leafActive)}
         </ResizablePanel>
         <ResizableHandle
           withHandle
-          disabled={!canSetSplitRatio}
+          style={zoomedPaneId ? { display: "none" } : undefined}
+          disabled={Boolean(zoomedPaneId) || !canSetSplitRatio}
           aria-disabled={!canSetSplitRatio}
           id={`herdr-split-handle-${pathKey(path) || "root"}`}
           className={!canSetSplitRatio ? "pointer-events-none cursor-default opacity-50" : undefined}
         />
-        <ResizablePanel id={`${groupId}-second`} defaultSize={secondPct} minSize={10}>
+        <ResizablePanel id={`${groupId}-second`} defaultSize={secondPct} minSize={10} style={zoomPanelStyle(node.second)}>
           {renderNode(node.second, [...path, true], leafActive)}
         </ResizablePanel>
       </ResizablePanelGroup>
@@ -669,6 +691,7 @@ function HerdrTerminalLeaf({
 }: HerdrTerminalLeafProps) {
   const { t } = useTranslation("workbench")
   const fontSize = useTerminalSettingsStore((state) => state.fontSize)
+  const fontFamily = useTerminalSettingsStore((state) => state.fontFamily)
   const paneKey = paneId ?? terminalId
   const attachmentKey = herdrAttachmentKey(pagePath, paneKey)
   const sessions = useHerdrStore((s) => s.sessions)
@@ -731,6 +754,15 @@ function HerdrTerminalLeaf({
   const displayMode: HerdrTerminalMode = connectorEnabled ? controlMode : "observe"
   const displayRole: HerdrTerminalRole = connectorEnabled ? role : "observer"
 
+  useEffect(() => {
+    let cancelled = false
+    void document.fonts?.load(`${fontSize}px ${terminalFontStack(fontFamily)}`).then(() => {
+      const fit = fitRef.current
+      if (!cancelled && !disposedRef.current && visibleRef.current && fit) safeFit(fit)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [fontFamily, fontSize])
+
   useLayoutEffect(() => {
     activeRef.current = active
     visibleRef.current = visible
@@ -749,6 +781,7 @@ function HerdrTerminalLeaf({
       convertEol: true,
       cursorBlink: true,
       fontSize,
+      fontFamily: terminalFontStack(fontFamily),
       theme: { ...buildXtermTheme(currentMode()) },
       disableStdin: false,
       scrollback: 0,
@@ -880,7 +913,7 @@ function HerdrTerminalLeaf({
     dataDisposableRef.current = installTerminalImeHandling(
       term,
       (data) => {
-        if (disposedRef.current) return
+        if (disposedRef.current || terminalModalOpen()) return
         if (!transport.canWrite()) return
         void transport.write(data).catch(() => undefined)
       },
@@ -1040,11 +1073,12 @@ function HerdrTerminalLeaf({
     const term = termRef.current
     const fitAddon = fitRef.current
     if (!term || !fitAddon || disposedRef.current) return
-    if (term.options.fontSize === fontSize) return
+    if (term.options.fontSize === fontSize && term.options.fontFamily === terminalFontStack(fontFamily)) return
     term.options.fontSize = fontSize
+    term.options.fontFamily = terminalFontStack(fontFamily)
     if (!visibleRef.current) return
     safeFit(fitAddon)
-  }, [fontSize])
+  }, [fontSize, fontFamily])
 
   useLayoutEffect(() => {
     const term = termRef.current

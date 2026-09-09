@@ -23,15 +23,6 @@ pub enum HerdrCommand {
         workspace_id: Option<String>,
         title: Option<String>,
     },
-    #[serde(rename = "herdr_agent_catalog")]
-    AgentCatalog { session_name: Option<String> },
-    #[serde(rename = "herdr_agent_create")]
-    AgentCreate {
-        session_name: Option<String>,
-        workspace_id: String,
-        kind: String,
-        bypass_permissions: Option<bool>,
-    },
     #[serde(rename = "herdr_workspace_focus")]
     WorkspaceFocus {
         session_name: Option<String>,
@@ -183,22 +174,6 @@ impl HerdrCommand {
                 session_name.as_deref(),
                 workspace_id,
                 title,
-            )?)
-            .map_err(|e| e.to_string()),
-            Self::AgentCatalog { session_name } => {
-                serde_json::to_value(manager.agent_catalog(session_name.as_deref())?)
-                    .map_err(|e| e.to_string())
-            }
-            Self::AgentCreate {
-                session_name,
-                workspace_id,
-                kind,
-                bypass_permissions,
-            } => serde_json::to_value(manager.agent_create(
-                session_name.as_deref(),
-                workspace_id,
-                kind,
-                bypass_permissions.unwrap_or(false),
             )?)
             .map_err(|e| e.to_string()),
             Self::WorkspaceFocus {

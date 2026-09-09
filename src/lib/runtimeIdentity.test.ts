@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { resourceKey, runtimeKey, sameConnection, workspaceKey, remoteFilePath, parseRemoteFilePath } from "./runtimeIdentity"
+import { runtimeKey, sameConnection, remoteFilePath, parseRemoteFilePath } from "./runtimeIdentity"
 import { nativePathJoin, relativePathWithin, samePathIdentity } from "./paths"
 
 describe("runtime authority", () => {
@@ -16,11 +16,6 @@ describe("runtime authority", () => {
   it("isolates duplicate session and path names across hosts", () => {
     expect(runtimeKey({ hostId: "one", sessionName: "default" }))
       .not.toBe(runtimeKey({ hostId: "two", sessionName: "default" }))
-    const workspace = { hostId: "one", canonicalPath: "/home/me/app", access: "runtime" as const }
-    expect(workspaceKey(workspace)).not.toBe(workspaceKey({ ...workspace, hostId: "two" }))
-    expect(resourceKey({ workspace, relativePath: "src/main.ts" }))
-      .not.toBe(resourceKey({ workspace: { ...workspace, hostId: "two" }, relativePath: "src/main.ts" }))
-    expect(workspaceKey(workspace)).toBe(workspaceKey({ ...workspace, access: "sftp" }))
   })
 
   it("does not collide on delimiters or accept an old connection generation", () => {

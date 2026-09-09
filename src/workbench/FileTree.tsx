@@ -1,3 +1,4 @@
+import { gitFileNameStyle, worktreeFilesFrom, worktreeFileMetadata } from "./git/fileRows"
 import { ChevronDown, ChevronRight, GitCompareArrows } from "lucide-react"
 import { useEffect, useRef } from "react"
 import { useTranslation } from "react-i18next"
@@ -7,8 +8,8 @@ import { FileIcon } from "../lib/fileIcons"
 import type { FileNode } from "../lib/types"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { useFileTreeStore } from "../state/fileTreeStore"
-import { changedPathSet, useGitStore } from "../state/gitStore"
-import { useUiStore } from "../state/uiStore"
+import { useGitStore } from "../state/gitStore"
+import { useDiffModalStore } from "../state/diffModalStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
 // Repo-relative form of an absolute node path, matched against the git status
@@ -32,7 +33,6 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
     const openTab = useWorkspaceStore((s) => s.openTab)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const sourceGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
-    const openDiffInGitMode = useUiStore((s) => s.openDiffInGitMode)
     const active = useWorkspaceStore(
         (s) => !node.isDir && s.groups[s.activeGroupIndex]?.activePath === node.path
     )
@@ -43,7 +43,9 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
         s.environment?.status === "ready" ? s.environment.root : workspacePath
     )
     const rel = relativePath(node.path, repoRoot)
-    const isChanged = useGitStore((s) => !node.isDir && changedPathSet(s.status).has(rel))
+    const gitStatus = useGitStore((s) => s.status)
+    const gitFile = !node.isDir ? worktreeFileMetadata(gitStatus).get(rel) : undefined
+    const isChanged = Boolean(gitFile)
 
     function onClick() {
         if (node.isDir) {
@@ -96,6 +98,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                         />
                     )}
                     <span
+                        style={gitFile ? gitFileNameStyle(gitFile.status, gitFile.staged) : undefined}
                         className={
                             "truncate " +
                             (node.isDir
@@ -113,7 +116,13 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                         type="button"
                         aria-label={t("fileTree.openDiffFile", { name: node.name })}
                         title={t("fileTree.openDiffTitle")}
-                        onClick={() => openDiffInGitMode(rel)}
+                        onClick={() => {
+                            const git = useGitStore.getState()
+                            if (git.environment?.status !== "ready") return
+                            const files = worktreeFilesFrom(git.status)
+                            const file = files.find((entry) => entry.path === rel && !entry.staged) ?? files.find((entry) => entry.path === rel)
+                            if (file) useDiffModalStore.getState().openWorktree(git.environment.root, files, { path: rel, staged: file.staged })
+                        }}
                         className="absolute top-1/2 right-[6px] flex size-[20px] -translate-y-1/2 items-center justify-center rounded-[6px] text-(--ink-3) opacity-0 transition-all duration-[130ms] group-hover:opacity-100 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
                     >
                         <GitCompareArrows className="size-[13px]" aria-hidden="true" />

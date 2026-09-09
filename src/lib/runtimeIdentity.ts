@@ -6,17 +6,6 @@ export interface RuntimeKey {
   sessionName: string
 }
 
-export interface WorkspaceRef {
-  hostId: string
-  canonicalPath: string
-  access: "runtime" | "sftp"
-}
-
-export interface ResourceRef {
-  workspace: WorkspaceRef
-  relativePath: string
-}
-
 export interface ConnectionOwner {
   hostId: string
   generation: number
@@ -24,19 +13,6 @@ export interface ConnectionOwner {
 
 export function runtimeKey(key: RuntimeKey): string {
   return JSON.stringify([key.hostId, key.sessionName])
-}
-
-export function workspaceKey(workspace: WorkspaceRef): string {
-  // Access mode does not change file identity when SFTP is upgraded to runtime.
-  return JSON.stringify([workspace.hostId, workspace.canonicalPath])
-}
-
-export function resourceKey(resource: ResourceRef): string {
-  return JSON.stringify([
-    resource.workspace.hostId,
-    resource.workspace.canonicalPath,
-    resource.relativePath
-  ])
 }
 
 export function sameConnection(left: ConnectionOwner, right: ConnectionOwner): boolean {

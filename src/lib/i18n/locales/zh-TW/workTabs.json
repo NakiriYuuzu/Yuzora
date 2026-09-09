@@ -1,0 +1,7 @@
+{
+  "pin": "釘選分頁",
+  "unpin": "取消釘選",
+  "terminalUnavailableTitle": "目前無法新增終端機",
+  "terminalUnavailableDescription": "請選取已連線且支援建立終端機的 Host Runtime 與 Space。",
+  "newTerminal": "新增終端機"
+}

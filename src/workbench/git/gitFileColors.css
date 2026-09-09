@@ -1,0 +1,15 @@
+:root {
+    --git-file-deleted: #66616b;
+    --git-file-untracked: #87512d;
+    --git-file-staged: #147552;
+    --git-file-modified: #2456cc;
+    --git-file-conflict: #b52242;
+}
+
+.dark {
+    --git-file-deleted: #bdb7c9;
+    --git-file-untracked: #e4b786;
+    --git-file-staged: #7ed5aa;
+    --git-file-modified: #9ab9ff;
+    --git-file-conflict: #ffa1b4;
+}

@@ -148,7 +148,7 @@ fn merge_path(shell: &OsStr, inherited: Option<&OsStr>) -> OsString {
     for path in
         std::env::split_paths(shell).chain(inherited.into_iter().flat_map(std::env::split_paths))
     {
-        if crate::lsp_framing::is_trusted_path_entry(Path::new(&path)) && !paths.contains(&path) {
+        if is_trusted_path_entry(Path::new(&path)) && !paths.contains(&path) {
             paths.push(path);
         }
     }
@@ -222,4 +222,14 @@ mod tests {
             "/nvm/bin:/bin:/usr/bin"
         );
     }
+}
+
+fn is_trusted_path_entry(path: &Path) -> bool {
+    path.is_absolute()
+        && path.components().all(|part| {
+            !matches!(
+                part,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
 }

@@ -13,7 +13,6 @@
     "cmOpen": "開啟",
     "cmOpenSplit": "在右側分割開啟",
     "cmRename": "重新命名…",
-    "cmOpenInBrowser": "在預覽中開啟",
     "cmCopyRel": "複製相對路徑",
     "cmReveal": "在檔案管理器中顯示",
     "cmDelete": "刪除",
@@ -25,9 +24,6 @@
     "cmCopy": "複製",
     "cmPaste": "貼上",
     "cmCompareHead": "與 HEAD 比較",
-    "cmFormatDoc": "格式化文件",
-    "cmRenameTerminal": "重新命名終端機…",
-    "cmCloseTerminal": "關閉終端機",
     "cmCopyHash": "複製提交雜湊",
     "cmCopyBranch": "複製分支名稱",
     "cmFetch": "抓取",
@@ -36,7 +32,6 @@
     "cmStageSelected": "暫存所選項目",
     "cmUnstageSelected": "取消暫存所選項目",
     "cmRollbackSelected": "回復所選項目…",
-    "cmOpenSsh": "連線至主機",
     "cmOpenSftp": "開啟 SFTP 瀏覽器",
     "cmCopyAddr": "複製主機位址",
     "cmCopyDbAddress": "複製資料庫位址",
@@ -50,7 +45,6 @@
     "cmPreviewReload": "重新載入",
     "cmCopyUrl": "複製 URL",
     "cmOpenExternal": "在預設瀏覽器中開啟",
-    "cmStopDevServer": "停止開發伺服器",
     "disabled": {
       "targetUnavailable": "目標項目已不存在",
       "nothingToDo": "目前沒有可執行的內容",
@@ -175,27 +169,6 @@
     "closeSplitTitle": "關閉分割",
     "emptyTitle": "開啟專案以開始編輯",
     "emptyDescription": "開啟專案後，檔案與分頁會顯示在這裡。"
-  },
-  "terminalDrawer": {
-    "dragToResize": "拖曳調整大小",
-    "iconAriaLabel": "終端機",
-    "tabListAriaLabel": "終端機分頁",
-    "allTerminalsTitle": "所有終端機",
-    "splitRightTitle": "向右分割",
-    "splitLimitTitle": "最多只能同時顯示兩個終端機",
-    "newTerminalTitle": "新增終端機",
-    "selectProfileTitle": "使用 Profile 新增終端機",
-    "defaultProfile": "預設",
-    "closeTabAriaLabel": "關閉 {{title}}",
-    "renameInputAriaLabel": "重新命名 {{title}}",
-    "spawnFailedTitle": "終端機啟動失敗",
-    "leftPane": "左側",
-    "rightPane": "右側",
-    "focusedPane": "已聚焦",
-    "paneResizeAriaLabel": "調整終端機窗格大小",
-    "paneRatioText": "左側 {{left}}% · 右側 {{right}}%",
-    "collapseAriaLabel": "收合終端機",
-    "expandAriaLabel": "展開終端機"
   },
   "branchPopover": {
     "title": "Git 分支",
@@ -457,5 +430,6 @@
     "cleanTitle": "工作目錄乾淨",
     "cleanDescription": "沒有已暫存、未暫存、未追蹤或衝突的檔案。",
     "detachedHead": "分離式 HEAD"
-  }
+  },
+  "dragToResize": "拖曳調整大小"
 }

@@ -29,7 +29,7 @@
 
 > Yuzora 是以 HERDR 作為執行與終端 runtime 的 **Agent Development Environment（ADE）**。
 > Spaces、named Sessions、Attention 與 Agents 投影在同一個桌面表面；編輯器、git、SSH/SFTP、
-> 資料庫與本機 terminal 仍可並用。以 Tauri 打造，預設在地執行。
+> 資料庫與瀏覽器仍可並用。以 Tauri 打造，預設在地執行。
 
 <br />
 
@@ -43,7 +43,7 @@
 
 ### 從 Space 到 agent 終端
 
-Workspace rail 投影 HERDR Spaces；ADE sidebar 整理 named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放，Agent Inspector 維持唯讀。
+Space 與 Agent 側欄投影 HERDR Spaces、named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放，Agent Inspector 維持唯讀。
 
 <code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code> <code>唯讀 Inspector</code>
 
@@ -85,14 +85,14 @@ SSH 連上遠端主機瀏覽與編輯檔案、SFTP 傳輸；資料庫面板直�
 
 ### 內建 terminal 與 git 工具
 
-xterm 驅動的本機 terminal drawer 就在編輯器下方；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
+HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
 
-<code>xterm + pty</code> <code>git log / cherry-pick</code> <code>log 查詢</code>
+<code>xterm + HERDR</code> <code>git log / cherry-pick</code> <code>log 查詢</code>
 
 </td>
 <td valign="middle" width="62%">
 
-<img src="docs/readme/terminal-git-zh.png" alt="本機 terminal drawer 與 git 面板：log、diff、cherry-pick" />
+終端執行由 HERDR 管理。瀏覽器可開啟網站，或在 HERDR terminal 啟動的服務網址。
 
 </td>
 </tr>
@@ -118,7 +118,7 @@ Windows `.msi` 安裝檔與歷史版本見 [GitHub Releases](https://github.com/
 | 桌面框架 | [Tauri 2](https://tauri.app)（Rust） |
 | 前端 | React + TypeScript + Vite |
 | Agent runtime | HERDR public API ＋官方 terminal session connector |
-| Terminal | xterm.js ＋本機 pty ＋ HERDR terminal pages |
+| Terminal | xterm.js ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
 Yuzora 會優先使用 PATH 安裝的 HERDR binary；偵測不到時，會自動改用 macOS／Windows 安裝檔內附且固定版本的 Yuzora-managed binary。關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會終止 HERDR server、panes 或 agents。

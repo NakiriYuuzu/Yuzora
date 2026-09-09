@@ -10,7 +10,6 @@ import type { OpenFileResult } from "../lib/types"
 // Spy on the view registry so we can assert the exact (path, view) call args.
 const registerView = vi.fn()
 const unregisterView = vi.fn()
-const updateViewMetadata = vi.fn()
 const getDocument = vi.fn(async (): Promise<{ result: OpenFileResult }> => ({
     result: { kind: "full", content: "one\ntwo\nthree", size: 13, lineEnding: "lf" }
 }))
@@ -19,8 +18,6 @@ const saveFile = vi.fn(async () => 0)
 vi.mock("./viewRegistry", () => ({
     registerView: (path: string, view: EditorView, metadata: unknown) => registerView(path, view, metadata),
     unregisterView: (path: string, view?: EditorView) => unregisterView(path, view),
-    updateViewMetadata: (path: string, view: EditorView, metadata: unknown) =>
-        updateViewMetadata(path, view, metadata),
     getView: vi.fn(),
     getViewEntry: vi.fn()
 }))

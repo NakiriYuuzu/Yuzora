@@ -58,9 +58,10 @@ export function HerdrBridge() {
       if (!snapshot?.focusedWorkspaceId || !snapshot.focusedTabId) return
       const workspace = useWorkspaceStore.getState().workspacePath
       const root = snapshot.spaces.find((space) => space.id === snapshot.focusedWorkspaceId)?.path
-      // A reconnect/snapshot cannot replace the restored or user-opened folder.
-      // Explicit Space/tab activation owns the guarded workspace switch.
-      if (workspace && (!root || canonicalPathKey(workspace) !== canonicalPathKey(root))) return
+      // Background snapshots only restore terminals inside an already-open folder.
+      // Runtime-only Spaces must wait for explicit activation, including when
+      // Yuzora has no workspace; otherwise cancelled folder pickers reopen on refresh.
+      if (!workspace || !root || canonicalPathKey(workspace) !== canonicalPathKey(root)) return
       const focusKey = `${snapshot.focusedWorkspaceId}:${snapshot.focusedTabId}`
       if (restoredFocusRef.current.get(sessionName) === focusKey) return
       if (restoringFocusRef.current.has(sessionName)) return

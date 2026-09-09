@@ -11,8 +11,6 @@ use serde_json::Value;
 pub enum TrustCommand {
     Status { workspace: String },
     List,
-    Challenge { workspace: String },
-    ExecutionChallenge { workspace: String, command: String },
     Grant { challenge: String },
     Revoke { path: String },
 }
@@ -29,16 +27,6 @@ impl TrustCommand {
         match self {
             Self::Status { workspace } => value(trust.0.status(files.canonical_root(&workspace)?)),
             Self::List => value(trust.0.list()),
-            Self::Challenge { workspace } => value(
-                trust
-                    .0
-                    .issue_workspace_challenge(files.canonical_root(&workspace)?),
-            ),
-            Self::ExecutionChallenge { workspace, command } => value(
-                trust
-                    .0
-                    .issue_execution_challenge(files.canonical_root(&workspace)?, &command),
-            ),
             Self::Grant { challenge } => value(trust.0.grant(&challenge)),
             Self::Revoke { path } => {
                 trust.0.revoke(&path)?;

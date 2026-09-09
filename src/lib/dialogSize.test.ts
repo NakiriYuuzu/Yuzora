@@ -131,7 +131,7 @@ describe("dialogSize storage", () => {
       widthRatio: 0.5,
       heightRatio: 0.4,
     })
-    expect(loadDialogSizePreference("git-diff")).toEqual(defaultDialogSizePreference())
+    expect(loadDialogSizePreference("git-diff")).toEqual(defaultDialogSizePreference("git-diff"))
   })
 
   it("persists and reopens 280×180 at a 10,000,000 viewport without rewriting to 80%", () => {

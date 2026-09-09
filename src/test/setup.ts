@@ -5,7 +5,6 @@ import i18n from "@/lib/i18n";
 import { useAppDialogStore } from "@/state/appDialogStore";
 import { previewInitialState, usePreviewStore } from "@/state/previewStore";
 import { useTextInputDialogStore } from "@/state/textInputDialogStore";
-import { terminalInitialState, useTerminalStore } from "@/state/terminalStore";
 import { uiInitialState, useUiStore } from "@/state/uiStore";
 
 // jsdom doesn't implement these; cmdk (command palette) and Radix primitives
@@ -64,5 +63,4 @@ afterEach(() => {
   useTextInputDialogStore.setState({ pending: null });
 });
 afterEach(() => useUiStore.setState(uiInitialState));
-afterEach(() => useTerminalStore.setState(terminalInitialState));
 afterEach(() => usePreviewStore.setState(previewInitialState));

@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 const STORE_VERSION: u32 = 1;
 const CHALLENGE_TTL: Duration = Duration::from_secs(60);
@@ -54,8 +53,6 @@ impl Default for TrustDocument {
 #[derive(Clone, Debug)]
 enum ChallengeKind {
     GrantWorkspace,
-    Execute { command: String, digest: String },
-    GrantAndExecute { command: String, digest: String },
 }
 
 #[derive(Clone, Debug)]
@@ -178,28 +175,10 @@ pub struct WorkspaceTrustChallengeDto {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkspaceExecutionChallengeDto {
-    pub challenge_id: String,
-    pub canonical_path: String,
-    pub command: String,
-    pub command_digest: String,
-    pub grants_trust: bool,
-    pub trusted: bool,
-    pub expires_at: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TrustedWorkspaceDto {
     pub canonical_path: String,
     pub fs_identity: String,
     pub granted_at: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct AuthorizedExecution {
-    pub canonical_path: String,
-    pub command: String,
 }
 
 struct TrustInner {
@@ -242,15 +221,6 @@ impl WorkspaceTrustState {
     pub fn bind_session_git_root(&self, identity: &WorkspaceIdentity, git_root: &str) {
         self.0.bind_session_git_root(identity, git_root);
     }
-
-    pub fn authorize_execution(
-        &self,
-        workspace: &str,
-        command: &str,
-        challenge_id: &str,
-    ) -> Result<AuthorizedExecution, String> {
-        self.0.authorize_execution(workspace, command, challenge_id)
-    }
 }
 
 pub fn default_store_path() -> PathBuf {
@@ -258,10 +228,6 @@ pub fn default_store_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".yuzora")
         .join(STORE_FILE_NAME)
-}
-
-pub fn command_digest(command: &str) -> String {
-    hex_encode(&Sha256::digest(command.as_bytes()))
 }
 
 pub fn project_repo_presence(path: &str) -> bool {
@@ -510,56 +476,11 @@ impl WorkspaceTrustStore {
         })
     }
 
-    pub fn issue_execution_challenge(
-        &self,
-        path: &str,
-        command: &str,
-    ) -> Result<WorkspaceExecutionChallengeDto, String> {
-        if command.trim().is_empty() {
-            return Err(TrustError::UnsupportedPath {
-                reason: "empty command".into(),
-            }
-            .to_frontend());
-        }
-        let observed = observe_identity(path).map_err(|error| error.to_frontend())?;
-        let trusted = matches!(
-            self.lookup(&observed)
-                .map_err(|error| error.to_frontend())?,
-            TrustLookup::Trusted
-        );
-        let digest = command_digest(command);
-        let kind = if trusted {
-            ChallengeKind::Execute {
-                command: command.to_string(),
-                digest: digest.clone(),
-            }
-        } else {
-            ChallengeKind::GrantAndExecute {
-                command: command.to_string(),
-                digest: digest.clone(),
-            }
-        };
-        let challenge_id = self.issue_challenge(kind, observed.clone());
-        let expires_at = self.challenge_expiry(&challenge_id);
-        Ok(WorkspaceExecutionChallengeDto {
-            challenge_id,
-            canonical_path: observed.canonical_path,
-            command: command.to_string(),
-            command_digest: digest,
-            grants_trust: !trusted,
-            trusted,
-            expires_at,
-        })
-    }
-
     pub fn grant(&self, challenge_id: &str) -> Result<WorkspaceTrustStatusDto, String> {
         let challenge = self
             .take_challenge(challenge_id)
             .map_err(|error| error.to_frontend())?;
-        if !matches!(
-            challenge.kind,
-            ChallengeKind::GrantWorkspace | ChallengeKind::GrantAndExecute { .. }
-        ) {
+        if !matches!(challenge.kind, ChallengeKind::GrantWorkspace) {
             return Err(TrustError::StaleChallenge.to_frontend());
         }
         let observed = observe_identity(&challenge.identity.canonical_path)
@@ -601,54 +522,6 @@ impl WorkspaceTrustStore {
         Ok(stopped)
     }
 
-    pub fn authorize_execution(
-        &self,
-        workspace: &str,
-        command: &str,
-        challenge_id: &str,
-    ) -> Result<AuthorizedExecution, String> {
-        let observed = observe_identity(workspace).map_err(|error| error.to_frontend())?;
-        let digest = command_digest(command);
-        let challenge = self
-            .take_challenge(challenge_id)
-            .map_err(|error| error.to_frontend())?;
-        if challenge.identity != observed {
-            return Err(TrustError::IdentityMismatch {
-                identity: observed,
-                challenge_id: challenge_id.to_string(),
-            }
-            .to_frontend());
-        }
-        let (stored_command, stored_digest, grants_trust) = match challenge.kind {
-            ChallengeKind::Execute { command, digest } => (command, digest, false),
-            ChallengeKind::GrantAndExecute { command, digest } => (command, digest, true),
-            ChallengeKind::GrantWorkspace => {
-                return Err(TrustError::StaleChallenge.to_frontend());
-            }
-        };
-        if stored_command != command || stored_digest != digest {
-            return Err(TrustError::StaleChallenge.to_frontend());
-        }
-        if grants_trust {
-            self.persist_grant(&observed)
-                .map_err(|error| error.to_frontend())?;
-        } else if !matches!(
-            self.lookup(&observed)
-                .map_err(|error| error.to_frontend())?,
-            TrustLookup::Trusted
-        ) {
-            return Err(TrustError::Untrusted {
-                identity: observed,
-                challenge_id: challenge_id.to_string(),
-            }
-            .to_frontend());
-        }
-        Ok(AuthorizedExecution {
-            canonical_path: observed.canonical_path,
-            command: stored_command,
-        })
-    }
-
     pub fn grant_for_tests(&self, path: &str) -> WorkspaceIdentity {
         let identity = observe_identity(path).expect("test workspace identity");
         let challenge_id = self.issue_challenge(ChallengeKind::GrantWorkspace, identity.clone());
@@ -688,10 +561,6 @@ impl WorkspaceTrustStore {
             let same_family = matches!(
                 (&challenge.kind, &kind),
                 (ChallengeKind::GrantWorkspace, ChallengeKind::GrantWorkspace)
-                    | (
-                        ChallengeKind::Execute { .. } | ChallengeKind::GrantAndExecute { .. },
-                        ChallengeKind::Execute { .. } | ChallengeKind::GrantAndExecute { .. }
-                    )
             );
             !(same_identity && same_family)
         });
@@ -1118,61 +987,6 @@ mod tests {
         let expired = store.insert_expired_challenge(ChallengeKind::GrantWorkspace, identity);
         let error = store.grant(&expired).unwrap_err();
         assert!(error.contains("challengeExpired"));
-    }
-
-    #[test]
-    fn execution_requires_matching_single_use_challenge() {
-        let (tmp, store) = temp_store();
-        let workspace = make_workspace(&tmp, "repo");
-        store.grant_for_tests(workspace.to_str().unwrap());
-        let issued = store
-            .issue_execution_challenge(workspace.to_str().unwrap(), "bun run dev")
-            .unwrap();
-        assert!(!issued.grants_trust);
-        let authorized = store
-            .authorize_execution(
-                workspace.to_str().unwrap(),
-                "bun run dev",
-                &issued.challenge_id,
-            )
-            .unwrap();
-        assert_eq!(authorized.command, "bun run dev");
-        let replay = store.authorize_execution(
-            workspace.to_str().unwrap(),
-            "bun run dev",
-            &issued.challenge_id,
-        );
-        assert!(replay.unwrap_err().contains("staleChallenge"));
-    }
-
-    #[test]
-    fn execution_challenge_can_grant_and_rejects_command_mismatch() {
-        let (tmp, store) = temp_store();
-        let workspace = make_workspace(&tmp, "repo");
-        let issued = store
-            .issue_execution_challenge(workspace.to_str().unwrap(), "bun run dev")
-            .unwrap();
-        assert!(issued.grants_trust);
-        let mismatch = store.authorize_execution(
-            workspace.to_str().unwrap(),
-            "bun run evil",
-            &issued.challenge_id,
-        );
-        assert!(mismatch.unwrap_err().contains("staleChallenge"));
-        let retry = store
-            .issue_execution_challenge(workspace.to_str().unwrap(), "bun run dev")
-            .unwrap();
-        store
-            .authorize_execution(
-                workspace.to_str().unwrap(),
-                "bun run dev",
-                &retry.challenge_id,
-            )
-            .unwrap();
-        assert_eq!(
-            store.status(workspace.to_str().unwrap()).unwrap().state,
-            "trusted"
-        );
     }
 
     #[test]

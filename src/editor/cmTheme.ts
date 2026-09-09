@@ -130,7 +130,7 @@ export const appTheme = EditorView.theme({
 // Syntax palette. Values are `var(--syn-*)` strings (StyleModule passes them
 // through untouched); the variables live on `.cm-editor` in editor.css and carry
 // their own .dark overrides, so the highlight follows the theme too. Colours are
-// picked to match the --st-* LSP semantic palette (same meaning → same hue).
+// picked to keep syntax roles visually consistent across themes.
 export const appHighlightStyle = HighlightStyle.define([
     { tag: t.keyword, color: "var(--syn-keyword)" },
     { tag: t.string, color: "var(--syn-string)" },

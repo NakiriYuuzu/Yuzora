@@ -1,23 +1,13 @@
 {
   "previewPanel": {
-    "portOverrideInvalid": "Preview port override \"{{value}}\" is invalid; using the detected port instead.",
-    "viewLogs": "View logs",
-    "portOccupiedDescription": "Port {{ports}} already has a service running — connect directly, change the port and start, or detect again.",
     "back": "Back",
     "forward": "Forward",
     "reload": "Reload",
-    "urlLabel": "Preview URL",
+    "urlLabel": "Browser URL",
     "urlPlaceholder": "Enter a URL…",
-    "urlSchemeError": "Preview URLs must use http:// or https://",
+    "urlSchemeError": "Browser URLs must use http:// or https://",
     "openExternally": "Open in browser",
-    "toggleResponsiveFrame": "Toggle responsive frame",
-    "stop": "Stop",
-    "status": {
-      "starting": "Starting",
-      "running": "Running",
-      "exited": "Exited",
-      "failed": "Failed"
-    }
+    "toggleResponsiveFrame": "Toggle responsive frame"
   },
   "sshPanel": {
     "tabsAriaLabel": "SFTP or SSH",

@@ -1,0 +1,23 @@
+{
+  "title": "Resource usage",
+  "close": "Close resource usage",
+  "scope": "Yuzora App and owned descendants only. External Herdr processes and remote hosts are not fully included.",
+  "memory": "Memory",
+  "categorySummary": "Memory by category",
+  "category": {
+    "app": "App",
+    "webview": "WebView",
+    "tools": "Managed tools"
+  },
+  "largestFirst": "Largest first",
+  "sortLabel": "Sort usage",
+  "categoryList": "Resource categories",
+  "noSample": "No sample is available. Unknown usage is not zero.",
+  "processCount_one": "{{count}} process",
+  "processCount_other": "{{count}} processes",
+  "noShare": "Share unavailable",
+  "share": "{{value}}% of total",
+  "detailLimit": "Category usage is available; individual processes and workspace attribution are not provided.",
+  "measurement": "RSS uses decimal MB. CPU is relative to one core and can exceed 100%.",
+  "sampling": "Recent {{attempts}} attempts: {{failures}} failed · {{empty}} empty · {{skipped}} skipped without focus."
+}

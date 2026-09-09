@@ -9,7 +9,7 @@ import { join } from "node:path"
 import { normalizeDocumentLineEndings, serializeDocumentLineEndings } from "./lineEndings"
 
 describe("serializeDocumentLineEndings", () => {
-    it("normalizes LF, CRLF, and bare CR for editor and LSP buffers", () => {
+    it("normalizes LF, CRLF, and bare CR for editor buffers", () => {
         expect(normalizeDocumentLineEndings("one\r\ntwo\rthree\n")).toBe("one\ntwo\nthree\n")
     })
 

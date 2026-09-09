@@ -1,20 +1,10 @@
 import { create } from "zustand"
 
-import { previewClose, previewRevoke } from "../lib/ipc"
-import type { DevServerInfo } from "../lib/types"
+import { previewClose } from "../lib/ipc"
 import { enqueueNativePreviewOperation } from "../preview/nativePreviewQueue"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "./workspaceStore"
 
 type ResponsiveFrame = "full" | "mobile"
-
-export type PreviewFrameMode = "static" | "dev-server"
-
-export interface StaticPreviewSession {
-    workspace: string
-    token: string
-    url: string
-    sourcePath?: string
-}
 
 export interface PreviewNavState {
     url: string | null
@@ -29,7 +19,19 @@ export interface PreviewNativeNavigationSync {
     token: number
 }
 
+export interface PreviewNativeNavigationSnapshot {
+    sessionId: string
+    url: string
+    canGoBack: boolean
+    canGoForward: boolean
+}
+
 export interface PreviewNativeSession {
+    sessionId?: string
+    canGoBack?: boolean
+    canGoForward?: boolean
+    outerBackStack?: string[]
+    outerForwardStack?: string[]
     workspacePath: string
     currentUrl: string
     backStack: string[]
@@ -41,20 +43,12 @@ export type PreviewNativeRequest =
     | { token: number; kind: "close"; workspacePath: string | null }
 
 interface PreviewState {
-    devServer: DevServerInfo | null
-    devServers: Record<string, DevServerInfo>
-    attempts: Record<string, number>
     nav: Record<string, PreviewNavState>
     nativeNavigationSyncs: Record<string, PreviewNativeNavigationSync>
     nativeNavigationSyncToken: number
     nativeSession: PreviewNativeSession | null
     nativeRequestToken: number
     nativeRequest: PreviewNativeRequest | null
-    setDevServer: (info: DevServerInfo | null) => void
-    devServerForWorkspace: (workspace: string) => DevServerInfo | null
-    beginAttempt: (workspace: string) => number
-    attemptForWorkspace: (workspace: string) => number
-    restoreAttempt: (workspace: string, expected: number, previous: number) => boolean
     navForWorkspace: (workspace: string) => PreviewNavState
     navigate: (workspace: string, url: string) => boolean
     goBack: (workspace: string) => void
@@ -62,7 +56,8 @@ interface PreviewState {
     syncNativeBack: (workspace: string) => boolean
     syncNativeForward: (workspace: string) => boolean
     consumeNativeNavigationSync: (workspace: string, token: number) => void
-    recordNativeOpen: (workspace: string, url: string) => void
+    recordNativeOpen: (workspace: string, url: string, sessionId?: string) => void
+    receiveNativeNavigation: (event: PreviewNativeNavigationSnapshot) => void
     closeNativeSession: (workspace?: string) => void
     beginNativeOpenRequest: (workspace: string, url: string) => number
     beginNativeCloseRequest: (workspace: string | null) => number
@@ -70,56 +65,26 @@ interface PreviewState {
     settleNativeRequest: (token: number) => boolean
     reload: (workspace: string) => void
     setFrame: (workspace: string, frame: ResponsiveFrame) => void
-    staticPreview: StaticPreviewSession | null
-    openStaticPreview: (workspace: string, session: { token: string; url: string; sourcePath?: string }) => boolean
-    revokeStaticPreview: () => void
     reset: () => void
 }
 
 export const previewInitialState = {
-    devServer: null as DevServerInfo | null,
-    devServers: {} as Record<string, DevServerInfo>,
-    attempts: {} as Record<string, number>,
     nav: {} as Record<string, PreviewNavState>,
     nativeNavigationSyncs: {} as Record<string, PreviewNativeNavigationSync>,
     nativeNavigationSyncToken: 0,
     nativeSession: null as PreviewNativeSession | null,
     nativeRequestToken: 0,
     nativeRequest: null as PreviewNativeRequest | null,
-    staticPreview: null as StaticPreviewSession | null
 }
 
-// P3: the navigate choke point now admits any http/https URL — external https is
-// rendered in a child webview (an <iframe> can't host it), local dev servers keep
-// the iframe path. Non-web schemes (file:, javascript:, …) are still rejected.
+// The navigation boundary admits only web URLs; renderer selection remains in
+// PreviewPanel so remote frames keep their tunnel boundary.
 function isAllowedPreviewUrl(rawUrl: string): boolean {
     try {
         const url = new URL(rawUrl)
         return url.protocol === "http:" || url.protocol === "https:"
     } catch {
         return false
-    }
-}
-
-// A local dev-server / static-server URL renders in the sandboxed <iframe>;
-// everything else (external https) goes to the child webview. 127.0.0.1 is what
-// the P3 static file server binds, so right-clicked HTML previews stay on the
-// iframe path too.
-export function previewFrameModeFor(
-    url: string | null,
-    session: StaticPreviewSession | null
-): PreviewFrameMode {
-    if (!url || !session) return "dev-server"
-    try {
-        const target = new URL(url)
-        const sessionUrl = new URL(session.url)
-        if (target.origin !== sessionUrl.origin) return "dev-server"
-        const prefix = `/${session.token}/`
-        return target.pathname === `/${session.token}` || target.pathname.startsWith(prefix)
-            ? "static"
-            : "dev-server"
-    } catch {
-        return "dev-server"
     }
 }
 
@@ -145,31 +110,6 @@ function defaultNav(): PreviewNavState {
 
 export const usePreviewStore = create<PreviewState>()((set, get) => ({
     ...previewInitialState,
-
-    setDevServer: (info) =>
-        set((s) => {
-            if (!info) return { devServer: null }
-            return {
-                devServer: info,
-                devServers: { ...s.devServers, [info.workspace]: info }
-            }
-        }),
-
-    devServerForWorkspace: (workspace) => get().devServers[workspace] ?? null,
-
-    beginAttempt: (workspace) => {
-        const attempt = (get().attempts[workspace] ?? 0) + 1
-        set((s) => ({ attempts: { ...s.attempts, [workspace]: attempt } }))
-        return attempt
-    },
-
-    attemptForWorkspace: (workspace) => get().attempts[workspace] ?? 0,
-
-    restoreAttempt: (workspace, expected, previous) => {
-        if ((get().attempts[workspace] ?? 0) !== expected) return false
-        set((s) => ({ attempts: { ...s.attempts, [workspace]: previous } }))
-        return true
-    },
 
     navForWorkspace: (workspace) => get().nav[workspace] ?? defaultNav(),
 
@@ -326,13 +266,17 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
             return { nativeNavigationSyncs }
         }),
 
-    recordNativeOpen: (workspace, url) =>
+    recordNativeOpen: (workspace, url, sessionId) =>
         set((s) => {
             const current = s.nativeSession
-            if (current?.workspacePath !== workspace) {
+            if (current?.workspacePath !== workspace || current.sessionId !== sessionId) {
                 return {
                     nativeSession: {
                         workspacePath: workspace,
+                        sessionId,
+                        ...(sessionId ? { canGoBack: false, canGoForward: false,
+                            outerBackStack: [...(s.nav[workspace]?.backStack ?? [])],
+                            outerForwardStack: [...(s.nav[workspace]?.forwardStack ?? [])] } : {}),
                         currentUrl: url,
                         backStack: [],
                         forwardStack: []
@@ -344,11 +288,38 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
                 nativeSession: {
                     ...current,
                     currentUrl: url,
+                    outerForwardStack: [],
                     backStack: [...current.backStack, current.currentUrl],
                     forwardStack: []
                 }
             }
         }),
+
+    receiveNativeNavigation: ({ sessionId, url, canGoBack, canGoForward }) => {
+        if (!isAllowedPreviewUrl(url)) return
+        set((s) => {
+            const session = s.nativeSession
+            if (!session || session.sessionId !== sessionId || s.nativeRequest !== null
+                || useWorkspaceStore.getState().workspacePath !== session.workspacePath) return s
+            const workspace = session.workspacePath
+            const nav = s.nav[workspace]
+            if (!nav || nav.url !== session.currentUrl) return s
+            const changedUrl = nav.url !== url
+            if (!changedUrl && session.canGoBack === canGoBack && session.canGoForward === canGoForward) return s
+            const token = s.nativeNavigationSyncToken + 1
+            return {
+                // The native browser owns its actual history, including redirects,
+                // replaceState and traversal. A snapshot never invents entries.
+                nav: { ...s.nav, [workspace]: { ...nav, url } },
+                nativeSession: { ...session, currentUrl: url, canGoBack, canGoForward,
+                    outerForwardStack: canGoBack ? [] : session.outerForwardStack },
+                ...(changedUrl ? {
+                    nativeNavigationSyncs: { ...s.nativeNavigationSyncs, [workspace]: { url, token } },
+                    nativeNavigationSyncToken: token
+                } : {})
+            }
+        })
+    },
 
     closeNativeSession: (workspace) =>
         set((s) => {
@@ -404,37 +375,7 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
             }
         }),
 
-    openStaticPreview: (workspace, session) => {
-        const previous = get().staticPreview
-        set({
-            staticPreview: {
-                workspace,
-                token: session.token,
-                url: session.url,
-                ...(session.sourcePath ? { sourcePath: session.sourcePath } : {})
-            }
-        })
-        const opened = get().navigate(workspace, session.url)
-        if (previous && previous.token !== session.token) {
-            void previewRevoke(previous.token).catch(() => undefined)
-        }
-        return opened
-    },
-
-    revokeStaticPreview: () => {
-        const session = get().staticPreview
-        if (!session) return
-        set({ staticPreview: null })
-        void previewRevoke(session.token).catch(() => undefined)
-    },
-
-    reset: () => {
-        const session = get().staticPreview
-        set(previewInitialState)
-        if (session) {
-            void previewRevoke(session.token).catch(() => undefined)
-        }
-    }
+    reset: () => set(previewInitialState)
 }))
 
 function previewTabIsOpen(groups: { tabs: { path: string; kind?: string }[] }[]): boolean {
@@ -465,12 +406,10 @@ function closeNativePreviewForOwner(workspacePath: string | null): void {
 
 useWorkspaceStore.subscribe((state, previous) => {
     if (state.workspacePath !== previous.workspacePath) {
-        usePreviewStore.getState().revokeStaticPreview()
         closeNativePreviewForOwner(previous.workspacePath)
         return
     }
     if (previewTabIsOpen(previous.groups) && !previewTabIsOpen(state.groups)) {
-        usePreviewStore.getState().revokeStaticPreview()
         closeNativePreviewForOwner(state.workspacePath)
     }
 })

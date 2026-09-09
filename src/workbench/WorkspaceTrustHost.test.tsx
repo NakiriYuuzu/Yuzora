@@ -13,8 +13,6 @@ const ipcMocks = vi.hoisted(() => ({
     workspaceTrustExecutionChallenge: vi.fn()
 }))
 
-const lspMocks = vi.hoisted(() => ({ restartWorkspace: vi.fn().mockResolvedValue(undefined) }))
-vi.mock("@/lsp/lspManager", () => lspMocks)
 
 vi.mock("@/lib/ipc", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@/lib/ipc")>()),
@@ -39,53 +37,12 @@ beforeEach(() => {
     ipcMocks.workspaceTrustStatus.mockReset()
     ipcMocks.workspaceTrustGrant.mockReset()
     ipcMocks.workspaceTrustExecutionChallenge.mockReset()
-    lspMocks.restartWorkspace.mockClear()
     vi.spyOn(useGitStore.getState(), "detect").mockResolvedValue()
 })
 
 afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
-})
-
-it("shows the canonical workspace and exact command before execution", async () => {
-    ipcMocks.workspaceTrustExecutionChallenge.mockResolvedValue({
-        challengeId: "exec-1",
-        canonicalPath: "/canonical/workspace",
-        command: "bun run dev:web",
-        commandDigest: "abc",
-        grantsTrust: true,
-        trusted: false,
-        expiresAt: 1
-    })
-    render(<WorkspaceTrustHost />)
-    const pending = useWorkspaceTrustStore.getState().requestExecution("/workspace", "bun run dev:web")
-
-    expect(await screen.findByRole("alertdialog")).toBeInTheDocument()
-    expect(screen.getByText("/canonical/workspace")).toBeInTheDocument()
-    expect(screen.getByTestId("workspace-trust-command")).toHaveTextContent("bun run dev:web")
-    expect(
-        screen.getByRole("button", { name: i18n.t("workspaceTrust.copyCommand", { ns: "workbench" }) })
-    ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("workspaceTrust.cancel", { ns: "workbench" }) }))
-    await expect(pending).resolves.toBeNull()
-})
-
-it("confirms an execution challenge and keeps the exact command bound", async () => {
-    ipcMocks.workspaceTrustExecutionChallenge.mockResolvedValue({
-        challengeId: "exec-2",
-        canonicalPath: "/canonical/workspace",
-        command: "bun run dev:web",
-        commandDigest: "abc",
-        grantsTrust: true,
-        trusted: false,
-        expiresAt: 1
-    })
-    render(<WorkspaceTrustHost />)
-    const pending = useWorkspaceTrustStore.getState().requestExecution("/workspace", "bun run dev:web")
-    await screen.findByTestId("workspace-trust-command")
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("workspaceTrust.runCommand", { ns: "workbench" }) }))
-    await expect(pending).resolves.toBe("exec-2")
 })
 
 it("displays a verbatim Windows workspace path without changing grant identity", async () => {
@@ -133,7 +90,6 @@ it("grants workspace trust for a detected repo and retries git detect", async ()
     fireEvent.click(screen.getByRole("button", { name: i18n.t("workspaceTrust.grant", { ns: "workbench" }) }))
     await waitFor(() => expect(ipcMocks.workspaceTrustGrant).toHaveBeenCalledWith("grant-1"))
     await waitFor(() => expect(useGitStore.getState().detect).toHaveBeenCalledWith("/workspace"))
-    await waitFor(() => expect(lspMocks.restartWorkspace).toHaveBeenCalledWith("/workspace", expect.any(Function)))
 })
 
 it("keeps the dialog open and displays asynchronous grant failures", async () => {

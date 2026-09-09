@@ -7,13 +7,13 @@ use std::time::{Duration, Instant};
 
 use russh::client::{self, Handle};
 use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKey};
-use russh::{ChannelMsg, Disconnect};
+use russh::Disconnect;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{oneshot, Notify};
 
 use crate::logging;
 use crate::path_capability::{self, PathCapabilityError, SafeLeafName, SafeRelativePath};
@@ -50,19 +50,6 @@ pub struct SshConnectResult {
     pub session_id: String,
     pub fingerprint: String,
     pub known_host: bool,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SshDataPayload {
-    session_id: String,
-    chunk: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SshExitPayload {
-    session_id: String,
 }
 
 /// Format an SSH public key as its OpenSSH `SHA256:<base64>` fingerprint — the
@@ -861,16 +848,8 @@ impl client::Handler for Client {
     }
 }
 
-/// Outbound commands the shell task pumps into the SSH channel. Kept off the
-/// Tauri command threads so write/resize return immediately.
-enum ShellCmd {
-    Data(Vec<u8>),
-    Resize(u32, u32),
-}
-
 struct SessionEntry {
     handle: Arc<AsyncMutex<Handle<Client>>>,
-    shell: Option<mpsc::UnboundedSender<ShellCmd>>,
     /// Lazily-opened SFTP subsystem for this session (F5). `SftpSession` methods
     /// take `&self` and drive an internal request pipeline, so one `Arc` is
     /// shared across concurrent list/transfer commands.
@@ -949,8 +928,8 @@ pub struct SftpListing {
 }
 
 /// Progress ticks for an in-flight transfer, emitted on `sftp://progress` and
-/// correlated by the front-end-supplied `transfer_id` (mirrors the `ssh://data`
-/// event pattern). A terminal tick carries `done: true`.
+/// correlated by the front-end-supplied `transfer_id`. A terminal tick carries
+/// `done: true`.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SftpProgressPayload {
@@ -1289,7 +1268,6 @@ impl SshManager {
             session_id.clone(),
             SessionEntry {
                 handle: Arc::new(AsyncMutex::new(session)),
-                shell: None,
                 sftp: None,
                 host,
             },
@@ -1300,53 +1278,6 @@ impl SshManager {
             fingerprint,
             known_host,
         })
-    }
-
-    async fn open_shell(
-        self: &Arc<Self>,
-        app: AppHandle,
-        session_id: String,
-        cols: u32,
-        rows: u32,
-    ) -> Result<(), String> {
-        let handle = self.get_handle(&session_id)?;
-        let channel = {
-            let handle = handle.lock().await;
-            let channel = handle
-                .channel_open_session()
-                .await
-                .map_err(|e| format!("無法開啟 SSH channel：{e}"))?;
-            channel
-                .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
-                .await
-                .map_err(|e| format!("request_pty 失敗：{e}"))?;
-            channel
-                .request_shell(false)
-                .await
-                .map_err(|e| format!("request_shell 失敗：{e}"))?;
-            channel
-        };
-
-        let (tx, rx) = mpsc::unbounded_channel::<ShellCmd>();
-        let registered = {
-            let mut map = self.sessions.lock().unwrap();
-            match map.get_mut(&session_id) {
-                Some(entry) => {
-                    entry.shell = Some(tx);
-                    true
-                }
-                None => false,
-            }
-        };
-        if !registered {
-            // Disconnected between get_handle and here — tear the channel down.
-            let _ = channel.eof().await;
-            return Err(format!("SSH session {session_id} 已關閉"));
-        }
-
-        let manager = Arc::clone(self);
-        tauri::async_runtime::spawn(shell_loop(manager, app, session_id, channel, rx));
-        Ok(())
     }
 
     /// Open (or reuse) the session's SFTP subsystem. A second `channel_open_session`
@@ -1758,34 +1689,13 @@ impl SshManager {
         );
     }
 
-    fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-        let tx = self.get_shell(session_id)?;
-        tx.send(ShellCmd::Data(data.as_bytes().to_vec()))
-            .map_err(|_| format!("SSH session {session_id} 的 shell 已結束"))
-    }
-
-    fn resize(&self, session_id: &str, cols: u32, rows: u32) -> Result<(), String> {
-        let tx = self.get_shell(session_id)?;
-        tx.send(ShellCmd::Resize(cols, rows))
-            .map_err(|_| format!("SSH session {session_id} 的 shell 已結束"))
-    }
-
     async fn disconnect(&self, session_id: &str) -> Result<(), String> {
         self.transfers.disconnect(Some(session_id));
         let entry = self.sessions.lock().unwrap().remove(session_id);
-        let Some(SessionEntry {
-            handle,
-            shell,
-            host,
-            ..
-        }) = entry
-        else {
+        let Some(SessionEntry { handle, host, .. }) = entry else {
             // Idempotent: disconnecting an unknown/already-closed session is fine.
             return Ok(());
         };
-        // Dropping the sender ends the shell task (its rx yields None), which
-        // sends EOF and emits ssh://exit.
-        drop(shell);
         {
             let handle = handle.lock().await;
             let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
@@ -1795,8 +1705,8 @@ impl SshManager {
     }
 
     pub fn kill_all(&self) {
-        // Dropping every entry drops its Handle (closing the transport) and its
-        // shell sender (ending the shell task). Called on app exit.
+        // Dropping every entry drops its Handle (closing the transport). Called
+        // on app exit.
         self.host_keys.reject_all_pending();
         self.transfers.disconnect(None);
         self.sessions.lock().unwrap().clear();
@@ -1886,14 +1796,6 @@ impl SshManager {
             .map_err(String::from)
     }
 
-    pub async fn session_alive(&self, session_id: &str) -> bool {
-        let Ok(handle) = self.get_handle(session_id) else {
-            return false;
-        };
-        let alive = !handle.lock().await.is_closed();
-        alive
-    }
-
     fn get_handle(&self, session_id: &str) -> Result<Arc<AsyncMutex<Handle<Client>>>, String> {
         self.sessions
             .lock()
@@ -1901,23 +1803,6 @@ impl SshManager {
             .get(session_id)
             .map(|entry| entry.handle.clone())
             .ok_or_else(|| format!("找不到 SSH session {session_id}"))
-    }
-
-    fn get_shell(&self, session_id: &str) -> Result<mpsc::UnboundedSender<ShellCmd>, String> {
-        let map = self.sessions.lock().unwrap();
-        let entry = map
-            .get(session_id)
-            .ok_or_else(|| format!("找不到 SSH session {session_id}"))?;
-        entry
-            .shell
-            .clone()
-            .ok_or_else(|| format!("SSH session {session_id} 尚未開啟 shell"))
-    }
-
-    fn mark_shell_closed(&self, session_id: &str) {
-        if let Some(entry) = self.sessions.lock().unwrap().get_mut(session_id) {
-            entry.shell = None;
-        }
     }
 
     fn log_connect(
@@ -1971,128 +1856,6 @@ impl SshManager {
     }
 }
 
-async fn shell_loop(
-    manager: Arc<SshManager>,
-    app: AppHandle,
-    session_id: String,
-    mut channel: russh::Channel<client::Msg>,
-    mut rx: mpsc::UnboundedReceiver<ShellCmd>,
-) {
-    let mut chunker = Utf8Chunker::default();
-    let emit_chunk = |chunk: String| {
-        if !chunk.is_empty() {
-            let _ = app.emit(
-                "ssh://data",
-                SshDataPayload {
-                    session_id: session_id.clone(),
-                    chunk,
-                },
-            );
-        }
-    };
-
-    loop {
-        tokio::select! {
-            cmd = rx.recv() => match cmd {
-                Some(ShellCmd::Data(bytes)) => {
-                    if channel.data(&bytes[..]).await.is_err() {
-                        break;
-                    }
-                }
-                Some(ShellCmd::Resize(cols, rows)) => {
-                    let _ = channel.window_change(cols, rows, 0, 0).await;
-                }
-                None => {
-                    // All senders dropped (session disconnected) — close the shell.
-                    let _ = channel.eof().await;
-                    break;
-                }
-            },
-            msg = channel.wait() => match msg {
-                Some(ChannelMsg::Data { ref data }) => {
-                    if let Some(chunk) = chunker.push(data.as_ref()) {
-                        emit_chunk(chunk);
-                    }
-                }
-                Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-                    if let Some(chunk) = chunker.push(data.as_ref()) {
-                        emit_chunk(chunk);
-                    }
-                }
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-                _ => {}
-            },
-        }
-    }
-
-    if let Some(chunk) = chunker.finish_lossy() {
-        emit_chunk(chunk);
-    }
-    let _ = app.emit(
-        "ssh://exit",
-        SshExitPayload {
-            session_id: session_id.clone(),
-        },
-    );
-    manager.mark_shell_closed(&session_id);
-}
-
-// UTF-8 boundary chunker mirroring pty_service's encoding so ssh:// output
-// reaches xterm as the same well-formed String stream (multibyte chars split
-// across SSH packets are reassembled; invalid bytes become U+FFFD).
-#[derive(Default)]
-struct Utf8Chunker {
-    pending: Vec<u8>,
-}
-
-impl Utf8Chunker {
-    fn push(&mut self, bytes: &[u8]) -> Option<String> {
-        self.pending.extend_from_slice(bytes);
-        let mut output = String::new();
-
-        loop {
-            match std::str::from_utf8(&self.pending) {
-                Ok(valid) => {
-                    output.push_str(valid);
-                    self.pending.clear();
-                    break;
-                }
-                Err(err) => {
-                    let valid_up_to = err.valid_up_to();
-                    if valid_up_to > 0 {
-                        let complete = self.pending.drain(..valid_up_to).collect::<Vec<_>>();
-                        output.push_str(&String::from_utf8(complete).unwrap_or_default());
-                    }
-
-                    if let Some(error_len) = err.error_len() {
-                        self.pending.drain(..error_len);
-                        output.push('\u{fffd}');
-                        continue;
-                    }
-
-                    break;
-                }
-            }
-        }
-
-        if output.is_empty() {
-            None
-        } else {
-            Some(output)
-        }
-    }
-
-    fn finish_lossy(&mut self) -> Option<String> {
-        if self.pending.is_empty() {
-            None
-        } else {
-            let text = String::from_utf8_lossy(&self.pending).into_owned();
-            self.pending.clear();
-            Some(text)
-        }
-    }
-}
-
 #[tauri::command]
 pub async fn ssh_connect(
     state: tauri::State<'_, SshState>,
@@ -2115,37 +1878,6 @@ pub fn ssh_host_key_respond(
     state
         .0
         .respond_host_key(&challenge_id, accept, &endpoint, &fingerprint)
-}
-
-#[tauri::command]
-pub async fn ssh_open_shell(
-    app: AppHandle,
-    state: tauri::State<'_, SshState>,
-    session_id: String,
-    cols: u32,
-    rows: u32,
-) -> Result<(), String> {
-    let manager = state.0.clone();
-    manager.open_shell(app, session_id, cols, rows).await
-}
-
-#[tauri::command]
-pub async fn ssh_write(
-    state: tauri::State<'_, SshState>,
-    session_id: String,
-    data: String,
-) -> Result<(), String> {
-    state.0.write(&session_id, &data)
-}
-
-#[tauri::command]
-pub async fn ssh_resize(
-    state: tauri::State<'_, SshState>,
-    session_id: String,
-    cols: u32,
-    rows: u32,
-) -> Result<(), String> {
-    state.0.resize(&session_id, cols, rows)
 }
 
 #[tauri::command]
@@ -2329,15 +2061,6 @@ mod tests {
         assert_eq!(fingerprint_sha256(&key), SAMPLE_FINGERPRINT);
     }
 
-    #[test]
-    fn chunker_reassembles_split_multibyte_and_flushes_tail() {
-        let mut chunker = Utf8Chunker::default();
-        let euro = "€".as_bytes();
-        assert_eq!(chunker.push(&euro[..1]), None);
-        assert_eq!(chunker.push(&euro[1..]), Some("€".to_string()));
-        assert_eq!(chunker.finish_lossy(), None);
-    }
-
     #[tokio::test]
     async fn connect_failure_is_logged() {
         use std::sync::{Arc, Mutex};
@@ -2362,14 +2085,6 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| e.event == "connect_failed" && e.source == "ssh" && e.level == "warn"));
-    }
-
-    #[test]
-    fn get_shell_reports_missing_session_and_unopened_shell() {
-        let manager = SshManager::for_test();
-        assert!(manager.get_shell("nope").is_err());
-        assert!(manager.write("nope", "x").is_err());
-        assert!(manager.resize("nope", 80, 24).is_err());
     }
 
     #[test]

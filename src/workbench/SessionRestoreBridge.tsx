@@ -128,6 +128,7 @@ export function SessionRestoreBridge() {
                         await getDocument(path)
                         if (cancelled) return
                         ws.openTab(path)
+                        if (session.pinnedPaths?.includes(path)) ws.toggleTabPinned(0, path)
                         opened.push(path)
                     } catch {
                         // File gone — silently skip this tab.
@@ -191,7 +192,7 @@ export function SessionRestoreBridge() {
                 group.activePath && isPersistableSessionPath(group.activePath)
                     ? group.activePath
                     : null
-            saveWorkspaceSession({ workspacePath, tabs, activePath })
+            saveWorkspaceSession({ workspacePath, tabs, activePath, pinnedPaths: group.tabs.filter((tab) => tab.pinned && tabs.includes(tab.path)).map((tab) => tab.path) })
         })
     }, [])
 

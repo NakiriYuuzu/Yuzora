@@ -1139,6 +1139,18 @@ async fn run_postgres() {
         .expect("release PostgreSQL DML verification");
 
     scenario(Engine::Postgres, "ordered-transaction-script");
+    // The later Q6 scenario increments this row; compose volumes survive reruns.
+    let reset = connection
+        .run_primary(
+            "postgres-transaction-reset",
+            "UPDATE alpha.transaction_probe SET value = 0 WHERE id = 1",
+        )
+        .await
+        .expect("reset PostgreSQL transaction fixture");
+    assert!(matches!(
+        reset.statements[0].result,
+        StatementExecutionResult::Execute { .. }
+    ));
     let transaction = connection
         .run_script(
             "postgres-transaction-script",
@@ -2121,6 +2133,18 @@ async fn run_mssql() {
         .expect("release MSSQL OUTPUT verification");
 
     scenario(Engine::Mssql, "ordered-transaction-script");
+    // The later Q6 scenario increments this row; compose volumes survive reruns.
+    let reset = connection
+        .run_primary(
+            "mssql-transaction-reset",
+            "UPDATE alpha.transaction_probe SET value = 0 WHERE id = 1",
+        )
+        .await
+        .expect("reset MSSQL transaction fixture");
+    assert!(matches!(
+        reset.statements[0].result,
+        StatementExecutionResult::Execute { .. }
+    ));
     let transaction = connection
         .run_script(
             "mssql-transaction-script",

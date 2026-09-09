@@ -2,9 +2,6 @@ import { Channel } from "@tauri-apps/api/core"
 import { invokeHerdr as invoke } from "./herdrProvider"
 
 import type {
-  HerdrAgentCatalogEntry,
-  HerdrAgentCreateRequest,
-  HerdrAgentCreateResult,
   HerdrAgentDetails,
   HerdrAgentReadResult,
   HerdrBinarySource,
@@ -301,25 +298,6 @@ export function herdrTerminalCreate(
     sessionName: request.sessionName ?? null,
     workspaceId: request.workspaceId ?? null,
     title: request.title ?? null
-  })
-}
-
-export function herdrAgentCatalog(
-  sessionName?: string | null
-): Promise<HerdrAgentCatalogEntry[]> {
-  return invoke("herdr_agent_catalog", {
-    sessionName: sessionName ?? null
-  })
-}
-
-export function herdrAgentCreate(
-  request: HerdrAgentCreateRequest
-): Promise<HerdrAgentCreateResult> {
-  return invoke("herdr_agent_create", {
-    sessionName: request.sessionName ?? null,
-    workspaceId: request.workspaceId,
-    kind: request.kind,
-    bypassPermissions: request.bypassPermissions ?? false
   })
 }
 

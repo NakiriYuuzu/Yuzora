@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
-import { EditorState } from "@codemirror/state"
-import { EditorView } from "@codemirror/view"
 
 import {
   CONTEXT_MENU_DEFS,
@@ -10,10 +8,8 @@ import {
 } from "@/app/workbench/contextMenuDefs"
 import type { ContextMenuKind, ContextMenuRequest } from "@/app/workbench/contextMenuModel"
 import i18n from "@/lib/i18n"
-import { registerView, unregisterView, updateViewMetadata } from "@/editor/viewRegistry"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useFolderPickerStore } from "@/state/folderPickerStore"
-import { useTerminalStore } from "@/state/terminalStore"
 import { clearGitSnapshots, initialGitState, useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
 import { useDbStore } from "@/state/dbStore"
@@ -33,7 +29,6 @@ const FINAL_KINDS: ContextMenuKind[] = [
   "file",
   "tab",
   "editor",
-  "terminalTab",
   "git",
   "gitChange",
   "status",
@@ -77,14 +72,12 @@ function gitChangeRequest(status: GitStatus): ContextMenuRequest {
 beforeEach(async () => {
   clearMocks()
   mockIPC((cmd) => cmd === "log_event" ? null : undefined)
-  unregisterView("/w/edit.ts")
   await i18n.changeLanguage("en")
   useWorkspaceStore.setState({
     workspacePath: "/w",
     groups: [{ tabs: [], activePath: null }],
     activeGroupIndex: 0,
   })
-  useTerminalStore.getState().reset()
   clearGitSnapshots()
   useGitStore.setState(initialGitState)
   useDbStore.setState({
@@ -229,40 +222,6 @@ describe("CONTEXT_MENU_DEFS", () => {
     expect(entries.some((entry, index) => entry.type === "separator" && entries[index - 1]?.type === "separator")).toBe(false)
   })
 
-  it("HTML-only action 以 typed file target 決定 visible", () => {
-    const html = resolveContextMenuEntries({
-      kind: "file",
-      workspacePath: "/w",
-      path: "/w/index.html",
-      isDirectory: false,
-      sourceGroupIndex: 0,
-    })
-    const source = resolveContextMenuEntries({
-      kind: "file",
-      workspacePath: "/w",
-      path: "/w/main.ts",
-      isDirectory: false,
-      sourceGroupIndex: 0,
-    })
-    expect(html.some((entry) => entry.type === "command" && entry.command.id === "cmOpenInBrowser")).toBe(true)
-    expect(source.some((entry) => entry.type === "command" && entry.command.id === "cmOpenInBrowser")).toBe(false)
-  })
-
-  it("directory 隱藏 file-only open actions，但保留 entity actions", () => {
-    const entries = resolveContextMenuEntries({
-      kind: "file",
-      workspacePath: "/w",
-      path: "/w/src",
-      isDirectory: true,
-      sourceGroupIndex: 0,
-    })
-    const ids = entries.flatMap((entry) => entry.type === "command" ? [entry.command.id] : [])
-    expect(ids).not.toContain("cmOpen")
-    expect(ids).not.toContain("cmOpenSplit")
-    expect(ids).not.toContain("cmOpenInBrowser")
-    expect(ids).toEqual(expect.arrayContaining(["cmRename", "cmCopyRel", "cmReveal", "cmDelete"]))
-  })
-
   it("Explorer Refresh only exists for the request workspace and bumps treeRevision", async () => {
     expect(resolveContextMenuEntries({ kind: "explorer", workspacePath: null })).toEqual([])
     const request: ContextMenuRequest = { kind: "explorer", workspacePath: "/w" }
@@ -345,96 +304,6 @@ describe("CONTEXT_MENU_DEFS", () => {
       (entry) => entry.type === "command" && entry.command.id === "cmSplit"
     )).toBe(false)
   })
-
-  it("editor availability follows the clicked view selection, readonly and formatter metadata", () => {
-    const path = "/w/edit.ts"
-    const view = new EditorView({
-      state: EditorState.create({ doc: "hello", selection: { anchor: 0, head: 5 } })
-    })
-    useWorkspaceStore.setState({
-      groups: [{
-        tabs: [{ path, name: "edit.ts", dirty: false, externallyModified: false }],
-        activePath: path,
-      }],
-      activeGroupIndex: 0,
-    })
-    registerView(path, view, {
-      groupIndex: 0,
-      readonly: false,
-      formatter: "checking",
-    })
-    const request: ContextMenuRequest = {
-      kind: "editor",
-      workspacePath: "/w",
-      path,
-      groupIndex: 0,
-    }
-    const byId = () => new Map(resolveContextMenuEntries(request).flatMap(
-      (entry) => entry.type === "command" ? [[entry.command.id, entry]] : []
-    ))
-
-    expect(byId().get("cmCopy")?.availability.enabled).toBe(true)
-    expect(byId().get("cmCut")?.availability.enabled).toBe(true)
-    expect(byId().get("cmPaste")?.availability.enabled).toBe(true)
-    expect(byId().get("cmFormatDoc")?.availability).toMatchObject({
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.formatterChecking",
-    })
-
-    view.dispatch({ selection: { anchor: 0 } })
-    expect(byId().get("cmCopy")?.availability.disabledReasonKey).toBe("contextMenu.disabled.noSelection")
-    expect(byId().get("cmCut")?.availability.disabledReasonKey).toBe("contextMenu.disabled.noSelection")
-    view.dispatch({ selection: { anchor: 0, head: 5 } })
-
-    updateViewMetadata(path, view, {
-      readonly: true,
-      formatter: "available",
-      formatDocument: async () => true,
-    })
-    expect(byId().get("cmCopy")?.availability.enabled).toBe(true)
-    expect(byId().get("cmCut")?.availability.disabledReasonKey).toBe("contextMenu.disabled.readonly")
-    expect(byId().get("cmPaste")?.availability.disabledReasonKey).toBe("contextMenu.disabled.readonly")
-    expect(byId().get("cmFormatDoc")?.availability.disabledReasonKey).toBe("contextMenu.disabled.readonly")
-
-    updateViewMetadata(path, view, {
-      readonly: false,
-      formatter: "unsupported",
-      formatDocument: undefined,
-    })
-    expect(byId().has("cmFormatDoc")).toBe(false)
-    unregisterView(path, view)
-    view.destroy()
-  })
-
-  it("terminal tab menu exposes only rename and close for the exact tab", async () => {
-    useTerminalStore.getState().addSession("/w", {
-      sessionId: "terminal-tab",
-      title: "Terminal 1",
-      launchStatus: "running",
-      workspace: "/w",
-      shell: "",
-      cols: 80,
-      rows: 24,
-    })
-    const request: ContextMenuRequest = {
-      kind: "terminalTab",
-      workspacePath: "/w",
-      sessionId: "terminal-tab",
-    }
-
-    expect(resolveContextMenuEntries(request).map(
-      (entry) => entry.type === "separator" ? "|" : entry.command.id
-    )).toEqual(["cmRenameTerminal", "|", "cmCloseTerminal"])
-    expect(commandFor(request, "cmRenameTerminal")?.label(request)).toBe("Rename terminal…")
-
-    expect(await commandFor(request, "cmRenameTerminal")?.executor(request)).toBe("completed")
-    expect(useTerminalStore.getState().layouts["/w"].renamingSessionId).toBe("terminal-tab")
-  })
-
-
-
-
-
 
   it("dbconn Open/Reconnect label and disabled reason follow live state in both locales", async () => {
     const request: ContextMenuRequest = {
@@ -717,13 +586,9 @@ describe("CONTEXT_MENU_DEFS", () => {
 
     expect(resolveContextMenuEntries(request).map((entry) =>
       entry.type === "separator" ? "|" : entry.command.id
-    )).toEqual(["cmOpenSsh", "cmOpenSftp", "|", "cmCopyAddr"])
+    )).toEqual(["cmOpenSftp", "|", "cmCopyAddr"])
 
-    expect(await commandFor(request, "cmOpenSsh")?.executor(request)).toBe("completed")
-    expect(useSshStore.getState().pendingAuthHostId).toBe(clicked.id)
     expect(useSshStore.getState().sessions[other.id]?.sessionId).toBe("other-session")
-    expect(await commandFor(request, "cmOpenSsh")?.executor(request)).toBe("cancelled")
-
     useSshStore.getState().cancelPendingAuth()
     expect(await commandFor(request, "cmOpenSftp")?.executor(request)).toBe("completed")
     expect(useSftpStore.getState().panelOpen).toBe(true)
@@ -736,15 +601,6 @@ describe("CONTEXT_MENU_DEFS", () => {
       .toEqual({ text: "clicked-user@clicked.example.com:2222" })
 
     useSshStore.setState({ pendingAuthHostId: clicked.id })
-    const pending = commandFor(request, "cmOpenSsh")?.availability(request)
-    expect(pending).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.authenticationPending",
-    })
-    expect(i18n.t(pending?.disabledReasonKey ?? "", { ns: "menus" }))
-      .toBe("Authentication is awaiting input")
-
     useSshStore.setState({
       pendingAuthHostId: null,
       sessions: {
@@ -793,9 +649,6 @@ describe("CONTEXT_MENU_DEFS", () => {
 
     await i18n.changeLanguage("zh-TW")
     useSshStore.setState({ pendingAuthHostId: clicked.id })
-    const pendingZh = commandFor(request, "cmOpenSsh")?.availability(request)
-    expect(i18n.t(pendingZh?.disabledReasonKey ?? "", { ns: "menus" }))
-      .toBe("正在等待驗證資料")
   })
 
   it("git/status copy presence and remote-operation availability follow the requested repository", () => {
@@ -1056,77 +909,6 @@ describe("CONTEXT_MENU_DEFS", () => {
     await expect(completed).resolves.toBe("completed")
   })
 
-  it("preview availability follows URL history, stable workspace and running attempt", async () => {
-    const emptyRequest: ContextMenuRequest = {
-      kind: "preview",
-      workspacePath: "/w",
-      url: null,
-      serverAttempt: 0,
-    }
-    const empty = resolveContextMenuEntries(emptyRequest)
-    expect(empty.map((entry) => entry.type === "separator" ? "|" : entry.command.id)).toEqual([
-      "cmPreviewBack",
-      "cmPreviewForward",
-    ])
-    expect(commandFor(emptyRequest, "cmPreviewBack")?.availability(emptyRequest)).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.noBackHistory",
-    })
-    expect(commandFor(emptyRequest, "cmPreviewForward")?.availability(emptyRequest)).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.noForwardHistory",
-    })
-
-    const preview = usePreviewStore.getState()
-    preview.navigate("/w", "http://localhost:5173")
-    preview.navigate("/w", "http://localhost:5173/about")
-    const request: ContextMenuRequest = {
-      kind: "preview",
-      workspacePath: "/w",
-      url: "http://localhost:5173/about",
-      serverAttempt: preview.attemptForWorkspace("/w"),
-    }
-    expect(commandFor(request, "cmPreviewBack")?.availability(request).enabled).toBe(true)
-    expect(commandFor(request, "cmPreviewForward")?.availability(request)).toMatchObject({
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.noForwardHistory",
-    })
-    expect(commandFor(request, "cmPreviewReload")?.availability(request).enabled).toBe(true)
-    expect(await commandFor(request, "cmPreviewReload")?.executor(request)).toBe("completed")
-    expect(usePreviewStore.getState().navForWorkspace("/w").reloadNonce).toBe(1)
-
-    preview.setDevServer({
-      workspace: "/w",
-      command: "bun run dev",
-      port: 5173,
-      status: { status: "running", port: 5173 },
-    })
-    expect(commandFor(request, "cmStopDevServer")?.availability(request)).toEqual({
-      visible: true,
-      enabled: true,
-    })
-    preview.beginAttempt("/w")
-    expect(commandFor(request, "cmStopDevServer")?.availability(request)).toEqual({
-      visible: false,
-      enabled: false,
-    })
-
-    preview.navigate("/w", "http://localhost:5173/contact")
-    expect(commandFor(request, "cmPreviewReload")?.availability(request)).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.targetUnavailable",
-    })
-    useWorkspaceStore.setState({ workspacePath: "/other" })
-    expect(commandFor(request, "cmPreviewBack")?.availability(request)).toEqual({
-      visible: true,
-      enabled: false,
-      disabledReasonKey: "contextMenu.disabled.targetUnavailable",
-    })
-  })
-
   it("representative final-kind matrix has executable enabled entries, reasons for disabled entries, and normalized separators", () => {
     const status = gitStatus({ untracked: ["new.ts"] })
     useGitStore.setState({
@@ -1157,13 +939,12 @@ describe("CONTEXT_MENU_DEFS", () => {
       { kind: "file", workspacePath: "/w", path: "/w/a.ts", isDirectory: false, sourceGroupIndex: 0 },
       { kind: "tab", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
       { kind: "editor", workspacePath: "/w", path: "/w/a.ts", groupIndex: 0 },
-      { kind: "terminalTab", workspacePath: "/w", sessionId: "session" },
       { kind: "git", repositoryRoot: "/w" },
       change,
       { kind: "status", repositoryRoot: "/w" },
       { kind: "sshhost", hostId: "host-1", address: "user@example.com:22" },
       { kind: "dbconn", descriptorId: "missing-db", address: "missing" },
-      { kind: "preview", workspacePath: "/w", url: null, serverAttempt: 0 },
+      { kind: "preview", workspacePath: "/w", url: null },
       { kind: "herdrSpace", sessionName: "default", workspaceId: "ws-1", label: "Space" },
       { kind: "herdrTab", sessionName: "default", tabId: "tab-1", workspaceId: "ws-1", label: "Tab" },
       { kind: "herdrPane", sessionName: "default", paneId: "pane-1", tabId: "tab-1", label: "Pane", focusedPaneId: "pane-2" },

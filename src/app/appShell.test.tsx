@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 
 import { AppShell } from "@/app/AppShell"
@@ -119,11 +119,16 @@ describe("AppShell", () => {
     const { container } = render(<AppShell />)
 
     const dragRegions = container.querySelectorAll("[data-tauri-drag-region]")
-    expect(dragRegions).toHaveLength(1)
-    expect(dragRegions[0]).toHaveClass("h-[20px]")
-    expect(dragRegions[0]).toHaveClass("left-20")
-    expect(dragRegions[0]).not.toHaveClass("inset-x-0")
-    expect(container.querySelector(".pt-\\[20px\\]")).toBeInTheDocument()
+    expect(dragRegions.length).toBeGreaterThan(0)
+    expect(container.querySelector(".workbench-body")).toHaveAttribute("data-native-lights", "true")
+    expect(container.querySelector(".workbench-titlebar")).toBeNull()
+    const sidebar = document.getElementById("workbench-spaces")!
+    expect(sidebar.querySelector(".workbench-native-controls")).toBeInTheDocument()
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-spaces"]')!)
+    expect(sidebar).toHaveStyle({ width: "0px" })
+    const controls = container.querySelector(".workbench-collapsed-native-controls")
+    expect(controls).toBeInTheDocument()
+    expect(controls?.closest("[inert]")).toBeNull()
   })
 
   it("窄視窗自動收合 nav、放寬後自動展開，且手動操作優先", () => {
@@ -133,7 +138,7 @@ describe("AppShell", () => {
 
     const origW = window.innerWidth
     const navHidden = () =>
-      (screen.getByLabelText("Project navigation").parentElement as HTMLElement).getAttribute(
+      (document.getElementById("workbench-spaces-content") as HTMLElement).getAttribute(
         "aria-hidden"
       )
 
@@ -151,7 +156,7 @@ describe("AppShell", () => {
       expect(navHidden()).toBe("false") // 放寬：自動展開（僅還原 auto 收合）
 
       // 手動收合後，窄→寬循環不應自動展開（手動優先）
-      fireEvent.click(screen.getByRole("button", { name: "Toggle sidebar" }))
+      fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-spaces"]')!)
       expect(navHidden()).toBe("true")
       window.innerWidth = 700
       fireEvent(window, new Event("resize"))
@@ -163,7 +168,7 @@ describe("AppShell", () => {
     }
   })
 
-  it("Windows 的 Tauri 內：沒有拖曳帶也沒有頂部位移", () => {
+  it("Windows 的 Tauri 內：不保留 macOS 紅綠燈空間", () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     Object.defineProperty(window.navigator, "userAgent", {
       value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
@@ -174,7 +179,7 @@ describe("AppShell", () => {
 
     const { container } = render(<AppShell />)
 
-    expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    expect(container.querySelector(".workbench-body")).toHaveAttribute("data-native-lights", "false")
     expect(container.querySelector(".pt-\\[20px\\]")).toBeNull()
   })
 
@@ -315,7 +320,7 @@ describe("AppShell", () => {
 
       expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "auto", accent: "lime" })
+      JSON.stringify({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
       )
     } finally {
       matchMediaSpy.mockRestore()
@@ -331,7 +336,7 @@ describe("AppShell", () => {
 
     expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "dark", accent: "lime" })
+      JSON.stringify({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
     )
   })
 
@@ -340,14 +345,37 @@ describe("AppShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }))
     const dialog = await screen.findByRole("dialog")
-    fireEvent.click(within(dialog).getByRole("radio", { name: "blue" }))
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Blue" }))
 
     expect(document.documentElement.style.getPropertyValue("--yz-accent")).toBe("#2f6bff")
     expect(document.documentElement.style.getPropertyValue("--yz-accent-rgb")).toBe("47, 107, 255")
     expect(document.documentElement.style.getPropertyValue("--yz-accent-ink")).toBe("#2456cc")
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "auto", accent: "blue" })
+      JSON.stringify({ theme: "auto", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true })
     )
+  })
+
+  it("左右側欄背景可獨立切換、立即保存，重新掛載還原且不影響主題", async () => {
+    const view = render(<AppShell />)
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    const dialog = await screen.findByRole("dialog")
+    const left = within(dialog).getByRole("switch", { name: "Left sidebar background" })
+    const right = within(dialog).getByRole("switch", { name: "Right sidebar background" })
+    const stored = () => JSON.parse(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)!)
+    expect(left).toBeChecked()
+    expect(right).toBeChecked()
+    fireEvent.click(left)
+    expect(document.getElementById("workbench-spaces")).toHaveAttribute("data-background", "false")
+    expect(document.getElementById("workbench-tools")).toHaveAttribute("data-background", "true")
+    expect(stored()).toMatchObject({ leftSidebarBackground: false, rightSidebarBackground: true })
+    fireEvent.click(right)
+    expect(document.getElementById("workbench-tools")).toHaveAttribute("data-background", "false")
+    fireEvent.click(left)
+    expect(stored()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: false })
+    view.unmount()
+    render(<AppShell />)
+    expect(document.getElementById("workbench-spaces")).toHaveAttribute("data-background", "true")
+    expect(document.getElementById("workbench-tools")).toHaveAttribute("data-background", "false")
   })
 
   it("重啟時從持久化 appearance 還原 accent", () => {
@@ -368,7 +396,7 @@ describe("AppShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }))
     const dialog = await screen.findByRole("dialog")
-    const toggle = within(dialog).getByRole("switch", { name: "Move opened workspace to top" })
+    const toggle = within(dialog).getByRole("switch", { name: "Move opened folder to top of recent folders" })
 
     expect(toggle).toBeChecked()
     fireEvent.click(toggle)
@@ -381,8 +409,8 @@ describe("AppShell", () => {
   it("renders the rail, nav panel and status bar", () => {
     render(<AppShell />)
 
-    expect(screen.getByLabelText("Workspace rail")).toBeInTheDocument()
-    expect(screen.getByLabelText("Project navigation")).toBeInTheDocument()
+    expect(screen.getByLabelText("Shared tools")).toBeInTheDocument()
+    expect(screen.getByLabelText("Sidebar navigation")).toBeInTheDocument()
     expect(screen.getByLabelText("Status bar")).toBeInTheDocument()
   })
 
@@ -391,32 +419,32 @@ describe("AppShell", () => {
     const mainSurface = screen.getByTestId("main-surface")
 
     // ADE is the default mode and shares the editor surface floor with Files.
-    expect(screen.getByRole("tab", { name: "ADE" })).toHaveAttribute("aria-selected", "true")
+    expect(useUiStore.getState().mode).toBe("ade")
     expect(mainSurface).toHaveStyle({ minHeight: "44px" })
-    fireEvent.click(screen.getByRole("tab", { name: "Files" }))
+    act(()=>useUiStore.getState().setMode("files"))
     expect(mainSurface).toHaveStyle({ minHeight: "44px" })
-    fireEvent.click(screen.getByRole("tab", { name: "ADE" }))
+    act(()=>useUiStore.getState().setMode("ade"))
     expect(mainSurface).toHaveStyle({ minHeight: "44px" })
-    expect(screen.getByTestId("nav-mode-content-ade")).toBeInTheDocument()
+    expect(screen.getByLabelText("Sidebar navigation")).toBeInTheDocument()
   })
 
   it("switches to Git mode and shows the selected state", () => {
     render(<AppShell />)
 
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-tools"]')!)
     const gitTab = screen.getByRole("tab", { name: "Git" })
-    fireEvent.click(gitTab)
+    fireEvent.mouseDown(gitTab, {button:0, ctrlKey:false})
 
     expect(gitTab).toHaveAttribute("aria-selected", "true")
-    expect(screen.getByTestId("nav-mode-content-git")).toBeInTheDocument()
+    expect(screen.getByRole("button", {name:"History and branch graph"})).toBeInTheDocument()
   })
 
   it("collapses and restores the nav panel via the rail toggle", () => {
     render(<AppShell />)
 
-    const toggle = screen.getByRole("button", { name: "Toggle sidebar" })
-    // 收合是動畫（width→0 + opacity→0），面板保持 mounted，
-    // 以 aria-hidden + inert 對輔助科技與互動隱藏。
-    const nav = screen.getByLabelText("Project navigation")
+    const toggle = document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-spaces"]')!
+    // 清單保持 mounted 並設為 inert；展開按鈕移至工作分頁邊緣。
+    const nav = document.getElementById("workbench-spaces-content")!
     expect(nav.closest('[aria-hidden="true"]')).toBeNull()
 
     fireEvent.click(toggle)
@@ -430,31 +458,26 @@ describe("AppShell", () => {
   it("resizes the nav panel by dragging its workspace-area handle, without lag, clamped to min/max", () => {
     const { container } = render(<AppShell />)
 
-    const nav = screen.getByLabelText("Project navigation").parentElement as HTMLElement
+    const nav = screen.getByLabelText("Sidebar navigation") as HTMLElement
     // Disambiguate from TerminalDrawer's own (row-resize) drag handle, which
     // shares the same title but lives in the workspace column, not here.
-    const handle = container.querySelector(
-      '.cursor-col-resize[title="Drag to resize"]'
-    ) as HTMLElement
-    expect(nav).toHaveStyle({ width: "266px" })
-    expect(nav.className).toMatch(/transition-\[width,opacity\]/)
+    const handle = container.querySelector('[role="separator"][aria-label="Resize Spaces and Agents sidebar"]') as HTMLElement
+    expect(nav).toHaveStyle({ width: "288px" })
 
     fireEvent.pointerDown(handle, { clientX: 0, pointerId: 1 })
     // Same lag fix as the terminal drag: the width transition is dropped
     // from the class list while actively resizing so it tracks 1:1.
-    expect(nav.className).not.toMatch(/transition-\[width,opacity\]/)
 
     fireEvent.pointerMove(handle, { clientX: 80, pointerId: 1 })
-    expect(nav).toHaveStyle({ width: "346px" })
+    expect(nav).toHaveStyle({ width: "368px" })
 
     fireEvent.pointerMove(handle, { clientX: 300, pointerId: 1 })
     expect(nav).toHaveStyle({ width: "420px" }) // clamped to MAX_NAV_WIDTH
 
     fireEvent.pointerMove(handle, { clientX: -400, pointerId: 1 })
-    expect(nav).toHaveStyle({ width: "220px" }) // clamped to MIN_NAV_WIDTH
+    expect(nav).toHaveStyle({ width: "256px" }) // clamped to MIN_NAV_WIDTH
 
     fireEvent.pointerUp(handle, { clientX: -400, pointerId: 1 })
-    expect(nav.className).toMatch(/transition-\[width,opacity\]/)
   })
 
   it("opens the settings dialog from the rail avatar", async () => {
@@ -475,189 +498,21 @@ describe("AppShell", () => {
     fireEvent.click(within(dialog).getByText("Git"))
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-    expect(screen.getByRole("tab", { name: "Git" })).toHaveAttribute("aria-selected", "true")
-  })
-
-  it("toggles the terminal drawer with Ctrl+`", () => {
-    render(<AppShell />)
-
-    const terminalDrawer = screen.getByTestId("terminal-drawer")
-    expect(terminalDrawer).toHaveAttribute("aria-hidden", "true")
-
-    fireEvent.keyDown(window, { key: "`", ctrlKey: true })
-    expect(terminalDrawer).toHaveAttribute("aria-hidden", "false")
-
-    fireEvent.keyDown(window, { key: "`", ctrlKey: true })
-    expect(terminalDrawer).toHaveAttribute("aria-hidden", "true")
-  })
-
-  it("best-effort closes pty and dev-server workspace on Tauri close request", async () => {
-    ;(globalThis as { isTauri?: boolean }).isTauri = true
-    mockWindows("main")
-    const calls: string[] = []
-    mockIPC((cmd) => {
-      calls.push(cmd)
-      if (cmd === "list_dir") return []
-      return null
-    })
-    useWorkspaceStore.setState({ workspacePath: "/workspace" })
-
-    render(<AppShell />)
-
-    await waitFor(() => expect(windowMocks.onCloseRequested).toHaveBeenCalled())
-    const preventDefault = vi.fn()
-    await windowMocks.closeHandlers[0]({ preventDefault })
-
-    expect(preventDefault).not.toHaveBeenCalled()
-    await waitFor(() => {
-      expect(calls).toContain("pty_close_workspace")
-      expect(calls).toContain("dev_server_stop_workspace")
-    })
-  })
-
-  // issue #21：Alt+F4 / 標題列關閉鈕走 WINDOW_CLOSE_REQUESTED，handler 會被
-  // @tauri-apps/api await，preventDefault() 會取消 destroy。Yuzora 不保留草稿，
-  // 因此這是未儲存內容的最後一道關卡。
-  describe("關閉視窗時的未儲存攔截", () => {
-    const openCloseRequest = () => {
-      ;(globalThis as { isTauri?: boolean }).isTauri = true
-      mockWindows("main")
-      const calls: Array<{ cmd: string; payload: unknown }> = []
-      mockIPC((cmd, payload) => {
-        calls.push({ cmd, payload })
-        if (cmd === "list_dir") return []
-        // The dirty tab below makes EditorPane actually load the document.
-        if (cmd === "open_file") return { kind: "full", content: "", size: 0, lineEnding: "lf" }
-        return null
-      })
-      useWorkspaceStore.setState({
-        workspacePath: "/workspace",
-        activeGroupIndex: 0,
-        groups: [
-          {
-            activePath: "/workspace/a.ts",
-            tabs: [
-              { path: "/workspace/a.ts", name: "a.ts", dirty: true, externallyModified: false },
-            ],
-          },
-        ],
-        pendingReveal: null,
-      })
-      return { calls, names: () => calls.map((c) => c.cmd) }
-    }
-
-    const fireCloseRequest = async () => {
-      await waitFor(() => expect(windowMocks.onCloseRequested).toHaveBeenCalled())
-      const preventDefault = vi.fn()
-      const closing = windowMocks.closeHandlers[0]({ preventDefault })
-      await waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
-      return { preventDefault, closing }
-    }
-
-    it("選取消：preventDefault 阻止關閉，dirty 分頁與子行程都維持原狀", async () => {
-      const { names } = openCloseRequest()
-      render(<AppShell />)
-
-      const { preventDefault, closing } = await fireCloseRequest()
-      useConfirmDialogStore.getState().respond("cancel")
-      await closing
-
-      expect(preventDefault).toHaveBeenCalled()
-      expect(names()).not.toContain("pty_close_workspace")
-      expect(names()).not.toContain("dev_server_stop_workspace")
-      expect(saveMocks.saveDirtyTab).not.toHaveBeenCalled()
-      expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
-    })
-
-    it("選不儲存：放行關閉並清理 PTY 與 dev server", async () => {
-      const { names } = openCloseRequest()
-      render(<AppShell />)
-
-      const { preventDefault, closing } = await fireCloseRequest()
-      useConfirmDialogStore.getState().respond("discard")
-      await closing
-
-      expect(preventDefault).not.toHaveBeenCalled()
-      expect(saveMocks.saveDirtyTab).not.toHaveBeenCalled()
-      expect(names()).toContain("pty_close_workspace")
-      expect(names()).toContain("dev_server_stop_workspace")
-    })
-
-    it("選儲存且成功：存完才放行關閉", async () => {
-      const { names } = openCloseRequest()
-      render(<AppShell />)
-
-      const { preventDefault, closing } = await fireCloseRequest()
-      useConfirmDialogStore.getState().respond("save")
-      await closing
-
-      expect(preventDefault).not.toHaveBeenCalled()
-      expect(saveMocks.saveDirtyTab).toHaveBeenCalledWith("/workspace/a.ts")
-      expect(names()).toContain("pty_close_workspace")
-    })
-
-    // issue #21 的原始情境：mixed-EOL 檔案被儲存檢查擋下。存檔失敗卻照樣關閉
-    // 等於永久丟掉使用者內容。
-    it("選儲存但存檔失敗：preventDefault，app 保持開啟", async () => {
-      const { names } = openCloseRequest()
-      saveMocks.saveDirtyTab.mockResolvedValue({ kind: "blocked", reason: "mixed" })
-      render(<AppShell />)
-
-      const { preventDefault, closing } = await fireCloseRequest()
-      useConfirmDialogStore.getState().respond("save")
-      await closing
-
-      expect(preventDefault).toHaveBeenCalled()
-      expect(names()).not.toContain("pty_close_workspace")
-      expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
-    })
-
-    // guard 一旦 reject 而沒被接住，wrapper 的 await 會炸掉：既不 preventDefault
-    // 也不 destroy，視窗會變成按了沒反應、沒對話框也沒錯誤。fail-safe 是「當成
-    // 取消」——寧可關不掉也不能靜默丟內容。
-    it("dirty gate 自己爆炸時 fail-safe 成取消，不會靜默關窗", async () => {
-      const { names } = openCloseRequest()
-      saveMocks.saveDirtyTab.mockRejectedValue(new Error("boom"))
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-
-      try {
-        render(<AppShell />)
-
-        const { preventDefault, closing } = await fireCloseRequest()
-        useConfirmDialogStore.getState().respond("save")
-        await closing
-
-        expect(preventDefault).toHaveBeenCalled()
-        expect(names()).not.toContain("pty_close_workspace")
-        expect(warn).toHaveBeenCalledWith("unsaved-changes guard failed:", expect.any(Error))
-      } finally {
-        warn.mockRestore()
-      }
-    })
-
-    it("尚未開啟工作區時仍註冊關閉攔截", async () => {
-      ;(globalThis as { isTauri?: boolean }).isTauri = true
-      mockWindows("main")
-      mockIPC(() => {})
-
-      render(<AppShell />)
-
-      await waitFor(() => expect(windowMocks.onCloseRequested).toHaveBeenCalled())
-    })
+    expect(useUiStore.getState().mode).toBe("git")
   })
 
   it("keeps the EditorPanel container mounted (CSS-hidden) when switching away from Files mode and back", () => {
     render(<AppShell />)
 
     const editorEmptyState = () => screen.getByText("Open a project to start editing")
-    expect(editorEmptyState().closest(".hidden")).toBeNull()
+    expect(editorEmptyState().closest("[hidden]")).toBeNull()
 
-    fireEvent.click(screen.getByRole("tab", { name: "Git" }))
+    act(()=>useUiStore.getState().setMode("git"))
     expect(editorEmptyState()).toBeInTheDocument()
-    expect(editorEmptyState().closest(".hidden")).not.toBeNull()
+    expect(editorEmptyState().closest("[hidden]")).not.toBeNull()
 
-    fireEvent.click(screen.getByRole("tab", { name: "Files" }))
-    expect(editorEmptyState().closest(".hidden")).toBeNull()
+    act(()=>useUiStore.getState().setMode("files"))
+    expect(editorEmptyState().closest("[hidden]")).toBeNull()
   })
 
   it("右鍵 root 開啟 general 選單並攔截原生選單，Escape 關閉", () => {

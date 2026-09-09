@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { ResourceUsagePopover } from "./ResourceUsagePopover";
+import { Button } from "@/components/ui/button";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronUp, GitBranch } from "lucide-react";
 
@@ -7,13 +9,8 @@ import { contextMenuHandler } from "@/state/contextMenuStore";
 import { changedPathSet, useGitStore } from "@/state/gitStore";
 import { isFileTab } from "@/lib/markdownPreviewTab";
 import { useWorkspaceStore } from "@/state/workspaceStore";
-import { useLspStore } from "@/state/lspStore";
-import { usePreviewStore } from "@/state/previewStore";
 import { usePerfStore } from "@/state/perfStore";
-import { useUiStore } from "@/state/uiStore";
-import { documentGeneration, getDocument } from "@/editor/documentRegistry";
-import { fileGradeOf, languageFromPath, lspLanguageOf } from "@/lib/types";
-import type { FileGrade, LspDisplayState } from "@/lib/types";
+import { languageFromPath } from "@/lib/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,43 +20,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-// Right-segment LSP labels/colours (design reference §6). State names stay in
-// English (technical terms); colours reuse the shared status tokens.
-const LSP_STATE_LABEL: Record<LspDisplayState, string> = {
-  ready: "Ready",
-  starting: "Starting",
-  failed: "Failed",
-  missing: "Missing",
-  syntaxOnly: "Syntax only",
-};
-
-const LSP_STATE_COLOR: Record<LspDisplayState, string> = {
-  ready: "var(--status-a)",
-  starting: "var(--ink-3)",
-  failed: "var(--status-d)",
-  missing: "var(--status-r)",
-  syntaxOnly: "var(--ink-3)",
-};
-
-// First non-empty line of a server's stderr, for the Failed-state tooltip.
-function lspErrorSummary(message: string | null): string | undefined {
-  if (!message) return undefined;
-  const line = message
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  return line ? line.slice(0, 200) : undefined;
-}
-
-/**
- * Status bar — design reference §6. Left side carries the workspace tag and the
- * Git branch chip (real data via useGitStore, opens BranchPopover); right side
- * shows the active file's language and live LSP state (useLspStore.displayFor);
- * Missing/Failed open the LSP settings for that language.
- */
 export function StatusBar() {
   const { t } = useTranslation("workbench");
-  const workspacePath = useWorkspaceStore((s) => s.workspacePath);
   const groups = useWorkspaceStore((s) => s.groups);
   const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex);
   const rawActivePath = groups[activeGroupIndex]?.activePath ?? null;
@@ -69,9 +31,6 @@ export function StatusBar() {
   const activePath = activeTab && isFileTab(activeTab) ? activeTab.path : null;
   const lineEnding = activePath ? activeTab?.lineEnding : undefined;
   const setLineEnding = useWorkspaceStore((s) => s.setLineEnding);
-  const devServer = usePreviewStore((s) =>
-    workspacePath ? s.devServerForWorkspace(workspacePath) : null
-  );
 
   const environment = useGitStore((s) => s.environment);
   const status = useGitStore((s) => s.status);
@@ -79,54 +38,6 @@ export function StatusBar() {
   const remoteMode = useGitStore((s) => s.remoteCheck.mode);
 
   const [branchOpen, setBranchOpen] = useState(false);
-
-  const openSettings = useUiStore((s) => s.openSettings);
-  const displayFor = useLspStore((s) => s.displayFor);
-  // Subscribed so the segment re-renders when a server's process state changes;
-  // displayFor reads servers/initialized, and the Failed tooltip reads servers.
-  const lspServers = useLspStore((s) => s.servers);
-  const lspInitialized = useLspStore((s) => s.initialized);
-
-  // The active file's LSP grade decides Ready/… vs Syntax only. Only the four
-  // LSP languages need it; other files are Syntax only regardless, so skip the
-  // read for them. The active file is already open, so getDocument hits the
-  // documentRegistry cache — no extra openFile IPC. reloadDocument bumps
-  // documentGeneration only AFTER a successful re-fetch, and its callers
-  // (ExternalChangeBridge / the resolver's takeDiskReload) flip a workspaceStore
-  // field on both outcomes. So a successful reload re-renders this bar with a new
-  // generation and the effect re-derives the grade; a failed reload leaves the
-  // generation — and the live pane/buffer — untouched, so the segment keeps its
-  // current state.
-  const generation = activePath ? documentGeneration(activePath) : 0;
-  const [grade, setGrade] = useState<FileGrade | null>(null);
-  useEffect(() => {
-    if (!activePath || !lspLanguageOf(activePath)) {
-      setGrade(null);
-      return;
-    }
-    let disposed = false;
-    void getDocument(activePath)
-      .then((entry) => {
-        if (!disposed) setGrade(fileGradeOf(entry.result));
-      })
-      .catch(() => {
-        // Read failed (e.g. a stale tab whose file was deleted): fall back to a
-        // non-full grade so the segment shows Syntax only rather than an
-        // optimistic live LSP state. displayFor maps every non-full grade to
-        // syntaxOnly; "limited" is the neutral stand-in for "nothing to mount on".
-        if (!disposed) setGrade("limited");
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [activePath, generation]);
-
-  const lsp = useMemo(
-    () => (activePath ? displayFor(activePath, grade ?? "full") : null),
-    // lspServers/lspInitialized feed displayFor; list them so the memo
-    // recomputes when the LSP layer reports a new state.
-    [activePath, grade, displayFor, lspServers, lspInitialized],
-  );
 
   const ready = environment?.status === "ready";
   const branchName = !ready
@@ -145,10 +56,6 @@ export function StatusBar() {
   // probe mode only knows "incoming yes/no" so it shows a dot.
   const showBehindCount = remoteMode === "autofetch" && behind > 0;
   const showIncomingDot = remoteMode === "probe" && remoteIncoming === "yes";
-  const devServerPort =
-    devServer?.status.status === "running"
-      ? (devServer.status.port ?? devServer.port)
-      : null;
 
   // F1 perf chip：主要數字是 app 本體 + 所有 Yuzora-owned 子行程的總和（#22），
   // title 再拆出「App 本體 / 子行程數」。cpuPercent is sysinfo's raw value;
@@ -215,12 +122,12 @@ export function StatusBar() {
       aria-expanded={ready ? branchOpen : undefined}
       aria-haspopup={ready ? "dialog" : undefined}
       onClick={() => setBranchOpen((v) => !v)}
-      className="flex h-[22px] items-center gap-[6px] rounded-[7px] px-[9px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)] disabled:cursor-default disabled:hover:bg-transparent"
+      className="flex h-[22px] min-w-0 max-w-[35%] shrink items-center gap-[6px] whitespace-nowrap rounded-[7px] px-[9px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)] disabled:cursor-default disabled:hover:bg-transparent"
     >
-      <span className="size-[7px] rounded-full bg-(--yz-accent)" aria-hidden="true" />
-      <GitBranch className="size-[12px]" aria-hidden="true" />
+      <span className="size-[7px] shrink-0 rounded-full bg-(--yz-accent)" aria-hidden="true" />
+      <GitBranch className="size-[12px] shrink-0" aria-hidden="true" />
       <span
-        className="font-medium"
+        className="min-w-0 truncate font-medium"
         style={{ color: conflicted ? "var(--status-d)" : "var(--ink-1)" }}
       >
         {branchName}
@@ -240,28 +147,11 @@ export function StatusBar() {
           ↓•
         </span>
       )}
-      <ChevronUp className={`ml-[2px] size-[11px] text-(--ink-3) transition-transform ${branchOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+      <ChevronUp className={`ml-[2px] size-[11px] shrink-0 text-(--ink-3) transition-transform ${branchOpen ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
   );
 
-  const lspLang = activePath ? lspLanguageOf(activePath) : null;
   const langLabel = activePath ? languageFromPath(activePath) : "";
-  const lspState = lsp?.state ?? "syntaxOnly";
-  const lspServerName = lsp?.serverId ?? "";
-  const lspText =
-    lspState === "syntaxOnly"
-      ? `${langLabel} · Syntax only`
-      : lspServerName
-        ? `${langLabel} · ${lspServerName} ${LSP_STATE_LABEL[lspState]}`
-        : `${langLabel} · ${LSP_STATE_LABEL[lspState]}`;
-  const lspClickable = lspState === "failed" || lspState === "missing";
-  const lspServerInfo = lspLang ? lspServers[lspLang] : undefined;
-  const lspTitle =
-    lspState === "failed"
-      ? lspErrorSummary(lspServerInfo?.lastError ?? null)
-      : lspState === "missing" && lspServerInfo?.status.status === "missing"
-        ? lspServerInfo.status.installHint
-        : undefined;
 
   return (
     <footer
@@ -270,7 +160,7 @@ export function StatusBar() {
         kind: "status",
         repositoryRoot: environment?.status === "ready" ? environment.root : null,
       })}
-      className="flex h-[30px] shrink-0 items-center gap-1 border-t border-(--line-1) bg-(--yz-glass-strong) px-2 font-mono text-[11.5px] text-(--ink-2) backdrop-blur-[20px] backdrop-saturate-[1.5]"
+      className="flex h-[30px] min-w-0 shrink-0 whitespace-nowrap items-center gap-1 border-t border-(--line-1) bg-(--yz-glass-strong) px-2 font-mono text-[11.5px] text-(--ink-2) backdrop-blur-[20px] backdrop-saturate-[1.5]"
     >
       <span className="rounded-[6px] px-[6px] font-medium text-(--ink-1)">Yuzora</span>
 
@@ -308,27 +198,19 @@ export function StatusBar() {
         </span>
       )}
 
-      {devServerPort != null && (
-        <span
-          className="ml-[13px] rounded-[6px] px-[6px] py-[2px]"
-          style={{ color: "var(--status-a)", background: "rgba(var(--yz-accent-rgb),0.10)" }}
-        >
-          {t("statusBar.devPort", { port: devServerPort })}
-        </span>
-      )}
 
       <div className="flex-1" />
 
       {perfChipText && (
-        <span
+        <ResourceUsagePopover trigger={<Button variant="ghost" size="sm"
           title={perfFullTitle}
           data-testid="status-perf-chip"
           data-perf-sampling-failures={perfFailures}
           data-perf-sampling-empty={perfEmpty}
-          className="rounded-[6px] px-[6px] text-(--ink-3)"
+          className="resource-usage-trigger h-6 px-1.5"
         >
-          {perfChipText}
-        </span>
+          {perfChipText}<ChevronUp aria-hidden="true" />
+        </Button>} />
       )}
 
       {activePath && lineEnding && lineEndingLabel && (
@@ -364,26 +246,9 @@ export function StatusBar() {
         </DropdownMenu>
       )}
 
-      {!activePath ? (
-        <span className="rounded-[6px] px-[6px] text-(--ink-3)">{t("statusBar.noFileOpen")}</span>
-      ) : lspClickable ? (
-        <button
-          type="button"
-          title={lspTitle}
-          onClick={() => openSettings("lsp", lsp?.language ?? "")}
-          className="cursor-pointer rounded-[6px] px-[6px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)]"
-          style={{ color: LSP_STATE_COLOR[lspState] }}
-        >
-          {lspText}
-        </button>
-      ) : (
-        <span
-          className="rounded-[6px] px-[6px]"
-          style={{ color: LSP_STATE_COLOR[lspState] }}
-        >
-          {lspText}
-        </span>
-      )}
+      <span className="min-w-0 max-w-[30%] shrink truncate rounded-[6px] px-[6px]" title={langLabel}>
+        {activePath ? langLabel : t("statusBar.noFileOpen")}
+      </span>
     </footer>
   );
 }
