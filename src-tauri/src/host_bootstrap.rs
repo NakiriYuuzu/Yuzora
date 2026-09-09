@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use yuzora_host::herdr_limits::MAX_NDJSON_LINE_BYTES;
 use yuzora_host::herdr_runtime::{inspect_documents, session_names, RuntimeBinaryCheck};
 use yuzora_host::herdr_service::HerdrBinarySource;
 use yuzora_host::protocol::{Operation, PROTOCOL_VERSION};
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PROBE_OUTPUT_BYTES: usize = 64 * 1024;
 const SUCCESS: &[u8] = b"\0YUZORA_OK\0";
 
 #[derive(Debug, Serialize)]
@@ -64,6 +66,16 @@ pub(crate) async fn execute(
     script: &str,
     input: &[u8],
 ) -> Result<Vec<u8>, String> {
+    execute_with_output_limit(target, ssh, script, input, MAX_PROBE_OUTPUT_BYTES).await
+}
+
+async fn execute_with_output_limit(
+    target: &HostTarget,
+    ssh: Option<&SshManager>,
+    script: &str,
+    input: &[u8],
+    max_output_bytes: usize,
+) -> Result<Vec<u8>, String> {
     let script = format!("set -eu\n{script}\nprintf '\\000YUZORA_OK\\000'\n");
     let mut stream = match target {
         HostTarget::Ssh { session_id } => {
@@ -99,11 +111,11 @@ pub(crate) async fn execute(
         stream.shutdown().await.map_err(|e| e.to_string())?;
         let mut output = Vec::new();
         (&mut stream)
-            .take(65537)
+            .take((max_output_bytes + 1) as u64)
             .read_to_end(&mut output)
             .await
             .map_err(|e| e.to_string())?;
-        if output.len() > 65536 {
+        if output.len() > max_output_bytes {
             return Err("host-probe-output-too-large".into());
         }
         if !output.ends_with(SUCCESS) {
@@ -327,7 +339,7 @@ fn select_host_binary(
 
 async fn runtime_metadata(
     target: &HostTarget,
-    ssh: &SshManager,
+    ssh: Option<&SshManager>,
     binary: &str,
     session: &str,
     command: &str,
@@ -337,7 +349,16 @@ async fn runtime_metadata(
         shell_quote(session)?,
         shell_quote(binary)?
     );
-    let bytes = execute(target, Some(ssh), &script, &[]).await?;
+    // Runtime schemas exceed the small host-probe budget. Match the native
+    // JSON ceiling while allowing the bootstrap transport's success marker.
+    let bytes = execute_with_output_limit(
+        target,
+        ssh,
+        &script,
+        &[],
+        MAX_NDJSON_LINE_BYTES + SUCCESS.len(),
+    )
+    .await?;
     serde_json::from_slice(&bytes).map_err(|error| format!("invalid-runtime-json: {error}"))
 }
 
@@ -346,11 +367,13 @@ async fn inspect_host_binary(
     ssh: &SshManager,
     binary: &str,
 ) -> Result<RuntimeBinaryCheck, String> {
-    let schema = runtime_metadata(target, ssh, binary, "default", "api schema --json").await?;
-    let sessions = runtime_metadata(target, ssh, binary, "default", "session list --json").await?;
+    let schema =
+        runtime_metadata(target, Some(ssh), binary, "default", "api schema --json").await?;
+    let sessions =
+        runtime_metadata(target, Some(ssh), binary, "default", "session list --json").await?;
     let mut statuses = Vec::new();
     for name in session_names(&sessions)? {
-        let status = runtime_metadata(target, ssh, binary, &name, "status --json").await?;
+        let status = runtime_metadata(target, Some(ssh), binary, &name, "status --json").await?;
         statuses.push((name, status));
     }
     inspect_documents(binary.to_string(), schema, statuses)
@@ -499,6 +522,96 @@ pub async fn host_prepare(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn metadata_fixture(bytes: &[u8]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("schema.json");
+        std::fs::write(&document, bytes).unwrap();
+        let binary = dir.path().join("herdr");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\ncat {}\n",
+                shell_quote(document.to_str().unwrap()).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        (dir, binary.to_str().unwrap().to_owned())
+    }
+
+    #[tokio::test]
+    async fn runtime_metadata_accepts_large_schema_up_to_shared_json_limit() {
+        // HERDR 0.9.0 emits a 275,129-byte schema, beyond the 64 KiB probe limit.
+        for size in [275_129, MAX_NDJSON_LINE_BYTES] {
+            let json = format!("{{\"description\":\"{}\"}}", "x".repeat(size - 18));
+            assert_eq!(json.len(), size);
+            let (_dir, binary) = metadata_fixture(json.as_bytes());
+            let schema = runtime_metadata(
+                &HostTarget::Local,
+                None,
+                &binary,
+                "default",
+                "api schema --json",
+            )
+            .await
+            .unwrap();
+            assert_eq!(schema["description"].as_str().unwrap().len(), size - 18);
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_metadata_rejects_oversized_or_invalid_json() {
+        for (bytes, error) in [
+            (
+                vec![b' '; MAX_NDJSON_LINE_BYTES + 1],
+                "host-probe-output-too-large",
+            ),
+            (b"not json".to_vec(), "invalid-runtime-json:"),
+        ] {
+            let (_dir, binary) = metadata_fixture(&bytes);
+            let result = runtime_metadata(
+                &HostTarget::Local,
+                None,
+                &binary,
+                "default",
+                "api schema --json",
+            )
+            .await;
+            assert!(result.unwrap_err().starts_with(error));
+        }
+    }
+
+    #[tokio::test]
+    async fn probes_keep_small_limit_and_runtime_requires_command_success() {
+        let (_dir, binary) = metadata_fixture(&vec![b' '; MAX_PROBE_OUTPUT_BYTES]);
+        assert_eq!(
+            execute(
+                &HostTarget::Local,
+                None,
+                &shell_quote(&binary).unwrap(),
+                &[]
+            )
+            .await
+            .unwrap_err(),
+            "host-probe-output-too-large"
+        );
+        std::fs::write(&binary, "#!/bin/sh\nprintf '{}'\nexit 1\n").unwrap();
+        assert_eq!(
+            runtime_metadata(
+                &HostTarget::Local,
+                None,
+                &binary,
+                "default",
+                "status --json"
+            )
+            .await
+            .unwrap_err(),
+            "host-setup-command-failed"
+        );
+    }
+
     #[test]
     fn host_source_is_explicit_and_missing_installed_does_not_fall_back() {
         let probe = HostProbe {
