@@ -88,6 +88,7 @@ afterEach(() => {
   delete (globalThis as { isTauri?: boolean }).isTauri
   // 移除測試蓋上的 own property，讓 jsdom 原本的 prototype getter 復原
   delete (window.navigator as { userAgent?: string }).userAgent
+  delete (window.navigator as { hardwareConcurrency?: number }).hardwareConcurrency
   useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
 })
 
@@ -95,6 +96,7 @@ describe("AppShell", () => {
   beforeEach(() => {
     // theme effect 會把偏好寫回 localStorage；測試間重裝＋清空避免跨測試殘留。
     installLocalStorage()
+    Object.defineProperty(navigator, "hardwareConcurrency", { configurable: true, value: 8 })
     localStorage.removeItem(APPEARANCE_SETTINGS_STORAGE_KEY)
     useRecentWorkspacesStore.setState({ moveOpenedWorkspaceToTop: true })
     useUiStore.setState(uiInitialState)
@@ -301,11 +303,24 @@ describe("AppShell", () => {
     }
   })
 
+  it("restores the saved bot animation switch after remounting the app", () => {
+    const app = render(<AppShell />)
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    fireEvent.click(screen.getByRole("switch", { name: "Bot animations" }))
+    expect(document.documentElement.dataset.botAnimations).toBe("false")
+    app.unmount()
+    useUiStore.setState(uiInitialState)
+    render(<AppShell />)
+    expect(document.documentElement.dataset.botAnimations).toBe("false")
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    expect(screen.getByRole("switch", { name: "Bot animations" })).not.toBeChecked()
+  })
+
   it("預設 auto 且系統為深色時套用 dark class，並把偏好寫回 localStorage", () => {
     const matchMediaSpy = vi.spyOn(window, "matchMedia").mockImplementation(
       (query: string) =>
         ({
-          matches: true,
+          matches: query === "(prefers-color-scheme: dark)",
           media: query,
           onchange: null,
           addListener: () => {},
@@ -320,7 +335,7 @@ describe("AppShell", () => {
 
       expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
+      JSON.stringify({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
       )
     } finally {
       matchMediaSpy.mockRestore()
@@ -336,7 +351,7 @@ describe("AppShell", () => {
 
     expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
+      JSON.stringify({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
     )
   })
 
@@ -351,7 +366,7 @@ describe("AppShell", () => {
     expect(document.documentElement.style.getPropertyValue("--yz-accent-rgb")).toBe("47, 107, 255")
     expect(document.documentElement.style.getPropertyValue("--yz-accent-ink")).toBe("#2456cc")
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "auto", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true })
+      JSON.stringify({ theme: "auto", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
     )
   })
 
@@ -367,11 +382,11 @@ describe("AppShell", () => {
     fireEvent.click(left)
     expect(document.getElementById("workbench-spaces")).toHaveAttribute("data-background", "false")
     expect(document.getElementById("workbench-tools")).toHaveAttribute("data-background", "true")
-    expect(stored()).toMatchObject({ leftSidebarBackground: false, rightSidebarBackground: true })
+    expect(stored()).toMatchObject({ leftSidebarBackground: false, rightSidebarBackground: true, botAnimations: true })
     fireEvent.click(right)
     expect(document.getElementById("workbench-tools")).toHaveAttribute("data-background", "false")
     fireEvent.click(left)
-    expect(stored()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: false })
+    expect(stored()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: false, botAnimations: true })
     view.unmount()
     render(<AppShell />)
     expect(document.getElementById("workbench-spaces")).toHaveAttribute("data-background", "true")

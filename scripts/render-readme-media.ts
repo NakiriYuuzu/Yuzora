@@ -14,7 +14,7 @@ async function render(args: string[]) {
 }
 
 for (const lang of ["en", "zh"]) {
-  for (const [feature, frame] of [["ade-herdr", 90], ["terminal-git", 160], ["remote-db", 60]] as const) {
+  for (const [feature, frame] of [["ade-herdr", 90], ["terminal-git", 160], ["remote-db", 120]] as const) {
     const output = resolve(root, `docs/readme/${feature}-${lang}.png`);
     await render(["still", "src/index.ts", `${feature}-${lang}`, output, `--frame=${frame}`]);
     const poster = feature === "ade-herdr" ? "ade-herdr-runtime" : feature;

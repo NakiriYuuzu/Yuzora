@@ -86,6 +86,8 @@ interface SettingsDialogProps {
   leftSidebarBackground?: boolean
   rightSidebarBackground?: boolean
   onSidebarBackgroundChange?: (side: "left" | "right", enabled: boolean) => void
+  botAnimations?: boolean
+  onBotAnimationsChange?: (enabled: boolean) => void
   // Optional target applied whenever the dialog opens (or the target changes
   // while open).
   initialSection?: string
@@ -160,6 +162,8 @@ export function SettingsDialog({
   leftSidebarBackground = true,
   rightSidebarBackground = true,
   onSidebarBackgroundChange = () => {},
+  botAnimations = false,
+  onBotAnimationsChange = () => {},
   initialSection,
   openNonce,
 }: SettingsDialogProps) {
@@ -367,6 +371,13 @@ export function SettingsDialog({
                     onChange={(id) => changeLanguage(id as LanguagePreference)}
                   />
                 </SettingCard>
+
+                <ToggleRow
+                  label={tw("settings.botAnimations")}
+                  sub={tw("settings.botAnimationsSub")}
+                  checked={botAnimations}
+                  onCheckedChange={onBotAnimationsChange}
+                />
 
                 <div className="flex flex-col">
                   <ToggleRow

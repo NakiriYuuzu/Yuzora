@@ -102,7 +102,7 @@ export function AppShell() {
   const toolsAutoCollapsed = useRef(window.innerWidth < 1200)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [appearance, setAppearance] = useState(loadAppearanceSettings)
-  const { theme, accent, leftSidebarBackground, rightSidebarBackground } = appearance
+  const { theme, accent, leftSidebarBackground, rightSidebarBackground, botAnimations } = appearance
   const [navWidth, setNavWidth] = useState(DEFAULT_NAV_WIDTH)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   // Whether the current collapse was applied automatically (narrow window) vs.
@@ -256,6 +256,11 @@ export function AppShell() {
   }, [appearance])
 
   useEffect(() => {
+    document.documentElement.dataset.botAnimations = String(botAnimations)
+    return () => { delete document.documentElement.dataset.botAnimations }
+  }, [botAnimations])
+
+  useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.key === "`" && event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault()
@@ -364,6 +369,10 @@ export function AppShell() {
       ...current,
       [side === "left" ? "leftSidebarBackground" : "rightSidebarBackground"]: enabled,
     }))
+  }, [])
+
+  const handleBotAnimationsChange = useCallback((enabled: boolean) => {
+    setAppearance(current => ({ ...current, botAnimations: enabled }))
   }, [])
 
   const handleToolChange = useCallback((tool: WorkspaceTool) => {
@@ -483,6 +492,8 @@ export function AppShell() {
         leftSidebarBackground={leftSidebarBackground}
         rightSidebarBackground={rightSidebarBackground}
         onSidebarBackgroundChange={handleSidebarBackgroundChange}
+        botAnimations={botAnimations}
+        onBotAnimationsChange={handleBotAnimationsChange}
         initialSection={settingsSection ?? undefined}
         openNonce={settingsNonce}
       />
