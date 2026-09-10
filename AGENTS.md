@@ -6,6 +6,7 @@
 - macOS 固定下載檔名為 `Yuzora-macos-aarch64.dmg`；更新發布流程時須同步核對官網、README、`docs/operations.md` 與 updater metadata。
 - 遠端 Host 保留 `macos-x86_64` 與 `macos-aarch64`；App 停止 Intel 支援不代表移除既有 Intel macOS 遠端工作區。
 - 已發布的舊版 Intel／universal artifacts 保持不可變，不重寫舊版 release 或 tag。
+- macOS 發布不使用 Apple Developer ID 簽章／公證；Stable 仍須 Tauri updater 簽章。正式 build 不可使用會一併停用 updater 簽章的 `--no-sign`；README 與 release notes 須說明 Gatekeeper 提示。
 
 ## UI components — shadcn first
 

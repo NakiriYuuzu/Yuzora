@@ -11,17 +11,17 @@
 <br />
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
-[![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
+[![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
 ![Version](https://img.shields.io/badge/version-0.0.9-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
-<samp><a href="README.md">English</a> · 繁體中文 · <a href="https://nakiriyuuzu.github.io/Yuzora/">官方網站</a></samp>
+<samp><a href="README.md">English</a> · 繁體中文 · <a href="https://github.yuuzu.net/Yuzora/">官方網站</a></samp>
 
 <br />
 <br />
 
-<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora 產品導覽：ADE 與 HERDR Spaces、Agents、終端頁面、SSH、資料庫、terminal 與 git" />
+<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora v0.0.9 Demo 導覽：Spaces、HERDR 終端機、Git 差異、SQL 結果與外觀設定" />
 
 </div>
 
@@ -34,6 +34,16 @@
 <br />
 
 ## 功能
+
+### v0.0.9 更新
+
+- 加快 Git 狀態、分支與 diff 載入；切換已開啟 HERDR 終端機更流暢，保留輸出與連線。
+- 編輯器／diff 主題捲軸、可調整寬度的資料庫側欄，以及清楚的提交紀錄／分支圖按鈕。
+- 多行整段貼上、可選擇的選取自動複製，以及 Option／Alt+V 將圖片貼到終端機所在主機。
+- Windows 原生 HERDR、可選擇啟用的 WSL，以及本機／SSH 主機間的工作區信任、路徑與重連改善。
+- 更新品牌，加入[網頁互動 Demo](https://github.yuuzu.net/Yuzora/demo/)，與官網一起透過 GitHub Actions Pages 部署。
+
+完整更新與限制見 [Changelog](CHANGELOG.md)。
 
 <table>
 <tr>
@@ -50,7 +60,7 @@ Space 與 Agent 側欄投影 HERDR Spaces、named Sessions、Attention 與 Agent
 </td>
 <td valign="middle" width="62%">
 
-<img src="docs/readme/ade-herdr-zh.png" alt="Yuzora ADE：HERDR Spaces rail、named Sessions、agent 狀態、BSP 終端 panes 與唯讀 Agent Inspector" />
+<img src="docs/readme/ade-herdr-zh.png" alt="Yuzora v0.0.9 AppShell Demo：Spaces 與 Agents、HERDR 終端機及工作區工具" />
 
 </td>
 </tr>
@@ -71,7 +81,7 @@ Space 與 Agent 側欄投影 HERDR Spaces、named Sessions、Attention 與 Agent
 
 SSH 連上遠端主機瀏覽與編輯檔案、SFTP 傳輸；資料庫面板直接查表、下 query、看結構。連線設定集中管理，known hosts 與憑證都留在本機。
 
-<code>SSH / SFTP</code> <code>PostgreSQL</code> <code>MySQL</code> <code>SQLite</code>
+<code>SSH / SFTP</code> <code>PostgreSQL</code> <code>SQL Server</code> <code>SQLite</code>
 
 </td>
 </tr>
@@ -92,7 +102,7 @@ HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷
 </td>
 <td valign="middle" width="62%">
 
-終端執行由 HERDR 管理。瀏覽器可開啟網站，或在 HERDR terminal 啟動的服務網址。
+<img src="docs/readme/terminal-git-zh.png" alt="Yuzora v0.0.9 Git 並排差異與提交紀錄／分支圖按鈕" />
 
 </td>
 </tr>
@@ -102,7 +112,7 @@ HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷
 
 ## 下載
 
-所有版本皆由 GitHub Actions 建置並發佈於 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases)，原始碼公開可查。
+正式版由 GitHub Actions 建置並發佈於 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases)。未發布的 PR 候選版只提供 Actions artifacts。
 
 | 平台 | 格式 | 下載 |
 |:--|:--|:--|
@@ -110,6 +120,10 @@ HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷
 | **Windows** | `.exe`（NSIS）— x64 | [Yuzora-windows-x64-setup.exe](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe) |
 
 Windows `.msi` 安裝檔與歷史版本見 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases)。Linux 僅作為 CI／測試 host，不是 Yuzora 支援的桌面發佈平台。
+
+從 v0.0.9 起，macOS App 僅支援 Apple Silicon；Intel macOS 遠端 Host 保留支援。
+
+macOS 安裝檔**未經 Apple Developer ID 簽章或公證**，首次開啟可能被 Gatekeeper 提示或阻擋。請從上述官方 Release 下載，嘗試開啟後，依 macOS「系統設定 → 隱私權與安全性」提供的「仍要打開」流程操作。Windows 尚未啟用 Authenticode，可能出現 SmartScreen 提示。正式版自動更新仍會驗證 Tauri updater 簽章。
 
 ## 技術架構
 
@@ -150,11 +164,11 @@ bun run tauri:build
 ```
 
 本機建置會刻意停用 updater 產物與 release 簽章，因此不需要 production secrets。
-官方 macOS 安裝檔只會在受保護的 release workflow 中完成 Developer ID 簽章與 notarization；各平台 gate 詳見 `docs/operations.md`。
+正式版保留 updater 簽章，macOS 不使用 Apple 簽章／公證。各平台建置與驗證步驟見[發布運維手冊](docs/operations.md)。
 
-> README 與[官方網站](https://nakiriyuuzu.github.io/Yuzora/)中的產品動畫與截圖，
-> 均由 [`site-remotion/`](site-remotion/) 內的 [Remotion](https://www.remotion.dev) 專案程式化渲染，
-> 與 app 本體的 design tokens 1:1 對齊。
+> README 與[官網](https://github.yuuzu.net/Yuzora/)媒體，均由 [Remotion](https://www.remotion.dev)
+> 使用目前 AppShell Demo 的錄製畫面渲染。錄製使用範例資料，不代表真實主機；
+> 原始碼與可重現的產生指令見 [`site-remotion/`](site-remotion/)。
 
 <br />
 
@@ -168,7 +182,7 @@ bun run tauri:build
 
 <sub>
 
-[原始碼](https://github.com/NakiriYuuzu/Yuzora) · [回報問題](https://github.com/NakiriYuuzu/Yuzora/issues) · [所有版本](https://github.com/NakiriYuuzu/Yuzora/releases) · [官方網站](https://nakiriyuuzu.github.io/Yuzora/)
+[原始碼](https://github.com/NakiriYuuzu/Yuzora) · [回報問題](https://github.com/NakiriYuuzu/Yuzora/issues) · [所有版本](https://github.com/NakiriYuuzu/Yuzora/releases) · [官方網站](https://github.yuuzu.net/Yuzora/)
 
 </sub>
 

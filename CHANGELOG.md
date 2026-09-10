@@ -42,6 +42,7 @@
 - HERDR／Browser 分頁的釘選僅保留於本次應用程式工作階段。剪貼簿圖片辨識取決於終端機內 Agent 對圖片路徑的支援。
 - 網頁 Demo 使用範例資料，重新整理後重設檔案與查詢結果；不連接本機或遠端主機。
 - Windows Authenticode 尚未啟用，安裝或首次開啟時仍可能出現 SmartScreen 提示。
+- macOS 安裝檔未經 Apple Developer ID 簽章或公證，首次開啟可能被 Gatekeeper 提示或阻擋；請從官方 GitHub Release 下載，確認來源後依 macOS「隱私權與安全性」的「仍要打開」流程開啟。正式版自動更新仍驗證 Tauri updater 簽章。
 
 ## [0.0.9-beta.3] - 2026-09-09
 

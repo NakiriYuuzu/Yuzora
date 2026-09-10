@@ -372,82 +372,18 @@ function verifyArtifactBoundary(workflow: Workflow): void {
   )
 }
 
-function verifyAppleNotarizationEnvironment(step: UnknownRecord, label: string): void {
-  const env = record(step.env, `${label}.env`)
-  for (const name of [
-    "APPLE_SIGNING_IDENTITY",
-    "APPLE_ID",
-    "APPLE_PASSWORD",
-    "APPLE_TEAM_ID",
-  ]) {
-    assert(
-      env[name] === `\${{ secrets.${name} }}`,
-      `${label} must receive ${name} from protected secrets`
-    )
-  }
-}
-
 function verifyStableMacOsDistributionContract(workflow: Workflow): void {
-  const buildSteps = steps(jobFor(workflow, "build"), "jobs.build")
-  const stableMacOsCondition =
-    "needs.guard.outputs.is_beta != 'true' && matrix.artifact_name == 'macos'"
-  const importCertificate = stepByName(buildSteps, "Import Developer ID Application certificate")
+  const build = jobFor(workflow, "build")
+  const buildSteps = steps(build, "jobs.build")
+  const stable = stepByName(buildSteps, "Build stable macOS installers without Apple signing")
   assert(
-    importCertificate.if === stableMacOsCondition,
-    "Developer ID certificate import must run only for stable macOS releases"
-  )
-  const importEnv = record(importCertificate.env, "Developer ID certificate import env")
-  for (const name of [
-    "APPLE_CERTIFICATE",
-    "APPLE_CERTIFICATE_PASSWORD",
-    "APPLE_SIGNING_IDENTITY",
-    "APPLE_ID",
-    "APPLE_PASSWORD",
-    "APPLE_TEAM_ID",
-  ]) {
-    assert(
-      importEnv[name] === `\${{ secrets.${name} }}`,
-      `macOS release must fail closed unless ${name} is configured`
-    )
-  }
-  assert(
-    includes(importCertificate.run, "Developer ID Application:") &&
-      includes(importCertificate.run, "openssl base64 -d -A") &&
-      includes(importCertificate.run, "security create-keychain") &&
-      includes(importCertificate.run, "security import") &&
-      includes(importCertificate.run, "security set-key-partition-list") &&
-      includes(importCertificate.run, "security find-identity"),
-    "macOS release must import and verify a Developer ID Application .p12 in an isolated keychain"
-  )
-
-  const verifyDistribution = stepByName(
-    buildSteps,
-    "Verify macOS Developer ID signature, Gatekeeper, and notarization"
+    !JSON.stringify(build).includes("secrets.APPLE_") &&
+      !buildSteps.some((step) => includes(step.run, "security import") || includes(step.run, "xcrun stapler")),
+    "macOS releases must not require Apple credentials or notarization"
   )
   assert(
-    verifyDistribution.if === stableMacOsCondition,
-    "Developer ID distribution verification must run only for stable macOS releases"
-  )
-  const verificationEnv = record(verifyDistribution.env, "macOS distribution verification env")
-  assert(
-    verificationEnv.APPLE_TEAM_ID === "${{ secrets.APPLE_TEAM_ID }}",
-    "macOS distribution verification must compare the signed TeamIdentifier with APPLE_TEAM_ID"
-  )
-  assert(
-    includes(verifyDistribution.run, "codesign --verify --deep --strict") &&
-      includes(verifyDistribution.run, "Authority=Developer ID Application:") &&
-      includes(verifyDistribution.run, "TeamIdentifier=${APPLE_TEAM_ID}") &&
-      includes(verifyDistribution.run, "spctl --assess --type execute") &&
-      includes(verifyDistribution.run, 'xcrun stapler validate "$APP_PATH"') &&
-      includes(verifyDistribution.run, 'xcrun stapler validate "$DMG_PATH"'),
-    "macOS release must fail closed on strict code-signing, Developer ID, Team ID, Gatekeeper, or stapling failure"
-  )
-
-  const cleanup = stepByName(buildSteps, "Remove temporary macOS signing keychain")
-  assert(
-    cleanup.if === `always() && ${stableMacOsCondition}` &&
-      includes(cleanup.run, "security delete-keychain"),
-    "stable macOS signing credentials must be removed from the temporary runner keychain even after failure"
+    !includes(stable.run, "--no-sign") && !includes(stable.run, "--no-updater"),
+    "unsigned macOS releases must retain updater signing and artifacts"
   )
 }
 
@@ -507,7 +443,7 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
   const macBuilds = matrix.include.map((row) => record(row, "release matrix row")).filter((row) => String(row.platform).startsWith("macos"))
   assert(macBuilds.length === 1 && macBuilds[0]!.rust_targets === "aarch64-apple-darwin" && macBuilds[0]!.build_args === "--target aarch64-apple-darwin", "macOS App releases must target Apple Silicon only")
   const buildSteps = steps(build, "jobs.build")
-  const stableBuild = stepByName(buildSteps, "Build signed and notarized stable macOS installers")
+  const stableBuild = stepByName(buildSteps, "Build stable macOS installers without Apple signing")
   assert(
     includes(stableBuild.if, "needs.guard.outputs.is_beta != 'true'") &&
       includes(stableBuild.if, "matrix.artifact_name == 'macos'"),
@@ -519,7 +455,6 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
       stableEnv.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
     "stable macOS build must receive updater signing secrets"
   )
-  verifyAppleNotarizationEnvironment(stableBuild, "stable macOS build")
   assert(
     includes(stableBuild.run, "bun tauri build --ci") &&
       includes(stableBuild.run, 'scripts/release-msi-build-config.ts "$VERSION"') &&

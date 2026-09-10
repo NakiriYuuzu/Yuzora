@@ -6,6 +6,7 @@ The published compositions use recordings of `src/demo/Demo.tsx`, which mounts t
 2. Serve `site/` with a static HTTP server. Avoid rebuilding while recording.
 3. With the user's browser-recording consent, run `YUZORA_DEMO_URL=http://127.0.0.1:4175/demo/ bun scripts/record-site-demo.ts` from the root.
 4. Run `bun scripts/render-site-media.ts` from the root. The script measures every capture, updates the manifest, and renders all six MP4s through Remotion 4.0.509.
+5. Run `bun scripts/render-readme-media.ts` from the root to refresh both README languages, their GIF tours, and the Pages posters with matching Remotion frames.
 
 Both scripts accept optional IDs such as `remote-db-zh remote-db-en` to update specific clips. The recording driver uses Playwright CLI and writes real UI posters to `site/assets/`. Playwright's FFmpeg must be installed (`bunx playwright install ffmpeg`). The Remotion package has its own FFmpeg runtime.
 

@@ -11,17 +11,17 @@
 <br />
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
-[![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
+[![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
 ![Version](https://img.shields.io/badge/version-0.0.9-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
-<samp>English · <a href="README.zh-TW.md">繁體中文</a> · <a href="https://nakiriyuuzu.github.io/Yuzora/">Website</a></samp>
+<samp>English · <a href="README.zh-TW.md">繁體中文</a> · <a href="https://github.yuuzu.net/Yuzora/">Website</a></samp>
 
 <br />
 <br />
 
-<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora product tour: ADE and HERDR Spaces, agents, terminal pages, SSH, databases, terminal and git" />
+<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.9 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
 
 </div>
 
@@ -35,6 +35,16 @@
 <br />
 
 ## Features
+
+### What's new in v0.0.9
+
+- Faster Git status, branch lists and diff loading; smoother switching between open HERDR terminals while keeping their output and connections.
+- Themed editor and diff scrollbars, a resizable database sidebar, and a clear commit history / branch graph button.
+- Whole-block multiline paste, optional copy on selection, and Option/Alt+V image paste to the terminal's host.
+- Native Windows HERDR, opt-in WSL, and safer workspace trust, paths and reconnection across local and SSH hosts.
+- Updated branding and an [interactive browser demo](https://github.yuuzu.net/Yuzora/demo/) deployed with the website through GitHub Actions Pages.
+
+See the [Changelog](CHANGELOG.md) for the complete release notes and limitations.
 
 <table>
 <tr>
@@ -51,7 +61,7 @@ The Space and Agent sidebar projects HERDR Spaces, named Sessions, Attention and
 </td>
 <td valign="middle" width="62%">
 
-<img src="docs/readme/ade-herdr-en.png" alt="Yuzora ADE with HERDR Spaces rail, named Sessions, agent status, BSP terminal panes and read-only Agent Inspector" />
+<img src="docs/readme/ade-herdr-en.png" alt="Yuzora v0.0.9 AppShell demo with Spaces and Agents, HERDR terminal and workspace tools" />
 
 </td>
 </tr>
@@ -72,7 +82,7 @@ The Space and Agent sidebar projects HERDR Spaces, named Sessions, Attention and
 
 Browse and edit files over SSH with SFTP transfer; query tables, run SQL and inspect schemas in the database panel. Connections are managed in one place — known hosts and credentials stay on your machine.
 
-<code>SSH / SFTP</code> <code>PostgreSQL</code> <code>MySQL</code> <code>SQLite</code>
+<code>SSH / SFTP</code> <code>PostgreSQL</code> <code>SQL Server</code> <code>SQLite</code>
 
 </td>
 </tr>
@@ -93,7 +103,7 @@ HERDR terminal pages provide xterm-powered input, output and split panes; the gi
 </td>
 <td valign="middle" width="62%">
 
-Terminal execution is owned by HERDR. Use the browser to open websites or services started in a HERDR terminal.
+<img src="docs/readme/terminal-git-en.png" alt="Yuzora v0.0.9 split Git diff with the commit history and branch graph button" />
 
 </td>
 </tr>
@@ -103,7 +113,7 @@ Terminal execution is owned by HERDR. Use the browser to open websites or servic
 
 ## Download
 
-Every build is produced by GitHub Actions and published on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) — the source is open.
+Stable releases are built by GitHub Actions and published on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Unpublished PR candidates are available only as Actions artifacts.
 
 | Platform | Format | Download |
 |:--|:--|:--|
@@ -111,6 +121,10 @@ Every build is produced by GitHub Actions and published on [GitHub Releases](htt
 | **Windows** | `.exe` (NSIS) — x64 | [Yuzora-windows-x64-setup.exe](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe) |
 
 The Windows `.msi` installer and past versions live on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Linux is used as a CI/test host only and is not a supported Yuzora desktop release platform.
+
+Starting with v0.0.9, the macOS App requires Apple Silicon. Intel macOS remote Hosts remain supported.
+
+macOS downloads are **not Apple Developer ID signed or notarized**. Gatekeeper may warn or block the first launch. Download from the official release above, then use macOS **System Settings → Privacy & Security → Open Anyway** if offered after the first launch attempt. Windows may show SmartScreen because Authenticode signing is not enabled. Stable updates still verify Tauri updater signatures.
 
 ## Tech stack
 
@@ -150,14 +164,14 @@ bun install
 bun run tauri:build
 ```
 
-This local build deliberately disables updater artifacts and release signing, so it does not
-require production secrets. Official macOS release installers are Developer ID signed and
-notarized only in the protected release workflow; see `docs/operations.md` for the platform gates.
+This local build disables updater artifacts and signing, so it does not require production
+secrets. Stable releases retain updater signatures; macOS Apple signing and notarization are
+not enabled. See [the operations guide](docs/operations.md) for release and verification steps.
 
-> The product animation and screenshots in this README and on the
-> [website](https://nakiriyuuzu.github.io/Yuzora/) are rendered programmatically by the
-> [Remotion](https://www.remotion.dev) project in [`site-remotion/`](site-remotion/),
-> with design tokens aligned 1:1 to the app itself.
+> README and [website](https://github.yuuzu.net/Yuzora/) media are rendered by
+> [Remotion](https://www.remotion.dev) from recordings of the current AppShell demo.
+> The recordings use sample data, not a live host. Sources and repeatable render
+> commands are in [`site-remotion/`](site-remotion/).
 
 <br />
 
@@ -171,7 +185,7 @@ notarized only in the protected release workflow; see `docs/operations.md` for t
 
 <sub>
 
-[Source](https://github.com/NakiriYuuzu/Yuzora) · [Issues](https://github.com/NakiriYuuzu/Yuzora/issues) · [Releases](https://github.com/NakiriYuuzu/Yuzora/releases) · [Website](https://nakiriyuuzu.github.io/Yuzora/)
+[Source](https://github.com/NakiriYuuzu/Yuzora) · [Issues](https://github.com/NakiriYuuzu/Yuzora/issues) · [Releases](https://github.com/NakiriYuuzu/Yuzora/releases) · [Website](https://github.yuuzu.net/Yuzora/)
 
 </sub>
 

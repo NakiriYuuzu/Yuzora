@@ -67,7 +67,7 @@ Required CI checks：
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生／Unix host installer payload gate |
-| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、Stable macOS Developer ID signing／notarization、Beta macOS unsigned 建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
+| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 四平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Pages    | `.github/workflows/deploy-pages.yml` | `main` 上官網／Demo 來源、建置設定、依賴或 workflow 變更；手動 dispatch | 安裝依賴、產生官網角色、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
@@ -93,22 +93,13 @@ Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可�
 
 Yuzora 有兩種不同的簽章邊界，不得混為一談。
 
-### Stable macOS workflow 合約：Developer ID signing／notarization
+### macOS workflow 合約：不使用 Apple 簽章／公證
 
-每個正式發布的 Stable macOS installer 都必須取得下列 GitHub Actions secrets：
+v0.0.9 發布政策依使用者明確授權：macOS App 僅 Apple Silicon，不使用 Apple Developer ID 簽章、notarization 或 stapling。Release 不取得 Apple credentials、不建立 signing keychain，也不將缺少 Apple secrets 當成發布阻礙。macOS linker 可能保留執行所需的 ad-hoc signature；它不代表 Apple 發行者身分或 Gatekeeper 信任。
 
-- `APPLE_CERTIFICATE`：base64 編碼的 Developer ID Application `.p12`。
-- `APPLE_CERTIFICATE_PASSWORD`：該 `.p12` 的匯出密碼。
-- `APPLE_SIGNING_IDENTITY`：完整的 `Developer ID Application: ...` identity。
-- `APPLE_ID`：供 notarization 使用的 Apple ID。
-- `APPLE_PASSWORD`：Apple ID 的 app-specific password，不是一般登入密碼。
-- `APPLE_TEAM_ID`：Apple Developer Team ID。
+Stable 使用一般 `bun tauri build --ci`，保留 Tauri updater signing secrets 與 updater artifacts，且不設定 Apple signing identity。**不可使用 `--no-sign`**：Tauri CLI 2.11.4 會一併略過 updater signatures，導致正式 metadata／publish gate 失敗。Beta 與候選版仍以 `--no-sign` 建置並停用 updater artifacts。
 
-Stable macOS release runner 會先檢查六項值皆非空且 identity 類型正確，再將 `.p12` 匯入 repository 外的暫時 keychain。Tauri build 必須完成 Developer ID signing、Apple notarization 與 stapling；產物上傳前還會逐項執行 strict `codesign`、核對 `Authority=Developer ID Application` 與 `TeamIdentifier`、執行 Gatekeeper `spctl`，並以 `xcrun stapler validate` 驗證 `.app` 與 `.dmg`。任何一步失敗都會阻止 artifact 上傳與 Publish；暫時 certificate 與 keychain 在成功或失敗後都會清除。
-
-此處描述的是 Stable fail-closed workflow 合約，不代表目前 GitHub repository 已完成 secret provisioning，也不代表任何尚未跑過該 workflow 的既有 artifact 已簽章。首次啟用或輪替 credentials 後，必須以實際 release run 的 macOS 驗證 step 與下載後 Gatekeeper smoke test 作為證據。Beta macOS 與 PR CI candidate 則刻意以 `--no-sign` 建置，不取得 Apple secrets；Beta 可作為清楚標示風險的 GitHub Pre-release 手動下載，candidate 仍不得發布或交付一般使用者。
-
-2026-09-10 查證：repository secret 名稱清單只有兩項 Tauri updater secrets，尚無上述六項 Apple secrets；Stable build job 未指定 GitHub Environment。v0.0.9 正式發布前必須完成 Apple credentials provisioning，再以正式 build 驗證；未簽章 candidate 成功不代表此 gate 已通過。
+README 與當版 release notes 必須說明 macOS 未經 Apple 簽章／公證，Gatekeeper 可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「仍要打開」流程操作。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
 
 ### 已啟用：Tauri updater artifact signing
 
@@ -132,7 +123,7 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 ### 尚未啟用：Windows 作業系統平台簽章
 
 - Windows Authenticode code signing 尚未啟用。
-- Updater artifact signature 不會消除 Windows SmartScreen 警告；Stable macOS Gatekeeper 信任必須由上述 Developer ID／notarization gate 獨立證明，Beta macOS 不具備此信任。
+- Updater artifact signature 不會消除 Windows SmartScreen 或 macOS Gatekeeper 提示；目前兩平台都沒有作業系統發行者簽章，macOS 也沒有公證。
 
 ### 目前仍需人工補強的 gate
 
@@ -162,9 +153,9 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - Beta 只接受 `X.Y.Z-beta.N`；不以 `rc`、build metadata 或其他自訂 suffix 表示 Beta。
 - Beta 不得更新 stable `latest.json`、`releases/latest` 或產品頁固定下載入口。
 - Beta 只發布供手動下載的 installer，必須停用 updater artifacts，不產生 `latest.json` 或 updater `.sig`，也不存取 updater 或 Apple signing secrets。Beta macOS installer 刻意 unsigned，必須在 release notes 揭露 Gatekeeper 警告、缺少 notarization 與無法驗證發行者身分的風險；不得將 Beta assets 升級為 Stable 或固定下載別名。
-- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9-beta.3`（`0.0.2307`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 都停用 updater artifacts並清空 updater endpoints；Beta macOS 另以 `--no-sign` 停用 OS signing，Stable build 則保留 OS signing、updater signing、stable endpoint 與 updater artifacts。
+- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9-beta.3`（`0.0.2307`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 都停用 updater artifacts並清空 updater endpoints；Beta macOS 另以 `--no-sign` 停用 OS signing，Stable build 保留 updater signing、stable endpoint 與 updater artifacts，但不啟用 Apple OS signing／notarization。
 - PR candidate 是未簽章、未發布的 Actions artifact，用於 merge 前驗證；它不是 Beta Release。
-- `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持 updater signing、macOS Developer ID signing／notarization、metadata、固定下載別名與 `--latest`；Beta 使用獨立 no-updater／no-sign build／publish path，固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
+- `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持 updater signing、metadata、固定下載別名與 `--latest`；Beta 使用獨立 no-updater／no-sign build／publish path，固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
 
 ### PR 必須包含
 
@@ -226,7 +217,7 @@ Remove-Item Env:GITHUB_REF_NAME
 
 - 三份 product version 與 tag contract 一致。
 - `CHANGELOG.md` 存在對應版本且內容非空。
-- Stable：Updater signing、macOS Developer ID signing／notarization、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
+- Stable：Updater signing、macOS 無 Apple 簽章／公證、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
 - Beta：macOS 明確 `--no-sign`、`prerelease=true`、沒有 updater 或 Apple signing secrets、沒有 updater artifacts／`.sig`／`latest.json`／stable aliases，release notes 揭露 unsigned 風險，且 publish command 不含 `--latest`。
 
 另外確認遠端 `v${VERSION}` tag 與同版本 GitHub Release 都不存在。若已存在 Published Release，不能重用 version；若存在 draft，Release guard 會先強制確認其 tag SHA 與成功的 `main` CI SHA 完全一致，否則 fail closed。符合的 same-SHA draft 只視為前次嘗試留下的可修復狀態：workflow 仍會重新建置 macOS／Windows、修復同一 draft 的 notes 與 assets，再重新通過完整發布 gate。
@@ -396,7 +387,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 `fail-fast: false`，單一平台失敗不會中止其他平台：
 
-- Stable macOS Apple Silicon：僅 Apple Silicon（M 系列）；Developer ID signed／notarized，產生 `.dmg`、`.app.tar.gz` 與 updater signature。
+- Stable macOS Apple Silicon：僅 Apple Silicon（M 系列）；無 Apple Developer ID 簽章／公證，產生 `.dmg`、`.app.tar.gz` 與 updater signature。
 - macOS App 主程式以 `lipo -archs` 驗證必須只有 `arm64`。CLI 產出的 `Yuzora.app.tar.gz` 與 `.sig` 在收集發布 artifacts 時成對命名為 `Yuzora_<version>_aarch64.app.tar.gz` 與 `.sig`，供 metadata 以版本和架構精確比對。
 - Stable Windows x64：本機產生 NSIS `setup.exe`、`.msi` 與 MSI updater signature。
 - Beta macOS／Windows：產生供手動下載的 versioned installers，但不產生 updater archive、`latest.json` 或 `.sig`，且 build environment 不含 updater signing secrets 與 contents-write token；macOS 以 `--no-sign` 建置且無 Developer ID／notarization，Windows 仍無 Authenticode。
@@ -456,7 +447,7 @@ Release workflow 的 automated publish gate 是 blocking gate；Stable 的 macOS
 - macOS DMG 掛載、安裝與首次啟動。
 - Windows NSIS／MSI 安裝；OTA 預期路徑以 MSI 為準。
 - 從上一個 stable 版本執行 updater smoke test。
-- 確認 release notes 已揭露尚未啟用 Windows Authenticode 的警告；Stable 記錄 macOS Developer ID／notarization 驗證結果，Beta 則記錄 unsigned／Gatekeeper 警告的實機結果。
+- 確認 release notes 已揭露 Windows Authenticode 與 macOS Apple 簽章／公證未啟用；記錄 Gatekeeper／SmartScreen 與首次啟動的實機結果。
 
 若人工驗收發現 regression，不覆寫已發布 tag 或 artifacts；立即建立 incident Issue，必要時隱藏受影響 Release，並透過新的 patch release PR 修正。平台驗收結果、Release URL、測試平台與診斷證據回填 release Issue。
 
@@ -606,6 +597,8 @@ gh variable delete YUZORA_BETA_ACCEPTANCE_URL --repo NakiriYuuzu/Yuzora
 ### 功能影片與 still 重製
 
 原始碼位於 `site-remotion/`；render commands 與 composition 規則見 `site-remotion/README.md`，實際 media naming 以 `site-remotion/src/Root.tsx`、`site/app.js` 與 `tests/site-page.test.js` 為準。
+
+README 圖片與動畫使用新版 AppShell Demo 錄製素材，與 Pages 共用 Remotion compositions；不可沿用舊手繪 Hero。更新錄製後，在 repo root 依序執行 `bun scripts/render-site-media.ts` 與 `bun scripts/render-readme-media.ts`，重新產生六張 README PNG、兩個 21 秒 GIF，並同步 Pages posters。抽查中英文的終端機、Git diff 與 SQL 結果畫面，確認圖片沒有落在對話框或操作過渡幀。
 
 ```bash
 cd site-remotion
