@@ -1,4 +1,4 @@
-import { revealItemInDir } from "@tauri-apps/plugin-opener"
+import { revealPathInSystem } from "@/lib/revealPath"
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 import type { EditorView } from "@codemirror/view"
 import type { MouseEvent as ReactMouseEvent } from "react"
@@ -494,7 +494,7 @@ export async function executeLegacyContextMenuAction(
         return deleteEntry(request.path, request.isDirectory, request.workspacePath)
     }
     if (request.kind === "file" && actionId === "cmReveal") {
-        await revealItemInDir(request.path)
+        await revealPathInSystem(request.path)
         return CONTEXT_MENU_COMPLETED
     }
 

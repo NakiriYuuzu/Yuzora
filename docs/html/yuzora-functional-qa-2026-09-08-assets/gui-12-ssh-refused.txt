@@ -1,0 +1,38 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 container 新增資料夾
+				4 heading 新增資料夾, Value: 2
+					5 text 新增資料夾
+				6 text 選擇資料夾所在的位置。
+				7 tab group (selectable)
+					8 tab (selectable) 本地
+					9 tab (selected) 遠端
+				10 container 錯誤
+					11 button QA Loopback qa@127.0.0.1, Help: qa@127.0.0.1:22229
+					12 text 錯誤
+					13 button 編輯 QA Loopback
+					14 button 移除 QA Loopback
+				15 button 新增主機
+				16 text 無法連線到 127.0.0.1:22229：Connection refused (os error 61)
+				17 container
+					18 text 近期資料夾
+					19 button /private/tmp/yuzora-functional-qa-20260908/QA-A 本地
+					20 button /Users/yuuzu/Documents 本地
+					21 button /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora 本地
+				22 button 取消
+				23 button (disabled) 開啟資料夾
+				24 button Close
+	25 close button
+	26 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	27 minimize button
+28 menu bar
+	29 Yuzora Current QA
+	30 File
+	31 Edit
+	32 View
+	33 Window
+	34 Help
+
+The focused UI element is 2 HTML content Description: Yuzora, URL: localhost:1420/

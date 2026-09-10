@@ -1,0 +1,219 @@
+{
+  "time": "2026-09-10T00:26:27.2495028+08:00",
+  "candidate": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8",
+  "installed": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora",
+  "files": [
+    {
+      "path": "yuzora.exe",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\yuzora.exe",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\yuzora.exe",
+      "newHash": "DF3F6A73ABD21288022165541421DB9185BAE8F09B6F604A0B9EA759D070F076",
+      "oldHash": "E07E71B93AFB9D3DC79012DC8A8FDD0810407D781CC79B154797F490FF6B8EEE",
+      "changed": true
+    },
+    {
+      "path": "herdr\\LICENSE-HERDR.txt",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\LICENSE-HERDR.txt",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\LICENSE-HERDR.txt",
+      "newHash": "C71D239DF91726FC519C6EB72D318EC65820627232B2F796219E87DCF35D0AB4",
+      "oldHash": "C71D239DF91726FC519C6EB72D318EC65820627232B2F796219E87DCF35D0AB4",
+      "changed": false
+    },
+    {
+      "path": "herdr\\windows-x86_64\\herdr.exe",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\windows-x86_64\\herdr.exe",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "newHash": "9B3BF49F94C2D09B1D62E11171B132865768DAFC36B1327FB946C0CEF9CA0D00",
+      "oldHash": "9B3BF49F94C2D09B1D62E11171B132865768DAFC36B1327FB946C0CEF9CA0D00",
+      "changed": false
+    },
+    {
+      "path": "herdr\\windows-x86_64\\conpty\\conpty.dll",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\windows-x86_64\\conpty\\conpty.dll",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\conpty\\conpty.dll",
+      "newHash": "39FBA2713E2495117B1591AE8C32A3B904BEA7AA66069CF7815E2844C76D75D8",
+      "oldHash": "39FBA2713E2495117B1591AE8C32A3B904BEA7AA66069CF7815E2844C76D75D8",
+      "changed": false
+    },
+    {
+      "path": "herdr\\windows-x86_64\\conpty\\herdr-conpty.json",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\windows-x86_64\\conpty\\herdr-conpty.json",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\conpty\\herdr-conpty.json",
+      "newHash": "C8F499AD82C568E737D6BC7D0B583E3785D2F43AF3D2C0CEBB856076690533F5",
+      "oldHash": "C8F499AD82C568E737D6BC7D0B583E3785D2F43AF3D2C0CEBB856076690533F5",
+      "changed": false
+    },
+    {
+      "path": "herdr\\windows-x86_64\\conpty\\arm64\\OpenConsole.exe",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\windows-x86_64\\conpty\\arm64\\OpenConsole.exe",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\conpty\\arm64\\OpenConsole.exe",
+      "newHash": "ED7622FD0D3BEDC9AB9F122F5E58EDF0DEF9E7999224F52DD395BA9F54EDBE09",
+      "oldHash": "ED7622FD0D3BEDC9AB9F122F5E58EDF0DEF9E7999224F52DD395BA9F54EDBE09",
+      "changed": false
+    },
+    {
+      "path": "herdr\\windows-x86_64\\conpty\\x64\\OpenConsole.exe",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\windows-x86_64\\conpty\\x64\\OpenConsole.exe",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\conpty\\x64\\OpenConsole.exe",
+      "newHash": "B7FD936C2668B87B9ECF7B3366DC6568AFC1C6F981874CBA3E955A1C35CF8160",
+      "oldHash": "B7FD936C2668B87B9ECF7B3366DC6568AFC1C6F981874CBA3E955A1C35CF8160",
+      "changed": false
+    },
+    {
+      "path": "herdr\\windows-x86_64\\THIRD-PARTY-NOTICES\\Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\windows-x86_64\\THIRD-PARTY-NOTICES\\Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\THIRD-PARTY-NOTICES\\Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+      "newHash": "5D177F23ECFEB0EA8E050B6A5A16355E1AE9A0B286436CA8F83ED08B3795BE6B",
+      "oldHash": "5D177F23ECFEB0EA8E050B6A5A16355E1AE9A0B286436CA8F83ED08B3795BE6B",
+      "changed": false
+    },
+    {
+      "path": "herdr\\windows-x86_64\\THIRD-PARTY-NOTICES\\Microsoft.Windows.Console.ConPTY-NOTICE.md",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\herdr\\windows-x86_64\\THIRD-PARTY-NOTICES\\Microsoft.Windows.Console.ConPTY-NOTICE.md",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\THIRD-PARTY-NOTICES\\Microsoft.Windows.Console.ConPTY-NOTICE.md",
+      "newHash": "E7FBAADEE6AB20C28B87730A510EE5F5815D8FB4BD88D1D54D282DC2A74C0726",
+      "oldHash": "E7FBAADEE6AB20C28B87730A510EE5F5815D8FB4BD88D1D54D282DC2A74C0726",
+      "changed": false
+    },
+    {
+      "path": "host\\LICENSE-HERDR.txt",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\LICENSE-HERDR.txt",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\LICENSE-HERDR.txt",
+      "newHash": "C71D239DF91726FC519C6EB72D318EC65820627232B2F796219E87DCF35D0AB4",
+      "oldHash": "C71D239DF91726FC519C6EB72D318EC65820627232B2F796219E87DCF35D0AB4",
+      "changed": false
+    },
+    {
+      "path": "host\\linux-aarch64.json",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\linux-aarch64.json",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\linux-aarch64.json",
+      "newHash": "09359323A8D6FF149C93448E2CCF731D88CC0E219E8D5AF2FC5FF59226A25992",
+      "oldHash": "09359323A8D6FF149C93448E2CCF731D88CC0E219E8D5AF2FC5FF59226A25992",
+      "changed": false
+    },
+    {
+      "path": "host\\linux-x86_64.json",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\linux-x86_64.json",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\linux-x86_64.json",
+      "newHash": "94473C31279856B884A66091E8F0FCA08530B60B0C73BD690373F602CB5A1859",
+      "oldHash": "94473C31279856B884A66091E8F0FCA08530B60B0C73BD690373F602CB5A1859",
+      "changed": false
+    },
+    {
+      "path": "host\\macos-aarch64.json",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\macos-aarch64.json",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\macos-aarch64.json",
+      "newHash": "B67D9BD8C3FE73200A930CD98623989B9BD6FE525DCB7B2B56D8CCE9B3FF0D64",
+      "oldHash": "B67D9BD8C3FE73200A930CD98623989B9BD6FE525DCB7B2B56D8CCE9B3FF0D64",
+      "changed": false
+    },
+    {
+      "path": "host\\macos-x86_64.json",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\macos-x86_64.json",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\macos-x86_64.json",
+      "newHash": "6A5617CE37B81BCDCFF7ACA0343A10DDB5716178A2C17883FED199CBA4EDAF70",
+      "oldHash": "6A5617CE37B81BCDCFF7ACA0343A10DDB5716178A2C17883FED199CBA4EDAF70",
+      "changed": false
+    },
+    {
+      "path": "host\\linux-aarch64\\herdr",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\linux-aarch64\\herdr",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\linux-aarch64\\herdr",
+      "newHash": "9C8DB20FB7E7427B138D5367113F1621FFD319F2F65D6F009E2594029115F0D2",
+      "oldHash": "9C8DB20FB7E7427B138D5367113F1621FFD319F2F65D6F009E2594029115F0D2",
+      "changed": false
+    },
+    {
+      "path": "host\\linux-aarch64\\yuzora-host",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\linux-aarch64\\yuzora-host",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\linux-aarch64\\yuzora-host",
+      "newHash": "445705A22D4031F8B92909277AB9F0A20693A3A59260317399657C41DC2BE007",
+      "oldHash": "445705A22D4031F8B92909277AB9F0A20693A3A59260317399657C41DC2BE007",
+      "changed": false
+    },
+    {
+      "path": "host\\linux-x86_64\\herdr",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\linux-x86_64\\herdr",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\linux-x86_64\\herdr",
+      "newHash": "4FA1A01158DD8043DA92D31B270780B0DCC10603038D9B61CAC4D81AB63FB71F",
+      "oldHash": "4FA1A01158DD8043DA92D31B270780B0DCC10603038D9B61CAC4D81AB63FB71F",
+      "changed": false
+    },
+    {
+      "path": "host\\linux-x86_64\\yuzora-host",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\linux-x86_64\\yuzora-host",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\linux-x86_64\\yuzora-host",
+      "newHash": "A1A7BB051FC098D70C0F9483050696FA6A9E800E5AAA120C2A94427B026D1BB0",
+      "oldHash": "A1A7BB051FC098D70C0F9483050696FA6A9E800E5AAA120C2A94427B026D1BB0",
+      "changed": false
+    },
+    {
+      "path": "host\\macos-aarch64\\herdr",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\macos-aarch64\\herdr",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\macos-aarch64\\herdr",
+      "newHash": "32B53DF09872628059C789A69F02A6B8E29E14DDF26711421F3463F70C1AEF17",
+      "oldHash": "32B53DF09872628059C789A69F02A6B8E29E14DDF26711421F3463F70C1AEF17",
+      "changed": false
+    },
+    {
+      "path": "host\\macos-aarch64\\yuzora-host",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\macos-aarch64\\yuzora-host",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\macos-aarch64\\yuzora-host",
+      "newHash": "05736D6FB6BDE0278D529411CDAC7CCF742A1B8EDE219E30C31D79F13DEFF48D",
+      "oldHash": "05736D6FB6BDE0278D529411CDAC7CCF742A1B8EDE219E30C31D79F13DEFF48D",
+      "changed": false
+    },
+    {
+      "path": "host\\macos-x86_64\\herdr",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\macos-x86_64\\herdr",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\macos-x86_64\\herdr",
+      "newHash": "D0C920B2A126A74809FA1491411C9A097A44786CAC9C2CA51B818A995581CF16",
+      "oldHash": "D0C920B2A126A74809FA1491411C9A097A44786CAC9C2CA51B818A995581CF16",
+      "changed": false
+    },
+    {
+      "path": "host\\macos-x86_64\\yuzora-host",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\host\\macos-x86_64\\yuzora-host",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\host\\macos-x86_64\\yuzora-host",
+      "newHash": "D84DBAF8C528472A7CEF95ED13F0A89FA63396B2D71AF8980F43CA479E8E1483",
+      "oldHash": "D84DBAF8C528472A7CEF95ED13F0A89FA63396B2D71AF8980F43CA479E8E1483",
+      "changed": false
+    },
+    {
+      "path": "legacy-cleanup\\cleanup-windows-registration.ps1",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\legacy-cleanup\\cleanup-windows-registration.ps1",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\legacy-cleanup\\cleanup-windows-registration.ps1",
+      "newHash": "2DAF527BE267807614D7ADDBAA0E99A66A4223544FAA00B3277185983E09A6F5",
+      "oldHash": "2DAF527BE267807614D7ADDBAA0E99A66A4223544FAA00B3277185983E09A6F5",
+      "changed": false
+    },
+    {
+      "path": "legacy-cleanup\\cleanup-wsl-adapter.sh",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\legacy-cleanup\\cleanup-wsl-adapter.sh",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\legacy-cleanup\\cleanup-wsl-adapter.sh",
+      "newHash": "A0C2DEA86AAA53F9329461D5E52B4A8E0A965703F97F10F2145D9E74A6AA2D61",
+      "oldHash": "A0C2DEA86AAA53F9329461D5E52B4A8E0A965703F97F10F2145D9E74A6AA2D61",
+      "changed": false
+    },
+    {
+      "path": "legacy-cleanup\\README.md",
+      "source": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-7aa7cf8\\legacy-cleanup\\README.md",
+      "target": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\legacy-cleanup\\README.md",
+      "newHash": "DB02AA47A9BBCD79D61A11D6FFF66DBC75EA5ADC71E7E2B4DCBF4C2FE9EEE36A",
+      "oldHash": "DB02AA47A9BBCD79D61A11D6FFF66DBC75EA5ADC71E7E2B4DCBF4C2FE9EEE36A",
+      "changed": false
+    }
+  ],
+  "processes": [
+    {
+      "Id": 25576,
+      "ProcessName": "herdr",
+      "StartTime": "2026-09-09T23:05:36.6743916+08:00"
+    },
+    {
+      "Id": 20164,
+      "ProcessName": "yuzora",
+      "StartTime": "2026-09-09T23:40:46.6488804+08:00"
+    }
+  ]
+}

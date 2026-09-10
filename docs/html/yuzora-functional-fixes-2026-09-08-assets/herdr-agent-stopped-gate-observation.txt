@@ -1,0 +1,2 @@
+Manual GUI observation recorded during this repair session: selecting stopped yuzora-provider-r7 disabled creation of Agent, terminal and Space; restored All afterward.
+The separate herdr-agent-stopped-gate.txt is only a CUA accessibility diff with no changes and is not sufficient standalone proof of disabled items.

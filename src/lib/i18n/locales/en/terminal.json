@@ -17,5 +17,8 @@
   "defaultFont": "Default",
   "fontFallbackHint": "JetBrains Mono is bundled. Other fonts must be installed on this device; unavailable fonts use a monospace fallback. Chinese and Japanese use system fallbacks.",
   "fontPreview": "Terminal text preview",
-  "fontPreviewSample": "Traditional Chinese 繁體中文 · Japanese 日本語 · 0123456789"
+  "fontPreviewSample": "Traditional Chinese 繁體中文 · Japanese 日本語 · 0123456789",
+  "copyOnSelect": "Copy on selection",
+  "copyOnSelectDescription": "Automatically copy terminal text when you finish dragging a selection. Turn off to copy manually.",
+  "clipboardPasteFailed": "Could not paste clipboard image: {{message}}"
 }

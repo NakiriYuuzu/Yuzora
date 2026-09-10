@@ -3,7 +3,7 @@
 // read/write mirrors sshStore's persistence shape (no persist middleware): the
 // store is the authoritative in-memory copy, localStorage the durable mirror.
 
-import { sanitizeSpaceCharacter, type SpaceCharacterConfig } from "@/app/workbench/space-character"
+import { randomSpaceCharacter, sanitizeSpaceCharacter, type SpaceCharacterConfig } from "@/app/workbench/space-character"
 import { create } from "zustand"
 
 import { canonicalPathKey } from "@/lib/paths"
@@ -152,6 +152,8 @@ interface RecentWorkspacesStore {
     record: (path: string) => void
     setMoveOpenedWorkspaceToTop: (enabled: boolean) => void
     presentationFor: (path: string) => RecentWorkspacePresentation | undefined
+    /** Assign a durable random identity only to Spaces with no saved appearance. */
+    ensureSpacePresentations: (keys: string[]) => void
     updatePresentation: (path: string, patch: Partial<RecentWorkspacePresentation>) => void
     /** Drop `path` and its presentation metadata without touching the folder. */
     remove: (path: string) => void
@@ -185,6 +187,23 @@ export const useRecentWorkspacesStore = create<RecentWorkspacesStore>()((set, ge
     },
 
     presentationFor: (path) => get().presentations[path.startsWith("space:") ? path : canonicalPathKey(path)],
+
+    ensureSpacePresentations: (keys) => {
+        const presentations = { ...get().presentations }
+        let changed = false
+        for (const key of keys) {
+            if (presentations[key]) continue
+            presentations[key] = {
+                avatarMode: "character",
+                character: randomSpaceCharacter(),
+                color: RECENT_WORKSPACE_COLOR_IDS[Math.floor(Math.random() * RECENT_WORKSPACE_COLOR_IDS.length)]
+            }
+            changed = true
+        }
+        if (!changed) return
+        saveRecentWorkspacePresentations(presentations)
+        set({ presentations })
+    },
 
     updatePresentation: (path, patch) => {
         const key = path.startsWith("space:") ? path : canonicalPathKey(path)

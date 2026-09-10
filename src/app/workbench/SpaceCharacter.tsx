@@ -1,3 +1,4 @@
+import { useState, type CSSProperties } from "react";
 import type { SpaceCharacterConfig } from "./space-character";
 
 /** Original modular avatar art inspired by soft shapes and minimal faces.
@@ -11,9 +12,20 @@ export function SpaceCharacter({
   portrait?: boolean;
 }) {
   const { shell, face, detail } = character;
+  // Keep each companion's independent rhythm stable across parent re-renders.
+  const [motionStyle] = useState(() => ({
+    "--character-blink-duration": `${4 + Math.random() * 3}s`,
+    "--character-blink-phase": `${-Math.random() * 7}s`,
+    "--character-look-duration": `${9 + Math.random() * 6}s`,
+    "--character-look-phase": `${-Math.random() * 15}s`,
+    "--character-body-duration": `${5 + Math.random() * 4}s`,
+    "--character-body-phase": `${-Math.random() * 9}s`,
+    "--character-body-animation": ["character-bob", "character-sway", "character-nod"][Math.floor(Math.random() * 3)],
+  }) as CSSProperties);
   return (
     <span
       className="space-character-art"
+      style={motionStyle}
       data-shell={shell}
       data-face={face}
       data-detail={detail}
@@ -56,7 +68,6 @@ export function SpaceCharacter({
                   strokeLinecap="round"
                 >
                   <path d="M24 44q5-9 10 0M46 44q5-9 10 0" />
-                  <path d="M37 52q3 3 6 0" strokeWidth="2.2" />
                 </g>
               )}
               {face === "sleepy" && (
@@ -68,6 +79,11 @@ export function SpaceCharacter({
                   <path d="m25 42 9 1m12 0 9-1" />
                 </g>
               )}
+            </g>
+            <g className="character-mouth" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              {face === "curious" && <path d="M37 53q3 4 6 0" />}
+              {face === "smile" && <path d="M35 52q5 7 10 0" />}
+              {face === "sleepy" && <ellipse cx="40" cy="54" rx="2.5" ry="1.5" />}
             </g>
           </g>
         </svg>

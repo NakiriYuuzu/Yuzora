@@ -1,0 +1,5 @@
+There has been no change in the accessibility tree for Window: "Yuzora".
+Selected:
+	1 menu Herdr Session：yuzora-provider-r7, Secondary Actions: Cancel
+
+Note: Pay special attention to the content selected by the user. If the user asks a question or refers to the content they are looking at on-screen, they might be referring to the selected content (but they might be referring to something else that's visible, too).

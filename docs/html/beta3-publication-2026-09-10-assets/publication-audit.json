@@ -1,0 +1,30 @@
+{
+  "tag": "v0.0.9-beta.3",
+  "sourceCommit": "c3472730b7a705ca796ac5197ccaf13472e18c51",
+  "publishedAt": "2026-09-10T02:07:49Z",
+  "url": "https://github.com/NakiriYuuzu/Yuzora/releases/tag/v0.0.9-beta.3",
+  "prerelease": true,
+  "stableLatest": "v0.0.8",
+  "stableAssetsUnchanged": true,
+  "stableUpdaterUnchanged": true,
+  "assets": [
+    {
+      "name": "Yuzora_0.0.9-beta.3_universal.dmg",
+      "size": 108281654,
+      "sha256": "031a0c9ca1cd4bf8483fbc4411c7517a3e63d8268419b399b4ab79598f114dd5",
+      "url": "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.9-beta.3/Yuzora_0.0.9-beta.3_universal.dmg"
+    },
+    {
+      "name": "Yuzora_0.0.9-beta.3_x64-setup.exe",
+      "size": 56767442,
+      "sha256": "00cd16f56abe5944f5947f122678fc75bf86e7847aef3947ddb484d18b0724bf",
+      "url": "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.9-beta.3/Yuzora_0.0.9-beta.3_x64-setup.exe"
+    },
+    {
+      "name": "Yuzora_0.0.9-beta.3_x64_en-US.msi",
+      "size": 82804736,
+      "sha256": "395b95964314d39333c4ef5b37b9f4f5c33a1d28e920be6583120572774216e9",
+      "url": "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.9-beta.3/Yuzora_0.0.9-beta.3_x64_en-US.msi"
+    }
+  ]
+}

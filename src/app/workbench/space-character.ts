@@ -14,6 +14,15 @@ export const DEFAULT_SPACE_CHARACTER: SpaceCharacterConfig = {
   detail: "none",
 };
 
+export function randomSpaceCharacter(): SpaceCharacterConfig {
+  return {
+    shell: CHARACTER_SHELLS[Math.floor(Math.random() * CHARACTER_SHELLS.length)],
+    face: CHARACTER_FACES[Math.floor(Math.random() * CHARACTER_FACES.length)],
+    detail: CHARACTER_DETAILS[Math.floor(Math.random() * CHARACTER_DETAILS.length)],
+    motion: true,
+  };
+}
+
 export function sanitizeSpaceCharacter(
   value: unknown,
 ): SpaceCharacterConfig | undefined {

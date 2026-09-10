@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora 單一 Runtime／Remote Provider 實作檢查點</title>
+<style>
+:root{color-scheme:light;--ink:#152c39;--muted:#4d626e;--line:#d4dedf;--paper:#f1f4f2;--accent:#075f63}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.7 system-ui,"PingFang TC",sans-serif}main{max-width:1080px;margin:48px auto;padding:0 24px 64px}header{border-top:5px solid var(--accent);padding:28px 0}h1{font-size:34px;line-height:1.25;margin:12px 0}h2{font-size:22px;margin-top:0}section{background:white;border:1px solid var(--line);padding:24px;margin:20px 0}p{max-width:90ch}a{color:var(--accent)}.meta{color:var(--muted);font-size:13px}.status{display:inline-block;padding:4px 10px;border:1px solid #bd8c42;background:#fff5df;color:#71480d}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line)}th{background:#edf4f2}code{font-size:12px;overflow-wrap:anywhere}li{margin:8px 0}.scroll{overflow:auto}@media(max-width:650px){main{padding:0 14px}h1{font-size:27px}section{padding:16px}}@media print{body{background:white}main{margin:0}section{break-inside:avoid}a{color:inherit}}
+</style></head>
+<body><main>
+<header><div class="meta">2026-09-07 更新 · 最新完成建置 r22 Mac App；Windows r22 尚待端點恢復 · 版本號仍為 0.0.9-beta.3</div>
+<h1>單一 Runtime 與 Remote Provider</h1>
+<span class="status">實作與驗收進行中；尚未達完整替代版發行門檻</span>
+<p>本檢查點記錄新架構的程式變更、當次測試與仍待完成的實機流程。r19／r20／r21／r22 是本次驗收建置標記，不是新 release tag。未提交、推送或正式發布。</p></header>
+<section><h2>已接入的架構</h2>
+<div class="scroll"><table><thead><tr><th>範圍</th><th>實作內容</th><th>驗收邊界</th></tr></thead><tbody>
+<tr><td>Runtime／主機</td><td>Host identity、RuntimeKey、WSL／SSH transport、typed yuzora-host、版本與雜湊驗證、每主機連線與 generation。</td><td>Windows 採 Linux payload；HERDR 使用官方 0.8.2／protocol 20。</td></tr>
+<tr><td>ADE／Terminal</td><td>跨主機 Session、Agent／Attention 彙整，官方 observe／control connector，事件訂閱與重連。</td><td>Agent native restore 必須另以官方 integration 實測，不能用 layout restore 代替。</td></tr>
+<tr><td>Workspace</td><td>共用資料夾入口、host canonical root、工作區文件 URI、Files／Editor、安全儲存、Git／worktree、LSP。</td><td>Agent cwd 不改寫 Files root；遠端 dirty buffer 與 revision 按工作區隔離。</td></tr>
+<tr><td>SFTP／Preview／DB</td><td>手動上下載與直接編輯，來源端靜態 Preview policy、loopback tunnel，網路 DB driver／TLS endpoint 分離，遠端 SQLite 獨立 lane。</td><td>純 SFTP 不啟動 helper；沒有本地儲存自動部署。</td></tr>
+<tr><td>移除與遷移</td><td>Windows-native HERDR／WSL Agent Plugin 舊路徑移除；身分遷移、受控清理與四平台 helper payload 納入打包。</td><td>保留使用者 runtime、hooks、session 資料；執行中程序不宣稱可跨環境搬移。</td></tr>
+</tbody></table></div></section>
+<section><h2>2026-09-07 接續驗收：r19／r20／r21／r22</h2>
+<p>仍未達完整替代版。r19 helper 已完成四平台重建；r20 加入 Terminal 輸入合併；r21 加入過期 LSP 診斷範圍檢查；r22 修正近期遠端資料夾入口在未連線時的主機重連、SFTP／Runtime 選擇與 WSL hostId／根目錄保留。版本字串仍為 0.0.9-beta.3，r 編號僅是本輪驗收產物識別，不代表正式發布。</p>
+<ul><li>主機更新：背景 heartbeat 與 setup 會協調資源釋放，保留重複更新／取消／身分變更保護。4 個新增競態測試通過。</li>
+<li>WSL 環境：真實 ps 顯示舊 probe 的 bash 處於 T 狀態；改用獨立 session 後，Ubuntu hello 約 0.29 秒、Debian 約 0.25 秒，stderr 無 fallback。舊版約 5.3 秒後 fallback。</li>
+<li>Linux watcher：新增真實程序測試，以舊 r18 helper 重现 read-access invalidation 失敗；r19 在 Oracle／Ubuntu／Debian 全通過，讀取不觸發變更，寫入仍回報 owned events。</li>
+<li>Oracle LSP：r19 可一鍵安裝 vtsls，顯示 TypeScript 型別錯誤、補全與穩定 dirty buffer。復原並儲存後另發現過期診斷越界；r21 已加保護及 5 個回歸測試，GUI 實測維持 vtsls Ready。</li>
+<li>Terminal：r18 GUI 快速輸入曾漏字，8 格 stream 佇列不足以逐字元送出。r20 將未送文字合併、限制待傳 UTF-8 bytes，失敗時停止並顯示訊息；5 個新增測試涵蓋順序、溢位、取消與不重送。</li>
+<li>近期遠端資料夾：r22 對 disconnected SSH 重用密碼／金鑰與 host-key 流程，保留 canonical root；SFTP 不啟動 helper；WSL 僅接受 discovery 中相同 hostId 的 WSL2 發行版。11 個 UI 回歸測試涵蓋取消登入、缺失主機、跨主機延遲結果與 WSL identity。</li></ul>
+<p>新增 r22 證據：<a href="yuzora-runtime-provider-implementation-2026-09-06-assets/yuzora-folder-picker-r22.log">Folder picker tests</a> · <a href="yuzora-runtime-provider-implementation-2026-09-06-assets/yuzora-front-r22.log">frontend</a> · <a href="yuzora-runtime-provider-implementation-2026-09-06-assets/macos-r22-executable.sha256">Mac executable hash</a>。測試原始證據：<a href="yuzora-runtime-provider-implementation-2026-09-06-assets/yuzora-wsl-stdio-r19.log">雙 WSL</a> · <a href="yuzora-runtime-provider-implementation-2026-09-06-assets/yuzora-oracle-stdio-r19.log">Oracle</a> · <a href="yuzora-runtime-provider-implementation-2026-09-06-assets/yuzora-oracle-read-access-r18-red.log">舊版重現</a> · <a href="yuzora-runtime-provider-implementation-2026-09-06-assets/runtime-r19-manifests.json">四平台雜湊清單</a></p>
+</section><section><h2>本輪實機問題與修正</h2><ol>
+<li><strong>主機短暫忙碌被判成斷線：</strong>Oracle UI 曾出現 <code>host-call-limit</code>，但來源 helper 的 <code>layout.export</code> 成功。SSH HERDR 呼叫改為最多 8 個執行中、32 個總在途，等待最多 15 秒；開始與交付前重新驗證 generation。忙碌的 heartbeat／inventory 保留最後有效狀態。</li>
+<li><strong>Terminal connector 在 topology refresh 中被重建：</strong>保留已掛載的 fallback／BSP terminal，避免更新時先清掉畫面而觸發 control takeover。已加入可重現的回歸測試。</li>
+<li><strong>信任失敗訊息被對話框隱藏：</strong>grant 成功前維持 dialog，等待中阻止重複確認；回應失敗只查狀態，不重送 grant。未成功時保留錯誤與新 challenge，過期回應不干擾新工作區。授權後重新偵測 Git 與重啟工作區 LSP。</li>
+<li><strong>App 退出時 SSH stream Drop panic：</strong>russh 的 channel Drop 需要 Tokio context；HostConnection 保存 executor handle，讓原生 UI thread 釋放 stream 時進入原 context。已加入原生執行緒釋放測試。</li>
+<li><strong>文件與 Session 隔離：</strong>接受遠端內容時一起更新 revision；Terminal／Inspector／context menu 使用 host-scoped Session lookup，binary 診斷依主機隔離。</li>
+</ol></section>
+<section><h2>已取得的測試證據</h2><div class="scroll"><table><thead><tr><th>證據</th><th>結果</th><th>適用範圍</th></tr></thead><tbody>
+<tr><td>r22 全前端</td><td>209 files／2,649 passed</td><td>當次完整前端來源。</td></tr>
+<tr><td>r22 typecheck／lint</td><td>typecheck 通過；0 errors／53 warnings</td><td>沒有新增 lint errors。</td></tr>
+<tr><td>r16 目標回歸</td><td>58 passed；Rust host_service 3 passed</td><td>信任、忙碌狀態、Terminal refresh、佇列與 UI thread Drop。</td></tr>
+<tr><td>r19 helper</td><td>548 unit passed／1 ignored；17 integration passed；clippy 無 warnings</td><td>獨立 helper protocol、Git、檔案、stream、SQLite。</td></tr>
+<tr><td>先前新架構實測</td><td>雙 WSL2 distro 檔案／owner 隔離；SQLite／SFTP／DB tunnel fixture 通過</td><td>作為分項證據保留；不代替 r16 安裝包 GUI 驗收。</td></tr>
+<tr><td>Oracle r16／r17 GUI</td><td>工作區信任落盤、Git diff、Terminal pwd、SQLite schema 與 3 筆中文查詢結果</td><td>r17 Terminal 無 fallback；LSP 正確顯示 missing，但 npm 只存在登入互動 shell PATH，r18 修正中。</td></tr>
+<tr><td>r19 Desktop Rust</td><td>396 unit passed／3 ignored；SQLite integration 1 passed／1 ignored；check／fmt／clippy 90 diagnostics baseline 通過</td><td>r16 額外 DB tunnel、SQLite proxy、真實 SFTP 程序測試共 3 項通過。</td></tr>
+<tr><td>r16 退出生命週期</td><td>下次啟動 previous_run_unclean=false；Oracle HERDR PID 675477 仍在執行</td><td>驗證 App 釋放自身資源且保留 HERDR。</td></tr>
+</tbody></table></div><p class="meta">r17 macOS App 與 Windows MSI／NSIS 已建置，Windows payload verifier 確認包含四平台 Unix runtime 且沒有 Windows HERDR bridge。r19 helper 已完成並經三個 Linux 端點程序驗證，r22 Mac App 已重建並以新 executable inode 啟動；Windows r22 source delta 已產生，但 Windows SSH 端點在重建時回報 Host is down，未宣稱新安裝包已驗證。GUI 啟動需在 bundle 完成後，並比對執行檔 inode，避免啟動時仍持有前一建置。</p></section>
+<section><h2>尚未解除的發行門檻</h2><ul>
+<li>最新產物仍需完整重跑 Oracle GUI 流程，特別是 LSP 安裝／診斷、Preview、worktree、Agent 與斷線重連。</li>
+<li>新 Windows MSI／NSIS 安裝後，Ubuntu 與 Debian WSL2 的完整 GUI 驗收。</li>
+<li>SSH macOS、原生 Linux／macOS 與純 SFTP 的最終端到端矩陣。</li>
+<li>Pi／Claude／Codex 的真實 working／idle／blocked、observe／control／takeover、斷線重連與官方 native Session restore 分項證據。</li>
+<li>跨主機同名 Session／terminal／路徑、檔案衝突與中斷、WebSocket Preview、DB TLS hostname／取消、負載與退出生命週期。</li>
+</ul><p>上述全部通過後，才可標示為完整替代版。舊 beta.3 報告不能作為新架構全通過證據。</p></section>
+<footer class="meta">架構權威：<a href="../../.yuuzu/adr/0003-single-unix-runtime-remote-provider.html">ADR-0003</a> · <a href="../../.yuuzu/CONTEXT.html">Domain Context</a></footer>
+</main></body></html>

@@ -5820,6 +5820,7 @@ dependencies = [
  "heck 0.5.0",
  "http",
  "http-range",
+ "image",
  "jni 0.21.1",
  "libc",
  "log",
@@ -7929,7 +7930,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora"
-version = "0.0.9-beta.3"
+version = "0.0.9"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -7944,6 +7945,9 @@ dependencies = [
  "libc",
  "notify",
  "notify-debouncer-mini",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "objc2-web-kit",
  "rand",
  "rusqlite",
@@ -7980,7 +7984,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-host"
-version = "0.0.9-beta.3"
+version = "0.0.9"
 dependencies = [
  "base64 0.23.1",
  "chrono",

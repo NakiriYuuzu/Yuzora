@@ -1,0 +1,120 @@
+[
+  {
+    "id": "QA26-002",
+    "priority": "P1",
+    "status": "CONFIRMED_GUI",
+    "caseId": "G037",
+    "title": "新建 Herdr 分頁時，命名對話框的輸入流入背景 shell",
+    "source": "src/app/panels/HerdrTerminalPage.tsx:773",
+    "steps": "新增Herdr terminal→命名dialog出現→直接鍵入qa_focus_probe→取消",
+    "expected": "輸入應進名稱欄位且不影響shell",
+    "actual": "dialog開啟時focus在背景Terminal input；名稱仍QA-A，取消後shell命令列出現qa_focus_probe（未按Enter執行）；第二次新建同樣聚焦背景terminal，連續2/2重現。",
+    "impact": "對話框出現後直接鍵入名稱，文字卻進背景命令列；連續 2/2 重現。測試未按 Enter 執行 probe。",
+    "cause": "背景 terminal 的 safeFocus 與 Dialog autoFocus 可能競爭；精確時序仍待修復時驗證。",
+    "next": "新建 terminal、立即打字、Enter、Escape、延遲連線等情境均須確保 dialog 焦點隔離。",
+    "evidence": [
+      "gui-15-tab-rename-focus",
+      "gui-16-rename-text-in-shell",
+      "gui-19-rename-focus-repeat"
+    ]
+  },
+  {
+    "id": "QA26-003",
+    "priority": "P1",
+    "status": "CONFIRMED_GUI",
+    "caseId": "G031",
+    "title": "現行工作面無法到達新增 Agent 功能",
+    "source": "src/app/AppShell.tsx:399",
+    "steps": "Session menu／Space menu／列尾／命令面板尋找新Agent",
+    "expected": "應能由現行工作面新增Agent",
+    "actual": "只可新增terminal；source確認新sidebar未掛NewAgentDialog，舊ProjectNavPanel無production mount",
+    "impact": "Session、Space、列尾與命令面板均找不到建立 Agent 入口，阻斷後續 Agent 生命週期測試。",
+    "cause": "現行 AppShell → SpaceAgentSidebar → SpaceAgentTree 使用 HerdrLauncher；HerdrNewAgentDialog 只由舊 HerdrNavContent 掛載。",
+    "next": "現行 sidebar 掛載建立入口後，重測 kind/cwd、pending、重複送出、失敗重試及 Agent 狀態。",
+    "evidence": []
+  },
+  {
+    "id": "QA26-004",
+    "priority": "P2",
+    "status": "CONFIRMED_GUI",
+    "caseId": "G036",
+    "title": "Inspector 行數欄位逐鍵輸入被過早限制",
+    "source": "src/app/workbench/HerdrAgentInspector.tsx:202",
+    "steps": "Ctrl/Cmd+A後鍵入120，再次鍵入80",
+    "expected": "分別維持120、80",
+    "actual": "120變500；80變200，逐鍵輸入遭過早clamp",
+    "impact": "全選後鍵入 120 得到 500；鍵入 80 得到 200，無法正常輸入合法值。",
+    "cause": "onChange 每個字元立即 clamp 到 20–500，破壞尚未完成的數字輸入。",
+    "next": "驗證空白、逐鍵 20/80/120/500、超界、貼上、blur 與 Enter。",
+    "evidence": [
+      "gui-14-inspector-number"
+    ]
+  },
+  {
+    "id": "QA26-005",
+    "priority": "P2",
+    "status": "CONFIRMED_GUI",
+    "caseId": "G011",
+    "title": "非 Git 資料夾顯示 raw untrustedWorkspace 錯誤",
+    "source": "src/workbench/WorkspaceTrustHost.tsx:43",
+    "steps": "QA 新資料夾→Git→重試",
+    "expected": "顯示可行動的信任/非儲存庫提示",
+    "actual": "反覆顯示 raw untrustedWorkspace JSON/challengeId；重試只換 challenge，沒有信任對話框",
+    "impact": "QA-A 沒有 .git；Git 區顯示含 canonicalPath/challengeId 的原始 JSON，重試只換 challenge。",
+    "cause": "Trust host 對 repoPresent !== true 不發起授權；非 repo 空態與錯誤處理不一致。這不是「所有新 repo 都不能授權」的證據。",
+    "next": "非 repo 應顯示可理解的空態；另測真正未信任 repo 的授權與取消流程。",
+    "evidence": [
+      "gui-08-untrusted-git-retry"
+    ]
+  },
+  {
+    "id": "QA26-006",
+    "priority": "P2",
+    "status": "CONFIRMED_GUI",
+    "caseId": "G028",
+    "title": "Preview 內頁連結未同步網址與返回歷史",
+    "source": null,
+    "steps": "localhost Home→點Next連結",
+    "expected": "網址與Back應同步內頁",
+    "actual": "iframe已 /next，網址仍root，Back disabled；輸入網址導航則可Back",
+    "impact": "Home 點 Next 後子頁是 /next，外部網址仍是 root，返回按鈕禁用；直接輸入網址的歷史正常。",
+    "cause": "GUI 已確認；尚未完整追蹤 native webview 導航事件到外層狀態的路徑。",
+    "next": "補測連結、重新導向、SPA navigation、Back/Forward 與重新整理。",
+    "evidence": [
+      "gui-13-preview-history"
+    ]
+  },
+  {
+    "id": "QA26-007",
+    "priority": "P2",
+    "status": "CONFIRMED_GUI",
+    "caseId": "G044",
+    "title": "Herdr pane 縮放狀態未反映在 Yuzora 佈局",
+    "source": "src/app/panels/HerdrTerminalPage.tsx:542",
+    "steps": "上下split→下pane右鍵縮放→官方pane layout查詢",
+    "expected": "zoomed=true時僅顯示焦點pane",
+    "actual": "runtime輸出zoomed:true；Yuzora仍顯示兩個50/50 panes；renderNode(layout.root)未使用zoomed",
+    "impact": "向下 split 後點縮放，官方 pane layout 回報 zoomed:true，畫面仍保留兩個 50/50 pane。",
+    "cause": "contextMenuDefs.ts:993 送出 pane zoom；HerdrTerminalPage 直接 renderNode(layout.root)，未使用 layout.zoomed 決定顯示範圍。",
+    "next": "驗證 zoom on/off、上下及左右分割、焦點變更、重連與兄弟 pane shell 保留。",
+    "evidence": [
+      "gui-20-zoom-ignored"
+    ]
+  },
+  {
+    "id": "QA26-001",
+    "status": "INTERMITTENT_UNRESOLVED",
+    "title": "Herdr fake connector 建立偶發逾時",
+    "source": "src-tauri/host/src/herdr_service.rs:7519",
+    "firstRun": "113 passed / 1 failed: timeout: Herdr CLI timed out",
+    "exactRepeat": "1 passed",
+    "suiteRepeat": "114 passed",
+    "impact": "本輪 helper suite 非穩定全綠。尚未證實 live runtime 有同樣問題。",
+    "cause": "未確認；不定性為 resize 或 release 缺陷。",
+    "repro": "cd src-tauri && cargo test --locked --manifest-path host/Cargo.toml --lib herdr_service::tests::fake_connector_control_resize_and_release -- --exact --nocapture",
+    "priority": "P2",
+    "caseId": null,
+    "next": "調查首次 open_terminal 建立逾時；保留首次失敗與兩次重跑證據。",
+    "evidence": []
+  }
+]

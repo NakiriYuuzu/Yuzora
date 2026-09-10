@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora · 側欄動畫與展開圖示修正</title>
+<style>body{margin:0;background:#fbfaf6;color:#2e2c28;font:15px/1.8 system-ui,"PingFang TC",sans-serif}main{max-width:920px;margin:auto;padding:40px 28px}h1{font-size:28px;line-height:1.4}h2{font-size:20px;margin-top:28px}small{color:#626059}a{color:#514488}code{font-size:13px;overflow-wrap:anywhere}li{margin:8px 0}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid #ddd9cf}</style>
+<main>
+<small>2026-09-08 · Desktop production 修正 · GUI 尚未驗收</small>
+<h1>恢復側欄動畫，對齊中央分頁列</h1>
+<p>手機 UI 暫停。本次只處理桌面兩側側欄展開／收合與展開按鈕，保留既有側欄背景設定、palette、原生視窗拖曳／雙擊功能。</p>
+<p><a href="http://127.0.0.1:4321/output/ui-rollout/index.html?theme=light&amp;accent=violet">開啟桌面測試頁</a>（真實 React 元件搭配 mock IPC，沒有連接 live Herdr）。</p>
+<h2>原因與變更</h2>
+<table><tr><th>Source 支持的原因</th><th>本次修正</th></tr>
+<tr><td>側欄 width 直接切換到 0，內容使用 hidden 立即退出版面。</td><td>外框寬度與 resize handle 使用既有 220ms／ease-out。內層保持使用者選定的寬度，外框裁切，退出後才隱藏可見內容。aria-hidden／inert 立即生效，元件維持掛載。</td></tr>
+<tr><td>原生左側展開鈕沿用 Logo 的 top:21px，未依中央 44px 分頁列置中；分割按鈕另外使用 7px bottom padding。</td><td>收合時兩側展開鈕 top:16.5px，依分頁列外框計算中心；28px target、16px SVG、padding:0。移除分割按鈕偏移，使其與分頁保持同一中心。</td></tr>
+<tr><td>收合後插入中央分頁列的 padding 與 resize handle 會跳變。</td><td>預留空間與側欄使用同一動畫節奏；拖曳期間 duration 為 0，取消或失去 pointer capture 後恢復。reduced motion 停用過渡。</td></tr></table>
+<h2>實際驗證</h2>
+<ul>
+<li>Production build 通過；新增測試後再次通過兩份 TypeScript config 檢查。</li>
+<li>AppShell、AppShell.layout、panels、EditorArea、TabBar：5 個測試檔、86 項既有測試通過。</li>
+<li>補充側欄 resize cancel／lost capture、收合後移出 Tab 順序、寬度與 focus 保留驗證後，AppShell.layout 的 9 項測試通過（新增 1 項）。</li>
+<li>本次 TSX 檔案的 ESLint：0 errors、1 個既有 set-state-in-effect warning；git diff --check 通過。</li>
+<li>4321 fixture HTTP 200；fixture 改用本次編譯 CSS，build 已同步至 dist。1420 dev server 與 target/debug/yuzora process 可見；未透過 GUI 刷新或操作原生 App。</li>
+</ul>
+<h2>待實機驗證</h2>
+<p>依使用者本次提供的 AGENTS.md，在 browser／GUI 自動化前必須取得明確肯定回覆；已詢問但尚未取得。因此沒有執行本次瀏覽器／原生自動化，也沒有 screenshot 或視覺 PASS。</p>
+<p>待確認：light／dark、背景開／關、1440／1280／1024 與 200% zoom；兩側連續反向展開／收合、拖曳調寬、reduced motion；macOS native traffic lights 與中央展開鈕的實際中心；多 pane 終端機／Editor 在動畫期間的 resize 流暢度及 focus。jsdom 不足以證明上述視覺與 runtime 行為。</p>
+<h2>變更位置與證據</h2>
+<ul>
+<li><code>src/app/AppShell.tsx</code>：resize 生命週期、保持側欄內層寬度與 resize handle 掛載。</li>
+<li><code>src/app/workbench/workbench-shell.css</code>：過渡、裁切、圖示對齊與 reduced motion。</li>
+<li><code>src/workbench/EditorArea.tsx</code>：分頁列分割按鈕置中。</li>
+<li><code>src/app/AppShell.layout.test.tsx</code>：resize／收合後的互動與焦點檢查。</li>
+<li><code>output/sidebar-motion/</code>：修改前副本、build、tests.log、layout-tests.log、typecheck.log、lint.log。</li>
+</ul>
+<small>本次開始 HEAD：711342825480a2edd5eb79005554ce828177e245。保留原有 dirty 工作，未 stage／commit／push。</small>
+</main></html>

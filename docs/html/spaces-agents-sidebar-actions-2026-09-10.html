@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spaces 與 Agents 側邊欄操作調整</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 880px; margin: 48px auto; padding: 0 24px; line-height: 1.8; }
+    h1 { line-height: 1.35; } h2 { margin-top: 32px; font-size: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #8886; vertical-align: top; }
+    code { overflow-wrap: anywhere; } .meta { color: #888; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Spaces 與 Agents 側邊欄操作調整</h1>
+    <p class="meta">2026-09-10 · 實作與驗證紀錄</p>
+    <p>Spaces 與 Agents 標題、目前 Herdr Session 範圍與新增功能整合為卡片。每個 Session 可獨立收合或展開 Spaces，各分支右側的「＋」用來新增 terminal。</p>
+    <h2>操作變更</h2>
+    <table>
+      <thead><tr><th>位置</th><th>完成行為</th></tr></thead>
+      <tbody>
+        <tr><td>Spaces 與 Agents 卡片</td><td>顯示「全部 Herdr Sessions」或目前主機與 Session 名稱。下拉選單負責切換範圍與重新整理。</td></tr>
+        <tr><td>卡片右側「＋」</td><td>提供「開啟資料夾並建立 Space」與「加入 Herdr Session」。Session 視窗保留已連線清單，並提供 SSH 遠端主機與 Windows 的 WSL 入口，可連接其他主機再載入其既有 Session。</td></tr>
+        <tr><td>Session 標題列</td><td>每個 Session 都有獨立的收合／展開按鈕，只影響該 Session 的 Spaces；空 Session 按鈕停用。移除「已載入快照」與 All 的 runtime namespace 提示，保留錯誤／斷線資訊。</td></tr>
+        <tr><td>分支列</td><td>右側常駐「＋」，使用該分支所屬的主機、Session 與 Space。開啟後沿用既有 terminal 分頁與命名流程。</td></tr>
+        <tr><td>空 Session</td><td>沿用指定主機的資料夾選擇器，按鈕名稱同步為「開啟資料夾並建立 Space」。</td></tr>
+        <tr><td>鍵盤操作</td><td>保留樹狀方向鍵導覽，聚焦分支後可使用 Tab 移到新增按鈕；按鈕提供主機／Session 與分支名稱。</td></tr>
+      </tbody>
+    </table>
+    <h2>建立流程</h2>
+    <p>使用既有 activateSpace 完成切換與未儲存內容確認，再檢查選取目標與 runtime 能力。取消切換或目標改變時不建立 terminal。處理期間停用重複建立；錯誤顯示於側邊欄。離線、不相容或缺少建立能力的 Session 停用「＋」。</p>
+    <p>加入 Herdr Session 時先重新整理既有清單。SSH 頁籤沿用 HostList，可新增／編輯主機與使用既有密碼、金鑰及主機驗證流程；連線後沿用 hostStore.setup 與 RuntimeSourceFields 設定 Herdr，重新整理並只列出所選主機的 Sessions。已連線的 runtime 可直接載入，不重複部署主機工具。</p>
+    <p>Windows 的 WSL 頁籤先檢查原有 opt-in 設定，再探索發行版；WSL1 無法選取。原本的已連線清單仍可選取本機或已連線遠端主機的 Session。停止中的 Session 無法載入；成功後更新卡片與樹狀清單，失敗則保留視窗與錯誤。</p>
+    <h2>驗證</h2>
+    <ul>
+      <li>5 個測試檔、65 項測試通過：HerdrSessionPicker、Space／terminal 建立、樹狀導覽、Session 狀態及面板整合。</li>
+      <li>回歸測試先確認舊視窗缺少 SSH 遠端主機入口，再驗證補回後的新增主機、密碼驗證入口、主機設定、Session 隔離、不相容錯誤、舊 SSH transport 拒用、WSL opt-in／WSL2 與關閉後的延遲回應。</li>
+      <li><code>bun run build</code> 通過，包含型別檢查。Vite 回報 chunk 大小與既有 remotePreviewUrl 匯入方式警告。</li>
+      <li>本次 Session 選擇與遠端主機修正的程式及測試 lint 無錯誤、無警告。</li>
+      <li><code>git diff --check</code> 通過。</li>
+      <li>尚未執行真實 SSH／WSL 連線，以及瀏覽器／E2E 或桌面實機視覺驗證；使用者提供的 AGENTS.md 要求瀏覽器／E2E 事先取得明確同意。</li>
+    </ul>
+    <h2>修改範圍</h2>
+    <p><code>AppShell.tsx</code>、<code>HerdrLauncher.tsx</code>、<code>HerdrSessionPicker.tsx</code>、<code>SpaceAgentTree.tsx</code>、相關測試、<code>space-agent-sidebar.css</code> 與兩個語系的 <code>spaceTree.json</code>。沿用現有 shadcn Card、Button、DropdownMenu、Dialog、Field、Select、Tabs 與 ScrollArea，未新增 UI primitive 或套件。</p>
+    <p>保留工作目錄原有修改；未執行 Git staging、commit 或 push。</p>
+  </main>
+</body>
+</html>

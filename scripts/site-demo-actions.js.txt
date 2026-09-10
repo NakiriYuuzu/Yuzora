@@ -1,0 +1,56 @@
+// Run via playwright-cli run-code --filename after video-start.
+// The video language and feature are selected by the current page URL.
+async (page) => {
+  const params = await page.evaluate(() => Object.fromEntries(new URLSearchParams(location.search)));
+  const lang = params.lang === 'en' ? 'en' : 'zh';
+  const feature = params.capture || 'ade-herdr';
+  const root = __REPO_ROOT__;
+  const scene = id => page.locator(`[data-demo-scene="${id}"]`).click();
+  await page.locator('.workbench-logomark path').first().waitFor();
+  await page.waitForTimeout(700);
+  if (feature === 'ade-herdr') {
+    await scene('terminal');
+    await page.waitForTimeout(1000);
+    await page.screenshot({path:`${root}/site/assets/ade-herdr-runtime-${lang}.png`});
+    await page.locator('.xterm-helper-textarea').first().click();
+    await page.keyboard.type('bun test',{delay:110});
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1500);
+    await scene('editor');
+    await page.waitForTimeout(1500);
+    await page.locator('button[aria-controls=workbench-spaces]').click();
+    await page.waitForTimeout(1000);
+    await page.locator('button[aria-controls=workbench-spaces]').click();
+    await scene('terminal');
+  } else if (feature === 'terminal-git') {
+    await scene('git');
+    await page.waitForTimeout(1000);
+    await page.screenshot({path:`${root}/site/assets/terminal-git-${lang}.png`});
+    await page.getByRole('radio',{name:lang==='en'?'Unified':'整合',exact:true}).click();
+    await page.waitForTimeout(1700);
+    await page.getByRole('radio',{name:lang==='en'?'Split':'分割',exact:true}).click();
+    await page.waitForTimeout(1700);
+    await scene('terminal');
+    await page.locator('.xterm-helper-textarea').first().click();
+    await page.keyboard.type('git status',{delay:100});
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1500);
+    await scene('git');
+  } else {
+    await scene('database');
+    await page.waitForTimeout(1000);
+    await page.getByRole('button',{name:lang==='en'?'Run All':'執行全部 statements',exact:false}).click();
+    await page.getByText(lang==='en'?'3 rows':'3 筆',{exact:true}).waitFor();
+    await page.screenshot({path:`${root}/site/assets/remote-db-${lang}.png`});
+    await page.waitForTimeout(2000);
+    await scene('appearance');
+    await page.getByRole('radio',{name:lang==='en'?'Violet':'紫羅蘭',exact:true}).click();
+    await page.waitForTimeout(1400);
+    await page.getByRole('radio',{name:lang==='en'?'Dark':'深色',exact:true}).click();
+    await page.waitForTimeout(1600);
+    await page.getByRole('button',{name:lang==='en'?'Close settings':'關閉設定',exact:true}).click();
+    await page.waitForTimeout(1700);
+  }
+  await page.waitForTimeout(1800);
+  return {feature,lang};
+}

@@ -729,6 +729,8 @@ async fn assert_postgres_boundary(connection: &IntegrationConnection, row_count:
 
 async fn run_postgres() {
     ensure_query_helper_bin();
+    scenario(Engine::Postgres, "paused-page-helper-backpressure");
+    postgres_paused_page_keeps_helper_memory_bounded().await;
     const HOST: &str = "127.0.0.1";
     const PORT: u16 = 55432;
     const DATABASE: &str = "yuzora_p8";
@@ -2414,4 +2416,70 @@ async fn database_integration_matrix() {
             Engine::Mssql => run_mssql().await,
         }
     }
+}
+
+/// Keep unread rows in PostgreSQL while the UI is parked on the first page.
+/// Run before the other PostgreSQL scenarios so their helper processes do not
+/// contribute to this measurement. SQLite fixtures run inside this process.
+async fn postgres_paused_page_keeps_helper_memory_bounded() {
+    use std::time::Duration;
+    ensure_query_helper_bin();
+    let runtime = IntegrationRuntime::default();
+    let connection = runtime
+        .open_postgres(
+            "postgres-backpressure",
+            "127.0.0.1",
+            55432,
+            "yuzora_p8",
+            "yuzora_full",
+            database_password(Engine::Postgres),
+            true,
+            true,
+        )
+        .await
+        .expect("open PostgreSQL backpressure fixture");
+    let run = connection
+        .run_primary(
+            "postgres-backpressure-large",
+            "SELECT repeat('x', 8192) FROM generate_series(1, 16384)",
+        )
+        .await
+        .expect("read only the first page of a 128 MiB result");
+    let session = first_result_session(&run);
+    assert_eq!(session.initial_page.rows.len(), 500);
+    assert!(session.initial_page.has_next);
+    let parent = sysinfo::Pid::from_u32(std::process::id());
+    let mut peak = 0;
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let system = sysinfo::System::new_all();
+        let children: Vec<_> = system
+            .processes()
+            .values()
+            .filter(|process| process.parent() == Some(parent))
+            .collect();
+        assert!(
+            !children.is_empty(),
+            "the query helper must still be running"
+        );
+        peak = peak.max(children.iter().map(|process| process.memory()).sum::<u64>());
+    }
+    // Leave ample room for TLS/runtime startup and one decoded 500-row page;
+    // retaining the full unread result in an unbounded queue exceeds this cap.
+    let bounded = peak < 64 * 1024 * 1024;
+    eprintln!("PostgreSQL paused-page helper peak RSS: {peak} bytes");
+    connection
+        .release_result(session.owner)
+        .await
+        .expect("release paused PostgreSQL result");
+    let next = connection
+        .run_primary("postgres-backpressure-reuse", "SELECT 42")
+        .await
+        .expect("reuse connection after release");
+    assert_eq!(first_result_session(&next).initial_page.rows.len(), 1);
+    connection.close().expect("close PostgreSQL fixture");
+    assert!(
+        bounded,
+        "paused helper eagerly retained unread rows: peak={peak}"
+    );
 }

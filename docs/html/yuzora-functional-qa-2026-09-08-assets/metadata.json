@@ -1,0 +1,39 @@
+{
+  "updatedAt": "2026-09-08T08:16:55.350Z",
+  "permission": "granted",
+  "verdict": "NOT_COMPLETE",
+  "guiCaseCount": 49,
+  "guiCounts": {
+    "PASS": 41,
+    "PASS_WITH_TOOL_LIMITATION": 1,
+    "FAIL": 6,
+    "PARTIAL": 1
+  },
+  "plannedCaseCount": 108,
+  "plannedCounts": {
+    "PASS": 26,
+    "PARTIAL": 33,
+    "NOT_RUN": 20,
+    "BLOCKED_ENV": 16,
+    "FAIL": 3,
+    "PASS_WITH_TOOL_LIMITATION": 1,
+    "INCONCLUSIVE": 1,
+    "BLOCKED_PRODUCT": 5,
+    "BLOCKED_GIT_PERMISSION": 3
+  },
+  "confirmedGuiFindings": 6,
+  "intermittentFindings": 1,
+  "version": "0.0.9-beta.3",
+  "head": "711342825480a2edd5eb79005554ce828177e245",
+  "runtime": "Herdr 0.9.0 / protocol 22",
+  "binarySHA256": "a7d0966bf8b793a9118420037f8c6c15a221000f07e3226ca33ecc2e0b5a2b73",
+  "scope": "GUI testing and diagnosis; no product source fixes",
+  "residue": [
+    "QA Alpha Space 與 QA-A / QA-Second 兩個重現用 shell 保留；第三個分頁與上下 QA panes 已 exit。",
+    "意外建立的 Documents Space 已由 UI 關閉；Documents 資料夾未修改。",
+    "QA SQLite profile 離線保留；QA Loopback SSH profile 已移除。",
+    "自建 watcher probe 已清理；其餘 fixtures 保留於 /tmp/yuzora-functional-qa-20260908。",
+    "App wrapper 與 Vite 維持啟動，方便使用者查看；Preview fixture server 127.0.0.1:34329 亦保留供重現。",
+    "設定已還原 System/Lime/Follow system/Editor13/minimap off/Terminal12；視窗經縮放，未保證恢復精確原始尺寸。"
+  ]
+}

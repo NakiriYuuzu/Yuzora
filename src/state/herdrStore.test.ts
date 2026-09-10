@@ -15,7 +15,8 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalCreate: vi.fn(),
   herdrTerminalRelease: vi.fn(),
   herdrWorkspaceFocus: vi.fn(),
-  herdrWorkspaceCreate: vi.fn()
+  herdrWorkspaceCreate: vi.fn(),
+  herdrWorktreeList: vi.fn()
 }))
 
 vi.mock("@/lib/workspaceActions", () => ({
@@ -35,7 +36,8 @@ import {
   herdrTerminalCreate,
   herdrTerminalRelease,
   herdrWorkspaceCreate,
-  herdrWorkspaceFocus
+  herdrWorkspaceFocus,
+  herdrWorktreeList
 } from "@/lib/herdrIpc"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
@@ -293,6 +295,10 @@ describe("herdrStore", () => {
     vi.mocked(herdrSessions).mockReset().mockResolvedValue(sessions)
     vi.mocked(herdrCapabilities).mockReset().mockResolvedValue(caps)
     vi.mocked(herdrSnapshot).mockReset().mockResolvedValue(rawSnapshot)
+    vi.mocked(herdrWorktreeList).mockReset().mockResolvedValue({
+      source: { repoKey: "k", repoName: "yuzora", repoRoot: "/Users/me/yuzora", sourceCheckoutPath: "/Users/me/yuzora" },
+      worktrees: []
+    })
     vi.mocked(herdrTabFocus).mockReset().mockResolvedValue(undefined)
     vi.mocked(herdrTabRename).mockReset().mockResolvedValue(undefined)
     vi.mocked(herdrTerminalCreate).mockReset()
@@ -590,6 +596,34 @@ describe("herdrStore", () => {
     expect(useWorkspaceStore.getState().groups[0].tabs.map((item) => item.terminalId)).toEqual(["term-2", "term-3"])
     expect(useWorkspaceStore.getState().groups[0].activePath).toBe("yuzora://herdr/default/term-2")
     expect(useUiStore.getState().mode).toBe("ade")
+  })
+
+  it.each(["space", "agent"])("opens the host-canonical non-Git pane directory on explicit %s selection", async (selection) => {
+    const external = structuredClone(rawSnapshot)
+    Object.assign(external.snapshot.workspaces[0], { worktree: undefined })
+    Object.assign(external.snapshot.panes[0], { cwd: "/Users/me/plain-folder" })
+    vi.mocked(herdrSnapshot).mockResolvedValue(external)
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    expect(useHerdrStore.getState().spaces()[0].path).toBeNull()
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    const result = selection === "space"
+      ? await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-1", path: null })
+      : await useHerdrStore.getState().activateAgent(useHerdrStore.getState().agents()[0])
+    expect(result).toEqual({ ok: true })
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/me/plain-folder", { skipUnsavedGuard: true })
+  })
+
+  it("keeps worktree scans off repeated agent snapshot refreshes", async () => {
+    vi.mocked(herdrWorktreeList).mockResolvedValue({ source: { repoKey: "k", repoName: "yuzora", repoRoot: "/Users/me/yuzora", sourceCheckoutPath: "/Users/me/yuzora", sourceWorkspaceId: "ws-1" }, worktrees: [] })
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const scansAfterBootstrap = vi.mocked(herdrWorktreeList).mock.calls.length
+    expect(scansAfterBootstrap).toBeGreaterThan(0)
+    for (let i = 0; i < 10; i++) await useHerdrStore.getState().refreshSnapshot("default")
+    expect(herdrWorktreeList).toHaveBeenCalledTimes(scansAfterBootstrap)
+    await useHerdrStore.getState().refreshWorktreeInventory("default")
+    expect(vi.mocked(herdrWorktreeList).mock.calls.length).toBeGreaterThan(scansAfterBootstrap)
   })
 
   it("Space activation shows its active terminal before the bridge poll", async () => {

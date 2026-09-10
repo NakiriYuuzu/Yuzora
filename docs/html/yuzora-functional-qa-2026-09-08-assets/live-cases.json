@@ -1,0 +1,532 @@
+[
+  {
+    "id": "G001",
+    "feature": "啟動",
+    "steps": "相同 current debug binary + 暫存 App wrapper 啟動",
+    "expected": "可操作並載入 runtime",
+    "actual": "App 可操作；original raw binary 無法由 CUA 定位，wrapper SHA 相同",
+    "status": "PASS",
+    "evidence": [
+      "gui-01-initial"
+    ],
+    "time": "2026-09-08T07:38:06.074Z"
+  },
+  {
+    "id": "G002",
+    "feature": "HERDR Session",
+    "steps": "default→stopped yuzora-provider-r7→default",
+    "expected": "stopped 顯示舊資料且可返回",
+    "actual": "stopped 操作禁用，default 可返回",
+    "status": "PASS",
+    "evidence": [
+      "gui-02-stopped-session"
+    ],
+    "time": "2026-09-08T07:38:06.075Z"
+  },
+  {
+    "id": "G003",
+    "feature": "HERDR Space",
+    "steps": "從資料夾建立 QA-A",
+    "expected": "Space 根目錄及 terminal cwd 正確",
+    "actual": "QA-A 建立，pwd 為 /private/tmp/yuzora-functional-qa-20260908/QA-A",
+    "status": "PASS",
+    "evidence": [
+      "gui-03-qa-space"
+    ],
+    "time": "2026-09-08T07:38:06.076Z"
+  },
+  {
+    "id": "G004",
+    "feature": "HERDR 輸入",
+    "steps": "多行 Unicode 貼上+Enter",
+    "expected": "兩行依序執行，Unicode 完整",
+    "actual": "Unicode 顯示正常；CUA paste 報 clipboard timeout 但文字已交付，直接 typeText 非 ASCII 不可靠",
+    "status": "PASS_WITH_TOOL_LIMITATION",
+    "evidence": [
+      "gui-04-terminal-paste"
+    ],
+    "time": "2026-09-08T07:38:06.076Z"
+  },
+  {
+    "id": "G005",
+    "feature": "HERDR layout",
+    "steps": "右 split→左右輸入 marker→右 exit 7→左 echo shell var",
+    "expected": "兄弟退出不殺死存活 shell",
+    "actual": "右 pane 自動收合，左 shell 仍輸出 left_keep",
+    "status": "PASS",
+    "evidence": [
+      "gui-05-pane-survives-exit"
+    ],
+    "time": "2026-09-08T07:38:06.076Z"
+  },
+  {
+    "id": "G006",
+    "feature": "Markdown",
+    "steps": "開 QA Markdown→勾 task one→存檔→切原始碼",
+    "expected": "表格/task/code/Unicode 保留",
+    "actual": "磁碟 [x] task one 正確，marksman Ready",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:38:57.812Z"
+  },
+  {
+    "id": "G007",
+    "feature": "Editor 衝突",
+    "steps": "dirty 編輯→外部 append→解決器保留我的→再存檔",
+    "expected": "不覆蓋 dirty；解決後可再次儲存",
+    "actual": "顯示衝突；磁碟 savedLocal/savedAfter=true, discardedExternal=true",
+    "status": "PASS",
+    "evidence": [
+      "gui-06-editor-conflict"
+    ],
+    "time": "2026-09-08T07:38:57.812Z"
+  },
+  {
+    "id": "G008",
+    "feature": "檔案 Unicode/CRLF",
+    "steps": "開中文空白路徑→追加→存檔→rename",
+    "expected": "Editor 標籤與路徑同步且 CRLF 保留",
+    "actual": "樹與開啟標籤同步 renamed 中文.txt，CRLF 狀態保留",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:40:33.947Z"
+  },
+  {
+    "id": "G009",
+    "feature": "Editor split",
+    "steps": "右分割→檔案選單在右側開啟→關閉 split",
+    "expected": "文件保留",
+    "actual": "README 移往右側，關 split 後仍可開啟",
+    "status": "PASS",
+    "evidence": [
+      "gui-07-editor-split"
+    ],
+    "time": "2026-09-08T07:40:33.947Z"
+  },
+  {
+    "id": "G010",
+    "feature": "全文搜尋",
+    "steps": "README 無內容命中→QA marker→Enter",
+    "expected": "no-result 提示與命中跳行",
+    "actual": "marker 命中 README 第3行並選取該行",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:40:33.947Z"
+  },
+  {
+    "id": "G011",
+    "feature": "Git 信任恢復",
+    "steps": "QA 新資料夾→Git→重試",
+    "expected": "顯示可行動的信任/非儲存庫提示",
+    "actual": "反覆顯示 raw untrustedWorkspace JSON/challengeId；重試只換 challenge，沒有信任對話框",
+    "status": "FAIL",
+    "evidence": [
+      "gui-08-untrusted-git-retry"
+    ],
+    "time": "2026-09-08T07:40:47.409Z"
+  },
+  {
+    "id": "G012",
+    "feature": "Herdr 診斷",
+    "steps": "設定→Herdr",
+    "expected": "顯示實際 binary/version/protocol",
+    "actual": "global /Users/yuuzu/.local/bin/herdr 0.9.0 protocol22 Available",
+    "status": "PASS",
+    "evidence": [
+      "gui-09-herdr-version"
+    ],
+    "time": "2026-09-08T07:43:08.873Z"
+  },
+  {
+    "id": "G013",
+    "feature": "LSP 狀態",
+    "steps": "Markdown/TS 開檔＋Settings LSP re-detect",
+    "expected": "支援語言可就緒，失敗可辨識",
+    "actual": "vtsls/marksman Ready；Python integrity failed；TS 錯誤 underline 本輪未確認",
+    "status": "PARTIAL",
+    "evidence": [],
+    "time": "2026-09-08T07:43:08.874Z"
+  },
+  {
+    "id": "G014",
+    "feature": "Logs 日期",
+    "steps": "since=2026-02-30",
+    "expected": "顯示驗證錯誤",
+    "actual": "valid ISO timestamp 提示，清除恢復",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:43:08.874Z"
+  },
+  {
+    "id": "G015",
+    "feature": "Logs 分頁/複製",
+    "steps": "下一頁→Copy",
+    "expected": "只複製50筆該頁",
+    "actual": "Page2/10，Copied50rows sanitized",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:43:08.874Z"
+  },
+  {
+    "id": "G016",
+    "feature": "Logs 無結果",
+    "steps": "查詢唯一不存在字串",
+    "expected": "0 rows且Copy disabled",
+    "actual": "No matching logs，Copy disabled",
+    "status": "PASS",
+    "evidence": [
+      "gui-10-logs-empty"
+    ],
+    "time": "2026-09-08T07:43:08.874Z"
+  },
+  {
+    "id": "G017",
+    "feature": "Settings 搜尋",
+    "steps": "唯一不存在 setting→清除",
+    "expected": "有空態且可恢復",
+    "actual": "0 categories／clear 恢復",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:43:08.874Z"
+  },
+  {
+    "id": "G018",
+    "feature": "設定持久化",
+    "steps": "Light/Violet/English/Editor15/minimap/Terminal13→退出重啟",
+    "expected": "設定保留且可還原",
+    "actual": "所有值重啟後保留；已還原System/Lime/Follow system/13/off/12",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:43:51.713Z"
+  },
+  {
+    "id": "G019",
+    "feature": "HERDR app restart",
+    "steps": "QA shell變數→退出App→重啟→echo",
+    "expected": "runtime不被App退出終止",
+    "actual": "left_keep 仍保留",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:43:51.713Z"
+  },
+  {
+    "id": "G020",
+    "feature": "SQLite 連線",
+    "steps": "空表單→不存在路徑→有效fixture",
+    "expected": "validation→不存在提示→成功",
+    "actual": "空表單禁用；不存在未建檔；fixture 1ms連線",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:45:20.422Z"
+  },
+  {
+    "id": "G021",
+    "feature": "SQLite 分頁",
+    "steps": "1205 rows查詢→第2頁→第3頁",
+    "expected": "500/500/205且開始501/1001",
+    "actual": "數量與邊界一致，末端next disabled",
+    "status": "PASS",
+    "evidence": [
+      "gui-11-sqlite-page3"
+    ],
+    "time": "2026-09-08T07:45:20.422Z"
+  },
+  {
+    "id": "G022",
+    "feature": "SQL 錯誤恢復",
+    "steps": "不存在table→COUNT+NULL/empty兩statement",
+    "expected": "錯誤可讀且後續結果正常",
+    "actual": "no such table→1205；第二tab NULL和空字串正確",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:45:20.423Z"
+  },
+  {
+    "id": "G023",
+    "feature": "SQL 取消",
+    "steps": "100000000 recursive sum→取消",
+    "expected": "停止且controls恢復",
+    "actual": "3701ms interrupted、已取消，run重新可用",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:45:20.423Z"
+  },
+  {
+    "id": "G024",
+    "feature": "SQLite 寫入效果",
+    "steps": "UPDATE fixture id1＋SELECT→切第一statement",
+    "expected": "affected1且後續值正確",
+    "actual": "已提交1筆，SELECT QA-UPDATED",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:45:35.438Z"
+  },
+  {
+    "id": "G025",
+    "feature": "DB 網路表單",
+    "steps": "PG loopback54329拒絕→MSSQL port65536→14339拒絕",
+    "expected": "非法port禁用且失敗可重試",
+    "actual": "PG/MSSQL顯示資料庫連線失敗；port65536禁用",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:47:16.294Z"
+  },
+  {
+    "id": "G026",
+    "feature": "SSH 表單/失敗恢復",
+    "steps": "port65536→22229→金鑰/密碼切換→loopback refused",
+    "expected": "validation正確，錯誤可恢復",
+    "actual": "private-key欄位切換正確，refused即時顯示；QA主機已移除",
+    "status": "PASS",
+    "evidence": [
+      "gui-12-ssh-refused"
+    ],
+    "time": "2026-09-08T07:49:17.116Z"
+  },
+  {
+    "id": "G027",
+    "feature": "Preview URL",
+    "steps": "javascript scheme→localhost省略scheme→404→返回",
+    "expected": "scheme拒絕、localhost正規化、404可返回",
+    "actual": "明確拒絕；顯示fixture與404；輸入網址歷史正常",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:50:52.745Z"
+  },
+  {
+    "id": "G028",
+    "feature": "Preview 內頁歷史",
+    "steps": "localhost Home→點Next連結",
+    "expected": "網址與Back應同步內頁",
+    "actual": "iframe已 /next，網址仍root，Back disabled；輸入網址導航則可Back",
+    "status": "FAIL",
+    "evidence": [
+      "gui-13-preview-history"
+    ],
+    "time": "2026-09-08T07:50:52.745Z"
+  },
+  {
+    "id": "G029",
+    "feature": "Preview responsive",
+    "steps": "desktop→mobile→desktop",
+    "expected": "畫面寬度變更且內容保留",
+    "actual": "mobile窄框正常，切回內容保留",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:50:52.745Z"
+  },
+  {
+    "id": "G030",
+    "feature": "Git 唯讀",
+    "steps": "受信任repo status→package diff split/unified→HEAD hash log→作者menu Escape",
+    "expected": "數據一致，對話框可關閉",
+    "actual": "68 tracked changes；package +6；HEAD7113428；Escape返回作者filter",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:52:03.790Z"
+  },
+  {
+    "id": "G031",
+    "feature": "新增 Agent 可達性",
+    "steps": "Session menu／Space menu／列尾／命令面板尋找新Agent",
+    "expected": "應能由現行工作面新增Agent",
+    "actual": "只可新增terminal；source確認新sidebar未掛NewAgentDialog，舊ProjectNavPanel無production mount",
+    "status": "FAIL",
+    "evidence": [],
+    "time": "2026-09-08T07:54:25.389Z"
+  },
+  {
+    "id": "G032",
+    "feature": "Space 外觀",
+    "steps": "QA Space顯示名/角色/色彩修改",
+    "expected": "只改呈現不動folder identity",
+    "actual": "QA Alpha顯示名生效，canonical path仍QA-A",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:54:25.389Z"
+  },
+  {
+    "id": "G033",
+    "feature": "LSP 符號",
+    "steps": "sample.ts→命令面板跳至符號→add→Enter",
+    "expected": "跳至函式",
+    "actual": "選取 export function add 整行；vtsls Ready",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:55:34.761Z"
+  },
+  {
+    "id": "G034",
+    "feature": "本機 PTY",
+    "steps": "新增→cwd/marker/錯誤命令→split→exit7→exit",
+    "expected": "正確cwd，兩pane限制，退出清理",
+    "actual": "LOCAL_QA和cwd正確；command not found；雙pane限制；最後回空態",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:56:47.844Z"
+  },
+  {
+    "id": "G035",
+    "feature": "Agent Inspector",
+    "steps": "Info→text/ansi→刷新",
+    "expected": "metadata與read-only輸出可載入",
+    "actual": "pane w8:p3/root/cwd可見；text及ansi可載入",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T07:57:45.330Z"
+  },
+  {
+    "id": "G036",
+    "feature": "Inspector 行數輸入",
+    "steps": "Ctrl/Cmd+A後鍵入120，再次鍵入80",
+    "expected": "分別維持120、80",
+    "actual": "120變500；80變200，逐鍵輸入遭過早clamp",
+    "status": "FAIL",
+    "evidence": [
+      "gui-14-inspector-number"
+    ],
+    "time": "2026-09-08T07:57:45.331Z"
+  },
+  {
+    "id": "G037",
+    "feature": "Herdr 新分頁命名焦點",
+    "steps": "新增Herdr terminal→命名dialog出現→直接鍵入qa_focus_probe→取消",
+    "expected": "輸入應進名稱欄位且不影響shell",
+    "actual": "dialog開啟時focus在背景Terminal input；名稱仍QA-A，取消後shell命令列出現qa_focus_probe（未按Enter執行）；第二次新建同樣聚焦背景terminal，連續2/2重現。",
+    "status": "FAIL",
+    "evidence": [
+      "gui-15-tab-rename-focus",
+      "gui-16-rename-text-in-shell",
+      "gui-19-rename-focus-repeat"
+    ],
+    "time": "2026-09-08T07:58:43.546Z"
+  },
+  {
+    "id": "G038",
+    "feature": "Herdr 大量輸出/scroll",
+    "steps": "seq5000→上捲/下捲→側欄resize與收合",
+    "expected": "可讀早期輸出並恢復新輸入",
+    "actual": "看到5000與QA_OUTPUT_DONE，scroll可移動，QA_RESIZE_OK正常",
+    "status": "PASS",
+    "evidence": [
+      "gui-17-terminal-resize"
+    ],
+    "time": "2026-09-08T08:01:30.101Z"
+  },
+  {
+    "id": "G039",
+    "feature": "Herdr tab attach",
+    "steps": "設QA_SECOND→關UI分頁→既有分頁重開→echo",
+    "expected": "不終止runtime且保留變數",
+    "actual": "second_keep仍保留",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:01:30.102Z"
+  },
+  {
+    "id": "G040",
+    "feature": "Herdr 既有tab改名",
+    "steps": "頁籤context rename→直接鍵入QA-Second",
+    "expected": "名稱成功更新且不送入shell",
+    "actual": "現有tab改名正常；新建tab命名有race",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:01:30.102Z"
+  },
+  {
+    "id": "G041",
+    "feature": "窄視窗",
+    "steps": "連續縮小→右側工具自動收合→放大",
+    "expected": "主要terminal與導覽可用",
+    "actual": "窄視窗自動收合tools，放大後恢復",
+    "status": "PASS",
+    "evidence": [
+      "gui-18-small-window"
+    ],
+    "time": "2026-09-08T08:04:30.101Z"
+  },
+  {
+    "id": "G042",
+    "feature": "Herdr 分頁釘選",
+    "steps": "QA-Second釘選→移至首位→右鍵取消釘選",
+    "expected": "釘選可切換且分頁仍可開啟",
+    "actual": "釘選選單變為取消釘選；取消後QA-Second仍存在",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:07:55.669Z"
+  },
+  {
+    "id": "G043",
+    "feature": "Herdr 上下分割與ANSI",
+    "steps": "向下split→上pane紅字→下pane獨立marker",
+    "expected": "上下輸出獨立、ANSI呈現正確",
+    "actual": "上pane QA_RED紅色、下pane QA_BOTTOM_READY；各自shell正常",
+    "status": "PASS",
+    "evidence": [
+      "gui-20-zoom-ignored"
+    ],
+    "time": "2026-09-08T08:09:35.479Z"
+  },
+  {
+    "id": "G044",
+    "feature": "Herdr pane縮放",
+    "steps": "上下split→下pane右鍵縮放→官方pane layout查詢",
+    "expected": "zoomed=true時僅顯示焦點pane",
+    "actual": "runtime輸出zoomed:true；Yuzora仍顯示兩個50/50 panes；renderNode(layout.root)未使用zoomed",
+    "status": "FAIL",
+    "evidence": [
+      "gui-20-zoom-ignored"
+    ],
+    "time": "2026-09-08T08:09:35.480Z"
+  },
+  {
+    "id": "G045",
+    "feature": "Herdr 上下pane退出恢復",
+    "steps": "下方exit→上方echo QA_TOP",
+    "expected": "只結束下方pane並保留上方shell",
+    "actual": "下方消失，上方top_keep仍保留；zoom已還原false",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:10:25.746Z"
+  },
+  {
+    "id": "G046",
+    "feature": "檔案重名保護",
+    "steps": "外部新增watch-probe.txt→開啟→改名README.md",
+    "expected": "拒絕覆寫現有README",
+    "actual": "target already exists錯誤；原README與probe均保留",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:11:32.551Z"
+  },
+  {
+    "id": "G047",
+    "feature": "Editor dirty關閉",
+    "steps": "改probe→關閉→取消→再關閉→不儲存",
+    "expected": "取消保留buffer；捨棄不更動磁碟",
+    "actual": "取消後QA-DIRTY-CLOSE保留；不儲存後標籤移除、磁碟仍只有QA-WATCHER-ADD",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:11:56.126Z"
+  },
+  {
+    "id": "G048",
+    "feature": "Files watcher",
+    "steps": "外部新增probe→移至empty→刪除",
+    "expected": "樹跟隨磁碟新增/移動/刪除",
+    "actual": "新增可開啟；移動後root移除且empty出現；刪除後節點移除",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:12:21.933Z"
+  },
+  {
+    "id": "G049",
+    "feature": "不同工作區同名檔",
+    "steps": "開QA父目錄→QA-B README→切回QA-A Space",
+    "expected": "同名檔內容與路徑不混用",
+    "actual": "QA-B顯示Beta marker；返回QA-A恢復原tabs與Alpha marker；未建立第二個Herdr Space",
+    "status": "PASS",
+    "evidence": [],
+    "time": "2026-09-08T08:12:21.933Z"
+  }
+]

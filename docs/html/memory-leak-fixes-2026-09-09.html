@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora 記憶體洩漏修正與驗證 · 2026-09-09</title>
+<style>
+:root{color-scheme:light;--ink:#19232e;--muted:#566674;--line:#d9e0e5;--accent:#225a71}*{box-sizing:border-box}body{margin:0;background:#f7f9fa;color:var(--ink);font:16px/1.75 system-ui,"PingFang TC",sans-serif}main{max-width:980px;margin:auto;padding:40px 24px 64px}h1{font-size:32px;line-height:1.35}h2{font-size:23px;margin-top:32px}p{margin:12px 0}.meta{font-size:14px;color:var(--muted)}.lead{border-left:4px solid #347357;padding:12px 20px;background:#edf6f1}a{color:var(--accent);overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line)}th{color:var(--accent)}code,pre{font:13px/1.6 ui-monospace,SFMono-Regular,monospace}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf2f5;padding:16px}article{padding:20px;background:white;border:1px solid var(--line);border-radius:9px;margin:18px 0}h3{margin:0 0 12px;font-size:19px}@media(max-width:650px){main{padding:24px 16px}h1{font-size:26px}th,td{padding:8px;font-size:12px}}@media print{body{background:white}main{max-width:none}article{break-inside:avoid}}
+</style></head><body><main>
+<p class="meta">YUZORA · 2026-09-09 · 工作目錄中的修正，尚未 commit</p>
+<h1>記憶體洩漏修正與驗證</h1>
+<p class="lead"><strong>已修正上一輪列出的四類回收缺口與 PostgreSQL 無界預讀。</strong>在相同的 128 MiB PostgreSQL 查詢、停留第一頁測試中，helper 的採樣 RSS 峰值由 271.6 MiB 降至 20.2 MiB。</p>
+<p>本報告承接<a href="memory-leak-audit-2026-09-09.html">原始掃描報告</a>。前端測試使用實際專案模組與模擬 I/O；PostgreSQL 則使用真實本機 fixture、實際 Rust helper 與 OS 程序記憶體採樣。未執行瀏覽器／GUI 自動化；數字代表這些重現場景，並非整個 App 所有操作都已證明零洩漏。</p>
+
+<h2>修正前後</h2>
+<table><thead><tr><th>場景</th><th>修正前</th><th>修正後</th></tr></thead><tbody>
+<tr><td>遠端 terminal + event subscription 各開關 100 次</td><td>200 個遺留 callback</td><td>callback 與模擬原生串流皆回到 0</td></tr>
+<tr><td>25 次關閉分割編輯區</td><td>25 份已關閉文件仍命中快取</td><td>25 份全部重新讀取；仍開啟文件與未存內容保留</td></tr>
+<tr><td>讀取未完成就關閉，再重開同一路徑</td><td>舊讀取仍可完成並回寫</td><td>已關閉的讀取 token 失效，不能覆蓋重開的文件</td></tr>
+<tr><td>遠端斷線與重連後釋放舊 ID</td><td>stale guard 擋住登錄清理</td><td>舊登錄移除、重複 release 成功，新 generation 保留</td></tr>
+<tr><td>連續切換 160 個遠端工作區</td><td>累積占用、超過 host 的 128 個上限</td><td>每次剩 1 個 active capability，離開後為 0</td></tr>
+<tr><td>128 MiB PostgreSQL 結果停在第一頁</td><td>284,819,456 bytes（271.6 MiB）</td><td>21,151,744 bytes（20.2 MiB）</td></tr>
+</tbody></table>
+
+<h2>變更內容</h2>
+<article><h3>1. Channel 只在真正的 IPC 邊界建立</h3>
+<p>HERDR typed wrappers 直接傳遞事件函式，由 provider 在 native command 或 remote host stream 的實際 IPC 邊界建立 Channel。每個 Channel 都有 Rust owner，可在結束時接收 end 並解除 callback。已斷線的遠端請求在建立 Channel 前拒絕。</p>
+<p>主機移除或 generation 更換會刪掉對應 streams 登錄；同一連線只更新名稱／設定時保留其物件 identity。closed 事件先驗證 owner，再做本地清理；過期的 release 仍可完成本地退場，輸入命令維持原本的 identity gate。</p>
+<p><a href="../../src/lib/herdrProvider.ts">herdrProvider.ts</a> · <a href="../../src/lib/herdrIpc.ts">herdrIpc.ts</a> · <a href="../../src/lib/herdrProvider.lifecycle.test.ts">回歸測試</a></p></article>
+
+<article><h3>2. 最後一個文件分頁離開時清理內容與 revision</h3>
+<p>新增 <code>WorkspaceResourcesBridge</code>，在 groups／workspace 轉場時比較仍開啟的文件，統一釋放被關閉的文件與遠端 revision。分割區整組關閉、非作用中文件關閉及 workspace 切換都會走這個流程；移動文件到另一組不會被誤刪。</p>
+<p><code>documentRegistry</code> 的每次讀取／reload 持有可撤銷 token。drop 或 clear 後，即使 I/O 晚到也不能重新插入快取；token 在 finally 清除，不累積已完成請求。drop 接受原工作區 identity，避免切換後清到另一個相同路徑。</p>
+<p><a href="../../src/workbench/WorkspaceResourcesBridge.tsx">WorkspaceResourcesBridge.tsx</a> · <a href="../../src/editor/documentRegistry.ts">documentRegistry.ts</a> · <a href="../../src/workbench/WorkspaceResourcesBridge.test.tsx">工作區回歸測試</a> · <a href="../../src/editor/documentRegistry.test.ts">文件競態測試</a></p></article>
+
+<article><h3>3. 遠端 workspace capability 有明確退場與保留期間</h3>
+<p>離開工作區會提出 release；如果仍有檔案 I/O 或暫時的 SQLite 瀏覽器持有 lease，等最後一個使用者結束才關閉 capability。清理會停止對應 watcher、移除 revisions 及 workspace 登錄，再呼叫 host 的 workspaceClose。進行中的寫入在驗證結果後才放開 lease，不重送寫入。</p>
+<p>SQLite 檔案瀏覽器於卸載時釋放 lease，開啟結果晚到也會回收。資料夾選擇器取消後回收晚到的 capability；已選定工作區的有效性依主機連線判定，避免沿用已卸載對話框的 generation。回到仍活躍的工作區時不會因舊 release 請求而關閉它。</p>
+<p><a href="../../src/lib/remoteFiles.ts">remoteFiles.ts</a> · <a href="../../src/app/workbench/SqliteLocationFields.tsx">SqliteLocationFields.tsx</a> · <a href="../../src/workbench/FolderPickerHost.tsx">FolderPickerHost.tsx</a> · <a href="../../src/lib/remoteFiles.test.ts">lease／寫入回歸測試</a></p></article>
+
+<article><h3>4. PostgreSQL 按需讀取，讓 backpressure 傳回資料庫</h3>
+<p>刪除 unbounded row channel 與獨立 eager reader task。consumer 的 select 直接讀取 PostgreSQL RowStream；stdout 無法寫出、桌面停在第一頁時，就不再主動拉取後續資料列。既有 cancel、stop、closed 與錯誤處理保留，停止串流時直接 drain RowStream。</p>
+<p>新增真實 PostgreSQL 回歸場景：<code>SELECT repeat('x', 8192) FROM generate_series(1, 16384)</code>，只讀取 500 列的第一頁，接著六次採樣 helper RSS。修正前同一測試在約 272 MiB 失敗，修正後約 20 MiB，並確認釋放後可再執行 <code>SELECT 42</code>。場景併入 PostgreSQL integration matrix，避免與同一測試程序其他 PostgreSQL helper 並行造成採樣混雜。</p>
+<p><a href="../../src-tauri/host/src/db_service.rs">host/src/db_service.rs</a> · <a href="../../src-tauri/tests/database_integration.rs">database_integration.rs</a></p></article>
+
+<h2>完成的驗證</h2>
+<table><thead><tr><th>檢查</th><th>結果</th><th>紀錄</th></tr></thead><tbody>
+<tr><td>全量前端測試</td><td>189 個檔案、2,252 個測試通過</td><td><a href="memory-leak-fixes-2026-09-09-assets/frontend-all.log">log</a></td></tr>
+<tr><td>六個相關檔案的回歸測試</td><td>59 個測試通過</td><td><a href="memory-leak-fixes-2026-09-09-assets/frontend-regressions.log">log</a></td></tr>
+<tr><td>build／typecheck</td><td>通過；build 仍提示大型 bundle 與既有混用 import</td><td><a href="memory-leak-fixes-2026-09-09-assets/build.log">log</a></td></tr>
+<tr><td>ESLint</td><td>0 errors、51 warnings</td><td><a href="memory-leak-fixes-2026-09-09-assets/lint.log">log</a></td></tr>
+<tr><td>Rust db_service 單元測試</td><td>71 個測試通過</td><td>cargo test --locked --manifest-path src-tauri/host/Cargo.toml --lib db_service::tests</td></tr>
+<tr><td>SQLite／PostgreSQL 真實 integration matrix</td><td>通過；含記憶體上限、取消、翻頁、釋放、重連與重用</td><td><a href="memory-leak-fixes-2026-09-09-assets/database-after.log">log</a></td></tr>
+<tr><td>Rust all-targets check</td><td>通過（目前 macOS host）</td><td><a href="memory-leak-fixes-2026-09-09-assets/cargo-check.log">log</a></td></tr>
+<tr><td>Rust fmt／git diff --check</td><td>通過</td><td>desktop 與 host manifests</td></tr>
+<tr><td>Clippy exact baseline</td><td>90 個診斷完全吻合，不需變更 baseline</td><td><a href="memory-leak-fixes-2026-09-09-assets/clippy.log">log</a></td></tr>
+</tbody></table>
+<p>本機此次未執行 Windows／Linux GUI 驗收或 MSSQL integration。PostgreSQL fixture 已於驗證完成後停止，保留既有 Docker volume。原本工作目錄中的其他修改保持原樣，未執行 git add、commit 或 push。</p>
+
+<h2>重跑方式</h2>
+<pre>bun run test
+bun run build
+bun run lint
+
+cargo check --locked --manifest-path src-tauri/Cargo.toml --all-targets
+cargo test --locked --manifest-path src-tauri/host/Cargo.toml --lib db_service::tests
+
+docker compose -f tests/database/docker-compose.yml up -d --wait postgres
+YUZORA_P8_DATABASE_PASSWORD='Yuzora-P8-Only-2026!' \
+YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres \
+cargo test --locked --manifest-path src-tauri/Cargo.toml \
+  --test database_integration -- --ignored --nocapture</pre>
+<p class="meta">上面的密碼為 repo 文件指定的本機測試 fixture 密碼。原始缺口重現腳本保留在掃描報告旁，仍鎖定舊行為；修正驗收應使用本報告列出的回歸測試。</p>
+<p><a href="memory-leak-fixes-2026-09-09-assets/postgres-before.log">PostgreSQL 修正前失敗紀錄</a> · <a href="memory-leak-fixes-2026-09-09-assets/source-sha256.txt">修正後來源 SHA-256</a></p>
+</main></body></html>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>側邊欄與設定元件對齊修正 · 2026-09-10</title>
+<style>body{margin:0;background:#f7f7f4;color:#252725;font:16px/1.7 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:40px 24px}h1{font-size:30px;line-height:1.35}h2{margin-top:36px;font-size:21px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:12px;border-bottom:1px solid #d8ddd6}figure{margin:24px 0}img{display:block;width:100%;height:auto;border:1px solid #d8ddd6;border-radius:12px}figcaption{font-size:14px;color:#555d53;margin-top:8px}code{background:#e9ede5;padding:2px 5px;border-radius:4px}a{color:#436627}.status{color:#436627;font-weight:600}</style></head>
+<body><main>
+<p>Yuzora · 2026-09-10</p><h1>側邊欄留白、主題色勾選與 Switch 對齊</h1>
+<p class="status">四項修正完成；瀏覽器互動驗證、11 項相關測試、型別檢查、建置與元件 lint 通過。</p>
+<table><thead><tr><th>項目</th><th>原因與修正</th><th>畫面量測</th></tr></thead><tbody>
+<tr><td>Herdr 卡片上方留白</td><td>卡片與上方分隔線過近；上方 margin 由 4px 增加至 12px。</td><td>增加 8px。</td></tr>
+<tr><td>右側欄頂部對齊</td><td>右側 chrome 比左側少 8px；增加標題列高度與頂部 padding，同步調整展開狀態的收合按鈕。</td><td>左右內容起點皆為 y=61px，按鈕皆為 y=21px。</td></tr>
+<tr><td>主題色勾選置中</td><td>RadioGroupItem 的自訂 SVG 缺少水平置中；色票以 inline-flex 置中。</td><td>五種色票在淺、深色模式的水平與垂直中心誤差皆為 0px。</td></tr>
+<tr><td>Switch 只移至中間</td><td>軌道使用 px，滑塊使用 rem；全域 13px 字級將滑塊縮小。預設與 small 滑塊改用 16px／12px，與既有固定尺寸軌道一致。</td><td>預設開關右端留白由 7px 修正為 1px，與關閉時左端 1px 一致；既有 yz-switch 仍維持兩端各 2px。</td></tr>
+</tbody></table>
+<h2>驗證範圍</h2>
+<p>Playwright Chromium 開啟現有 Vite 頁面，透過真實 UI 點選色票、切換淺深色主題、點擊自訂 Switch，並以 Space 鍵切換終端機 Switch。檢查 1440×960、1024×768、減少動態效果及側欄收合／展開；小視窗依既有規則一次展開一側。</p>
+<p><code>bun run test src/app/AppShell.layout.test.tsx src/app/workbench/settingsPrimitives.test.tsx</code>：2 檔、11 項通過。<code>bun run build</code> 通過，包含型別檢查；保留既有 bundle 大小與 remotePreviewUrl 靜態／動態 import 提示。Switch 元件 eslint 與本次檔案 diff whitespace 檢查通過。</p>
+<p>本次 E2E 驗證範圍為瀏覽器前端，未驗證原生 Tauri WebView 或 SSH／WSL 後端。純瀏覽器因缺少 Tauri IPC 的既有初始化錯誤仍存在，未視為本次修正的後端驗證結果。窄視窗腳本初次遇到自動收合與退出動畫中的媒體偏好切換，重新載入並按既有響應式行為檢查後通過。</p>
+<h2>修正前後</h2>
+<figure><img src="sidebar-settings-alignment-2026-09-10-assets/sidebar-before.png" alt="修正前左右欄頂部不齊、Herdr 卡片貼近分隔線"><figcaption>修正前。</figcaption></figure>
+<figure><img src="sidebar-settings-alignment-2026-09-10-assets/sidebar-after.png" alt="修正後左右頂部對齊與 Herdr 卡片上方留白"><figcaption>修正後：右側整體下移 8px，卡片上方增加 8px。</figcaption></figure>
+<figure><img src="sidebar-settings-alignment-2026-09-10-assets/settings-light-after.png" alt="淺色設定中的置中色票勾選及完整開啟開關"><figcaption>淺色模式：主題色勾選置中，自訂 Switch 兩端留白正常。</figcaption></figure>
+<figure><img src="sidebar-settings-alignment-2026-09-10-assets/terminal-dark-after.png" alt="深色終端機設定中的修正後 Switch"><figcaption>深色模式：終端機 Switch 使用完整行程，保留鍵盤焦點提示。</figcaption></figure>
+<figure><img src="sidebar-settings-alignment-2026-09-10-assets/settings-1024-after.png" alt="1024px 寬度的設定中色票依然置中"><figcaption>1024×768 設定畫面。</figcaption></figure>
+<h2>變更檔案</h2>
+<ul><li><code>src/app/workbench/space-agent-sidebar.css</code></li><li><code>src/app/workbench/workbench-shell.css</code></li><li><code>src/app/workbench/settings-modern.css</code></li><li><code>src/components/ui/switch.tsx</code></li></ul>
+<p>沿用既有 shadcn 元件，未新增 UI primitive。保留工作目錄其他變更；沒有 staging、commit 或 push。</p>
+</main></body></html>

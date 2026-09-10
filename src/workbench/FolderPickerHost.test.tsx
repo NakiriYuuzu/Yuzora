@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }))
 vi.mock("@/lib/platform", () => ({ isWindowsPlatform: vi.fn(() => false) }))
 vi.mock("@/lib/ipc", () => ({ sshConnect: vi.fn(), sshDisconnect: vi.fn(async () => {}), sftpListDir: vi.fn() }))
 vi.mock("@/lib/hostIpc", () => ({ requestHost: vi.fn(), wslDistributions: vi.fn(), wslPath: vi.fn() }))
-vi.mock("@/lib/remoteFiles", () => ({ registerRuntimeWorkspace: vi.fn(), registerSftpWorkspace: vi.fn() }))
+vi.mock("@/lib/remoteFiles", () => ({ registerRuntimeWorkspace: vi.fn(), registerSftpWorkspace: vi.fn(), releaseRemoteWorkspace: vi.fn(async () => {}) }))
 vi.mock("@/app/panels/SftpPanel", () => ({ SftpPanel: () => null }))
 
 import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore"
@@ -25,7 +25,7 @@ import { remoteFilePath } from "@/lib/runtimeIdentity"
 import { isWindowsPlatform } from "@/lib/platform"
 import { requestHost, wslDistributions, wslPath } from "@/lib/hostIpc"
 import { sftpListDir, sshConnect } from "@/lib/ipc"
-import { registerRuntimeWorkspace, registerSftpWorkspace } from "@/lib/remoteFiles"
+import { registerRuntimeWorkspace, registerSftpWorkspace, releaseRemoteWorkspace } from "@/lib/remoteFiles"
 
 const root = "/home/test/中文 project"
 const server: SshHost = { id: "ssh-a", name: "Server A", host: "a.example", port: 22, user: "test", authKind: "key", keyPath: "/key" }
@@ -280,6 +280,23 @@ it("directs disabled WSL to settings without starting discovery", () => {
   expect(wslDistributions).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole("button", { name: "Manage this host" }))
   expect(useUiStore.getState().settingsSection).toBe("herdr")
+})
+
+it("retires a selected capability returned after the folder picker was closed", async () => {
+  const opening = deferred<string>()
+  vi.mocked(registerRuntimeWorkspace).mockReturnValueOnce(opening.promise)
+  vi.mocked(requestHost).mockImplementation(async (_owner, operation) => operation.method === "workspaceOpen" ? { capabilityId: "browse", canonicalPath: "/selected" } : [])
+  const view = mountWslRuntime()
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
+  const isConnectionCurrent = vi.mocked(registerRuntimeWorkspace).mock.calls.at(-1)![2]
+  view.unmount()
+  const uri = remoteFilePath("wsl-a", "/selected")
+  await act(async () => opening.resolve(uri))
+  expect(finish).not.toHaveBeenCalled()
+  expect(releaseRemoteWorkspace).toHaveBeenCalledWith(uri)
+  expect(isConnectionCurrent()).toBe(true)
 })
 
 it("keeps the chosen WSL workspace valid after the folder dialog closes", async () => {

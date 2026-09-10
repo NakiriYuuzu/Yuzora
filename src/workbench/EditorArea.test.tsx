@@ -150,9 +150,9 @@ describe("EditorArea persistent Herdr pages", () => {
         expect(first).toHaveAttribute("data-visible", "true")
         expect(second).toHaveAttribute("data-active", "false")
         expect(second).toHaveAttribute("data-visible", "false")
-        expect(firstLayer.className).toContain("opacity-100")
-        expect(secondLayer.className).toContain("opacity-0")
-        expect(secondLayer.className).not.toContain("invisible")
+        expect(firstLayer.className).toContain("visible")
+        expect(secondLayer.className).toContain("invisible")
+        expect(secondLayer.className).not.toContain("transition-opacity")
 
         act(() => {
             useWorkspaceStore.getState().setActiveTab(0, secondPath)
@@ -164,8 +164,8 @@ describe("EditorArea persistent Herdr pages", () => {
         expect(first).toHaveAttribute("data-visible", "false")
         expect(second).toHaveAttribute("data-active", "true")
         expect(second).toHaveAttribute("data-visible", "true")
-        expect(firstLayer.className).toContain("opacity-0")
-        expect(secondLayer.className).toContain("opacity-100")
+        expect(firstLayer.className).toContain("invisible")
+        expect(secondLayer.className).toContain("visible")
     })
 })
 

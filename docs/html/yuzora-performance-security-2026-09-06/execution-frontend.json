@@ -1,0 +1,432 @@
+{
+  "tasks": [
+    {
+      "id": "FE-Dirty",
+      "title": "輸入 dirty 狀態 no-op 與 structural sharing",
+      "auditIds": [
+        "F01"
+      ],
+      "featureIds": [],
+      "owner": "FE-EDITOR",
+      "files": [
+        "src/state/workspaceStore.ts",
+        "src/editor/cmExtensions.ts",
+        "src/editor/EditorPane.tsx",
+        "src/workbench/EditorArea.tsx"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "已 dirty 的文件不重建 state；只替換實際改變的 tab/group，維持同文件多個 view 的 dirty/save 行為。",
+      "gate": "輸入、保存、重開與跨 group 同檔案狀態一致；量測 editor input p95、store notification 與非目標 pane render 次數。",
+      "note": "可立即實作。與 FE-Load 共用 cmExtensions/editor hosts，由同一 owner 短暫串行接線；這是檔案 ownership，不是 FE-Load 的技術前置。"
+    },
+    {
+      "id": "FE-TREE-C",
+      "title": "檔案樹 cache 與虛擬列契約",
+      "auditIds": [],
+      "featureIds": [],
+      "owner": "FE-TREE",
+      "files": [
+        "src/state/fileTreeStore.ts",
+        "src/workbench/FileTree.tsx"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "固定 workspace/path/generation 身分、loading/loaded/evicted/error、reload、stable row key、active/expanded pin 與 ScrollArea viewport/ref 契約，提供 stale completion 與 eviction fixtures。",
+      "gate": "cache 與 view owner 對同一 fixtures 得到一致 row identity、loading/reload 行為；契約不要求先完成 cache 或 virtualizer。",
+      "note": "小型契約工作，不先全面重構。契約凍結後 FE-TreeCache 與 FE-TreeView 可以平行開發。"
+    },
+    {
+      "id": "FE-TreeCache",
+      "title": "檔案樹有界 cache、跨批次 single-flight 與取消失效",
+      "auditIds": [
+        "F03",
+        "F04"
+      ],
+      "featureIds": [],
+      "owner": "FE-TREE",
+      "files": [
+        "src/state/fileTreeStore.ts"
+      ],
+      "requires": [
+        "FE-TREE-C"
+      ],
+      "mockAfter": [
+        "FE-TREE-C"
+      ],
+      "deliverable": "共用 semaphore、跨 batch single-flight、generation/latest apply、workspace/node/byte budget 與 LRU；active/expanded 節點受 pin 保護。",
+      "gate": "先驗證 drop/evict/workspace change 會失效 pending listings，再啟用 eviction；大量並行 relist 不超過全域上限，晚回覆不復活 cache，evicted 節點可重新載入。",
+      "note": "F03/F04 同檔案且共享生命週期，合併 ownership。若 pinned 節點超出 budget，限制新 cache admission，不能破壞 active/expanded 狀態。與 RT-FSP 的實際 filesystem 壓力行為於整合 gate 驗證，不要求其先完成才能開發。"
+    },
+    {
+      "id": "FE-TreeView",
+      "title": "檔案樹可見列 flatten 與虛擬化",
+      "auditIds": [
+        "F02"
+      ],
+      "featureIds": [],
+      "owner": "FE-TREE-UI",
+      "files": [
+        "src/workbench/FileTree.tsx",
+        "src/components/ui/scroll-area.tsx"
+      ],
+      "requires": [
+        "FE-TREE-C"
+      ],
+      "mockAfter": [
+        "FE-TREE-C"
+      ],
+      "deliverable": "只建立可見的扁平 tree rows 與 viewport 附近 DOM，保留展開、選取、鍵盤、ARIA、scroll anchor 和載入狀態。",
+      "gate": "大樹 DOM/訂閱量隨 viewport 受界限；真實 GUI 驗證展開、折疊、重載及捲動錨點；與 FE-TreeCache 整合後確認 eviction/reload 不改變 row identity。",
+      "note": "不需要等待 FE-TreeCache 全包完成；可用 frozen fixtures 獨立交付相容 view。沿用 shadcn ScrollArea viewport；不建立包辦 DB/SFTP/Search 的通用巨大 list。"
+    },
+    {
+      "id": "FE-Document",
+      "title": "文件讀取 single-flight 與 registry 生命週期",
+      "auditIds": [
+        "F05"
+      ],
+      "featureIds": [],
+      "owner": "FE-DOCUMENT",
+      "files": [
+        "src/editor/documentRegistry.ts"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "合併相同文件的 pending read；drop/clear 使用 generation invalidation，避免已移除文件被晚完成的讀取重新放回 cache。",
+      "gate": "duplicate open 只讀一次；讀取失敗可重試；drop/clear 之後晚完成不復活資料；保存、未保存文件與目前使用中的 document 不遺失。",
+      "note": "保持 registry 公開 API，可立即開發。FE-Markdown 可依自己的 worker/document input 契約平行開發，不將兩者排成硬依賴。"
+    },
+    {
+      "id": "SEARCH-C",
+      "title": "Workspace search 取消、預算與增量事件契約",
+      "auditIds": [],
+      "featureIds": [],
+      "owner": "FE-PROTOCOL",
+      "files": [
+        "src-tauri/src/search_service.rs",
+        "src/lib/types.ts",
+        "src/lib/ipc.ts",
+        "src/workbench/search/useWorkspaceSearch.ts"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "固定 run identity、stable result identity、batch/done/cancel/truncated/error、預算原因、排序及 settlement 語意；定義共享 quota/cancel interface，提供 TS/Rust wire fixtures。",
+      "gate": "雙側 fixtures 一致；stale run 不能回填新搜尋；done/cancel/error 只 settle 一次；global quota 不是每 worker 複製一份。",
+      "note": "契約先交付後，Core/Parallel/View 各自使用 fake collector、clock、walker 與 channel 平行開發。R15 Git log 屬 RT-GIT，不與 workspace search 合包。"
+    },
+    {
+      "id": "SEARCH-Core",
+      "title": "Workspace search 內層取消與資源預算",
+      "auditIds": [
+        "R01",
+        "R03"
+      ],
+      "featureIds": [],
+      "owner": "SEARCH-BACKEND",
+      "files": [
+        "src-tauri/src/search_service.rs"
+      ],
+      "requires": [
+        "SEARCH-C"
+      ],
+      "mockAfter": [
+        "SEARCH-C"
+      ],
+      "deliverable": "受控 executor、檔案/區塊內取消、scan/line/bytes/time budgets、parallel-safe global quota；IPC send 失敗立即停止；避免不必要的全文 lowercase 重掃。",
+      "gate": "超大單檔、超長行、取消、IPC 關閉、Unicode 與 stale generation 案例通過；資源耗用有界且截斷原因可辨識；run settlement 前不釋放仍在工作中的 owner。",
+      "note": "先建立可供多 worker 共用的安全 collector/quota/cancellation。這是 SEARCH-Parallel 正式啟用的硬前置，worker 原型與前端不必等待 Core 完成才開發。"
+    },
+    {
+      "id": "SEARCH-Parallel",
+      "title": "Workspace search 有界平行 walker 與 worker",
+      "auditIds": [
+        "R02"
+      ],
+      "featureIds": [],
+      "owner": "SEARCH-BACKEND",
+      "files": [
+        "src-tauri/src/search_service.rs"
+      ],
+      "requires": [
+        "SEARCH-C",
+        "SEARCH-Core"
+      ],
+      "mockAfter": [
+        "SEARCH-C"
+      ],
+      "deliverable": "bounded work queue、worker-local Searcher 與共享 result quota；並行度可由量測選定，取消能停止生產與消費。",
+      "gate": "多 worker 不超配結果/bytes quota、不遺漏 settlement；取消能排空或丟棄待處理工作；cold/warm、大小檔混合語料比較吞吐、首批延遲、CPU 與 RSS。",
+      "note": "可在 SEARCH-C 後 mock 開發；只有 production 啟用等待 SEARCH-Core。不能藉無上限平行度或每 worker 獨立上限製造表面速度提升。"
+    },
+    {
+      "id": "SEARCH-View",
+      "title": "Workspace search 增量 grouping 與虛擬化結果",
+      "auditIds": [
+        "F06"
+      ],
+      "featureIds": [],
+      "owner": "FE-SEARCH-UI",
+      "files": [
+        "src/workbench/search/useWorkspaceSearch.ts",
+        "src/workbench/search/WorkspaceSearchGroup.tsx",
+        "src/components/ui/scroll-area.tsx"
+      ],
+      "requires": [
+        "SEARCH-C",
+        "SEARCH-Core"
+      ],
+      "mockAfter": [
+        "SEARCH-C"
+      ],
+      "deliverable": "逐 batch 增量更新 groups/results，避免每次複製重組全部事件；只渲染可見結果，顯示取消/截斷原因且保持鍵盤選取。",
+      "gate": "密集 batch、快速改 query、取消後新搜尋、截斷與 IPC error fixtures 通過；最終連接 Core 驗證真實狀態；大結果集 DOM 與 commit duration 受界限。",
+      "note": "元件與 reducer 可在契約後使用 mock 平行開發；既有事件的純 UI 優化可先交付。完整新截斷/取消行為以 Core 真實 emitter 為 production 前置，不依賴 Parallel 完工。"
+    },
+    {
+      "id": "FE-LSP",
+      "title": "Semantic tokens 與 diagnostics 請求取消",
+      "auditIds": [
+        "F07"
+      ],
+      "featureIds": [],
+      "owner": "FE-LSP",
+      "files": [
+        "src/lsp/semanticTokens.ts",
+        "src/lsp/diagnosticsPull.ts",
+        "src/lsp/transport.ts",
+        "src/lsp/workspace.ts",
+        "src/lsp/lspManager.ts",
+        "src/lsp/lspExtensions.ts",
+        "src/lsp/transport.test.ts",
+        "src/lsp/workspace.test.ts",
+        "src/lsp/lspManager.test.ts",
+        "src/lsp/lspExtensions.test.ts",
+        "src/editor/editorPane.lsp.test.tsx",
+        "src/editor/EditorPane.tsx",
+        "src/lib/ipc.ts"
+      ],
+      "requires": [
+        "LS-C"
+      ],
+      "mockAfter": [
+        "LS-C"
+      ],
+      "deliverable": "superseded request 與 dispose 取消，清理 timer/listener；即使 server 忽略取消仍以 generation 防止 stale apply。 同時承接 transport IPC admission、workspace didOpen/didChange producer、client recovery 與 extension adapter；latest-unsent document/version 在序列化前合併，不讓 sendChain 累積完整字串。",
+      "gate": "快速輸入、切文件、關 pane、server 延遲/忽略取消時結果正確；與 RT-LSP 整合驗證 pending request、server CPU 與 shutdown，不能只測前端丟棄回覆。 didOpen→didChange→request/save barrier→didClose 保序，背景文件升為 editor 時版本一致；真 transport 失敗後 reinitialize／重新同步最新 buffer，替換 pane client/formatter/plugin 引用且不重複 append。純記憶體壓力不 restart；舊 generation IPC 與回覆失效。",
+      "note": "LS-C 凍結取消與 disposal owner 後即可 mock 開發，與 Rust writer/shutdown 實作平行；端到端 gate 等兩側整合。 transport.ts/workspace.ts/lspManager.ts/lspExtensions.ts 歸 FE-LSP；EditorPane 與其測試由 editor lifecycle writer 短暫接線，ipc.ts 仍歸 INT。只限制 Rust queue 不構成端到端改善。"
+    },
+    {
+      "id": "FE-Herdr",
+      "title": "HERDR snapshot structural sharing 與 ID maps",
+      "auditIds": [
+        "F11"
+      ],
+      "featureIds": [],
+      "owner": "FE-HERDR",
+      "files": [
+        "src/state/herdrStore.ts",
+        "src/app/workbench/HerdrNavContent.tsx"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "保留未變 snapshot 實體參照，建立內部 ID lookup，移除 attention render 迴圈中的 agents.find；保留現有 public DTO 與 session isolation。",
+      "gate": "相同/局部改變/刪除 snapshot fixtures 對應正確 references；Attention/Agents 選取不漂移；大量 agents 的更新 CPU 與無關 render 次數下降。 對齊現有 normalization／identity writer：合法 workspace path→null 不能保留舊值，cwd 不補作 root；entity maps 限正確 runtime scope，舊 connection generation 不回填。同 host access 升級 identity 穩定、跨 host 同 path 必須隔離。",
+      "note": "可立即以既有 snapshot fixtures 開發。新內部 maps 透過 selector adapter 接 UI，不等待全部 HERDR backend 改善。 現有 normalization／runtimeIdentity 變更不代表 store 已 host-aware；不接管他人四個 source/test 檔。不需等完整 host migration，最終接線再對齊契約。"
+    },
+    {
+      "id": "FE-Load",
+      "title": "功能與語言 lazy chunks",
+      "auditIds": [
+        "F08"
+      ],
+      "featureIds": [],
+      "owner": "FE-EDITOR",
+      "files": [
+        "src/editor/cmExtensions.ts",
+        "src/editor/EditorPane.tsx",
+        "src/workbench/EditorArea.tsx",
+        "src/App.tsx",
+        "vite.config.ts",
+        "package.json",
+        "bun.lock"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "按實際使用載入功能與語言模組，補足 loading/error/dispose 行為；記錄 production dynamic import/asset 路徑供 CSP 整合。",
+      "gate": "冷啟動與各功能首次開啟分開量測；lazy loading 前後功能、語言切換與錯誤恢复一致；最終 Tauri chunks/workers/CSP 聯合 gate 通過。",
+      "note": "可立即開發；與 FE-Dirty 同 owner，cmExtensions/editor hosts 採短暫串行 handoff，不建立偽硬依賴。F08/F09/H01 由總計畫另設聯合 gate，不互相 requires。bundle/gzip bytes 不能替代啟動延遲證據。"
+    },
+    {
+      "id": "FE-Markdown",
+      "title": "Markdown worker、latest-wins 與預覽預算",
+      "auditIds": [
+        "F09"
+      ],
+      "featureIds": [],
+      "owner": "FE-MARKDOWN",
+      "files": [
+        "src/workbench/MarkdownPreview.tsx",
+        "vite.config.ts",
+        "package.json",
+        "bun.lock"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "定義 worker input/output/generation 契約，移出主執行緒 parsing，加入 bytes/nodes/time budgets、latest-wins 及 worker disposal；保留 sanitizer。",
+      "gate": "快速切檔/輸入/關閉後 stale result 不回填；大文檔與病態 markdown 主執行緒可回應；預算拒絕有可理解狀態；真 Tauri module worker、資源 URL 與 CSP 聯合 gate 通過。",
+      "note": "可用 fake worker 與固定 document fixtures 立即開發，不要求 FE-Document 完工。worker 本身不提供 HTML 安全邊界；不得移除 sanitizer。與 FE-Load/FE-CSP 只共享早期資源契約及最終聯合 gate。"
+    },
+    {
+      "id": "FE-Build",
+      "title": "Tailwind 建置 profiling 與明確 source 範圍",
+      "auditIds": [
+        "F13"
+      ],
+      "featureIds": [],
+      "owner": "FE-BUILD",
+      "files": [
+        "src/styles.css",
+        "vite.config.ts",
+        "package.json",
+        "bun.lock"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "量測 Tailwind transform/source discovery 成本，以實際使用目錄限制 source 範圍，保留合法動態 classes。",
+      "gate": "固定依賴與冷/暖條件重複量測；最終新增 UI/worker 目錄和 dynamic class coverage 不漏；完整 build 與 GUI 樣式回歸通過。",
+      "note": "profiling 可立即開始；整合後再確認所有實際來源。既有 27.8 秒 Tailwind transform、28.51 秒 Vite 為單次觀察，不當作穩定基準或 CPU time。效能量測期間不與其他 build/壓测同跑。"
+    },
+    {
+      "id": "FE-CSP",
+      "title": "Main WebView CSP 與 capability 邊界加固",
+      "auditIds": [
+        "H01"
+      ],
+      "featureIds": [],
+      "owner": "FE-SECURITY",
+      "files": [
+        "src-tauri/tauri.conf.json",
+        "src-tauri/capabilities/default.json"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "盤點 script/style/img/font/connect/worker 實際需求，建立主 WebView CSP；保持 preview 與 main 的 capability 分離及必要 dev/production 資源載入。",
+      "gate": "真 Tauri 驗證 main/child webview IPC 權限、外部 navigation、CodeMirror、worker、fonts/assets 與 CSP reports；最終 F08/F09 production chunks/workers 聯合 gate 通過後正式啟用。",
+      "note": "inventory/policy/fixtures 可立即進行，不等待全部改善完成。與 FE-Load/FE-Markdown 不互相 requires，總計畫負責聯合 gate。此項是防禦縱深，不能改寫為已證明的 main XSS/RCE。"
+    }
+  ],
+  "locks": [
+    {
+      "files": [
+        "src/editor/cmExtensions.ts",
+        "src/editor/EditorPane.tsx",
+        "src/workbench/EditorArea.tsx"
+      ],
+      "owner": "FE-EDITOR",
+      "tasks": [
+        "FE-Dirty",
+        "FE-Load"
+      ],
+      "reason": "同一 editor owner 管理 extension 與 host 接線，採短暫串行 handoff；store/模組開發可平行，共用檔案不是技術硬依賴。"
+    },
+    {
+      "files": [
+        "src/state/fileTreeStore.ts",
+        "src/workbench/FileTree.tsx"
+      ],
+      "owner": "FE-TREE",
+      "tasks": [
+        "FE-TREE-C",
+        "FE-TreeCache",
+        "FE-TreeView"
+      ],
+      "reason": "先固定 row/cache 契約，再由 cache owner 與 view owner 分檔實作；涉及公開 selector/row model 的接線由 FE-TREE 整合，防止兩側各自發明 loading/evicted 語意。"
+    },
+    {
+      "files": [
+        "src-tauri/src/search_service.rs"
+      ],
+      "owner": "SEARCH-BACKEND",
+      "tasks": [
+        "SEARCH-C",
+        "SEARCH-Core",
+        "SEARCH-Parallel"
+      ],
+      "reason": "單一 owner 接 wire enum、coordinator、collector 與 worker；parallel worker 可依 frozen quota/cancel interface 開發，避免多人同改 run_search 的控制流程。"
+    },
+    {
+      "files": [
+        "src/lib/types.ts",
+        "src/lib/ipc.ts"
+      ],
+      "owner": "FE-PROTOCOL",
+      "tasks": [
+        "SEARCH-C",
+        "SEARCH-Core",
+        "SEARCH-View"
+      ],
+      "reason": "跨層 DTO/wrapper 由 protocol integrator 單一 writer；DB/SFTP/Git 其他片段也需納入總計畫此鎖，不能以共用 types/ipc 為由串行所有功能。"
+    },
+    {
+      "files": [
+        "src/workbench/search/useWorkspaceSearch.ts",
+        "src/workbench/search/WorkspaceSearchGroup.tsx"
+      ],
+      "owner": "FE-SEARCH-UI",
+      "tasks": [
+        "SEARCH-C",
+        "SEARCH-View"
+      ],
+      "reason": "契約工作提供 fixtures 與 reducer 語意，UI owner 接入真實 channel，避免 event/state schema 與 grouping/virtualization 同時改動相同區塊。"
+    },
+    {
+      "files": [
+        "src/components/ui/scroll-area.tsx"
+      ],
+      "owner": "FE-UI-INTEGRATION",
+      "tasks": [
+        "FE-TreeView",
+        "SEARCH-View"
+      ],
+      "reason": "共用 primitive 只由整合者維護 viewport/ref 契約；DB/SFTP virtualizer 於總計畫加到同一 ownership 規則。各領域保留自己的 row keys、鍵盤/ARIA 與 scroll anchor。"
+    },
+    {
+      "files": [
+        "vite.config.ts",
+        "package.json",
+        "bun.lock"
+      ],
+      "owner": "FE-BUILD",
+      "tasks": [
+        "FE-Load",
+        "FE-Markdown",
+        "FE-Build"
+      ],
+      "reason": "單一 build owner 接 dynamic imports/module worker/Tailwind/dependency 設定；各工作包可在其元件檔平行開發，最終資源行為交 FE-CSP 聯合驗證。"
+    },
+    {
+      "files": [
+        "src-tauri/tauri.conf.json",
+        "src-tauri/capabilities/default.json"
+      ],
+      "owner": "FE-SECURITY",
+      "tasks": [
+        "FE-CSP"
+      ],
+      "reason": "集中維護 main/preview capability 與 CSP；worker/chunk owner 提供資源需求，不各自放寬安全設定。"
+    },
+    {
+      "files": [
+        "src/editor/editorPane.lsp.test.tsx"
+      ],
+      "owner": "FE-EDITOR",
+      "tasks": [
+        "FE-LSP",
+        "FE-Dirty",
+        "FE-Load"
+      ],
+      "reason": "LSP recovery、lazy editor 與原 pane lifecycle 整合測試由單一 writer 接線；其餘 LSP transport/workspace/client tests 歸 FE-LSP。"
+    }
+  ]
+}

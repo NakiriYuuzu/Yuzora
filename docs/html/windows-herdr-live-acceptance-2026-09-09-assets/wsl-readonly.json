@@ -1,0 +1,29 @@
+{
+  "list": {
+    "command": [
+      "--list",
+      "--verbose"
+    ],
+    "timedOut": true
+  },
+  "ubuntuIdentity": {
+    "command": [
+      "--distribution",
+      "Ubuntu-26.04",
+      "--exec",
+      "id",
+      "-u"
+    ],
+    "timedOut": true
+  },
+  "debianIdentity": {
+    "command": [
+      "--distribution",
+      "Yuzora-Verify-Debian",
+      "--exec",
+      "id",
+      "-u"
+    ],
+    "timedOut": true
+  }
+}

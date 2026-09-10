@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora v0.0.9 發布前檢查 · 2026-09-10</title>
+<style>body{margin:0;background:#f6f5f0;color:#242824;font:16px/1.75 system-ui,sans-serif}main{max-width:960px;margin:auto;padding:56px 24px}h1{font-size:36px;line-height:1.25}h2{margin-top:36px;font-size:23px}a{color:#315aaa}table{border-collapse:collapse;width:100%}td,th{text-align:left;vertical-align:top;border-bottom:1px solid #d7dbd2;padding:12px}th{background:#e8ece2}code{overflow-wrap:anywhere}.status{border-left:4px solid #a17d30;padding:14px 18px;background:#eee8d8}.meta{color:#646d64}</style>
+<main><p class="meta">2026-09-10 · release/v0.0.9 · Bun 1.3.14 · Rust 1.96.0</p>
+<h1>v0.0.9 發布前檢查</h1>
+<p class="status">本機檢查已完成，準備以 PR 建立新候選安裝檔。正式 merge／發布仍待本次最終候選的使用者驗證，以及 macOS Apple signing credentials 配置。</p>
+<p>本次依使用者授權納入當前全部產品、測試、品牌、官網、Demo 與既有研究／驗收文件改動。追蹤於 <a href="https://github.com/NakiriYuuzu/Yuzora/issues/93">Issue #93</a>；發布流程以 <a href="../operations.md">operations.md</a> 與實際 workflow 為準。</p>
+<h2>交付範圍</h2>
+<ul><li>HERDR Space／Session、工作區信任、Windows／WSL 路徑與非 Git 資料夾。</li><li>終端機多行貼上、圖片路徑傳送、選取自動複製、隱藏畫面恢復與資源釋放。</li><li>新版品牌、角色與側欄、Git 差異、資料庫及設定介面。</li><li>中英文官網及使用範例資料的 AppShell Demo；不連接實際本機或遠端主機。</li><li>桌面與 helper 版本／lockfiles、Changelog、README 與運維文件。</li></ul>
+<h2>本機驗證</h2>
+<table><thead><tr><th>檢查</th><th>結果</th></tr></thead><tbody>
+<tr><td>依賴／前端</td><td>Frozen install、typecheck、frontend build 通過；ESLint 0 errors、51 warnings。</td></tr>
+<tr><td>Vitest</td><td>195 個檔案、2,342 項測試通過。</td></tr>
+<tr><td>桌面 Rust</td><td>368 unit + 1 integration 通過；4 ignored。Cargo check、fmt 與 exact Clippy baseline 90 diagnostics 通過。</td></tr>
+<tr><td>Host helper</td><td>369 unit + 11 integration 通過；fmt 與 strict Clippy 通過。兩個 Cargo lockfile 隨版本更新。</td></tr>
+<tr><td>Release contract</td><td>v0.0.9 版本一致、Changelog notes、Stable updater 及 Beta 隔離合約通過。遠端 v0.0.9 tag／Release 尚不存在。</td></tr>
+<tr><td>Pages</td><td>角色產生與 Demo build 通過，並加入 PR CI；生成的 site/demo/ 及空 linker 暫存檔不提交。</td></tr>
+</tbody></table>
+<p>本機完整測試仍保留大型 bundle 提示與既有 lint warnings；真實跨平台 runtime、installer 與 GUI 驗收以本次新候選及使用者結果為準。本次未使用本機瀏覽器／E2E；歷史報告保留其原有來源與限制，不作為這次最終候選的通過證據。</p>
+<h2>修正的發布阻擋項目</h2>
+<p>舊測試硬編碼 beta.3 tag，及仍把建立終端機當作 Session 篩選選單項目；已更新為正式版 tag 與目前的 Space／Session 新增入口，並保留停止 Session 不出現在篩選選單的驗證。ESLint 排除生成的 Demo bundle；Rust 新增測試依 fmt／Clippy 規範整理。</p>
+<h2>Pages 部署</h2>
+<p>依使用者確認，沿用 GitHub Actions 部署 GitHub Pages，source 為 workflow，不建立 gh-pages 分支。Workflow 安裝 frozen dependencies、產生角色、建置 Demo，再上傳完整 site/。Demo 使用相對 assets，支援 /Yuzora/demo/。Pages 仍獨立於 main CI 觸發，部署成功不等於同來源通過 CI。</p>
+<h2>正式發布前仍需完成</h2>
+<ol><li>最終 PR 的三平台 CI、真實資料庫與四平台 helper、macOS／Windows 候選安裝檔成功；在 PR 記錄 head、tree、run、artifact 與 installer SHA-256。</li><li>使用者依 operations 第 5 節驗證受影響平台並明確核准 merge。</li><li>Repository 配置 APPLE_CERTIFICATE、APPLE_CERTIFICATE_PASSWORD、APPLE_SIGNING_IDENTITY、APPLE_ID、APPLE_PASSWORD、APPLE_TEAM_ID。當日僅查到兩項 updater secrets；此清單只記錄名稱。</li><li>Merge 後由 exact main push CI 觸發 Release；實際通過 macOS Developer ID／notarization、updater signing、metadata 與 automated publish gate。</li><li>發布後查證 Latest、下載別名、updater metadata、Pages／Demo 及正式安裝與 OTA smoke test。</li></ol>
+<p class="meta">遠端 CI、候選下載與後續結果將回填 Issue #93／Release PR；本文件記錄本機 preflight，不宣稱已完成正式發布。</p>
+</main></html>

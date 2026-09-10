@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-TW">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora 新 UI 替換・開發與驗收紀錄</title>
+<style>
+:root{color-scheme:light;--paper:#fbfaf6;--ink:#2e2c28;--muted:#656158;--line:#d9d5cc}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.8 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1160px;margin:auto;padding:56px 28px 90px}header{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:36px}h1{font-size:34px;line-height:1.3;letter-spacing:-.7px}h2{font-size:23px;margin:46px 0 16px}h3{font-size:17px}p{margin:10px 0}small,figcaption,.muted{color:var(--muted)}code{font:12px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%;margin:18px 0}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line)}th{background:#f0ede5;font-weight:600}figure{margin:24px 0}img{width:100%;border:1px solid var(--line);border-radius:12px}figcaption{font-size:13px;margin-top:7px}a{color:#315981}ul{padding-left:22px}.note{padding:16px 20px;border-left:3px solid #9c8b65;background:#f1ede3}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.badge{font-size:12px;padding:4px 9px;border-radius:6px;background:#e7eedc} @media(max-width:700px){main{padding:24px 16px}h1{font-size:27px}.grid{display:block}table{font-size:13px}th,td{padding:8px}}
+</style>
+<main>
+<header><span class="badge">Production UI migration · 2026-09-08</span><h1>Yuzora 新 UI 替換</h1><p>將已拍板的 Demo 外觀與工作流程接入正式 React 工作面，延續真實 HostRuntime、typed IPC 與既有資料模型。</p><p class="muted">基準 HEAD：<code>711342825480a2edd5eb79005554ce828177e245</code>。本次沒有 commit、push、merge 或 release；沒有修改 Rust backend，沒有操作 live Herdr、資料庫與遠端主機。</p></header>
+
+<section><h2>平行開發與整合方式</h2><p>依使用者指定，三個 <strong>gpt-6-astra / low</strong> 各自負責有明確邊界的元件。主 agent 負責外殼、依賴、整合與瀏覽器驗證。開發凍結後由一個 <strong>gpt-6-astra / max</strong> 獨立審查；問題交回原分工修正，並由同一 reviewer 複查。</p>
+<table><tr><th>分工</th><th>責任與交付</th></tr><tr><td>Spaces / Agents</td><td>Space → worktree → Agent 樹、完整 Host + Session 身份、All 已載入集合、獨立 Inspector、角色外觀編輯、啟動入口與原 capability gates。</td></tr><tr><td>Editor / Git / Tabs</td><td>Rich Markdown 與 CodeMirror 共用文件、工作分頁釘選、Git 多選與大型並排 diff、原 Git graph、Terminal 新增分頁及不停止 runtime 的關閉投影。</td></tr><tr><td>Settings / Theme</td><td>分類設定與搜尋、JetBrains Mono 預設字型、持久化主題與多點漸層、真實資源分類、窄視窗狀態列。</td></tr><tr><td>Root integration</td><td>雙側欄 AppShell、共用工具上欄、面板 mount / focus / resize 保護、整合測試、隔離 fixture、證據與本紀錄。</td></tr></table></section>
+
+<section><h2>正式接線後的行為</h2><ul>
+<li>左側 Spaces 與 Agents，右側 Files / Git。資料庫、SSH / SFTP、搜尋和設定移至頂列。右側可開啟原有 Git 提交紀錄與 branch graph。</li>
+<li>All 只是已載入 runtime 的展示篩選，沒有創建新的跨 Session runtime。工作目錄、worktree 與 Agent actions 維持完整 Host + Named Session scope。</li>
+<li>Markdown 預設文件模式，可切原始碼。TipTap 編輯透過 CodeMirror transaction，保留既有儲存、undo、LSP 與 remote revision 路徑。不支援無損 roundtrip 的 HTML、frontmatter、圖片／引用等內容回退至安全閱讀與原始碼。</li>
+<li>Git 檔案單擊或 Enter 開啟共用 DiffModal，預設並排、首次近滿版；使用者調整過的尺寸仍會保存。多選暫存沿用原 store 與實際 Git 操作。</li>
+<li>刪除為灰色、未追蹤為醒目暖棕、已暫存為綠色、修改為藍色，另有文字標記。明暗主題使用各自的可讀色票。</li>
+<li>右鍵可釘選，批次關閉保留釘選。<strong>跨重啟持久化目前涵蓋檔案分頁</strong>；Herdr / Preview 的釘選維持本次 UI session。</li>
+<li>新增分頁提供 Herdr Terminal 與 Browser。既有本機終端機 drawer 保留，避免在 UI 遷移中遺失已存在的 PTY。關閉 Herdr 工作分頁只釋放 attachment；明確停止 runtime 的操作仍走原控制與確認流程。</li>
+<li>Terminal 字型預設使用已 bundled 的 JetBrains Mono；文字大小與字型立即更新既有本機與 Herdr terminal renderer，不以重新啟動 process 套用。Shell profile 明確只適用本機終端機。</li>
+<li>資源視窗使用 PerfSnapshot 的 App、WebView、受管工具三分類。沒有假造逐 PID、Space 歸屬或遠端用量。畫面說明其觀測範圍。</li>
+</ul><div class="note">正式 domain 以 accepted ADR-0003 為準：Linux / macOS、Windows WSL2 與 SSH HostRuntime 使用完整 <code>hostId + sessionName</code>。沒有將舊 Demo 的 Windows-native 模型、AgentZone 或 mock runtime 搬入 production。</div></section>
+
+<section><h2>獨立 Review 與修正</h2><p>以下五項均有 source 或實際 fixture 圖面證據。不是視覺偏好清單；修正後由 max reviewer 複查。</p>
+<table><tr><th>優先項</th><th>觸發與影響</th><th>最小修正與驗證</th></tr>
+<tr><td>P1 · Source 支持<br>關閉頁重新出現</td><td>關閉 Herdr 工作分頁後，切另一 terminal / reconnect 觸發 hydration，已關頁可被重新投影。<code>workspaceStore.ts</code>、<code>herdrStore.ts</code>。</td><td>dismissed projection 以完整 RuntimeKey + tabId（legacy terminalId fallback）記錄；implicit hydration 跳過，explicit open 清除單筆。回歸測試涵蓋跨 namespace 與批次關閉，沒有改回停止 process。</td></tr>
+<tr><td>P2 · Source 支持<br>ADE 操作入口遺失</td><td>ready Agent 只可 activate，缺 Inspector；Space 右鍵 rename / close 的舊入口不再可達。<code>SpaceAgentTree.tsx</code>。</td><td>增加可獨立操作的 Inspector 按鈕，接回 scoped herdrSpace / herdrPane context menus。測試確認 Inspector 不觸發 activate，payload 有正確 Session。</td></tr>
+<tr><td>P2 · Source 支持<br>大量檔案重複運算</td><td>每個 FileTree row 都重新展開完整 Git changes。<code>FileTree.tsx</code>、<code>git/fileRows.tsx</code>。</td><td>使用 status identity 的 WeakMap，共用 path metadata 索引；逐列 O(1) 查詢。狀態優先順序測試通過。Reviewer 的純計算 benchmark 122.38ms → 6.17ms；不是瀏覽器 FPS 或實機 latency。</td></tr>
+<tr><td>P2 · Source 支持<br>Diff 首次 resize 跳動</td><td>render 強制接近全窗，但 hook 使用 80% origin，首次拖曳／鍵盤操作會跳回較小尺寸。<code>DiffModal.tsx</code>、<code>useResizableDialogSize.ts</code>。</td><td>把大尺寸放入 hook 的真正預設，移除 render override；測試首次 pointer / keyboard 步進及保存尺寸。</td></tr>
+<tr><td>P2 · 已觀察<br>窄窗狀態列裁字</td><td>720×450 有效 viewport 中，長 branch 與 LSP 文字換行後被固定行高裁切。<code>StatusBar.tsx</code>。</td><td>保持單行、可縮排省略與完整 title；StatusBar 41 項測試通過。最終 720 圖面另附。</td></tr></table>
+<p>另補上 mode-aware Herdr visible / active 與 inert，讓切到 Git / Database 的隱藏 terminal 不再以可見頁處理焦點／resize，元件與 connector 持續掛載。移除 registry 安裝時殘留且未使用的 <code>cn</code> package。</p></section>
+
+<section><h2>已執行的檢查</h2><table><tr><th>證據層級</th><th>結果與範圍</th></tr>
+<tr><td>全域 frontend tests</td><td>217 個 test files、2,695 項測試通過；review 後小範圍文字與狀態列修正亦完成對應測試。</td></tr>
+<tr><td>Lint / typecheck / build</td><td>Lint：0 errors、56 warnings。Typecheck 通過。Production build 通過；保留大 chunk 與既有 dynamic import 等 build warnings，不視為已完成 bundle 效能調校。</td></tr>
+<tr><td>實際瀏覽器・fixture</td><td>直接掛載 production AppShell / stores / 元件，mockIPC 對所有未知與 mutation requests 拒絕。沒有載入 App 的 runtime Bridges。圖面均帶 FIXTURE 標記。</td></tr>
+<tr><td>視覺與互動</td><td>Light / lime、dark / violet；1440×900、1280×800、1024×768，另 720×450 有效 viewport。右工具收合、窄窗單側切換、Git 單擊並排 diff、Escape 返回檔案列、釘選選單狀態、設定主題切換、字級鍵盤調整 12→13、資源視窗分類與 Escape focus return。</td></tr>
+<tr><td>文字對比抽查</td><td>Git 明暗語意 tokens 最低白底 5.68:1、深底 #24212d 8.09:1、選取底 #3b3549 6.01:1；瀏覽器 computed styles 已確認使用新色。這是抽查，並非所有半透明合成背景及全部 palette 的 WCAG 認證。</td></tr>
+<tr><td>工作區界線</td><td>原有 dirty QA / 研究文件未納入 UI 修改；Demo 專案未修改。沒有 Git index / commit / branch 寫入；沒有 live Herdr / DB / remote mutation。</td></tr></table></section>
+
+<section><h2>Fixture 畫面證據</h2><p class="muted">這些是正式元件的瀏覽器 fixture 畫面，不是原生 runtime 成功證據。圖中資源數字與 Agent 狀態皆為測試資料。</p>
+<figure><img src="yuzora-ui-rollout-2026-09-08-assets/light-final-1440.png" alt="淺色青檸 1440 雙側欄"><figcaption>Light / lime：雙側欄、Space 身份、Markdown 文件與釘選分頁。</figcaption></figure>
+<figure><img src="yuzora-ui-rollout-2026-09-08-assets/dark-final-1440.png" alt="深色紫羅蘭 1440 雙側欄"><figcaption>Dark / violet：暖深灰中央閱讀面、多角色調與修正後的 Git 狀態字色。</figcaption></figure>
+<div class="grid"><figure><img src="yuzora-ui-rollout-2026-09-08-assets/settings-dark-1440.png" alt="新版設定"><figcaption>Settings：搜尋、分類、主題與 palette。</figcaption></figure><figure><img src="yuzora-ui-rollout-2026-09-08-assets/resources-1440.png" alt="資源分類用量"><figcaption>Resource usage：三種實際 DTO 分類；此圖使用 fixture 數字。</figcaption></figure></div>
+<figure><img src="yuzora-ui-rollout-2026-09-08-assets/diff-final-1440.png" alt="接近全窗的並排 diff"><figcaption>單擊 Git 檔案即開啟大型並排 diff，模擬原文與修改文實際經 CodeMirror render。</figcaption></figure>
+<div class="grid"><figure><img src="yuzora-ui-rollout-2026-09-08-assets/compact-1280.png" alt="1280 寬度工作面"><figcaption>1280×800：雙側欄。</figcaption></figure><figure><img src="yuzora-ui-rollout-2026-09-08-assets/narrow-1024.png" alt="1024 寬度工作面"><figcaption>1024×768：自動收合右側；可手動切至工具側欄。</figcaption></figure></div>
+</section>
+
+<figure><img style="max-width:720px" src="yuzora-ui-rollout-2026-09-08-assets/effective-720-final.png" alt="修正後的720有效viewport"><figcaption>720×450有效viewport：長branch及LSP保持單行省略，右工具可展開。這不是實際200% zoom證據。</figcaption></figure>
+<section><h2>結論與尚未覆蓋的驗收</h2><p><strong>品牌延續：可進下一階段。</strong>紙色、暖深灰、Space palette、三種既有字型及四角漸層仍可辨識；閱讀面保持穩定。<strong>ADE：source 與 frontend fixture 審查後可進原生驗收。</strong>五項 review 問題已修正；完整 runtime 驗收仍有證據缺口。</p>
+<ul><li>真正 200% browser / OS zoom 尚未執行。720×450 僅為 1440×900 在 200% 時近似的有效 viewport，不標為 zoom PASS。</li><li>沒有啟動 live Herdr，因此四個 panes、observe / control / takeover、agent 替換與重連的原生 terminal input、IME、scroll、resize 仍待實機驗收。</li><li>Native Preview webview 疊層、焦點與快捷鍵；遠端文件 owner / revision / save；DB / SSH / SFTP 完整流程未實際操作。現有 source gates 與單元測試不能替代這些驗收。</li><li>Browser fixture 的 graph 入口可達，原 Git graph 實作保留；本次沒有用真實 Git history 操作或提交。沒有實際執行 staging、commit、checkout 或刪除。</li><li>全部 palette、全狀態、完整 Tab / Shift+Tab 與螢幕閱讀器矩陣尚未逐項跑完。僅對本文列出的操作與圖面下結論。</li></ul>
+<p class="note">交付為正式 UI 程式碼與前端驗證結果；不是自動授權 merge / release。下一階段應在受控、可拋棄 workspace 執行原生驗收，再決定發佈。</p></section>
+</main></html>

@@ -1,10 +1,10 @@
 /* Each sidebar owns its window chrome; the center starts at the top edge. */
 .workbench-window-grip { position:absolute; inset:0 0 auto; height:8px; z-index:3; user-select:none; }
-.workbench-body { --workbench-reveal-start:0px; --workbench-reveal-end:0px; --workbench-sidebar-duration:var(--dur-mid); position:relative; display:flex; flex:1; min-height:0; gap:0; padding:8px; }
+.workbench-body { --workbench-reveal-start:0px; --workbench-reveal-end:0px; --workbench-sidebar-duration:260ms; --workbench-sidebar-ease:cubic-bezier(0.2,0.8,0.2,1); position:relative; display:flex; flex:1; min-height:0; gap:0; padding:8px; }
 /* Drag resizing stays synchronous; only collapse/expand needs a spatial transition. */
 .workbench-body[data-resizing] { --workbench-sidebar-duration:0ms; }
 .workbench-title { display:flex; flex:1; min-width:0; min-height:28px; align-items:center; gap:8px; user-select:none; }
-.workbench-title .workbench-logomark { font:600 24px/1 var(--font-serif); transform:translateY(-1px); }
+.workbench-title .workbench-logomark { width:28px; height:28px; object-fit:contain; }
 .workbench-title > strong { font-size:13px; font-weight:600; }
 /* Match AppKit's x22/y35 control group; keep breathing room before the brand. */
 .workbench-native-controls { display:block; width:64px; height:28px; flex-shrink:0; }
@@ -12,9 +12,9 @@
 .workbench-body[data-native-lights="true"] .workbench-sidebar-chrome { gap:16px; }
 .workbench-toggle-space { width:28px; height:28px; flex-shrink:0; }
 /* One persistent button per edge: only its position changes, so focus survives collapse. */
-.workbench-edge-toggle { position:absolute; z-index:2; top:13px; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; color:var(--ink-2); transition: left var(--workbench-sidebar-duration) var(--ease-out), top var(--workbench-sidebar-duration) var(--ease-out), background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), box-shadow var(--dur-fast); }
+.workbench-edge-toggle { position:absolute; z-index:2; top:13px; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; color:var(--ink-2); transition: left var(--workbench-sidebar-duration) var(--workbench-sidebar-ease), top var(--workbench-sidebar-duration) var(--workbench-sidebar-ease), background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), box-shadow var(--dur-fast); }
 .workbench-edge-toggle > svg { width:16px; height:16px; }
-.workbench-left-toggle[data-expanded="true"] { top:21px; }
+.workbench-edge-toggle[aria-expanded="true"] { top:21px; }
 /* Center the 28px restore target in the 44px tab header, including its outer border. */
 .workbench-edge-toggle[aria-expanded="false"] { top:16.5px; }
 .workbench-right-toggle { right:17px; }
@@ -23,14 +23,14 @@
 .workbench-body[data-native-lights="true"][data-left-collapsed="true"] { --workbench-reveal-start:128px; }
 .workbench-body[data-right-collapsed="true"] { --workbench-reveal-end:40px; }
 /* Match the existing 44px EditorArea headers, including a split editor's outer edges. */
-.workbench-workspace .group-header { transition:padding var(--workbench-sidebar-duration) var(--ease-out); }
+.workbench-workspace .group-header { transition:padding var(--workbench-sidebar-duration) var(--workbench-sidebar-ease); }
 .workbench-workspace .editor-group:first-child > .group-header { padding-left:calc(8px + var(--workbench-reveal-start)); }
 .workbench-workspace .editor-group:last-child > .group-header { padding-right:calc(8px + var(--workbench-reveal-end)); }
-/* Git/Database have different header layouts; reserve a short row above their controls. */
+/* Git reserves a short row; Database accommodates edge controls within its panels. */
 .workbench-workspace[data-utility-row="true"] { padding-top:36px; }
 .workbench-body[data-native-lights="true"][data-left-collapsed="true"] .workbench-workspace[data-utility-row="true"] { padding-top:44px; }
 .workbench-sidebar-content { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; }
-.workbench-spaces,.workbench-tools { display:flex; flex-shrink:0; min-height:0; overflow:hidden; transition:width var(--workbench-sidebar-duration) var(--ease-out); }
+.workbench-spaces,.workbench-tools { display:flex; flex-shrink:0; min-height:0; overflow:hidden; transition:width var(--workbench-sidebar-duration) var(--workbench-sidebar-ease); }
 /* Keep content at its chosen width while the outer shell clips it. Inert/aria-hidden
    apply immediately; visibility waits for the exit, without unmounting state. */
 .workbench-spaces-surface,.workbench-tools-surface { display:flex; flex:none; flex-direction:column; min-width:0; min-height:0; border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--yz-glass); backdrop-filter:blur(20px) saturate(1.5); padding:8px; visibility:visible; }
@@ -38,7 +38,7 @@
 .workbench-tools[data-collapsed="true"] > .workbench-tools-surface { visibility:hidden; transition:visibility 0s var(--workbench-sidebar-duration); }
 .workbench-spaces-surface { padding:4px 6px 0; }
 .workbench-tools-surface { padding:4px 8px 8px; }
-.workbench-tools-surface > .workbench-tools-chrome { height:28px; min-height:28px; margin-bottom:12px; }
+.workbench-tools-surface > .workbench-tools-chrome { height:36px; min-height:36px; padding-top:8px; margin-bottom:12px; }
 /* Background preferences keep the same inset and border width to avoid reflow. */
 .workbench-spaces[data-background="false"] > .workbench-spaces-surface,
 .workbench-tools[data-background="false"] > .workbench-tools-surface { border-color:transparent; background:transparent; backdrop-filter:none; }
@@ -55,14 +55,18 @@
 .workbench-sidebar-content > .space-tree-panel { min-height:0; flex:1; }
 .workbench-sidebar-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; height:30px; margin-bottom:4px; padding-left:8px; font-size:13px; }
 .workbench-sidebar-heading strong { font-weight:600; }
-.workbench-workspace { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; transition:padding-top var(--workbench-sidebar-duration) var(--ease-out); }
+.workbench-workspace { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; transition:padding-top var(--workbench-sidebar-duration) var(--workbench-sidebar-ease); }
 .workbench-main-surface { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .workbench-mode-surface { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .workbench-mode-surface[hidden],.workbench-tool-body[hidden],.workbench-database-surface[hidden] { display:none; }
 .workbench-database-surface { display:flex; flex:1; min-width:0; min-height:0; gap:10px; }
 .workbench-database-nav { display:flex; flex-direction:column; width:230px; min-height:0; flex-shrink:0; border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--yz-glass); padding:12px; overflow:hidden; }
 .workbench-database-main { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
-.workbench-resize-handle { display:flex; flex-shrink:0; align-items:center; justify-content:center; width:10px; min-width:0; overflow:hidden; touch-action:none; cursor:col-resize; transition:width var(--workbench-sidebar-duration) var(--ease-out); }
+/* Keep the database panels aligned with the workspace top without covering controls. */
+.workbench-database-main .database-profile-header { height:44px; padding-right:calc(10px + var(--workbench-reveal-end)); }
+.workbench-body[data-left-collapsed="true"] .workbench-database-nav { padding-top:48px; }
+.workbench-body[data-native-lights="true"][data-left-collapsed="true"] .workbench-database-nav { padding-top:56px; }
+.workbench-resize-handle { display:flex; flex-shrink:0; align-items:center; justify-content:center; width:10px; min-width:0; overflow:hidden; touch-action:none; cursor:col-resize; transition:width var(--workbench-sidebar-duration) var(--workbench-sidebar-ease); }
 .workbench-resize-handle[data-collapsed="true"] { width:0; pointer-events:none; }
 .workbench-resize-handle > span { width:3px; height:34px; border-radius:3px; background:var(--line-2); }
 .workbench-resize-handle:focus-visible { outline:2px solid var(--ring); outline-offset:-2px; border-radius:5px; }

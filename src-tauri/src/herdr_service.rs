@@ -78,6 +78,13 @@ pub async fn herdr_terminal_input(
 }
 
 #[tauri::command]
+pub async fn terminal_clipboard_image(png_base64: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || yuzora_host::clipboard_image::stage(&png_base64))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn herdr_terminal_resize(
     state: tauri::State<'_, HerdrState>,
     session_id: String,

@@ -55,7 +55,7 @@ function RuntimeSettings({ initialHostId }: { initialHostId: string }) {
   return <div className="flex min-w-0 flex-col gap-4">
     {windows && <Card size="sm"><CardHeader><CardTitle>{t("windowsRuntime")}</CardTitle><CardDescription>{t("windowsHint")}</CardDescription></CardHeader><CardContent>
       <Field orientation="horizontal"><div className="flex flex-1 flex-col gap-1"><FieldLabel htmlFor="wsl-runtime-enabled">{t("enableWsl")}</FieldLabel><FieldDescription>{t("enableWslHint")}</FieldDescription></div>
-        <Switch id="wsl-runtime-enabled" checked={enabled} onCheckedChange={value => { try { useRuntimePreferencesStore.getState().setWslEnabled(value); setError(null) } catch (error) { setError(String(error)) } }} />
+        <Switch id="wsl-runtime-enabled" className="yz-switch" checked={enabled} onCheckedChange={value => { try { useRuntimePreferencesStore.getState().setWslEnabled(value); setError(null) } catch (error) { setError(String(error)) } }} />
       </Field>
     </CardContent></Card>}
     <Field><FieldLabel htmlFor="herdr-runtime-host">{t("host")}</FieldLabel><Select value={hostId} onValueChange={setHostId}>

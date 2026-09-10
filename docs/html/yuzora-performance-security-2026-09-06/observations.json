@@ -1,0 +1,1484 @@
+[
+  {
+    "id": "R01",
+    "priority": "P2",
+    "category": "搜尋",
+    "status": "結構確認",
+    "title": "取消檢查未深入檔案內，舊搜尋仍佔執行緒",
+    "refs": [
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 133
+      },
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 156
+      },
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 195
+      }
+    ],
+    "impact": "每個查詢直接 spawn OS thread；generation 只在走訪下一個檔案時检查。巨大、低命中檔案可令舊查詢在背景繼續讀取；丟棄UI結果不會停止工作。",
+    "fix": "加入每區塊取消、單一活動搜尋或受控 executor；新查詢取消舊工作且 IPC send 失敗時停止。",
+    "verify": "搜尋數GB低命中檔→連打新query；觀察cancel p95、thread數、disk read是否迅速收斂。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R02",
+    "priority": "P2",
+    "category": "搜尋",
+    "status": "量測候選",
+    "title": "走訪與內容搜尋串行；每檔重新建 Searcher",
+    "refs": [
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 133
+      },
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 145
+      }
+    ],
+    "impact": "很多小檔或多核心SSD情境，單worker限制吞吐，反覆建Searcher增加配置。",
+    "fix": "量測後採有限 parallel walker/worker-local Searcher；共用取消與原子總結果配額、以有界channel彙整；避免每檔spawn。",
+    "verify": "10k/100k檔、cold/warm cache、SSD/網路磁碟；對照1/2/4/8workers首筆與完成延遲。",
+    "effort": "M",
+    "limit": "目前200檔/2000matches/單檔500及忽略binary/gitignore已有保護；並行不一定對慢磁碟較快。"
+  },
+  {
+    "id": "R03",
+    "priority": "P2",
+    "category": "搜尋",
+    "status": "結構確認",
+    "title": "命中數上限不等於掃描位元組與單行上限",
+    "refs": [
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 76
+      },
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 49
+      },
+      {
+        "path": "src-tauri/src/search_service.rs",
+        "line": 145
+      }
+    ],
+    "impact": "長單行仍要完整lossy decode；大小寫不敏感查找每命中lowercase整行與query，200字preview在後面才裁切。無命中的大檔也沒有掃描預算。",
+    "fix": "query lowercase預計算；以matcher offset避免重複掃描；設line/buffer/scan bytes/time预算並回報截斷原因。",
+    "verify": "100MiB單行、有/無命中及Unicode casefold fixture，量峰值記憶體、取消時間及column正確性。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R04",
+    "priority": "P2",
+    "category": "日誌",
+    "status": "結構確認",
+    "title": "同步日誌寫入持全域鎖並逐筆開檔",
+    "refs": [
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 113
+      },
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 154
+      },
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 235
+      },
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 1957
+      }
+    ],
+    "impact": "每筆在GLOBAL_SINK mutex中序列化、open、append，部分呼叫来自同步command/async runtime；慢盤或診斷高頻時阻塞呼叫者。",
+    "fix": "有界log queue、單writer持有buffered handle；按時間/大小flush，exit有界drain；嚴重audit事件不得默默丟失。",
+    "verify": "高頻diagnostics+慢盤fixture；producer latency、queue bytes、drop counters與退出flush完整性。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R05",
+    "priority": "P1",
+    "category": "日誌",
+    "status": "結構確認",
+    "title": "100 MiB 日誌限制排除當日檔，沒有單檔輪替",
+    "refs": [
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 117
+      },
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 175
+      },
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 194
+      }
+    ],
+    "impact": "當日檔不計入size清理且每日才再cleanup，單日大量log/trace能持续長大；100MiB不是全日誌的硬上限。",
+    "fix": "依大小輪替當日segment，把active segment計入總budget；限制單record bytes，避免大metadata/單行撐滿記憶體。",
+    "verify": "單日寫超過配額並跨日，確認disk總量和保留政策；測超大metadata。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R06",
+    "priority": "P2",
+    "category": "日誌",
+    "status": "結構確認",
+    "title": "查最新少量結果仍整檔掃描與JSON解析",
+    "refs": [
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 543
+      },
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 580
+      }
+    ],
+    "impact": "query_dir採O(limit)筆數ring buffer，但每檔從頭解析；頻繁filter/refresh會重掃大檔。limit由呼叫方傳入且不clamp；單行大小也不受筆數限制。",
+    "fix": "優先分段/反向tail+offset cursor和時間索引；需要多條件全文查詢時才評估SQLite FTS；加server limit/record byte cap與取消。",
+    "verify": "1/100/1000MiB日誌查最新100筆、稀有text、跨時間filter；量scan bytes/CPU/latency。",
+    "effort": "M",
+    "limit": "既有spawn_blocking避免直接在主執行緒掃整檔；不能誤報整檔載入RAM。"
+  },
+  {
+    "id": "R07",
+    "priority": "P1",
+    "category": "Git",
+    "status": "結構確認",
+    "title": "Git stdout/stderr 全量累積，diff 可造成尖峰記憶體",
+    "refs": [
+      {
+        "path": "src-tauri/src/git_service.rs",
+        "line": 227
+      },
+      {
+        "path": "src-tauri/src/git_service.rs",
+        "line": 233
+      },
+      {
+        "path": "src-tauri/src/git_service.rs",
+        "line": 1785
+      }
+    ],
+    "impact": "read_to_end/read_to_string無byte cap，git show大型blob/大量diff即使在timeout內完成仍可使RAM大增，之後轉字串/IPC/雙側diff再放大。",
+    "fix": "依命令設定stdout/stderr budget；diff先查blob size並回傳large/binary；stream/分页可用結果，超限kill+reap並保留明確truncated。",
+    "verify": "500MiB blob、巨量untracked/status與高量stderr；量native+WebView峰值與清理。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R08",
+    "priority": "P1",
+    "category": "Git",
+    "status": "結構確認",
+    "title": "Git timeout 未涵蓋 stdin write 與 reader join",
+    "refs": [
+      {
+        "path": "src-tauri/src/git_service.rs",
+        "line": 238
+      },
+      {
+        "path": "src-tauri/src/git_service.rs",
+        "line": 241
+      },
+      {
+        "path": "src-tauri/src/git_service.rs",
+        "line": 257
+      }
+    ],
+    "impact": "stdin.write_all在建立deadline之前；direct child退出後join readers亦無deadline。停止讀stdin或子孫保留stdout可使已宣告timeout的操作卡住。",
+    "fix": "deadline從spawn前起算，stdin/stdout/stderr與wait共同受控；timeout/error對process tree kill/reap并有界join。",
+    "verify": "不讀stdin的git wrapper、父退出子仍持pipe、讀錯誤三種本機fixture，驗證所有路徑期限及FD回收。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R09",
+    "priority": "P1",
+    "category": "LSP／程序",
+    "status": "結構確認",
+    "title": "LSP 阻塞寫入與 shutdown 共用鎖，可能卡住退出",
+    "refs": [
+      {
+        "path": "src-tauri/src/lsp_service.rs",
+        "line": 265
+      },
+      {
+        "path": "src-tauri/src/lsp_service.rs",
+        "line": 342
+      },
+      {
+        "path": "src-tauri/src/lib.rs",
+        "line": 453
+      }
+    ],
+    "impact": "send持stdin mutex做blocking write_all/flush；stop_shared先取同一mutex，才kill child。server不讀pipe時，退出無法先kill來解除寫入阻塞。",
+    "fix": "独立有界writer task與deadline；stop先mark/cancel+kill child再回收stdin，維持frame順序；禁止无限等待同一鎖。",
+    "verify": "LSP fixture不讀stdin，送超過pipe容量的didOpen/didChange，同時stop/exit；驗證期限內退出、無orphan/FD。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R10",
+    "priority": "P2",
+    "category": "檔案／Preview",
+    "status": "結構確認",
+    "title": "只在讀取前 stat 檢查大小，實際 read 仍無硬界限",
+    "refs": [
+      {
+        "path": "src-tauri/src/fs_service.rs",
+        "line": 186
+      },
+      {
+        "path": "src-tauri/src/fs_service.rs",
+        "line": 253
+      },
+      {
+        "path": "src-tauri/src/fs_service.rs",
+        "line": 446
+      },
+      {
+        "path": "src-tauri/src/preview_server.rs",
+        "line": 233
+      }
+    ],
+    "impact": "檔案在stat後增長仍可超過允許大小；base64同時持raw+約4/3 encoded再經JSON/JS複製。Preview同樣對opened.len檢查後read_to_end。",
+    "fix": "在同一opened handle以take(cap+1)有界讀取并验证bytes；backend固定允許上限，不完全信任caller max；大檔/圖片優先scope-controlled stream/protocol。",
+    "verify": "成長中檔案與閾值±1，檢查讀取bytes與峰值RSS；保留既有binary/large file分類。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R11",
+    "priority": "P2",
+    "category": "檔案／Preview",
+    "status": "結構確認",
+    "title": "Preview 服務串行且讀檔期間持 sessions 全域鎖",
+    "refs": [
+      {
+        "path": "src-tauri/src/preview_server.rs",
+        "line": 167
+      },
+      {
+        "path": "src-tauri/src/preview_server.rs",
+        "line": 197
+      },
+      {
+        "path": "src-tauri/src/preview_server.rs",
+        "line": 239
+      }
+    ],
+    "impact": "一個serve_loop同步handle_request，持sessions鎖完成read_to_end；HEAD也先讀body。大資源或慢讀取會阻擋其他assets與revoke，stop_all還join該thread。",
+    "fix": "短鎖取得pinned capability/allowlist快照；有界worker pool與streaming response；HEAD仅metadata、必要Range/conditional cache；stop deadline。",
+    "verify": "64 assets、8MiB資源、慢reader與關閉同時進行；首屏/並發延遲、revoke/exit時間。",
+    "effort": "M",
+    "limit": "現有64檔、discovery2MiB、serve8MiB與restricted CSP/token/allowlist皆應保留。"
+  },
+  {
+    "id": "R12",
+    "priority": "P3",
+    "category": "檔案／Preview",
+    "status": "加固建議",
+    "title": "過期 Preview session 主動回收與總量上限",
+    "refs": [
+      {
+        "path": "src-tauri/src/preview_server.rs",
+        "line": 89
+      },
+      {
+        "path": "src-tauri/src/preview_server.rs",
+        "line": 218
+      }
+    ],
+    "impact": "TTL只在該token收到request時刪除；create只清同selected檔舊session。若consumer錯失revoke，過期的不同檔案session與pinned handles可留到退出。",
+    "fix": "create或週期sweep expired，另設session/allowlist bytes cap；維持顯式close/revoke。",
+    "verify": "重複建立不同檔案並略過revoke，時間前進後檢查session count/FD。",
+    "effort": "S",
+    "limit": "這是後端回收保險，未聲稱正常UI關閉一定遺漏revoke。"
+  },
+  {
+    "id": "R13",
+    "priority": "P2",
+    "category": "LSP／程序",
+    "status": "結構確認",
+    "title": "Process stdout 逐行讀取缺單行 bytes 上限",
+    "refs": [
+      {
+        "path": "src-tauri/src/process_service.rs",
+        "line": 523
+      }
+    ],
+    "impact": "BufReader.lines等換行才產出，持續無換行輸出可累積大String；每行clone給stderr tail/IPC，只有行數上限不足以限制bytes。",
+    "fix": "分塊有界parser，超長行分段/truncate標記、batch IPC；tail同時設byte budget。",
+    "verify": "100MiB不換行、10萬短行與正常ready URL偵測；量RSS、IPC頻率與port parsing正確性。",
+    "effort": "M",
+    "limit": "未量測改善幅度；排序依觸發頻率、影響與修復風險。"
+  },
+  {
+    "id": "R14",
+    "priority": "P2",
+    "category": "可觀測性",
+    "status": "結構確認",
+    "title": "每2秒掃全系統程序，慢取樣可重疊",
+    "refs": [
+      {
+        "path": "src-tauri/src/perf_service.rs",
+        "line": 179
+      },
+      {
+        "path": "src/workbench/PerfBridge.tsx",
+        "line": 133
+      },
+      {
+        "path": "src/workbench/PerfBridge.tsx",
+        "line": 173
+      }
+    ],
+    "impact": "refresh ProcessesToUpdate::All並clone所有process name；setInterval沒有in-flight gate，慢於2秒可重疊與晚回填。",
+    "fix": "single-flight+generation，降低背景/idle頻率；快取process名稱/分類，定期發現新子程序、平時採樣已知tree，保留退出PID清理。",
+    "verify": "大量本機process、取樣延遲>2s、focus切換；量採樣自身CPU/latency與in-flight最多1。",
+    "effort": "M",
+    "limit": "現有只在app active取樣，不能寫成背景無條件每2秒掃描；PID tree關係需定期重建。"
+  },
+  {
+    "id": "H01",
+    "priority": "P2",
+    "category": "安全加固",
+    "status": "加固建議",
+    "title": "主 WebView 的 CSP 為 null",
+    "refs": [
+      {
+        "path": "src-tauri/tauri.conf.json",
+        "line": 30
+      },
+      {
+        "path": "src-tauri/capabilities/default.json",
+        "line": 5
+      }
+    ],
+    "impact": "缺CSP會放大未來renderer injection影響，但本次未證明任意HTML可注入main。Preview既有獨立CSP，不能混為一談。",
+    "fix": "盤點實際script/style/img/connect需求，部署限制主WebView CSP；回歸CodeMirror/worker/font/asset/dev URL；保留preview與main capability分離。",
+    "verify": "真Tauri測試main與child webview IPC權限、外部URL navigation及CSP report。",
+    "effort": "M",
+    "limit": "防禦縱深；不是另一個已確認XSS或RCE。"
+  },
+  {
+    "id": "H02",
+    "priority": "P2",
+    "category": "安全加固",
+    "status": "加固建議",
+    "title": "LSP trace 原文含文件內容，需敏感度與保留策略",
+    "refs": [
+      {
+        "path": "src-tauri/src/lsp_service.rs",
+        "line": 596
+      },
+      {
+        "path": "src-tauri/src/logging.rs",
+        "line": 113
+      }
+    ],
+    "impact": "開啟trace時body直接寫入log，didOpen/didChange可能含私密程式碼/文字；新增日誌欄位可能绕过既有特定redaction。",
+    "fix": "trace預設關閉，短TTL/容量輪替、敏感method body opt-in或遮罩；寫入時就盡量minimize，限制檔案權限，匯出再做第二層redaction。",
+    "verify": "以假token/私鑰/DB密碼sentinel測落盤與匯出；驗證診斷仍保有必要context。",
+    "effort": "M",
+    "limit": "使用者明確trace屬診斷功能；未查明可被未授權帳號讀取，不列credential leak漏洞。"
+  },
+  {
+    "id": "S01",
+    "priority": "P1",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "SSH terminal 輸入與輸出缺端到端 byte backpressure",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1301
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1627
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1755
+      },
+      {
+        "path": "src/terminal/SshTerminalSession.tsx",
+        "line": 118
+      }
+    ],
+    "impact": "unbounded ShellCmd輸入複製Vec；遠端chunks直接emit→term.write，不等xterm完成。大量貼上/輸出與慢renderer可累積pending bytes。",
+    "fix": "bounded byte channel、resize latest-wins；output batching+ACK credit；超限明確暫停，不默默丟bytes。",
+    "verify": "1/10/50MiB/s、20MiB paste、10背景sessions；量queue/RSS/heap、echo p95及停止後回落。",
+    "effort": "M",
+    "limit": "SSH與現有local TerminalOutputQueue的路徑不同；scrollback4000不是pending bytes限制，未實測遠端DoS。"
+  },
+  {
+    "id": "S02",
+    "priority": "P1",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "SFTP 覆寫先刪舊檔再 rename，失敗可遺失原檔",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1516
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1522
+      }
+    ],
+    "impact": "remove(remote)成功後rename(temp)失敗，原檔已不在；error又嘗試刪temp。網路/permission錯誤會打破原子替換。",
+    "fix": "使用server支援的posix-rename原子覆寫；不支援時可復原backup transaction或非覆寫流程。",
+    "verify": "在remove後注入rename failure/斷線；舊檔或backup仍可恢復，新檔成功才替代。",
+    "effort": "M",
+    "limit": "已確認資料完整性缺陷，未宣稱權限提升。"
+  },
+  {
+    "id": "S03",
+    "priority": "P1",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "傳輸取消與 ACK idle deadline 不完整",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1482
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1502
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1569
+      },
+      {
+        "path": "src/state/sftpStore.ts",
+        "line": 295
+      },
+      {
+        "path": "src/app/panels/SshPanel.tsx",
+        "line": 949
+      }
+    ],
+    "impact": "transfer無獨立取消token；SDK一般request有10s timeout，但write_nowait ACK poll不經該timeout，peer保持連線不答ACK可長期留task/FD。",
+    "fix": "transfer registry+CancellationToken；copy/ACK drain/close/promote加入idle/overall deadline；cleanup有界且釋放slot。",
+    "verify": "第8個write ACK故意不回，取消單一transfer後terminal仍可用，scratch/FD/slot全部釋放。",
+    "effort": "M",
+    "limit": "russh-sftp 2.4.0本機source已核查；不是所有SFTP操作都沒有timeout。"
+  },
+  {
+    "id": "S04",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "量測候選",
+    "title": "下載缺 read-ahead，WAN 吞吐受 request window 限制",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 958
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1570
+      },
+      {
+        "path": "src-tauri/Cargo.lock",
+        "line": 4985
+      }
+    ],
+    "impact": "32KiB download僅一個pending read；100ms RTT request-window理論上限約0.3125MiB/s。upload已有8個write pipeline，不能把上傳同樣視為單筆等待。",
+    "fix": "bounded offset read-ahead、negotiated packet size、in-flight byte budget；upload依benchmark調chunk/queue。",
+    "verify": "RTT1/20/100/200ms×1/4/16 transfers×1GiB；吞吐、RSS、terminal echo p95。",
+    "effort": "L",
+    "limit": "理論模型非實測；8×32KiB upload模型約2.5MiB/s@100ms，disk/server/TCP另有限制。"
+  },
+  {
+    "id": "S05",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "大型遠端目錄全量累積、排序、JSON 與 DOM",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1379
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1004
+      },
+      {
+        "path": "src/app/panels/SshPanel.tsx",
+        "line": 843
+      }
+    ],
+    "impact": "SDK read_dir每batch重新collect舊entries可能造成累計搬移；repo再次collect/sort，comparator lowercase配置，UI全entries.map。首屏要等完整目錄，持續READDIR無EOF缺cumulative budget。",
+    "fix": "低階opendir/readdir cursor或受控streaming，entry/byte/time cap；sort key預算、virtual list與handle cleanup。",
+    "verify": "1k/10k/100k entries和不回EOF fixture；首屏、allocations、IPC bytes、DOM數。",
+    "effort": "L",
+    "limit": "remote server本來控制遠端內容；此項是資源界限/可用性，非已復現的新權限漏洞。"
+  },
+  {
+    "id": "S06",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "多檔傳輸無總排程，首次 SFTP 初始化可重複",
+    "refs": [
+      {
+        "path": "src/app/panels/SshPanel.tsx",
+        "line": 744
+      },
+      {
+        "path": "src/app/panels/SshPanel.tsx",
+        "line": 417
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1329
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1357
+      }
+    ],
+    "impact": "多選/drop直接void upload所有檔；同時cache miss都先開channel/handshake才入cache。大量小檔耗FD、buffers與server channels。",
+    "fix": "per-session singleflight SFTP init；有限transfer scheduler，queued不提前占FD/capability，保留terminal控制容量。",
+    "verify": "1000小檔cold/warm；SFTP init次數=1，active數上限與FD/成功率/完成时间。",
+    "effort": "M",
+    "limit": ""
+  },
+  {
+    "id": "S07",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "Progress 高頻整表複製，完成歷史無界保留",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 959
+      },
+      {
+        "path": "src/state/sftpStore.ts",
+        "line": 276
+      },
+      {
+        "path": "src/state/sftpStore.ts",
+        "line": 295
+      },
+      {
+        "path": "src/app/panels/SshPanel.tsx",
+        "line": 286
+      },
+      {
+        "path": "src/app/panels/SshPanel.tsx",
+        "line": 928
+      },
+      {
+        "path": "src/app/panels/SshPanel.tsx",
+        "line": 433
+      }
+    ],
+    "impact": "每256KiB tick、不按時間節流；100MiB/s模型約400ticks/s。每tick复制全部transfers，pane全表filter/map，歷史T使每次O(T)。",
+    "fix": "100–200ms backend throttle保final；renderer coalesce、active/completed分離、host selectors、history TTL/cap。",
+    "verify": "10k歷史+4active，測events/s、React commits/GC/heap；terminal與UI保持响应。",
+    "effort": "M",
+    "limit": "速率數字為閾值推算非實測；完成fallback tick另有把transferred覆成0的語意問題。"
+  },
+  {
+    "id": "S08",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "目錄請求缺 generation fencing，完成上傳引發 refresh storm",
+    "refs": [
+      {
+        "path": "src/state/sftpStore.ts",
+        "line": 111
+      },
+      {
+        "path": "src/state/sftpStore.ts",
+        "line": 139
+      },
+      {
+        "path": "src/state/sftpStore.ts",
+        "line": 225
+      }
+    ],
+    "impact": "A→B操作若A晚回會覆蓋B；重連舊session結果也可回寫；每個upload完成都重新整目錄list。",
+    "fix": "host+session+request generation fencing；in-flight dedupe、batch完成debounce一次refresh，維持selection/viewport。",
+    "verify": "deferred A/B逆序resolve與reconnect；100檔完成listing次數有界且路徑正確。",
+    "effort": "M",
+    "limit": ""
+  },
+  {
+    "id": "S09",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "SSH timeout 只包 handshake，authentication 無 deadline",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1125
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1143
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1202
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1229
+      }
+    ],
+    "impact": "connect timeout在authenticate之前結束；russh default無keepalive/inactivity。握手成功後不回auth的peer可令connecting長期卡住與延長credentials lifetime。",
+    "fix": "分階段auth/control deadline與取消；適當keepalive/blackhole detection，避免把合法閒置shell當錯誤。",
+    "verify": "握手後沉默、休眠喚醒/blackhole，測connecting結束時間、socket/task回收與重試session數。",
+    "effort": "M",
+    "limit": ""
+  },
+  {
+    "id": "S10",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "Per-session channel 控制鎖跨 network await",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1285
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1341
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1655
+      }
+    ],
+    "impact": "同session channel/subsystem建立等待時持handle mutex，disconnect與下一channel也要等；不同session不直接受此鎖影響。",
+    "fix": "control deadline/cancellation+singleflight；再評估縮鎖/控制actor，不移除需要的session序列化。",
+    "verify": "延遲channel-open，量同/不同session p95與disconnect上限、mutex wait。",
+    "effort": "M",
+    "limit": "不是全host全域傳輸鎖，也不能靠無限制多session解決。"
+  },
+  {
+    "id": "S11",
+    "priority": "P2",
+    "category": "SSH／SFTP",
+    "status": "結構確認",
+    "title": "連線晚到回應可復活已移除 host",
+    "refs": [
+      {
+        "path": "src/state/sshStore.ts",
+        "line": 148
+      },
+      {
+        "path": "src/state/sshStore.ts",
+        "line": 195
+      },
+      {
+        "path": "src/state/sshStore.ts",
+        "line": 204
+      }
+    ],
+    "impact": "connecting期間sessionId=null，removeHost無法disconnect；connect完成無generation檢查而重新設active/session，可留backend transport。",
+    "fix": "每host connection generation/cancel；完成若host不存在或generation變更，立刻disconnect新session；清cache ownership。",
+    "verify": "resolve connect前remove/reset/disconnect；store不復活、backend sessions與FD归零。",
+    "effort": "M",
+    "limit": "markExit已有best-effort disconnect，正常shell退出不是完全未清理。"
+  },
+  {
+    "id": "S12",
+    "priority": "P3",
+    "category": "SSH／SFTP",
+    "status": "加固建議",
+    "title": "同步 key/known_hosts I/O 與遠端暫存檔加固",
+    "refs": [
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1214
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 795
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 844
+      },
+      {
+        "path": "src-tauri/src/ssh_service.rs",
+        "line": 1472
+      },
+      {
+        "path": "src-tauri/src/path_capability.rs",
+        "line": 1045
+      }
+    ],
+    "impact": "async路徑同步key讀取/解密、pin檔鎖/fsync可能占runtime；temp採CREATE|TRUNCATE無EXCLUSIVE，跨session destination別名去重不完整。",
+    "fix": "bounded spawn_blocking保留pin原子性；remote temp exclusive-create+retry；明確symlink/endpoint ownership policy。",
+    "verify": "慢盤/高成本key解密量runtime lag；duplicate destination與temp collision fixture。",
+    "effort": "M",
+    "limit": "UUID temp降低預置攻擊機會；remote本來控制自己的檔案。後半僅hardening，未證明新的權限突破。"
+  },
+  {
+    "id": "F01",
+    "priority": "P2",
+    "category": "前端／編輯器",
+    "status": "結構確認",
+    "title": "每次輸入重建全部 groups/tabs，即使已 dirty",
+    "refs": [
+      {
+        "path": "src/editor/cmExtensions.ts",
+        "line": 171
+      },
+      {
+        "path": "src/editor/EditorPane.tsx",
+        "line": 189
+      },
+      {
+        "path": "src/state/workspaceStore.ts",
+        "line": 1051
+      },
+      {
+        "path": "src/workbench/EditorArea.tsx",
+        "line": 24
+      }
+    ],
+    "impact": "docChanged→markDirty每次map所有groups/tabs並產生新group引用；多tab時每鍵O(totalTabs)+下游衍生/render。",
+    "fix": "dirty無變化直接return原state；只複製命中tab/group，保留其餘引用。",
+    "verify": "100tabs連打，查store reference stability/React commit和input p95。",
+    "effort": "S",
+    "limit": "非docChanged不觸發；不相關store欄位本來有selector隔離。"
+  },
+  {
+    "id": "F02",
+    "priority": "P2",
+    "category": "前端／編輯器",
+    "status": "結構確認",
+    "title": "File tree 已展開列全量 DOM 與 store subscriptions",
+    "refs": [
+      {
+        "path": "src/workbench/FileTree.tsx",
+        "line": 24
+      },
+      {
+        "path": "src/workbench/FileTree.tsx",
+        "line": 124
+      },
+      {
+        "path": "src/workbench/FileTree.tsx",
+        "line": 182
+      }
+    ],
+    "impact": "大量扁平目錄/展開節點使DOM及每列selector隨N成長。",
+    "fix": "flatten visible nodes+virtual window，保留tree鍵盤/ARIA、ScrollArea与選取語意。",
+    "verify": "10k/50k節點，DOM保持viewport量级，量scroll/frame time。",
+    "effort": "M",
+    "limit": "children已lazy，collapsed不渲染；git changedPathSet已有WeakMap cache。"
+  },
+  {
+    "id": "F03",
+    "priority": "P2",
+    "category": "前端／編輯器",
+    "status": "結構確認",
+    "title": "File tree cache 無 workspace/節點總量預算",
+    "refs": [
+      {
+        "path": "src/state/fileTreeStore.ts",
+        "line": 7
+      },
+      {
+        "path": "src/state/fileTreeStore.ts",
+        "line": 159
+      }
+    ],
+    "impact": "刻意保留曾訪workspace与展開目錄，但無LRU/eviction，長工作階段heap持續保留；現有prune主要針對已刪除子樹。",
+    "fix": "workspace LRU與directory nodes/bytes cap；active/expanded pin，collapsed舊目錄可淘汰。",
+    "verify": "巡覽100workspaces後返回一個；關閉/GC後量retained nodes與cache size。",
+    "effort": "M",
+    "limit": "保留切回即顯體驗，是資源政策缺口而非DOM未dispose的證據。"
+  },
+  {
+    "id": "F04",
+    "priority": "P2",
+    "category": "前端／編輯器",
+    "status": "結構確認",
+    "title": "File relist 上限是每批 8，缺跨批去重與晚回防護",
+    "refs": [
+      {
+        "path": "src/state/fileTreeStore.ts",
+        "line": 148
+      },
+      {
+        "path": "src/state/fileTreeStore.ts",
+        "line": 162
+      },
+      {
+        "path": "src/state/fileTreeStore.ts",
+        "line": 197
+      }
+    ],
+    "impact": "多次watch/refresh各自mapLimit8，可8×calls並行；await後無generation，舊目錄回應可覆蓋新內容。",
+    "fix": "(root,dir)singleflight、shared semaphore、latest generation apply；沿用精準invalidation。",
+    "verify": "deferred listDir逆序返回、重複watch bursts，驗證global active≤8與newest-wins。",
+    "effort": "M",
+    "limit": ""
+  },
+  {
+    "id": "F05",
+    "priority": "P2",
+    "category": "前端／編輯器",
+    "status": "結構確認",
+    "title": "Document registry 只快取已完成讀取，缺 in-flight ownership",
+    "refs": [
+      {
+        "path": "src/editor/documentRegistry.ts",
+        "line": 11
+      },
+      {
+        "path": "src/editor/documentRegistry.ts",
+        "line": 20
+      },
+      {
+        "path": "src/editor/documentRegistry.ts",
+        "line": 59
+      }
+    ],
+    "impact": "同時split/preview載同file重複IPC；drop/clear不能使pending read失效，讀取完成可重新塞回已關文件cache。",
+    "fix": "pending Promise去重、path/workspace epoch；drop/clear invalidate pending，失效結果不入cache。",
+    "verify": "兩同時get只invoke一次；openFile pending→drop/clear→resolve後cache維持空。",
+    "effort": "S",
+    "limit": "正常close已有dropDocument；EditorPane有view.destroy/ownership，非所有文件永久洩漏。"
+  },
+  {
+    "id": "F06",
+    "priority": "P2",
+    "category": "搜尋",
+    "status": "結構確認",
+    "title": "搜尋前端每批複製全結果、重分組、全量 DOM",
+    "refs": [
+      {
+        "path": "src/workbench/search/useWorkspaceSearch.ts",
+        "line": 59
+      },
+      {
+        "path": "src/workbench/search/WorkspaceSearchGroup.tsx",
+        "line": 14
+      },
+      {
+        "path": "src/workbench/search/WorkspaceSearchGroup.tsx",
+        "line": 148
+      }
+    ],
+    "impact": "50ms批次setEvents([...prev,...batch])累計copy；每render全掃groupByFile再建所有cmdk結果列。",
+    "fix": "按file增量聚合、virtual results或游標分頁，將input優先於結果render。",
+    "verify": "500/2000hits下首批可互動時間、DOM/heap、輸入p95；測truncated提示。",
+    "effort": "M",
+    "limit": "已有250ms debounce、50ms batch及後端2000matches cap，不是無限制結果。"
+  },
+  {
+    "id": "F07",
+    "priority": "P2",
+    "category": "LSP／程序",
+    "status": "結構確認",
+    "title": "過期 semantic/diagnostic request 只丟結果，未停止工作",
+    "refs": [
+      {
+        "path": "src/lsp/semanticTokens.ts",
+        "line": 180
+      },
+      {
+        "path": "src/lsp/diagnosticsPull.ts",
+        "line": 117
+      }
+    ],
+    "impact": "superseded request仍耗LSP CPU並retain view至settlement；destroy只clear timer，未cancel/disposed gate，late dispatch依賴catch。",
+    "fix": "保留request identity並cancel superseded/destroy；singleflight latest queue與generation/disposed gate；delta semantic token列為後續量測。",
+    "verify": "慢server下0.5s停頓輸入、立即關tab；量pending count/cancel與destroyed-view dispatch。",
+    "effort": "M",
+    "limit": "@codemirror/lsp-client預設3s timeout并清pending；不能宣稱永久pending leak，completion已有abort。"
+  },
+  {
+    "id": "F08",
+    "priority": "P2",
+    "category": "啟動／建置",
+    "status": "建置量測",
+    "title": "單一主 JS 約 3.11 MB，功能與語言 eager 載入",
+    "refs": [
+      {
+        "path": "src/editor/cmExtensions.ts",
+        "line": 12
+      },
+      {
+        "path": "src/App.tsx",
+        "line": 20
+      }
+    ],
+    "impact": "本次build主JS3113.39kB（gzip981.29），CSS137.50kB，2394modules；多語言mode與Bridge/Hosts同步import。",
+    "fix": "Editor/DB/Git/Markdown/Settings lazy boundary；語言按需dynamic import+promise cache，首開可預載。",
+    "verify": "cold start native load/parse/evaluate時間、首可互動及各功能首次打開p95。",
+    "effort": "L",
+    "limit": "Tauri本機載入，gzip大小不是實際下載/啟動量測；僅manualChunks仍eager不足以保證收益。"
+  },
+  {
+    "id": "F09",
+    "priority": "P2",
+    "category": "前端／編輯器",
+    "status": "量測候選",
+    "title": "大型 Markdown 全文 parse/sanitize/DOM 在主執行緒",
+    "refs": [
+      {
+        "path": "src/workbench/MarkdownPreview.tsx",
+        "line": 188
+      },
+      {
+        "path": "src/workbench/MarkdownPreview.tsx",
+        "line": 270
+      },
+      {
+        "path": "src/workbench/MarkdownPreview.tsx",
+        "line": 309
+      },
+      {
+        "path": "src/workbench/MarkdownPreview.tsx",
+        "line": 468
+      }
+    ],
+    "impact": "變更後doc.toString→tokens→HTML→sanitize tree→live DOM，多份暫存；line count還split全文，細小修改也整份重做。",
+    "fix": "parser worker+latest-wins；preview bytes/nodes/time budget與section rendering；維持DOMPurify/links policy。",
+    "verify": "在現有grade允許範圍內1/5/10MiB多短行文件（超gate則驗證降級），小修改p95/heap與取消。",
+    "effort": "L",
+    "limit": "已有memo/useMemo、400ms poll、identity/large/long-line gate，不變內容不反覆parse。"
+  },
+  {
+    "id": "F10",
+    "priority": "P3",
+    "category": "前端／編輯器",
+    "status": "量測候選",
+    "title": "有界 terminal queue 的 Array.shift 仍有搬移成本",
+    "refs": [
+      {
+        "path": "src/terminal/terminalOutputQueue.ts",
+        "line": 14
+      },
+      {
+        "path": "src/terminal/terminalOutputQueue.ts",
+        "line": 350
+      },
+      {
+        "path": "src/terminal/terminalOutputQueue.ts",
+        "line": 376
+      }
+    ],
+    "impact": "大量極小chunk時，overflow每次shift搬array slots；bytes有界但object數與CPU隨chunk粒度變化。",
+    "fix": "head-index/deque與適度compact、chunk coalesce，維持UTF8及callback backpressure。",
+    "verify": "總bytes固定、chunk1/16/4096×12sessions；量enqueue CPU/alloc与顯示正確性。",
+    "effort": "S",
+    "limit": "現有256KiB cap、frame batching、hidden cap、dispose都有效，正常backend batching能減輕問題。"
+  },
+  {
+    "id": "F11",
+    "priority": "P2",
+    "category": "HERDR",
+    "status": "結構確認",
+    "title": "相同 snapshot 仍重製 projection，attention join 二次掃描",
+    "refs": [
+      {
+        "path": "src/state/herdrStore.ts",
+        "line": 718
+      },
+      {
+        "path": "src/app/workbench/HerdrNavContent.tsx",
+        "line": 49
+      },
+      {
+        "path": "src/app/workbench/HerdrNavContent.tsx",
+        "line": 73
+      },
+      {
+        "path": "src/app/workbench/HerdrNavContent.tsx",
+        "line": 373
+      }
+    ],
+    "impact": "每snapshot新map/attention/item引用，nav重新sort；attention內agents.find形成O(A×N)。",
+    "fix": "normalize by ID/structural sharing、agentByPaneId Map、細粒度selector與相同snapshot no-op。",
+    "verify": "1000agents與相同snapshot重播，React renders、normalization CPU、heap。",
+    "effort": "M",
+    "limit": "正常事件stream healthy fallback12s，異常4s，事件debounce250ms且refresh coalescing；不是每4s无条件全refresh。"
+  },
+  {
+    "id": "F12",
+    "priority": "P2",
+    "category": "可觀測性",
+    "status": "結構確認",
+    "title": "Diagnostics high-water 保留每個歷史 terminal ID",
+    "refs": [
+      {
+        "path": "src/workbench/PerfBridge.tsx",
+        "line": 60
+      },
+      {
+        "path": "src/workbench/PerfBridge.tsx",
+        "line": 75
+      }
+    ],
+    "impact": "terminalHighWater map不刪已unregister session，每次report遍歷歷史全部ID；大量短session延長後記憶體/成本累積。",
+    "fix": "把已結束session計数fold入cumulative scalar再刪entry，處理重連同ID防雙算。",
+    "verify": "建立/關閉10k unique sessions，map回落、累計monotonic且正確。",
+    "effort": "S",
+    "limit": "不能直接clear造成漏報。"
+  },
+  {
+    "id": "F13",
+    "priority": "P3",
+    "category": "啟動／建置",
+    "status": "建置量測",
+    "title": "Tailwind transform 佔本次 build 大部分時間",
+    "refs": [
+      {
+        "path": "src/styles.css",
+        "line": 5
+      },
+      {
+        "path": "vite.config.ts",
+        "line": 11
+      }
+    ],
+    "impact": "本次Vite build28.51s；plugin timing Tailwind transform27.8s。值得排查非UI來源掃描範圍。",
+    "fix": "profile clean/incremental build，再明確@source包含UI與必要檔，排除docs/vendor/fixtures等確定不需掃描來源。",
+    "verify": "相同cache狀態重測至少5次median，驗證所有動態class與視覺回歸。",
+    "effort": "S",
+    "limit": "單次plugin elapsed不是CPU時間或穩定基準；不可直接承諾97%加速。"
+  },
+  {
+    "id": "D01",
+    "priority": "P1",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "結果每加一列重掃快取，O(N²) 並持全域鎖",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 290
+      },
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 317
+      },
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 669
+      },
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 753
+      },
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 807
+      },
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 876
+      }
+    ],
+    "impact": "estimate_session_after_push掃該session；refresh_accounting又掃所有sessions/pages/rows/values。很多窄列在64MiB上限前已可累積巨大成本，跨連線爭同mutex。",
+    "fix": "增量更新page/session/registry retained bytes，只處理capacity變化；保持原子預算預留及rollback，再考慮per-session lock。",
+    "verify": "5k/10k/20k窄列×1/4connections；量push耗時/lock hold wait/首屏，全部budget tests繼續通過。",
+    "effort": "M",
+    "limit": "有容量防護；問題是反覆計算與串行成本，不是無界cache。"
+  },
+  {
+    "id": "D02",
+    "priority": "P1",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "PG helper 無界 row queue 中斷分頁背壓",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 2951
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 3054
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 5177
+      },
+      {
+        "path": "src-tauri/src/db_query_worker.rs",
+        "line": 44
+      }
+    ],
+    "impact": "driver持續try_next→unbounded_channel；parent讀500+lookahead後停讀，stdout阻塞但row queue仍成長。session64MiB/registry256MiB未涵蓋該queue，可撞helper512MiB guard。",
+    "fix": "bounded channel+byte permits，背壓傳至driver stream；cancel/close走獨立控制通道。",
+    "verify": "快server大量窄/寬列，停第一頁30s，helper RSS持平、cancel快且無被guard殺掉。",
+    "effort": "M",
+    "limit": "helper隔離/watchdog有效止血，但不是正常backpressure。"
+  },
+  {
+    "id": "D03",
+    "priority": "P1",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "跨 run 的未提交交易警示會遺失",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 6105
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 6138
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 4591
+      },
+      {
+        "path": "src/app/panels/DatabasePanel.tsx",
+        "line": 478
+      }
+    ],
+    "impact": "每run從transaction_may_be_open=false開始，僅追本run boundary；先BEGIN再單獨SELECT/UPDATE可能失去警示，server仍持lock/snapshot。",
+    "fix": "connection-generation-scoped transaction狀態；優先driver/server資訊，語法保守補充；不可自動commit。",
+    "verify": "同連線BEGIN→SELECT→UPDATE→COMMIT、error/cancel/reconnect，警示到真正結束才清。",
+    "effort": "M",
+    "limit": "SQLite outcome可能仍有TransactionPending小提示；PG/MSSQL無同等補救。靜態確認，未跑真DB。"
+  },
+  {
+    "id": "D04",
+    "priority": "P2",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "500 rows/page 不限制瞬時 IPC 與 clone 工作集",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 12
+      },
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 684
+      }
+    ],
+    "impact": "合法大text/JSON可讓一頁接近64MiB；rows/columns深clone，再serde/IPC/JS，registry cap不含這些暫時配置。",
+    "fix": "page同時row+byte cap；large cell預覽與明確取全文；縮小深clone鎖範圍，評估不可變共享頁。",
+    "verify": "合法大field/row頁量native+WebView峰值、IPC bytes與翻頁p95。",
+    "effort": "M",
+    "limit": "已有1MiB field、8MiB row、64MiB session、256MiB registry；不可當整app RSS上限。"
+  },
+  {
+    "id": "D05",
+    "priority": "P2",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "結果表格全量 cell DOM，寬表/長字串布局成本高",
+    "refs": [
+      {
+        "path": "src/app/panels/DatabasePanel.tsx",
+        "line": 834
+      },
+      {
+        "path": "src/app/panels/DatabasePanel.tsx",
+        "line": 910
+      },
+      {
+        "path": "src/lib/types.ts",
+        "line": 669
+      }
+    ],
+    "impact": "每頁rows.map×columns.map，text/JSON完整字串及nowrap，使500×數百欄与大cell放大layout/heap。",
+    "fix": "row/column virtualization、cell顯示長度界限，原值在獨立viewer取用；保留ScrollArea与拖欄。",
+    "verify": "500×20/200欄與長cell，量DOM/layout/橫捲和input p95。",
+    "effort": "M",
+    "limit": "窄表500列未必需虛擬化，先以基準證實收益。"
+  },
+  {
+    "id": "D06",
+    "priority": "P2",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "Release/disconnect 保留結果，需明確快取淘汰政策",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 541
+      },
+      {
+        "path": "src-tauri/src/db_result_session.rs",
+        "line": 580
+      },
+      {
+        "path": "src/state/dbStore.ts",
+        "line": 1899
+      }
+    ],
+    "impact": "release保ready pages；disconnect前端queryBuckets僅running=false，保留run/result和metadata。跨descriptor結果缺前端總bytes預算。",
+    "fix": "區分停止cursor/保留結果與清除；inactive LRU/bytes budget、清除入口，保留使用者需要的結果。",
+    "verify": "多descriptor query→release→disconnect→clear，分段查registry bytes與JS retained heap。",
+    "effort": "M",
+    "limit": "現有tests刻意要求release保cache，屬生命週期政策，不可直接稱memory leak。"
+  },
+  {
+    "id": "D07",
+    "priority": "P2",
+    "category": "資料庫",
+    "status": "量測候選",
+    "title": "SQLite idle 分頁游標保留 blocking thread/statement/lock",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 4801
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 6039
+      }
+    ],
+    "impact": "primary worker持connection lock、statement/rows，以blocking_recv等下一頁；多idle cursor各佔worker与read snapshot。",
+    "fix": "idle cursor政策、active streaming數上限与UI提示；量測後評估固定每connection worker。",
+    "verify": "多connection停在501+列第一頁，量threads/write wait/WAL growth與release回復。",
+    "effort": "M",
+    "limit": "一次执行live cursor是正確性設計；不可每頁重跑SQL或任意LIMIT/OFFSET。"
+  },
+  {
+    "id": "D08",
+    "priority": "P2",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "Metadata catalog 全量載入與全量樹渲染",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 2186
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 2470
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 1230
+      },
+      {
+        "path": "src/app/workbench/DatabaseNavContent.tsx",
+        "line": 537
+      },
+      {
+        "path": "src/app/workbench/DatabaseNavContent.tsx",
+        "line": 671
+      }
+    ],
+    "impact": "PG query()/MSSQL into_first_result/SQLite收全集；UI每render分組sort、預設展開schema/kind。大型catalog的首屏與RAM成長。",
+    "fix": "catalog/schema lazy load+metadata搜尋/分頁、visible-tree virtualize；activeTables引用不變時memo grouping。",
+    "verify": "1k/10k/50kobjects，metadata latency/IPC bytes/render与expand。",
+    "effort": "M",
+    "limit": "columns已有按需載入，一般小DB負擔有限。"
+  },
+  {
+    "id": "D09",
+    "priority": "P2",
+    "category": "資料庫",
+    "status": "結構確認",
+    "title": "前端平行 metadata 請求遇單 lease，變成 Busy/手動重試",
+    "refs": [
+      {
+        "path": "src/state/dbStore.ts",
+        "line": 2308
+      },
+      {
+        "path": "src-tauri/src/db_connection_actor.rs",
+        "line": 306
+      },
+      {
+        "path": "src/app/workbench/DatabaseNavContent.tsx",
+        "line": 600
+      }
+    ],
+    "impact": "不同columns請求可同時送，backend busy立即拒絕不排隊；快速展開多物件產生多個錯誤，增加體感延遲。",
+    "fix": "每connection metadata queue+object singleflight、query優先；若增加metadata connection需處理temporary/session/transaction context差異。",
+    "verify": "延遲fixture快速展開5objects全部成功且dedupe；query開始能取消/延後queue。",
+    "effort": "M",
+    "limit": "lease防止driver protocol交錯，不能直接拿掉允許同connection任意平行。"
+  },
+  {
+    "id": "D10",
+    "priority": "P3",
+    "category": "資料庫",
+    "status": "量測候選",
+    "title": "Helper 每列 JSON/frame 編解碼，可評估有界批次",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 3054
+      },
+      {
+        "path": "src-tauri/src/db_query_worker.rs",
+        "line": 416
+      },
+      {
+        "path": "src-tauri/src/db_query_worker.rs",
+        "line": 447
+      },
+      {
+        "path": "src-tauri/src/db_query_worker.rs",
+        "line": 751
+      }
+    ],
+    "impact": "大量窄列每row配置JSON Vec、寫length/body/flush、父端decode，增加serde/syscall候選成本。",
+    "fix": "row+byte雙界限小batch，保first-page/cancel延遲；binary protocol等profiler證據再考慮。",
+    "verify": "32/128/500row batch對照row/s、CPU/alloc、首頁与cancel p95。",
+    "effort": "M",
+    "limit": "flush依pipe實作不一定是重點；先改善D01，未量測不列主要CPU結論。"
+  },
+  {
+    "id": "D11",
+    "priority": "P2",
+    "category": "資料庫",
+    "status": "量測候選",
+    "title": "Run All 整份完成才顯示，首個可用結果被拖延",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 6136
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 4483
+      },
+      {
+        "path": "src/state/dbStore.ts",
+        "line": 2492
+      }
+    ],
+    "impact": "逐statement累積outcomes後一次回QueryRun，快→慢script讓使用者必須等慢statement才看見早已完成結果；大型script增加單回應工作集。",
+    "fix": "保留SQL執行順序，以exact run/statement owner events逐段發進度/完成結果；script byte/statement工作量門檻。",
+    "verify": "快→慢→快fixture，第一結果提早可見、cancel與skipped/outcome順序完全一致。",
+    "effort": "L",
+    "limit": "同connection/transaction的statement不可join_all平行。"
+  },
+  {
+    "id": "D12",
+    "priority": "P3",
+    "category": "資料庫",
+    "status": "加固建議",
+    "title": "單 helper 限制之外，需整體 query/cursor 資源預算",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_query_worker.rs",
+        "line": 48
+      },
+      {
+        "path": "src-tauri/src/db_query_worker.rs",
+        "line": 818
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 3645
+      }
+    ],
+    "impact": "每frame read120s不是整query deadline；多helper各有512MiB guard，app總量仍可高；SQLite也沒有同等query總期限。",
+    "fix": "query elapsed/idle cursor/active-helper budgets与app-wide指標；分開connect timeout/read inactivity/query deadline/user cancel。",
+    "verify": "慢首列、每120s內持續送列、停止翻頁、多helper矩陣，量總RAM/active queries/取消。",
+    "effort": "M",
+    "limit": "已有exact cancel/teardown/frame timeout/OS guard；不是完全沒timeout。"
+  },
+  {
+    "id": "SEC01",
+    "priority": "P1",
+    "category": "安全漏洞",
+    "status": "已本機復現",
+    "title": "PostgreSQL VerifyFull 可降级成明文並傳送密碼",
+    "refs": [
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 2082
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 2094
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 2112
+      },
+      {
+        "path": "src-tauri/src/db_service.rs",
+        "line": 3204
+      },
+      {
+        "path": "src-tauri/src/db_query_worker.rs",
+        "line": 589
+      },
+      {
+        "path": "src-tauri/Cargo.lock",
+        "line": 6729
+      }
+    ],
+    "impact": "Config::new沿用tokio-postgres 0.7.18的SslMode::Prefer；rustls connector本身不強制TLS。active MITM/受控endpoint回SSLRequest=N，再要求cleartext auth，即使VerifyFull也可收到密碼。",
+    "fix": "兩個加密mode明确SslMode::Require；已授權明文mode明确Disable；保留VerifyFull CA/hostname驗證与trust-cert acknowledgement；补完整協議負面測試。",
+    "verify": "本機fake server+假sentinel已復現。回歸應在N後立即失敗，不能再送StartupMessage或PasswordMessage；另測正常TLS與明文explicit exception。",
+    "effort": "S",
+    "limit": "HIGH安全嚴重度；需要使用者發起PG密碼連線與攻擊者控制網路路徑/endpoint。不是未登入RCE。現有plain-server test只讀首包後關socket未涵蓋此流程。"
+  },
+  {
+    "id": "R15",
+    "priority": "P2",
+    "category": "Git",
+    "status": "結構確認",
+    "title": "Git log 搜尋先取得並 hydrate 全部 matches，最後才截取回傳頁面",
+    "refs": [
+      {
+        "path": "src-tauri/src/git_log.rs",
+        "line": 664
+      },
+      {
+        "path": "src-tauri/src/git_log.rs",
+        "line": 680
+      },
+      {
+        "path": "src-tauri/src/git_log.rs",
+        "line": 741
+      },
+      {
+        "path": "src-tauri/src/git_log.rs",
+        "line": 867
+      },
+      {
+        "path": "src-tauri/src/git_log.rs",
+        "line": 722
+      }
+    ],
+    "impact": "正常log頁有500上限，但query分支無max-count，全部match OIDs進hydrate與cat-file stdin；大量歷史命中增加process I/O、記憶體与首屏時間。",
+    "fix": "按實際搜尋排序語意加入有界scan/cursor與批次hydrate，只materialize需要的頁；超過搜尋預算明確標記可繼續。",
+    "verify": "10萬/100萬commit資料集、common/rare query，量首屏/總scan/IPC/記憶體及分頁無漏重。",
+    "effort": "M",
+    "limit": "不能拿正常500頁大小推論搜尋也有界；不要在尚未完成必要filter前任意截斷而漏掉有效結果。"
+  }
+]

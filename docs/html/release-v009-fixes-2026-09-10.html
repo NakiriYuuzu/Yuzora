@@ -1,0 +1,43 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yuzora v0.0.9 修正與驗證</title><style>
+:root{color-scheme:light;--ink:#252c36;--muted:#586473;--line:#dce1e7;--accent:#345e75}*{box-sizing:border-box}body{margin:0;background:#f7f8fa;color:var(--ink);font:16px/1.75 system-ui,"PingFang TC",sans-serif}main{max-width:1040px;margin:auto;padding:36px 24px 70px}h1{font-size:32px;line-height:1.3}h2{margin-top:32px;font-size:23px}p{margin:12px 0}.meta{font-size:13px;color:var(--muted)}.lead{padding:16px 20px;border-left:4px solid var(--accent);background:#edf3f6}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line)}th{color:var(--accent)}a{color:var(--accent)}code{font:13px ui-monospace,monospace;overflow-wrap:anywhere}img{display:block;width:100%;border:1px solid var(--line);border-radius:10px;margin:16px 0}li{margin:8px 0}@media(max-width:640px){main{padding:22px 14px}th,td{padding:7px;font-size:12px}}</style></head><body><main>
+<p class="meta">2026-09-10 · Yuzora · release/v0.0.9 · 工作目錄中的修正</p>
+<h1>v0.0.9：檔案、終端與效能修正</h1>
+<p class="lead">已從 <code>release/v0.0.9-beta.3</code> 建立並切到 <code>release/v0.0.9</code>，保留原有修改、刪除及未追蹤檔案。此次修正包含品牌圖示、信任 challenge、WSL 檔案管理員、非 Git 目錄、終端完整畫面恢復、捲動元件與背景成本。未執行 staging、commit 或 push。</p>
+<h2>需求與結果</h2><table><thead><tr><th>項目</th><th>改動與證據</th></tr></thead><tbody>
+<tr><td>目前的 Logo</td><td>標題列、設定頁、啟動畫面與 favicon 統一使用目前隨 App 發布的 Yuzora 圖示（<code>src-tauri/icons/128x128.png</code>）；移除原先 y. 文字標誌與 Vite favicon。前端以同一份 <code>public/yuzora.png</code> 提供圖片。</td></tr>
+<tr><td>第一次信任報錯</td><td>最小 Rust 重現證實：顯示確認視窗後，背景 status／Git 權限查詢撤銷原 challenge，確認得到 <code>staleChallenge</code>。同一目錄、同一 filesystem identity 現在沿用未到期 challenge，且不延長時限；一次性、撤銷、目錄替換與跨程序持久化測試保留。</td></tr>
+<tr><td>WSL 在檔案管理員顯示</td><td>原先把 <code>yuzora-fs://</code> 文件 URI 傳給本機 opener。現在依已連線的 host identity 與 WSL 發行版轉成 <code>\\wsl.localhost\發行版\路徑</code>，保留中文與空格。SSH／未連線或無法對應的遠端主機停用此動作，不把遠端 URI 當作本機檔案。</td></tr>
+<tr><td>Windows 新 Space 出現 PowerShell provider 路徑（追加）</td><td>建立 Space 時，Windows canonical 路徑 <code>\\?\C:\...</code> 曾直接傳入 HERDR，PowerShell 因而顯示 <code>Microsoft.PowerShell.Core\FileSystem::</code>。在 HERDR 啟動目錄邊界改用一般磁碟機／UNC 路徑；只在兩種寫法 canonicalize 後指向同一個實際目錄時轉換，保留 workspace／trust 原有 identity。新分頁與分割終端的明確 cwd 也走相同流程。Unix／WSL 目錄不改寫；Windows 原生實機 prompt 尚待確認。</td></tr>
+<tr><td>非 Git 目錄看不到檔案</td><td>HERDR 0.9.0 的 workspace metadata 只有 Git worktree 能提供根目錄。明確選取 Space／Agent 時，改用所選 Terminal Session 的 pane cwd 作為候選資料夾，通過同主機 canonicalize 與未儲存檢查後載入 Files。既有綁定根目錄優先；背景快照仍不推導根目錄，也不採用 agent integration cwd。</td></tr>
+<tr><td>隱藏終端裁切後畫面異常</td><td>在丟失增量 ANSI 狀態後，不把殘餘差分畫到舊畫面。切回先釋放並重建該 connector，取得完整 authoritative frame；保留 xterm 與 HERDR terminal／agent 程序，並於重新顯示和寫入完成後重繪。正常切換不重建 connector。真實 xterm fixture 21 次切換、18 次 320 KiB 裁切恢復皆通過，結束時仍為 7 個有效 connector。</td></tr>
+<tr><td>Windows 記憶體／受控工具</td><td>每條 helper lane 的 Tokio worker threads 固定為 2，避免每個終端／watcher／tunnel 依主機 CPU 數各建立完整執行緒池。另降低重複 worktree 掃描與非作用中畫面繪製。下方列出可重現的本機測量；尚未在使用者的 Windows／7 個 WSL agent 上重測 2600 MB。</td></tr>
+<tr><td>統一 shadcn 捲動</td><td>剩餘 DropdownMenu 原生捲軸改由既有 ScrollArea 提供。80 項長選單能用 End 捲到最後一項，Enter 正確選取 Item 79，native scrollbar 為 none。設定頁的兩個長內容區也確認使用 ScrollArea。source 掃描留下的 overflow-auto 僅為專案允許的 CodeMirror／merge hosts；xterm 與原生 webview 捲動仍由各自 library 管理。</td></tr>
+<tr><td>UI 回饋速度</td><td>終端改為訂閱自身 runtime，20 次其他 runtime 更新不觸發該終端 React commit。agent snapshot 更新沿用同拓樸的 worktree inventory，10 次一般刷新不重掃 Git；拓樸改變、初始化與既有 30 秒週期仍更新。非作用中終端用 visibility:hidden 保持尺寸和實例，停止透明圖層的淡入淡出繪製。</td></tr>
+</tbody></table>
+<h2>追加：HERDR 終端剪貼簿</h2>
+<table><thead><tr><th>項目</th><th>修正與驗證</th></tr></thead><tbody>
+<tr><td>多行文字逐行送出</td><td>xterm 的本地 bracketed-paste 狀態不能代表 HERDR 內部 agent 的模式；原本 paste 會轉成一般 CR 輸入，輸入佇列也可能將貼上與按鍵合併。改由 transport 將每次貼上送成獨立完整 bracketed-paste frame，統一換行並移除內嵌貼上分隔符。一般打字仍能合併，貼上之間與按鍵之間保持界線，不附加 Enter。保留原有 256 KiB 待送上限、觀察模式與失敗不重播規則。</td></tr>
+<tr><td>Option／Alt+V 圖片</td><td>以實體 KeyV 識別 Option+V（含 macOS 產生 √ 的情況），由原生剪貼簿讀取圖片、轉 PNG，再經 typed helper operation 存到該終端的主機，最後貼入圖片路徑。WSL／SSH 使用對應 connection owner 與 generation；舊 helper 未提供 clipboardImage 時明確報錯。PNG 上限 8 MiB、原生圖片上限 16 Mi pixels；轉換後釋放 canvas 與 native Image resource。DOM PNG 貼上也使用同一路徑。需要讀取圖片的 agent 自身支援圖片路徑。</td></tr>
+<tr><td>選取後自動複製</td><td>拖曳文字並放開滑鼠後複製一次，保留 xterm 選取反白。預設開啟；可於「設定 → 終端機 → 選取後自動複製」關閉，立即生效並持久保存。關閉後手動 Ctrl／Cmd+C 保留，觀察模式仍能複製。解除元件時移除 listener 與尚未執行的複製工作。</td></tr>
+<tr><td>過期圖片操作</td><td>在 clipboard read、host staging 與貼入前確認目前終端、可寫狀態及 host generation。圖片傳送途中切換分頁、釋放 connector 或重新連線時，丟棄過期貼上結果。實際瀏覽器延遲 helper 回應後切換 Agent 2，未產生任何 terminal input。</td></tr>
+</tbody></table>
+<p>實際 xterm 瀏覽器驗證（HERDR IPC 與系統剪貼簿為隔離 fixture）：多行文字只產生一個完整 frame；Alt+V 與 Option+V 各產生一次圖片路徑，沒有 Enter，兩個 native image resource 均關閉。滑鼠拖曳保留反白，放開後複製一次；切換設定關閉後第二次拖曳不再覆寫剪貼簿。Rust built-helper stdio 往返則實際驗證 clipboardImage 方法、PNG 落檔內容與 owner identity。尚未在 Windows／WSL 原機與各家 agent 上驗收圖片辨識。</p>
+<p><a href="release-v009-fixes-2026-09-10-assets/clipboard-browser.log">瀏覽器貼上／選取證據</a> · <a href="release-v009-fixes-2026-09-10-assets/clipboard-browser-late.log">切換期間丟棄圖片結果</a> · <a href="release-v009-fixes-2026-09-10-assets/clipboard-final-targeted.log">最終 131 項終端回歸測試</a></p>
+<img src="release-v009-fixes-2026-09-10-assets/clipboard-selection.png" alt="xterm 選取文字並保留反白，放開後複製一次">
+<img src="release-v009-fixes-2026-09-10-assets/clipboard-settings.png" alt="終端機設定新增選取後自動複製開關">
+<h2>記憶體測量的範圍</h2>
+<p>macOS 上使用實際建置的 <code>yuzora-host --tcp</code>，同時啟動七條閒置 helper lanes，等待初始化後採樣 RSS 與執行緒，再關閉測試程序。這是 executor 成本對照，不是 Windows 實測，也不是七個活躍 agent 的總占用。</p>
+<table><thead><tr><th>指標</th><th>修改前</th><th>修改後</th></tr></thead><tbody><tr><td>7 個 helper 總執行緒</td><td>91</td><td>21（減少 70）</td></tr><tr><td>7 個 helper 總 RSS</td><td>60,528 KiB（59.1 MiB）</td><td>58,224 KiB（56.9 MiB；減少約 2.3 MiB）</td></tr><tr><td>10 次同拓樸 agent snapshot 刷新</td><td>每次觸發 worktree inventory 查詢</td><td>0 次額外 worktree 掃描；明確刷新仍有效</td></tr><tr><td>20 次其他 runtime 更新</td><td>所有訂閱整份 runtime map 的終端會收到更新</td><td>被測終端 0 次 React commit</td></tr></tbody></table>
+<p><a href="release-v009-fixes-2026-09-10-assets/helper-before.json">RSS 修改前</a> · <a href="release-v009-fixes-2026-09-10-assets/helper-after.json">RSS 修改後</a>。Windows 受控工具 106 個與 WebView 1040 MB 的原始場景仍需原機測量，不能以這些數字推算已減少多少。</p>
+<h2>驗證</h2><ul>
+<li>完整前端 192 個檔案、2,294 項測試通過；最後的輸入邊界修正另跑 131 項終端回歸測試通過。typecheck、production build 與 ESLint：完整日誌附於本報告。ESLint 0 errors、51 個既有 warnings；build 仍有大型 bundle 與既有 dynamic import 提示。</li>
+<li>Desktop：<a href="release-v009-fixes-2026-09-10-assets/desktop-tests.log">368 個 unit tests、1 個 integration test 通過</a>，4 個原本 ignored tests 未執行。</li>
+<li>Host：<a href="release-v009-fixes-2026-09-10-assets/host-tests.log">369 個 unit tests、11 個 integration tests 通過</a>（test-threads=2）；含 built helper、stdio 圖片往返、filesystem watcher、SQLite lane。先前高併發驗證有兩個啟動 fixture 逾時，獨立重跑及完整低併發重跑皆通過。</li>
+<li><a href="release-v009-fixes-2026-09-10-assets/cargo-check.log">cargo check --locked --all-targets</a>、Rust fmt 及 git diff --check 通過；<a href="release-v009-fixes-2026-09-10-assets/clippy.log">Clippy exact baseline 90 項吻合</a>。</li>
+<li>使用本次明確授權的 Playwright 瀏覽器驗證實際 xterm、實際 EditorArea、長選單與設定頁。terminal fixture 模擬 HERDR 傳輸，不連接真實 agent，不代表 Windows 原生／WSL transport 驗收。</li>
+</ul>
+<p><a href="release-v009-fixes-2026-09-10-assets/frontend-tests.log">前端完整測試</a> · <a href="release-v009-fixes-2026-09-10-assets/build.log">Build / typecheck</a> · <a href="release-v009-fixes-2026-09-10-assets/lint.log">Lint</a></p>
+<p>追加 Windows cwd 修正：<a href="release-v009-fixes-2026-09-10-assets/windows-cwd-tests.log">路徑與 Unix 保留回歸測試</a> · <a href="release-v009-fixes-2026-09-10-assets/windows-cwd-herdr-tests.log">HERDR service 測試</a>。另加入 Windows 專用真實目錄 identity 測試，供 Windows CI／原機執行。</p>
+<h2>畫面證據</h2><p>目前 Yuzora Logo 與設定頁 ScrollArea：</p><img src="release-v009-fixes-2026-09-10-assets/settings.png" alt="設定頁使用目前 Yuzora Logo 與 shadcn 捲軸"><p>七終端 fixture 完成切換與裁切恢復後的完整畫面：</p><img src="release-v009-fixes-2026-09-10-assets/terminals.png" alt="Agent 7 完整 authoritative screen，無需使用者滾動恢復">
+<p class="meta">版本號維持原有 0.0.9-beta.3；此次是切換 release 分支與 bug 修正，尚未建立 installer、提交或發布 release。</p>
+</main></body></html>

@@ -1,0 +1,215 @@
+src/app/panels/HerdrTerminalPage.tsx:90-96
+SHA256 8d438e7dd4ea4d66a7cd3c800bcd0744ae7fbbf36bca04db9a603d1cf572c9ea
+90: function safeFocus(term: Terminal): void {
+91:   try {
+92:     term.focus()
+93:   } catch {
+94:     // jsdom
+95:   }
+96: }
+
+src/app/panels/HerdrTerminalPage.tsx:767-777
+SHA256 8d438e7dd4ea4d66a7cd3c800bcd0744ae7fbbf36bca04db9a603d1cf572c9ea
+767:       scrollOnUserInput: false,
+768:       smoothScrollDuration: 0
+769:     })
+770:     const fitAddon = new FitAddon()
+771:     term.loadAddon(fitAddon)
+772:     term.open(container)
+773:     if (activeRef.current) safeFocus(term)
+774:     clipboardRef.current = installTerminalClipboardHandling(term, {
+775:       canPaste: () =>
+776:         !disposedRef.current && openReadyRef.current && Boolean(transportRef.current?.canWrite())
+777:     })
+
+src/app/panels/HerdrTerminalPage.tsx:1062-1080
+SHA256 8d438e7dd4ea4d66a7cd3c800bcd0744ae7fbbf36bca04db9a603d1cf572c9ea
+1062:   useLayoutEffect(() => {
+1063:     const term = termRef.current
+1064:     const fitAddon = fitRef.current
+1065:     const becameVisible = visible && !previousVisibleRef.current
+1066:     previousVisibleRef.current = visible
+1067:     if (!visible || !term || !fitAddon) return
+1068:     if (becameVisible) {
+1069:       safeFit(fitAddon)
+1070:       const next = terminalSize(term)
+1071:       if (next.cols !== lastSizeRef.current.cols || next.rows !== lastSizeRef.current.rows) {
+1072:         lastSizeRef.current = next
+1073:         void transportRef.current?.resize(next.cols, next.rows).catch(() => undefined)
+1074:       }
+1075:     }
+1076:     if (active) safeFocus(term)
+1077:   }, [active, visible])
+1078: 
+1079:   const onTakeControl = useCallback(async () => {
+1080:     if (takingControl || controlMode === "control" || !connectorEnabled) return
+
+src/workbench/TextInputDialogHost.tsx:70-80
+SHA256 236b1c847b53cce30311b694c32e362fe6947bb35ca0c4dd7fb45688f070a6ba
+70:                     <Input
+71:                         id="text-input-dialog-value"
+72:                         autoFocus
+73:                         value={value}
+74:                         placeholder={pending.placeholder}
+75:                         onChange={(event) => setValue(event.target.value)}
+76:                         onFocus={(event) => event.currentTarget.select()}
+77:                     />
+78:                 </Field>
+79:                 <DialogFooter className="mt-4">
+80:                     <Button type="button" variant="ghost" onClick={() => onRespond(null)}>
+
+src/app/workbench/HerdrAgentInspector.tsx:199-211
+SHA256 2917c368c2513f9fa8a6e03b5b91691c80f6871efb12fb755e6c79fc4243644a
+199:                 <label className="text-[11px] text-(--ink-3)" htmlFor="herdr-read-lines">
+200:                   {t("herdrInspector.lines")}
+201:                 </label>
+202:                 <input
+203:                   id="herdr-read-lines"
+204:                   type="number"
+205:                   min={20}
+206:                   max={500}
+207:                   value={lines}
+208:                   onChange={(event) => {
+209:                     const next = Number(event.target.value)
+210:                     setLines(Number.isFinite(next) ? Math.min(500, Math.max(20, next)) : 120)
+211:                   }}
+
+src/workbench/WorkspaceTrustHost.tsx:34-47
+SHA256 07af2259f7acf2923eca7100fcca7dadd69859ca27cc036f41377c7a1e1fe1b2
+34:         useWorkspaceTrustStore.getState().cancelPrompt()
+35:         if (!workspacePath) return
+36:         let cancelled = false
+37:         void (async () => {
+38:             try {
+39:                 const status = await useWorkspaceTrustStore.getState().refreshStatus(workspacePath)
+40:                 if (cancelled) return
+41:                 if (status.state === "trusted") return
+42:                 if (!status.challengeId) return
+43:                 if (status.state !== "invalid" && status.repoPresent !== true) return
+44:                 const granted = await useWorkspaceTrustStore.getState().requestWorkspaceGrant(status)
+45:                 if (cancelled || !granted) return
+46:                 if (useWorkspaceStore.getState().workspacePath !== workspacePath) return
+47:                 await useGitStore.getState().detect(workspacePath)
+
+src/app/AppShell.tsx:394-403
+SHA256 0410f509d778c2abf2fef86ddf28a830bc4414b42fdf09c959565600aa8d347d
+394:                 <Server data-icon="inline-start" /><span>{t("remoteTools")}</span>
+395:               </Button>
+396:             </nav>
+397:             <Separator className="workbench-sidebar-divider" />
+398:             <div className="workbench-sidebar-heading"><strong>{t("spacesAndAgents")}</strong></div>
+399:             <SpaceAgentSidebar />
+400:             <footer className="workbench-sidebar-footer">
+401:               <Separator className="workbench-sidebar-divider" />
+402:               <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("settings")} onClick={handleOpenSettings}><Settings data-icon="inline-start" /><span>{t("settings")}</span></Button>
+403:             </footer>
+
+src/app/workbench/SpaceAgentSidebar.tsx:1-12
+SHA256 6ac53e233285ea1b141c9ba85549bc0402d3deffbf936d055ecfe0eaa66e1ce8
+1: import { SpaceAgentTree } from "./SpaceAgentTree";
+2: import "./space-agent-sidebar.css";
+3: 
+4: /** Keep mounted across tool modes so browsing and keyboard context survive. */
+5: export function SpaceAgentSidebar() {
+6:   return <SpaceAgentTree />;
+7: }
+8: 
+
+src/app/workbench/SpaceAgentTree.tsx:360-380
+SHA256 2024d14828fd142b38a36d92fee48bf0efdf8a09baa5bd2033a10990f8391b1d
+360:     if (next) focus(next);
+361:   }
+362: 
+363:   return (
+364:     <div className="space-tree-panel">
+365:       <HerdrLauncher
+366:         scope={scopeSession}
+367:         onScopeChange={(name) => {
+368:           setScopeSession(name);
+369:           setSelectedAgent(null);
+370:         }}
+371:       />
+372:       <div className="tree-browse-toolbar">
+373:         <span>{scopeSession === null ? t("allHint") : t("loaded")}</span>
+374:         <Button
+375:           variant="ghost"
+376:           size="icon-sm"
+377:           aria-label={t("collapseAll")}
+378:           onClick={() => {
+379:             setCollapsed(
+380:               new Set(
+
+src/app/workbench/HerdrNavContent.tsx:456-465
+SHA256 474cc9db09f9d66efabfa1501b408bf107754e7a9e04aada13d90d3081676f67
+456:             onClick={() => void onCreateTerminal()}
+457:             disabled={createDisabled}
+458:             reason={!canCreateTerminal || stopped ? createBlockedReason : null}
+459:           />
+460:         </div>
+461:       )}
+462:       <HerdrNewAgentDialog open={newAgentOpen} onOpenChange={setNewAgentOpen} />
+463:       <HerdrAgentInspector
+464:         open={inspectedAgent !== null}
+465:         onOpenChange={(open) => {
+
+src/app/workbench/contextMenuDefs.ts:984-1002
+SHA256 586c197a8df9a3153e4877db8bd0b3e7c92525bbc0d6c11300eb500bf9b5f797
+984:     }),
+985:     item<"herdrPane">("cmHerdrZoomPane", {
+986:       availability: (request) =>
+987:         request.paneId
+988:           ? herdrMethodAvailability(request.sessionName, "paneZoom", "pane.zoom")
+989:           : disabled(DISABLED_TARGET),
+990:       danger: false,
+991:       executor: async (request) => {
+992:         if (!request.paneId) return CONTEXT_MENU_CANCELLED
+993:         await herdrPaneZoom({
+994:           sessionName: request.sessionName,
+995:           paneId: request.paneId,
+996:           mode: "toggle"
+997:         })
+998:         await afterHerdrMutation(request.sessionName)
+999:         return CONTEXT_MENU_COMPLETED
+1000:       },
+1001:     }),
+1002:     item<"herdrPane">("cmHerdrSwapPane", {
+
+src/lib/herdrTypes.ts:505-512
+SHA256 41e0566e2661e48d5f95a6dc7f977f17d4b53debb7044fbee1ae2c25d1c56145
+505: /** Protocol-19 `LayoutDescription` (camelCase IPC). */
+506: export interface HerdrLayoutDescription {
+507:   workspaceId: string
+508:   tabId: string
+509:   zoomed: boolean
+510:   focusedPaneId: string
+511:   root: HerdrLayoutNode
+512: }
+
+src/app/panels/HerdrTerminalPage.tsx:534-545
+SHA256 8d438e7dd4ea4d66a7cd3c800bcd0744ae7fbbf36bca04db9a603d1cf572c9ea
+534:   ) : !layoutReady && !layout ? (
+535:     <div
+536:       className="flex h-full items-center justify-center text-[12px] text-(--ink-3)"
+537:       data-testid="herdr-layout-loading"
+538:     >
+539:       {t("herdrNav.connecting")}
+540:     </div>
+541:   ) : layout ? (
+542:     renderNode(layout.root, [], active)
+543:   ) : (
+544:     <HerdrTerminalLeaf
+545:       pagePath={pagePath}
+
+src-tauri/host/src/herdr_service.rs:7513-7523
+SHA256 f7f9900ca7492e8c82f5ba8969e411d433991876fcd120d556b21e9aa2fe39c7
+7513:                 false,
+7514:                 40,
+7515:                 10,
+7516:                 None,
+7517:                 on_event,
+7518:             )
+7519:             .unwrap();
+7520:         assert_eq!(opened.role, HerdrTerminalRole::Controller);
+7521:         {
+7522:             let sessions = mgr.sessions.lock().unwrap();
+7523:             let session = sessions.get(&opened.session_id).unwrap();

@@ -1,0 +1,5 @@
+Command result: Rust desktop library
+Status: PASS_WITH_IGNORED
+396 passed / 3 ignored；ignored 不算通過；exit 0
+test pty_service::tests::dropping_a_pump_whose_thread_panicked_does_not_panic_again ... ok
+test result: ok. 396 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 6.00s

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Herdr 選取視窗外框移除</title>
+<style>body{max-width:760px;margin:48px auto;padding:0 24px;font:16px/1.7 system-ui;color:#2e2c28;background:#fbfaf6}code{font-size:.9em}</style>
+<h1>Herdr 選取視窗外框移除</h1>
+<p>2026-09-10：依使用者要求，移除 Herdr pane 的主題色外框。</p>
+<p>修改 <code>src/app/panels/HerdrTerminalPage.tsx</code>，移除邊框裝飾、專用的選取判斷變數與堆疊隔離樣式。舊的容器內陰影亦不恢復。保留 Herdr pane 切換與鍵盤焦點行為。</p>
+<p>後續已依使用者要求實作「使用中」標籤與淡主題色標題列，詳見 <a href="herdr-terminal-focus-header-2026-09-10.html">Herdr 分割終端機焦點標示</a>。</p>
+<p>驗證：移除後重新執行 HerdrTerminalLayout 與 HerdrTerminalPage 測試，共 49 項通過；<code>bun run build</code>（含型別檢查）與 <code>git diff --check</code> 通過。建置有動態匯入未拆分與大型 chunk 提示。尚未執行實機視覺驗收。</p>
+<p>保留工作區既有修改；未執行 staging、commit 或 push。</p>
+</html>

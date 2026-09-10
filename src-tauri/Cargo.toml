@@ -1,6 +1,6 @@
 [package]
 name = "yuzora"
-version = "0.0.9-beta.3"
+version = "0.0.9"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -21,7 +21,7 @@ tauri-build = { version = "2", features = [] }
 yuzora-host = { path = "host" }
 # `unstable` unlocks the multiwebview API (Window::add_child) the preview panel
 # uses to overlay an external-URL browser webview over the panel region (P3).
-tauri = { version = "2", features = ["unstable", "protocol-asset"] }
+tauri = { version = "2", features = ["unstable", "protocol-asset", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -83,6 +83,9 @@ tauri-plugin-updater = "2.10.1"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Com"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKNavigation"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

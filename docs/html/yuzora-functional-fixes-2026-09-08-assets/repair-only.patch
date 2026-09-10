@@ -1,0 +1,2065 @@
+--- a/bun.lock
++++ b/bun.lock
+@@ -81,6 +81,7 @@
+         "eslint": "^10.8.1",
+         "eslint-plugin-react-hooks": "^7.1.1",
+         "eslint-plugin-react-refresh": "^0.5.4",
++        "fflate": "^0.8.3",
+         "jsdom": "^30.0.1",
+         "typescript": "~6.0.3",
+         "typescript-eslint": "^8.67.0",
+@@ -965,6 +966,8 @@
+ 
+     "fdir": ["fdir@6.5.0", "", { "peerDependencies": { "picomatch": "^3 || ^4" }, "optionalPeers": ["picomatch"] }, "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg=="],
+ 
++    "fflate": ["fflate@0.8.3", "", {}, "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="],
++
+     "figures": ["figures@6.1.0", "", { "dependencies": { "is-unicode-supported": "^2.0.0" } }, "sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg=="],
+ 
+     "file-entry-cache": ["file-entry-cache@8.0.0", "", { "dependencies": { "flat-cache": "^4.0.0" } }, "sha512-XXTUwCvisa5oacNGRP9SfNtYBNAMi+RPwBFmblZEF7N7swHYQS6/Zfk7SRwx4D5j3CH211YNRco1DEMNVfZCnQ=="],
+--- a/package.json
++++ b/package.json
+@@ -101,6 +101,7 @@
+     "eslint": "^10.8.1",
+     "eslint-plugin-react-hooks": "^7.1.1",
+     "eslint-plugin-react-refresh": "^0.5.4",
++    "fflate": "^0.8.3",
+     "jsdom": "^30.0.1",
+     "typescript": "~6.0.3",
+     "typescript-eslint": "^8.67.0",
+--- a/scripts/update-lsp-integrity-catalog.test.ts
++++ b/scripts/update-lsp-integrity-catalog.test.ts
+@@ -1,5 +1,8 @@
++import { createHash } from "node:crypto"
++import { gzipSync } from "node:zlib"
+ import { describe, expect, it } from "vitest"
+ import {
++  verifiedExecutableSha256,
+   catalogWritePlan,
+   contentTreeManifest,
+   githubDigestToSha256,
+@@ -128,3 +131,31 @@
+     })
+   })
+ })
++
++
++describe("executable digest from authenticated artifacts", () => {
++  const executable = Buffer.from("reviewed executable")
++  const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
++  const zip = Buffer.from("UEsDBBQAAAAIAEiIKF1K3PKHFQAAABMAAAAKAAAAc2VydmVyLmV4ZStKLctMLU9NUUitSE0uLUlMykkFAFBLAQIUAxQAAAAIAEiIKF1K3PKHFQAAABMAAAAKAAAAAAAAAAAAAACAAQAAAABzZXJ2ZXIuZXhlUEsFBgAAAAABAAEAOAAAAD0AAAAAAA==", "base64")
++  it.each(["gz", "zip", "bare"] as const)("derives %s executable identity only after authenticating the archive", (unpack) => {
++    const archive = unpack === "gz" ? gzipSync(executable) : unpack === "zip" ? zip : executable
++    expect(verifiedExecutableSha256(archive, digest(archive), unpack, "server.exe")).toBe(digest(executable))
++    expect(() => verifiedExecutableSha256(archive, "0".repeat(64), unpack, "server.exe")).toThrow("archive SHA256 mismatch")
++  })
++  it("verifies ZIP artifacts without external executables on PATH", () => {
++    const originalPath = process.env.PATH
++    process.env.PATH = ""
++    try {
++      expect(verifiedExecutableSha256(zip, digest(zip), "zip", "server.exe")).toBe(digest(executable))
++    } finally {
++      process.env.PATH = originalPath
++    }
++  })
++  it("does not publish compressed support without an authenticated executable digest", () => {
++    const archive = gzipSync(executable)
++    const release = { assets: [{ name: "server.gz", browser_download_url: "https://example.com/server.gz", digest: `sha256:${digest(archive)}` }] }
++    const assets = { test: { name: "server.gz", unpack: "gz" as const, executable: "server" } }
++    expect(proposeBinaryPlatforms(release, assets).test.status).toBe("unavailable")
++    expect(proposeBinaryPlatforms(release, assets, { "server.gz": archive }).test.executableSha256).toBe(digest(executable))
++  })
++})
+--- a/scripts/update-lsp-integrity-catalog.ts
++++ b/scripts/update-lsp-integrity-catalog.ts
+@@ -4,11 +4,14 @@
+ // expected digest. Writes reviewed files only when `--write` is passed.
+ 
+ import { createHash } from "node:crypto"
++import { unzipSync } from "fflate"
++import { gunzipSync } from "node:zlib"
+ 
+ export type BinaryPlatformProposal = {
+   status: "supported" | "unavailable"
+   url?: string
+   sha256?: string
++  executableSha256?: string
+   unpack?: "gz" | "bare" | "zip"
+   executable?: string
+   reason?: string
+@@ -103,7 +106,8 @@
+ 
+ export function proposeBinaryPlatforms(
+   release: GitHubRelease,
+-  assets: Record<string, { name: string; unpack: "gz" | "bare" | "zip"; executable: string }>
++  assets: Record<string, { name: string; unpack: "gz" | "bare" | "zip"; executable: string }>,
++  archives: Record<string, Uint8Array> = {}
+ ): Record<string, BinaryPlatformProposal> {
+   const out: Record<string, BinaryPlatformProposal> = {}
+   for (const [platform, spec] of Object.entries(assets)) {
+@@ -117,10 +121,18 @@
+       }
+       continue
+     }
++    if (spec.unpack !== "bare" && !archives[spec.name]) {
++      out[platform] = { status: "unavailable", reason: `missing verified executable digest for ${spec.name}` }
++      continue
++    }
++    const executableSha256 = spec.unpack === "bare"
++      ? sha256
++      : verifiedExecutableSha256(archives[spec.name], sha256, spec.unpack, spec.executable)
+     out[platform] = {
+       status: "supported",
+       url,
+       sha256,
++      executableSha256,
+       unpack: spec.unpack,
+       executable: spec.executable,
+     }
+@@ -128,6 +140,25 @@
+   return out
+ }
+ 
++// Archive bytes gain authority only after matching an independently reviewed
++// download digest. Never derive the expected download digest from these bytes.
++export function verifiedExecutableSha256(
++  archive: Uint8Array, expectedArchiveSha256: string,
++  unpack: "gz" | "zip" | "bare", executable: string
++): string {
++  if (!/^[a-f0-9]{64}$/i.test(expectedArchiveSha256) || sha256(archive) !== expectedArchiveSha256.toLowerCase()) {
++    throw new Error("archive SHA256 mismatch")
++  }
++  const bytes = unpack === "bare" ? archive : unpack === "gz"
++    ? gunzipSync(archive, { maxOutputLength: 100 * 1024 * 1024 })
++    : unzipSync(archive, {
++      filter: (entry) => entry.name === executable
++        && entry.originalSize > 0 && entry.originalSize <= 100 * 1024 * 1024,
++    })[executable]
++  if (!bytes) throw new Error("ZIP is missing a valid executable")
++  return sha256(bytes)
++}
++
+ export function refuseLocalByteDigest(options: {
+   localSha256?: string
+   githubDigest?: string | null
+@@ -233,11 +264,19 @@
+     const release = (await fetchImpl(
+       `https://api.github.com/repos/${route.repo}/releases/tags/${route.version}`
+     )) as GitHubRelease
++    const archives: Record<string, Uint8Array> = {}
++    for (const spec of Object.values(route.assets)) {
++      const asset = release.assets?.find((item) => item.name === spec.name)
++      if (!asset?.browser_download_url || !githubDigestToSha256(asset.digest)) continue
++      const response = await fetch(asset.browser_download_url)
++      if (!response.ok) throw new Error(`artifact download failed: HTTP ${response.status}`)
++      archives[spec.name] = new Uint8Array(await response.arrayBuffer())
++    }
+     binaries.push({
+       language: route.language,
+       serverId: route.serverId,
+       version: route.version,
+-      platforms: proposeBinaryPlatforms(release, route.assets),
++      platforms: proposeBinaryPlatforms(release, route.assets, archives),
+     })
+   }
+   return {
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -85,4 +85,10 @@
+ tauri-plugin-updater = "2.10.1"
+ 
+ [target.'cfg(windows)'.dependencies]
+-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }
++windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Com"] }
++
++[target.'cfg(target_os = "macos")'.dependencies]
++objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKNavigation"] }
++
++[target.'cfg(target_os = "linux")'.dependencies]
++webkit2gtk = "2.0.2"
+--- a/src-tauri/host/src/lsp_catalog.rs
++++ b/src-tauri/host/src/lsp_catalog.rs
+@@ -74,6 +74,8 @@
+     url: Option<String>,
+     #[serde(default)]
+     sha256: Option<String>,
++    #[serde(default)]
++    executable_sha256: Option<String>,
+     #[serde(default)]
+     unpack: Option<String>,
+     #[serde(default)]
+@@ -85,6 +87,7 @@
+     pub version: String,
+     pub url: String,
+     pub sha256: String,
++    pub executable_sha256: String,
+     pub unpack: String,
+     pub executable: String,
+ }
+@@ -313,6 +316,18 @@
+     let sha256 = require_sha256(&platform.sha256, server)?;
+     let unpack = require_field(&platform.unpack, server, "unpack")?;
+     let executable = require_field(&platform.executable, server, "executable")?;
++    // Bare assets are already executables; compressed assets require a separately
++    // reviewed digest of the executable derived from the verified archive.
++    let executable_sha256 = if unpack == "bare" && platform.executable_sha256.is_none() {
++        sha256.clone()
++    } else {
++        require_sha256(&platform.executable_sha256, server).map_err(|_| {
++            format!(
++                "缺少已審核的 executableSha256，拒絕安裝 {}",
++                server.server_id
++            )
++        })?
++    };
+     if !matches!(unpack.as_str(), "gz" | "bare" | "zip") {
+         return Err(format!(
+             "{} 的 unpack `{unpack}` 不受支援",
+@@ -326,6 +341,7 @@
+         version: server.version.clone(),
+         url,
+         sha256,
++        executable_sha256,
+         unpack,
+         executable,
+     })
+@@ -714,10 +730,10 @@
+     match &identity {
+         CatalogIdentity::Binary(binary) => {
+             let digest = sha256_file(installed)?;
+-            if !sha256_matches(&digest, &binary.sha256) {
++            if !sha256_matches(&digest, &binary.executable_sha256) {
+                 return Err(format!(
+                     "已安裝的 {server_id} 檔案摘要不符，請重新安裝（預期 {}，實得 {digest}）",
+-                    binary.sha256
++                    binary.executable_sha256
+                 ));
+             }
+         }
+@@ -1279,6 +1295,22 @@
+             resolve_identity(&catalog, "rust", "rust-analyzer", "macos", "aarch64").unwrap_err();
+         assert!(err.contains("缺少已審核"), "{err}");
+         assert!(err.contains("sha256"), "{err}");
++    }
++
++    #[test]
++    fn compressed_identity_requires_reviewed_executable_digest() {
++        for unpack in ["gz", "zip"] {
++            let catalog = fixture_catalog(serde_json::json!({
++                "language": "rust", "serverId": "rust-analyzer", "kind": "binary",
++                "version": "fixture", "bin": "rust-analyzer", "platforms": {"*": {
++                    "status": "supported", "url": "https://example.com/archive",
++                    "sha256": "a".repeat(64), "unpack": unpack, "executable": "rust-analyzer"
++                }}
++            }));
++            let error = resolve_identity(&catalog, "rust", "rust-analyzer", "macos", "aarch64")
++                .unwrap_err();
++            assert!(error.contains("executableSha256"), "{error}");
++        }
+     }
+ 
+     #[test]
+--- a/src-tauri/host/src/lsp_download.rs
++++ b/src-tauri/host/src/lsp_download.rs
+@@ -1058,6 +1058,14 @@
+             &identity.executable,
+             language,
+             emit,
++        )?;
++        catalog::verify_installed(
++            catalog::embedded_catalog()?,
++            catalog_language,
++            server_id,
++            &unpacked_tmp,
++            os,
++            arch,
+         )?;
+         make_executable(&unpacked_tmp)?;
+         replace_managed_file(&dest, &unpacked_tmp)?;
+@@ -1333,6 +1341,84 @@
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn unpacked_binary_verification_uses_executable_digest() {
++        use sha2::{Digest, Sha256};
++        use std::io::Write;
++        let executable = b"reviewed executable fixture";
++        let hash = |bytes: &[u8]| {
++            Sha256::digest(bytes)
++                .iter()
++                .map(|byte| format!("{byte:02x}"))
++                .collect::<String>()
++        };
++        for kind in [UnpackKind::Gz, UnpackKind::Zip, UnpackKind::Bare] {
++            let (archive, unpack) = match kind {
++                UnpackKind::Gz => {
++                    let mut encoder =
++                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
++                    encoder.write_all(executable).unwrap();
++                    (encoder.finish().unwrap(), "gz")
++                }
++                UnpackKind::Zip => {
++                    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
++                    writer
++                        .start_file("rust-analyzer", zip::write::SimpleFileOptions::default())
++                        .unwrap();
++                    writer.write_all(executable).unwrap();
++                    (writer.finish().unwrap().into_inner(), "zip")
++                }
++                UnpackKind::Bare => (executable.to_vec(), "bare"),
++            };
++            let catalog = catalog::parse_catalog(
++                &serde_json::json!({
++                    "catalogVersion": "1", "servers": [{
++                        "language": "rust", "serverId": "rust-analyzer", "kind": "binary",
++                        "version": "fixture", "bin": "rust-analyzer", "platforms": {"*": {
++                            "status": "supported", "url": "https://example.com/fixture",
++                            "sha256": hash(&archive), "executableSha256": hash(executable),
++                            "unpack": unpack, "executable": "rust-analyzer"
++                        }}
++                    }]
++                })
++                .to_string(),
++            )
++            .unwrap();
++            let tmp = tempfile::tempdir().unwrap();
++            let download = tmp.path().join("download");
++            let installed = tmp.path().join("rust-analyzer");
++            std::fs::write(&download, &archive).unwrap();
++            unpack_verified_download(
++                &download,
++                &installed,
++                kind,
++                "rust-analyzer",
++                "rust",
++                &|_| {},
++            )
++            .unwrap();
++            catalog::verify_installed(
++                &catalog,
++                "rust",
++                "rust-analyzer",
++                &installed,
++                "macos",
++                "aarch64",
++            )
++            .unwrap_or_else(|error| panic!("{unpack}: {error}"));
++            std::fs::write(&installed, b"tampered").unwrap();
++            assert!(catalog::verify_installed(
++                &catalog,
++                "rust",
++                "rust-analyzer",
++                &installed,
++                "macos",
++                "aarch64"
++            )
++            .is_err());
++        }
++    }
++
+     use super::*;
+     use std::io::Write;
+     use std::sync::Arc;
+--- a/src-tauri/lsp-catalog/manifest.json
++++ b/src-tauri/lsp-catalog/manifest.json
+@@ -14,6 +14,7 @@
+           "status": "supported",
+           "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-apple-darwin.gz",
+           "sha256": "f50878b806fe5b2a792e3d93a7142f17c2eb6affc6dd158b7b35e1a45cfadef5",
++          "executableSha256": "78247dd08a4e14e2c4836bfbb9d33c627b160d3a547c07a959f8e811290577b8",
+           "unpack": "gz",
+           "executable": "rust-analyzer"
+         },
+@@ -21,6 +22,7 @@
+           "status": "supported",
+           "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-apple-darwin.gz",
+           "sha256": "77111cbbed692d5b865cb9469c9b78250dd099353dabdbdfd7bfb4f567f7538e",
++          "executableSha256": "621c75d17c4c3382d1f4cc36cd69cee1d39d9ba061ff538bd8c6fce502d111f5",
+           "unpack": "gz",
+           "executable": "rust-analyzer"
+         },
+@@ -28,6 +30,7 @@
+           "status": "supported",
+           "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-unknown-linux-gnu.gz",
+           "sha256": "609af2b89ad5f2eea88060b0907e0f684c65a9cfc05539a6270072265bb98994",
++          "executableSha256": "cf2cadf5e634eae236453afcfba1ba3f809a0b5c510baec6d2306110d76a9a13",
+           "unpack": "gz",
+           "executable": "rust-analyzer"
+         },
+@@ -35,6 +38,7 @@
+           "status": "supported",
+           "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-unknown-linux-gnu.gz",
+           "sha256": "e278cbae972df49cbcead8851aea47478478fc5ef686e2c6a35b44911e3926cf",
++          "executableSha256": "f73b5f0b82beae36d1550b2a3c63765dd38ef5daa9f4782bff32292187e22dd5",
+           "unpack": "gz",
+           "executable": "rust-analyzer"
+         },
+@@ -42,6 +46,7 @@
+           "status": "supported",
+           "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-pc-windows-msvc.zip",
+           "sha256": "887fd4d17a90f45dfb55b78c9f2e75deb56e0074312992a2b9442a44bb2013aa",
++          "executableSha256": "55fa871fcd2cb52ca68344b224edb33c9c4faa217345596757f1f61868dbd387",
+           "unpack": "zip",
+           "executable": "rust-analyzer.exe"
+         },
+@@ -49,6 +54,7 @@
+           "status": "supported",
+           "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-pc-windows-msvc.zip",
+           "sha256": "7313385a329988c987cff4e2a7bb859d70ae6c228d705095b1015b822ffb670d",
++          "executableSha256": "2e5062b0ce1df1316af4458842044cd432742757b76f7902e479efc018b62977",
+           "unpack": "zip",
+           "executable": "rust-analyzer.exe"
+         }
+@@ -65,6 +71,7 @@
+           "status": "supported",
+           "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos",
+           "sha256": "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b",
++          "executableSha256": "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b",
+           "unpack": "bare",
+           "executable": "marksman"
+         },
+@@ -72,6 +79,7 @@
+           "status": "supported",
+           "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos",
+           "sha256": "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b",
++          "executableSha256": "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b",
+           "unpack": "bare",
+           "executable": "marksman"
+         },
+@@ -79,6 +87,7 @@
+           "status": "supported",
+           "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-arm64",
+           "sha256": "db8e124527f7f8048e3e6c91821b9c52ef173d92c01e47d221bf1337afd962fb",
++          "executableSha256": "db8e124527f7f8048e3e6c91821b9c52ef173d92c01e47d221bf1337afd962fb",
+           "unpack": "bare",
+           "executable": "marksman"
+         },
+@@ -86,6 +95,7 @@
+           "status": "supported",
+           "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-x64",
+           "sha256": "be5098e8213219269c47fc0d916a66fa31ce0602ec967475c722260aabf26087",
++          "executableSha256": "be5098e8213219269c47fc0d916a66fa31ce0602ec967475c722260aabf26087",
+           "unpack": "bare",
+           "executable": "marksman"
+         },
+@@ -93,6 +103,7 @@
+           "status": "supported",
+           "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman.exe",
+           "sha256": "a6d05beb08ebe41b0a9f09c98a438540421436fa5531424c22e0bb1d22529705",
++          "executableSha256": "a6d05beb08ebe41b0a9f09c98a438540421436fa5531424c22e0bb1d22529705",
+           "unpack": "bare",
+           "executable": "marksman.exe"
+         },
+@@ -100,6 +111,7 @@
+           "status": "supported",
+           "url": "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman.exe",
+           "sha256": "a6d05beb08ebe41b0a9f09c98a438540421436fa5531424c22e0bb1d22529705",
++          "executableSha256": "a6d05beb08ebe41b0a9f09c98a438540421436fa5531424c22e0bb1d22529705",
+           "unpack": "bare",
+           "executable": "marksman.exe"
+         }
+@@ -116,6 +128,7 @@
+           "status": "supported",
+           "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-aarch64-apple-darwin",
+           "sha256": "2a79532a969ecc73f911961774db3b5448b3373861d7f0f8ccaa2a7e4fd01e99",
++          "executableSha256": "2a79532a969ecc73f911961774db3b5448b3373861d7f0f8ccaa2a7e4fd01e99",
+           "unpack": "bare",
+           "executable": "markdown-oxide"
+         },
+@@ -123,6 +136,7 @@
+           "status": "supported",
+           "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-x86_64-apple-darwin",
+           "sha256": "e1b329489d5932951948cdbcc6bb02713bd7f9544be5efcad4a7e975a3452221",
++          "executableSha256": "e1b329489d5932951948cdbcc6bb02713bd7f9544be5efcad4a7e975a3452221",
+           "unpack": "bare",
+           "executable": "markdown-oxide"
+         },
+@@ -130,6 +144,7 @@
+           "status": "supported",
+           "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-aarch64-unknown-linux-gnu",
+           "sha256": "bf3b9a7c9db54ccf3b0709f8b7cfb274dc95fcceb2350c0c18fae9750c54aed5",
++          "executableSha256": "bf3b9a7c9db54ccf3b0709f8b7cfb274dc95fcceb2350c0c18fae9750c54aed5",
+           "unpack": "bare",
+           "executable": "markdown-oxide"
+         },
+@@ -137,6 +152,7 @@
+           "status": "supported",
+           "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-x86_64-unknown-linux-gnu",
+           "sha256": "7d85204680efd2e5a2bb2d4bb139a71ac4c4df89ad87c4eb3d87783d1bc4f54e",
++          "executableSha256": "7d85204680efd2e5a2bb2d4bb139a71ac4c4df89ad87c4eb3d87783d1bc4f54e",
+           "unpack": "bare",
+           "executable": "markdown-oxide"
+         },
+@@ -144,6 +160,7 @@
+           "status": "supported",
+           "url": "https://github.com/Feel-ix-343/markdown-oxide/releases/download/v0.25.12/markdown-oxide-v0.25.12-x86_64-pc-windows-gnu.exe",
+           "sha256": "1dcc307623fb509bfcc055478774ae1cd7e87d452ccdfad8183f8ee270cd711e",
++          "executableSha256": "1dcc307623fb509bfcc055478774ae1cd7e87d452ccdfad8183f8ee270cd711e",
+           "unpack": "bare",
+           "executable": "markdown-oxide.exe"
+         },
+--- a/src-tauri/src/git_service.rs
++++ b/src-tauri/src/git_service.rs
+@@ -82,6 +82,11 @@
+     path: &str,
+     detect: impl FnOnce() -> Result<GitEnvironment, String>,
+ ) -> Result<GitEnvironment, String> {
++    // A non-repository has no Git operation to authorize. Use the same
++    // filesystem-only probe as the trust prompt, without spawning Git.
++    if Path::new(path).is_dir() && !crate::workspace_trust::project_repo_presence(path) {
++        return Ok(GitEnvironment::NotARepo);
++    }
+     let identity = trust.require_trusted(path)?;
+     let env = detect()?;
+     if let GitEnvironment::Ready { root, .. } = &env {
+@@ -90,6 +95,26 @@
+     Ok(env)
+ }
+ 
++fn detect_trusted_and_finish(
++    trust: &crate::workspace_trust::WorkspaceTrustState,
++    registry: &yuzora_host::git_registry::GitRegistry,
++    generation: u64,
++    path: &str,
++    detect: impl FnOnce() -> Result<GitEnvironment, String>,
++) -> Result<GitEnvironment, String> {
++    let result = detect_trusted_environment(trust, path, detect);
++    match &result {
++        Ok(environment) if !matches!(environment, GitEnvironment::Ready { .. }) => {
++            // The filesystem-only empty state bypasses detect_commit_and_watch.
++            // Finish its generation too, releasing prior authority and watcher.
++            registry.finish(path, generation, environment, None)?;
++        }
++        Err(_) => registry.close(path, generation)?,
++        _ => {}
++    }
++    result
++}
++
+ #[tauri::command]
+ pub async fn git_detect(
+     app: tauri::AppHandle,
+@@ -101,13 +126,9 @@
+     let repo_shared = state.0.clone();
+     let trust = trust.inner().clone();
+     let environment = run_blocking(move || {
+-        let result = detect_trusted_environment(&trust, &path, || {
++        detect_trusted_and_finish(&trust, &repo_shared, generation, &path, || {
+             detect_commit_and_watch(app, &repo_shared, generation, &path)
+-        });
+-        if result.is_err() {
+-            repo_shared.close(&path, generation)?;
+-        }
+-        result
++        })
+     })
+     .await?;
+     Ok(GitDetectionDto {
+@@ -191,13 +212,9 @@
+     let repo_shared = state.0.clone();
+     let trust = trust.inner().clone();
+     let env = run_blocking(move || {
+-        let result = detect_trusted_environment(&trust, &path, || {
++        detect_trusted_and_finish(&trust, &repo_shared, generation, &path, || {
+             detect_commit_and_watch(app, &repo_shared, generation, &path)
+-        });
+-        if result.is_err() {
+-            repo_shared.close(&path, generation)?;
+-        }
+-        result
++        })
+     })
+     .await?;
+     let root = match &env {
+@@ -2395,9 +2412,126 @@
+         )
+         .unwrap();
+         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "5");
++    }
++
++    #[test]
++    fn nonrepo_redetection_releases_repository_and_watcher() {
++        use std::sync::{
++            atomic::{AtomicBool, Ordering},
++            Arc,
++        };
++        struct Dropped(Arc<AtomicBool>);
++        impl Drop for Dropped {
++            fn drop(&mut self) {
++                self.0.store(true, Ordering::Release);
++            }
++        }
++        let tmp = tempfile::tempdir().unwrap();
++        let folder = tmp.path().join("repo");
++        let marker = folder.join(".git");
++        std::fs::create_dir_all(&marker).unwrap();
++        let path = folder.to_str().unwrap();
++        let trust = crate::workspace_trust::WorkspaceTrustState::at(tmp.path().join("trust.json"));
++        let registry = yuzora_host::git_registry::GitRegistry::default();
++        let dropped = Arc::new(AtomicBool::new(false));
++        let token = Dropped(dropped.clone());
++        let watcher = yuzora_host::git_watch::build_git_watcher(&marker, move || {
++            let _ = &token;
++        })
++        .unwrap();
++        let ready = registry.begin(path).unwrap();
++        registry
++            .finish(
++                path,
++                ready,
++                &GitEnvironment::Ready {
++                    root: path.into(),
++                    version: "test".into(),
++                },
++                Some(watcher),
++            )
++            .unwrap();
++        assert!(registry.with_repository(path, |_| Ok(())).is_ok());
++        std::fs::remove_dir(&marker).unwrap();
++        let generation = registry.begin(path).unwrap();
++        let environment = detect_trusted_and_finish(&trust, &registry, generation, path, || {
++            panic!("non-repository detection must not execute git")
++        })
++        .unwrap();
++        assert!(matches!(environment, GitEnvironment::NotARepo));
++        assert!(registry.with_repository(path, |_| Ok(())).is_err());
++        assert!(
++            dropped.load(Ordering::Acquire),
++            "the old watcher callback must be dropped"
++        );
+     }
+ 
+     #[test]
++    fn stale_nonrepo_detection_preserves_new_repository_generation() {
++        let tmp = tempfile::tempdir().unwrap();
++        let folder = tmp.path().join("plain");
++        std::fs::create_dir(&folder).unwrap();
++        let path = folder.to_str().unwrap();
++        let trust = crate::workspace_trust::WorkspaceTrustState::at(tmp.path().join("trust.json"));
++        let registry = yuzora_host::git_registry::GitRegistry::default();
++        let stale = registry.begin(path).unwrap();
++        let current = registry.begin(path).unwrap();
++        registry
++            .finish(
++                path,
++                current,
++                &GitEnvironment::Ready {
++                    root: path.into(),
++                    version: "test".into(),
++                },
++                None,
++            )
++            .unwrap();
++        assert!(matches!(
++            detect_trusted_and_finish(&trust, &registry, stale, path, || {
++                panic!("non-repository detection must not execute git")
++            })
++            .unwrap(),
++            GitEnvironment::NotARepo
++        ));
++        assert!(registry.with_repository(path, |_| Ok(())).is_ok());
++    }
++
++    #[test]
++    fn untrusted_plain_folder_detects_empty_state_without_running_git() {
++        let tmp = tempfile::tempdir().unwrap();
++        let trust = crate::workspace_trust::WorkspaceTrustState::at(
++            tmp.path().join("workspace-trust.json"),
++        );
++        let folder = tmp.path().join("plain-folder");
++        std::fs::create_dir(&folder).unwrap();
++        let environment = detect_trusted_environment(&trust, folder.to_str().unwrap(), || {
++            panic!("non-repository detection must not execute git")
++        })
++        .expect("a plain folder should have a non-repository empty state");
++        assert!(matches!(environment, GitEnvironment::NotARepo));
++    }
++
++    #[test]
++    fn untrusted_nested_repository_detection_still_requires_trust() {
++        let tmp = tempfile::tempdir().unwrap();
++        let trust = crate::workspace_trust::WorkspaceTrustState::at(
++            tmp.path().join("workspace-trust.json"),
++        );
++        let repo = tmp.path().join("repo");
++        let nested = repo.join("nested");
++        std::fs::create_dir_all(&nested).unwrap();
++        std::fs::write(repo.join(".git"), "gitdir: ../worktree-metadata").unwrap();
++        let result = detect_trusted_environment(&trust, nested.to_str().unwrap(), || {
++            panic!("untrusted repository must not execute git")
++        });
++        match result {
++            Err(error) => assert!(error.contains("untrustedWorkspace")),
++            Ok(_) => panic!("repository detection must still require trust"),
++        }
++    }
++
++    #[test]
+     fn untrusted_workspace_never_spawns_git() {
+         let tmp = tempfile::tempdir().unwrap();
+         let trust = crate::workspace_trust::WorkspaceTrustState::at(
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -351,6 +351,7 @@
+             preview_server::preview_revoke,
+             preview_server::preview_stop_all,
+             preview_webview::preview_open_url,
++            preview_webview::preview_navigation_state,
+             preview_webview::preview_set_bounds,
+             preview_webview::preview_set_visible,
+             preview_webview::preview_close,
+--- a/src-tauri/src/preview_webview.rs
++++ b/src-tauri/src/preview_webview.rs
+@@ -45,8 +45,13 @@
+     let _ = webview.emit(PREVIEW_FILE_DROP_EVENT, PreviewFileDropPayload { paths });
+ }
+ 
+-pub struct PreviewWebviewState(pub Mutex<Option<Webview>>);
++pub struct PreviewWebview {
++    webview: Webview,
++    session_id: Option<String>,
++}
+ 
++pub struct PreviewWebviewState(pub Mutex<Option<PreviewWebview>>);
++
+ fn focus_main_webview(app: &AppHandle) {
+     if let Some(webview) = app.get_webview("main") {
+         let _ = webview.set_focus();
+@@ -62,6 +67,7 @@
+ }
+ 
+ #[tauri::command]
++#[allow(clippy::too_many_arguments)] // IPC keeps the existing bounds fields and adds session ownership.
+ pub fn preview_open_url(
+     app: AppHandle,
+     url: String,
+@@ -69,12 +75,25 @@
+     y: f64,
+     width: f64,
+     height: f64,
++    session_id: Option<String>,
+     state: tauri::State<'_, PreviewWebviewState>,
+ ) -> Result<(), String> {
+     let parsed = parse_web_url(&url)?;
+     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+ 
+-    if let Some(webview) = guard.as_ref() {
++    // A new frontend owner must not inherit callbacks or history from a closed
++    // or superseded session, even if its close command has not run yet.
++    if guard
++        .as_ref()
++        .is_some_and(|preview| preview.session_id != session_id)
++    {
++        if let Some(previous) = guard.take() {
++            previous.webview.close().map_err(|e| e.to_string())?;
++        }
++    }
++
++    if let Some(preview) = guard.as_ref() {
++        let webview = &preview.webview;
+         webview.navigate(parsed).map_err(|e| e.to_string())?;
+         let _ = webview.set_position(LogicalPosition::new(x, y));
+         let _ = webview.set_size(LogicalSize::new(width, height));
+@@ -84,7 +103,9 @@
+     let window = app
+         .get_window("main")
+         .ok_or_else(|| "main window missing".to_string())?;
+-    let builder = WebviewBuilder::new(PREVIEW_LABEL, WebviewUrl::External(parsed)).focused(false);
++    let builder = WebviewBuilder::new(PREVIEW_LABEL, WebviewUrl::External(parsed))
++        .focused(false)
++        .on_navigation(|url| matches!(url.scheme(), "http" | "https"));
+     let webview = window
+         .add_child(
+             builder,
+@@ -93,7 +114,10 @@
+         )
+         .map_err(|e| e.to_string())?;
+     let _ = webview.hide();
+-    *guard = Some(webview);
++    *guard = Some(PreviewWebview {
++        webview,
++        session_id,
++    });
+     Ok(())
+ }
+ 
+@@ -106,7 +130,8 @@
+     state: tauri::State<'_, PreviewWebviewState>,
+ ) -> Result<(), String> {
+     let guard = state.0.lock().map_err(|e| e.to_string())?;
+-    if let Some(webview) = guard.as_ref() {
++    if let Some(preview) = guard.as_ref() {
++        let webview = &preview.webview;
+         let _ = webview.set_position(LogicalPosition::new(x, y));
+         let _ = webview.set_size(LogicalSize::new(width, height));
+     }
+@@ -120,7 +145,8 @@
+     state: tauri::State<'_, PreviewWebviewState>,
+ ) -> Result<(), String> {
+     let guard = state.0.lock().map_err(|e| e.to_string())?;
+-    if let Some(webview) = guard.as_ref() {
++    if let Some(preview) = guard.as_ref() {
++        let webview = &preview.webview;
+         let _ = if visible {
+             webview.show()
+         } else {
+@@ -140,7 +166,7 @@
+ ) -> Result<(), String> {
+     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+     let close_result = if let Some(webview) = guard.take() {
+-        webview.close().map_err(|e| e.to_string())
++        webview.webview.close().map_err(|e| e.to_string())
+     } else {
+         Ok(())
+     };
+@@ -151,23 +177,163 @@
+ 
+ fn eval_history(state: &tauri::State<'_, PreviewWebviewState>, js: &str) -> Result<(), String> {
+     let guard = state.0.lock().map_err(|e| e.to_string())?;
+-    if let Some(webview) = guard.as_ref() {
++    if let Some(preview) = guard.as_ref() {
++        let webview = &preview.webview;
+         webview.eval(js).map_err(|e| e.to_string())?;
+     }
+     Ok(())
++}
++
++#[derive(Clone, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct PreviewNavigationSnapshot {
++    session_id: String,
++    url: String,
++    can_go_back: bool,
++    can_go_forward: bool,
++}
++
++#[derive(Clone, Copy)]
++enum NavigationAction {
++    Read,
++    Back,
++    Forward,
++}
++
++// Run only inside with_webview's main-thread callback. Never consult page JS:
++// these flags describe the browser's real history, including SPA and redirects.
++fn native_snapshot(
++    view: tauri::webview::PlatformWebview,
++    action: NavigationAction,
++) -> Result<(String, bool, bool), String> {
++    #[cfg(target_os = "macos")]
++    unsafe {
++        let view: &objc2_web_kit::WKWebView = &*view.inner().cast();
++        match action {
++            NavigationAction::Read => {}
++            NavigationAction::Back => {
++                view.goBack();
++            }
++            NavigationAction::Forward => {
++                view.goForward();
++            }
++        }
++        let url = view
++            .URL()
++            .and_then(|url| url.absoluteString())
++            .ok_or("Preview URL unavailable")?
++            .to_string();
++        Ok((url, view.canGoBack(), view.canGoForward()))
++    }
++    #[cfg(target_os = "linux")]
++    {
++        use webkit2gtk::WebViewExt;
++        let view = view.inner();
++        match action {
++            NavigationAction::Read => {}
++            NavigationAction::Back => view.go_back(),
++            NavigationAction::Forward => view.go_forward(),
++        }
++        let url = view.uri().ok_or("Preview URL unavailable")?.to_string();
++        Ok((url, view.can_go_back(), view.can_go_forward()))
++    }
++    #[cfg(windows)]
++    unsafe {
++        let view = view
++            .controller()
++            .CoreWebView2()
++            .map_err(|e| e.to_string())?;
++        match action {
++            NavigationAction::Read => {}
++            NavigationAction::Back => view.GoBack().map_err(|e| e.to_string())?,
++            NavigationAction::Forward => view.GoForward().map_err(|e| e.to_string())?,
++        }
++        let mut back = Default::default();
++        let mut forward = Default::default();
++        view.CanGoBack(&mut back).map_err(|e| e.to_string())?;
++        view.CanGoForward(&mut forward).map_err(|e| e.to_string())?;
++        let mut source = Default::default();
++        view.Source(&mut source).map_err(|e| e.to_string())?;
++        let url = source.to_string().map_err(|e| e.to_string());
++        windows_sys::Win32::System::Com::CoTaskMemFree(source.0.cast());
++        Ok((url?, back.as_bool(), forward.as_bool()))
++    }
+ }
+ 
++async fn read_or_navigate(
++    app: AppHandle,
++    session_id: Option<String>,
++    action: NavigationAction,
++) -> Result<PreviewNavigationSnapshot, String> {
++    let state = app.state::<PreviewWebviewState>();
++    let (webview, owner) = {
++        let guard = state.0.lock().map_err(|e| e.to_string())?;
++        let preview = guard.as_ref().ok_or("Preview is closed")?;
++        if session_id.is_some() && preview.session_id != session_id {
++            return Err("Preview owner changed".into());
++        }
++        (preview.webview.clone(), preview.session_id.clone())
++    };
++    let (sender, receiver) = tokio::sync::oneshot::channel();
++    let callback_app = app.clone();
++    let callback_owner = owner.clone();
++    webview
++        .with_webview(move |view| {
++            let current = callback_app.state::<PreviewWebviewState>();
++            let result = (|| {
++                let guard = current.0.lock().map_err(|e| e.to_string())?;
++                if guard
++                    .as_ref()
++                    .is_none_or(|preview| preview.session_id != callback_owner)
++                {
++                    return Err("Preview owner changed".into());
++                }
++                drop(guard);
++                native_snapshot(view, action)
++            })();
++            let _ = sender.send(result);
++        })
++        .map_err(|e| e.to_string())?;
++    let (url, can_go_back, can_go_forward) = receiver.await.map_err(|e| e.to_string())??;
++    let guard = state.0.lock().map_err(|e| e.to_string())?;
++    if guard
++        .as_ref()
++        .is_none_or(|preview| preview.session_id != owner)
++    {
++        return Err("Preview owner changed".into());
++    }
++    parse_web_url(&url)?;
++    Ok(PreviewNavigationSnapshot {
++        session_id: owner.unwrap_or_default(),
++        url,
++        can_go_back,
++        can_go_forward,
++    })
++}
++
+ #[tauri::command]
+-pub fn preview_back(state: tauri::State<'_, PreviewWebviewState>) -> Result<(), String> {
+-    eval_history(&state, "history.back()")
++pub async fn preview_navigation_state(
++    app: AppHandle,
++    session_id: String,
++) -> Result<PreviewNavigationSnapshot, String> {
++    read_or_navigate(app, Some(session_id), NavigationAction::Read).await
+ }
+ 
+ #[tauri::command]
+-pub fn preview_forward(state: tauri::State<'_, PreviewWebviewState>) -> Result<(), String> {
+-    eval_history(&state, "history.forward()")
++pub async fn preview_back(app: AppHandle, session_id: Option<String>) -> Result<(), String> {
++    read_or_navigate(app, session_id, NavigationAction::Back)
++        .await
++        .map(|_| ())
+ }
+ 
+ #[tauri::command]
++pub async fn preview_forward(app: AppHandle, session_id: Option<String>) -> Result<(), String> {
++    read_or_navigate(app, session_id, NavigationAction::Forward)
++        .await
++        .map(|_| ())
++}
++
++#[tauri::command]
+ pub fn preview_reload(state: tauri::State<'_, PreviewWebviewState>) -> Result<(), String> {
+     eval_history(&state, "location.reload()")
+ }
+--- a/src/app/panels/HerdrTerminalLayout.test.tsx
++++ b/src/app/panels/HerdrTerminalLayout.test.tsx
+@@ -205,6 +205,7 @@
+   beforeEach(() => {
+     cleanup()
+     seed()
++    layoutMock.set({ ...layoutMock.get(), zoomed: false, focusedPaneId: "p1" })
+     layoutMock.export.mockClear()
+     layoutMock.setRatio.mockClear()
+     vi.mocked(herdrLayoutSetSplitRatio).mockClear()
+@@ -246,6 +247,27 @@
+     expect(attachments.has(herdrAttachmentKey("yuzora://herdr/default/t1", "p1"))).toBe(true)
+     expect(attachments.has(herdrAttachmentKey("yuzora://herdr/default/t1", "p2"))).toBe(true)
+     expect(attachments.has(herdrAttachmentKey("yuzora://herdr/default/t1", "p3"))).toBe(true)
++  })
++
++  it("zooms only the focused pane without releasing connectors and restores the split", async () => {
++    render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
++    await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
++    act(() => {
++      layoutMock.set({ ...layoutMock.get(), zoomed: true, focusedPaneId: "p2" })
++      useHerdrStore.getState().bumpTopologyRevision()
++    })
++    await waitFor(() => expect(screen.getByTestId("herdr-split-handle-root")).not.toBeVisible())
++    expect(screen.getByTestId("herdr-terminal-leaf-t1")).not.toBeVisible()
++    expect(screen.getByTestId("herdr-terminal-leaf-t2")).toBeVisible()
++    expect(screen.getByTestId("herdr-terminal-leaf-t3")).not.toBeVisible()
++    expect(herdrTerminalRelease).not.toHaveBeenCalled()
++    act(() => {
++      layoutMock.set({ ...layoutMock.get(), zoomed: false })
++      useHerdrStore.getState().bumpTopologyRevision()
++    })
++    await waitFor(() => expect(screen.getByTestId("herdr-split-handle-root")).toBeVisible())
++    expect(screen.getByTestId("herdr-terminal-leaf-t1")).toBeVisible()
++    expect(herdrTerminalOpen).toHaveBeenCalledTimes(3)
+   })
+ 
+   it("uses the page's owning named-session snapshot after sidebar session changes", async () => {
+--- a/src/app/panels/HerdrTerminalPage.test.tsx
++++ b/src/app/panels/HerdrTerminalPage.test.tsx
+@@ -1,3 +1,5 @@
++import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
++import { useTextInputDialogStore } from "@/state/textInputDialogStore"
+ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+ 
+@@ -326,8 +328,43 @@
+ 
+   afterEach(() => {
+     cleanup()
++  })
++
++  it("does not steal focus when a naming dialog is pending before its portal mounts", async () => {
++    void useTextInputDialogStore.getState().request({ title: "Name", label: "Name", confirmLabel: "Save" })
++    try {
++      render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
++      await waitFor(() => expect(xtermMock.state.terminals.length).toBeGreaterThan(0))
++      expect(xtermMock.state.terminals[0].focus).not.toHaveBeenCalled()
++    } finally {
++      useTextInputDialogStore.getState().respond(null)
++    }
+   })
+ 
++  it("blocks focus and terminal input while any mounted modal is open", async () => {
++    const view = render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active={false} visible />)
++    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalled())
++    const modal = document.createElement("div")
++    modal.setAttribute("aria-modal", "true")
++    document.body.append(modal)
++    try {
++      const term = xtermMock.state.terminals[0]
++      term.focus.mockClear()
++      view.rerender(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
++      expect(term.focus).not.toHaveBeenCalled()
++      const calls = vi.mocked(installTerminalImeHandling).mock.calls
++      const sendInput = calls[calls.length - 1][1]
++      herdrIpcMock.herdrTerminalInput.mockClear()
++      sendInput("qa_focus_probe")
++      expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
++      modal.remove()
++      sendInput("after_modal")
++      await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalled())
++    } finally {
++      modal.remove()
++    }
++  })
++
+   it.each(["ssh-linux", "wsl-ubuntu"])("opens the scoped %s Session even when local default is stopped", async (hostId) => {
+     const scope = JSON.stringify([hostId, "default"])
+     seedSessions([{ name: "default", default: true, running: false }])
+--- a/src/app/panels/HerdrTerminalPage.tsx
++++ b/src/app/panels/HerdrTerminalPage.tsx
+@@ -33,6 +33,7 @@
+   HerdrTerminalRole
+ } from "@/lib/herdrTypes"
+ import { useHerdrStore } from "@/state/herdrStore"
++import { useTextInputDialogStore } from "@/state/textInputDialogStore"
+ import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
+ import { useWorkspaceStore } from "@/state/workspaceStore"
+ import { contextMenuHandler } from "@/state/contextMenuStore"
+@@ -85,9 +86,16 @@
+   } catch {
+     // jsdom / hidden panes
+   }
++}
++
++function terminalModalOpen(): boolean {
++  // The request exists before React mounts the dialog portal.
++  return useTextInputDialogStore.getState().pending !== null
++    || document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open]') !== null
+ }
+ 
+ function safeFocus(term: Terminal): void {
++  if (terminalModalOpen()) return
+   try {
+     term.focus()
+   } catch {
+@@ -431,6 +439,18 @@
+     pagePath
+   })
+ 
++  const zoomedPaneId = layout?.zoomed && focusedPaneId && layoutPaneIds.includes(focusedPaneId)
++    ? focusedPaneId
++    : null
++  const containsZoomedPane = (node: HerdrLayoutNode): boolean => node.type === "pane"
++    ? node.paneId === zoomedPaneId
++    : containsZoomedPane(node.first) || containsZoomedPane(node.second)
++  const zoomPanelStyle = (node: HerdrLayoutNode): CSSProperties | undefined => !zoomedPaneId
++    ? undefined
++    : containsZoomedPane(node)
++      ? { position: "absolute", inset: 0, width: "100%", height: "100%" }
++      : { display: "none" }
++
+   const renderNode = (
+     node: HerdrLayoutNode,
+     path: boolean[],
+@@ -463,7 +483,7 @@
+           label={node.label ?? null}
+           title={node.label ?? title}
+           active={leafActive && (!focusedPaneId || leafPaneId === focusedPaneId)}
+-          visible={visible}
++          visible={visible && (!zoomedPaneId || leafPaneId === zoomedPaneId)}
+           focusedPaneId={focusedPaneId}
+           tabId={layout?.tabId ?? resolvedTabId}
+           workspaceId={layout?.workspaceId ?? null}
+@@ -481,11 +501,11 @@
+       <ResizablePanelGroup
+         id={groupId}
+         orientation={orientation}
+-        className="h-full w-full"
++        className="relative h-full w-full"
+         data-testid={`herdr-split-${pathKey(path) || "root"}`}
+         data-direction={node.direction}
+         onLayoutChanged={(nextLayout, meta) => {
+-          if (!canSetSplitRatio || !meta.isUserInteraction) return
++          if (zoomedPaneId || !canSetSplitRatio || !meta.isUserInteraction) return
+           const firstId = `${groupId}-first`
+           const secondId = `${groupId}-second`
+           const first = nextLayout[firstId]
+@@ -496,17 +516,18 @@
+           onSplitRatioChanged(path, first / total)
+         }}
+       >
+-        <ResizablePanel id={`${groupId}-first`} defaultSize={firstPct} minSize={10}>
++        <ResizablePanel id={`${groupId}-first`} defaultSize={firstPct} minSize={10} style={zoomPanelStyle(node.first)}>
+           {renderNode(node.first, [...path, false], leafActive)}
+         </ResizablePanel>
+         <ResizableHandle
+           withHandle
+-          disabled={!canSetSplitRatio}
++          style={zoomedPaneId ? { display: "none" } : undefined}
++          disabled={Boolean(zoomedPaneId) || !canSetSplitRatio}
+           aria-disabled={!canSetSplitRatio}
+           id={`herdr-split-handle-${pathKey(path) || "root"}`}
+           className={!canSetSplitRatio ? "pointer-events-none cursor-default opacity-50" : undefined}
+         />
+-        <ResizablePanel id={`${groupId}-second`} defaultSize={secondPct} minSize={10}>
++        <ResizablePanel id={`${groupId}-second`} defaultSize={secondPct} minSize={10} style={zoomPanelStyle(node.second)}>
+           {renderNode(node.second, [...path, true], leafActive)}
+         </ResizablePanel>
+       </ResizablePanelGroup>
+@@ -892,7 +913,7 @@
+     dataDisposableRef.current = installTerminalImeHandling(
+       term,
+       (data) => {
+-        if (disposedRef.current) return
++        if (disposedRef.current || terminalModalOpen()) return
+         if (!transport.canWrite()) return
+         void transport.write(data).catch(() => undefined)
+       },
+--- a/src/app/panels/previewPanel.test.tsx
++++ b/src/app/panels/previewPanel.test.tsx
+@@ -16,6 +16,7 @@
+ // deliberately small since the happy paths are already covered there.
+ 
+ const ipcMocks = vi.hoisted(() => ({
++  previewNavigationState: vi.fn(),
+   requestDevServerAuthorization: vi.fn(),
+   devServerDetect: vi.fn(),
+   devServerStart: vi.fn(),
+@@ -50,6 +51,7 @@
+   devServerDetect: (...args: unknown[]) => ipcMocks.devServerDetect(...args),
+   devServerStart: (...args: unknown[]) => ipcMocks.devServerStart(...args),
+   devServerStop: (...args: unknown[]) => ipcMocks.devServerStop(...args),
++  previewNavigationState: (...args: unknown[]) => ipcMocks.previewNavigationState(...args),
+   previewOpenUrl: (...args: unknown[]) => ipcMocks.previewOpenUrl(...args),
+   previewSetBounds: (...args: unknown[]) => ipcMocks.previewSetBounds(...args),
+   previewSetVisible: (...args: unknown[]) => ipcMocks.previewSetVisible(...args),
+@@ -99,6 +101,13 @@
+   useAppDialogStore.setState({ pending: null })
+   useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
+   ipcMocks.requestDevServerAuthorization.mockResolvedValue("challenge-1")
++  ipcMocks.previewBack.mockImplementation(async () => { usePreviewStore.getState().syncNativeBack("/workspace") })
++  ipcMocks.previewForward.mockImplementation(async () => { usePreviewStore.getState().syncNativeForward("/workspace") })
++  ipcMocks.previewNavigationState.mockImplementation(async () => {
++    const session = usePreviewStore.getState().nativeSession!
++    return { sessionId: session.sessionId, url: session.currentUrl,
++      canGoBack: session.backStack.length > 0, canGoForward: session.forwardStack.length > 0 }
++  })
+ })
+ 
+ afterEach(async () => {
+@@ -263,7 +272,7 @@
+     const { unmount } = render(<PreviewPanel />)
+ 
+     await waitFor(() =>
+-      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com", 0, 0, 0, 0)
++      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com", 0, 0, 0, 0, expect.any(String))
+     )
+     expect(ipcMocks.previewSetBounds).toHaveBeenCalledWith(0, 0, 0, 0)
+     expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true)
+@@ -273,6 +282,66 @@
+     await waitFor(() => expect(ipcMocks.previewClose).toHaveBeenCalled())
+   })
+ 
++  it.each(["http://127.0.0.1:34329", "https://example.com"])("QA26-006 reads actual native URL and history for %s", async (origin) => {
++    ;(globalThis as { isTauri?: boolean }).isTauri = true
++    let browser = { url: `${origin}/`, canGoBack: false, canGoForward: false }
++    ipcMocks.previewNavigationState.mockImplementation(async (sessionId: string) => ({ sessionId, ...browser }))
++    ipcMocks.previewBack.mockImplementationOnce(async () => { browser = { url: `${origin}/`, canGoBack: false, canGoForward: true } })
++    ipcMocks.previewForward.mockImplementationOnce(async () => { browser = { url: `${origin}/next`, canGoBack: true, canGoForward: false } })
++    usePreviewStore.getState().navigate("/workspace", origin)
++    render(<PreviewPanel />)
++    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalled())
++    expect(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) })).toBeDisabled()
++    browser = { url: `${origin}/next`, canGoBack: true, canGoForward: false }
++    await waitFor(() => expect(screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" })))
++      .toHaveValue(`${origin}/next`))
++    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1)
++    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) }))
++    await waitFor(() => expect(screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))).toHaveValue(`${origin}/`))
++    expect(ipcMocks.previewBack).toHaveBeenCalledTimes(1)
++    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) }))
++    await waitFor(() => expect(screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))).toHaveValue(`${origin}/next`))
++    expect(ipcMocks.previewForward).toHaveBeenCalledTimes(1)
++    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1)
++  })
++
++  it("keeps snapshot polling single-flight and discards results after an overlay hides the owner", async () => {
++    ;(globalThis as { isTauri?: boolean }).isTauri = true
++    const pending = deferred<{ sessionId: string; url: string; canGoBack: boolean; canGoForward: boolean }>()
++    ipcMocks.previewNavigationState.mockImplementationOnce(() => pending.promise)
++    usePreviewStore.getState().navigate("/workspace", "https://example.com/")
++    const { unmount } = render(<PreviewPanel />)
++    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1))
++    const sessionId = ipcMocks.previewNavigationState.mock.calls[0][0] as string
++    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
++    expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1)
++    act(() => useAppDialogStore.setState({ pending: { type: "message", title: "Modal", description: "Modal", resolve: () => {} } }))
++    await act(async () => pending.resolve({ sessionId, url: "https://example.com/stale", canGoBack: true, canGoForward: false }))
++    expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe("https://example.com/")
++    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
++    expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1)
++    act(() => useAppDialogStore.setState({ pending: null }))
++    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(2))
++    unmount()
++    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
++    expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(2)
++  })
++
++  it("discards a snapshot if a newer open generation started while it was in flight", async () => {
++    ;(globalThis as { isTauri?: boolean }).isTauri = true
++    const pending = deferred<{ sessionId: string; url: string; canGoBack: boolean; canGoForward: boolean }>()
++    ipcMocks.previewNavigationState.mockImplementationOnce(() => pending.promise)
++    usePreviewStore.getState().navigate("/workspace", "https://example.com/")
++    render(<PreviewPanel />)
++    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1))
++    const sessionId = ipcMocks.previewNavigationState.mock.calls[0][0] as string
++    const state = usePreviewStore.getState()
++    const token = state.beginNativeOpenRequest("/workspace", "https://example.com/")
++    state.settleNativeRequest(token)
++    await act(async () => pending.resolve({ sessionId, url: "https://example.com/stale", canGoBack: true, canGoForward: false }))
++    expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe("https://example.com/")
++  })
++
+   it("serializes visibility behind a pending open and revalidates the latest overlay state", async () => {
+     ;(globalThis as { isTauri?: boolean }).isTauri = true
+     const opening = deferred<void>()
+@@ -516,6 +585,7 @@
+     }))
+     ipcMocks.previewOpenUrl.mockClear()
+ 
++    await waitFor(() => expect(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) })).toBeEnabled())
+     fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) }))
+     await waitFor(() => {
+       expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
+@@ -525,6 +595,7 @@
+     expect(ipcMocks.previewBack).toHaveBeenCalledTimes(1)
+     expect(ipcMocks.previewOpenUrl).not.toHaveBeenCalled()
+ 
++    await waitFor(() => expect(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) })).toBeEnabled())
+     fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) }))
+     await waitFor(() => {
+       expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
+@@ -535,7 +606,7 @@
+     expect(ipcMocks.previewOpenUrl).not.toHaveBeenCalled()
+   })
+ 
+-  it("preserves A→B→local history continuity with deterministic external fallbacks", async () => {
++  it("preserves A→B→static iframe history with deterministic external fallbacks", async () => {
+     ;(globalThis as { isTauri?: boolean }).isTauri = true
+     const preview = usePreviewStore.getState()
+     preview.navigate("/workspace", "https://example.com/a")
+@@ -545,7 +616,7 @@
+     preview.navigate("/workspace", "https://example.com/b")
+     await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
+       .toBe("https://example.com/b"))
+-    preview.navigate("/workspace", "http://localhost:8765/")
++    preview.openStaticPreview("/workspace", { token: "token", url: "http://localhost:8765/token/" })
+     await waitFor(() => expect(screen.getByTitle("Live preview")).toBeInTheDocument())
+     expect(usePreviewStore.getState().nativeSession).toBeNull()
+     ipcMocks.previewBack.mockClear()
+@@ -567,7 +638,7 @@
+     fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) }))
+     await waitFor(() => expect(screen.getByTitle("Live preview")).toHaveAttribute(
+       "src",
+-      "http://localhost:8765/"
++      "http://localhost:8765/token/"
+     ))
+     expect(usePreviewStore.getState().nativeSession).toBeNull()
+   })
+@@ -596,10 +667,10 @@
+     await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
+       .toBe("https://example.com/a"))
+     expect(ipcMocks.previewBack).not.toHaveBeenCalled()
+-    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com/a", 0, 0, 0, 0)
++    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com/a", 0, 0, 0, 0, expect.any(String))
+   })
+ 
+-  it("invalidates the previous owner when another workspace switches to local preview", async () => {
++  it("invalidates the previous owner when another workspace switches to native local preview", async () => {
+     ;(globalThis as { isTauri?: boolean }).isTauri = true
+     const preview = usePreviewStore.getState()
+     preview.navigate("/workspace", "https://example.com/a")
+@@ -612,8 +683,8 @@
+     preview.navigate("/workspace-b", "http://localhost:8765/")
+     useWorkspaceStore.setState({ workspacePath: "/workspace-b" })
+ 
+-    await waitFor(() => expect(usePreviewStore.getState().nativeSession).toBeNull())
+-    expect(ipcMocks.previewClose).toHaveBeenCalled()
++    await waitFor(() => expect(usePreviewStore.getState().nativeSession?.workspacePath).toBe("/workspace-b"))
++    expect(ipcMocks.previewOpenUrl.mock.calls[1][5]).not.toBe(ipcMocks.previewOpenUrl.mock.calls[0][5])
+ 
+     useWorkspaceStore.setState({ workspacePath: "/workspace" })
+     await waitFor(() => expect(usePreviewStore.getState().nativeSession).toMatchObject({
+@@ -670,7 +741,7 @@
+       .toBe("https://example.com/pending")
+   })
+ 
+-  it("queues Back behind pending B and revalidates the established native history", async () => {
++  it("disables Back while the newest URL is still opening", async () => {
+     ;(globalThis as { isTauri?: boolean }).isTauri = true
+     const preview = usePreviewStore.getState()
+     preview.navigate("/workspace", "https://example.com/a")
+@@ -690,9 +761,9 @@
+     expect(ipcMocks.previewBack).not.toHaveBeenCalled()
+ 
+     openingB.resolve(undefined)
+-    await waitFor(() => expect(ipcMocks.previewBack).toHaveBeenCalledTimes(1))
+-    await waitFor(() => expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
+-      .toBe("https://example.com/a"))
++    await waitFor(() => expect(usePreviewStore.getState().nativeRequest).toBeNull())
++    expect(ipcMocks.previewBack).not.toHaveBeenCalled()
++    expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe("https://example.com/b")
+   })
+ 
+   it("closes unknown native content when the newest open fails after an older success", async () => {
+--- a/src/app/panels/PreviewPanel.tsx
++++ b/src/app/panels/PreviewPanel.tsx
+@@ -1,4 +1,5 @@
+ import { useEffect, useRef, useState } from "react"
++import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
+ import { isTauri } from "@/lib/platform"
+ import {
+   AlertTriangle,
+@@ -26,6 +27,7 @@
+   devServerStop,
+   previewClose,
+   previewOpenUrl,
++  previewNavigationState,
+   previewSetBounds,
+   previewSetVisible,
+ } from "@/lib/ipc"
+@@ -158,6 +160,7 @@
+   const staticPreview = usePreviewStore((s) => s.staticPreview)
+   const navMap = usePreviewStore((s) => s.nav)
+   const attempts = usePreviewStore((s) => s.attempts)
++  const nativeSessionId = usePreviewStore((s) => s.nativeSession?.sessionId)
+   const nativeNavigationSyncs = usePreviewStore((s) => s.nativeNavigationSyncs)
+   const nav = workspace ? navMap[workspace] ?? EMPTY_NAV : EMPTY_NAV
+   const navigate = usePreviewStore((s) => s.navigate)
+@@ -183,10 +186,12 @@
+ 
+   const status = devServer?.status ?? null
+   const primaryCandidate = candidates[0] ?? null
+-  // External https renders in a native child webview; localhost/127.0.0.1 stays
+-  // in the iframe. Native Back/Forward is used only while previewStore can prove
+-  // that the current child-webview session owns the adjacent external URL.
+-  const external = !!nav.url && !isLocalPreviewUrl(nav.url)
++  // Desktop local dev servers use the same native navigation path as external
++  // pages. Static files retain their sandbox; remote sources retain their tunnel
++  // iframe and source URL identity (ADR-0003).
++  const external = !!nav.url && (!isLocalPreviewUrl(nav.url)
++    || (isTauri() && !!workspace && !parseRemoteFilePath(workspace)
++      && previewFrameModeFor(nav.url, staticPreview) !== "static"))
+   const renderedPreview = useRemotePreviewUrl(workspace, nav.url, staticPreview?.url === nav.url, nav.reloadNonce)
+   const nativeNavigationSync = workspace ? nativeNavigationSyncs[workspace] ?? null : null
+   const previewTarget: PreviewCommandTarget | null = workspace ? {
+@@ -218,7 +223,32 @@
+     navigate(workspace, portUrl(port))
+   }, [devServer, navigate, nav.url, workspace])
+ 
+-  // --- external-URL child webview (P3) ---
++  useEffect(() => {
++    if (!isTauri() || !external || !previewVisible || !workspace || !nativeSessionId) return
++    let disposed = false
++    let timer: ReturnType<typeof setTimeout> | undefined
++    const poll = async () => {
++      try {
++        await enqueueNativePreviewOperation(async () => {
++          const state = usePreviewStore.getState()
++          if (disposed || state.nativeRequest !== null || state.nativeSession?.sessionId !== nativeSessionId
++            || useWorkspaceStore.getState().workspacePath !== workspace) return
++          const generation = state.nativeRequestToken
++          const snapshot = await previewNavigationState(nativeSessionId)
++          const latest = usePreviewStore.getState()
++          if (!disposed && latest.nativeRequestToken === generation) latest.receiveNativeNavigation(snapshot)
++        })
++      } catch {
++        // Closing/replacing the native owner can race an in-flight snapshot.
++      } finally {
++        if (!disposed) timer = setTimeout(() => void poll(), 250)
++      }
++    }
++    void poll()
++    return () => { disposed = true; clearTimeout(timer) }
++  }, [external, nativeSessionId, previewVisible, workspace])
++
++  // --- native child webview ---
+   // Open/navigate the native webview to the external URL, positioned over the
+   // placeholder <div>. previewOpenUrl reuses an existing webview (just navigates),
+   // so re-running on url change doesn't recreate it.
+@@ -240,6 +270,9 @@
+     const host = webviewHostRef.current
+     if (!host) return
+     const targetUrl = nav.url
++    const nativeSession = usePreviewStore.getState().nativeSession
++    const sessionId = (nativeSession?.workspacePath === workspace ? nativeSession.sessionId : null)
++      ?? crypto.randomUUID()
+     const requestToken = usePreviewStore.getState().beginNativeOpenRequest(workspace, targetUrl)
+     let cancelled = false
+     void enqueueNativePreviewOperation(async () => {
+@@ -252,7 +285,7 @@
+           return
+         }
+         const rect = currentHost.getBoundingClientRect()
+-        await previewOpenUrl(targetUrl, rect.left, rect.top, rect.width, rect.height)
++        await previewOpenUrl(targetUrl, rect.left, rect.top, rect.width, rect.height, sessionId)
+       } catch (error) {
+         if (usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) {
+           usePreviewStore.getState().closeNativeSession()
+@@ -281,7 +314,7 @@
+         }
+         return
+       }
+-      usePreviewStore.getState().recordNativeOpen(workspace, targetUrl)
++      usePreviewStore.getState().recordNativeOpen(workspace, targetUrl, sessionId)
+       usePreviewStore.getState().settleNativeRequest(requestToken)
+     })
+     return () => {
+--- a/src/app/workbench/HerdrAgentInspector.test.tsx
++++ b/src/app/workbench/HerdrAgentInspector.test.tsx
+@@ -220,6 +220,7 @@
+     )
+     const lines = await screen.findByLabelText(/Lines|行數/)
+     fireEvent.change(lines, { target: { value: "999" } })
++    fireEvent.blur(lines)
+     await waitFor(() =>
+       expect(ipc.read).toHaveBeenLastCalledWith(expect.objectContaining({ lines: 500 }))
+     )
+@@ -235,3 +236,25 @@
+     expect(ansi.container.innerHTML).not.toContain("<script")
+   })
+ })
++
++it("keeps line-count drafts intact until blur or Enter commits them", async () => {
++  ipc.get.mockResolvedValue(details("w1:p1", "Agent"))
++  ipc.read.mockResolvedValue(readResult("w1:p1", "output"))
++  render(<HerdrAgentInspector open onOpenChange={() => undefined} agent={agent("w1:p1", "Agent")} />)
++  await screen.findByText("output")
++  const input = screen.getByRole("spinbutton")
++  ipc.read.mockClear()
++  for (const draft of ["", "1", "12", "120", "", "8", "80"]) {
++    fireEvent.change(input, { target: { value: draft } })
++    expect(input).toHaveValue(draft === "" ? null : Number(draft))
++  }
++  expect(ipc.read).not.toHaveBeenCalled()
++  fireEvent.keyDown(input, { key: "Enter" })
++  await waitFor(() => expect(ipc.read).toHaveBeenLastCalledWith(expect.objectContaining({ lines: 80 })))
++  for (const [draft, expected] of [["999", 500], ["1", 20], ["", 120], ["80.7", 80]] as const) {
++    fireEvent.change(input, { target: { value: draft } })
++    fireEvent.blur(input)
++    expect(input).toHaveValue(expected)
++    await waitFor(() => expect(ipc.read).toHaveBeenLastCalledWith(expect.objectContaining({ lines: expected })))
++  }
++})
+--- a/src/app/workbench/HerdrAgentInspector.tsx
++++ b/src/app/workbench/HerdrAgentInspector.tsx
+@@ -3,6 +3,7 @@
+ import { useTranslation } from "react-i18next"
+ 
+ import { AnsiText } from "@/app/workbench/AnsiText"
++import { Input } from "@/components/ui/input"
+ import { Button } from "@/components/ui/button"
+ import {
+   Dialog,
+@@ -51,6 +52,15 @@
+   const [source, setSource] = useState<HerdrReadSource>("recent")
+   const [format, setFormat] = useState<HerdrReadFormat>("text")
+   const [lines, setLines] = useState(120)
++  const [linesDraft, setLinesDraft] = useState("120")
++  const commitLines = () => {
++    const parsed = Number(linesDraft)
++    const next = linesDraft.trim() && Number.isFinite(parsed)
++      ? Math.min(500, Math.max(20, Math.trunc(parsed)))
++      : 120
++    setLinesDraft(String(next))
++    setLines(next)
++  }
+   const [loading, setLoading] = useState(false)
+   const [error, setError] = useState<string | null>(null)
+   const requestGenerationRef = useRef(0)
+@@ -199,15 +209,19 @@
+                 <label className="text-[11px] text-(--ink-3)" htmlFor="herdr-read-lines">
+                   {t("herdrInspector.lines")}
+                 </label>
+-                <input
++                <Input
+                   id="herdr-read-lines"
+                   type="number"
+                   min={20}
+                   max={500}
+-                  value={lines}
+-                  onChange={(event) => {
+-                    const next = Number(event.target.value)
+-                    setLines(Number.isFinite(next) ? Math.min(500, Math.max(20, next)) : 120)
++                  value={linesDraft}
++                  onChange={(event) => setLinesDraft(event.target.value)}
++                  onBlur={commitLines}
++                  onKeyDown={(event) => {
++                    if (event.key === "Enter") {
++                      event.preventDefault()
++                      commitLines()
++                    }
+                   }}
+                   className="h-[30px] w-[72px] rounded-[8px] border border-(--line-2) bg-(--paper-0) px-[8px] text-[12px]"
+                 />
+--- a/src/app/workbench/HerdrLauncher.tsx
++++ b/src/app/workbench/HerdrLauncher.tsx
+@@ -4,6 +4,7 @@
+ import { useState } from "react";
+ import { useTranslation } from "react-i18next";
+ import {
++  Bot,
+   ChevronDown,
+   FolderOpen,
+   FolderPlus,
+@@ -22,6 +23,7 @@
+   DropdownMenuRadioItem,
+   DropdownMenuTrigger,
+ } from "@/components/ui/dropdown-menu";
++import { HerdrNewAgentDialog } from "./HerdrNewAgentDialog";
+ import { useHerdrStore } from "@/state/herdrStore";
+ import { sessionScope, parseRuntimeScope } from "@/lib/herdrProvider";
+ import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
+@@ -42,6 +44,8 @@
+   const space = useHerdrStore((s) =>
+     s.snapshot?.spaces.find((x) => x.id === s.selectedSpaceId),
+   );
++  const canCreateAgent = useHerdrStore((s) => s.canCreateAgent());
++  const [newAgentOpen, setNewAgentOpen] = useState(false);
+   const canCreateTerminal = useHerdrStore((s) => s.canCreateTerminal());
+   const canCreateSpace = useHerdrStore((s) => s.canCreateSpace());
+   const [busy, setBusy] = useState(false),
+@@ -118,6 +122,13 @@
+               <Separator />
+               <DropdownMenuGroup>
+                 <DropdownMenuItem
++                  disabled={busy || !space || !canCreateAgent}
++                  onSelect={() => setNewAgentOpen(true)}
++                >
++                  <Bot />
++                  {tw("herdrNav.newAgent")}
++                </DropdownMenuItem>
++                <DropdownMenuItem
+                   disabled={busy || !space || !canCreateTerminal}
+                   onSelect={() =>
+                     void run(async () => {
+@@ -189,6 +200,7 @@
+           </DropdownMenu>
+         </div>
+       </div>
++      <HerdrNewAgentDialog open={newAgentOpen} onOpenChange={setNewAgentOpen} />
+       {error && (
+         <p className="herdr-launcher-notice" role="alert">
+           {error}
+--- a/src/app/workbench/SpaceAgentSidebar.test.tsx
++++ b/src/app/workbench/SpaceAgentSidebar.test.tsx
+@@ -0,0 +1,48 @@
++import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
++import { afterEach, beforeEach, expect, it, vi } from "vitest";
++import { herdrInitialState, useHerdrStore } from "@/state/herdrStore";
++import type { HerdrCapabilities } from "@/lib/herdrTypes";
++import { SpaceAgentSidebar } from "./SpaceAgentSidebar";
++const mocks = vi.hoisted(() => ({ catalog: vi.fn(), create: vi.fn() }));
++vi.mock("@/lib/herdrIpc", async (original) => ({
++  ...(await original<typeof import("@/lib/herdrIpc")>()),
++  herdrAgentCatalog: mocks.catalog,
++}));
++const scope = '["host-b","same"]';
++beforeEach(() => {
++  mocks.catalog.mockResolvedValue([{ agent: "codex", bypassFlags: [], detectedBinaryPath: "/bin/codex" }]);
++  mocks.create.mockResolvedValue(null);
++  useHerdrStore.setState({
++    ...herdrInitialState,
++    selectedSessionName: scope, selectedSpaceId: "space-b",
++    sessions: [{ name: "same", runtimeId: scope, hostId: "host-b", running: true, default: false, sessionDir: "/", socketPath: "/sock" }],
++    capabilities: { server: { running: true }, api: { snapshot: true, workspaceFocus: true, tabCreate: true, tabClose: true, agentManifests: true, agentStart: true }, terminal: { create: true } } as HerdrCapabilities,
++    snapshot: { herdrSessionId: scope, protocol: 20, version: "0.8.2", spaces: [{ id: "space-b", label: "Destination B", path: "/repo-b", order: 0, focused: true }], agents: [], tabs: [], terminals: [], raw: {} },
++    createAgentInSelectedSpace: mocks.create,
++  });
++});
++afterEach(() => { cleanup(); vi.clearAllMocks(); });
++async function openMenu() {
++  fireEvent.keyDown(screen.getByRole("button", { name: "Herdr Session: All" }), { key: "Enter" });
++  return screen.findByRole("menuitem", { name: "New Herdr Agent" });
++}
++it("reaches the Agent dialog from the production sidebar and uses the selected runtime destination", async () => {
++  render(<SpaceAgentSidebar />);
++  fireEvent.click(await openMenu());
++  expect(await screen.findByRole("dialog", { name: "New Herdr Agent" })).toBeInTheDocument();
++  expect(screen.getByText("host-b · same")).toBeInTheDocument();
++  expect(screen.getByText("/repo-b")).toBeInTheDocument();
++  await screen.findByText("codex");
++  expect(mocks.catalog).toHaveBeenCalledWith(scope);
++  fireEvent.click(screen.getByRole("button", { name: "Start Agent" }));
++  await waitFor(() => expect(mocks.create).toHaveBeenCalledWith("codex", false));
++  expect(useHerdrStore.getState().selectedSpaceId).toBe("space-b");
++});
++it.each(["stopped", "unsupported", "no-space"])("disables Agent creation when %s", async (reason) => {
++  if (reason === "stopped") useHerdrStore.setState({ sessions: useHerdrStore.getState().sessions.map(s => ({ ...s, running: false })) });
++  if (reason === "unsupported") useHerdrStore.setState({ capabilities: null });
++  if (reason === "no-space") useHerdrStore.setState({ selectedSpaceId: null });
++  render(<SpaceAgentSidebar />);
++  expect(await openMenu()).toHaveAttribute("aria-disabled", "true");
++  expect(mocks.catalog).not.toHaveBeenCalled();
++});
+--- a/src/app/workbench/SpaceAgentTree.test.tsx
++++ b/src/app/workbench/SpaceAgentTree.test.tsx
+@@ -204,3 +204,24 @@
+     paneId: "pane",
+   });
+ });
++
++it.each([undefined, null])("uses the workspace label for an agent without a repository branch (%s)", (branch) => {
++  const runtimes = useHerdrStore.getState().runtimesBySession;
++  const runtime = runtimes[scopes[0]];
++  useHerdrStore.setState({
++    runtimesBySession: {
++      ...runtimes,
++      [scopes[0]]: {
++        ...runtime,
++        snapshot: {
++          ...runtime.snapshot!,
++          spaces: [{ ...runtime.snapshot!.spaces[0], label: "QA-A", path: "/tmp/QA-A", branch }],
++        },
++      },
++    },
++  });
++  render(<SpaceAgentTree />);
++  const agent = screen.getAllByRole("treeitem").find((row) => row.getAttribute("aria-level") === "3")!;
++  expect(agent).toHaveAccessibleName(`Codex · Codex · Unknown · QA-A · ${scopes[0]}`);
++  expect(agent.getAttribute("aria-label")).not.toMatch(/undefined|null/);
++});
+--- a/src/app/workbench/SpaceAgentTree.tsx
++++ b/src/app/workbench/SpaceAgentTree.tsx
+@@ -512,7 +512,7 @@
+                     tabIndex={node.key === tabKey ? 0 : -1}
+                     aria-label={
+                       node.kind === "agent"
+-                        ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.space.branch} · ${node.sessionName}`
++                        ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.space.branch ?? node.space.label} · ${node.sessionName}`
+                         : node.kind === "project"
+                           ? `${node.label} · ${t("agentCount", { count: node.count })} · ${node.sessionName}`
+                           : `${node.label} · ${node.space.path} · ${node.sessionName}`
+--- a/src/lib/ipc.ts
++++ b/src/lib/ipc.ts
+@@ -785,9 +785,10 @@
+     x: number,
+     y: number,
+     width: number,
+-    height: number
++    height: number,
++    sessionId?: string
+ ): Promise<void> {
+-    return invoke("preview_open_url", { url, x, y, width, height })
++    return invoke("preview_open_url", { url, x, y, width, height, sessionId })
+ }
+ 
+ export function previewSetBounds(
+@@ -807,14 +808,18 @@
+     return invoke("preview_close")
+ }
+ 
+-export function previewBack(): Promise<void> {
+-    return invoke("preview_back")
++export function previewBack(sessionId?: string): Promise<void> {
++    return invoke("preview_back", { sessionId })
+ }
+ 
+-export function previewForward(): Promise<void> {
+-    return invoke("preview_forward")
++export function previewForward(sessionId?: string): Promise<void> {
++    return invoke("preview_forward", { sessionId })
+ }
+ 
++export function previewNavigationState(sessionId: string): Promise<import("@/state/previewStore").PreviewNativeNavigationSnapshot> {
++    return invoke("preview_navigation_state", { sessionId })
++}
++
+ export function previewReload(): Promise<void> {
+     return invoke("preview_reload")
+ }
+--- a/src/preview/nativeNavigation.test.ts
++++ b/src/preview/nativeNavigation.test.ts
+@@ -0,0 +1,57 @@
++import { beforeEach, expect, it } from "vitest"
++import { usePreviewStore } from "@/state/previewStore"
++import { useWorkspaceStore } from "@/state/workspaceStore"
++
++beforeEach(() => {
++  useWorkspaceStore.setState({ workspacePath: "/ws/a" })
++  usePreviewStore.getState().reset()
++})
++
++it("canonical initial load and redirect replace the requested URL without synthetic Back", () => {
++  const s = usePreviewStore.getState()
++  s.navigate("/ws/a", "http://localhost:34329")
++  s.recordNativeOpen("/ws/a", "http://localhost:34329", "child-1")
++  s.receiveNativeNavigation({ sessionId: "child-1", url: "http://localhost:34329/", canGoBack: false, canGoForward: false })
++  expect(s.navForWorkspace("/ws/a")).toMatchObject({ url: "http://localhost:34329/", backStack: [] })
++  s.receiveNativeNavigation({ sessionId: "child-1", url: "http://localhost:34329/final", canGoBack: false, canGoForward: false })
++  expect(s.navForWorkspace("/ws/a")).toMatchObject({ url: "http://localhost:34329/final", backStack: [] })
++})
++
++it("uses native capabilities for link, in-page back, replaceState, hash and reload", () => {
++  const s = usePreviewStore.getState()
++  s.navigate("/ws/a", "https://example.com/")
++  s.recordNativeOpen("/ws/a", "https://example.com/", "child-1")
++  const snapshot = (url: string, canGoBack: boolean, canGoForward: boolean) =>
++    s.receiveNativeNavigation({ sessionId: "child-1", url, canGoBack, canGoForward })
++  snapshot("https://example.com/next", true, false)
++  expect(usePreviewStore.getState().nativeSession).toMatchObject({ canGoBack: true, canGoForward: false })
++  snapshot("https://example.com/", false, true)
++  expect(usePreviewStore.getState().nativeSession).toMatchObject({ canGoBack: false, canGoForward: true })
++  snapshot("https://example.com/replaced", false, true)
++  snapshot("https://example.com/replaced#section", true, false)
++  snapshot("https://example.com/replaced#section", true, false)
++  expect(s.navForWorkspace("/ws/a")).toMatchObject({ url: "https://example.com/replaced#section", backStack: [] })
++})
++
++it("rejects stale child ownership, pending navigation and non-web URLs", () => {
++  const s = usePreviewStore.getState()
++  s.navigate("/ws/a", "https://example.com/")
++  s.recordNativeOpen("/ws/a", "https://example.com/", "child-2")
++  const snapshot = (sessionId: string, url: string) => s.receiveNativeNavigation({ sessionId, url, canGoBack: true, canGoForward: false })
++  snapshot("child-1", "https://example.com/stale")
++  snapshot("child-2", "file:///etc/passwd")
++  s.beginNativeCloseRequest("/ws/a")
++  snapshot("child-2", "https://example.com/late")
++  expect(s.navForWorkspace("/ws/a").url).toBe("https://example.com/")
++})
++
++it("clears an outer Forward branch when the rebuilt native child gains a new history entry", () => {
++  const s = usePreviewStore.getState()
++  s.navigate("/ws/a", "https://example.com/a")
++  s.navigate("/ws/a", "http://localhost:34329/static")
++  s.goBack("/ws/a")
++  s.recordNativeOpen("/ws/a", "https://example.com/a", "child-3")
++  expect(usePreviewStore.getState().nativeSession?.outerForwardStack).toEqual(["http://localhost:34329/static"])
++  s.receiveNativeNavigation({ sessionId: "child-3", url: "https://example.com/b", canGoBack: true, canGoForward: false })
++  expect(usePreviewStore.getState().nativeSession?.outerForwardStack).toEqual([])
++})
+--- a/src/preview/previewCommands.test.ts
++++ b/src/preview/previewCommands.test.ts
+@@ -324,3 +324,20 @@
+       .toBe("running")
+   })
+ })
++
++it("does not use old native capabilities for a pending or unmatched URL", async () => {
++  const preview = usePreviewStore.getState()
++  preview.navigate("/ws/a", "https://example.com/a")
++  preview.recordNativeOpen("/ws/a", "https://example.com/a", "owner")
++  preview.receiveNativeNavigation({ sessionId: "owner", url: "https://example.com/a", canGoBack: true, canGoForward: true })
++  preview.beginNativeOpenRequest("/ws/a", "https://example.com/b")
++  expect(previewTargetCanGoBack(target())).toBe(false)
++  expect(previewTargetCanGoForward(target())).toBe(false)
++  expect(await goBackPreview(target())).toBe("cancelled")
++  preview.settleNativeRequest(usePreviewStore.getState().nativeRequestToken)
++  preview.navigate("/ws/a", "https://example.com/b")
++  expect(previewTargetCanGoBack(target())).toBe(false)
++  expect(await goForwardPreview(target())).toBe("cancelled")
++  expect(commandMocks.previewBack).not.toHaveBeenCalled()
++  expect(commandMocks.previewForward).not.toHaveBeenCalled()
++})
+--- a/src/preview/previewCommands.ts
++++ b/src/preview/previewCommands.ts
+@@ -35,12 +35,22 @@
+ 
+ export function previewTargetCanGoBack(target: PreviewCommandTarget): boolean {
+   if (!previewTargetHasUrl(target)) return false
+-  return usePreviewStore.getState().navForWorkspace(target.workspacePath).backStack.length > 0
++  const state = usePreviewStore.getState()
++  if (state.nativeSession?.workspacePath === target.workspacePath && state.nativeSession.canGoBack !== undefined) {
++    return state.nativeRequest === null && state.nativeSession.currentUrl === target.url
++      && (state.nativeSession.canGoBack || (state.nativeSession.outerBackStack?.length ?? 0) > 0)
++  }
++  return state.navForWorkspace(target.workspacePath).backStack.length > 0
+ }
+ 
+ export function previewTargetCanGoForward(target: PreviewCommandTarget): boolean {
+   if (!previewTargetHasUrl(target)) return false
+-  return usePreviewStore.getState().navForWorkspace(target.workspacePath).forwardStack.length > 0
++  const state = usePreviewStore.getState()
++  if (state.nativeSession?.workspacePath === target.workspacePath && state.nativeSession.canGoForward !== undefined) {
++    return state.nativeRequest === null && state.nativeSession.currentUrl === target.url
++      && (state.nativeSession.canGoForward || (state.nativeSession.outerForwardStack?.length ?? 0) > 0)
++  }
++  return state.navForWorkspace(target.workspacePath).forwardStack.length > 0
+ }
+ 
+ export function previewTargetHasRunningServer(target: PreviewCommandTarget): boolean {
+@@ -48,13 +58,31 @@
+   const state = usePreviewStore.getState()
+   return state.attemptForWorkspace(target.workspacePath) === target.serverAttempt
+     && state.devServerForWorkspace(target.workspacePath)?.status.status === "running"
++}
++
++function traverseOuterHistory(workspace: string, direction: "back" | "forward"): ContextMenuCommandOutcome {
++  const state = usePreviewStore.getState()
++  const session = state.nativeSession
++  const nav = state.navForWorkspace(workspace)
++  if (!session || session.workspacePath !== workspace) return cancelled()
++  const backStack = session.outerBackStack ?? []
++  const forwardStack = session.outerForwardStack ?? []
++  if ((direction === "back" ? backStack : forwardStack).length === 0) return cancelled()
++  // A prior surface belongs to a different native history. Reopen under a new
++  // owner instead of appending a synthetic Back to the current browser history.
++  state.closeNativeSession(workspace)
++  usePreviewStore.setState({ nav: { ...state.nav, [workspace]: { ...nav, backStack, forwardStack } } })
++  if (direction === "back") state.goBack(workspace)
++  else state.goForward(workspace)
++  return completed()
+ }
+ 
+ export async function goBackPreview(
+   target: PreviewCommandTarget
+ ): Promise<ContextMenuCommandOutcome> {
+   if (!previewTargetCanGoBack(target) || !target.url) return cancelled()
+-  if (isLocalPreviewUrl(target.url)) {
++  if (isLocalPreviewUrl(target.url)
++    && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
+     usePreviewStore.getState().goBack(target.workspacePath)
+     return completed()
+   }
+@@ -62,6 +90,14 @@
+   return enqueueNativePreviewOperation(async () => {
+     if (!previewTargetCanGoBack(target) || !target.url) return cancelled()
+     const state = usePreviewStore.getState()
++    if (state.nativeSession?.workspacePath === target.workspacePath
++      && state.nativeSession.canGoBack !== undefined) {
++      if (state.nativeRequest !== null || state.nativeSession.currentUrl !== target.url) return cancelled()
++      if (!state.nativeSession.canGoBack) return traverseOuterHistory(target.workspacePath, "back")
++      await nativePreviewBack(state.nativeSession.sessionId)
++      // The next native snapshot acknowledges the actual URL and capabilities.
++      return completed()
++    }
+     const nav = state.navForWorkspace(target.workspacePath)
+     const adjacentUrl = nav.backStack.at(-1)
+     if (!adjacentUrl) return cancelled()
+@@ -70,7 +106,7 @@
+       && nativeSession?.workspacePath === target.workspacePath
+       && nativeSession.currentUrl === target.url
+       && nativeSession.backStack.at(-1) === adjacentUrl
+-    if (isLocalPreviewUrl(adjacentUrl) || !hasNativeContinuity) {
++    if (!hasNativeContinuity) {
+       state.goBack(target.workspacePath)
+       return completed()
+     }
+@@ -100,7 +136,8 @@
+   target: PreviewCommandTarget
+ ): Promise<ContextMenuCommandOutcome> {
+   if (!previewTargetCanGoForward(target) || !target.url) return cancelled()
+-  if (isLocalPreviewUrl(target.url)) {
++  if (isLocalPreviewUrl(target.url)
++    && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
+     usePreviewStore.getState().goForward(target.workspacePath)
+     return completed()
+   }
+@@ -108,6 +145,14 @@
+   return enqueueNativePreviewOperation(async () => {
+     if (!previewTargetCanGoForward(target) || !target.url) return cancelled()
+     const state = usePreviewStore.getState()
++    if (state.nativeSession?.workspacePath === target.workspacePath
++      && state.nativeSession.canGoForward !== undefined) {
++      if (state.nativeRequest !== null || state.nativeSession.currentUrl !== target.url) return cancelled()
++      if (!state.nativeSession.canGoForward) return traverseOuterHistory(target.workspacePath, "forward")
++      await nativePreviewForward(state.nativeSession.sessionId)
++      // The next native snapshot acknowledges the actual URL and capabilities.
++      return completed()
++    }
+     const nav = state.navForWorkspace(target.workspacePath)
+     const adjacentUrl = nav.forwardStack[0]
+     if (!adjacentUrl) return cancelled()
+@@ -116,7 +161,7 @@
+       && nativeSession?.workspacePath === target.workspacePath
+       && nativeSession.currentUrl === target.url
+       && nativeSession.forwardStack[0] === adjacentUrl
+-    if (isLocalPreviewUrl(adjacentUrl) || !hasNativeContinuity) {
++    if (!hasNativeContinuity) {
+       state.goForward(target.workspacePath)
+       return completed()
+     }
+@@ -146,7 +191,8 @@
+   target: PreviewCommandTarget
+ ): Promise<ContextMenuCommandOutcome> {
+   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
+-  if (isLocalPreviewUrl(target.url)) {
++  if (isLocalPreviewUrl(target.url)
++    && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
+     usePreviewStore.getState().reload(target.workspacePath)
+     return completed()
+   }
+--- a/src/state/previewStore.ts
++++ b/src/state/previewStore.ts
+@@ -29,7 +29,19 @@
+     token: number
+ }
+ 
++export interface PreviewNativeNavigationSnapshot {
++    sessionId: string
++    url: string
++    canGoBack: boolean
++    canGoForward: boolean
++}
++
+ export interface PreviewNativeSession {
++    sessionId?: string
++    canGoBack?: boolean
++    canGoForward?: boolean
++    outerBackStack?: string[]
++    outerForwardStack?: string[]
+     workspacePath: string
+     currentUrl: string
+     backStack: string[]
+@@ -62,7 +74,8 @@
+     syncNativeBack: (workspace: string) => boolean
+     syncNativeForward: (workspace: string) => boolean
+     consumeNativeNavigationSync: (workspace: string, token: number) => void
+-    recordNativeOpen: (workspace: string, url: string) => void
++    recordNativeOpen: (workspace: string, url: string, sessionId?: string) => void
++    receiveNativeNavigation: (event: PreviewNativeNavigationSnapshot) => void
+     closeNativeSession: (workspace?: string) => void
+     beginNativeOpenRequest: (workspace: string, url: string) => number
+     beginNativeCloseRequest: (workspace: string | null) => number
+@@ -89,9 +102,8 @@
+     staticPreview: null as StaticPreviewSession | null
+ }
+ 
+-// P3: the navigate choke point now admits any http/https URL — external https is
+-// rendered in a child webview (an <iframe> can't host it), local dev servers keep
+-// the iframe path. Non-web schemes (file:, javascript:, …) are still rejected.
++// The navigation boundary admits only web URLs; renderer selection remains in
++// PreviewPanel so static and remote frames keep their sandbox/tunnel boundary.
+ function isAllowedPreviewUrl(rawUrl: string): boolean {
+     try {
+         const url = new URL(rawUrl)
+@@ -101,10 +113,8 @@
+     }
+ }
+ 
+-// A local dev-server / static-server URL renders in the sandboxed <iframe>;
+-// everything else (external https) goes to the child webview. 127.0.0.1 is what
+-// the P3 static file server binds, so right-clicked HTML previews stay on the
+-// iframe path too.
++// Static sessions retain their restrictive iframe sandbox even when other
++// desktop localhost URLs use the native browser.
+ export function previewFrameModeFor(
+     url: string | null,
+     session: StaticPreviewSession | null
+@@ -326,13 +336,17 @@
+             return { nativeNavigationSyncs }
+         }),
+ 
+-    recordNativeOpen: (workspace, url) =>
++    recordNativeOpen: (workspace, url, sessionId) =>
+         set((s) => {
+             const current = s.nativeSession
+-            if (current?.workspacePath !== workspace) {
++            if (current?.workspacePath !== workspace || current.sessionId !== sessionId) {
+                 return {
+                     nativeSession: {
+                         workspacePath: workspace,
++                        sessionId,
++                        ...(sessionId ? { canGoBack: false, canGoForward: false,
++                            outerBackStack: [...(s.nav[workspace]?.backStack ?? [])],
++                            outerForwardStack: [...(s.nav[workspace]?.forwardStack ?? [])] } : {}),
+                         currentUrl: url,
+                         backStack: [],
+                         forwardStack: []
+@@ -344,12 +358,39 @@
+                 nativeSession: {
+                     ...current,
+                     currentUrl: url,
++                    outerForwardStack: [],
+                     backStack: [...current.backStack, current.currentUrl],
+                     forwardStack: []
+                 }
+             }
+         }),
+ 
++    receiveNativeNavigation: ({ sessionId, url, canGoBack, canGoForward }) => {
++        if (!isAllowedPreviewUrl(url)) return
++        set((s) => {
++            const session = s.nativeSession
++            if (!session || session.sessionId !== sessionId || s.nativeRequest !== null
++                || useWorkspaceStore.getState().workspacePath !== session.workspacePath) return s
++            const workspace = session.workspacePath
++            const nav = s.nav[workspace]
++            if (!nav || nav.url !== session.currentUrl) return s
++            const changedUrl = nav.url !== url
++            if (!changedUrl && session.canGoBack === canGoBack && session.canGoForward === canGoForward) return s
++            const token = s.nativeNavigationSyncToken + 1
++            return {
++                // The native browser owns its actual history, including redirects,
++                // replaceState and traversal. A snapshot never invents entries.
++                nav: { ...s.nav, [workspace]: { ...nav, url } },
++                nativeSession: { ...session, currentUrl: url, canGoBack, canGoForward,
++                    outerForwardStack: canGoBack ? [] : session.outerForwardStack },
++                ...(changedUrl ? {
++                    nativeNavigationSyncs: { ...s.nativeNavigationSyncs, [workspace]: { url, token } },
++                    nativeNavigationSyncToken: token
++                } : {})
++            }
++        })
++    },
++
+     closeNativeSession: (workspace) =>
+         set((s) => {
+             if (workspace && s.nativeSession?.workspacePath !== workspace) return s

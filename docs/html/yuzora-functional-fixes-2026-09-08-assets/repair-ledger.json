@@ -1,0 +1,129 @@
+[
+  {
+    "id": "QA26-002",
+    "title": "新增 Terminal 名稱輸入被 shell 搶走",
+    "status": "FIXED",
+    "cause": "Terminal 的自動 focus 與 IME 寫入未避開開啟中的 dialog。",
+    "fix": "pending input dialog 與 mounted modal 都會阻止終端搶焦點及寫入；關閉 dialog 後正常恢復。",
+    "tests": "立即輸入 QA-Fix-Input → 名稱欄位保留；Enter 改名成功；shell 仍是空白 prompt。含 modal 關閉後恢復輸入回歸測試。",
+    "files": [
+      "src/app/panels/HerdrTerminalPage.tsx"
+    ],
+    "image": "herdr-naming-fixed"
+  },
+  {
+    "id": "QA26-007",
+    "title": "Herdr pane zoom 沒有放大／狀態容易丟失",
+    "status": "FIXED",
+    "cause": "zoom 顯示與 BSP 子樹、pane 實例生命週期未正確協調。",
+    "fix": "保留原 BSP 與 connector，隱藏非焦點分支；放大時停用 separator；還原使用原始 ratio。",
+    "tests": "右 pane 全幅 → 還原兩 pane；左 shell 變數 zoom_alive 保留。鍵盤兩次 Right 調整 50%→60%，官方 layout 確認 ratio 0.6。滑鼠 drag 未取得可靠工具證據。",
+    "files": [
+      "src/app/panels/HerdrTerminalPage.tsx"
+    ],
+    "image": "herdr-zoom-fixed"
+  },
+  {
+    "id": "QA26-003",
+    "title": "Herdr Agent 新增入口無法抵達",
+    "status": "FIXED",
+    "cause": "現行 launcher 沒有掛載既有新增 Agent dialog。",
+    "fix": "在現行 Session 選單開啟既有 dialog，保留 runtime、Space 與 capability 限制。",
+    "tests": "搜尋 pi → 在 local/default/QA-A 成功啟動；Sidebar 與即時 terminal 出現。停止的 Session 禁用新增。pending Escape 競態由單元測試驗證。",
+    "files": [
+      "src/app/workbench/HerdrLauncher.tsx"
+    ],
+    "image": "herdr-agent-created"
+  },
+  {
+    "id": "QA26-004",
+    "title": "Inspector 行數逐字輸入被 clamp 改寫",
+    "status": "FIXED",
+    "cause": "每次輸入立即轉數字及 clamp，中間字串無法保留。",
+    "fix": "使用字串 draft；blur／Enter 提交後限制 20–500，空白回 120，小數取整。",
+    "tests": "逐字 80→80、120→120；999 提交→500；空白提交→120。GUI 證據為現場操作文字紀錄。",
+    "files": [
+      "src/app/workbench/HerdrAgentInspector.tsx"
+    ],
+    "note": "inspector-input-fixed.txt"
+  },
+  {
+    "id": "QA26-005",
+    "title": "非 Git 資料夾顯示 raw trust JSON",
+    "status": "FIXED",
+    "cause": "在識別非儲存庫前先做 Git 信任要求；首版 early return 又遺漏 registry 收尾。",
+    "fix": "先做 filesystem-only repo presence 判斷，再保留真實 repo 的 trust gate；以共同 finish 路徑釋放 watcher、操作權限並保護新 generation。",
+    "tests": "QA-A 顯示「不是 Git 儲存庫」；無 raw JSON。新增 watcher Drop、authority、stale generation 與巢狀 repo trust 回歸。",
+    "files": [
+      "src-tauri/src/git_service.rs"
+    ],
+    "image": "git-nonrepo-fixed"
+  },
+  {
+    "id": "QA26-006",
+    "title": "Preview 網址與前進／後退狀態失同步",
+    "status": "FIXED",
+    "cause": "推算的 URL ledger 無法分辨 redirect、SPA replace 與原生 traversal。",
+    "fix": "本機 native webview 讀取實際 URL、canGoBack／canGoForward，執行原生歷史操作；可見時單飛輪詢，owner／generation 隔離，保留跨 iframe 邊界歷史。",
+    "tests": "無 slash 首頁、Next、redirect、toolbar Back、SPA push/replace、頁內 Back/Forward、hash、reload 均實機通過；新分支清除 Forward；Settings 遮蔽／還原正常。remote/static iframe 內頁同步不在此修復範圍。",
+    "files": [
+      "src/app/panels/PreviewPanel.tsx",
+      "src/preview/previewCommands.ts",
+      "src/state/previewStore.ts",
+      "src/lib/ipc.ts",
+      "src-tauri/src/preview_webview.rs",
+      "src-tauri/src/lib.rs",
+      "src-tauri/Cargo.toml"
+    ],
+    "image": "preview-native-history-fixed"
+  },
+  {
+    "id": "QA26-008",
+    "title": "無 branch 的 Agent label 出現 undefined",
+    "status": "FIXED",
+    "cause": "Agent accessibility label 直接使用可能不存在的 branch。",
+    "fix": "與父層一致使用 branch ?? label。",
+    "tests": "undefined／null 兩種回歸；GUI label 顯示 π - QA-A · pi · 待命 · QA-A · default。",
+    "files": [
+      "src/app/workbench/SpaceAgentTree.tsx"
+    ],
+    "note": "agent-label-fixed.txt"
+  },
+  {
+    "id": "QA26-009",
+    "title": "Rust Analyzer 完整性誤判",
+    "status": "FIXED",
+    "cause": "下載壓縮檔的摘要被拿來比對解壓後 executable。",
+    "fix": "sha256 保留 archive 驗證；新增 executableSha256 驗證解壓輸出及啟動。六平台官方 artifact 驗證後更新摘要；ZIP generator 使用 fflate，免除未宣告的 Python 環境相依。",
+    "tests": "catalog 18、解壓／tamper 1、generator 13 個測試通過；六平台 digests 獨立覆核；clean PATH 驗證。GUI 重新偵測既有 binary 後 Rust Ready，沒有重装。",
+    "files": [
+      "src-tauri/host/src/lsp_catalog.rs",
+      "src-tauri/host/src/lsp_download.rs",
+      "src-tauri/lsp-catalog/manifest.json",
+      "scripts/update-lsp-integrity-catalog.ts",
+      "package.json",
+      "bun.lock"
+    ],
+    "image": "rust-analyzer-ready"
+  },
+  {
+    "id": "ENV-PYRIGHT",
+    "title": "Python LSP 本機安裝環境恢復",
+    "status": "ENVIRONMENT_REMEDIED",
+    "cause": "現有 Homebrew launcher 與審核 wrapper 不符，managed prefix 尚未安裝。",
+    "fix": "透過 App 的 Python「一鍵安裝」安裝 managed Pyright 1.1.413，保留完整性驗證及 Homebrew。",
+    "tests": "qa_python.py 顯示 Python · pyright Ready；Ready 不代表所有補全及 diagnostics 情境已驗收。",
+    "files": [],
+    "image": "python-lsp-ready"
+  },
+  {
+    "id": "QA26-001",
+    "title": "Herdr CLI 偶發 timeout",
+    "status": "DIAGNOSED_NOT_FIXED",
+    "cause": "高程序啟動壓力下可重現 shell 在 dyld 啟動階段停滯；最初首敗是否同因未完全證明。",
+    "fix": "保留 production timeout 及原回歸測試；未以加長 timeout 或略過測試掩蓋。",
+    "tests": "8-way 64/64、32-way 32/32 通過；64-way 24/64 timeout。解除壓力後 exact test 0.22s 通過，最後 service 92/92 通過。",
+    "files": [],
+    "note": "herdr-timeout-diagnosis.txt"
+  }
+]

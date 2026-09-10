@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+<title id="title">Yuzora app icon</title>
+<rect x="64" y="64" width="896" height="896" rx="196" fill="#0e1026"/>
+<g transform="translate(116 116) scale(3)"><g>
+  <path fill="#cbd5e1" d="M34 32H73Q77 32 80 35L120 77Q124 81 124 86V109Q124 117 118 111L91 83H78Q73 83 70 79L30 39Q24 32 34 32Z"/>
+  <path fill="#8caab7" d="M91 83H124V109Q124 117 118 111Z"/>
+  <path fill="#3b82f6" d="M142 88L190 36Q194 32 199 32H231Q239 32 234 39L149 132Q142 139 136 132V101Q136 94 142 88Z"/>
+  <path fill="#14b8a6" d="M96 111L132 148Q136 152 136 158V224Q136 232 130 226L92 186Q88 182 88 176V115Q88 107 96 111Z"/>
+</g></g>
+</svg>

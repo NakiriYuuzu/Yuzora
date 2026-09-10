@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora 功能移除與驗證紀錄 · 2026-09-08</title>
+<style>
+:root{color-scheme:light;--paper:#f6f3ec;--card:#fffdf9;--ink:#242b31;--muted:#616b72;--line:#d9d6cf;--accent:#215c59}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.75 system-ui,-apple-system,"PingFang TC",sans-serif}main{max-width:1100px;margin:auto;padding:48px 24px 80px}header{padding:0 0 26px;border-bottom:2px solid var(--accent)}.eyebrow{font:12px/1.5 ui-monospace,monospace;letter-spacing:.09em;color:var(--accent)}h1{font-size:clamp(30px,4vw,46px);line-height:1.25;font-weight:650;letter-spacing:-.03em;margin:18px 0}h2{font-size:23px;margin:0 0 18px}h3{font-size:17px;margin:0 0 8px}p{margin:10px 0}.lead{max-width:830px;font-size:18px;color:var(--muted)}.meta{font-size:12px;color:var(--muted)}nav{display:flex;flex-wrap:wrap;gap:18px;margin:24px 0}a{color:var(--accent);text-underline-offset:3px}section{margin:30px 0;padding:26px;border:1px solid var(--line);border-radius:12px;background:var(--card)}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}th,td{padding:13px 12px;vertical-align:top;border-bottom:1px solid var(--line)}th{font-size:12px;letter-spacing:.03em;color:var(--muted)}tbody tr:last-child td{border-bottom:0}td:first-child{min-width:140px;font-weight:600}code{font:12px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.stat{border-left:3px solid var(--accent);padding:4px 15px}.stat strong{display:block;font-size:25px;line-height:1.4}.stat span{font-size:13px;color:var(--muted)}.note{border-left:3px solid #bd884a;padding:8px 15px;background:#fcf6e9}.pass{font-weight:650;color:var(--accent)}.sub{display:block;font-size:12px;color:var(--muted);margin-top:6px}footer{font-size:12px;color:var(--muted)}@media(max-width:720px){main{padding:28px 16px 48px}section{padding:18px}.grid{grid-template-columns:1fr}th,td{padding:10px 8px}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="eyebrow">YUZORA / IMPLEMENTATION RECORD / 2026-09-08</div>
+<h1>Terminal 統一使用 HERDR，<br>Preview 收斂為 Browser</h1>
+<p class="lead">依三位 Luna 的審查與使用者確認，移除 LSP、Yuzora 自建終端、舊導覽 UI、靜態 Preview／Dev Server 與已確認無呼叫者的程式碼。刪除涵蓋前端、IPC、Rust desktop、host protocol、依賴與建置腳本。</p>
+<p class="meta">工作分支 release/v0.0.9-beta.3 · HEAD 711342825480 · 保留開始前的工作區修改 · 未 staging／commit／push</p>
+</header>
+<nav aria-label="報告導覽"><a href="#scope">移除範圍</a><a href="#retained">保留功能</a><a href="#verification">驗證</a><a href="#limits">交付界線</a><a href="#evidence">紀錄</a></nav>
+<div class="grid" aria-label="交付概況">
+<div class="stat"><strong>6 類清理</strong><span>依使用者指定範圍完成程式移除</span></div>
+<div class="stat"><strong>HERDR</strong><span>唯一 terminal runtime</span></div>
+<div class="stat"><strong>Browser</strong><span>網址、導覽歷史、原生 webview 與 tunnel</span></div>
+</div>
+<section id="scope"><h2>移除範圍</h2><div class="table-wrap"><table>
+<thead><tr><th>範圍</th><th>完成項目</th><th>主要路徑</th></tr></thead><tbody>
+<tr><td>Dead code</td><td>移除未使用 helpers、workspace path index、gitDetect wrapper／command、sshSessionAlive 整條查詢、未使用 UI primitives；清除對應 DTO、tests、exports 與設定搜尋欄位。</td><td><code>src/lib/ipc.ts</code><br><code>src/lib/runtimeIdentity.ts</code><br><code>src-tauri/host/src/protocol.rs</code></td></tr>
+<tr><td>本地 terminals</td><td>移除 local PTY、獨立 SSH shell、TerminalSession、terminal store、profiles、drawer、相關生命週期事件、Tauri commands 與 portable-pty 直接依賴。HERDR 的 xterm 設定繼續使用。</td><td><code>src/terminal/</code><br><code>src/app/AppShell.tsx</code><br><code>src-tauri/src/ssh_service.rs</code></td></tr>
+<tr><td>LSP</td><td>移除 client、server 偵測／安裝／下載、診斷、補全、hover、definitions、rename、symbols、格式化、remote streams、設定、命令、catalog、spike 與 fixtures；移除 @codemirror/lsp-client、fflate 直接依賴。</td><td><code>src/lsp/</code> 已刪除<br><code>src-tauri/**/lsp_*</code> 已刪除<br><code>src-tauri/lsp-catalog/</code> 已刪除</td></tr>
+<tr><td>舊版 UI</td><td>移除 WorkspaceRail、ProjectNavPanel、HerdrNavContent 與專屬測試。現行 SpaceAgentSidebar 與 WorkspaceToolsPanel 保留。</td><td><code>src/app/workbench/</code></td></tr>
+<tr><td>停用功能與殘留</td><td>移除未接入的 diagnostics pull extension、舊 launcher helpers／tests、Windows HERDR 空資源佔位與已失去用途的 API。沒有以 cfg(any())、空 stub 或隱藏開關保留這些實作。</td><td><code>src-tauri/host/src/process_kill.rs</code><br><code>src-tauri/resources/herdr/</code></td></tr>
+<tr><td>設定 Preview</td><td>移除 PreviewSection、靜態伺服器／token／resource policy、Dev Server 偵測／啟停／程序管理、ProcessBridge 與專屬 execution challenge。Browser 直接開啟網址與已執行的服務。</td><td><code>src/preview/</code><br><code>src/state/previewStore.ts</code><br><code>src-tauri/host/src/trust_command.rs</code></td></tr>
+</tbody></table></div></section>
+<section id="retained"><h2>保留的功能與工作流程</h2>
+<p><strong>HERDR terminals：</strong>named Sessions、Spaces、Agents、BSP panes、輸入輸出、control／observer、resize、scroll、字型與 IME、connector 釋放與重連。App 關閉仍保留 HERDR 持有的 server 與程序。</p>
+<p><strong>Browser：</strong>網址輸入、導覽歷史、上一頁／下一頁、重新整理、原生 webview、面板可見性與遠端 loopback tunnel。保留 native session generation 與延遲回應防護；內部仍使用部分 <code>preview</code> 命名。</p>
+<p><strong>其餘工作面：</strong>CodeMirror 語法編輯、工作區文字搜尋、Markdown／SVG／圖片檢視、Git、Database、SSH 認證與 host helper、SFTP 傳輸及檔案編輯仍保留。</p>
+<p class="note">需要開發伺服器時，在 HERDR terminal 啟動，再將網址貼入 Browser。編輯器已不再提供 LSP 智慧編輯與 LSP 格式化。</p>
+<p>Profile migration、Windows workspace migration、installer legacy-cleanup payload 與現行 capability fallback 仍有 production caller，繼續保留。歷史 ADR、研究報告與 log sanitization fixtures 可能仍提及舊功能；這些內容不會重新啟用已刪除的執行路徑。</p>
+</section>
+<section id="verification"><h2>驗證結果</h2><div class="table-wrap"><table>
+<thead><tr><th>檢查</th><th>結果與範圍</th></tr></thead><tbody>
+<tr><td>Frontend tests</td><td id="frontend-result"><span class="pass">185 檔、2,212 tests 全數通過。</span> Browser／CommandPalette／Settings／IPC 相關 4 檔 96 tests 亦另外通過；保留 native navigation races、可見性、歷史與遠端 tunnel lease 的測試。</td></tr>
+<tr><td>Typecheck／Build</td><td class="pass">PASS</td></tr>
+<tr><td>ESLint</td><td>0 errors、51 warnings。保留現有 hooks／refresh 等警告，未擴張本次移除範圍。</td></tr>
+<tr><td>Rust all-targets</td><td class="pass">Desktop 與獨立 host 的 cargo check --locked --all-targets 均通過（本機 macOS ARM64）。</td></tr>
+<tr><td>Rust focused tests</td><td id="rust-result"><span class="pass">62 tests 通過。</span> Host 17 tests：stream protocol、stream 開啟邊界、登入環境與 workspace trust；Desktop 45 tests：command inventory、SSH／SFTP。</td></tr>
+<tr><td>Rust fmt／Clippy</td><td>Desktop／host fmt 通過。Clippy exact baseline 比對通過，90 diagnostics；只調整 SSH 刪碼引起的 3 處行號。</td></tr>
+<tr><td>Host helper</td><td><span class="pass">macos-aarch64 release 重建成功</span>；官方 HERDR 0.8.2／protocol 20。<span class="sub">helper SHA-256：<code>686d3fecfb4a700c6530ed72456d785ea8d5a8c598b872de6c20a558cd6eb9ff</code></span></td></tr>
+<tr><td>Static audit／Diff</td><td>Graph 與 live source 核對已刪模組、呼叫者、IPC／host 協定、設定搜尋、locales、CSS 與 CI/scripts；git diff --check 通過。Graph 覆蓋與 module closure 為輔助證據，不構成所有可能 dead code 的形式化證明。</td></tr>
+</tbody></table></div></section>
+<section id="limits"><h2>交付與驗收界線</h2>
+<p>本次完成 source 清理、文件同步、前端建置與本機 host helper。尚未執行真實 GUI／E2E、遠端 SSH／WSL 實機驗收、資料庫 Docker integration 或其他平台安裝包重建。未替換使用者已部署的遠端 helper，也未發布版本。</p>
+<p>Rust 使用明確範圍測試；含 Git fixture commit 的 integration 測試僅編譯檢查，沒有執行 Git 寫入。Browser 與 HERDR 的單元測試涵蓋 mock／jsdom 行為，實際 native webview、IME、terminal 畫面與跨平台行為仍需實機驗收。</p>
+<p>前端 build 留有大型 bundle 與 remotePreviewUrl ineffective dynamic import 警告；這些不是本次移除後的編譯錯誤。</p>
+</section>
+<section id="evidence"><h2>架構與變更紀錄</h2>
+<p><a href="../../.yuuzu/adr/0004-herdr-terminals-browser-only.html">ADR-0004：HERDR terminals 與 Browser 範圍</a> 已明確取代 ADR-0003 的 LSP／靜態 Preview／Dev Server 決策；<a href="../../.yuuzu/CONTEXT.html">Domain Context</a>、CLAUDE.md、雙語 README 與官網原始碼已同步。</p>
+<p><a href="yuzora-lsp-deadcode-audit-2026-09-08.html">原始三位 Luna 審查報告</a> 為移除前快照；本報告記錄實作後狀態。整合時與開始前的 dirty snapshot 比對，避免把既有改動歸入本次清理。</p>
+<p class="meta">開始前備份：<code>/var/folders/pr/t_2qssms523gg360fb8bxqt80000gn/T/yuzora-removal-baseline-zNGfUl</code><br>原始測試與建置紀錄：<code>/tmp/yuzora-removal-*</code>（暫存檔）。</p>
+</section>
+<footer>Yuzora · 2026-09-08 · 此文件未包含 GUI 截圖或跨平台發布驗收宣稱。</footer>
+</main></body></html>

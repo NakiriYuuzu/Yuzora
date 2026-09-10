@@ -136,7 +136,8 @@ export function DiffView({ content, mode, path }: { content: DiffContent; mode: 
                         updateListener
                     ]
                 },
-                parent
+                parent,
+                gutter: false
             })
         } else {
             view = new EditorView({
@@ -145,7 +146,7 @@ export function DiffView({ content, mode, path }: { content: DiffContent; mode: 
                     lineNumbers(),
                     ...themeExtensions,
                     ...langExtensions,
-                    unifiedMergeView({ original, mergeControls: false }),
+                    unifiedMergeView({ original, mergeControls: false, gutter: false }),
                     EditorState.readOnly.of(true),
                     updateListener
                 ],

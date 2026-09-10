@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HERDR 0.9.0 升級與後續相容性防護</title>
+<style>body{margin:0;background:#f6f4ef;color:#202c35;font:16px/1.75 system-ui,-apple-system,sans-serif}main{max-width:1000px;margin:auto;padding:44px 24px}h1{line-height:1.25}h2{margin-top:32px}a{color:#1d627b}code{font:13px/1.7 ui-monospace,monospace;overflow-wrap:anywhere}pre{padding:16px;background:#fff;white-space:pre-wrap;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid #d9d6cd;text-align:left;vertical-align:top}.note{padding:16px;background:#fff0cf}</style></head><body><main>
+<h1>HERDR 升級至 0.9.0／protocol 22</h1><p class="note">後續已獲同意、執行並加入隔離 runtime E2E：請見<a href="herdr-runtime-e2e-2026-09-09.html">最新 E2E gate 與新候選報告</a>。以下保留 790e23d 候選紀錄。</p>
+<p>已推送 <code>790e23d7fb1401ff618d6f2a2e01c1cbc68fab15</code>，tree <code>813dbe05b12632744b4426eaa440fdf6fec15598</code>。<a href="https://github.com/NakiriYuuzu/Yuzora/pull/92">PR #92</a> 維持 Draft；<a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34315253412">CI 與兩平台候選建置</a>全部通過，<a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34315253256">獨立四平台 helper workflow</a>亦通過。尚未 merge 或發布。</p>
+<p>兩個候選 job 實際 checkout GitHub PR merge commit <code>eb7816f61419d3025696492e274f7cab4e77ea2a</code>；已透過 GitHub API 核對其 tree 與上述 head tree 相同。</p>
+<p class="note">使用者的 Ubuntu-24.04／UID 1000 server 已是 0.9.0／protocol 22；這次更新 Yuzora client 與 helper，不停止既有 server。舊的 7a7a5a3 候選仍含 HERDR 0.8.2，不能用來驗收這次修正。</p>
+<h2>新候選安裝包</h2><p><a href="https://github.com/NakiriYuuzu/Yuzora/pull/92#issuecomment-5596548596">PR 候選證據與驗收步驟</a>已回填；三份 SHA256SUMS 讀回核對均為 OK。CI 綠燈與產物驗證不代表同一 Windows／WSL 已完成互動驗收。</p>
+<p>macOS 候選已下載至 <code>/Users/yuuzu/Downloads/Yuzora-v0.0.9-beta.3-candidate-790e23d/macos/</code>；DMG checksum 有效，版本 <code>0.0.9-beta.3</code>、bundle ID <code>dev.yuuzu.yuzora</code>、主程式架構 <code>x86_64 arm64</code>。唯讀掛載後驗證四平台 host payload 及兩份 macOS 原生 HERDR hash，均通過並已卸載。</p>
+<table id="candidate-installers"><thead><tr><th>檔案</th><th>SHA-256</th></tr></thead><tbody>
+<tr><td>Yuzora_0.0.9-beta.3_universal.dmg</td><td><code>0501087a5b651df109287a2ebd4ace8272278a3dfd588a87808a1852caa01c94</code></td></tr>
+<tr><td>Yuzora_0.0.9-beta.3_x64_en-US.msi</td><td><code>556cb5523e0eefb3d4cdbfa25ef55608882eca05419cd6660bb9e5ca23b86121</code></td></tr>
+<tr><td>Yuzora_0.0.9-beta.3_x64-setup.exe</td><td><code>4fc1c78184bfaf172c38b19b1c09b24911c0561ae111c866656a4909f88e4982</code></td></tr>
+</tbody></table>
+<p id="candidate-windows-status">Windows MSI／NSIS 已下載並記錄 SHA-256；CI 已解包驗證 runtime、manifest 與 cleanup hashes。<a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34315253412/artifacts/10090215124">下載 Windows 候選</a> · <a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34315253412/artifacts/10090125908">下載 macOS 候選</a>。檔案、SHA256SUMS.txt 與 VERIFICATION.md 位於 <code>/Users/yuuzu/Downloads/Yuzora-v0.0.9-beta.3-candidate-790e23d/</code>。</p>
+<h2>已實作</h2>
+<ul>
+<li>四平台官方 HERDR 0.9.0 檔案皆以 GitHub release digest 核對；license digest 未變。</li>
+<li><a href="../../src-tauri/herdr-runtime.json">共用 runtime manifest</a>統一版本、protocol、四平台 URL／SHA-256 與 license；準備腳本與 native guard 共用，修改該檔會觸發 helper workflow。</li>
+<li>保留 server.compatible gate；失敗時顯示 client／server 版本、protocol、選用 binary 與恢復說明，不再混用「已載入快照」和成功空集合。主機／Session 使用可讀標籤，快照刷新失敗標示過期。</li>
+<li>「更新主機工具」保留既有 managed 來源選擇，連線後仍可明確選擇來源。既有 host 不會被全面自動重新部署。</li>
+<li>0.9.0 的事件訂閱只接收 live events；subscription ack 後補讀快照，涵蓋初始競態。</li>
+<li>官方 method／subscription fixtures 鎖定 protocol 22；契約測試抓到舊解析器漏掉未帶 namespace 的 ping，已補上明確例外。</li>
+<li>啟動遇到較新且不相容的 server 時，不再引導使用者用舊 client 停止／重啟所有 Sessions。</li>
+</ul>
+<h2>本機驗證</h2>
+<table><thead><tr><th>檢查</th><th>結果</th></tr></thead><tbody>
+<tr><td>Frontend</td><td>186 files／2,229 tests passed；另對最後的可存取標籤修改重跑 6 個狀態測試，通過。</td></tr>
+<tr><td>Build／lint</td><td>Build（含 typecheck）通過；lint 0 errors／51 warnings，保留既有 bundle／dynamic import 提示。</td></tr>
+<tr><td>Host Rust</td><td>361 unit tests、11 integration tests 通過；strict Clippy 通過。</td></tr>
+<tr><td>Desktop Rust</td><td>364 unit passed／3 ignored；SQLite integration 1 passed／1 ignored；Clippy exact baseline 匹配 90 diagnostics。</td></tr>
+<tr><td>Release</td><td>版本、notes、Beta／updater contracts、diff whitespace 檢查通過。</td></tr>
+</tbody></table>
+<p>790e23d 當時未執行隔離 runtime E2E；後續使用者已同意，測試通過並於 c287b1c 加入 CI，見上方最新報告。browser／GUI 仍未驗收。</p>
+<h2>避免再次發生的研究</h2>
+<p><a href="../research/herdr-runtime-upgrade-prevention-2026-09-09.md">完整研究與主要來源</a>固定查核官方 HERDR v0.9.0 source。短期措施如上；中期建議把 managed／installed／explicit 來源政策與 binary／helper 解析路徑分開，保存 artifact identity、驗證時間與上一個有效版本，再評估穩定 endpoint generation。</p>
+<p>endpoint_compatible 不能替代 private protocol compatible；restart_needed=false 不代表舊 private connector 可用，server_binary_stale 也只表示版本不同。這些語意已在研究中分開說明，中期設定與 transport 遷移尚未實作。</p>
+<h2>Windows 下一步驗收</h2>
+<p>本次 CI 的 Linux x86-64 payload 已下載核對：HERDR SHA-256 與官方 0.9.0 一致；helper SHA-256 為 <code>566088d740ae5e31d61c5ee7dfdcd773bfd19ee53a5ebe5df6fc19b3d60f2385</code>，部署 manifest SHA-256 為 <code>b4ffca7912cf2b01f1214ae817eeb8f8882a0d16a4b165bc37776d2b3de22bad</code>。manifest 的外層 protocol 1 是 helper 部署契約，內層 herdr.protocol 22 才是 HERDR private protocol。</p>
+<ol>
+<li>使用這次新 CI 產出的 installer，記錄 SHA-256。</li>
+<li>從「新增資料夾」選 Ubuntu-24.04，確認使用 Yuzora 隨附 HERDR，按「更新主機工具」。</li>
+<li>確認所選 binary 已更新為 0.9.0／protocol 22，server 仍為原本的 0.9.0，socket／Session／UID 一致。</li>
+<li>驗證原有 Agents／Terminal 程序存續、snapshot、events、observe／control、輸入／縮放與重連。</li>
+<li>回報結果與限制；候選驗收通過並另行授權 merge 後，才可設定 accepted tree 與進入自動發布。</li>
+</ol>
+<h2>更新後的唯讀證據（PowerShell）</h2>
+<p>installer 請填實際安裝的檔案；HERDR 路徑請從更新後的 Yuzora 主機設定複製，勿沿用舊變數或從 PATH 另找 binary。以下不會停止 server。</p>
+<pre><code>$Installer = Read-Host '實際安裝的 MSI 或 EXE 完整路徑'
+Get-FileHash -LiteralPath $Installer -Algorithm SHA256
+$YuzoraHerdr = Read-Host '更新後 Yuzora 選用的 HERDR 完整 Linux 路徑'
+wsl.exe --distribution Ubuntu-24.04 --exec id -u
+wsl.exe --distribution Ubuntu-24.04 --exec sha256sum -- $YuzoraHerdr
+wsl.exe --distribution Ubuntu-24.04 --exec env HERDR_SESSION=default $YuzoraHerdr status --json
+wsl.exe --distribution Ubuntu-24.04 --exec env HERDR_SESSION=default $YuzoraHerdr session list --json</code></pre>
+<p>預期 linux-x86_64 binary SHA-256 為 <code>4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f</code>；client 與 server 均為 0.9.0／protocol 22、<code>compatible:true</code>，UID 為 1000，原 default Session 及 <code>/home/yuuzu/.config/herdr/herdr.sock</code> 保留。status／session list 無法單獨證明原 Agents 程序存續，還須實際核對原工作和終端操作。</p>
+</main></body></html>

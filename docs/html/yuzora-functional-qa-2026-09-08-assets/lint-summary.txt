@@ -1,0 +1,5 @@
+Command result: ESLint
+Status: PASS_WITH_WARNINGS
+0 errors / 56 warnings；exit 0
+$ eslint .
+✖ 56 problems (0 errors, 56 warnings)

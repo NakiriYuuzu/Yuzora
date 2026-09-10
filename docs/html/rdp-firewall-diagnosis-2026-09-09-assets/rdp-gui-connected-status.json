@@ -1,0 +1,100 @@
+{
+  "time": "2026-09-09T23:05:50.0991953+08:00",
+  "sessions": " SESSIONNAME               USERNAME                 ID  STATE   TYPE        DEVICE \r\n>services                                            0  Disc                        \r\n rdp-tcp#0                 Yuuzu                     1  Active                      \r\n console                                             2  Conn                        \r\n rdp-tcp                                         65536  Listen                      \r\n",
+  "processes": [
+    {
+      "Id": 25576,
+      "ProcessName": "herdr",
+      "SessionId": 1,
+      "StartTime": "2026-09-09T23:05:36.6743916+08:00"
+    },
+    {
+      "Id": 2876,
+      "ProcessName": "yuzora",
+      "SessionId": 1,
+      "StartTime": "2026-09-09T23:05:36.3206117+08:00"
+    }
+  ],
+  "herdrStatus": {
+    "client": {
+      "version": "0.9.0",
+      "channel": "stable",
+      "protocol": 22,
+      "endpoint_protocol_generation": 1,
+      "endpoint_capabilities": [
+        "surface_interest",
+        "presentation_effects_fence",
+        "health_check"
+      ],
+      "binary": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "session": null
+    },
+    "server": {
+      "status": "running",
+      "running": true,
+      "version": "0.9.0",
+      "protocol": 22,
+      "capabilities": {
+        "live_handoff": false,
+        "detached_server_daemon": true,
+        "endpoint_protocol_generation": 1,
+        "surface_interest": true,
+        "health_check": true
+      },
+      "compatible": true,
+      "endpoint_compatible": true,
+      "socket": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\herdr.sock",
+      "session": null,
+      "restart_needed": false,
+      "server_binary_stale": false
+    },
+    "update": {
+      "restart_needed": false,
+      "server_binary_stale": false
+    }
+  },
+  "herdrSessions": {
+    "sessions": [
+      {
+        "default": true,
+        "name": "default",
+        "running": true,
+        "session_dir": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr",
+        "socket_path": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\herdr.sock"
+      },
+      {
+        "default": false,
+        "name": "yuzora-p8-owner",
+        "running": false,
+        "session_dir": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\sessions\\yuzora-p8-owner",
+        "socket_path": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\sessions\\yuzora-p8-owner\\herdr.sock"
+      }
+    ]
+  },
+  "rdp": {
+    "Name": "TermService",
+    "State": "Running",
+    "ProcessId": 7968,
+    "PathName": "C:\\WINDOWS\\System32\\svchost.exe -k TerminalService",
+    "StartName": "NT Authority\\NetworkService"
+  },
+  "listeners": [
+    {
+      "LocalAddress": "::",
+      "LocalPort": 3389,
+      "OwningProcess": 7968
+    },
+    {
+      "LocalAddress": "0.0.0.0",
+      "LocalPort": 3389,
+      "OwningProcess": 7968
+    }
+  ],
+  "security": {
+    "UserAuthentication": 1,
+    "SecurityLayer": 2,
+    "PortNumber": 3389
+  },
+  "logSessions": "",
+  "task": null
+}

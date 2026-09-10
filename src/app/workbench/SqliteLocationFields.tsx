@@ -7,7 +7,7 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { listRemoteDir, registerRuntimeWorkspace } from "@/lib/remoteFiles"
+import { listRemoteDir, registerRuntimeWorkspace, releaseRemoteWorkspace, retainRemoteWorkspace } from "@/lib/remoteFiles"
 import { parseRemoteFilePath, remoteFilePath } from "@/lib/runtimeIdentity"
 import type { DbSqliteWorkspace, FileNode } from "@/lib/types"
 import { useHostStore } from "@/state/hostStore"
@@ -63,15 +63,25 @@ function RemoteSqliteBrowser({ workspace, onClose, onChoose }: {
   const generation = useRef(0)
   useEffect(() => {
     const current = ++generation.current
+    let disposed = false
+    let leasedUri: string | undefined
+    let release: (() => Promise<void>) | undefined
+    const close = async () => {
+      await release?.()
+      if (leasedUri) await releaseRemoteWorkspace(leasedUri)
+    }
     setBusy(true); setError(false)
     void (async () => {
       if (!connection) throw new Error("disconnected")
-      const uri = await registerRuntimeWorkspace(connection.owner, workspace.canonicalPath, () => generation.current === current && useHostStore.getState().hosts[workspace.hostId]?.connection === connection)
+      const uri = await registerRuntimeWorkspace(connection.owner, workspace.canonicalPath, () => useHostStore.getState().hosts[workspace.hostId]?.connection === connection)
+      leasedUri = uri
+      release = retainRemoteWorkspace(uri)
+      if (disposed) { await close(); return }
       const rows = await listRemoteDir(uri)
       if (generation.current !== current || useHostStore.getState().hosts[workspace.hostId]?.connection !== connection) return
       setCwd(uri); setRows(rows)
     })().catch(() => { if (generation.current === current) setError(true) }).finally(() => { if (generation.current === current) setBusy(false) })
-    return () => { generation.current++ }
+    return () => { disposed = true; generation.current++; void close() }
   }, [connection, workspace.hostId, workspace.canonicalPath])
   async function browse(uri: string) {
     const current = ++generation.current

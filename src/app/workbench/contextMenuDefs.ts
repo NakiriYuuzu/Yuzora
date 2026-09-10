@@ -1,4 +1,5 @@
 import i18n from "@/lib/i18n"
+import { systemRevealPath } from "@/lib/revealPath"
 import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import { getViewEntry } from "@/editor/viewRegistry"
 import {
@@ -428,7 +429,8 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       executor: legacy("cmCopyRel"),
     }),
     item<"file">("cmReveal", {
-      availability: (request) => currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
+      availability: (request) => currentWorkspace(request.workspacePath) && systemRevealPath(request.path)
+        ? available() : disabled(DISABLED_TARGET),
       danger: false,
       executor: legacy("cmReveal"),
     }),

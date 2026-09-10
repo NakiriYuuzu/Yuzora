@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HERDR 專案啟用與 Terminal 關閉修正</title>
+<style>body{margin:0;background:#f6f3ec;color:#242b31;font:16px/1.8 system-ui,-apple-system,"PingFang TC",sans-serif}main{max-width:850px;margin:48px auto;padding:28px;background:#fffdf9;border:1px solid #d9d6cf;border-radius:12px}h1{font-size:30px;line-height:1.3}h2{font-size:21px;margin-top:30px}code{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}a{color:#215c59}.meta{font-size:13px;color:#616b72}@media(max-width:900px){main{margin:20px 12px;padding:22px}}</style></head>
+<body><main>
+<p class="meta">Yuzora · 2026-09-09 · BUGFIX</p>
+<h1>外部專案直接開啟 terminals，<br>分頁「×」真正關閉 HERDR tab</h1>
+<h2>外部 HERDR Space／Agent</h2>
+<p>原本 activateSpace／activateTab 在缺少檔案根目錄時要求選資料夾，導致使用者無法直接進入外部已建立的 terminal。現在缺少檔案根目錄仍可聚焦 HERDR Space／tab，顯示既有 Terminal Sessions。Space 選取會呈現該 Space 的可用 tabs，並維持其 active tab。</p>
+<p>沒有根目錄時保留目前 Files 工作區，不從 Agent cwd 猜測路徑，也不彈出資料夾選擇。已有根目錄的專案仍走既有工作區切換與未儲存檔案保護。背景自動恢復保留前次修正，不替使用者主動選取新的資料夾。</p>
+<h2>終端分頁「×」</h2>
+<p>原先只移除畫面與解除 connector，HERDR tab 仍存在。現在先驗證對應 session 與 tab.close 能力，使用與右鍵關閉相同的冪等關閉 API，成功後才釋放 connector、移除畫面並刷新 topology／snapshot。</p>
+<p>重複點擊不會重複送出。精確符合目標 tab 的 already-closed 回應視為成功；其他錯誤保留分頁與 connector 並顯示訊息。操作只針對點擊分頁的 HERDR tab，不關閉整個 Space 或 server。App 退出仍僅釋放自己的連線。</p>
+<h2>驗證</h2>
+<p>修正前新增測試可重現 6 項失敗；修正後 herdrStore 與 TabBar 的 72 tests 全數通過。涵蓋無檔案工作區、已有檔案工作區、外部 Agent、Space 多個 tabs、第二個 terminal 的 runtime-first 關閉、already-closed、連點與關閉失敗。</p>
+<p id="full-tests">完整前端回歸測試：186 檔、2,221 tests 全數通過。</p>
+<p>Typecheck、production build、修改檔案 ESLint 與 git diff --check 通過。Build 保留既有大型 bundle／dynamic import 警告。未執行 GUI、真實 terminal 程序終止或跨平台 E2E；開發伺服器已確認提供新版關閉邏輯。</p>
+<h2>程式與決策</h2>
+<p><a href="../../src/state/herdrStore.ts">herdrStore</a> · <a href="../../src/workbench/TabBar.tsx">TabBar</a> · <a href="../../src/state/herdrStore.test.ts">啟用回歸測試</a> · <a href="../../src/workbench/TabBar.test.tsx">關閉回歸測試</a> · <a href="../../.yuuzu/adr/0004-herdr-terminals-browser-only.html">ADR-0004 補充</a></p>
+<p class="meta">保留既有工作區修改；未 staging／commit／push。</p>
+</main></body></html>

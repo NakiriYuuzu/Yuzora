@@ -1,0 +1,96 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 button (expanded) 收合左側導覽, Secondary Actions: Collapse
+			4 button (collapsed) 展開右側工作工具, Secondary Actions: Expand
+			5 container 側邊導覽
+				6 text Yuzora
+				7 container 共用工具
+					8 button 搜尋檔案與命令
+					9 toggle button 工作面, Value: on
+					10 toggle button 資料庫, Value: off
+					11 button SSH / SFTP
+				12 text Spaces 與 Agents
+				13 pop up button Herdr Session：All, Help: 開啟 Session 或資料夾
+				14 text All 僅彙整已載入的 runtime namespace
+				15 button 收合所有 Space 資料夾
+				16 container
+					17 text 需要注意  · 1
+				18 button π - .pi · 回覆待查看
+				19 container Spaces 與 Agents · All
+					20 text default
+					21 text 已載入快照
+					22 button (expanded) .pi · 1 個 Agents · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse
+					23 button 編輯 Space：.pi · default
+					24 button (expanded) main · /Users/yuuzu/.pi · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse
+					25 button π - .pi · pi · 回覆待查看 · main · default, Help: 開啟所屬 pane；不可用時顯示唯讀詳情
+					26 button 檢視 Agent：π - .pi
+					27 button (expanded) yuzora · 0 個 Agents · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse
+					28 button 編輯 Space：yuzora · default
+					29 button (expanded) release/v0.0.9-beta.3 · /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse
+					30 button (expanded) privacy-filter · 0 個 Agents · default, Secondary Actions: Collapse
+					31 button 編輯 Space：privacy-filter · default
+					32 button (expanded) privacy-filter · null · default, Secondary Actions: Collapse
+					33 button (expanded) Documents · 0 個 Agents · default, Help: /Users/yuuzu/Documents, Secondary Actions: Collapse
+					34 button 編輯 Space：Documents · default
+					35 button (expanded) Documents · /Users/yuuzu/Documents · default, Help: /Users/yuuzu/Documents, Secondary Actions: Collapse
+					36 button (expanded) QA Alpha · 0 個 Agents · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse
+					37 button 編輯 Space：QA Alpha · default
+					38 button (selected, expanded) QA-A · /private/tmp/yuzora-functional-qa-20260908/QA-A · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse
+				39 container
+					40 text yuzora-provider-r7 :  資料尚未更新 · 不代表即時狀態
+				41 text 數量為 0 的 worktree 尚無 Agent。
+				42 button 設定
+			43 splitter 調整左側 Spaces 與 Agents 寬度, Value: 288
+			44 button QA-Second
+			45 text 本地
+			46 button 關閉 QA-Second
+			47 button QA-A
+			48 text 本地
+			49 button 關閉 QA-A
+			50 button sample.ts, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/sample.ts
+			51 text 本地
+			52 button 關閉 sample.ts
+			53 button renamed 中文.txt, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/nested/renamed 中文.txt
+			54 text 本地
+			55 button 關閉 renamed 中文.txt
+			56 button README.md, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/README.md
+			57 text 本地
+			58 button 關閉 README.md
+			59 pop up button 新增分頁
+			60 button 向右分割, Help: 分割編輯器
+			61 text QA-Second
+			62 text 控制者
+			63 text entry area (settable) Terminal input
+			64 image 終端機
+			65 tab group (selectable) 終端機分頁
+			66 pop up button (disabled) 所有終端機
+			67 button (disabled) 向右分割
+			68 container 新增終端機
+				69 button 新增終端機
+				70 pop up button 使用 Profile 新增終端機
+			71 button (collapsed) 展開終端機, Secondary Actions: Expand
+			72 container 狀態列
+				73 text Yuzora
+				74 button (disabled) main
+				75 pop up button 11% · 508MB, Help: App 本體與受管理子行程總和 — App 本體 5% · 154MB ／ 受管理子行程 8 個（WebView renderer/GPU 0 個 0MB、受管理工具 8 個 354MB）
+				76 text 未開啟檔案
+			77 heading 命令面板, Value: 2
+				78 text 命令面板
+			79 text 搜尋檔案、執行命令…
+			80 heading 符號選擇器, Value: 2
+				81 text 符號選擇器
+			82 text 跳至符號…
+	83 close button
+	84 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	85 minimize button
+86 menu bar
+	87 Yuzora Current QA
+	88 File
+	89 Edit
+	90 View
+	91 Window
+	92 Help
+
+The focused UI element is 63 text entry area (settable) Terminal input

@@ -548,22 +548,23 @@ impl WorkspaceTrustStore {
     }
 
     fn issue_challenge(&self, kind: ChallengeKind, identity: WorkspaceIdentity) -> String {
-        let id = random_token();
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        inner.challenges.retain(|_, challenge| {
-            if challenge.expired() {
-                return false;
-            }
-            let same_identity = challenge.identity == identity;
-            let same_family = matches!(
-                (&challenge.kind, &kind),
-                (ChallengeKind::GrantWorkspace, ChallengeKind::GrantWorkspace)
-            );
-            !(same_identity && same_family)
-        });
+        inner.challenges.retain(|_, challenge| !challenge.expired());
+        // Status and Git probes can overlap the confirmation dialog. Reuse
+        // its still-valid token without extending its original lifetime.
+        if let Some(challenge) = inner.challenges.values().find(|challenge| {
+            challenge.identity == identity
+                && matches!(
+                    (&challenge.kind, &kind),
+                    (ChallengeKind::GrantWorkspace, ChallengeKind::GrantWorkspace)
+                )
+        }) {
+            return challenge.id.clone();
+        }
+        let id = random_token();
         inner.challenges.insert(
             id.clone(),
             Challenge {
@@ -906,6 +907,18 @@ fn rfc3339_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_status_and_git_checks_preserve_the_displayed_grant_challenge() {
+        let (tmp, store) = temp_store();
+        let workspace = make_workspace(&tmp, "workspace");
+        let path = workspace.to_str().unwrap();
+        let displayed = store.status(path).unwrap().challenge_id.unwrap();
+        let refreshed = store.status(path).unwrap().challenge_id.unwrap();
+        assert!(store.require_trusted(path).is_err());
+        assert_eq!(store.grant(&displayed).unwrap().state, "trusted");
+        assert!(store.grant(&refreshed).is_err(), "grants remain single-use");
+    }
 
     fn temp_store() -> (tempfile::TempDir, WorkspaceTrustStore) {
         let tmp = tempfile::tempdir().unwrap();

@@ -16,7 +16,14 @@ function localReferenceExists(reference, baseFile = "site/index.html") {
   if (!reference || reference.startsWith("#") || /^(?:https?:|data:|mailto:)/.test(reference)) {
     return true
   }
-  return existsSync(resolve(root, dirname(baseFile), reference))
+  const [file, fragment] = reference.split("#")
+  const path = resolve(root, dirname(baseFile), file)
+  if (!existsSync(path)) return false
+  if (fragment && file.endsWith(".svg")) {
+    const svg = new DOMParser().parseFromString(readFileSync(path, "utf8"), "image/svg+xml")
+    return svg.getElementById(fragment) !== null
+  }
+  return true
 }
 
 describe("GitHub Pages product page", () => {
@@ -53,14 +60,24 @@ describe("GitHub Pages product page", () => {
     expect(page.querySelector("#theme-toggle[data-i18n-aria-label='nav.theme']")).not.toBeNull()
   })
 
-  it("uses the current desktop application logo for favicon and branding", () => {
-    expect(page.querySelector('link[rel="icon"][href="assets/yuzora-icon.png"]')).not.toBeNull()
-    expect(page.querySelectorAll('img[src="assets/yuzora-icon.png"]')).toHaveLength(2)
-    expect(
-      readFileSync(resolve(root, "site/assets/yuzora-icon.png")).equals(
-        readFileSync(resolve(root, "src-tauri/icons/128x128@2x.png")),
-      ),
-    ).toBe(true)
+  it("uses the selected vector identity for favicon and site branding", () => {
+    expect(page.querySelector('link[rel="icon"][href="assets/brand/yuzora-mark.svg"]')).not.toBeNull()
+    expect(page.querySelectorAll('.brand-nav-mark use[href="#yuzora-mark"]')).toHaveLength(2)
+    expect(page.getElementById("brand")).not.toBeNull()
+  })
+
+  it("offers self-contained symbol and outlined-wordmark SVG downloads", () => {
+    for (const file of ["yuzora-mark.svg", "yuzora-lockup.svg"]) {
+      const link = page.querySelector(`a[download="${file}"]`)
+      expect(link, file).not.toBeNull()
+      const svg = new DOMParser().parseFromString(
+        readFileSync(resolve(root, "site", link.getAttribute("href")), "utf8"), "image/svg+xml",
+      )
+      expect(svg.querySelector("parsererror")).toBeNull()
+      expect(svg.querySelectorAll("path").length).toBeGreaterThan(0)
+      expect(svg.querySelector("text, image, foreignObject, script, use")).toBeNull()
+      expect(svg.documentElement.getAttribute("viewBox")).toBeTruthy()
+    }
   })
 
   it("provides both localized dictionary entries for every markup key", () => {

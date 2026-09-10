@@ -1,0 +1,98 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 container Settings
+				4 container
+					5 heading Settings, Value: 2
+						6 text Settings
+					7 text Make your workspace feel like yours.
+					8 text field (settable) Search settings, Placeholder: Search settings, font, shell…
+					9 button Close settings
+				10 container
+					11 text Yuzora Workspace preferences
+					12 tab group (selectable) Settings categories
+						13 text Personalization
+						14 tab (selectable) Appearance
+						15 tab (selectable) Editor
+						16 text Development
+						17 tab (selectable) Terminal
+						18 tab (selectable) Herdr
+						19 tab (selectable) LSP
+						20 tab (selectable) Git
+						21 tab (selectable) Preview
+						22 text Application
+						23 tab (selectable) Safety
+						24 tab (selected) Logs
+						25 tab (selectable) About & Updates
+					26 text Yuzora Yuzora v0.0.9-beta.3
+				27 container Logs
+					28 text Application
+					29 heading Logs, Value: 3
+						30 text Logs
+					31 text Debug, user_action, audit, app_lifecycle events
+					32 container Filters
+						33 text Filters
+						34 text log_query filters
+						35 container kind filter
+							36 text kind
+							37 toggle button debug, Value: off
+							38 toggle button user_action, Value: off
+							39 toggle button audit, Value: off
+							40 toggle button app_lifecycle, Value: off
+						41 container level filter
+							42 text level
+							43 toggle button debug, Value: off
+							44 toggle button info, Value: off
+							45 toggle button warn, Value: off
+							46 toggle button error, Value: off
+						47 container
+							48 text source
+							49 pop up button source filter, Value: All sources
+						50 container
+							51 text Text search
+							52 search text field (settable) Text search, Value: QA-NO-SUCH-LOG-20260908, Placeholder: event or message
+								53 text (settable) QA-NO-SUCH-LOG-20260908
+								54 button cancel
+						55 container
+							56 text since
+							57 text field (settable) since, Placeholder: 2026-01-02T00:00:00+08:00
+						58 container
+							59 text until
+							60 text field (settable) until, Placeholder: 2026-01-03T00:00:00+08:00
+					61 container Actions
+						62 text Actions
+						63 text Copy / Export bundle / Open logs folder
+						64 button (disabled) Copy
+						65 button Export bundle
+						66 button Open logs folder
+						67 container
+							68 checkbox Verbose logging (debug), Value: 0
+							69 text Verbose logging (debug)
+						70 container
+							71 checkbox Sanitize, Value: 1
+							72 text Sanitize
+						73 container
+							74 text Kept: file names, host class, ports, timestamps, and hashes you can correlate within this bundle Removed: full paths, hosts and IPs, accounts, SSH fingerprints, and credentials
+						75 text Copied 50 rows (sanitized)
+					76 container Results
+						77 text Results
+						78 text 0 / 0 rows · 0 runs
+						79 container Log results
+							80 text No logs match the filters.
+				81 text Theme and font changes apply immediately. Service actions use their own controls.
+				82 splitter Resize dialog width, Help: Resize dialog. Reset dialog size to 80% of the app window., Value: 1440, Details: 1440px
+				83 splitter Resize dialog height, Help: Resize dialog. Reset dialog size to 80% of the app window., Value: 851, Details: 851px
+				84 splitter Resize dialog, Help: Resize dialog. Reset dialog size to 80% of the app window., Value: 1440, Details: 1440×851px
+	85 close button
+	86 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	87 minimize button
+88 menu bar
+	89 Yuzora Current QA
+	90 File
+	91 Edit
+	92 View
+	93 Window
+	94 Help
+
+The focused UI element is 52 search text field (settable) Text search, Value: QA-NO-SUCH-LOG-20260908, Placeholder: event or message

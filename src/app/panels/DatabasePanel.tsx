@@ -326,7 +326,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
           <div
             role="group"
             aria-label={t("databasePanel.activeProfileAriaLabel", { name: activeProfileName })}
-            className="flex h-[32px] shrink-0 items-center gap-[8px] border-b border-(--line-1) px-[10px]"
+            className="database-profile-header flex h-[32px] shrink-0 items-center gap-[8px] border-b border-(--line-1) px-[10px]"
           >
             <span className="shrink-0 text-[10px] font-semibold tracking-[0.06em] text-(--ink-4) uppercase">
               {t("databasePanel.activeProfile")}

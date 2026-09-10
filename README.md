@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.9--beta.3-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.9-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -122,11 +122,13 @@ The Windows `.msi` installer and past versions live on [GitHub Releases](https:/
 | Terminal | xterm.js + HERDR terminal pages |
 | Toolchain | Bun · Vitest · Cargo |
 
-Yuzora prefers a PATH-installed HERDR binary and automatically falls back to the pinned Yuzora-managed binary bundled with macOS and Windows builds. On startup it reuses an existing resolved HERDR server or launches a detached `herdr server` and waits for it to become ready. Closing pages or the app releases only Yuzora's connector children; it does not terminate the HERDR server, panes or agents.
+Yuzora bundles HERDR 0.9.0. In Settings → HERDR, each host can use a Yuzora-managed, installed or custom binary with compatibility checks and diagnostics. Windows uses native HERDR by default; WSL is opt-in, and each workspace runs on its selected local, WSL or SSH host. Pure SFTP connections do not require a runtime. Closing Yuzora releases its own helpers and connectors while preserving HERDR servers and agents. Existing host paths are retained on upgrade; update the selected source explicitly in settings.
 
-### Experimental Windows WSL Pi plugin
+Agents are started manually in HERDR terminals. The old WSL Pi plugin, separate local/SSH terminals and LSP settings have been removed. The browser opens websites and services you start in a terminal.
 
-Windows `0.0.9-beta.3` installers bundle the Pi-only `Yuzora WSL Agents` plugin under the app resource directory. It remains off by default: users explicitly enable **Settings → Herdr → WSL Pi integration**, which ownership-safely links the bundled Plugin and installs its adapter in the WSL distros configured by Herdr. Turning it off uninstalls owned adapter files before unlinking. Only plugin-managed panes are supported. Yuzora consumes HERDR snapshot/events for live identity and state; it does not parse terminal output, infer Linux processes, project native Pi session ids, or provide resume/control guarantees. HERDR `v0.8.2` is Stable, while its Windows plugin surface and this integration remain Experimental. Existing running protocol-19 servers must be stopped and restarted explicitly; Yuzora never kills them during upgrade. See [`herdr-plugins/yuzora-wsl-agents/README.md`](herdr-plugins/yuzora-wsl-agents/README.md).
+### Interactive web demo
+
+The [website](https://github.yuuzu.net/Yuzora/) includes an [interactive demo](https://github.yuuzu.net/Yuzora/demo/) with sample terminals, files, Git diffs and databases. It uses in-memory data and does not connect to your computer or remote hosts. Build it with `bun run demo:build`; GitHub Actions deploys the website and demo together to Pages.
 
 ## Development
 

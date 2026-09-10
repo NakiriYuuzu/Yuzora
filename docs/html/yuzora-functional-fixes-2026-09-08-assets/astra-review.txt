@@ -1,0 +1,12 @@
+Astra xhigh final review: GO
+Source: /root/astra_review final agent response. This is a recorded review summary, not a test log.
+
+No remaining code-review findings.
+Git: registry/watchers/authority cleanup and stale generation tests passed.
+Preview: native URL/history snapshot, pending guards, lifecycle and cross-mode history reviewed; 82 focused tests passed.
+Herdr: input focus, zoom, Agent entry, Inspector draft and branch-label fallback reviewed.
+LSP: archive/executable digests separated; six official artifacts independently verified; ZIP generator uses declared fflate dependency; clean PATH passed.
+
+Linux/Windows: API source review only, no platform compilation or GUI proof.
+Remote/static iframe inner-navigation synchronization remains limited.
+QA26-001: process-start starvation demonstrated under stress; original first failure not conclusively explained; not a connector bug declared fixed.

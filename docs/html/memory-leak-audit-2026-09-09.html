@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora 記憶體與資源洩漏掃描 · 2026-09-09</title>
+<style>
+:root{color-scheme:light;--ink:#19232e;--muted:#566674;--line:#d9e0e5;--accent:#225a71;--paper:#f7f9fa}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--paper);font:16px/1.75 system-ui,"PingFang TC",sans-serif}main{max-width:1050px;margin:0 auto;padding:42px 24px 70px}h1{font-size:34px;line-height:1.3;margin:8px 0 20px}h2{margin-top:40px;font-size:24px}h3{font-size:19px;margin:0 0 12px}p{margin:12px 0}a{color:var(--accent);overflow-wrap:anywhere}code,pre{font-family:ui-monospace,SFMono-Regular,monospace;font-size:13px}code{overflow-wrap:anywhere}pre{padding:16px;background:#edf2f5;white-space:pre-wrap;overflow-wrap:anywhere}article{background:white;padding:24px;border:1px solid var(--line);border-radius:10px;margin:18px 0}.meta,.muted{color:var(--muted);font-size:14px}.lead{border-left:4px solid var(--accent);padding-left:18px;font-size:18px}.tag{display:inline-block;border:1px solid var(--line);padding:1px 8px;border-radius:5px;font-size:12px;margin-right:6px}.p1{color:#993e22;background:#fff2ed}.p2{color:#725f1b;background:#fff9dd}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{color:var(--accent)}ul{padding-left:24px}.source{font-size:13px}.note{background:#edf4f7;padding:15px;border-radius:7px}@media(max-width:650px){main{padding:24px 16px}h1{font-size:28px}article{padding:18px}th,td{padding:8px;font-size:12px}}@media print{body{background:white}main{max-width:none;padding:0}article{break-inside:avoid}a{color:inherit}}
+</style>
+</head>
+<body><main>
+<p class="meta">YUZORA · 2026-09-09 · HEAD eca2fca + 當時工作目錄內容</p>
+<h1>記憶體與資源洩漏掃描</h1>
+<p class="lead"><strong>確認 4 類回收缺口，另發現 1 項 PostgreSQL 記憶體成長風險。</strong>最優先是遠端 HERDR 的 Channel callback：重複建立與關閉後，callback 數量持續上升。</p>
+<p>這次檢查涵蓋前端、Tauri Rust、host helper、官網與 Remotion 原始碼的資源生命週期模式，並追查高風險路徑。新增的檔案只有本報告與驗證資料；產品程式碼未修改。</p>
+<p class="note">「確認」指實際專案模組在模擬 I/O 下可重現保留引用或漏掉釋放。沒有執行瀏覽器自動化、原生 heap／RSS 壓測或真實 PostgreSQL 大結果測試，因此不把測試計數換算為整個 App 的實際記憶體用量，也不宣稱已排除所有平台及第三方套件的洩漏。</p>
+
+<h2>結果一覽</h2>
+<table>
+<thead><tr><th>項目</th><th>優先級</th><th>證據</th><th>保留範圍</th></tr></thead>
+<tbody>
+<tr><td><a href="#m1">M1 遠端 Channel callback 未回收</a></td><td>P1</td><td>200 次開關 → 200 個 callback；原生串流為 0</td><td>renderer 存活期間</td></tr>
+<tr><td><a href="#m2">M2 文件快取回收缺口</a></td><td>P2</td><td>關閉 25 次分割區 → 0 分頁、25 份仍可命中的快取；另重現讀取完成晚於關閉</td><td>同一工作區期間，直到 clearAll／再次 drop</td></tr>
+<tr><td><a href="#m3">M3 斷線後舊串流登錄未刪除</a></td><td>P2</td><td>25 次斷線 → 25 筆舊 ID 仍能查到；release 被 stale guard 擋住</td><td>renderer 存活期間</td></tr>
+<tr><td><a href="#m4">M4 遠端工作區 capability 缺少退場</a></td><td>P2</td><td>128 個不同路徑、0 次 workspaceClose；模擬 host 上限後第 129 個失敗</td><td>host 連線期間；後端有 128 個上限</td></tr>
+<tr><td><a href="#r1">R1 PostgreSQL 無界預讀佇列</a></td><td>P1 風險</td><td>直接確認 unbounded row queue；尚未做真實 DB 壓測</td><td>查詢 helper；設有約 512 MiB 記憶體保護</td></tr>
+</tbody></table>
+
+<h2>已確認的回收缺口</h2>
+<article id="m1">
+<h3><span class="tag p1">P1</span>M1：遠端 HERDR 多建立一層無人回收的 Channel</h3>
+<p><code>herdrTerminalOpen</code> 與 <code>herdrEventsSubscribe</code> 先建立 Tauri <code>Channel</code>。遠端路由進入 <code>openStream</code> 後，又建立一個 Channel 交給 <code>host_stream_open</code>；原本的 Channel 僅透過 <code>output.onmessage(...)</code> 在 JavaScript 內轉送事件。</p>
+<p>已安裝的 Tauri API 在 Channel 建構時呼叫 <code>transformCallback</code>，由全域 callback 表強引用該物件，收到 Rust 的 <code>end</code> 訊息才 <code>unregisterCallback</code>。第一層 Channel 沒有送到 Rust，無法收到這個訊號；程式亦未釋放它。GC 因此不能自動回收該 callback 與其可達閉包。終端機路徑的閉包會連到事件處理與 terminal effect 環境。</p>
+<pre>terminal 開啟／釋放 100 次 → callbacks = 100
+再做 events 訂閱／釋放 100 次 → callbacks = 200
+nativeStreams = 0</pre>
+<p>驗證使用實際 <code>Channel</code> 與實際 HERDR wrapper/provider；模擬 Rust 正確回傳 end，確保遺留的不是測試未關閉的 native Channel。正常結束的遠端串流也會觸發，並非只發生於錯誤路徑。</p>
+<p><strong>建議：</strong>將 Channel 的建立集中於實際跨 IPC 的邊界；provider 之間以一般事件函式傳遞，使每個原生 Channel 都有明確 owner，並涵蓋成功、開啟失敗、斷線與取消。</p>
+<p class="source">來源：<a href="../../src/lib/herdrIpc.ts">src/lib/herdrIpc.ts:248、352</a>；<a href="../../src/lib/herdrProvider.ts">src/lib/herdrProvider.ts:100–130</a>；<a href="../../node_modules/@tauri-apps/api/core.js">@tauri-apps/api/core.js:73–123</a>。</p>
+</article>
+
+<article id="m2">
+<h3><span class="tag p2">P2</span>M2：關閉分割區及讀取競態會留下完整文件</h3>
+<p><strong>路徑 A：關閉右側編輯區。</strong><code>EditorArea</code> 的按鈕直接呼叫 <code>closeSplit</code>。該動作移除右側 tabs，但沒有執行一般分頁關閉流程中的 <code>dropDocument</code>。EditorPane 卸載會 <code>updateBuffer</code>、unregister view 及 destroy CodeMirror，文件字串仍由全域 registry 持有。</p>
+<pre>重複：splitRight → openTabInGroup → getDocument → closeSplit
+25 次後：openTabs = 0
+重新探查 25 個已關閉的 path：新增檔案讀取 = 0，全部命中舊快取</pre>
+<p><strong>路徑 B：在檔案讀取完成前關閉分頁。</strong><code>getDocument</code> 只檢查 workspace epoch 與 path identity；<code>dropDocument</code> 只刪當下快取，沒有使 in-flight read 失效。讀取稍後完成，仍會 <code>registry.set</code>。EditorPane 的 disposed flag 可以阻止建立畫面，卻不能阻止 registry 插入內容。局部測試重現 drop → late resolve → get 命中同一份快取。</p>
+<p>兩條路徑保留的是內容，不只是小型 path 記錄；檔案越大，影響越明顯。切換工作區時 <code>clearAll</code> 會釋放文件內容，因此屬於工作區生命週期內可累積的保留。</p>
+<p><strong>建議：</strong>以仍然開啟的文件 owner 統一清理 registry；最後一個 owner 關閉時同步使該文件的讀取 token 失效。分割區關閉需要接入正常的儲存／捨棄與文件釋放流程。</p>
+<p class="source">來源：<a href="../../src/state/workspaceStore.ts">src/state/workspaceStore.ts:1132–1143</a>；<a href="../../src/workbench/EditorArea.tsx">src/workbench/EditorArea.tsx:79</a>；<a href="../../src/editor/EditorPane.tsx">src/editor/EditorPane.tsx:148–158</a>；<a href="../../src/editor/documentRegistry.ts">src/editor/documentRegistry.ts:17–35</a>。</p>
+</article>
+
+<article id="m3">
+<h3><span class="tag p2">P2</span>M3：遠端斷線的清理被 stale guard 提前阻擋</h3>
+<p><code>unregisterRuntimeHost</code> 只移除 hosts。之後 native 串流送來 closed 時，事件處理在檢查 hosts identity 失敗後直接 return，沒有刪掉 streams entry。呼叫 <code>herdrEventsRelease</code>／<code>herdrTerminalRelease</code> 又會先執行 <code>ensureCurrent(stream.host)</code>，因此在 <code>streams.delete</code> 前拋出 <code>StaleRuntimeResponse</code>。</p>
+<p>斷線、重連與再次開啟會留下不同 generation 的 entries，各自強引用舊 RuntimeHost、owner 與 session inventory。Rust 的 disconnect 本身會清理原生 streams/tunnels；本項發現位於前端登錄表。</p>
+<pre>25 個 generation：open → unregister host → native closed/end → release
+25 個舊 ID 的 release 都拋 StaleRuntimeResponse
+對應 release 沒有執行 native close；如果 entry 已刪除，本來應直接成功返回</pre>
+<p><strong>建議：</strong>斷線時先清除該 owner 的前端登錄；closed 事件的 bookkeeping 應能處理過期 owner。release 在 host 過期時也必須能完成本地移除，輸入與其他操作仍保留 identity gate。</p>
+<p class="source">來源：<a href="../../src/lib/herdrProvider.ts">src/lib/herdrProvider.ts:45–47、107–114、163–173</a>；<a href="../../src/state/hostStore.ts">src/state/hostStore.ts:close</a>；<a href="../../src-tauri/src/host_service.rs">src-tauri/src/host_service.rs:465–482</a>。</p>
+</article>
+
+<article id="m4">
+<h3><span class="tag p2">P2</span>M4：舊遠端工作區持續占用 capability 與目錄 handle</h3>
+<p><code>registerRuntimeWorkspace</code> 會向 host 開啟 capability，並把它記在模組層的 workspaces Map。一般 workspace 切換只清文件快取與更新 workspace store，沒有釋放舊 capability。現有 <code>workspaceClose</code> 主要處理開啟失效與重複 canonical 路徑，沒有正常退場的引用計數／淘汰路徑。</p>
+<p>host 的 <code>WorkspaceFiles</code> 為每個 capability 保留 <code>PinnedDir</code>，並在 128 個 entries 時拒絕新的 open。不同路徑持續加入會消耗這個有限資源；即使前端現在只使用一個 workspace，舊紀錄仍在。runtime folder／SQLite 瀏覽器也會走此註冊邊界。</p>
+<pre>實際前端註冊與 workspace store，模擬 host 的真實上限規則：
+不同路徑註冊 128 次 → retained capabilities = 128，workspaceClose = 0
+第 129 個 → too-many-workspaces</pre>
+<p>這是有上限的資源保留問題；測試中的 host registry 是模擬值，128 上限與 PinnedDir ownership 另由 Rust 原始碼確認。未聲稱量測了真實的 128 個 OS handle。</p>
+<p><strong>建議：</strong>以文件／瀏覽器／工作區消費者持有的 lease 管理 capability；最後使用者離開時 workspaceClose，並移除無人使用的 revisions/backend closure。最近使用清單只需保存可重開的識別資料。</p>
+<p class="source">來源：<a href="../../src/lib/remoteFiles.ts">src/lib/remoteFiles.ts:14–16、138–159</a>；<a href="../../src/lib/workspaceActions.ts">src/lib/workspaceActions.ts:62–64</a>；<a href="../../src-tauri/host/src/files.rs">src-tauri/host/src/files.rs:59–74</a>。</p>
+</article>
+
+<h2>高風險記憶體成長路徑</h2>
+<article id="r1">
+<h3><span class="tag p1">P1 風險</span>R1：PostgreSQL helper 將資料流轉成無界 Row 佇列</h3>
+<p><code>helper_pg_query</code> 建立 <code>mpsc::unbounded_channel</code>，獨立 reader task 不斷 <code>try_next</code> 並同步 send 每列。consumer 需轉換欄位並寫 stdout；當桌面端取得第一頁後等待使用者翻頁，stdio 的 backpressure 只會擋住 consumer，reader 仍可把資料庫輸出搬進記憶體佇列。</p>
+<p>raw row 的大小檢查也在出佇列之後，這部分記憶體不在桌面 ResultSessionRegistry 的 64 MiB/session、256 MiB/process 預算中。大結果或慢速消費可能使 helper 記憶體上升，直到查詢讀完、取消，或被記憶體保護停止。</p>
+<p><strong>現有保護：</strong>helper 約 512 MiB 上限；Unix 為 RSS watchdog（有採樣間隔，部分平台另有 address-space fail-safe），Windows 為 Job Object process memory limit。這可限制故障範圍，無法取代預讀 backpressure。此項屬於可從 source 確認的無界緩衝設計，尚未量測真實 PostgreSQL 下的成長曲線，不能等同永久不可回收洩漏。</p>
+<p><strong>建議：</strong>改為小容量、有 await backpressure 的 row channel，讓取消能打斷 blocked send；必要時加 byte budget。驗收使用大結果查詢，停在第一頁並觀察 helper RSS 是否穩定，再確認取消與關閉能回收。</p>
+<p class="source">來源：<a href="../../src-tauri/host/src/db_service.rs">src-tauri/host/src/db_service.rs:3003–3011、3082、3115、5839</a>；<a href="../../src-tauri/host/src/db_query_worker.rs">src-tauri/host/src/db_query_worker.rs:44–45、236–306</a>。</p>
+</article>
+
+<h2>其他值得限制的長期保留</h2>
+<p>以下未列入上面的四類已重現缺口，避免將刻意快取、條件式風險與實際洩漏混為一談。</p>
+<ul>
+<li><a href="../../src/editor/documentRegistry.ts">documentRegistry.ts:74–78</a> 的 generations 明確跨 clearAll 保留；不同路徑逐步累積。可考慮 workspace epoch／開啟 token，避免永久保存歷史路徑。</li>
+<li><a href="../../src/state/herdrStore.ts">herdrStore.ts:219–224、372–396</a> 保留 runtimesBySession；session 清單更新沒有同步移除消失的 runtime。需在永久刪除與暫時斷線之間定義淘汰政策。</li>
+<li><a href="../../src/state/gitLogStore.ts">gitLogStore.ts:76、93、281</a> 的 author cache 刻意在 repo 切換時保留，缺少容量上限；commit detail cache 則已有 50 筆限制。可替 author cache 加 LRU。</li>
+<li><a href="../../src/state/updateStore.ts">updateStore.ts:46–55、145–151</a> 替換／reset Update 時沒有呼叫 <code>Update.close()</code>；Tauri Resource 不由 JS GC 回收，下載 bytes 也由 Rust resource table 持有。但目前 UI 在 available/downloaded 狀態不提供重複 check，reset 主要是測試入口，因此僅列成生命週期防護缺口，未宣稱一般點擊操作可持續重現。</li>
+</ul>
+
+<h2>掃描與驗證範圍</h2>
+<p>資源模式掃描涵蓋 <code>src/</code>、<code>src-tauri/src/</code>、<code>src-tauri/host/src/</code>、<code>site/</code>、<code>site-remotion/src/</code> 共 327 個非獨立測試 TS／TSX／JS／Rust 檔案候選；Rust inline tests 仍在檔案內。這是全範圍模式掃描加生命週期追查，不代表逐行驗證了每一個分支。</p>
+<table><thead><tr><th>區域</th><th>檢查內容與結果</th></tr></thead><tbody>
+<tr><td>React／編輯器／UI</td><td>事件、interval、timeout、observer、RAF、CodeMirror view、Blob URL、stores／Map。檢查到的 observer/listener 多有對應清理；SVG Object URL 有 revoke。文件 registry 缺口見 M2。</td></tr>
+<tr><td>Terminal／HERDR</td><td>output queue 有界、輸入有 256 KiB cap、unmount dispose 與晚到 open release；遠端 wrapper callback 與斷線 Map 缺口見 M1/M3。</td></tr>
+<tr><td>Host／SSH／SFTP／tunnel</td><td>stream queue、連線 generation、disconnect、Drop、helper 子程序、transfer 取消、JoinSet abort/drain。既有 streams/tunnels 有上限；workspace capability 缺口見 M4。</td></tr>
+<tr><td>資料庫</td><td>actor settlement、result cache、connection release、worker process containment。結果快取預算相關 15 個測試通過；PostgreSQL 原始 row queue 風險見 R1。</td></tr>
+<tr><td>Browser／Git／搜尋／log／perf</td><td>native WebView close、遠端 tunnel lease、watcher join、取消與快取上限。原生 WebView 的 allocator／平台程序未做 heap 驗證；不據此宣稱完全無洩漏。</td></tr>
+<tr><td>官網／Remotion／vendor</td><td>官網與影片程式納入事件／計時器模式掃描；靜態頁面的整頁生命周期 listener 不直接當成洩漏。vendored Tiberius 補查 raw ownership/leak 模式，未進行第三方 driver 全面動態稽核。</td></tr>
+</tbody></table>
+<p>codebase-memory 索引已更新，引用的主要檔案均確認 metadata_match。索引有兩份 CSS 的局部解析缺口；i18n、測試、vendor、文件、build output 等為設計上排除，已按用途做直接來源補查。node_modules 僅核對 Tauri Channel／Resource 的實際套件實作；外部 HERDR binary、OS WebView 與所有第三方依賴不在完整動態驗證範圍。</p>
+
+<h2>可重跑的驗證資料</h2>
+<p><a href="memory-leak-audit-2026-09-09-assets/probe.ts">局部 probe 原始碼</a> · <a href="memory-leak-audit-2026-09-09-assets/results.json">觀測結果 JSON</a> · <a href="memory-leak-audit-2026-09-09-assets/source-sha256.txt">主要來源 SHA-256</a></p>
+<pre>bun docs/html/memory-leak-audit-2026-09-09-assets/probe.ts channels
+bun docs/html/memory-leak-audit-2026-09-09-assets/probe.ts documents
+bun docs/html/memory-leak-audit-2026-09-09-assets/probe.ts workspaces</pre>
+<p>probe 的 assertion 刻意鎖定掃描當下觀測到的缺口；執行成功表示重現了保留現象，<strong>不是洩漏已修復</strong>。正式修復時應把它們改為驗證資源回到基線的回歸測試。</p>
+<pre>bun run test src/lib/herdrProvider.test.ts src/terminal/herdrTerminalTransport.test.ts src/terminal/terminalOutputQueue.test.ts src/editor/documentRegistry.test.ts src/editor/viewRegistry.test.ts src/lib/remoteFiles.watch.test.ts src/preview/useRemotePreviewUrl.test.tsx
+# 7 files / 76 tests passed
+
+cargo test --locked --manifest-path src-tauri/host/Cargo.toml --lib db_result_session::tests
+# 15 passed</pre>
+<p class="muted">優先處理 M1 與 R1，再補齊 M2/M3/M4 的 owner 退場規則。若要量測實際影響，下一步是在取得專案要求的 E2E 授權後，做真實開關分頁／斷線重連的 heap 比較，並獨立量測 PostgreSQL helper RSS。</p>
+</main></body></html>

@@ -17,6 +17,7 @@ export const useTerminalSettingsStore = create<TerminalSettingsStore>()((set, ge
   ...loadTerminalSettings(),
   update: (patch) => {
     const next: TerminalSettings = {
+      copyOnSelect: patch.copyOnSelect ?? get().copyOnSelect,
       imeAnchorMode: patch.imeAnchorMode ?? get().imeAnchorMode,
       fontSize: normalizeTerminalFontSize(patch.fontSize ?? get().fontSize),
       fontFamily: normalizeTerminalFontFamily(patch.fontFamily ?? get().fontFamily),

@@ -1,0 +1,39 @@
+{"id":"cli:agent:get","result":{"agent":{"agent":"pi","agent_status":"idle","cwd":"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr-plugins\\yuzora-wsl-agents\\","focused":true,"pane_id":"w1:p3","revision":2,"state_change_seq":6,"tab_id":"w1:t3","terminal_id":"term_65ac97a2af1f13","terminal_title":"π - yuzora-wsl-agents","terminal_title_stripped":"π - yuzora-wsl-agents","workspace_id":"w1"},"type":"agent_info"}}
+
+ pi v0.84.4
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+[Extensions]
+  yuzora-herdr-wsl.ts
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 0.85.1 is available. Run pi update
+ Changelog: https://pi.dev/changelog
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Reply with exactly WSL_VERIFY_20260906_OK. Do not use any tools or access any files.
+
+
+ WSL_VERIFY_20260906_OK
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ $ pwd
+
+ /home/yuuzu
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~
+↑1.1k ↓12 $0.006 (sub) 0.4%/272k (auto)                                                                                                                                                                                                                                       gpt-5.5 • medium
+{"id":"cli:api:snapshot","result":{"snapshot":{"agents":[{"agent":"pi","agent_status":"idle","cwd":"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr-plugins\\yuzora-wsl-agents\\","focused":false,"pane_id":"w1:p2","revision":1,"state_change_seq":3,"tab_id":"w1:t2","terminal_id":"term_65ac973c5f0b82","terminal_title":"π - yuuzu","terminal_title_stripped":"π - yuuzu","workspace_id":"w1"},{"agent":"pi","agent_status":"idle","cwd":"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr-plugins\\yuzora-wsl-agents\\","focused":true,"pane_id":"w1:p3","revision":2,"state_change_seq":6,"tab_id":"w1:t3","terminal_id":"term_65ac97a2af1f13","terminal_title":"π - yuzora-wsl-agents","terminal_title_stripped":"π - yuzora-wsl-agents","workspace_id":"w1"}],"focused_pane_id":"w1:p3","focused_tab_id":"w1:t3","focused_workspace_id":"w1","layouts":[{"area":{"height":39,"width":94,"x":26,"y":1},"focused_pane_id":"w1:p1","panes":[{"focused":true,"pane_id":"w1:p1","rect":{"height":39,"width":94,"x":26,"y":1}}],"splits":[],"tab_id":"w1:t1","workspace_id":"w1","zoomed":false},{"area":{"height":39,"width":94,"x":26,"y":1},"focused_pane_id":"w1:p2","panes":[{"focused":true,"pane_id":"w1:p2","rect":{"height":39,"width":94,"x":26,"y":1}}],"splits":[],"tab_id":"w1:t2","workspace_id":"w1","zoomed":false},{"area":{"height":39,"width":94,"x":26,"y":1},"focused_pane_id":"w1:p3","panes":[{"focused":true,"pane_id":"w1:p3","rect":{"height":39,"width":94,"x":26,"y":1}}],"splits":[],"tab_id":"w1:t3","workspace_id":"w1","zoomed":false}],"panes":[{"agent_status":"unknown","cwd":"\\\\wsl.localhost\\Ubuntu-26.04\\home\\yuuzu","focused":false,"pane_id":"w1:p1","revision":0,"scroll":{"max_offset_from_bottom":1,"offset_from_bottom":0,"viewport_rows":73},"tab_id":"w1:t1","terminal_id":"term_65ac973c54c7b1","workspace_id":"w1"},{"agent":"pi","agent_status":"idle","cwd":"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr-plugins\\yuzora-wsl-agents\\","focused":false,"label":"WSL Pi","pane_id":"w1:p2","revision":1,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":73},"tab_id":"w1:t2","terminal_id":"term_65ac973c5f0b82","terminal_title":"π - yuuzu","terminal_title_stripped":"π - yuuzu","workspace_id":"w1"},{"agent":"pi","agent_status":"idle","cwd":"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr-plugins\\yuzora-wsl-agents\\","focused":true,"label":"WSL","pane_id":"w1:p3","revision":2,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":73},"tab_id":"w1:t3","terminal_id":"term_65ac97a2af1f13","terminal_title":"π - yuzora-wsl-agents","terminal_title_stripped":"π - yuzora-wsl-agents","workspace_id":"w1"}],"protocol":20,"tabs":[{"agent_status":"unknown","focused":false,"label":"1","number":1,"pane_count":1,"tab_id":"w1:t1","workspace_id":"w1"},{"agent_status":"idle","focused":false,"label":"2","number":2,"pane_count":1,"tab_id":"w1:t2","workspace_id":"w1"},{"agent_status":"idle","focused":true,"label":"3","number":3,"pane_count":1,"tab_id":"w1:t3","workspace_id":"w1"}],"version":"0.8.2","workspaces":[{"active_tab_id":"w1:t3","agent_status":"idle","focused":true,"label":"WSL Verify 20260906","number":1,"pane_count":3,"tab_count":3,"workspace_id":"w1"}]},"type":"session_snapshot"}}
+{"utc":"2026-09-06T05:07:45.7693097Z","freeRamBytes":22156980224,"commitPercent":38.26,"cpuPercent":10,"trackedWorkingSet":2924863488,"processes":[{"ProcessName":"herdr","Id":16128,"WorkingSet64":25694208},{"ProcessName":"herdr","Id":17504,"WorkingSet64":25686016},{"ProcessName":"herdr","Id":29336,"WorkingSet64":41648128},{"ProcessName":"herdr","Id":29384,"WorkingSet64":25784320},{"ProcessName":"vmmemWSL","Id":16672,"WorkingSet64":2669035520},{"ProcessName":"wsl","Id":2884,"WorkingSet64":8114176},{"ProcessName":"wsl","Id":8832,"WorkingSet64":13111296},{"ProcessName":"wsl","Id":15376,"WorkingSet64":13000704},{"ProcessName":"wsl","Id":21064,"WorkingSet64":8105984},{"ProcessName":"wslhost","Id":560,"WorkingSet64":12128256},{"ProcessName":"wslhost","Id":708,"WorkingSet64":12349440},{"ProcessName":"wslhost","Id":13560,"WorkingSet64":12062720},{"ProcessName":"wslhost","Id":13812,"WorkingSet64":12300288},{"ProcessName":"yuzora","Id":25448,"WorkingSet64":45842432}]}

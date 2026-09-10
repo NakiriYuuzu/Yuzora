@@ -1,0 +1,39 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Windows 原生 HERDR 與 WSL 主機設定</title><style>
+:root{color-scheme:light dark;font-family:system-ui,"PingFang TC",sans-serif;background:#f7f7f5;color:#17202a}body{margin:0}main{max-width:1050px;margin:auto;padding:36px 24px 80px}h1{font-size:30px;letter-spacing:-.03em}h2{font-size:21px;margin-top:36px}p,li{line-height:1.75}a{color:#075b99}code{font-size:13px;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;margin:20px 0}td,th{text-align:left;padding:12px;border-bottom:1px solid #d8dee4;vertical-align:top}th{background:#edf1f4}.note{border-left:4px solid #b7831d;padding:8px 18px;background:#fff4dc}.muted{color:#586774}.flow{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.flow>div{background:white;border:1px solid #d8dee4;padding:16px;border-radius:8px}@media(max-width:700px){.flow{grid-template-columns:1fr}main{padding:20px 15px}table{font-size:13px}}@media(prefers-color-scheme:dark){:root{background:#111820;color:#e4e9ef}.flow>div{background:#17222c}th{background:#1b2935}.note{background:#302817}a{color:#82bbf0}.muted{color:#a2b0be}td,th{border-color:#35424e}}
+</style></head><body><main>
+<p class="muted">2026-09-09 · beta.3 發布候選 · <a href="https://github.com/NakiriYuuzu/Yuzora/pull/92">PR #92</a></p>
+<h1>Windows 本機可直接使用 HERDR；WSL 由設定啟用</h1>
+<p>Windows 本機與每個 WSL 發行版各自選用 client 與 Session。設定提供管理版本、主機已安裝版本、自訂完整路徑，並在套用前核對相容性。</p>
+<h2>WSL 已是 0.9.0，為什麼仍然報錯？</h2>
+<table><thead><tr><th>已取得的證據</th><th>實際值</th><th>含義</th></tr></thead><tbody>
+<tr><td>發行版／帳號</td><td>Ubuntu-24.04 · UID 1000 · WSL2</td><td>確認操作的是相同發行版與帳號。</td></tr>
+<tr><td>Yuzora 執行的 client</td><td>0.8.2 · protocol 20</td><td>保存的管理路徑仍指向舊 binary。</td></tr>
+<tr><td>執行中的 server</td><td>0.9.0 · protocol 22 · compatible=false</td><td>版本不相容屬實；不能以 PATH 上另一支 HERDR 的版本代替。</td></tr>
+<tr><td>default socket</td><td><code>/home/yuuzu/.config/herdr/herdr.sock</code></td><td>先更新 client，保留這個 server 與既有工作。</td></tr>
+</tbody></table>
+<p><strong>原保存路徑：</strong><code>/home/yuuzu/.local/share/yuzora/runtimes/0.0.9-beta.3-linux-x86_64-fa8bc0288db5545d3355c37bb6ee8087e9dd3c9df15944c524eb5aeb6e7ee55a/herdr</code></p>
+<p>使用者原 installer hash 尚未取得，因此沒有將原安裝檔認定為特定候選產物。</p>
+<h2>使用方式</h2><div class="flow">
+<div><strong>Windows 本機</strong><p>設定 → HERDR → Windows 本機。可選 Yuzora 管理、主機已安裝、或自訂 herdr.exe。檢查後套用；來源變更重啟 Yuzora 生效。</p></div>
+<div><strong>WSL</strong><p>設定 → HERDR → 啟用 WSL HERDR，再選 Ubuntu-24.04。檢查目前與目標 client，更新主機工具。新增資料夾時明確選 WSL。</p></div>
+<div><strong>不相容</strong><p>從錯誤按「修復此主機」，核對 exact binary、client／server protocol 與每個 running Session。可複製診斷；不自動停止 server。</p></div>
+</div>
+<h2>本次 WSL 管理版本的核對值</h2><p>CI 的 Linux x86-64 payload manifest SHA-256：<code>94473c31279856b884a66091e8f0fca08530b60b0c73bd690373f602cb5a1859</code>；其中 HERDR binary SHA-256：<code>4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f</code>。</p><p>使用此候選並於 Ubuntu-24.04 套用管理版本後，預期 client 路徑為：<code>/home/yuuzu/.local/share/yuzora/runtimes/0.0.9-beta.3-linux-x86_64-94473c31279856b884a66091e8f0fca08530b60b0c73bd690373f602cb5a1859/herdr</code>。這是候選 payload 的預期值；使用者尚未回報套用後結果，不能視為已完成原環境驗收。</p><h2>四項防護</h2><ol>
+<li>設定直接管理主機工具、更新／重新偵測、複製診斷，分開顯示目前 client 與目標版本。</li>
+<li>錯誤提供「修復此主機」，以 hostId 定位，介面顯示主機名稱與 Session 名稱。</li>
+<li>來源政策與解析 binary／helper 路徑分開保存；管理套件差異顯示可更新；已安裝來源缺失不回退。</li>
+<li>套用前重新驗證 schema 與所有 running Sessions，失敗保留原設定；server 需要更換時先保全工作並確認受影響 Session。</li>
+</ol>
+<h2>驗證證據</h2>
+<p>Commit：<code>eca2fcaa43851fcd89990e3b7bb4ac1f3a600a80</code><br>Tree：<code>1dfa471d44dac8b5f5ed95bccf3fc64639913a77</code></p>
+<table><thead><tr><th>範圍</th><th>結果</th></tr></thead><tbody>
+<tr><td>前端</td><td>186 files／2,239 tests 通過；lint 無 errors；typecheck／production build 通過。</td></tr>
+<tr><td>Rust</td><td>Host 364 unit tests＋11 integration tests 通過；desktop 365 unit tests／3 ignored＋SQLite 1 passed／1 ignored；新增 host source 測試與其模組 3 項通過。fmt、strict host clippy、desktop 90 diagnostics baseline 通過。</td></tr>
+<tr><td>實際 macOS ARM HERDR</td><td>0.9.0／protocol 22 隔離測試通過 schema、snapshot、live events、observe／control／input／resize，僅停止測試自己的 Session。</td></tr>
+<tr><td>固定 Windows payload</td><td>官方 zip SHA-256 與解出的 7 個檔案皆驗證。CI 另驗證原生 named pipe／PowerShell 終端與 installer 解包。</td></tr>
+<tr><td>新候選 CI</td><td id="ci-result">全部通過：<a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34327614167">CI 34327614167</a>；<a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34327613749">helper 34327613749</a>。</td></tr>
+</tbody></table>
+<p>最終 CI checkout：<code>33d9554c2915de8d21f9f029f64045af5b7a0025</code>；GitHub API 核對 tree 為 <code>1dfa471d44dac8b5f5ed95bccf3fc64639913a77</code>，與最終 head 完全相同。獨立 helper workflow 的 macOS Intel runner 首次遇到 Rust 下載站 DNS 錯誤，重跑失敗 job 後全部通過。</p><h2>候選安裝檔</h2><p><a href="https://github.com/NakiriYuuzu/Yuzora/pull/92#issuecomment-5598968091">PR 最終候選證據</a></p><p><a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34327614167/artifacts/10095417437">GitHub Windows MSI／NSIS</a> · <a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34327614167/artifacts/10095081350">GitHub macOS universal</a></p><table><thead><tr><th>安裝檔</th><th>SHA-256</th></tr></thead><tbody><tr><td>Yuzora_0.0.9-beta.3_universal.dmg</td><td><code>578f57aa3bbc19d474864e12427fe3f65c27d1a3e9fd72dbf421decdd6b2e1d5</code></td></tr><tr><td>Yuzora_0.0.9-beta.3_x64_en-US.msi</td><td><code>1fd3f97315555a9358620648c30681296290194b6cc13d844ae8abf32d7732fb</code></td></tr><tr><td>Yuzora_0.0.9-beta.3_x64-setup.exe</td><td><code>405418836580248727849fc4e5beb55c2ba06a455df91de73f1526593aeb507c</code></td></tr></tbody></table><p>已下載至 <code>/Users/yuuzu/Downloads/Yuzora-v0.0.9-beta.3-candidate-eca2fca</code>；同目錄包含 SHA256SUMS.txt 與 README.md。Windows 原生 HERDR E2E 與 MSI／NSIS 解包檢查皆通過；macOS DMG 已完成 checksum、版本、雙架構與 runtime hash 的唯讀檢查。</p>
+<p class="note">尚未執行使用者原 Windows／WSL GUI 驗收。乾淨 runner 通過只能證明該產物的建置與自動化測試；發布前仍需以新 installer 在原 Ubuntu-24.04 驗證 client 切換、Session 存續與實際終端。維持 Draft，尚未 merge 或發布。</p>
+<p>先前 ca95194 候選不含本次 Windows 原生與設定功能，不可代替這次驗收。</p>
+</main></body></html>

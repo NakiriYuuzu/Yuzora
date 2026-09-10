@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="304" height="320" viewBox="-24 -32 304 320" role="img" aria-labelledby="title">
+<title id="title">Yuzora construction grid</title>
+<g id="yuzora-geometry">
+  <g fill="none" stroke="var(--logo-guide, #94a3b8)" stroke-width=".55" opacity=".32"><path d="M0 0V256M0 0H256"/><path d="M16 0V256M0 16H256"/><path d="M32 0V256M0 32H256"/><path d="M48 0V256M0 48H256"/><path d="M64 0V256M0 64H256"/><path d="M80 0V256M0 80H256"/><path d="M96 0V256M0 96H256"/><path d="M112 0V256M0 112H256"/><path d="M128 0V256M0 128H256"/><path d="M144 0V256M0 144H256"/><path d="M160 0V256M0 160H256"/><path d="M176 0V256M0 176H256"/><path d="M192 0V256M0 192H256"/><path d="M208 0V256M0 208H256"/><path d="M224 0V256M0 224H256"/><path d="M240 0V256M0 240H256"/><path d="M256 0V256M0 256H256"/></g>
+  <g opacity=".2"><g>
+  <path fill="var(--logo-silver, #cbd5e1)" d="M34 32H73Q77 32 80 35L120 77Q124 81 124 86V109Q124 117 118 111L91 83H78Q73 83 70 79L30 39Q24 32 34 32Z"/>
+  <path fill="var(--logo-fold, #8caab7)" d="M91 83H124V109Q124 117 118 111Z"/>
+  <path fill="var(--logo-primary, #3b82f6)" d="M142 88L190 36Q194 32 199 32H231Q239 32 234 39L149 132Q142 139 136 132V101Q136 94 142 88Z"/>
+  <path fill="var(--logo-secondary, #14b8a6)" d="M96 111L132 148Q136 152 136 158V224Q136 232 130 226L92 186Q88 182 88 176V115Q88 107 96 111Z"/>
+</g></g>
+  <g fill="none" stroke="var(--logo-guide, #64748b)" stroke-width=".8">
+    <path d="M0 32H256M0 228H256M128 -16V272" stroke-dasharray="3 4"/>
+    <path d="M30 39L218 227M231 32L88 188" opacity=".55"/>
+    <path d="M124 68V132M136 68V132M124 100H136"/>
+    <path d="M0 -10H256M0 -14V-6M256 -14V-6"/>
+    <circle cx="34" cy="38" r="6"/><circle cx="130" cy="224" r="6"/>
+  </g>
+  <g fill="var(--logo-ink, #0e1026)" font-family="monospace" font-size="8">
+    <text x="128" y="-17" text-anchor="middle">256 u</text>
+    <text x="150" y="103">12 u</text>
+    <text x="0" y="273">16 u GRID</text>
+  </g>
+</g>
+</svg>

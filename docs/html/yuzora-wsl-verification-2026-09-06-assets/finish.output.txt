@@ -1,0 +1,15 @@
+{"id":"cli:workspace:close","result":{"type":"ok"}}
+{
+    "utc":  "2026-09-06T05:10:09.9553656Z",
+    "uninstallExit":  0,
+    "appRootExists":  false,
+    "processes":  [
+
+                  ],
+    "cdpPolicy":  null,
+    "cdpListening":  0,
+    "freeRamBytes":  22321315840
+}
+ADAPTER=absent
+REPORTER_PROCESSES=PI_PROCESSES=  NAME            STATE           VERSION
+* Ubuntu-26.04    Running         2

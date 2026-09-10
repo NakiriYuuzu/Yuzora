@@ -1,4 +1,3 @@
-import { Channel } from "@tauri-apps/api/core"
 import { invokeHerdr as invoke } from "./herdrProvider"
 
 import type {
@@ -245,8 +244,6 @@ export function herdrTerminalOpen(args: {
   sessionName?: string | null
   onEvent: (event: HerdrTerminalEvent) => void
 }): Promise<HerdrTerminalOpenResult> {
-  const ch = new Channel<HerdrTerminalEvent>()
-  ch.onmessage = args.onEvent
   return invoke("herdr_terminal_open", {
     target: args.target,
     mode: args.mode ?? null,
@@ -254,7 +251,7 @@ export function herdrTerminalOpen(args: {
     cols: args.cols,
     rows: args.rows,
     sessionName: args.sessionName ?? null,
-    onEvent: ch
+    onEvent: args.onEvent
   })
 }
 
@@ -349,12 +346,10 @@ export function herdrEventsSubscribe(args: {
   paneIds?: string[]
   onEvent: (event: HerdrSubscriptionEvent) => void
 }): Promise<string> {
-  const ch = new Channel<HerdrSubscriptionEvent>()
-  ch.onmessage = args.onEvent
   return invoke("herdr_events_subscribe", {
     sessionName: args.sessionName ?? null,
     paneIds: args.paneIds ?? [],
-    onEvent: ch
+    onEvent: args.onEvent
   })
 }
 

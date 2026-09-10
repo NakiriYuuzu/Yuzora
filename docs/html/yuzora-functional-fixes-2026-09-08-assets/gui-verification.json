@@ -1,0 +1,75 @@
+[
+  {
+    "id": "QA26-002",
+    "result": "重啟修復binary後，新建tab直接鍵入QA-Fix-Input保持名稱欄位focus；Enter改名成功，shell仍空白prompt。",
+    "evidence": [
+      "herdr-naming-fixed"
+    ],
+    "time": "2026-09-08T08:50:58.109Z"
+  },
+  {
+    "id": "QA26-005",
+    "result": "non-repo QA-A Git已顯示不是Git儲存庫，沒有raw trust JSON。",
+    "evidence": [
+      "git-nonrepo-fixed"
+    ],
+    "time": "2026-09-08T08:50:58.109Z"
+  },
+  {
+    "id": "QA26-007",
+    "result": "右pane zoom全幅；unzoom恢復兩個pane且左shell zoom_alive保留；鍵盤Right兩次可調60%，官方layout回ratio0.6，未重啟shell。",
+    "evidence": [
+      "herdr-zoom-fixed",
+      "herdr-unzoom-ratio-fixed"
+    ],
+    "time": "2026-09-08T08:54:53.517Z"
+  },
+  {
+    "id": "QA26-004",
+    "result": "80與120逐鍵輸入正常；999提交變500，空白提交回120。",
+    "evidence": [
+      "inspector-input-fixed"
+    ],
+    "time": "2026-09-08T08:55:35.297Z"
+  },
+  {
+    "id": "QA26-003",
+    "result": "現行Herdr選單可新增Agent，搜尋pi並啟動成功，local/default/QA-A scope正確，Sidebar新增待命Agent及即時terminal。pending時取消/啟動禁用；Escape時已完成成功，不宣稱覆蓋pending競態。",
+    "evidence": [
+      "herdr-agent-created"
+    ],
+    "time": "2026-09-08T08:57:36.450Z"
+  },
+  {
+    "id": "ENV-PYRIGHT",
+    "result": "既有一鍵安裝完成managed Pyright；qa_python.py已顯示Python · pyright Ready，未變更Homebrew或關閉完整性驗證。",
+    "evidence": [
+      "python-lsp-ready"
+    ],
+    "time": "2026-09-08T09:01:06.466Z"
+  },
+  {
+    "id": "QA26-006",
+    "result": "無slash首次載入Back禁用；Next同步URL；redirect/final一次Back回/next；SPA push清Forward；replace後頁內Back回/next、Forward回/replaced；hash同步；reload後一次Back離開hash，無假歷史。",
+    "evidence": [
+      "preview-native-history-fixed"
+    ],
+    "time": "2026-09-08T09:08:18.462Z"
+  },
+  {
+    "id": "QA26-009",
+    "result": "更新後重新偵測既有managed Rust Analyzer即顯示已安裝；開Rust檔已Ready，無須重裝。補齊fixture Cargo.toml並清除最初無Cargo專案提示。",
+    "evidence": [
+      "rust-analyzer-ready"
+    ],
+    "time": "2026-09-08T09:11:44.351Z"
+  },
+  {
+    "id": "QA26-008",
+    "result": "再次在non-repo QA-A新增Pi，AX label為π - QA-A · pi · 待命 · QA-A · default，無undefined/null。",
+    "evidence": [
+      "agent-label-fixed"
+    ],
+    "time": "2026-09-08T09:13:07.767Z"
+  }
+]

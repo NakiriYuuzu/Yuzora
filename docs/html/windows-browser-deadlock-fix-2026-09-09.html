@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Windows Browser 死鎖修正 — 2026-09-09</title>
+<style>
+:root{color-scheme:light;font-family:system-ui,"Segoe UI","PingFang TC",sans-serif;color:#182232;background:#f6f3eb}body{margin:0}main{max-width:920px;margin:40px auto;padding:0 24px 48px}h1{font-size:32px;line-height:1.3}h2{font-size:20px;margin-top:32px}p,li{line-height:1.8}a{color:#245f75}code{font-family:Consolas,monospace;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;background:#fffdf8}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #ddd6ca;padding:12px}blockquote{border-left:3px solid #245f75;margin:16px 0;padding:8px 20px;background:#fffdf8}.status{padding:16px;border:1px solid #ddd6ca;background:#fffdf8}
+</style>
+</head>
+<body><main>
+<h1>Windows Browser 死鎖修正</h1>
+<p>2026-09-09 · 工作區版本 <code>0.0.9-beta.3</code> · 分支 <code>release/v0.0.9-beta.3</code></p>
+<p class="status">已修正與使用者症狀高度吻合的原生 webview 建立方式。本機編譯、既有相關測試與 Clippy baseline 通過；尚未在 Windows 重現原始問題或驗證修正後的安裝包。使用者實際安裝版本與觸發網址尚未確認。</p>
+<h2>問題與證據</h2>
+<p>使用者回報 Windows 開啟 Browser 後，各功能無法顯示內容；點擊檔案仍有反應，但應用也無法關閉。原始 <code>preview_open_url</code> 是同步 Tauri command，直接呼叫 <code>Window::add_child</code>。</p>
+<p>本機 Cargo.lock 的 Tauri 版本為 <code>2.11.5</code>，其 <code>WebviewBuilder</code> 原始碼文件明確記載：</p>
+<blockquote>On Windows, this function deadlocks when used in a synchronous command or event handlers. You should use async commands and separate threads when creating webviews.</blockquote>
+<p>來源：本機已解析套件 <code>tauri-2.11.5/src/webview/mod.rs</code>，第 287–290 行；<a href="https://docs.rs/tauri/2.11.5/tauri/webview/struct.WebviewBuilder.html#method.new">同版本 API 文件</a>；套件引用的 <a href="https://github.com/tauri-apps/wry/issues/583">WebView2 issue #583</a>。遠端連結供追查，本次直接核對的是本機套件原始碼。</p>
+<p>死鎖會阻止原生事件與 IPC 推進，與內容載入及關窗同時停止的描述吻合；本次沒有 Windows 執行期堆疊，故不能斷言已排除所有其他原因。</p>
+<h2>變更</h2>
+<p>程式變更限於 <a href="../../src-tauri/src/preview_webview.rs">src-tauri/src/preview_webview.rs</a>：</p>
+<ul>
+<li>將開啟、bounds、visibility、close、reload 五個 command 設為 <code>#[tauri::command(async)]</code>。Tauri 負責將原生操作送到主執行緒，呼叫端不再佔住主執行緒等待結果或生命週期鎖。</li>
+<li>歷史查詢／導覽的 <code>with_webview</code> 主執行緒回呼改用 <code>try_lock</code>。如果建立／關閉正在持有共享鎖，回呼回傳錯誤，避免主執行緒等待正在等它完成工作的 command。既有輪詢會稍後再讀取；競爭中的手動歷史導覽可能回報失敗，由使用者重試。</li>
+<li>沿用既有 <code>nativePreviewQueue</code>，維持前端開啟、導覽、顯示與關閉操作的先後順序及 session ownership 檢查。</li>
+</ul>
+<h2>驗證</h2>
+<table>
+<thead><tr><th>檢查</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td><code>bun run test src/app/panels/previewPanel.test.tsx src/preview/nativeNavigation.test.ts src/preview/previewCommands.test.ts src/state/previewStore.test.ts</code></td><td>4 個檔案、56 項通過，涵蓋前端佇列、延遲開啟、歷史、清理與 owner 切換。原生 IPC 為 mock，不能驗證 WebView2 死鎖。</td></tr>
+<tr><td><code>cargo check --locked --all-targets</code></td><td>macOS 通過。</td></tr>
+<tr><td><code>cargo test --locked --lib preview_webview::tests</code></td><td>修正後通過既有 URL scheme 測試 1 項。不是原生執行期測試。</td></tr>
+<tr><td><code>cargo fmt --package yuzora -- --check</code></td><td>通過。</td></tr>
+<tr><td><code>ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json</code></td><td>通過，精確符合既有 90 項 diagnostics。</td></tr>
+<tr><td>一次性 command dispatch 原始碼檢查</td><td>HEAD 有 5 個同步 Browser command，工作樹為 0。這是靜態檢查，不是死鎖重現。</td></tr>
+<tr><td><code>cargo check --locked --all-targets --target x86_64-pc-windows-msvc</code></td><td>受本機交叉編譯環境限制：<code>ring 0.17.14</code> 缺少 Windows C 標頭 <code>assert.h</code>，在檢查 Yuzora 前失敗。</td></tr>
+<tr><td><code>git diff --check</code></td><td>通過。</td></tr>
+</tbody></table>
+<p>本機為 macOS；既有測試無法執行真正的 Windows WebView2 路徑。本次未新增會把 mock 或原始碼字串檢查誤當死鎖回歸的測試，也未進行 Browser／E2E 自動化。</p>
+<h2>Windows 尚待驗收</h2>
+<ol>
+<li>以包含本次變更的 Windows build，開啟 Browser 並載入回報時的網址；另測一般 HTTPS 與已啟動的本機 HTTP 服務。</li>
+<li>開啟檔案，確認編輯器實際顯示內容；切換其他功能，確認 Browser 原生圖層正確隱藏或關閉。</li>
+<li>快速切換網址、返回／前進、重新整理、調整面板大小，並在載入期間關閉 Browser 分頁。</li>
+<li>用視窗關閉按鈕及 Alt+F4 確認應用能正常退出。記錄 Windows／WebView2 版本、候選 build 與結果。</li>
+</ol>
+<p>本次未 stage、commit、push、建立安裝包或發佈；既有未提交變更保留。</p>
+</main></body></html>

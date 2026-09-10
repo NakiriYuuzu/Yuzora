@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>資料庫模式上方空白修正</title>
+<style>body{max-width:1000px;margin:40px auto;padding:0 24px;font:16px/1.7 system-ui;color:#243047;background:#f7f8fa}h1,h2{line-height:1.3}code{background:#e8edf3;padding:2px 5px}img{width:100%;border-radius:12px}figure{margin:24px 0}figcaption{color:#526079}</style>
+<h1>資料庫模式上方空白修正</h1>
+<p>2026-09-09。切換資料庫後，主內容頂端現維持在 8px；原本會下移至 44px，產生 36px 的整列空白。</p>
+<h2>原因與修正</h2>
+<p>AppShell 在資料庫模式隱藏右側工具欄，進而啟用 <code>data-utility-row</code>，為側欄按鈕加入 36px 上方 padding。移除資料庫模式的整列預留，改由既有連線標頭容納右側按鈕：標頭高 44px、右方預留 40px。左側收合時僅在資料庫導覽內預留按鈕空間，macOS 視窗控制鈕另保留高度。</p>
+<p>修改限於 <code>src/app/AppShell.tsx</code>、<code>src/app/panels/DatabasePanel.tsx</code>、<code>src/app/workbench/workbench-shell.css</code>。沿用既有元件，未新增 UI primitive。</p>
+<h2>驗證</h2>
+<ul>
+<li>已授權的 agent-browser／Chromium：1440×900 空連線狀態，修正前頂端 8→44px，修正後 8→8px。</li>
+<li>使用既有 databaseSidebarLayoutFixture，以 12 個連線設定、45 個物件、50 筆歷史查詢驗證已連線版面。右側連線資訊終點 x=1381，按鈕起點 x=1395，無重疊。</li>
+<li>800×600：主內容頂端 8px；左側按鈕底部 44.5px，資料庫導覽內容頂端 57px。反覆切換六次，主內容頂端皆為 8px。</li>
+<li>macOS 控制鈕以瀏覽器切換 CSS data attribute 驗證預留：主內容頂端 8px，導覽內容頂端 65px。未執行原生 Tauri GUI 驗收或真實資料庫查詢。</li>
+<li><code>bun run test src/app/AppShell.layout.test.tsx src/app/appShell.test.tsx src/app/panels/databasePanel.test.tsx</code>：75 個測試通過。</li>
+<li><code>bun run build</code>：typecheck 與 build 通過；既有 chunk size、dynamic import 警告仍在。</li>
+<li>修改的 TSX 檔 ESLint：0 errors、5 個未修改程式碼上的既有 warnings。<code>git diff --check</code> 通過。</li>
+</ul>
+<h2>畫面證據</h2>
+<figure><img src="database-mode-top-gap-2026-09-09-assets/before.png" alt="修正前資料庫面板上方多出空白"><figcaption>修正前：空連線狀態，上方多出 36px。</figcaption></figure>
+<figure><img src="database-mode-top-gap-2026-09-09-assets/after.png" alt="修正後資料庫面板頂端對齊"><figcaption>修正後：使用版面 fixture，面板頂端對齊，右上角按鈕不遮住連線資訊。</figcaption></figure>
+<figure><img src="database-mode-top-gap-2026-09-09-assets/narrow.png" alt="窄視窗下資料庫面板與側欄展開按鈕"><figcaption>800×600：展開按鈕保留於面板內，沒有整列空白。</figcaption></figure>
+</html>

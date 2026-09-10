@@ -1,6 +1,38 @@
 //! Account shell selection shared by native terminals and host processes.
 use std::path::PathBuf;
 
+#[cfg(any(windows, test))]
+fn windows_shell_cwd_candidate(path: &str) -> Option<String> {
+    let rest = path.strip_prefix(r"\\?\")?;
+    if rest
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"UNC\"))
+    {
+        return Some(format!(r"\\{}", &rest[4..]));
+    }
+    let bytes = rest.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\')
+        .then(|| rest.to_owned())
+}
+
+/// PowerShell treats a verbatim device path as a provider-qualified location.
+/// Use Win32 cwd syntax only when it resolves to exactly the same directory;
+/// identity-sensitive filesystem/trust paths remain canonical elsewhere.
+pub fn working_directory(path: String) -> String {
+    #[cfg(windows)]
+    if let Some(candidate) = windows_shell_cwd_candidate(&path) {
+        if let (Ok(original), Ok(simplified)) = (
+            std::fs::canonicalize(&path),
+            std::fs::canonicalize(&candidate),
+        ) {
+            if original == simplified {
+                return candidate;
+            }
+        }
+    }
+    path
+}
+
 pub fn resolve_shell(override_shell: Option<&str>) -> PathBuf {
     resolve_shell_from(
         override_shell,
@@ -67,5 +99,56 @@ fn default_shell() -> PathBuf {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         PathBuf::from("/bin/sh")
+    }
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::*;
+
+    #[test]
+    fn windows_shell_cwd_uses_drive_or_unc_syntax_instead_of_a_device_namespace() {
+        for (canonical, expected) in [
+            (r"\\?\C:\Work\中文 project", r"C:\Work\中文 project"),
+            (r"\\?\C:\", r"C:\"),
+            (r"\\?\UNC\server\share\project", r"\\server\share\project"),
+        ] {
+            assert_eq!(
+                windows_shell_cwd_candidate(canonical).as_deref(),
+                Some(expected)
+            );
+        }
+        for path in [
+            "/home/me/project",
+            r"C:\Work",
+            r"\\server\share",
+            r"\\.\pipe\name",
+            r"\\?\Volume{guid}\",
+        ] {
+            assert_eq!(windows_shell_cwd_candidate(path), None);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_cwd_preserves_the_actual_directory_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("中文 project");
+        std::fs::create_dir(&folder).unwrap();
+        let canonical = std::fs::canonicalize(&folder).unwrap();
+        let cwd = working_directory(canonical.to_str().unwrap().to_owned());
+        assert!(!cwd.starts_with(r"\\?\"));
+        assert_eq!(std::fs::canonicalize(cwd).unwrap(), canonical);
+        // A path that cannot be verified must never silently change identity.
+        let missing = r"\\?\C:\yuzora-missing-fixture-5fbd6513".to_owned();
+        assert_eq!(working_directory(missing.clone()), missing);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_shell_cwd_is_not_reinterpreted_as_a_windows_path() {
+        for path in ["/home/me/中文 project", r"/home/me/\\?\C:\literal"] {
+            assert_eq!(working_directory(path.to_owned()), path);
+        }
     }
 }

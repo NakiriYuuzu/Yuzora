@@ -3,6 +3,7 @@
    Verify against those files before changing values here. */
 
 @import "tailwindcss";
+@source ".";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/hanken-grotesk";

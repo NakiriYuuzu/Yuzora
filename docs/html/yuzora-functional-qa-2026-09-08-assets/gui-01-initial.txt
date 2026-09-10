@@ -1,0 +1,87 @@
+The following is a diff from the previous accessibility tree for Window: "Yuzora" with ~ and + representing changed and added elements, respectively. Removed elements are summarized by ID range.
+Removed element IDs: 17-19, 24, 27-28, 37-40, 43
++				61 container
++					62 text 需要注意  · 1
++				63 button π - .pi · 回覆待查看
++					64 row (selectable, expanded) .pi · 1 個 Agents · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: .pi
+1 分支 · 1 Agents
++					65 row (selectable, expanded) main · /Users/yuuzu/.pi · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: main
+1 待處理
++					66 row (selectable) π - .pi · pi · 回覆待查看 · main · default, Help: 開啟所屬 pane；不可用時顯示唯讀詳情, Value: π - .pi
+pi
+回覆待查看
++					67 row (selectable, expanded) yuzora · 0 個 Agents · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: yuzora
+1 分支 · 0 Agents
++					68 row (selected, expanded) release/v0.0.9-beta.3 · /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: release/v0.0.9-beta.3
+0
++					69 row (selectable, expanded) privacy-filter · 0 個 Agents · default, Secondary Actions: Collapse, Value: privacy-filter
+1 分支 · 0 Agents
++					70 row (selectable, expanded) privacy-filter · null · default, Secondary Actions: Collapse, Value: privacy-filter
+0
++				71 text 數量為 0 的 worktree 尚無 Agent。
++			72 button Yuzora
++			73 text 本地
++			74 button 關閉 Yuzora
++			75 text Yuzora
++			76 text 控制者
++			77 text entry area (settable) Terminal input
+~				35 text /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora 本地
++					78 button 新增資料夾
++					79 button SFTP 傳輸
++					80 container
++						81 button .claude
++						82 button .design
++						83 button .firecrawl
++						84 button .git
++						85 button .github
++						86 button .idea
++						87 button .pi
++						88 button .pi-subagents
++						89 button .playwright-cli
++						90 button .playwright-mcp
++						91 button .superpowers
++						92 button .vscode
++						93 button .yuuzu
++						94 button dist
++						95 button docs
++						96 button fixtures
++						97 button herdr-plugins
++						98 button node_modules
++						99 button output
++						100 button public
++						101 button scripts
++						102 button site
++						103 button site-remotion
++						104 button specs
++						105 button spikes
++						106 button src
++						107 button src-tauri
++						108 button tests
++						109 button .DS_Store
++						110 button .editorconfig
++						111 button .gitattributes
++						112 button .gitignore
++						113 button .intentionally-empty-file.o
++						114 button 開啟差異 .intentionally-empty-file.o, Help: 開啟差異
++						115 button AGENTS.md
++						116 button app-icon.png
++						117 button bun.lock
++						118 button 開啟差異 bun.lock, Help: 開啟差異
++						119 button CHANGELOG.md
++						120 button CLAUDE.md
++						121 button components.json
++						122 button eslint.config.js
++						123 button 開啟差異 eslint.config.js, Help: 開啟差異
++						124 button index.html
++						125 button package.json
++						126 button 開啟差異 package.json, Help: 開啟差異
++						127 button QA-REPORT.md
++						128 button 開啟差異 QA-REPORT.md, Help: 開啟差異
++						129 button README.md
++						130 button README.zh-TW.md
++						131 button tsconfig.json
++						132 button tsconfig.node.json
++						133 button tsconfig.tsbuildinfo
++						134 button vite.config.ts
++				135 pop up button release/v0.0.9-beta.3
++				136 text 218

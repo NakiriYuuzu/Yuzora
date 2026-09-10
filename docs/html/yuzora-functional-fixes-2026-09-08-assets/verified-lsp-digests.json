@@ -1,0 +1,38 @@
+[
+  {
+    "platform": "macos/aarch64",
+    "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-apple-darwin.gz",
+    "archiveSha256": "f50878b806fe5b2a792e3d93a7142f17c2eb6affc6dd158b7b35e1a45cfadef5",
+    "executableSha256": "78247dd08a4e14e2c4836bfbb9d33c627b160d3a547c07a959f8e811290577b8"
+  },
+  {
+    "platform": "macos/x86_64",
+    "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-apple-darwin.gz",
+    "archiveSha256": "77111cbbed692d5b865cb9469c9b78250dd099353dabdbdfd7bfb4f567f7538e",
+    "executableSha256": "621c75d17c4c3382d1f4cc36cd69cee1d39d9ba061ff538bd8c6fce502d111f5"
+  },
+  {
+    "platform": "linux/aarch64",
+    "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-unknown-linux-gnu.gz",
+    "archiveSha256": "609af2b89ad5f2eea88060b0907e0f684c65a9cfc05539a6270072265bb98994",
+    "executableSha256": "cf2cadf5e634eae236453afcfba1ba3f809a0b5c510baec6d2306110d76a9a13"
+  },
+  {
+    "platform": "linux/x86_64",
+    "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-unknown-linux-gnu.gz",
+    "archiveSha256": "e278cbae972df49cbcead8851aea47478478fc5ef686e2c6a35b44911e3926cf",
+    "executableSha256": "f73b5f0b82beae36d1550b2a3c63765dd38ef5daa9f4782bff32292187e22dd5"
+  },
+  {
+    "platform": "windows/aarch64",
+    "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-aarch64-pc-windows-msvc.zip",
+    "archiveSha256": "887fd4d17a90f45dfb55b78c9f2e75deb56e0074312992a2b9442a44bb2013aa",
+    "executableSha256": "55fa871fcd2cb52ca68344b224edb33c9c4faa217345596757f1f61868dbd387"
+  },
+  {
+    "platform": "windows/x86_64",
+    "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-06-29/rust-analyzer-x86_64-pc-windows-msvc.zip",
+    "archiveSha256": "7313385a329988c987cff4e2a7bb859d70ae6c228d705095b1015b822ffb670d",
+    "executableSha256": "2e5062b0ce1df1316af4458842044cd432742757b76f7902e479efc018b62977"
+  }
+]

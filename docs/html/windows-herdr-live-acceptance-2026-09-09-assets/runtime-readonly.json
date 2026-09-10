@@ -1,0 +1,19 @@
+{
+  "rdpPort": 3389,
+  "rdpListeners": [],
+  "nativeStatus": {
+    "exitCode": 0,
+    "stdout": "{\"client\":{\"version\":\"0.9.0\",\"channel\":\"stable\",\"protocol\":22,\"endpoint_protocol_generation\":1,\"endpoint_capabilities\":[\"surface_interest\",\"presentation_effects_fence\",\"health_check\"],\"binary\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Local\\\\Yuzora\\\\herdr\\\\windows-x86_64\\\\herdr.exe\",\"session\":null},\"server\":{\"status\":\"running\",\"running\":true,\"version\":\"0.9.0\",\"protocol\":22,\"capabilities\":{\"live_handoff\":false,\"detached_server_daemon\":true,\"endpoint_protocol_generation\":1,\"surface_interest\":true,\"health_check\":true},\"compatible\":true,\"endpoint_compatible\":true,\"socket\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\herdr.sock\",\"session\":null,\"restart_needed\":false,\"server_binary_stale\":false},\"update\":{\"restart_needed\":false,\"server_binary_stale\":false}}\n",
+    "stderr": ""
+  },
+  "nativeSessions": {
+    "exitCode": 0,
+    "stdout": "{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\",\"socket_path\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\herdr.sock\"},{\"default\":false,\"name\":\"yuzora-p8-owner\",\"running\":false,\"session_dir\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\sessions\\\\yuzora-p8-owner\",\"socket_path\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\sessions\\\\yuzora-p8-owner\\\\herdr.sock\"}]}\n",
+    "stderr": ""
+  },
+  "wslVersion": {
+    "exitCode": 0,
+    "stdout": "W\u0000S\u0000L\u0000 \u0000Hr,g\u001a� \u00002\u0000.\u00007\u0000.\u00001\u00001\u0000.\u00000\u0000\r\u0000\n\u00008h�_Hr,g\u001a� \u00006\u0000.\u00001\u00008\u0000.\u00003\u00003\u0000.\u00002\u0000-\u00002\u0000\r\u0000\n\u0000W\u0000S\u0000L\u0000g\u0000 \u0000Hr,g\u001a� \u00001\u0000.\u00000\u0000.\u00007\u00003\u0000.\u00002\u0000\r\u0000\n\u0000M\u0000S\u0000R\u0000D\u0000C\u0000 \u0000Hr,g\u001a� \u00001\u0000.\u00002\u0000.\u00007\u00002\u00001\u00004\u0000\r\u0000\n\u0000D\u0000i\u0000r\u0000e\u0000c\u0000t\u00003\u0000D\u0000 \u0000Hr,g\u001a� \u00001\u0000.\u00006\u00001\u00001\u0000.\u00001\u0000-\u00008\u00001\u00005\u00002\u00008\u00005\u00001\u00001\u0000\r\u0000\n\u0000D\u0000X\u0000C\u0000o\u0000r\u0000e\u0000 \u0000Hr,g\u001a� \u00001\u00000\u0000.\u00000\u0000.\u00002\u00006\u00001\u00000\u00000\u0000.\u00001\u0000-\u00002\u00004\u00000\u00003\u00003\u00001\u0000-\u00001\u00004\u00003\u00005\u0000.\u0000g\u0000e\u0000-\u0000r\u0000e\u0000l\u0000e\u0000a\u0000s\u0000e\u0000\r\u0000\n\u0000W\u0000i\u0000n\u0000d\u0000o\u0000w\u0000s\u0000 \u0000Hr,g\u001a� \u00001\u00000\u0000.\u00000\u0000.\u00002\u00006\u00002\u00000\u00000\u0000.\u00009\u00001\u00006\u00008\u0000\r\u0000\n\u0000",
+    "stderr": ""
+  }
+}

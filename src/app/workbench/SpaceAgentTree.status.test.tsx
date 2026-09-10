@@ -49,7 +49,8 @@ it.each(["idle", "connecting"] as const)("does not describe %s as an empty succe
 });
 it("shows a successful empty snapshot with a readable host and Session name", () => {
   show("ready", emptySnapshot, null);
-  expect(screen.getByText("已載入快照")).toBeInTheDocument();
+  expect(screen.queryByText("已載入快照")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "展開 Ubuntu-24.04 · default 的 Spaces" })).toBeDisabled();
   expect(document.body).toHaveTextContent("Ubuntu-24.04 · default: 此 Session 尚無 Space。");
   expect(document.body).not.toHaveTextContent(scope);
 });

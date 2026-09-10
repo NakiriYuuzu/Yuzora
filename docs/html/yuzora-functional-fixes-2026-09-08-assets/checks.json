@@ -1,0 +1,65 @@
+[
+  {
+    "name": "前端完整 Vitest",
+    "result": "PASS · 219 files / 2,723 tests · 67.68s",
+    "cmd": "bun run test --maxWorkers=4",
+    "log": "/tmp/yuzora-fix-vitest-final.log",
+    "pattern": "Test Files|Tests  |Duration"
+  },
+  {
+    "name": "Herdr service 最終回歸",
+    "result": "PASS · 92 passed / 0 failed · 11.05s",
+    "cmd": "cargo test --locked --manifest-path src-tauri/host/Cargo.toml --lib herdr_service::tests -- --test-threads=16",
+    "log": "/tmp/yuzora-fix-host-herdr-final.log",
+    "pattern": "test result:"
+  },
+  {
+    "name": "Herdr service / transport 整組",
+    "result": "PASS · 114 passed / 0 failed · 8.18s（修復期間）",
+    "cmd": "cargo test --locked --manifest-path src-tauri/host/Cargo.toml --lib herdr -- --test-threads=16",
+    "log": "/tmp/qa26-herdr-suite-single16.log",
+    "pattern": "test result:"
+  },
+  {
+    "name": "Frontend build / typecheck",
+    "result": "PASS · exit 0；Vite 有既有 chunk / dynamic import 警告",
+    "cmd": "bun run build",
+    "log": "/tmp/yuzora-fix-frontend-build.log",
+    "pattern": "built in|^\\$"
+  },
+  {
+    "name": "Debug Rust build",
+    "result": "PASS · 12.03s；已啟動相同 SHA256 binary",
+    "cmd": "cargo build --locked --manifest-path src-tauri/Cargo.toml",
+    "log": "/tmp/yuzora-fix-build-final.log",
+    "pattern": "Compiling|Finished"
+  },
+  {
+    "name": "ESLint",
+    "result": "PASS_WITH_WARNINGS · 0 errors / 56 warnings",
+    "cmd": "bun run lint",
+    "log": "/tmp/yuzora-fix-lint-final.log",
+    "pattern": "problems|0 errors"
+  },
+  {
+    "name": "Clippy 基線",
+    "result": "PASS · 精確符合既有 90 diagnostics",
+    "cmd": "既有 Clippy baseline check（本輪輸出）",
+    "log": "/tmp/yuzora-fix-clippy.log",
+    "pattern": "baseline"
+  },
+  {
+    "name": "Rust format",
+    "result": "PASS · exit 0",
+    "cmd": "cargo fmt --check（desktop / host）",
+    "log": "/tmp/yuzora-fix-fmt-final.log",
+    "pattern": "."
+  },
+  {
+    "name": "Preview focused",
+    "result": "PASS · 7 files / 82 tests",
+    "cmd": "bun run test -- src/app/panels/previewPanel.test.tsx src/preview src/state/previewStore.test.ts",
+    "log": "/tmp/qa006-r2-green.txt",
+    "pattern": "Test Files|Tests  |Duration"
+  }
+]

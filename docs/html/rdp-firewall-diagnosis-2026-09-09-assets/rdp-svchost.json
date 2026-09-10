@@ -1,0 +1,41 @@
+{
+  "members": {
+    "TerminalService": [
+      "TermService"
+    ],
+    "NetworkService": [
+      "CryptSvc",
+      "lanmanworkstation",
+      "WinRM",
+      "WECSVC",
+      "DNSCache",
+      "dosvc",
+      "DHCP",
+      "TermService",
+      "MapsBroker",
+      "Tapisrv"
+    ]
+  },
+  "groups": [
+    {
+      "name": "TerminalService",
+      "values": {
+        "AuthenticationCapabilities": 8192,
+        "CoInitializeSecurityAllowComCapability": 1,
+        "CoInitializeSecurityParam": 1,
+        "COM_UnmarshalingPolicy": 1,
+        "DefaultRpcStackSize": 28
+      }
+    },
+    {
+      "name": "NetworkService",
+      "values": {
+        "AuthenticationCapabilities": 8192,
+        "CoInitializeSecurityAllowComCapability": 1,
+        "CoInitializeSecurityParam": 1,
+        "COM_UnmarshalingPolicy": 1,
+        "DefaultRpcStackSize": 28
+      }
+    }
+  ]
+}

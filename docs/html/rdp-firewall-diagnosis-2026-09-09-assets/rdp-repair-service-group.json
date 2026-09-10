@@ -1,0 +1,76 @@
+{
+  "time": "2026-09-09T21:15:50.0318323+08:00",
+  "backup": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-rdp-repair-20260909-210121",
+  "original": "C:\\WINDOWS\\System32\\svchost.exe -k NetworkService",
+  "processesBefore": [
+    {
+      "Id": 22804,
+      "ProcessName": "herdr",
+      "StartTime": "2026-09-09T20:25:34.0676996+08:00"
+    },
+    {
+      "Id": 28428,
+      "ProcessName": "vmmemWSL",
+      "StartTime": "2026-09-06T19:56:21.3642473+08:00"
+    }
+  ],
+  "stop": "\r\nSERVICE_NAME: TermService \r\n        TYPE               : 30  WIN32  \r\n        STATE              : 3  STOP_PENDING \r\n                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\r\n        WIN32_EXIT_CODE    : 0  (0x0)\r\n        SERVICE_EXIT_CODE  : 0  (0x0)\r\n        CHECKPOINT         : 0x1\r\n        WAIT_HINT          : 0xea60\r\n",
+  "start": "[SC] StartService FAILED 1056:\r\n\r\nAn instance of the service is already running.\r\n\r\n",
+  "services": [
+    {
+      "Name": "SessionEnv",
+      "State": "Stopped",
+      "ProcessId": 0,
+      "PathName": "C:\\WINDOWS\\System32\\svchost.exe -k netsvcs -p",
+      "StartName": "localSystem"
+    },
+    {
+      "Name": "TermService",
+      "State": "Running",
+      "ProcessId": 7448,
+      "PathName": "C:\\WINDOWS\\System32\\svchost.exe -k TerminalService",
+      "StartName": "NT Authority\\NetworkService"
+    },
+    {
+      "Name": "UmRdpService",
+      "State": "Stopped",
+      "ProcessId": 0,
+      "PathName": "C:\\WINDOWS\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p",
+      "StartName": "localSystem"
+    }
+  ],
+  "listeners": [],
+  "sessions": " SESSIONNAME               USERNAME                 ID  STATE   TYPE        DEVICE \r\n>services                                            0  Disc                        \r\n console                   Yuuzu                     7  Active                      \r\n",
+  "certificates": [
+    {
+      "Subject": "CN=DESKTOP-NMLUN4F",
+      "Thumbprint": "F65593F199374C3D75CD0A375BF1D866EF152453",
+      "HasPrivateKey": true,
+      "NotAfter": "2027-03-10T21:03:37+08:00"
+    }
+  ],
+  "events": [
+    {
+      "TimeCreated": "2026-09-09T21:15:51.1468515+08:00",
+      "Id": 17,
+      "Message": "遠端桌面服務啟動失敗。相關的狀態碼是 0x80070005。"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:15:51.144362+08:00",
+      "Id": 17,
+      "Message": "遠端桌面服務啟動失敗。相關的狀態碼是 0x80070005。"
+    }
+  ],
+  "processesAfter": [
+    {
+      "Id": 22804,
+      "ProcessName": "herdr",
+      "StartTime": "2026-09-09T20:25:34.0676996+08:00"
+    },
+    {
+      "Id": 28428,
+      "ProcessName": "vmmemWSL",
+      "StartTime": "2026-09-06T19:56:21.3642473+08:00"
+    }
+  ]
+}

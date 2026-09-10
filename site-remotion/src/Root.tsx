@@ -1,67 +1,24 @@
 import "./index.css";
 import { Composition } from "remotion";
-import { AdeHerdr } from "./AdeHerdr";
-import { HERO_DURATION, Hero } from "./Hero";
-import { RemoteDb } from "./RemoteDb";
-import { TerminalGit } from "./TerminalGit";
+import { RecordedWorkbench } from "./RecordedWorkbench";
+import manifest from "./capture-manifest.json";
 
-const FPS = 30;
-const WIDTH = 1280;
-const HEIGHT = 800;
-
-const LANGS = ["zh", "en"] as const;
-
-export const RemotionRoot: React.FC = () => {
-  return (
-    <>
-      {LANGS.map((lang) => (
-        <Composition
-          key={`hero-${lang}`}
-          id={`hero-${lang}`}
-          component={Hero}
-          defaultProps={{ lang }}
-          durationInFrames={HERO_DURATION}
-          fps={FPS}
-          width={WIDTH}
-          height={HEIGHT}
-        />
-      ))}
-      {LANGS.map((lang) => (
-        <Composition
-          key={`ade-herdr-${lang}`}
-          id={`ade-herdr-${lang}`}
-          component={AdeHerdr}
-          defaultProps={{ lang }}
-          durationInFrames={170}
-          fps={FPS}
-          width={WIDTH}
-          height={HEIGHT}
-        />
-      ))}
-      {LANGS.map((lang) => (
-        <Composition
-          key={`remote-db-${lang}`}
-          id={`remote-db-${lang}`}
-          component={RemoteDb}
-          defaultProps={{ lang }}
-          durationInFrames={230}
-          fps={FPS}
-          width={WIDTH}
-          height={HEIGHT}
-        />
-      ))}
-      {LANGS.map((lang) => (
-        <Composition
-          key={`terminal-git-${lang}`}
-          id={`terminal-git-${lang}`}
-          component={TerminalGit}
-          defaultProps={{ lang }}
-          durationInFrames={300}
-          fps={FPS}
-          width={WIDTH}
-          height={HEIGHT}
-        />
-      ))}
-    </>
-  );
-};
+export const RemotionRoot: React.FC = () => (
+  <>
+    {manifest.map(({ feature, lang, frames }) => (
+      <Composition
+        key={`${feature}-${lang}`}
+        id={`${feature}-${lang}`}
+        component={RecordedWorkbench}
+        defaultProps={{
+          feature: feature as "ade-herdr" | "terminal-git" | "remote-db",
+          lang: lang as "zh" | "en",
+        }}
+        durationInFrames={frames}
+        fps={30}
+        width={1440}
+        height={960}
+      />
+    ))}
+  </>
+);

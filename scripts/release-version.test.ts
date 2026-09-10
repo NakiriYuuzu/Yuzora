@@ -12,9 +12,9 @@ describe("release version classification", () => {
     expect(versionFromTag("v0.0.9-beta.1")).toBe("0.0.9-beta.1")
   })
 
-  it("accepts the current beta product version and matching tag", () => {
-    expect(verifyVersionConsistency(process.cwd(), "v0.0.9-beta.3")).toBe(
-      "Version consistency verified: v0.0.9-beta.3"
+  it("accepts the current stable product version and matching tag", () => {
+    expect(verifyVersionConsistency(process.cwd(), "v0.0.9")).toBe(
+      "Version consistency verified: v0.0.9"
     )
   })
 

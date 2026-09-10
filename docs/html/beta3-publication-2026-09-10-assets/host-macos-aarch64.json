@@ -1,0 +1,15 @@
+{
+  "protocol": 1,
+  "version": "0.0.9-beta.3",
+  "target": "macos-aarch64",
+  "helper": {
+    "path": "macos-aarch64/yuzora-host",
+    "sha256": "05736d6fb6bde0278d529411cdac7ccf742a1b8ede219e30c31d79f13deff48d"
+  },
+  "herdr": {
+    "path": "macos-aarch64/herdr",
+    "sha256": "32b53df09872628059c789a69f02a6b8e29e14ddf26711421f3463f70c1aef17",
+    "version": "0.9.0",
+    "protocol": 22
+  }
+}

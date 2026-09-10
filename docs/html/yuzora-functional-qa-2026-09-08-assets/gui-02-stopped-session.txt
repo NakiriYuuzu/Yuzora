@@ -1,0 +1,121 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 button (expanded) 收合左側導覽, Secondary Actions: Collapse
+			4 button (expanded) 收合右側工作工具, Secondary Actions: Collapse
+			5 container 側邊導覽
+				6 text Yuzora
+				7 container 共用工具
+					8 button 搜尋檔案與命令
+					9 toggle button 工作面, Value: on
+					10 toggle button 資料庫, Value: off
+					11 button SSH / SFTP
+				12 text Spaces 與 Agents
+				13 pop up button Herdr Session：yuzora-provider-r7, Help: 開啟 Session 或資料夾
+				14 text 已載入快照
+				15 button 收合所有 Space 資料夾
+				16 text Server 已停止 · 顯示上次資料
+				17 outline (selectable) Spaces 與 Agents · yuzora-provider-r7
+				18 text 此 Session 尚無 Space。
+				19 container
+					20 text yuzora-provider-r7 :  Server 已停止 · 顯示上次資料
+				21 button 設定
+			22 splitter 調整左側 Spaces 與 Agents 寬度, Value: 288
+			23 button Yuzora
+			24 text 本地
+			25 button 關閉 Yuzora
+			26 pop up button 新增分頁
+			27 button 向右分割, Help: 分割編輯器
+			28 text Yuzora
+			29 text 控制者
+			30 text entry area (settable) Terminal input
+			31 splitter 調整右側工作工具寬度, Value: 264
+			32 container 工作工具
+				33 text 工作工具
+				34 tab group (selectable) 工作工具
+					35 tab (selected) 檔案
+					36 tab (selectable) Git
+				37 text /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora 本地
+				38 container 檔案
+					39 button 新增資料夾
+					40 button SFTP 傳輸
+					41 container
+						42 button .claude
+						43 button .design
+						44 button .firecrawl
+						45 button .git
+						46 button .github
+						47 button .idea
+						48 button .pi
+						49 button .pi-subagents
+						50 button .playwright-cli
+						51 button .playwright-mcp
+						52 button .superpowers
+						53 button .vscode
+						54 button .yuuzu
+						55 button dist
+						56 button docs
+						57 button fixtures
+						58 button herdr-plugins
+						59 button node_modules
+						60 button output
+						61 button public
+						62 button scripts
+						63 button site
+						64 button site-remotion
+						65 button specs
+						66 button spikes
+						67 button src
+						68 button src-tauri
+						69 button tests
+						70 button .DS_Store
+						71 button .editorconfig
+						72 button .gitattributes
+						73 button .gitignore
+						74 button .intentionally-empty-file.o
+						75 button 開啟差異 .intentionally-empty-file.o, Help: 開啟差異
+						76 button AGENTS.md
+						77 button app-icon.png
+						78 button bun.lock
+						79 button 開啟差異 bun.lock, Help: 開啟差異
+						80 button CHANGELOG.md
+						81 button CLAUDE.md
+						82 button components.json
+						83 button eslint.config.js
+						84 button 開啟差異 eslint.config.js, Help: 開啟差異
+						85 button index.html
+						86 button package.json
+						87 button 開啟差異 package.json, Help: 開啟差異
+						88 button QA-REPORT.md
+						89 button 開啟差異 QA-REPORT.md, Help: 開啟差異
+						90 button README.md
+						91 button README.zh-TW.md
+						92 button tsconfig.json
+						93 button tsconfig.node.json
+						94 button tsconfig.tsbuildinfo
+						95 button vite.config.ts
+			96 container 狀態列
+				97 text Yuzora
+				98 pop up button release/v0.0.9-beta.3
+				99 text 220
+				100 pop up button 2% · 147MB, Help: App 本體與受管理子行程總和 — App 本體 2% · 139MB ／ 受管理子行程 1 個（WebView renderer/GPU 0 個 0MB、受管理工具 1 個 8MB）
+				101 text 未開啟檔案
+			102 heading 命令面板, Value: 2
+				103 text 命令面板
+			104 text 搜尋檔案、執行命令…
+			105 heading 符號選擇器, Value: 2
+				106 text 符號選擇器
+			107 text 跳至符號…
+	108 close button
+	109 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	110 minimize button
+111 menu bar
+	112 Yuzora Current QA
+	113 File
+	114 Edit
+	115 View
+	116 Window
+	117 Help
+
+The focused UI element is 13 pop up button Herdr Session：yuzora-provider-r7, Help: 開啟 Session 或資料夾

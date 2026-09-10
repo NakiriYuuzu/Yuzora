@@ -278,3 +278,24 @@ test("reloadDocument 失敗（檔案已刪）時 generation 不變且 rejection 
     await expect(reloadDocument("/w/reload-gone.ts")).rejects.toThrow()
     expect(documentGeneration("/w/reload-gone.ts")).toBe(gen0)
 })
+
+test("dropping a file invalidates a pending read even when it is reopened in the same workspace", async () => {
+    let finish!: (value: OpenFileResult) => void
+    mockIPC(() => new Promise<OpenFileResult>(resolve => { finish = resolve }))
+    const pending = getDocument("/repo/closed.ts")
+    dropDocument("/repo/closed.ts")
+    mockIPC(() => ({ kind: "full", content: "new", size: 3, lineEnding: "lf" }))
+    await getDocument("/repo/closed.ts")
+    finish({ kind: "full", content: "old", size: 3, lineEnding: "lf" })
+    await expect(pending).rejects.toThrow()
+    expect((await getDocument("/repo/closed.ts")).result).toMatchObject({ content: "new" })
+})
+
+test("a reload started without a cached document cannot repopulate a closed file", async () => {
+    let finish!: (value: OpenFileResult) => void
+    mockIPC(() => new Promise<OpenFileResult>(resolve => { finish = resolve }))
+    const pending = reloadDocument("/repo/closed-reload.ts")
+    dropDocument("/repo/closed-reload.ts")
+    finish({ kind: "full", content: "old", size: 3, lineEnding: "lf" })
+    await expect(pending).rejects.toThrow()
+})

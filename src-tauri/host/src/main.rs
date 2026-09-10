@@ -20,6 +20,9 @@ fn main() {
         }
     }
     tokio::runtime::Builder::new_multi_thread()
+        // Each terminal/watch/tunnel lane is a separate helper. Do not create
+        // one executor thread per host CPU for every idle pipe.
+        .worker_threads(2)
         .enable_all()
         .build()
         .expect("host runtime")

@@ -192,6 +192,11 @@ impl HostServer {
                 methods: methods(),
             })
             .map_err(|e| e.to_string()),
+            Operation::ClipboardImage { png_base64 } => tokio::task::spawn_blocking(move || {
+                crate::clipboard_image::stage(&png_base64).map(Value::String)
+            })
+            .await
+            .map_err(|e| e.to_string())?,
             Operation::WorkspaceOpen { path } => self.files.open(&path),
             Operation::WorkspaceClose { workspace } => {
                 self.git

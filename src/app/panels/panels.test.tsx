@@ -131,10 +131,10 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
 
 
     const nav = screen.getByRole("complementary", { name: "Sidebar navigation" })
-    // Default herdrStore is idle/connecting until HerdrBridge bootstraps.
     expect(
-      within(nav).getByText(/All shows loaded runtime namespaces only/)
+      within(nav).getByRole("button", { name: "Herdr Session: All" })
     ).toBeInTheDocument()
+    expect(within(nav).queryByText(/All shows loaded runtime namespaces only/)).not.toBeInTheDocument()
   })
 })
 

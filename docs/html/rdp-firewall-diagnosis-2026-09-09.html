@@ -1,0 +1,40 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Windows RDP／防火牆診斷</title><style>body{font:16px/1.75 system-ui,sans-serif;background:#f7f8fa;color:#182334;margin:0}main{max-width:960px;padding:32px 24px;margin:auto}h1{line-height:1.3}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid #d5deea;text-align:left;vertical-align:top}code{font-size:13px;overflow-wrap:anywhere}.note{border-left:4px solid #ad7617;background:#fff2d7;padding:16px}a{color:#075eac}</style></head><body><main>
+<p>2026-09-09 · 初始診斷 20:48 · 恢復與 GUI 實測更新 23:49（Asia/Taipei）</p><h1>RDP 已恢復，已透過 Windows App 登入並操作 Yuzora</h1>
+<p>主機 <code>DESKTOP-NMLUN4F</code>／<code>192.168.213.129</code>。防火牆原本已放行 3389；原始失敗發生在 TermService 向 LSM 註冊服務階段。已將 TermService ImagePath 恢復為 Windows 元件清單宣告的 <code>svchost.exe -k TerminalService</code>。</p>
+<section class="note"><strong>連線修復已通過實測。</strong><p>使用者後續自行重啟，Windows 的 LastBootUpTime 為 21:28:45。23:04 復測確認 IPv4／IPv6 3389 listener、loopback 與 Mac TCP 連線均成功；本次開機後未再出現 LSM Event 17。CUA 已實際登入 Windows 桌面並完成部分 Yuzora 設定驗收。無新增防火牆規則，無放寬 ACL、NLA 或 TLS。</p></section>
+<h2>恢復後觀測</h2><p>TermService PID 7968、LSM PID 2084。登入前透過 SSH 核對 RDP 憑證 SHA-256，與 Windows App 顯示一致後才繼續；未永久信任憑證。後續出現的 <code>0x5</code> 是其他本機／RDP 連線接手互動 Session，與原先沒有 listener 的 <code>0x704</code> 不同。使用者保留操作時間後，可持續操作 Windows Yuzora。</p>
+<p>GUI 過程曾遇到 Yuzora 顯示「沒有回應」；僅重啟已核對路徑與啟動時間的 Yuzora 程序後恢復，原生 HERDR PID 25576 保持不變。這是當次恢復，尚未證明 RDP／顯示切換造成的 app hang 已永久修復。GUI 最後關閉的是本次 RDP 視窗，保留 Windows 應用程式與 HERDR。</p>
+<p>Yuzora 驗收另找出 WSL 更新錯誤 <code>host-probe-output-too-large</code>，已定位為 schema 大小超出主機探測上限；詳見 <a href="windows-herdr-live-acceptance-2026-09-09.html">Windows HERDR 驗收紀錄</a>。</p>
+<h2>恢復證據</h2><ul><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-recheck-health.json">開機時間、服務、憑證、loopback、無新增 Event 17</a></li><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-gui-connected-status.json">GUI 登入後 rdp-tcp Active 與 runtime 狀態</a></li><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-session-events.json">互動 Session 被本機／其他連線接手事件</a></li><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-post-recovery-state.json">Yuzora 恢復後與 HERDR 存續證據</a></li></ul>
+<hr><h2>以下為 21:22 以前的歷史診斷</h2><p>下列「仍未恢復」均描述重啟前狀態；最新結論以頁首恢復實測為準。</p>
+<h2>已定位的失敗位置</h2><p>短時間 ETW 追蹤顯示：TermService（當時 PID 5896）呼叫本機 LSM（PID 1544）公開的 <code>ISessionManager {517f87fe-597a-4672-8555-6daf1c8c788d}</code>、opnum 3，RPC server 的安全性檢查回傳 <code>5 / Access denied</code>，隨後 LSM 出現 Event 17／<code>0x80070005</code>。這定位了失敗邊界；尚未證明是哪項 LSM 內部狀態或安全性判斷造成拒絕。</p>
+<h2>本次處理與結果</h2><table><thead><tr><th>處理</th><th>結果</th></tr></thead><tbody>
+<tr><td>保全登錄、RDP-Tcp ACL、服務狀態、Session 及程序清單</td><td>Windows 備份：<code>C:\Users\Yuuzu\AppData\Local\Temp\yuzora-rdp-repair-20260909-210121</code>。含原始 <code>TermService.reg</code>／<code>TerminalServer.reg</code>，以及變更前 <code>TermService-before-group-repair.reg</code>。</td></tr>
+<tr><td>重啟 RDP 服務；另以一次性 SYSTEM 排程測試</td><td>仍無 listener。一次性排程已移除，所有本次 ETW session 已停止。</td></tr>
+<tr><td>比對已安裝 Windows 元件清單</td><td>服務帳號 NetworkService、六項 RequiredPrivileges、service SID 與元件宣告一致。沒有任意加入 SeTcbPrivilege、修改 ACL 或調降 NLA／TLS。</td></tr>
+<tr><td>修正服務啟動參數</td><td>原 <code>svchost.exe -k NetworkService</code> 與元件清單不符；已恢復 <code>%SystemRoot%\System32\svchost.exe -k TerminalService</code>。此項修正後，LSM 的拒絕仍存在，不能視為根因已解決。</td></tr>
+<tr><td>官方 WMI API 重新啟用 RDP</td><td>關閉／開啟皆回傳 0，最後 <code>fDenyTSConnections=0</code>；未修改防火牆例外，3389 仍無 listener。</td></tr>
+<tr><td>憑證</td><td>啟動 SessionEnv 後，Windows 已產生 Remote Desktop 自簽憑證（CN=DESKTOP-NMLUN4F、有 private key、到期 2027-03-10）。憑證存在仍無法連線，因此不能將缺少憑證直接當成根因。</td></tr>
+<tr><td>保留工作</td><td>21:22：console Session 7 保留；HERDR PID 22804（20:25:34 啟動）、WSL VM PID 28428（09-06 啟動）均維持原程序。HERDR default client/server 皆 0.9.0／protocol 22、compatible=true。Yuzora 程序當時已不在清單中；本次沒有關閉該程式。</td></tr>
+</tbody></table>
+<h2>Computer use 實測</h2><p>本次已透過 CUA 操作 Mac 的 Windows App，雙擊已儲存的 192.168.213.129 連線。畫面先顯示 Initiating remote connection，隨後出現 Unable to connect／Error code: 0x704，未進入 Windows 桌面。已關閉錯誤提示。此結果是連線失敗的 GUI 證據，不能算 Yuzora 功能驗收通過。</p><h2>後續通過條件</h2><p>先確認 Windows 的 <code>qwinsta</code> 出現 <code>rdp-tcp Listen</code>，本機 127.0.0.1:3389 與 Mac 到 192.168.213.129:3389 均可連線，再用 Windows App 實際登入並驗收 Yuzora。正常重啟 Windows 可作為重建 LSM 狀態的下一個診斷步驟，但尚未執行，不能保證重啟必定解決。</p>
+<h2>初始唯讀診斷（20:48）</h2><table><thead><tr><th>檢查</th><th>實測結果</th><th>判讀</th></tr></thead><tbody>
+<tr><td>Mac → SSH</td><td>TCP 22 成功，sshd 同時監聽 IPv4／IPv6</td><td>IP 與基本網路路徑可用。</td></tr>
+<tr><td>Windows 網路設定</td><td>乙太網路為 Public，防火牆啟用</td><td>RDP 規則 Profile=Any，涵蓋目前網路。</td></tr>
+<tr><td>SSH 防火牆</td><td>OpenSSH 規則僅 Private；另有 Allow-SSH-Port-22：Enabled=True、Allow、Profile=Any、RemoteAddress=Any</td><td>額外全 profile 規則解釋 Public 網路仍可 SSH。</td></tr>
+<tr><td>RDP 防火牆</td><td>RemoteDesktop-UserMode-In-TCP／UDP：Enabled=True、Allow、3389、Profile=Any、RemoteAddress=Any，綁定 termservice／svchost.exe</td><td>已存在正確的 RDP 入站放行規則。</td></tr>
+<tr><td>RDP 開關</td><td>fDenyTSConnections=0、fEnableWinStation=1、AllowTSConnections=1</td><td>設定允許 RDP。</td></tr>
+<tr><td>服務／監聽器</td><td>TermService=Running，PID 10264；無 TCP／UDP 3389。qwinsta 無 rdp-tcp Listen</td><td>服務程序存在，但 RDP 初始化未完成。</td></tr>
+<tr><td>Windows → 本機 RDP</td><td>127.0.0.1:3389：目標電腦拒絕連線</td><td>不依賴 Mac 或外部網路，也無法接上 RDP。</td></tr>
+<tr><td>直接錯誤證據</td><td>LocalSessionManager/Operational，Event ID 17，2026-09-09 20:36:35 連續三筆：遠端桌面服務啟動失敗，0x80070005</td><td>0x80070005＝Access denied／存取被拒。</td></tr>
+<tr><td>TLS 憑證線索</td><td>SecurityLayer=2；LocalMachine 的 Remote Desktop store 不存在，SSLCertificateSHA1Hash 全零、Type=0</td><td>尚未建立可用 RDP 憑證。可能與初始化失敗有關，現有證據不能單獨確認憑證是根因。</td></tr>
+<tr><td>程式檔與服務帳號</td><td>TermService 使用 NetworkService，ServiceDll 為系統 termsrv.dll，Microsoft 簽章有效</td><td>未見替換為第三方 DLL 的證據。</td></tr>
+</tbody></table>
+<h2>下一個修復範圍</h2><p>應針對 TermService 的初始化存取權限、RDP listener 設定與憑證建立流程查證。MachineKeys 目前具有 Administrators FullControl 與 Everyone 讀寫，符合 Microsoft 文件列出的基本權限；不能憑 Access denied 就擅自對整個目錄授予更廣權限。現有事件沒有指明是哪個物件遭拒，尚不能指定單一 ACL 為根因。</p>
+<p>上表是修復前的初始觀測；目前狀態與本次變更以頁首更新為準。防火牆、網路類型、NLA／TLS 及 ACL 維持原設定。</p>
+<h2>證據與參考</h2><ul><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-rpc-denied.json">RPC 失敗與 ISessionManager 介面證據</a></li><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-rcm-manifest.xml">Windows 元件清單：服務啟動參數與必要權限</a></li><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-repair-service-group.json">啟動參數修正與復測結果</a></li><li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-preserve-status.json">21:22 最新狀態及 HERDR／WSL 程序保留證據</a></li>
+<li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-diagnose.json">網路、有效防火牆與服務設定</a></li>
+<li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-listener-detail.json">事件、監聽器、本機連線與憑證</a></li>
+<li><a href="rdp-firewall-diagnosis-2026-09-09-assets/rdp-access-detail.json">服務權限與 ACL 唯讀資料</a></li>
+<li><a href="https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/rdp-error-general-troubleshooting">Microsoft：RDP 一般連線排查（listener／自簽憑證／MachineKeys）</a></li>
+</ul></main></body></html>

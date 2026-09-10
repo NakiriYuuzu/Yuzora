@@ -1,0 +1,72 @@
+{
+  "time": "2026-09-10T03:17:08.4786436+08:00",
+  "native": {
+    "session": "yuzora-empty-gui-0910",
+    "workspace": "w3",
+    "folder": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\Yuzora-Empty-GUI-20260910\\native-new-folder-20260910\\a01f955-folder-check",
+    "folderExists": true,
+    "content": "WINDOWS_FINAL_CANDIDATE_OK",
+    "tabs": {
+      "id": "cli:tab:list",
+      "result": {
+        "tabs": [
+          {
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "a01f955-folder-check",
+            "number": 1,
+            "pane_count": 1,
+            "tab_id": "w3:t1",
+            "workspace_id": "w3"
+          },
+          {
+            "agent_status": "unknown",
+            "focused": true,
+            "label": "native-final-second",
+            "number": 2,
+            "pane_count": 1,
+            "tab_id": "w3:t2",
+            "workspace_id": "w3"
+          }
+        ],
+        "type": "tab_list"
+      }
+    }
+  },
+  "wsl": {
+    "distro": "Ubuntu-26.04",
+    "session": "default",
+    "workspace": "w6",
+    "folder": "/home/yuuzu/Yuzora-WSL-GUI-20260910",
+    "content": [
+      "WSL_FOLDER_SESSION_OK",
+      "WSL_EDITOR_SAVE_OK"
+    ],
+    "tabs": {
+      "id": "cli:tab:list",
+      "result": {
+        "tabs": [
+          {
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "Yuzora-WSL-GUI-20260910",
+            "number": 1,
+            "pane_count": 1,
+            "tab_id": "w6:t1",
+            "workspace_id": "w6"
+          },
+          {
+            "agent_status": "unknown",
+            "focused": true,
+            "label": "wsl-folder-second",
+            "number": 2,
+            "pane_count": 1,
+            "tab_id": "w6:t2",
+            "workspace_id": "w6"
+          }
+        ],
+        "type": "tab_list"
+      }
+    }
+  }
+}

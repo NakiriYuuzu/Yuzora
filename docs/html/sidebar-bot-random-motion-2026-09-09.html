@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>側邊欄 bot 隨機動作 — 2026-09-09</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 760px; margin: 48px auto; padding: 0 24px; line-height: 1.8; }
+  h1 { font-size: 28px; } h2 { margin-top: 32px; font-size: 20px; }
+  code { overflow-wrap: anywhere; }
+</style>
+<main>
+  <h1>側邊欄 bot 隨機動作</h1>
+  <p>2026-09-09：每個 bot 現在各自隨機選擇浮動、左右搖晃或點頭，並分別抽選眨眼、視線及身體動畫的週期與起始時間。</p>
+  <h2>原因與修改</h2>
+  <p>原本動畫使用固定週期，延遲只依外型區分，因此同外型的多專案 bot 會同步。現在由 SpaceCharacter 的 lazy state initializer 為每個元件建立獨立動畫參數，透過 CSS 自訂屬性播放；父元件重新渲染時保留參數，重新掛載才重新抽選。不同 bot 仍可能抽到相同動作，但各自的速度與起始時間獨立。</p>
+  <ul>
+    <li><code>src/app/workbench/SpaceCharacter.tsx</code>：初始化並套用每個 bot 的隨機參數。</li>
+    <li><code>src/app/workbench/space-agent-sidebar.css</code>：使用獨立週期與延遲，加入左右搖晃及點頭動作。</li>
+  </ul>
+  <p>沿用既有角色元件與 CSS 動畫，沒有新增 UI primitive 或 JavaScript 計時器；保留 portrait 小幅度動作、motion=false 及 prefers-reduced-motion 支援。</p>
+  <h2>驗證</h2>
+  <ul>
+    <li><code>bun run build</code>：通過，包含 TypeScript 檢查。</li>
+    <li><code>bunx eslint src/app/workbench/SpaceCharacter.tsx</code>：通過。</li>
+    <li>SpaceAgentSidebar、SpaceAgentTree、SpaceAgentTree.status：3 個既有測試檔、16 項測試通過。</li>
+    <li><code>git diff --check</code>：通過。</li>
+  </ul>
+  <p>建置仍提示 remotePreviewUrl 的靜態／動態匯入重疊及 bundle 大小；測試環境提示 localstorage-file 路徑，皆未造成驗證失敗。</p>
+  <p>尚未進行瀏覽器／E2E 視覺驗證；依本次提供的 AGENTS.md 規則，啟用瀏覽器自動化前須取得使用者明確同意。既有測試通過不代表已驗證實際動畫畫面。</p>
+</main>
+</html>

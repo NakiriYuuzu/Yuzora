@@ -5,7 +5,7 @@ import reactRefresh from "eslint-plugin-react-refresh"
 
 export default tseslint.config(
     {
-        ignores: ["dist", "output", "src-tauri", "node_modules", "docs", "spikes", "fixtures", "adapters", "site-remotion"]
+        ignores: ["dist", "output", "src-tauri", "node_modules", "docs", "spikes", "fixtures", "adapters", "site-remotion", "site/demo"]
     },
     js.configs.recommended,
     ...tseslint.configs.recommended,

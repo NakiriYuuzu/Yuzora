@@ -1,0 +1,538 @@
+{
+  "tasks": [
+    {
+      "id": "DB-S",
+      "title": "PostgreSQL TLS 降級修補",
+      "auditIds": [
+        "SEC01"
+      ],
+      "featureIds": [],
+      "owner": "DB安全修補者",
+      "files": [
+        "src-tauri/src/db_service.rs",
+        "src-tauri/src/db_query_worker.rs",
+        "src-tauri/tests/database_integration.rs"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "加密模式明確 Require、已授權明文模式明確 Disable，補完整協議負面回歸。",
+      "gate": "加密模式收到 SSL 拒絕後不送 Startup/Password；正常 TLS、明文例外與憑證確認流程仍正確。全部 network 功能最終驗收須包含此 gate。",
+      "note": "可立即獨立交付，不等待 DB 重構，也不讓每個工作包硬依賴它。既有稽核已復現漏洞；本規劃未實作修復或新增、執行修復後 loopback 回歸。"
+    },
+    {
+      "id": "DB-C",
+      "title": "DB 跨層契約與測試 fixtures",
+      "auditIds": [
+        "D03",
+        "D04",
+        "D06",
+        "D08",
+        "D09",
+        "D11",
+        "D12"
+      ],
+      "featureIds": [
+        "DBM01",
+        "DBM02",
+        "DBM03",
+        "DBM04"
+      ],
+      "owner": "DB契約整合者",
+      "files": [
+        "src/lib/types.ts",
+        "src/lib/ipc.ts",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/db_service.rs",
+        "src-tauri/src/db_query_worker.rs"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "凍結 Host/DB child identity、metadataRevision、snapshot/cursor owner 分離、有界 page/cell、progress/heartbeat 與 resourceWaiting 契約，提供可共享 fixtures。",
+      "gate": "Rust/TS 契約一致；明列舊 descriptor 相容、離線 cell 讀取、過期 owner、pin-full、忙碌 Preview 與兩 DB 獨立狀態案例。",
+      "note": "只凍結必要介面，避免先做全面重構；契約通過後各包可用 mock 平行開發，production 相依仍須完成。"
+    },
+    {
+      "id": "DB-A",
+      "title": "增量結果記憶體計帳",
+      "auditIds": [
+        "D01"
+      ],
+      "featureIds": [],
+      "owner": "DB結果核心實作者",
+      "files": [
+        "src-tauri/src/db_result_session.rs"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "以增量 page/session/registry retained bytes 取代每列重掃，保留原子預留與配置回滾。",
+      "gate": "既有 15 項結果預算與 ownership 測試不退步；比較 5k/10k/20k 列、1/4 connections 的新增列與鎖等待成本。",
+      "note": "可與 DB-S、DB-C 立即平行；先保持公開行為，落地後再由 DB-R 改頁面與快取生命週期。效能改善須另量測。"
+    },
+    {
+      "id": "DB-R",
+      "title": "有界頁面與可離線讀取的結果快照",
+      "auditIds": [
+        "D04",
+        "D06"
+      ],
+      "featureIds": [
+        "DBM04"
+      ],
+      "owner": "DB結果核心實作者",
+      "files": [
+        "src-tauri/src/db_result_session.rs",
+        "src-tauri/src/db_service.rs",
+        "src/lib/types.ts",
+        "src/lib/ipc.ts",
+        "src/state/dbStore.ts"
+      ],
+      "requires": [
+        "DB-C",
+        "DB-A"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "500 列與 2 MiB 軟目標頁面、不可變 cell handles、pin/LRU、明確 discard；分離 retained snapshot 與 live cursor ownership。",
+      "gate": "合法單大列仍可讀；各 DB current result 切換或離線後仍保留全文；回收舊頁回 pageEvicted/cellEvicted，不重跑 SQL；新 actor 不操作舊 cursor。",
+      "note": "停止 cursor 不等於清除結果；pin-full 僅拒絕或延後新 admission。無強制 disk spool；先前固定每 500 列定位須改為保存 page ordinal。"
+    },
+    {
+      "id": "DB-B",
+      "title": "有界資料流與獨立控制通道",
+      "auditIds": [
+        "D02",
+        "D12"
+      ],
+      "featureIds": [],
+      "owner": "DB傳輸實作者",
+      "files": [
+        "src-tauri/src/db_query_worker.rs",
+        "src-tauri/src/db_service.rs"
+      ],
+      "requires": [
+        "DB-C"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "PG bounded row queue 與 byte permits，背壓傳到 driver；cancel/close/heartbeat 不被資料輸出堵住。",
+      "gate": "大量結果停第一頁 30 秒時 retained queue 不持續膨脹；背壓滿載仍可取消並收到 heartbeat；取消不得影響下一 run。",
+      "note": "與 DB-A、DB-T、DB-H 平行。新 120 秒 liveness 語意須在 heartbeat/control path 通過後啟用，不能把合法長 SQL 無列輸出當失聯。"
+    },
+    {
+      "id": "DB-BT",
+      "title": "Helper 批次傳輸量測與選型",
+      "auditIds": [
+        "D10"
+      ],
+      "featureIds": [],
+      "owner": "DB傳輸實作者",
+      "files": [
+        "src-tauri/src/db_query_worker.rs",
+        "src-tauri/src/db_service.rs"
+      ],
+      "requires": [
+        "DB-B",
+        "DB-A"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "比較 row/byte 雙界線的小批次，選擇具量測收益且保持簡單的 frame 策略。",
+      "gate": "比較 32/128/500 列批次的吞吐、配置、首屏與取消延遲；保持 frame hard ceiling；未改善則保留簡單版本並交付證據。",
+      "note": "原型可先做；正式比較等待 DB-A 避免把 accounting 成本誤歸因 serde，production 等 DB-B 的背壓與取消正確性。"
+    },
+    {
+      "id": "DB-T",
+      "title": "連線交易與實際執行 context",
+      "auditIds": [
+        "D03"
+      ],
+      "featureIds": [
+        "DBM03",
+        "DBM04"
+      ],
+      "owner": "DB執行狀態實作者",
+      "files": [
+        "src-tauri/src/db_connection_actor.rs",
+        "src-tauri/src/db_service.rs",
+        "src-tauri/src/db_query_worker.rs",
+        "src/state/dbStore.ts",
+        "src/app/panels/DatabasePanel.tsx"
+      ],
+      "requires": [
+        "DB-C"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "connection-generation-scoped transaction/context snapshot，提供 fresh/stale/unknown 與实际 catalog，不靠本 run 重新初始化交易狀態。",
+      "gate": "跨 run BEGIN/SELECT/UPDATE/COMMIT、error/cancel/reconnect 正確；unknown 保守處理；不得自動 commit/rollback；schema browse 不改 search_path。",
+      "note": "可獨立使用 engine fixture 開發；補充 context 讀取失敗不能覆蓋原 SQL outcome。Preview 啟用與交易保護須等待本包。"
+    },
+    {
+      "id": "DB-H",
+      "title": "Host profile 與多 database 生命週期",
+      "auditIds": [],
+      "featureIds": [
+        "DBM01",
+        "DBM02"
+      ],
+      "owner": "DB設定與連線實作者",
+      "files": [
+        "src-tauri/src/db_profiles.rs",
+        "src-tauri/src/db_credentials.rs",
+        "src-tauri/src/db_service.rs",
+        "src-tauri/src/db_query_worker.rs",
+        "src/state/dbStore.ts"
+      ],
+      "requires": [
+        "DB-C"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "HostProfile 下建立每 DB 穩定 child descriptor，實作無秘密 migration、credential binding reuse、bounded database discovery 與 lazy open。",
+      "gate": "舊 descriptorId 不變、migration 不讀 vault；DB A/B 獨立 actor/交易；刪 child 不刪 host credential；新 DB 不繼承其他 DB 的明文授權。",
+      "note": "同 host 的不同 DB 可平行開啟；同 descriptor 仍以 reservation 去重。不可每 schema 建連線，不用 USE 搬移既有 console，也不自動合併相似舊 profiles。"
+    },
+    {
+      "id": "DB-N",
+      "title": "有界多 schema metadata",
+      "auditIds": [
+        "D08"
+      ],
+      "featureIds": [
+        "DBM03"
+      ],
+      "owner": "DB資料檢索實作者",
+      "files": [
+        "src-tauri/src/db_service.rs",
+        "src-tauri/src/db_query_worker.rs",
+        "src/lib/databaseSql.ts",
+        "src/lib/types.ts",
+        "src/lib/ipc.ts"
+      ],
+      "requires": [
+        "DB-C",
+        "DB-H"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "listNamespaces/listObjects/columns 有界分頁與搜尋，包含空 schema、權限、quoted identity、metadataRevision。",
+      "gate": "PG/MSSQL 多 schema 同名物件、權限拒絕、空 schema，SQLite ATTACH/temp，過期 revision 與跨 DB 回應均不混入。",
+      "note": "各引擎 adapter 可依契約 mock 與 DB-H 平行；production 跨 database owner 整合才等待 DB-H。保留 catalog/schema/kind/name 四元 identity。"
+    },
+    {
+      "id": "DB-Q",
+      "title": "排隊、去重與保留工作的資源 admission",
+      "auditIds": [
+        "D09",
+        "D12"
+      ],
+      "featureIds": [
+        "DBM02",
+        "DBM03"
+      ],
+      "owner": "DB排程實作者",
+      "files": [
+        "src-tauri/src/db_connection_actor.rs",
+        "src-tauri/src/db_query_worker.rs",
+        "src-tauri/src/db_service.rs",
+        "src/state/dbStore.ts"
+      ],
+      "requires": [
+        "DB-C",
+        "DB-R",
+        "DB-B",
+        "DB-T"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "每 connection metadata single-flight/queue，app query/metadata/connect/helper admission 與獨立控制優先權。",
+      "gate": "快速展開 5 物件成功且去重；query 優先、取消可達；pin-full 不終止 active query、未提交交易或各 DB current result，只拒絕或延後新增工作。",
+      "note": "queue/counter 可先用 fake actor/clock/budget 平行開發；production 壓力處置須等 pin、背壓與交易狀態，不可只加 semaphore 後沿用隱藏 cancellation。"
+    },
+    {
+      "id": "DB-UR",
+      "title": "結果表格、cell viewer 與独立 Preview",
+      "auditIds": [
+        "D05",
+        "D04",
+        "D06"
+      ],
+      "featureIds": [
+        "DBM04"
+      ],
+      "owner": "DB結果介面實作者",
+      "files": [
+        "src/app/panels/DatabasePanel.tsx",
+        "src/lib/types.ts",
+        "src/state/dbStore.ts",
+        "src/lib/ipc.ts"
+      ],
+      "requires": [
+        "DB-C",
+        "DB-R",
+        "DB-T"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "虛擬化寬表、4 KiB cell preview 與全文 viewer、offline snapshot 呈現；Preview 使用獨立有界結果 bucket。",
+      "gate": "500×20/200 欄 GUI 驗收與量測；離線全文可讀；Preview 不覆寫 SQL/runGroup，busy/open cursor/未提交交易時明確拒絕，不自動取消、提交或另開連線。",
+      "note": "可用 frozen page/cell/transaction fixtures 與 backend 平行；preview 截斷只是呈現，不得冒充 resultLimitReached。"
+    },
+    {
+      "id": "DB-UN",
+      "title": "Host、database、schema 導覽與獨立 console",
+      "auditIds": [
+        "D08"
+      ],
+      "featureIds": [
+        "DBM01",
+        "DBM02",
+        "DBM03"
+      ],
+      "owner": "DB導覽介面實作者",
+      "files": [
+        "src/app/workbench/DatabaseNavContent.tsx",
+        "src/app/panels/DatabasePanel.tsx",
+        "src/state/dbStore.ts",
+        "src/lib/databaseSql.ts",
+        "src/lib/databaseCompletion.ts"
+      ],
+      "requires": [
+        "DB-C",
+        "DB-H",
+        "DB-N",
+        "DB-Q"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "Host→DB→schema/object 惰性樹、分頁搜尋、每 DB console bucket 與實際 context 顯示。 明確負責 schema-aware SQL completion provider：按 engine/descriptor/generation/metadataRevision 建候選，columns 按需讀取；使用 CodeMirror compartment 更新候選，不重建 EditorView/undo。",
+      "gate": "DB A/B SQL、結果與取消目標不混用；切換 DB 不解除各自 current-result pin；schema filter 不 SET search_path；延遲/權限/空 schema 正確。 同名物件插入完整限定名稱；切換 DB/schema、revision 或 reconnect 時舊候選失效；無權限物件不出現；候選更新不清除草稿、游標或 undo。",
+      "note": "可先用多 DB fixtures 開發；database discovery 不代表自動開全部 connection。共用 dbStore 與 panel 接線交單一整合者。 databaseCompletion.ts 是規劃新增的 provider；DatabasePanel 的 CodeMirror 接線仍交既有 panel writer。DB-N 提供 metadata，不重複維護另一份無界全量 catalog。"
+    },
+    {
+      "id": "DB-E",
+      "title": "保持順序的 script 進度與提早結果",
+      "auditIds": [
+        "D11"
+      ],
+      "featureIds": [],
+      "owner": "DB執行進度實作者",
+      "files": [
+        "src-tauri/src/db_service.rs",
+        "src-tauri/src/db_query_worker.rs",
+        "src/state/dbStore.ts",
+        "src/app/panels/DatabasePanel.tsx",
+        "src/lib/types.ts",
+        "src/lib/ipc.ts"
+      ],
+      "requires": [
+        "DB-C",
+        "DB-R",
+        "DB-B",
+        "DB-Q"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "exact run/statement owner events、去重 reducer 與逐 statement 已完成結果，維持單 connection SQL 順序。",
+      "gate": "快→慢→快 script 首結果提早可讀；事件重複/延遲、cancel/skipped/outcome 順序正確；資源壓力不丟目前結果、不重跑 statement。",
+      "note": "前端 reducer/event fixture 可先平行；production emitter 等結果 ownership、背壓與 admission。不得 join_all 同一 script 的 statements。"
+    },
+    {
+      "id": "DB-SQ",
+      "title": "SQLite idle cursor 與 worker 策略",
+      "auditIds": [
+        "D07"
+      ],
+      "featureIds": [],
+      "owner": "SQLite執行實作者",
+      "files": [
+        "src-tauri/src/db_service.rs",
+        "src-tauri/src/db_connection_actor.rs",
+        "src-tauri/src/db_result_session.rs"
+      ],
+      "requires": [
+        "DB-C",
+        "DB-R",
+        "DB-Q"
+      ],
+      "mockAfter": [
+        "DB-C"
+      ],
+      "deliverable": "量測多 idle cursor 的 thread、write wait、WAL 成本；依證據選擇有界 worker 策略並保持 live statement ownership。",
+      "gate": "多 connection 501+ 列停留、next/release/cancel 與回收正確；不重跑 SQL、不丟 transaction/context，不以 idle TTL 終止工作。",
+      "note": "基準量測可立即進行，worker 原型可用契約平行；production 接線等 DB-R/DB-Q。固定 worker 模型只在量測支持時採用。"
+    }
+  ],
+  "locks": [
+    {
+      "files": [
+        "src-tauri/src/db_service.rs"
+      ],
+      "owner": "DB後端整合者",
+      "tasks": [
+        "DB-S",
+        "DB-C",
+        "DB-R",
+        "DB-B",
+        "DB-BT",
+        "DB-T",
+        "DB-H",
+        "DB-N",
+        "DB-Q",
+        "DB-E",
+        "DB-SQ"
+      ],
+      "reason": "共用 commands、engine worker 與 run 接線由單一 writer 合併。DB-S 小修先落地；各線的獨立模組、fixtures 與演算法仍可平行，不以同檔名製造功能硬相依。"
+    },
+    {
+      "files": [
+        "src-tauri/src/db_result_session.rs"
+      ],
+      "owner": "DB結果核心實作者",
+      "tasks": [
+        "DB-A",
+        "DB-R",
+        "DB-SQ"
+      ],
+      "reason": "DB-A 先固定增量計帳，再由 DB-R 改 page/pin/snapshot；DB-SQ 透過介面使用。預算預留、pin 與 eviction 判斷不可競態。"
+    },
+    {
+      "files": [
+        "src-tauri/src/db_query_worker.rs"
+      ],
+      "owner": "DB傳輸與協議整合者",
+      "tasks": [
+        "DB-S",
+        "DB-C",
+        "DB-B",
+        "DB-BT",
+        "DB-T",
+        "DB-H",
+        "DB-N",
+        "DB-Q",
+        "DB-E"
+      ],
+      "reason": "message enum、frame/read loop、heartbeat 與 cancellation 單一 writer；engine adapters 可平行。控制通道不可被資料背壓阻塞。"
+    },
+    {
+      "files": [
+        "src-tauri/src/db_connection_actor.rs"
+      ],
+      "owner": "DB actor 整合者",
+      "tasks": [
+        "DB-T",
+        "DB-Q",
+        "DB-SQ"
+      ],
+      "reason": "lease、交易與 settlement 狀態須統一；同 connection query/metadata/context 保持序列化，exact cancel 完成前不能讓新 run 接管。"
+    },
+    {
+      "files": [
+        "src-tauri/src/db_profiles.rs",
+        "src-tauri/src/db_credentials.rs"
+      ],
+      "owner": "DB設定與連線實作者",
+      "tasks": [
+        "DB-H"
+      ],
+      "reason": "migration、credential binding、recovery ledger 與同 descriptor open reservation 單一 owner；不同 DB child 可平行連線。"
+    },
+    {
+      "files": [
+        "src/lib/types.ts",
+        "src/lib/ipc.ts",
+        "src-tauri/src/lib.rs"
+      ],
+      "owner": "DB契約整合者",
+      "tasks": [
+        "DB-C",
+        "DB-R",
+        "DB-N",
+        "DB-UR",
+        "DB-E"
+      ],
+      "reason": "集中更新 typed contract 與 command registration，各實作者交付 adapter；避免前後端 independently 改同一 DTO。"
+    },
+    {
+      "files": [
+        "src/state/dbStore.ts"
+      ],
+      "owner": "DB store 整合者",
+      "tasks": [
+        "DB-R",
+        "DB-T",
+        "DB-H",
+        "DB-Q",
+        "DB-UR",
+        "DB-UN",
+        "DB-E"
+      ],
+      "reason": "單一 writer 接線各包 reducers/adapters；每 DB current result、離線 owner、metadataRevision 與新連線身份不可互相覆蓋。"
+    },
+    {
+      "files": [
+        "src/app/panels/DatabasePanel.tsx"
+      ],
+      "owner": "DB結果介面整合者",
+      "tasks": [
+        "DB-T",
+        "DB-UR",
+        "DB-UN",
+        "DB-E"
+      ],
+      "reason": "表格/viewer 抽取與 panel 接線集中合併；交易、進度與導覽透過凍結 props/store 契約平行開發。"
+    },
+    {
+      "files": [
+        "src/app/workbench/DatabaseNavContent.tsx",
+        "src/lib/databaseSql.ts"
+      ],
+      "owner": "DB導覽介面實作者",
+      "tasks": [
+        "DB-N",
+        "DB-UN"
+      ],
+      "reason": "導覽與 qualified object helper 單一 writer；backend metadata adapter 不直接修改 tree，逐段 identifier quoting 不可退化。"
+    },
+    {
+      "files": [
+        ".github/clippy-baseline.json"
+      ],
+      "owner": "最終 Rust 整合者",
+      "tasks": [
+        "DB-S",
+        "DB-A",
+        "DB-R",
+        "DB-B",
+        "DB-BT",
+        "DB-T",
+        "DB-H",
+        "DB-N",
+        "DB-Q",
+        "DB-E",
+        "DB-SQ"
+      ],
+      "reason": "所有 Rust 整合後依實際 final warnings 一次處理 exact baseline，避免各工作線產生互斥 fingerprints；不藉平行化放寬 gate。"
+    },
+    {
+      "files": [
+        "src/lib/databaseCompletion.ts"
+      ],
+      "owner": "DB導覽介面實作者",
+      "tasks": [
+        "DB-UN"
+      ],
+      "reason": "規劃新增 completion provider；只消費 owner-bound metadata，UI compartment 接線由 panel writer 合作。"
+    }
+  ]
+}

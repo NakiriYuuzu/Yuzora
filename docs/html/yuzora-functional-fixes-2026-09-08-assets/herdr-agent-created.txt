@@ -1,0 +1,111 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 button (expanded) 收合左側導覽, Secondary Actions: Collapse
+			4 button (expanded) 收合右側工作工具, Secondary Actions: Collapse
+			5 container 側邊導覽
+				6 text Yuzora
+				7 container 共用工具
+					8 button 搜尋檔案與命令
+					9 toggle button 工作面, Value: on
+					10 toggle button 資料庫, Value: off
+					11 button SSH / SFTP
+				12 text Spaces 與 Agents
+				13 pop up button Herdr Session：All, Help: 開啟 Session 或資料夾
+				14 text All 僅彙整已載入的 runtime namespace
+				15 button 收合所有 Space 資料夾
+				16 container
+					17 text 需要注意  · 1
+				18 button π - .pi · 回覆待查看
+				19 outline (selectable) Spaces 與 Agents · All
+					20 row (selectable, expanded) .pi · 1 個 Agents · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: .pi
+1 分支 · 1 Agents
+					21 row (selectable, expanded) main · /Users/yuuzu/.pi · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: main
+1 待處理
+					22 row (selectable) π - .pi · pi · 回覆待查看 · main · default, Help: 開啟所屬 pane；不可用時顯示唯讀詳情, Value: π - .pi
+pi
+回覆待查看
+					23 row (selectable, expanded) yuzora · 0 個 Agents · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: yuzora
+1 分支 · 0 Agents
+					24 row (selectable, expanded) release/v0.0.9-beta.3 · /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: release/v0.0.9-beta.3
+0
+					25 row (selectable, expanded) privacy-filter · 0 個 Agents · default, Secondary Actions: Collapse, Value: privacy-filter
+1 分支 · 0 Agents
+					26 row (selectable, expanded) privacy-filter · null · default, Secondary Actions: Collapse, Value: privacy-filter
+0
+					27 row (selectable, expanded) QA Alpha · 1 個 Agents · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA Alpha
+1 分支 · 1 Agents
+					28 row (selected, expanded) QA-A · /private/tmp/yuzora-functional-qa-20260908/QA-A · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA-A
+1
+					29 row (selectable) π - QA-A · pi · 待命 · undefined · default, Help: 開啟所屬 pane；不可用時顯示唯讀詳情, Value: π - QA-A
+pi
+待命
+				30 container
+					31 text yuzora-provider-r7 :  資料尚未更新 · 不代表即時狀態
+				32 text 數量為 0 的 worktree 尚無 Agent。
+				33 button 設定
+			34 splitter 調整左側 Spaces 與 Agents 寬度, Value: 288
+			35 button sample.ts, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/sample.ts
+			36 text 本地
+			37 button 關閉 sample.ts
+			38 button renamed 中文.txt, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/nested/renamed 中文.txt
+			39 text 本地
+			40 button 關閉 renamed 中文.txt
+			41 button README.md, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/README.md
+			42 text 本地
+			43 button 關閉 README.md
+			44 button QA-A
+			45 text 本地
+			46 button 關閉 QA-A
+			47 button QA-Second
+			48 text 本地
+			49 button 關閉 QA-Second
+			50 button QA-A
+			51 text 本地
+			52 button 關閉 QA-A
+			53 button QA-Fix-Input
+			54 text 本地
+			55 button 關閉 QA-Fix-Input
+			56 button pi
+			57 text 本地
+			58 button 關閉 pi
+			59 pop up button 新增分頁
+			60 button 向右分割, Help: 分割編輯器
+			61 text pi
+			62 text 控制者
+			63 text entry area (settable) Terminal input
+			64 splitter 調整右側工作工具寬度, Value: 264
+			65 container 工作工具
+				66 text 工作工具
+				67 tab group (selectable) 工作工具
+					68 tab (selectable) 檔案
+					69 tab (selected) Git
+				70 text /private/tmp/yuzora-functional-qa-20260908/QA-A 本地
+				71 button 提交紀錄與分支圖
+				72 container Git
+					73 text 不是 Git 儲存庫
+					74 text 請初始化儲存庫，或開啟 Git 專案。
+			75 container 狀態列
+				76 text Yuzora
+				77 button (disabled) main
+				78 pop up button 13% · 336MB, Help: App 本體與受管理子行程總和 — App 本體 7% · 124MB ／ 受管理子行程 11 個（WebView renderer/GPU 0 個 0MB、受管理工具 11 個 213MB）
+				79 text 未開啟檔案
+			80 heading 命令面板, Value: 2
+				81 text 命令面板
+			82 text 搜尋檔案、執行命令…
+			83 heading 符號選擇器, Value: 2
+				84 text 符號選擇器
+			85 text 跳至符號…
+	86 close button
+	87 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	88 minimize button
+89 menu bar
+	90 Yuzora Current QA
+	91 File
+	92 Edit
+	93 View
+	94 Window
+	95 Help
+
+The focused UI element is 2 HTML content Description: Yuzora, URL: localhost:1420/

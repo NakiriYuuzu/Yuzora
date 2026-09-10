@@ -97,10 +97,10 @@ export function EditorArea() {
                                     <div
                                         key={tab.path}
                                         className={cn(
-                                            "absolute inset-0 min-h-0 min-w-0 transition-opacity duration-75 ease-out",
+                                            "absolute inset-0 min-h-0 min-w-0",
                                             tabVisible
-                                                ? "opacity-100 pointer-events-auto"
-                                                : "opacity-0 pointer-events-none"
+                                                ? "visible pointer-events-auto"
+                                                : "invisible pointer-events-none"
                                         )}
                                         aria-hidden={!tabVisible}
                                         inert={!tabVisible}

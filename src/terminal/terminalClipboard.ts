@@ -7,6 +7,9 @@ export interface TerminalClipboardController extends IDisposable {
 
 interface TerminalClipboardOptions {
   canPaste?: () => boolean
+  pasteText?: (text: string) => void
+  pasteImage?: (image?: Blob) => void
+  copyOnSelect?: () => boolean
 }
 
 function browserClipboard(): Clipboard | null {
@@ -50,6 +53,8 @@ export function installTerminalClipboardHandling(
   let initialConnectionWasWritable: boolean | null = null
   const element = term.element
   const textarea = term.textarea
+  let selecting = false
+  let selectionTimer: ReturnType<typeof setTimeout> | undefined
 
   const canPaste = () => !disposed && (options.canPaste?.() ?? true)
 
@@ -60,7 +65,8 @@ export function installTerminalClipboardHandling(
       return
     }
     pendingPaste = null
-    term.paste(text)
+    if (options.pasteText) options.pasteText(text)
+    else term.paste(text)
   }
 
   const copySelection = () => {
@@ -85,6 +91,20 @@ export function installTerminalClipboardHandling(
   }
 
   const handleShortcut = (event: KeyboardEvent): boolean => {
+    if (event.type === "keydown" && event.key === "Enter" && event.shiftKey
+      && !event.ctrlKey && !event.altKey && !event.metaKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault()
+      // A raw CR/LF can submit the agent prompt. Use HERDR's atomic paste
+      // boundary to insert a literal newline, independent of xterm's mode.
+      if (canPaste()) deliverPaste("\n")
+      return false
+    }
+    if (event.type === "keydown" && event.altKey && !event.ctrlKey && !event.metaKey
+      && (event.code === "KeyV" || event.key.toLowerCase() === "v") && options.pasteImage) {
+      event.preventDefault()
+      if (canPaste() && !event.repeat) options.pasteImage()
+      return false
+    }
     if (
       event.type !== "keydown"
       || event.altKey
@@ -126,6 +146,11 @@ export function installTerminalClipboardHandling(
   const handlePaste = (event: ClipboardEvent) => {
     event.preventDefault()
     event.stopImmediatePropagation()
+    const image = Array.from(event.clipboardData?.items ?? []).find((item) => item.type === "image/png")?.getAsFile()
+    if (image && options.pasteImage) {
+      if (canPaste()) options.pasteImage(image)
+      return
+    }
     const text = event.clipboardData?.getData("text/plain") ?? ""
     if (text.length > 0) {
       deliverPaste(text)
@@ -134,9 +159,21 @@ export function installTerminalClipboardHandling(
     pasteClipboard()
   }
 
+  const handleMouseDown = (event: MouseEvent) => { selecting = event.button === 0 }
+  const handleMouseUp = () => {
+    if (!selecting) return
+    selecting = false
+    if (selectionTimer) clearTimeout(selectionTimer)
+    selectionTimer = setTimeout(() => {
+      if (!disposed && options.copyOnSelect?.()) copySelection()
+    }, 0)
+  }
+
   element?.addEventListener("keydown", handleKeyDown, true)
   element?.addEventListener("copy", handleCopy, true)
   element?.addEventListener("paste", handlePaste, true)
+  element?.addEventListener("mousedown", handleMouseDown, true)
+  window.addEventListener("mouseup", handleMouseUp)
   if (textarea && textarea !== element) {
     textarea.addEventListener("paste", handlePaste, true)
   }
@@ -147,11 +184,14 @@ export function installTerminalClipboardHandling(
       pendingPaste = null
       if (initialConnectionSetup) initialConnectionWasWritable = canPaste()
       initialConnectionSetup = false
-      if (text !== null && canPaste()) term.paste(text)
+      if (text !== null && canPaste()) deliverPaste(text)
     },
     dispose: () => {
       disposed = true
       pendingPaste = null
+      if (selectionTimer) clearTimeout(selectionTimer)
+      element?.removeEventListener("mousedown", handleMouseDown, true)
+      window.removeEventListener("mouseup", handleMouseUp)
       element?.removeEventListener("keydown", handleKeyDown, true)
       element?.removeEventListener("copy", handleCopy, true)
       element?.removeEventListener("paste", handlePaste, true)

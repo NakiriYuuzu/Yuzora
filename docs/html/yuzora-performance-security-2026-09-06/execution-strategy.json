@@ -1,0 +1,494 @@
+{
+  "version": 1,
+  "date": "2026-09-06",
+  "status": "派工設定已備妥；待使用者明確開始指令，尚未啟動開發代理",
+  "sourceCommit": "9d0634c44e314b3dcc1c39b371ed448481b2f16a",
+  "title": "55 項改善與多 database／schema：平行開發及整合相依",
+  "scope": "原稽核 55 項全部納入；新增 DBM01–DBM04 是功能能力標籤，不增加已確認漏洞數。此文件安排工程工作，不授權 Git 寫入、發布或外部遠端測試。",
+  "features": [
+    {
+      "id": "DBM01",
+      "title": "HostProfile／穩定 database child 與 v1→v2 設定遷移"
+    },
+    {
+      "id": "DBM02",
+      "title": "同主機 database 探索、手動指定及獨立連線"
+    },
+    {
+      "id": "DBM03",
+      "title": "多 schema 導覽、metadata 分頁、補全與實際 context"
+    },
+    {
+      "id": "DBM04",
+      "title": "指定 owner 的獨立 Table Preview，不覆寫草稿或目前結果"
+    }
+  ],
+  "definitions": [
+    {
+      "term": "可立即準備／開發",
+      "text": "沒有其他工作包的程式交付前置；先確認 ownership。效能路徑變更前仍須留下 BASE 所定義的對照資料。安全修補不必等待全專案 benchmark。"
+    },
+    {
+      "term": "契約後可平行",
+      "text": "先固定 typed DTO、owner、錯誤與 lifecycle fixtures，再用 mock 開發獨立演算法、adapter 或 UI；mock 通過不等於 production 整合完成。"
+    },
+    {
+      "term": "交付硬相依 requires",
+      "text": "正式交付／啟用前必須通過的前置工作包。可以先寫測試或草擬介面；若有 mockAfter，可在該契約完成後提前開發。"
+    },
+    {
+      "term": "檔案互斥",
+      "text": "同一檔案一次只有一位 writer；這是編輯與接線衝突，不自動構成功能先後依賴。其他人透過獨立模組、props、adapter 與測試 fixture 平行工作。"
+    },
+    {
+      "term": "聯合 gate",
+      "text": "組合真正 backend、frontend 及故障情境驗證。多個前置以 AND 解讀，不是完成其中一個即可。"
+    }
+  ],
+  "decisions": [
+    "維持 PostgreSQL、MSSQL、SQLite。HostProfile→DatabaseDescriptor→ConnectionIdentity→schema；schema 不新增連線，PG/MSSQL database 各有獨立 actor。SQLite ATTACH 保持同 session，不自動重播。",
+    "Schema 選取只影響瀏覽／補全，產生 SQL 使用限定名稱。手寫 SQL 的 context 變動只讀回並標示 fresh/stale/unknown，不暗中 SET search_path、USE、commit 或 rollback。",
+    "RetainedResultOwner 與 LiveCursorOwner 分離：每 DB current result 即使離線或未選中仍 pin；已保留頁與 cell 可唯讀。下一頁讀 DB、cancel 必須有 live exact owner；舊 snapshot 不可操作新 actor。",
+    "記憶體壓力只淘汰 inactive cache；全部 pin 時暫停 producer 或拒絕／延後新 admission。淘汰回 pageEvicted/cellEvicted；明確清除回 resultReleased；禁止重跑 SQL、強制 disk spool 或靠強制 GC 回收仍被引用的物件。",
+    "Preview 使用獨立、有界結果 bucket 與 captured descriptor/object/revision；busy、open cursor 或未提交交易時拒絕，保留 SQL 草稿與目前結果。",
+    "每個舊 network profile 遷為自己的 host＋DB child，保留 descriptor ID；不因 hostname 相同而合併，不重寫 vault 密碼，保留 credential recovery。原明文例外不延伸到新 database。",
+    "SFTP 無 atomic-overwrite 能力時保留原檔並要求其他檔名；使用經驗證 explicit target leaf，final promote 再處理競態，不能先刪除舊檔。",
+    "LSP 取得 byte credit 並入列才算 accepted；已 accepted 保持 FIFO，未 accepted 每文件只保留最新版本引用。壓力恢復後按協商模式補送，單純壓力不 restart。"
+  ],
+  "acceptedOverrides": {
+    "S02": "採原子覆寫；server 不支援時保留原檔並提供其他檔名，不採 backup transaction 或 delete-then-rename。final promote 衝突仍須保留對方檔案。",
+    "S03": "以 request 30 秒、no-progress 60 秒及 cleanup 3 秒作初始期限；不設固定整檔傳輸總時長。取消只清理 owned scratch，清理逾時獨立回報。",
+    "D04": "500 rows／2 MiB retained 軟目標與既有 field/row hard limits；完整 cell 僅由 retained handle 讀取，不重跑 SQL、不強制落盤。",
+    "D06": "每個 DB 的 current result（含離線或未選中）與 inspector 均 pin；只淘汰 inactive cache。停止 cursor 與 discard result 分開。",
+    "D07": "不以 idle TTL 自動關閉 cursor／交易；固定 worker 模型先量測，資源不足時拒絕或延後新 admission。",
+    "D12": "SQL wall-clock deadline 預設關閉；helper heartbeat/control 可達後才啟用新的失聯判定。cache 壓力用背壓／admission，不取消既有 query。"
+  },
+  "defaults": [
+    {
+      "area": "DB page/cell",
+      "value": "500 rows／2 MiB retained 軟目標，合法大列獨立頁；保留 1 MiB field／8 MiB row。頁面儲存起始 ordinal；文字 preview 4 KiB、binary 256 bytes。"
+    },
+    {
+      "area": "DB cache/admission",
+      "value": "64 MiB/result session、256 MiB/app registry；metadata 8 MiB/DB、32 MiB/app、200 items／1 MiB/page、TTL 5 分鐘。4 個執行／取頁、2 metadata、2 connect、8 network helpers；每 DB 一執行一待執行，metadata queue 32。"
+    },
+    {
+      "area": "DB deadline",
+      "value": "SQL wall-clock 預設關閉；connect 15 秒、metadata 30 秒。Heartbeat 每 5 秒、120 秒無 helper liveness 判失聯；assembly timeout 獨立。控制 frame 不受 data credits 堵塞，idle cursor／transaction 不自動取消。"
+    },
+    {
+      "area": "SSH/SFTP",
+      "value": "input 1 MiB/session；output 4 MiB/session、32 MiB/app；transfer 4/session、8/app、queue 1000；chunk ≤128 KiB 且符合 negotiated cap，window 起始 8，progress 100 ms。"
+    },
+    {
+      "area": "LSP",
+      "value": "inbound/outgoing frame 64 MiB；queued＋in-flight 72 MiB/server、128 MiB/app，前端待送資料也納入計量。"
+    },
+    {
+      "area": "Search/Preview/log",
+      "value": "Search 起始 2 workers，每段 1 GiB 或 30 秒，保留現有結果配額；Preview 4 workers／queue 32／16 sessions；日誌 10 MiB/segment、100 MiB 合計含 active、14 天，writer queue 4 MiB。"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "BASE",
+      "title": "固定對照資料與驗收矩陣",
+      "auditIds": [],
+      "featureIds": [],
+      "owner": "整合／量測負責人",
+      "files": [],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "固定 source revision、fixture hash、指標定義、cold/warm 條件、55 項及新增能力追蹤；依受測子系統先留下修改前資料。",
+      "gate": "每項有測試情境與對照條件；沒有量測的數字明確標示未量測，不把既有 92 tests 當成本次實作驗收。",
+      "note": "基準量測獨占測試主機；安全修補可先保留可重現 fixture，不等待全部效能量測。"
+    },
+    {
+      "id": "ALIGN-HOST",
+      "title": "對齊進行中的 host／identity 邊界與檔案交接",
+      "auditIds": [],
+      "featureIds": [],
+      "owner": "INT 與現有 host／identity 工作負責人",
+      "files": [],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "核對最新 diff、真實 capability／file-content 所在地、host protocol 與 SFTP raw／reservation 介面；記錄可接手的穩定契約與唯一 writer。重用 sftp_edit 的 raw/posix-rename 能力，抽成單一 adapter，不另建競爭實作。",
+      "gate": "新 host source 與 desktop facade 對應完整；SFTP atomic-save／destination reservation、session generation、HostState shutdown 和 normalization identity 均有交接 fixture。未交接前不覆寫其他工作者檔案。",
+      "note": "只對齊契約與 ownership，不要求整個 host migration 完成；Git、logging、LSP、process、perf 等獨立工作不需等待。"
+    },
+    {
+      "id": "INT",
+      "title": "共用邊界與退出整合",
+      "auditIds": [],
+      "featureIds": [],
+      "owner": "整合負責人（單一 writer）",
+      "files": [
+        "src-tauri/src/lib.rs",
+        "src/lib/ipc.ts",
+        "src/lib/types.ts",
+        "src-tauri/Cargo.toml",
+        "src-tauri/Cargo.lock",
+        "src-tauri/src/path_capability.rs",
+        "src-tauri/src/process_kill.rs",
+        ".github/clippy-baseline.json"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "按子系統逐次接線 DTO、commands、dependency 與 capability；集中 owned-process 終止能力，最後整合全 app bounded shutdown。",
+      "gate": "跨層型別一致；stop idempotent；控制操作可達；共同 10 秒 shutdown 期限內收斂並回報失敗，log 最後有界 drain；僅停止 owned processes/connectors，clean marker 不提前寫。",
+      "note": "持續性整合職責，不必等全部工作完成才第一次接線。各 service stop API 可先 mock；production shutdown 必須等對應 bounded stop 實作後驗收。"
+    }
+  ],
+  "gates": [
+    {
+      "id": "G-DB",
+      "title": "多 database／schema 與結果壓力聯合驗收",
+      "auditIds": [
+        "SEC01",
+        "D01",
+        "D02",
+        "D03",
+        "D04",
+        "D05",
+        "D06",
+        "D07",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D12"
+      ],
+      "featureIds": [
+        "DBM01",
+        "DBM02",
+        "DBM03",
+        "DBM04"
+      ],
+      "gate": "兩 DB 分別保留未提交交易與 current result；另一 DB 大結果引發 cache 壓力時，metadata、取消、disconnect/reconnect 不破壞原工作。驗證三引擎、migration、同名／空 schema、temp objects、離線 cell 與 exact owner。"
+    },
+    {
+      "id": "G-SSH",
+      "title": "SSH 互動與 SFTP 真實傳輸聯合驗收",
+      "auditIds": [
+        "S01",
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06",
+        "S07",
+        "S08",
+        "S09",
+        "S10",
+        "S11",
+        "S12",
+        "F10"
+      ],
+      "featureIds": [],
+      "gate": "真 adapter＋backend＋frontend 在高 RTT、多檔、慢 renderer、取消／黑洞、無 atomic overwrite、目的地競態及大目錄下驗證 bytes、echo 延遲與原檔完整性。"
+    },
+    {
+      "id": "G-LSP",
+      "title": "LSP 一致性、取消、隱私與退出聯合驗收",
+      "auditIds": [
+        "R09",
+        "F07",
+        "H02"
+      ],
+      "featureIds": [],
+      "gate": "10 MiB escaping 密集文件、不讀 stdin、持續編輯與過期 request；accepted 版本有序、pending 有界、停機不等 stdin 鎖，trace producer 與落盤／匯出政策一致。"
+    },
+    {
+      "id": "G-ASSET",
+      "title": "production chunks、worker、CSP 與 CSS 聯合驗收",
+      "auditIds": [
+        "F08",
+        "F09",
+        "F13",
+        "H01"
+      ],
+      "featureIds": [],
+      "gate": "真 Tauri 驗证 lazy feature/language chunks、Markdown worker、CodeMirror、字型、IPC、資產及動態 class；不需等待其他 DB／SFTP 效能工作才開始此 gate。"
+    }
+  ],
+  "locks": [
+    {
+      "files": [
+        "src-tauri/src/lib.rs",
+        "src/lib/ipc.ts",
+        "src/lib/types.ts",
+        "src-tauri/Cargo.toml",
+        "src-tauri/Cargo.lock",
+        "src-tauri/src/path_capability.rs",
+        "src-tauri/src/process_kill.rs",
+        ".github/clippy-baseline.json"
+      ],
+      "owner": "INT",
+      "tasks": [],
+      "reason": "其他包提交 signature／DTO／dependency 需求，由 INT 串行接線；exact clippy baseline 在 final diagnostics 確定後更新，不讓多 worker 各改一份。"
+    },
+    {
+      "files": [
+        "src/components/ui/scroll-area.tsx"
+      ],
+      "owner": "INT 指定的共用 UI owner",
+      "tasks": [],
+      "reason": "Tree、Search、DB、SFTP 共享 viewport/ref 接入方式；領域列表可平行寫，不同時修改 primitive，也不額外發明通用 list 框架。"
+    },
+    {
+      "files": [
+        "package.json",
+        "bun.lock",
+        "vite.config.ts",
+        "src/styles.css"
+      ],
+      "owner": "Build／asset 整合 owner",
+      "tasks": [],
+      "reason": "集中 dependency、worker/chunk 及 Tailwind source 接線。先固定 asset contract，最後驗證 lazy components 與動態 classes 都有 CSS。"
+    },
+    {
+      "files": [
+        "src-tauri/host/src/path_capability.rs",
+        "src-tauri/host/src/file_content.rs",
+        "src-tauri/host/src/content.rs",
+        "src-tauri/host/src/files.rs",
+        "src-tauri/src/file_content.rs"
+      ],
+      "owner": "Host/core 邊界 owner（沿用現有工作者）",
+      "tasks": [
+        "SH-A",
+        "SH-B",
+        "RT-FSP",
+        "INT"
+      ],
+      "reason": "真 capability／分類／讀寫實作已移到 host；desktop facade 不再是常數與底層檢查所在地。先 ALIGN-HOST，再由單一 owner 接線安全邊界。"
+    },
+    {
+      "files": [
+        "src-tauri/host/src/protocol.rs",
+        "src-tauri/host/src/wire.rs",
+        "src-tauri/host/src/server.rs",
+        "src-tauri/host/src/main.rs",
+        "src-tauri/host/src/lib.rs",
+        "src-tauri/src/host_service.rs"
+      ],
+      "owner": "Host protocol/runtime owner（沿用現有工作者）",
+      "tasks": [
+        "SH-C",
+        "SH-A",
+        "SH-B",
+        "RT-FSP",
+        "INT"
+      ],
+      "reason": "Host transport 是 SSH 的新消費者，protocol limits 與 LSP limits 分開。保留每 connection request 順序；HostState disconnect_all 納入退出整合。"
+    },
+    {
+      "files": [
+        "src-tauri/src/sftp_edit.rs"
+      ],
+      "owner": "SH-A adapter owner（完成現有 writer 交接後）",
+      "tasks": [
+        "SH-A",
+        "SH-B",
+        "SH-F"
+      ],
+      "reason": "已有 raw session、posix-rename／remote-write reservation 使用者；先交接，再抽出共用 adapter，禁止第二套 promotion／save ownership。"
+    },
+    {
+      "files": [
+        "src-tauri/host/Cargo.toml",
+        "src-tauri/host/Cargo.lock"
+      ],
+      "owner": "INT dependency/build owner",
+      "tasks": [
+        "SH-A",
+        "RT-FSP",
+        "INT"
+      ],
+      "reason": "新 host crate 的 dependency／lockfile 也集中排程；host/target 是產物，不列 source ownership。"
+    },
+    {
+      "files": [
+        "src/lib/herdrNormalize.ts",
+        "src/lib/herdrNormalize.test.ts",
+        "src/lib/runtimeIdentity.ts",
+        "src/lib/runtimeIdentity.test.ts"
+      ],
+      "owner": "現有 normalization／identity 工作負責人",
+      "tasks": [
+        "FE-Herdr",
+        "INT"
+      ],
+      "reason": "FE-Herdr 唯讀消費最終契約，不接管這四檔。合法 workspace path→null、host-scoped tuple keys、access 升級及 stale connection generation 均需整合回歸。"
+    },
+    {
+      "files": [
+        "src-tauri/tests/database_integration.rs",
+        "tests/database"
+      ],
+      "owner": "DB integration 整合者",
+      "tasks": [
+        "DB-S",
+        "DB-A",
+        "DB-R",
+        "DB-B",
+        "DB-BT",
+        "DB-T",
+        "DB-H",
+        "DB-N",
+        "DB-Q",
+        "DB-UR",
+        "DB-UN",
+        "DB-E",
+        "DB-SQ"
+      ],
+      "reason": "TLS fixture 優先交付；交易、多 DB、namespace、取消、資源壓力共用 integration fixtures，由單一 writer 接線。DB-S 不永久獨占，也不因此成為每個 DB 包的硬前置。"
+    }
+  ],
+  "parallelExamples": [
+    {
+      "title": "可立即分流",
+      "work": "DB-S TLS 修補、DB-A accounting、RT-GIT、獨立 editor/document/HERDR 工作可同時開發。",
+      "condition": "實際只挑 3 個 worker；其餘排隊。共用檔案有單一 writer，相關效能修改先保存對照資料。"
+    },
+    {
+      "title": "DB 契約完成後",
+      "work": "DB-R 結果核心、DB-B 傳輸、DB-H profile/discovery 可平行；DB-UR／DB-UN 可先用 fixtures 做 UI。",
+      "condition": "db_service、db_query_worker、dbStore 的變更經指定 owner 接線；DB-R 等 DB-A，新 UI 正式啟用等各 backend AND gate。"
+    },
+    {
+      "title": "SSH 契約完成後",
+      "work": "SH-A adapter、SH-B backend mock、SH-F frontend mock 可平行。",
+      "condition": "先通過 ALIGN-HOST，重用已出現的 raw／atomic-save 邊界；ssh_service.rs 只有 SH-B writer。真 transfer/promotion 仍需 SH-A，不另外並行建第二套 adapter。"
+    },
+    {
+      "title": "跨子系統補位",
+      "work": "RT-LOG、RT-FSP、RT-PROC、RT-PERF、前端 tree/search 等無衝突工作作為空閒 slot 候選。",
+      "condition": "LSP writer＋前端可依 LS-C 平行；logging writer→rotation→cursor、search quota→parallel enable 保留內部順序。"
+    }
+  ],
+  "dispatchPolicy": [
+    "模型與啟動：等待明確開工指令；開發使用 gpt-5.6-sol / medium，全部工作與驗收完成後才 spawn gpt-6-astra / xhigh 做最終 review。",
+    "本輪已發現其他工作者修改 host/capability/SSH/Cargo/identity；派工前重新讀取 diff，依 ALIGN-HOST 完成交接。不得把稽核時的舊檔案位置當成目前實作位置。",
+    "預設一位整合者＋最多三位實作 worker；這是目前協作容量，不是 runtime concurrency 設定。",
+    "每次派工寫明 task ID、唯一檔案 ownership、允許修改的 adapter/module、所需契約版本、驗收 gate；先檢查 live worktree 與其他工作者 ownership。",
+    "有 requires 未完成且無 mockAfter 的工作，只做不依赖該實作的 fixture／設計準備；有 mockAfter 者依契約先行，不將 mock 狀態寫成已完成。",
+    "shared-file writer 持短時間接線窗口；不要為了平行而做全專案無關模組拆分。所有人不得還原其他人的變更。",
+    "本評估不建立 Git worktree、不 stage／commit／push。若日後使用隔離 checkout，shared protocol／dependency 相容性 gate 仍存在。",
+    "DAG 是技術與整合順序，未有工時數據，不能據此宣稱精確 critical path、完成日期或加速倍數。"
+  ],
+  "runtime": [
+    {
+      "work": "DB",
+      "parallel": "不同 DB actors 與 retained snapshot 唯讀可受限平行。",
+      "serial": "同 connection 的 query、metadata、context 操作服從 lease；同 script statements 有序，cancel settlement 完成才交接下一 run。"
+    },
+    {
+      "work": "Profile／結果預算",
+      "parallel": "不同 database child 可獨立 connect；不可變結果可多讀。",
+      "serial": "同 profile credential ledger／generation 更新，以及 budget reservation、pin／evict 判斷必須原子。SQLite statement 留在所屬 worker。"
+    },
+    {
+      "work": "SSH／SFTP",
+      "parallel": "不同檔案有限傳輸、單檔有限 read-ahead、terminal 資料與控制分流。",
+      "serial": "同 session lifecycle／SFTP 初始化 single-flight；同目的地單 promotion owner，ACK 完整後才 close/promote。"
+    },
+    {
+      "work": "LSP／Git",
+      "parallel": "不同 LSP server 與不同 repo 的独立工作可有界平行。",
+      "serial": "同 server accepted frames FIFO；同 repo mutation 保留既有互斥，不因 runner 改善而平行 checkout／merge 等操作。"
+    },
+    {
+      "work": "Logging／Preview",
+      "parallel": "log closed segments 的受控讀取、Preview requests 可平行。",
+      "serial": "append／rotation 單 writer；retention cursor identity 與 capability revoke/generation 一致，不能以吞吐放寬權限。"
+    },
+    {
+      "work": "Shutdown",
+      "parallel": "獨立 service cleanup 在共同 deadline 內平行。",
+      "serial": "先停止 admission；各自遵守 owned-resource 清理順序，log 最後 drain，完成後才標 clean。"
+    }
+  ],
+  "testScheduling": [
+    "聚焦功能測試可平行，但 fixtures、temp dirs、ports、資料庫 namespace 與假時鐘必須隔離。共用 Docker DB 的 migration／破壞性 fixture 不同時跑。",
+    "同工作目錄的 dependency resolution、完整 Cargo／Vite build 與寫同產物的測試由 INT 排程；不以多 process 等同更快，避免 build lock 與 RAM 競爭。",
+    "同一主機的 CPU、input p95、RSS／GC、磁碟吞吐、cold start、build 或 terminal soak benchmark 一次只跑一個；暫停其他 build、壓測及 GUI 操作。",
+    "cold／warm cache 分開，固定 fixture hash、app mode、viewport、instrumentation、worker 數與回收等待時間。bundle bytes 不代替 startup latency，peak RSS 不代替 retained heap。",
+    "不同主機可同時量測，但每台以自己的 baseline 做前後比較；不可直接跨硬體混合得出改善百分比。",
+    "最終執行 frontend lint/typecheck/test/build、三平台 cargo check、fmt／exact clippy baseline／Rust tests、三引擎 integration、真 Tauri GUI；至少 50 次 lifecycle 循環與 2 小時混合負載。原稽核的 8 小時 soak 保留為延伸穩定性測試，不宣稱本次已跑。"
+  ],
+  "evidence": [
+    "工作包來源為 observations.json 的 55 項、已接受的多 database/schema 計畫與三條獨立唯讀相依評估；不重新聲稱做過全部產品測試。",
+    "Codebase graph 優先用於定位，對 metadata drift 及 graph 未覆蓋處以 live source 為準。已核對 lib.rs 的 exit 清理與 clean marker 順序；共享檔案清單是 ownership 風險，不是窮盡所有可能的 diff。",
+    "本次交付僅文件及其 renderer／驗證資料；任務均是 planned，不代表改善已實作或已測得加速。",
+    "原稽核程式碼連結與行號以固定 commit 驗證；新 host／identity 變更只用來更新派工風險與路徑，未宣稱已驗收或已修復原 finding。"
+  ],
+  "workspaceAlignment": {
+    "assessedAt": "2026-09-06T09:56:48.762Z",
+    "basis": "本輪文件生成期間的唯讀 git diff 與 live source 快照；不是持續監控。",
+    "affectedTasks": [
+      "SH-C",
+      "SH-A",
+      "SH-B",
+      "SH-F",
+      "RT-FSP",
+      "INT",
+      "FE-Herdr"
+    ],
+    "summary": "其他工作者正在抽出 host crate 與 runtime identity。path_capability 原實作已移至 host/src，desktop 檔案成為 facade；sftp_edit 已提供 raw session／posix-rename 路徑，不能再按舊稽核位置寫第二套 adapter。",
+    "paths": [
+      "src-tauri/Cargo.toml",
+      "src-tauri/Cargo.lock",
+      "src-tauri/src/lib.rs",
+      "src-tauri/src/ssh_service.rs",
+      "src-tauri/src/path_capability.rs",
+      "src-tauri/src/file_content.rs",
+      "src-tauri/src/host_service.rs",
+      "src-tauri/src/sftp_edit.rs",
+      "src-tauri/host/",
+      "src/lib/herdrNormalize.ts",
+      "src/lib/herdrNormalize.test.ts",
+      "src/lib/runtimeIdentity.ts",
+      "src/lib/runtimeIdentity.test.ts"
+    ],
+    "rule": "所有 ownership 表是交接後的目標分工；交接前維持現有工作者 writer。SH-C 與 RT-FSP 的正式交付需 ALIGN-HOST；SH-F 純 F10 queue 內部工作與 FE-Herdr 目前 runtime 內的最佳化可先行，接線再對齊。"
+  },
+  "executionControl": {
+    "state": "standby",
+    "startTrigger": "使用者在本任務明確下達開始／開工指令後才 spawn 開發代理；本次準備訊息不是啟動授權。",
+    "maxConcurrentDevelopmentAgents": 3,
+    "coordinator": "主代理負責排程、ownership、共用檔案串行接線與驗收；不另行改變主代理模型。",
+    "developmentAgent": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "medium",
+      "agent_type": "worker",
+      "fork_turns": "none"
+    },
+    "finalReviewAgent": {
+      "model": "gpt-6-astra",
+      "reasoning_effort": "xhigh",
+      "agent_type": "default",
+      "fork_turns": "none"
+    },
+    "preflight": [
+      "收到開始指令後重新讀取 CLAUDE.md、live worktree diff 與檔案 ownership；目前 host/remote 架構仍有大量他人變更，不直接沿用舊快照派工。",
+      "以 codebase graph／live source 重新對齊已搬移模組，更新 affected task paths 與依賴；他人變更若已涵蓋部分改善，先驗證再記錄處置，不重複實作，也不逕自標示完成。",
+      "保存本輪起始變更清單與測試基準，區分既有／他人變更和本輪實作；必要檔案交接依 ALIGN-HOST 執行。",
+      "建立新的 Sol medium worker，明帶工作包、唯一 ownership、契約、完成 gate 與不得還原他人變更；不把舊分析代理當作已符合指定模型的開發代理。"
+    ],
+    "scheduling": [
+      "同時最多三名開發 worker（目前共四個 active slots，保留一個主代理）；依 requires／mockAfter 和目標 writer 動態補位。",
+      "先挑可獨立且有價值的安全／正確性工作，再推進契約與效能工作；共用檔案僅由指定 writer 接線。",
+      "每個 worker 必須回報修改路徑、測試證據、未完成項與風險；主代理驗證後才更新工作包狀態。",
+      "依既有規則排程重型 build／benchmark；不能因增加代理而同時污染效能量測。"
+    ],
+    "reviewStartConditions": [
+      "44 個工作包均完成其交付與 gate；55 項原清單及 DBM01–DBM04 均有實作／量測處置證據，沒有 pending、blocked 或僅 mock 的未完成範圍。",
+      "G-DB、G-SSH、G-LSP、G-ASSET、G-ALL 全部通過；缺少平台／環境驗證不能寫成已完成。",
+      "所有實作 worker 停止寫入，凍結待審改動與驗證結果快照；若他人同時變更相同範圍，先對齊並重驗受影響項，再進入 review。"
+    ],
+    "reviewScope": "最後才 spawn Astra xhigh，以唯讀方式審查本輪最終實作、相關未追蹤新檔及必要相鄰程式碼；檢查正確性、安全、ownership、並行／取消、記憶體回收、多 database/schema、相容性、遷移與測試盲點。不得把原先已存在的他人變更誤算成本輪改動。",
+    "reviewFindings": "每項附嚴重度、精確位置、觸發條件與修正建議。確認缺陷交回 Sol medium 修正；完成相關回歸後，再由 Astra xhigh 核對。不得提前宣稱全部完成或 review 通過。",
+    "permissions": "仍不包含 Git stage／commit／push、建立 Git worktree、發布或使用真實外部帳密；本次只儲存待命設定。"
+  }
+}

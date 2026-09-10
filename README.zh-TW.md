@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.9--beta.3-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.9-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -121,11 +121,13 @@ Windows `.msi` 安裝檔與歷史版本見 [GitHub Releases](https://github.com/
 | Terminal | xterm.js ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
-Yuzora 會優先使用 PATH 安裝的 HERDR binary；偵測不到時，會自動改用 macOS／Windows 安裝檔內附且固定版本的 Yuzora-managed binary。關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會終止 HERDR server、panes 或 agents。
+Yuzora 隨附 HERDR 0.9.0。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
 
-### Experimental Windows WSL Pi Plugin
+Agent 由使用者在 HERDR 終端機手動啟動。舊 WSL Pi Plugin、獨立本機／SSH 終端機與 LSP 設定已移除；Browser 可開啟網站及自行在終端機啟動的服務。
 
-Windows `0.0.9-beta.3` 安裝檔會在 App resource 內附 Pi-only 的 `Yuzora WSL Agents` Plugin，且預設維持停用。使用者可在**設定 → Herdr → WSL Pi 整合**明確開啟；Yuzora 會依 ownership 規則 link 內附 Plugin，並在 Herdr 設定的 WSL distro 安裝 adapter。關閉時會先卸載 owned adapter files，再 unlink Plugin。只支援 Plugin-managed panes。Yuzora 只消費 HERDR snapshot／events 的 live identity 與 state；不解析 terminal、不推斷 Linux process、不投影 Pi native session id，也不保證 resume／control。HERDR `v0.8.2` Runtime 為 Stable，但 Windows Plugin surface 與本整合仍為 Experimental。既有 running protocol-19 server 必須由使用者明確停止並重啟；Yuzora 升級時不會 kill。詳見 [`herdr-plugins/yuzora-wsl-agents/README.md`](herdr-plugins/yuzora-wsl-agents/README.md)。
+### 網頁互動 Demo
+
+[官網](https://github.yuuzu.net/Yuzora/)提供[互動 Demo](https://github.yuuzu.net/Yuzora/demo/)，可操作範例終端機、檔案、Git 差異與資料庫。Demo 使用記憶體中的範例資料，不連接本機或遠端主機。執行 `bun run demo:build` 建置，GitHub Actions 會將官網與 Demo 一同部署至 Pages。
 
 ## 開發
 

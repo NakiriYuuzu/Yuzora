@@ -1,0 +1,84 @@
+{
+  "time": "2026-09-10T01:37:37.7599629+08:00",
+  "name": "yuzora-empty-gui-0910",
+  "folder": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\Yuzora-Empty-GUI-20260910",
+  "startedPid": 4832,
+  "status": {
+    "client": {
+      "version": "0.9.0",
+      "channel": "stable",
+      "protocol": 22,
+      "endpoint_protocol_generation": 1,
+      "endpoint_capabilities": [
+        "surface_interest",
+        "presentation_effects_fence",
+        "health_check"
+      ],
+      "binary": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "session": "yuzora-empty-gui-0910"
+    },
+    "server": {
+      "status": "running",
+      "running": true,
+      "version": "0.9.0",
+      "protocol": 22,
+      "capabilities": {
+        "live_handoff": false,
+        "detached_server_daemon": false,
+        "endpoint_protocol_generation": 1,
+        "surface_interest": true,
+        "health_check": true
+      },
+      "compatible": true,
+      "endpoint_compatible": true,
+      "socket": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\sessions\\yuzora-empty-gui-0910\\herdr.sock",
+      "session": "yuzora-empty-gui-0910",
+      "restart_needed": false,
+      "server_binary_stale": false
+    },
+    "update": {
+      "restart_needed": false,
+      "server_binary_stale": false
+    }
+  },
+  "workspaces": {
+    "id": "cli:workspace:list",
+    "result": {
+      "type": "workspace_list",
+      "workspaces": []
+    }
+  },
+  "originalServerBefore": {
+    "Id": 25576,
+    "StartTime": "2026-09-09T23:05:36.6743916+08:00"
+  },
+  "originalServerAfter": {
+    "Id": 25576,
+    "StartTime": "2026-09-09T23:05:36.6743916+08:00"
+  },
+  "sessions": {
+    "sessions": [
+      {
+        "default": true,
+        "name": "default",
+        "running": true,
+        "session_dir": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr",
+        "socket_path": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\herdr.sock"
+      },
+      {
+        "default": false,
+        "name": "yuzora-empty-gui-0910",
+        "running": true,
+        "session_dir": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\sessions\\yuzora-empty-gui-0910",
+        "socket_path": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\sessions\\yuzora-empty-gui-0910\\herdr.sock"
+      },
+      {
+        "default": false,
+        "name": "yuzora-p8-owner",
+        "running": false,
+        "session_dir": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\sessions\\yuzora-p8-owner",
+        "socket_path": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\sessions\\yuzora-p8-owner\\herdr.sock"
+      }
+    ]
+  }
+}

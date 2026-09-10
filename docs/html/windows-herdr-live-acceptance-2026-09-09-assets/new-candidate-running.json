@@ -1,0 +1,39 @@
+{
+  "computer": "DESKTOP-NMLUN4F",
+  "user": "yuuzu",
+  "psVersion": "7.6.5",
+  "processes": [
+    {
+      "ProcessId": 16932,
+      "ExecutablePath": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\yuzora.exe",
+      "CommandLine": "\"C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\yuzora.exe\" ",
+      "SessionId": 1
+    }
+  ],
+  "installedBinaryHash": "DF3F6A73ABD21288022165541421DB9185BAE8F09B6F604A0B9EA759D070F076",
+  "bundledHerdrHash": "9B3BF49F94C2D09B1D62E11171B132865768DAFC36B1327FB946C0CEF9CA0D00",
+  "distributions": [
+    {
+      "PSChildName": "{80f34b73-2ee6-4419-bb79-c1f9f302e6f8}",
+      "DistributionName": "Yuzora-Verify-Debian",
+      "DefaultUid": 1000,
+      "Version": 2
+    },
+    {
+      "PSChildName": "{9f8308a7-615d-48b6-95b4-762d097f5a01}",
+      "DistributionName": "Ubuntu-26.04",
+      "DefaultUid": 1000,
+      "Version": 2
+    }
+  ],
+  "tools": [
+    {
+      "Name": "bun.exe",
+      "Source": "C:\\Users\\Yuuzu\\.bun\\bin\\bun.exe"
+    },
+    {
+      "Name": "gh.exe",
+      "Source": "C:\\Program Files\\GitHub CLI\\gh.exe"
+    }
+  ]
+}

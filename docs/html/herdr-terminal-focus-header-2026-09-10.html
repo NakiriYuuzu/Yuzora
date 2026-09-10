@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Herdr 分割終端機焦點標示</title>
+<style>body{max-width:760px;margin:48px auto;padding:0 24px;font:16px/1.7 system-ui;color:#2e2c28;background:#fbfaf6}code{font-size:.9em}</style>
+<h1>Herdr 分割終端機焦點標示</h1>
+<p>2026-09-10：分割畫面中的每個 terminal pane 增加固定 28px 標題列，顯示窗格名稱；目前使用的 pane 顯示淡主題色背景與「使用中」標籤。</p>
+<p>提示沿用 Herdr 的焦點與頁面 active／visible 狀態。切換 pane 時，標記等 Herdr 確認後才移動；頁面失去作用中狀態或隱藏時移除標記。點擊標題可聚焦該 pane，標題按鈕以 aria-pressed 表達目前選取狀態。透過既有放大操作切換 pane 時亦會更新標記。</p>
+<p>所有分割 pane 保持相同標題列高度，避免焦點切換改變 terminal 尺寸。標題列佔用獨立空間，不覆蓋終端內容；觀察模式的「取得控制」按鈕置於標題列，避免與標記重疊。單一 pane 保持原有配置。未恢復四邊外框。</p>
+<p>沿用 shadcn Button 與 Badge，新增部分是 terminal 專用標題 chrome，無新增通用 primitive。文案包含繁體中文與英文。</p>
+<p>修改：<code>src/app/panels/HerdrTerminalPage.tsx</code>、<code>HerdrTerminalLayout.test.tsx</code>，以及兩語系的 <code>workbench.json</code>。</p>
+<p>驗證：HerdrTerminalLayout 與 HerdrTerminalPage 共 50 項測試通過，涵蓋待確認的焦點切換、只標示一個 pane、隱藏／非作用中頁面、放大狀態，以及焦點切換不重建 connector。修改的 TSX 檔案 ESLint、<code>bun run build</code>（含型別檢查）、<code>git diff --check</code> 通過。建置保留動態匯入未拆分與大型 chunk 提示。</p>
+<p>尚未執行實機／瀏覽器視覺驗收。保留既有工作區修改，未執行 staging、commit 或 push。</p>
+</html>

@@ -1,0 +1,3 @@
+~				130 number field (settable) 行數, Value: 200
++					148 stepper 0
+The focused UI element is 130 number field (settable) 行數, Value: 200

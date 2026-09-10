@@ -1,0 +1,20 @@
+{
+  "space": {
+    "id": "w1",
+    "label": "WSL Verify 20260906",
+    "order": 1,
+    "focused": true,
+    "activeTabId": "w1:t2",
+    "path": "\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr-plugins\\yuzora-wsl-agents\\",
+    "status": "idle",
+    "agentCount": 1,
+    "terminalCount": 2,
+    "tabCount": 2,
+    "repoKey": null,
+    "repoName": null,
+    "repoRoot": null,
+    "isLinkedWorktree": null
+  },
+  "originalPaneCwd": "\\\\wsl.localhost\\Ubuntu-26.04\\home\\yuuzu",
+  "pluginAgentCwd": "\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr-plugins\\yuzora-wsl-agents\\"
+}

@@ -1690,6 +1690,7 @@ impl HerdrManager {
         label: Option<String>,
         focus: bool,
     ) -> Result<HerdrWorkspaceCreateResult, String> {
+        let cwd = cwd.map(crate::shell::working_directory);
         let mut params = serde_json::Map::new();
         if let Some(cwd) = cwd.filter(|s| !s.trim().is_empty()) {
             params.insert("cwd".into(), serde_json::Value::String(cwd));
@@ -4251,6 +4252,7 @@ fn build_tab_create_params(
     cwd: Option<String>,
     focus: bool,
 ) -> serde_json::Value {
+    let cwd = cwd.map(crate::shell::working_directory);
     let mut params = serde_json::Map::new();
     if let Some(workspace_id) = workspace_id.filter(|s| !s.trim().is_empty()) {
         params.insert(
@@ -4280,6 +4282,7 @@ fn build_pane_split_params(
     ratio: Option<f64>,
     focus: bool,
 ) -> serde_json::Value {
+    let cwd = cwd.map(crate::shell::working_directory);
     let mut params = serde_json::Map::new();
     params.insert(
         "direction".into(),

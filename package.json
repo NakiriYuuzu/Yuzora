@@ -1,12 +1,15 @@
 {
   "name": "yuzora",
   "private": true,
-  "version": "0.0.9-beta.3",
+  "version": "0.0.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:tauri": "vite --mode tauri",
     "build": "bun run typecheck && vite build",
+    "demo:dev": "vite --config vite.demo.config.ts",
+    "demo:build": "vite build --config vite.demo.config.ts",
+    "site:companions": "bun scripts/generate-site-companions.tsx",
     "runtime:verify": "bun scripts/verify-host-resources.ts",
     "host:prepare": "bun scripts/prepare-host-resources.ts",
     "herdr:prepare": "bun scripts/prepare-herdr-resources.ts",

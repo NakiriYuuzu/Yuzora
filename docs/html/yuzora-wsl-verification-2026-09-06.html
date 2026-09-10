@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora v0.0.9 WSL 實機驗證 · 2026-09-06</title>
+<style>
+:root{color-scheme:light;--ink:#17283a;--muted:#546475;--line:#d5dde4;--accent:#215b75;--paper:#f7f9fa}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.75 system-ui,"PingFang TC","Microsoft JhengHei",sans-serif}main{max-width:1120px;margin:auto;padding:40px 24px 80px}h1{font-size:34px;line-height:1.3}h2{margin-top:38px;font-size:23px}h3{font-size:18px}p{margin:12px 0}a{color:var(--accent)}code{font:0.88em ui-monospace,Consolas,monospace;overflow-wrap:anywhere;background:#eaf0f4;padding:2px 4px}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border:1px solid var(--line);padding:12px;text-align:left;vertical-align:top}th{background:#eaf0f4}.meta{font-size:13px;color:var(--muted)}.verdict{border-left:5px solid #b45932;background:#fff2e9;padding:16px 20px}.good{color:#276345}.warn{color:#924415}figure{margin:22px 0}img{width:100%;height:auto;border:1px solid var(--line);border-radius:8px}figcaption{font-size:13px;color:var(--muted)}li{margin:7px 0}.flow{padding:18px;background:#eaf0f4;font-family:ui-monospace,monospace;line-height:2;overflow-wrap:anywhere}details{margin:18px 0;padding:12px 16px;border:1px solid var(--line);background:white}summary{cursor:pointer;font-weight:650}@media(max-width:700px){main{padding:22px 14px}h1{font-size:27px}table{font-size:12px}th,td{padding:7px}}@media print{body{background:white}main{padding:0}details{display:block}h2,figure{break-inside:avoid}}
+</style>
+</head>
+<body><main>
+<p class="meta">Windows 實機／SSH＋WebView2 · 2026-09-06 · 約 13:00–13:10 Asia/Taipei</p>
+<h1>WSL Pi 能運作，但目前不宜判定完整整合可用</h1>
+<div class="verdict"><strong>結論：</strong>已安裝並重測 <code>0.0.9-beta.3 / 9d0634c</code> 的 MSI 候選，Settings、Pi 提示與 idle／working／blocked UI 投影均成功。新發現的 cwd 來源錯置會讓 Files 與後續 WSL pane 指向 Plugin 安裝目錄；應先修正這個問題，再補雙 distro 驗收。維持 Experimental，不建議據此放行 beta.3。</div>
+
+<h2>此次測的是哪個版本</h2>
+<table><tbody>
+<tr><th>公開版本</th><td>GitHub 最新 Pre-release 為 <code>v0.0.9-beta.2</code>；最新 Stable 為 <code>v0.0.8</code>。beta.3 尚未公開發布。</td></tr>
+<tr><th>候選與 PR</th><td><a href="https://github.com/NakiriYuuzu/Yuzora/pull/89">Draft PR #89</a>，head <code>9d0634c44e314b3dcc1c39b371ed448481b2f16a</code>，tree <code>91f58722d7cd7bae9400eaddb8c0042eaa4a4665</code>。</td></tr>
+<tr><th>主機與 runtime</th><td>DESKTOP-NMLUN4F；Windows 11 Pro build 26200；Ubuntu-26.04 / WSL2；Pi 0.84.4；Yuzora-managed Herdr 0.8.2 / protocol 20。</td></tr>
+<tr><th>MSI SHA-256</th><td><code>423a4e795e9378ab62f31cf0886e8301adbf088245d14d458f1914fb3ce83c4e</code>；本輪實際安裝、UI／runtime 驗證及卸載。</td></tr>
+<tr><th>NSIS SHA-256</th><td><code>ea07e79bad69315a540a9ea8b70cf5d48a0517774895884e8f97957242fc93b2</code>；本輪只重核雜湊，未重跑安裝流程；前次同候選的證據另存原驗收文件。</td></tr>
+<tr><th>套件檔案</th><td>10 個 runtime 檔案皆與 source 相符：3 個 WSL 消費的 adapter 檔案為 LF 且 raw SHA 相等；其餘 Windows 檔案與 source 的 CRLF 形式相等。未把 macOS raw SHA 的換行差異誤判為內容差異。</td></tr>
+</tbody></table>
+
+<h2>本輪實測結果</h2>
+<table><thead><tr><th>項目</th><th>結果</th><th>證據與界限</th></tr></thead><tbody>
+<tr><td>冷啟動、版本／protocol</td><td class="good">PASS</td><td>安裝前 app、adapter、Yuzora／Herdr 程序均不存在；從安裝位置啟動並連上 managed 0.8.2 / 20。</td></tr>
+<tr><td>Settings 開啟與關閉</td><td class="good">PASS</td><td>disabled → Plugin 0.1.0 enabled / adapter current → disabled；結束時 CLI 複核 unlinked / absent。沒有重現永遠 Checking。</td></tr>
+<tr><td>Pi 啟動、文字輸入／回覆</td><td class="good">PASS</td><td>Plugin-managed pane 啟動 Pi；透過 pane input 傳入固定提示，實際回覆 <code>WSL_VERIFY_20260906_OK</code>。沒有要求工具執行或讀取專案。</td></tr>
+<tr><td>working → idle</td><td class="good">PASS</td><td>HERDR agent API 與 Yuzora DOM 都觀察到轉換；UI working 05:06:32.860Z → idle 05:06:36.455Z。<a href="yuzora-wsl-verification-2026-09-06-assets/ui-transitions.json">DOM 紀錄</a>；不是原始 events stream 的錄製。</td></tr>
+<tr><td>blocked → idle、Attention</td><td class="good">PASS</td><td>僅於第二個 Plugin-managed shell 用 <code>pi -e</code> 載入 repo 的 W09 confirm fixture；UI 與 API 顯示 blocked，Esc 取消後 idle。這是實際 Pi UI hook 測試，不是模型工具權限對話的驗收。</td></tr>
+<tr><td>Agent control API</td><td class="warn">已知限制，實機確認</td><td><code>herdr agent prompt</code> 回 <code>agent_not_ready: ... no longer the pane foreground process</code>；pane input 可用。identity／state 成功不代表 Agent control API 可用。</td></tr>
+<tr><td>工作目錄／Files／新 shell</td><td class="warn">FAIL，新發現</td><td>Linux Pi cwd 與 Windows launcher cwd 不一致；Yuzora 採用後者，新 shell 也繼承錯誤 context。詳見下節。</td></tr>
+<tr><td>W18 雙 distro</td><td class="warn">未執行</td><td>主機只有一個實際 distro。已詢問建立暫時第二 distro 的核准，本輪尚未收到，因此沒有建立／複製。既有同 distro 的兩個 panes 不等同 W18。</td></tr>
+<tr><td>資源觀察與回滾</td><td class="good">本輪無異常</td><td>137 samples／約 5 分 23 秒：最低可用 RAM 20.26 GiB；最高 commit 39.68%；最高 CPU sample 37%；包含 WSL VM 的 tracked working set 最高 2.72 GiB。短測不能證明長時間無洩漏。</td></tr>
+</tbody></table>
+
+<h2>需要先修正的 cwd 問題</h2>
+<p><strong>重現條件：</strong>在非 worktree、沒有 workspace-level cwd 的 snapshot 中，以 <code>\\wsl.localhost\Ubuntu-26.04\home\yuuzu</code> 建立 Space，再開 Plugin WSL Pi。</p>
+<div class="flow">原始 root pane cwd：\\wsl.localhost\Ubuntu-26.04\home\yuuzu<br>Pi 實際 !pwd：/home/yuuzu<br>Agent 回報 cwd：C:\Users\Yuuzu\AppData\Local\Yuzora\herdr-plugins\yuzora-wsl-agents<br>Yuzora Space.path → Plugin 目錄 → Files 顯示 Plugin 檔案<br>再開 WSL shell → /mnt/c/Users/Yuuzu/AppData/Local/Yuzora/herdr-plugins/yuzora-wsl-agents</div>
+<p><a href="../../src/lib/herdrNormalize.ts">herdrNormalize.ts</a> 第 74 行依序掃描 <code>[agentsRaw, panesRaw]</code>，取第一個 cwd 作 Space fallback；因此正確 root pane cwd 被 Agent launcher cwd 蓋過。<a href="../../src/state/herdrStore.ts">herdrStore.ts</a> 的 <code>restoreFocusedState</code> 會再用 Space.path 開啟本機工作目錄。本輪把實機 snapshot 餵入原始 normalization 函式，能直接重現同一個錯誤路徑。</p>
+<p>這個判斷有三份相互對應的證據：<a href="yuzora-wsl-verification-2026-09-06-assets/idle-snapshot.json">原始 snapshot</a>、<a href="yuzora-wsl-verification-2026-09-06-assets/normalization-repro.json">原函式重現結果</a>、下方 Files 截圖。沒有寫入或更動 Plugin 內容。</p>
+<figure><img src="yuzora-wsl-verification-2026-09-06-assets/files-wrong-root.png" alt="Yuzora Files 顯示 adapters、scripts、herdr-plugin.toml 與 README.md，專案已切到 Plugin 安裝目錄"><figcaption>應指向 Ubuntu 的工作目錄，實際 Files 卻列出 Plugin 套件。背景 terminal 也顯示新 shell 在 Plugin 目錄。</figcaption></figure>
+
+<h2>較好的解法</h2>
+<table><thead><tr><th>方向</th><th>適合需求</th><th>判斷</th></tr></thead><tbody>
+<tr><td>保留 Windows Herdr＋WSL Pi Plugin，修正 cwd contract</td><td>近期交付 Yuzora 內的 WSL Pi terminal 與 live state</td><td><strong>優先建議。</strong>先保存／採用明確的 Space root，避免拿 Plugin launcher cwd 覆蓋 project root；Plugin 新 pane 也必須繼承同一個可信任的 workspace cwd。若上游無 authoritative workspace root，需明確、可驗證的來源優先序與 provenance，不能僅依陣列順序猜測。</td></tr>
+<tr><td>Windows 原生 Agent＋官方 integration</td><td>工具鏈不依賴 Linux，想減少 Windows↔WSL 邊界</td><td>官方支援 Windows Pi／Claude Code／Codex 等 integration；可避免此次 WSL cwd 橋接問題，但仍受 Windows runtime 的既有限制。此次沒有替使用者遷移或實測各原生 Agent。</td></tr>
+<tr><td>Linux／WSL 單一 Herdr runtime，再做完整 remote provider</td><td>以 Linux 工作區、多 Agent、恢復與控制能力為核心</td><td>值得另立架構計畫。官方 Windows client 可 <code>herdr --remote</code> 連 Linux／macOS，但 Yuzora 目前只接 Windows-native runtime；TUI remote attach 不會自動補齊 Yuzora 的 snapshot、events、terminal、paths 與檔案操作整合。必須另立 ADR 取代／擴充現有 ADR-0002。</td></tr>
+</tbody></table>
+<p>近期修正的驗收至少要包含：UNC 與 Windows drive root、非 Git 資料夾、多 Agent／多 pane、agent/pane array 重新排序、關閉初始 root pane、切換 tab、新建 Plugin shell、Files 與實際 Linux cwd 一致。修正會產生新的 candidate；<code>9d0634c</code> 的安裝包驗收不能直接替代新候選的驗收。</p>
+<p>不建議為了完成 v0.0.9 就升級到 Herdr preview 或直接恢復雙 runtime provider。最新 Stable 仍是 0.8.2；官方限制與本轮觀察相符，尚無已驗證的較新 Stable 可直接解決此整合問題。</p>
+
+<h2>畫面證據</h2>
+<details><summary>Settings：adapter 已啟用</summary><figure><img src="yuzora-wsl-verification-2026-09-06-assets/settings-enabled.png" alt="Settings 顯示 Plugin 0.1.0 enabled 與 adapter current"></figure></details>
+<details><summary>Pi：真實提示與回覆</summary><figure><img src="yuzora-wsl-verification-2026-09-06-assets/pi-prompt.png" alt="Pi 在 WSL 回覆驗收字串，Yuzora Agents 顯示 idle"></figure></details>
+<details><summary>Pi：blocked 與 Attention</summary><figure><img src="yuzora-wsl-verification-2026-09-06-assets/pi-blocked.png" alt="Pi 確認框等待輸入，Yuzora Agent 與 Attention 顯示 blocked"></figure></details>
+<details><summary>Settings：停用與回滾</summary><figure><img src="yuzora-wsl-verification-2026-09-06-assets/settings-disabled-final.png" alt="WSL Pi integration 已停用"></figure></details>
+
+<h2>結束狀態與來源</h2>
+<p>本輪只新增此報告與 evidence assets，未修改產品程式、未執行 Git add／commit／push、未更新 GitHub Issues／PR／acceptance variables。原有 dirty files 保留。測試 Space 已刪除，工作目錄先恢復原本 Ubuntu home；Settings 關閉、Plugin unlinked、adapter absent、MSI 卸載成功、app root 不存在、Yuzora／Herdr／Pi／reporter 測試程序為零。臨時排程與 CDP 設定／SSH tunnel 已清除。既有 Ubuntu 保留，WSL 仍為 Running；測試記錄留在 Windows Temp 與本報告 assets。</p>
+<ul>
+<li><a href="yuzora-wsl-verification-2026-09-06-assets/finish.output.txt">主機 cleanup 證據</a>、<a href="yuzora-wsl-verification-2026-09-06-assets/status.output.txt">Plugin／adapter 最終狀態</a>、<a href="yuzora-wsl-verification-2026-09-06-assets/resources-summary.json">資源摘要</a>。</li>
+<li><a href="https://github.com/NakiriYuuzu/Yuzora/issues/90">Issue #90：Bundled Experimental 範圍與過往 gates</a>；<a href="../../.yuuzu/eval/herdr-wsl-plugin-windows.html">既有候選驗收紀錄</a>。本輪 cwd failure 補充舊紀錄，不改寫過去已執行的結果。</li>
+<li><a href="https://github.com/herdrdev/herdr/releases/tag/v0.8.2">Herdr Stable 0.8.2</a>；<a href="https://github.com/herdrdev/herdr/blob/v0.8.2/docs/next/website/src/content/docs/windows-beta.mdx">同 tag 的 Windows 文件</a>；<a href="https://github.com/herdrdev/herdr/blob/v0.8.2/docs/next/website/src/content/docs/persistence-remote.mdx">remote 文件</a>。</li>
+<li><a href="../../.yuuzu/adr/0002-windows-native-herdr-with-wsl-shell-agents.html">ADR-0002：Windows-native Herdr</a>；<a href="../../herdr-plugins/yuzora-wsl-agents/README.md">Plugin 操作與限制</a>。</li>
+</ul>
+</main></body></html>

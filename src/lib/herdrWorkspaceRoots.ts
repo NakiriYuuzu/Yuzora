@@ -5,6 +5,21 @@ import { LOCAL_HOST_ID, parseRemoteFilePath, remoteFilePath, runtimeKey } from "
 const STORAGE_KEY = "yuzora.runtime.workspace-roots.v1"
 const MAX_BINDINGS = 2048
 
+/** Only explicit Space/Agent selection may adopt a non-Git pane directory.
+ * Background projection must never change Files based on a process cwd. */
+export function directoryForSelection(snapshot: HerdrSnapshot | null, workspaceId: string, paneId?: string | null): string | null {
+  const space = snapshot?.spaces.find((item) => item.id === workspaceId)
+  if (space?.path) return space.path
+  const terminals = snapshot?.terminals.filter((item) => item.workspaceId === workspaceId) ?? []
+  const selected = paneId
+    ? terminals.find((item) => item.paneId === paneId)
+    : terminals.find((item) => item.tabId === space?.activeTabId) ?? terminals[0]
+  const path = selected?.cwd
+  if (!path || !snapshot) return null
+  const { hostId } = parseRuntimeScope(snapshot.herdrSessionId)
+  return hostId === LOCAL_HOST_ID ? path : remoteFilePath(hostId, path)
+}
+
 function read(): Record<string, string> {
   try {
     const value: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")

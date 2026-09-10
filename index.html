@@ -2,11 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/brand/yuzora-mark.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Yuzora</title>
     <style>
-      /* Startup splash — self-contained: no external assets, colors mirror
+      /* Startup splash — colors mirror
          styles.css --paper-1 / --ink-1 for both themes so the first paint
          matches the app shell that replaces it. */
       #yz-splash {
@@ -16,22 +16,16 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        gap: 18px;
         background: #fbfaf6;
         color: #2e2c28;
+        --logo-ink: currentColor;
         font-family: "Hanken Grotesk Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         opacity: 1;
       }
       .dark #yz-splash {
         background: #1a191f;
         color: #e7e4df;
-      }
-      #yz-splash .yz-wordmark {
-        font-size: 27px;
-        font-weight: 650;
-        letter-spacing: 0.35em;
-        text-transform: uppercase;
-        /* re-center: tracking adds a trailing gap after the last glyph */
-        padding-left: 0.35em;
       }
     </style>
     <script>
@@ -60,7 +54,7 @@
 
   <body>
     <div id="yz-splash" role="status" aria-label="Yuzora is starting">
-      <div class="yz-wordmark">Yuzora</div>
+      <svg width="280" height="100" viewBox="0 0 718 256" aria-hidden="true" focusable="false"><use href="/brand/yuzora-lockup.svg#yuzora-lockup" /></svg>
     </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

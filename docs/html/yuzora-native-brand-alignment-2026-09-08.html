@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora · 原生視窗控制與品牌對齊</title>
+<style>body{margin:0;background:#fbfaf6;color:#2e2c28;font:15px/1.8 system-ui,"PingFang TC",sans-serif}main{max-width:900px;margin:auto;padding:44px 28px}h1{font-size:30px;line-height:1.3}h2{font-size:20px;margin-top:32px}small{color:#626059}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #ddd9cf}th{background:#f4f1ea}code{font-size:13px;overflow-wrap:anywhere}</style>
+<main><small>2026-09-08 · Production UI 修正</small><h1>同步原生紅綠燈與 Logo 的位置</h1>
+<p>使用者附圖顯示原生紅綠燈高於 Logo，綠色按鈕與 Logo 也過近。前版將 HTML 品牌列下移 8px，但 macOS 視窗控制仍使用原座標；其 56px 預留區不足以維持清楚間距。</p>
+<table><tr><th>調整</th><th>實作</th></tr>
+<tr><td>原生控制</td><td><code>trafficLightPosition</code> 由 x22／y27 改為 x22／y35，與已增加留白的品牌列對齊。</td></tr>
+<tr><td>水平間距</td><td>控制預留寬度由 56px 增為 64px；macOS 品牌列 gap 由 8px 增為 16px。保留 Logo、Yuzora 名稱與側欄按鈕的原有尺寸。</td></tr>
+<tr><td>收合狀態</td><td>展開按鈕移至 x102／y21，第一組分頁的額外左側留白為 128px；原生控制預留區同步更新。Git／Database 在此情境預留 44px 控制高度，避免壓到工具列。</td></tr>
+</table>
+<h2>驗證與交付狀態</h2>
+<ul><li>AppShell 與 AppShell.layout：2 個測試檔、40 項測試通過。</li><li>前端 build 與兩份 TypeScript config 通過；保留既有 bundle size／dynamic import 警告。</li><li><code>cargo check --locked --all-targets</code> 通過。</li><li><code>git diff --check</code> 通過。</li><li>既有 <code>bun run tauri:dev</code> 流程已因設定更新重新啟動 <code>target/debug/yuzora</code>，以 process 狀態確認；本次沒有透過 GUI 自動化驗證新畫面。</li><li>最新 frontend build 已同步到 <code>dist</code>，fixture 的 CSS 來源已更新。</li></ul>
+<p><strong>未驗證：</strong>原生畫面中的實際視覺中心、紅綠燈 hit area 與收合後的 GUI 疊放。已依使用者新提供的 AGENTS.md 規則詢問 GUI／E2E 許可；未取得明確同意前，不執行相關自動化，也不把上述項目記為 PASS。</p>
+<p>變更範圍：<code>src-tauri/tauri.conf.json</code>、<code>src/app/AppShell.tsx</code>、<code>src/app/workbench/workbench-shell.css</code>。沒有新增元件、操作 live Herdr、修改 demo 或執行 Git 寫入。日誌位於 <code>output/native-brand-alignment/{tests,build,cargo-check}.log</code>。</p>
+</main></html>

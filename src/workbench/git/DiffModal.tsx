@@ -7,6 +7,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { DialogResizeHandles } from "@/components/ui/dialog-resize-handles"
 import { useResizableDialogSize } from "@/hooks/useResizableDialogSize"
 import { dialogMinSize } from "@/lib/dialogSize"
+import { showsNativeTrafficLights } from "@/lib/platform"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { PanelImperativeHandle } from "react-resizable-panels"
 import { Dialog as DialogPrimitive } from "radix-ui"
@@ -448,8 +449,11 @@ export function DiffModal() {
                     </DialogPrimitive.Title>
                     <DialogPrimitive.Description className="sr-only">{sub}</DialogPrimitive.Description>
 
-                    {/* header — design L1398 */}
-                    <div className="flex h-[52px] shrink-0 items-center gap-[11px] border-b border-(--line-1) bg-(--paper-1) pr-[14px] pl-[17px]">
+                    {/* The expanded modal header must clear AppKit's native window controls. */}
+                    <div
+                        data-native-lights={showsNativeTrafficLights()}
+                        className="flex h-[52px] shrink-0 items-center gap-[11px] border-b border-(--line-1) bg-(--paper-1) pr-[14px] pl-[17px] data-[native-lights=true]:pl-[92px]"
+                    >
                         <svg
                             width="17"
                             height="17"

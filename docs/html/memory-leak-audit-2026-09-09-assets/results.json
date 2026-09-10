@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-09",
+  "method": "Actual frontend modules and installed Tauri Channel with simulated native IPC/file responses; no browser or native heap profiling.",
+  "channels": {"terminalCycles":100,"callbacksAfterTerminalClose":100,"subscriptionCycles":100,"callbacksAfterAllCloses":200,"nativeStreamsAfterAllCloses":0,"disconnectCycles":25,"staleEntriesStillFoundByRelease":25,"nativeCloseCallsFromStaleRelease":0},
+  "documents": {"splitCloseCycles":25,"openTabsAfterClose":0,"newReadsWhenProbingClosedFiles":0,"closedFilesStillCached":25,"newReadsAfterCloseDuringLoad":0},
+  "workspaces": {"visitedWorkspaces":128,"retainedHostCapabilities":128,"workspaceCloseCalls":0,"nextWorkspaceError":"Error: too-many-workspaces"},
+  "existingTests": {"frontendFiles":7,"frontendTestsPassed":76,"rustResultSessionTestsPassed":15},
+  "postgres": {"evidence":"static source only","queue":"tokio::sync::mpsc::unbounded_channel","helperMemoryLimitMiB":512}
+}

@@ -8,11 +8,11 @@
 // front-end hides it (`preview_set_visible(false)`) whenever any modal/popover is
 // open (see the overlay gate) and closes it when the preview panel unmounts.
 //
-// Commands here deliberately stay synchronous (main thread) while the rest of the
-// app moved to `(async)`: the native webview ops must land on the main thread
-// anyway, and main-thread execution serializes rapid-fire `preview_set_bounds` /
-// `preview_set_visible` in invoke order — on the async runtime two bounds updates
-// could apply out of order and leave the overlay misplaced.
+// Dispatch commands off the main thread: creating a WebView2 child from a
+// synchronous command deadlocks on Windows. Tauri dispatches the native work to
+// the main thread itself. The frontend's nativePreviewQueue preserves operation
+// order; commands sharing the lifecycle mutex must not wait for it on the main
+// thread while creation/close waits for native work to finish there.
 
 use std::sync::Mutex;
 
@@ -66,7 +66,7 @@ fn parse_web_url(url: &str) -> Result<Url, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)] // IPC keeps the existing bounds fields and adds session ownership.
 pub fn preview_open_url(
     app: AppHandle,
@@ -121,7 +121,7 @@ pub fn preview_open_url(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_set_bounds(
     x: f64,
     y: f64,
@@ -138,7 +138,7 @@ pub fn preview_set_bounds(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_set_visible(
     app: AppHandle,
     visible: bool,
@@ -159,7 +159,7 @@ pub fn preview_set_visible(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_close(
     app: AppHandle,
     state: tauri::State<'_, PreviewWebviewState>,
@@ -281,7 +281,10 @@ async fn read_or_navigate(
         .with_webview(move |view| {
             let current = callback_app.state::<PreviewWebviewState>();
             let result = (|| {
-                let guard = current.0.lock().map_err(|e| e.to_string())?;
+                // This callback runs on the main thread. A lifecycle command
+                // can hold the mutex while waiting for that same thread, so
+                // reject a racing snapshot/action instead of blocking it.
+                let guard = current.0.try_lock().map_err(|e| e.to_string())?;
                 if guard
                     .as_ref()
                     .is_none_or(|preview| preview.session_id != callback_owner)
@@ -333,7 +336,7 @@ pub async fn preview_forward(app: AppHandle, session_id: Option<String>) -> Resu
         .map(|_| ())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_reload(state: tauri::State<'_, PreviewWebviewState>) -> Result<(), String> {
     eval_history(&state, "location.reload()")
 }

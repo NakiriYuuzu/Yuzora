@@ -12,6 +12,9 @@ import {
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 import { useTranslation } from "react-i18next"
+import { SquareTerminal } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 
 import {
   ResizableHandle,
@@ -75,6 +78,7 @@ const defaultCols = 80
 const defaultRows = 24
 const RATIO_EPSILON = 0.01
 const RATIO_DEBOUNCE_MS = 120
+const LAYOUT_RETRY_DELAYS = [400, 1000]
 
 function currentMode(): TerminalMode {
   return document.documentElement.classList.contains("dark") ? "dark" : "light"
@@ -163,25 +167,16 @@ export function HerdrTerminalPage({
     [pagePathProp, herdrSessionId, terminalId]
   )
   const sessions = useHerdrStore((s) => s.sessions)
-  const selectedSessionName = useHerdrStore((s) => s.selectedSessionName)
-  const selectedSnapshot = useHerdrStore((s) => s.snapshot)
-  const selectedCapabilities = useHerdrStore((s) => s.capabilities)
-  const runtimesBySession = useHerdrStore((s) => s.runtimesBySession)
   const topologyRevision = useHerdrStore((s) => s.topologyRevision)
   const attachments = useHerdrStore((s) => s.attachments)
   const targetSessionName = useMemo(
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
-  const targetRuntime = targetSessionName
-    ? runtimesBySession[targetSessionName]
-    : undefined
-  const snapshot =
-    targetRuntime?.snapshot ??
-    (targetSessionName === selectedSessionName ? selectedSnapshot : null)
-  const targetCapabilities =
-    targetRuntime?.capabilities ??
-    (targetSessionName === selectedSessionName ? selectedCapabilities : null)
+  const snapshot = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
+    ?? (targetSessionName === s.selectedSessionName ? s.snapshot : null))
+  const targetCapabilities = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.capabilities : null)
+    ?? (targetSessionName === s.selectedSessionName ? s.capabilities : null))
 
   const sessionRunning = useMemo(
     () => resolveSessionRunning(sessions, herdrSessionId),
@@ -211,7 +206,10 @@ export function HerdrTerminalPage({
   )
 
   const resolvedTabId = useMemo(() => {
-    if (herdrTabId) return herdrTabId
+    // Saved page metadata can outlive a tab after a pane move or restore.
+    // Keep a live owning tab; otherwise resolve from this terminal's snapshot.
+    if (herdrTabId && (snapshot?.tabs.some((tab) => tab.id === herdrTabId)
+      || snapshot?.terminals.some((term) => term.tabId === herdrTabId))) return herdrTabId
     const fromTerminal = snapshot?.terminals.find(
       (item) =>
         item.terminalId === terminalId ||
@@ -223,11 +221,12 @@ export function HerdrTerminalPage({
         item.terminalId === terminalId ||
         (paneId && item.paneId === paneId)
     )
-    return fromAgent?.tabId ?? null
+    return fromAgent?.tabId ?? herdrTabId
   }, [herdrTabId, snapshot, terminalId, paneId])
 
   const [layout, setLayout] = useState<HerdrLayoutDescription | null>(null)
   const [layoutError, setLayoutError] = useState<string | null>(null)
+  const [layoutRetrying, setLayoutRetrying] = useState(false)
   const [layoutReady, setLayoutReady] = useState(!sessionCanConnect)
   const [surfaceSessionRunning, setSurfaceSessionRunning] = useState(sessionRunning)
   const suppressRatioWriteRef = useRef(true)
@@ -235,6 +234,8 @@ export function HerdrTerminalPage({
   const lastWrittenRatioRef = useRef<Map<string, number>>(new Map())
   const canSetSplitRatioRef = useRef(canSetSplitRatio)
   const layoutLoadGenerationRef = useRef(0)
+  const layoutRetryTimerRef = useRef<number | null>(null)
+  const layoutTargetRef = useRef<string | null>(null)
   const updateHerdrPageTabId = useWorkspaceStore((s) => s.updateHerdrPageTabId)
 
   const sessionNameArg = herdrSessionId === "live" ? null : herdrSessionId
@@ -243,8 +244,18 @@ export function HerdrTerminalPage({
     if (resolvedTabId) updateHerdrPageTabId(pagePath, resolvedTabId)
   }, [pagePath, resolvedTabId, updateHerdrPageTabId])
 
-  const reloadLayout = useCallback(async () => {
+  const reloadLayout = useCallback(async function loadLayout(attempt = 0): Promise<void> {
     const generation = ++layoutLoadGenerationRef.current
+    if (layoutRetryTimerRef.current !== null) window.clearTimeout(layoutRetryTimerRef.current)
+    layoutRetryTimerRef.current = null
+    setLayoutRetrying(true)
+    const target = JSON.stringify([targetSessionName, resolvedTabId, resolvedTabId ? null : paneId])
+    if (layoutTargetRef.current !== target) {
+      layoutTargetRef.current = target
+      setLayout(null)
+      setLayoutError(null)
+      setLayoutReady(false)
+    }
     suppressRatioWriteRef.current = true
     for (const timer of ratioTimersRef.current.values()) {
       window.clearTimeout(timer)
@@ -252,11 +263,13 @@ export function HerdrTerminalPage({
     ratioTimersRef.current.clear()
     lastWrittenRatioRef.current.clear()
     if (sessionIsStopped || (!sessionCanConnect && !hasConnectedSession)) {
+      setLayoutRetrying(false)
       setLayout(null)
       setLayoutReady(true)
       return
     }
     if (!sessionCanConnect) {
+      setLayoutRetrying(false)
       // Inventory refresh is transient, not topology teardown. Preserve the
       // last authoritative BSP tree and its mounted connector leaves.
       setLayoutReady(true)
@@ -283,13 +296,22 @@ export function HerdrTerminalPage({
       }, 0)
     } catch (error) {
       if (generation !== layoutLoadGenerationRef.current) return
-      // Legacy / single-pane fallback when layout.export is unavailable.
-      setLayout(null)
+      // A busy WSL helper is not evidence that BSP is unsupported. Keep the
+      // last authoritative tree and its live connectors while recovering.
       setLayoutError(error instanceof Error ? error.message : String(error))
       setHasConnectedSession(true)
       setSurfaceSessionRunning(true)
+      if (attempt < LAYOUT_RETRY_DELAYS.length && targetCapabilities?.api.layoutExport !== false) {
+        setLayoutRetrying(true)
+        layoutRetryTimerRef.current = window.setTimeout(() => {
+          if (generation === layoutLoadGenerationRef.current) void loadLayout(attempt + 1)
+        }, LAYOUT_RETRY_DELAYS[attempt])
+      }
     } finally {
-      if (generation === layoutLoadGenerationRef.current) setLayoutReady(true)
+      if (generation === layoutLoadGenerationRef.current && layoutRetryTimerRef.current === null) {
+        setLayoutRetrying(false)
+        setLayoutReady(true)
+      }
     }
   }, [
     paneId,
@@ -297,8 +319,10 @@ export function HerdrTerminalPage({
     sessionCanConnect,
     sessionIsStopped,
     sessionNameArg,
+    targetSessionName,
     hasConnectedSession,
-    canSetSplitRatio
+    canSetSplitRatio,
+    targetCapabilities?.api.layoutExport
   ])
 
   useEffect(() => {
@@ -315,6 +339,7 @@ export function HerdrTerminalPage({
     const ratioTimers = ratioTimersRef.current
     return () => {
       layoutLoadGenerationRef.current += 1
+      if (layoutRetryTimerRef.current !== null) window.clearTimeout(layoutRetryTimerRef.current)
       for (const timer of ratioTimers.values()) {
         window.clearTimeout(timer)
       }
@@ -485,6 +510,7 @@ export function HerdrTerminalPage({
           active={leafActive && (!focusedPaneId || leafPaneId === focusedPaneId)}
           visible={visible && (!zoomedPaneId || leafPaneId === zoomedPaneId)}
           focusedPaneId={focusedPaneId}
+          showFocusHeader={layoutPaneIds.length > 1}
           tabId={layout?.tabId ?? resolvedTabId}
           workspaceId={layout?.workspaceId ?? null}
           contextSessionName={tabMenuSession}
@@ -638,14 +664,17 @@ export function HerdrTerminalPage({
           {t("herdrTerminal.splitResizeUnavailable")}
         </div>
       )}
-      {layoutError && sessionCanConnect && !layout && (
+      {layoutError && sessionCanConnect && (layout || !layoutRetrying) && (
         <div
           role="status"
-          data-testid="herdr-layout-fallback"
+          data-testid={layout ? "herdr-layout-refresh-error" : "herdr-layout-fallback"}
           title={layoutError}
-          className="pointer-events-none absolute bottom-2 left-2 max-w-[70%] truncate rounded-[4px] border border-(--term-line) bg-(--term-bar) px-[8px] py-[4px] text-[11px] text-(--term-fg2)"
+          className="absolute bottom-2 left-2 flex max-w-[70%] items-center gap-2 rounded-[4px] border border-(--term-line) bg-(--term-bar) px-[8px] py-[4px] text-[11px] text-(--term-fg2)"
         >
-          {t("herdrTerminal.legacyLayout")}
+          <span className="truncate">{t(layout ? "herdrTerminal.layoutRefreshFailed" : "herdrTerminal.legacyLayout")}</span>
+          <Button variant="ghost" size="xs" disabled={layoutRetrying} onClick={() => void reloadLayout()}>
+            {t(layoutRetrying ? "herdrTerminal.layoutRetrying" : "herdrTerminal.retryLayout")}
+          </Button>
         </div>
       )}
     </div>
@@ -664,6 +693,7 @@ interface HerdrTerminalLeafProps {
   active: boolean
   visible: boolean
   focusedPaneId?: string | null
+  showFocusHeader?: boolean
   tabId?: string | null
   workspaceId?: string | null
   contextSessionName: string
@@ -683,6 +713,7 @@ function HerdrTerminalLeaf({
   active,
   visible,
   focusedPaneId = null,
+  showFocusHeader = false,
   tabId = null,
   workspaceId = null,
   contextSessionName,
@@ -695,7 +726,6 @@ function HerdrTerminalLeaf({
   const paneKey = paneId ?? terminalId
   const attachmentKey = herdrAttachmentKey(pagePath, paneKey)
   const sessions = useHerdrStore((s) => s.sessions)
-  const runtimesBySession = useHerdrStore((s) => s.runtimesBySession)
   const inventorySessionRunning = useMemo(
     () => resolveSessionRunning(sessions, herdrSessionId),
     [sessions, herdrSessionId]
@@ -704,9 +734,8 @@ function HerdrTerminalLeaf({
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
-  const targetSnapshot = targetSessionName
-    ? runtimesBySession[targetSessionName]?.snapshot ?? null
-    : null
+  const targetSnapshot = useHerdrStore((s) => targetSessionName
+    ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null)
   const baseCwd = resolveHerdrTerminalBaseCwd({
     snapshot: targetSnapshot,
     terminalId,
@@ -731,6 +760,8 @@ function HerdrTerminalLeaf({
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const clipboardRef = useRef<TerminalClipboardController | null>(null)
   const outputQueueRef = useRef<TerminalOutputQueue | null>(null)
+  const recoverOutputRef = useRef<(() => void) | null>(null)
+  const repaintAfterWriteRef = useRef(false)
   const lastOutputSeqRef = useRef<number | null>(null)
   const disposedRef = useRef(false)
   const openReadyRef = useRef(false)
@@ -768,8 +799,14 @@ function HerdrTerminalLeaf({
     visibleRef.current = visible
     tabIdRef.current = tabId
     cwdRef.current = baseCwd
-    outputQueueRef.current?.setVisible(visible)
-    if (visible) outputQueueRef.current?.flushNow()
+    const queue = outputQueueRef.current
+    if (visible && !previousVisibleRef.current) repaintAfterWriteRef.current = true
+    if (visible && queue?.needsResync) {
+      recoverOutputRef.current?.()
+    } else {
+      queue?.setVisible(visible)
+      if (visible) queue?.flushNow()
+    }
   }, [active, baseCwd, tabId, visible])
 
   useEffect(() => {
@@ -793,8 +830,24 @@ function HerdrTerminalLeaf({
     term.open(container)
     if (activeRef.current) safeFocus(term)
     clipboardRef.current = installTerminalClipboardHandling(term, {
+      pasteText: (text) => { void transportRef.current?.paste(text).catch(() => undefined) },
+      copyOnSelect: () => useTerminalSettingsStore.getState().copyOnSelect,
+      pasteImage: (image) => {
+        const transport = transportRef.current
+        const sessionId = transport?.getSessionId?.()
+        if (!transport || !sessionId) return
+        void import("@/terminal/terminalClipboardImage").then(({ pasteTerminalClipboardImage }) =>
+          pasteTerminalClipboardImage(contextSessionName,
+            () => !disposedRef.current && visibleRef.current && activeRef.current
+              && transportRef.current === transport && transport.canWrite() && transport.getSessionId?.() === sessionId,
+            (path) => transport.paste(path), image)
+        ).catch((error) => {
+          if (!disposedRef.current) setStatusMessage(t("clipboardPasteFailed", { ns: "terminal", message: String(error) }))
+        })
+      },
       canPaste: () =>
-        !disposedRef.current && openReadyRef.current && Boolean(transportRef.current?.canWrite())
+        !disposedRef.current && visibleRef.current && activeRef.current
+        && openReadyRef.current && Boolean(transportRef.current?.canWrite())
     })
     term.attachCustomWheelEventHandler((event) => {
       const transport = transportRef.current
@@ -827,7 +880,13 @@ function HerdrTerminalLeaf({
         onProcessed()
         return
       }
-      term.write(data, onProcessed)
+      term.write(data, () => {
+        if (!disposedRef.current && visibleRef.current && repaintAfterWriteRef.current) {
+          repaintAfterWriteRef.current = false
+          term.refresh(0, term.rows - 1)
+        }
+        onProcessed()
+      })
     }, visibleRef.current)
     outputQueueRef.current = queue
     registerTerminalOutputQueue(attachmentKey, queue)
@@ -910,6 +969,27 @@ function HerdrTerminalLeaf({
     })
     transportRef.current = transport
 
+    let recovering = false
+    const recoverOutput = () => {
+      if (recovering || transport.isDisposed?.()) return
+      recovering = true
+      repaintAfterWriteRef.current = true
+      openReadyRef.current = false
+      queue.setVisible(false)
+      transport.detachSession()
+      lastOutputSeqRef.current = null
+      void useHerdrStore.getState().releaseAttachment(attachmentKey).then(async () => {
+        if (transport.isDisposed?.()) return
+        await transport.open({ ...lastSizeRef.current, onEvent: handleEvent })
+        if (transport.isDisposed?.()) return
+        openReadyRef.current = true
+        clipboardRef.current?.flushPendingPaste()
+      }).catch((error) => {
+        if (!transport.isDisposed?.()) setStatusMessage(String(error))
+      }).finally(() => { recovering = false })
+    }
+    recoverOutputRef.current = recoverOutput
+
     dataDisposableRef.current = installTerminalImeHandling(
       term,
       (data) => {
@@ -934,9 +1014,13 @@ function HerdrTerminalLeaf({
           // Resetting xterm before that atomic frame paints an intermediate
           // empty viewport, visible as a one-frame shake on every scroll.
           outputQueueRef.current?.replace(event.data)
+          queue.setVisible(visibleRef.current)
+          if (visibleRef.current) queue.flushNow()
+          setStatusMessage(null)
           return
         }
         outputQueueRef.current?.push(event.data)
+        if (queue.needsResync && visibleRef.current) recoverOutput()
         return
       }
       if (event.type === "exit") {
@@ -951,19 +1035,7 @@ function HerdrTerminalLeaf({
       }
       if (event.type === "resync") {
         setStatusMessage(event.message)
-        outputQueueRef.current?.push(`\r\n[Herdr resync: ${event.message}]\r\n`)
-        transport.detachSession()
-        void useHerdrStore
-          .getState()
-          .releaseAttachment(attachmentKey)
-          .then(() => {
-            if (disposedRef.current || transport.isDisposed?.()) return
-            return transport.open({
-              cols: lastSizeRef.current.cols,
-              rows: lastSizeRef.current.rows,
-              onEvent: handleEvent
-            })
-          })
+        recoverOutput()
         return
       }
       if (event.type === "error") {
@@ -1049,6 +1121,7 @@ function HerdrTerminalLeaf({
       outputQueueRef.current?.dispose()
       unregisterTerminalOutputQueue(attachmentKey)
       transport.detach()
+      recoverOutputRef.current = null
       transportRef.current = null
       void useHerdrStore.getState().releaseAttachment(attachmentKey).catch(() => undefined)
       term.dispose()
@@ -1093,6 +1166,7 @@ function HerdrTerminalLeaf({
         lastSizeRef.current = next
         void transportRef.current?.resize(next.cols, next.rows).catch(() => undefined)
       }
+      term.refresh(0, term.rows - 1)
     }
     if (active) safeFocus(term)
   }, [active, visible])
@@ -1147,10 +1221,20 @@ function HerdrTerminalLeaf({
     focusedPaneId
   })
 
-  const badgeStyle: CSSProperties | undefined =
-    focusedPaneId && paneId && focusedPaneId === paneId
-      ? { boxShadow: "inset 0 0 0 1px var(--yz-accent)" }
-      : undefined
+  const paneActive = active && visible
+  const paneTitle = label || title || t("herdrTerminal.defaultTitle")
+  const takeControlButton = displayMode !== "control" && sessionCanConnect ? (
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      data-testid="herdr-take-control"
+      disabled={takingControl}
+      onClick={() => void onTakeControl()}
+    >
+      {t("herdrTerminal.takeControl")}
+    </Button>
+  ) : null
 
   return (
     <div
@@ -1161,7 +1245,6 @@ function HerdrTerminalLeaf({
       data-control-mode={displayMode}
       data-role={displayRole}
       data-attachment-key={attachmentKey}
-      style={badgeStyle}
       onContextMenu={(event) => {
         if (targetOpenRef.current?.handleContextMenu(event)) return
         if (paneId) leafContextMenu(event)
@@ -1170,17 +1253,34 @@ function HerdrTerminalLeaf({
         if (event.button === 0 && paneId) onActivatePane?.(paneId)
       }}
     >
-      {displayMode !== "control" && sessionCanConnect && (
-        <div className="absolute right-2 top-2 z-10">
-          <button
+      {showFocusHeader && (
+        <div
+          data-active={paneActive}
+          className="flex h-7 shrink-0 items-center gap-2 border-b border-(--term-line) bg-(--term-bar) pr-2 data-[active=true]:bg-[color-mix(in_srgb,var(--yz-accent)_18%,var(--term-bar))]"
+        >
+          <Button
             type="button"
-            data-testid="herdr-take-control"
-            disabled={takingControl}
-            onClick={() => void onTakeControl()}
-            className="rounded-[7px] border border-(--line-2) bg-(--term-bar) px-[8px] py-[2px] text-[11px] font-medium text-(--ink-1) transition-colors hover:bg-(--yz-hover) disabled:opacity-50"
+            variant="ghost"
+            size="xs"
+            className="h-full min-w-0 flex-1 justify-start"
+            aria-label={t("herdrTerminal.focusPane", { name: paneTitle })}
+            aria-pressed={paneActive}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => {
+              if (paneActive && termRef.current) safeFocus(termRef.current)
+              else if (paneId) onActivatePane?.(paneId)
+            }}
           >
-            {t("herdrTerminal.takeControl")}
-          </button>
+            <SquareTerminal data-icon="inline-start" aria-hidden="true" />
+            <span className="min-w-0 truncate" title={paneTitle}>{paneTitle}</span>
+            {paneActive && <Badge variant="secondary" className="ml-auto">{t("herdrTerminal.focused")}</Badge>}
+          </Button>
+          {takeControlButton}
+        </div>
+      )}
+      {!showFocusHeader && takeControlButton && (
+        <div className="absolute right-2 top-2 z-10">
+          {takeControlButton}
         </div>
       )}
       <div ref={containerRef} className="min-h-0 flex-1" />

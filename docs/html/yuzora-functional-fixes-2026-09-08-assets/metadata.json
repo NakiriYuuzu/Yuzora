@@ -1,0 +1,26 @@
+{
+  "date": "2026-09-08",
+  "codeReview": "GO",
+  "fixedProductIssues": 8,
+  "environmentRemedies": 1,
+  "diagnosedUnresolved": 1,
+  "all108ScenariosVerified": false,
+  "platformGui": "macOS only",
+  "app": "0.0.9-beta.3",
+  "herdr": "0.9.0 / protocol 22",
+  "binarySha256": "b509bb17e2b58e2785f131da2f0d033ba2becf1c8414d2d879397ac18be1b538",
+  "baselineCaptured": "2026-09-08T08:40:29.209Z",
+  "baseline": "/tmp/yuzora-fix-20260908-baseline",
+  "head": "711342825480a2edd5eb79005554ce828177e245",
+  "gitWritesPerformed": false,
+  "reportGeneratedAt": "2026-09-08T09:21:20.818Z",
+  "reportValidation": {
+    "staticChecks": "PASS",
+    "scriptExecution": false,
+    "localLinks": 53,
+    "images": 7,
+    "duplicateIds": false,
+    "guiLayout": "NOT_RUN_BROWSER_POLICY_BLOCK",
+    "reason": "Local file URL was blocked by browser security policy; no alternate browser path used."
+  }
+}

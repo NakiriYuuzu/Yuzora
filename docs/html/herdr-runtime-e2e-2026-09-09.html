@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HERDR runtime E2E gate 與候選驗證</title><style>body{margin:0;background:#f6f4ef;color:#202c35;font:16px/1.75 system-ui,-apple-system,sans-serif}main{max-width:1000px;margin:auto;padding:44px 24px}h1{line-height:1.25}h2{margin-top:32px}a{color:#1d627b}code{font:13px/1.7 ui-monospace,monospace;overflow-wrap:anywhere}pre{padding:16px;background:white;white-space:pre-wrap;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid #d9d6cd;text-align:left;vertical-align:top}.note{padding:16px;background:#fff0cf}</style></head><body><main>
+<h1>HERDR runtime E2E 已加入 CI gate</h1>
+<p>使用者於本對話明確同意後執行。提交 <code>ca951945910bb0716f359e40bf239d2df7c15c06</code>，tree <code>f411725b302599998da685c9c53cb2a53be627c8</code>。<a href="https://github.com/NakiriYuuzu/Yuzora/pull/92">PR #92</a> 維持 Draft。</p>
+<p id="ci-status"><a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34318725448">最終 CI 34318725448</a> 與 <a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34318725194">Host helper 34318725194</a> 全部通過。四平台 E2E、兩平台候選、下載與產物檢查已完成，尚待原 Windows／WSL 使用者驗收。</p>
+<p class="note">測試使用暫存 XDG roots 與獨立 contract-smoke Session，只停止自身建立的 Session。未停止使用者現有 server、WSL 或 Agents；此次授權與驗證範圍為 runtime E2E，不含 browser／GUI 操作。</p>
+<h2>已驗證的範圍</h2>
+<table><thead><tr><th>項目</th><th>結果</th></tr></thead><tbody>
+<tr><td>本機正向</td><td>官方 HERDR 0.9.0／protocol 22：method schema、client/server status、訂閱 ack 後 snapshot、live workspace event、官方 observe／control、實際輸入與 resize 通過。</td></tr>
+<tr><td>本機負向</td><td>從舊 7a7a5a3 DMG 取得的 0.8.2 binary，在建立測試 server 前因 schema protocol 不符而失敗，證明 gate 能拒絕錯誤 artifact。</td></tr>
+<tr><td>靜態檢查</td><td>腳本 ESLint、專案 typecheck、diff whitespace 通過。</td></tr>
+<tr><td>CI gate</td><td>CI 34318725448 的 Linux x86-64／ARM、macOS x86-64／ARM 已全部通過。四平台 helper 準備實際 payload 後、上傳 artifact 前執行；step timeout 3 分鐘，失敗阻擋該平台 artifact。</td></tr>
+</tbody></table>
+<p>草稿首次實跑暴露連線與事件命名假設：events.subscribe 佔用獨立串流連線；lifecycle 事件欄位是 <code>event: workspace_created</code>。已核對官方固定版本 source／schema 並修正腳本，Yuzora backend 的連線分離及相容性 gate 未放寬。</p>
+<h2>本機重現命令</h2>
+<pre><code>bun scripts/verify-herdr-runtime.ts /實際的/0.9.0/herdr</code></pre>
+<p><a href="../../scripts/verify-herdr-runtime.ts">測試腳本</a> · <a href="../research/herdr-runtime-upgrade-prevention-2026-09-09.md">預防研究與完整驗收矩陣</a> · <a href="herdr-090-upgrade-2026-09-09.html">前一輪升級與故障分析</a></p>
+<h2>新候選與驗收</h2>
+<div id="candidate-evidence"><p><a href="https://github.com/NakiriYuuzu/Yuzora/pull/92#issuecomment-5597290876">PR 最終候選證據</a> · <a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34318725448/artifacts/10091524971">Windows MSI／NSIS</a> · <a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34318725448/artifacts/10091451377">macOS DMG</a></p><p>兩平台 checkout 均為 <code>becbfe194d302040432b325bac282653dcb78c1a</code>，已查證其 tree 與最終 head 相同。macOS DMG checksum、版本／bundle ID、x86_64／arm64 架構、四平台 host payload 與原生 macOS HERDR hashes 均通過；唯讀掛載已卸載。Windows CI 從 MSI／NSIS 解包驗證 runtime／manifest／cleanup hashes，通過。</p><table><thead><tr><th>Installer</th><th>SHA-256</th></tr></thead><tbody><tr><td>macos/Yuzora_0.0.9-beta.3_universal.dmg</td><td><code>12a5d7e131a62b8409a9abaaa8e8d5c300c0766b687033edffa6ae5cea7574af</code></td></tr><tr><td>windows/msi/Yuzora_0.0.9-beta.3_x64_en-US.msi</td><td><code>e6108f2fecb18d2d41b4a2afd84c42c3d7a65eaf47dee44f23742377a530eb7f</code></td></tr><tr><td>windows/nsis/Yuzora_0.0.9-beta.3_x64-setup.exe</td><td><code>410a3810b022ee255e2d5a22acb44e34cb8c6b08da93b0c19954e4fca0455b7f</code></td></tr></tbody></table><p>三個 installer 已下載，SHA256SUMS 讀回均為 OK。檔案、<code>SHA256SUMS.txt</code>、<code>VERIFICATION.md</code> 與四平台 <code>RUNTIME-MANIFESTS.json</code> 位於 <code>/Users/yuuzu/Downloads/Yuzora-v0.0.9-beta.3-candidate-ca95194/</code>。</p></div>
+<p>原 Windows／WSL 仍需安裝新候選，選 Ubuntu-24.04 並更新主機工具，再以 Yuzora 實際保存的完整 binary 路徑核對 0.9.0／protocol 22、compatible:true、UID 1000、原 default Session 與 socket。實際確認原 Agents／Terminal 程序存續、snapshot／events、輸入／resize／重連。</p>
+<p>此隔離測試不代表 host 路徑遷移、mixed-version server、Yuzora UI 或原使用者工作存續已驗收。未設定 accepted-tree、未 merge、未發布；仍需使用者候選驗收與明確 merge 核准。</p>
+</main></body></html>

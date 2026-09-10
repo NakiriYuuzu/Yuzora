@@ -1,0 +1,62 @@
+{
+  "macos-aarch64": {
+    "protocol": 1,
+    "version": "0.0.9-beta.3",
+    "target": "macos-aarch64",
+    "helper": {
+      "path": "macos-aarch64/yuzora-host",
+      "sha256": "62bfeee17581d970d65a06498741b717b655b5ef0708671f0f6f9d493bef6e62"
+    },
+    "herdr": {
+      "path": "macos-aarch64/herdr",
+      "sha256": "a5d4f4d504d8b309c91f811050559300faba31258425f53c50852fc96f6ae574",
+      "version": "0.8.2",
+      "protocol": 20
+    }
+  },
+  "macos-x86_64": {
+    "protocol": 1,
+    "version": "0.0.9-beta.3",
+    "target": "macos-x86_64",
+    "helper": {
+      "path": "macos-x86_64/yuzora-host",
+      "sha256": "a635c99d4911785dba81892f64eb5ef39d5b8fecc41c25241623861bb3463a2f"
+    },
+    "herdr": {
+      "path": "macos-x86_64/herdr",
+      "sha256": "ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1",
+      "version": "0.8.2",
+      "protocol": 20
+    }
+  },
+  "linux-aarch64": {
+    "protocol": 1,
+    "version": "0.0.9-beta.3",
+    "target": "linux-aarch64",
+    "helper": {
+      "path": "linux-aarch64/yuzora-host",
+      "sha256": "beb6441341f2a1afb212acc86e8b2c7b761e0f447b43fc305ca7ba7ae690cdb0"
+    },
+    "herdr": {
+      "path": "linux-aarch64/herdr",
+      "sha256": "f55610658e1c2e0d2aaef730b4b2ab885f7f8ba00285ab372bfb14f2e3d5b40d",
+      "version": "0.8.2",
+      "protocol": 20
+    }
+  },
+  "linux-x86_64": {
+    "protocol": 1,
+    "version": "0.0.9-beta.3",
+    "target": "linux-x86_64",
+    "helper": {
+      "path": "linux-x86_64/yuzora-host",
+      "sha256": "9e97c317b85b9753a849a4dca41c554f7c8345c41a4abb7e45181362a3630787"
+    },
+    "herdr": {
+      "path": "linux-x86_64/herdr",
+      "sha256": "976150a14d490c94b243ea2e1a7eb2dfb67f12e36b182db90936f6728e6aecf4",
+      "version": "0.8.2",
+      "protocol": 20
+    }
+  }
+}
