@@ -1,0 +1,282 @@
+name: Recover stable release metadata
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Failed Release run with successful installer builds and draft assembly
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Verify source and snapshot private draft
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Draft visibility requires write permission; this job executes no repository code.
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      source_sha: ${{ steps.snapshot.outputs.source_sha }}
+      tag_name: ${{ steps.snapshot.outputs.tag_name }}
+      release_id: ${{ steps.snapshot.outputs.release_id }}
+      release_notes_b64: ${{ steps.snapshot.outputs.release_notes_b64 }}
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Validate original build and capture draft inputs
+        id: snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          mkdir -p release-inputs
+          gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          jq -e '.path == ".github/workflows/release.yml" and .event == "workflow_run" and .head_branch == "main" and .conclusion == "failure"' source-run.json >/dev/null
+          SOURCE_SHA="$(jq -er '.head_sha' source-run.json)"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # Both the installer source and this reviewed recovery workflow need exact main push CI.
+          for sha in "$SOURCE_SHA" "$WORKFLOW_SHA"; do
+            gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=$sha&per_page=100" > ci-runs.json
+            jq -e --arg sha "$sha" '.workflow_runs | any(.head_sha == $sha and .event == "push" and .head_branch == "main" and .conclusion == "success")' ci-runs.json >/dev/null
+          done
+          gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID/jobs?filter=latest&per_page=100" > jobs.json
+          for name in \
+            'Main CI / release channel' \
+            'host-artifacts / build (ubuntu-24.04, linux-x86_64)' \
+            'host-artifacts / build (ubuntu-24.04-arm, linux-aarch64)' \
+            'host-artifacts / build (macos-14, macos-aarch64)' \
+            'host-artifacts / build (macos-15-intel, macos-x86_64)' \
+            'Build macOS Apple Silicon installers' \
+            'Build Windows x86-64 installers' \
+            'Assemble draft release from build artifacts'; do
+            jq -e --arg name "$name" '[.[].jobs[] | select(.name == $name)] | length == 1 and .[0].conclusion == "success"' jobs.json >/dev/null
+          done
+          gh api "repos/$GH_REPO/contents/package.json?ref=$SOURCE_SHA" --jq '.content' | base64 --decode > package.json
+          VERSION="$(jq -er '.version' package.json)"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          TAG_NAME="v$VERSION"
+          gh api "repos/$GH_REPO/git/ref/tags/$TAG_NAME" > tag-ref.json
+          [ "$(jq -r '.object.type' tag-ref.json)" = tag ]
+          TAG_OBJECT="$(jq -er '.object.sha' tag-ref.json)"
+          gh api "repos/$GH_REPO/git/tags/$TAG_OBJECT" > tag.json
+          jq -e --arg sha "$SOURCE_SHA" '.object.type == "commit" and .object.sha == $sha' tag.json >/dev/null
+          gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > releases.json
+          jq -e --arg tag "$TAG_NAME" '[.[][] | select(.tag_name == $tag)] | if length == 1 then .[0] else error("ambiguous release") end' releases.json > release-inputs/release.json
+          jq -e '.draft == true and .prerelease == false and (.body | length > 0) and all(.assets[]; .size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))' release-inputs/release.json >/dev/null
+          jq -r '.assets[].name | select(. != "latest.json")' release-inputs/release.json | sort > release-inputs/asset-names.txt
+          printf '%s\n' \
+            "Yuzora_${VERSION}_aarch64.dmg" \
+            "Yuzora_${VERSION}_aarch64.app.tar.gz" "Yuzora_${VERSION}_aarch64.app.tar.gz.sig" \
+            "Yuzora_${VERSION}_x64-setup.exe" "Yuzora_${VERSION}_x64-setup.exe.sig" \
+            "Yuzora_${VERSION}_x64_en-US.msi" "Yuzora_${VERSION}_x64_en-US.msi.sig" \
+            Yuzora-macos-aarch64.dmg Yuzora-windows-x64-setup.exe Yuzora-windows-x64.msi | sort > expected-assets.txt
+          diff -u expected-assets.txt release-inputs/asset-names.txt
+          for pair in "Yuzora-macos-aarch64.dmg:Yuzora_${VERSION}_aarch64.dmg" "Yuzora-windows-x64-setup.exe:Yuzora_${VERSION}_x64-setup.exe" "Yuzora-windows-x64.msi:Yuzora_${VERSION}_x64_en-US.msi"; do
+            jq -e --arg alias "${pair%%:*}" --arg original "${pair#*:}" '[.assets[] | select(.name == $alias or .name == $original)] | length == 2 and .[0].size == .[1].size and .[0].digest == .[1].digest' release-inputs/release.json >/dev/null
+          done
+          gh release download "$TAG_NAME" --pattern '*.sig' --dir release-inputs
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "tag_name=$TAG_NAME"
+            echo "release_id=$(jq -er '.id' release-inputs/release.json)"
+            echo "release_notes_b64=$(jq -r '.body' release-inputs/release.json | base64 -w0)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Hand off public signatures and draft inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: recovery-updater-inputs
+          path: release-inputs/
+          if-no-files-found: error
+          retention-days: 7
+
+  prepare-updater-metadata:
+    name: Generate metadata from original installer source
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.guard.outputs.source_sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: recovery-updater-inputs
+          path: release-inputs
+      - name: Generate metadata and compare original release notes
+        shell: bash
+        env:
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bun scripts/release-notes.ts "$TAG_NAME" release-notes.md
+          [ "$(cat release-notes.md)" = "$(jq -r '.body' release-inputs/release.json)" ]
+          bun scripts/prepare-updater-metadata.ts "$TAG_NAME" "$REPOSITORY" release-notes.md release-inputs/asset-names.txt release-inputs updater-release/latest.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: recovery-updater-metadata
+          path: updater-release/latest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Publish verified stable release
+    needs: [guard, prepare-updater-metadata]
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      needs.prepare-updater-metadata.result == 'success'
+    runs-on: ubuntu-latest
+    # No checkout and no repository-controlled code execute in this write job.
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: recovery-updater-inputs
+          path: release-inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: recovery-updater-metadata
+          path: updater-release
+      - name: Recheck immutable source and unchanged draft before uploading metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          RELEASE_ID: ${{ needs.guard.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/git/ref/tags/$TAG_NAME" > tag-ref.json
+          [ "$(jq -r '.object.type' tag-ref.json)" = tag ]
+          TAG_OBJECT="$(jq -er '.object.sha' tag-ref.json)"
+          gh api "repos/$GH_REPO/git/tags/$TAG_OBJECT" > tag.json
+          jq -e --arg sha "$SOURCE_SHA" '.object.type == "commit" and .object.sha == $sha' tag.json >/dev/null
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" > current-release.json
+          jq -e '.draft == true and .prerelease == false' current-release.json >/dev/null
+          for input in release-inputs/release.json current-release.json; do
+            jq -S '{id,tag_name,body,draft,prerelease,assets:([.assets[] | select(.name != "latest.json") | {id,name,size,digest}] | sort_by(.name))}' "$input" > "$input.canonical"
+          done
+          cmp release-inputs/release.json.canonical current-release.json.canonical
+          gh release upload "$TAG_NAME" updater-release/latest.json --clobber
+          gh release download "$TAG_NAME" --pattern latest.json --dir uploaded-metadata
+          cmp updater-release/latest.json uploaded-metadata/latest.json
+      - name: Synchronize and verify release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+          RELEASE_NOTES_B64: ${{ needs.guard.outputs.release_notes_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_NOTES_B64" | base64 --decode > release-notes.md
+          EXPECTED_RELEASE_NOTES="$(cat release-notes.md)"
+          gh release edit "$TAG_NAME" --notes-file release-notes.md
+          ACTUAL_RELEASE_NOTES="$(gh release view "$TAG_NAME" --json body --jq '.body')"
+          [ "$ACTUAL_RELEASE_NOTES" = "$EXPECTED_RELEASE_NOTES" ] || {
+            echo "::error::release notes do not match guard-verified notes"
+            exit 1
+          }
+      - name: Verify release assets and updater metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease,body,assets)"
+          [ "$(jq -r '.isDraft' <<<"$RELEASE_JSON")" = "true" ] || { echo "::error::release must be draft"; exit 1; }
+          [ "$(jq -r '.isPrerelease' <<<"$RELEASE_JSON")" = "false" ] || { echo "::error::stable release must not be prerelease"; exit 1; }
+          jq -e '.body | type == "string" and test("[^[:space:]]")' <<<"$RELEASE_JSON" >/dev/null || { echo "::error::release notes are empty"; exit 1; }
+          mapfile -t ASSET_NAMES < <(jq -r '.assets[].name' <<<"$RELEASE_JSON" | sort)
+          TMP_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP_DIR"' EXIT
+          gh release download "$TAG_NAME" --pattern latest.json --dir "$TMP_DIR"
+          [ "$(jq -r '.version' "$TMP_DIR/latest.json")" = "${TAG_NAME#v}" ] || { echo "::error::latest.json version mismatch"; exit 1; }
+          jq -e '.notes | type == "string" and test("[^[:space:]]")' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::latest.json notes empty"; exit 1; }
+          for key in darwin-aarch64 windows-x86_64; do
+            jq -e --arg key "$key" '.platforms[$key] != null and (.platforms[$key].url | type == "string" and length > 0) and (.platforms[$key].signature | type == "string" and length > 0)' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::invalid $key updater entry"; exit 1; }
+          done
+          jq -e '.platforms["darwin-x86_64"] == null' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::Intel macOS updater entry present"; exit 1; }
+          jq -e '.platforms | keys[] | select(startswith("linux-"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::Linux updater entry present"; exit 1; } || true
+          jq -e '.platforms | keys[] | select(test("windows-.*-nsis"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::NSIS updater entry present"; exit 1; } || true
+          jq -e '.platforms["windows-x86_64"].url | endswith(".msi")' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::Windows OTA must use MSI"; exit 1; }
+
+          VERSION="${TAG_NAME#v}"
+          find_single_asset() {
+            local label="$1"
+            local pattern="$2"
+            local matches=()
+            local asset
+            for asset in "${ASSET_NAMES[@]}"; do
+              if [[ "$asset" == $pattern ]]; then matches+=("$asset"); fi
+            done
+            [ "${#matches[@]}" -eq 1 ] || {
+              echo "::error::expected exactly one ${label}, found ${#matches[@]}" >&2
+              exit 1
+            }
+            printf '%s' "${matches[0]}"
+          }
+
+          DMG_NAME="$(find_single_asset "versioned macOS DMG" "Yuzora_${VERSION}_*.dmg")"
+          SETUP_NAME="$(find_single_asset "versioned Windows setup EXE" "Yuzora_${VERSION}_*-setup.exe")"
+          MAC_ARCHIVE_URL="$(jq -r '.platforms["darwin-aarch64"].url' "$TMP_DIR/latest.json")"
+          MAC_ARCHIVE_NAME="${MAC_ARCHIVE_URL##*/}"
+          WINDOWS_MSI_URL="$(jq -r '.platforms["windows-x86_64"].url' "$TMP_DIR/latest.json")"
+          WINDOWS_MSI_NAME="${WINDOWS_MSI_URL##*/}"
+          [[ "$MAC_ARCHIVE_NAME" == "Yuzora_${VERSION}_"*.app.tar.gz ]] || { echo "::error::macOS updater asset name/version mismatch"; exit 1; }
+          [[ "$WINDOWS_MSI_NAME" == "Yuzora_${VERSION}_"*.msi ]] || { echo "::error::Windows updater asset name/version mismatch"; exit 1; }
+
+          EXPECTED_ASSETS=(
+            "$DMG_NAME"
+            "$SETUP_NAME"
+            "${SETUP_NAME}.sig"
+            "$MAC_ARCHIVE_NAME"
+            "${MAC_ARCHIVE_NAME}.sig"
+            "$WINDOWS_MSI_NAME"
+            "${WINDOWS_MSI_NAME}.sig"
+            "Yuzora-macos-aarch64.dmg"
+            "Yuzora-windows-x64-setup.exe"
+            "Yuzora-windows-x64.msi"
+            "latest.json"
+          )
+          mapfile -t EXPECTED_ASSET_NAMES < <(printf '%s\n' "${EXPECTED_ASSETS[@]}" | sort -u)
+          [ "${#EXPECTED_ASSET_NAMES[@]}" -eq "${#EXPECTED_ASSETS[@]}" ] || { echo "::error::stable asset allowlist contains duplicate names"; exit 1; }
+          if ! diff -u \
+            <(printf '%s\n' "${EXPECTED_ASSET_NAMES[@]}") \
+            <(printf '%s\n' "${ASSET_NAMES[@]}"); then
+            echo "::error::unexpected stable release assets; exact allowlist mismatch"
+            exit 1
+          fi
+      - name: Publish verified stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false --prerelease=false --latest
+      - name: Confirm stable publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: gh release view "$TAG_NAME" --json isDraft,isPrerelease,publishedAt --jq 'select(.isDraft == false and .isPrerelease == false and .publishedAt != null)'
+
