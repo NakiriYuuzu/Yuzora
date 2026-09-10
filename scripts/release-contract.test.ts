@@ -58,6 +58,23 @@ describe("release workflow contracts", () => {
     )
   })
 
+  it.each(["stable", "candidate"])("rejects an Intel or universal macOS App in the %s matrix", (lane) => {
+    const result = spawnSync("bun", ["-e", `
+      import { parseReleaseWorkflow, verifyStableReleaseContract, verifyBetaReleaseContract } from "./scripts/release-contract.ts";
+      const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+      const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+      if (${JSON.stringify(lane)} === "stable") {
+        release.jobs.build.strategy.matrix.include[0].build_args = "--target universal-apple-darwin";
+        verifyStableReleaseContract(release);
+      } else {
+        ci.jobs["release-candidate"].strategy.matrix.include[0]["rust-targets"] = "x86_64-apple-darwin";
+        verifyBetaReleaseContract(release, ci);
+      }
+    `], { encoding: "utf8" })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("must target Apple Silicon only")
+  })
+
   it("rejects mutable action refs and accepts full commit pins", () => {
     expect(isPinnedReleaseActionRef("actions/checkout@v4")).toBe(false)
     expect(isPinnedReleaseActionRef("dtolnay/rust-toolchain@stable")).toBe(false)

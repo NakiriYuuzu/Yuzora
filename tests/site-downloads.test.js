@@ -14,7 +14,7 @@ import {
 } from "../site/downloads.js"
 
 describe("GitHub Pages platform download selection", () => {
-  it("selects the universal DMG for macOS", () => {
+  it("selects the Apple Silicon DMG for macOS", () => {
     const target = resolveDownloadTarget({
       userAgentData: { platform: "macOS" },
       userAgent: "Mozilla/5.0",
@@ -23,7 +23,7 @@ describe("GitHub Pages platform download selection", () => {
     expect(target).toMatchObject({
       status: "supported",
       platform: "macos",
-      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-universal.dmg",
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-aarch64.dmg",
     })
   })
 
@@ -33,6 +33,13 @@ describe("GitHub Pages platform download selection", () => {
       platform: "windows",
       url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
     })
+  })
+
+  it("rejects confirmed Intel Macs without mistaking the shared MacIntel user agent for hardware", () => {
+    expect(resolveDownloadTarget({ userAgentData: { platform: "macOS", architecture: "x86", bitness: "64" } }))
+      .toMatchObject({ status: "unsupported-architecture", platform: "macos", url: null })
+    expect(resolveDownloadTarget({ platform: "MacIntel", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)" }))
+      .toMatchObject({ status: "supported", platform: "macos", url: expect.stringContaining("macos-aarch64") })
   })
 
   it.each([
@@ -128,7 +135,7 @@ describe("GitHub Pages platform download selection", () => {
     applyDownloadTarget(target, document)
 
     expect(document.querySelector("#primary-download")?.getAttribute("href")).toBe(
-      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-universal.dmg",
+      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-aarch64.dmg",
     )
     expect(document.querySelector("[data-platform-download='macos']")).toHaveClass(
       "is-recommended",

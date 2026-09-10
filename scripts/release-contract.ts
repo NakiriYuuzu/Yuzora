@@ -296,7 +296,7 @@ function verifyArtifactBoundary(workflow: Workflow): void {
   )
   const collect = stepByName(buildSteps, "Collect verified local installer artifacts")
   assert(
-    includes(collect.run, "BUNDLE_DIR=\"src-tauri/target/universal-apple-darwin/release/bundle\"") &&
+    includes(collect.run, "BUNDLE_DIR=\"src-tauri/target/aarch64-apple-darwin/release/bundle\"") &&
       includes(collect.run, "BUNDLE_DIR=\"src-tauri/target/release/bundle\"") &&
       includes(collect.run, "dmg/*.dmg") &&
       includes(collect.run, "macos/*.app.tar.gz") &&
@@ -305,7 +305,7 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(collect.run, "*.app.tar.gz.sig") &&
       includes(collect.run, "*.msi.sig") &&
       includes(collect.run, 'copy_exactly_one "Windows NSIS updater signature"'),
-    "build must validate Tauri CLI macOS universal and Windows NSIS/MSI/updater output paths"
+    "build must validate Tauri CLI macOS Apple Silicon and Windows NSIS/MSI/updater output paths"
   )
   verifyRuntimePayloadSteps(buildSteps, "matrix.artifact_name == 'windows'")
 
@@ -504,6 +504,8 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
   assert(Array.isArray(matrix.include), "release build matrix is required")
   const platforms = matrix.include.map((row, index) => record(row, `build matrix row ${index}`).platform)
   assert(platforms.includes("macos-latest") && platforms.includes("windows-latest") && !platforms.includes("ubuntu-22.04"), "release must build only macOS and Windows installers")
+  const macBuilds = matrix.include.map((row) => record(row, "release matrix row")).filter((row) => String(row.platform).startsWith("macos"))
+  assert(macBuilds.length === 1 && macBuilds[0]!.rust_targets === "aarch64-apple-darwin" && macBuilds[0]!.build_args === "--target aarch64-apple-darwin", "macOS App releases must target Apple Silicon only")
   const buildSteps = steps(build, "jobs.build")
   const stableBuild = stepByName(buildSteps, "Build signed and notarized stable macOS installers")
   assert(
@@ -650,6 +652,10 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
     "release candidates must run only for release pull requests"
   )
   const candidateSteps = steps(candidate, "release candidate")
+  const candidateMatrix = record(record(candidate.strategy, "candidate strategy").matrix, "candidate matrix")
+  assert(Array.isArray(candidateMatrix.include), "candidate matrix is required")
+  const macCandidates = candidateMatrix.include.map((row) => record(row, "candidate matrix row")).filter((row) => String(row.os).startsWith("macos"))
+  assert(macCandidates.length === 1 && macCandidates[0]!["rust-targets"] === "aarch64-apple-darwin" && macCandidates[0]!["build-args"] === "--target aarch64-apple-darwin", "macOS App candidates must target Apple Silicon only")
   const branchCheck = stepByName(
     candidateSteps,
     "Verify release candidate branch matches product version"

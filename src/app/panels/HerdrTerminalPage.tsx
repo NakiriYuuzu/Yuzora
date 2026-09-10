@@ -12,6 +12,7 @@ import {
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 import { useTranslation } from "react-i18next"
+import { useShallow } from "zustand/react/shallow"
 import { SquareTerminal } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -168,13 +169,30 @@ export function HerdrTerminalPage({
   )
   const sessions = useHerdrStore((s) => s.sessions)
   const topologyRevision = useHerdrStore((s) => s.topologyRevision)
-  const attachments = useHerdrStore((s) => s.attachments)
+  const pageAttachments = useHerdrStore(useShallow((s) =>
+    Array.from(s.attachments.values()).filter((record) => record.pagePath === pagePath)
+  ))
   const targetSessionName = useMemo(
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
-  const snapshot = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
-    ?? (targetSessionName === s.selectedSessionName ? s.snapshot : null))
+  const { terminals, agents, resolvedTabId } = useHerdrStore(useShallow((s) => {
+    const snapshot = (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
+      ?? (targetSessionName === s.selectedSessionName ? s.snapshot : null)
+    // Focus updates replace the snapshot and tab flags. A mounted page only
+    // needs its owning tab identity and terminal topology, not those flags.
+    const knownTab = herdrTabId && (snapshot?.tabs.some((tab) => tab.id === herdrTabId)
+      || snapshot?.terminals.some((term) => term.tabId === herdrTabId))
+    const fromTerminal = snapshot?.terminals.find((item) =>
+      item.terminalId === terminalId || (paneId && item.paneId === paneId))
+    const fromAgent = snapshot?.agents.find((item) =>
+      item.terminalId === terminalId || (paneId && item.paneId === paneId))
+    return {
+      terminals: snapshot?.terminals,
+      agents: snapshot?.agents,
+      resolvedTabId: knownTab ? herdrTabId : fromTerminal?.tabId ?? fromAgent?.tabId ?? herdrTabId
+    }
+  }))
   const targetCapabilities = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.capabilities : null)
     ?? (targetSessionName === s.selectedSessionName ? s.capabilities : null))
 
@@ -204,25 +222,6 @@ export function HerdrTerminalPage({
       (sessionCanConnect || hasConnectedSession) &&
       terminalConnectorCapabilitiesAllowControl
   )
-
-  const resolvedTabId = useMemo(() => {
-    // Saved page metadata can outlive a tab after a pane move or restore.
-    // Keep a live owning tab; otherwise resolve from this terminal's snapshot.
-    if (herdrTabId && (snapshot?.tabs.some((tab) => tab.id === herdrTabId)
-      || snapshot?.terminals.some((term) => term.tabId === herdrTabId))) return herdrTabId
-    const fromTerminal = snapshot?.terminals.find(
-      (item) =>
-        item.terminalId === terminalId ||
-        (paneId && item.paneId === paneId)
-    )
-    if (fromTerminal?.tabId) return fromTerminal.tabId
-    const fromAgent = snapshot?.agents.find(
-      (item) =>
-        item.terminalId === terminalId ||
-        (paneId && item.paneId === paneId)
-    )
-    return fromAgent?.tabId ?? herdrTabId
-  }, [herdrTabId, snapshot, terminalId, paneId])
 
   const [layout, setLayout] = useState<HerdrLayoutDescription | null>(null)
   const [layoutError, setLayoutError] = useState<string | null>(null)
@@ -361,14 +360,14 @@ export function HerdrTerminalPage({
 
   const paneToTerminal = useMemo(() => {
     const map = new Map<string, string>()
-    for (const term of snapshot?.terminals ?? []) {
+    for (const term of terminals ?? []) {
       if (term.paneId) map.set(term.paneId, term.terminalId)
     }
-    for (const agent of snapshot?.agents ?? []) {
+    for (const agent of agents ?? []) {
       if (agent.paneId && agent.terminalId) map.set(agent.paneId, agent.terminalId)
     }
     return map
-  }, [snapshot])
+  }, [terminals, agents])
 
   const onSplitRatioChanged = useCallback(
     (splitPath: boolean[], ratio: number) => {
@@ -423,9 +422,6 @@ export function HerdrTerminalPage({
   const focusedPaneId = layout?.focusedPaneId ?? layoutPaneIds[0] ?? null
   const splitResizeUnavailable = Boolean(layout && layoutPaneIds.length > 1 && !canSetSplitRatio)
   const expectedAttachmentCount = layout ? Math.max(1, layoutPaneIds.length) : 1
-  const pageAttachments = Array.from(attachments.values()).filter(
-    (record) => record.pagePath === pagePath
-  )
   const showControllerBadge =
     sessionCanConnect &&
     pageAttachments.length >= expectedAttachmentCount &&
@@ -734,14 +730,12 @@ function HerdrTerminalLeaf({
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
-  const targetSnapshot = useHerdrStore((s) => targetSessionName
-    ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null)
-  const baseCwd = resolveHerdrTerminalBaseCwd({
-    snapshot: targetSnapshot,
+  const baseCwd = useHerdrStore((s) => resolveHerdrTerminalBaseCwd({
+    snapshot: targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null,
     terminalId,
     paneId,
     workspaceId
-  })
+  }))
   const sessionRunning = sessionRunningOverride ?? inventorySessionRunning
   const sessionCanConnect = !forceDisconnected && sessionRunning === true
   const sessionIsStopped = forceDisconnected || sessionRunning === false

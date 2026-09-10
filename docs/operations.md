@@ -6,6 +6,8 @@
 > Runtime／payload 與產品驗收範圍更新：2026-09-10（v0.0.9 release branch，尚待最終候選驗收）；Release／Pages 流程最後查證：2026-09-10。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
+> 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
+
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
 
 ## 1. Source of truth
@@ -283,7 +285,7 @@ gh run download "${RUN_ID}" \
   --name yuzora-release-candidate-windows-x86-64
 ```
 
-需要 macOS 候選檔時，將 artifact name 改為 `yuzora-release-candidate-macos-universal`。
+需要 macOS 候選檔時，將 artifact name 改為 `yuzora-release-candidate-macos-aarch64`。
 
 使用者至少要在本次受影響平台驗證 acceptance criteria。單一 runtime 改造與新版介面必須使用包含最終變更的新候選安裝檔；舊 Windows-native beta.3 證據、已發布 beta.3 及 PR #92 的候選檔不可代替 v0.0.9 最終候選。
 
@@ -394,7 +396,8 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 `fail-fast: false`，單一平台失敗不會中止其他平台：
 
-- Stable macOS universal：Apple Silicon＋Intel；Developer ID signed／notarized，產生 `.dmg`、`.app.tar.gz` 與 updater signature。
+- Stable macOS Apple Silicon：僅 Apple Silicon（M 系列）；Developer ID signed／notarized，產生 `.dmg`、`.app.tar.gz` 與 updater signature。
+- macOS App 主程式以 `lipo -archs` 驗證必須只有 `arm64`。CLI 產出的 `Yuzora.app.tar.gz` 與 `.sig` 在收集發布 artifacts 時成對命名為 `Yuzora_<version>_aarch64.app.tar.gz` 與 `.sig`，供 metadata 以版本和架構精確比對。
 - Stable Windows x64：本機產生 NSIS `setup.exe`、`.msi` 與 MSI updater signature。
 - Beta macOS／Windows：產生供手動下載的 versioned installers，但不產生 updater archive、`latest.json` 或 `.sig`，且 build environment 不含 updater signing secrets 與 contents-write token；macOS 以 `--no-sign` 建置且無 Developer ID／notarization，Windows 仍無 Authenticode。
 
@@ -406,7 +409,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 | 平台    | 固定檔名                                                                            |
 | ------- | ----------------------------------------------------------------------------------- |
-| macOS   | `Yuzora-macos-universal.dmg`                                                        |
+| macOS   | `Yuzora-macos-aarch64.dmg`                                                        |
 | Windows | `Yuzora-windows-x64-setup.exe`、`Yuzora-windows-x64.msi`                            |
 
 固定檔名如有變更，必須在同一個 PR 更新所有實際 consumer：
@@ -421,7 +424,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 只有 Stable 雙平台 build 與 `assemble-draft` 都成功後，metadata 才採兩段式 boundary；same-SHA draft recovery 沒有略過 build／assembly 的旁路：
 
-1. `prepare-updater-metadata` 是 read-only checkout job。它從 draft 以 read token 取得 asset inventory與 `.app.tar.gz.sig`／`.msi.sig`，執行 repository-owned metadata generator，驗證 version、notes、macOS universal archive、MSI URL 與 signatures，然後把 `latest.json` 作為 Actions artifact 上傳。
+1. `prepare-updater-metadata` 是 read-only checkout job。它從 draft 以 read token 取得 asset inventory與 `.app.tar.gz.sig`／`.msi.sig`，執行 repository-owned metadata generator，驗證 version、notes、macOS Apple Silicon archive、MSI URL 與 signatures，然後把 `latest.json` 作為 Actions artifact 上傳。
 2. `upload-updater-metadata` 是無 checkout 的 contents-write job。它下載該 metadata artifact、移除 draft 中殘留的 Linux AppImage／DEB／RPM assets，再以 `gh release upload --clobber` 取代 `latest.json`；它不執行 repository code。
 
 不得讓 write-capable token 進入 metadata generator。任一段失敗時不得 Publish。
@@ -435,8 +438,8 @@ Publish 前 workflow 自動驗證：
 - Release 仍是 draft、不是 prerelease，且 release body 非空。
 - Release asset inventory 必須精確等於本輪重建的 versioned DMG、NSIS setup EXE、MSI、macOS／NSIS／MSI updater signatures、三個固定檔名別名與 `latest.json`；updater archive／MSI名稱由已驗證 metadata 綁定，任一額外、重複或缺少 asset 都會 fail closed。
 - `latest.json.version` 與 tag 相同，notes 非空。
-- `darwin-aarch64`、`darwin-x86_64`、`windows-x86_64` 都有非空 URL 與 signature。
-- 不含 Linux 或 Windows NSIS updater key、不含 Linux 固定別名資產，且 Windows OTA URL 使用 `.msi`。
+- `darwin-aarch64`、`windows-x86_64` 都有非空 URL 與 signature。
+- 不含 Intel macOS、Linux 或 Windows NSIS updater key、不含 Linux 固定別名資產，且 Windows OTA URL 使用 `.msi`。
 
 Stable 全部成功後執行 `gh release edit --draft=false --prerelease=false --latest`，並再次查證 `publishedAt`。任一條件失敗時 workflow 結束為失敗，Release 保持 draft，不會出現部分成功卻永久等待人工 Publish 的正常路徑。
 
@@ -485,7 +488,8 @@ curl -fsSL \
 - Latest Release 為剛發布的 tag。
 - `latest.json.version` 等於新版本。
 - `latest.json.notes` 非空。
-- 至少存在 `darwin-aarch64`、`darwin-x86_64`、`windows-x86_64`。
+- 至少存在 `darwin-aarch64`、`windows-x86_64`。
+- 不存在 `darwin-x86_64`；Intel macOS App 不會被引導安裝 Apple Silicon 更新。
 - 沒有 `windows-*-nsis` key。
 - 所有 Windows updater URLs 指向 `.msi`。
 - Metadata 中每個 artifact URL 與 signature 都可下載。
@@ -494,13 +498,13 @@ curl -fsSL \
 
 至少確認以下 URL 回傳成功：
 
-- `Yuzora-macos-universal.dmg`
+- `Yuzora-macos-aarch64.dmg`
 - `Yuzora-windows-x64-setup.exe`
 - `Yuzora-windows-x64.msi`
 
 ### OTA smoke test
 
-從上一個 stable 版本，在 macOS universal 與 Windows x64 驗證：
+從上一個 stable 版本，在 macOS Apple Silicon 與 Windows x64 驗證：
 
 1. App 發現新版本。
 2. 顯示的 release notes 正確。

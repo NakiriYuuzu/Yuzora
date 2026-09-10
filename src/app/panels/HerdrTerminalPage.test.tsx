@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { HerdrCapabilities, HerdrTerminalEvent } from "@/lib/herdrTypes"
+import { normalizeHerdrSnapshot } from "@/lib/herdrNormalize"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 const xtermMock = vi.hoisted(() => {
@@ -330,6 +331,40 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("ignores attachment updates for other terminal pages while keeping its own badge reactive", async () => {
+    const renderCommit = vi.fn()
+    render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible /></Profiler>)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    const [key, record] = [...useHerdrStore.getState().attachments][0]
+    renderCommit.mockClear()
+    await act(async () => {
+      useHerdrStore.getState().registerAttachment("other-page", { ...record, pagePath: "other-page" })
+    })
+    expect(renderCommit).not.toHaveBeenCalled()
+    act(() => useHerdrStore.getState().registerAttachment(key, { ...record, mode: "observe", role: "observer" }))
+    expect(renderCommit).toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not redraw a terminal when only runtime focus changes", async () => {
+    const snapshot = normalizeHerdrSnapshot({ protocol: 22, version: "0.9.0", snapshot: {
+      tabs: [{ tab_id: "tab-1", workspace_id: "space-1", terminal_id: "term-1", pane_id: "pane-1" }],
+      panes: [{ pane_id: "pane-1", terminal_id: "term-1", tab_id: "tab-1", workspace_id: "space-1", cwd: "/demo" }]
+    } }, "default")
+    const runtime = { connectionState: "ready" as const, capabilities: terminalControlCapabilities, snapshot, baseSnapshot: snapshot, worktreeInventory: null, errorMessage: null }
+    useHerdrStore.setState({ snapshot, runtimesBySession: { default: runtime } })
+    const renderCommit = vi.fn()
+    render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId="default" terminalId="term-1" herdrTabId="tab-1" active visible /></Profiler>)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    renderCommit.mockClear()
+    act(() => {
+      const focused = { ...snapshot, focusedTabId: "other-tab", tabs: snapshot.tabs.map(tab => ({ ...tab, focused: false })) }
+      useHerdrStore.setState({ snapshot: focused, runtimesBySession: { default: { ...runtime, snapshot: focused } } })
+    })
+    expect(renderCommit).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
   })
 
   it("does not steal focus when a naming dialog is pending before its portal mounts", async () => {

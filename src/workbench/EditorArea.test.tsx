@@ -6,6 +6,8 @@ import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
 import { useHerdrStore } from "@/state/herdrStore"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
+const herdrRender = vi.hoisted(() => vi.fn())
+
 vi.mock("./TabBar", () => ({
     TabBar: ({ groupIndex }: { groupIndex: number }) => {
         const group = useWorkspaceStore((state) => state.groups[groupIndex])
@@ -30,13 +32,16 @@ vi.mock("@/app/panels/HerdrTerminalPage", () => ({
         terminalId: string
         active: boolean
         visible?: boolean
-    }) => (
+    }) => {
+        herdrRender(props.terminalId)
+        return (
         <div
             data-testid={`mock-herdr-${props.terminalId}`}
             data-active={String(props.active)}
             data-visible={String(props.visible)}
         />
-    )
+        )
+    }
 }))
 
 vi.mock("@/app/panels/PreviewPanel", () => ({
@@ -90,6 +95,19 @@ afterEach(() => {
 })
 
 describe("EditorArea persistent Herdr pages", () => {
+    it("updates only the departing and arriving terminal when switching among many open pages", () => {
+        const tabs = Array.from({ length: 30 }, (_, i) => herdrTab(`yuzora://herdr/default/term-${i}`, `term-${i}`, `tab-${i}`))
+        useUiStore.setState({ mode: "ade" })
+        useWorkspaceStore.setState({ groups: [{ activePath: tabs[0].path, tabs }], activeGroupIndex: 0 })
+        render(<EditorArea />)
+        const hidden = screen.getByTestId("mock-herdr-term-29")
+        herdrRender.mockClear()
+        act(() => useWorkspaceStore.getState().setActiveTab(0, tabs[1].path))
+        expect(herdrRender.mock.calls.map(([id]) => id)).toEqual(["term-0", "term-1"])
+        expect(screen.getByTestId("mock-herdr-term-29")).toBe(hidden)
+        expect(screen.getByTestId("mock-herdr-term-1")).toHaveAttribute("data-visible", "true")
+    })
+
     it("switches the visible tab strip by Space without unmounting cached Herdr pages", () => {
         const firstPath = "yuzora://herdr/default/term-1"
         const secondPath = "yuzora://herdr/default/term-2"

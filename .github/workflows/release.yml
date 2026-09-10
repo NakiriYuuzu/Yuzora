@@ -272,11 +272,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: macOS universal
+          - label: macOS Apple Silicon
             artifact_name: macos
             platform: macos-latest
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            build_args: --target universal-apple-darwin
+            rust_targets: aarch64-apple-darwin
+            build_args: --target aarch64-apple-darwin
           - label: Windows x86-64
             artifact_name: windows
             platform: windows-latest
@@ -448,7 +448,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
           APPS=("$BUNDLE_DIR"/macos/*.app)
           DMGS=("$BUNDLE_DIR"/dmg/*.dmg)
           if [ "${#APPS[@]}" -ne 1 ]; then
@@ -515,7 +515,8 @@ jobs:
           }
 
           if [ "${{ matrix.artifact_name }}" = "macos" ]; then
-            BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+            BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
+            test "$(lipo -archs "$BUNDLE_DIR/macos/Yuzora.app/Contents/MacOS/yuzora")" = "arm64"
             copy_exactly_one "macOS DMG" "$BUNDLE_DIR"/dmg/*.dmg
             if [ "$IS_BETA" = "true" ]; then
               if find "$BUNDLE_DIR" -type f -name '*.sig' -print -quit | grep -q .; then
@@ -525,6 +526,11 @@ jobs:
             else
               copy_exactly_one "macOS updater archive" "$BUNDLE_DIR"/macos/*.app.tar.gz
               copy_exactly_one "macOS updater signature" "$BUNDLE_DIR"/macos/*.app.tar.gz.sig
+              VERSION="$(jq -er '.version' package.json)"
+              MAC_ARCHIVES=(release-assets/*.app.tar.gz)
+              MAC_SIGNATURES=(release-assets/*.app.tar.gz.sig)
+              mv "${MAC_ARCHIVES[0]}" "release-assets/Yuzora_${VERSION}_aarch64.app.tar.gz"
+              mv "${MAC_SIGNATURES[0]}" "release-assets/Yuzora_${VERSION}_aarch64.app.tar.gz.sig"
             fi
           else
             BUNDLE_DIR="src-tauri/target/release/bundle"
@@ -604,7 +610,7 @@ jobs:
             SETUP="$(find release-artifacts -maxdepth 1 -type f -name '*setup.exe' -print -quit)"
             MSI="$(find release-artifacts -maxdepth 1 -type f -name '*.msi' -print -quit)"
             for pair in \
-              "$DMG:Yuzora-macos-universal.dmg" \
+              "$DMG:Yuzora-macos-aarch64.dmg" \
               "$SETUP:Yuzora-windows-x64-setup.exe" \
               "$MSI:Yuzora-windows-x64.msi"; do
               source="${pair%%:*}"
@@ -789,9 +795,10 @@ jobs:
           gh release download "$TAG_NAME" --pattern latest.json --dir "$TMP_DIR"
           [ "$(jq -r '.version' "$TMP_DIR/latest.json")" = "${TAG_NAME#v}" ] || { echo "::error::latest.json version mismatch"; exit 1; }
           jq -e '.notes | type == "string" and test("[^[:space:]]")' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::latest.json notes empty"; exit 1; }
-          for key in darwin-aarch64 darwin-x86_64 windows-x86_64; do
+          for key in darwin-aarch64 windows-x86_64; do
             jq -e --arg key "$key" '.platforms[$key] != null and (.platforms[$key].url | type == "string" and length > 0) and (.platforms[$key].signature | type == "string" and length > 0)' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::invalid $key updater entry"; exit 1; }
           done
+          jq -e '.platforms["darwin-x86_64"] == null' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::Intel macOS updater entry present"; exit 1; }
           jq -e '.platforms | keys[] | select(startswith("linux-"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::Linux updater entry present"; exit 1; } || true
           jq -e '.platforms | keys[] | select(test("windows-.*-nsis"))' "$TMP_DIR/latest.json" >/dev/null && { echo "::error::NSIS updater entry present"; exit 1; } || true
           jq -e '.platforms["windows-x86_64"].url | endswith(".msi")' "$TMP_DIR/latest.json" >/dev/null || { echo "::error::Windows OTA must use MSI"; exit 1; }
@@ -829,7 +836,7 @@ jobs:
             "${MAC_ARCHIVE_NAME}.sig"
             "$WINDOWS_MSI_NAME"
             "${WINDOWS_MSI_NAME}.sig"
-            "Yuzora-macos-universal.dmg"
+            "Yuzora-macos-aarch64.dmg"
             "Yuzora-windows-x64-setup.exe"
             "Yuzora-windows-x64.msi"
             "latest.json"

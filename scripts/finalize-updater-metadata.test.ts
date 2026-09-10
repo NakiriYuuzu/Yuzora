@@ -2,23 +2,24 @@ import { describe, expect, it } from "vitest"
 import { finalizeUpdaterMetadata } from "./finalize-updater-metadata"
 
 const msiUrl =
-  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.2/Yuzora_0.0.2_x64_en-US.msi"
+  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.9/Yuzora_0.0.9_x64_en-US.msi"
 const nsisUrl =
-  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.2/Yuzora_0.0.2_x64-setup.exe"
+  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.9/Yuzora_0.0.9_x64-setup.exe"
 const macUrl =
-  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.2/Yuzora_universal.app.tar.gz"
+  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.9/Yuzora_0.0.9_aarch64.app.tar.gz"
 const linuxUrl =
-  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.2/Yuzora_0.0.2_amd64.AppImage"
+  "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.0.9/Yuzora_0.0.9_amd64.AppImage"
 
 function metadata() {
   return {
-    version: "0.0.2",
+    version: "0.0.9",
     notes: "### 改善\n\n- 可直接在設定中檢查更新。",
     platforms: {
       "windows-x86_64": { url: msiUrl, signature: "msi-signature" },
       "windows-x86_64-msi": { url: msiUrl, signature: "msi-signature" },
       "windows-x86_64-nsis": { url: nsisUrl, signature: "nsis-signature" },
       "darwin-aarch64": { url: macUrl, signature: "mac-signature" },
+      "darwin-x86_64": { url: macUrl, signature: "mac-signature" },
       "linux-x86_64": { url: linuxUrl, signature: "linux-signature" },
     },
   }
@@ -26,23 +27,23 @@ function metadata() {
 
 const assets = [
   "latest.json",
-  "Yuzora_0.0.2_x64_en-US.msi",
-  "Yuzora_0.0.2_x64_en-US.msi.sig",
-  "Yuzora_0.0.2_x64-setup.exe",
-  "Yuzora_0.0.2_x64-setup.exe.sig",
-  "Yuzora_universal.app.tar.gz",
-  "Yuzora_universal.app.tar.gz.sig",
+  "Yuzora_0.0.9_x64_en-US.msi",
+  "Yuzora_0.0.9_x64_en-US.msi.sig",
+  "Yuzora_0.0.9_x64-setup.exe",
+  "Yuzora_0.0.9_x64-setup.exe.sig",
+  "Yuzora_0.0.9_aarch64.app.tar.gz",
+  "Yuzora_0.0.9_aarch64.app.tar.gz.sig",
 ]
 
 describe("finalizeUpdaterMetadata", () => {
   it("rejects updater metadata without user-facing release notes", () => {
     expect(() =>
-      finalizeUpdaterMetadata({ ...metadata(), notes: undefined }, assets, "0.0.2")
+      finalizeUpdaterMetadata({ ...metadata(), notes: undefined }, assets, "0.0.9")
     ).toThrow("updater notes are required")
   })
 
-  it("removes unsupported Linux and NSIS entries while keeping MSI as the Windows OTA target", () => {
-    const finalized = finalizeUpdaterMetadata(metadata(), assets, "0.0.2")
+  it("removes unsupported Intel macOS, Linux and NSIS entries while keeping Windows MSI", () => {
+    const finalized = finalizeUpdaterMetadata(metadata(), assets, "0.0.9")
 
     expect(finalized.platforms["windows-x86_64"]).toEqual({
       url: msiUrl,
@@ -51,6 +52,7 @@ describe("finalizeUpdaterMetadata", () => {
     expect(finalized.platforms["windows-x86_64-msi"]).toBeDefined()
     expect(finalized.platforms["windows-x86_64-nsis"]).toBeUndefined()
     expect(finalized.platforms["linux-x86_64"]).toBeUndefined()
+    expect(finalized.platforms["darwin-x86_64"]).toBeUndefined()
     expect(finalized.notes).toBe("### 改善\n\n- 可直接在設定中檢查更新。")
   })
 
@@ -58,7 +60,7 @@ describe("finalizeUpdaterMetadata", () => {
     const input = metadata()
     input.platforms["windows-x86_64"] = { url: nsisUrl, signature: "nsis-signature" }
 
-    expect(() => finalizeUpdaterMetadata(input, assets, "0.0.2")).toThrow(
+    expect(() => finalizeUpdaterMetadata(input, assets, "0.0.9")).toThrow(
       "windows-x86_64 must point to an MSI asset"
     )
   })
@@ -67,9 +69,9 @@ describe("finalizeUpdaterMetadata", () => {
     expect(() =>
       finalizeUpdaterMetadata(
         metadata(),
-        assets.filter((name) => name !== "Yuzora_universal.app.tar.gz.sig"),
-        "0.0.2"
+        assets.filter((name) => name !== "Yuzora_0.0.9_aarch64.app.tar.gz.sig"),
+        "0.0.9"
       )
-    ).toThrow("missing signature asset Yuzora_universal.app.tar.gz.sig")
+    ).toThrow("missing signature asset Yuzora_0.0.9_aarch64.app.tar.gz.sig")
   })
 })

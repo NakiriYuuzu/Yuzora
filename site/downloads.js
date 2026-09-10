@@ -3,7 +3,7 @@ const RELEASE_DOWNLOAD_BASE = "https://github.com/NakiriYuuzu/Yuzora/releases/la
 const DOWNLOADS = {
   macos: {
     platform: "macos",
-    url: `${RELEASE_DOWNLOAD_BASE}Yuzora-macos-universal.dmg`,
+    url: `${RELEASE_DOWNLOAD_BASE}Yuzora-macos-aarch64.dmg`,
   },
   windows: {
     platform: "windows",
@@ -36,6 +36,11 @@ export function resolveDownloadTarget({
   }
 
   if (/mac/i.test(reportedPlatform)) {
+    // macOS user agents say "Intel" even on Apple Silicon. Only reject an
+    // explicit architecture from client hints; the download label states M-series.
+    if (/^(x86|x86_64|x64|amd64|ia32)$/.test(architecture)) {
+      return { status: "unsupported-architecture", platform: "macos", url: null }
+    }
     return { status: "supported", ...DOWNLOADS.macos }
   }
 

@@ -130,11 +130,11 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            label: macOS universal
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            build-args: --target universal-apple-darwin
-            artifact-name: yuzora-release-candidate-macos-universal
-            artifact-path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            label: macOS Apple Silicon
+            rust-targets: aarch64-apple-darwin
+            build-args: --target aarch64-apple-darwin
+            artifact-name: yuzora-release-candidate-macos-aarch64
+            artifact-path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest
             label: Windows x86-64
             rust-targets: ""
@@ -197,6 +197,11 @@ jobs:
       - name: Verify isolated native Windows HERDR contract
         if: runner.os == 'Windows'
         run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe
+
+      - name: Verify Apple Silicon App architecture
+        if: runner.os == 'macOS'
+        shell: bash
+        run: test "$(lipo -archs src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app/Contents/MacOS/yuzora)" = "arm64"
 
       - name: Verify Windows native and Unix runtime payloads
         if: runner.os == 'Windows'
