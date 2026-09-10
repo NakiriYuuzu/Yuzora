@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   APPEARANCE_SETTINGS_STORAGE_KEY,
@@ -33,24 +33,62 @@ function installLocalStorage(): void {
 
 beforeEach(() => {
   installLocalStorage()
+  vi.spyOn(navigator, "hardwareConcurrency", "get").mockReturnValue(8)
+  Object.defineProperty(navigator, "deviceMemory", { configurable: true, value: 8 })
   localStorage.clear()
 })
 
+afterEach(() => {
+  vi.restoreAllMocks()
+  delete (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+})
+
 describe("appearance settings", () => {
+  it.each([[2, 8], [4, 8], [8, 4], [8, 2], [0, 8]])("defaults bot animations off for %i cores / %i GB", (cores, memory) => {
+    vi.spyOn(navigator, "hardwareConcurrency", "get").mockReturnValue(cores)
+    Object.defineProperty(navigator, "deviceMemory", { configurable: true, value: memory })
+    expect(loadAppearanceSettings().botAnimations).toBe(false)
+  })
+
+  it("keeps animations available when memory reporting is unavailable on a capable device", () => {
+    delete (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+    expect(loadAppearanceSettings().botAnimations).toBe(true)
+  })
+
+  it("defaults bot animations off for reduced motion", () => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)")
+    vi.spyOn(window, "matchMedia").mockReturnValue({ ...media, matches: true })
+    expect(loadAppearanceSettings().botAnimations).toBe(false)
+  })
+
+  it("persists explicit bot animation choices instead of replacing them with hardware defaults", () => {
+    vi.spyOn(navigator, "hardwareConcurrency", "get").mockReturnValue(2)
+    for (const botAnimations of [true, false]) {
+      saveAppearanceSettings({ ...loadAppearanceSettings(), botAnimations })
+      expect(loadAppearanceSettings().botAnimations).toBe(botAnimations)
+    }
+  })
+
+  it("uses hardware defaults for missing or invalid animation preferences", () => {
+    for (const botAnimations of [undefined, "false", 0, null]) {
+      localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ botAnimations }))
+      expect(loadAppearanceSettings().botAnimations).toBe(true)
+    }
+  })
   it("舊版設定預設開啟兩側背景，非 boolean 值不視為使用者偏好", () => {
     for (const sidebarFields of [{}, { leftSidebarBackground: "false", rightSidebarBackground: 0 }]) {
       localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ theme: "light", accent: "blue", ...sidebarFields }))
-      expect(loadAppearanceSettings()).toEqual({ theme: "light", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true })
+      expect(loadAppearanceSettings()).toEqual({ theme: "light", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
     }
   })
 
   it("沒有持久化值時回傳預設 auto 與 lime", () => {
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
   })
 
   it("壞 JSON 時回傳預設 auto 與 lime", () => {
     localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, "{not json")
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
   })
 
   it("非法 theme 或 accent 值時分別回傳預設值", () => {
@@ -58,12 +96,12 @@ describe("appearance settings", () => {
       APPEARANCE_SETTINGS_STORAGE_KEY,
       JSON.stringify({ theme: "neon", accent: "infrared" })
     )
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
     localStorage.setItem(
       APPEARANCE_SETTINGS_STORAGE_KEY,
       JSON.stringify({ theme: 42, accent: 42 })
     )
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
   })
 
   it("不把 Object prototype inherited keys 當成合法 accent", () => {
@@ -72,14 +110,14 @@ describe("appearance settings", () => {
         APPEARANCE_SETTINGS_STORAGE_KEY,
         JSON.stringify({ theme: "dark", accent }),
       )
-      expect(loadAppearanceSettings()).toEqual({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
+      expect(loadAppearanceSettings()).toEqual({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
     }
   })
 
   it("save→load 往返保留合法 theme 與 accent", () => {
     for (const theme of ["light", "dark", "auto"] as const) {
-      saveAppearanceSettings({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true })
-      expect(loadAppearanceSettings()).toEqual({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true })
+      saveAppearanceSettings({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true, botAnimations: true })
+      expect(loadAppearanceSettings()).toEqual({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true, botAnimations: true })
     }
   })
 })

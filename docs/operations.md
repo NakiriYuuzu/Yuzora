@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-10（v0.0.9 候選已由使用者接受）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-11（v0.0.9 含新增 Bot 動畫開關，最終候選另行驗收）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -281,6 +281,8 @@ gh run download "${RUN_ID}" \
 使用者至少要在本次受影響平台驗證 acceptance criteria。單一 runtime 改造與新版介面必須使用包含最終變更的新候選安裝檔；舊 Windows-native beta.3 證據、已發布 beta.3 及 PR #92 的候選檔不可代替 v0.0.9 最終候選。
 
 v0.0.9 另需驗證多行貼上不逐行執行、選取自動複製的開關與保存、Option／Alt+V 圖片送至正確主機、切換分頁後丟棄過期圖片、隱藏終端機重新顯示、WSL 檔案總管路徑、工作區信任確認與非 Git 資料夾。新版 Logo／側欄／Session 選擇器／Git diff 與官網 Demo 必須涵蓋本次新介面；Demo 的範例資料互動不代表真實 host 或 installer 驗收。
+
+Bot 動畫總開關位於「設定 → 外觀」，保存於 appearance preferences。沒有已保存選擇時，邏輯核心不超過 4、可用的 `deviceMemory` 回報不超過 4 GB，或系統要求 reduced motion，都預設關閉；核心資訊缺失也採關閉。記憶體 API 不可用時只依核心與系統設定判定，不在啟動時跑效能壓力測試。這是輕量的預設值估計，使用者可手動開關並保存；OS reduced motion 與各 Space 自身關閉動畫的設定仍優先。驗收須確認關閉後眨眼、表情、擺動與 hover 位移停止、角色保持可見、重啟保存選擇，以及切換不重新掛載終端機或編輯器。
 
 beta.3 的產品範圍依已接受的 ADR-0004：Terminal 統一使用 HERDR，Agent 由使用者在 Terminal 手動啟動；移除獨立本機／SSH terminal、shell profiles、新增 Agent 表單及 LSP。Browser 保留網站導覽與遠端 loopback forwarding，移除靜態 Preview server／Dev Server 管理。驗收時確認移除入口不再出現，同時確認保留的檔案編輯、Git、SSH／SFTP 與 Database 功能仍正常：
 
@@ -561,10 +563,13 @@ gh variable delete YUZORA_BETA_ACCEPTANCE_URL --repo NakiriYuuzu/Yuzora
 
 v0.0.9 的 Release run `34502146123` 已成功建置兩平台、驗證四平台 Host、完成 Windows runtime／installer payload gates 及 draft assembly，但唯讀 metadata job 因 `release not found` 失敗。草稿已存在，錯誤不能視為沒有 Release，也不能藉此移動 tag、重建成另一個 commit 或手動 Publish。
 
+**目前 v0.0.9 已追加 Bot 動畫設定，上述原 run 不含最新需求，不再作為本次最終候選，也不 dispatch 該舊來源的恢復。** 必須先產生及驗收新候選，舊的未公開草稿／tag 另依受控清理授權處理。以下恢復流程僅適用於需求與已驗收 installer source 未改變的情況。
+
 修正 workflow 必須先透過 PR 合併並通過 exact `main` push CI。已有使用者候選驗收與發布授權時，可從 `main` dispatch `recover-stable-release.yml`，輸入原始失敗的 Release run ID：
 
 ```bash
-gh workflow run recover-stable-release.yml --ref main -f source_run_id=34502146123
+SOURCE_RUN_ID="123456789" # 填入仍符合最新已驗收來源的失敗 Release run
+gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_RUN_ID"
 ```
 
 恢復流程只處理 Stable 草稿，並依序驗證：

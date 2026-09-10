@@ -50,6 +50,17 @@ describe("Settings dialog layout at constrained height", () => {
     cleanup()
   })
 
+  it("offers a searchable bot animation switch", () => {
+    const onBotAnimationsChange = vi.fn()
+    render(<SettingsDialog open onOpenChange={() => {}} theme="light" onThemeChange={() => {}} botAnimations={false} onBotAnimationsChange={onBotAnimationsChange} />)
+    const toggle = screen.getByRole("switch", { name: "Bot animations" })
+    expect(toggle).not.toBeChecked()
+    fireEvent.click(toggle)
+    expect(onBotAnimationsChange).toHaveBeenCalledWith(true)
+    fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), { target: { value: "bot animation" } })
+    expect(screen.getByRole("button", { name: /Bot animations/ })).toBeInTheDocument()
+  })
+
   it("scrolls the sidebar section list while keeping the version footer fixed", () => {
     // Force the dialog to its 640x440 minimum so ten 37px rows cannot fit.
     localStorage.setItem(

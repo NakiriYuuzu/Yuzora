@@ -16,6 +16,7 @@ export interface AppearanceSettings {
   accent: AccentPreference
   leftSidebarBackground: boolean
   rightSidebarBackground: boolean
+  botAnimations: boolean
 }
 
 export interface TerminalSettings {
@@ -30,6 +31,7 @@ const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   accent: DEFAULT_ACCENT_PREFERENCE,
   leftSidebarBackground: true,
   rightSidebarBackground: true,
+  botAnimations: false,
 }
 
 const VALID_THEME_PREFERENCES: ThemePreference[] = ["light", "dark", "auto"]
@@ -92,7 +94,17 @@ export function loadAppearanceSettings(): AppearanceSettings {
     rightSidebarBackground: typeof settings.rightSidebarBackground === "boolean"
       ? settings.rightSidebarBackground
       : DEFAULT_APPEARANCE_SETTINGS.rightSidebarBackground,
+    botAnimations: typeof settings.botAnimations === "boolean"
+      ? settings.botAnimations
+      : defaultBotAnimationsEnabled(),
   }
+}
+
+function defaultBotAnimationsEnabled(): boolean {
+  if (typeof navigator === "undefined" || !(navigator.hardwareConcurrency > 4)) return false
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+  if (typeof memory === "number" && memory <= 4) return false
+  return typeof window !== "undefined" && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
 }
 
 export function saveAppearanceSettings(settings: AppearanceSettings): void {

@@ -6,7 +6,7 @@ export const SETTINGS_GROUPS=[
   {id:'application',sections:['safety','logs','about']},
 ] as const
 const fields:Partial<Record<SettingsSectionId,{ns:string;keys:string[]}>>={
-  appearance:{ns:'workbench',keys:['settings.theme','settings.accentColor','settings.leftSidebarBackground','settings.rightSidebarBackground','settings.language','settings.moveOpenedWorkspaceToTop']},
+  appearance:{ns:'workbench',keys:['settings.theme','settings.accentColor','settings.leftSidebarBackground','settings.rightSidebarBackground','settings.botAnimations','settings.language','settings.moveOpenedWorkspaceToTop']},
   editor:{ns:'workbench',keys:['settings.editorFontSize','settings.showMinimap']},
   terminal:{ns:'terminal',keys:['fontFamilyLabel','fontSizeLabel']},
   herdr:{ns:'workbench',keys:['herdrSettings.binarySource']},
@@ -16,6 +16,7 @@ const fields:Partial<Record<SettingsSectionId,{ns:string;keys:string[]}>>={
   about:{ns:'workbench',keys:['settings.currentVersion','settings.updates']},
 }
 const aliases:Record<string,string>={
+  'settings.botAnimations':'角色 機器人 夥伴 動畫 效能 bot animation motion performance companion',
   'settings.editorFontSize':'字級 字體 字型 font size typography',
   fontSizeLabel:'字級 字體 字型 font size typography',
   fontFamilyLabel:'字體 字型 font family JetBrains Mono Menlo Cascadia Consolas monospace',

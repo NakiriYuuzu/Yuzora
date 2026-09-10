@@ -451,6 +451,8 @@
     "themeDark": "深色",
     "themeAuto": "自動",
     "accentColor": "主題色",
+    "botAnimations": "Bot 動畫",
+    "botAnimationsSub": "顯示 Space 夥伴的眨眼、表情與擺動。低效能裝置預設關閉；系統的「減少動態效果」仍優先。",
     "leftSidebarBackground": "左側欄背景",
     "leftSidebarBackgroundSub": "為導覽、Spaces 與 Agents 顯示霧面背景和邊框。",
     "rightSidebarBackground": "右側欄背景",

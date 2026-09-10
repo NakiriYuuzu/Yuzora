@@ -2,6 +2,7 @@ import { useEffect } from "react"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { AppShell } from "./AppShell"
+import { saveAppearanceSettings } from "@/app/workbench/settingsStorage"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 
 const lifecycle = vi.hoisted(() => ({ editorMount: vi.fn(), editorUnmount: vi.fn(), spacesMount: vi.fn(), spacesUnmount: vi.fn(), editorRender: vi.fn(), spacesRender: vi.fn(), toolsRender: vi.fn(), settingsRender: vi.fn(), remote: vi.fn() }))
@@ -9,14 +10,14 @@ vi.mock("@/lib/platform", () => ({ isTauri: () => false, showsNativeTrafficLight
 vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn() }))
 vi.mock("@/lib/unsavedGuard", () => ({ confirmDiscardingUnsaved: vi.fn() }))
 vi.mock("@/state/sftpStore", () => ({ useSftpStore: { getState: () => ({ setPanelOpen: lifecycle.remote }) } }))
-vi.mock("@/app/workbench/settingsStorage", () => ({ loadAppearanceSettings: () => ({ theme: "light", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true }), saveAppearanceSettings: vi.fn() }))
+vi.mock("@/app/workbench/settingsStorage", () => ({ loadAppearanceSettings: () => ({ theme: "light", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true }), saveAppearanceSettings: vi.fn() }))
 vi.mock("@/app/panels/EditorPanel", () => ({ EditorPanel: () => { lifecycle.editorRender(); useEffect(() => { lifecycle.editorMount(); return lifecycle.editorUnmount }, []); return <input aria-label="Editor buffer" defaultValue="unsaved draft" /> } }))
 vi.mock("@/app/workbench/SpaceAgentSidebar", () => ({ SpaceAgentSidebar: () => { lifecycle.spacesRender(); useEffect(() => { lifecycle.spacesMount(); return lifecycle.spacesUnmount }, []); return <button>Space leaf</button> } }))
 vi.mock("@/app/panels/GitPanel", () => ({ GitPanel: () => <div>Git graph surface</div> }))
 vi.mock("@/app/panels/DatabasePanel", () => ({ DatabasePanel: () => <div>Database query surface</div> }))
 vi.mock("@/app/workbench/DatabaseNavContent", () => ({ DatabaseNavContent: () => null }))
 vi.mock("@/app/workbench/WorkspaceToolsPanel", () => ({ WorkspaceToolsPanel: ({ onOpenGraph }: { onOpenGraph: () => void }) => { lifecycle.toolsRender(); return <button onClick={onOpenGraph}>Tool leaf</button> } }))
-vi.mock("@/app/workbench/SettingsDialog", () => ({ SettingsDialog: ({ open }: { open: boolean }) => { lifecycle.settingsRender(); return open ? <div role="dialog" aria-label="Settings dialog" /> : null } }))
+vi.mock("@/app/workbench/SettingsDialog", () => ({ SettingsDialog: ({ open, botAnimations, onBotAnimationsChange }: { open: boolean; botAnimations: boolean; onBotAnimationsChange: (enabled: boolean) => void }) => { lifecycle.settingsRender(); return open ? <div role="dialog" aria-label="Settings dialog"><button onClick={() => onBotAnimationsChange(!botAnimations)}>Toggle bot animations</button></div> : null } }))
 vi.mock("@/app/workbench/CommandPalette", () => ({ CommandPalette: ({ open }: { open: boolean }) => open ? <div role="dialog" aria-label="Command search" /> : null }))
 vi.mock("@/app/workbench/ContextMenu", () => ({ ContextMenu: () => null }))
 vi.mock("@/workbench/git/DiffModal", () => ({ DiffModal: () => null }))
@@ -35,6 +36,23 @@ beforeEach(() => {
   resize(1440)
 })
 afterEach(cleanup)
+
+it("applies and saves the global bot animation switch without remounting work surfaces", () => {
+  const app = render(<AppShell />)
+  const editor = screen.getByRole("textbox", { name: "Editor buffer" })
+  expect(document.documentElement.dataset.botAnimations).toBe("true")
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+  fireEvent.click(screen.getByRole("button", { name: "Toggle bot animations" }))
+  expect(document.documentElement.dataset.botAnimations).toBe("false")
+  expect(saveAppearanceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ botAnimations: false }))
+  expect(screen.getByRole("textbox", { name: "Editor buffer" })).toBe(editor)
+  expect(lifecycle.editorMount).toHaveBeenCalledTimes(1)
+  expect(lifecycle.spacesMount).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole("button", { name: "Toggle bot animations" }))
+  expect(document.documentElement.dataset.botAnimations).toBe("true")
+  app.unmount()
+  expect(document.documentElement.dataset.botAnimations).toBeUndefined()
+})
 
 it("does not rerender unrelated work surfaces when toggling or resizing sidebars", () => {
   render(<AppShell />)

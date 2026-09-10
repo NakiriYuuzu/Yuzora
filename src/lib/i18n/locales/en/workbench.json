@@ -451,6 +451,8 @@
     "themeDark": "Dark",
     "themeAuto": "Auto",
     "accentColor": "Accent color",
+    "botAnimations": "Bot animations",
+    "botAnimationsSub": "Animate Space companions with blinks, expressions and movement. Off by default on lower-performance devices; system reduced motion still takes priority.",
     "leftSidebarBackground": "Left sidebar background",
     "leftSidebarBackgroundSub": "Show a frosted background and border behind navigation, Spaces and Agents.",
     "rightSidebarBackground": "Right sidebar background",

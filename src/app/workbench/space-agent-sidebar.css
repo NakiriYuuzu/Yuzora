@@ -184,6 +184,8 @@
 @keyframes character-sway { 0%,16%,52%,66%,100% { transform:translateX(0) rotate(0) scale(1); } 26%,36% { transform:translateX(calc(var(--character-lift) * .5)) rotate(-7deg) scale(.97,1.03); } 76%,86% { transform:translateX(calc(var(--character-lift) * -.5)) rotate(6deg) scale(1.03,.97); } }
 @keyframes character-nod { 0%,20%,48%,70%,100% { transform:translateY(0) rotate(0) scale(1); } 28%,35% { transform:translateY(calc(var(--character-lift) * -.5)) rotate(5deg) scale(1.06,.94); } 39% { transform:translateY(var(--character-lift)) rotate(-3deg) scale(.97,1.04); } 80%,88% { transform:translateY(calc(var(--character-lift) * .5)) rotate(-4deg) scale(1); } }
 @media(prefers-reduced-motion:reduce) { .space-character-art[data-motion="true"] { transition:none; translate:none; }.space-character-art[data-motion="true"] :is(.character-blink,.character-gaze,.character-mouth,.space-character-body) { animation:none; }.space-character-preview > .character-motion-note { display:block; margin:0 0 12px; } }
+:root[data-bot-animations="false"] .space-character-art[data-motion] { transition:none; translate:none; }
+:root[data-bot-animations="false"] .space-character-art[data-motion] :is(.character-blink,.character-gaze,.character-mouth,.space-character-body) { animation:none; }
 
 
 .space-tree-attention { display:flex; flex-direction:column; gap:3px; padding:8px 4px; font-size:12px; border-bottom:1px solid var(--line-1); }

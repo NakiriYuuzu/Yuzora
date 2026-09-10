@@ -39,6 +39,7 @@
 ### What's new in v0.0.9
 
 - Faster Git status, branch lists and diff loading; smoother switching between open HERDR terminals while keeping their output and connections.
+- A persistent Bot animations switch under Appearance; lower-spec devices default to static companions, with system reduced motion respected.
 - Themed editor and diff scrollbars, a resizable database sidebar, and a clear commit history / branch graph button.
 - Whole-block multiline paste, optional copy on selection, and Option/Alt+V image paste to the terminal's host.
 - Native Windows HERDR, opt-in WSL, and safer workspace trust, paths and reconnection across local and SSH hosts.
