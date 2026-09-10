@@ -153,12 +153,17 @@ manifest_check = false
   for (const child of children) if (child !== server && child.exitCode === null) child.stdin.end()
   try { if (server) await command(["session", "stop", session, "--json"]) }
   finally {
-    for (const child of children) if (child.exitCode === null) child.kill()
-    // Windows keeps executable and working-directory handles until process exit.
-    await Promise.all(children.filter(child => child.exitCode === null && child.signalCode === null).map(child => new Promise<void>(resolve => {
+    const waitForChildren = () => Promise.all(children.filter(child => child.exitCode === null && child.signalCode === null).map(child => new Promise<void>(resolve => {
       const timer = setTimeout(resolve, 3000)
       child.once("close", () => { clearTimeout(timer); resolve() })
     })))
-    await rm(root, { recursive: true, force: true })
+    // The stop response can precede server/ConPTY teardown. Let the server
+    // release its shell before killing any tracked process that remains alive.
+    await waitForChildren()
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill()
+    await waitForChildren()
+    // Windows may release directory handles after the process exit event.
+    // Retry transient filesystem locks for at most 5.5s; never ignore failure.
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 }
