@@ -38,6 +38,10 @@ jobs:
   # Secret Service smoke tests still require user-session runners on each OS.
   rust-compile:
     name: Rust compile (${{ matrix.label }})
+    # Compile/test jobs do not build installers. Candidate jobs retain and
+    # verify the real resources downloaded from host-artifacts.
+    env:
+      TAURI_CONFIG: '{"bundle":{"resources":[]}}'
     strategy:
       fail-fast: false
       matrix:
@@ -98,9 +102,7 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
 
-      # Named-pipe connect/write/event seams are portable and must run on the
-      # Windows compiler job. This is not a substitute for real Herdr GUI
-      # acceptance on a Windows desktop.
+      # Windows compiles the remote facade; real WSL GUI acceptance is separate.
       - name: Herdr transport tests
         if: runner.os == 'Windows'
         working-directory: src-tauri
@@ -109,7 +111,14 @@ jobs:
   # Release PRs must provide runnable installers before merge so the user can
   # complete platform validation. These are Actions artifacts only: no tag,
   # GitHub Release, updater signature, or publication happens from a PR.
+  host-artifacts:
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/host.yml
+
   release-candidate:
+    needs: host-artifacts
     name: Release candidate (${{ matrix.label }})
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/')
     strategy:
@@ -152,6 +161,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Download Unix host runtimes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: host-*
+          merge-multiple: true
+          path: src-tauri/resources/host/
+
+      - name: Verify Unix host runtime payloads
+        run: bun run runtime:verify
+
       - name: Verify release candidate branch matches product version
         shell: bash
         env:
@@ -171,6 +190,15 @@ jobs:
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
           bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build-args }}
 
+      - name: Verify isolated native Windows HERDR contract
+        if: runner.os == 'Windows'
+        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe
+
+      - name: Verify Windows native and Unix runtime payloads
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/verify-windows-runtime-payload.ps1 -BundleDir "src-tauri/target/release/bundle"
+
       - name: Upload release candidate
         uses: actions/upload-artifact@v4
         with:
@@ -181,6 +209,8 @@ jobs:
 
   database-integration:
     name: Real database integration (Linux x86-64)
+    env:
+      TAURI_CONFIG: '{"bundle":{"resources":[]}}'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:

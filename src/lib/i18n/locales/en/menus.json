@@ -13,7 +13,6 @@
     "cmOpen": "Open",
     "cmOpenSplit": "Open in Right Split",
     "cmRename": "Rename…",
-    "cmOpenInBrowser": "Open in preview",
     "cmCopyRel": "Copy relative path",
     "cmReveal": "Show in File Manager",
     "cmDelete": "Delete",
@@ -25,9 +24,6 @@
     "cmCopy": "Copy",
     "cmPaste": "Paste",
     "cmCompareHead": "Compare with HEAD",
-    "cmFormatDoc": "Format document",
-    "cmRenameTerminal": "Rename terminal…",
-    "cmCloseTerminal": "Close terminal",
     "cmCopyHash": "Copy commit hash",
     "cmCopyBranch": "Copy branch name",
     "cmFetch": "Fetch",
@@ -36,7 +32,6 @@
     "cmStageSelected": "Stage Selected",
     "cmUnstageSelected": "Unstage Selected",
     "cmRollbackSelected": "Rollback Selected…",
-    "cmOpenSsh": "Open SSH terminal",
     "cmOpenSftp": "Open SFTP browser",
     "cmCopyAddr": "Copy host address",
     "cmCopyDbAddress": "Copy database address",
@@ -50,7 +45,6 @@
     "cmPreviewReload": "Reload",
     "cmCopyUrl": "Copy URL",
     "cmOpenExternal": "Open in Default Browser",
-    "cmStopDevServer": "Stop Dev Server",
     "disabled": {
       "targetUnavailable": "The item is no longer available",
       "nothingToDo": "There is nothing to do",
@@ -175,27 +169,6 @@
     "closeSplitTitle": "Close split",
     "emptyTitle": "Open a project to start editing",
     "emptyDescription": "Files and tabs will appear here once a project is open."
-  },
-  "terminalDrawer": {
-    "dragToResize": "Drag to resize",
-    "iconAriaLabel": "Terminal",
-    "tabListAriaLabel": "Terminal tabs",
-    "allTerminalsTitle": "All terminals",
-    "splitRightTitle": "Split right",
-    "splitLimitTitle": "A maximum of two terminals can be visible",
-    "newTerminalTitle": "New terminal",
-    "selectProfileTitle": "New terminal with profile",
-    "defaultProfile": "default",
-    "closeTabAriaLabel": "Close {{title}}",
-    "renameInputAriaLabel": "Rename {{title}}",
-    "spawnFailedTitle": "Terminal failed to start",
-    "leftPane": "Left",
-    "rightPane": "Right",
-    "focusedPane": "Focused",
-    "paneResizeAriaLabel": "Resize terminal panes",
-    "paneRatioText": "Left {{left}}% · Right {{right}}%",
-    "collapseAriaLabel": "Collapse terminal",
-    "expandAriaLabel": "Expand terminal"
   },
   "branchPopover": {
     "title": "Git Branches",
@@ -459,5 +432,6 @@
     "cleanTitle": "Working tree clean",
     "cleanDescription": "No staged, unstaged, untracked, or conflicted files.",
     "detachedHead": "Detached HEAD"
-  }
+  },
+  "dragToResize": "Drag to resize"
 }

@@ -9,7 +9,7 @@ import { useGitStore } from "../../state/gitStore"
 import { useUiStore } from "../../state/uiStore"
 import { diffStats, langLabel, loadWorktreeDiff, splitPath } from "./diffLoad"
 import { DiffView } from "./DiffView"
-import { GitBadge } from "./fileRows"
+import { GitBadge, gitFileNameStyle } from "./fileRows"
 import { openGitChangeContextMenu } from "./gitChangeContextMenu"
 import {
     buildGitChangeModel,
@@ -90,6 +90,7 @@ function FileRow({
                 <GitBadge badge={row.badge} />
                 <span className="flex min-w-0 flex-1 items-baseline">
                 <span
+                    style={gitFileNameStyle(row.badge, row.staged)}
                     className={
                         "truncate text-[12.5px] " +
                         (selected ? "font-semibold text-(--ink-0)" : "font-medium text-(--ink-1)")

@@ -4,11 +4,10 @@ import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   fetchWithRetry,
+  archiveExtractionCommand,
   HERDR_RESOURCE_TARGETS,
   HERDR_RESOURCE_VERSION,
-  resourceTargetIdsForHost,
-  validateArchiveEntries,
-  zipExtractionToolForPlatform
+  resourceTargetIdsForHost
 } from "./prepare-herdr-resources"
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -19,18 +18,24 @@ afterEach(() => {
 })
 
 describe("prepare Herdr resources", () => {
-  it("pins protocol-19 Herdr resources for both released desktop platforms", () => {
+  it("uses Windows inbox zip-capable tar even when Git Bash shadows PATH", () => {
+    expect(archiveExtractionCommand("win32", "D:\\staging dir\\archive.zip", "D:\\staging dir\\runtime", "C:\\Windows")).toEqual(["C:\\Windows\\System32\\tar.exe", "-xf", "D:\\staging dir\\archive.zip", "-C", "D:\\staging dir\\runtime"])
+    expect(() => archiveExtractionCommand("win32", "archive.zip", "runtime")).toThrow("SystemRoot")
+    expect(archiveExtractionCommand("darwin", "/tmp/archive.zip", "/tmp/runtime")).toEqual(["unzip", "-q", "/tmp/archive.zip", "-d", "/tmp/runtime"])
+  })
+  it("pins protocol-22 Herdr v0.9.0 Stable resources for both released desktop platforms", () => {
     expect(HERDR_RESOURCE_VERSION).toEqual({
-      baseVersion: "0.8.0",
-      protocol: 19,
-      windowsBuildId: "2026-08-04-d78e3d3b5126",
+      baseVersion: "0.9.0",
+      protocol: 22,
       licenseSha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     })
+    expect(HERDR_RESOURCE_TARGETS["macos-aarch64"].url).toContain("/v0.9.0/")
+    expect(HERDR_RESOURCE_TARGETS["macos-x86_64"].url).toContain("/v0.9.0/")
+    expect(Object.keys(HERDR_RESOURCE_TARGETS).sort()).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64", "windows-x86_64"])
     expect(resourceTargetIdsForHost("darwin")).toEqual(["macos-aarch64", "macos-x86_64"])
     expect(resourceTargetIdsForHost("win32")).toEqual(["windows-x86_64"])
-    expect(zipExtractionToolForPlatform("win32")).toBe("powershell")
-    expect(zipExtractionToolForPlatform("darwin")).toBe("tar")
-    expect(() => resourceTargetIdsForHost("linux")).toThrow(/does not build desktop/)
+    expect(resourceTargetIdsForHost("linux")).toEqual(["linux-aarch64", "linux-x86_64"])
+
   })
 
   it("pins every downloaded archive and extracted file by SHA-256", () => {
@@ -42,9 +47,7 @@ describe("prepare Herdr resources", () => {
         expect(file.sha256).toMatch(/^[a-f0-9]{64}$/)
       }
     }
-    expect(HERDR_RESOURCE_TARGETS["windows-x86_64"].files.map((file) => file.path)).toContain(
-      "conpty/x64/OpenConsole.exe"
-    )
+
   })
 
   it("retries transient download failures with bounded backoff", async () => {
@@ -82,20 +85,12 @@ describe("prepare Herdr resources", () => {
       "resources/herdr/macos-aarch64/": "herdr/macos-aarch64/",
       "resources/herdr/macos-x86_64/": "herdr/macos-x86_64/"
     })
-    expect(windows.bundle.resources).toMatchObject({
-      "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/"
+    expect(windows.bundle.resources).toEqual({
+      "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/",
+      "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
+      "resources/host/": "host/",
+      "resources/legacy-cleanup/": "legacy-cleanup/"
     })
-  })
-
-  it("accepts only the exact pinned archive shape", () => {
-    const expected = HERDR_RESOURCE_TARGETS["windows-x86_64"].files.map((file) => file.path)
-    expect(() => validateArchiveEntries([...expected, "conpty/"], expected)).not.toThrow()
-    expect(() => validateArchiveEntries([...expected, "unexpected.dll"], expected)).toThrow(
-      /archive contents changed/
-    )
-    expect(() => validateArchiveEntries(["../herdr.exe"], ["herdr.exe"])).toThrow(/unsafe path/)
-    expect(() => validateArchiveEntries([String.raw`C:\herdr.exe`], ["herdr.exe"])).toThrow(
-      /unsafe path/
-    )
+    expect(macos.bundle.resources["resources/host/"]).toBe("host/")
   })
 })

@@ -1,7 +1,7 @@
-import { Bot, Database, Files, GitBranch, Server, type LucideIcon } from "lucide-react"
+import { Bot, Database, Files, GitBranch, type LucideIcon } from "lucide-react"
 
 /** Workbench modes. ADE (Agents) is first/default; Files is second. */
-export type Mode = "ade" | "files" | "git" | "database" | "ssh"
+export type Mode = "ade" | "files" | "git" | "database"
 
 export interface ModeDefinition {
   id: Mode
@@ -14,15 +14,15 @@ export const MODES: ModeDefinition[] = [
   { id: "files", label: "Files", icon: Files },
   { id: "git", label: "Git", icon: GitBranch },
   { id: "database", label: "Database", icon: Database },
-  { id: "ssh", label: "SSH", icon: Server },
 ]
 
 export const DEFAULT_MODE: Mode = "ade"
 
 /** Normalize legacy persisted mode ids into the current Mode union. */
 export function normalizeWorkbenchMode(raw: string | null | undefined): Mode {
+  if (raw === "ssh") return "files"
   if (raw === "agent" || raw === "agentzone" || raw === "AgentZone") return "ade"
-  if (raw === "ade" || raw === "files" || raw === "git" || raw === "database" || raw === "ssh") {
+  if (raw === "ade" || raw === "files" || raw === "git" || raw === "database") {
     return raw
   }
   return DEFAULT_MODE

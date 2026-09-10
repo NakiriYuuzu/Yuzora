@@ -7,17 +7,6 @@ export interface FileNode {
     kind?: FileNodeKind
 }
 
-export interface WorkspacePathIndexEntry {
-    relativePath: string
-    canonicalPath: string
-}
-
-export interface WorkspacePathIndexResult {
-    workspace: string
-    entries: WorkspacePathIndexEntry[]
-    truncated: boolean
-}
-
 export type DocumentLineEnding = "lf" | "crlf" | "mixed"
 
 export type OpenFileResult =
@@ -49,65 +38,7 @@ export function languageFromPath(path: string): string {
 }
 
 export const MAX_LINE_LEN_SYNTAX_OFF = 10_000
-
-// --- LSP (T4 serde contract; all outputs camelCase) ---
-export type LspLanguage = "typescript" | "python" | "rust" | "markdown"
-
-// Maps a file path to its LSP language, or null when Yuzora ships no server for
-// it. Lives here (not in lspManager) so lspStore can use it without importing
-// the client-lifecycle module (avoids a store <-> manager import cycle).
-const LSP_LANGUAGE_BY_EXT: Record<string, LspLanguage> = {
-    ts: "typescript",
-    tsx: "typescript",
-    mts: "typescript",
-    cts: "typescript",
-    js: "typescript",
-    jsx: "typescript",
-    mjs: "typescript",
-    cjs: "typescript",
-    py: "python",
-    pyi: "python",
-    rs: "rust",
-    md: "markdown",
-    markdown: "markdown"
-}
-
-export function lspLanguageOf(path: string): LspLanguage | null {
-    const ext = path.split(".").pop()?.toLowerCase() ?? ""
-    return LSP_LANGUAGE_BY_EXT[ext] ?? null
-}
-export type LspProcessStatus =
-    | { status: "starting" }
-    | { status: "missing"; installHint: string }
-    | { status: "crashed"; reason: string }
-    | { status: "stopped" }
-export interface LspServerInfo {
-    // Raw workspace string this info belongs to (the Rust-side process-map key).
-    // Used to drop stale events from a workspace the UI has already left.
-    workspace: string
-    language: string
-    serverId: string
-    command: string
-    path: string | null
-    status: LspProcessStatus
-    lastStartupLog: string | null
-    lastError: string | null
-    restartCount: number
-}
-export interface LspConfig {
-    defaults: Record<string, string>
-    workspaces: Record<string, Record<string, string>>
-}
-// 狀態列顯示態（前端組合 process status＋client initialized＋檔案分級推導）
-export type LspDisplayState = "ready" | "starting" | "failed" | "missing" | "syntaxOnly"
-// 一鍵安裝進度（T14 emit "lsp:install-progress"；T12 listen 顯示）
-export interface LspInstallProgress {
-    language: string
-    phase: "download" | "verify" | "unpack" | "npm" | "pip" | "done" | "error"
-    percent: number | null
-    message: string | null
-}
-// 檔案分級（LSP 掛載判準；由 OpenFileResult.kind＋hasVeryLongLine 推導）
+// 檔案分級（由 OpenFileResult.kind＋hasVeryLongLine 推導）
 export type FileGrade = "full" | "limited" | "tooLarge" | "binary" | "nonUtf8Readonly" | "veryLongLine"
 
 function hasVeryLongLine(content: string): boolean {
@@ -168,22 +99,6 @@ export interface WorkspaceTrustStatus {
     repoPresent?: boolean
     reason?: string
 }
-export interface WorkspaceTrustChallenge {
-    challengeId: string
-    canonicalPath: string
-    fsIdentity: string
-    repoPresent: boolean
-    expiresAt: number
-}
-export interface WorkspaceExecutionChallenge {
-    challengeId: string
-    canonicalPath: string
-    command: string
-    commandDigest: string
-    grantsTrust: boolean
-    trusted: boolean
-    expiresAt: number
-}
 export interface TrustedWorkspace {
     canonicalPath: string
     fsIdentity: string
@@ -191,7 +106,7 @@ export interface TrustedWorkspace {
 }
 export type RemoteProbe = "yes" | "no" | "unknown"
 // #57 T3：watcher 事件 payload 帶 workspace 標識；listener 比對 live
-// workspacePath 後才處理，杜絕切換 gap 內舊 workspace 事件串場（比照 LspBridge）。
+// workspacePath 後才處理，杜絕切換 gap 內舊 workspace 事件串場。
 export interface ExternalChangePayload { workspaceRoot: string; paths: string[] }
 export interface GitStateChangedPayload { workspaceRoot: string }
 export type GradedText =
@@ -204,62 +119,6 @@ export interface SearchMatch { line: number; col: number; preview: string }
 export type SearchEvent =
     | { type: "match"; path: string; matches: SearchMatch[] }
     | { type: "done"; truncated: boolean; fileCount: number }
-export interface PtySessionInfo {
-    sessionId: string
-    workspace: string
-    shell: string
-    cols: number
-    rows: number
-}
-export type PtyEvent =
-    // `seq` is a monotonic per-session counter and `droppedBytes` reports what
-    // the Rust pending cap discarded since the previous output event.
-    | {
-        type: "output"
-        data: string
-        seq: number
-        droppedBytes: number
-        truncated: boolean
-    }
-    | { type: "exit"; code: number | null }
-export type PtyActivity = "idle" | "busy" | "unknown"
-// Per-session PTY output telemetry (issue #39 AC 6). Byte counts are UTF-8 and
-// match the `TerminalOutputQueue` getters, which report the same unit.
-export interface PtyOutputMetrics {
-    outputBytes: number
-    queueDepth: number
-    droppedBytes: number
-}
-export type TerminalProfileKind = "system" | "cmd" | "powershell" | "wsl" | "custom"
-export type TerminalCwdStrategy = "native" | "wsl"
-export interface TerminalProfile {
-    id: string
-    name: string
-    shell: string
-    args: string[]
-    kind: TerminalProfileKind
-    cwdStrategy: TerminalCwdStrategy
-}
-export interface DevServerCandidate {
-    scriptName: string
-    command: string
-    likelyPort: number | null
-}
-export interface DevServerDetect {
-    candidates: DevServerCandidate[]
-    runningPorts: number[]
-}
-export type DevServerStatus =
-    | { status: "starting" }
-    | { status: "running"; port: number | null }
-    | { status: "exited"; code: number | null }
-    | { status: "failed"; reason: string }
-export interface DevServerInfo {
-    workspace: string
-    command: string
-    port: number | null
-    status: DevServerStatus
-}
 export type AskpassKind = "username" | "password" | "passphrase" | "fingerprint" | "other"
 export type AskpassOperation = "fetch" | "pull" | "push" | "probe"
 export interface AskpassRequest {
@@ -369,10 +228,13 @@ export interface PostgresTransportFields {
 // Write-only connection input used behind the Rust profile/Test Connection
 // authority. No renderer-facing command can register this config directly;
 // passwords are sent in-flight only and are NEVER persisted anywhere.
+export interface DbSqliteWorkspace { hostId: string; canonicalPath: string }
+
 export type DbOpenConfig =
-    | { kind: "sqlite"; path: string }
+    | { kind: "sqlite"; path: string; workspace?: DbSqliteWorkspace }
     | ({
           kind: "postgres"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -381,6 +243,7 @@ export type DbOpenConfig =
       } & PostgresTransportFields)
     | {
           kind: "mssql"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -406,9 +269,10 @@ export type DbResultSessionId = DbOpaqueId<"resultSession">
 /** Non-secret connection address. Passwords are accepted only by write-only
  * request contracts and can never appear in a returned descriptor. */
 export type DbProfileTarget =
-    | { kind: "sqlite"; path: string }
+    | { kind: "sqlite"; path: string; workspace?: DbSqliteWorkspace }
     | ({
           kind: "postgres"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -416,6 +280,7 @@ export type DbProfileTarget =
       } & PostgresTransportFields)
     | {
           kind: "mssql"
+          viaHost?: string
           host: string
           port: number
           database: string
@@ -440,6 +305,7 @@ export function postgresInsecureExceptionMatches(
 }
 
 export interface PostgresTransportIdentity {
+    viaHost?: string
     transportMode: PostgresTransportMode
     host: string
     port: number
@@ -451,7 +317,8 @@ export function postgresTransportIdentityMatches(
     left: PostgresTransportIdentity,
     right: PostgresTransportIdentity
 ): boolean {
-    return left.transportMode === right.transportMode
+    return (left.viaHost ?? null) === (right.viaHost ?? null)
+        && left.transportMode === right.transportMode
         && left.host === right.host
         && left.port === right.port
         && left.user === right.user
@@ -571,6 +438,7 @@ export interface DbProfileUpdateRequest {
     transportChallengeId?: string | null
 }
 export interface DbPostgresTransportChallengeRequest {
+    viaHost?: string
     transportMode: PostgresTransportMode
     host: string
     port: number
@@ -578,6 +446,7 @@ export interface DbPostgresTransportChallengeRequest {
     database: string
 }
 export interface DbPostgresTransportChallenge {
+    viaHost?: string
     challengeId: string
     transportMode: PostgresTransportMode
     host: string
@@ -824,8 +693,6 @@ export type SshAuthInput =
     | { kind: "password"; password: string }
     | { kind: "key"; keyPath: string; passphrase?: string }
 export interface SshConnectResult { sessionId: string; fingerprint: string; knownHost?: boolean }
-export interface SshDataEvent { sessionId: string; chunk: string }
-export interface SshExitEvent { sessionId: string }
 export type SshHostKeyPrompt =
     | {
           kind: "new"
@@ -881,7 +748,7 @@ export interface SftpProgressEvent {
 
 // --- Performance monitor (F1; Rust serde outputs camelCase) ---
 // cpuPercent/memoryBytes 是 app 本體加上所有 Yuzora-owned descendants（ACP
-// wrapper、Pi/Claude agent、terminal shell、LSP server…）的總和；appCpuPercent/
+// host helper、HERDR connector、WebView helper…）的總和；appCpuPercent/
 // appMemoryBytes 只有 host process 自己，descendantCount 是被計入的子孫數。
 // CPU 沿用 sysinfo 語意：單一 process 的值是相對於「一顆核心」的百分比（可超過
 // 100），總量為各成員該值的算術和，未除以核心數。memoryBytes 為 resident bytes。

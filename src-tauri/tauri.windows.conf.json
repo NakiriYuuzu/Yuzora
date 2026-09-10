@@ -1,8 +1,10 @@
 {
   "bundle": {
     "resources": {
+      "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/",
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
-      "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/"
+      "resources/host/": "host/",
+      "resources/legacy-cleanup/": "legacy-cleanup/"
     }
   }
 }

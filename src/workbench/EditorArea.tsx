@@ -1,3 +1,4 @@
+import { useUiStore } from "../state/uiStore"
 import { FileCode2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -7,6 +8,8 @@ import { HerdrTerminalPage } from "@/app/panels/HerdrTerminalPage"
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import { isMarkdownPreviewTab, previewTabSourcePath } from "../lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
+import { RichMarkdownEditor } from "../editor/RichMarkdownEditor"
+import { isMarkdownPath } from "./MarkdownPreview"
 import { EditorPane } from "../editor/EditorPane"
 import { documentGeneration } from "../editor/documentRegistry"
 import { TabBar } from "./TabBar"
@@ -21,6 +24,7 @@ const ACTION_ACTIVE_CLASS = "bg-(--yz-accent)/16 text-(--yz-accent-ink)"
 
 export function EditorArea() {
     const { t } = useTranslation("menus")
+    const editorSurfaceVisible = useUiStore((s) => s.mode === "files" || s.mode === "ade")
     const groups = useWorkspaceStore((s) => s.groups)
     const activeGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
     const splitRight = useWorkspaceStore((s) => s.splitRight)
@@ -47,10 +51,10 @@ export function EditorArea() {
                             (i > 0 ? " border-l border-(--line-1)" : "")
                         }
                     >
-                        <div className="group-header flex h-[44px] shrink-0 items-center gap-[3px] border-b border-(--line-1) bg-(--paper-0) px-[8px]">
+                        <div data-tauri-drag-region="deep" className="group-header flex h-[44px] shrink-0 items-center gap-[3px] border-b border-(--line-1) bg-(--paper-0) px-[8px]">
                             <TabBar groupIndex={i} />
                             {last && (
-                                <div className="group-actions flex shrink-0 items-center gap-[2px] pb-[7px]">
+                                <div className="group-actions flex shrink-0 items-center gap-[2px]">
                                     <button
                                         type="button"
                                         aria-label={
@@ -88,7 +92,7 @@ export function EditorArea() {
                         </div>
                         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                             {herdrTabs.map((tab) => {
-                                const tabVisible = tab.path === group.activePath
+                                const tabVisible = editorSurfaceVisible && tab.path === group.activePath
                                 return (
                                     <div
                                         key={tab.path}
@@ -99,6 +103,7 @@ export function EditorArea() {
                                                 : "opacity-0 pointer-events-none"
                                         )}
                                         aria-hidden={!tabVisible}
+                                        inert={!tabVisible}
                                         data-testid={`herdr-page-layer-${tab.path}`}
                                     >
                                         <HerdrTerminalPage
@@ -143,6 +148,9 @@ export function EditorArea() {
                                                     />
                                                 </div>
                                             )
+                                        }
+                                        if (isMarkdownPath(group.activePath)) {
+                                            return <RichMarkdownEditor key={`${group.activePath}:${documentGeneration(group.activePath)}`} path={group.activePath} groupIndex={i} />
                                         }
                                         if (isSvgPath(group.activePath)) {
                                             return (

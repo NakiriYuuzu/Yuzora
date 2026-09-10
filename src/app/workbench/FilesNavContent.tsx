@@ -1,3 +1,5 @@
+import { Button } from "@/components/ui/button"
+import { useSftpStore } from "@/state/sftpStore"
 import { FolderOpen } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -31,6 +33,7 @@ export function FilesNavContent() {
             description={t("files.emptyDescription")}
           />
         </div>
+        <Button variant="outline" onClick={() => useSftpStore.getState().setPanelOpen(true)}>{t("hosts:transfers")}</Button>
         <DashedActionButton label={t("files.openWorkspace")} onClick={pickWorkspace} />
       </div>
     )
@@ -41,6 +44,7 @@ export function FilesNavContent() {
       onContextMenu={contextMenuHandler({ kind: "explorer", workspacePath })}
       className="flex h-full flex-col"
     >
+      <div className="flex gap-2 pb-2"><Button variant="outline" size="sm" onClick={pickWorkspace}>{t("hosts:addFolder")}</Button><Button variant="outline" size="sm" onClick={() => useSftpStore.getState().setPanelOpen(true)}>{t("hosts:transfers")}</Button></div>
       <ScrollArea className="min-h-0 flex-1" viewportClassName="py-[4px]">
         <FileTree />
       </ScrollArea>

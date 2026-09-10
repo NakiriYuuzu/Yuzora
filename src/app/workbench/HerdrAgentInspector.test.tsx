@@ -153,21 +153,6 @@ beforeEach(() => {
 })
 
 describe("HerdrAgentInspector", () => {
-  it("displays a Herdr-projected WSL origin badge", async () => {
-    ipc.get.mockResolvedValue(details("w1:p1", "Agent"))
-    ipc.read.mockResolvedValue(readResult("w1:p1", "output"))
-
-    render(
-      <HerdrAgentInspector
-        open
-        onOpenChange={() => undefined}
-        agent={{ ...agent("w1:p1", "Agent"), executionOrigin: { kind: "wsl", distribution: "Ubuntu" } }}
-      />
-    )
-
-    expect(await screen.findByTestId("herdr-inspector-origin")).toHaveTextContent("WSL · Ubuntu")
-  })
-
   it("ignores an older response after the selected agent changes", async () => {
     const oldGet = deferred<HerdrAgentDetails>()
     const oldRead = deferred<HerdrAgentReadResult>()
@@ -235,6 +220,7 @@ describe("HerdrAgentInspector", () => {
     )
     const lines = await screen.findByLabelText(/Lines|行數/)
     fireEvent.change(lines, { target: { value: "999" } })
+    fireEvent.blur(lines)
     await waitFor(() =>
       expect(ipc.read).toHaveBeenLastCalledWith(expect.objectContaining({ lines: 500 }))
     )
@@ -249,4 +235,26 @@ describe("HerdrAgentInspector", () => {
     expect(red).toHaveStyle({ color: "#cc6666" })
     expect(ansi.container.innerHTML).not.toContain("<script")
   })
+})
+
+it("keeps line-count drafts intact until blur or Enter commits them", async () => {
+  ipc.get.mockResolvedValue(details("w1:p1", "Agent"))
+  ipc.read.mockResolvedValue(readResult("w1:p1", "output"))
+  render(<HerdrAgentInspector open onOpenChange={() => undefined} agent={agent("w1:p1", "Agent")} />)
+  await screen.findByText("output")
+  const input = screen.getByRole("spinbutton")
+  ipc.read.mockClear()
+  for (const draft of ["", "1", "12", "120", "", "8", "80"]) {
+    fireEvent.change(input, { target: { value: draft } })
+    expect(input).toHaveValue(draft === "" ? null : Number(draft))
+  }
+  expect(ipc.read).not.toHaveBeenCalled()
+  fireEvent.keyDown(input, { key: "Enter" })
+  await waitFor(() => expect(ipc.read).toHaveBeenLastCalledWith(expect.objectContaining({ lines: 80 })))
+  for (const [draft, expected] of [["999", 500], ["1", 20], ["", 120], ["80.7", 80]] as const) {
+    fireEvent.change(input, { target: { value: draft } })
+    fireEvent.blur(input)
+    expect(input).toHaveValue(expected)
+    await waitFor(() => expect(ipc.read).toHaveBeenLastCalledWith(expect.objectContaining({ lines: expected })))
+  }
 })

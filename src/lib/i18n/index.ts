@@ -11,7 +11,7 @@
  *   here. Keep each domain in its own ns file so parallel migrations never
  *   collide on a single shared file.
  * • `common` is the default namespace (shared / app-wide copy). Feature areas
- *   get their own ns: `lsp`, `git`, `terminal`, `preview`, …
+ *   get their own ns: `git`, `terminal`, `preview`, …
  * • Keys are camelCase. Nest one level where it groups naturally
  *   (e.g. common `language.system`); the leaf value is the user-facing string.
  * • Interpolation uses i18next `{{name}}` placeholders, e.g.

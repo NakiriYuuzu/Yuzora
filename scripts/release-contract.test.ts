@@ -11,8 +11,10 @@ import {
 
 interface WorkflowStep {
   env?: Record<string, string>
+  if?: string
   name?: string
   run?: string
+  shell?: string
   uses?: string
 }
 
@@ -87,8 +89,8 @@ describe("release workflow contracts", () => {
     const workflow = releaseWorkflow()
     const ghReleaseJobs = Object.entries(workflow.jobs)
       .filter(([, job]) =>
-        !job.steps.some((step) => step.uses?.startsWith("actions/checkout@")) &&
-        job.steps.some((step) => /\bgh release\b/.test(step.run ?? ""))
+        !(job.steps ?? []).some((step) => step.uses?.startsWith("actions/checkout@")) &&
+        (job.steps ?? []).some((step) => /\bgh release\b/.test(step.run ?? ""))
       )
       .map(([name]) => name)
 
@@ -333,6 +335,69 @@ describe("release workflow contracts", () => {
     )
     expect(candidate.status).not.toBe(0)
     expect(candidate.stderr).toContain("release candidates must use the generated no-updater numeric WiX version override")
+  })
+
+  it("requires a human beta acceptance attestation tied to the exact candidate tree", () => {
+    const workflow = releaseWorkflow()
+    const resolve = workflow.jobs.guard.steps.find(
+      (step) => step.name === "Resolve release target"
+    )
+    expect(resolve?.env).toMatchObject({
+      BETA_ACCEPTED_TREE_SHA: "${{ vars.YUZORA_BETA_ACCEPTED_TREE_SHA }}",
+      BETA_ACCEPTANCE_URL: "${{ vars.YUZORA_BETA_ACCEPTANCE_URL }}"
+    })
+    expect(resolve?.run).toContain('git rev-parse "${SOURCE_SHA}^{tree}"')
+    expect(resolve?.run).toContain(
+      "YUZORA_BETA_ACCEPTED_TREE_SHA must be the accepted PR candidate tree SHA"
+    )
+    expect(resolve?.run).toContain(
+      "YUZORA_BETA_ACCEPTANCE_URL must reference the recorded Yuzora candidate acceptance evidence"
+    )
+
+    const result = spawnSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow, verifyBetaReleaseContract } from "./scripts/release-contract.ts";
+        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+        const resolve = release.jobs.guard.steps.find((step) => step.name === "Resolve release target");
+        delete resolve.env.BETA_ACCEPTED_TREE_SHA;
+        verifyBetaReleaseContract(release, ci);
+      `],
+      { encoding: "utf8" }
+    )
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("human acceptance attestation")
+  })
+
+  it("omits payloads only from compile/test jobs, never installer jobs", () => {
+    const ci = JSON.parse(execFileSync("bun", ["-e", `
+      import { parseReleaseWorkflow } from "./scripts/release-contract.ts";
+      console.log(JSON.stringify(parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text())));
+    `], { encoding: "utf8" })) as ParsedReleaseWorkflow
+    for (const name of ["rust-compile", "database-integration"]) {
+      expect(JSON.parse(ci.jobs[name].env!.TAURI_CONFIG)).toEqual({ bundle: { resources: [] } })
+    }
+    for (const job of [ci.jobs["release-candidate"], releaseWorkflow().jobs.build]) {
+      expect(job.env?.TAURI_CONFIG).toBeUndefined()
+      expect(job.steps.some((step) => step.run === "bun run runtime:verify")).toBe(true)
+    }
+  })
+
+  it("requires candidates and releases to verify Unix runtime payloads", () => {
+    const workflow = releaseWorkflow()
+    const verifier = workflow.jobs.build.steps.find((step) => step.name === "Verify Windows native and Unix runtime payloads")
+    expect(verifier).toMatchObject({ if: "matrix.artifact_name == 'windows'", shell: "powershell" })
+    expect(verifier?.run).toContain("scripts/verify-windows-runtime-payload.ps1")
+    const result = spawnSync("bun", ["-e", `
+      import { parseReleaseWorkflow, verifyBetaReleaseContract } from "./scripts/release-contract.ts";
+      const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+      const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+      ci.jobs["release-candidate"].steps.find((step) => step.name === "Verify Windows native and Unix runtime payloads").run = "true";
+      verifyBetaReleaseContract(release, ci);
+    `], { encoding: "utf8" })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("Windows installers must verify native and Unix runtime payloads")
   })
 
   it("keeps stable macOS fail-closed while requiring beta macOS to remain unsigned", () => {

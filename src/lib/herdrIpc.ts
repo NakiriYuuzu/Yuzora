@@ -1,9 +1,7 @@
-import { Channel, invoke } from "@tauri-apps/api/core"
+import { Channel } from "@tauri-apps/api/core"
+import { invokeHerdr as invoke } from "./herdrProvider"
 
 import type {
-  HerdrAgentCatalogEntry,
-  HerdrAgentCreateRequest,
-  HerdrAgentCreateResult,
   HerdrAgentDetails,
   HerdrAgentReadResult,
   HerdrBinarySource,
@@ -303,33 +301,19 @@ export function herdrTerminalCreate(
   })
 }
 
-export function herdrAgentCatalog(
-  sessionName?: string | null
-): Promise<HerdrAgentCatalogEntry[]> {
-  return invoke("herdr_agent_catalog", {
-    sessionName: sessionName ?? null
-  })
-}
-
-export function herdrAgentCreate(
-  request: HerdrAgentCreateRequest
-): Promise<HerdrAgentCreateResult> {
-  return invoke("herdr_agent_create", {
-    sessionName: request.sessionName ?? null,
-    workspaceId: request.workspaceId,
-    kind: request.kind,
-    bypassPermissions: request.bypassPermissions ?? false
-  })
-}
-
 export function herdrBinarySourceGet(): Promise<HerdrBinarySourceInfo> {
   return invoke("herdr_binary_source_get")
 }
 
 export function herdrBinarySourceSet(
-  source: HerdrBinarySource
+  source: HerdrBinarySource,
+  customPath?: string
 ): Promise<HerdrBinarySourceSetResult> {
-  return invoke("herdr_binary_source_set", { source })
+  return invoke("herdr_binary_source_set", { source, customPath: customPath ?? null })
+}
+
+export function herdrBinarySourceCheck(source: HerdrBinarySource, customPath?: string): Promise<import("./herdrTypes").RuntimeBinaryCheck> {
+  return invoke("herdr_binary_source_check", { source, customPath: customPath ?? null })
 }
 
 export function herdrAgentGet(args: {
@@ -362,12 +346,14 @@ export function herdrAgentRead(args: {
 
 export function herdrEventsSubscribe(args: {
   sessionName?: string | null
+  paneIds?: string[]
   onEvent: (event: HerdrSubscriptionEvent) => void
 }): Promise<string> {
   const ch = new Channel<HerdrSubscriptionEvent>()
   ch.onmessage = args.onEvent
   return invoke("herdr_events_subscribe", {
     sessionName: args.sessionName ?? null,
+    paneIds: args.paneIds ?? [],
     onEvent: ch
   })
 }

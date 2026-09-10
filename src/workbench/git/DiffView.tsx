@@ -29,7 +29,7 @@ import {
 
 // Same theme + highlight the editor uses, so diff surfaces (background, gutters,
 // tooltips) follow the app theme instead of CodeMirror's light baseTheme default.
-const themeExtensions = [appTheme, syntaxHighlighting(appHighlightStyle)]
+const themeExtensions = [appTheme, syntaxHighlighting(appHighlightStyle), EditorView.lineWrapping]
 
 type DiffMode = "unified" | "split"
 

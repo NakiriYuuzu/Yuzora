@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { normalizeTerminalFontFamily } from "@/terminal/terminalFonts"
 
 import {
   TERMINAL_SETTINGS_STORAGE_KEY,
@@ -16,10 +17,9 @@ export const useTerminalSettingsStore = create<TerminalSettingsStore>()((set, ge
   ...loadTerminalSettings(),
   update: (patch) => {
     const next: TerminalSettings = {
-      defaultProfile: patch.defaultProfile ?? get().defaultProfile,
-      customProfile: patch.customProfile ?? get().customProfile,
       imeAnchorMode: patch.imeAnchorMode ?? get().imeAnchorMode,
       fontSize: normalizeTerminalFontSize(patch.fontSize ?? get().fontSize),
+      fontFamily: normalizeTerminalFontFamily(patch.fontFamily ?? get().fontFamily),
     }
     set(next)
     writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, next)

@@ -1,5 +1,5 @@
 import { useRef, type DragEvent, type KeyboardEvent } from "react"
-import { Bot, Globe, Plus, SquareTerminal } from "lucide-react"
+import { Bot, Globe, Plus, SquareTerminal, Pin } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import {
     isFileTab,
@@ -17,7 +17,6 @@ import { logUserAction } from "@/features/logs/userAction"
 import { FileIcon } from "../lib/fileIcons"
 import { workspacePathForDisplay } from "../lib/paths"
 import { contextMenuHandler } from "../state/contextMenuStore"
-import { isMarkdownPath } from "./MarkdownPreview"
 import { isSvgPath, useSvgPreviewStore } from "./SvgSplitView"
 import {
     DropdownMenu,
@@ -28,14 +27,13 @@ import {
     DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-    closeHerdrTabIdempotently,
-    openCreatedHerdrTabAndRequestName
-} from "@/lib/herdrTabActions"
+import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { herdrTabMove } from "@/lib/herdrIpc"
+import { closeHerdrTabIdempotently } from "@/lib/herdrTabActions"
 import { herdrInsertIndexForProjectedDrop } from "@/lib/workbenchTabReorder"
 import { showActionError } from "@/lib/actionFeedback"
-import { requestAppConfirmation } from "@/state/appDialogStore"
+import { WorkspaceHostBadge } from "./WorkspaceHostBadge"
+import { findRuntimeSession, parseRuntimeScope } from "@/lib/herdrProvider"
 
 export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
@@ -48,21 +46,6 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const draggedTabPathRef = useRef<string | null>(null)
     const closePreviewTab = useWorkspaceStore((s) => s.closePreviewTab)
     const closeMarkdownPreviewTab = useWorkspaceStore((s) => s.closeMarkdownPreviewTab)
-    const toggleMarkdownPreview = useWorkspaceStore((s) => s.toggleMarkdownPreview)
-    const markdownPreviewSourceKey = useWorkspaceStore((s) => {
-        const sources: string[] = []
-        for (const candidate of s.groups) {
-            for (const tab of candidate.tabs) {
-                if (!isMarkdownPreviewTab(tab)) continue
-                const source = previewTabSourcePath(tab)
-                if (source) sources.push(source)
-            }
-        }
-        return sources.sort().join("\0")
-    })
-    const markdownPreviewSources = new Set(
-        markdownPreviewSourceKey ? markdownPreviewSourceKey.split("\0") : []
-    )
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const herdrSessions = useHerdrStore((s) => s.sessions)
     const herdrRuntimes = useHerdrStore((s) => s.runtimesBySession)
@@ -72,10 +55,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const canCreateHerdrTerminal = useHerdrStore((s) => s.canCreateTerminal())
     const canFocusHerdrTab = useHerdrStore((s) => s.canFocusSelectedTab())
     const canMoveHerdrTab = useHerdrStore((s) => s.canMoveSelectedTab())
-    const createHerdrTerminal = useHerdrStore((s) => s.createTerminalInSelectedSpace)
     const activateHerdrTab = useHerdrStore((s) => s.activateTab)
-    const mode = useUiStore((s) => s.mode)
-    const setMode = useUiStore((s) => s.setMode)
     const svgClosedPaths = useSvgPreviewStore((s) => s.closedPaths)
     const toggleSvgPreview = useSvgPreviewStore((s) => s.toggle)
     const forgetSvgPreview = useSvgPreviewStore((s) => s.forget)
@@ -100,8 +80,8 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
             tab.herdrWorkspaceId ??
             (tab.herdrTabId ? runtimeWorkspaceByTabId.get(tab.herdrTabId) : null)
         return workspaceId === herdrSelectedSpaceId
-    })
-    const showHerdrTabsMenu = mode === "ade" && Boolean(herdrSelectedSessionName)
+    }).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+    const showHerdrTabsMenu = Boolean(herdrSelectedSessionName)
 
     function onOpenBrowserTab() {
         useWorkspaceStore.getState().openPreviewTab(groupIndex)
@@ -109,19 +89,8 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     }
 
     async function onCreateHerdrTab() {
-        const created = await createHerdrTerminal()
-        if (!created) return
-        setMode("ade")
         try {
-            await openCreatedHerdrTabAndRequestName({
-                sessionName: created.herdrSessionId,
-                workspaceId: created.workspaceId,
-                terminalId: created.terminalId,
-                title: created.title,
-                paneId: created.paneId,
-                tabId: created.tabId,
-                groupIndex
-            })
+            await openNewTerminalTab(groupIndex)
         } catch (error) {
             await showActionError(t("contextMenu.cmHerdrRenameTab"), error)
         }
@@ -224,7 +193,8 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
             sourceProjectedIndex < 0 ||
             destProjectedIndex < 0 ||
             destProjectedIndex >= projectedTabs.length ||
-            sourceProjectedIndex === destProjectedIndex
+            sourceProjectedIndex === destProjectedIndex ||
+            Boolean(sourceTab.pinned) !== Boolean(projectedTabs[destProjectedIndex]?.pinned)
         ) {
             return null
         }
@@ -273,6 +243,12 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         tab: TabInfo,
         projectedIndex: number
     ) {
+        if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "p") {
+            event.preventDefault()
+            event.stopPropagation()
+            useWorkspaceStore.getState().toggleTabPinned(groupIndex, tab.path)
+            return
+        }
         if (
             !event.altKey ||
             event.ctrlKey ||
@@ -290,7 +266,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         reorder()
     }
 
-    async function onClose(tab: TabInfo) {
+    async function onClose(tab: TabInfo, sessionName: string, tabId?: string | null) {
         // Browser singleton preview holds no document — close it without a dirty
         // prompt or dropDocument. Markdown preview is a store-owned adjacent
         // EditorGroup tab and is closed through closeMarkdownPreviewTab below.
@@ -304,45 +280,27 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
             void logUserAction("close_tab", `close ${tab.name}`)
             return
         }
-        // The top-level close button mirrors Herdr's destructive tab close.
-        // Runtime success is the commit point: connector release and local page
-        // removal happen only afterwards, so a rejected/failed close keeps the
-        // user's terminal surface intact. App teardown remains release-only.
         if (tab.kind === "herdr-terminal") {
             if (closingHerdrPagesRef.current.has(tab.path)) return
             closingHerdrPagesRef.current.add(tab.path)
-            const sessionName =
-                tab.herdrSessionId === "live"
-                    ? (herdrSessions.find((session) => session.default) ?? herdrSessions[0])?.name ?? "live"
-                    : tab.herdrSessionId ?? "live"
-            const targetSnapshot =
-                herdrRuntimes[sessionName]?.snapshot ??
-                (herdrSelectedSessionName === sessionName ? herdrSelectedSnapshot : null)
-            const target =
-                targetSnapshot?.terminals.find(
-                    (terminal) => terminal.terminalId === tab.terminalId
-                ) ??
-                targetSnapshot?.agents.find(
-                    (agent) => agent.terminalId === tab.terminalId
-                )
-            const tabId = tab.herdrTabId ?? target?.tabId ?? null
             try {
-                if (!tabId) throw new Error("Herdr tab ID unavailable")
-                const accepted = await requestAppConfirmation({
-                    title: t("contextMenu.confirm.closeHerdrTabTitle"),
-                    description: t("contextMenu.confirm.closeHerdrTab", { name: tab.name }),
-                    kind: "warning",
-                    destructive: true
-                })
-                if (!accepted) return
+                const state = useHerdrStore.getState()
+                const session = findRuntimeSession(state.sessions, sessionName)
+                const caps = state.runtimesBySession[sessionName]?.capabilities ??
+                    (state.selectedSessionName === sessionName ? state.capabilities : null)
+                if (!tabId) throw new Error(t("contextMenu.disabled.targetUnavailable"))
+                if (!session?.running || !caps?.server.running) throw new Error(t("contextMenu.disabled.herdrUnavailable"))
+                if (!caps.api.tabClose || (caps.api.methods?.length && !caps.api.methods.includes("tab.close"))) {
+                    throw new Error(t("contextMenu.disabled.herdrMethodUnavailable"))
+                }
+                // Keep the page/connector until the runtime confirms tab.close.
                 await closeHerdrTabIdempotently(sessionName, tabId)
                 await useHerdrStore.getState().releaseAttachmentsForPage(tab.path)
-                useWorkspaceStore.getState().closeTabsByPath([tab.path])
+                useWorkspaceStore.getState().closeTabsByPath([tab.path], sessionName)
                 useHerdrStore.getState().bumpTopologyRevision()
-                void useHerdrStore.getState().refreshSnapshot(sessionName).catch(() => undefined)
-                void logUserAction("close_tab", `close herdr ${sessionName}:${tabId}`)
+                await useHerdrStore.getState().refreshSnapshot(sessionName).catch(() => undefined)
             } catch (error) {
-                await showActionError(t("contextMenu.cmHerdrCloseTab"), error)
+                await showActionError(t("tabBar.close", { name: tab.name }), error)
             } finally {
                 closingHerdrPagesRef.current.delete(tab.path)
             }
@@ -379,9 +337,9 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
             {projectedTabs.map((tab, index) => {
                 const active = tab.path === group.activePath
                 const herdrSessionName =
-                    tab.herdrSessionId === "live"
-                        ? (herdrSessions.find((session) => session.default) ?? herdrSessions[0])?.name ?? "live"
-                        : tab.herdrSessionId ?? "live"
+                    tab.herdrSessionId === "live" || !tab.herdrSessionId
+                        ? findRuntimeSession(herdrSessions, "live")?.name ?? "live"
+                        : tab.herdrSessionId
                 const herdrSnapshot =
                     herdrRuntimes[herdrSessionName]?.snapshot ??
                     (herdrSelectedSessionName === herdrSessionName ? herdrSelectedSnapshot : null)
@@ -418,9 +376,10 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                               groupIndex
                           })
                 return (
-                    <span
-                        key={tab.path}
+                    <span key={tab.path}
+                        data-tauri-drag-region="false"
                         onContextMenu={tabContextMenu}
+                        data-pinned={tab.pinned || undefined}
                         onDragOver={onTabDragOver}
                         onDrop={(event) => void onTabDrop(event, index)}
                         className={
@@ -442,7 +401,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 "tab-name flex min-w-0 items-center gap-[8px] text-left text-[12.5px] whitespace-nowrap " +
                                 (active ? "font-semibold" : "font-medium")
                             }
-                            aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+                            aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+P"
                             onDragStart={(event) => onTabDragStart(event, tab)}
                             onDragEnd={() => {
                                 draggedTabPathRef.current = null
@@ -459,8 +418,10 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             ) : (
                                 <FileIcon fileName={tab.name} className="size-[15px] shrink-0" />
                             )}
+                            {tab.pinned && <Pin className="size-[12px] shrink-0" aria-hidden="true" />}
                             <span className="max-w-[140px] truncate">{tab.name}</span>
                         </button>
+                        <WorkspaceHostBadge path={tab.kind === "preview" ? workspacePath ?? undefined : previewTabSourcePath(tab) ?? tab.path} hostId={tab.kind === "herdr-terminal" ? parseRuntimeScope(herdrSessionName).hostId : undefined} />
                         {isFileTab(tab) && tab.externallyModified && (
                             <span
                                 role="button"
@@ -484,38 +445,27 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             />
                         )}
                         {isFileTab(tab) &&
-                            (isMarkdownPath(tab.name) || isSvgPath(tab.name)) && (
+                            isSvgPath(tab.name) && (
                             <button
                                 type="button"
                                 className={
                                     "preview-toggle flex size-[18px] shrink-0 items-center justify-center rounded-[6px] transition-colors " +
-                                    ((isMarkdownPath(tab.name)
-                                        ? markdownPreviewSources.has(tab.path)
-                                        : !svgClosedPaths[tab.path])
+                                    (!svgClosedPaths[tab.path]
                                         ? "bg-(--yz-accent)/16 text-(--yz-accent-ink)"
                                         : "text-(--ink-3) hover:bg-(--paper-3) hover:text-(--ink-0)")
                                 }
                                 aria-label={t("tabBar.togglePreview", { name: tab.name })}
                                 aria-pressed={
-                                    isMarkdownPath(tab.name)
-                                        ? markdownPreviewSources.has(tab.path)
-                                        : !svgClosedPaths[tab.path]
+                                    !svgClosedPaths[tab.path]
                                 }
                                 title={
-                                    isMarkdownPath(tab.name)
-                                        ? t("tabBar.toggleMarkdownPreviewTitle")
-                                        : t("tabBar.toggleSvgPreviewTitle")
+                                    t("tabBar.toggleSvgPreviewTitle")
                                 }
                                 onClick={(e) => {
                                     e.stopPropagation()
                                     setActiveTab(groupIndex, tab.path)
-                                    if (isMarkdownPath(tab.name)) {
-                                        toggleMarkdownPreview(tab.path, groupIndex)
-                                        void logUserAction("toggle_md_preview", `toggle preview ${tab.path}`)
-                                    } else {
-                                        toggleSvgPreview(tab.path)
-                                        void logUserAction("toggle_svg_preview", `toggle preview ${tab.path}`)
-                                    }
+                                    toggleSvgPreview(tab.path)
+                                    void logUserAction("toggle_svg_preview", `toggle preview ${tab.path}`)
                                 }}
                             >
                                 <svg
@@ -538,7 +488,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             type="button"
                             className="tab-close flex size-[18px] shrink-0 items-center justify-center rounded-[6px] text-(--ink-3) transition-colors hover:bg-(--paper-3) hover:text-(--ink-0)"
                             aria-label={t("tabBar.close", { name: tab.name })}
-                            onClick={() => void onClose(tab)}
+                            onClick={() => void onClose(tab, herdrSessionName, tab.herdrTabId ?? herdrRuntimeTab?.id ?? herdrTarget?.tabId)}
                         >
                             <svg
                                 width="11"

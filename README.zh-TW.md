@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://nakiriyuuzu.github.io/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.9--beta.2-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.9--beta.3-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -29,7 +29,7 @@
 
 > Yuzora 是以 HERDR 作為執行與終端 runtime 的 **Agent Development Environment（ADE）**。
 > Spaces、named Sessions、Attention 與 Agents 投影在同一個桌面表面；編輯器、git、SSH/SFTP、
-> 資料庫與本機 terminal 仍可並用。以 Tauri 打造，預設在地執行。
+> 資料庫與瀏覽器仍可並用。以 Tauri 打造，預設在地執行。
 
 <br />
 
@@ -43,7 +43,7 @@
 
 ### 從 Space 到 agent 終端
 
-Workspace rail 投影 HERDR Spaces；ADE sidebar 整理 named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放，Agent Inspector 維持唯讀。
+Space 與 Agent 側欄投影 HERDR Spaces、named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放，Agent Inspector 維持唯讀。
 
 <code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code> <code>唯讀 Inspector</code>
 
@@ -85,14 +85,14 @@ SSH 連上遠端主機瀏覽與編輯檔案、SFTP 傳輸；資料庫面板直�
 
 ### 內建 terminal 與 git 工具
 
-xterm 驅動的本機 terminal drawer 就在編輯器下方；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
+HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
 
-<code>xterm + pty</code> <code>git log / cherry-pick</code> <code>log 查詢</code>
+<code>xterm + HERDR</code> <code>git log / cherry-pick</code> <code>log 查詢</code>
 
 </td>
 <td valign="middle" width="62%">
 
-<img src="docs/readme/terminal-git-zh.png" alt="本機 terminal drawer 與 git 面板：log、diff、cherry-pick" />
+終端執行由 HERDR 管理。瀏覽器可開啟網站，或在 HERDR terminal 啟動的服務網址。
 
 </td>
 </tr>
@@ -118,10 +118,14 @@ Windows `.msi` 安裝檔與歷史版本見 [GitHub Releases](https://github.com/
 | 桌面框架 | [Tauri 2](https://tauri.app)（Rust） |
 | 前端 | React + TypeScript + Vite |
 | Agent runtime | HERDR public API ＋官方 terminal session connector |
-| Terminal | xterm.js ＋本機 pty ＋ HERDR terminal pages |
+| Terminal | xterm.js ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
-Yuzora 會優先使用 PATH 安裝的 HERDR binary；偵測不到時，會自動改用 macOS／Windows 安裝檔內附且固定版本的 Yuzora-managed binary。關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會隱式啟動或終止 HERDR server、panes 或 agents。
+Yuzora 會優先使用 PATH 安裝的 HERDR binary；偵測不到時，會自動改用 macOS／Windows 安裝檔內附且固定版本的 Yuzora-managed binary。關閉頁面或 App 時，Yuzora 只釋放自己建立的 connector child，不會終止 HERDR server、panes 或 agents。
+
+### Experimental Windows WSL Pi Plugin
+
+Windows `0.0.9-beta.3` 安裝檔會在 App resource 內附 Pi-only 的 `Yuzora WSL Agents` Plugin，且預設維持停用。使用者可在**設定 → Herdr → WSL Pi 整合**明確開啟；Yuzora 會依 ownership 規則 link 內附 Plugin，並在 Herdr 設定的 WSL distro 安裝 adapter。關閉時會先卸載 owned adapter files，再 unlink Plugin。只支援 Plugin-managed panes。Yuzora 只消費 HERDR snapshot／events 的 live identity 與 state；不解析 terminal、不推斷 Linux process、不投影 Pi native session id，也不保證 resume／control。HERDR `v0.8.2` Runtime 為 Stable，但 Windows Plugin surface 與本整合仍為 Experimental。既有 running protocol-19 server 必須由使用者明確停止並重啟；Yuzora 升級時不會 kill。詳見 [`herdr-plugins/yuzora-wsl-agents/README.md`](herdr-plugins/yuzora-wsl-agents/README.md)。
 
 ## 開發
 

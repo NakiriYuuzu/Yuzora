@@ -6,8 +6,7 @@ import {
     getView,
     getViewEntry,
     registerView,
-    unregisterView,
-    updateViewMetadata
+    unregisterView
 } from "./viewRegistry"
 
 function makeView(): EditorView {
@@ -44,35 +43,6 @@ describe("viewRegistry", () => {
         expect(getView("/w/c.ts")).toBeUndefined()
     })
 
-    it("tracks clicked-view metadata and only lets the owning view update it", () => {
-        const owner = makeView()
-        const stale = makeView()
-        const formatDocument = async () => true
-        registerView("/w/meta.ts", owner, {
-            groupIndex: 1,
-            readonly: true,
-            formatter: "checking"
-        })
-
-        updateViewMetadata("/w/meta.ts", stale, { formatter: "available", formatDocument })
-        expect(getViewEntry("/w/meta.ts")).toMatchObject({
-            view: owner,
-            groupIndex: 1,
-            readonly: true,
-            formatter: "checking"
-        })
-
-        updateViewMetadata("/w/meta.ts", owner, { formatter: "available", formatDocument })
-        expect(getViewEntry("/w/meta.ts")).toMatchObject({
-            view: owner,
-            groupIndex: 1,
-            readonly: true,
-            formatter: "available",
-            formatDocument
-        })
-        unregisterView("/w/meta.ts", owner)
-    })
-
     it("resolves Windows drive / verbatim / slash aliases to the same view", () => {
         const v = makeView()
         const raw = String.raw`\\?\C:\Users\Yuuzu\project\src\main.ts`
@@ -82,14 +52,13 @@ describe("viewRegistry", () => {
         expect(getView(String.raw`C:\Users\Yuuzu\project\src\main.ts`)).toBe(v)
         expect(getView("c:/Users/Yuuzu/project/src/main.ts")).toBe(v)
 
-        updateViewMetadata("C:/Users/Yuuzu/project/src/main.ts", v, { groupIndex: 0 })
-        expect(getViewEntry(raw)).toMatchObject({ view: v, groupIndex: 0 })
+        expect(getViewEntry(raw)).toMatchObject({ view: v })
 
         unregisterView("C:/Users/Yuuzu/project/src/main.ts", v)
         expect(getView(raw)).toBeUndefined()
     })
 
-    it("resolves Windows UNC and LSP forward-slash UNC aliases to the same view", () => {
+    it("resolves Windows UNC and forward-slash UNC aliases to the same view", () => {
         const v = makeView()
         const raw = String.raw`\\Server\Share\Project\src\main.ts`
         registerView(raw, v)
@@ -140,12 +109,12 @@ describe("viewRegistry", () => {
             expect(getView(uncPath)).toBe(windows)
             expect(getView(String.raw`\\server\share\file.ts`)).toBe(windows)
 
-            updateViewMetadata(uncPath, windows, { formatter: "available" })
-            updateViewMetadata(posixPath, posix, { readonly: true })
+            registerView(uncPath, windows, { groupIndex: 1, readonly: false })
+            registerView(posixPath, posix, { groupIndex: 2, readonly: true })
             expect(getViewEntry(uncPath)).toMatchObject({
                 view: windows,
                 groupIndex: 1,
-                formatter: "available"
+                readonly: false
             })
             expect(getViewEntry(posixPath)).toMatchObject({
                 view: posix,

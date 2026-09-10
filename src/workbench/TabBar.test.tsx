@@ -34,7 +34,6 @@ import { useHerdrStore } from "../state/herdrStore"
 import { useTextInputDialogStore } from "../state/textInputDialogStore"
 import { useSvgPreviewStore } from "../state/svgPreviewStore"
 import { useUiStore, uiInitialState } from "../state/uiStore"
-import { isMarkdownPreviewTab } from "../lib/markdownPreviewTab"
 import { saveDirtyTab } from "../editor/saveDocument"
 
 const initialHerdrState = useHerdrStore.getState()
@@ -207,60 +206,29 @@ function seedMdTab() {
     })
 }
 
-test(".md 分頁顯示 preview toggle、非 .md 不顯示", () => {
+test("Markdown opens in its own document tab without an extra preview button", () => {
     mockIPC((cmd) => (cmd === "open_file" ? { kind: "full", content: "", size: 0 } : undefined))
     seedMdTab()
     render(<TabBar groupIndex={0} />)
-    expect(screen.queryByLabelText("Toggle preview r.md")).toBeTruthy()
+    expect(screen.queryByLabelText("Toggle preview r.md")).toBeNull()
     expect(screen.queryByLabelText("Toggle preview a.ts")).toBeNull()
 })
 
-test("點 preview toggle 切換開啟狀態", () => {
-    mockIPC((cmd) => {
-        if (cmd === "log_event") return null
-        if (cmd === "open_file") return { kind: "full", content: "", size: 0 }
-        return undefined
-    })
-    seedMdTab()
+test("Alt+P pins a tab first without changing its active identity", () => {
+    seedTabs()
     render(<TabBar groupIndex={0} />)
-    expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/r.md")).toBe(false)
-    fireEvent.click(screen.getByLabelText("Toggle preview r.md"))
-    expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/r.md")).toBe(true)
-    expect(useWorkspaceStore.getState().groups[1].tabs.some(isMarkdownPreviewTab)).toBe(true)
-    fireEvent.click(screen.getByLabelText("Toggle preview r.md"))
-    expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/r.md")).toBe(false)
+    fireEvent.keyDown(screen.getByRole("button", { name: "b.ts" }), { key: "p", altKey: true })
+    const group = useWorkspaceStore.getState().groups[0]
+    expect(group.tabs[0]).toMatchObject({ path: "/w/b.ts", pinned: true, dirty: true })
+    expect(group.activePath).toBe("/w/a.ts")
+    fireEvent.keyDown(screen.getByRole("button", { name: "b.ts" }), { key: "p", altKey: true })
+    expect(useWorkspaceStore.getState().groups[0].tabs.find((tab) => tab.path === "/w/b.ts")?.pinned).toBe(false)
 })
 
 test("TabBar 只管理 toggle，不再 mount Markdown preview", () => {
     seedMdTab()
     useWorkspaceStore.getState().toggleMarkdownPreview("/w/r.md", 0)
     render(<TabBar groupIndex={0} />)
-    expect(screen.queryByRole("complementary", { name: "Markdown preview" })).toBeNull()
-})
-
-test("非 active md tab 按 preview toggle 會先設為 active", () => {
-    mockIPC((cmd) => {
-        if (cmd === "log_event") return null
-        return undefined
-    })
-    useWorkspaceStore.setState({
-        workspacePath: "/w",
-        activeGroupIndex: 0,
-        groups: [
-            {
-                activePath: "/w/a.md",
-                tabs: [
-                    { path: "/w/a.md", name: "a.md", dirty: false, externallyModified: false },
-                    { path: "/w/b.md", name: "b.md", dirty: false, externallyModified: false }
-                ]
-            }
-        ]
-    })
-    render(<TabBar groupIndex={0} />)
-    const bEye = screen.getByLabelText("Toggle preview b.md")
-    fireEvent.click(bEye)
-    expect(bEye.getAttribute("aria-pressed")).toBe("true")
-    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.md")
     expect(screen.queryByRole("complementary", { name: "Markdown preview" })).toBeNull()
 })
 
@@ -310,21 +278,11 @@ test("svg 分頁 toggle 預設 aria-pressed=true（反相語意），點擊後�
     expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(true)
 })
 
-test("md 與 svg 分頁並存：toggle 各自分流（title 與 aria-pressed 互不干擾）", () => {
-    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+test("SVG retains its preview toggle while Markdown uses document mode", () => {
     seedMixedPreviewTabs()
     render(<TabBar groupIndex={0} />)
-    const svgEye = screen.getByLabelText("Toggle preview logo.svg")
-    const mdEye = screen.getByLabelText("Toggle preview r.md")
-    expect(svgEye.getAttribute("title")).toBe("Toggle SVG preview")
-    expect(mdEye.getAttribute("title")).toBe("Toggle Markdown preview")
-    // 預設：svg 開（true）、md 關（false）。
-    expect(svgEye.getAttribute("aria-pressed")).toBe("true")
-    expect(mdEye.getAttribute("aria-pressed")).toBe("false")
-    fireEvent.click(mdEye)
-    expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/r.md")).toBe(true)
-    expect(useSvgPreviewStore.getState().isOpen("/w/logo.svg")).toBe(true)
-    expect(useSvgPreviewStore.getState().closedPaths["/w/logo.svg"]).toBeUndefined()
+    expect(screen.getByLabelText("Toggle preview logo.svg")).toHaveAttribute("aria-pressed", "true")
+    expect(screen.queryByLabelText("Toggle preview r.md")).toBeNull()
 })
 
 test("關閉 svg 分頁清除其明確關閉狀態（重開回到預設開啟）", async () => {
@@ -411,236 +369,47 @@ test("右鍵 tab 開啟 tab 選單並帶 path 與 groupIndex", () => {
     })
 })
 
-test("closing a Herdr tab waits for runtime tab.close before removing the local page", async () => {
-    let finishRuntimeClose!: () => void
-    const runtimeClose = new Promise<void>((resolve) => {
-        finishRuntimeClose = resolve
-    })
-    const closeRequests: Array<Record<string, unknown>> = []
+test.each([false, true])("the second terminal close button closes its exact runtime tab before removing the page (already gone: %s)", async (alreadyGone) => {
+    const commands: Array<{ cmd: string; args: unknown }> = []
+    let finishClose!: () => void
     mockIPC((cmd, args) => {
-        if (cmd === "herdr_tab_close") {
-            closeRequests.push(args as Record<string, unknown>)
-            return runtimeClose
-        }
-        if (cmd === "log_event") return null
-        return undefined
-    })
-    const pagePath = "yuzora://herdr/default/term-close"
-    useWorkspaceStore.setState({
-        workspacePath: "/w",
-        activeGroupIndex: 0,
-        groups: [{
-            activePath: pagePath,
-            tabs: [{
-                path: pagePath,
-                name: "Closable",
-                dirty: false,
-                externallyModified: false,
-                kind: "herdr-terminal",
-                herdrSessionId: "default",
-                terminalId: "term-close",
-                herdrTabId: "tab-close",
-                paneId: "pane-close"
-            }]
-        }]
-    })
-    useHerdrStore.setState({
-        sessions: [{
-            name: "default",
-            default: true,
-            running: true,
-            sessionDir: "/tmp/default",
-            socketPath: "/tmp/default.sock"
-        }],
-        selectedSessionName: "default"
-    })
-
-    render(<TabBar groupIndex={0} />)
-    fireEvent.click(screen.getByLabelText("Close Closable"))
-
-    await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
-    useAppDialogStore.getState().respond(true)
-    await waitFor(() => expect(closeRequests).toEqual([{ sessionName: "default", tabId: "tab-close" }]))
-    expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(1)
-
-    finishRuntimeClose()
-    await waitFor(() => expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(0))
-})
-
-test("closing a moved Herdr page removes it by path after runtime close succeeds", async () => {
-    let finishRuntimeClose!: () => void
-    mockIPC((cmd) => {
-        if (cmd === "herdr_tab_close") {
-            return new Promise<void>((resolve) => {
-                finishRuntimeClose = resolve
-            })
-        }
-        if (cmd === "log_event") return null
-        return undefined
-    })
-    const pagePath = "yuzora://herdr/default/term-close"
-    const tab = {
-        path: pagePath,
-        name: "Closable",
-        dirty: false,
-        externallyModified: false,
-        kind: "herdr-terminal" as const,
-        herdrSessionId: "default",
-        terminalId: "term-close",
-        herdrTabId: "tab-close",
-        paneId: "pane-close"
-    }
-    useWorkspaceStore.setState({
-        workspacePath: "/w",
-        activeGroupIndex: 1,
-        groups: [
-            { activePath: null, tabs: [] },
-            { activePath: pagePath, tabs: [tab] }
-        ]
-    })
-    useHerdrStore.setState({
-        sessions: [{
-            name: "default",
-            default: true,
-            running: true,
-            sessionDir: "/tmp/default",
-            socketPath: "/tmp/default.sock"
-        }],
-        selectedSessionName: "default"
-    })
-
-    render(<TabBar groupIndex={1} />)
-    fireEvent.click(screen.getByLabelText("Close Closable"))
-    await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
-    useAppDialogStore.getState().respond(true)
-    await waitFor(() => expect(finishRuntimeClose).toBeTypeOf("function"))
-
-    act(() => {
-        useWorkspaceStore.setState({
-            groups: [{ activePath: pagePath, tabs: [tab] }],
-            activeGroupIndex: 0
+        commands.push({ cmd, args })
+        if (cmd === "herdr_tab_close") return new Promise<void>((resolve, reject) => {
+            finishClose = () => alreadyGone ? reject("tab_not_found: tab tab-close not found") : resolve()
         })
+        return null
     })
-    finishRuntimeClose()
-
-    await waitFor(() => expect(
-        useWorkspaceStore.getState().groups.some((group) =>
-            group.tabs.some((candidate) => candidate.path === pagePath)
-        )
-    ).toBe(false))
+    const release = vi.fn().mockResolvedValue(undefined)
+    const refresh = vi.fn().mockResolvedValue(true)
+    const path = "yuzora://herdr/default/term-close"
+    const first = { path: "yuzora://herdr/default/term-first", name: "First", kind: "herdr-terminal" as const, herdrSessionId: "default", terminalId: "term-first", herdrTabId: "tab-first", dirty: false, externallyModified: false }
+    useWorkspaceStore.setState({ workspacePath: "/w", activeGroupIndex: 0, groups: [{ activePath: path, tabs: [first, { path, name: "Shell", kind: "herdr-terminal", herdrSessionId: "default", terminalId: "term-close", herdrTabId: "tab-close", dirty: false, externallyModified: false }] }] })
+    useHerdrStore.setState({ selectedSpaceId: null, selectedSessionName: "default", sessions: [{ name: "default", default: true, running: true, sessionDir: "/tmp/default", socketPath: "/tmp/default.sock" }], capabilities: { server: { running: true }, api: { tabClose: true, methods: ["tab.close"] } } as NonNullable<typeof initialHerdrState.capabilities>, releaseAttachmentsForPage: release, refreshSnapshot: refresh })
+    render(<TabBar groupIndex={0} />)
+    fireEvent.click(screen.getByLabelText("Close Shell"))
+    await waitFor(() => expect(commands).toContainEqual({ cmd: "herdr_tab_close", args: { sessionName: "default", tabId: "tab-close" } }))
+    expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(2)
+    expect(release).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByLabelText("Close Shell"))
+    expect(commands.filter((item) => item.cmd === "herdr_tab_close")).toHaveLength(1)
+    await act(async () => { finishClose() })
+    await waitFor(() => expect(useWorkspaceStore.getState().groups[0].tabs).toEqual([first]))
+    expect(release).toHaveBeenCalledWith(path)
+    expect(refresh).toHaveBeenCalledWith("default")
+    expect(useAppDialogStore.getState().pending).toBeNull()
 })
 
-test("closing a stale Herdr page treats the matching runtime tab_not_found as idempotent success", async () => {
-    const closeRequests: Array<Record<string, unknown>> = []
-    mockIPC((cmd, args) => {
-        if (cmd === "herdr_tab_close") {
-            closeRequests.push(args as Record<string, unknown>)
-            throw new Error("tab_not_found: tab tab-stale not found")
-        }
-        if (cmd === "log_event") return null
-        return undefined
-    })
-    const pagePath = "yuzora://herdr/default/term-stale"
-    useWorkspaceStore.setState({
-        workspacePath: "/w",
-        activeGroupIndex: 0,
-        groups: [{
-            activePath: pagePath,
-            tabs: [{
-                path: pagePath,
-                name: "Renamed stale page",
-                dirty: false,
-                externallyModified: false,
-                kind: "herdr-terminal",
-                herdrSessionId: "default",
-                terminalId: "term-stale",
-                herdrTabId: "tab-stale",
-                paneId: "pane-stale"
-            }]
-        }]
-    })
-    useHerdrStore.setState({
-        sessions: [{
-            name: "default",
-            default: true,
-            running: true,
-            sessionDir: "/tmp/default",
-            socketPath: "/tmp/default.sock"
-        }],
-        selectedSessionName: "default",
-        snapshot: {
-            herdrSessionId: "default",
-            protocol: 19,
-            version: "0.8.0",
-            spaces: [],
-            agents: [],
-            tabs: [],
-            terminals: [],
-            raw: {}
-        },
-        connectionState: "ready"
-    })
-
+test("a failed terminal close preserves its page and attachment", async () => {
+    mockIPC((cmd) => { if (cmd === "herdr_tab_close") throw new Error("host disconnected"); return null })
+    const release = vi.fn().mockResolvedValue(undefined)
+    const path = "yuzora://herdr/default/term-close"
+    useWorkspaceStore.setState({ activeGroupIndex: 0, groups: [{ activePath: path, tabs: [{ path, name: "Shell", kind: "herdr-terminal", herdrSessionId: "default", terminalId: "term-close", herdrTabId: "tab-close", dirty: false, externallyModified: false }] }] })
+    useHerdrStore.setState({ selectedSpaceId: null, selectedSessionName: "default", sessions: [{ name: "default", default: true, running: true, sessionDir: "/tmp/default", socketPath: "/tmp/default.sock" }], capabilities: { server: { running: true }, api: { tabClose: true, methods: ["tab.close"] } } as NonNullable<typeof initialHerdrState.capabilities>, releaseAttachmentsForPage: release })
     render(<TabBar groupIndex={0} />)
-    fireEvent.click(screen.getByLabelText("Close Renamed stale page"))
-
-    await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
-    useAppDialogStore.getState().respond(true)
-    await waitFor(() => expect(
-        useWorkspaceStore.getState().groups[0].tabs.some((tab) => tab.path === pagePath)
-    ).toBe(false))
-    expect(closeRequests).toEqual([{
-        sessionName: "default",
-        tabId: "tab-stale"
-    }])
-    expect(nativeMessage).not.toHaveBeenCalled()
-})
-
-test("failed Herdr tab.close keeps the local page open", async () => {
-    mockIPC((cmd) => {
-        if (cmd === "herdr_tab_close") {
-            throw new Error("tab_not_found: tab another-tab not found")
-        }
-        if (cmd === "log_event") return null
-        return undefined
-    })
-    const pagePath = "yuzora://herdr/default/term-close"
-    useWorkspaceStore.setState({
-        workspacePath: "/w",
-        activeGroupIndex: 0,
-        groups: [{
-            activePath: pagePath,
-            tabs: [{
-                path: pagePath,
-                name: "Closable",
-                dirty: false,
-                externallyModified: false,
-                kind: "herdr-terminal",
-                herdrSessionId: "default",
-                terminalId: "term-close",
-                herdrTabId: "tab-close",
-                paneId: "pane-close"
-            }]
-        }]
-    })
-    useHerdrStore.setState({
-        sessions: [{
-            name: "default",
-            default: true,
-            running: true,
-            sessionDir: "/tmp/default",
-            socketPath: "/tmp/default.sock"
-        }],
-        selectedSessionName: "default"
-    })
-
-    render(<TabBar groupIndex={0} />)
-    fireEvent.click(screen.getByLabelText("Close Closable"))
-
-    await waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
-    useAppDialogStore.getState().respond(true)
-    await waitFor(() => expect(useAppDialogStore.getState().pending).toMatchObject({ type: "message" }))
-    expect(useWorkspaceStore.getState().groups[0].tabs.some((tab) => tab.path === pagePath)).toBe(true)
+    fireEvent.click(screen.getByLabelText("Close Shell"))
+    await waitFor(() => expect(useAppDialogStore.getState().pending).not.toBeNull())
+    expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(1)
+    expect(release).not.toHaveBeenCalled()
 })
 
 test("Herdr terminal tab focuses its runtime tab and opens the typed destructive menu", () => {
@@ -1240,7 +1009,7 @@ test("Alt+Arrow reorders ordinary projected slots without activation or hidden-S
     render(<TabBar groupIndex={0} />)
     const first = screen.getByRole("button", { name: "a.ts" })
     const second = screen.getByRole("button", { name: "b.ts" })
-    expect(second).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight")
+    expect(second).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight Alt+P")
     expect(fireEvent.keyDown(first, { key: "ArrowLeft", altKey: true })).toBe(true)
     expect(fireEvent.keyDown(second, { key: "ArrowLeft", altKey: true })).toBe(false)
 
@@ -1537,7 +1306,7 @@ test("Alt+Arrow uses schema-gated tab.move for Herdr tabs", async () => {
 
     render(<TabBar groupIndex={0} />)
     const source = screen.getByRole("button", { name: "Keyboard One" })
-    expect(source).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight")
+    expect(source).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight Alt+P")
     expect(source).toHaveAttribute("draggable", "false")
     expect(fireEvent.keyDown(source, { key: "ArrowRight", altKey: true })).toBe(true)
     expect(herdrTabMove).not.toHaveBeenCalled()

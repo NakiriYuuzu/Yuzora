@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog"
+import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
 
 import { clearAll } from "@/editor/documentRegistry"
 import { logUserAction } from "@/features/logs/userAction"
@@ -11,6 +11,8 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 import { isImagePath } from "@/workbench/ImageView"
 
 export interface OpenWorkspaceOptions {
+    /** Drop a delayed restore before it replaces a newer user workspace. */
+    shouldOpen?: () => boolean
     // #60 T4c：預設從 per-workspace session map 立即還原 tabs。冷啟還原
     // （SessionRestoreBridge）自己帶逐檔存在性驗證再開分頁，傳 false 關掉
     // 這裡的還原，避免失效檔案的分頁被搶先開出來。
@@ -35,6 +37,7 @@ async function openWorkspaceAtPathWithOutcome(
     path: string,
     options?: OpenWorkspaceOptions
 ): Promise<boolean> {
+    if (options?.shouldOpen && !options.shouldOpen()) return false
     // Guard unsaved work before discarding the current workspace's buffers.
     // Restore-on-launch runs with no workspace and no tabs open (SessionRestore
     // only fires when workspacePath is null), so there are never dirty tabs then
@@ -49,6 +52,7 @@ async function openWorkspaceAtPathWithOutcome(
     }
 
     const opened = await openWorkspace(path)
+    if (options?.shouldOpen && !options.shouldOpen()) return false
     const canonical = opened.canonicalPath
     // #60 T4c：切回曾開過的 workspace 要還原它的 tabs。entry 必須在
     // setWorkspace 之前讀出——SessionRestoreBridge 的存檔訂閱會對 store 轉場
@@ -78,12 +82,13 @@ async function openWorkspaceAtPathWithOutcome(
         // 不在這裡 await（unsavedGuard 已保證切換時沒有 dirty buffer）。
         for (const tabPath of sessionEntry.tabs) {
             workspace.openTab(tabPath, 0)
+            if (sessionEntry.pinnedPaths?.includes(tabPath)) workspace.toggleTabPinned(0, tabPath)
         }
         if (sessionEntry.activePath && sessionEntry.tabs.includes(sessionEntry.activePath)) {
             workspace.setActiveTab(0, sessionEntry.activePath)
         }
     }
-    void startWatch(canonical)
+    void startWatch(canonical).catch((error) => console.warn("workspace watcher failed", error))
     void logUserAction("open_workspace", `open workspace ${canonical}`)
     useRecentWorkspacesStore.getState().record(canonical)
     return true
@@ -103,7 +108,12 @@ export async function openWorkspaceAtPath(
  * surrounding UI (e.g. a popover).
  */
 export async function pickWorkspace(): Promise<boolean> {
-    const selected = await open({ directory: true, multiple: false })
+    const selected = await chooseWorkspaceFolder()
     if (typeof selected !== "string") return false
     return openWorkspaceAtPathWithOutcome(selected)
+}
+
+export async function pickRemoteWorkspace(): Promise<boolean> {
+    const selected = await chooseWorkspaceFolder({ initialLocation: "remote" })
+    return typeof selected === "string" && openWorkspaceAtPathWithOutcome(selected)
 }

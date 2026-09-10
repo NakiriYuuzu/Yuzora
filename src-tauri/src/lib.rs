@@ -6,7 +6,7 @@ pub mod db_profiles;
 pub mod db_query_worker;
 pub mod db_result_session;
 pub mod db_service;
-pub mod dev_server_detect;
+mod db_transport;
 pub mod env_path;
 pub mod file_content;
 pub mod fs_service;
@@ -15,31 +15,58 @@ pub mod git_oid;
 pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
-mod herdr_limits;
 pub mod herdr_service;
-mod herdr_transport;
+pub mod host_bootstrap;
+mod host_git;
+mod host_herdr;
+pub mod host_service;
+mod host_sqlite;
+pub mod host_streams;
+pub mod host_tunnels;
+pub mod host_wsl;
 pub mod logging;
-pub mod lsp_adapters;
-pub mod lsp_config;
-pub mod lsp_download;
-pub mod lsp_service;
 pub mod path_capability;
 pub mod perf_service;
-pub mod preview_resource_policy;
-pub mod preview_server;
 pub mod preview_webview;
 pub mod process_kill;
-pub mod process_service;
-pub mod pty_service;
 pub mod run_context;
 pub mod run_summary;
 pub mod search_service;
+pub mod sftp_edit;
+mod sftp_transfer;
+mod sftp_tree;
 pub mod ssh_service;
 pub mod watcher;
-pub mod workspace_path_index;
 pub mod workspace_trust;
 
 const DATABASE_SHUTDOWN_THREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_resource_dir_from_executable(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    executable
+        .parent()?
+        .parent()?
+        .join("Resources")
+        .canonicalize()
+        .ok()
+}
+
+fn packaged_resource_dir_from_current_exe() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        macos_resource_dir_from_executable(&executable)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        executable.parent()?.canonicalize().ok()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = executable;
+        None
+    }
+}
 
 #[derive(Debug)]
 enum DatabaseShutdownThreadError {
@@ -117,6 +144,8 @@ fn shutdown_database_runtime_on_dedicated_thread(
 pub fn run() {
     // 先套用持久化的 log level 門檻，確保啟動最早期的寫入（含 env_path）也受門檻約束
     logging::apply_persisted_log_level();
+    yuzora_host::db_logging::set_sink(logging::write_global);
+    git_service::configure_logging();
     // GUI（Finder/Dock）啟動的 .app 只拿到 launchd 預設 PATH，撈不到 homebrew/nvm/
     // bun。必須在任何 tauri::Builder／執行緒 spawn 之前跑，set_var("PATH") 才安全。
     env_path::fix_gui_path();
@@ -151,13 +180,9 @@ pub fn run() {
                 .build(),
         )
         .manage(watcher::WatcherState::default())
-        .manage(git_service::GitServiceState(std::sync::Arc::new(
-            std::sync::Mutex::new(None),
-        )))
+        .manage(host_service::HostState::default())
+        .manage(git_service::GitServiceState::default())
         .manage(workspace_trust::WorkspaceTrustState::production())
-        .manage(git_watch::GitWatchState(std::sync::Arc::new(
-            std::sync::Mutex::new(None),
-        )))
         .manage(search_service::SearchState(std::sync::Arc::new(
             std::sync::atomic::AtomicU64::new(0),
         )))
@@ -166,12 +191,12 @@ pub fn run() {
         .manage(perf_service::PerfState(std::sync::Mutex::new(
             sysinfo::System::new(),
         )))
-        .manage(preview_server::PreviewServerState::new())
         .manage(preview_webview::PreviewWebviewState(std::sync::Mutex::new(
             None,
         )))
         .manage(path_capability::WorkspacePathState::new())
         .manage(path_capability::DownloadDestinationState::new())
+        .manage(sftp_tree::TreeState::default())
         .setup(|app| {
             use tauri::{Emitter, Manager};
             #[cfg(desktop)]
@@ -185,10 +210,15 @@ pub fn run() {
                 .state::<db_result_session::ResultSessionState>()
                 .inner()
                 .clone();
+            app.manage(ssh_service::SshState(std::sync::Arc::new(
+                ssh_service::SshManager::new(app.handle().clone()),
+            )));
             app.manage(db_profiles::DatabaseProfileState::production(
                 profile_repository_path,
                 database_state,
                 result_sessions,
+                app.state::<host_service::HostState>().0.clone(),
+                app.state::<ssh_service::SshState>().0.clone(),
             ));
             // Windows stub / bind 失敗回 Err → 降級：manage AskpassState(None)，四個 remote
             // command 經 begin_operation 取空 env（git 仍可用系統 credential helper）。務必 manage，
@@ -204,23 +234,18 @@ pub fn run() {
                     app.manage(askpass::AskpassState(None));
                 }
             }
-            app.manage(lsp_service::LspState(std::sync::Arc::new(
-                lsp_service::LspManager::new(app.handle().clone()),
-            )));
-            app.manage(pty_service::PtyState(std::sync::Arc::new(
-                pty_service::PtyManager::new(app.handle().clone()),
-            )));
-            app.manage(process_service::ProcessState(std::sync::Arc::new(
-                process_service::ProcessManager::new(app.handle().clone()),
-            )));
-            app.manage(ssh_service::SshState(std::sync::Arc::new(
-                ssh_service::SshManager::new(app.handle().clone()),
-            )));
             app.manage(path_capability::SelectedPathState::new());
             let herdr_manager = std::sync::Arc::new(herdr_service::HerdrManager::new());
             let herdr_config_dir = app.path().app_data_dir()?.join("herdr");
-            let herdr_resource_dir = app.path().resource_dir().ok();
+            let herdr_resource_dir = app
+                .path()
+                .resource_dir()
+                .ok()
+                .or_else(packaged_resource_dir_from_current_exe);
             herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir);
+            if let Err(error) = herdr_manager.ensure_server_running_on_startup() {
+                eprintln!("herdr server startup failed: {error}");
+            }
             app.manage(herdr_service::HerdrState(herdr_manager));
             // The main window starts hidden (tauri.conf `visible: false`) so the
             // native chrome never flashes the OS theme before the persisted
@@ -243,8 +268,27 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            host_service::host_connect,
+            host_service::host_request,
+            host_service::host_disconnect,
+            host_streams::host_stream_open,
+            host_streams::host_stream_command,
+            host_streams::host_stream_close,
+            host_tunnels::host_tunnel_open,
+            host_tunnels::host_tunnel_close,
+            host_bootstrap::host_probe,
+            host_bootstrap::host_prepare,
+            host_bootstrap::host_runtime_check,
+            host_wsl::host_wsl_distributions,
+            host_wsl::host_wsl_path,
+            sftp_edit::sftp_open_file,
+            sftp_edit::sftp_create_file,
+            sftp_edit::sftp_read_file_base64,
+            sftp_edit::sftp_save_file,
+            sftp_edit::sftp_file_revision,
             asset_scope::allow_workspace_asset_scope,
             fs_service::open_workspace,
+            fs_service::workspace_canonical_path,
             fs_service::list_dir,
             fs_service::open_file,
             fs_service::is_openable_file,
@@ -261,8 +305,10 @@ pub fn run() {
             logging::log_sanitize_lines,
             logging::get_log_level,
             logging::set_log_level,
+            logging::get_log_enabled,
+            logging::set_log_enabled,
             watcher::start_watch,
-            workspace_path_index::workspace_path_index,
+            watcher::stop_watch,
             search_service::search_workspace,
             db_service::db_list_tables,
             db_service::db_table_columns,
@@ -282,10 +328,8 @@ pub fn run() {
             db_profiles::db_test_connection,
             db_profiles::db_postgres_transport_challenge,
             perf_service::perf_snapshot,
-            preview_server::preview_create,
-            preview_server::preview_revoke,
-            preview_server::preview_stop_all,
             preview_webview::preview_open_url,
+            preview_webview::preview_navigation_state,
             preview_webview::preview_set_bounds,
             preview_webview::preview_set_visible,
             preview_webview::preview_close,
@@ -294,11 +338,9 @@ pub fn run() {
             preview_webview::preview_reload,
             workspace_trust::workspace_trust_status,
             workspace_trust::workspace_trust_list,
-            workspace_trust::workspace_trust_challenge,
-            workspace_trust::workspace_trust_execution_challenge,
             workspace_trust::workspace_trust_grant,
             workspace_trust::workspace_trust_revoke,
-            git_service::git_detect,
+            git_service::git_close_workspace,
             git_service::git_bootstrap,
             git_service::git_status_cmd,
             git_service::git_stage,
@@ -323,43 +365,21 @@ pub fn run() {
             git_log::git_log_authors,
             git_log::git_file_at_rev,
             askpass::askpass_respond,
-            lsp_service::lsp_start,
-            lsp_service::lsp_send,
-            lsp_service::lsp_stop_workspace,
-            lsp_service::lsp_status,
-            lsp_service::lsp_detect_server,
-            lsp_service::lsp_config_get,
-            lsp_service::lsp_config_set_server,
-            lsp_service::lsp_config_stale,
-            lsp_service::lsp_config_clear_stale,
-            lsp_service::lsp_set_trace,
-            lsp_download::lsp_install_server,
-            pty_service::pty_list_profiles,
-            pty_service::pty_open,
-            pty_service::pty_write,
-            pty_service::pty_resize,
-            pty_service::pty_activity,
-            pty_service::pty_output_metrics,
-            pty_service::pty_close,
-            pty_service::pty_close_workspace,
-            dev_server_detect::dev_server_detect,
-            process_service::dev_server_start,
-            process_service::dev_server_stop,
-            process_service::dev_server_stop_workspace,
             ssh_service::ssh_connect,
             ssh_service::ssh_host_key_respond,
-            ssh_service::ssh_open_shell,
-            ssh_service::ssh_write,
-            ssh_service::ssh_resize,
             ssh_service::ssh_disconnect,
             ssh_service::sftp_list_dir,
             ssh_service::sftp_mkdir,
             ssh_service::sftp_rename,
             ssh_service::sftp_remove,
             ssh_service::sftp_upload,
+            ssh_service::sftp_transfer_prepare,
+            ssh_service::sftp_transfer_cancel,
             ssh_service::sftp_download,
             path_capability::sftp_pick_selected_path,
             path_capability::sftp_pick_download_destination,
+            sftp_tree::sftp_pick_tree,
+            sftp_tree::sftp_transfer_tree,
             herdr_service::herdr_sessions,
             herdr_service::herdr_capabilities,
             herdr_service::herdr_snapshot,
@@ -369,8 +389,6 @@ pub fn run() {
             herdr_service::herdr_terminal_scroll,
             herdr_service::herdr_terminal_release,
             herdr_service::herdr_terminal_create,
-            herdr_service::herdr_agent_catalog,
-            herdr_service::herdr_agent_create,
             herdr_service::herdr_workspace_focus,
             herdr_service::herdr_workspace_create,
             herdr_service::herdr_workspace_rename,
@@ -391,6 +409,7 @@ pub fn run() {
             herdr_service::herdr_layout_set_split_ratio,
             herdr_service::herdr_binary_source_get,
             herdr_service::herdr_binary_source_set,
+            herdr_service::herdr_binary_source_check,
             herdr_service::herdr_agent_get,
             herdr_service::herdr_agent_read,
             herdr_service::herdr_events_subscribe,
@@ -411,12 +430,11 @@ pub fn run() {
                 if !graceful_exit_recorded.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     logging::record_graceful_exit();
                 }
-                app.state::<pty_service::PtyState>().0.kill_all();
-                app.state::<process_service::ProcessState>().0.kill_all();
-                app.state::<lsp_service::LspState>().0.stop_all();
                 git_service::kill_all_processes();
+                app.state::<host_service::HostState>().0.disconnect_all();
                 app.state::<ssh_service::SshState>().0.kill_all();
                 app.state::<path_capability::SelectedPathState>().clear();
+                app.state::<sftp_tree::TreeState>().clear();
                 app.state::<path_capability::WorkspacePathState>().clear();
                 app.state::<path_capability::DownloadDestinationState>()
                     .clear();
@@ -425,7 +443,6 @@ pub fn run() {
                 app.state::<herdr_service::HerdrState>()
                     .0
                     .release_all_connectors();
-                app.state::<preview_server::PreviewServerState>().stop_all();
                 if !database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     let database_profiles = app
                         .state::<db_profiles::DatabaseProfileState>()
@@ -455,19 +472,54 @@ pub fn run() {
 #[cfg(test)]
 mod command_inventory_tests {
     #[test]
+    fn macos_packaged_resource_fallback_uses_contents_resources() {
+        let bundle = tempfile::tempdir().unwrap();
+        let contents = bundle.path().join("Yuzora.app/Contents");
+        let executable = contents.join("MacOS/yuzora");
+        let resources = contents.join("Resources");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(&executable, []).unwrap();
+
+        assert_eq!(
+            super::macos_resource_dir_from_executable(&executable),
+            Some(resources.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn app_startup_launches_resolved_herdr_server() {
+        let source = include_str!("lib.rs");
+        let run_source = source.split("#[cfg(test)]").next().unwrap();
+        let resource_fallback = run_source
+            .find(".or_else(packaged_resource_dir_from_current_exe)")
+            .expect("packaged startup must recover the managed Herdr resource directory");
+        let configure = run_source
+            .find("herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir)")
+            .expect("startup must configure Herdr paths");
+        let launch = run_source
+            .find("herdr_manager.ensure_server_running_on_startup()")
+            .expect("startup must launch the resolved Herdr server");
+        let manage = run_source
+            .find("app.manage(herdr_service::HerdrState(herdr_manager))")
+            .expect("startup must register Herdr state");
+
+        assert!(
+            resource_fallback < configure && configure < launch && launch < manage,
+            "Herdr must resolve its configured or managed binary before startup and register state afterward"
+        );
+    }
+
+    #[test]
     fn app_exit_inventory_runs_bounded_database_shutdown_once() {
         let source = include_str!("lib.rs");
         for required in [
             "tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit",
-            "app.state::<pty_service::PtyState>().0.kill_all()",
-            "app.state::<process_service::ProcessState>().0.kill_all()",
-            "app.state::<lsp_service::LspState>().0.stop_all()",
             "git_service::kill_all_processes()",
             "app.state::<ssh_service::SshState>().0.kill_all()",
             "app.state::<path_capability::SelectedPathState>().clear()",
             "app.state::<herdr_service::HerdrState>()",
             "release_all_connectors()",
-            "app.state::<preview_server::PreviewServerState>().stop_all()",
             "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
             "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
             "recv_timeout(DATABASE_SHUTDOWN_THREAD_TIMEOUT)",
@@ -485,7 +537,7 @@ mod command_inventory_tests {
         }
         let run_source = source.split("#[cfg(test)]").next().unwrap();
         let child_cleanup = run_source
-            .find("app.state::<pty_service::PtyState>().0.kill_all()")
+            .find("git_service::kill_all_processes()")
             .unwrap();
         let database_shutdown = run_source
             .rfind("shutdown_database_runtime_on_dedicated_thread(database_profiles)")
@@ -538,8 +590,6 @@ mod command_inventory_tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
-            "herdr_service::herdr_agent_catalog",
-            "herdr_service::herdr_agent_create",
             "herdr_service::herdr_agent_get",
             "herdr_service::herdr_agent_read",
             "herdr_service::herdr_events_subscribe",

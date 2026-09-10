@@ -1,3 +1,5 @@
+import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
+import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -326,6 +328,64 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("does not steal focus when a naming dialog is pending before its portal mounts", async () => {
+    void useTextInputDialogStore.getState().request({ title: "Name", label: "Name", confirmLabel: "Save" })
+    try {
+      render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+      await waitFor(() => expect(xtermMock.state.terminals.length).toBeGreaterThan(0))
+      expect(xtermMock.state.terminals[0].focus).not.toHaveBeenCalled()
+    } finally {
+      useTextInputDialogStore.getState().respond(null)
+    }
+  })
+
+  it("blocks focus and terminal input while any mounted modal is open", async () => {
+    const view = render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active={false} visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalled())
+    const modal = document.createElement("div")
+    modal.setAttribute("aria-modal", "true")
+    document.body.append(modal)
+    try {
+      const term = xtermMock.state.terminals[0]
+      term.focus.mockClear()
+      view.rerender(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+      expect(term.focus).not.toHaveBeenCalled()
+      const calls = vi.mocked(installTerminalImeHandling).mock.calls
+      const sendInput = calls[calls.length - 1][1]
+      herdrIpcMock.herdrTerminalInput.mockClear()
+      sendInput("qa_focus_probe")
+      expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
+      modal.remove()
+      sendInput("after_modal")
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalled())
+    } finally {
+      modal.remove()
+    }
+  })
+
+  it.each(["ssh-linux", "wsl-ubuntu"])("opens the scoped %s Session even when local default is stopped", async (hostId) => {
+    const scope = JSON.stringify([hostId, "default"])
+    seedSessions([{ name: "default", default: true, running: false }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      sessions: [local, { ...local, hostId, runtimeId: scope, running: true }]
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="same-terminal" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledWith(expect.objectContaining({ sessionName: scope, target: "same-terminal" })))
+    expect(screen.queryByTestId("herdr-terminal-stopped")).toBeNull()
+  })
+
+  it("never borrows a running local default for a stopped remote Session", async () => {
+    const scope = JSON.stringify(["ssh-stopped", "default"])
+    seedSessions([{ name: "default", default: true, running: true }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({ selectedSessionName: scope, sessions: [local, { ...local, hostId: "ssh-stopped", runtimeId: scope, running: false }] })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="same-terminal" active visible />)
+    await waitFor(() => expect(screen.getByTestId("herdr-terminal-stopped")).toBeInTheDocument())
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
   })
 
   it("does not open a control connector before exact runtime capabilities are known", async () => {
@@ -814,6 +874,23 @@ describe("HerdrTerminalPage stopped session gate", () => {
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
   })
 
+  it("keeps the fallback connector mounted while a topology refresh awaits layout", async () => {
+    const { herdrLayoutExport } = await import("@/lib/herdrIpc")
+    seedSessions([{ name: "work", default: false, running: true }])
+    render(<HerdrTerminalPage herdrSessionId="work" terminalId="term-1" active visible />)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    const term = xtermMock.state.terminals[0]
+    let rejectLayout!: (error: Error) => void
+    vi.mocked(herdrLayoutExport).mockImplementationOnce(() => new Promise((_, reject) => { rejectLayout = reject }))
+    await act(async () => { useHerdrStore.getState().bumpTopologyRevision() })
+    expect(screen.queryByTestId("herdr-layout-loading")).toBeNull()
+    expect(term.dispose).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalRelease).not.toHaveBeenCalled()
+    await act(async () => { rejectLayout(new Error("layout still unavailable")) })
+    expect(xtermMock.state.terminals).toEqual([term])
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+  })
+
   it("preserves an authoritative BSP layout while session inventory is temporarily unknown", async () => {
     const { herdrLayoutExport } = await import("@/lib/herdrIpc")
     vi.mocked(herdrLayoutExport).mockResolvedValueOnce({
@@ -1174,6 +1251,7 @@ describe("HerdrTerminalPage target opening", () => {
     expect(useContextMenuStore.getState().request?.kind).toBe("herdrPane")
     useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
 
+    await waitFor(() => expect(xtermMock.state.terminals).toHaveLength(1))
     const term = xtermMock.state.terminals[0]
     term.bufferLines = [{ text: "https://example.com/docs" }]
     let links: Array<{

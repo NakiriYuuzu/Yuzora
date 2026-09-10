@@ -1,7 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("@/lib/herdrProvider", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/herdrProvider")>(),
+  canonicalRuntimeWorkspace: vi.fn(async (_scope: string, path: string) => path)
+}))
+vi.mock("@/state/folderPickerStore", () => ({ chooseWorkspaceFolder: vi.fn() }))
 
 vi.mock("@/lib/herdrIpc", () => ({
-  herdrAgentCreate: vi.fn(),
   herdrSessions: vi.fn(),
   herdrCapabilities: vi.fn(),
   herdrSnapshot: vi.fn(),
@@ -22,7 +27,6 @@ vi.mock("@/lib/unsavedGuard", () => ({
 }))
 
 import {
-  herdrAgentCreate,
   herdrCapabilities,
   herdrSessions,
   herdrSnapshot,
@@ -38,6 +42,7 @@ import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { herdrInitialState, useHerdrStore } from "./herdrStore"
 import { useWorkspaceStore } from "./workspaceStore"
 import { useUiStore } from "./uiStore"
+import { chooseWorkspaceFolder } from "./folderPickerStore"
 
 const caps = {
   binaryPath: "/bin/herdr",
@@ -71,8 +76,6 @@ const caps = {
         paneClose: true,
         layoutExport: true,
         layoutSetSplitRatio: true,
-        agentManifests: true,
-        agentStart: true,
         agentGet: true,
         agentRead: true,
         eventsSubscribe: true,
@@ -273,7 +276,14 @@ function snapshotWithWorkspace(workspaceId: string, label: string, path: string)
 }
 
 describe("herdrStore", () => {
+  afterEach(() => vi.unstubAllGlobals())
   beforeEach(() => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key)
+    })
     useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
     useWorkspaceStore.setState({
       workspacePath: "/Users/me/yuzora",
@@ -447,42 +457,6 @@ describe("herdrStore", () => {
     })
   })
 
-  it("createAgentInSelectedSpace passes only the allowlisted bypass opt-in and refreshes", async () => {
-    await useHerdrStore.getState().refreshSessions()
-    await useHerdrStore.getState().bootstrap("default")
-    vi.mocked(herdrAgentCreate).mockResolvedValue({
-      name: "codex",
-      kind: "codex",
-      terminalId: "term-agent",
-      paneId: "pane-agent",
-      tabId: "tab-agent",
-      workspaceId: "ws-1",
-      title: "codex"
-    })
-
-    const created = await useHerdrStore
-      .getState()
-      .createAgentInSelectedSpace("codex", true)
-
-    expect(created).toEqual({
-      herdrSessionId: "default",
-      workspaceId: "ws-1",
-      terminalId: "term-agent",
-      paneId: "pane-agent",
-      tabId: "tab-agent",
-      title: "codex",
-      name: "codex",
-      kind: "codex"
-    })
-    expect(herdrAgentCreate).toHaveBeenCalledWith({
-      sessionName: "default",
-      workspaceId: "ws-1",
-      kind: "codex",
-      bypassPermissions: true
-    })
-    expect(useHerdrStore.getState().canCreateAgent()).toBe(true)
-  })
-
   it("keeps the folder basename when Herdr returns no created title", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
@@ -561,7 +535,7 @@ describe("herdrStore", () => {
     expect(new Set(paths).size).toBe(paths.length)
   })
 
-  it("switches Yuzora workspace when protocol-19 exposes Space cwd only on agents", async () => {
+  it("opens an external Agent terminal without asking for a file workspace", async () => {
     const snapshotWithoutWorkspacePaths = structuredClone(rawSnapshot)
     for (const workspace of snapshotWithoutWorkspacePaths.snapshot.workspaces) {
       Object.assign(workspace, { worktree: undefined })
@@ -583,15 +557,39 @@ describe("herdrStore", () => {
       .agents()
       .find((item) => item.workspaceId === "ws-2")!
 
-    expect(useHerdrStore.getState().spaces().find((space) => space.id === "ws-2")?.path).toBe(
-      "/Users/me/YuStock"
-    )
+    expect(useHerdrStore.getState().spaces().find((space) => space.id === "ws-2")?.path).toBeNull()
+    vi.mocked(chooseWorkspaceFolder).mockClear().mockResolvedValue(null)
     const result = await useHerdrStore.getState().activateAgent(yuStock)
 
     expect(result).toEqual({ ok: true })
-    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/me/YuStock", {
-      skipUnsavedGuard: true
-    })
+    expect(chooseWorkspaceFolder).not.toHaveBeenCalled()
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/Users/me/yuzora")
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("yuzora://herdr/default/term-2")
+  })
+
+  it.each([null, "/Users/me/yuzora"])("opens all external Space terminals without changing file workspace %s", async (workspacePath) => {
+    const external = structuredClone(rawSnapshot)
+    for (const workspace of external.snapshot.workspaces) Object.assign(workspace, { worktree: undefined })
+    vi.mocked(herdrSnapshot).mockResolvedValue(external)
+    vi.mocked(chooseWorkspaceFolder).mockClear().mockResolvedValue(null)
+    useWorkspaceStore.setState({ workspacePath })
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const runtime = useHerdrStore.getState().runtimesBySession.default!
+    const snapshot = runtime.snapshot!
+    const tab = snapshot.tabs.find((item) => item.workspaceId === "ws-2")!
+    useHerdrStore.setState({ runtimesBySession: { default: { ...runtime, snapshot: {
+      ...snapshot, tabs: [...snapshot.tabs, { ...tab, id: "tab-3", terminalId: "term-3", active: false, focused: false }]
+    } } } })
+    const result = await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2", path: null })
+    expect(result).toEqual({ ok: true })
+    expect(chooseWorkspaceFolder).not.toHaveBeenCalled()
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(useWorkspaceStore.getState().workspacePath).toBe(workspacePath)
+    expect(useWorkspaceStore.getState().groups[0].tabs.map((item) => item.terminalId)).toEqual(["term-2", "term-3"])
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("yuzora://herdr/default/term-2")
+    expect(useUiStore.getState().mode).toBe("ade")
   })
 
   it("Space activation shows its active terminal before the bridge poll", async () => {

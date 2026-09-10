@@ -1,14 +1,5 @@
-/**
- * Transport seam shared by local PTY sessions and Herdr terminal pages.
- * xterm / FitAddon / IME / theme stay in the session component; only IO lives here.
- */
+/** Transport seam for Herdr terminal pages. */
 
-import {
-  ptyClose,
-  ptyOpen,
-  ptyResize,
-  ptyWrite
-} from "@/lib/ipc"
 import {
   herdrTerminalInput,
   herdrTerminalOpen,
@@ -21,7 +12,6 @@ import type {
   HerdrTerminalMode,
   HerdrTerminalRole
 } from "@/lib/herdrTypes"
-import type { PtyEvent, TerminalCwdStrategy } from "@/lib/types"
 
 export type TerminalTransportOutputEvent = {
   type: "output"
@@ -89,66 +79,6 @@ export interface TerminalTransport {
   isDisposed?(): boolean
   /** Reopen the same target in control mode with takeover after explicit user action. */
   takeControl?(): Promise<void>
-}
-
-export interface LocalPtyTransportOptions {
-  workspace: string
-  sessionId: string
-  shell?: string | null
-  shellArgs?: string[]
-  cwdStrategy?: TerminalCwdStrategy
-}
-
-export function createLocalPtyTransport(options: LocalPtyTransportOptions): TerminalTransport {
-  const {
-    workspace,
-    sessionId,
-    shell = null,
-    shellArgs,
-    cwdStrategy = "native"
-  } = options
-  let opened = false
-
-  return {
-    async open({ cols, rows, onEvent }) {
-      const handle = (event: PtyEvent) => {
-        if (event.type === "output") {
-          onEvent({
-            type: "output",
-            data: event.data,
-            seq: event.seq,
-            droppedBytes: event.droppedBytes,
-            truncated: event.truncated
-          })
-          return
-        }
-        onEvent({ type: "exit", code: event.code })
-      }
-      await ptyOpen(
-        workspace,
-        sessionId,
-        shell,
-        shellArgs,
-        cwdStrategy,
-        cols,
-        rows,
-        handle
-      )
-      opened = true
-    },
-    write(data) {
-      return ptyWrite(sessionId, data)
-    },
-    resize(cols, rows) {
-      return ptyResize(sessionId, cols, rows)
-    },
-    async release() {
-      if (!opened) return
-      opened = false
-      await ptyClose(sessionId)
-    },
-    canWrite: () => true
-  }
 }
 
 function decodeFrameBytes(bytesBase64: string): string {
@@ -219,6 +149,17 @@ export function createHerdrTerminalTransport(
   let openGeneration = 0
   /** Permanent disposal — survives release and blocks all reopen paths. */
   let disposed = false
+  type InputQueue = { text: string; bytes: number; drain: Promise<void> | null }
+  let inputQueue: InputQueue | null = null
+  const discardInput = () => {
+    if (inputQueue) { inputQueue.text = ""; inputQueue.bytes = 0 }
+    inputQueue = null
+  }
+  const failInput = (queue: InputQueue, message: string) => {
+    if (inputQueue !== queue) return
+    discardInput()
+    eventHandler?.({ type: "error", message })
+  }
 
   const target = () => terminalId
 
@@ -261,6 +202,7 @@ export function createHerdrTerminalTransport(
     onEvent: (event: TerminalTransportEvent) => void
   ) => {
     if (disposed) return
+    discardInput()
     const generation = ++openGeneration
     lastSeq = null
     lastCols = cols
@@ -276,6 +218,7 @@ export function createHerdrTerminalTransport(
       onEvent: (event) => {
         if (disposed || generation !== openGeneration) return
         if (event.type === "closed") {
+          discardInput()
           sessionId = null
           lastSeq = null
           openGeneration += 1
@@ -289,6 +232,7 @@ export function createHerdrTerminalTransport(
       return
     }
     sessionId = result.sessionId
+    inputQueue = { text: "", bytes: 0, drain: null }
     mode = result.mode
     role = result.role
     takeover = result.takeover
@@ -310,8 +254,40 @@ export function createHerdrTerminalTransport(
       await openConnector(mode, openTakeover, cols, rows, onEvent)
     },
     async write(data) {
-      if (disposed || !sessionId || mode !== "control") return
-      await herdrTerminalInput(sessionId, data, null)
+      if (disposed || !sessionId || mode !== "control" || !inputQueue || !data) return
+      const queue = inputQueue
+      // One request in flight avoids filling the remote stream's bounded queue
+      // with individual keystrokes. Coalesce unsent text in its original order.
+      const limit = 256 * 1024
+      const bytes = data.length > limit ? limit + 1 : new TextEncoder().encode(data).length
+      if (queue.bytes + bytes > limit) {
+        failInput(queue, "terminal-input-limit")
+        throw new Error("terminal-input-limit")
+      }
+      queue.text += data
+      queue.bytes += bytes
+      if (!queue.drain) {
+        const id = sessionId
+        queue.drain = (async () => {
+          await Promise.resolve()
+          try {
+            while (inputQueue === queue && queue.text) {
+              const text = queue.text
+              queue.text = ""
+              queue.bytes = 0
+              await herdrTerminalInput(id, text, null)
+            }
+          } catch (error) {
+            // Delivery may be unknown. Pause input and discard the unsent tail;
+            // a later connector must never replay it (including a queued Enter).
+            failInput(queue, "terminal-input-failed")
+            throw error
+          } finally {
+            queue.drain = null
+          }
+        })()
+      }
+      await queue.drain
     },
     async resize(cols, rows) {
       if (disposed) return
@@ -329,6 +305,7 @@ export function createHerdrTerminalTransport(
       await herdrTerminalScroll(sessionId, direction, lines)
     },
     detach() {
+      discardInput()
       disposed = true
       openGeneration += 1
       eventHandler = null
@@ -336,6 +313,7 @@ export function createHerdrTerminalTransport(
       lastSeq = null
     },
     detachSession() {
+      discardInput()
       openGeneration += 1
       const id = sessionId
       sessionId = null
@@ -343,6 +321,7 @@ export function createHerdrTerminalTransport(
       return id
     },
     async release() {
+      discardInput()
       openGeneration += 1
       if (!sessionId) return
       const id = sessionId
@@ -352,6 +331,7 @@ export function createHerdrTerminalTransport(
       await herdrTerminalRelease(id).catch(() => undefined)
     },
     async dispose() {
+      discardInput()
       disposed = true
       openGeneration += 1
       eventHandler = null
@@ -363,7 +343,7 @@ export function createHerdrTerminalTransport(
     },
     async takeControl() {
       if (disposed) return
-      if (mode === "control" && role === "controller") return
+      if (mode === "control" && role === "controller" && inputQueue) return
       const onEvent = eventHandler
       if (!onEvent) {
         throw new Error("Herdr transport is not open")
@@ -378,7 +358,7 @@ export function createHerdrTerminalTransport(
       if (disposed) return
       await openConnector("control", true, lastCols, lastRows, onEvent)
     },
-    canWrite: () => !disposed && mode === "control" && sessionId !== null,
+    canWrite: () => !disposed && mode === "control" && sessionId !== null && inputQueue !== null,
     getControlMode: () => mode,
     getRole: () => role,
     getSessionId: () => sessionId,

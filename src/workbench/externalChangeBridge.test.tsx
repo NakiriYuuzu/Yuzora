@@ -30,7 +30,10 @@ vi.mock("../lib/externalChange", () => ({
 // Mock only the disk read, not documentRegistry: reloadDocument and
 // documentGeneration run for real so the generation-bump timing under test is
 // the real one. listDir backs fileTreeStore's precise invalidation (#59 T4b).
-vi.mock("../lib/ipc", () => ({ openFile: vi.fn(), listDir: vi.fn() }))
+vi.mock("../lib/ipc", () => {
+    const openFile = vi.fn()
+    return { openFile, openFileSnapshot: async (path: string) => ({ result: await openFile(path), accept: () => {} }), listDir: vi.fn() }
+})
 
 beforeEach(() => {
     vi.clearAllMocks()
@@ -50,6 +53,20 @@ function flaggedTab() {
 }
 
 describe("ExternalChangeBridge reload settling", () => {
+    it.each([false, true])("preserves an edit made during reload (saved meanwhile: %s)", async (saved) => {
+        useWorkspaceStore.getState().markDirty(PATH, false)
+        let finish!: (value: Awaited<ReturnType<typeof ipc.openFile>>) => void
+        vi.mocked(ipc.openFile).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+        const generation = documentGeneration(PATH)
+        render(<ExternalChangeBridge />)
+        capturedFsListener({ payload: { workspaceRoot: "/w", paths: [PATH] } })
+        useWorkspaceStore.getState().markDirty(PATH, true)
+        if (saved) useWorkspaceStore.getState().markDirty(PATH, false)
+        finish({ kind: "full", content: "old remote response", size: 19, lineEnding: "lf" })
+        await waitFor(() => expect(flaggedTab()?.externallyModified).toBe(!saved))
+        expect(documentGeneration(PATH)).toBe(generation)
+    })
+
     it("bumps the shared tree revision for every external filesystem event", () => {
         const revision = useWorkspaceStore.getState().treeRevision
         render(<ExternalChangeBridge />)

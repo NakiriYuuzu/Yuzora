@@ -1,1 +1,3 @@
 src-tauri/resources/herdr/LICENSE-HERDR.txt text eol=lf
+src-tauri/resources/host/LICENSE-HERDR.txt text eol=lf
+src-tauri/resources/legacy-cleanup/*.sh text eol=lf

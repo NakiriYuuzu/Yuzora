@@ -19,6 +19,7 @@ export function applyAccentPreference(
   root: HTMLElement = document.documentElement
 ): void {
   const palette = ACCENT_THEMES[accent]
+  root.dataset.accent = accent
   root.style.setProperty("--yz-accent", palette.solid)
   root.style.setProperty("--yz-accent-rgb", palette.rgb)
   root.style.setProperty("--yz-accent-ink", palette.ink)

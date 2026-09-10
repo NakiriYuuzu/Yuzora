@@ -1,4 +1,5 @@
 import i18n from "@/lib/i18n"
+import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import { getViewEntry } from "@/editor/viewRegistry"
 import {
   herdrPaneClose,
@@ -30,17 +31,10 @@ import {
   openPreviewExternally,
   previewTargetCanGoBack,
   previewTargetCanGoForward,
-  previewTargetHasRunningServer,
   previewTargetHasUrl,
   previewTargetIsCurrent,
   reloadPreview,
-  stopPreviewDevServer,
 } from "@/preview/previewCommands"
-import {
-  beginRenameTerminal,
-  closeTerminal,
-  terminalTargetExists,
-} from "@/terminal/terminalCommands"
 import {
   CONTEXT_MENU_CANCELLED,
   CONTEXT_MENU_COMPLETED,
@@ -86,7 +80,6 @@ const DISABLED_TARGET = "contextMenu.disabled.targetUnavailable"
 const DISABLED_NOTHING = "contextMenu.disabled.nothingToDo"
 const DISABLED_NO_SELECTION = "contextMenu.disabled.noSelection"
 const DISABLED_READONLY = "contextMenu.disabled.readonly"
-const DISABLED_FORMATTER_CHECKING = "contextMenu.disabled.formatterChecking"
 const DISABLED_TWO_GROUP_LIMIT = "contextMenu.disabled.twoGroupLimit"
 const DISABLED_NOT_REPOSITORY = "contextMenu.disabled.notRepository"
 const DISABLED_GIT_BUSY = "contextMenu.disabled.gitBusy"
@@ -223,12 +216,8 @@ function previewUrlAvailability(
 
 function herdrSessionRuntime(sessionName: string) {
   const state = useHerdrStore.getState()
-  const session =
-    state.sessions.find((item) => item.name === sessionName) ??
-    (sessionName === "live"
-      ? state.sessions.find((item) => item.default) ?? state.sessions[0]
-      : null)
-  const resolvedName = session?.name ?? sessionName
+  const session = findRuntimeSession(state.sessions, sessionName)
+  const resolvedName = sessionScope(session) ?? sessionName
   const runtime = state.runtimesBySession[resolvedName]
   const capabilities =
     runtime?.capabilities ??
@@ -427,13 +416,6 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       danger: false,
       executor: legacy("cmOpenSplit"),
     }),
-    item<"file">("cmOpenInBrowser", {
-      availability: (request) => request.isDirectory || !/\.html?$/i.test(request.path)
-        ? hidden()
-        : currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
-      danger: false,
-      executor: legacy("cmOpenInBrowser"),
-    }),
     "separator",
     item<"file">("cmRename", {
       availability: (request) => currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
@@ -458,6 +440,13 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   tab: [
+    item<"tab">("cmPinTab", {
+      label: (request) => i18n.t(useWorkspaceStore.getState().groups[request.groupIndex]?.tabs.find((tab) => tab.path === request.path)?.pinned ? "unpin" : "pin", { ns: "workTabs" }),
+      availability: (request) => useWorkspaceStore.getState().groups[request.groupIndex]?.tabs.some((tab) => tab.path === request.path) ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: (request) => { useWorkspaceStore.getState().toggleTabPinned(request.groupIndex, request.path); return CONTEXT_MENU_COMPLETED },
+    }),
+    "separator",
     item<"tab">("cmCloseTab", {
       availability: (request) => tabExists(request) ? available() : disabled(DISABLED_TARGET),
       danger: false,
@@ -534,36 +523,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       danger: false,
       executor: legacy("cmCompareHead"),
     }),
-    item<"editor">("cmFormatDoc", {
-      availability: (request) => {
-        if (!editorExists(request)) return hidden()
-        const entry = getViewEntry(request.path)
-        if (!entry) return hidden()
-        if (entry.readonly) return disabled(DISABLED_READONLY)
-        if (entry.formatter === "checking") return disabled(DISABLED_FORMATTER_CHECKING)
-        return entry.formatter === "available" && entry.formatDocument ? available() : hidden()
-      },
-      danger: false,
-      executor: legacy("cmFormatDoc"),
-    }),
     item<"editor">("cmCmdPalette", { availability: available, danger: false, executor: legacy("cmCmdPalette") }),
-  ],
-  terminalTab: [
-    item<"terminalTab">("cmRenameTerminal", {
-      availability: (request) => terminalTargetExists(request)
-        ? available()
-        : disabled(DISABLED_TARGET),
-      danger: false,
-      executor: beginRenameTerminal,
-    }),
-    "separator",
-    item<"terminalTab">("cmCloseTerminal", {
-      availability: (request) => terminalTargetExists(request)
-        ? available()
-        : disabled(DISABLED_TARGET),
-      danger: true,
-      executor: closeTerminal,
-    }),
   ],
   git: [
     item<"git">("cmCopyHash", {
@@ -628,11 +588,6 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"status">("cmPush", { availability: gitAvailability, danger: false, executor: legacy("cmPush") }),
   ],
   sshhost: [
-    item<"sshhost">("cmOpenSsh", {
-      availability: sshHostAvailability,
-      danger: false,
-      executor: legacy("cmOpenSsh"),
-    }),
     item<"sshhost">("cmOpenSftp", {
       availability: sshHostAvailability,
       danger: false,
@@ -745,12 +700,6 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       danger: false,
       executor: openPreviewExternally,
     }),
-    "separator",
-    item<"preview">("cmStopDevServer", {
-      availability: (request) => previewTargetHasRunningServer(request) ? available() : hidden(),
-      danger: true,
-      executor: stopPreviewDevServer,
-    }),
   ],
   herdrSpace: [
     item<"herdrSpace">("cmHerdrRenameSpace", {
@@ -820,6 +769,19 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   herdrTab: [
+    item<"herdrTab">("cmPinTab", {
+      label: (request) => i18n.t(useWorkspaceStore.getState().groups.flatMap((group) => group.tabs).find((tab) => tab.path === request.pagePath)?.pinned ? "unpin" : "pin", { ns: "workTabs" }),
+      availability: (request) => request.pagePath ? available() : hidden(),
+      danger: false,
+      executor: (request) => {
+        const state = useWorkspaceStore.getState()
+        const index = state.groups.findIndex((group) => group.tabs.some((tab) => tab.path === request.pagePath))
+        if (index < 0 || !request.pagePath) return CONTEXT_MENU_CANCELLED
+        state.toggleTabPinned(index, request.pagePath)
+        return CONTEXT_MENU_COMPLETED
+      },
+    }),
+    "separator",
     item<"herdrTab">("cmHerdrNewTab", {
       availability: (request) =>
         herdrMethodAvailability(request.sessionName, "tabCreate", "tab.create"),

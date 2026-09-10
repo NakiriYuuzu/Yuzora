@@ -1,13 +1,10 @@
 /**
  * Ring-buffer ceiling per session, in **UTF-8 bytes**.
  *
- * Deliberately equal to `PTY_OUTPUT_PENDING_CAP` in `src-tauri/src/pty_service.rs`
- * so a full backend batch fits exactly, nothing crosses the IPC boundary only
- * to be discarded on arrival, and the two `droppedBytes` counters measure the
- * same threshold.
+ * HERDR output is buffered independently for each attached session.
  *
  * Tradeoff: the unit is UTF-8 bytes rather than characters so these numbers are
- * comparable with the Rust counters. CJK text costs 3 bytes per character, so a
+ * comparable across terminal output sources. CJK text costs 3 bytes per character, so a
  * hidden Chinese session retains roughly a third of the characters an ASCII one
  * does. Accepted deliberately in exchange for cross-boundary comparability.
  */

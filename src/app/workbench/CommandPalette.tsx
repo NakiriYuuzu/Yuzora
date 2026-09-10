@@ -1,9 +1,9 @@
+import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
 import {
   BotIcon,
-  ListTreeIcon,
   MonitorPlayIcon,
   SearchIcon,
   SettingsIcon,
@@ -35,9 +35,7 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
 import { showActionError } from "@/lib/actionFeedback"
 import i18n from "@/lib/i18n"
-import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import { SymbolPicker } from "@/workbench/SymbolPicker"
 import { useWorkspaceSearch } from "@/workbench/search/useWorkspaceSearch"
 import { WorkspaceSearchGroup } from "@/workbench/search/WorkspaceSearchGroup"
 
@@ -64,21 +62,15 @@ const HERDR_PALETTE_AGENT_LIMIT = 128
  */
 export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSettings }: CommandPaletteProps) {
   const { t } = useTranslation("workbench")
-  // Picker open state is kept separate from mode (rather than a nullable mode) so
-  // SymbolPicker can stay permanently mounted — its reset-on-close effect only
-  // runs when it isn't unmounted on every close.
   // Register with the preview child-webview z-order gate: while the palette is
   // open the native webview must hide so it can't paint over this dialog.
   useOverlayPresence(open)
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [pickerMode, setPickerMode] = useState<"document" | "workspace">("document")
   const [search, setSearch] = useState("")
   const [caseSensitive, setCaseSensitive] = useState(false)
   const setPaletteOpen = useCallback((nextOpen: boolean) => {
     if (!nextOpen) setSearch("")
     onOpenChange(nextOpen)
   }, [onOpenChange])
-  const toggleTerminal = useUiStore((s) => s.toggleTerminal)
   const togglePreviewTab = useWorkspaceStore((s) => s.togglePreviewTab)
   const requestReveal = useWorkspaceStore((s) => s.requestReveal)
   const herdrSnapshot = useHerdrStore((s) => s.snapshot)
@@ -138,33 +130,11 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       className: ITEM_CLASS,
     })),
     {
-      value: t("commandPalette.goToSymbol"),
-      label: t("commandPalette.goToSymbol"),
-      icon: ListTreeIcon,
-      onSelect: () => {
-        setPaletteOpen(false)
-        setPickerMode("document")
-        setPickerOpen(true)
-      },
-      className: ITEM_CLASS,
-    },
-    {
-      value: t("commandPalette.workspaceSymbols"),
-      label: t("commandPalette.workspaceSymbols"),
-      icon: WaypointsIcon,
-      onSelect: () => {
-        setPaletteOpen(false)
-        setPickerMode("workspace")
-        setPickerOpen(true)
-      },
-      className: ITEM_CLASS,
-    },
-    {
-      value: t("commandPalette.toggleTerminal"),
-      label: t("commandPalette.toggleTerminal"),
+      value: t("newTerminal", { ns: "workTabs" }),
+      label: t("newTerminal", { ns: "workTabs" }),
       icon: SquareTerminalIcon,
       onSelect: () => {
-        toggleTerminal()
+        void openNewTerminalTab()
         setPaletteOpen(false)
       },
       className: ITEM_CLASS,
@@ -278,18 +248,12 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
     const handler = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault()
-        // The symbol picker sits above the palette; ⌘K there closes it rather than
-        // stacking a second dialog on top.
-        if (pickerOpen) {
-          setPickerOpen(false)
-          return
-        }
         setPaletteOpen(!open)
       }
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [open, pickerOpen, setPaletteOpen])
+  }, [open, setPaletteOpen])
 
   return (
     <>
@@ -383,7 +347,6 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       </DialogContent>
     </Dialog>
 
-    <SymbolPicker open={pickerOpen} onOpenChange={setPickerOpen} mode={pickerMode} />
     </>
   )
 }

@@ -54,6 +54,7 @@ export type DialogPixelSize = {
 export type DialogMinSize = {
   width: number
   height: number
+  edgeMarginPx?: number
 }
 
 export type DialogSizeBounds = {
@@ -77,7 +78,8 @@ export function isValidRatio(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1
 }
 
-export function defaultDialogSizePreference(): DialogSizePreference {
+export function defaultDialogSizePreference(id?: DialogSizeId): DialogSizePreference {
+  if (id === "git-diff") return { widthRatio: 1, heightRatio: 1 }
   return {
     widthRatio: DEFAULT_DIALOG_SIZE_RATIO,
     heightRatio: DEFAULT_DIALOG_SIZE_RATIO,
@@ -97,10 +99,10 @@ export function getViewportSize(
   }
 }
 
-export function maxDialogSize(viewport: DialogPixelSize): DialogPixelSize {
+export function maxDialogSize(viewport: DialogPixelSize, edgeMarginPx = DIALOG_EDGE_MARGIN_PX): DialogPixelSize {
   return {
-    width: Math.max(1, viewport.width - DIALOG_EDGE_MARGIN_PX * 2),
-    height: Math.max(1, viewport.height - DIALOG_EDGE_MARGIN_PX * 2),
+    width: Math.max(1, viewport.width - edgeMarginPx * 2),
+    height: Math.max(1, viewport.height - edgeMarginPx * 2),
   }
 }
 
@@ -120,7 +122,7 @@ export function dialogSizeBounds(
   viewport: DialogPixelSize,
   minSize?: DialogMinSize | null,
 ): DialogSizeBounds {
-  const max = maxDialogSize(viewport)
+  const max = maxDialogSize(viewport, minSize?.edgeMarginPx)
   const min = resolveMinSize(minSize)
   return {
     minWidth: Math.min(min.width, max.width),
@@ -222,12 +224,12 @@ export function loadDialogSizePreference(
   id: DialogSizeId,
   storage: Pick<Storage, "getItem"> | null = defaultStorage(),
 ): DialogSizePreference {
-  if (!storage) return defaultDialogSizePreference()
+  if (!storage) return defaultDialogSizePreference(id)
   try {
     const parsed = parseDialogSizeStorage(storage.getItem(DIALOG_SIZE_STORAGE_KEY))
-    return parsed.sizes[id] ?? defaultDialogSizePreference()
+    return parsed.sizes[id] ?? defaultDialogSizePreference(id)
   } catch {
-    return defaultDialogSizePreference()
+    return defaultDialogSizePreference(id)
   }
 }
 

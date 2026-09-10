@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
+      "resources/herdr/linux-aarch64/": "herdr/linux-aarch64/",
+      "resources/herdr/linux-x86_64/": "herdr/linux-x86_64/",
+      "resources/host/": "host/",
+      "resources/legacy-cleanup/": "legacy-cleanup/"
+    }
+  }
+}

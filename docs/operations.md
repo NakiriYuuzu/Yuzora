@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> 最後查證：2026-08-27。
+> Runtime／payload 與產品驗收範圍更新：2026-09-09（beta.3 目前工作樹，尚未發布）；其他發布流程最後查證：2026-08-31。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
@@ -60,12 +60,13 @@ Required CI checks：
 
 ---
 
-## 3. 三條 GitHub Actions workflow
+## 3. GitHub Actions workflows
 
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔 |
-| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；自動建立 tag、Stable macOS Developer ID signing／notarization、Beta macOS unsigned 建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
+| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生／Unix host installer payload gate |
+| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、Stable macOS Developer ID signing／notarization、Beta macOS unsigned 建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
+| Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 四平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Pages    | `.github/workflows/deploy-pages.yml` | `main` 上 `site/**` 變更；手動 dispatch | 將 `site/` 部署到 GitHub Pages                                                                                                                                          |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
@@ -74,7 +75,7 @@ Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可�
 
 ### CI 重要特性
 
-- Frontend 與 release jobs 固定使用 Bun `1.3.14`，Rust compile、database、candidate 與 Release jobs 固定使用 Rust `1.96.0`；升級任一 toolchain 時需在同一個 PR 更新 CI、candidate、Release workflow 與 exact Clippy baseline，再搭配 `@typescript/native` typecheck 驗證。
+- Host helper workflow 的 Bun 尚未固定版本；Frontend 與 release jobs 固定使用 Bun `1.3.14`，Rust compile、database、candidate 與 Release jobs 固定使用 Rust `1.96.0`；升級任一 toolchain 時需在同一個 PR 更新 CI、candidate、Release workflow 與 exact Clippy baseline，再搭配 `@typescript/native` typecheck 驗證。
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
@@ -129,10 +130,9 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 
 ### 目前仍需人工補強的 gate
 
-在 workflow 修正前，不得把下列條件描述為已由自動化強制：
-
-- Release guard 只辨識成功的 `main` push CI，尚未查證該 SHA 是否來自 `release/vX.Y.Z` PR、是否跑過 candidate jobs，或是否取得使用者核准。
-- Release guard 尚未從 GitHub 查證 source SHA 對應的 PR、candidate run 與使用者核准；既有同版本 draft 的 tag SHA 已強制必須等於本次 `workflow_run.head_sha`，不一致時會 fail closed。
+- 新 Beta build 會在建立 tag 前要求 repository variables `YUZORA_BETA_ACCEPTED_TREE_SHA` 與 `YUZORA_BETA_ACCEPTANCE_URL`。Guard 會把前者與 exact successful-main tree 比對，並要求後者指向本 repository 的 PR／Issue evidence；未設定、格式錯誤或 tree 不一致都 fail closed。這是 blocking human attestation，但 workflow 不會自行理解 comment 內容或逐項重跑 candidate acceptance。
+- Stable 尚未使用同一 tree-attestation variables；仍依 release PR、candidate evidence 與明確 merge 核准流程人工把關。
+- 既有同版本 draft 的 tag SHA 已強制必須等於本次 `workflow_run.head_sha`，不一致時會 fail closed。
 - Release actions 已固定到經審查的完整 commit SHA，checkout 一律停用 persisted credentials；仍應定期審查並更新 pin，並將 signing secrets 移入具 required reviewer 的 protected Environment。
 - Metadata finalizer 目前確認 URL／signature 非空與同名 artifact／`.sig` 存在，但尚未強制 URL 屬於目前 repository/tag，也未比較 metadata signature 與 `.sig` 內容。
 
@@ -156,7 +156,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - Beta 只接受 `X.Y.Z-beta.N`；不以 `rc`、build metadata 或其他自訂 suffix 表示 Beta。
 - Beta 不得更新 stable `latest.json`、`releases/latest` 或產品頁固定下載入口。
 - Beta 只發布供手動下載的 installer，必須停用 updater artifacts，不產生 `latest.json` 或 updater `.sig`，也不存取 updater 或 Apple signing secrets。Beta macOS installer 刻意 unsigned，必須在 release notes 揭露 Gatekeeper 警告、缺少 notarization 與無法驗證發行者身分的風險；不得將 Beta assets 升級為 Stable 或固定下載別名。
-- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 都停用 updater artifacts並清空 updater endpoints；Beta macOS 另以 `--no-sign` 停用 OS signing，Stable build 則保留 OS signing、updater signing、stable endpoint 與 updater artifacts。
+- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9-beta.3`（`0.0.2307`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 都停用 updater artifacts並清空 updater endpoints；Beta macOS 另以 `--no-sign` 停用 OS signing，Stable build 則保留 OS signing、updater signing、stable endpoint 與 updater artifacts。
 - PR candidate 是未簽章、未發布的 Actions artifact，用於 merge 前驗證；它不是 Beta Release。
 - `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持 updater signing、macOS Developer ID signing／notarization、metadata、固定下載別名與 `--latest`；Beta 使用獨立 no-updater／no-sign build／publish path，固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
 
@@ -278,18 +278,40 @@ gh run download "${RUN_ID}" \
 
 需要 macOS 候選檔時，將 artifact name 改為 `yuzora-release-candidate-macos-universal`。
 
-使用者至少要在本次受影響平台驗證 acceptance criteria。Windows terminal／IME 版本至少包括：
+使用者至少要在本次受影響平台驗證 acceptance criteria。單一 runtime 改造與新版介面必須使用包含最終變更的新候選安裝檔；舊 Windows-native beta.3 證據及 PR #92 先前 head 的候選檔不可代替。
 
-- Microsoft Pinyin 中文 composition、replacement、commit 不重複也不遺失。
-- Command Prompt、Windows PowerShell、PowerShell 7 能依設定與單次選擇啟動。
-- WSL default 與已安裝 distro 能啟動，Windows／UNC workspace 的 cwd 轉換正確。
-- Herdr 沒有任何 Space、連線失敗或不可用時，ADE 必須仍提供 Open Local Folder escape；本機 Terminal 在沒有 workspace 時必須開啟 folder picker，不可 silent no-op。
-- Windows-native HERDR 0.8.0 running session 可透過 named pipe 完成 snapshot、schema-gated mutation 與 `events.subscribe`；停止、不相容或缺少 method 時仍需顯示真實 unavailable 原因。若 pane 透過 `wsl.exe` 進入互動式 Linux shell，不得假定 HERDR 能看見其中的 Linux descendant Agent。
-- Windows installer 必須包含 `herdr/windows-x86_64/herdr.exe` 與同版 ConPTY runtime。PATH 存在 Herdr 時使用全域版本；暫時移除 PATH 版本並重啟後，必須自動解析到 Yuzora-managed protocol-19 binary，且診斷顯示 `configured=global`、`resolved=default` 與實際 managed path。
-- HERDR 診斷與工作區信任介面不顯示 Windows `\\?\` verbatim prefix，且信任授權／撤銷仍作用於原始 canonical path identity。
-- 一般 shell 與 TUI 模式的 IME anchor／輸入位置可接受。
+beta.3 的產品範圍依已接受的 ADR-0004：Terminal 統一使用 HERDR，Agent 由使用者在 Terminal 手動啟動；移除獨立本機／SSH terminal、shell profiles、新增 Agent 表單及 LSP。Browser 保留網站導覽與遠端 loopback forwarding，移除靜態 Preview server／Dev Server 管理。驗收時確認移除入口不再出現，同時確認保留的檔案編輯、Git、SSH／SFTP 與 Database 功能仍正常：
 
-驗證結果必須寫入 PR comment 或 review，包含平台、installer、結果與已知限制。只有使用者明確表示「驗證通過」並授權 merge，maintainer／agent 才能 merge。CI 全綠、artifact 存在或 reviewer 沒有留言，都不能推定為使用者核准。
+- Windows 原生 HERDR 與設定啟用後至少兩個 WSL2 發行版；原生 macOS／Linux、SSH macOS／Linux及純 SFTP 分別記錄結果。
+- Windows 本機工作區使用原生 HERDR，無需 WSL；只有明確選取 WSL 的工作區在該發行版執行 HERDR、Agent、Terminal、Files、Git。Windows 磁碟路徑（含手動輸入）由該 distro 的 `wslpath` 轉換，另一發行版的 WSL UNC 路徑必須拒絕。切換主機／發行版或取消選擇器後，過期結果不得改變新選擇。
+- 沒有 Space 或 HERDR 不相容時，共用新增資料夾入口仍可使用；未連線的近期資料夾導回原主機登入與原根目錄。
+- 取消資料夾選擇後，背景 snapshot 不得再次彈窗或擅自開啟工作區；主動點選沒有 Files 根目錄的外部 Space／Agent，仍可開啟其 Terminal Sessions 並保留原 Files 工作區。
+- 使用主機 discovery 的 socket；跨主機同名 Session、terminal、路徑、信任與事件不互相污染。Agent cwd 不得覆寫 Files 根目錄。
+- MSI／NSIS 包含四平台 Unix runtime、manifest 及受控清理工具；另含固定版本 Windows HERDR、ConPTY 與授權檔，逐檔核對 lockfile 雜湊；不得含 WSL Agent Plugin 或散落在核准原生目錄之外的舊 HERDR／ConPTY。從 installer 解包驗證，不以 source inventory 代替。
+- 在 HERDR Terminal 手動啟動 Pi／Claude／Codex，驗證 prompt、working／idle／blocked、observe／control／takeover及重連；官方 native Session restore 與 layout restore 分開記錄。停止的 Sessions 不再出現在側欄／Session 選單，但保留 runtime 資料。
+- 遠端編輯／安全儲存、Git diff／worktree、Browser 導覽／歷史／WebSocket forwarding、DB tunnel／TLS hostname／SQLite／取消，及 SFTP 版本衝突與部分傳輸失敗。
+- 新版雙側欄、Space／Agent 切換、Inspector、窄視窗資料夾選擇器、Git 並排 diff、Markdown 文件／原始碼切換與安全回退、檔案釘選重啟恢復、設定搜尋／主題與資源用量。HERDR／Browser 釘選只驗證本次應用程式工作階段。
+- 關閉 Log 記錄後立即停止新增，重啟後設定維持；重新開啟可繼續記錄，既有 Log 仍可查閱／匯出。
+- Microsoft Pinyin composition／replacement／commit、一般 shell 與 TUI 的 IME anchor及快速輸入不可遺失或重複。
+- 重連不重送 terminal input、Git 寫入或 SQL；終端分頁「×」成功關閉對應 HERDR tab 後才移除畫面，失敗時保留分頁並顯示錯誤，且不斷開共用 SSH。退出 App 釋放自身 helper／connector／tunnel，保留 HERDR／Agent／WSL。
+
+驗證結果必須寫入 PR comment 或 review，包含平台、installer hash、結果與已知限制。只有使用者明確表示「驗證通過」並授權 merge，maintainer／agent 才能 merge。CI 全綠、artifact 存在或 reviewer 沒有留言，都不能推定為使用者核准。
+
+Beta 在 merge 前還必須把 candidate tree 與 evidence URL 寫入 repository variables；不要放 secret 或 token：
+
+```bash
+CANDIDATE_SHA="<exact release PR head>"
+ACCEPTANCE_URL="https://github.com/NakiriYuuzu/Yuzora/pull/<pr>#issuecomment-<id>"
+
+gh variable set YUZORA_BETA_ACCEPTED_TREE_SHA \
+  --repo NakiriYuuzu/Yuzora \
+  --body "$(git rev-parse "${CANDIDATE_SHA}^{tree}")"
+gh variable set YUZORA_BETA_ACCEPTANCE_URL \
+  --repo NakiriYuuzu/Yuzora \
+  --body "$ACCEPTANCE_URL"
+```
+
+若任何 code／resource／workflow 變更使 candidate head 改變，舊 attestation 立即失效；必須重跑 exact candidate、更新 evidence comment 與兩個 variables。發布完成後刪除這兩個 variables，避免把舊 attestation 誤認為後續 Beta 的核准。
 
 ### Merge 前
 
@@ -301,8 +323,9 @@ gh run download "${RUN_ID}" \
 - Release／updater 敏感檔案已有合適 reviewer。
 - PR body 對本次完整交付的 Issues 使用 `Closes`／`Fixes`，讓 merge 自動關閉 Issues；未完成的 Issue 只能使用 `Refs`。
 - 遠端 version tag 與同版本 Published Release 不存在；既有 draft 必須先核對 tag SHA，且不得把 draft 內既有 assets 當成已驗證候選。
-- PR comment 記錄 release PR number、候選安裝檔 run ID、驗證平台與 candidate head SHA，避免後續一般 `main` commit 被誤認為已驗證的 release source。
-- Merge 後由 Release workflow 等待並查證 `main` 上該 exact commit 的 push CI；PR CI 綠燈本身不會直接發布。
+- PR comment 記錄 release PR number、候選安裝檔 run ID、驗證平台、installer hashes、candidate head SHA 與 candidate tree SHA。
+- Beta 的兩個 acceptance variables 已設定為該 tree SHA 與 evidence URL；`gh variable get` 讀回一致。
+- Merge 後由 Release workflow 等待並查證 `main` 上該 exact commit 的 push CI；PR CI 綠燈本身不會直接發布。Beta Guard 另要求 successful-main tree 精確匹配已 attested candidate tree。
 
 ---
 
@@ -312,18 +335,18 @@ gh run download "${RUN_ID}" \
 
 1. Release PR 包含版本、lockfile、Changelog 與必要的 workflow／contract 修改。
 2. PR required CI 與 candidate builds 成功後保持開啟，等待使用者下載安裝檔並完成實機驗證。
-3. 使用者在 PR 明確回報驗證通過並授權 merge 後，才 merge 至 `main`；merge 同時透過 `Closes` 關閉已完成 Issues。
+3. 使用者在 PR 明確回報驗證通過並授權 merge；Beta 另設定 accepted candidate tree SHA／evidence URL variables，讀回確認後才 merge 至 `main`。merge 同時透過 `Closes` 關閉已完成 Issues。
 4. `main` push 觸發完整 CI；Release workflow 透過 `workflow_run` 接收完成事件。
 5. Guard 只接受 `event=push`、`head_branch=main`、`conclusion=success`，並 checkout `workflow_run.head_sha`，確保後續 tag、build 與 checks 使用同一個 immutable commit。
-6. Guard 從該 commit 的 `package.json` 解析唯一允許的 Stable `X.Y.Z` 或 Beta `X.Y.Z-beta.N` version，執行版本與 release notes checks；Stable 再執行 updater contract，Beta 改執行 prerelease isolation contract。
+6. Guard 從該 commit 的 `package.json` 解析唯一允許的 Stable `X.Y.Z` 或 Beta `X.Y.Z-beta.N` version，執行版本與 release notes checks；Stable 再執行 updater contract。新 Beta build 除 prerelease isolation contract 外，也必須讓 successful-main tree 等於 accepted candidate tree，並持有本 repository evidence URL。
 7. 若版本 tag 不存在，workflow 建立 annotated `v<version>` tag 並精確指向該成功 CI SHA；接著開始建置。若既有 same-SHA draft，workflow 也會重新建置兩平台並修復該 draft；tag SHA 不同時會 fail closed。
 8. 若相同版本已 Published，workflow 安全略過，不會因後續一般 PR 重複發布。
 
-流程政策將 PR 定義為唯一 repository 變更入口，並避免「PR CI 綠燈但尚未進入 `main`」就對外發布。不過，現行 Release guard 尚未從 GitHub 查證 source SHA 對應的 PR、candidate run 與使用者核准；在 branch protection 與此 gate 完成前，仍需依第 4、5 節人工核對。CI、tag、Release 與 Issue 關閉的關係如下：
+流程政策將 PR 定義為唯一 repository 變更入口，並避免「PR CI 綠燈但尚未進入 `main`」就對外發布。Beta tree attestation 會阻止未經 accepted candidate tree 核准的新 build／tag；但 evidence 內容與 candidate run 仍由使用者／maintainer 判斷，Stable 也仍依人工 gate。CI、tag、Release 與 Issue 關閉的關係如下：
 
 ```text
 Issue ──Closes──> Release PR ──candidate artifacts──> user validation
-                                                        │ explicit approval
+                                                        │ evidence URL + tree attestation
                                                         ▼
                                                      PR merge
                                                         │
@@ -352,11 +375,11 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 3. Stable 才驗證 `TAURI_SIGNING_PRIVATE_KEY` 與 password secret；Beta build step 不接收這些 secrets。
 4. 解析出的 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致，且版本只可為 Stable 或 `-beta.N`。
 5. `CHANGELOG.md` 有該版本 release notes。
-6. Stable 驗證 updater release contract；Beta 驗證 prerelease isolation contract。
+6. Stable 驗證 updater release contract；Beta 驗證 prerelease isolation contract。新 Beta build 另要求 `YUZORA_BETA_ACCEPTED_TREE_SHA` 精確等於 successful-main tree，且 `YUZORA_BETA_ACCEPTANCE_URL` 指向本 repository 的 PR／Issue evidence。
 7. 新版本由獨立、無 checkout 的 `create-tag` write job 建立 annotated tag；既有 draft 的 tag SHA 必須與 CI SHA 一致並觸發雙平台重建；已發布版本安全略過。
 8. Release state 的 `shouldBuild` 與 `shouldPublishExisting` 先驗證為 boolean 再交給 shell；`false` 是合法決策值，不得被 `jq` truthiness 誤判為 guard failure。
 
-Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 checkout 並執行 repository code，但沒有 write-capable token。所有 contents write 都只存在於無 checkout、只執行固定 inline `gh`/shell 的 job。現行 Guard 不負責證明該 SHA 來自 release PR 或已完成 candidate／使用者驗證；這些仍是明確的人工 gate。任何 guard failure 都不會進入 build。
+Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 checkout 並執行 repository code，但沒有 write-capable token。所有 contents write 都只存在於無 checkout、只執行固定 inline `gh`/shell 的 job。Beta Guard 只驗證 maintainer 提供的 exact tree／evidence pointer，不自行解讀 evidence 是否真的完成全部案例；Stable 的 candidate／使用者驗證也仍是人工 gate。任何 guard failure 都不會進入 build。
 
 ### 7.2 雙平台建置與 artifact boundary
 
@@ -495,6 +518,15 @@ gh release view "v${VERSION}" \
 
 確認 `isDraft=false`、`isPrerelease=true`，且 `releases/latest`、stable `latest.json` 與產品頁固定下載連結仍指向原 Stable。macOS Beta 還必須確認 release notes 明示 unsigned／notarization 缺口，並實機記錄 Gatekeeper 行為。Beta 安裝與啟動結果回填 release Issue；不得把 Beta 成功推定為 Stable release approval。
 
+確認已發布版本與 attested evidence 一致後，清除一次性 Beta acceptance variables：
+
+```bash
+gh variable delete YUZORA_BETA_ACCEPTED_TREE_SHA --repo NakiriYuuzu/Yuzora
+gh variable delete YUZORA_BETA_ACCEPTANCE_URL --repo NakiriYuuzu/Yuzora
+```
+
+若需要修復同版本 draft，必須先重新設定該 exact tree 的 variables；不得重用其他 candidate 的 attestation。
+
 ---
 
 ## 10. 失敗與復原
@@ -604,6 +636,7 @@ ADE/HERDR runtime、remote database 與 terminal/git poster stills 必須使用�
 scripts/verify-version-consistency.ts
 scripts/release-notes.ts
 scripts/verify-updater-release-contract.ts
+scripts/verify-windows-bundled-wsl-plugin.ps1
 scripts/finalize-updater-metadata.ts
 package.json
 src-tauri/Cargo.toml
@@ -615,3 +648,87 @@ site/downloads.js
 ```
 
 更新本文件時，在頁首更新「最後查證」日期，並在 PR 說明實際驗證過的 workflow、Release 或 Pages 證據，以及仍未由自動化強制的人工 gate。
+
+---
+
+## 13. 原生 Runtime 與 Remote Provider
+
+本節描述目前改造工作樹；**尚未達完整替代版發行門檻**。主機路由依 ADR-0005 Windows 原生與 opt-in WSL 決策；分項驗收與未完成矩陣見 [實作檢查點](html/yuzora-runtime-provider-implementation-2026-09-06.html)。歷史 Windows-native Plugin 操作已移除，不能對新安裝包執行舊 link／adapter enable 流程。
+
+### 主機設定與診斷
+
+- 「新增資料夾 → Windows 本機／WSL／遠端」分開執行環境。WSL 預設關閉，須在「設定 → HERDR」啟用才探索或自動連線；關閉只釋放 Yuzora helper，保留設定與執行中 Session。SSH 沿用密碼／金鑰及 host-key 驗證。純 SFTP 不要求 helper。
+- 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。相容基準為 HERDR 0.9.0／private protocol 22，仍須 schema／capability 檢查。
+- 官方版本、protocol、五平台 URL／SHA-256 與 license digest 統一放在 `src-tauri/herdr-runtime.json`，由準備腳本與 native manifest guard 共用；更新該檔會觸發 helper workflow。升級時核對官方 release assets 的 digest、實際 binary schema 與 method／subscription fixtures，不能只改 protocol 數字。
+- 已保存的 WSL／SSH host 仍使用其原 binary／helper 路徑，不會因重新安裝桌面程式而自動部署。從「設定 → HERDR」選取原主機，選擇 Yuzora 管理／主機已安裝／自訂完整路徑，按「檢查／重新偵測」後套用；來源政策與實際 binary／helper 路徑分開保存，更新使用新版本目錄並保留舊檔。這是明確的使用者操作，不是全面自動更新。
+- 設定頁分別顯示目前 client 與目標來源；診斷包括 exact binary、client／schema protocol，以及 default 與所有執行中 Session 的 server version／protocol／compatible／socket。錯誤中的「修復此主機」直接定位主機設定，可複製目前與目標診斷。
+- 已安裝版本找不到時不回退管理版本。保存前重新驗證相容性；驗證失敗保留原設定。原生來源變更保存後需重新啟動 **Yuzora** 才生效，並顯示待生效路徑；不停止或重啟 HERDR server。
+- WSL server 顯示 0.9.0 不表示 client 已升級：若保存路徑仍指向舊管理目錄，實際 client 可能是 0.8.2／protocol 20。必須使用設定顯示的完整路徑查 `status --json`，不能拿另一個 PATH binary 的版本代替。
+- 0.9.0 的 `server.compatible` 仍代表 private protocol 相容；`endpoint_compatible` 與 endpoint generation 是另一套契約，不可用來放寬現有 terminal connector gate。`restart_needed` 不是必須停止 server 的命令；client 比 server 舊時，先更新 client，保留正在執行的 Sessions。
+- 0.9.0 新事件訂閱只接收 live events；Yuzora 在 subscription acknowledgement 後補讀快照，涵蓋 bootstrap snapshot 與訂閱之間的變更。
+- HERDR 升級候選需在原本受影響的 WSL／SSH host 驗證：client／server versions、protocols、socket、舊 managed 設定更新、既有程序存續、snapshot／events／terminal observe／control／input／resize。另見 `docs/research/herdr-runtime-upgrade-prevention-2026-09-09.md` 的長期方案與驗證矩陣。
+- Windows 本機使用 HERDR 官方 named pipe，macOS／Linux 本機使用 Unix socket；SSH 使用 direct-streamlocal；WSL 由 `wsl.exe --distribution … --exec` 啟動 helper，不需 sshd。Named Session socket 從來源主機 discovery 取得，不拼接猜測。
+- 版本不相容時先記錄 hostId、session、實際 binary／socket、版本及錯誤。不要自動停止既有 server；需重啟時由使用者先保存該主機上的工作。
+- SSH／WSL 身分變更必須重新驗證；顯示名稱變更不改 hostId。保留 dirty buffer，重連確認外部 revision 後才能儲存。
+
+### CI 編譯與測試隔離
+
+一般 Rust compile／database integration jobs 使用 `TAURI_CONFIG={"bundle":{"resources":[]}}`，讓乾淨 checkout 不依賴未下載的 installer payload。此設定只屬編譯／測試 jobs；candidate／Release 必須保留實際 resources 與 `runtime:verify`、installer payload gate，不得沿用空資源設定。
+
+Helper 程序測試使用隔離的 shell／npm fixture，避免 CI runner 的 login profile 改寫測試 PATH；工作區替換測試保留原 inode，確保測到不同的檔案系統身分；SQLite 取消測試沿用正式查詢的 pre-step cancellation guard。
+
+Host helper workflow 在上傳四平台 payload 前執行 `bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/<target>/herdr`。測試使用暫存 XDG roots 與獨立 named Session，驗證實際 bundled binary 的版本／protocol／method schema、subscription ack 後讀取 snapshot、live workspace event、官方 terminal observer／controller、輸入與 resize，最後只停止自身建立的 Session。Windows candidate／Release 也以原生 HERDR 執行相同契約測試，額外隔離 APPDATA／LOCALAPPDATA，驗證 named pipe 與 PowerShell 終端；不修改 HOME。此 gate 不代表 Yuzora UI、既有 host 路徑遷移、混合版本 server 或原 Windows／WSL 工作存續已驗收；本機執行 E2E 仍須遵循當次使用者授權。
+
+DB helper 若因資源上限退出，request broken pipe 與 response EOF 使用相同的既有 `valueTooLarge` 分類；不可因兩個 pipe 的關閉順序不同而變成一般 `helperIo`。程序停止測試必須確認實際 exit status，stdout 的完成訊息不代表程序已退出。
+
+### Payload 建置與驗證
+
+四個 target：`linux-x86_64`、`linux-aarch64`、`macos-x86_64`、`macos-aarch64`。在對應架構 runner 執行，例如 Linux x86-64：
+
+```bash
+bun run host:prepare linux-x86_64
+```
+
+CI 的 `host-artifacts` reusable job 產出四個 `host-<target>` artifacts；candidate／Release 合併下載至 `src-tauri/resources/host/`，再執行：
+
+```bash
+bun run runtime:verify
+cargo fmt --manifest-path src-tauri/host/Cargo.toml -- --check
+cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path src-tauri/host/Cargo.toml
+```
+
+每個 target 包含 `yuzora-host`、官方 `herdr` 與 `<target>.json` manifest，另含 HERDR license。Release reusable build 明確使用 guard 的 `source_sha`；不可混用其他 source tree 的 helper。
+
+Windows 安裝包建置後，在具備 verifier 所需解包工具的 Windows 環境驗證：
+
+```powershell
+./scripts/verify-windows-runtime-payload.ps1 -BundleDir "src-tauri/target/release/bundle"
+```
+
+本機 debug build 改用 `debug/bundle`。需 Rust MSVC、Visual Studio Build Tools／Windows SDK及 build process PATH 中的 NASM。只有 verifier 和實際安裝後 GUI 都通過才完成 Windows gate。macOS GUI 啟動前等 build exit 0，退出舊 App，核對執行中 executable 與 bundle inode／hash；產物版本字串相同不能證明是同一 build。
+
+### 舊版清理與遷移
+
+先預覽 `src-tauri/resources/legacy-cleanup/` 工具的結果，再套用。Windows 必須在移除舊安裝目錄前保留可驗證的 manifest 與既有 HERDR binary：
+
+```powershell
+./cleanup-windows-registration.ps1 -LegacyResourceRoot "<舊版資源根目錄>" -HerdrPath "<既有 herdr.exe>"
+# 確認預覽中的 exact owned registration 後，使用相同參數加 -Apply。
+```
+
+各 WSL distro 內先預覽：
+
+```bash
+sh cleanup-wsl-adapter.sh "$HOME/.pi/agent"
+# 確認預覽後：
+sh cleanup-wsl-adapter.sh --apply "$HOME/.pi/agent"
+```
+
+自訂 `PI_CODING_AGENT_DIR` 時傳入實際 Agent 目錄。工具只處理符合雜湊／receipt／registration root 的 Yuzora 檔案，修改過的內容保留；不刪官方 integration、使用者 hooks、外部 runtime 或 session。Windows helper 不啟停 HERDR，未執行時保留狀態並停止清理。不得以刪除整個 `.pi`／HERDR／WSL 目錄作為替代。
+
+舊 SSH 主機遷入共用清單；Windows 本機工作區直接恢復，既有 WSL 工作區保留發行版身分，停用時延後恢復。保留歷史 session，不推測 Agent Session ID，不宣稱搬移執行中的程序。
+
+### 發布前證據
+
+記錄 source commit／tree、平台、installer SHA256、四平台 manifest、測試命令與結果、GUI acceptance及未完成項目。工作樹未提交時只能記錄本機 checkpoint，遠端舊 PR 的綠燈與 candidate 不涵蓋新修改。完整矩陣未通過前，不設定 accepted-tree attestation、不 merge、不發布；沿用第 5 節的使用者候選驗證與明確 merge 核准流程。

@@ -89,7 +89,7 @@ beforeEach(() => {
   useWorkspaceStore.setState({ sessionRestoreReady: false })
   useHerdrStore.setState({
     ...herdrInitialState,
-    sessions,
+    sessions: sessions.slice(0, 1),
     selectedSessionName: "default",
     connectionState: "ready",
     capabilities,
@@ -113,6 +113,54 @@ afterEach(() => {
 })
 
 describe("HerdrBridge event ownership", () => {
+  it("takes a fresh snapshot after the live-only subscription is acknowledged", async () => {
+    let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
+    eventIpc.subscribe.mockImplementation(async ({ onEvent }: { onEvent: (event: HerdrSubscriptionEvent) => void }) => {
+      callback = onEvent
+      return "sub-live-only"
+    })
+    render(<HerdrBridge />)
+    await waitFor(() => expect(callback).toBeDefined())
+    const refresh = useHerdrStore.getState().refreshSnapshot
+    const before = vi.mocked(refresh).mock.calls.length
+    act(() => callback?.({ type: "subscribed", subscriptionId: "sub-live-only" }))
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(before + 1), { timeout: 700 })
+  })
+
+  it("replaces per-pane selectors only when pane membership changes and drops the old callback", async () => {
+    const callbacks: Array<(event: HerdrSubscriptionEvent) => void> = []
+    eventIpc.subscribe.mockImplementation(async ({ onEvent }: { onEvent: (event: HerdrSubscriptionEvent) => void }) => {
+      callbacks.push(onEvent)
+      const id = `sub-${callbacks.length}`
+      onEvent({ type: "subscribed", subscriptionId: id })
+      return id
+    })
+    const snapshot = {
+      herdrSessionId: "default", protocol: 20, version: "0.8.2",
+      spaces: [], agents: [], tabs: [], terminals: [{ terminalId: "term-1", paneId: "w1:p1" }], raw: {}
+    }
+    const setSnapshot = (value: typeof snapshot) => {
+      const state = useHerdrStore.getState()
+      useHerdrStore.setState({ runtimesBySession: {
+        ...state.runtimesBySession,
+        default: { ...state.runtimesBySession.default!, snapshot: value }
+      } })
+    }
+    setSnapshot(snapshot)
+    render(<HerdrBridge />)
+    await waitFor(() => expect(callbacks).toHaveLength(1))
+    expect(eventIpc.subscribe.mock.calls[0][0].paneIds).toEqual(["w1:p1"])
+    await act(async () => { setSnapshot({ ...snapshot, raw: { revision: 2 } }) })
+    expect(callbacks).toHaveLength(1)
+    await act(async () => { setSnapshot({ ...snapshot, terminals: [...snapshot.terminals, { terminalId: "term-2", paneId: "w1:p2" }] }) })
+    await waitFor(() => expect(callbacks).toHaveLength(2))
+    expect(eventIpc.release).toHaveBeenCalledWith("sub-1")
+    expect(eventIpc.subscribe.mock.calls[1][0].paneIds).toEqual(["w1:p1", "w1:p2"])
+    const revision = useHerdrStore.getState().topologyRevision
+    await act(async () => { callbacks[0]({ type: "pane_exited", subscriptionId: "sub-1", paneId: "w1:p1", workspaceId: "w1" }) })
+    expect(useHerdrStore.getState().topologyRevision).toBe(revision)
+  })
+
   it("refreshes snapshot and BSP topology when Herdr reports pane exit", async () => {
     let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
     const refreshSnapshot = vi.fn(async () => true)
@@ -211,7 +259,8 @@ describe("HerdrBridge event ownership", () => {
     await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledWith("default"))
   })
 
-  it("rejects late events from the previous named session", async () => {
+  it("keeps background sessions subscribed and isolates their attention", async () => {
+    useHerdrStore.setState({ sessions })
     const callbacks = new Map<string, (event: HerdrSubscriptionEvent) => void>()
     eventIpc.subscribe.mockImplementation(
       async ({
@@ -253,7 +302,7 @@ describe("HerdrBridge event ownership", () => {
       })
     })
     expect(useHerdrStore.getState().attentionItems("work")).toHaveLength(0)
-    expect(useHerdrStore.getState().attentionItems("default")).toHaveLength(0)
+    expect(useHerdrStore.getState().attentionItems("default")).toHaveLength(1)
 
     act(() => {
       callbacks.get("work")?.({
@@ -267,6 +316,10 @@ describe("HerdrBridge event ownership", () => {
       })
     })
     expect(useHerdrStore.getState().attentionItems("work")[0]?.title).toBe("Current")
+    expect(useHerdrStore.getState().attentionItems()).toHaveLength(2)
+    expect(eventIpc.release).not.toHaveBeenCalledWith("sub-default")
+    cleanup()
     expect(eventIpc.release).toHaveBeenCalledWith("sub-default")
+    expect(eventIpc.release).toHaveBeenCalledWith("sub-work")
   })
 })

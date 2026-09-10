@@ -1,11 +1,12 @@
+import { SftpHost, SshAuthenticationHost } from "@/workbench/SftpHost";
 import { AppShell } from "@/app/AppShell";
+import { FolderPickerHost } from "@/workbench/FolderPickerHost";
+import { HostConnectionsBridge } from "@/workbench/HostConnectionsBridge";
 import { ExternalChangeBridge } from "@/workbench/ExternalChangeBridge";
 import { ExternalChangeResolver } from "@/workbench/ExternalChangeResolver";
 import { GitBridge } from "@/workbench/GitBridge";
 import { FileDropBridge } from "@/workbench/FileDropBridge";
-import { LspBridge } from "@/workbench/LspBridge";
 import { HerdrBridge } from "@/workbench/HerdrBridge";
-import { ProcessBridge } from "@/workbench/ProcessBridge";
 import { SshBridge } from "@/workbench/SshBridge";
 import { SshHostKeyHost } from "@/workbench/SshHostKeyHost";
 import { PerfBridge } from "@/workbench/PerfBridge";
@@ -21,16 +22,18 @@ function App() {
   return (
     <>
       <AppShell />
+      <FolderPickerHost />
+      <HostConnectionsBridge />
       <ExternalChangeBridge />
       <ExternalChangeResolver />
       <GitBridge />
       <FileDropBridge />
-      <LspBridge />
       <SessionRestoreBridge />
       <HerdrBridge />
-      <ProcessBridge />
       <SshBridge />
       <SshHostKeyHost />
+      <SftpHost />
+      <SshAuthenticationHost />
       <PerfBridge />
       <AskpassHost />
       <WorkspaceTrustHost />

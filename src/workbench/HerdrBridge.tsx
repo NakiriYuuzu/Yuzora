@@ -1,255 +1,51 @@
 import { useEffect, useRef } from "react"
-
 import { herdrEventsRelease, herdrEventsSubscribe } from "@/lib/herdrIpc"
+import { runtimeOwner, sessionScope } from "@/lib/herdrProvider"
 import { isHerdrPagePath } from "@/lib/herdrPages"
+import { canonicalPathKey } from "@/lib/paths"
 import { useHerdrStore } from "@/state/herdrStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import {
-  HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS,
-  shouldPollHerdrSnapshots,
-  shouldRefreshWorktreeInventory
-} from "@/workbench/herdrBridgePolicy"
+import { HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS, shouldPollHerdrSnapshots, shouldRefreshWorktreeInventory } from "./herdrBridgePolicy"
 
-const SNAPSHOT_POLL_MS = 4000
-const WORKTREE_INVENTORY_FALLBACK_MS = 30_000
-const RETRY_BASE_MS = 1000
-const RETRY_MAX_MS = 16000
-const EVENT_REFRESH_DEBOUNCE_MS = 250
+interface RuntimeSubscription {
+  scope: string
+  identity: string
+  inFlight: boolean
+  connecting: boolean
+  subscriptionId: string | null
+  subscriptionGeneration: number
+  paneKey: string | null
+  attempts: number
+  nextAttempt: number
+  lastSnapshot: number
+  lastInventory: number
+  refreshTimer: ReturnType<typeof setTimeout> | null
+  retryTimer: ReturnType<typeof setTimeout> | null
+}
 
-/**
- * Headless Herdr bridge.
- * - Refreshes named sessions every 4s.
- * - Bootstraps/polls snapshot only for the selected running session.
- * - Owns one events.subscribe stream per selected running session when available.
- * - Recovers from transient failures with bounded backoff.
- * - Reconciles attachments against open herdr-terminal pages.
- * - Never starts stopped sessions / TUI / server.
- */
+/** Each running runtime owns its polling/backoff and event stream. Only the
+ * focused runtime restores the visible workspace; all runtimes feed attention. */
 export function HerdrBridge() {
   const cancelledRef = useRef(false)
-  const inFlightRef = useRef(false)
-  const attemptRef = useRef(0)
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const restoredFocusRef = useRef(new Map<string, string>())
   const restoringFocusRef = useRef(new Set<string>())
-  const eventOwnerRef = useRef<{
-    sessionName: string
-    generation: number
-    subscriptionId: string | null
-    terminating: boolean
-  } | null>(null)
-  const eventGenerationRef = useRef(0)
-  const eventDesiredSessionRef = useRef<string | null>(null)
-  const eventRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const eventRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const eventRetryAttemptRef = useRef(0)
-  const eventConnectInFlightRef = useRef(false)
-  const lastWorktreeInventoryRefreshRef = useRef(new Map<string, number>())
-  const lastSnapshotSuccessRef = useRef(new Map<string, number>())
 
   useEffect(() => {
     cancelledRef.current = false
-    attemptRef.current = 0
-
-    const clearRetryTimer = () => {
-      if (retryTimerRef.current !== null) {
-        clearTimeout(retryTimerRef.current)
-        retryTimerRef.current = null
-      }
+    const active = new Map<string, RuntimeSubscription>()
+    let listing = false
+    const current = (entry: RuntimeSubscription) => !cancelledRef.current && active.get(entry.scope) === entry
+    const release = (entry: RuntimeSubscription) => {
+      entry.subscriptionGeneration++
+      if (entry.refreshTimer) clearTimeout(entry.refreshTimer)
+      if (entry.retryTimer) clearTimeout(entry.retryTimer)
+      entry.refreshTimer = null
+      entry.retryTimer = null
+      const id = entry.subscriptionId
+      entry.subscriptionId = null
+      useHerdrStore.getState().setEventsHealth(entry.scope, false, null)
+      if (id) void herdrEventsRelease(id).catch(() => undefined)
     }
-
-    const clearEventRefreshTimer = () => {
-      if (eventRefreshTimerRef.current !== null) {
-        clearTimeout(eventRefreshTimerRef.current)
-        eventRefreshTimerRef.current = null
-      }
-    }
-
-    const clearEventRetryTimer = () => {
-      if (eventRetryTimerRef.current !== null) {
-        clearTimeout(eventRetryTimerRef.current)
-        eventRetryTimerRef.current = null
-      }
-    }
-
-    const scheduleEventDrivenRefresh = (sessionName: string) => {
-      clearEventRefreshTimer()
-      eventRefreshTimerRef.current = setTimeout(() => {
-        eventRefreshTimerRef.current = null
-        if (
-          cancelledRef.current ||
-          useHerdrStore.getState().selectedSessionName !== sessionName
-        ) {
-          return
-        }
-        void useHerdrStore.getState().refreshSnapshot(sessionName).then((ok) => {
-          if (ok) lastSnapshotSuccessRef.current.set(sessionName, Date.now())
-        })
-      }, EVENT_REFRESH_DEBOUNCE_MS)
-    }
-
-    let ensureEventSubscription: (sessionName: string) => Promise<void>
-
-    const scheduleEventReconnect = (sessionName: string) => {
-      if (
-        cancelledRef.current ||
-        eventDesiredSessionRef.current !== sessionName ||
-        useHerdrStore.getState().selectedSessionName !== sessionName
-      ) {
-        return
-      }
-      clearEventRetryTimer()
-      const exp = Math.min(eventRetryAttemptRef.current, 4)
-      const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** exp)
-      eventRetryAttemptRef.current += 1
-      eventRetryTimerRef.current = setTimeout(() => {
-        eventRetryTimerRef.current = null
-        void ensureEventSubscription(sessionName)
-      }, delay)
-    }
-
-    const releaseEventSubscription = async () => {
-      const owner = eventOwnerRef.current
-      if (owner) {
-        owner.terminating = true
-        if (eventGenerationRef.current === owner.generation) {
-          eventGenerationRef.current += 1
-        }
-        eventOwnerRef.current = null
-        useHerdrStore.getState().setEventsHealth(owner.sessionName, false, null)
-      }
-      if (owner?.subscriptionId) {
-        await herdrEventsRelease(owner.subscriptionId).catch(() => undefined)
-      }
-    }
-
-    ensureEventSubscription = async (sessionName: string) => {
-      eventDesiredSessionRef.current = sessionName
-      if (cancelledRef.current || eventConnectInFlightRef.current) return
-      const state = useHerdrStore.getState()
-      if (state.selectedSessionName !== sessionName) return
-      const caps = state.runtimesBySession[sessionName]?.capabilities
-      if (
-        !caps?.api.eventsSubscribe ||
-        caps.events.status !== "available" ||
-        !caps.server.running
-      ) {
-        if (eventOwnerRef.current) await releaseEventSubscription()
-        state.setEventsHealth(sessionName, false, null)
-        return
-      }
-      if (
-        eventOwnerRef.current?.sessionName === sessionName &&
-        !eventOwnerRef.current.terminating
-      ) {
-        return
-      }
-
-      eventConnectInFlightRef.current = true
-      if (eventOwnerRef.current) await releaseEventSubscription()
-      const owner = {
-        sessionName,
-        generation: ++eventGenerationRef.current,
-        subscriptionId: null as string | null,
-        terminating: false
-      }
-      eventOwnerRef.current = owner
-      state.setEventsHealth(sessionName, false, null)
-      try {
-        const subscriptionId = await herdrEventsSubscribe({
-          sessionName,
-          onEvent: (event) => {
-            if (
-              cancelledRef.current ||
-              owner.terminating ||
-              owner.generation !== eventGenerationRef.current ||
-              eventOwnerRef.current !== owner ||
-              eventDesiredSessionRef.current !== sessionName ||
-              useHerdrStore.getState().selectedSessionName !== sessionName
-            ) {
-              return
-            }
-            if (event.type === "subscribed") {
-              owner.subscriptionId = event.subscriptionId
-              eventRetryAttemptRef.current = 0
-              clearEventRetryTimer()
-              useHerdrStore.getState().applySubscriptionEvent(sessionName, event)
-              return
-            }
-            if (!owner.subscriptionId || event.subscriptionId !== owner.subscriptionId) return
-            useHerdrStore.getState().applySubscriptionEvent(sessionName, event)
-            if (
-              event.type === "agent_status_changed" ||
-              event.type === "pane_exited" ||
-              event.type === "worktree_changed" ||
-              event.type === "topology_changed"
-            ) {
-              if (event.type === "pane_exited" || event.type === "topology_changed") {
-                useHerdrStore.getState().bumpTopologyRevision()
-              }
-              // Store owns worktree inventory dirty reconciliation. This bridge
-              // only schedules the authoritative snapshot recovery pass.
-              scheduleEventDrivenRefresh(sessionName)
-              return
-            }
-            if (event.type === "disconnected" || event.type === "error") {
-              owner.terminating = true
-              if (eventOwnerRef.current === owner) eventOwnerRef.current = null
-              scheduleEventDrivenRefresh(sessionName)
-              void herdrEventsRelease(event.subscriptionId)
-                .catch(() => undefined)
-                .finally(() => scheduleEventReconnect(sessionName))
-            }
-          }
-        })
-        const stillOwner =
-          !cancelledRef.current &&
-          !owner.terminating &&
-          eventOwnerRef.current === owner &&
-          eventDesiredSessionRef.current === sessionName &&
-          useHerdrStore.getState().selectedSessionName === sessionName
-        if (!stillOwner || (owner.subscriptionId && owner.subscriptionId !== subscriptionId)) {
-          owner.terminating = true
-          if (eventOwnerRef.current === owner) eventOwnerRef.current = null
-          await herdrEventsRelease(subscriptionId).catch(() => undefined)
-          return
-        }
-        owner.subscriptionId = subscriptionId
-        eventRetryAttemptRef.current = 0
-        clearEventRetryTimer()
-        useHerdrStore.getState().setEventsHealth(sessionName, true, subscriptionId)
-      } catch {
-        owner.terminating = true
-        if (eventOwnerRef.current === owner) eventOwnerRef.current = null
-        useHerdrStore.getState().setEventsHealth(sessionName, false, null)
-        scheduleEventDrivenRefresh(sessionName)
-        scheduleEventReconnect(sessionName)
-      } finally {
-        eventConnectInFlightRef.current = false
-        const desired = eventDesiredSessionRef.current
-        if (
-          desired &&
-          desired !== sessionName &&
-          useHerdrStore.getState().selectedSessionName === desired
-        ) {
-          void ensureEventSubscription(desired)
-        }
-      }
-    }
-
-    const scheduleRetry = () => {
-      if (cancelledRef.current) return
-      clearRetryTimer()
-      const exp = Math.min(attemptRef.current, 4)
-      const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** exp)
-      attemptRef.current += 1
-      retryTimerRef.current = setTimeout(() => {
-        retryTimerRef.current = null
-        void ensureConnected()
-      }, delay)
-    }
-
     const maybeRestoreFocusedView = async (sessionName: string) => {
       if (
         cancelledRef.current ||
@@ -260,6 +56,12 @@ export function HerdrBridge() {
       if (!useWorkspaceStore.getState().sessionRestoreReady) return
       const snapshot = useHerdrStore.getState().runtimesBySession[sessionName]?.snapshot
       if (!snapshot?.focusedWorkspaceId || !snapshot.focusedTabId) return
+      const workspace = useWorkspaceStore.getState().workspacePath
+      const root = snapshot.spaces.find((space) => space.id === snapshot.focusedWorkspaceId)?.path
+      // Background snapshots only restore terminals inside an already-open folder.
+      // Runtime-only Spaces must wait for explicit activation, including when
+      // Yuzora has no workspace; otherwise cancelled folder pickers reopen on refresh.
+      if (!workspace || !root || canonicalPathKey(workspace) !== canonicalPathKey(root)) return
       const focusKey = `${snapshot.focusedWorkspaceId}:${snapshot.focusedTabId}`
       if (restoredFocusRef.current.get(sessionName) === focusKey) return
       if (restoringFocusRef.current.has(sessionName)) return
@@ -290,168 +92,176 @@ export function HerdrBridge() {
       }
     }
 
-    const ensureConnected = async () => {
-      if (cancelledRef.current || inFlightRef.current) return
-      inFlightRef.current = true
-      try {
-        await useHerdrStore.getState().refreshSessions()
-        if (cancelledRef.current) return
 
-        const state = useHerdrStore.getState()
-        const selected = state.selectedSession()
-        if (!selected) return
-        eventDesiredSessionRef.current = selected.running ? selected.name : null
-
-        if (!selected.running) {
-          clearEventRetryTimer()
-          await releaseEventSubscription()
-          if (state.selectedSessionName) {
-            await state.selectSession(selected.name)
-          }
-          attemptRef.current = 0
-          return
-        }
-
-        if (state.connectionState === "ready" && state.selectedSessionName === selected.name) {
-          attemptRef.current = 0
-          await state.refreshSnapshot(selected.name)
-          if (useHerdrStore.getState().selectedSessionName !== selected.name) return
-          await ensureEventSubscription(selected.name)
-          await maybeRestoreFocusedView(selected.name)
-          if (
-            !cancelledRef.current &&
-            useHerdrStore.getState().connectionState === "error"
-          ) {
-            scheduleRetry()
-          }
-          return
-        }
-
-        await state.bootstrap(selected.name)
-        if (
-          cancelledRef.current ||
-          useHerdrStore.getState().selectedSessionName !== selected.name
-        ) {
-          return
-        }
-
-        const next = useHerdrStore.getState().connectionState
-        if (next === "ready" || next === "stopped") {
-          attemptRef.current = 0
-          if (next === "ready") {
-            await ensureEventSubscription(selected.name)
-            await maybeRestoreFocusedView(selected.name)
-          } else {
-            await releaseEventSubscription()
-          }
-          return
-        }
-        if (next === "error") {
-          scheduleRetry()
-        }
-      } finally {
-        inFlightRef.current = false
-      }
+    const scheduleRefresh = (entry: RuntimeSubscription) => {
+      if (!current(entry) || entry.refreshTimer) return
+      entry.refreshTimer = setTimeout(() => {
+        entry.refreshTimer = null
+        if (current(entry)) void refresh(entry, true)
+      }, 250)
     }
 
-    void ensureConnected()
+    const subscribe = async (entry: RuntimeSubscription) => {
+      if (!current(entry) || entry.connecting || entry.retryTimer) return
+      const paneIds = [...new Set(useHerdrStore.getState().runtimesBySession[entry.scope]?.snapshot?.terminals
+        .flatMap((terminal) => terminal.paneId ? [terminal.paneId] : []) ?? [])].sort()
+      const paneKey = JSON.stringify(paneIds)
+      if (entry.subscriptionId && entry.paneKey === paneKey) return
+      const caps = useHerdrStore.getState().runtimesBySession[entry.scope]?.capabilities
+      if (!caps?.api.eventsSubscribe || caps.events.status !== "available" || !caps.server.running) return
+      entry.connecting = true
+      const generation = ++entry.subscriptionGeneration
+      const currentSubscription = () => current(entry) && entry.subscriptionGeneration === generation
+      let terminated = false
+      const retry = () => {
+        if (!current(entry) || entry.retryTimer) return
+        const delay = Math.min(16000, 1000 * 2 ** Math.min(entry.attempts++, 4))
+        entry.retryTimer = setTimeout(() => {
+          entry.retryTimer = null
+          if (current(entry)) void subscribe(entry)
+        }, delay)
+      }
+      try {
+        const previousId = entry.subscriptionId
+        entry.subscriptionId = null
+        if (previousId) {
+          useHerdrStore.getState().setEventsHealth(entry.scope, false, null)
+          await herdrEventsRelease(previousId).catch(() => undefined)
+          if (!currentSubscription()) return
+        }
+        entry.paneKey = paneKey
+        const id = await herdrEventsSubscribe({
+          sessionName: entry.scope,
+          paneIds,
+          onEvent: (event) => {
+            if (!currentSubscription() || terminated) return
+            if (event.type === "subscribed") {
+              entry.subscriptionId = event.subscriptionId
+              entry.attempts = 0
+              // Protocol 22 subscriptions start with live events. Reconcile after
+              // acknowledgement to cover changes since the bootstrap snapshot.
+              scheduleRefresh(entry)
+            } else if (!entry.subscriptionId || event.subscriptionId !== entry.subscriptionId) return
+            useHerdrStore.getState().applySubscriptionEvent(entry.scope, event)
+            if (event.type === "disconnected" || event.type === "error") {
+              terminated = true
+              entry.subscriptionId = null
+              void herdrEventsRelease(event.subscriptionId).catch(() => undefined)
+              scheduleRefresh(entry)
+              retry()
+            } else if (event.type !== "subscribed") {
+              if (event.type === "pane_exited" || event.type === "topology_changed") useHerdrStore.getState().bumpTopologyRevision()
+              scheduleRefresh(entry)
+            }
+          }
+        })
+        if (!currentSubscription() || terminated || (entry.subscriptionId && entry.subscriptionId !== id)) {
+          await herdrEventsRelease(id).catch(() => undefined)
+          return
+        }
+        entry.subscriptionId = id
+        entry.attempts = 0
+        useHerdrStore.getState().setEventsHealth(entry.scope, true, id)
+      } catch {
+        if (currentSubscription()) {
+          entry.subscriptionId = null
+          useHerdrStore.getState().setEventsHealth(entry.scope, false, null)
+          retry()
+        }
+      } finally { entry.connecting = false }
+    }
 
+    const refresh = async (entry: RuntimeSubscription, force = false) => {
+      if (!current(entry) || entry.inFlight || (!force && Date.now() < entry.nextAttempt)) return
+      entry.inFlight = true
+      try {
+        const state = useHerdrStore.getState()
+        const runtime = state.runtimesBySession[entry.scope]
+        let ok = true
+        if (runtime?.connectionState !== "ready") {
+          await state.bootstrap(entry.scope)
+          ok = useHerdrStore.getState().runtimesBySession[entry.scope]?.connectionState === "ready"
+        } else if (force || shouldPollHerdrSnapshots(runtime.capabilities, !!entry.subscriptionId, Date.now() - entry.lastSnapshot, HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS)) {
+          ok = await state.refreshSnapshot(entry.scope)
+          if (ok) entry.lastSnapshot = Date.now()
+        }
+        if (!current(entry)) return
+        if (!ok) {
+          entry.nextAttempt = Date.now() + Math.min(16000, 1000 * 2 ** Math.min(entry.attempts++, 4))
+          return
+        }
+        entry.nextAttempt = 0
+        const latest = useHerdrStore.getState().runtimesBySession[entry.scope]
+        if (shouldRefreshWorktreeInventory(latest?.capabilities ?? null, Date.now() - entry.lastInventory, 30000)) {
+          entry.lastInventory = Date.now()
+          void useHerdrStore.getState().refreshWorktreeInventory(entry.scope).catch(() => undefined)
+        }
+        void subscribe(entry)
+        await maybeRestoreFocusedView(entry.scope)
+      } finally { entry.inFlight = false }
+    }
+
+    const reconcileRuntimes = () => {
+      const wanted = new Map<string, string>()
+      for (const session of useHerdrStore.getState().sessions) {
+        const scope = sessionScope(session)!
+        if (session.running) wanted.set(scope, JSON.stringify([runtimeOwner(scope), session.socketPath]))
+      }
+      for (const [scope, entry] of active) {
+        if (wanted.get(scope) !== entry.identity) {
+          active.delete(scope)
+          release(entry)
+          restoredFocusRef.current.delete(scope)
+        }
+      }
+      for (const [scope, identity] of wanted) {
+        let entry = active.get(scope)
+        if (!entry) {
+          entry = {scope, identity, inFlight:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
+          active.set(scope, entry)
+        }
+        void refresh(entry).catch(() => undefined)
+      }
+    }
+    const poll = async () => {
+      if (listing || cancelledRef.current) return
+      listing = true
+      try {
+        await useHerdrStore.getState().refreshSessions()
+        if (!cancelledRef.current) reconcileRuntimes()
+      } finally { listing = false }
+    }
+    void poll()
+    const interval = setInterval(() => void poll(), 4000)
     const unsubscribeWorkspaceRestore = useWorkspaceStore.subscribe((state, previous) => {
       if (!state.sessionRestoreReady || previous.sessionRestoreReady) return
-      const sessionName = useHerdrStore.getState().selectedSessionName
-      if (sessionName) void maybeRestoreFocusedView(sessionName)
+      const scope = useHerdrStore.getState().selectedSessionName
+      if (scope) void maybeRestoreFocusedView(scope)
     })
-    const unsubscribeHerdrFocus = useHerdrStore.subscribe((state, previous) => {
-      const sessionName = state.selectedSessionName
-      if (sessionName !== previous.selectedSessionName) {
-        eventDesiredSessionRef.current = sessionName
-        eventRetryAttemptRef.current = 0
-        clearEventRetryTimer()
-        if (sessionName) state.setEventsHealth(sessionName, false, null)
-        void releaseEventSubscription().then(() => {
-          if (sessionName) void ensureEventSubscription(sessionName)
-        })
+    const unsubscribeFocus = useHerdrStore.subscribe((state, previous) => {
+      for (const [runtimeScope, entry] of active) {
+        if (state.runtimesBySession[runtimeScope]?.snapshot !== previous.runtimesBySession[runtimeScope]?.snapshot) {
+          void subscribe(entry)
+        }
       }
-      if (!sessionName) return
-      const snapshot = state.runtimesBySession[sessionName]?.snapshot
-      const previousSnapshot = previous.runtimesBySession[sessionName]?.snapshot
-      if (sessionName !== previous.selectedSessionName || snapshot !== previousSnapshot) {
-        void maybeRestoreFocusedView(sessionName)
+      const scope = state.selectedSessionName
+      if (!scope) return
+      if (scope !== previous.selectedSessionName) {
+        const entry = active.get(scope)
+        state.setEventsHealth(scope, !!entry?.subscriptionId, entry?.subscriptionId ?? null)
+      }
+      if (scope !== previous.selectedSessionName || state.runtimesBySession[scope]?.snapshot !== previous.runtimesBySession[scope]?.snapshot) {
+        void maybeRestoreFocusedView(scope)
       }
     })
-
-    pollTimerRef.current = setInterval(() => {
-      if (cancelledRef.current || inFlightRef.current) return
-      const state = useHerdrStore.getState()
-      void state.refreshSessions().then(() => {
-        if (cancelledRef.current) return
-        const latest = useHerdrStore.getState()
-        const selected = latest.selectedSession()
-        if (!selected) return
-        if (!selected.running) {
-          eventDesiredSessionRef.current = null
-          clearEventRetryTimer()
-          void releaseEventSubscription()
-          return
-        }
-        if (latest.connectionState === "ready") {
-          void ensureEventSubscription(selected.name)
-          const now = Date.now()
-          const lastInventoryRefresh =
-            lastWorktreeInventoryRefreshRef.current.get(selected.name) ?? 0
-          if (
-            shouldRefreshWorktreeInventory(
-              latest.capabilities,
-              now - lastInventoryRefresh,
-              WORKTREE_INVENTORY_FALLBACK_MS
-            )
-          ) {
-            lastWorktreeInventoryRefreshRef.current.set(selected.name, now)
-            void latest.refreshWorktreeInventory(selected.name)
-          }
-          const lastSnapshotSuccess =
-            lastSnapshotSuccessRef.current.get(selected.name) ?? 0
-          if (
-            !shouldPollHerdrSnapshots(
-              latest.capabilities,
-              latest.eventsHealthy,
-              now - lastSnapshotSuccess,
-              HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS
-            )
-          ) {
-            return
-          }
-          void latest.refreshSnapshot(selected.name).then((ok) => {
-            if (ok) lastSnapshotSuccessRef.current.set(selected.name, Date.now())
-            return maybeRestoreFocusedView(selected.name)
-          })
-          return
-        }
-        if (
-          latest.connectionState === "error" ||
-          latest.connectionState === "unsupported" ||
-          latest.connectionState === "idle" ||
-          latest.connectionState === "stopped"
-        ) {
-          void ensureConnected()
-        }
-      })
-    }, SNAPSHOT_POLL_MS)
-
     return () => {
       cancelledRef.current = true
-      inFlightRef.current = false
-      clearRetryTimer()
-      clearEventRefreshTimer()
-      clearEventRetryTimer()
-      eventDesiredSessionRef.current = null
+      clearInterval(interval)
       unsubscribeWorkspaceRestore()
-      unsubscribeHerdrFocus()
-      if (pollTimerRef.current !== null) {
-        clearInterval(pollTimerRef.current)
-        pollTimerRef.current = null
-      }
-      void releaseEventSubscription()
+      unsubscribeFocus()
+      const entries = [...active.values()]
+      active.clear()
+      entries.forEach(release)
       void useHerdrStore.getState().releaseAllAttachments().catch(() => undefined)
     }
   }, [])

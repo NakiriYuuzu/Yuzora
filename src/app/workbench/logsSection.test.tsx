@@ -74,12 +74,27 @@ let sanitizeCalls: string[][] = []
 let exportCalls: Array<Record<string, unknown>> = []
 let queryResult: unknown[] = []
 let sanitizeFails = false
+let recordingEnabled = true
+let recordingSaveFails = false
+let recordingLoadFails = false
+let logLevel = "info"
+let recordingCalls: boolean[] = []
 
 function setupIpc() {
   mockIPC((cmd, args) => {
     const payload = (args ?? {}) as Record<string, unknown>
     if (cmd === "log_sources") return []
-    if (cmd === "get_log_level") return "info"
+    if (cmd === "get_log_level") return logLevel
+    if (cmd === "get_log_enabled") {
+      if (recordingLoadFails) throw new Error("settings unavailable")
+      return recordingEnabled
+    }
+    if (cmd === "set_log_enabled") {
+      recordingCalls.push(payload.enabled as boolean)
+      if (recordingSaveFails) throw new Error("disk is read-only")
+      recordingEnabled = payload.enabled as boolean
+      return undefined
+    }
     if (cmd === "log_query") return queryResult
     if (cmd === "log_sanitize_lines") {
       sanitizeCalls.push(payload.lines as string[])
@@ -105,6 +120,11 @@ beforeEach(() => {
   exportCalls = []
   queryResult = [sensitiveRow]
   sanitizeFails = false
+  recordingEnabled = true
+  recordingSaveFails = false
+  recordingLoadFails = false
+  logLevel = "info"
+  recordingCalls = []
   setupIpc()
 })
 
@@ -112,6 +132,58 @@ async function renderWithRows() {
   render(<LogsSection />)
   await screen.findByTestId("log-row-connect_failed")
 }
+
+describe("LogsSection recording", () => {
+  it("disables recording, preserves verbose preference, and still shows existing logs", async () => {
+    logLevel = "debug"
+    await renderWithRows()
+    const toggle = screen.getByRole("switch", { name: "Record logs" })
+    const verbose = screen.getByRole("checkbox", { name: "Verbose logging (debug)" })
+    expect(toggle).toBeChecked()
+    expect(verbose).toBeChecked()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).not.toBeChecked())
+    expect(recordingCalls).toEqual([false])
+    expect(verbose).toBeChecked()
+    expect(verbose).toBeDisabled()
+    expect(screen.getByTestId("log-row-connect_failed")).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toBeChecked())
+    expect(recordingCalls).toEqual([false, true])
+    expect(verbose).toBeEnabled()
+    expect(verbose).toBeChecked()
+  })
+
+  it("restores the disabled setting when the section is reopened", async () => {
+    await renderWithRows()
+    fireEvent.click(screen.getByRole("switch", { name: "Record logs" }))
+    await waitFor(() => expect(recordingEnabled).toBe(false))
+    cleanup()
+    await renderWithRows()
+    expect(screen.getByRole("switch", { name: "Record logs" })).not.toBeChecked()
+    expect(screen.getByRole("checkbox", { name: "Verbose logging (debug)" })).toBeDisabled()
+  })
+
+  it("keeps recording enabled and reports a failed save", async () => {
+    recordingSaveFails = true
+    await renderWithRows()
+    const toggle = screen.getByRole("switch", { name: "Record logs" })
+    fireEvent.click(toggle)
+    expect(await screen.findByRole("alert")).toHaveTextContent("disk is read-only")
+    expect(toggle).toBeChecked()
+    expect(toggle).toBeEnabled()
+    expect(recordingEnabled).toBe(true)
+  })
+
+  it("prevents changing unknown settings if loading fails", async () => {
+    recordingLoadFails = true
+    await renderWithRows()
+    expect(screen.getByRole("alert")).toHaveTextContent("settings unavailable")
+    expect(screen.getByRole("switch", { name: "Record logs" })).toBeDisabled()
+    expect(screen.getByRole("checkbox", { name: "Verbose logging (debug)" })).toBeDisabled()
+  })
+})
 
 describe("LogsSection sanitize", () => {
   // AC 7：Copy 與 Export 的 sanitize 語意一致

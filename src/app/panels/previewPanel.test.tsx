@@ -16,10 +16,8 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 // deliberately small since the happy paths are already covered there.
 
 const ipcMocks = vi.hoisted(() => ({
+  previewNavigationState: vi.fn(),
   requestDevServerAuthorization: vi.fn(),
-  devServerDetect: vi.fn(),
-  devServerStart: vi.fn(),
-  devServerStop: vi.fn(),
   previewOpenUrl: vi.fn(),
   previewSetBounds: vi.fn(),
   previewSetVisible: vi.fn(),
@@ -47,9 +45,7 @@ vi.mock("@/state/workspaceTrustStore", async (importOriginal) => ({
 
 vi.mock("@/lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/ipc")>()),
-  devServerDetect: (...args: unknown[]) => ipcMocks.devServerDetect(...args),
-  devServerStart: (...args: unknown[]) => ipcMocks.devServerStart(...args),
-  devServerStop: (...args: unknown[]) => ipcMocks.devServerStop(...args),
+  previewNavigationState: (...args: unknown[]) => ipcMocks.previewNavigationState(...args),
   previewOpenUrl: (...args: unknown[]) => ipcMocks.previewOpenUrl(...args),
   previewSetBounds: (...args: unknown[]) => ipcMocks.previewSetBounds(...args),
   previewSetVisible: (...args: unknown[]) => ipcMocks.previewSetVisible(...args),
@@ -81,7 +77,6 @@ function installLocalStorage(): void {
   })
 }
 
-const startButton = () => screen.getByRole("button", { name: i18n.t("start", { ns: "preview" }) })
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -99,6 +94,13 @@ beforeEach(() => {
   useAppDialogStore.setState({ pending: null })
   useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
   ipcMocks.requestDevServerAuthorization.mockResolvedValue("challenge-1")
+  ipcMocks.previewBack.mockImplementation(async () => { usePreviewStore.getState().syncNativeBack("/workspace") })
+  ipcMocks.previewForward.mockImplementation(async () => { usePreviewStore.getState().syncNativeForward("/workspace") })
+  ipcMocks.previewNavigationState.mockImplementation(async () => {
+    const session = usePreviewStore.getState().nativeSession!
+    return { sessionId: session.sessionId, url: session.currentUrl,
+      canGoBack: session.backStack.length > 0, canGoForward: session.forwardStack.length > 0 }
+  })
 })
 
 afterEach(async () => {
@@ -113,110 +115,7 @@ afterEach(async () => {
   vi.clearAllMocks()
 })
 
-describe("PreviewPanel dev-server detection", () => {
-  it("renders the no-candidates guidance when detection finds nothing to run", async () => {
-    ipcMocks.devServerDetect.mockResolvedValueOnce({ candidates: [], runningPorts: [] })
-
-    render(<PreviewPanel />)
-    fireEvent.click(startButton())
-
-    expect(await screen.findByText(i18n.t("noCandidates", { ns: "preview" }))).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: i18n.t("retryDetect", { ns: "preview" }) })
-    ).toBeInTheDocument()
-    expect(ipcMocks.devServerStart).not.toHaveBeenCalled()
-  })
-
-  it("detects a candidate and auto-starts it, landing on the running status", async () => {
-    ipcMocks.devServerDetect.mockResolvedValueOnce({
-      candidates: [{ scriptName: "dev", command: "bun run dev:web", likelyPort: 4173 }],
-      runningPorts: [],
-    })
-    ipcMocks.devServerStart.mockResolvedValueOnce({
-      workspace: "/workspace",
-      command: "bun run dev:web",
-      port: 4173,
-      status: { status: "running", port: 4173 },
-    })
-
-    render(<PreviewPanel />)
-    fireEvent.click(startButton())
-
-    await waitFor(() =>
-      expect(ipcMocks.devServerStart).toHaveBeenCalledWith(
-        "/workspace",
-        "bun run dev:web",
-        4173,
-        expect.any(Function),
-        "challenge-1"
-      )
-    )
-    expect(
-      await screen.findByText(i18n.t("previewPanel.status.running", { ns: "panels" }))
-    ).toBeInTheDocument()
-  })
-})
-
-describe("PreviewPanel workspace trust", () => {
-  it("does not spawn when the user cancels the exact-command prompt", async () => {
-    ipcMocks.devServerDetect.mockResolvedValueOnce({
-      candidates: [{ scriptName: "dev", command: "bun run dev:web", likelyPort: 4173 }],
-      runningPorts: [],
-    })
-    ipcMocks.requestDevServerAuthorization.mockResolvedValueOnce(null)
-
-    render(<PreviewPanel />)
-    fireEvent.click(startButton())
-
-    await waitFor(() =>
-      expect(ipcMocks.requestDevServerAuthorization).toHaveBeenCalledWith(
-        "/workspace",
-        "bun run dev:web"
-      )
-    )
-    expect(ipcMocks.devServerStart).not.toHaveBeenCalled()
-    expect(usePreviewStore.getState().devServer).toBeNull()
-  })
-})
-
-describe("PreviewPanel start/stop lifecycle", () => {
-  it("stops a running dev server via the Stop button", async () => {
-    usePreviewStore.getState().setDevServer({
-      workspace: "/workspace",
-      command: "bun run dev:web",
-      port: 4173,
-      status: { status: "running", port: 4173 },
-    })
-    ipcMocks.devServerStop.mockResolvedValueOnce(undefined)
-
-    render(<PreviewPanel />)
-    fireEvent.click(
-      screen.getByRole("button", { name: i18n.t("previewPanel.stop", { ns: "panels" }) })
-    )
-
-    await waitFor(() => expect(ipcMocks.devServerStop).toHaveBeenCalledWith("/workspace"))
-    expect(
-      await screen.findByText(i18n.t("previewPanel.status.exited", { ns: "panels" }))
-    ).toBeInTheDocument()
-  })
-})
-
-describe("PreviewPanel error path", () => {
-  it("shows a failed status with the rejection reason when devServerStart rejects, without crashing", async () => {
-    ipcMocks.devServerDetect.mockResolvedValueOnce({
-      candidates: [{ scriptName: "dev", command: "bun run dev:web", likelyPort: 4173 }],
-      runningPorts: [],
-    })
-    ipcMocks.devServerStart.mockRejectedValueOnce(new Error("spawn ENOENT"))
-
-    render(<PreviewPanel />)
-    fireEvent.click(startButton())
-
-    expect(await screen.findByText("spawn ENOENT")).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: i18n.t("retryStart", { ns: "preview" }) })
-    ).toBeInTheDocument()
-  })
+describe("PreviewPanel", () => {
 
   it.each([
     ["localhost:5173", "http://localhost:5173"],
@@ -247,7 +146,7 @@ describe("PreviewPanel error path", () => {
       fireEvent.keyDown(input, { key: "Enter" })
 
       expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Preview URLs must use http:// or https://"
+        "Browser URLs must use http:// or https://"
       )
       expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
         .toBe("http://localhost:5173")
@@ -263,7 +162,7 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
     const { unmount } = render(<PreviewPanel />)
 
     await waitFor(() =>
-      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com", 0, 0, 0, 0)
+      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com", 0, 0, 0, 0, expect.any(String))
     )
     expect(ipcMocks.previewSetBounds).toHaveBeenCalledWith(0, 0, 0, 0)
     expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true)
@@ -271,6 +170,66 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
 
     unmount()
     await waitFor(() => expect(ipcMocks.previewClose).toHaveBeenCalled())
+  })
+
+  it.each(["http://127.0.0.1:34329", "https://example.com"])("QA26-006 reads actual native URL and history for %s", async (origin) => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    let browser = { url: `${origin}/`, canGoBack: false, canGoForward: false }
+    ipcMocks.previewNavigationState.mockImplementation(async (sessionId: string) => ({ sessionId, ...browser }))
+    ipcMocks.previewBack.mockImplementationOnce(async () => { browser = { url: `${origin}/`, canGoBack: false, canGoForward: true } })
+    ipcMocks.previewForward.mockImplementationOnce(async () => { browser = { url: `${origin}/next`, canGoBack: true, canGoForward: false } })
+    usePreviewStore.getState().navigate("/workspace", origin)
+    render(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalled())
+    expect(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) })).toBeDisabled()
+    browser = { url: `${origin}/next`, canGoBack: true, canGoForward: false }
+    await waitFor(() => expect(screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" })))
+      .toHaveValue(`${origin}/next`))
+    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) }))
+    await waitFor(() => expect(screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))).toHaveValue(`${origin}/`))
+    expect(ipcMocks.previewBack).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) }))
+    await waitFor(() => expect(screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))).toHaveValue(`${origin}/next`))
+    expect(ipcMocks.previewForward).toHaveBeenCalledTimes(1)
+    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps snapshot polling single-flight and discards results after an overlay hides the owner", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const pending = deferred<{ sessionId: string; url: string; canGoBack: boolean; canGoForward: boolean }>()
+    ipcMocks.previewNavigationState.mockImplementationOnce(() => pending.promise)
+    usePreviewStore.getState().navigate("/workspace", "https://example.com/")
+    const { unmount } = render(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1))
+    const sessionId = ipcMocks.previewNavigationState.mock.calls[0][0] as string
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+    expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1)
+    act(() => useAppDialogStore.setState({ pending: { type: "message", title: "Modal", description: "Modal", resolve: () => {} } }))
+    await act(async () => pending.resolve({ sessionId, url: "https://example.com/stale", canGoBack: true, canGoForward: false }))
+    expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe("https://example.com/")
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+    expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1)
+    act(() => useAppDialogStore.setState({ pending: null }))
+    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(2))
+    unmount()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+    expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(2)
+  })
+
+  it("discards a snapshot if a newer open generation started while it was in flight", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const pending = deferred<{ sessionId: string; url: string; canGoBack: boolean; canGoForward: boolean }>()
+    ipcMocks.previewNavigationState.mockImplementationOnce(() => pending.promise)
+    usePreviewStore.getState().navigate("/workspace", "https://example.com/")
+    render(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewNavigationState).toHaveBeenCalledTimes(1))
+    const sessionId = ipcMocks.previewNavigationState.mock.calls[0][0] as string
+    const state = usePreviewStore.getState()
+    const token = state.beginNativeOpenRequest("/workspace", "https://example.com/")
+    state.settleNativeRequest(token)
+    await act(async () => pending.resolve({ sessionId, url: "https://example.com/stale", canGoBack: true, canGoForward: false }))
+    expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe("https://example.com/")
   })
 
   it("serializes visibility behind a pending open and revalidates the latest overlay state", async () => {
@@ -404,37 +363,6 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
 })
 
 describe("PreviewPanel context-menu boundary", () => {
-  it("opens a typed preview request from toolbar and empty/error chrome", () => {
-    const { unmount } = render(<PreviewPanel />)
-
-    fireEvent.contextMenu(screen.getByTestId("preview-toolbar"), { clientX: 12, clientY: 24 })
-    expect(useContextMenuStore.getState()).toMatchObject({
-      request: {
-        kind: "preview",
-        workspacePath: "/workspace",
-        url: null,
-        serverAttempt: 0,
-      },
-      x: 12,
-      y: 24,
-    })
-
-    useContextMenuStore.getState().close()
-    fireEvent.contextMenu(screen.getByTestId("preview-empty-chrome"))
-    expect(useContextMenuStore.getState().request?.kind).toBe("preview")
-    unmount()
-
-    useContextMenuStore.getState().close()
-    usePreviewStore.getState().setDevServer({
-      workspace: "/workspace",
-      command: "bun run dev",
-      port: 5173,
-      status: { status: "failed", reason: "spawn failed" },
-    })
-    render(<PreviewPanel />)
-    fireEvent.contextMenu(screen.getByTestId("preview-error-chrome"))
-    expect(useContextMenuStore.getState().request?.kind).toBe("preview")
-  })
 
   it("does not attach the Yuzora preview menu to iframe/frame shell or native host", () => {
     usePreviewStore.getState().navigate("/workspace", "http://localhost:5173")
@@ -442,7 +370,7 @@ describe("PreviewPanel context-menu boundary", () => {
 
     fireEvent.contextMenu(screen.getByTestId("preview-frame-shell"))
     expect(useContextMenuStore.getState().request).toBeNull()
-    fireEvent.contextMenu(screen.getByTitle("Live preview"))
+    fireEvent.contextMenu(screen.getByTitle("Browser"))
     expect(useContextMenuStore.getState().request).toBeNull()
     unmount()
 
@@ -496,7 +424,7 @@ describe("PreviewPanel shared toolbar commands", () => {
       expect(screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" })))
         .toHaveValue("http://localhost:8765/")
     })
-    expect(screen.getByTitle("Live preview")).toHaveAttribute("src", "http://localhost:8765/")
+    expect(screen.getByTitle("Browser")).toHaveAttribute("src", "http://localhost:8765/")
     expect(ipcMocks.previewBack).not.toHaveBeenCalled()
   })
 
@@ -516,6 +444,7 @@ describe("PreviewPanel shared toolbar commands", () => {
     }))
     ipcMocks.previewOpenUrl.mockClear()
 
+    await waitFor(() => expect(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) }))
     await waitFor(() => {
       expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
@@ -525,6 +454,7 @@ describe("PreviewPanel shared toolbar commands", () => {
     expect(ipcMocks.previewBack).toHaveBeenCalledTimes(1)
     expect(ipcMocks.previewOpenUrl).not.toHaveBeenCalled()
 
+    await waitFor(() => expect(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) }))
     await waitFor(() => {
       expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
@@ -533,43 +463,6 @@ describe("PreviewPanel shared toolbar commands", () => {
     })
     expect(ipcMocks.previewForward).toHaveBeenCalledTimes(1)
     expect(ipcMocks.previewOpenUrl).not.toHaveBeenCalled()
-  })
-
-  it("preserves A→B→local history continuity with deterministic external fallbacks", async () => {
-    ;(globalThis as { isTauri?: boolean }).isTauri = true
-    const preview = usePreviewStore.getState()
-    preview.navigate("/workspace", "https://example.com/a")
-    render(<PreviewPanel />)
-    await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
-      .toBe("https://example.com/a"))
-    preview.navigate("/workspace", "https://example.com/b")
-    await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
-      .toBe("https://example.com/b"))
-    preview.navigate("/workspace", "http://localhost:8765/")
-    await waitFor(() => expect(screen.getByTitle("Live preview")).toBeInTheDocument())
-    expect(usePreviewStore.getState().nativeSession).toBeNull()
-    ipcMocks.previewBack.mockClear()
-    ipcMocks.previewForward.mockClear()
-    ipcMocks.previewOpenUrl.mockClear()
-
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) }))
-    await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
-      .toBe("https://example.com/b"))
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.back", { ns: "panels" }) }))
-    await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
-      .toBe("https://example.com/a"))
-    expect(ipcMocks.previewBack).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) }))
-    await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
-      .toBe("https://example.com/b"))
-    expect(ipcMocks.previewForward).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.forward", { ns: "panels" }) }))
-    await waitFor(() => expect(screen.getByTitle("Live preview")).toHaveAttribute(
-      "src",
-      "http://localhost:8765/"
-    ))
-    expect(usePreviewStore.getState().nativeSession).toBeNull()
   })
 
   it("invalidates native continuity across PreviewPanel unmount/remount", async () => {
@@ -596,10 +489,10 @@ describe("PreviewPanel shared toolbar commands", () => {
     await waitFor(() => expect(usePreviewStore.getState().nativeSession?.currentUrl)
       .toBe("https://example.com/a"))
     expect(ipcMocks.previewBack).not.toHaveBeenCalled()
-    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com/a", 0, 0, 0, 0)
+    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledWith("https://example.com/a", 0, 0, 0, 0, expect.any(String))
   })
 
-  it("invalidates the previous owner when another workspace switches to local preview", async () => {
+  it("invalidates the previous owner when another workspace switches to native local preview", async () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     const preview = usePreviewStore.getState()
     preview.navigate("/workspace", "https://example.com/a")
@@ -612,8 +505,8 @@ describe("PreviewPanel shared toolbar commands", () => {
     preview.navigate("/workspace-b", "http://localhost:8765/")
     useWorkspaceStore.setState({ workspacePath: "/workspace-b" })
 
-    await waitFor(() => expect(usePreviewStore.getState().nativeSession).toBeNull())
-    expect(ipcMocks.previewClose).toHaveBeenCalled()
+    await waitFor(() => expect(usePreviewStore.getState().nativeSession?.workspacePath).toBe("/workspace-b"))
+    expect(ipcMocks.previewOpenUrl.mock.calls[1][5]).not.toBe(ipcMocks.previewOpenUrl.mock.calls[0][5])
 
     useWorkspaceStore.setState({ workspacePath: "/workspace" })
     await waitFor(() => expect(usePreviewStore.getState().nativeSession).toMatchObject({
@@ -670,7 +563,7 @@ describe("PreviewPanel shared toolbar commands", () => {
       .toBe("https://example.com/pending")
   })
 
-  it("queues Back behind pending B and revalidates the established native history", async () => {
+  it("disables Back while the newest URL is still opening", async () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     const preview = usePreviewStore.getState()
     preview.navigate("/workspace", "https://example.com/a")
@@ -690,9 +583,9 @@ describe("PreviewPanel shared toolbar commands", () => {
     expect(ipcMocks.previewBack).not.toHaveBeenCalled()
 
     openingB.resolve(undefined)
-    await waitFor(() => expect(ipcMocks.previewBack).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
-      .toBe("https://example.com/a"))
+    await waitFor(() => expect(usePreviewStore.getState().nativeRequest).toBeNull())
+    expect(ipcMocks.previewBack).not.toHaveBeenCalled()
+    expect(usePreviewStore.getState().navForWorkspace("/workspace").url).toBe("https://example.com/b")
   })
 
   it("closes unknown native content when the newest open fails after an older success", async () => {
@@ -753,36 +646,5 @@ describe("PreviewPanel shared toolbar commands", () => {
       currentUrl: "https://example.com/b",
     }))
     expect(ipcMocks.previewClose).not.toHaveBeenCalled()
-  })
-
-  it("surfaces opener, native navigation and stop failures while preserving running state", async () => {
-    const preview = usePreviewStore.getState()
-    preview.navigate("/workspace", "https://example.com/first")
-    preview.recordNativeOpen("/workspace", "https://example.com/first")
-    preview.navigate("/workspace", "https://example.com/second")
-    preview.recordNativeOpen("/workspace", "https://example.com/second")
-    preview.setDevServer({
-      workspace: "/workspace",
-      command: "bun run dev",
-      port: null,
-      status: { status: "running", port: null },
-    })
-    ipcMocks.previewReload.mockRejectedValueOnce(new Error("native reload failed"))
-    ipcMocks.openUrl.mockRejectedValueOnce(new Error("opener failed"))
-    ipcMocks.devServerStop.mockRejectedValueOnce(new Error("stop failed"))
-    render(<PreviewPanel />)
-
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.reload", { ns: "panels" }) }))
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.openExternally", { ns: "panels" }) }))
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("previewPanel.stop", { ns: "panels" }) }))
-
-    await waitFor(() => expect(ipcMocks.showActionError).toHaveBeenCalledTimes(3))
-    expect(ipcMocks.showActionError).toHaveBeenCalledWith(
-      i18n.t("previewPanel.reload", { ns: "panels" }),
-      expect.objectContaining({ message: "native reload failed" })
-    )
-    expect(usePreviewStore.getState().devServerForWorkspace("/workspace")?.status.status)
-      .toBe("running")
-    expect(usePreviewStore.getState().attemptForWorkspace("/workspace")).toBe(0)
   })
 })

@@ -1,0 +1,7 @@
+{
+  "pin": "Pin tab",
+  "unpin": "Unpin tab",
+  "terminalUnavailableTitle": "Terminal unavailable",
+  "terminalUnavailableDescription": "Select a connected Host Runtime and a Space that supports terminal creation.",
+  "newTerminal": "New terminal"
+}

@@ -47,6 +47,7 @@ import type {
     DbProfileRecoveryRow,
     DbSaveAndConnectOutcome,
     DbProfileTarget,
+    DbSqliteWorkspace,
     PostgresInsecureException,
     PostgresTransportMode,
     DbQueryCancelResult,
@@ -97,7 +98,9 @@ export interface SavedDbConnection {
     credentialState?: DbCredentialState
     /** SQLite only. */
     path?: string
+    workspace?: DbSqliteWorkspace
     /** Network only. */
+    viaHost?: string
     host?: string
     port?: number
     database?: string
@@ -334,8 +337,8 @@ function basename(path: string): string {
 
 function targetKeyOfProfile(target: DbProfileTarget): string {
     return target.kind === "sqlite"
-        ? target.path
-        : `${target.kind}:${target.host}:${target.port}:${target.database}`
+        ? (target.workspace ? JSON.stringify(["sqlite", target.workspace.hostId, target.workspace.canonicalPath, target.path]) : target.path)
+        : `${target.viaHost ? JSON.stringify([target.viaHost]) + ":" : ""}${target.kind}:${target.host}:${target.port}:${target.database}`
 }
 
 /** Same content-derived key, computed from a saved descriptor's own fields (so
@@ -343,16 +346,17 @@ function targetKeyOfProfile(target: DbProfileTarget): string {
  *  this exact string). */
 function savedTargetKey(s: SavedDbConnection): string {
     return s.kind === "sqlite"
-        ? (s.path ?? s.id)
-        : `${s.kind}:${s.host}:${s.port}:${s.database}`
+        ? (s.workspace ? JSON.stringify(["sqlite", s.workspace.hostId, s.workspace.canonicalPath, s.path]) : (s.path ?? s.id))
+        : `${s.viaHost ? JSON.stringify([s.viaHost]) + ":" : ""}${s.kind}:${s.host}:${s.port}:${s.database}`
 }
 
 function profileTargetOf(config: DbOpenConfig): DbProfileTarget {
-    if (config.kind === "sqlite") return { kind: "sqlite", path: config.path }
+    if (config.kind === "sqlite") return { kind: "sqlite", path: config.path, ...(config.workspace ? { workspace: { hostId: config.workspace.hostId, canonicalPath: config.workspace.canonicalPath } } : {}) }
     if (config.kind === "postgres") {
         return {
             kind: "postgres",
             host: config.host,
+            ...(config.viaHost ? { viaHost: config.viaHost } : {}),
             port: config.port,
             database: config.database,
             user: config.user,
@@ -362,6 +366,7 @@ function profileTargetOf(config: DbOpenConfig): DbProfileTarget {
     return {
         kind: "mssql",
         host: config.host,
+            ...(config.viaHost ? { viaHost: config.viaHost } : {}),
         port: config.port,
         database: config.database,
         user: config.user,
@@ -383,12 +388,13 @@ function savedFromProfile(profile: DbProfileDescriptor): SavedDbConnection {
         name: profile.name,
         credentialState: profile.credentialState
     }
-    if (target.kind === "sqlite") return { ...base, path: target.path }
+    if (target.kind === "sqlite") return { ...base, path: target.path, ...(target.workspace ? { workspace: target.workspace } : {}) }
     if (target.kind === "postgres") {
         const transport = migrateLegacyPostgresTransport(target)
         return {
             ...base,
             host: target.host,
+            ...(target.viaHost ? { viaHost: target.viaHost } : {}),
             port: target.port,
             database: target.database,
             user: target.user,
@@ -398,6 +404,7 @@ function savedFromProfile(profile: DbProfileDescriptor): SavedDbConnection {
     return {
         ...base,
         host: target.host,
+            ...(target.viaHost ? { viaHost: target.viaHost } : {}),
         port: target.port,
         database: target.database,
         user: target.user,
@@ -411,7 +418,7 @@ function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null 
             descriptorId: saved.id as DbDescriptorId,
             configGeneration: saved.configGeneration ?? 1,
             name: saved.name,
-            target: { kind: "sqlite", path: saved.path },
+            target: { kind: "sqlite", path: saved.path, ...(saved.workspace ? { workspace: saved.workspace } : {}) },
             credentialState: "notRequired"
         }
     }
@@ -426,6 +433,7 @@ function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null 
             ? {
                   kind: "postgres",
                   host: saved.host,
+            ...(saved.viaHost ? { viaHost: saved.viaHost } : {}),
                   port: saved.port,
                   database: saved.database,
                   user: saved.user,
@@ -434,6 +442,7 @@ function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null 
             : {
                   kind: "mssql",
                   host: saved.host,
+            ...(saved.viaHost ? { viaHost: saved.viaHost } : {}),
                   port: saved.port,
                   database: saved.database,
                   user: saved.user,
@@ -452,7 +461,7 @@ function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null 
 
 export function savedConnectionAddress(s: SavedDbConnection): string {
     return s.kind === "sqlite"
-        ? (s.path ?? s.name)
+        ? `${s.workspace ? s.workspace.hostId + ": " : ""}${s.path ?? s.name}`
         : `${s.user ?? ""}@${s.host ?? ""}:${s.port ?? ""}/${s.database ?? ""}`
 }
 
@@ -490,8 +499,10 @@ function sanitizeSaved(s: SavedDbConnection): SavedDbConnection {
     }
     if (s.kind === "sqlite") {
         if (s.path) out.path = s.path
+        if (s.workspace) out.workspace = { hostId: s.workspace.hostId, canonicalPath: s.workspace.canonicalPath }
         return out
     }
+    if (s.viaHost) out.viaHost = s.viaHost
     out.host = s.host
     out.port = s.port
     out.database = s.database
@@ -510,7 +521,13 @@ function isSavedConnection(value: unknown): value is SavedDbConnection {
     if (typeof value !== "object" || value === null) return false
     const v = value as Record<string, unknown>
     if (typeof v.id !== "string" || typeof v.name !== "string") return false
-    if (v.kind === "sqlite") return typeof v.path === "string"
+    if (v.kind === "sqlite") {
+        if (typeof v.path !== "string") return false
+        if (v.workspace === undefined) return true
+        if (!v.workspace || typeof v.workspace !== "object") return false
+        const workspace = v.workspace as Record<string, unknown>
+        return typeof workspace.hostId === "string" && workspace.hostId.length > 0 && typeof workspace.canonicalPath === "string" && workspace.canonicalPath.startsWith("/")
+    }
     if (v.kind === "postgres" || v.kind === "mssql") {
         return (
             typeof v.host === "string" &&
@@ -1821,7 +1838,15 @@ export const useDbStore = create<DbState>()((set, get) => {
         }
     },
 
-    openConnection: (path) => get().openConfig({ kind: "sqlite", path }),
+    openConnection: async (path) => {
+        if (!path.startsWith("yuzora-fs://")) return get().openConfig({ kind: "sqlite", path })
+        const { runtimeWorkspaceService } = await import("@/lib/remoteFiles")
+        const { parseRemoteFilePath } = await import("@/lib/runtimeIdentity")
+        const source = parseRemoteFilePath(path)!
+        const service = runtimeWorkspaceService(path)
+        service.assertCurrent()
+        return get().openConfig({ kind: "sqlite", path: source.path, workspace: { hostId: service.owner.hostId, canonicalPath: service.root } })
+    },
 
     closeConnection: async (connId) => {
         // Resolve the descriptor and delegate to disconnect so a closed connection

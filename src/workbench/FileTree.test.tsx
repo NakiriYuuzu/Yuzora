@@ -1,3 +1,4 @@
+import { useDiffModalStore } from "@/state/diffModalStore"
 import { expect, test, afterEach } from "vitest"
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
@@ -113,7 +114,7 @@ test("workspace 為 repo 子目錄時 rel 以 repo root 為基準（changed 標�
     await waitFor(() => expect(screen.getByText("readme.md")).toBeTruthy())
     // changed 標記生效 → Open diff 鈕存在，且以 repo-relative path 開 diff。
     fireEvent.click(screen.getByRole("button", { name: "Open diff readme.md" }))
-    expect(useUiStore.getState().gitSelectedPath).toBe("sub/readme.md")
+    expect(useDiffModalStore.getState().source).toMatchObject({ type: "worktree", repositoryRoot: "/repo", files: [{ path: "sub/readme.md", staged: false }] })
 })
 
 test("Windows drive workspace 以 Git-relative path 命中 changed 標記", async () => {
@@ -150,10 +151,10 @@ test("Windows drive workspace 以 Git-relative path 命中 changed 標記", asyn
     render(<FileTree />)
     await waitFor(() => expect(screen.getByText("readme.md")).toBeTruthy())
     fireEvent.click(screen.getByRole("button", { name: "Open diff readme.md" }))
-    expect(useUiStore.getState().gitSelectedPath).toBe("readme.md")
+    expect(useDiffModalStore.getState().source).toMatchObject({ type: "worktree", files: [{ path: "readme.md", staged: false }] })
 })
 
-test("changed 檔案列的 Open diff 鈕呼叫 openDiffInGitMode", async () => {
+test("changed file Open diff button opens the shared modal", async () => {
     mockIPC((cmd, args) => {
         if (cmd === "list_dir") {
             const path = (args as { path: string }).path
@@ -170,13 +171,14 @@ test("changed 檔案列的 Open diff 鈕呼叫 openDiffInGitMode", async () => {
         activeGroupIndex: 0
     })
     useGitStore.setState({
+        environment: { status: "ready", root: "/w", version: "2.50.1" },
         status: { ...makeStatus(), unstaged: [{ path: "readme.md", origPath: null, status: "M" }] }
     })
     render(<FileTree />)
     await waitFor(() => expect(screen.getByText("readme.md")).toBeTruthy())
     fireEvent.click(screen.getByRole("button", { name: "Open diff readme.md" }))
-    expect(useUiStore.getState().mode).toBe("git")
-    expect(useUiStore.getState().gitSelectedPath).toBe("readme.md")
+    expect(useDiffModalStore.getState().open).toBe(true)
+    expect(useDiffModalStore.getState().source).toMatchObject({ type: "worktree", files: [{ path: "readme.md", staged: false }] })
 })
 
 // --- #59 T4b：per-workspace 樹狀態保留＋精準失效 ---

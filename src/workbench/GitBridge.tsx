@@ -6,10 +6,24 @@ import { useWorkspaceStore } from "../state/workspaceStore"
 import { useGitStore } from "../state/gitStore"
 import { useUiStore } from "../state/uiStore"
 import { useDiffModalStore } from "../state/diffModalStore"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
+import { watchRemoteGit } from "@/lib/remoteGitWatch"
+import { gitCloseWorkspace } from "@/lib/ipc"
 
 export function GitBridge() {
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const remoteCheck = useGitStore((s) => s.remoteCheck)
+    const environment = useGitStore((s) => s.environment)
+    const snapshotStale = useGitStore((s) => s.snapshotStale)
+
+    useEffect(() => {
+        if (!workspacePath || !parseRemoteFilePath(workspacePath) || snapshotStale || environment?.status !== "ready") return
+        return watchRemoteGit(workspacePath, environment.root, () => {
+            if (useWorkspaceStore.getState().workspacePath !== workspacePath) return
+            void useGitStore.getState().refresh()
+            void useGitStore.getState().loadBranches()
+        })
+    }, [workspacePath, environment, snapshotStale])
 
     // effect A: detect git environment whenever the workspace changes.
     useEffect(() => {
@@ -17,6 +31,7 @@ export function GitBridge() {
         useDiffModalStore.getState().close()
         if (!workspacePath) return
         void useGitStore.getState().detect(workspacePath)
+        return () => gitCloseWorkspace(workspacePath)
     }, [workspacePath])
 
     // effect B: refresh on backend/fs events; on window focus also poll remote.

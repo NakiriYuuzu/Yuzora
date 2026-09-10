@@ -1,0 +1,82 @@
+/* System tone follows the persisted accent. Reading, status and terminal
+   palettes retain their own tokens; no Space appearance is overwritten. */
+:root {
+  /* Lime restores the original four-color atmosphere. Other palettes keep
+     distinct cool/warm companions instead of tinting every corner one hue. */
+  --yz-glow-a-light: #e9f4c8; --yz-glow-b-light: #cdeed3;
+  --yz-glow-c-light: #c4dbf6; --yz-glow-d-light: #f6e6c8;
+  --yz-glow-a-dark: #232c18; --yz-glow-b-dark: #15261d;
+  --yz-glow-c-dark: #182236; --yz-glow-d-dark: #2a2017;
+  --yz-tone-base: #f6f5ef;
+  --yz-tone-a: var(--yz-glow-a-light);
+  --yz-tone-b: var(--yz-glow-b-light);
+  --yz-tone-c: var(--yz-glow-c-light);
+  --yz-tone-d: var(--yz-glow-d-light);
+  --yz-tone-ink: color-mix(in srgb, var(--yz-accent-ink) 75%, #2e2c28);
+  --yz-bg: radial-gradient(125% 120% at 0% 0%, var(--yz-tone-a) 0%, transparent 46%), radial-gradient(120% 115% at 100% 2%, var(--yz-tone-b) 0%, transparent 50%), radial-gradient(125% 130% at 96% 100%, var(--yz-tone-c) 0%, transparent 54%), radial-gradient(120% 120% at 8% 100%, var(--yz-tone-d) 0%, transparent 48%), var(--yz-tone-base);
+  --yz-glass: rgba(251,250,246,.48);
+  --yz-glass-strong: rgba(251,250,246,.70);
+  --yz-field: color-mix(in srgb, var(--yz-tone-base) 76%, white);
+  --yz-panel: rgba(255,255,255,.45);
+  --yz-solid: color-mix(in srgb, var(--yz-accent) 5%, white);
+  --yz-active: color-mix(in srgb, var(--yz-accent) 15%, var(--paper-1));
+  --yz-hover: color-mix(in srgb, var(--yz-accent) 9%, var(--paper-1));
+  --yz-sunk: color-mix(in srgb, var(--yz-accent) 7%, var(--paper-2));
+  --frost-light: color-mix(in srgb, var(--yz-tone-a) 12%, rgba(251,250,246,.94));
+  --primary: var(--yz-tone-ink);
+  --primary-foreground: #ffffff;
+  --secondary: var(--yz-solid);
+  --muted: var(--yz-sunk);
+  --accent: var(--yz-hover);
+  --accent-foreground: var(--yz-tone-ink);
+  --ring: var(--yz-tone-ink);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--yz-active);
+  --sidebar-accent-foreground: var(--ink-1);
+  --sidebar-ring: var(--ring);
+}
+
+:root.dark {
+  --yz-tone-base: #100f14;
+  --yz-tone-a: var(--yz-glow-a-dark);
+  --yz-tone-b: var(--yz-glow-b-dark);
+  --yz-tone-c: var(--yz-glow-c-dark);
+  --yz-tone-d: var(--yz-glow-d-dark);
+  --yz-tone-ink: color-mix(in srgb, var(--yz-accent) 45%, #e7e4df);
+  --yz-glass: rgba(34,33,40,.52);
+  --yz-glass-strong: rgba(24,23,29,.72);
+  --yz-field: color-mix(in srgb, var(--yz-accent) 8%, #242329);
+  --yz-panel: rgba(255,255,255,.04);
+  --yz-solid: color-mix(in srgb, var(--yz-accent) 11%, #302e36);
+  --yz-active: color-mix(in srgb, var(--yz-accent) 19%, #29272f);
+  --yz-hover: color-mix(in srgb, var(--yz-accent) 12%, #242329);
+  --yz-sunk: color-mix(in srgb, var(--yz-accent) 6%, #201f26);
+  --frost-light: color-mix(in srgb, var(--yz-accent) 7%, rgba(32,31,38,.97));
+  --primary-foreground: #1a191f;
+}
+
+:root[data-accent="blue"] {
+  --yz-glow-a-light:#cee0fc; --yz-glow-b-light:#caede7; --yz-glow-c-light:#dfd3f3; --yz-glow-d-light:#f6e6c8;
+  --yz-glow-a-dark:#192b43; --yz-glow-b-dark:#18342f; --yz-glow-c-dark:#2d223e; --yz-glow-d-dark:#33281d;
+}
+:root[data-accent="violet"] {
+  --yz-glow-a-light:#e3d6fa; --yz-glow-b-light:#d4e3fa; --yz-glow-c-light:#f1d3dc; --yz-glow-d-light:#d9ecd5;
+  --yz-glow-a-dark:#2f2341; --yz-glow-b-dark:#1c2d40; --yz-glow-c-dark:#362330; --yz-glow-d-dark:#203328;
+}
+:root[data-accent="coral"] {
+  --yz-glow-a-light:#fad9cd; --yz-glow-b-light:#f4e7c0; --yz-glow-c-light:#dad9f4; --yz-glow-d-light:#cceadf;
+  --yz-glow-a-dark:#392622; --yz-glow-b-dark:#3a3120; --yz-glow-c-dark:#27273d; --yz-glow-d-dark:#1b342f;
+}
+:root[data-accent="amber"] {
+  --yz-glow-a-light:#f7e6ba; --yz-glow-b-light:#ddebc6; --yz-glow-c-light:#cbdff4; --yz-glow-d-light:#f0d6de;
+  --yz-glow-a-dark:#352d1b; --yz-glow-b-dark:#25331e; --yz-glow-c-dark:#1c2b3c; --yz-glow-d-dark:#35232e;
+}
+
+.settings-topbar { background:var(--yz-glass-strong); }
+/* Opaque hover keeps primary labels readable on every accent palette. */
+[data-slot="button"]:is([data-variant="default"],:not([data-variant])):hover { background:color-mix(in srgb,var(--primary) 90%,var(--ink-1)); }
+.yz-switch[data-state="checked"] { background:var(--primary); }
+.dark .yz-switch[data-state="checked"] [data-slot="switch-thumb"] { background:var(--primary-foreground); }
+.settings-theme-sketch .theme-sketch-nav { background:color-mix(in srgb,var(--yz-accent) 10%,#ece9e0); }
+.settings-theme-sketch[data-theme-preview="dark"] .theme-sketch-nav { background:color-mix(in srgb,var(--yz-accent) 12%,#2d2b34); }

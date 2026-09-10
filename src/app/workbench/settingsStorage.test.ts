@@ -37,13 +37,20 @@ beforeEach(() => {
 })
 
 describe("appearance settings", () => {
+  it("舊版設定預設開啟兩側背景，非 boolean 值不視為使用者偏好", () => {
+    for (const sidebarFields of [{}, { leftSidebarBackground: "false", rightSidebarBackground: 0 }]) {
+      localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ theme: "light", accent: "blue", ...sidebarFields }))
+      expect(loadAppearanceSettings()).toEqual({ theme: "light", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true })
+    }
+  })
+
   it("沒有持久化值時回傳預設 auto 與 lime", () => {
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
   })
 
   it("壞 JSON 時回傳預設 auto 與 lime", () => {
     localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, "{not json")
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
   })
 
   it("非法 theme 或 accent 值時分別回傳預設值", () => {
@@ -51,12 +58,12 @@ describe("appearance settings", () => {
       APPEARANCE_SETTINGS_STORAGE_KEY,
       JSON.stringify({ theme: "neon", accent: "infrared" })
     )
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
     localStorage.setItem(
       APPEARANCE_SETTINGS_STORAGE_KEY,
       JSON.stringify({ theme: 42, accent: 42 })
     )
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime" })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
   })
 
   it("不把 Object prototype inherited keys 當成合法 accent", () => {
@@ -65,96 +72,25 @@ describe("appearance settings", () => {
         APPEARANCE_SETTINGS_STORAGE_KEY,
         JSON.stringify({ theme: "dark", accent }),
       )
-      expect(loadAppearanceSettings()).toEqual({ theme: "dark", accent: "lime" })
+      expect(loadAppearanceSettings()).toEqual({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true })
     }
   })
 
   it("save→load 往返保留合法 theme 與 accent", () => {
     for (const theme of ["light", "dark", "auto"] as const) {
-      saveAppearanceSettings({ theme, accent: "violet" })
-      expect(loadAppearanceSettings()).toEqual({ theme, accent: "violet" })
+      saveAppearanceSettings({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true })
+      expect(loadAppearanceSettings()).toEqual({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true })
     }
   })
 })
 
 describe("terminal settings", () => {
-  it("uses a structured system-default profile and cursor IME anchor by default", () => {
-    expect(loadTerminalSettings()).toMatchObject({
-      defaultProfile: {
-        id: "system",
-        name: "System default",
-        shell: "",
-        args: [],
-        kind: "system",
-        cwdStrategy: "native",
-      },
-      customProfile: {
-        id: "custom",
-        shell: "",
-        args: [],
-        kind: "custom",
-        cwdStrategy: "native",
-      },
-      imeAnchorMode: "cursor",
-    })
-  })
-
-  it("migrates the legacy shell path and whitespace args into a custom profile", () => {
-    localStorage.setItem(
-      TERMINAL_SETTINGS_STORAGE_KEY,
-      JSON.stringify({
-        shellPath: " C:\\Program Files\\PowerShell\\7\\pwsh.exe ",
-        shellArgs: "-NoLogo -NoProfile",
-      }),
-    )
-
-    expect(loadTerminalSettings()).toMatchObject({
-      defaultProfile: {
-        id: "custom",
-        shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-        args: ["-NoLogo", "-NoProfile"],
-        kind: "custom",
-        cwdStrategy: "native",
-      },
-      customProfile: {
-        id: "custom",
-        shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-        args: ["-NoLogo", "-NoProfile"],
-        kind: "custom",
-        cwdStrategy: "native",
-      },
-      imeAnchorMode: "cursor",
-    })
-  })
-
-  it("preserves structured argv entries containing spaces and validates the IME anchor", () => {
+  it("retains display preferences while ignoring removed shell profiles", () => {
     writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, {
-      defaultProfile: {
-        id: "powershell-7",
-        name: "PowerShell 7",
-        shell: "pwsh.exe",
-        args: ["-NoExit", "-Command", "Write-Output 'hello world'"],
-        kind: "powershell",
-        cwdStrategy: "native",
-      },
-      customProfile: {
-        id: "custom",
-        name: "Custom",
-        shell: "",
-        args: [],
-        kind: "custom",
-        cwdStrategy: "native",
-      },
-      imeAnchorMode: "tui",
+      shellPath: "/bin/zsh", defaultProfile: { shell: "/bin/zsh" },
+      fontSize: 18, fontFamily: "menlo", imeAnchorMode: "tui",
     })
-
-    expect(loadTerminalSettings()).toMatchObject({
-      defaultProfile: {
-        args: ["-NoExit", "-Command", "Write-Output 'hello world'"],
-      },
-      imeAnchorMode: "tui",
-    })
-
+    expect(loadTerminalSettings()).toEqual({ fontSize: 18, fontFamily: "menlo", imeAnchorMode: "tui" })
     writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { imeAnchorMode: "floating" })
     expect(loadTerminalSettings().imeAnchorMode).toBe("cursor")
   })
@@ -168,5 +104,21 @@ describe("terminal settings", () => {
   })
 })
 
-// P5：pi 雙 runtime——builtin（bundle 內 adapter）預設、community 一鍵回退。
-// builtin command 來自 platform cache（非 Tauri／未 init 時為 null → 退回 community）。
+describe("terminal font preference migration", () => {
+  it("defaults missing and unknown fonts while retaining legacy font size", () => {
+    for (const fontFamily of [undefined, "unknown", null, 2]) {
+      writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { fontSize: 18, fontFamily })
+      expect(loadTerminalSettings()).toMatchObject({ fontSize: 18, fontFamily: "jetbrains" })
+    }
+  })
+
+  it("persists each supported font", async () => {
+    const { useTerminalSettingsStore, reloadTerminalSettingsStore } = await import("@/state/terminalSettingsStore")
+    reloadTerminalSettingsStore()
+    for (const fontFamily of ["jetbrains", "system", "menlo", "cascadia", "consolas"] as const) {
+      useTerminalSettingsStore.getState().update({ fontFamily })
+      reloadTerminalSettingsStore()
+      expect(useTerminalSettingsStore.getState()).toMatchObject({ fontFamily })
+    }
+  })
+})

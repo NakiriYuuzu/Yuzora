@@ -41,14 +41,16 @@ Release：推 `v*` tag 觸發 `release.yml`；tag 必須等於 `src-tauri/tauri.
 
 ## 架構
 
-**IPC 邊界**（理解全 app 的關鍵）：React 前端 ←→ `src/lib/ipc.ts`／`src/lib/herdrIpc.ts`（typed invoke wrappers）←→ `src-tauri/src/lib.rs` 統一註冊的 `#[tauri::command]`；Rust 側一個 service 一個 module（`herdr_service`、`git_*`、`db_*`、`lsp_*`、`pty_service`、`ssh_service`⋯）。HERDR snapshot、capabilities、layout 與 terminal connector 必須經現有 typed boundary，不直接繞過 service。
+**IPC 邊界**（理解全 app 的關鍵）：React 前端 ←→ `src/lib/ipc.ts`／`src/lib/herdrIpc.ts`（typed invoke wrappers）←→ `src-tauri/src/lib.rs` 統一註冊的 `#[tauri::command]`；Rust 側一個 service 一個 module（`herdr_service`、`git_*`、`db_*`、`ssh_service`⋯）。HERDR snapshot、capabilities、layout 與 terminal connector 必須經現有 typed boundary，不直接繞過 service。
 
 **前端分層**：
 
-- `src/app/`＝外殼 chrome：`AppShell.tsx`（版面根）＋`workbench/`（Spaces rail、ADE nav、SettingsDialog、CommandPalette、StatusBar）＋`panels/`（HerdrTerminal／Editor／Git／Database／Ssh／Preview）。
+- `src/app/`＝外殼 chrome：`AppShell.tsx`（版面根）＋`workbench/`（SpaceAgentSidebar、SettingsDialog、CommandPalette、StatusBar）＋`panels/`（HerdrTerminal／Editor／Git／Database／Ssh／Browser）。
 - `src/workbench/`＝功能表面與 glue：EditorArea、TabBar、各 SplitView，以及 **Bridge 模式**——`HerdrBridge` 與其他 `*Bridge`／`*Host` 在 `src/App.tsx` 以扁平兄弟節點掛載，把 Tauri/runtime 事件接進 stores；`AppShell` 保持純版面，跨 store 協調寫在 Bridge。
 - `src/state/`＝zustand stores；HERDR runtime 狀態集中於獨立 typed `herdrStore`，並按 named Session 隔離 snapshot、capabilities 與連線狀態。
-- 子系統：`src-tauri/src/herdr_service.rs`＋`src/lib/herdrIpc.ts`／`herdrTypes.ts`（HERDR public API、capability/schema gating 與官方 terminal connector）、`src/editor/`（CodeMirror 6）、`src/lsp/`（client 協定層，Rust `lsp_service` 負責 spawn／下載 server）、`src/terminal/`（xterm；本機 PTY、SSH shell 與 HERDR terminal transport）、`src/preview/`（原生子 webview 疊在面板上，靠 tauri `unstable` multiwebview API）。
+- 子系統：`src-tauri/src/herdr_service.rs`＋`src/lib/herdrIpc.ts`／`herdrTypes.ts`（HERDR public API、capability/schema gating 與官方 terminal connector）、`src/editor/`（CodeMirror 6 語法編輯）、`src/terminal/`（xterm 與 HERDR terminal transport）、`src/preview/`（Browser：原生子 webview 與遠端 loopback forwarding；程式內保留 preview 命名）。
+- 產品範圍：terminal 統一由 HERDR 提供；編輯器不含 LSP；Browser 開啟網站與已執行的服務，不提供靜態 Preview server 或 Dev Server 管理。Markdown／SVG／圖片檢視仍屬編輯器功能。見 `.yuuzu/adr/0004-herdr-terminals-browser-only.html`。
+- HERDR 主機路由：Windows 使用原生 named pipe，WSL 預設關閉並由設定啟用；macOS／Linux 原生及 SSH runtime 保留。來源切換先驗證 client／各 Session，相容性 gate 不放寬，不自動停止 server；原生來源保存後重啟 Yuzora 生效。見 `.yuuzu/adr/0005-native-windows-opt-in-wsl.html`。
 - 路徑 alias：`@/` → `src/`。
 
 **i18n**：`src/lib/i18n/locales/{en,zh-TW}/<ns>.json`，`import.meta.glob` 自動註冊——新增 namespace 只要在兩個語系各放一個 JSON；UI 文字兩語系都要填。

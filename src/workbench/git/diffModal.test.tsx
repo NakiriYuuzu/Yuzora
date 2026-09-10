@@ -66,6 +66,7 @@ describe("DiffModal — text source", () => {
             useDiffModalStore.getState().setMode("split")
             useDiffModalStore.getState().openText("src/a.ts", full("old\n"), full("new\n"))
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
 
         expect(screen.getAllByText("Diff · src/a.ts").length).toBeGreaterThan(0)
         expect(screen.getByRole("option", { name: /a\.ts/ })).toBeInTheDocument()
@@ -87,6 +88,7 @@ describe("DiffModal — worktree source", () => {
                 "src/a.ts"
             )
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         // "Diff · Working tree" renders in both the visible header and the
         // sr-only dialog title.
         expect(screen.getAllByText("Diff · Working tree").length).toBeGreaterThan(0)
@@ -109,6 +111,7 @@ describe("DiffModal — worktree source", () => {
                 "a.ts"
             )
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         await waitFor(() => expect(gitDiffContent).toHaveBeenCalledWith("/w", "a.ts", false, null))
         fireEvent.click(screen.getByRole("option", { name: /b\.ts/ }))
         await waitFor(() => expect(gitDiffContent).toHaveBeenCalledWith("/w", "b.ts", true, null))
@@ -130,6 +133,7 @@ describe("DiffModal — worktree source", () => {
                 { path: "mm.ts", origPath: null, status: "M", staged: false }
             ])
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         // Row 0 (staged) is active by default → loads the staged side.
         await waitFor(() => expect(gitDiffContent).toHaveBeenCalledWith("/w", "mm.ts", true, null))
         gitDiffContent.mockClear()
@@ -167,6 +171,7 @@ describe("DiffModal — worktree source", () => {
             resolveNewA?.({ original: full("newest old\n"), modified: full("newest A\n") })
             await Promise.resolve()
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         const editorText = () => Array.from(container.querySelectorAll(".cm-content"), (node) => node.textContent).join("\n")
         await waitFor(() => expect(editorText()).toContain("newest A"))
         await act(async () => {
@@ -198,6 +203,7 @@ describe("DiffModal — worktree source", () => {
                 { path: "a.ts", origPath: null, status: "M", staged: false }
             ])
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         const editorText = () =>
             Array.from(container.querySelectorAll(".cm-content"), (node) => node.textContent).join("\n")
         await waitFor(() => expect(editorText()).toContain("content A"))
@@ -310,12 +316,12 @@ describe("DiffModal — mode toggle + close", () => {
         act(() => {
             useDiffModalStore.getState().openWorktree("/w", [{ path: "a.ts", origPath: null, status: "M", staged: false }], "a.ts")
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         await waitFor(() => expect(container.querySelector(".cm-editor")).not.toBeNull())
-        // unified → one editor.
-        expect(container.querySelectorAll(".cm-editor").length).toBe(1)
-        fireEvent.click(screen.getByRole("radio", { name: "Split" }))
-        expect(useDiffModalStore.getState().mode).toBe("split")
-        await waitFor(() => expect(container.querySelectorAll(".cm-editor").length).toBe(2))
+        expect(container.querySelectorAll(".cm-editor").length).toBe(2)
+        fireEvent.click(screen.getByRole("radio", { name: "Unified" }))
+        expect(useDiffModalStore.getState().mode).toBe("unified")
+        await waitFor(() => expect(container.querySelectorAll(".cm-editor").length).toBe(1))
     })
 
     it("close button closes the modal", () => {
@@ -323,6 +329,7 @@ describe("DiffModal — mode toggle + close", () => {
         act(() => {
             useDiffModalStore.getState().openWorktree("/w", [{ path: "a.ts", origPath: null, status: "M", staged: false }], "a.ts")
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         fireEvent.click(screen.getByRole("button", { name: "Close" }))
         expect(useDiffModalStore.getState().open).toBe(false)
     })
@@ -332,6 +339,7 @@ describe("DiffModal — mode toggle + close", () => {
         act(() => {
             useDiffModalStore.getState().openWorktree("/w", [{ path: "a.ts", origPath: null, status: "M", staged: false }], "a.ts")
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         fireEvent.keyDown(document.body, { key: "Escape" })
         expect(useDiffModalStore.getState().open).toBe(false)
     })
@@ -341,6 +349,7 @@ describe("DiffModal — mode toggle + close", () => {
         act(() => {
             useDiffModalStore.getState().openWorktree("/w", [{ path: "a.ts", origPath: null, status: "M", staged: false }], "a.ts")
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         // The overlay carries the design's translucent-ink background class.
         const overlay = container.ownerDocument.body.querySelector(
             ".bg-\\[rgba\\(27\\,26\\,23\\,0\\.34\\)\\]"
@@ -361,6 +370,7 @@ describe("DiffModal — mode toggle + close", () => {
                 "b.ts"
             )
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         const row = screen.getByRole("option", { name: /b\.ts/ })
         expect(row.className).toContain("bg-(--yz-active)")
         const other = screen.getByRole("option", { name: /a\.ts/ })
@@ -377,6 +387,7 @@ describe("DiffModal — mode toggle + close", () => {
                 { path: "only.ts", origPath: null, status: "M", staged: false }
             ])
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         expect(screen.getAllByText("Staged").length).toBeGreaterThan(0)
         expect(screen.getAllByText("Unstaged").length).toBeGreaterThan(0)
         expect(screen.getByRole("option", { name: /mm\.ts \(Staged\)/ })).toBeInTheDocument()
@@ -398,6 +409,7 @@ describe("DiffModal — mode toggle + close", () => {
                 }))
             )
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         const filter = screen.getByLabelText("Filter files")
         fireEvent.change(filter, { target: { value: "file15" } })
         expect(screen.getByRole("option", { name: /file15\.ts/ })).toBeInTheDocument()
@@ -420,6 +432,7 @@ describe("DiffModal — mode toggle + close", () => {
                 "file1.ts"
             )
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         expect(useDiffModalStore.getState().activeIndex).toBe(1)
         fireEvent.change(screen.getByLabelText("Filter files"), { target: { value: "file0" } })
         const visible = screen.getByRole("option", { name: /file0\.ts/ })
@@ -436,6 +449,7 @@ describe("DiffModal — mode toggle + close", () => {
                 { path: "a.ts", origPath: null, status: "M", staged: false }
             ])
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         const panel = screen.getByTestId("diff-files") as HTMLElement & {
             __yzPanel?: { collapse: () => void; expand: () => void }
         }
@@ -468,6 +482,7 @@ describe("DiffModal — mode toggle + close", () => {
                 "file3.ts"
             )
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         expect(useDiffModalStore.getState().activeIndex).toBe(3)
         const collapse = screen.getByRole("button", { name: "Collapse file list" })
         collapse.focus()
@@ -491,72 +506,20 @@ describe("DiffModal — mode toggle + close", () => {
         expect(screen.getByRole("button", { name: "Collapse file list" })).toHaveAttribute("aria-controls", "diff-file-panel-content")
     })
 
-    it("expands the file panel when a new source replaces a collapsed open source", async () => {
+    it("starts collapsed on replacement and reopening, while retaining file navigation", async () => {
         render(<DiffModal />)
-        act(() => {
-            useDiffModalStore.getState().openWorktree("/w", [
-                { path: "a.ts", origPath: null, status: "M", staged: false }
-            ])
-        })
-        fireEvent.click(screen.getByRole("button", { name: "Collapse file list" }))
-        await waitFor(() => {
-            expect(screen.getByRole("button", { name: "Expand file list" })).toHaveAttribute("aria-expanded", "false")
-        })
-
-        act(() => {
-            useDiffModalStore.getState().openWorktree("/w", [
-                { path: "b.ts", origPath: null, status: "M", staged: false }
-            ])
-        })
-
-        await waitFor(() => {
-            expect(screen.getByRole("button", { name: "Collapse file list" })).toHaveAttribute("aria-expanded", "true")
-        })
-        expect(screen.getByTestId("diff-file-panel-content")).not.toHaveAttribute("inert")
-        expect(screen.getByTestId("diff-file-panel-content")).not.toHaveAttribute("aria-hidden")
-        expect(screen.getByRole("option", { name: /b\.ts/ })).toBeInTheDocument()
-    })
-
-    it("reopens with the file list expanded after a collapsed close", async () => {
-        render(<DiffModal />)
-        act(() => {
-            useDiffModalStore.getState().openWorktree("/w", [
-                { path: "a.ts", origPath: null, status: "M", staged: false }
-            ])
-        })
-        expect(screen.getByRole("button", { name: "Collapse file list" })).toHaveAttribute("aria-expanded", "true")
-        fireEvent.click(screen.getByRole("button", { name: "Collapse file list" }))
-        await waitFor(() => {
-            expect(screen.getByTestId("diff-file-panel-content")).toHaveAttribute("inert")
-        })
-        fireEvent.click(screen.getByRole("button", { name: "Close" }))
-        expect(useDiffModalStore.getState().open).toBe(false)
-        expect(screen.queryByTestId("diff-file-panel-content")).toBeNull()
-
-        act(() => {
-            useDiffModalStore.getState().openWorktree("/w", [
-                { path: "a.ts", origPath: null, status: "M", staged: false }
-            ])
-        })
-
-        const content = screen.getByTestId("diff-file-panel-content")
-        expect(content).not.toHaveAttribute("inert")
-        expect(content).not.toHaveAttribute("aria-hidden")
-        expect(screen.getByTestId("diff-files")).toHaveAttribute("data-files-collapsed", "false")
-        const toggle = screen.getByRole("button", { name: "Collapse file list" })
-        expect(toggle).toHaveAttribute("aria-expanded", "true")
-        const handle = screen.getByTestId("diff-files-handle")
-        expect(handle).not.toHaveAttribute("disabled")
-        expect(handle).not.toHaveAttribute("aria-disabled", "true")
-        expect(handle).not.toHaveAttribute("aria-hidden")
-        expect(handle.className).not.toMatch(/w-0/)
-
-        fireEvent.click(toggle)
-        await waitFor(() => {
-            expect(screen.getByRole("button", { name: "Expand file list" })).toHaveAttribute("aria-expanded", "false")
-        })
+        const open = (path: string) => act(() => useDiffModalStore.getState().openWorktree("/w", [{ path, origPath: null, status: "M", staged: false }]))
+        open("a.ts")
         expect(screen.getByTestId("diff-file-panel-content")).toHaveAttribute("inert")
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
+        expect(screen.getByRole("option", { name: /a\.ts/ })).toBeInTheDocument()
+        open("b.ts")
+        expect(screen.getByRole("button", { name: "Expand file list" })).toHaveAttribute("aria-expanded", "false")
+        expect(screen.queryByRole("option")).toBeNull()
+        act(() => useDiffModalStore.getState().close())
+        open("a.ts")
         expect(screen.getByTestId("diff-file-panel-content")).toHaveAttribute("aria-hidden", "true")
+        expect(screen.getByTestId("diff-files-handle")).toHaveAttribute("aria-hidden", "true")
     })
 
     it("moves focus into the dialog on open and restores it on close", async () => {
@@ -570,6 +533,7 @@ describe("DiffModal — mode toggle + close", () => {
                 { path: "a.ts", origPath: null, status: "M", staged: false }
             ])
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         await waitFor(() => expect(screen.getByRole("button", { name: "Close" })).toHaveFocus())
         act(() => {
             useDiffModalStore.getState().close()
@@ -585,6 +549,7 @@ describe("DiffModal — mode toggle + close", () => {
                 { path: "a.ts", origPath: null, status: "M", staged: false }
             ])
         })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
         const handle = screen.getByTestId("diff-files-handle")
         expect(handle.className).not.toMatch(/w-0/)
         const toggle = screen.getByTestId("diff-files-toggle")

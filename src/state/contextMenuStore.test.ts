@@ -18,11 +18,9 @@ import { useDbStore } from "@/state/dbStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { useFileTreeStore } from "@/state/fileTreeStore"
 import { useGitStore } from "@/state/gitStore"
-import { usePreviewStore } from "@/state/previewStore"
 import { useSftpStore } from "@/state/sftpStore"
 import { useSshStore } from "@/state/sshStore"
 import { useSvgPreviewStore } from "@/state/svgPreviewStore"
-import { useTerminalStore, terminalInitialState } from "@/state/terminalStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useUiStore, uiInitialState } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -141,7 +139,6 @@ beforeEach(() => {
         activeGroupIndex: 0
     })
     useGitStore.setState({ status: null, environment: null, busy: null, lastError: null, consoleLog: [] })
-    useTerminalStore.setState(terminalInitialState)
     // Keep the broad legacy context-menu assertions focused on command effects
     // while routing their old prompt/plugin stubs through the new app-owned
     // dialog seams. Dedicated host tests verify the actual modal UI.
@@ -795,21 +792,6 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         unregisterView(EDIT_PATH)
     })
 
-    it("editor: cmFormatDoc 只呼叫 clicked view 註冊的 formatter", async () => {
-        const view = makeEditorView("const x=1")
-        const format = vi.fn(async () => true)
-        registerView(EDIT_PATH, view, {
-            groupIndex: 0,
-            formatter: "available",
-            formatDocument: format
-        })
-        useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: EDIT_PATH }], activeGroupIndex: 0 })
-
-        expect(await runLegacyContextMenuAction("editor", "cmFormatDoc", {})).toBe("completed")
-        expect(format).toHaveBeenCalledTimes(1)
-        unregisterView(EDIT_PATH)
-    })
-
     it("editor: Paste clipboard failure reaches the shared action-error dialog", async () => {
         const calls: string[] = []
         mockIPC((cmd) => {
@@ -836,47 +818,6 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         expect(await runContextMenuAction(request, command)).toBe("error")
         expect(calls).toContain("plugin:dialog|message")
         unregisterView(EDIT_PATH, view)
-    })
-
-    it("editor: formatter rejection reaches the shared action-error dialog", async () => {
-        const calls: string[] = []
-        mockIPC((cmd) => {
-            calls.push(cmd)
-            return null
-        })
-        const view = makeEditorView("hello")
-        registerView(EDIT_PATH, view, {
-            groupIndex: 0,
-            formatter: "available",
-            formatDocument: async () => {
-                throw new Error("formatter failed")
-            }
-        })
-        useWorkspaceStore.setState({
-            workspacePath: "/w",
-            groups: [{ tabs: [], activePath: EDIT_PATH }],
-            activeGroupIndex: 0
-        })
-        const request: ContextMenuRequest = {
-            kind: "editor",
-            workspacePath: "/w",
-            path: EDIT_PATH,
-            groupIndex: 0
-        }
-        const command = commandFor(request, "cmFormatDoc")!
-        useContextMenuStore.getState().open(request, 1, 1)
-
-        expect(await runContextMenuAction(request, command)).toBe("error")
-        expect(calls).toContain("plugin:dialog|message")
-        unregisterView(EDIT_PATH, view)
-    })
-
-    it("editor: 沒有 active view 時 cmCut/cmCopy/cmPaste/cmFormatDoc 都是 no-op、不 throw", () => {
-        useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 })
-        expect(() => runLegacyContextMenuAction("editor", "cmCopy", {})).not.toThrow()
-        expect(() => runLegacyContextMenuAction("editor", "cmCut", {})).not.toThrow()
-        expect(() => runLegacyContextMenuAction("editor", "cmPaste", {})).not.toThrow()
-        expect(() => runLegacyContextMenuAction("editor", "cmFormatDoc", {})).not.toThrow()
     })
 
     it("git: cmFetch 呼叫 gitStore.runOp('fetch', …) → git_fetch_cmd", async () => {
@@ -960,7 +901,7 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
             authKind: "password"
         })
         runLegacyContextMenuAction("sshhost", "cmOpenSftp", { hostId: host.id })
-        expect(useSftpStore.getState().activeTab).toBe("sftp")
+        expect(useSftpStore.getState().panelOpen).toBe(true)
         expect(useSshStore.getState().activeHostId).toBe(host.id)
         // Password host → begins the connect flow rather than silently no-op'ing.
         expect(useSshStore.getState().pendingAuthHostId).toBe(host.id)
@@ -1337,42 +1278,6 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         expect(calls.find((c) => c.cmd === "plugin:opener|reveal_item_in_dir")?.args).toMatchObject({
             paths: ["/w/f.ts"]
         })
-    })
-
-    // P3: create a per-document static preview session, then open that isolated
-    // URL in the singleton preview tab.
-    it("file: cmOpenInBrowser preview_create 選取檔並在 preview 分頁開啟 session 網址", async () => {
-        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
-        mockIPC((cmd, args) => {
-            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
-            if (cmd === "preview_create") {
-                return {
-                    token: "ab".repeat(32),
-                    url: "http://127.0.0.1:4599/abababababababababababababababababababababababababababababababab/index.html"
-                }
-            }
-            return cmd === "log_event" ? null : undefined
-        })
-        useWorkspaceStore.setState({
-            workspacePath: "/w",
-            groups: [{ tabs: [], activePath: null }],
-            activeGroupIndex: 0
-        })
-
-        runLegacyContextMenuAction("file", "cmOpenInBrowser", { path: "/w/site/index.html" })
-
-        await vi.waitFor(() =>
-            expect(usePreviewStore.getState().navForWorkspace("/w").url).toBe(
-                "http://127.0.0.1:4599/abababababababababababababababababababababababababababababababab/index.html"
-            )
-        )
-        expect(calls.find((c) => c.cmd === "preview_create")?.args).toMatchObject({
-            path: "/w/site/index.html"
-        })
-        expect(usePreviewStore.getState().staticPreview?.token).toBe("ab".repeat(32))
-        const g = useWorkspaceStore.getState().groups[0]
-        expect(g.tabs.some((t) => t.kind === "preview")).toBe(true)
-        expect(g.activePath).toBe("yuzora://preview")
     })
 
     // Finding 3 (Codex high): a delete/rename that leaves the open tab pointing at

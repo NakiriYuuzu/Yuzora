@@ -7,13 +7,13 @@ use std::time::{Duration, Instant};
 
 use russh::client::{self, Handle};
 use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKey};
-use russh::{ChannelMsg, Disconnect};
+use russh::Disconnect;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{oneshot, Notify};
 
 use crate::logging;
 use crate::path_capability::{self, PathCapabilityError, SafeLeafName, SafeRelativePath};
@@ -50,19 +50,6 @@ pub struct SshConnectResult {
     pub session_id: String,
     pub fingerprint: String,
     pub known_host: bool,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SshDataPayload {
-    session_id: String,
-    chunk: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SshExitPayload {
-    session_id: String,
 }
 
 /// Format an SSH public key as its OpenSSH `SHA256:<base64>` fingerprint — the
@@ -861,16 +848,8 @@ impl client::Handler for Client {
     }
 }
 
-/// Outbound commands the shell task pumps into the SSH channel. Kept off the
-/// Tauri command threads so write/resize return immediately.
-enum ShellCmd {
-    Data(Vec<u8>),
-    Resize(u32, u32),
-}
-
 struct SessionEntry {
     handle: Arc<AsyncMutex<Handle<Client>>>,
-    shell: Option<mpsc::UnboundedSender<ShellCmd>>,
     /// Lazily-opened SFTP subsystem for this session (F5). `SftpSession` methods
     /// take `&self` and drive an internal request pipeline, so one `Arc` is
     /// shared across concurrent list/transfer commands.
@@ -907,6 +886,15 @@ pub enum SftpUploadSource {
     },
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SftpUploadRequest {
+    transfer_id: String,
+    source: SftpUploadSource,
+    remote_dir: String,
+    expected_revision: Option<String>,
+}
+
 fn open_sftp_upload_source(
     selected: &path_capability::SelectedPathRegistry,
     workspaces: &path_capability::WorkspacePathRegistry,
@@ -940,8 +928,8 @@ pub struct SftpListing {
 }
 
 /// Progress ticks for an in-flight transfer, emitted on `sftp://progress` and
-/// correlated by the front-end-supplied `transfer_id` (mirrors the `ssh://data`
-/// event pattern). A terminal tick carries `done: true`.
+/// correlated by the front-end-supplied `transfer_id`. A terminal tick carries
+/// `done: true`.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SftpProgressPayload {
@@ -1012,6 +1000,7 @@ pub struct SshManager {
     sessions: Mutex<HashMap<String, SessionEntry>>,
     log: LogFn,
     transfer_dests: path_capability::TransferDestSet,
+    pub(crate) transfers: crate::sftp_transfer::Transfers,
     host_keys: Arc<HostKeyController>,
     auth_probe: Option<Arc<Mutex<Vec<&'static str>>>>,
 }
@@ -1019,6 +1008,24 @@ pub struct SshManager {
 pub struct SshState(pub Arc<SshManager>);
 
 impl SshManager {
+    pub(crate) async fn open_host_exec(
+        &self,
+        session_id: &str,
+        command: &str,
+    ) -> Result<crate::host_service::HostStream, String> {
+        let handle = self.get_handle(session_id)?;
+        let channel = handle
+            .lock()
+            .await
+            .channel_open_session()
+            .await
+            .map_err(|e| e.to_string())?;
+        channel
+            .exec(true, command.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Box::new(channel.into_stream()))
+    }
     pub fn new(app: AppHandle) -> Self {
         let emit_app = app.clone();
         Self::with_parts(
@@ -1033,7 +1040,7 @@ impl SshManager {
     }
 
     #[cfg(test)]
-    fn for_test() -> Self {
+    pub(crate) fn for_test() -> Self {
         Self::with_log(Box::new(|_| {}))
     }
 
@@ -1065,6 +1072,7 @@ impl SshManager {
                 persist_io,
             ),
             transfer_dests: path_capability::TransferDestSet::new(),
+            transfers: crate::sftp_transfer::Transfers::default(),
             auth_probe: None,
         }
     }
@@ -1260,7 +1268,6 @@ impl SshManager {
             session_id.clone(),
             SessionEntry {
                 handle: Arc::new(AsyncMutex::new(session)),
-                shell: None,
                 sftp: None,
                 host,
             },
@@ -1273,59 +1280,12 @@ impl SshManager {
         })
     }
 
-    async fn open_shell(
-        self: &Arc<Self>,
-        app: AppHandle,
-        session_id: String,
-        cols: u32,
-        rows: u32,
-    ) -> Result<(), String> {
-        let handle = self.get_handle(&session_id)?;
-        let channel = {
-            let handle = handle.lock().await;
-            let channel = handle
-                .channel_open_session()
-                .await
-                .map_err(|e| format!("無法開啟 SSH channel：{e}"))?;
-            channel
-                .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
-                .await
-                .map_err(|e| format!("request_pty 失敗：{e}"))?;
-            channel
-                .request_shell(false)
-                .await
-                .map_err(|e| format!("request_shell 失敗：{e}"))?;
-            channel
-        };
-
-        let (tx, rx) = mpsc::unbounded_channel::<ShellCmd>();
-        let registered = {
-            let mut map = self.sessions.lock().unwrap();
-            match map.get_mut(&session_id) {
-                Some(entry) => {
-                    entry.shell = Some(tx);
-                    true
-                }
-                None => false,
-            }
-        };
-        if !registered {
-            // Disconnected between get_handle and here — tear the channel down.
-            let _ = channel.eof().await;
-            return Err(format!("SSH session {session_id} 已關閉"));
-        }
-
-        let manager = Arc::clone(self);
-        tauri::async_runtime::spawn(shell_loop(manager, app, session_id, channel, rx));
-        Ok(())
-    }
-
     /// Open (or reuse) the session's SFTP subsystem. A second `channel_open_session`
     /// on the live SSH handle is upgraded to the `sftp` subsystem, then wrapped in
     /// a `SftpSession`. Cached on the entry so every sftp command shares one
     /// subsystem; a race where two commands open concurrently keeps whichever
     /// registered first and drops the loser.
-    async fn ensure_sftp(&self, session_id: &str) -> Result<Arc<SftpSession>, String> {
+    pub(crate) async fn ensure_sftp(&self, session_id: &str) -> Result<Arc<SftpSession>, String> {
         if let Some(sftp) = self
             .sessions
             .lock()
@@ -1431,19 +1391,30 @@ impl SshManager {
 
     async fn sftp_upload(
         &self,
-        app: &AppHandle,
+        progress: &(dyn Fn(u64, u64, bool) + Send + Sync),
         selected: &path_capability::SelectedPathRegistry,
         workspaces: &path_capability::WorkspacePathRegistry,
         trust: &crate::workspace_trust::WorkspaceTrustState,
         session_id: &str,
-        transfer_id: &str,
-        source: SftpUploadSource,
-        remote_dir: &str,
+        request: SftpUploadRequest,
     ) -> Result<(), String> {
+        let SftpUploadRequest {
+            transfer_id,
+            source,
+            remote_dir,
+            expected_revision,
+        } = request;
+        let transfer_id = transfer_id.as_str();
+        let remote_dir = remote_dir.as_str();
+        let expected_revision = expected_revision.as_deref();
+        let mut transfer = self.transfers.start(session_id, transfer_id)?;
+        transfer.check()?;
         if !path_capability::is_safe_transfer_id(transfer_id) {
             return Err(PathCapabilityError::UnsafeLeaf.into());
         }
-        reject_unsafe_remote_leaf(remote_dir)?;
+        if remote_dir != "/" {
+            reject_unsafe_remote_leaf(remote_dir)?;
+        }
         let leaf = match &source {
             SftpUploadSource::Workspace { relative_path, .. } => {
                 SafeRelativePath::parse(relative_path)?
@@ -1459,17 +1430,65 @@ impl SshManager {
             .transfer_dests
             .acquire(path_capability::remote_dest_key(session_id, &remote_path))?;
         let opened = open_sftp_upload_source(selected, workspaces, trust, source)?;
-        let sftp = self.ensure_sftp(session_id).await?;
+        let source_metadata = opened.file.metadata().map_err(|_| "sftp-read-failed")?;
+        let sftp = transfer.run(self.ensure_sftp(session_id)).await?;
+        let canonical_dir = transfer
+            .run(async {
+                sftp.canonicalize(remote_dir)
+                    .await
+                    .map_err(|_| "sftp-path-changed".into())
+            })
+            .await?;
+        if canonical_dir != remote_dir {
+            return Err("sftp-path-changed".into());
+        }
+        if transfer
+            .run(crate::sftp_edit::remote_revision(&sftp, &remote_path))
+            .await?
+            .as_deref()
+            != expected_revision
+        {
+            return Err("file-conflict".into());
+        }
+        let permissions = if expected_revision.is_some() {
+            sftp.symlink_metadata(&remote_path)
+                .await
+                .map_err(|e| e.to_string())?
+                .permissions
+        } else {
+            None
+        };
+        // Existing targets require the server's atomic replacement extension.
+        let raw = if expected_revision.is_some() {
+            let raw = transfer.run(self.open_sftp_raw(session_id)).await?;
+            let version = transfer
+                .run(async { raw.init().await.map_err(|e| e.to_string()) })
+                .await?;
+            if version
+                .extensions
+                .get("posix-rename@openssh.com")
+                .map(String::as_str)
+                != Some("1")
+            {
+                let _ = raw.close_session();
+                return Err("sftp-atomic-replace-unavailable".into());
+            }
+            Some(raw)
+        } else {
+            None
+        };
         // Stream into a temp sibling and rename into place, so an interrupted
         // upload never leaves a half-written file at (or clobbers) the target.
         let temp_path = remote_join(remote_dir, &temp_transfer_name(leaf.as_str(), transfer_id));
 
         let total = opened.len;
         let mut local = tokio::fs::File::from_std(opened.file);
+        // Await the bounded create response so cancellation cannot abandon a
+        // successful remote create before we know which scratch to clean up.
         let mut remote = sftp
             .open_with_flags(
                 temp_path.clone(),
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
             )
             .await
             .map_err(|_| "sftp-remote-open-failed".to_string())?;
@@ -1477,33 +1496,45 @@ impl SshManager {
         let mut buf = vec![0u8; SFTP_CHUNK];
         let mut transferred = 0u64;
         let mut last_emit = 0u64;
-        self.emit_progress(app, session_id, transfer_id, 0, total, false);
+        progress(0, total, false);
         // On any read/write/close failure, fall through to temp cleanup below.
-        let copy = async {
-            loop {
-                let n = local
-                    .read(&mut buf)
-                    .await
-                    .map_err(|_| "sftp-read-failed".to_string())?;
-                if n == 0 {
-                    break;
+        let copy = transfer
+            .run(async {
+                if let Some(permissions) = permissions {
+                    remote
+                        .set_metadata(russh_sftp::protocol::FileAttributes {
+                            permissions: Some(permissions & 0o777),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|_| "sftp-write-failed")?;
+                }
+                loop {
+                    let n = local
+                        .read(&mut buf)
+                        .await
+                        .map_err(|_| "sftp-read-failed".to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    remote
+                        .write_all(&buf[..n])
+                        .await
+                        .map_err(|_| "sftp-write-failed".to_string())?;
+                    transferred += n as u64;
+                    if transferred - last_emit >= SFTP_PROGRESS_STEP {
+                        last_emit = transferred;
+                        progress(transferred, total, false);
+                    }
                 }
                 remote
-                    .write_all(&buf[..n])
+                    .shutdown()
                     .await
-                    .map_err(|_| "sftp-write-failed".to_string())?;
-                transferred += n as u64;
-                if transferred - last_emit >= SFTP_PROGRESS_STEP {
-                    last_emit = transferred;
-                    self.emit_progress(app, session_id, transfer_id, transferred, total, false);
-                }
-            }
-            remote
-                .shutdown()
-                .await
-                .map_err(|_| "sftp-write-failed".to_string())
-        }
-        .await;
+                    .map_err(|_| "sftp-write-failed".to_string())
+            })
+            .await;
+
+        drop(remote);
 
         if let Err(e) = copy {
             // Best-effort: drop the half-written temp, leave any existing target intact.
@@ -1511,39 +1542,71 @@ impl SshManager {
             return Err(e);
         }
 
-        // SFTP rename does not overwrite; drop an existing target first, then
-        // promote the fully-written temp into place.
-        if sftp.try_exists(remote_path.clone()).await.unwrap_or(false) {
-            if sftp.remove_file(remote_path.clone()).await.is_err() {
-                let _ = sftp.remove_file(temp_path.clone()).await;
-                return Err("sftp-promote-failed".into());
+        let promote = async {
+            let after = local.metadata().await.map_err(|_| "sftp-read-failed")?;
+            if after.len() != source_metadata.len()
+                || after.modified().ok() != source_metadata.modified().ok()
+            {
+                return Err("sftp-source-changed".into());
+            }
+            if transfer
+                .run(crate::sftp_edit::remote_revision(&sftp, &remote_path))
+                .await?
+                .as_deref()
+                != expected_revision
+            {
+                return Err("file-conflict".into());
+            }
+            if sftp
+                .canonicalize(remote_dir)
+                .await
+                .map_err(|e| e.to_string())?
+                != canonical_dir
+            {
+                return Err("sftp-path-changed".into());
+            }
+            transfer.check()?;
+            // Once promotion starts, report its actual outcome. Cancelling an
+            // in-flight rename would make the commit outcome unknowable.
+            if let Some(raw) = &raw {
+                crate::sftp_edit::atomic_replace(raw, &temp_path, &remote_path).await
+            } else {
+                sftp.rename(&temp_path, &remote_path)
+                    .await
+                    .map_err(|_| "sftp-promote-failed".into())
             }
         }
-        if let Err(_e) = sftp.rename(temp_path.clone(), remote_path.clone()).await {
+        .await;
+        if let Some(raw) = raw {
+            let _ = raw.close_session();
+        }
+        if let Err(error) = promote {
             let _ = sftp.remove_file(temp_path.clone()).await;
-            return Err("sftp-promote-failed".into());
+            return Err(error);
         }
 
-        self.emit_progress(app, session_id, transfer_id, transferred, total, true);
+        progress(transferred, total, true);
         Ok(())
     }
 
     async fn sftp_download(
         &self,
-        app: &AppHandle,
+        progress: &(dyn Fn(u64, u64, bool) + Send + Sync),
         session_id: &str,
         transfer_id: &str,
         remote_path: &str,
         destination_capability_id: &str,
         destinations: &path_capability::DownloadDestinationRegistry,
     ) -> Result<(), String> {
+        let mut transfer = self.transfers.start(session_id, transfer_id)?;
+        transfer.check()?;
         if !path_capability::is_safe_transfer_id(transfer_id) {
             return Err(PathCapabilityError::UnsafeLeaf.into());
         }
         reject_unsafe_remote_leaf(remote_path)?;
         let mut scratch = destinations.take_scratch(destination_capability_id, transfer_id)?;
         let _slot = self.transfer_dests.acquire(scratch.dest_key())?;
-        let sftp = self.ensure_sftp(session_id).await?;
+        let sftp = transfer.run(self.ensure_sftp(session_id)).await?;
         let total = sftp
             .metadata(remote_path.to_string())
             .await
@@ -1563,31 +1626,32 @@ impl SshManager {
         let mut buf = vec![0u8; SFTP_CHUNK];
         let mut transferred = 0u64;
         let mut last_emit = 0u64;
-        self.emit_progress(app, session_id, transfer_id, 0, total, false);
+        progress(0, total, false);
         // On any read/write/flush failure, fall through to temp cleanup below.
-        let copy = async {
-            loop {
-                let n = remote
-                    .read(&mut buf)
-                    .await
-                    .map_err(|_| "sftp-read-failed".to_string())?;
-                if n == 0 {
-                    break;
+        let copy = transfer
+            .run(async {
+                loop {
+                    let n = remote
+                        .read(&mut buf)
+                        .await
+                        .map_err(|_| "sftp-read-failed".to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    out.write_all(&buf[..n])
+                        .await
+                        .map_err(|_| "sftp-write-failed".to_string())?;
+                    transferred += n as u64;
+                    if transferred - last_emit >= SFTP_PROGRESS_STEP {
+                        last_emit = transferred;
+                        progress(transferred, total, false);
+                    }
                 }
-                out.write_all(&buf[..n])
+                out.sync_all()
                     .await
-                    .map_err(|_| "sftp-write-failed".to_string())?;
-                transferred += n as u64;
-                if transferred - last_emit >= SFTP_PROGRESS_STEP {
-                    last_emit = transferred;
-                    self.emit_progress(app, session_id, transfer_id, transferred, total, false);
-                }
-            }
-            out.sync_all()
-                .await
-                .map_err(|_| "sftp-write-failed".to_string())
-        }
-        .await;
+                    .map_err(|_| "sftp-write-failed".to_string())
+            })
+            .await;
 
         // Close the temp file so the rename sees a released handle on every platform.
         drop(out);
@@ -1595,15 +1659,16 @@ impl SshManager {
             scratch.discard();
             return Err(e);
         }
+        transfer.check()?;
         if scratch.promote().is_err() {
             return Err("sftp-promote-failed".into());
         }
 
-        self.emit_progress(app, session_id, transfer_id, transferred, total, true);
+        progress(transferred, total, true);
         Ok(())
     }
 
-    fn emit_progress(
+    pub(crate) fn emit_progress(
         &self,
         app: &AppHandle,
         session_id: &str,
@@ -1624,33 +1689,13 @@ impl SshManager {
         );
     }
 
-    fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-        let tx = self.get_shell(session_id)?;
-        tx.send(ShellCmd::Data(data.as_bytes().to_vec()))
-            .map_err(|_| format!("SSH session {session_id} 的 shell 已結束"))
-    }
-
-    fn resize(&self, session_id: &str, cols: u32, rows: u32) -> Result<(), String> {
-        let tx = self.get_shell(session_id)?;
-        tx.send(ShellCmd::Resize(cols, rows))
-            .map_err(|_| format!("SSH session {session_id} 的 shell 已結束"))
-    }
-
     async fn disconnect(&self, session_id: &str) -> Result<(), String> {
+        self.transfers.disconnect(Some(session_id));
         let entry = self.sessions.lock().unwrap().remove(session_id);
-        let Some(SessionEntry {
-            handle,
-            shell,
-            host,
-            ..
-        }) = entry
-        else {
+        let Some(SessionEntry { handle, host, .. }) = entry else {
             // Idempotent: disconnecting an unknown/already-closed session is fine.
             return Ok(());
         };
-        // Dropping the sender ends the shell task (its rx yields None), which
-        // sends EOF and emits ssh://exit.
-        drop(shell);
         {
             let handle = handle.lock().await;
             let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
@@ -1660,11 +1705,95 @@ impl SshManager {
     }
 
     pub fn kill_all(&self) {
-        // Dropping every entry drops its Handle (closing the transport) and its
-        // shell sender (ending the shell task). Called on app exit.
+        // Dropping every entry drops its Handle (closing the transport). Called
+        // on app exit.
         self.host_keys.reject_all_pending();
+        self.transfers.disconnect(None);
         self.sessions.lock().unwrap().clear();
         self.transfer_dests.clear();
+    }
+
+    pub(crate) async fn open_host_helper(
+        &self,
+        session_id: &str,
+        helper: &str,
+        mode: crate::host_service::HostLane,
+    ) -> Result<crate::host_service::HostStream, String> {
+        let handle = self.get_handle(session_id)?;
+        let channel = handle
+            .lock()
+            .await
+            .channel_open_session()
+            .await
+            .map_err(|e| e.to_string())?;
+        let mode = mode.argument();
+        let command = format!("exec {} {mode}", crate::host_service::shell_quote(helper)?);
+        channel
+            .exec(true, command.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Box::new(channel.into_stream()))
+    }
+
+    pub(crate) async fn open_host_socket(
+        &self,
+        session_id: &str,
+        socket: &str,
+    ) -> Result<crate::host_service::HostStream, String> {
+        let handle = self.get_handle(session_id)?;
+        let channel = handle
+            .lock()
+            .await
+            .channel_open_direct_streamlocal(socket)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Box::new(channel.into_stream()))
+    }
+
+    pub(crate) async fn open_host_tcp(
+        &self,
+        session_id: &str,
+        endpoint: &yuzora_host::tunnel::Endpoint,
+    ) -> Result<crate::host_service::HostStream, String> {
+        endpoint.validate()?;
+        let handle = self.get_handle(session_id)?;
+        let channel = handle
+            .lock()
+            .await
+            .channel_open_direct_tcpip(&endpoint.host, u32::from(endpoint.port), "127.0.0.1", 0)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Box::new(channel.into_stream()))
+    }
+
+    pub(crate) async fn open_sftp_raw(
+        &self,
+        session_id: &str,
+    ) -> Result<russh_sftp::client::RawSftpSession, String> {
+        let handle = self.get_handle(session_id)?;
+        let channel = handle
+            .lock()
+            .await
+            .channel_open_session()
+            .await
+            .map_err(|e| e.to_string())?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(russh_sftp::client::RawSftpSession::new(
+            channel.into_stream(),
+        ))
+    }
+
+    pub(crate) fn reserve_remote_write(
+        &self,
+        session_id: &str,
+        path: &str,
+    ) -> Result<path_capability::TransferDestGuard, String> {
+        self.transfer_dests
+            .acquire(path_capability::remote_dest_key(session_id, path))
+            .map_err(String::from)
     }
 
     fn get_handle(&self, session_id: &str) -> Result<Arc<AsyncMutex<Handle<Client>>>, String> {
@@ -1674,23 +1803,6 @@ impl SshManager {
             .get(session_id)
             .map(|entry| entry.handle.clone())
             .ok_or_else(|| format!("找不到 SSH session {session_id}"))
-    }
-
-    fn get_shell(&self, session_id: &str) -> Result<mpsc::UnboundedSender<ShellCmd>, String> {
-        let map = self.sessions.lock().unwrap();
-        let entry = map
-            .get(session_id)
-            .ok_or_else(|| format!("找不到 SSH session {session_id}"))?;
-        entry
-            .shell
-            .clone()
-            .ok_or_else(|| format!("SSH session {session_id} 尚未開啟 shell"))
-    }
-
-    fn mark_shell_closed(&self, session_id: &str) {
-        if let Some(entry) = self.sessions.lock().unwrap().get_mut(session_id) {
-            entry.shell = None;
-        }
     }
 
     fn log_connect(
@@ -1744,128 +1856,6 @@ impl SshManager {
     }
 }
 
-async fn shell_loop(
-    manager: Arc<SshManager>,
-    app: AppHandle,
-    session_id: String,
-    mut channel: russh::Channel<client::Msg>,
-    mut rx: mpsc::UnboundedReceiver<ShellCmd>,
-) {
-    let mut chunker = Utf8Chunker::default();
-    let emit_chunk = |chunk: String| {
-        if !chunk.is_empty() {
-            let _ = app.emit(
-                "ssh://data",
-                SshDataPayload {
-                    session_id: session_id.clone(),
-                    chunk,
-                },
-            );
-        }
-    };
-
-    loop {
-        tokio::select! {
-            cmd = rx.recv() => match cmd {
-                Some(ShellCmd::Data(bytes)) => {
-                    if channel.data(&bytes[..]).await.is_err() {
-                        break;
-                    }
-                }
-                Some(ShellCmd::Resize(cols, rows)) => {
-                    let _ = channel.window_change(cols, rows, 0, 0).await;
-                }
-                None => {
-                    // All senders dropped (session disconnected) — close the shell.
-                    let _ = channel.eof().await;
-                    break;
-                }
-            },
-            msg = channel.wait() => match msg {
-                Some(ChannelMsg::Data { ref data }) => {
-                    if let Some(chunk) = chunker.push(data.as_ref()) {
-                        emit_chunk(chunk);
-                    }
-                }
-                Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-                    if let Some(chunk) = chunker.push(data.as_ref()) {
-                        emit_chunk(chunk);
-                    }
-                }
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-                _ => {}
-            },
-        }
-    }
-
-    if let Some(chunk) = chunker.finish_lossy() {
-        emit_chunk(chunk);
-    }
-    let _ = app.emit(
-        "ssh://exit",
-        SshExitPayload {
-            session_id: session_id.clone(),
-        },
-    );
-    manager.mark_shell_closed(&session_id);
-}
-
-// UTF-8 boundary chunker mirroring pty_service's encoding so ssh:// output
-// reaches xterm as the same well-formed String stream (multibyte chars split
-// across SSH packets are reassembled; invalid bytes become U+FFFD).
-#[derive(Default)]
-struct Utf8Chunker {
-    pending: Vec<u8>,
-}
-
-impl Utf8Chunker {
-    fn push(&mut self, bytes: &[u8]) -> Option<String> {
-        self.pending.extend_from_slice(bytes);
-        let mut output = String::new();
-
-        loop {
-            match std::str::from_utf8(&self.pending) {
-                Ok(valid) => {
-                    output.push_str(valid);
-                    self.pending.clear();
-                    break;
-                }
-                Err(err) => {
-                    let valid_up_to = err.valid_up_to();
-                    if valid_up_to > 0 {
-                        let complete = self.pending.drain(..valid_up_to).collect::<Vec<_>>();
-                        output.push_str(&String::from_utf8(complete).unwrap_or_default());
-                    }
-
-                    if let Some(error_len) = err.error_len() {
-                        self.pending.drain(..error_len);
-                        output.push('\u{fffd}');
-                        continue;
-                    }
-
-                    break;
-                }
-            }
-        }
-
-        if output.is_empty() {
-            None
-        } else {
-            Some(output)
-        }
-    }
-
-    fn finish_lossy(&mut self) -> Option<String> {
-        if self.pending.is_empty() {
-            None
-        } else {
-            let text = String::from_utf8_lossy(&self.pending).into_owned();
-            self.pending.clear();
-            Some(text)
-        }
-    }
-}
-
 #[tauri::command]
 pub async fn ssh_connect(
     state: tauri::State<'_, SshState>,
@@ -1888,37 +1878,6 @@ pub fn ssh_host_key_respond(
     state
         .0
         .respond_host_key(&challenge_id, accept, &endpoint, &fingerprint)
-}
-
-#[tauri::command]
-pub async fn ssh_open_shell(
-    app: AppHandle,
-    state: tauri::State<'_, SshState>,
-    session_id: String,
-    cols: u32,
-    rows: u32,
-) -> Result<(), String> {
-    let manager = state.0.clone();
-    manager.open_shell(app, session_id, cols, rows).await
-}
-
-#[tauri::command]
-pub async fn ssh_write(
-    state: tauri::State<'_, SshState>,
-    session_id: String,
-    data: String,
-) -> Result<(), String> {
-    state.0.write(&session_id, &data)
-}
-
-#[tauri::command]
-pub async fn ssh_resize(
-    state: tauri::State<'_, SshState>,
-    session_id: String,
-    cols: u32,
-    rows: u32,
-) -> Result<(), String> {
-    state.0.resize(&session_id, cols, rows)
 }
 
 #[tauri::command]
@@ -1968,6 +1927,24 @@ pub async fn sftp_remove(
 }
 
 #[tauri::command]
+pub fn sftp_transfer_prepare(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+) -> Result<String, String> {
+    state.0.get_handle(&session_id)?;
+    state.0.transfers.reserve(&session_id)
+}
+
+#[tauri::command]
+pub fn sftp_transfer_cancel(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    transfer_id: String,
+) -> Result<(), String> {
+    state.0.transfers.cancel(&session_id, &transfer_id)
+}
+
+#[tauri::command]
 pub async fn sftp_upload(
     app: AppHandle,
     state: tauri::State<'_, SshState>,
@@ -1975,21 +1952,22 @@ pub async fn sftp_upload(
     workspaces: tauri::State<'_, path_capability::WorkspacePathState>,
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     session_id: String,
-    transfer_id: String,
-    source: SftpUploadSource,
-    remote_dir: String,
+    request: SftpUploadRequest,
 ) -> Result<(), String> {
+    let transfer_id = request.transfer_id.clone();
     state
         .0
         .sftp_upload(
-            &app,
+            &|transferred, total, done| {
+                state
+                    .0
+                    .emit_progress(&app, &session_id, &transfer_id, transferred, total, done)
+            },
             &selected.0,
             &workspaces.0,
             &trust,
             &session_id,
-            &transfer_id,
-            source,
-            &remote_dir,
+            request,
         )
         .await
 }
@@ -2007,7 +1985,11 @@ pub async fn sftp_download(
     state
         .0
         .sftp_download(
-            &app,
+            &|transferred, total, done| {
+                state
+                    .0
+                    .emit_progress(&app, &session_id, &transfer_id, transferred, total, done)
+            },
             &session_id,
             &transfer_id,
             &remote_path,
@@ -2079,15 +2061,6 @@ mod tests {
         assert_eq!(fingerprint_sha256(&key), SAMPLE_FINGERPRINT);
     }
 
-    #[test]
-    fn chunker_reassembles_split_multibyte_and_flushes_tail() {
-        let mut chunker = Utf8Chunker::default();
-        let euro = "€".as_bytes();
-        assert_eq!(chunker.push(&euro[..1]), None);
-        assert_eq!(chunker.push(&euro[1..]), Some("€".to_string()));
-        assert_eq!(chunker.finish_lossy(), None);
-    }
-
     #[tokio::test]
     async fn connect_failure_is_logged() {
         use std::sync::{Arc, Mutex};
@@ -2112,14 +2085,6 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| e.event == "connect_failed" && e.source == "ssh" && e.level == "warn"));
-    }
-
-    #[test]
-    fn get_shell_reports_missing_session_and_unopened_shell() {
-        let manager = SshManager::for_test();
-        assert!(manager.get_shell("nope").is_err());
-        assert!(manager.write("nope", "x").is_err());
-        assert!(manager.resize("nope", 80, 24).is_err());
     }
 
     #[test]
@@ -2753,7 +2718,7 @@ mod tests {
         port
     }
 
-    const TEST_HOST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+    pub(super) const TEST_HOST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
 QyNTUxOQAAACDUGvy/dQi6qt6SkwsGTu3EcAiTFB8VrntPMcvXnOxZoQAAAJDwjSfa8I0n
 2gAAAAtzc2gtZWQyNTUxOQAAACDUGvy/dQi6qt6SkwsGTu3EcAiTFB8VrntPMcvXnOxZoQ
@@ -3272,3 +3237,7 @@ CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
         assert_eq!(order, vec!["Alpha", "apple", "beta.txt", "Zebra.txt"]);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "sftp_integration_tests.rs"]
+mod sftp_integration_tests;

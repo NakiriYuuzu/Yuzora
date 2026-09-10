@@ -1,0 +1,39 @@
+.resource-usage-trigger { gap:5px; color:var(--ink-2); font:400 12px var(--font-mono); }
+.resource-usage-trigger[aria-expanded="true"] { color:var(--ink-1); background:var(--yz-active); }
+.resource-usage-popover { width:min(440px,calc(100vw - 24px)); height:min(580px,75vh); max-height:var(--radix-popover-content-available-height); gap:0; padding:0; overflow:hidden; border:1px solid var(--line-2); border-radius:14px; background:var(--frost-light); color:var(--ink-1); box-shadow:var(--shadow-xl); backdrop-filter:blur(20px); font:400 13px/1.5 var(--font-sans); }
+.resource-usage-heading { display:flex; align-items:center; gap:8px; padding:14px 16px 0; flex-shrink:0; }
+.resource-usage-heading h2 { margin:0; font-size:15px; font-weight:600; }
+.resource-usage-heading button { margin-left:auto; }
+.resource-usage-scope { margin:4px 16px 12px; color:var(--ink-2); font-size:12px; }
+.resource-usage-totals { display:flex; gap:32px; padding:0 16px 12px; flex-shrink:0; }
+.resource-usage-totals > div { display:flex; flex:1; flex-direction:column; gap:4px; }
+.resource-usage-totals > div > span { display:flex; align-items:center; gap:6px; color:var(--ink-2); font-size:12px; }
+.resource-usage-totals svg { width:14px; height:14px; }
+.resource-usage-totals strong { font:500 26px/1.2 var(--font-mono); letter-spacing:-1px; }
+.resource-usage-totals small { font-size:13px; letter-spacing:0; color:var(--ink-2); }
+.resource-usage-categories { display:grid; grid-template-columns:1fr 1fr 1.3fr; gap:12px; padding:10px 16px; border-block:1px solid var(--line-1); background:var(--yz-glass); flex-shrink:0; }
+.resource-usage-categories > div { display:flex; flex-direction:column; gap:3px; }
+.resource-usage-categories span { font-size:12px; color:var(--ink-2); }
+.resource-usage-categories strong { font:500 13px var(--font-mono); }
+.resource-usage-categories small { font-size:12px; color:var(--ink-2); }
+.resource-usage-sort { display:flex; align-items:center; gap:10px; justify-content:space-between; padding:10px 12px 6px 16px; flex-shrink:0; }
+.resource-usage-sort > span { color:var(--ink-2); font-size:12px; }
+.resource-usage-sort [data-slot="toggle-group"] { gap:2px; padding:2px; border:1px solid var(--line-1); border-radius:8px; }
+.resource-usage-sort [data-slot="toggle-group-item"] { min-height:26px; padding:2px 8px; font-size:12px; color:var(--ink-2); }
+.resource-usage-sort [data-state="on"] { background:var(--yz-active); color:var(--ink-1); }
+.resource-usage-list { flex:1; min-height:0; }
+.resource-usage-list ol { list-style:none; padding:0 12px; margin:0; }
+.resource-usage-row { display:grid; grid-template-columns:18px minmax(0,1fr) auto; align-items:center; gap:3px 9px; padding:9px 4px 10px; border-bottom:1px solid var(--line-1); }
+.resource-usage-row > svg { width:16px; height:16px; color:var(--ink-2); align-self:start; margin-top:2px; }
+.resource-usage-source,.resource-usage-values { display:flex; min-width:0; flex-direction:column; gap:3px; }
+.resource-usage-source strong { font-size:13px; font-weight:500; }
+.resource-usage-source span { color:var(--ink-2); font-size:12px; overflow-wrap:anywhere; }
+.resource-usage-values { text-align:right; align-self:start; }
+.resource-usage-values strong { font:500 13px/20px var(--font-mono); }
+.resource-usage-values span { color:var(--ink-2); font-size:12px; }
+.resource-usage-meter { grid-column:2 / -1; height:3px; margin-top:3px; border-radius:2px; background:var(--line-1); overflow:hidden; }
+.resource-usage-meter span { display:block; height:100%; border-radius:inherit; background:var(--ink-2); opacity:.65; }
+.resource-usage-footnote { padding:10px 16px; border-top:1px solid var(--line-1); flex-shrink:0; }
+.resource-usage-footnote p { margin:0; color:var(--ink-2); font-size:12px; line-height:18px; }
+.resource-usage-trigger:focus-visible,.resource-usage-popover button:focus-visible { outline:2px solid var(--ink-2); outline-offset:2px; }
+@media(prefers-reduced-motion:reduce) { .resource-usage-popover,.resource-usage-popover * { animation:none!important; transition:none!important; } }

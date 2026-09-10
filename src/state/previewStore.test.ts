@@ -1,29 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
-import type { DevServerInfo } from "../lib/types"
 import { enqueueNativePreviewOperation } from "../preview/nativePreviewQueue"
 import {
     isLocalPreviewUrl,
-    previewFrameModeFor,
-    previewInitialState,
     usePreviewStore
 } from "./previewStore"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "./workspaceStore"
-
-const runningServer: DevServerInfo = {
-    workspace: "/ws/a",
-    command: "bun run dev",
-    port: 5173,
-    status: { status: "running", port: 5173 }
-}
-
-const otherServer: DevServerInfo = {
-    workspace: "/ws/b",
-    command: "bun run dev",
-    port: 3000,
-    status: { status: "running", port: 3000 }
-}
 
 beforeEach(() => {
     clearMocks()
@@ -35,17 +18,6 @@ afterEach(() => {
 })
 
 describe("usePreviewStore", () => {
-    it("sets dev server info and keeps it isolated by workspace", () => {
-        const s = usePreviewStore.getState()
-
-        s.setDevServer(runningServer)
-        s.setDevServer(otherServer)
-
-        const state = usePreviewStore.getState()
-        expect(state.devServers["/ws/a"]).toEqual(runningServer)
-        expect(state.devServers["/ws/b"]).toEqual(otherServer)
-        expect(state.devServerForWorkspace("/ws/a")).toEqual(runningServer)
-    })
 
     it("navigates local URLs, pushes history, and clears forward history", () => {
         const s = usePreviewStore.getState()
@@ -92,19 +64,6 @@ describe("usePreviewStore", () => {
         expect(usePreviewStore.getState().navForWorkspace("/ws/b").url).toBe("http://127.0.0.1:3000")
         expect(usePreviewStore.getState().navForWorkspace("/ws/b").backStack).toEqual([])
         expect(usePreviewStore.getState().navForWorkspace("/ws/a").url).toBe("http://localhost:5173/about")
-    })
-
-    it("tracks async attempt identity per workspace and only restores the expected claim", () => {
-        const s = usePreviewStore.getState()
-
-        expect(s.attemptForWorkspace("/ws/a")).toBe(0)
-        expect(s.beginAttempt("/ws/a")).toBe(1)
-        expect(s.beginAttempt("/ws/a")).toBe(2)
-        expect(s.beginAttempt("/ws/b")).toBe(1)
-        expect(s.restoreAttempt("/ws/a", 1, 0)).toBe(false)
-        expect(s.restoreAttempt("/ws/a", 2, 1)).toBe(true)
-        expect(s.attemptForWorkspace("/ws/a")).toBe(1)
-        expect(s.attemptForWorkspace("/ws/b")).toBe(1)
     })
 
     it("syncs native history into nav state with a consumable one-shot marker", () => {
@@ -221,97 +180,6 @@ describe("usePreviewStore", () => {
         expect(isLocalPreviewUrl("https://localhost:5173")).toBe(false)
         expect(isLocalPreviewUrl(null)).toBe(false)
         expect(isLocalPreviewUrl("garbage")).toBe(false)
-    })
-
-    it("reset restores the exported initial state", () => {
-        const s = usePreviewStore.getState()
-        s.setDevServer(runningServer)
-        s.navigate("/ws/a", "http://localhost:5173")
-        s.reload("/ws/a")
-        s.setFrame("/ws/a", "mobile")
-
-        s.reset()
-
-        expect(usePreviewStore.getState()).toMatchObject(previewInitialState)
-    })
-
-    it("opens a static session and uses the restrictive frame mode only for that URL", () => {
-        const session = {
-            token: "ab".repeat(32),
-            url: "http://127.0.0.1:4599/abababababababababababababababababababababababababababababababab/index.html"
-        }
-        expect(usePreviewStore.getState().openStaticPreview("/ws/a", session)).toBe(true)
-        expect(usePreviewStore.getState().staticPreview).toMatchObject({
-            workspace: "/ws/a",
-            token: session.token,
-            url: session.url
-        })
-        expect(usePreviewStore.getState().navForWorkspace("/ws/a").url).toBe(session.url)
-        expect(previewFrameModeFor(session.url, usePreviewStore.getState().staticPreview)).toBe(
-            "static"
-        )
-        expect(
-            previewFrameModeFor("http://localhost:5173", usePreviewStore.getState().staticPreview)
-        ).toBe("dev-server")
-    })
-
-    it("revokes the static session on reset, workspace switch, and preview tab close", async () => {
-        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
-        mockIPC((cmd, args) => {
-            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
-        })
-        const session = {
-            token: "cd".repeat(32),
-            url: "http://127.0.0.1:4599/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd/index.html"
-        }
-        usePreviewStore.getState().openStaticPreview("/ws/a", session)
-        usePreviewStore.getState().reset()
-        await Promise.resolve()
-        expect(usePreviewStore.getState().staticPreview).toBeNull()
-        expect(calls.some((call) => call.cmd === "preview_revoke" && call.args.token === session.token)).toBe(
-            true
-        )
-
-        calls.length = 0
-        const next = {
-            token: "ef".repeat(32),
-            url: "http://127.0.0.1:4599/efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef/index.html"
-        }
-        useWorkspaceStore.setState({ workspacePath: "/ws/a" })
-        usePreviewStore.getState().openStaticPreview("/ws/a", next)
-        useWorkspaceStore.setState({ workspacePath: "/ws/b" })
-        await Promise.resolve()
-        expect(usePreviewStore.getState().staticPreview).toBeNull()
-        expect(calls.some((call) => call.cmd === "preview_revoke" && call.args.token === next.token)).toBe(
-            true
-        )
-
-        calls.length = 0
-        const last = {
-            token: "aa".repeat(32),
-            url: "http://127.0.0.1:4599/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/index.html"
-        }
-        useWorkspaceStore.setState({
-            workspacePath: "/ws/a",
-            groups: [{
-                tabs: [{
-                    path: PREVIEW_TAB_PATH,
-                    name: "Preview",
-                    dirty: false,
-                    externallyModified: false,
-                    kind: "preview"
-                }],
-                activePath: PREVIEW_TAB_PATH
-            }],
-            activeGroupIndex: 0
-        })
-        usePreviewStore.getState().openStaticPreview("/ws/a", last)
-        useWorkspaceStore.getState().closePreviewTab()
-        await Promise.resolve()
-        expect(usePreviewStore.getState().staticPreview).toBeNull()
-        expect(calls.some((call) => call.cmd === "preview_revoke" && call.args.token === last.token)).toBe(
-            true
-        )
     })
 
     it("physically closes a native preview when its workspace or Preview tab goes away", async () => {

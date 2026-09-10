@@ -2,11 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { useState } from "react"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
-vi.mock("@/lsp/lspManager", () => ({ ensureClient: vi.fn() }))
-vi.mock("@/lsp/symbols", () => ({
-    requestDocumentSymbols: vi.fn(),
-    requestWorkspaceSymbols: vi.fn()
-}))
+
 vi.mock("@/editor/documentRegistry", () => ({ getDocument: vi.fn() }))
 vi.mock("@/lib/actionFeedback", () => ({ showActionError: vi.fn() }))
 
@@ -20,27 +16,15 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
 
 import type { SearchEvent } from "@/lib/types"
 import { CommandPalette } from "@/app/workbench/CommandPalette"
-import { ensureClient } from "@/lsp/lspManager"
-import { requestDocumentSymbols, requestWorkspaceSymbols } from "@/lsp/symbols"
 import { getDocument } from "@/editor/documentRegistry"
 import { showActionError } from "@/lib/actionFeedback"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
-import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
-
-const managed = {
-    client: { id: "fake", initializing: Promise.resolve() },
-    language: "typescript",
-    capabilities: { documentSymbolProvider: true, workspaceSymbolProvider: true }
-}
 
 beforeEach(() => {
     useUiStore.setState(uiInitialState)
     useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
-    vi.mocked(ensureClient).mockResolvedValue(managed as never)
-    vi.mocked(requestDocumentSymbols).mockResolvedValue([])
-    vi.mocked(requestWorkspaceSymbols).mockResolvedValue([])
     vi.mocked(getDocument).mockResolvedValue({ result: { kind: "full", content: "", size: 0, lineEnding: "lf" } })
     useWorkspaceStore.setState({
         workspacePath: "/ws",
@@ -56,14 +40,7 @@ afterEach(() => {
     useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
 })
 
-const flush = async () => {
-    await act(async () => {
-        for (let i = 0; i < 6; i++) await Promise.resolve()
-    })
-}
-
-// Owns the palette open state the way the workbench does, so the "Go to symbol"
-// entry (which closes the palette) and the ⌘K handler operate on real state.
+// Owns the palette open state the way the workbench does.
 function Harness() {
     const [open, setOpen] = useState(true)
     return (
@@ -76,37 +53,10 @@ function Harness() {
     )
 }
 
-it("⌘K while the symbol picker is open closes the picker without stacking the palette", async () => {
+it("toggle browser command opens the singleton browser tab", async () => {
     render(<Harness />)
 
-    // Open the symbol picker from the palette: the palette closes, the picker opens.
-    fireEvent.click(await screen.findByRole("option", { name: /go to symbol/i }))
-    await flush()
-    expect(screen.getAllByRole("dialog")).toHaveLength(1)
-
-    // ⌘K must close the picker and NOT open the palette on top of it.
-    await act(async () => {
-        fireEvent.keyDown(window, { key: "k", metaKey: true })
-    })
-    await flush()
-    expect(screen.queryAllByRole("dialog")).toHaveLength(0)
-})
-
-it("renders terminal and preview toggles and closes after selection", async () => {
-    render(<Harness />)
-
-    expect(await screen.findByRole("option", { name: /toggle terminal/i })).toBeInTheDocument()
-    expect(screen.getByRole("option", { name: /toggle preview/i })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole("option", { name: /toggle terminal/i }))
-    expect(useUiStore.getState().terminalOpen).toBe(true)
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-})
-
-it("toggle preview command opens the singleton preview tab", async () => {
-    render(<Harness />)
-
-    fireEvent.click(await screen.findByRole("option", { name: /toggle preview/i }))
+    fireEvent.click(await screen.findByRole("option", { name: /toggle browser/i }))
 
     const groups = useWorkspaceStore.getState().groups
     expect(groups.some((g) => g.tabs.some((t) => t.path === PREVIEW_TAB_PATH))).toBe(true)
@@ -415,14 +365,12 @@ it("'>' prefix restricts to commands and skips the workspace search", async () =
 
     // ">" alone keeps every command and runs no workspace search.
     fireEvent.change(input, { target: { value: ">" } })
-    expect(screen.getByRole("option", { name: /toggle terminal/i })).toBeInTheDocument()
     expect(screen.queryByText("Workspace search")).not.toBeInTheDocument()
     expect(searchWorkspace).not.toHaveBeenCalled()
 
     // The text after ">" filters the command list.
     fireEvent.change(input, { target: { value: ">settings" } })
     expect(screen.getByRole("option", { name: /settings/i })).toBeInTheDocument()
-    expect(screen.queryByRole("option", { name: /toggle terminal/i })).not.toBeInTheDocument()
 })
 
 it("a single-character query stays below the search floor and runs no workspace search", async () => {
@@ -487,31 +435,4 @@ it("workspace search sanitizes an extended Windows child path but reveals the ra
     fireEvent.click(screen.getByText("needle"))
     expect(useWorkspaceStore.getState().pendingReveal).toEqual({ path: rawPath, line: 3 })
     vi.useRealTimers()
-})
-
-it("Go to symbol with an active markdown preview does not start document/LSP lookup", async () => {
-    const previewPath = markdownPreviewPath("/ws/readme.md")
-    useWorkspaceStore.setState({
-        workspacePath: "/ws",
-        groups: [{
-            activePath: previewPath,
-            tabs: [{
-                path: previewPath,
-                name: "Preview",
-                dirty: false,
-                externallyModified: false,
-                kind: "markdown-preview",
-                sourcePath: "/ws/readme.md"
-            }]
-        }],
-        activeGroupIndex: 0
-    })
-
-    render(<Harness />)
-    fireEvent.click(await screen.findByRole("option", { name: /go to symbol/i }))
-    await flush()
-
-    expect(getDocument).not.toHaveBeenCalled()
-    expect(ensureClient).not.toHaveBeenCalled()
-    expect(requestDocumentSymbols).not.toHaveBeenCalled()
 })

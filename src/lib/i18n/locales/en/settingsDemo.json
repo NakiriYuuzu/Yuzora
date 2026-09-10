@@ -1,0 +1,36 @@
+{
+  "title": "Settings",
+  "subtitle": "Make your workspace feel like yours.",
+  "search": "Search settings",
+  "searchPlaceholder": "Search settings, font, shell…",
+  "clearSearch": "Clear search",
+  "categories": "Settings categories",
+  "localPreferences": "Workspace preferences",
+  "groups": {
+    "personal": "Personalization",
+    "workspace": "Development",
+    "application": "Application"
+  },
+  "theme": "Theme",
+  "themes": {
+    "light": "Light",
+    "dark": "Dark",
+    "auto": "System"
+  },
+  "themeHint": "Applies immediately. System follows your device appearance.",
+  "palettes": {
+    "lime": "Lime",
+    "blue": "Blue",
+    "violet": "Violet",
+    "coral": "Coral",
+    "amber": "Amber"
+  },
+  "paletteHint": "Theme colors also tint the background, sidebars, menus, and controls. Space characters and colors remain independently editable.",
+  "resultsTitle": "Search settings",
+  "resultsCount": "{{count}} categories and settings found for “{{query}}”",
+  "noResults": "No matching settings",
+  "noResultsHint": "Try “font”, “terminal”, or “Git”, or browse the categories on the left.",
+  "editorPreview": "Editor font preview",
+  "editorSample": "Read code and Traditional Chinese at your chosen size.",
+  "preferencesHint": "Theme and font changes apply immediately. Service actions use their own controls."
+}

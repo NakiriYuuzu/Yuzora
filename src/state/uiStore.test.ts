@@ -108,51 +108,30 @@ describe("uiStore", () => {
         useUiStore.getState().closeResolver()
         expect(useUiStore.getState().resolverPath).toBe(null)
     })
-    it("openSettings targets a section and language", () => {
-        useUiStore.getState().openSettings("lsp", "python")
-        const s = useUiStore.getState()
-        expect(s.settingsOpen).toBe(true)
-        expect(s.settingsSection).toBe("lsp")
-        expect(s.settingsLanguage).toBe("python")
-    })
     it("openSettings targets a logs source", () => {
-        useUiStore.getState().openSettings("logs", { source: "dev_server" })
+        useUiStore.getState().openSettings("logs", { source: "git" })
         const s = useUiStore.getState()
         expect(s.settingsOpen).toBe(true)
         expect(s.settingsSection).toBe("logs")
-        expect(s.settingsLanguage).toBe(null)
-        expect(s.settingsLogSource).toBe("dev_server")
+        expect(s.settingsLogSource).toBe("git")
     })
     it("openSettings without arguments opens with no target", () => {
         useUiStore.getState().openSettings()
         const s = useUiStore.getState()
         expect(s.settingsOpen).toBe(true)
         expect(s.settingsSection).toBe(null)
-        expect(s.settingsLanguage).toBe(null)
         expect(s.settingsLogSource).toBe(null)
     })
     it("setSettingsOpen(false) closes the dialog", () => {
-        useUiStore.getState().openSettings("lsp", "python")
+        useUiStore.getState().openSettings("logs", { source: "git" })
         useUiStore.getState().setSettingsOpen(false)
         expect(useUiStore.getState().settingsOpen).toBe(false)
     })
     it("openSettings bumps settingsNonce on every call (re-target while open)", () => {
-        useUiStore.getState().openSettings("lsp", "python")
+        useUiStore.getState().openSettings("logs", { source: "git" })
         const n1 = useUiStore.getState().settingsNonce
-        useUiStore.getState().openSettings("lsp", "python")
+        useUiStore.getState().openSettings("logs", { source: "git" })
         expect(useUiStore.getState().settingsNonce).toBe(n1 + 1)
-    })
-    it("setTraceEnabled toggles in-memory trace state (default off)", () => {
-        expect(useUiStore.getState().traceEnabled).toBe(false)
-        useUiStore.getState().setTraceEnabled(true)
-        expect(useUiStore.getState().traceEnabled).toBe(true)
-    })
-    it("toggleTerminal flips terminal drawer visibility from the initial closed state", () => {
-        expect(useUiStore.getState().terminalOpen).toBe(false)
-        useUiStore.getState().toggleTerminal()
-        expect(useUiStore.getState().terminalOpen).toBe(true)
-        useUiStore.getState().toggleTerminal()
-        expect(useUiStore.getState().terminalOpen).toBe(false)
     })
 
     it("Git change single/toggle/range selection keeps an independent primary and anchor", () => {

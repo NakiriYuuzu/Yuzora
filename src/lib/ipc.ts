@@ -1,4 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core"
+import { parseRemoteFilePath } from "./runtimeIdentity"
+import { invokeNativeGit, closeNativeGitWorkspace } from "./nativeGit"
 
 // Re-exported so feature modules that carry their own domain logic around a
 // command (the log-event envelope builder) can
@@ -10,13 +12,9 @@ export { invoke }
 import type {
     FileNode,
     WorkspaceOpenResult,
-    WorkspacePathIndexResult,
     OpenFileResult,
-    GitEnvironment,
     GitBootstrapResult,
     WorkspaceTrustStatus,
-    WorkspaceTrustChallenge,
-    WorkspaceExecutionChallenge,
     TrustedWorkspace,
     GitStatus,
     BranchList,
@@ -27,16 +25,6 @@ import type {
     CommitDetail,
     AuthorEntry,
     FileAtRevResult,
-    LspServerInfo,
-    LspConfig,
-    PtyActivity,
-    PtyEvent,
-    PtyOutputMetrics,
-    PtySessionInfo,
-    TerminalProfile,
-    TerminalCwdStrategy,
-    DevServerDetect,
-    DevServerInfo,
     DbTable,
     DbColumn,
     DbDescriptorId,
@@ -97,26 +85,33 @@ export interface GitRollbackResult {
 
 
 export function openWorkspace(path: string): Promise<WorkspaceOpenResult> {
+    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.openRemoteWorkspace(path))
     return invoke("open_workspace", { path })
 }
 
 export function listDir(path: string): Promise<FileNode[]> {
+    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.listRemoteDir(path))
     return invoke("list_dir", { path })
 }
 
-export function workspacePathIndex(workspace: string): Promise<WorkspacePathIndexResult> {
-    return invoke("workspace_path_index", { workspace })
-}
-
 export function openFile(path: string): Promise<OpenFileResult> {
+    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.readRemoteFile(path))
     return invoke("open_file", { path })
 }
 
+/** Accept the revision only when the editor accepts the matching content. */
+export async function openFileSnapshot(path: string): Promise<{ result: OpenFileResult; accept: () => void }> {
+    if (parseRemoteFilePath(path)) return (await import("./remoteFiles")).readRemoteFileSnapshot(path)
+    return { result: await openFile(path), accept: () => {} }
+}
+
 export function isOpenableFile(path: string): Promise<boolean> {
+    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.readRemoteFile(path, false)).then(() => true, () => false)
     return invoke("is_openable_file", { path })
 }
 
 export function allowWorkspaceAssetScope(path: string): Promise<void> {
+    if (parseRemoteFilePath(path)) return Promise.resolve()
     return invoke("allow_workspace_asset_scope", { path })
 }
 
@@ -126,81 +121,97 @@ export interface FileBase64 {
 }
 
 export function readFileBase64(path: string, maxBytes: number): Promise<FileBase64> {
+    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.readRemoteBase64(path, maxBytes))
     return invoke("read_file_base64", { path, maxBytes })
 }
 
 export function saveFile(path: string, content: string): Promise<number> {
+    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.saveRemoteFile(path, content))
     return invoke("save_file", { path, content })
 }
 
 export function fsCreateFile(workspace: string, path: string): Promise<void> {
+    if (parseRemoteFilePath(workspace) || parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.createRemotePath(workspace, path, false))
     return invoke("fs_create_file", { workspace, path })
 }
 
 export function fsCreateDir(workspace: string, path: string): Promise<void> {
+    if (parseRemoteFilePath(workspace) || parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.createRemotePath(workspace, path, true))
     return invoke("fs_create_dir", { workspace, path })
 }
 
 export function fsRename(workspace: string, from: string, to: string): Promise<void> {
+    if ([workspace, from, to].some((path) => parseRemoteFilePath(path))) return import("./remoteFiles").then((remote) => remote.renameRemotePath(workspace, from, to))
     return invoke("fs_rename", { workspace, from, to })
 }
 
 export function fsDelete(workspace: string, path: string): Promise<void> {
+    if (parseRemoteFilePath(workspace) || parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.deleteRemotePath(workspace, path))
     return invoke("fs_delete", { workspace, path })
 }
 
-export function startWatch(path: string): Promise<void> {
+let watchRequestGeneration = 0
+export async function startWatch(path: string): Promise<void> {
+    const generation = ++watchRequestGeneration
+    const remote = await import("./remoteFiles")
+    if (generation !== watchRequestGeneration) return
+    await remote.stopRemoteWatch()
+    if (generation !== watchRequestGeneration) return
+    if (parseRemoteFilePath(path)) {
+        await invoke("stop_watch")
+        if (generation !== watchRequestGeneration) return
+        return remote.startRemoteWatch(path)
+    }
     return invoke("start_watch", { path })
 }
 
-export function gitDetect(path: string): Promise<GitEnvironment> {
-    return invoke("git_detect", { path })
+function invokeGit<T>(command: string, args: Record<string, unknown>): Promise<T> {
+    const path = args.repositoryRoot ?? args.path
+    if (typeof path === "string" && parseRemoteFilePath(path)) return import("./remoteGit").then((remote) => remote.invokeRemoteGit<T>(command, args))
+    return invokeNativeGit<T>(command, args)
+}
+
+export function gitCloseWorkspace(path: string): void {
+    if (!parseRemoteFilePath(path)) closeNativeGitWorkspace(path)
 }
 
 // #57 T3：冷開 workspace 的 git 首載——一趟完成 detect→(status‖branches)，
 // 消除 detect 先行寫 State、status/branches 才能發的結構性 waterfall。
 // 細粒度 gitStatus/gitBranches 保留給後續 refresh。
 export function gitBootstrap(path: string): Promise<GitBootstrapResult> {
-    return invoke("git_bootstrap", { path })
+    return invokeGit("git_bootstrap", { path })
 }
 
 export function workspaceTrustStatus(path: string): Promise<WorkspaceTrustStatus> {
+    if (parseRemoteFilePath(path)) return import("./remoteTrust").then((remote) => remote.remoteTrustStatus(path))
     return invoke("workspace_trust_status", { path })
 }
 
-export function workspaceTrustList(): Promise<TrustedWorkspace[]> {
-    return invoke("workspace_trust_list")
-}
-
-export function workspaceTrustChallenge(path: string): Promise<WorkspaceTrustChallenge> {
-    return invoke("workspace_trust_challenge", { path })
-}
-
-export function workspaceTrustExecutionChallenge(
-    path: string,
-    command: string
-): Promise<WorkspaceExecutionChallenge> {
-    return invoke("workspace_trust_execution_challenge", { path, command })
+export async function workspaceTrustList(): Promise<TrustedWorkspace[]> {
+    const [local, remote] = await Promise.all([invoke<TrustedWorkspace[]>("workspace_trust_list"), import("./remoteTrust").then((remote) => remote.remoteTrustList())])
+    return [...local, ...remote]
 }
 
 export function workspaceTrustGrant(challengeId: string): Promise<WorkspaceTrustStatus> {
+    if (challengeId.startsWith("[")) return import("./remoteTrust").then((remote) => remote.remoteTrustGrant(challengeId))
     return invoke("workspace_trust_grant", { challengeId })
 }
 
 export function workspaceTrustRevoke(canonicalPath: string): Promise<TrustedWorkspace[]> {
+    if (parseRemoteFilePath(canonicalPath)) return import("./remoteTrust").then(async (remote) => { await remote.remoteTrustRevoke(canonicalPath); return workspaceTrustList() })
     return invoke("workspace_trust_revoke", { canonicalPath })
 }
 
 export function gitStatus(repositoryRoot: string, pathspec?: string[]): Promise<GitStatus> {
-    return invoke("git_status_cmd", { repositoryRoot, pathspec: pathspec ?? null })
+    return invokeGit("git_status_cmd", { repositoryRoot, pathspec: pathspec ?? null })
 }
 
 export function gitStage(repositoryRoot: string, paths: string[]): Promise<void> {
-    return invoke("git_stage", { repositoryRoot, paths })
+    return invokeGit("git_stage", { repositoryRoot, paths })
 }
 
 export function gitUnstage(repositoryRoot: string, paths: string[]): Promise<void> {
-    return invoke("git_unstage", { repositoryRoot, paths })
+    return invokeGit("git_unstage", { repositoryRoot, paths })
 }
 
 export function gitDiscard(
@@ -208,7 +219,7 @@ export function gitDiscard(
     paths: string[],
     untracked: string[]
 ): Promise<void> {
-    return invoke("git_discard", { repositoryRoot, paths, untracked })
+    return invokeGit("git_discard", { repositoryRoot, paths, untracked })
 }
 
 export function gitRollbackPaths(
@@ -216,15 +227,15 @@ export function gitRollbackPaths(
     targets: GitRollbackTarget[],
     deleteUntrackedOrAdded: boolean
 ): Promise<GitRollbackResult> {
-    return invoke("git_rollback_paths", { repositoryRoot, targets, deleteUntrackedOrAdded })
+    return invokeGit("git_rollback_paths", { repositoryRoot, targets, deleteUntrackedOrAdded })
 }
 
 export function gitCommit(repositoryRoot: string, message: string): Promise<void> {
-    return invoke("git_commit_cmd", { repositoryRoot, message })
+    return invokeGit("git_commit_cmd", { repositoryRoot, message })
 }
 
 export function gitBranches(repositoryRoot: string): Promise<BranchList> {
-    return invoke("git_branches", { repositoryRoot })
+    return invokeGit("git_branches", { repositoryRoot })
 }
 
 export function gitCreateBranch(
@@ -232,35 +243,35 @@ export function gitCreateBranch(
     name: string,
     startPoint?: string
 ): Promise<void> {
-    return invoke("git_create_branch", { repositoryRoot, name, startPoint: startPoint ?? null })
+    return invokeGit("git_create_branch", { repositoryRoot, name, startPoint: startPoint ?? null })
 }
 
 export function gitCheckout(repositoryRoot: string, name: string): Promise<void> {
-    return invoke("git_checkout", { repositoryRoot, name })
+    return invokeGit("git_checkout", { repositoryRoot, name })
 }
 
 export function gitCheckoutDetached(repositoryRoot: string, rev: string): Promise<void> {
-    return invoke("git_checkout_detached", { repositoryRoot, rev })
+    return invokeGit("git_checkout_detached", { repositoryRoot, rev })
 }
 
 export function gitCherryPick(repositoryRoot: string, hash: string): Promise<void> {
-    return invoke("git_cherry_pick", { repositoryRoot, hash })
+    return invokeGit("git_cherry_pick", { repositoryRoot, hash })
 }
 
 export function gitFetch(repositoryRoot: string, background: boolean): Promise<void> {
-    return invoke("git_fetch_cmd", { repositoryRoot, background })
+    return invokeGit("git_fetch_cmd", { repositoryRoot, background })
 }
 
 export function gitPull(repositoryRoot: string): Promise<void> {
-    return invoke("git_pull_cmd", { repositoryRoot })
+    return invokeGit("git_pull_cmd", { repositoryRoot })
 }
 
 export function gitPush(repositoryRoot: string): Promise<void> {
-    return invoke("git_push_cmd", { repositoryRoot })
+    return invokeGit("git_push_cmd", { repositoryRoot })
 }
 
 export function gitRemoteProbe(repositoryRoot: string): Promise<RemoteProbe> {
-    return invoke("git_remote_probe", { repositoryRoot })
+    return invokeGit("git_remote_probe", { repositoryRoot })
 }
 
 export function gitDiffContent(
@@ -269,15 +280,15 @@ export function gitDiffContent(
     staged: boolean,
     origPath?: string | null
 ): Promise<DiffContent> {
-    return invoke("git_diff_content", { repositoryRoot, path, staged, origPath: origPath ?? null })
+    return invokeGit("git_diff_content", { repositoryRoot, path, staged, origPath: origPath ?? null })
 }
 
 export function gitConflictAbort(repositoryRoot: string, op: string): Promise<void> {
-    return invoke("git_conflict_abort", { repositoryRoot, op })
+    return invokeGit("git_conflict_abort", { repositoryRoot, op })
 }
 
 export function gitConflictContinue(repositoryRoot: string, op: string): Promise<void> {
-    return invoke("git_conflict_continue", { repositoryRoot, op })
+    return invokeGit("git_conflict_continue", { repositoryRoot, op })
 }
 
 export function askpassRespond(id: number, response: string | null): Promise<void> {
@@ -293,7 +304,7 @@ export function gitLogPage(
     since?: string | null,
     until?: string | null
 ): Promise<LogPage> {
-    return invoke("git_log_page", {
+    return invokeGit("git_log_page", {
         repositoryRoot,
         cursor,
         limit,
@@ -305,11 +316,11 @@ export function gitLogPage(
 }
 
 export function gitCommitDetail(repositoryRoot: string, hash: string): Promise<CommitDetail> {
-    return invoke("git_commit_detail", { repositoryRoot, hash })
+    return invokeGit("git_commit_detail", { repositoryRoot, hash })
 }
 
 export function gitLogAuthors(repositoryRoot: string): Promise<AuthorEntry[]> {
-    return invoke("git_log_authors", { repositoryRoot })
+    return invokeGit("git_log_authors", { repositoryRoot })
 }
 
 export function gitFileAtRev(
@@ -317,7 +328,7 @@ export function gitFileAtRev(
     rev: string,
     path: string
 ): Promise<FileAtRevResult> {
-    return invoke("git_file_at_rev", { repositoryRoot, rev, path })
+    return invokeGit("git_file_at_rev", { repositoryRoot, rev, path })
 }
 
 export function searchWorkspace(
@@ -326,146 +337,13 @@ export function searchWorkspace(
     caseSensitive: boolean,
     onEvent: (e: SearchEvent) => void
 ): Promise<void> {
+    if (parseRemoteFilePath(root)) return import("./remoteSearch").then((remote) => remote.searchRemoteWorkspace(root, query, caseSensitive, onEvent))
     const ch = new Channel<SearchEvent>()
     ch.onmessage = onEvent
-    return invoke("search_workspace", { root, query, caseSensitive, onEvent: ch })
-}
-
-export function ptyOpen(
-    workspace: string,
-    sessionId: string,
-    shell: string | null,
-    shellArgs: string[] | undefined,
-    cwdStrategy: TerminalCwdStrategy,
-    cols: number,
-    rows: number,
-    onEvent: (e: PtyEvent) => void
-): Promise<PtySessionInfo> {
-    const ch = new Channel<PtyEvent>()
-    ch.onmessage = onEvent
-    return invoke("pty_open", {
-        workspace,
-        sessionId,
-        shell,
-        shellArgs,
-        cwdStrategy,
-        cols,
-        rows,
-        onEvent: ch
+    return import("./remoteSearch").then(async (remote) => {
+        await remote.stopRemoteSearch()
+        return invoke("search_workspace", { root, query, caseSensitive, onEvent: ch })
     })
-}
-
-export function ptyListProfiles(): Promise<TerminalProfile[]> {
-    return invoke("pty_list_profiles")
-}
-
-export function ptyWrite(sessionId: string, data: string): Promise<void> {
-    return invoke("pty_write", { sessionId, data })
-}
-
-export function ptyResize(sessionId: string, cols: number, rows: number): Promise<void> {
-    return invoke("pty_resize", { sessionId, cols, rows })
-}
-
-export function ptyActivity(sessionId: string): Promise<PtyActivity> {
-    return invoke("pty_activity", { sessionId })
-}
-
-export function ptyOutputMetrics(sessionId: string): Promise<PtyOutputMetrics | null> {
-    return invoke("pty_output_metrics", { sessionId })
-}
-
-export function ptyClose(sessionId: string): Promise<void> {
-    return invoke("pty_close", { sessionId })
-}
-
-export function ptyCloseWorkspace(workspace: string): Promise<void> {
-    return invoke("pty_close_workspace", { workspace })
-}
-
-export function devServerDetect(workspace: string, extraPorts?: number[]): Promise<DevServerDetect> {
-    return invoke("dev_server_detect", { workspace, extraPorts })
-}
-
-export function devServerStart(
-    workspace: string,
-    command: string,
-    port: number | null,
-    onOutput: (line: string) => void,
-    challengeId: string
-): Promise<DevServerInfo> {
-    const ch = new Channel<string>()
-    ch.onmessage = onOutput
-    return invoke("dev_server_start", { workspace, command, port, challengeId, onOutput: ch })
-}
-
-export function devServerStop(workspace: string): Promise<void> {
-    return invoke("dev_server_stop", { workspace })
-}
-
-export function devServerStopWorkspace(workspace: string): Promise<void> {
-    return invoke("dev_server_stop_workspace", { workspace })
-}
-
-export function lspStart(
-    workspace: string,
-    language: string,
-    onMessage: (msg: string) => void
-): Promise<LspServerInfo> {
-    const ch = new Channel<string>()
-    ch.onmessage = onMessage
-    return invoke("lsp_start", { workspace, language, onMessage: ch })
-}
-
-export function lspSend(workspace: string, language: string, message: string): Promise<void> {
-    return invoke("lsp_send", { workspace, language, message })
-}
-
-export function lspStopWorkspace(workspace: string): Promise<void> {
-    return invoke("lsp_stop_workspace", { workspace })
-}
-
-export function lspStatus(workspace: string): Promise<LspServerInfo[]> {
-    return invoke("lsp_status", { workspace })
-}
-
-export function lspDetectServer(
-    workspace: string | null,
-    language: string
-): Promise<LspServerInfo> {
-    return invoke("lsp_detect_server", { workspace, language })
-}
-
-export function lspConfigGet(): Promise<LspConfig> {
-    return invoke("lsp_config_get")
-}
-
-export function lspConfigSetServer(
-    workspace: string | null,
-    language: string,
-    serverId: string
-): Promise<LspConfig> {
-    return invoke("lsp_config_set_server", { workspace, language, serverId })
-}
-
-export function lspConfigStale(): Promise<string[]> {
-    return invoke("lsp_config_stale")
-}
-
-export function lspConfigClearStale(workspace: string): Promise<LspConfig> {
-    return invoke("lsp_config_clear_stale", { workspace })
-}
-
-export function lspSetTrace(enabled: boolean): Promise<void> {
-    return invoke("lsp_set_trace", { enabled })
-}
-
-
-export function lspInstallServer(
-    workspace: string | null,
-    language: string
-): Promise<LspServerInfo> {
-    return invoke("lsp_install_server", { workspace, language })
 }
 
 
@@ -580,18 +458,6 @@ export function sshHostKeyRespond(
     return invoke("ssh_host_key_respond", { challengeId, accept, endpoint, fingerprint })
 }
 
-export function sshOpenShell(sessionId: string, cols: number, rows: number): Promise<void> {
-    return invoke("ssh_open_shell", { sessionId, cols, rows })
-}
-
-export function sshWrite(sessionId: string, data: string): Promise<void> {
-    return invoke("ssh_write", { sessionId, data })
-}
-
-export function sshResize(sessionId: string, cols: number, rows: number): Promise<void> {
-    return invoke("ssh_resize", { sessionId, cols, rows })
-}
-
 export function sshDisconnect(sessionId: string): Promise<void> {
     return invoke("ssh_disconnect", { sessionId })
 }
@@ -622,6 +488,14 @@ export function sftpPickSelectedPath(): Promise<SftpSelectedPathGrant[]> {
     return invoke("sftp_pick_selected_path")
 }
 
+export function sftpPickTree(direction: "upload" | "download", suggestedLeaf?: string): Promise<SftpSelectedPathGrant | null> {
+    return invoke("sftp_pick_tree", { direction, suggestedLeaf })
+}
+
+export function sftpTransferTree(sessionId: string, request: { selectionId: string; transferId: string; direction: "upload" | "download"; remotePath: string; name: string }): Promise<{ files: number; bytes: number }> {
+    return invoke("sftp_transfer_tree", { sessionId, request })
+}
+
 export function sftpPickDownloadDestination(
     suggestedLeaf: string
 ): Promise<SftpSelectedPathGrant | null> {
@@ -632,9 +506,22 @@ export function sftpUpload(
     sessionId: string,
     transferId: string,
     source: SftpUploadSource,
-    remoteDir: string
+    remoteDir: string,
+    expectedRevision: string | null = null
 ): Promise<void> {
-    return invoke("sftp_upload", { sessionId, transferId, source, remoteDir })
+    return invoke("sftp_upload", { sessionId, request: { transferId, source, remoteDir, expectedRevision } })
+}
+
+export function sftpFileRevision(sessionId: string, path: string, transferId: string): Promise<string | null> {
+    return invoke("sftp_file_revision", { sessionId, path, transferId })
+}
+
+export function sftpTransferPrepare(sessionId: string): Promise<string> {
+    return invoke("sftp_transfer_prepare", { sessionId })
+}
+
+export function sftpTransferCancel(sessionId: string, transferId: string): Promise<void> {
+    return invoke("sftp_transfer_cancel", { sessionId, transferId })
 }
 
 export function sftpDownload(
@@ -655,32 +542,15 @@ export function perfSnapshot(): Promise<PerfSnapshot | null> {
     return invoke("perf_snapshot")
 }
 
-// --- Preview (P3): isolated static session + external-URL child webview ---
-export type PreviewSession = {
-    token: string
-    url: string
-}
-
-export function previewCreate(path: string): Promise<PreviewSession> {
-    return invoke("preview_create", { path })
-}
-
-export function previewRevoke(token: string): Promise<void> {
-    return invoke("preview_revoke", { token })
-}
-
-export function previewStopAll(): Promise<void> {
-    return invoke("preview_stop_all")
-}
-
 export function previewOpenUrl(
     url: string,
     x: number,
     y: number,
     width: number,
-    height: number
+    height: number,
+    sessionId?: string
 ): Promise<void> {
-    return invoke("preview_open_url", { url, x, y, width, height })
+    return invoke("preview_open_url", { url, x, y, width, height, sessionId })
 }
 
 export function previewSetBounds(
@@ -700,12 +570,16 @@ export function previewClose(): Promise<void> {
     return invoke("preview_close")
 }
 
-export function previewBack(): Promise<void> {
-    return invoke("preview_back")
+export function previewBack(sessionId?: string): Promise<void> {
+    return invoke("preview_back", { sessionId })
 }
 
-export function previewForward(): Promise<void> {
-    return invoke("preview_forward")
+export function previewForward(sessionId?: string): Promise<void> {
+    return invoke("preview_forward", { sessionId })
+}
+
+export function previewNavigationState(sessionId: string): Promise<import("@/state/previewStore").PreviewNativeNavigationSnapshot> {
+    return invoke("preview_navigation_state", { sessionId })
 }
 
 export function previewReload(): Promise<void> {

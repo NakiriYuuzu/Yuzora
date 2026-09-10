@@ -6,6 +6,7 @@ import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { HerdrBridge } from "./HerdrBridge"
 import { shouldPollHerdrSnapshots } from "./herdrBridgePolicy"
+import { remoteFilePath } from "@/lib/runtimeIdentity"
 
 const initialWorkspaceState = useWorkspaceStore.getState()
 const initialHerdrState = useHerdrStore.getState()
@@ -40,7 +41,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       herdrSessionId: "default",
       protocol: 19,
       version: "0.8.0",
-      spaces: [{ id: "ws-1", label: "Main", order: 1, focused: true }],
+      spaces: [{ id: "ws-1", label: "Main", path: "/tmp/main", order: 1, focused: true }],
       agents: [],
       tabs: [
         {
@@ -64,7 +65,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       raw: {}
     }
 
-    useWorkspaceStore.setState({ sessionRestoreReady: true })
+    useWorkspaceStore.setState({ sessionRestoreReady: true, workspacePath: "/tmp/main" })
     // Focus restoration is runtime state recovery, not conditional presentation.
     useUiStore.setState({ mode: "files" })
     useHerdrStore.setState({
@@ -177,7 +178,7 @@ describe("HerdrBridge attachment reconciliation", () => {
     ).toBe(true)
   })
 
-  it("retries a cancelled cold-start focus restore instead of accepting an empty Intro result", async () => {
+  it("retries a cancelled focus restore inside the hydrated workspace", async () => {
     const restoreFocusedState = vi
       .fn()
       .mockResolvedValueOnce({ ok: false as const, cancelled: true as const })
@@ -193,7 +194,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       herdrSessionId: "default",
       protocol: 19,
       version: "0.8.0",
-      spaces: [{ id: "ws-1", label: "Main", order: 1, focused: true }],
+      spaces: [{ id: "ws-1", label: "Main", path: "/tmp/main", order: 1, focused: true }],
       agents: [],
       tabs: [{
         id: "tab-1",
@@ -214,7 +215,7 @@ describe("HerdrBridge attachment reconciliation", () => {
       focusedPaneId: "pane-1",
       raw: {}
     }
-    useWorkspaceStore.setState({ sessionRestoreReady: true })
+    useWorkspaceStore.setState({ sessionRestoreReady: true, workspacePath: "/tmp/main" })
     useHerdrStore.setState({
       ...herdrInitialState,
       sessions: [session],
@@ -253,6 +254,49 @@ describe("HerdrBridge attachment reconciliation", () => {
     })
 
     await waitFor(() => expect(restoreFocusedState).toHaveBeenCalledTimes(2))
+  })
+
+  it.each([
+    ["a runtime-only folder before any workspace is opened", null, "/tmp/herdr-only", false],
+    ["a runtime-only Space without a root", null, undefined, false],
+    ["another native folder", "/tmp/chosen", "/tmp/agent-cwd", false],
+    ["missing Space root", "/tmp/chosen", undefined, false],
+    ["the same native folder", "/tmp/chosen", "/tmp/chosen", true],
+    ["another host with the same path", remoteFilePath("host-a", "/tmp/chosen"), remoteFilePath("host-b", "/tmp/chosen"), false],
+    ["the same remote folder", remoteFilePath("host-a", "/tmp/chosen"), remoteFilePath("host-a", "/tmp/chosen"), true]
+  ])("preserves hydrated workspace identity when snapshot targets %s", async (_label, workspacePath, root, shouldRestore) => {
+    const restoreFocusedState = vi.fn(async () => ({ ok: true as const }))
+    const snapshot = {
+      herdrSessionId: "default", protocol: 20, version: "0.8.2",
+      spaces: [{ id: "w1", label: "Test", order: 1, focused: true, path: root }],
+      agents: [], tabs: [], terminals: [],
+      focusedWorkspaceId: "w1", focusedTabId: "w1:t1", raw: {}
+    }
+    useWorkspaceStore.setState({ sessionRestoreReady: false, workspacePath: null })
+    useHerdrStore.setState({
+      ...herdrInitialState,
+      selectedSessionName: "default",
+      runtimesBySession: {
+        default: { capabilities: null, snapshot, worktreeInventory: null, connectionState: "ready", errorMessage: null }
+      },
+      refreshSessions: vi.fn(async () => undefined),
+      restoreFocusedState,
+      releaseAllAttachments: vi.fn(async () => undefined)
+    })
+    render(<HerdrBridge />)
+    await act(async () => {
+      useWorkspaceStore.setState({ sessionRestoreReady: true, workspacePath })
+    })
+    expect(restoreFocusedState).toHaveBeenCalledTimes(shouldRestore ? 1 : 0)
+    // Reconnect snapshots must apply the same workspace guard.
+    await act(async () => {
+      const state = useHerdrStore.getState()
+      useHerdrStore.setState({ runtimesBySession: {
+        default: { ...state.runtimesBySession.default!, snapshot: { ...snapshot, focusedTabId: "w1:t2" } }
+      } })
+    })
+    expect(restoreFocusedState).toHaveBeenCalledTimes(shouldRestore ? 2 : 0)
+    expect(useWorkspaceStore.getState().workspacePath).toBe(workspacePath)
   })
 
   it("keeps composite leaf attachments while their owning page is open", async () => {

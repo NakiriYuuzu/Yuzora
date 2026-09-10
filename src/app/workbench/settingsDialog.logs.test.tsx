@@ -3,7 +3,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import { SettingsDialog } from "@/app/workbench/SettingsDialog"
-import { useLspStore } from "@/state/lspStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -39,24 +38,11 @@ const logRows = [
     timestamp: "2026-01-02T03:04:05+08:00",
     level: "error",
     kind: "audit",
-    source: "lsp",
+    source: "ui",
     workspace_path: "/ws",
-    event: "lsp_restart",
+    event: "ui_error",
     message: "server crashed",
-    metadata: { language: "typescript", restartCount: 2 },
-  },
-]
-
-const devServerLogRows = [
-  {
-    timestamp: "2026-01-02T04:05:06+08:00",
-    level: "error",
-    kind: "debug",
-    source: "dev_server",
-    workspace_path: "/ws",
-    event: "dev_server_start_failed",
-    message: "command not found",
-    metadata: { command: "bun run dev" },
+    metadata: { action: "settings" },
   },
 ]
 
@@ -66,17 +52,11 @@ let sourcesResult: string[] = []
 
 function setupIpc() {
   mockIPC((cmd, args) => {
-    const a = (args ?? {}) as Record<string, unknown>
     if (cmd === "log_sources") return sourcesResult
     if (cmd === "log_query") {
       logQueryCalls.push((args ?? {}) as Record<string, unknown>)
       return queryResult
     }
-    if (cmd === "lsp_config_get") return { defaults: {}, workspaces: {} }
-    if (cmd === "lsp_config_stale") return []
-    if (cmd === "lsp_status") return []
-    if (cmd === "lsp_set_trace") return undefined
-    if (cmd === "lsp_config_set_server") return { defaults: { [a.language as string]: a.serverId }, workspaces: {} }
     return undefined
   })
 }
@@ -113,26 +93,6 @@ function renderDialog(props: Partial<React.ComponentProps<typeof SettingsDialog>
   )
 }
 
-function SettingsHarness() {
-  const open = useUiStore((s) => s.settingsOpen)
-  const setOpen = useUiStore((s) => s.setSettingsOpen)
-  const section = useUiStore((s) => s.settingsSection)
-  const language = useUiStore((s) => s.settingsLanguage)
-  const nonce = useUiStore((s) => s.settingsNonce)
-
-  return (
-    <SettingsDialog
-      open={open}
-      onOpenChange={setOpen}
-      theme="light"
-      onThemeChange={() => {}}
-      initialSection={section ?? undefined}
-      initialLanguage={language ?? undefined}
-      openNonce={nonce}
-    />
-  )
-}
-
 beforeEach(() => {
   installLocalStorage()
   cleanup()
@@ -140,9 +100,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   logQueryCalls = []
   queryResult = []
-  sourcesResult = ["ui", "lsp", "agent", "dev_server"]
+  sourcesResult = ["ui", "agent"]
   useUiStore.setState(uiInitialState)
-  useLspStore.getState().reset()
   useWorkspaceStore.setState({ workspacePath: "/ws" })
   setupIpc()
 })
@@ -284,7 +243,7 @@ describe("SettingsDialog logs section", () => {
       }),
     )
     fireEvent.change(screen.getByRole("combobox", { name: "source filter" }), {
-      target: { value: "lsp" },
+      target: { value: "ui" },
     })
     fireEvent.change(screen.getByRole("searchbox", { name: "Text search" }), {
       target: { value: "server" },
@@ -303,7 +262,7 @@ describe("SettingsDialog logs section", () => {
           until: "2026-01-03T00:00:00+08:00",
           levels: ["error"],
           kinds: ["audit"],
-          sources: ["lsp"],
+          sources: ["ui"],
           text: "server",
           limit: 500,
         },
@@ -334,73 +293,21 @@ describe("SettingsDialog logs section", () => {
 
     // debounced：mount 後同步當下尚未觸發 log_query
     expect(logQueryCalls.length).toBe(0)
-    expect(await screen.findByTestId("log-row-lsp_restart")).toBeInTheDocument()
+    expect(await screen.findByTestId("log-row-ui_error")).toBeInTheDocument()
     expect(logQueryCalls.length).toBeGreaterThan(0)
-  })
-
-  it("applies an initial source target to log_query and renders matching rows", async () => {
-    queryResult = devServerLogRows
-    useUiStore.setState({ settingsLogSource: "dev_server", settingsNonce: 1 })
-
-    renderDialog({ openNonce: 1 })
-
-    expect(await screen.findByRole("heading", { name: "Logs" })).toBeInTheDocument()
-    await waitFor(() =>
-      expect(logQueryCalls.at(-1)).toEqual({
-        filters: {
-          sources: ["dev_server"],
-          limit: 500,
-        },
-      }),
-    )
-    expect(await screen.findByTestId("log-row-dev_server_start_failed")).toBeInTheDocument()
-  })
-
-  it("opens Logs with the lsp source from a failed LSP card and renders matching rows", async () => {
-    queryResult = logRows
-    useLspStore.getState().setServerInfo({
-      workspace: "/ws",
-      language: "python",
-      serverId: "pylsp",
-      command: "uv run pylsp",
-      path: "/bin/pylsp",
-      status: { status: "crashed", reason: "boom" },
-      lastStartupLog: null,
-      lastError: "spawn pylsp failed",
-      restartCount: 1,
-    })
-
-    render(<SettingsHarness />)
-    act(() => useUiStore.getState().openSettings("lsp", "python"))
-    const dialog = await screen.findByRole("dialog")
-    const card = await within(dialog).findByTestId("lsp-card-python")
-    expect(within(card).getByText("spawn pylsp failed")).toBeInTheDocument()
-
-    fireEvent.click(within(card).getByRole("button", { name: "View logs" }))
-
-    expect(await within(dialog).findByRole("heading", { name: "Logs" })).toBeInTheDocument()
-    await waitFor(() =>
-      expect(logQueryCalls.at(-1)).toEqual({
-        filters: {
-          sources: ["lsp"],
-          limit: 500,
-        },
-      }),
-    )
-    expect(await within(dialog).findByTestId("log-row-lsp_restart")).toBeInTheDocument()
   })
 
   it("renders timestamp, level, kind, source, event, and message columns", async () => {
     queryResult = logRows
     renderDialog()
 
-    const row = await screen.findByTestId("log-row-lsp_restart")
+    const row = await screen.findByTestId("log-row-ui_error")
 
     expect(within(row).getByText("2026-01-02T03:04:05+08:00")).toBeInTheDocument()
     expect(within(row).getByText("error")).toBeInTheDocument()
     expect(within(row).getByText("audit")).toBeInTheDocument()
-    expect(within(row).getByText("lsp")).toBeInTheDocument()
-    expect(within(row).getByText("lsp_restart")).toBeInTheDocument()
+    expect(within(row).getByText("ui")).toBeInTheDocument()
+    expect(within(row).getByText("ui_error")).toBeInTheDocument()
     expect(within(row).getByText("server crashed")).toBeInTheDocument()
   })
 
@@ -408,9 +315,8 @@ describe("SettingsDialog logs section", () => {
     queryResult = logRows
     renderDialog()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Expand metadata lsp_restart" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Expand metadata ui_error" }))
 
-    expect(await screen.findByText(/"language": "typescript"/)).toBeInTheDocument()
-    expect(screen.getByText(/"restartCount": 2/)).toBeInTheDocument()
+    expect(await screen.findByText(/"action": "settings"/)).toBeInTheDocument()
   })
 })

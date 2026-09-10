@@ -1,3 +1,4 @@
+import { herdrProjectionKey, herdrProjectionDismissed } from "../lib/herdrProjection"
 import { create } from "zustand"
 import type { DocumentLineEnding } from "../lib/types"
 import type { HerdrSnapshot } from "../lib/herdrTypes"
@@ -33,6 +34,7 @@ export interface TabInfo {
     name: string
     dirty: boolean
     externallyModified: boolean
+    pinned?: boolean
     lineEnding?: DocumentLineEnding
     lineEndingGeneration?: number
     // Absent ⇒ a normal file tab. "preview" marks the singleton preview tab so
@@ -72,6 +74,7 @@ interface WorkspaceState {
     workspacePath: string | null
     workspaceCapabilityId: string | null
     groups: EditorGroup[]
+    dismissedHerdrPages: Record<string, true>
     activeGroupIndex: number
     pendingReveal: PendingReveal | null
     // Bumped after a file-tree mutation (new/rename/delete via the context menu)
@@ -88,10 +91,11 @@ interface WorkspaceState {
     openInRightSplit: (path: string, sourceGroupIndex: number) => void
     splitAndMoveRight: (groupIndex: number, path: string) => void
     refreshTree: () => void
+    toggleTabPinned: (groupIndex: number, path: string) => void
     closeTab: (groupIndex: number, path: string) => void
     closeOtherTabs: (groupIndex: number, keepPath: string) => void
     closeAllTabs: (groupIndex: number) => void
-    closeTabsByPath: (paths: string[]) => void
+    closeTabsByPath: (paths: string[], defaultRuntimeScope?: string) => void
     /** Same-group identity move. Invalid path / no-op destination leave state unchanged. */
     reorderTab: (groupIndex: number, path: string, destinationIndex: number) => void
     /** Reorder only visible/projected slots, preserving hidden-Space pages. */
@@ -129,6 +133,7 @@ interface WorkspaceState {
         herdrTabId?: string | null
         herdrWorkspaceId?: string | null
         groupIndex?: number
+        restore?: boolean
     }) => void
     /** paneId is mutable topology metadata — update without recreating the page. */
     updateHerdrPagePaneId: (pagePath: string, paneId: string | null) => void
@@ -361,7 +366,19 @@ function withoutTab(group: EditorGroup, path: string): EditorGroup {
     }
 }
 
+function dismissedAfterClosing(state: WorkspaceState, paths: ReadonlySet<string>, defaultRuntimeScope?: string) {
+    const dismissed = { ...state.dismissedHerdrPages }
+    for (const group of state.groups) for (const tab of group.tabs) {
+        if (!paths.has(tab.path) || tab.kind !== "herdr-terminal" || !tab.herdrSessionId) continue
+        const scope = tab.herdrSessionId === "live" ? defaultRuntimeScope ?? "live" : tab.herdrSessionId
+        const key = herdrProjectionKey(scope, tab.herdrTabId, tab.terminalId)
+        if (key) dismissed[key] = true
+    }
+    return dismissed
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
+    dismissedHerdrPages: {},
     workspacePath: null,
     workspaceCapabilityId: null,
     groups: [emptyGroup()],
@@ -536,6 +553,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 destinationIndex
             )
         }),
+    toggleTabPinned: (groupIndex, path) => set((s) => ({
+        groups: s.groups.map((group, index) => index !== groupIndex ? group : {
+            ...group,
+            tabs: group.tabs.map((tab) => tab.path === path ? { ...tab, pinned: !tab.pinned } : tab)
+                .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+        })
+    })),
     closeTab: (groupIndex, path) =>
         set((s) => {
             const groups = s.groups.map((g) => ({ ...g, tabs: [...g.tabs] }))
@@ -554,7 +578,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             if (tab && isFileTab(tab)) {
                 return closeMarkdownPreviewsInGroups(groups, tab.path, s.activeGroupIndex)
             }
-            return { groups }
+            return { groups, dismissedHerdrPages: dismissedAfterClosing(s, new Set([path])) }
         }),
     // Pure tab-list mutations for the tab context menu's "Close others" /
     // "Close all" — the confirm-dialog + document/preview cleanup side effects
@@ -565,38 +589,38 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             const group = s.groups[groupIndex]
             if (!group) return s
             const closedSources = group.tabs
-                .filter((tab) => tab.path !== keepPath && isFileTab(tab))
+                .filter((tab) => tab.path !== keepPath && !tab.pinned && isFileTab(tab))
                 .map((tab) => tab.path)
             const groups = s.groups.map((candidate, index) => {
                 if (index !== groupIndex) return candidate
-                const tabs = candidate.tabs.filter((tab) => tab.path === keepPath)
+                const tabs = candidate.tabs.filter((tab) => tab.path === keepPath || tab.pinned)
                 return { ...candidate, tabs, activePath: tabs.length > 0 ? keepPath : null }
             })
             let next = { groups, activeGroupIndex: s.activeGroupIndex }
             for (const source of closedSources) {
                 next = closeMarkdownPreviewsInGroups(next.groups, source, next.activeGroupIndex)
             }
-            return next
+            return { ...next, dismissedHerdrPages: dismissedAfterClosing(s, new Set(group.tabs.filter((tab) => !next.groups.some((candidate) => candidate.tabs.some((remaining) => remaining.path === tab.path))).map((tab) => tab.path))) }
         }),
     closeAllTabs: (groupIndex) =>
         set((s) => {
             const group = s.groups[groupIndex]
             if (!group) return s
-            const closedSources = group.tabs.filter(isFileTab).map((tab) => tab.path)
+            const closedSources = group.tabs.filter((tab) => !tab.pinned && isFileTab(tab)).map((tab) => tab.path)
             const groups = s.groups.map((candidate, index) =>
-                index === groupIndex ? { ...candidate, tabs: [], activePath: null } : candidate
+                index === groupIndex ? { ...candidate, tabs: candidate.tabs.filter((tab) => tab.pinned), activePath: candidate.tabs.find((tab) => tab.pinned && tab.path === candidate.activePath)?.path ?? candidate.tabs.find((tab) => tab.pinned)?.path ?? null } : candidate
             )
             let next = { groups, activeGroupIndex: s.activeGroupIndex }
             for (const source of closedSources) {
                 next = closeMarkdownPreviewsInGroups(next.groups, source, next.activeGroupIndex)
             }
-            return next
+            return { ...next, dismissedHerdrPages: dismissedAfterClosing(s, new Set(group.tabs.filter((tab) => !next.groups.some((candidate) => candidate.tabs.some((remaining) => remaining.path === tab.path))).map((tab) => tab.path))) }
         }),
     // Bulk close every tab (across ALL groups) whose path is in `paths`. Used
     // after a file/folder delete: a tab left pointing at a now-gone path would
     // let its EditorPane recreate the file on the next save. activePath falls
     // back to the last surviving tab, mirroring closeTab's rule.
-    closeTabsByPath: (paths) =>
+    closeTabsByPath: (paths, defaultRuntimeScope) =>
         set((s) => {
             const drop = new Set(paths)
             const closedSources = new Set<string>()
@@ -627,7 +651,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                         : group.activePath
                 return { ...group, tabs, activePath }
             })
-            return pruneEmptiedGroups(groups, emptied, s.activeGroupIndex)
+            return { ...pruneEmptiedGroups(groups, emptied, s.activeGroupIndex), dismissedHerdrPages: dismissedAfterClosing(s, drop, defaultRuntimeScope) }
         }),
     reorderTab: (groupIndex, path, destinationIndex) =>
         set((s) => {
@@ -648,6 +672,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         set((s) => {
             const group = s.groups[groupIndex]
             if (!group) return s
+            const source = group.tabs.find((tab) => tab.path === path)
+            if (Boolean(source?.pinned) !== Boolean(projected[destProjectedIndex]?.pinned)) return s
             const tabs = reorderProjectedSlots(group.tabs, projected, path, destProjectedIndex)
             if (!tabs) return s
             return {
@@ -728,7 +754,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         set((s) => {
             const result = hydrateFocusedSpaceHerdrPages(
                 s.groups,
-                snapshot,
+                { ...snapshot, tabs: snapshot.tabs.filter((tab) => !herdrProjectionDismissed(s.dismissedHerdrPages, snapshot.herdrSessionId, tab.id, tab.terminalId)) },
                 defaultSessionName,
                 s.activeGroupIndex
             )
@@ -912,11 +938,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         paneId,
         herdrTabId,
         herdrWorkspaceId,
-        groupIndex
+        groupIndex,
+        restore = false
     }) =>
         set((s) => {
             const path = herdrPagePath(herdrSessionId, terminalId)
             const tabId = herdrTabId?.trim() || null
+            if (restore && herdrProjectionDismissed(s.dismissedHerdrPages, herdrSessionId, tabId, terminalId)) return s
+            const dismissedHerdrPages = { ...s.dismissedHerdrPages }
+            for (const key of [herdrProjectionKey(herdrSessionId, tabId, terminalId), herdrProjectionKey(herdrSessionId, null, terminalId)]) {
+                if (key) delete dismissedHerdrPages[key]
+            }
             let existingGroupIndex = -1
             let existingPath: string | null = null
             for (let gi = 0; gi < s.groups.length; gi++) {
@@ -946,6 +978,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             if (existingGroupIndex !== -1 && existingPath) {
                 const focusPath = existingPath
                 return {
+                    dismissedHerdrPages,
                     groups: s.groups.map((group, index) => {
                         if (index !== existingGroupIndex) return group
                         return {
@@ -992,7 +1025,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 paneId: paneId ?? null
             })
             g.activePath = path
-            return { groups, activeGroupIndex: targetGroupIndex }
+            return { groups, activeGroupIndex: targetGroupIndex, dismissedHerdrPages }
         }),
     updateHerdrPagePaneId: (pagePath, paneId) =>
         set((s) => {

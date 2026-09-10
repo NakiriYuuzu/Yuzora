@@ -20,6 +20,10 @@ build/
 .vite/
 .scaffold/
 src-tauri/target/
+src-tauri/host/target/
+src-tauri/resources/host/
+src-tauri/resources/herdr/linux-aarch64/
+src-tauri/resources/herdr/linux-x86_64/
 src-tauri/gen/
 src-tauri/resources/herdr/macos-aarch64/*
 !src-tauri/resources/herdr/macos-aarch64/.gitkeep

@@ -7,7 +7,7 @@ vi.mock("@/lib/ipc", () => ({
 }))
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }))
 
-import { SshNavContent } from "@/app/workbench/SshNavContent"
+import { HostList, PasswordPromptDialog } from "@/app/workbench/HostList"
 import { useSshStore } from "@/state/sshStore"
 
 function installLocalStorage(): void {
@@ -40,7 +40,7 @@ describe("SSH host dialog layout", () => {
   })
 
   it("keeps authentication choices compact instead of inheriting the radio square ratio", () => {
-    render(<SshNavContent />)
+    render(<HostList />)
     fireEvent.click(screen.getByText("New host"))
 
     for (const choice of ["Password", "Key file"]) {
@@ -51,7 +51,7 @@ describe("SSH host dialog layout", () => {
   })
 
   it("scrolls key-based host form fields while keeping footer actions fixed", () => {
-    render(<SshNavContent />)
+    render(<HostList />)
     fireEvent.click(screen.getByText("New host"))
     fireEvent.click(screen.getByRole("radio", { name: "Key file" }))
 
@@ -85,7 +85,7 @@ describe("SSH host dialog layout", () => {
     })
     useSshStore.setState({ pendingAuthHostId: host.id })
 
-    render(<SshNavContent />)
+    render(<PasswordPromptDialog host={host} />)
 
     const dialog = screen.getByTestId("ssh-password-dialog")
     expect(dialog).not.toHaveAttribute("data-dialog-size-id")

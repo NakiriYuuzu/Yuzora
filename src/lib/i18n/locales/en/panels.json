@@ -1,23 +1,13 @@
 {
   "previewPanel": {
-    "portOverrideInvalid": "Preview port override \"{{value}}\" is invalid; using the detected port instead.",
-    "viewLogs": "View logs",
-    "portOccupiedDescription": "Port {{ports}} already has a service running — connect directly, change the port and start, or detect again.",
     "back": "Back",
     "forward": "Forward",
     "reload": "Reload",
-    "urlLabel": "Preview URL",
+    "urlLabel": "Browser URL",
     "urlPlaceholder": "Enter a URL…",
-    "urlSchemeError": "Preview URLs must use http:// or https://",
+    "urlSchemeError": "Browser URLs must use http:// or https://",
     "openExternally": "Open in browser",
-    "toggleResponsiveFrame": "Toggle responsive frame",
-    "stop": "Stop",
-    "status": {
-      "starting": "Starting",
-      "running": "Running",
-      "exited": "Exited",
-      "failed": "Failed"
-    }
+    "toggleResponsiveFrame": "Toggle responsive frame"
   },
   "sshPanel": {
     "tabsAriaLabel": "SFTP or SSH",
@@ -31,6 +21,13 @@
     "sftpUp": "Up one level",
     "sftpRefresh": "Refresh",
     "sftpNewFolder": "New folder",
+    "sftpUploadFolder": "Upload folder",
+    "sftpDownloadFolder": "Download folder",
+    "sftpNewDestination": "New destination folder name (existing folders are preserved)",
+    "sftpFolderConflict": "A destination folder already exists. Choose a new name.",
+    "sftpTreeUnsupported": "The folder contains a symlink or unsupported entry. Nothing was published.",
+    "sftpTreeLimit": "The folder exceeds the transfer limit (10,000 entries, 64 levels, 1 TiB).",
+    "sftpTreePartial": "Transfer failed. A temporary folder remains for inspection:",
     "sftpUpload": "Upload files",
     "sftpUploadFile": "Upload {{name}}",
     "sftpDownload": "Download {{name}}",
@@ -38,7 +35,7 @@
     "sftpDelete": "Delete {{name}}",
     "sftpLoading": "Loading…",
     "sftpEmptyDir": "Empty",
-    "sftpLocalNoWorkspace": "Open a folder to browse local files.",
+    "sftpLocalNoWorkspace": "Open a local workspace, or use the remote panel’s upload and download buttons to pick local files.",
     "sftpNewFolderPrompt": "Create remote folder",
     "sftpRenamePrompt": "Rename remote item",
     "sftpNameLabel": "Name",
@@ -72,7 +69,17 @@
     "reconnect": "Reconnect",
     "fingerprintNotice": "First connection: host key recorded; a future change will be rejected (TOFU) — fingerprint:",
     "knownHostNotice": "Host key matches the pinned fingerprint (known host) — fingerprint:",
-    "dismissFingerprintNotice": "Dismiss host key notice"
+    "dismissFingerprintNotice": "Dismiss host key notice",
+    "sftpOverwriteRemoteTitle": "Overwrite remote file",
+    "sftpOverwriteRemoteConfirm": "\"{{name}}\" already exists on this host. Replace the version just checked?",
+    "sftpErrorConflict": "The destination changed. Refresh and start the transfer again.",
+    "sftpErrorAtomicUnavailable": "This server does not support atomic replacement. The original file was kept.",
+    "sftpCancel": "Cancel",
+    "sftpCancelling": "Cancelling…",
+    "sftpCancelled": "Cancelled",
+    "sftpErrorTransferLimit": "Too many transfers. Wait for one to finish.",
+    "sftpErrorConnectionChanged": "The host connection changed. Start the transfer again.",
+    "sftpErrorSourceChanged": "The source file changed during transfer. The destination was kept."
   },
   "databasePanel": {
     "emptyTitle": "Database connections are not configured",

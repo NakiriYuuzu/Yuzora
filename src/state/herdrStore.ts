@@ -1,7 +1,8 @@
+import { canonicalRuntimeWorkspace, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
+import { bindWorkspaceRoot, projectWorkspaceRoots } from "@/lib/herdrWorkspaceRoots"
 import { create } from "zustand"
 
 import {
-  herdrAgentCreate,
   herdrCapabilities,
   herdrSessions,
   herdrSnapshot,
@@ -15,7 +16,6 @@ import {
 } from "@/lib/herdrIpc"
 import {
   HERDR_LIVE_SESSION_ID,
-  normalizeHerdrExecutionOrigin,
   normalizeHerdrSnapshot
 } from "@/lib/herdrNormalize"
 import type {
@@ -71,17 +71,12 @@ export type HerdrCreateTerminalResult = {
   title?: string | null
 }
 
-export type HerdrCreateAgentResult = HerdrCreateTerminalResult & {
-  name: string
-  kind: string
-}
-
 export type HerdrActivationResult =
   | { ok: true }
   | { ok: false; cancelled?: boolean; error?: string }
 
 export function herdrAttentionKey(sessionName: string, paneId: string): string {
-  return `${sessionName}::${paneId}`
+  return JSON.stringify([sessionName, paneId])
 }
 
 function attentionKindForStatus(
@@ -131,23 +126,17 @@ interface HerdrState {
   releaseAttachmentsForPage: (pagePath: string) => Promise<void>
   releaseAllAttachments: () => Promise<void>
   createTerminalInSelectedSpace: () => Promise<HerdrCreateTerminalResult | null>
-  createAgentInSelectedSpace: (
-    kind: string,
-    bypassPermissions: boolean
-  ) => Promise<HerdrCreateAgentResult | null>
   createSpaceFromFolder: (
     cwd: string,
     label?: string | null
   ) => Promise<HerdrActivationResult & { space?: HerdrSpaceInfo | null }>
   canCreateTerminal: () => boolean
-  canCreateAgent: () => boolean
   /** workspace.create is intentionally independent of workspace.focus for empty sessions. */
   canCreateSpace: () => boolean
   canMutateSelectedSession: () => boolean
   canFocusSelectedTab: () => boolean
   canMoveSelectedTab: () => boolean
   createTerminalBlockedReason: () => string | null
-  createAgentBlockedReason: () => string | null
   createSpaceBlockedReason: () => string | null
   mutationBlockedReason: () => string | null
   spaces: () => HerdrSpaceInfo[]
@@ -255,6 +244,8 @@ function projectSelected(state: HerdrState, selectedSessionName: string | null):
     capabilities: runtime.capabilities,
     snapshot: runtime.snapshot,
     errorMessage: runtime.errorMessage,
+    eventsHealthy: runtime.eventsHealthy ?? false,
+    eventsSubscriptionId: runtime.eventsSubscriptionId ?? null,
     selectedSpaceId: selectedSessionName
       ? (state.selectedSpaceBySession[selectedSessionName] ?? null)
       : null
@@ -344,7 +335,6 @@ const tabActivationGeneration = new Map<string, number>()
 const tabActivationTail = new Map<string, Promise<void>>()
 /** One create transaction per named session prevents duplicate first Spaces/Agents. */
 const spaceCreationInFlight = new Set<string>()
-const agentCreationInFlight = new Set<string>()
 let sessionSelectionGeneration = 0
 
 async function acquireTabActivation(sessionName: string): Promise<() => void> {
@@ -376,7 +366,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
   selectedSession() {
     const name = get().selectedSessionName
     if (!name) return null
-    return get().sessions.find((s) => s.name === name) ?? null
+    return get().sessions.find((s) => sessionScope(s) === name) ?? null
   },
 
   async refreshSessions() {
@@ -388,11 +378,11 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           let selectedSessionName = state.selectedSessionName
           if (
             !selectedSessionName ||
-            !sessions.some((session) => session.name === selectedSessionName)
+            !sessions.some((session) => sessionScope(session) === selectedSessionName)
           ) {
             selectedSessionName =
-              sessions.find((session) => session.default)?.name ??
-              sessions[0]?.name ??
+              sessionScope(sessions.find((session) => session.default)) ??
+              sessionScope(sessions[0]) ??
               null
           }
           return {
@@ -401,6 +391,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           }
         })
       } catch (error) {
+        if (error instanceof StaleRuntimeResponse) return
         const message = error instanceof Error ? error.message : String(error)
         set((state) => ({
           errorMessage: message,
@@ -415,14 +406,14 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
   },
 
   async selectSession(sessionName) {
-    const session = get().sessions.find((item) => item.name === sessionName)
+    const session = get().sessions.find((item) => sessionScope(item) === sessionName)
     if (!session) return
     sessionSelectionGeneration += 1
     set((state) => ({
       ...projectSelected(state, sessionName),
       selectedSpaceId: state.selectedSpaceBySession[sessionName] ?? null
     }))
-    // Switching sessions must not close pages / TerminalDrawer — only selection changes.
+    // Switching sessions must not close pages — only selection changes.
     if (session.running) {
       await get().bootstrap(sessionName)
     } else {
@@ -443,7 +434,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const resolved =
       sessionName ??
       get().selectedSessionName ??
-      get().sessions.find((s) => s.default)?.name ??
+      sessionScope(get().sessions.find((s) => s.default)) ??
       HERDR_LIVE_SESSION_ID
     const existing = bootstrapInFlight.get(resolved)
     if (existing) return existing
@@ -454,7 +445,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         errorMessage: null
       }))
       try {
-        const named = get().sessions.find((s) => s.name === resolved)
+        const named = get().sessions.find((s) => sessionScope(s) === resolved)
         if (named && !named.running) {
           set((state) =>
             withRuntime(state, resolved, {
@@ -514,6 +505,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         // Authoritative inventory reconcile after snapshot recovery.
         await get().refreshWorktreeInventory(resolved)
       } catch (error) {
+        if (error instanceof StaleRuntimeResponse) return
         const message = error instanceof Error ? error.message : String(error)
         if (isStoppedReason(message)) {
           set((state) =>
@@ -542,7 +534,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
   async refreshSnapshot(sessionName) {
     const resolved = sessionName ?? get().selectedSessionName
     if (!resolved) return false
-    const named = get().sessions.find((s) => s.name === resolved)
+    const named = get().sessions.find((s) => sessionScope(s) === resolved)
     if (named && !named.running) {
       set((state) =>
         withRuntime(state, resolved, {
@@ -579,6 +571,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
             consecutiveFailures = 0
             passSucceeded = true
           } catch (error) {
+            if (error instanceof StaleRuntimeResponse) return false
             const message = error instanceof Error ? error.message : String(error)
             if (isStoppedReason(message)) {
               pendingRefresh.delete(resolved)
@@ -627,7 +620,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
   async refreshWorktreeInventory(sessionName) {
     const resolved = sessionName ?? get().selectedSessionName
     if (!resolved) return
-    const named = get().sessions.find((s) => s.name === resolved)
+    const named = get().sessions.find((s) => sessionScope(s) === resolved)
     if (named && !named.running) return
     const runtime = runtimeOf(get(), resolved)
     if (!runtime.capabilities?.api.worktreeList) return
@@ -717,6 +710,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
   },
 
   applySnapshot(sessionName, snapshot) {
+    snapshot = projectWorkspaceRoots(sessionName, snapshot)
     snapshotGeneration.set(sessionName, (snapshotGeneration.get(sessionName) ?? 0) + 1)
     const previousRuntime = get().runtimesBySession[sessionName]
     const inventory = previousRuntime?.worktreeInventory ?? null
@@ -791,7 +785,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
             : state.selectedSpaceId
       }
     })
-    const defaultSessionName = get().sessions.find((session) => session.default)?.name ?? null
+    const defaultSessionName = sessionScope(get().sessions.find((session) => session.default && !session.hostId))
     useWorkspaceStore
       .getState()
       .reconcileHerdrPagesFromSnapshot(mergedSnapshot, defaultSessionName)
@@ -918,12 +912,6 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     return Boolean(caps?.api.tabCreate && caps.terminal.create)
   },
 
-  canCreateAgent() {
-    if (!get().canCreateTerminal()) return false
-    const api = get().capabilities?.api
-    return Boolean(api?.agentManifests && api.agentStart && api.tabClose)
-  },
-
   canCreateSpace() {
     const state = get()
     const sessionName = state.selectedSessionName
@@ -955,15 +943,6 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       get().capabilities?.terminal.reason ??
       get().capabilities?.api.reason ??
       "Herdr tab.create unavailable"
-    )
-  },
-
-  createAgentBlockedReason() {
-    if (get().canCreateAgent()) return null
-    return (
-      get().createTerminalBlockedReason() ??
-      get().capabilities?.api.reason ??
-      "Herdr server.agent_manifests/agent.start unavailable"
     )
   },
 
@@ -1022,47 +1001,6 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     }
   },
 
-  async createAgentInSelectedSpace(kind, bypassPermissions) {
-    const { selectedSpaceId, selectedSessionName } = get()
-    if (!selectedSpaceId || !selectedSessionName || !get().canCreateAgent()) return null
-    if (agentCreationInFlight.has(selectedSessionName)) {
-      set((state) =>
-        withRuntime(state, selectedSessionName, {
-          errorMessage: i18n.t("herdrNav.agentCreationInProgress", { ns: "workbench" })
-        })
-      )
-      return null
-    }
-
-    agentCreationInFlight.add(selectedSessionName)
-    try {
-      const created = await herdrAgentCreate({
-        sessionName: selectedSessionName,
-        workspaceId: selectedSpaceId,
-        kind,
-        bypassPermissions
-      })
-      set((state) => withRuntime(state, selectedSessionName, { errorMessage: null }))
-      void get().refreshSnapshot(selectedSessionName)
-      return {
-        herdrSessionId: selectedSessionName,
-        workspaceId: created.workspaceId,
-        terminalId: created.terminalId,
-        paneId: created.paneId,
-        tabId: created.tabId,
-        title: created.title?.trim() || created.kind,
-        name: created.name,
-        kind: created.kind
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      set((state) => withRuntime(state, selectedSessionName, { errorMessage: message }))
-      return null
-    } finally {
-      agentCreationInFlight.delete(selectedSessionName)
-    }
-  },
-
   async createSpaceFromFolder(cwd, label) {
     const stateBefore = get()
     const sessionName = stateBefore.selectedSessionName
@@ -1096,12 +1034,14 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
       let created
       try {
+        cwd = await canonicalRuntimeWorkspace(sessionName, cwd)
         created = await herdrWorkspaceCreate({
           sessionName,
           cwd,
           label: label ?? null,
           focus: true
         })
+        bindWorkspaceRoot(sessionName, created.workspaceId, cwd)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         set((state) => withRuntime(state, sessionName, { errorMessage: message }))
@@ -1188,7 +1128,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         ? stateBefore.selectedSpaceBySession[previousSession] ?? null
         : null
 
-    const session = stateBefore.sessions.find((item) => item.name === sessionName)
+    const session = stateBefore.sessions.find((item) => sessionScope(item) === sessionName)
     if (session && !session.running) {
       return {
         ok: false,
@@ -1203,6 +1143,8 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     }
 
+    // External HERDR Spaces may have terminals without a bound file root.
+    // Focus those terminals without opening or replacing the Files workspace.
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(path && !pathsMatch(path, currentWorkspace))
 
@@ -1220,6 +1162,10 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
     // 2) Focus Herdr Space on the target running session.
     try {
+      if (path) {
+        path = await canonicalRuntimeWorkspace(sessionName, path)
+        bindWorkspaceRoot(sessionName, workspaceId, path)
+      }
       await herdrWorkspaceFocus({ sessionName, workspaceId })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1288,6 +1234,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     })
 
     const focusedSnapshot = get().runtimesBySession[sessionName]?.snapshot
+    if (focusedSnapshot?.focusedWorkspaceId === workspaceId) {
+      useWorkspaceStore.getState().hydrateHerdrPagesFromSnapshot(
+        focusedSnapshot,
+        sessionScope(get().sessions.find((item) => item.default && !item.hostId))
+      )
+    }
     const activeTab = focusedSnapshot?.tabs.find(
       (tab) => tab.workspaceId === workspaceId && tab.id === focusedSnapshot.focusedTabId
     )
@@ -1307,6 +1259,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         )
       }
     }
+    useUiStore.getState().setMode("ade")
     return { ok: true }
   },
 
@@ -1317,7 +1270,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     }
 
     const stateBefore = get()
-    const session = stateBefore.sessions.find((item) => item.name === sessionName)
+    const session = stateBefore.sessions.find((item) => sessionScope(item) === sessionName)
     const runtime = stateBefore.runtimesBySession[sessionName]
     if (session && !session.running) {
       return {
@@ -1336,7 +1289,8 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     }
 
-    const space = runtime.snapshot?.spaces.find((item) => item.id === tab.workspaceId)
+    let space = runtime.snapshot?.spaces.find((item) => item.id === tab.workspaceId)
+    if (!space) return { ok: false, error: "Herdr Space is unavailable" }
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(space?.path && !pathsMatch(space.path, currentWorkspace))
 
@@ -1384,6 +1338,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
 
       try {
+        if (space.path) {
+          const path = await canonicalRuntimeWorkspace(sessionName, space.path)
+          if (!isLatestActivation()) return { ok: false, cancelled: true }
+          space = { ...space, path }
+          bindWorkspaceRoot(sessionName, tab.workspaceId, path)
+        }
         await herdrWorkspaceFocus({ sessionName, workspaceId: tab.workspaceId })
         if (!isLatestActivation()) return { ok: false, cancelled: true }
         await herdrTabFocus({ sessionName, tabId: tab.id })
@@ -1506,7 +1466,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const readTarget = () => {
       if (!isCurrentSelection()) return { kind: "cancelled" as const }
       const state = get()
-      const session = state.sessions.find((item) => item.name === sessionName)
+      const session = state.sessions.find((item) => sessionScope(item) === sessionName)
       const snapshot = state.runtimesBySession[sessionName]?.snapshot
       if ((session && !session.running) || !snapshot) {
         return {
@@ -1521,6 +1481,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       if (!tab || !space || !tab.terminalId) {
         return { kind: "error" as const, error: "Herdr focused tab is unavailable" }
       }
+      if (!space.path) return { kind: "error" as const, error: i18n.t("rootRequired", { ns: "hosts" }) }
       return {
         kind: "ok" as const,
         snapshot,
@@ -1594,7 +1555,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     })
     if (!isCurrentSelection()) return { ok: false, cancelled: true }
     const defaultSessionName =
-      get().sessions.find((session) => session.default)?.name ?? null
+      sessionScope(get().sessions.find((session) => session.default && !session.hostId))
     useWorkspaceStore
       .getState()
       .hydrateHerdrPagesFromSnapshot(target.snapshot, defaultSessionName)
@@ -1610,69 +1571,46 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
   applySubscriptionEvent(sessionName, event) {
     const current = get()
-    if (current.selectedSessionName !== sessionName) return
     if (event.type === "subscribed") {
-      set({ eventsHealthy: true, eventsSubscriptionId: event.subscriptionId })
+      get().setEventsHealth(sessionName, true, event.subscriptionId)
       return
     }
-    if (current.eventsSubscriptionId !== event.subscriptionId) return
+    const subscriptionId = current.runtimesBySession[sessionName]?.eventsSubscriptionId ??
+      (current.selectedSessionName === sessionName ? current.eventsSubscriptionId : null)
+    if (subscriptionId !== event.subscriptionId) return
     if (event.type === "error" || event.type === "disconnected") {
-      set((state) => ({
-        eventsHealthy: false,
-        errorMessage: event.type === "error" ? event.message : state.errorMessage
-      }))
+      get().setEventsHealth(sessionName, false, null)
+      if (event.type === "error") set((state) => withRuntime(state, sessionName, { errorMessage: event.message }))
       return
     }
+    get().setEventsHealth(sessionName, true, event.subscriptionId)
     if (event.type === "pane_exited") {
       const key = herdrAttentionKey(sessionName, event.paneId)
       set((state) => {
         const attentionByKey = new Map(state.attentionByKey)
         attentionByKey.delete(key)
-        return { attentionByKey, eventsHealthy: true }
+        return { attentionByKey }
       })
       return
     }
     if (event.type === "worktree_changed") {
-      set({ eventsHealthy: true })
       // Dirty signal only — authoritative recovery is list + snapshot.
       void get().refreshWorktreeInventory(sessionName)
       return
     }
     if (event.type === "topology_changed") {
-      set({ eventsHealthy: true })
       return
     }
     if (event.type !== "agent_status_changed" || !event.paneId) return
 
     const kind = attentionKindForStatus(event.agentStatus)
     const key = herdrAttentionKey(sessionName, event.paneId)
-    const eventSuppliesExecutionOrigin = Object.hasOwn(event, "executionOrigin")
-    const executionOrigin = normalizeHerdrExecutionOrigin(event.executionOrigin)
     set((state) => {
       const attentionByKey = new Map(state.attentionByKey)
-      const runtime = state.runtimesBySession[sessionName]
-      const snapshot = runtime?.snapshot
-      const baseSnapshot = runtime?.baseSnapshot
-      const patchExecutionOrigin = (source: HerdrSnapshot): HerdrSnapshot => ({
-        ...source,
-        agents: source.agents.map((agent) =>
-          agent.paneId === event.paneId ? { ...agent, executionOrigin } : agent
-        ),
-        terminals: source.terminals.map((terminal) =>
-          terminal.paneId === event.paneId ? { ...terminal, executionOrigin } : terminal
-        )
-      })
-      const snapshotPatch =
-        eventSuppliesExecutionOrigin && (snapshot || baseSnapshot)
-          ? withRuntime(state, sessionName, {
-              ...(snapshot ? { snapshot: patchExecutionOrigin(snapshot) } : {}),
-              ...(baseSnapshot ? { baseSnapshot: patchExecutionOrigin(baseSnapshot) } : {})
-            })
-          : {}
       if (!kind) {
         // Idle/working clear temporary unknown/done/blocked attention for this pane.
         attentionByKey.delete(key)
-        return { ...snapshotPatch, attentionByKey, eventsHealthy: true }
+        return { attentionByKey }
       }
       const previous = attentionByKey.get(key)
       attentionByKey.set(key, {
@@ -1689,17 +1627,15 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         seen: kind === "done" ? (previous?.seen ?? false) : false,
         updatedAt: Date.now()
       })
-      return { ...snapshotPatch, attentionByKey, eventsHealthy: true }
+      return { attentionByKey }
     })
   },
 
   setEventsHealth(sessionName, healthy, subscriptionId = null) {
     set((state) => {
-      if (state.selectedSessionName !== sessionName) return state
       return {
-        eventsHealthy: healthy,
-        eventsSubscriptionId:
-          subscriptionId === undefined ? state.eventsSubscriptionId : subscriptionId
+        ...withRuntime(state, sessionName, { eventsHealthy: healthy, eventsSubscriptionId: subscriptionId }),
+        ...(state.selectedSessionName === sessionName ? { eventsHealthy: healthy, eventsSubscriptionId: subscriptionId } : {})
       }
     })
   },
@@ -1724,7 +1660,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
   },
 
   attentionItems(sessionName) {
-    const selected = sessionName ?? get().selectedSessionName
+    const selected = sessionName
     const items = Array.from(get().attentionByKey.values()).filter((item) => {
       if (selected && item.sessionName !== selected) return false
       if (item.kind === "done" && item.seen) return false
@@ -1738,7 +1674,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const state = get()
     const resolved = sessionName ?? state.selectedSessionName
     if (!resolved) return false
-    const session = state.sessions.find((item) => item.name === resolved)
+    const session = state.sessions.find((item) => sessionScope(item) === resolved)
     const caps =
       state.runtimesBySession[resolved]?.capabilities ??
       (resolved === state.selectedSessionName ? state.capabilities : null)

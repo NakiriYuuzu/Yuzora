@@ -8,9 +8,7 @@ import {
   openPreviewExternally,
   previewTargetCanGoBack,
   previewTargetCanGoForward,
-  previewTargetHasRunningServer,
   reloadPreview,
-  stopPreviewDevServer,
   type PreviewCommandTarget,
 } from "@/preview/previewCommands"
 import { usePreviewStore } from "@/state/previewStore"
@@ -46,7 +44,6 @@ function target(workspacePath = "/ws/a"): PreviewCommandTarget {
   return {
     workspacePath,
     url: preview.navForWorkspace(workspacePath).url,
-    serverAttempt: preview.attemptForWorkspace(workspacePath),
   }
 }
 
@@ -263,64 +260,21 @@ describe("previewCommands", () => {
     expect(usePreviewStore.getState().nativeNavigationSyncs["/ws/a"]).toBeUndefined()
     expect(usePreviewStore.getState().nativeSession).toBeNull()
   })
+})
 
-  it("stops the exact running server and marks it exited only while its claim remains current", async () => {
-    const preview = usePreviewStore.getState()
-    const attempt = preview.beginAttempt("/ws/a")
-    preview.setDevServer({
-      workspace: "/ws/a",
-      command: "bun run dev",
-      port: 5173,
-      status: { status: "running", port: 5173 },
-    })
-    commandMocks.devServerStop.mockResolvedValueOnce(undefined)
-    const current = { ...target(), serverAttempt: attempt }
-
-    expect(previewTargetHasRunningServer(current)).toBe(true)
-    expect(await stopPreviewDevServer(current)).toBe("completed")
-    expect(commandMocks.devServerStop).toHaveBeenCalledWith("/ws/a")
-    expect(usePreviewStore.getState().devServerForWorkspace("/ws/a")?.status)
-      .toEqual({ status: "exited", code: null })
-  })
-
-  it("restores the attempt and keeps the server running when stop fails", async () => {
-    const preview = usePreviewStore.getState()
-    const attempt = preview.beginAttempt("/ws/a")
-    preview.setDevServer({
-      workspace: "/ws/a",
-      command: "bun run dev",
-      port: 5173,
-      status: { status: "running", port: 5173 },
-    })
-    commandMocks.devServerStop.mockRejectedValueOnce(new Error("stop failed"))
-    const current = { ...target(), serverAttempt: attempt }
-
-    await expect(stopPreviewDevServer(current)).rejects.toThrow("stop failed")
-    expect(usePreviewStore.getState().attemptForWorkspace("/ws/a")).toBe(attempt)
-    expect(usePreviewStore.getState().devServerForWorkspace("/ws/a")?.status.status)
-      .toBe("running")
-    expect(previewTargetHasRunningServer(current)).toBe(true)
-  })
-
-  it("does not overwrite a newer attempt after an in-flight stop resolves", async () => {
-    let resolveStop!: () => void
-    commandMocks.devServerStop.mockImplementationOnce(() => new Promise<void>((resolve) => {
-      resolveStop = resolve
-    }))
-    const preview = usePreviewStore.getState()
-    const attempt = preview.beginAttempt("/ws/a")
-    preview.setDevServer({
-      workspace: "/ws/a",
-      command: "bun run dev",
-      port: 5173,
-      status: { status: "running", port: 5173 },
-    })
-
-    const stopping = stopPreviewDevServer({ ...target(), serverAttempt: attempt })
-    usePreviewStore.getState().beginAttempt("/ws/a")
-    resolveStop()
-    await expect(stopping).resolves.toBe("completed")
-    expect(usePreviewStore.getState().devServerForWorkspace("/ws/a")?.status.status)
-      .toBe("running")
-  })
+it("does not use old native capabilities for a pending or unmatched URL", async () => {
+  const preview = usePreviewStore.getState()
+  preview.navigate("/ws/a", "https://example.com/a")
+  preview.recordNativeOpen("/ws/a", "https://example.com/a", "owner")
+  preview.receiveNativeNavigation({ sessionId: "owner", url: "https://example.com/a", canGoBack: true, canGoForward: true })
+  preview.beginNativeOpenRequest("/ws/a", "https://example.com/b")
+  expect(previewTargetCanGoBack(target())).toBe(false)
+  expect(previewTargetCanGoForward(target())).toBe(false)
+  expect(await goBackPreview(target())).toBe("cancelled")
+  preview.settleNativeRequest(usePreviewStore.getState().nativeRequestToken)
+  preview.navigate("/ws/a", "https://example.com/b")
+  expect(previewTargetCanGoBack(target())).toBe(false)
+  expect(await goForwardPreview(target())).toBe("cancelled")
+  expect(commandMocks.previewBack).not.toHaveBeenCalled()
+  expect(commandMocks.previewForward).not.toHaveBeenCalled()
 })

@@ -3,12 +3,10 @@ import { openUrl } from "@tauri-apps/plugin-opener"
 
 import type { ContextMenuCommandOutcome } from "@/app/workbench/contextMenuModel"
 import {
-  devServerStop,
   previewBack as nativePreviewBack,
   previewForward as nativePreviewForward,
   previewReload as nativePreviewReload,
 } from "@/lib/ipc"
-import type { DevServerInfo } from "@/lib/types"
 import { enqueueNativePreviewOperation } from "@/preview/nativePreviewQueue"
 import { isLocalPreviewUrl, usePreviewStore } from "@/state/previewStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -18,7 +16,6 @@ export { enqueueNativePreviewOperation } from "@/preview/nativePreviewQueue"
 export interface PreviewCommandTarget {
   workspacePath: string
   url: string | null
-  serverAttempt: number
 }
 
 const completed = (): ContextMenuCommandOutcome => "completed"
@@ -35,26 +32,47 @@ export function previewTargetHasUrl(target: PreviewCommandTarget): boolean {
 
 export function previewTargetCanGoBack(target: PreviewCommandTarget): boolean {
   if (!previewTargetHasUrl(target)) return false
-  return usePreviewStore.getState().navForWorkspace(target.workspacePath).backStack.length > 0
+  const state = usePreviewStore.getState()
+  if (state.nativeSession?.workspacePath === target.workspacePath && state.nativeSession.canGoBack !== undefined) {
+    return state.nativeRequest === null && state.nativeSession.currentUrl === target.url
+      && (state.nativeSession.canGoBack || (state.nativeSession.outerBackStack?.length ?? 0) > 0)
+  }
+  return state.navForWorkspace(target.workspacePath).backStack.length > 0
 }
 
 export function previewTargetCanGoForward(target: PreviewCommandTarget): boolean {
   if (!previewTargetHasUrl(target)) return false
-  return usePreviewStore.getState().navForWorkspace(target.workspacePath).forwardStack.length > 0
+  const state = usePreviewStore.getState()
+  if (state.nativeSession?.workspacePath === target.workspacePath && state.nativeSession.canGoForward !== undefined) {
+    return state.nativeRequest === null && state.nativeSession.currentUrl === target.url
+      && (state.nativeSession.canGoForward || (state.nativeSession.outerForwardStack?.length ?? 0) > 0)
+  }
+  return state.navForWorkspace(target.workspacePath).forwardStack.length > 0
 }
 
-export function previewTargetHasRunningServer(target: PreviewCommandTarget): boolean {
-  if (!previewTargetIsCurrent(target)) return false
+function traverseOuterHistory(workspace: string, direction: "back" | "forward"): ContextMenuCommandOutcome {
   const state = usePreviewStore.getState()
-  return state.attemptForWorkspace(target.workspacePath) === target.serverAttempt
-    && state.devServerForWorkspace(target.workspacePath)?.status.status === "running"
+  const session = state.nativeSession
+  const nav = state.navForWorkspace(workspace)
+  if (!session || session.workspacePath !== workspace) return cancelled()
+  const backStack = session.outerBackStack ?? []
+  const forwardStack = session.outerForwardStack ?? []
+  if ((direction === "back" ? backStack : forwardStack).length === 0) return cancelled()
+  // A prior surface belongs to a different native history. Reopen under a new
+  // owner instead of appending a synthetic Back to the current browser history.
+  state.closeNativeSession(workspace)
+  usePreviewStore.setState({ nav: { ...state.nav, [workspace]: { ...nav, backStack, forwardStack } } })
+  if (direction === "back") state.goBack(workspace)
+  else state.goForward(workspace)
+  return completed()
 }
 
 export async function goBackPreview(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetCanGoBack(target) || !target.url) return cancelled()
-  if (isLocalPreviewUrl(target.url)) {
+  if (isLocalPreviewUrl(target.url)
+    && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
     usePreviewStore.getState().goBack(target.workspacePath)
     return completed()
   }
@@ -62,6 +80,14 @@ export async function goBackPreview(
   return enqueueNativePreviewOperation(async () => {
     if (!previewTargetCanGoBack(target) || !target.url) return cancelled()
     const state = usePreviewStore.getState()
+    if (state.nativeSession?.workspacePath === target.workspacePath
+      && state.nativeSession.canGoBack !== undefined) {
+      if (state.nativeRequest !== null || state.nativeSession.currentUrl !== target.url) return cancelled()
+      if (!state.nativeSession.canGoBack) return traverseOuterHistory(target.workspacePath, "back")
+      await nativePreviewBack(state.nativeSession.sessionId)
+      // The next native snapshot acknowledges the actual URL and capabilities.
+      return completed()
+    }
     const nav = state.navForWorkspace(target.workspacePath)
     const adjacentUrl = nav.backStack.at(-1)
     if (!adjacentUrl) return cancelled()
@@ -70,7 +96,7 @@ export async function goBackPreview(
       && nativeSession?.workspacePath === target.workspacePath
       && nativeSession.currentUrl === target.url
       && nativeSession.backStack.at(-1) === adjacentUrl
-    if (isLocalPreviewUrl(adjacentUrl) || !hasNativeContinuity) {
+    if (!hasNativeContinuity) {
       state.goBack(target.workspacePath)
       return completed()
     }
@@ -100,7 +126,8 @@ export async function goForwardPreview(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetCanGoForward(target) || !target.url) return cancelled()
-  if (isLocalPreviewUrl(target.url)) {
+  if (isLocalPreviewUrl(target.url)
+    && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
     usePreviewStore.getState().goForward(target.workspacePath)
     return completed()
   }
@@ -108,6 +135,14 @@ export async function goForwardPreview(
   return enqueueNativePreviewOperation(async () => {
     if (!previewTargetCanGoForward(target) || !target.url) return cancelled()
     const state = usePreviewStore.getState()
+    if (state.nativeSession?.workspacePath === target.workspacePath
+      && state.nativeSession.canGoForward !== undefined) {
+      if (state.nativeRequest !== null || state.nativeSession.currentUrl !== target.url) return cancelled()
+      if (!state.nativeSession.canGoForward) return traverseOuterHistory(target.workspacePath, "forward")
+      await nativePreviewForward(state.nativeSession.sessionId)
+      // The next native snapshot acknowledges the actual URL and capabilities.
+      return completed()
+    }
     const nav = state.navForWorkspace(target.workspacePath)
     const adjacentUrl = nav.forwardStack[0]
     if (!adjacentUrl) return cancelled()
@@ -116,7 +151,7 @@ export async function goForwardPreview(
       && nativeSession?.workspacePath === target.workspacePath
       && nativeSession.currentUrl === target.url
       && nativeSession.forwardStack[0] === adjacentUrl
-    if (isLocalPreviewUrl(adjacentUrl) || !hasNativeContinuity) {
+    if (!hasNativeContinuity) {
       state.goForward(target.workspacePath)
       return completed()
     }
@@ -146,7 +181,8 @@ export async function reloadPreview(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
-  if (isLocalPreviewUrl(target.url)) {
+  if (isLocalPreviewUrl(target.url)
+    && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
     usePreviewStore.getState().reload(target.workspacePath)
     return completed()
   }
@@ -189,51 +225,8 @@ export async function openPreviewExternally(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
-  await openUrl(target.url)
-  return completed()
-}
-
-function sameRunningServer(left: DevServerInfo | null, right: DevServerInfo | null): boolean {
-  if (left?.status.status !== "running" || right?.status.status !== "running") return false
-  return left.workspace === right.workspace
-    && left.command === right.command
-    && left.port === right.port
-    && left.status.port === right.status.port
-}
-
-export async function stopPreviewDevServer(
-  target: PreviewCommandTarget
-): Promise<ContextMenuCommandOutcome> {
-  if (!previewTargetHasRunningServer(target)) return cancelled()
-
-  const state = usePreviewStore.getState()
-  const server = state.devServerForWorkspace(target.workspacePath)
-  if (!server) return cancelled()
-  const stopAttempt = state.beginAttempt(target.workspacePath)
-
-  try {
-    await devServerStop(target.workspacePath)
-  } catch (error) {
-    usePreviewStore.getState().restoreAttempt(
-      target.workspacePath,
-      stopAttempt,
-      target.serverAttempt
-    )
-    throw error
-  }
-
-  const latest = usePreviewStore.getState()
-  if (
-    useWorkspaceStore.getState().workspacePath === target.workspacePath
-    && latest.attemptForWorkspace(target.workspacePath) === stopAttempt
-    && sameRunningServer(server, latest.devServerForWorkspace(target.workspacePath))
-  ) {
-    latest.setDevServer({
-      workspace: target.workspacePath,
-      command: server.command,
-      port: server.port,
-      status: { status: "exited", code: null },
-    })
-  }
+  const url = (await import("./remotePreviewUrl")).remotePreviewDisplayUrl(target.workspacePath, target.url)
+  if (!previewTargetHasUrl(target)) return cancelled()
+  await openUrl(url)
   return completed()
 }

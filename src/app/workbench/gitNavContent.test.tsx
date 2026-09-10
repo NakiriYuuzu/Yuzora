@@ -416,14 +416,14 @@ describe("GitNavContent — ready state (E1)", () => {
         await waitFor(() => expect(ipc.gitUnstage).toHaveBeenCalledWith("/w", ["a.ts", "d.ts"]))
     })
 
-    it("clicking a file row selects it without opening Diff or mutating", () => {
+    it("clicking a file row selects it and opens Diff without mutating", () => {
         setReady({
             staged: [{ path: "a.ts", origPath: null, status: "M" }],
             unstaged: [{ path: "b.ts", origPath: null, status: "M" }]
         })
         render(<GitNavContent />)
         fireEvent.click(screen.getByText("b.ts"))
-        expect(useDiffModalStore.getState().open).toBe(false)
+        expect(useDiffModalStore.getState().open).toBe(true)
         expect(ipc.gitStage).not.toHaveBeenCalled()
         expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual(["b.ts"])
     })
@@ -614,7 +614,7 @@ describe("GitNavContent — ready state (E1)", () => {
             "b.ts",
             "c.ts"
         ])
-        expect(useDiffModalStore.getState().open).toBe(false)
+        expect(useDiffModalStore.getState().open).toBe(true)
 
         fireEvent.contextMenu(screen.getByText("b.ts"), { clientX: 11, clientY: 12 })
         expect(useContextMenuStore.getState().request).toMatchObject({

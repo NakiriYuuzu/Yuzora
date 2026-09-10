@@ -5,7 +5,7 @@ import type { FileNode } from "../lib/types"
 import { useWorkspaceStore } from "./workspaceStore"
 
 // Per-workspace file-tree state (#59 T4b, spec Phase 3.2), bucketed by workspace
-// root the same way terminalStore buckets layouts: switching workspaces keeps
+// root: switching workspaces keeps
 // every visited tree (root listing, lazily-loaded children, expanded dirs,
 // scroll offset) so switching back hydrates instantly, then revalidates in the
 // background instead of starting from a blank remount.

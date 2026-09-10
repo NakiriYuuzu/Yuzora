@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
@@ -48,6 +48,6 @@ export default defineConfig(({ mode }) => ({
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
     globals: true,
-    exclude: ["**/node_modules/**", "**/.superpowers/**"],
+    exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**"],
   },
 }));

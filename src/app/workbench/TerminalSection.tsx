@@ -6,182 +6,46 @@ import {
   type TerminalSettings,
 } from "@/app/workbench/settingsStorage"
 import { isWindowsPlatform } from "@/lib/platform"
-import type { TerminalProfile } from "@/lib/types"
 import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
-import { useWorkbenchLayoutStore } from "@/state/workbenchLayoutStore"
-import { useWorkspaceStore } from "@/state/workspaceStore"
-import {
-  EMPTY_CUSTOM_TERMINAL_PROFILE,
-  availableTerminalProfiles,
-  terminalProfileDisplayName,
-} from "@/terminal/terminalProfiles"
-import { useTerminalProfiles } from "@/terminal/useTerminalProfiles"
+import { TERMINAL_FONTS, normalizeTerminalFontFamily, terminalFontStack } from "@/terminal/terminalFonts"
 
-import { Segmented, SettingCard, SettingsTextInput } from "./settingsPrimitives"
+import {Slider} from '@/components/ui/slider'
+import {Select,SelectContent,SelectGroup,SelectItem,SelectTrigger,SelectValue} from '@/components/ui/select'
+import {Field,FieldGroup,FieldLabel} from '@/components/ui/field'
+import { Segmented, SettingCard } from "./settingsPrimitives"
 export function TerminalSection() {
   const { t } = useTranslation("terminal")
   const settings = useTerminalSettingsStore()
   const updateSettings = useTerminalSettingsStore((state) => state.update)
-  const discoveredProfiles = useTerminalProfiles()
-  const workspacePath = useWorkspaceStore((state) => state.workspacePath)
-  const terminalRatioScope = useWorkbenchLayoutStore((state) => state.terminalRatioScope)
-  const setTerminalRatioScope = useWorkbenchLayoutStore((state) => state.setTerminalRatioScope)
 
   const update = (patch: Partial<TerminalSettings>) => {
     updateSettings(patch)
   }
-  const selectProfile = (profile: TerminalProfile) => {
-    update({ defaultProfile: profile })
-  }
-  const updateCustomProfile = (patch: Partial<TerminalProfile>) => {
-    const customProfile = {
-      ...settings.customProfile,
-      ...patch,
-      id: "custom",
-      name: t("customProfileName"),
-      kind: "custom" as const,
-    }
-    update({
-      customProfile,
-      ...(settings.defaultProfile.id === "custom"
-        ? { defaultProfile: customProfile }
-        : {}),
-    })
-  }
-  const selectableProfiles = availableTerminalProfiles(
-    discoveredProfiles,
-    settings.defaultProfile,
-    settings.customProfile,
-  )
-  if (!selectableProfiles.some((profile) => profile.id === "custom")) {
-    selectableProfiles.push({
-      ...EMPTY_CUSTOM_TERMINAL_PROFILE,
-      name: t("customProfileName"),
-    })
-  }
 
   return (
-    <div className="flex flex-col gap-[14px]">
-      <SettingCard
-        label={t("sizeMemoryLabel")}
-        sub={t("sizeMemoryDescription")}
-      >
-        <Segmented
-          label={t("sizeMemoryLabel")}
-          options={[
-            { id: "global", label: t("sizeMemoryGlobal") },
-            { id: "workspace", label: t("sizeMemoryWorkspace") },
-          ]}
-          value={terminalRatioScope}
-          onChange={(scope) => {
-            if (scope === "global" || scope === "workspace") {
-              setTerminalRatioScope(scope, workspacePath)
-            }
-          }}
-        />
-      </SettingCard>
-
-      <SettingCard
-        label={t("fontSizeLabel")}
-        sub={t("fontSizeDescription")}
-      >
-        <label className="flex items-center gap-[10px]">
-          <input
-            id="terminal-font-size"
-            type="range"
-            min={MIN_TERMINAL_FONT_SIZE}
-            max={MAX_TERMINAL_FONT_SIZE}
-            step={1}
-            value={settings.fontSize}
-            aria-label={t("fontSizeLabel")}
-            onChange={(event) => update({ fontSize: Number(event.currentTarget.value) })}
-            className="min-w-0 flex-1 accent-(--yz-accent)"
-          />
-          <output
-            htmlFor="terminal-font-size"
-            className="min-w-[42px] text-right font-mono text-[11.5px] text-(--ink-2)"
-          >
-            {t("fontSizeValue", { size: settings.fontSize })}
-          </output>
-        </label>
-      </SettingCard>
-
-      <SettingCard
-        label={t("shellLabel")}
-        sub={t("shellDescription")}
-      >
-        <div className="flex flex-col gap-[12px]">
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[11.5px] font-medium text-(--ink-2)">
-              {t("defaultProfileLabel")}
-            </span>
-            <select
-              aria-label={t("defaultProfileLabel")}
-              value={settings.defaultProfile.id}
-              onChange={(event) => {
-                const profile = selectableProfiles.find(
-                  (candidate) => candidate.id === event.currentTarget.value,
-                )
-                if (profile) selectProfile(profile)
-              }}
-              className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none focus:border-(--yz-accent)"
-            >
-              {selectableProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {terminalProfileDisplayName(profile)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <SettingsTextInput
-            label={t("customExecutableLabel")}
-            value={settings.customProfile.shell}
-            placeholder={t("customExecutablePlaceholder")}
-            onChange={(shell) => updateCustomProfile({ shell })}
-          />
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[11.5px] font-medium text-(--ink-2)">
-              {t("customArgsLabel")}
-            </span>
-            <textarea
-              aria-label={t("customArgsLabel")}
-              rows={3}
-              value={settings.customProfile.args.join("\n")}
-              placeholder={t("customArgsPlaceholder")}
-              onChange={(event) => {
-                const args = event.currentTarget.value
-                  .split("\n")
-                  .map((arg) => arg.trim())
-                  .filter(Boolean)
-                updateCustomProfile({ args })
-              }}
-              className="resize-y rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] py-[7px] font-mono text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent)"
-            />
-            <span className="text-[10.5px] text-(--ink-3)">{t("customArgsHint")}</span>
-          </label>
-          <Segmented
-            label={t("customCwdStrategyLabel")}
-            options={[
-              { id: "native", label: t("customCwdNative") },
-              ...(isWindowsPlatform()
-                ? [{ id: "wsl" as const, label: t("customCwdWsl") }]
-                : []),
-            ]}
-            value={
-              !isWindowsPlatform() && settings.customProfile.cwdStrategy === "wsl"
-                ? "native"
-                : settings.customProfile.cwdStrategy
-            }
-            onChange={(cwdStrategy) => {
-              if (cwdStrategy === "native" || cwdStrategy === "wsl") {
-                updateCustomProfile({
-                  cwdStrategy: isWindowsPlatform() ? cwdStrategy : "native",
-                })
-              }
-            }}
-          />
+    <FieldGroup className="settings-fields">
+      <SettingCard label={t("typographyLabel")} sub={t("fontFamilyDescription")}>
+        <FieldGroup className="settings-terminal-typography">
+        <Field data-settings-label={t("fontFamilyLabel")}><FieldLabel htmlFor="settings-terminal-font">{t("fontFamilyLabel")}</FieldLabel>
+        <Select value={settings.fontFamily} onValueChange={value=>update({fontFamily:normalizeTerminalFontFamily(value)})}>
+          <SelectTrigger id="settings-terminal-font" className="settings-terminal-font-select"><SelectValue/></SelectTrigger>
+          <SelectContent><SelectGroup>{TERMINAL_FONTS.map(font=><SelectItem key={font.id} value={font.id}>{font.id==='system'?t("systemMonospace"):font.name}{font.id==='jetbrains'?` · ${t("defaultFont")}`:''}</SelectItem>)}</SelectGroup></SelectContent>
+        </Select>
+        </Field>
+        <Field data-settings-label={t("fontSizeLabel")}><FieldLabel>{t("fontSizeLabel")}</FieldLabel>
+        <div className="settings-slider-row">
+          <Slider min={MIN_TERMINAL_FONT_SIZE} max={MAX_TERMINAL_FONT_SIZE} step={1} value={[settings.fontSize]} aria-label={t("fontSizeLabel")} onValueChange={value=>update({fontSize:value[0]})}/>
+          <output className="settings-slider-value">{t("fontSizeValue",{size:settings.fontSize})}</output>
         </div>
+        </Field>
+        </FieldGroup>
+        <p className="settings-inline-hint">{t("fontFallbackHint")}</p>
       </SettingCard>
+
+      <div className="settings-terminal-preview" role="img" aria-label={t("fontPreview")} data-design="replica-terminal-font-preview" data-design-label={t("fontPreview")}>
+        <div><span>{t("fontPreview")}</span><span>{settings.fontSize} px</span></div>
+        <pre style={{fontFamily:terminalFontStack(settings.fontFamily),fontSize:settings.fontSize}}><span>~/yuzora</span>{'  main\n$ '}<span>echo "Hello, Yuzora"</span>{'\nHello, Yuzora\n'}{t("fontPreviewSample")}{'\n0O  1lI  {} [] ()  => != / \\ _'}</pre>
+      </div>
 
       {isWindowsPlatform() && (
         <SettingCard label={t("imeLabel")} sub={t("imeDescription")}>
@@ -198,6 +62,6 @@ export function TerminalSection() {
           />
         </SettingCard>
       )}
-    </div>
+    </FieldGroup>
   )
 }

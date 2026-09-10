@@ -12,7 +12,7 @@ export interface HydrateFocusedSpaceHerdrPagesResult<TGroup extends EditorGroupL
     activeGroupIndex: number
 }
 
-/** Move `from` to `to` with the same splice semantics as TerminalDrawer. */
+/** Move `from` to `to` using stable splice semantics. */
 export function moveItemToIndex<T>(items: readonly T[], from: number, to: number): T[] | null {
     if (from < 0 || from >= items.length) return null
     const clampedTo = Math.max(0, Math.min(items.length - 1, to))

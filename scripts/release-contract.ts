@@ -18,6 +18,13 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 function steps(job: UnknownRecord, label: string): UnknownRecord[] {
+  if (label === "jobs.host-artifacts" && job.uses === "./.github/workflows/host.yml") {
+    assert(job.steps === undefined && job.secrets === undefined, "host artifacts must not inherit secrets or define steps")
+    assert(contentsPermission(job, label) === "read", "host artifacts must use contents: read")
+    const options = record(job.with, "host artifacts source")
+    assert(options["source-ref"] === "${{ needs.guard.outputs.source_sha }}", "host artifacts must build the verified release source")
+    return []
+  }
   assert(Array.isArray(job.steps), `${label}.steps are required`)
   return job.steps.map((step, index) => record(step, `${label}.steps[${index}]`))
 }
@@ -300,6 +307,7 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(collect.run, 'copy_exactly_one "Windows NSIS updater signature"'),
     "build must validate Tauri CLI macOS universal and Windows NSIS/MSI/updater output paths"
   )
+  verifyRuntimePayloadSteps(buildSteps, "matrix.artifact_name == 'windows'")
 
   const assemble = jobFor(workflow, "assemble-draft")
   const assembleUpload = stepByName(
@@ -564,6 +572,18 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
       includes(resolve.run, "bun scripts/release-state.ts"),
     "guard must classify releases through the tested release state machine"
   )
+  const resolveEnv = record(resolve.env, "beta release target env")
+  assert(
+    resolveEnv.BETA_ACCEPTED_TREE_SHA ===
+      "${{ vars.YUZORA_BETA_ACCEPTED_TREE_SHA }}" &&
+      resolveEnv.BETA_ACCEPTANCE_URL === "${{ vars.YUZORA_BETA_ACCEPTANCE_URL }}" &&
+      includes(resolve.run, '[ "$IS_BETA" = "true" ] && [ "$SHOULD_BUILD" = "true" ]') &&
+      includes(resolve.run, 'git rev-parse "${SOURCE_SHA}^{tree}"') &&
+      includes(resolve.run, "YUZORA_BETA_ACCEPTED_TREE_SHA must be the accepted PR candidate tree SHA") &&
+      includes(resolve.run, '[ "$BETA_ACCEPTED_TREE_SHA" != "$SOURCE_TREE_SHA" ]') &&
+      includes(resolve.run, "YUZORA_BETA_ACCEPTANCE_URL must reference the recorded Yuzora candidate acceptance evidence"),
+    "new beta builds must require a human acceptance attestation tied to the exact candidate tree"
+  )
   const betaContract = stepByName(guardSteps, "Verify beta prerelease contract")
   assert(betaContract.if === "steps.release.outputs.is_beta == 'true'", "beta contract must only run for beta")
   assert(betaContract.run === "bun run check:beta-release", "beta contract command changed")
@@ -629,18 +649,23 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
       includes(candidate.if, "github.event_name == 'pull_request'"),
     "release candidates must run only for release pull requests"
   )
-  const branchCheck = stepByName(steps(candidate, "release candidate"), "Verify release candidate branch matches product version")
+  const candidateSteps = steps(candidate, "release candidate")
+  const branchCheck = stepByName(
+    candidateSteps,
+    "Verify release candidate branch matches product version"
+  )
   assert(
     includes(branchCheck.run, '"$HEAD_REF" != "release/v${VERSION}"'),
     "candidate installers must require the exact release/v<product-version> branch"
   )
-  const candidateBuild = stepByName(steps(candidate, "release candidate"), "Build unsigned release candidate")
+  const candidateBuild = stepByName(candidateSteps, "Build unsigned release candidate")
   assert(
     includes(candidateBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
       includes(candidateBuild.run, '--config "$RELEASE_BUILD_CONFIG"') &&
       includes(candidateBuild.run, "--no-sign"),
     "release candidates must use the generated no-updater numeric WiX version override for every channel"
   )
+  verifyRuntimePayloadSteps(candidateSteps, "runner.os == 'Windows'")
 
   verifyCiLinuxDependencySetup(ci)
 }
@@ -657,4 +682,16 @@ function verifyCiLinuxDependencySetup(ci: Workflow): void {
       `${jobName} must use the bounded canonical-mirror Linux dependency installer`
     )
   }
+}
+
+function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], windowsCondition: string): void {
+  const download = stepByName(buildSteps, "Download Unix host runtimes")
+  const options = record(download.with, "runtime download options")
+  assert(download.uses === "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" && options.pattern === "host-*" && options["merge-multiple"] === true && options.path === "src-tauri/resources/host/", "installers must consume all four Unix runtime artifacts")
+  assert(includes(stepByName(buildSteps, "Verify Unix host runtime payloads").run, "bun run runtime:verify"), "installers must verify Unix runtime manifests and hashes before building")
+  const verify = stepByName(buildSteps, "Verify Windows native and Unix runtime payloads")
+  assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify native and Unix runtime payloads extracted from MSI and NSIS")
+  const smoke = stepByName(buildSteps, "Verify isolated native Windows HERDR contract")
+  assert(smoke.if === windowsCondition && smoke.run === "bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe", "Windows installers must pass the isolated native runtime contract")
+  assert(!buildSteps.some((step) => includes(step.run, "yuzora-wsl-agents")), "legacy WSL plugin must not run during installer builds")
 }

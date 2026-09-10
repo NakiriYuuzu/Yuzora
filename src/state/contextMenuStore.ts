@@ -34,11 +34,8 @@ import {
     gitFetch,
     gitPull,
     gitPush,
-    previewCreate,
-    previewRevoke
 } from "../lib/ipc"
 import { isFileTab, isMarkdownPreviewTab } from "../lib/markdownPreviewTab"
-import { usePreviewStore } from "./previewStore"
 import { useSvgPreviewStore } from "./svgPreviewStore"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
 import { useDiffModalStore, type WorktreeDiffFile } from "./diffModalStore"
@@ -245,7 +242,7 @@ async function closeOtherTabsWithConfirm(groupIndex: number, keepPath: string): 
     // Generic file-tab batch actions must never silently remove runtime-backed
     // Herdr pages. Those require their explicit destructive Herdr close flow.
     const toClose = group.tabs.filter(
-        (tab) => tab.path !== keepPath && tab.kind !== "herdr-terminal"
+        (tab) => tab.path !== keepPath && !tab.pinned && tab.kind !== "herdr-terminal"
     )
     if (toClose.length === 0) return CONTEXT_MENU_CANCELLED
     if (toClose.some((t) => isFileTab(t) && t.dirty)) {
@@ -267,7 +264,7 @@ async function closeOtherTabsWithConfirm(groupIndex: number, keepPath: string): 
 async function closeAllTabsWithConfirm(groupIndex: number): Promise<ContextMenuCommandOutcome> {
     const group = useWorkspaceStore.getState().groups[groupIndex]
     if (!group || group.tabs.length === 0) return CONTEXT_MENU_CANCELLED
-    const tabs = group.tabs.filter((tab) => tab.kind !== "herdr-terminal")
+    const tabs = group.tabs.filter((tab) => !tab.pinned && tab.kind !== "herdr-terminal")
     if (tabs.length === 0) return CONTEXT_MENU_CANCELLED
     if (tabs.some((t) => isFileTab(t) && t.dirty)) {
         const ok = await requestAppConfirmation({
@@ -433,37 +430,6 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
     }
 }
 
-// cmOpenInBrowser (P3): create a revocable per-document static preview session
-// and open that isolated URL in the singleton preview tab.
-async function openInBrowser(path: string, workspace: string): Promise<ContextMenuCommandOutcome> {
-    if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
-    try {
-        const session = await previewCreate(path)
-        if (useWorkspaceStore.getState().workspacePath !== workspace) {
-            void previewRevoke(session.token).catch(() => undefined)
-            return CONTEXT_MENU_CANCELLED
-        }
-        useWorkspaceStore.getState().openPreviewTab()
-        usePreviewStore.getState().openStaticPreview(workspace, session)
-        return CONTEXT_MENU_COMPLETED
-    } catch (e) {
-        await showAppMessage({
-            title: i18n.t("contextMenu.actionErrorTitle.preview", { ns: "menus" }),
-            description: staticPreviewErrorMessage(e),
-            kind: "error"
-        })
-        return CONTEXT_MENU_CANCELLED
-    }
-}
-
-function staticPreviewErrorMessage(error: unknown): string {
-    const raw = String(error)
-    if (raw.includes("preview-graph-too-large")) {
-        return i18n.t("staticCreateTooLarge", { ns: "preview" })
-    }
-    return i18n.t("staticCreateFailed", { ns: "preview" })
-}
-
 // Target-specific legacy adapter for commands that still share existing domain
 // operations. The registry owns visibility, availability, and dispatch.
 export async function executeLegacyContextMenuAction(
@@ -531,9 +497,6 @@ export async function executeLegacyContextMenuAction(
         await revealItemInDir(request.path)
         return CONTEXT_MENU_COMPLETED
     }
-    if (request.kind === "file" && actionId === "cmOpenInBrowser") {
-        return openInBrowser(request.path, request.workspacePath)
-    }
 
     if (request.kind === "explorer" && request.workspacePath) {
         if (actionId === "cmCopyPath") {
@@ -554,12 +517,6 @@ export async function executeLegacyContextMenuAction(
               : await pasteIntoEditor(target.view)
         return changed ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
     }
-    if (request.kind === "editor" && actionId === "cmFormatDoc") {
-        const target = editorTarget(request)
-        if (!target?.formatDocument) return CONTEXT_MENU_CANCELLED
-        return (await target.formatDocument()) ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
-    }
-
     if (
         (request.kind === "git" || request.kind === "status") &&
         currentGitRepositoryMatches(request.repositoryRoot) &&
@@ -618,18 +575,6 @@ export async function executeLegacyContextMenuAction(
         const host = useSshStore.getState().hosts.find((candidate) => candidate.id === request.hostId)
         if (!host) return CONTEXT_MENU_CANCELLED
         await writeText(`${host.user}@${host.host}:${host.port}`)
-        return CONTEXT_MENU_COMPLETED
-    }
-    if (request.kind === "sshhost" && actionId === "cmOpenSsh") {
-        const state = useSshStore.getState()
-        if (
-            !state.hosts.some((host) => host.id === request.hostId) ||
-            state.pendingAuthHostId === request.hostId ||
-            state.sessions[request.hostId]?.status === "connecting"
-        ) {
-            return CONTEXT_MENU_CANCELLED
-        }
-        state.beginConnect(request.hostId)
         return CONTEXT_MENU_COMPLETED
     }
     if (request.kind === "sshhost" && actionId === "cmDisconnect") {

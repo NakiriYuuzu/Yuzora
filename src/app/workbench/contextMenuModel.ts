@@ -38,11 +38,6 @@ interface EditorContextMenuRequest {
   groupIndex: number
 }
 
-interface TerminalTabContextMenuRequest {
-  kind: "terminalTab"
-  workspacePath: string
-  sessionId: string
-}
 
 
 interface GitContextMenuRequest {
@@ -87,7 +82,6 @@ interface PreviewContextMenuRequest {
   kind: "preview"
   workspacePath: string
   url: string | null
-  serverAttempt: number
 }
 
 interface HerdrSpaceContextMenuRequest {
@@ -127,7 +121,6 @@ export type ContextMenuRequest =
   | FileContextMenuRequest
   | TabContextMenuRequest
   | EditorContextMenuRequest
-  | TerminalTabContextMenuRequest
   | GitContextMenuRequest
   | GitChangeContextMenuRequest
   | StatusContextMenuRequest

@@ -1,0 +1,92 @@
+{
+  "baseVersion": "0.9.0",
+  "protocol": 22,
+  "licenseSha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "targets": {
+    "linux-aarch64": {
+      "id": "linux-aarch64",
+      "destination": "linux-aarch64",
+      "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.0/herdr-linux-aarch64",
+      "archiveSha256": "9c8db20fb7e7427b138d5367113f1621ffd319f2f65d6f009e2594029115f0d2",
+      "files": [
+        {
+          "path": "herdr",
+          "sha256": "9c8db20fb7e7427b138d5367113f1621ffd319f2f65d6f009e2594029115f0d2"
+        }
+      ]
+    },
+    "linux-x86_64": {
+      "id": "linux-x86_64",
+      "destination": "linux-x86_64",
+      "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.0/herdr-linux-x86_64",
+      "archiveSha256": "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f",
+      "files": [
+        {
+          "path": "herdr",
+          "sha256": "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f"
+        }
+      ]
+    },
+    "macos-aarch64": {
+      "id": "macos-aarch64",
+      "destination": "macos-aarch64",
+      "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.0/herdr-macos-aarch64",
+      "archiveSha256": "32b53df09872628059c789a69f02a6b8e29e14ddf26711421f3463f70c1aef17",
+      "files": [
+        {
+          "path": "herdr",
+          "sha256": "32b53df09872628059c789a69f02a6b8e29e14ddf26711421f3463f70c1aef17"
+        }
+      ]
+    },
+    "macos-x86_64": {
+      "id": "macos-x86_64",
+      "destination": "macos-x86_64",
+      "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.0/herdr-macos-x86_64",
+      "archiveSha256": "d0c920b2a126a74809fa1491411c9a097a44786cac9c2ca51b818a995581cf16",
+      "files": [
+        {
+          "path": "herdr",
+          "sha256": "d0c920b2a126a74809fa1491411c9a097a44786cac9c2ca51b818a995581cf16"
+        }
+      ]
+    },
+    "windows-x86_64": {
+      "id": "windows-x86_64",
+      "destination": "windows-x86_64",
+      "format": "zip",
+      "url": "https://github.com/herdrdev/herdr/releases/download/v0.9.0/herdr-windows-x86_64.zip",
+      "archiveSha256": "b4508c445de1c1a68c760a01735da2aba2fa214b2aafd4b07f732e49b2a64b11",
+      "files": [
+        {
+          "path": "conpty/arm64/OpenConsole.exe",
+          "sha256": "ed7622fd0d3bedc9ab9f122f5e58edf0def9e7999224f52dd395ba9f54edbe09"
+        },
+        {
+          "path": "conpty/conpty.dll",
+          "sha256": "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8"
+        },
+        {
+          "path": "conpty/herdr-conpty.json",
+          "sha256": "c8f499ad82c568e737d6bc7d0b583e3785d2f43af3d2c0cebb856076690533f5"
+        },
+        {
+          "path": "conpty/x64/OpenConsole.exe",
+          "sha256": "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160"
+        },
+        {
+          "path": "herdr.exe",
+          "sha256": "9b3bf49f94c2d09b1d62e11171b132865768dafc36b1327fb946c0cef9ca0d00"
+        },
+        {
+          "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+          "sha256": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b"
+        },
+        {
+          "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md",
+          "sha256": "e7fbaadee6ab20c28b87730a510ee5f5815d8fb4bd88d1d54d282dc2a74c0726"
+        }
+      ]
+    }
+  }
+}

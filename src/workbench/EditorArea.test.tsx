@@ -1,3 +1,4 @@
+import { useUiStore } from "@/state/uiStore"
 import { act, cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -291,3 +292,25 @@ describe("EditorArea markdown preview tabs", () => {
         expect(screen.queryByTestId("preview-panel")).toBeNull()
     })
 })
+
+ it("keeps Herdr mounted but invisible and inert across Git and Database modes", () => {
+    const path = "yuzora://herdr/default/mode-terminal"
+    useWorkspaceStore.setState({ groups: [{ activePath: path, tabs: [herdrTab(path, "mode-terminal", "mode-tab")] }], activeGroupIndex: 0 })
+    useUiStore.getState().setMode("files")
+    render(<EditorArea />)
+    const terminal = screen.getByTestId("mock-herdr-mode-terminal")
+    const layer = screen.getByTestId(`herdr-page-layer-${path}`)
+    expect(terminal).toHaveAttribute("data-visible", "true")
+    for (const mode of ["git", "database"] as const) {
+        act(() => useUiStore.getState().setMode(mode))
+        expect(screen.getByTestId("mock-herdr-mode-terminal")).toBe(terminal)
+        expect(terminal).toHaveAttribute("data-visible", "false")
+        expect(terminal).toHaveAttribute("data-active", "false")
+        expect(layer).toHaveAttribute("inert")
+    }
+    act(() => useUiStore.getState().setMode("files"))
+    expect(screen.getByTestId("mock-herdr-mode-terminal")).toBe(terminal)
+    expect(terminal).toHaveAttribute("data-visible", "true")
+    expect(terminal).toHaveAttribute("data-active", "true")
+    expect(layer).not.toHaveAttribute("inert")
+ })

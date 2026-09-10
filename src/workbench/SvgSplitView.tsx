@@ -288,13 +288,13 @@ export function SvgSplitView({ path, groupIndex }: { path: string; groupIndex: n
                     <div
                         role="separator"
                         tabIndex={0}
-                        aria-label={tMenus("terminalDrawer.dragToResize")}
+                        aria-label={tMenus("dragToResize")}
                         aria-orientation={orientation === "row" ? "vertical" : "horizontal"}
                         aria-valuemin={Math.round(bounds.min * 100)}
                         aria-valuemax={Math.round(bounds.max * 100)}
                         aria-valuenow={editorPercent}
                         aria-valuetext={valueText}
-                        title={tMenus("terminalDrawer.dragToResize")}
+                        title={tMenus("dragToResize")}
                         data-testid="svg-preview-divider"
                         className={`relative shrink-0 touch-none bg-(--line-1) transition-colors hover:bg-(--yz-accent) focus-visible:bg-(--yz-accent) focus-visible:outline-none ${
                             orientation === "row"

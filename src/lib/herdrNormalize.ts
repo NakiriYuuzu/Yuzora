@@ -49,36 +49,6 @@ function asAgentStatus(value: unknown): HerdrAgentStatus {
 }
 
 /**
- * Normalize optional presentation metadata without allowing it to affect any
- * Herdr resource identity, routing, or workspace-path decisions.
- */
-export function normalizeHerdrExecutionOrigin(value: unknown) {
-  const origin = asRecord(value)
-  if (origin?.kind !== "wsl") return undefined
-
-  const rawDistribution = origin.distribution
-  if (typeof rawDistribution !== "string") return { kind: "wsl" } as const
-  const distribution = rawDistribution.trim()
-  const characters = Array.from(distribution)
-  const hasControlCharacter = characters.some((character) => {
-    const codePoint = character.codePointAt(0) ?? 0
-    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
-  })
-  if (!distribution || characters.length > 128 || hasControlCharacter) {
-    return { kind: "wsl" } as const
-  }
-  return { kind: "wsl", distribution } as const
-}
-
-/** Format normalized presentation metadata for a compact Agent badge. */
-export function formatHerdrExecutionOrigin(
-  origin: ReturnType<typeof normalizeHerdrExecutionOrigin>
-): string | null {
-  if (!origin) return null
-  return origin.distribution ? `WSL · ${origin.distribution}` : "WSL"
-}
-
-/**
  * Normalize raw Herdr `session.snapshot` payload into ADE Spaces/Agents/Panes.
  * Unknown / extra wire fields are ignored defensively.
  */
@@ -97,22 +67,6 @@ export function normalizeHerdrSnapshot(
   const focusedTabId = asString(root.focused_tab_id)
   const focusedPaneId = asString(root.focused_pane_id)
 
-  // Protocol 19 workspace summaries do not expose cwd/path. Derive the Space
-  // path from its agent/pane launch cwd so selecting another Space can also
-  // switch Yuzora's project context. Prefer `cwd` over mutable foreground_cwd.
-  const fallbackSpacePaths = new Map<string, string>()
-  for (const values of [agentsRaw, panesRaw]) {
-    for (const value of values) {
-      const item = asRecord(value)
-      if (!item) continue
-      const workspaceId = asString(item.workspace_id)
-      const path = asString(item.cwd) ?? asString(item.foreground_cwd)
-      if (workspaceId && path && !fallbackSpacePaths.has(workspaceId)) {
-        fallbackSpacePaths.set(workspaceId, path)
-      }
-    }
-  }
-
   const spaces: HerdrSpaceInfo[] = []
   for (let i = 0; i < workspaces.length; i++) {
     const ws = asRecord(workspaces[i])
@@ -122,12 +76,12 @@ export function normalizeHerdrSnapshot(
     const order = asNumber(ws.number) ?? i
     const worktreeRec = asRecord(ws.worktree)
     const snapshotProvenance = spaceProvenanceFromSnapshotWorktree(worktreeRec)
-    // Protocol 19 path fallback: worktree.checkout_path → path/cwd → agent/pane cwd.
+    // Only workspace-owned metadata defines the project root. An agent's cwd
+    // can be an integration directory or a subdirectory after `cd`.
     const path =
       snapshotProvenance.path ??
       asString(ws.path) ??
       asString(ws.cwd) ??
-      fallbackSpacePaths.get(id) ??
       null
     spaces.push({
       id,
@@ -147,14 +101,6 @@ export function normalizeHerdrSnapshot(
     })
   }
   spaces.sort((a, b) => a.order - b.order)
-
-  const paneExecutionOrigins = new Map<string, ReturnType<typeof normalizeHerdrExecutionOrigin>>()
-  for (const paneValue of panesRaw) {
-    const pane = asRecord(paneValue)
-    const paneId = pane ? asString(pane.pane_id) : null
-    const executionOrigin = pane ? normalizeHerdrExecutionOrigin(pane.execution_origin) : undefined
-    if (paneId && executionOrigin) paneExecutionOrigins.set(paneId, executionOrigin)
-  }
 
   const agents: HerdrAgentInfo[] = []
   for (let i = 0; i < agentsRaw.length; i++) {
@@ -185,10 +131,7 @@ export function normalizeHerdrSnapshot(
         asString(agent.terminal_title) ??
         asString(agent.name),
       displayAgent: asString(agent.display_agent) ?? asString(agent.agent),
-      focused: asBool(agent.focused),
-      executionOrigin: Object.hasOwn(agent, "execution_origin")
-        ? normalizeHerdrExecutionOrigin(agent.execution_origin)
-        : paneExecutionOrigins.get(paneId)
+      focused: asBool(agent.focused)
     })
   }
 
@@ -210,8 +153,7 @@ export function normalizeHerdrSnapshot(
         asString(pane.terminal_title_stripped) ??
         asString(pane.terminal_title),
       cwd: asString(pane.cwd) ?? asString(pane.foreground_cwd),
-      status: asAgentStatus(pane.agent_status),
-      executionOrigin: normalizeHerdrExecutionOrigin(pane.execution_origin)
+      status: asAgentStatus(pane.agent_status)
     })
   }
 

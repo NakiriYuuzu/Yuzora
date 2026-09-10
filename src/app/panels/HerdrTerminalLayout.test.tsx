@@ -205,6 +205,7 @@ describe("HerdrTerminalPage BSP layout surface", () => {
   beforeEach(() => {
     cleanup()
     seed()
+    layoutMock.set({ ...layoutMock.get(), zoomed: false, focusedPaneId: "p1" })
     layoutMock.export.mockClear()
     layoutMock.setRatio.mockClear()
     vi.mocked(herdrLayoutSetSplitRatio).mockClear()
@@ -246,6 +247,27 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     expect(attachments.has(herdrAttachmentKey("yuzora://herdr/default/t1", "p1"))).toBe(true)
     expect(attachments.has(herdrAttachmentKey("yuzora://herdr/default/t1", "p2"))).toBe(true)
     expect(attachments.has(herdrAttachmentKey("yuzora://herdr/default/t1", "p3"))).toBe(true)
+  })
+
+  it("zooms only the focused pane without releasing connectors and restores the split", async () => {
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
+    await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
+    act(() => {
+      layoutMock.set({ ...layoutMock.get(), zoomed: true, focusedPaneId: "p2" })
+      useHerdrStore.getState().bumpTopologyRevision()
+    })
+    await waitFor(() => expect(screen.getByTestId("herdr-split-handle-root")).not.toBeVisible())
+    expect(screen.getByTestId("herdr-terminal-leaf-t1")).not.toBeVisible()
+    expect(screen.getByTestId("herdr-terminal-leaf-t2")).toBeVisible()
+    expect(screen.getByTestId("herdr-terminal-leaf-t3")).not.toBeVisible()
+    expect(herdrTerminalRelease).not.toHaveBeenCalled()
+    act(() => {
+      layoutMock.set({ ...layoutMock.get(), zoomed: false })
+      useHerdrStore.getState().bumpTopologyRevision()
+    })
+    await waitFor(() => expect(screen.getByTestId("herdr-split-handle-root")).toBeVisible())
+    expect(screen.getByTestId("herdr-terminal-leaf-t1")).toBeVisible()
+    expect(herdrTerminalOpen).toHaveBeenCalledTimes(3)
   })
 
   it("uses the page's owning named-session snapshot after sidebar session changes", async () => {

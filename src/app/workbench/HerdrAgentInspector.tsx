@@ -3,7 +3,7 @@ import type { RefObject } from "react"
 import { useTranslation } from "react-i18next"
 
 import { AnsiText } from "@/app/workbench/AnsiText"
-import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -16,7 +16,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { herdrAgentGet, herdrAgentRead } from "@/lib/herdrIpc"
-import { formatHerdrExecutionOrigin } from "@/lib/herdrNormalize"
+import { findRuntimeSession } from "@/lib/herdrProvider"
 import type {
   HerdrAgentDetails,
   HerdrAgentInfo,
@@ -52,6 +52,15 @@ export function HerdrAgentInspector({
   const [source, setSource] = useState<HerdrReadSource>("recent")
   const [format, setFormat] = useState<HerdrReadFormat>("text")
   const [lines, setLines] = useState(120)
+  const [linesDraft, setLinesDraft] = useState("120")
+  const commitLines = () => {
+    const parsed = Number(linesDraft)
+    const next = linesDraft.trim() && Number.isFinite(parsed)
+      ? Math.min(500, Math.max(20, Math.trunc(parsed)))
+      : 120
+    setLinesDraft(String(next))
+    setLines(next)
+  }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const requestGenerationRef = useRef(0)
@@ -61,7 +70,7 @@ export function HerdrAgentInspector({
   const target = agent?.paneId ?? null
   const stopped = useMemo(() => {
     if (!sessionName) return true
-    const session = sessions.find((item) => item.name === sessionName)
+    const session = findRuntimeSession(sessions, sessionName)
     return session ? !session.running : true
   }, [sessionName, sessions])
 
@@ -111,7 +120,6 @@ export function HerdrAgentInspector({
     }
   }, [load])
 
-  const originLabel = formatHerdrExecutionOrigin(agent?.executionOrigin)
   const disabledReason = stopped
     ? t("herdrInspector.sessionStopped")
     : !canInspect
@@ -135,20 +143,9 @@ export function HerdrAgentInspector({
       >
         <DialogHeader className="border-b border-(--line-1) px-[20px] py-[16px]">
           <DialogTitle>{t("herdrInspector.title")}</DialogTitle>
-          <div className="flex items-center gap-[8px]">
-            <DialogDescription>
-              {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
-            </DialogDescription>
-            {originLabel && (
-              <Badge
-                variant="outline"
-                data-testid="herdr-inspector-origin"
-                className="h-[18px] border-(--line-2) px-[6px] text-[9px] font-normal text-(--ink-3)"
-              >
-                {originLabel}
-              </Badge>
-            )}
-          </div>
+          <DialogDescription>
+            {agent?.title ?? agent?.name ?? t("herdrInspector.untitled")}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-[12px] px-[20px] py-[16px]">
@@ -212,15 +209,19 @@ export function HerdrAgentInspector({
                 <label className="text-[11px] text-(--ink-3)" htmlFor="herdr-read-lines">
                   {t("herdrInspector.lines")}
                 </label>
-                <input
+                <Input
                   id="herdr-read-lines"
                   type="number"
                   min={20}
                   max={500}
-                  value={lines}
-                  onChange={(event) => {
-                    const next = Number(event.target.value)
-                    setLines(Number.isFinite(next) ? Math.min(500, Math.max(20, next)) : 120)
+                  value={linesDraft}
+                  onChange={(event) => setLinesDraft(event.target.value)}
+                  onBlur={commitLines}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault()
+                      commitLines()
+                    }
                   }}
                   className="h-[30px] w-[72px] rounded-[8px] border border-(--line-2) bg-(--paper-0) px-[8px] text-[12px]"
                 />

@@ -5,7 +5,14 @@ import type { SshAuthInput, SshAuthKind } from "@/lib/types"
 
 // Persisted host book. Secrets (password / key passphrase) are NEVER stored —
 // only the non-sensitive connection descriptor lands in localStorage.
-export const SSH_HOSTS_STORAGE_KEY = "yuzora.ssh.hosts.v1"
+export const SSH_HOSTS_STORAGE_KEY = "yuzora.hosts.ssh.v2"
+const LEGACY_SSH_HOSTS_STORAGE_KEY = "yuzora.ssh.hosts.v1"
+const connectionAttempts = new Map<string, number>()
+function nextAttempt(id: string): number {
+    const generation = (connectionAttempts.get(id) ?? 0) + 1
+    connectionAttempts.set(id, generation)
+    return generation
+}
 
 export interface SshHost {
     id: string
@@ -52,8 +59,6 @@ interface SshStore {
     cancelPendingAuth: () => void
     disconnect: (id: string) => Promise<void>
     setActiveHost: (id: string) => void
-    /** Called when a shell's ssh://exit fires — mark the session dead. */
-    markExit: (sessionId: string) => void
     reset: () => void
 }
 
@@ -78,11 +83,14 @@ function isSshHost(value: unknown): value is SshHost {
 
 export function loadSshHosts(): SshHost[] {
     try {
-        const raw = localStorage.getItem(SSH_HOSTS_STORAGE_KEY)
+        const current = localStorage.getItem(SSH_HOSTS_STORAGE_KEY)
+        const raw = current ?? localStorage.getItem(LEGACY_SSH_HOSTS_STORAGE_KEY)
         if (!raw) return []
         const parsed = JSON.parse(raw)
         if (!Array.isArray(parsed)) return []
-        return parsed.filter(isSshHost).map(sanitizeHost)
+        const hosts = parsed.filter(isSshHost).map(sanitizeHost)
+        if (current === null) saveSshHosts(hosts)
+        return hosts
     } catch {
         return []
     }
@@ -138,14 +146,28 @@ export const useSshStore = create<SshStore>()((set, get) => ({
     },
 
     updateHost: (id, input) => {
+        const previous = get().hosts.find((host) => host.id === id)
+        if (!previous) return
+        const identityChanged = previous.host !== input.host || previous.port !== input.port || previous.user !== input.user
+        const credentialsChanged = previous.authKind !== input.authKind || previous.keyPath !== input.keyPath
+        const nextId = identityChanged ? newHostId() : id
+        if (identityChanged || credentialsChanged) {
+            nextAttempt(id)
+            const sessionId = get().sessions[id]?.sessionId
+            if (sessionId) void sshDisconnect(sessionId).catch(() => undefined)
+        }
         set((s) => {
-            const hosts = s.hosts.map((h) => (h.id === id ? sanitizeHost({ id, ...input }) : h))
+            const hosts = s.hosts.map((h) => h.id === id ? sanitizeHost({ id: nextId, ...input }) : h)
             saveSshHosts(hosts)
-            return { hosts }
+            if (!identityChanged && !credentialsChanged) return { hosts }
+            const sessions = { ...s.sessions }
+            delete sessions[id]
+            return { hosts, sessions, activeHostId: s.activeHostId === id ? null : s.activeHostId }
         })
     },
 
     removeHost: (id) => {
+        nextAttempt(id)
         const session = get().sessions[id]
         if (session?.sessionId) void sshDisconnect(session.sessionId).catch(() => undefined)
         set((s) => {
@@ -182,6 +204,9 @@ export const useSshStore = create<SshStore>()((set, get) => ({
     connect: async (id, secret) => {
         const host = get().hosts.find((h) => h.id === id)
         if (!host) return
+        const existing = get().sessions[id]
+        if (existing?.status === "connecting" || existing?.status === "connected") return
+        const attempt = nextAttempt(id)
         const auth = buildAuth(host, secret)
         set((s) => ({
             // Focus the host as soon as the attempt starts so the panel reflects
@@ -202,6 +227,10 @@ export const useSshStore = create<SshStore>()((set, get) => ({
         }))
         try {
             const res = await sshConnect(host.host, host.port, host.user, auth)
+            if (connectionAttempts.get(id) !== attempt || !get().hosts.some((item) => item.id === id)) {
+                await sshDisconnect(res.sessionId).catch(() => undefined)
+                return
+            }
             set((s) => ({
                 activeHostId: id,
                 sessions: {
@@ -217,6 +246,7 @@ export const useSshStore = create<SshStore>()((set, get) => ({
                 }
             }))
         } catch (e) {
+            if (connectionAttempts.get(id) !== attempt) return
             set((s) => ({
                 sessions: {
                     ...s.sessions,
@@ -236,6 +266,7 @@ export const useSshStore = create<SshStore>()((set, get) => ({
     cancelPendingAuth: () => set({ pendingAuthHostId: null }),
 
     disconnect: async (id) => {
+        nextAttempt(id)
         const session = get().sessions[id]
         if (session?.sessionId) {
             await sshDisconnect(session.sessionId)
@@ -257,23 +288,6 @@ export const useSshStore = create<SshStore>()((set, get) => ({
         set({ activeHostId: id })
     },
 
-    markExit: (sessionId) => {
-        const entry = Object.values(get().sessions).find((sess) => sess.sessionId === sessionId)
-        if (!entry) return
-        // The shell ended server-side; free the now-idle SSH handle in the
-        // backend so it doesn't linger until app exit (best-effort).
-        void sshDisconnect(sessionId).catch(() => undefined)
-        set((s) => {
-            const prev = s.sessions[entry.hostId]
-            if (!prev || prev.sessionId !== sessionId) return {}
-            return {
-                sessions: {
-                    ...s.sessions,
-                    [entry.hostId]: { ...prev, status: "disconnected", sessionId: null }
-                }
-            }
-        })
-    },
 
     reset: () =>
         set({ hosts: loadSshHosts(), sessions: {}, activeHostId: null, pendingAuthHostId: null })

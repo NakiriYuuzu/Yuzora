@@ -31,21 +31,13 @@ fn level_rank(level: &str) -> u8 {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct LogEvent {
-    pub level: String,
-    pub kind: String,
-    pub source: String,
-    pub workspace_path: Option<String>,
-    pub event: String,
-    pub message: String,
-    pub metadata: serde_json::Value,
-}
+pub use yuzora_host::log_event::LogEvent;
 
 pub struct LogSink {
     dir: PathBuf,
     last_cleanup: Option<NaiveDate>,
     min_level: u8,
+    enabled: bool,
     /// `None` = 用 process-global run context（生產路徑）。只有測試會覆寫，
     /// 好在同一個檔案裡模擬兩次 app run。
     run_id: Option<String>,
@@ -91,6 +83,7 @@ impl LogSink {
             dir,
             last_cleanup: None,
             min_level: LEVEL_DEBUG,
+            enabled: true,
             run_id: None,
         }
     }
@@ -111,6 +104,9 @@ impl LogSink {
     }
 
     pub fn write(&mut self, ev: LogEvent) {
+        if !self.enabled {
+            return;
+        }
         // 每日首筆寫入時補跑 cleanup（放在門檻判斷之前：嚴格門檻下仍會清理，
         // retention／size 上限在長時間不重啟下也會生效）
         let today = Local::now().date_naive();
@@ -165,6 +161,11 @@ impl LogSink {
 
     pub fn set_min_level(&mut self, level: &str) {
         self.min_level = level_rank(level);
+    }
+
+    fn apply_persisted_settings(&mut self, path: &Path) {
+        self.set_min_level(&read_log_level_from(path));
+        self.enabled = read_log_enabled_from(path);
     }
 
     pub fn cleanup(&self) {
@@ -248,27 +249,7 @@ pub fn cleanup_global() {
 /// 將字串中所有 `scheme://user[:pass]@host` 的 userinfo 遮蔽為 `<redacted>`，
 /// 供 git args 等可能含 credentials 的內容入 log 前使用。
 pub fn mask_url_userinfo(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut rest = input;
-    while let Some(pos) = rest.find("://") {
-        let after_scheme = pos + 3;
-        out.push_str(&rest[..after_scheme]);
-        let tail = &rest[after_scheme..];
-        // userinfo 只會出現在 authority 段（下一個 '/'、'?'、'#'、空白之前）
-        let authority_end = tail
-            .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace())
-            .unwrap_or(tail.len());
-        let authority = &tail[..authority_end];
-        if let Some(at) = authority.rfind('@') {
-            out.push_str("<redacted>");
-            out.push_str(&authority[at..]);
-        } else {
-            out.push_str(authority);
-        }
-        rest = &tail[authority_end..];
-    }
-    out.push_str(rest);
-    out
+    yuzora_host::log_event::mask_url_userinfo(input)
 }
 
 /// 連線失敗（SSH/SFTP/DB）的統一落盤事件。level=warn（在預設門檻 info 下會落盤）。
@@ -422,20 +403,32 @@ pub fn write_log_level_to(path: &Path, level: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let body = serde_json::json!({ "minLevel": level }).to_string();
+    let body = serde_json::json!({ "minLevel": level, "enabled": read_log_enabled_from(path) })
+        .to_string();
     std::fs::write(path, body).map_err(|e| e.to_string())
 }
 
-/// 套用 level 到全域共享 sink（write_global 走的那個）。
-pub fn set_min_level_global(level: &str) {
-    if let Ok(mut sink) = global_sink().lock() {
-        sink.set_min_level(level);
-    }
+fn read_log_enabled_from(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("enabled").and_then(|enabled| enabled.as_bool()))
+        .unwrap_or(true)
 }
 
-/// 啟動期讀持久化設定並套用（lib.rs 呼叫一次）。無設定檔時 = info。
+fn write_log_enabled_to(path: &Path, enabled: bool) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::json!({ "minLevel": read_log_level_from(path), "enabled": enabled });
+    std::fs::write(path, body.to_string()).map_err(|e| e.to_string())
+}
+
+/// 啟動期讀持久化設定並套用（lib.rs 呼叫一次）。無設定檔時 = 開啟、info。
 pub fn apply_persisted_log_level() {
-    set_min_level_global(&read_log_level_from(&log_config_path()));
+    if let Ok(mut sink) = global_sink().lock() {
+        sink.apply_persisted_settings(&log_config_path());
+    }
 }
 
 pub(crate) fn retained_log_files(dir: &Path) -> Vec<PathBuf> {
@@ -1972,6 +1965,22 @@ pub fn get_log_level() -> String {
 }
 
 #[tauri::command(async)]
+pub fn get_log_enabled() -> bool {
+    read_log_enabled_from(&log_config_path())
+}
+
+#[tauri::command(async)]
+pub fn set_log_enabled(enabled: bool) -> Result<(), String> {
+    // 與 level 設定共用鎖，避免任一設定覆蓋另一個並發更新。
+    let mut sink = global_sink()
+        .lock()
+        .map_err(|_| "log sink unavailable".to_string())?;
+    write_log_enabled_to(&log_config_path(), enabled)?;
+    sink.enabled = enabled;
+    Ok(())
+}
+
+#[tauri::command(async)]
 pub fn set_log_level(level: String) -> Result<(), String> {
     if !VALID_LEVELS.contains(&level.as_str()) {
         return Err(format!("invalid log level: {level}"));
@@ -2972,8 +2981,8 @@ mod tests {
             .ends_with("/agent"));
     }
 
-    /// B1：非 ASCII 內容（`→`、中文、日文、emoji）不得 panic——`lsp_service` 的
-    /// `spawn {} → {}` 是每個啟動過 LSP 的使用者當日 log 必有的形狀。
+    /// B1：非 ASCII 內容（`→`、中文、日文、emoji）不得 panic；程序啟動紀錄
+    /// 與歷史 logs 都可能包含 `spawn {} → {}` 這種訊息。
     #[test]
     fn redact_line_handles_non_ascii_content_without_panicking() {
         let redactor = redactor();
@@ -3514,5 +3523,76 @@ mod tests {
         // 非法值 → 退回 info
         std::fs::write(&path, r#"{"minLevel":"loud"}"#).unwrap();
         assert_eq!(read_log_level_from(&path), "info");
+    }
+
+    #[test]
+    fn disabled_sink_drops_all_levels_and_kinds_without_changing_existing_logs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut sink = LogSink::new(tmp.path().to_path_buf());
+        sink.write(ev("before disabling"));
+        let original = std::fs::read(sink.current_path()).unwrap();
+        sink.enabled = false;
+        for level in VALID_LEVELS {
+            for kind in VALID_KINDS {
+                let mut event = ev("must not be recorded");
+                event.level = level.into();
+                event.kind = kind.into();
+                sink.write(event);
+            }
+        }
+        assert_eq!(std::fs::read(sink.current_path()).unwrap(), original);
+        assert_eq!(query_dir(tmp.path(), &LogQueryFilters::default()).len(), 1);
+
+        sink.enabled = true;
+        sink.write(ev("after enabling"));
+        assert_eq!(query_dir(tmp.path(), &LogQueryFilters::default()).len(), 2);
+    }
+
+    #[test]
+    fn recording_config_defaults_to_enabled_and_preserves_level() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logging.json");
+        assert!(read_log_enabled_from(&path));
+        for legacy in [
+            r#"{"minLevel":"debug"}"#,
+            "bad json",
+            r#"{"enabled":"false"}"#,
+        ] {
+            std::fs::write(&path, legacy).unwrap();
+            assert!(read_log_enabled_from(&path));
+        }
+        write_log_level_to(&path, "debug").unwrap();
+        write_log_enabled_to(&path, false).unwrap();
+        assert!(!read_log_enabled_from(&path));
+        assert_eq!(read_log_level_from(&path), "debug");
+        write_log_level_to(&path, "warn").unwrap();
+        assert!(!read_log_enabled_from(&path));
+        write_log_enabled_to(&path, true).unwrap();
+        assert!(read_log_enabled_from(&path));
+        assert_eq!(read_log_level_from(&path), "warn");
+    }
+
+    #[test]
+    fn persisted_disabled_setting_blocks_first_write_after_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logging.json");
+        let dir = tmp.path().join("logs");
+        write_log_level_to(&path, "debug").unwrap();
+        write_log_enabled_to(&path, false).unwrap();
+        let mut sink = LogSink::new(dir.clone());
+        sink.apply_persisted_settings(&path);
+        sink.write(app_start_event(crate::run_context::current(), false));
+        let mut error = ev("startup error");
+        error.level = "error".into();
+        sink.write(error);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+
+        write_log_enabled_to(&path, true).unwrap();
+        let mut restarted = LogSink::new(dir.clone());
+        restarted.apply_persisted_settings(&path);
+        let mut debug = ev("debug setting preserved");
+        debug.level = "debug".into();
+        restarted.write(debug);
+        assert_eq!(query_dir(&dir, &LogQueryFilters::default()).len(), 1);
     }
 }

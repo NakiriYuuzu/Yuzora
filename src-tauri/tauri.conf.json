@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Yuzora",
-  "version": "0.0.9-beta.2",
+  "version": "0.0.9-beta.3",
   "identifier": "dev.yuuzu.yuzora",
   "build": {
     "beforeDevCommand": "bun run dev:tauri",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run herdr:prepare && bun run build",
+    "beforeBuildCommand": "bun run runtime:verify && bun run herdr:prepare && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -20,8 +20,8 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {
-          "x": 7,
-          "y": 15
+          "x": 22,
+          "y": 35
         },
         "visible": false
       }
