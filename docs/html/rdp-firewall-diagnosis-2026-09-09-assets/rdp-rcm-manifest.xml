@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v3" manifestVersion="1.0" copyright="Copyright (c) Microsoft Corporation. All Rights Reserved." xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <assemblyIdentity name="Microsoft-Windows-TerminalServices-RemoteConnectionManager" version="10.0.26100.8737" processorArchitecture="amd64" language="neutral" buildType="release" publicKeyToken="31bf3856ad364e35" versionScope="nonSxS" />
+  <dependency discoverable="no" resourceType="resources">
+    <dependentAssembly>
+      <assemblyIdentity name="Microsoft-Windows-TerminalServices-RemoteConnectionManager.Resources" version="10.0.26100.8737" processorArchitecture="amd64" language="*" buildType="release" publicKeyToken="31bf3856ad364e35" versionScope="nonSxS" />
+    </dependentAssembly>
+  </dependency>
+  <file name="termsrv.dll" destinationPath="$(runtime.system32)\" sourceName="termsrv.dll" importPath="$(build.nttree)\" sourcePath=".\">
+    <securityDescriptor name="WRP_FILE_DEFAULT_SDDL" />
+    <asmv2:hash xmlns:asmv2="urn:schemas-microsoft-com:asm.v2" xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+      <dsig:Transforms>
+        <dsig:Transform Algorithm="urn:schemas-microsoft-com:HashTransforms.Identity" />
+      </dsig:Transforms>
+      <dsig:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha256" />
+      <dsig:DigestValue>IrqVamrjRdCQmCW1wdW/lOkCQam7ydkhGOMe8z1/vtk=</dsig:DigestValue>
+    </asmv2:hash>
+  </file>
+  <file name="rdsdwmdr.dll" destinationPath="$(runtime.system32)\" sourceName="rdsdwmdr.dll" importPath="$(build.nttree)\" sourcePath=".\">
+    <securityDescriptor name="WRP_FILE_DEFAULT_SDDL" />
+    <asmv2:hash xmlns:asmv2="urn:schemas-microsoft-com:asm.v2" xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+      <dsig:Transforms>
+        <dsig:Transform Algorithm="urn:schemas-microsoft-com:HashTransforms.Identity" />
+      </dsig:Transforms>
+      <dsig:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha256" />
+      <dsig:DigestValue>+oNfLdQigIRmX50GtV55dZJQQXqFk3wZByYL7Ek2pL4=</dsig:DigestValue>
+    </asmv2:hash>
+  </file>
+  <registryKeys>
+    <registryKey keyName="HKEY_CLASSES_ROOT\CLSID\{F9A874B6-F8A8-4D73-B5A8-AB610816828B}\">
+      <registryValue name="" valueType="REG_SZ" value="Terminal Services Connection Manager Class" />
+      <registryValue name="AppID" valueType="REG_SZ" value="{C9F65BA8-1F8F-4382-AE27-C91FFB29275F}" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_CLASSES_ROOT\CLSID\{F9A874B6-F8A8-4D73-B5A8-AB610816828B}\ProgID\">
+      <registryValue name="" valueType="REG_SZ" value="RCM.ConnectionManager.1" />
+    </registryKey>
+    <registryKey keyName="HKEY_CLASSES_ROOT\CLSID\{F9A874B6-F8A8-4D73-B5A8-AB610816828B}\VersionIndependentProgID\">
+      <registryValue name="" valueType="REG_SZ" value="RCM.ConnectionManager" />
+    </registryKey>
+    <registryKey keyName="HKEY_CLASSES_ROOT\RCM.ConnectionManager\CurVer\">
+      <registryValue name="" valueType="REG_SZ" value="RCM.ConnectionManager.1" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_CLASSES_ROOT\AppID\{C9F65BA8-1F8F-4382-AE27-C91FFB29275F}\">
+      <registryValue name="" valueType="REG_SZ" value="RCM" />
+      <registryValue name="LocalService" valueType="REG_SZ" value="TermService" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_CLASSES_ROOT\RCM.ConnectionManager\">
+      <registryValue name="" valueType="REG_SZ" value="Terminal Services Connection Manager Class" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_CLASSES_ROOT\RCM.ConnectionManager.1\CLSID\">
+      <registryValue name="" valueType="REG_SZ" value="{F9A874B6-F8A8-4D73-B5A8-AB610816828B}" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_CLASSES_ROOT\RCM.ConnectionManager.1\">
+      <registryValue name="" valueType="REG_SZ" value="Terminal Services Connection Manager Class" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SvcHost\termsvcs">
+      <registryValue name="CoInitializeSecurityParam" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SvcHost\TerminalService">
+      <registryValue name="CoInitializeSecurityParam" valueType="REG_DWORD" value="0x00000001" />
+      <registryValue name="DefaultRpcStackSize" valueType="REG_DWORD" value="0x0000001C" />
+      <registryValue name="AuthenticationCapabilities" valueType="REG_DWORD" value="0x00002000" />
+      <registryValue name="CoInitializeSecurityAllowComCapability" valueType="REG_DWORD" value="0x00000001" />
+      <registryValue name="COM_UnmarshalingPolicy" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\RCM">
+      <securityDescriptor name="REGKEY_TERMSERV_VMHOST_SERVICE_FULLCONTROL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Licensing Core">
+      <securityDescriptor name="REGKEY_TERMSERV_VMHOST_SERVICE_FULLCONTROL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\ConnectionHandler" />
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\ConnectionHandler\0f0a4bf8-8362-435d-938c-222a518a8b78">
+      <registryValue name="CLSID" valueType="REG_SZ" value="2be8bdbb-be09-499d-9a4b-4637e09ae00b" />
+      <registryValue name="Name" valueType="REG_SZ" value="Default Connection Handler" />
+      <registryValue name="Description" valueType="REG_SZ" value="Default Connection Handler" />
+      <registryValue name="fAcceptConnection" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\ConnectionHandler\49e52265-9c80-4b84-a9d5-7ecf311036ac">
+      <registryValue name="CLSID" valueType="REG_SZ" value="13ea11a6-8e1a-40ce-9ea9-03e82b3ed5d9" />
+      <registryValue name="Name" valueType="REG_SZ" value="Hybrid Connection Handler" />
+      <registryValue name="Description" valueType="REG_SZ" value="Hybrid Connection Handler" />
+      <registryValue name="fAcceptConnection" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\TerminalTypes\0f0a4bf8-8362-435d-938c-222a518a8b78">
+      <registryValue name="Name" valueType="REG_SZ" value="RDP Regular Desktop Terminal" />
+      <registryValue name="SessionSource" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\TerminalTypes\0f0a4bf8-8362-435d-938c-222a518a8b78\ReconCompat">
+      <registryValue name="88f5767d-d13f-404d-a348-8b8e030294a9" valueType="REG_DWORD" value="0x00000000" />
+      <registryValue name="49e52265-9c80-4b84-a9d5-7ecf311036ac" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\TerminalTypes\49e52265-9c80-4b84-a9d5-7ecf311036ac">
+      <registryValue name="Name" valueType="REG_SZ" value="RDP Hybrid Terminal" />
+      <registryValue name="SessionSource" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\TerminalTypes\49e52265-9c80-4b84-a9d5-7ecf311036ac\ReconCompat">
+      <registryValue name="88f5767d-d13f-404d-a348-8b8e030294a9" valueType="REG_DWORD" value="0x00000000" />
+      <registryValue name="0f0a4bf8-8362-435d-938c-222a518a8b78" valueType="REG_DWORD" value="0x00000001" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\SessionArbitrationHelper">
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\EventLog\System\TermService">
+      <registryValue name="EventMessageFile" valueType="REG_EXPAND_SZ" value="%SystemRoot%\system32\termsrv.dll" />
+      <registryValue name="TypesSupported" valueType="REG_DWORD" value="0x00000007" />
+      <registryValue name="providerGuid" valueType="REG_SZ" value="{C76BAA63-AE81-421C-B425-340B4B24157F}" />
+      <securityDescriptor name="WRP_REGKEY_DEFAULT_SDDL" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlset\Services\TermService">
+      <overridable name="Start" scope="Microsoft" type="REG_DWORD" />
+    </registryKey>
+    <registryKey keyName="HKEY_LOCAL_MACHINE\System\CurrentControlset\Services\TermService\Parameters">
+      <registryValue name="ServiceDll" valueType="REG_EXPAND_SZ" value="%SystemRoot%\System32\termsrv.dll" />
+      <registryValue name="ServiceDllUnloadOnStop" valueType="REG_DWORD" value="0x00000001" />
+    </registryKey>
+  </registryKeys>
+  <HTTPAI>
+    <AddUrl sddl="D:(A;;GX;;;S-1-5-80-446051430-1559341753-4161941529-1950928533-810483104)" url="https://+:3392/rdp/" />
+  </HTTPAI>
+  <memberships>
+    <categoryMembership>
+      <id name="Microsoft.Windows.Categories" version="1.0.0.0" publicKeyToken="365143bb27e7ac8b" typeName="SvcHost" />
+      <categoryInstance subcategory="termsvcs">
+        <serviceGroup position="last" serviceName="TermService" />
+      </categoryInstance>
+      <categoryInstance subcategory="TerminalService">
+        <serviceGroup position="last" serviceName="TermService" />
+      </categoryInstance>
+    </categoryMembership>
+    <categoryMembership>
+      <id name="Microsoft.Windows.Categories.Services" version="10.0.26100.8737" publicKeyToken="31bf3856ad364e35" typeName="Service" />
+      <categoryInstance subcategory="TermService">
+        <serviceData name="TermService" displayName="@%SystemRoot%\System32\termsrv.dll,-268" errorControl="normal" start="demand" type="win32ShareProcess" description="@%SystemRoot%\System32\termsrv.dll,-267" dependOnService="RPCSS,staterepository" imagePath="%SystemRoot%\System32\svchost.exe -k TerminalService" objectName="NT Authority\NetworkService" requiredPrivileges="SeAssignPrimaryTokenPrivilege,SeAuditPrivilege,SeChangeNotifyPrivilege,SeCreateGlobalPrivilege,SeImpersonatePrivilege,SeIncreaseQuotaPrivilege" sidType="unrestricted">
+          <failureActions resetPeriod="86400">
+            <actions>
+              <action delay="60000" type="restartService" />
+              <action delay="60000" type="restartService" />
+              <action delay="60000" type="none" />
+            </actions>
+          </failureActions>
+        </serviceData>
+      </categoryInstance>
+    </categoryMembership>
+  </memberships>
+  <asmv2:configuration xmlns:asmv2="urn:schemas-microsoft-com:asm.v3" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+    <asmv2:configurationSchema>
+      <xsd:schema xmlns="Microsoft-Windows-TerminalServices-RemoteConnectionManager" targetNamespace="Microsoft-Windows-TerminalServices-RemoteConnectionManager">
+        <xsd:element default="0" name="TSUserEnabled" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="This boolean, when set, indicates that the loose security mode for app compat is enabled" wcm:displayName="TSUserEnabled" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="true" name="DeleteTempDirsOnExit" type="xsd:boolean" wcm:changeImpact="noImpact" wcm:description="This boolean, when set, indicates termsrv to delete temporary folders on session exit" wcm:displayName="DeleteTempDirsOnExit" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="false" name="PerSessionTempDir" type="xsd:boolean" wcm:changeImpact="noImpact" wcm:description="This boolean, when set, indicates termsrv to use temporary folders per session" wcm:displayName="PerSessionTempDir" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="true" name="fSingleSessionPerUser" type="xsd:boolean" wcm:changeImpact="noImpact" wcm:description="This boolean, when set, indicates termsrv to restrict each user to one session" wcm:displayName="fSingleSessionPerUser" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="1" name="LicensingMode" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:dataOnly="true" wcm:description="LicensingMode configures how Terminal Services manages Client Access Licenses (CALs). Two types of Terminal Server Client Access Licenses are available: TS Device CAL or TS User CAL:" wcm:displayName="LicensingMode" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Licensing Core')" wcm:passes="offlineServicing generalize specialize" wcm:scope="allUsers" wcm:subScope="machineIndependent" wcm:visible="true" />
+        <xsd:element default="0" name="Callback" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="" name="CallbackNumber" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="" name="Domain" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="" name="InitialProgram" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="KeyboardLayout" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="MaxConnectionTime" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="MaxDisconnectionTime" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="MaxIdleTime" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="" name="NWLogonServer" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="" name="Password" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="" name="UserName" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="" name="WorkDirectory" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="1" name="Shadow" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="1" name="fInheritAutoLogon" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritCallback" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritCallbackNumber" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="1" name="fInheritInitialProgram" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritMaxDisconnectionTime" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritMaxIdleTime" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritMaxSessionTime" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritReconnectSame" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritResetBroken" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fInheritShadow" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fLogonDisabled" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fPromptForPassword" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fReconnectSame" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element default="0" name="fResetBroken" type="xsd:unsignedInt" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration')" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+        <xsd:element name="ImagePath" type="xsd:string" wcm:changeImpact="noImpact" wcm:description="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_description1" wcm:displayName="___d__os_obj_amd64fre_temp_a281beebad924a37_ech1fgbyyn_terminalservices-remoteconnectionmanager.man.temp1.missingResource.config_displayName1" wcm:handler="regkey('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\TermService')" wcm:legacyType="REG_EXPAND_SZ" wcm:scope="allUsers" wcm:subScope="machineIndependent" />
+      </xsd:schema>
+    </asmv2:configurationSchema>
+    <asmv2:metadata />
+  </asmv2:configuration>
+  <migration ignoreConfigurationSection="Yes" scope="Upgrade,MigWiz,USMT" settingsVersion="1">
+    <migXml xmlns="">
+      <rules context="System">
+        <include>
+          <objectSet>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server [TSUserEnabled]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server [DeleteTempDirsOnExit]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server [PerSessionTempDir]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server [fSingleSessionPerUser]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Licensing Core [LicensingMode]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [Callback]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [CallbackNumber]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [Domain]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [InitialProgram]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [KeyboardLayout]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [MaxConnectionTime]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [MaxDisconnectionTime]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [MaxIdleTime]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [NWLogonServer]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [Password]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [UserName]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [WorkDirectory]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [Shadow]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritAutoLogon]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritCallback]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritCallbackNumber]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritInitialProgram]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritMaxDisconnectionTime]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritMaxIdleTime]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritMaxSessionTime]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritReconnectSame]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritResetBroken]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fInheritShadow]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fLogonDisabled]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fPromptForPassword]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fReconnectSame]</pattern>
+            <pattern type="Registry">HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration [fResetBroken]</pattern>
+          </objectSet>
+        </include>
+      </rules>
+    </migXml>
+    <supportedComponents>
+      <supportedComponent>
+        <assemblyIdentity name="_" version="1.0.0.0" />
+        <supportedComponentIdentity buildType="release" language="neutral" name="Microsoft-Windows-TerminalServices-RemoteConnectionManager" processorArchitecture="*" publicKeyToken="31bf3856ad364e35" settingsVersionRange="0-1" versionScope="nonSxS" xmlns="urn:schemas-microsoft-com:asm.v3" />
+      </supportedComponent>
+      <supportedComponent>
+        <assemblyIdentity name="_" version="1.0.0.0" />
+        <supportedComponentIdentity language="*" name="Microsoft-Windows-TerminalServices-RemoteConnectionManager-DL" processorArchitecture="*" settingsVersionRange="0" xmlns="urn:schemas-microsoft-com:asm.v3" />
+      </supportedComponent>
+    </supportedComponents>
+    <migrationDisplayID>Additional_Options\Windows_Core_Settings</migrationDisplayID>
+  </migration>
+  <trustInfo>
+    <security>
+      <accessControl>
+        <securityDescriptorDefinitions>
+          <securityDescriptorDefinition name="Network-Service-Full-control" sddl="D:(A;CI;CCDCLCSWRPWPDTLOCRSDRC;;;S-1-5-80-446051430-1559341753-4161941529-1950928533-810483104)" operationHint="replace" />
+          <securityDescriptorDefinition name="WRP_REGKEY_DEFAULT_SDDL" sddl="O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464D:P(A;CI;GA;;;S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464)(A;CI;GR;;;SY)(A;CI;GR;;;BA)(A;CI;GR;;;BU)(A;CI;GR;;;S-1-15-2-1)(A;CI;GR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)" operationHint="replace" />
+          <securityDescriptorDefinition name="REGKEY_TERMSERV_VMHOST_SERVICE_FULLCONTROL" sddl="D:(A;CI;CCDCLCSWRPWPDTLOCRSDRC;;;S-1-5-80-446051430-1559341753-4161941529-1950928533-810483104)(A;CI;CCDCLCSWRPWPDTLOCRSDRC;;;S-1-5-80-4130899010-3337817248-2959896732-3640118089-1866760602)" operationHint="replace" />
+          <securityDescriptorDefinition name="WRP_FILE_DEFAULT_SDDL" sddl="O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464D:P(A;;FA;;;S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464)(A;;GRGX;;;BA)(A;;GRGX;;;SY)(A;;GRGX;;;BU)(A;;GRGX;;;S-1-15-2-1)(A;;GRGX;;;S-1-15-2-2)S:(AU;FASA;0x000D0116;;;WD)" operationHint="replace" description="Default SDDL for Windows Resource Protected file" />
+        </securityDescriptorDefinitions>
+      </accessControl>
+    </security>
+  </trustInfo>
+  <imaging>
+    <sysprepInformation>
+      <sysprepProvider stage="generalize">
+        <sysprepOrder order="0x0A00" />
+        <sysprepModule methodName="RCMSysPrepGeneralize" moduleName="$(runtime.system32)\setup\tssysprep.dll" />
+      </sysprepProvider>
+      <sysprepProvider stage="specialize">
+        <sysprepOrder order="0x0700" />
+        <registryActions>
+          <deleteKey path="HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server\RCM\Secrets" />
+        </registryActions>
+      </sysprepProvider>
+    </sysprepInformation>
+  </imaging>
+  <localization>
+    <resources culture="en-US">
+      <stringTable>
+        <string id="description" value="This component is responsible for anything that is remote connection related." />
+        <string id="displayName" value="Remote Desktop Services Remote Connection Manager" />
+        <string id="displayName1" value="TSEnabled" />
+        <string id="displayName2" value="TSUserEnabled" />
+        <string id="description1" value="This boolean, when set, indicates that the TS App Server is enabled" />
+        <string id="description2" value="This boolean, when set, indicates that the loose security mode for app compat is enabled" />
+        <string id="description4" value="Allows users to connect interactively to a remote computer. Remote Desktop, Fast User Switching, Remote Assistance, and RD Session Host Server depend on this service - stopping or disabling this service may make your computer unreliable.  To prevent remote use of this computer, clear the checkboxes on the Remote tab of the System properties control panel item." />
+        <string id="displayName4" value="Remote Desktop Services" />
+        <string id="displayName8" value="RCM security descriptor" />
+        <string id="description9" value="RCM runs as Network Service, this security descriptor allows access to certain areas of the registry" />
+        <string id="description11" value="Configure User Experience in a Remote Desktop Services session" />
+        <string id="displayName100" value="Session Environment Service" />
+        <string id="description111" value="Session Environment Service" />
+        <string id="displayName13" value="DeleteTempDirsOnExit" />
+        <string id="displayName14" value="PerSessionTempDir" />
+        <string id="description15" value="This boolean, when set, indicates termsrv to delete temporary folders on session exit" />
+        <string id="description16" value="This boolean, when set, indicates termsrv to use temporary folders per session" />
+        <string id="displayName17" value="fSingleSessionPerUser" />
+        <string id="description18" value="This boolean, when set, indicates termsrv to restrict each user to one session" />
+        <string id="displayName22" value="LicensingMode" />
+        <string id="description21" value="LicensingMode configures how Terminal Services manages Client Access Licenses (CALs). Two types of Terminal Server Client Access Licenses are available: TS Device CAL or TS User CAL:" />
+        <string id="displayName23" value="Connection Handler Access Control" />
+        <string id="description24" value="Write access to administrators and TermService and Read access to everyone" />
+      </stringTable>
+    </resources>
+  </localization>
+</assembly>
+

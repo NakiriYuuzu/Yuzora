@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora：GPUI 遷移評估 · 2026-09-09</title>
+<style>
+:root{color-scheme:light dark;--bg:#faf9f6;--fg:#202832;--muted:#596574;--line:#d9dde1;--accent:#245f75;--panel:#fff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.8 system-ui,"PingFang TC","Microsoft JhengHei",sans-serif}main{max-width:1000px;margin:48px auto;padding:0 24px 64px}h1{font-size:clamp(28px,5vw,42px);line-height:1.25}h2{font-size:23px;margin-top:42px}p{margin:14px 0}.meta,small{color:var(--muted)}a{color:var(--accent);text-underline-offset:3px}.verdict{border-left:4px solid var(--accent);padding:12px 22px;background:var(--panel)}table{border-collapse:collapse;width:100%;font-size:14px;table-layout:fixed}th,td{border-bottom:1px solid var(--line);padding:13px 12px;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:var(--panel)}th:first-child{width:22%}code{font-size:.92em;overflow-wrap:anywhere}li{margin:8px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:20px;background:var(--panel);border:1px solid var(--line);line-height:1.65}footer{border-top:1px solid var(--line);margin-top:40px;padding-top:20px}@media(prefers-color-scheme:dark){:root{--bg:#14191e;--fg:#e7edf1;--muted:#acb7c0;--line:#37434c;--accent:#8bc5d9;--panel:#1c242b}}@media(max-width:600px){main{padding:0 14px 40px;margin-top:28px}th,td{padding:10px 6px;font-size:12px}}@media print{main{margin:0;max-width:none}h2{break-after:avoid}tr{break-inside:avoid}a{color:inherit}}
+</style>
+</head>
+<body><main>
+<p class="meta">架構評估 · 2026-09-09 · 工作分支 release/v0.0.9-beta.3 · 尚未批准遷移</p>
+<h1>GPUI 適合作為下一代工作面；<br>目前應先驗證，再決定全面遷移。</h1>
+<div class="verdict"><p><strong>建議：有條件採用 GPUI Kit 作為原生桌面方向，先做獨立的 HERDR Terminal＋Browser 技術原型。現階段不建議全面重寫。</strong></p><p>如果目的只是只發布 Windows 與 macOS，保留 Tauri 即可：目前 release matrix 已經只有這兩個桌面平台。若目的在於長期採用 Rust、改善高頻互動的可控性、統一桌面渲染，GPUI 才有足夠的評估價值。</p></div>
+<p>本評估以保留目前 HERDR、Editor、Git、Database、SSH/SFTP、Browser 功能為假設；「只提供 Windows／macOS」解讀為桌面客戶端範圍，保留 Windows 所需的 WSL2 與遠端 Linux host。沒有假定要增加 LSP、重建 PTY，或刪除 Browser。</p>
+
+<h2>1. 最新上游狀態</h2>
+<p>使用者提到的「GPUI（Shadcn）」，最接近的是 Longbridge 的 <a href="https://github.com/longbridge/gpui-kit/tree/v0.6.0">GPUI Kit</a>。原 gpui-component 專案已改名；<a href="https://github.com/longbridge/gpui-kit/releases/tag/v0.6.0">v0.6.0 於 2026-09-03 發布</a>，<code>gpui-component</code> 仍是其中的 styled UI layer，官方建議新應用依賴 <code>gpui-kit</code> facade。</p>
+<p>它與 shadcn 的關係是設計及分層理念，不具 React／Radix／Tailwind 原始碼相容性。主工作面的元件、Zustand 狀態協調、事件與動畫都要移植。GPUI 自行繪製 UI，不能將「原生 Rust 應用」理解為每個控制項都是系統 AppKit／WinUI widget。</p>
+<ul>
+<li>Kit 已提供 Dock、可拖曳分頁、虛擬列表、DataTable、Command palette、Editor 與 Markdown／HTML rich text；常見工作面元件有可用基礎。</li>
+<li>v0.6.0 對 Input、Editor、Dock、Table、WebView 等 API 有多項 breaking changes，並採用 <code>gpui-pre</code> 0.3.x 家族。<a href="https://github.com/zed-industries/zed/blob/f29c8eaf13682ef5a4a70a81eb4838b247cf7211/crates/gpui/README.md">GPUI 官方</a>仍說明 pre-1.0 與版本間的 breaking changes。原型應固定相容版本與 lockfile。</li>
+<li><a href="https://github.com/longbridge/gpui-kit/blob/v0.6.0/website/docs/installation.md">Kit v0.6 安裝文件</a>列 macOS 15+、Windows 10+、Rust 1.90+。這是文件列出的開發／安裝要求，不能直接當作所有最終產物的最低執行版本保證；舊版 macOS、Intel Mac、Windows GPU／DPI 環境需要另行驗證。</li>
+<li>Kit 已加入可存取性語意；上游 GPUI 有 AccessKit 支援。這不等於 Yuzora 的終端、編輯器和自訂 UI 已通過 VoiceOver／Narrator 驗收。</li>
+</ul>
+<p>官方宣傳的 120 FPS、20 萬行編輯能力屬於上游說明，沒有在本次當作 Yuzora 的效能測試結果。</p>
+
+<h2>2. Yuzora 現況使哪些部分容易，哪些部分困難</h2>
+<table>
+<thead><tr><th>範圍</th><th>遷移方式與主要成本</th><th>判斷</th></tr></thead>
+<tbody>
+<tr><td>HERDR／host helper</td><td><code>yuzora-host</code> 已是沒有 Tauri dependency 的 Rust crate；桌面 HERDR service 多為 adapter。保留 runtime、protocol、ownership 與 helper，另接 GPUI 事件。</td><td>最有利的重用基礎。</td></tr>
+<tr><td>SSH／SFTP／DB／Git</td><td>Rust 核心邏輯可沿用；desktop service 仍有 AppHandle、Emitter、State 與 Tauri async runtime 依賴，需拆開事件、路徑與生命週期 adapter。</td><td>可重用，但不是直接複製即完成。</td></tr>
+<tr><td>側欄／分頁／表單／資料表</td><td>採 Kit 元件重建互動。設計 token、文案與需求可保留，React／Radix 元件不能直接使用。</td><td>元件選擇合適；中至高工作量。</td></tr>
+<tr><td>HERDR Terminal</td><td>xterm、FitAddon、IME、選取、鍵盤、輸出佇列及 transport 配合需重寫。Kit v0.6 catalog／source tree 中未找到可直接替代 xterm 的 Terminal 元件。</td><td>原生化的首要風險。</td></tr>
+<tr><td>Editor／Diff／Markdown</td><td>Kit Editor 可支撐語法編輯；需移植 document revision、dirty buffer、檔案衝突、CodeMirror merge 與 undo 語意。Kit 的 Markdown 顯示不等於 Tiptap 視覺編輯。</td><td>高工作量；目前不需 LSP 是有利條件。</td></tr>
+<tr><td>Browser</td><td>可使用 gpui-wry 保留系統 WebView；網址／tunnel 邏輯可沿用，視窗、bounds、focus、overlay 與關閉流程需重接。</td><td>可行但 integration 仍屬實驗性。</td></tr>
+<tr><td>安裝／更新／桌面整合</td><td>替換 Tauri bundler、updater、process、dialog、clipboard、opener、window-state 整合。需處理原使用者設定、keyring identity、更新渠道與安裝升級。</td><td>獨立工作流，GPUI 不會自動完成。</td></tr>
+</tbody></table>
+<p>依目前 Git 追蹤檔案計算：<code>src/</code> 正式 TS／TSX／CSS 為 <strong>233 檔、49,458 行</strong>；前端測試為 <strong>172 檔、50,161 行</strong>。Rust host 為 45 檔、37,407 行；desktop 為 43 檔、27,625 行，Rust 統計包含 inline tests。統計排除 vendor、建置產物與未追蹤文件；它衡量規模，不能換算成精確工期或重用百分比。</p>
+<p>既有 Vitest／jsdom 測試可作為行為規格參考；依賴 React、DOM、CodeMirror 的測試不能直接執行在 GPUI UI 上。</p>
+
+<h2>3. 兩項必須先解決的整合問題</h2>
+<p><strong>Terminal 必須繼續遵守 HERDR 的終端語意。</strong>目前 xterm 設定 <code>scrollback: 0</code>，接收 HERDR frame，處理 full／增量序列，捲動由 runtime 控制。GPUI 端不能只是開一個新的 local PTY，也不能把遠端捲動任意改成本機 scrollback。</p>
+<p>原生方案可評估 <a href="https://github.com/alacritty/alacritty/tree/master/alacritty_terminal">alacritty_terminal</a> 等終端狀態引擎，再實作 GPUI renderer 與 HERDR connector adapter；引擎本身不是可直接放進 Dock 的 GPUI UI。需要驗證全畫面 TUI、ANSI／Unicode、中文組字、寬字元、選取、滑鼠、快捷鍵、貼上、resize、controller／observer、first-full／resync 與重連時不重送輸入。</p>
+<p>GPUI 與 Kit 採 Apache-2.0；Zed 的 <a href="https://github.com/zed-industries/zed/blob/f29c8eaf13682ef5a4a70a81eb4838b247cf7211/crates/terminal_view/Cargo.toml">terminal_view</a> 則標示 GPL-3.0-or-later 且依賴 Zed editor／workspace 等模組。不能因 GPUI 是 Apache 授權，就假設 Zed 整套 Terminal 可作為同授權的獨立元件直接搬用。</p>
+<p><strong>保留內建 Browser，就仍需網頁引擎。</strong><a href="https://github.com/longbridge/gpui-kit/blob/v0.6.0/crates/webview/README.md">gpui-wry 的 README</a>明確標示 experimental、目前支援 macOS／Windows，且 WebView 會覆蓋其 bounds 內的 GPUI 元件，建議獨立視窗或 Popup layer。</p>
+<p>Yuzora 現在的 Tauri child WebView 本來也有這個覆蓋問題，已透過 overlay gate 在開啟 modal／popover 時隱藏。改用 GPUI 不會自動消除此限制，必須重建並驗證遮蔽、焦點和生命週期。若只想完全移除 Tauri app framework，保留 Wry 可成立；若要求完全沒有 WebView，則現有內建 Browser 需求必須改為外部瀏覽器或另選網頁引擎。</p>
+<p>短期以 WebView 保留 xterm／CodeMirror 可以降低初次移植量，但會保留 JS、WebView 資源與混合焦點成本；不應將此方案的成果當作「完整原生化」的效能證據。</p>
+
+<h2>4. 只發布 Windows／macOS 的真正影響</h2>
+<p><a href="../../.github/workflows/release.yml">現有 release.yml</a> 的 matrix 已是 macOS Universal（arm64＋x86_64）與 Windows x64；Linux 用於部分 CI、資料庫整合與 host runtime。更換 UI framework 不是縮減桌面發布平台的必要條件。</p>
+<p>Windows 目前透過 WSL2 使用 Unix HERDR runtime。GPUI 只更換桌面呈現層，WSL2、遠端 Linux helper、SSH routing 與 host identity 仍需保留；不發布 Linux 桌面，不代表可以刪除 Linux runtime 建置與驗證。</p>
+<p>移除 Tauri 後，還是需要兩平台建置、macOS .app／DMG、codesign／notarization、Windows installer／簽署，以及 updater 的下載驗證、套用、失敗恢復與舊版升級路徑。這些可以使用獨立工具完成，但不由 GPUI renderer 代辦。</p>
+
+<h2>5. 建議的技術原型與採用門檻</h2>
+<p>先以 <strong>1–2 週作為驗證 timebox</strong>，不是功能完成承諾；驗證未通過即可終止，避免把全案遷移當作已決定事項。後續實作需另獲授權。</p>
+<ol>
+<li><strong>接真實 HERDR：</strong>建立小型 GPUI Kit 工作面，只接既有 session／terminal adapter；兩平台各運行一組多分割 TUI，驗證 IME、選取、貼上、resize、remote scroll 與斷線重連。</li>
+<li><strong>接 Browser 與一個 Editor：</strong>驗證 Browser 在 panel resize、tab 切換、modal、popover、Command palette 下的遮蔽和焦點；編輯器驗證 dirty buffer、存檔、外部衝突與 Unicode。</li>
+<li><strong>同條件測量：</strong>比較 release build 的冷啟動、可互動時間、輸入延遲分布、frame time、閒置 CPU、GPU／耗電及總記憶體；記憶體納入 WebView／helper，固定 terminal 數、輸出負載與 Browser 狀態。</li>
+<li><strong>打包一輪：</strong>確認 macOS arm64／Intel 與 Windows x64 的目標環境能執行，列出最低 OS／GPU 要求，驗證設定資料可讀取與 HERDR 退出語意。</li>
+</ol>
+<p><strong>通過條件：</strong>核心操作無阻斷性退步；終端與 Browser 問題有可維護的解法；實測收益足以支持重寫成本；最低平台支援符合使用者範圍。若優勢僅是畫面風格，保留目前 Tauri 並改進 UI 的成本通常更低。</p>
+<p>本次沒有編譯 GPUI 原型或執行 GUI／效能測試，因此無法宣稱 GPUI 版本已更快、更省記憶體或具有功能等價性。若要完整保留目前功能，應視為<strong>數月級的工程項目</strong>，精確工期需在終端／Browser 原型與功能盤點後估算。</p>
+
+<h2>6. 若通過驗證，建議的遷移順序</h2>
+<pre>Yuzora Desktop（GPUI Kit）
+  ├─ 工作面：Spaces／Agents／Dock／Editor／Database UI
+  ├─ HERDR terminal renderer＋connector adapter
+  ├─ Browser：gpui-wry
+  └─ UI 無關的 Rust service 邊界
+       ├─ HERDR／host identity／session／事件
+       ├─ Files／Git／SSH／SFTP／DB／vault
+       └─ yuzora-host → 本機 macOS／WSL2／SSH Linux・macOS
+
+桌面發布：Windows x64＋macOS arm64／Intel
+安裝與更新：獨立維護的打包、簽署、升級流程</pre>
+<p>先抽離 desktop service 的 Tauri adapter，保留原應用作為行為基準；接著完成 GPUI 工作面與 terminal，再遷移 Editor／Git／Database／SFTP，最後完成資料、設定、keyring、安裝與更新遷移。新 UI 不繞過既有 host／workspace 信任、owner／generation、typed protocol 與不重送寫入規則。Tokio runtime 應有明確 ownership，不在 GPUI UI thread 執行阻塞工作。</p>
+<p>這個方向和現有 ADR 的 HERDR ownership 可以一致；若未來選擇外部 Browser、Windows 原生 PTY 或移除 Linux host，則是另一項產品／架構變更，需重新決策。</p>
+
+<h2>7. 證據與範圍</h2>
+<p>資料來源為本次讀取的工作區、官方 GitHub API 與原始碼；Exa API key 未設定，沒有執行 Exa pipeline，也沒有使用一般網路搜尋或瀏覽器自動化。知識圖譜用於架構與符號定位，文字搜尋不足的部分以直接檔案讀取補足。</p>
+<ul>
+<li><a href="../../CLAUDE.md">CLAUDE.md</a>、<a href="../../.yuuzu/CONTEXT.html">Domain Context</a>、<a href="../../.yuuzu/adr/0004-herdr-terminals-browser-only.html">ADR-0004</a>：目前範圍與生命週期。</li>
+<li><a href="../../package.json">package.json</a>、<a href="../../src-tauri/Cargo.toml">desktop Cargo.toml</a>、<a href="../../src-tauri/host/Cargo.toml">host Cargo.toml</a>：依賴邊界。</li>
+<li><a href="../../src-tauri/src/herdr_service.rs">HERDR Tauri adapter</a>、<a href="../../src/terminal/terminalTransport.ts">terminal transport</a>、<a href="../../src/app/panels/HerdrTerminalPage.tsx">HERDR Terminal UI</a>：可重用核心與需要移植的呈現。</li>
+<li><a href="../../src/editor/RichMarkdownEditor.tsx">RichMarkdownEditor</a>、<a href="../../src/workbench/git/DiffView.tsx">DiffView</a>、<a href="../../src-tauri/src/preview_webview.rs">Browser native WebView</a>：編輯／Browser 耦合。</li>
+<li><a href="../../.github/workflows/release.yml">release.yml</a>、<a href="../../.github/workflows/ci.yml">ci.yml</a>：發布與檢查平台。</li>
+<li><a href="https://github.com/longbridge/gpui-kit/releases/tag/v0.6.0">GPUI Kit v0.6.0 release</a>；tag commit：<code>94a313a72a2513aee2780240cd322d552b2395f0</code>。</li>
+<li><a href="https://github.com/longbridge/gpui-kit/blob/v0.6.0/README.md">Kit README</a>、<a href="https://github.com/longbridge/gpui-kit/blob/v0.6.0/website/docs/installation.md">安裝要求</a>、<a href="https://github.com/longbridge/gpui-kit/blob/v0.6.0/crates/webview/README.md">WebView 限制</a>。</li>
+<li><a href="https://github.com/zed-industries/zed/blob/f29c8eaf13682ef5a4a70a81eb4838b247cf7211/crates/gpui/README.md">GPUI README</a>、<a href="https://github.com/zed-industries/zed/blob/f29c8eaf13682ef5a4a70a81eb4838b247cf7211/crates/gpui/src/_accessibility.rs">Accessibility</a>、<a href="https://github.com/zed-industries/zed/blob/f29c8eaf13682ef5a4a70a81eb4838b247cf7211/crates/terminal_view/Cargo.toml">Zed terminal_view dependency／license</a>。</li>
+</ul>
+<footer><p>本次只新增評估文件；未修改應用程式、依賴、發布設定或 Git 歷史。結論是建議驗證方向，並非遷移完成、效能保證或新的已接受 ADR。</p></footer>
+</main></body></html>

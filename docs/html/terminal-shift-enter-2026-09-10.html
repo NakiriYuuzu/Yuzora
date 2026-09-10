@@ -1,0 +1,12 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Terminal Shift+Enter 換行</title><style>body{margin:0;background:#f7f8fa;color:#25313d;font:16px/1.8 system-ui,"PingFang TC",sans-serif}main{max-width:900px;margin:auto;padding:36px 24px}h1{line-height:1.3}h2{font-size:22px}a{color:#17688a}code{font-size:14px}.note{padding:16px;background:#fff1d4}</style></head><body><main>
+<p>2026-09-10 · release/v0.0.9 · 未 stage／commit／push</p><h1>Shift+Enter 在 HERDR 終端換行</h1>
+<p>加入 Shift+Enter：在目前可輸入的 HERDR 終端插入一個換行。一般 Enter 保留原有送出行為。Ctrl／Alt／Meta 同時按下時不覆寫原快捷鍵；中文輸入法組字中的事件與 Windows keyCode 229 不攔截。觀察模式或尚未連線時丟棄換行，不在之後取得控制權時補送。</p>
+<p>使用既有 transport.paste 邊界，傳送一個完整 bracketed-paste 換行訊息，避免原始 CR／LF 被當成送出。這個通道共用於本機與 WSL／SSH 主機，不讀取或改寫系統剪貼簿。</p>
+<h2>驗證</h2><ul>
+<li><a href="terminal-shift-enter-2026-09-10-assets/red.log">新增測試修正前 2 項失敗</a>，確認原本 Shift+Enter 會放行給 xterm 的 Enter 處理。</li>
+<li><a href="terminal-shift-enter-2026-09-10-assets/green.log">相關 9 檔、139 項終端測試通過</a>，包括 IME、其他組合鍵、觀察模式與實際 HerdrTerminalPage 輸入 frame。</li>
+<li><a href="terminal-shift-enter-2026-09-10-assets/build.log">typecheck／production build 通過</a>；<a href="terminal-shift-enter-2026-09-10-assets/lint.log">修改檔案 ESLint 通過</a>；git diff --check 通過。</li>
+<li><a href="terminal-shift-enter-2026-09-10-assets/browser.log">真實 xterm 瀏覽器驗證</a>：Shift+Enter 僅產生一次 bracketed newline frame，一般 Enter 僅產生原本的 CR。HERDR IPC 使用隔離 fixture。</li>
+<li><a href="terminal-shift-enter-2026-09-10-assets/pi-editor.log">pi 真實提示編輯器離線驗證</a>：輸入 first line → 新換行 frame → second line，草稿為兩行且提交 0 次；再按一般 Enter，提交完整兩行一次。沒有啟動 agent 或傳送模型請求。</li>
+</ul><p class="note">Windows／WSL 原機及其他 agent 的提示編輯器尚未在這輪實測。終端內的程式須支援多行／bracketed paste；單行輸入框仍由該程式決定可否換行。</p>
+</main></body></html>

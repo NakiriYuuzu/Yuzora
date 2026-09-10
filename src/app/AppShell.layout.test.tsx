@@ -4,19 +4,19 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { AppShell } from "./AppShell"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 
-const lifecycle = vi.hoisted(() => ({ editorMount: vi.fn(), editorUnmount: vi.fn(), spacesMount: vi.fn(), spacesUnmount: vi.fn(), remote: vi.fn() }))
+const lifecycle = vi.hoisted(() => ({ editorMount: vi.fn(), editorUnmount: vi.fn(), spacesMount: vi.fn(), spacesUnmount: vi.fn(), editorRender: vi.fn(), spacesRender: vi.fn(), toolsRender: vi.fn(), settingsRender: vi.fn(), remote: vi.fn() }))
 vi.mock("@/lib/platform", () => ({ isTauri: () => false, showsNativeTrafficLights: () => false, isWindowsPlatform: () => false, isMacPlatform: () => false, shortcutLabel: () => "Ctrl+K" }))
 vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn() }))
 vi.mock("@/lib/unsavedGuard", () => ({ confirmDiscardingUnsaved: vi.fn() }))
 vi.mock("@/state/sftpStore", () => ({ useSftpStore: { getState: () => ({ setPanelOpen: lifecycle.remote }) } }))
 vi.mock("@/app/workbench/settingsStorage", () => ({ loadAppearanceSettings: () => ({ theme: "light", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true }), saveAppearanceSettings: vi.fn() }))
-vi.mock("@/app/panels/EditorPanel", () => ({ EditorPanel: () => { useEffect(() => { lifecycle.editorMount(); return lifecycle.editorUnmount }, []); return <input aria-label="Editor buffer" defaultValue="unsaved draft" /> } }))
-vi.mock("@/app/workbench/SpaceAgentSidebar", () => ({ SpaceAgentSidebar: () => { useEffect(() => { lifecycle.spacesMount(); return lifecycle.spacesUnmount }, []); return <button>Space leaf</button> } }))
+vi.mock("@/app/panels/EditorPanel", () => ({ EditorPanel: () => { lifecycle.editorRender(); useEffect(() => { lifecycle.editorMount(); return lifecycle.editorUnmount }, []); return <input aria-label="Editor buffer" defaultValue="unsaved draft" /> } }))
+vi.mock("@/app/workbench/SpaceAgentSidebar", () => ({ SpaceAgentSidebar: () => { lifecycle.spacesRender(); useEffect(() => { lifecycle.spacesMount(); return lifecycle.spacesUnmount }, []); return <button>Space leaf</button> } }))
 vi.mock("@/app/panels/GitPanel", () => ({ GitPanel: () => <div>Git graph surface</div> }))
 vi.mock("@/app/panels/DatabasePanel", () => ({ DatabasePanel: () => <div>Database query surface</div> }))
 vi.mock("@/app/workbench/DatabaseNavContent", () => ({ DatabaseNavContent: () => null }))
-vi.mock("@/app/workbench/WorkspaceToolsPanel", () => ({ WorkspaceToolsPanel: () => <button>Tool leaf</button> }))
-vi.mock("@/app/workbench/SettingsDialog", () => ({ SettingsDialog: ({ open }: { open: boolean }) => open ? <div role="dialog" aria-label="Settings dialog" /> : null }))
+vi.mock("@/app/workbench/WorkspaceToolsPanel", () => ({ WorkspaceToolsPanel: ({ onOpenGraph }: { onOpenGraph: () => void }) => { lifecycle.toolsRender(); return <button onClick={onOpenGraph}>Tool leaf</button> } }))
+vi.mock("@/app/workbench/SettingsDialog", () => ({ SettingsDialog: ({ open }: { open: boolean }) => { lifecycle.settingsRender(); return open ? <div role="dialog" aria-label="Settings dialog" /> : null } }))
 vi.mock("@/app/workbench/CommandPalette", () => ({ CommandPalette: ({ open }: { open: boolean }) => open ? <div role="dialog" aria-label="Command search" /> : null }))
 vi.mock("@/app/workbench/ContextMenu", () => ({ ContextMenu: () => null }))
 vi.mock("@/workbench/git/DiffModal", () => ({ DiffModal: () => null }))
@@ -35,6 +35,23 @@ beforeEach(() => {
   resize(1440)
 })
 afterEach(cleanup)
+
+it("does not rerender unrelated work surfaces when toggling or resizing sidebars", () => {
+  render(<AppShell />)
+  const renders = [lifecycle.editorRender, lifecycle.spacesRender, lifecycle.toolsRender, lifecycle.settingsRender]
+  renders.forEach(render => render.mockClear())
+  for (let i = 0; i < 3; i++) {
+    fireEvent.click(leftToggle())
+    fireEvent.click(rightToggle())
+  }
+  fireEvent.click(leftToggle())
+  fireEvent.click(rightToggle())
+  fireEvent.keyDown(screen.getByRole("separator", { name: "Resize Spaces and Agents sidebar" }), { key: "ArrowRight" })
+  fireEvent.keyDown(screen.getByRole("separator", { name: "Resize workspace tools sidebar" }), { key: "ArrowLeft" })
+  renders.forEach(render => expect(render).not.toHaveBeenCalled())
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+  expect(screen.getByRole("dialog", { name: "Settings dialog" })).toBeVisible()
+})
 
 it("keeps edge controls reachable while collapsed sidebars give back their full width", () => {
   render(<AppShell />)
@@ -199,4 +216,13 @@ it("hides workspace tools in Database and restores the working surface from its 
   expect(rightToggle()).toHaveAttribute("aria-expanded", "true")
   expect(rightToggle()).toHaveFocus()
   expect(screen.getByRole("button", { name: "Tool leaf" })).toBe(tool)
+})
+
+it("opens commit history from the graph entry after viewing local changes", () => {
+  useUiStore.setState({ mode: "files", gitPanelTab: "local" })
+  render(<AppShell />)
+  fireEvent.click(screen.getByRole("button", { name: "Tool leaf" }))
+  expect(useUiStore.getState().mode).toBe("git")
+  expect(useUiStore.getState().gitPanelTab).toBe("log")
+  expect(screen.getByText("Git graph surface")).toBeVisible()
 })

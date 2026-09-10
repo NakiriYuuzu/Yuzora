@@ -66,6 +66,32 @@ async fn built_helper_roundtrip_conflict_and_connection_identity() {
     }
     let hello = value(call(&mut input, &mut output, &owner, "hello", Operation::Hello).await);
     assert_eq!(hello["protocol"], json!(PROTOCOL_VERSION));
+    assert!(hello["methods"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("clipboardImage")));
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0ioAAAAASUVORK5CYII=";
+    let staged = value(
+        call(
+            &mut input,
+            &mut output,
+            &owner,
+            "image",
+            Operation::ClipboardImage {
+                png_base64: png.into(),
+            },
+        )
+        .await,
+    );
+    let staged = staged.as_str().unwrap();
+    use base64::Engine;
+    assert_eq!(
+        std::fs::read(staged).unwrap(),
+        base64::engine::general_purpose::STANDARD
+            .decode(png)
+            .unwrap()
+    );
+    std::fs::remove_file(staged).unwrap();
     let root = value(
         call(
             &mut input,

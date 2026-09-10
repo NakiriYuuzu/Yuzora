@@ -90,7 +90,7 @@ describe("terminal settings", () => {
       shellPath: "/bin/zsh", defaultProfile: { shell: "/bin/zsh" },
       fontSize: 18, fontFamily: "menlo", imeAnchorMode: "tui",
     })
-    expect(loadTerminalSettings()).toEqual({ fontSize: 18, fontFamily: "menlo", imeAnchorMode: "tui" })
+    expect(loadTerminalSettings()).toEqual({ fontSize: 18, fontFamily: "menlo", imeAnchorMode: "tui", copyOnSelect: true })
     writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { imeAnchorMode: "floating" })
     expect(loadTerminalSettings().imeAnchorMode).toBe("cursor")
   })
@@ -105,6 +105,15 @@ describe("terminal settings", () => {
 })
 
 describe("terminal font preference migration", () => {
+  it("defaults selection copy on and persists an explicit off switch", async () => {
+    expect(loadTerminalSettings().copyOnSelect).toBe(true)
+    const { useTerminalSettingsStore, reloadTerminalSettingsStore } = await import("@/state/terminalSettingsStore")
+    reloadTerminalSettingsStore()
+    useTerminalSettingsStore.getState().update({ copyOnSelect: false })
+    useTerminalSettingsStore.getState().update({ fontSize: 18 })
+    reloadTerminalSettingsStore()
+    expect(useTerminalSettingsStore.getState().copyOnSelect).toBe(false)
+  })
   it("defaults missing and unknown fonts while retaining legacy font size", () => {
     for (const fontFamily of [undefined, "unknown", null, 2]) {
       writeJsonSetting(TERMINAL_SETTINGS_STORAGE_KEY, { fontSize: 18, fontFamily })

@@ -2,6 +2,7 @@ import { contextMenuHandler } from "@/state/contextMenuStore";
 import {
   Fragment,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,9 +11,11 @@ import {
 } from "react";
 import {
   ChevronsDownUp,
+  ChevronsUpDown,
   GitBranch,
   EllipsisVertical,
   Info,
+  Plus,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -29,6 +32,7 @@ import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider";
 import { spacePresentationKey, runtimeSessionLabel } from "./spaceTreeIdentity";
 import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
 import { workspacePathBasename } from "@/lib/paths";
+import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions";
 import { HerdrLauncher } from "./HerdrLauncher";
 import { SpaceAppearanceDialog } from "./SpaceAppearanceDialog";
 import { SpaceCharacter } from "./SpaceCharacter";
@@ -76,6 +80,8 @@ export function SpaceAgentTree() {
   const [inspected, setInspected] = useState<HerdrAgentInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creatingSpace, setCreatingSpace] = useState(false);
+  const [creatingTerminal, setCreatingTerminal] = useState<string | null>(null);
+  const terminalCreationInFlight = useRef(false);
   // All is a view filter, never a runtime Session name or process context.
   const [requestedScope, setScopeSession] = useState<string | null>(null);
   const scopeSession = sessions.some((item) => item.name === requestedScope) ? requestedScope : null;
@@ -126,8 +132,61 @@ export function SpaceAgentTree() {
     const named = rawSessions.find((item) => sessionScope(item) === name);
     return runtimeSessionLabel(name, named);
   }
+  function canAddTerminal(name: string) {
+    const runtime = runtimes[name];
+    const caps = runtime?.capabilities;
+    return runtime?.connectionState === "ready" && !runtime.errorMessage &&
+      caps?.server.compatible !== false && !!caps?.server.running &&
+      !!caps.api.snapshot && !!caps.api.workspaceFocus &&
+      !!caps.api.tabCreate && !!caps.terminal.create;
+  }
+  async function addTerminal(node: TreeNode) {
+    if (terminalCreationInFlight.current || creatingSpace || !canAddTerminal(node.sessionName)) return;
+    terminalCreationInFlight.current = true;
+    setCreatingTerminal(node.key);
+    setError(null);
+    focus(node.key);
+    try {
+      const activated = await useHerdrStore.getState().activateSpace({
+        sessionName: node.sessionName,
+        workspaceId: node.space.id,
+        path: node.space.path,
+      });
+      if (!activated.ok) {
+        if (!activated.cancelled) setError(activated.error ?? t("switchFailed"));
+        return;
+      }
+      // Activation may await an unsaved-work prompt or a remote host. Recheck
+      // the owner before invoking the existing selected-Space creation action.
+      const state = useHerdrStore.getState();
+      if (state.selectedSessionName !== node.sessionName || state.selectedSpaceId !== node.space.id)
+        throw new Error(t("terminalTargetChanged"));
+      if (state.connectionState !== "ready" || state.errorMessage ||
+          state.capabilities?.server.compatible === false || !state.canCreateTerminal())
+        throw new Error(state.errorMessage ?? state.createTerminalBlockedReason() ?? t("terminalUnavailable"));
+      const created = await state.createTerminalInSelectedSpace();
+      if (!created)
+        throw new Error(useHerdrStore.getState().runtimesBySession[node.sessionName]?.errorMessage ??
+          t("herdrNav.createFailedUnknown", { ns: "workbench" }));
+      setSelectedAgent(null);
+      expand(node.key, true);
+      await openCreatedHerdrTabAndRequestName({
+        sessionName: created.herdrSessionId,
+        workspaceId: created.workspaceId,
+        terminalId: created.terminalId,
+        title: created.title,
+        paneId: created.paneId,
+        tabId: created.tabId,
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      terminalCreationInFlight.current = false;
+      setCreatingTerminal(null);
+    }
+  }
   async function createSpace(sessionName: string) {
-    if (creatingSpace) return;
+    if (creatingSpace || terminalCreationInFlight.current) return;
     setCreatingSpace(true);
     setError(null);
     try {
@@ -254,6 +313,12 @@ export function SpaceAgentTree() {
         })),
     [runtimes, presentations, sessions, scopeSession, attention],
   );
+  // Persist once before the first paint, including Spaces discovered from HERDR.
+  useLayoutEffect(() => {
+    useRecentWorkspacesStore.getState().ensureSpacePresentations(
+      roots.flatMap((root) => root.identityKey ? [root.identityKey] : []),
+    );
+  }, [roots]);
   const all = roots.flatMap((root) => [
     root,
     ...root.children.flatMap((branch) => [branch, ...branch.children]),
@@ -421,42 +486,12 @@ export function SpaceAgentTree() {
       <HerdrLauncher
         scope={scopeSession}
         onCreateSpace={createSpace}
-        creatingSpace={creatingSpace}
+        creatingSpace={creatingSpace || creatingTerminal !== null}
         onScopeChange={(name) => {
           setScopeSession(name);
           setSelectedAgent(null);
         }}
       />
-      <div className="tree-browse-toolbar">
-        <span>{scopeSession === null ? t("allHint")
-          : !sessionNotice(scopeSession) ? t("loaded")
-          : runtimes[scopeSession]?.snapshot ? t("stale")
-          : !runtimes[scopeSession] || ["idle", "connecting"].includes(runtimes[scopeSession].connectionState) ? t("loading")
-          : t("unavailable")}</span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={t("collapseAll")}
-          onClick={() => {
-            setCollapsed(
-              new Set(
-                all
-                  .filter((node) => node.kind !== "agent")
-                  .map((node) => node.key),
-              ),
-            );
-            setFocusKey(roots[0]?.key ?? null);
-          }}
-        >
-          <ChevronsDownUp />
-        </Button>
-      </div>
-      {scopeSession !== null && sessionNotice(scopeSession) && (
-        <div className="space-tree-notice [overflow-wrap:anywhere]" role="status">
-          <p>{sessionNotice(scopeSession)}</p>
-          {needsRepair(scopeSession) && <Button variant="outline" size="sm" onClick={() => repairHost(scopeSession)}>{t("repairHost")}</Button>}
-        </div>
-      )}
       {error && (
         <p className="space-tree-notice" role="alert">
           {error}
@@ -525,219 +560,256 @@ export function SpaceAgentTree() {
           data-design="replica-space-agent-tree"
           data-design-label={t("treeTitle")}
         >
-          {visible.map((node, index) => {
-            const open = !collapsed.has(node.key),
-              selected = node.key === selectedKey;
-            const containsSelection =
-              node.kind === "project" &&
-              node.sessionName === session &&
-              node.children.some((child) => child.space.id === selectedSpace);
+          {shownSessions.map((item) => {
+            const sessionNodes = all.filter((node) => node.sessionName === item.name && node.kind !== "agent");
+            const expanded = sessionNodes.some((node) => node.kind === "project" && !collapsed.has(node.key));
+            const toggleLabel = t(expanded ? "collapseSession" : "expandSession", { session: sessionLabel(item.name) });
+            const notice = sessionNotice(item.name);
             return (
-              <Fragment key={node.key}>
-                {scopeSession === null &&
-                  visible[index - 1]?.sessionName !== node.sessionName && (
-                    <p className="tree-session-heading">
-                      <strong>
-                        {[
-                          rawSessions.find(
-                            (item) => sessionScope(item) === node.sessionName,
-                          )?.hostLabel,
-                          parseRuntimeScope(node.sessionName).sessionName,
+              <Fragment key={item.name}>
+                <div className="tree-session-heading">
+                  <strong title={sessionLabel(item.name)}>{sessionLabel(item.name)}</strong>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={toggleLabel}
+                    title={toggleLabel}
+                    aria-expanded={expanded}
+                    disabled={sessionNodes.length === 0}
+                    onClick={() => {
+                      setCollapsed((current) => {
+                        const next = new Set(current);
+                        for (const node of sessionNodes) {
+                          if (expanded) next.add(node.key);
+                          else next.delete(node.key);
+                        }
+                        return next;
+                      });
+                      setFocusKey(sessionNodes[0]?.key ?? null);
+                    }}
+                  >
+                    {expanded ? <ChevronsDownUp aria-hidden="true" /> : <ChevronsUpDown aria-hidden="true" />}
+                  </Button>
+                </div>
+                {notice && (
+                  <div className="space-tree-notice [overflow-wrap:anywhere]" role="status">
+                    <p>{notice}</p>
+                    {needsRepair(item.name) && <Button variant="outline" size="sm" onClick={() => repairHost(item.name)}>{t("repairHost")}</Button>}
+                  </div>
+                )}
+                {visible.filter((node) => node.sessionName === item.name).map((node) => {
+                  const open = !collapsed.has(node.key),
+                    selected = node.key === selectedKey;
+                  const containsSelection =
+                    node.kind === "project" &&
+                    node.sessionName === session &&
+                    node.children.some((child) => child.space.id === selectedSpace);
+                  return (
+                    <div
+                      key={node.key}
+                      role="none"
+                      className={`tree-row-shell tree-row-${node.kind}`}
+                      data-current={containsSelection}
+                      style={
+                        { "--space-color": node.color?.background } as CSSProperties
+                      }
+                    >
+                      <Button
+                        ref={(element) => {
+                          if (element) refs.current.set(node.key, element);
+                          else refs.current.delete(node.key);
+                        }}
+                        variant="ghost"
+                        role="treeitem"
+                        aria-level={node.level}
+                        aria-posinset={node.position}
+                        aria-setsize={node.size}
+                        aria-expanded={node.kind === "agent" ? undefined : open}
+                        aria-selected={selected}
+                        tabIndex={node.key === tabKey ? 0 : -1}
+                        aria-label={
+                          node.kind === "agent"
+                            ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.space.branch ?? node.space.label} · ${node.sessionName}`
+                            : node.kind === "project"
+                              ? `${node.label} · ${t("agentCount", { count: node.count })} · ${node.sessionName}`
+                              : `${node.label} · ${node.space.path} · ${node.sessionName}`
+                        }
+                        aria-description={[
+                          sessionNotice(node.sessionName),
+                          node.kind === "agent"
+                            ? node.agent?.status === "done"
+                              ? t("doneMeaning")
+                              : t("inspectHint")
+                            : `${t("pendingCount", { count: node.pending })} · ${t("folderHint")}`,
+                          node.kind === "project" ? t("editShortcut") : null,
                         ]
                           .filter(Boolean)
                           .join(" · ")}
-                      </strong>
-                      <span>
-                        {sessionNotice(node.sessionName) ?? t("loaded")}
-                      </span>
-                    </p>
-                  )}
-                <div
-                  role="none"
-                  className={`tree-row-shell tree-row-${node.kind}`}
-                  data-current={containsSelection}
-                  style={
-                    { "--space-color": node.color?.background } as CSSProperties
-                  }
-                >
-                  <Button
-                    ref={(element) => {
-                      if (element) refs.current.set(node.key, element);
-                      else refs.current.delete(node.key);
-                    }}
-                    variant="ghost"
-                    role="treeitem"
-                    aria-level={node.level}
-                    aria-posinset={node.position}
-                    aria-setsize={node.size}
-                    aria-expanded={node.kind === "agent" ? undefined : open}
-                    aria-selected={selected}
-                    tabIndex={node.key === tabKey ? 0 : -1}
-                    aria-label={
-                      node.kind === "agent"
-                        ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.space.branch ?? node.space.label} · ${node.sessionName}`
-                        : node.kind === "project"
-                          ? `${node.label} · ${t("agentCount", { count: node.count })} · ${node.sessionName}`
-                          : `${node.label} · ${node.space.path} · ${node.sessionName}`
-                    }
-                    aria-description={[
-                      sessionNotice(node.sessionName),
-                      node.kind === "agent"
-                        ? node.agent?.status === "done"
-                          ? t("doneMeaning")
-                          : t("inspectHint")
-                        : `${t("pendingCount", { count: node.pending })} · ${t("folderHint")}`,
-                      node.kind === "project" ? t("editShortcut") : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                    title={
-                      node.kind === "agent"
-                        ? t("inspectHint")
-                        : (node.space.path ?? undefined)
-                    }
-                    className={`space-tree-row tree-${node.kind}`}
-                    style={{ paddingLeft: 6 + (node.level - 1) * 10 }}
-                    onFocus={() => setFocusKey(node.key)}
-                    onKeyDown={(event) => onKey(event, node)}
-                    onClick={() => activate(node)}
-                    onContextMenu={
-                      node.kind === "worktree"
-                        ? contextMenuHandler({
-                            kind: "herdrSpace",
-                            sessionName: node.sessionName,
-                            workspaceId: node.space.id,
-                            label: node.space.label,
-                            path: node.space.path ?? null,
-                          })
-                        : node.kind === "agent" && node.agent?.paneId
-                          ? contextMenuHandler({
-                              kind: "herdrPane",
-                              sessionName: node.sessionName,
-                              paneId: node.agent.paneId,
-                              terminalId: node.agent.terminalId ?? null,
-                              tabId: node.agent.tabId ?? null,
-                              workspaceId: node.space.id,
-                              label: node.label,
-                              focusedPaneId:
-                                runtimes[node.sessionName]?.snapshot
-                                  ?.focusedPaneId ?? null,
-                            })
-                          : undefined
-                    }
-                  >
-                    {node.kind === "project" ? (
-                      <span
-                        className="tree-space-identity"
-                        data-avatar={node.avatarMode}
-                        style={{
-                          background: node.color?.background,
-                          color: node.color?.foreground,
-                        }}
-                        aria-hidden="true"
+                        title={
+                          node.kind === "agent"
+                            ? t("inspectHint")
+                            : (node.space.path ?? undefined)
+                        }
+                        className={`space-tree-row tree-${node.kind}`}
+                        style={{ paddingLeft: 6 + (node.level - 1) * 10 }}
+                        onFocus={() => setFocusKey(node.key)}
+                        onKeyDown={(event) => onKey(event, node)}
+                        onClick={() => activate(node)}
+                        onContextMenu={
+                          node.kind === "worktree"
+                            ? contextMenuHandler({
+                                kind: "herdrSpace",
+                                sessionName: node.sessionName,
+                                workspaceId: node.space.id,
+                                label: node.space.label,
+                                path: node.space.path ?? null,
+                              })
+                            : node.kind === "agent" && node.agent?.paneId
+                              ? contextMenuHandler({
+                                  kind: "herdrPane",
+                                  sessionName: node.sessionName,
+                                  paneId: node.agent.paneId,
+                                  terminalId: node.agent.terminalId ?? null,
+                                  tabId: node.agent.tabId ?? null,
+                                  workspaceId: node.space.id,
+                                  label: node.label,
+                                  focusedPaneId:
+                                    runtimes[node.sessionName]?.snapshot
+                                      ?.focusedPaneId ?? null,
+                                })
+                              : undefined
+                        }
                       >
-                        {node.avatarMode === "character" && node.character ? (
-                          <SpaceCharacter character={node.character} portrait />
+                        {node.kind === "project" ? (
+                          <span
+                            className="tree-space-identity"
+                            data-avatar={node.avatarMode}
+                            style={{
+                              background: node.color?.background,
+                              color: node.color?.foreground,
+                            }}
+                            aria-hidden="true"
+                          >
+                            {node.avatarMode === "character" && node.character ? (
+                              <SpaceCharacter character={node.character} portrait />
+                            ) : (
+                              node.glyph
+                            )}
+                          </span>
+                        ) : node.kind === "worktree" ? (
+                          <GitBranch aria-hidden="true" />
                         ) : (
-                          node.glyph
+                          <span
+                            className="tree-status-dot"
+                            data-status={node.agent?.status}
+                            aria-hidden="true"
+                          />
                         )}
-                      </span>
-                    ) : node.kind === "worktree" ? (
-                      <GitBranch aria-hidden="true" />
-                    ) : (
-                      <span
-                        className="tree-status-dot"
-                        data-status={node.agent?.status}
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span className="tree-node-label">
-                      <span>{node.label}</span>
-                      {node.kind === "project" && (
-                        <small>
-                          {t("spaceSummary", {
-                            branches: node.children.length,
-                            agents: node.count,
+                        <span className="tree-node-label">
+                          <span>{node.label}</span>
+                          {node.kind === "project" && (
+                            <small>
+                              {t("spaceSummary", {
+                                branches: node.children.length,
+                                agents: node.count,
+                              })}
+                            </small>
+                          )}
+                          {node.kind === "agent" && (
+                            <span className="tree-agent-meta">
+                              <small>{node.agent?.name}</small>
+                              <span className="tree-agent-status">
+                                {t(`status.${node.agent?.status}`)}
+                              </span>
+                            </span>
+                          )}
+                        </span>
+                        {node.kind === "worktree" && (
+                          <span
+                            className="tree-node-count"
+                            data-pending={node.pending > 0}
+                          >
+                            {node.pending
+                              ? t("pendingCount", { count: node.pending })
+                              : node.count}
+                          </span>
+                        )}
+                      </Button>
+                      {node.kind === "worktree" && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="tree-add-terminal shrink-0"
+                          tabIndex={node.key === tabKey ? 0 : -1}
+                          aria-label={t("addTerminalToBranch", {
+                            branch: node.label,
+                            session: sessionLabel(node.sessionName),
                           })}
-                        </small>
+                          title={canAddTerminal(node.sessionName)
+                            ? t("addTerminalToBranch", { branch: node.label, session: sessionLabel(node.sessionName) })
+                            : t("terminalUnavailable")}
+                          disabled={creatingTerminal !== null || creatingSpace || !canAddTerminal(node.sessionName)}
+                          aria-busy={creatingTerminal === node.key}
+                          onClick={() => void addTerminal(node)}
+                        >
+                          <Plus aria-hidden="true" />
+                        </Button>
                       )}
                       {node.kind === "agent" && (
-                        <span className="tree-agent-meta">
-                          <small>{node.agent?.name}</small>
-                          <span className="tree-agent-status">
-                            {t(`status.${node.agent?.status}`)}
-                          </span>
-                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          tabIndex={node.key === tabKey ? 0 : -1}
+                          aria-label={t("inspectAgent", { name: node.label })}
+                          onClick={(event) => {
+                            inspectorTrigger.current = event.currentTarget;
+                            setFocusKey(node.key);
+                            setInspected(node.agent!);
+                          }}
+                        >
+                          <Info aria-hidden="true" />
+                        </Button>
                       )}
-                    </span>
-                    {node.kind === "worktree" && (
-                      <span
-                        className="tree-node-count"
-                        data-pending={node.pending > 0}
-                      >
-                        {node.pending
-                          ? t("pendingCount", { count: node.pending })
-                          : node.count}
-                      </span>
+                      {node.kind === "project" && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="tree-edit-space"
+                          aria-label={t("editSpaceNamed", {
+                            name: node.label,
+                            session: node.sessionName,
+                          })}
+                          tabIndex={node.key === tabKey ? 0 : -1}
+                          onClick={(event) => {
+                            editTrigger.current = event.currentTarget;
+                            setFocusKey(node.key);
+                            setEditingSpace(node);
+                          }}
+                        >
+                          <EllipsisVertical aria-hidden="true" />
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+                {!notice && sessionNodes.length === 0 && (
+                  <div className="space-tree-empty [overflow-wrap:anywhere]" role="status">
+                    <p>{sessionLabel(item.name)}: {t("empty")}</p>
+                    {runtimes[item.name]?.capabilities?.api.workspaceCreate && runtimes[item.name]?.capabilities?.terminal.create && (
+                      <>
+                        <p>{t("firstTerminalHint")}</p>
+                        <Button variant="outline" size="sm" className="h-auto whitespace-normal" disabled={creatingSpace || creatingTerminal !== null} onClick={() => void createSpace(item.name)}>
+                          {creatingSpace ? t("openingSpace") : t("openFolderAndCreateSpace")}
+                        </Button>
+                      </>
                     )}
-                  </Button>
-                  {node.kind === "agent" && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      tabIndex={node.key === tabKey ? 0 : -1}
-                      aria-label={t("inspectAgent", { name: node.label })}
-                      onClick={(event) => {
-                        inspectorTrigger.current = event.currentTarget;
-                        setFocusKey(node.key);
-                        setInspected(node.agent!);
-                      }}
-                    >
-                      <Info aria-hidden="true" />
-                    </Button>
-                  )}
-                  {node.kind === "project" && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="tree-edit-space"
-                      aria-label={t("editSpaceNamed", {
-                        name: node.label,
-                        session: node.sessionName,
-                      })}
-                      tabIndex={node.key === tabKey ? 0 : -1}
-                      onClick={(event) => {
-                        editTrigger.current = event.currentTarget;
-                        setFocusKey(node.key);
-                        setEditingSpace(node);
-                      }}
-                    >
-                      <EllipsisVertical aria-hidden="true" />
-                    </Button>
-                  )}
-                </div>
+                  </div>
+                )}
               </Fragment>
             );
           })}
         </div>
         {!shownSessions.length && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
-        {shownSessions
-          .filter((item) => !runtimes[item.name]?.snapshot?.spaces.length)
-          .filter(() => scopeSession === null || !sessionNotice(scopeSession))
-          .map((item) => (
-            <div key={item.name} className="space-tree-empty [overflow-wrap:anywhere]" role="status">
-              <p>{sessionLabel(item.name)}: {sessionNotice(item.name) ?? t("empty")}</p>
-              {!sessionNotice(item.name) && runtimes[item.name]?.capabilities?.api.workspaceCreate && runtimes[item.name]?.capabilities?.terminal.create && (
-                <>
-                  <p>{t("firstTerminalHint")}</p>
-                  <Button variant="outline" size="sm" className="h-auto whitespace-normal" disabled={creatingSpace} onClick={() => void createSpace(item.name)}>
-                    {creatingSpace ? t("openingTerminal") : t("firstTerminal")}
-                  </Button>
-                </>
-              )}
-              {needsRepair(item.name) && <Button variant="outline" size="sm" onClick={() => repairHost(item.name)}>{t("repairHost")}</Button>}
-            </div>
-          ))}
         {visible.filter(
           (node) =>
             node.kind === "worktree" &&

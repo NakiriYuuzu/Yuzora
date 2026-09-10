@@ -1,0 +1,17 @@
+{
+  "os": "Microsoft Windows 11 專業版",
+  "rdpService": {
+    "Name": "TermService",
+    "Status": 4
+  },
+  "rdpListener": [],
+  "rdpDenied": 0,
+  "nativePreference": [
+    {
+      "value": {
+        "binarySource": "default"
+      },
+      "path": "C:\\Users\\Yuuzu\\AppData\\Roaming\\dev.yuuzu.yuzora\\herdr\\herdr-config-v1.json"
+    }
+  ]
+}

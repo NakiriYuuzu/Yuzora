@@ -29,6 +29,7 @@ export function wslPath(hostId: string, distro: string, path: string): Promise<s
 
 export type HostOperation =
   | { method: "hello" }
+  | { method: "clipboardImage"; params: { png_base64: string } }
   | { method: "workspaceAuthorize"; params: { workspace: string } }
   | { method: "trust"; params: { call:
       | { action: "status"; workspace: string }

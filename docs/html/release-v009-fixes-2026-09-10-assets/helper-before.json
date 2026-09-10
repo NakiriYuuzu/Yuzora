@@ -1,0 +1,35 @@
+{
+  "scenario": "seven idle helper TCP lanes on macOS",
+  "processes": [
+    {
+      "rssKiB": 8640,
+      "threads": 13
+    },
+    {
+      "rssKiB": 8624,
+      "threads": 13
+    },
+    {
+      "rssKiB": 8640,
+      "threads": 13
+    },
+    {
+      "rssKiB": 8656,
+      "threads": 13
+    },
+    {
+      "rssKiB": 8640,
+      "threads": 13
+    },
+    {
+      "rssKiB": 8688,
+      "threads": 13
+    },
+    {
+      "rssKiB": 8640,
+      "threads": 13
+    }
+  ],
+  "totalRssKiB": 60528,
+  "totalThreads": 91
+}

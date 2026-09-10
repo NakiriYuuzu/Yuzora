@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora × Herdr：專案、功能與 UI/UX 研究｜2026-09-06</title>
+<style>
+:root{color-scheme:light;--paper:#f4f3ee;--panel:#fffefa;--ink:#202923;--muted:#606a63;--line:#d8ddd3;--accent:#365b41;--warn:#89581b}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.75 system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif}main{max-width:1180px;margin:auto;padding:44px 28px 80px}header{border-top:5px solid var(--accent);padding:28px 0 22px}h1{font:700 clamp(28px,4vw,44px)/1.2 Georgia,"Noto Serif TC",serif;margin:8px 0 20px}h2{font-size:25px;line-height:1.4;margin:0 0 18px}h3{font-size:19px;margin:24px 0 8px}p{margin:10px 0}a{color:var(--accent);text-underline-offset:3px}section{padding:28px;background:var(--panel);border:1px solid var(--line);margin:20px 0;border-radius:10px;scroll-margin-top:18px}.meta,.note,figcaption{color:var(--muted);font-size:14px}.verdict{font-size:21px;line-height:1.65;max-width:940px}.tag{font-size:13px;padding:3px 9px;border:1px solid var(--line);border-radius:5px;display:inline-block;margin:3px 5px 3px 0}.good{color:var(--accent)}.partial{color:var(--warn)}nav{display:flex;gap:16px;flex-wrap:wrap;margin:15px 0}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px;text-align:left}th{background:#eaf0e6;vertical-align:top}th,td{padding:13px 11px;border-bottom:1px solid var(--line);vertical-align:top}th:first-child,td:first-child{min-width:115px}code{font-family:ui-monospace,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere;background:#edf0e9;padding:1px 4px;border-radius:3px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0e9;padding:18px;border-radius:5px;font-size:14px;line-height:1.7}ul,ol{padding-left:24px}li{margin:8px 0}.flow{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap}.flow div{flex:1;min-width:170px;padding:16px;background:#edf0e9;border-left:3px solid var(--accent)}.flow small{display:block;color:var(--muted);margin-top:6px}.screens{display:grid;grid-template-columns:1fr 1fr;gap:18px}figure{margin:12px 0}img{width:100%;max-height:470px;object-fit:contain;object-position:top;background:#1c1c20;border:1px solid var(--line)}figcaption{margin-top:9px}details{border-top:1px solid var(--line);padding:16px 0}summary{cursor:pointer;font-weight:650}.source-list{font-size:14px;overflow-wrap:anywhere}.callout{border-left:3px solid var(--warn);padding:8px 18px;background:#faf4e9}
+@media(max-width:720px){main{padding:24px 12px 48px}section{padding:20px 15px}.screens{grid-template-columns:1fr}table{font-size:13px}th,td{padding:10px 8px}.verdict{font-size:19px}}
+@media print{body{background:white}main{max-width:none;padding:0}section{break-inside:auto;border-radius:0}nav{display:none}h2,h3{break-after:avoid}tr,figure{break-inside:avoid}details{display:block}.table-wrap{overflow:visible}a{color:inherit}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="meta">RESEARCH · 2026-09-06 · 3 × gpt-5.6-luna researcher</div>
+<h1>Yuzora × Herdr<br>目前的工作面，能承載多少能力？</h1>
+<p class="verdict"><strong>目前 UI/UX 能承載 Herdr 的核心工作流程；尚未完整覆蓋 Herdr 的所有 CLI／API 能力。</strong>既有架構可延伸，優先工作是補齊操作入口、恢復流程與多 Session 的可見性。</p>
+<div><span class="tag good">核心架構與操作已有實作</span><span class="tag partial">完整 GUI 功能對等：未達成</span><span class="tag">本次：來源分析＋既有截圖檢視</span></div>
+<nav aria-label="報告章節"><a href="#baseline">範圍與版本</a><a href="#project">專案現況</a><a href="#herdr">Herdr 功能</a><a href="#fit">UI/UX 對照</a><a href="#priorities">改善順序</a><a href="#visual">視覺證據</a><a href="#sources">來源</a></nav>
+</header>
+
+<section id="baseline"><h2>研究範圍與判讀方式</h2>
+<p>三位 Luna researcher 分別負責：① Yuzora 架構與功能，② Herdr 功能、CLI 與 API，③ UI/UX 適配與缺口。主研究者交叉核對版本、官方文件與既有視覺證據，整併本報告。研究未修改產品程式碼、未執行 Git 寫入、未啟停或控制使用者的 Herdr runtime。</p>
+<div class="table-wrap"><table><thead><tr><th>基準</th><th>核對結果</th></tr></thead><tbody>
+<tr><td>Yuzora</td><td><code>0.0.9-beta.3</code>；分支 <code>release/v0.0.9-beta.3</code>；HEAD <code>9d0634c44e314b3dcc1c39b371ed448481b2f16a</code>。</td></tr>
+<tr><td>官方 Herdr</td><td>GitHub 最新 stable release 與官方文件 selector 均為 <code>v0.8.2</code>；release 發布時間 <code>2026-08-19T18:00:03Z</code>。<a href="#s1">[1]</a></td></tr>
+<tr><td>Yuzora bundled Herdr</td><td><code>0.8.2 / protocol 20</code>，資源準備腳本指向官方 release。使用者若選 PATH binary，實際版本仍須 runtime capability/schema 檢查。<a href="#s3">[3]</a></td></tr>
+<tr><td>索引限制</td><td>先以 codebase-memory 導覽，對變更或排除路徑補讀現行 source。Herdr 舊索引原始目錄已不存在；功能基準已改由官方 v0.8.2 source、release 及官方文件補證，沒有把舊索引當成最新版本證明。</td></tr>
+<tr><td>驗證限制</td><td>本機 Yuzora 未執行，1420 沒有 listener。沒有重跑測試、沒有本次端到端 GUI 驗收；既有 matching-HEAD Windows 證據只有特定流程與單 WSL distro 範圍。<a href="#s11">[11]</a></td></tr>
+</tbody></table></div>
+<p class="note">「已實作」指現行 source 有對應流程；「部分」指能力子集或操作流程未完整；「缺口」以所查的 typed IPC／UI 範圍為界；「待驗證」不當成缺陷。沒有用主觀百分比替代驗收。</p>
+</section>
+
+<section id="project"><h2>① 當前 Yuzora 專案</h2>
+<p>Yuzora 是 Tauri 2＋React 19 的 Agent Development Environment。Herdr 負責持續執行的 terminal／agent runtime；桌面端將它與 Editor、Git、Database、SSH/SFTP、Preview 整合。這是一個已有功能分層的 ADE。</p>
+<div class="flow" aria-label="Herdr 到 Yuzora 的資料流程">
+<div><strong>Herdr server</strong><small>Named Session → Workspace／Tab／Pane；持有 PTY、process、agent identity。</small></div>
+<div><strong>Rust service</strong><small>HerdrManager、schema/capability、snapshot/events、terminal connector。</small></div>
+<div><strong>Typed IPC＋Bridge</strong><small>herdrIpc / herdrTypes → HerdrBridge → per-session Zustand store。</small></div>
+<div><strong>桌面工作面</strong><small>Spaces、Agents、Attention、Inspector、terminal layout 與其他工具。</small></div>
+</div>
+<p>Unix 使用 local socket、Windows 使用 named pipe。AppShell 管理版面，Bridge 處理 runtime 事件與跨 store 協調；狀態依 Named Session 隔離。關閉 Yuzora 時釋放自己持有的 connector，不停止 Herdr server 或 pane processes。<a href="#s4">[4]</a> <a href="#s5">[5]</a> <a href="#s6">[6]</a></p>
+<div class="table-wrap"><table><thead><tr><th>功能面</th><th>目前實作與用途</th><th>證據</th></tr></thead><tbody>
+<tr><td>Herdr ADE</td><td>Session discovery、Space 建立／切換、tab/pane 操作、BSP layout、terminal observe/control/takeover、agent catalog/create/inspect、Attention。</td><td><a href="#s5">[5]</a> <a href="#s7">[7]</a> <a href="#s8">[8]</a></td></tr>
+<tr><td>Editor／LSP／搜尋</td><td>CodeMirror 6 編輯；LSP diagnostics、completion、hover、rename、symbols、code actions；專案文字搜尋與分組結果。</td><td><a href="#s12">[12]</a></td></tr>
+<tr><td>Git</td><td>Status、stage/unstage/discard、commit、branch/checkout、cherry-pick、fetch/pull/push、diff/conflict、history/detail。</td><td><a href="#s13">[13]</a></td></tr>
+<tr><td>Database</td><td>Profile／credential、連線測試、SQLite／PostgreSQL／MSSQL、query/cancel、分頁結果 session。</td><td><a href="#s13">[13]</a></td></tr>
+<tr><td>SSH／SFTP</td><td>遠端 shell、目錄瀏覽、路徑選擇、mkdir／rename／remove／upload／download。</td><td><a href="#s13">[13]</a></td></tr>
+<tr><td>Preview</td><td>原生子 webview，URL 導航、bounds/visibility、返回／前進／重新整理／關閉。</td><td><a href="#s13">[13]</a></td></tr>
+<tr><td>工作面／設定</td><td>Split layout、Command Palette、settings、en／zh-TW i18n、ScrollArea；terminal／CodeMirror 保留其原生捲動。</td><td><a href="#s4">[4]</a> <a href="#s12">[12]</a></td></tr>
+<tr><td>交付</td><td>Bun frontend checks/build、Rust checks/tests、CI 與 release workflows、version/beta/updater contract checks。本次沒有重新認證安裝包或發布狀態。</td><td><a href="#s3">[3]</a> <a href="#s4">[4]</a></td></tr>
+</tbody></table></div>
+<h3>應保留的設計邊界</h3>
+<ul>
+<li><strong>身份分離：</strong>Named Session 是 runtime namespace；Terminal Session 是終端互動生命週期；Agent Session 是 coding agent 自身的語意對話／恢復身份。UI 不能把 tab、pane 或 terminal ID 當成 agent session ID。<a href="#s4">[4]</a></li>
+<li><strong>權限與能力分離：</strong>terminal 的 observe/control 模式及 observer/controller 角色已有明確型別；操作受實際 schema、session 與 connector 狀態約束。<a href="#s5">[5]</a></li>
+<li><strong>Windows/WSL：</strong>Windows-native Herdr 擁有 runtime。WSL shell 不是另一個 Herdr runtime；目前 WSL Pi plugin 屬 Experimental，啟用與 adapter 操作為顯式流程，不能推廣成所有 WSL agent 都可 control/resume。<a href="#s4">[4]</a></li>
+</ul>
+</section>
+
+<section id="herdr"><h2>② Herdr 0.8.2 功能全貌</h2>
+<p>官方設計的重點是<strong>持續執行、以滑鼠為先、能辨識 agent 狀態、可由 CLI／socket API 操作</strong>。使用者離開 client 後工作持續；介面應讓人找到需要處理的 agent，不必逐 pane 巡查。Named Sessions 是完全獨立的 namespace，官方建議多數人從一個 default session 開始。<a href="#s2">[2]</a></p>
+<div class="table-wrap"><table><thead><tr><th>能力群</th><th>功能與重要語意</th><th>對桌面介面的含義</th></tr></thead><tbody>
+<tr><td>持續執行／恢復</td><td>Detach／reattach、Named Sessions、restart layout/history recovery、agent-native session restore、live handoff；不同恢復路徑保留的資料不同。</td><td>清楚分辨 client reconnect、server stopped、layout restore、agent resume；不能一律叫「重啟」。</td></tr>
+<tr><td>Workspace／Tab／Pane</td><td>建立、列出、聚焦、重新命名、關閉；Workspace/Tab 排序；pane split、swap、move、zoom、resize、neighbor/edges。跨 Workspace 移動 pane 會回傳新 public ID。</td><td>保留 server 權威 topology、焦點與 identity；操作後使用回應中的 ID。</td></tr>
+<tr><td>Layout</td><td>BSP tree、layout export/apply、split ratio；apply 是重建結構，不保留活躍 PTY／scrollback／process。</td><td>需要區分「調整目前版面」與「套用新佈局」。不能將 apply 包裝成無損還原。</td></tr>
+<tr><td>Terminal</td><td>Attach、observe/control connector、input/text/keys、run、output wait、read source（visible/recent/recent-unwrapped/detection）、text/ANSI、scrollback、title。</td><td>看得到／能輸入／擁有控制權是不同狀態；需要可靠 resize、scroll、重連及輸出呈現。</td></tr>
+<tr><td>Agent 操作</td><td>List/get/explain/focus/rename/read/start/prompt/wait/send-keys/attach；prompt/wait 綁定已辨識 agent。Blocked agent 的 prompt 會被拒絕。</td><td>GUI 派工不能只模擬 terminal 打字；要呈現忙碌、需回覆、不可操作及完成結果。</td></tr>
+<tr><td>Agent 狀態／偵測</td><td>working、blocked、idle、done、unknown。done 代表 idle 且未查看，不等於任務成功；unknown 不能視為完成。整合可能提供 lifecycle、native session 或兩者。</td><td>狀態保留語意與來源；不要把裝了 integration 當成所有 state/restore 都可靠。</td></tr>
+<tr><td>Agent view／metadata</td><td>宣告式 filter/sort、seen/status/context、pane/workspace tokens、display labels、TTL、authority guard；展示 metadata 不改變 lifecycle 權威。</td><td>支援高密度掃描與篩選；不能因自訂 badge 改變等待或通知邏輯。</td></tr>
+<tr><td>Events／通知</td><td>Snapshot bootstrap、typed events subscribe/wait、agent status、layout、worktree、output/scroll changes；notification.show、sound、delivery/position。</td><td>區分資料新鮮度、待處理狀態與 notification 送達結果；重連重新 snapshot。</td></tr>
+<tr><td>Git worktree</td><td>List/create/open/remove；與來源 repo、branch 和 workspace 有關聯；remove 不會刪除 branch。</td><td>建立隔離工作、開啟現有工作與移除 checkout 要有完整流程；關閉 Space 不可暗示刪除 worktree。</td></tr>
+<tr><td>Integrations</td><td>Install/status/uninstall；agent lifecycle hooks、native session reference、restore 支援依 agent 而異。</td><td>呈現支援表、安裝狀態與能力限制，保留使用者對 runtime/config 變更的掌控。</td></tr>
+<tr><td>Plugins</td><td>GitHub install、本機 link、build、enable/disable、uninstall/unlink、actions、startup/events hooks、logs、config/state directories、link handlers。</td><td>需要 registry/provenance、platform/min-version、警告與錯誤、action/context 和 logs 入口。</td></tr>
+<tr><td>Plugin panes／popup</td><td>Overlay、popup、split、tab、zoomed；popup 是 session 級模態 surface，沒有 pane ID，與一般 pane/agent API 不同。</td><td>不能只用普通 terminal pane renderer 就宣稱支援所有 plugin UI。</td></tr>
+<tr><td>實驗性圖形</td><td>pane.graphics info/set/clear/stream；需 kitty_graphics 開關；stream 的 ownership、大小限制與衝突需處理。</td><td>xterm 文字顯示不等於 plugin graphics 支援；應明確降級而非默默缺圖。</td></tr>
+<tr><td>設定／鍵盤／主題</td><td>Config check/default/reset-keys/reload、prefix/navigate modes、可配置快捷鍵、theme、sidebar/tab bar、shell、notifications、scrollback。</td><td>沿用 Herdr 心智模型，桌面快捷鍵需避免 OS/terminal 衝突；不需照搬 TUI 每個設定。</td></tr>
+<tr><td>維運／更新／遠端</td><td>Status、manifest status/reload/update、server stop/live handoff、stable/preview channels、自我更新入口、shell completion、remote client/SSH 工作模式。</td><td>區分本機和遠端 authority；Yuzora SSH/SFTP 不等於完整 Herdr remote runtime 管理。</td></tr>
+</tbody></table></div>
+<p class="note">來源：官方 v0.8.2 CLI/schema、官方 agent guide 與 socket API。下列附錄以 command families 與能力分類盤點，並非逐一執行命令測試；旗標及平台細節以實際 binary schema 為準。<a href="#s1">[1]</a> <a href="#s2">[2]</a></p>
+<details><summary>完整頂層 CLI groups 與主要子命令</summary>
+<div class="table-wrap"><table><thead><tr><th>Group</th><th>主要命令</th></tr></thead><tbody>
+<tr><td>server</td><td>agent-manifests、reload-agent-manifests、update-agent-manifests、reload-config、live-handoff、stop</td></tr>
+<tr><td>api</td><td>schema；snapshot helper 亦見官方文件，需依 binary 檢查可用性。</td></tr>
+<tr><td>status</td><td>runtime／server／client 狀態</td></tr>
+<tr><td>completion / completions</td><td>Shell completion 輸出</td></tr>
+<tr><td>config</td><td>check、reset-keys</td></tr>
+<tr><td>channel</td><td>show、set stable/preview</td></tr>
+<tr><td>workspace</td><td>list、create、get、focus、rename、report-metadata、close；排序亦有 API。</td></tr>
+<tr><td>worktree</td><td>list、create、open、remove</td></tr>
+<tr><td>tab</td><td>list、create、get、focus、rename、close；move 亦有 API。</td></tr>
+<tr><td>notification</td><td>show</td></tr>
+<tr><td>agent</td><td>list、get、explain、focus、rename、read、send-keys、start、prompt、wait、attach</td></tr>
+<tr><td>terminal</td><td>attach、session observe/control、title set/clear</td></tr>
+<tr><td>pane</td><td>list/get/current、layout/edges/neighbor、focus/resize/zoom/rename、read/input/send-keys/send-text/send-input、split/swap/move/close、run/wait-output、process-info、report-agent/report-agent-session/report-metadata/release-agent</td></tr>
+<tr><td>plugin</td><td>install/link/list/log-list/set-enabled/uninstall/unlink、action list/invoke、pane open/focus/close、config-dir/build</td></tr>
+<tr><td>integration</td><td>install、status、uninstall</td></tr>
+<tr><td>session</td><td>list、attach、stop、delete</td></tr>
+</tbody></table></div>
+<p>Group 以外還有啟動、<code>--remote &lt;host&gt;</code>、<code>--session &lt;name&gt;</code>、<code>--no-session</code>、<code>--remote-keybindings</code>、<code>--default-config</code>、version/help，以及 <code>herdr update</code>／<code>herdr update --handoff</code> 入口；不能用 group 數量當成能力總數。原始 API 另含 <code>agent.view.set/clear</code>、<code>layout.apply</code>、<code>pane.graphics.*</code>、<code>popup.close</code> 等進階介面。</p>
+</details>
+<details><summary>Agent 支援表：狀態 authority 與 native session restore</summary>
+<p>官方 Agents 文件現行表格列出以下 20 個主要支援項目，另列 Gemini CLI、Cline 為已偵測但測試較少。首頁顯示「21 agent CLIs detected」，與表格分類口徑不一致，因此本報告逐項列名，不把首頁數字當成完整覆蓋率。這些是 Herdr 的能力，並非 Yuzora Windows／WSL 皆已驗收。</p>
+<div class="table-wrap"><table><thead><tr><th>Agent</th><th>狀態 authority</th><th>Native session restore</th></tr></thead><tbody>
+<tr><td>Pi</td><td>Lifecycle hooks；未啟用時 screen manifest</td><td>有</td></tr>
+<tr><td>OMP</td><td>Lifecycle hooks；未啟用時 screen manifest</td><td>有</td></tr>
+<tr><td>GitHub Copilot CLI</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Devin CLI</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Kimi Code CLI</td><td>Lifecycle hooks；未啟用時 screen manifest</td><td>有</td></tr>
+<tr><td>Hermes Agent</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Qoder CLI</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Qwen Code</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Droid</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>OpenCode</td><td>Lifecycle plugin；未啟用時 screen manifest</td><td>有</td></tr>
+<tr><td>Kilo Code CLI</td><td>Lifecycle plugin；未啟用時 screen manifest</td><td>有</td></tr>
+<tr><td>MastraCode</td><td>Lifecycle hooks</td><td>有</td></tr>
+<tr><td>Claude Code</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Codex</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Cursor Agent CLI</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Amp</td><td>Screen manifest</td><td>無</td></tr>
+<tr><td>Grok CLI</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Antigravity CLI</td><td>Screen manifest</td><td>有</td></tr>
+<tr><td>Kiro CLI</td><td>Screen manifest</td><td>無</td></tr>
+<tr><td>Maki</td><td>Screen manifest</td><td>無</td></tr>
+</tbody></table></div>
+<p>Restore 有支援仍需有效的官方 integration-reported session reference。只有 session identity 的 integration 不取代 screen detection；完整 lifecycle hooks 正在回報時才接管狀態 authority。Screen detection 讀的是 live bottom-buffer；沒有匹配 approval/question 規則時也可能回到 idle，應用 <code>agent explain</code> 查原因。未辨識的 agent 仍可作一般 terminal process 執行。</p>
+</details>
+<details><summary>持續執行與恢復的差別</summary>
+<div class="table-wrap"><table><thead><tr><th>情境</th><th>Layout</th><th>Live process</th><th>畫面／Agent Session</th></tr></thead><tbody>
+<tr><td>Detach／reattach</td><td>保留</td><td>保留</td><td>Live terminal；原 agent process 仍在。</td></tr>
+<tr><td>Server restart</td><td>Snapshot 還原</td><td>不保留任意原 process</td><td>Recent history 可重播；具有效 native reference 的支援 agent 可 resume。</td></tr>
+<tr><td>Update</td><td>依相容性／重啟路徑</td><td>視實際路徑</td><td>不可只憑版本更新成功就宣稱保留工作。</td></tr>
+<tr><td>Update with handoff</td><td>Best effort</td><td>Handoff 成功時保留</td><td>需實際確認交接結果；Herdr 自有 updater 才提供此更新流程。</td></tr>
+</tbody></table></div>
+<p>Native restore 優先於該 pane 的 saved history replay。無效、重複、過期或不支援的 session reference 會退回原目錄 shell。Homebrew／mise／Nix 依各自管理器更新；<code>--remote</code> 是 thin local client 連接 Linux/macOS remote server，不是把所有作業系統組合視為相同。</p>
+</details>
+</section>
+
+<section id="fit"><h2>③ UI/UX 是否滿足 Herdr 設計？</h2>
+<p><strong>若目標是「Herdr 的桌面 ADE 工作面」，目前方向成立；若目標是「完整替代 Herdr TUI/CLI 的圖形化控制台」，仍需補功能。</strong>API 沒有 GUI wrapper，不等於使用者在 terminal 內無法執行；這裡評估的是產品介面是否有明確、可完成的操作流程。</p>
+<div class="table-wrap"><table><thead><tr><th>設計需求</th><th>判定</th><th>目前狀態與差距</th></tr></thead><tbody>
+<tr><td>Space → Agent → Terminal</td><td class="good">核心滿足</td><td>Space rail、Agents、Attention、跳轉 owning pane/Space、read-only Inspector 與 terminal 已接通。<a href="#s7">[7]</a></td></tr>
+<tr><td>Session 身份與隔離</td><td class="good">核心滿足</td><td>Named Session selector、running/stopped、per-session snapshot/capability，避免跨 session 借用狀態。<a href="#s6">[6]</a></td></tr>
+<tr><td>持續執行／多 client</td><td class="good">架構滿足</td><td>server 擁有 process；Yuzora connector 有 observer/controller/takeover。今天未重測 detach/reconnect 或多 client 搶控制權。<a href="#s5">[5]</a> <a href="#s8">[8]</a></td></tr>
+<tr><td>Tab／pane layout</td><td class="partial">主要操作滿足</td><td>Create/rename/close/split/zoom/swap/ratio 等已實作；部分入口集中右鍵選單。完整 pane move、layout apply/模板等尚非現有 GUI 功能對等範圍。<a href="#s9">[9]</a></td></tr>
+<tr><td>Attention</td><td class="partial">單 Session 滿足；跨 Session 有缺口</td><td>目前主要 poll／event subscription 與顯示限 selected session，背景 Named Session 沒有全域待辦聚合。這是 Yuzora 多 Session UX 的補強需求，不宣稱 Herdr 原生跨獨立 runtime 聚合。<a href="#s6">[6]</a> <a href="#s7">[7]</a></td></tr>
+<tr><td>Agent 操作閉環</td><td class="partial">部分</td><td>Catalog/create/get/read/inspect 已有；缺完整 prompt/wait/send-keys、attach/resume、explain 的 GUI 流程。Read-only Inspector 是現行設計，不是其本身出錯。<a href="#s5">[5]</a> <a href="#s7">[7]</a></td></tr>
+<tr><td>Worktree</td><td class="partial">部分</td><td>Inventory/provenance 可讀；缺 Herdr create/open/remove checkout 的完整 GUI 流程。既有 Git 頁不等同 Herdr worktree lifecycle。<a href="#s10">[10]</a></td></tr>
+<tr><td>Integrations／Plugins</td><td class="partial">特定整合滿足；通用管理有缺口</td><td>WSL Pi 有專用 experimental 設定；不是通用 plugin registry/actions/logs/panes/graphics manager。<a href="#s4">[4]</a> <a href="#s11">[11]</a></td></tr>
+<tr><td>能力／錯誤／恢復</td><td class="partial">防呆已有；恢復入口可加強</td><td>Unsupported、stopped、error、disabled reason、empty onboarding 已有。需把 connecting、stale、版本不符及下一步說清楚；不能用「重啟」一鍵無條件停止別人的 server。</td></tr>
+<tr><td>滑鼠與鍵盤</td><td class="partial">有基礎；可發現性待改善</td><td>Context menus、Radix、TerminalDrawer 的 roving tabindex 與 Arrow/Home/End 已有。需驗證完整 Herdr pane traversal，不能把 drawer tab keyboard 支援視為全 app 可及性通過。<a href="#s9">[9]</a></td></tr>
+<tr><td>高密度／窄窗／視覺</td><td>待實機驗證</td><td>Session pills、Space label 與 agent status 用字很小，technical diagnostics 長。既有截圖只證明少量 agent 與特定尺寸；不能推出大量 agent、200% zoom、窄窗或螢幕閱讀器已可用。</td></tr>
+<tr><td>Remote／維運／TUI 設定</td><td class="partial">子集／產品範圍差異</td><td>部分應保持由 Herdr CLI 處理。是否加入完整 remote、server lifecycle、theme/keybinding config、notification/graphics，應依產品定位決定。</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="priorities"><h2>建議改善順序與驗收條件</h2>
+<p>以下是研究建議，未開始實作，也沒有替專案建立新的 ADR 或功能承諾。</p>
+<div class="table-wrap"><table><thead><tr><th>順序</th><th>觸發情境 → 影響</th><th>最小改善</th><th>可驗收結果</th></tr></thead><tbody>
+<tr><td>1 · 多 Session 可見性</td><td>使用者停在 A，B 的 agent 進入 blocked；目前可能需切回 B 才發現。</td><td>Session pills 顯示待處理數、更新時間／stale；若產品要跨 session 監督，再加入全域 Attention 和有界背景更新。</td><td>兩個 session 的測試 agent 分別進入 blocked/done；前台可辨來源、可跳轉正確 pane，並區分已讀與 stale。</td></tr>
+<tr><td>2 · Agent 操作與恢復</td><td>看見 agent 後，想續接、派工或解釋 unknown，仍需自行知道 CLI。</td><td>以 capability 驅動 prompt/wait/attach/explain；把跳回 terminal 與結構化 action 都放在清楚位置。</td><td>支援版本可完成一輪派工；blocked 時不送入 prompt；agent 被替換不誤完成原 wait；不支援時提供原因。</td></tr>
+<tr><td>3 · 故障狀態的下一步</td><td>Stopped、events stale、binary/schema mismatch 看起來都像「不可用」。</td><td>狀態→原因→受控 action（重新連接／刷新／開啟診斷）；對 server stop/upgrade 保留明確 ownership。</td><td>斷線、server停止、protocol不符各自有正確提示；恢復後 snapshot/layout/控制權不跨 session 混用。</td></tr>
+<tr><td>4 · 常用 pane 操作可發現性</td><td>初次使用者不知右鍵才能找到 split/zoom/swap。</td><td>Terminal header 增加常用操作入口與快捷鍵提示，沿用現有 shadcn primitive 與 context menu。</td><td>不依賴記憶快捷鍵也能 split→focus→resize→zoom→還原；鍵盤可達，焦點與結果清楚。</td></tr>
+<tr><td>5 · Worktree 完整流程</td><td>可看到 branch/provenance，卻無法直接為新任務建立或打開 Herdr worktree。</td><td>先做 create/open；再做有 dirty/process/context 說明的 remove。</td><td>Workspace canonical path、branch/base 和 checkout 對應正確；取消不產生變更；移除不誤刪 branch。</td></tr>
+<tr><td>6 · 資訊階層與通用擴充</td><td>大量 agent／長 session 名稱與 diagnostics 增加掃描負擔；plugin 功能只能靠 CLI。</td><td>先改善文字尺寸／截斷與狀態文字，將診斷細節折疊；再視需要增設 Plugins &amp; Integrations 工作面。</td><td>窄窗與高 zoom 保留關鍵 status/action；unsupported plugin 呈現原因，錯誤與 logs 可追溯。</td></tr>
+</tbody></table></div>
+<p class="callout">不建議為了「功能對等」立即把所有 Herdr raw API 做成按鈕。先補常用工作流程；advanced graphics、layout apply、server live handoff、完整 config editing 可以維持進階入口，前提是支援邊界和操作方式清楚。</p>
+</section>
+
+<section id="visual"><h2>視覺證據與實機驗收缺口</h2>
+<div class="screens">
+<figure><a href="../../.yuuzu/eval/evidence/windows-p8-2026-08-31/9d0634c/msi-agent-idle.png"><img src="../../.yuuzu/eval/evidence/windows-p8-2026-08-31/9d0634c/msi-agent-idle.png" alt="既有 matching-HEAD Windows MSI 截圖，顯示 Spaces、Pi idle 與 controller terminal" loading="lazy"></a><figcaption>Matching-HEAD Windows MSI evidence：Space／Agent idle／controller。長畫布及少 agent 場景不能證明窄窗或多 agent 可用性。</figcaption></figure>
+<figure><a href="../../.yuuzu/eval/evidence/windows-p8-2026-08-31/9d0634c/nsis-settings-enabled.png"><img src="../../.yuuzu/eval/evidence/windows-p8-2026-08-31/9d0634c/nsis-settings-enabled.png" alt="既有 Windows NSIS Herdr settings 截圖，顯示 WSL Pi experimental switch 與 protocol 20 diagnostics" loading="lazy"></a><figcaption>Matching-HEAD Windows NSIS evidence：WSL Pi switch 與 binary diagnostics。技術細節齊全，主操作與診斷的資訊層級仍可改善。</figcaption></figure>
+</div>
+<p>主研究者另檢視 <code>w09-yuzora-attention-blocked.png</code>：可證明當次 blocked attention 曾呈現；terminal 當下空白不足以判定 bug。README 的 <code>ade-herdr-zh.png</code> 來自較舊 <code>b34b393 / v0.0.8</code>，只作歷史 Inspector 參考，未當作當前功能驗收。</p>
+<p>本地 acceptance summary 的 current_candidate 對應 HEAD，記錄 MSI／NSIS 啟用 → Pi idle → 停用、foreign registration refusal、initial status failure 的 UI evidence；狀態為 <code>EXACT_ARTIFACTS_SINGLE_DISTRO_P8_ACCEPTED_W18_PENDING</code>，W18 兩個實際安裝 WSL distro 尚未完成。舊 <code>QA-REPORT.md</code> 的 beta.1 數字和發布阻擋項沒有當成今天的狀態。<a href="#s11">[11]</a></p>
+<p><strong>下一輪實機應覆蓋：</strong>跨 Named Session 的 background attention、多 client observer/controller、agent prompt/blocked/replace、native session resume、四 pane 與多 agent、窄窗／200% zoom／鍵盤焦點、斷線及能力降級。這些是驗收工作，不是本報告已完成的測試。</p>
+</section>
+
+<section id="sources"><h2>來源與精確導覽</h2>
+<ol class="source-list">
+<li id="s1"><strong>官方版本與 source：</strong><a href="https://github.com/herdrdev/herdr/releases/tag/v0.8.2">v0.8.2 release</a>；<a href="https://api.github.com/repos/herdrdev/herdr/releases/latest">latest endpoint</a>；<a href="https://github.com/herdrdev/herdr/blob/v0.8.2/src/cli.rs">CLI source</a>；<a href="https://github.com/herdrdev/herdr/blob/v0.8.2/src/api/schema.rs">API schema</a>。2026-09-06 經 GitHub connector 讀取。</li>
+<li id="s2"><strong>官方產品設計：</strong><a href="https://herdr.dev/agent-guide.md">Agent guide</a>；<a href="https://herdr.dev/docs/">Docs / version selector</a>；<a href="https://herdr.dev/zh-cn/docs/socket-api/">Socket API（本次實際閱讀）</a>；<a href="https://herdr.dev/docs/session-state/">Session state</a>；<a href="https://herdr.dev/docs/agents/">Agents</a>。官網翻譯標示為 LLM 翻譯，命令基準另以 v0.8.2 source 核對。</li>
+<li id="s3"><strong>資源與版本：</strong><a href="../../scripts/prepare-herdr-resources.ts">scripts/prepare-herdr-resources.ts:35,44–70</a>；<a href="../operations.md">docs/operations.md:656,663</a>；<a href="../../package.json">package.json:2–24</a>；<a href="../../src-tauri/tauri.conf.json">src-tauri/tauri.conf.json:3–10</a>。</li>
+<li id="s4"><strong>架構與領域：</strong><a href="../../CLAUDE.md">CLAUDE.md</a>；<a href="../../.yuuzu/CONTEXT.html">.yuuzu/CONTEXT.html:19–35</a>；<a href="../../src-tauri/src/lib.rs">src-tauri/src/lib.rs:248–259,438–465</a>。</li>
+<li id="s5"><strong>Typed boundary：</strong><a href="../../src/lib/herdrIpc.ts">src/lib/herdrIpc.ts:48–390</a>；<a href="../../src/lib/herdrTypes.ts">src/lib/herdrTypes.ts:20–24,139–162,398–435</a>；<a href="../../src-tauri/src/herdr_service.rs">src-tauri/src/herdr_service.rs:1368,1484,4054–4127,4749–5272</a>。</li>
+<li id="s6"><strong>Session 與事件：</strong><a href="../../src/workbench/HerdrBridge.tsx">src/workbench/HerdrBridge.tsx:19–27,76–89,127–193</a>；<a href="../../src/state/herdrStore.ts">src/state/herdrStore.ts:718–797,899–990,1644–1713</a>。</li>
+<li id="s7"><strong>主要 UI：</strong><a href="../../src/app/workbench/HerdrNavContent.tsx">HerdrNavContent.tsx:202–303,306–367,406–429,496–564</a>；<a href="../../src/app/workbench/HerdrAgentInspector.tsx">HerdrAgentInspector.tsx:34–257</a>；<a href="../../src/app/workbench/WorkspaceRail.tsx">WorkspaceRail.tsx:149–417</a>。</li>
+<li id="s8"><strong>Terminal：</strong><a href="../../src/app/panels/HerdrTerminalPage.tsx">src/app/panels/HerdrTerminalPage.tsx:140–628,1061–1089,1134–1147</a>；<a href="../../src/terminal/terminalTransport.ts">src/terminal/terminalTransport.ts:197–387</a>。</li>
+<li id="s9"><strong>操作入口與鍵盤：</strong><a href="../../src/app/workbench/contextMenuDefs.ts">contextMenuDefs.ts:755–1030</a>；<a href="../../src/app/workbench/TerminalDrawer.tsx">TerminalDrawer.tsx:496–519,723–808,875–930</a>。</li>
+<li id="s10"><strong>Worktree：</strong><a href="../../src/lib/herdrWorktree.ts">src/lib/herdrWorktree.ts:10–88</a>；<a href="../../src/lib/herdrIpc.ts">src/lib/herdrIpc.ts:111–121</a>；<a href="../../src/app/workbench/WorkspaceRail.tsx">WorkspaceRail.tsx:240–270,384–413</a>。</li>
+<li id="s11"><strong>既有驗收：</strong><a href="../../.yuuzu/eval/evidence/windows-p8-2026-08-31/acceptance-summary.json">acceptance-summary.json:71–81,252–329</a>；<a href="../../.yuuzu/eval/evidence/windows-p8-2026-08-31/9d0634c/nsis-settings-transaction.json">matching-HEAD NSIS transaction</a>；<a href="../../.yuuzu/eval/evidence/windows-p8-2026-08-31/w09-yuzora-attention-blocked.png">blocked attention screenshot</a>。</li>
+<li id="s12"><strong>Editor／LSP／搜尋／i18n：</strong><a href="../../src/workbench/EditorArea.tsx">EditorArea.tsx:22</a>；<a href="../../src/lsp/lspManager.test.ts">lspManager.test.ts:84–169</a>；<a href="../../src/workbench/search/useWorkspaceSearch.ts">useWorkspaceSearch.ts:29</a>；<a href="../../src/lib/i18n/index.ts">i18n/index.ts:29–91</a>。</li>
+<li id="s13"><strong>其他工具 IPC：</strong><a href="../../src/lib/ipc.ts">src/lib/ipc.ts</a>：Git 157–320、Database 475–560、SSH/SFTP 601–646、Preview 664–712。</li>
+</ol>
+<p class="note">本報告由三份 Luna 研究綜合而成；來源若後續更新，請以固定 HEAD 與固定 Herdr tag 重做對照。完整 API 存在不代表所有平台、agent 或 Yuzora build 都具相同操作能力。</p>
+</section>
+<footer class="meta">研究完成於 2026-09-06 · 新增本研究報告；保留既有未提交變更。</footer>
+</main></body></html>

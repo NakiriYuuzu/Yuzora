@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora 幾何 Logo 與 Pages 品牌展示</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 880px; margin: 48px auto; padding: 0 24px; line-height: 1.8; }
+  h1 { font-size: 28px; } h2 { margin-top: 32px; font-size: 20px; }
+  code { overflow-wrap: anywhere; }
+  .preview { background: white; padding: 24px; border-radius: 16px; }
+  .preview img { display: block; width: 100%; height: auto; }
+</style>
+<main>
+  <h1>Yuzora 幾何 Logo 與 Pages 品牌展示</h1>
+  <p>2026-09-10：依使用者選定的三折面 Y 參考圖重建 SVG，並加入 GitHub Pages 網站。</p>
+  <div class="preview"><img src="../../site/assets/brand/yuzora-lockup.svg" alt="銀色、鈷藍、青綠折面構成的 Yuzora 標誌與字標"></div>
+  <h2>交付</h2>
+  <ul>
+    <li><a href="../../site/assets/brand/yuzora-mark.svg">純標誌 SVG</a>：256 × 256，透明背景，四條路徑構成三個折面與折角。</li>
+    <li><a href="../../site/assets/brand/yuzora-lockup.svg">含文字 SVG</a>：718 × 256，Hanken Grotesk 600 字標經 HarfBuzz 字距處理後轉為向量輪廓，無外部字型依賴。</li>
+    <li><a href="../../site/assets/brand/yuzora-geometry.svg">幾何構成 SVG</a>：同一母版的網格、折線、圓角參考與中央間距。</li>
+  </ul>
+  <p><code>scripts/generate-brand-assets.py</code> 保存母版與輸出流程，透過 <code>uv run scripts/generate-brand-assets.py</code> 可重新產生三個檔案。字型授權附於 <code>site/assets/brand/Hanken-Grotesk-OFL.txt</code>。</p>
+  <h2>網站整合</h2>
+  <p><code>site/index.html#brand</code> 新增標誌、字標、幾何構成、小尺寸與單色展示，以及兩版 Logo 與幾何 SVG 的下載連結。導覽列、頁尾與 favicon 採新標誌；其他產品內容與下載功能保留。</p>
+  <p>網站強調色同步為鈷藍，次色為海玻璃綠。SVG 的主色、次色、中性色、字標與構成線共用 CSS 主題變數，沿用既有深淺色控制；新增內容包含中英文文案與輔助標籤。網站使用原生 HTML/CSS，新增部分是品牌圖稿展示，未引入通用 UI primitive 或新的 UI 框架。</p>
+  <p>網站透過同源 SVG use 嵌入圖稿，以繼承主題色。獨立下載的檔案採參考配色與深色字標作為穩定預設；嵌入其他 App 時，可將 <code>--logo-*</code> 變數對應至該 App 的主題。完整方式見 <a href="../../site/assets/brand/README.md">資產使用說明</a>。</p>
+  <h2>驗證與發布狀態</h2>
+  <ul>
+    <li>網站頁面與平台下載測試：2 檔、28 項通過。涵蓋新增 SVG 下載、同源 fragment 目標、雙語字典與原有下載流程。</li>
+    <li>修改的網站 JavaScript 與測試檔 ESLint 通過；git diff --check 通過。</li>
+    <li>三個 SVG 經 macOS Quick Look 渲染；已檢視標誌、字標與構成圖，修正透明底獨立檔案跟隨系統偏好後產生的文字對比問題。</li>
+    <li>瀏覽器視覺驗收與發布仍待明確授權；單元測試及向量渲染不能替代實際網站的深淺色、手機版與外部 SVG use 驗證。</li>
+  </ul>
+  <h2>原生與 App 內圖示同步</h2>
+  <p>後續依使用者要求，SVG 母版同步輸出至 <code>public/brand/</code>；新增 <code>BrandMark</code> 元件，側邊欄與設定視窗改為共用 SVG。啟動畫面使用含文字 SVG，App favicon 使用純標誌。App 的 <code>--logo-*</code> 映射至現有 accent 與深淺色變數，保留使用者原本選擇的主題。</p>
+  <p><code>uv run scripts/generate-brand-assets.py --native</code> 會呼叫 Tauri 官方 icon CLI，從固定配色的午夜藍底 SVG 產生 <code>src-tauri/icons/</code> 下的 ICNS、ICO、PNG 與既有平台尺寸，並同步 <code>public/yuzora.png</code>、<code>site/assets/yuzora-icon.png</code>。原生圖示需重新打包安裝才會生效，目前沒有改動已安裝的 App。</p>
+  <ul>
+    <li><code>bun run build</code> 通過，包含 TypeScript 與 Vite；仍有既有 bundle 大小及 remotePreviewUrl 匯入提示。</li>
+    <li>AppShell、設定、啟動畫面與網站的 6 個相關測試檔，46 項測試通過。</li>
+    <li>修改的 React 檔案 ESLint 無錯誤；AppShell 與 SettingsDialog 各有一個原有 effect 設定 state 的警告。</li>
+    <li>確認網站與 App 的兩份 SVG 逐位元相同、PNG 尺寸正確、ICO／ICNS 容器有效，且兩個 PNG fallback 與原生輸出相同；已檢視生成的 256px 原生圖示。</li>
+  </ul>
+  <p>目前分支為 <code>release/v0.0.9</code>。Pages workflow 直接發布 <code>site/</code>；支援 main 分支的 site 變更推送與手動觸發，但已即時查核 GitHub 的 github-pages 環境，部署分支規則僅允許 <code>main</code>。因此發布前須取得明確 Git 操作授權，將本次品牌變更單獨帶到 main，不能從 release 分支直接部署。尚未執行 Git 暫存、提交、推送或部署。</p>
+</main>
+</html>

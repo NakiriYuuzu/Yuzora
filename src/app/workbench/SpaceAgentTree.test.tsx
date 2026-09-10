@@ -88,6 +88,28 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+it("saves first-seen Bot combinations and reuses them after the tree remounts", () => {
+  const firstMount = render(<SpaceAgentTree />);
+  const saved = loadRecentWorkspacePresentations();
+  const key = spacePresentationKey(scopes[0], "/repo");
+  // Two hosts own two identities; the first host's Sessions share one Bot.
+  expect(Object.keys(saved)).toHaveLength(2);
+  expect(saved[key].character).toBeDefined();
+  const appearances = (container: HTMLElement) =>
+    [...container.querySelectorAll(".tree-space-identity .space-character-art")].map((art) => [
+      art.getAttribute("data-shell"), art.getAttribute("data-face"), art.getAttribute("data-detail"),
+    ]);
+  const before = appearances(firstMount.container);
+  expect(before).toHaveLength(3);
+  expect(before[0]).toEqual(before[2]);
+  firstMount.unmount();
+  useRecentWorkspacesStore.setState({ presentations: saved });
+
+  const secondMount = render(<SpaceAgentTree />);
+
+  expect(appearances(secondMount.container)).toEqual(before);
+  expect(loadRecentWorkspacePresentations()).toEqual(saved);
+});
 it("keeps same path and agent IDs separate across hosts and sessions", () => {
   render(<SpaceAgentTree />);
   const leaves = screen
@@ -118,6 +140,24 @@ it("supports Home, End, parent navigation and collapse without changing runtime 
   fireEvent.keyDown(rows[0], { key: "ArrowLeft" });
   expect(screen.getAllByRole("treeitem")).toHaveLength(7);
   expect(useHerdrStore.getState().selectedSessionName).toBe(scopes[0]);
+});
+it("collapses and expands only the requested Session, including same-named Sessions on different hosts", () => {
+  render(<SpaceAgentTree />);
+  expect(screen.getAllByRole("button", { name: /^Collapse Spaces in / })).toHaveLength(3);
+  expect(screen.queryByText("Loaded snapshot")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Collapse Spaces in B · same" }));
+  expect(screen.getAllByRole("treeitem")).toHaveLength(7);
+  const expand = screen.getByRole("button", { name: "Expand Spaces in B · same" });
+  expect(expand).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: "Collapse Spaces in A · same" })).toHaveAttribute("aria-expanded", "true");
+  expect(useHerdrStore.getState().selectedSessionName).toBe(scopes[0]);
+  fireEvent.click(expand);
+  expect(screen.getAllByRole("treeitem")).toHaveLength(9);
+  expect(screen.getByRole("button", { name: "Collapse Spaces in B · same" })).toHaveAttribute("aria-expanded", "true");
+  const project = screen.getAllByRole("treeitem").filter(row => row.getAttribute("aria-level") === "1")[1];
+  fireEvent.keyDown(project, { key: "ArrowLeft" });
+  fireEvent.click(screen.getByRole("button", { name: "Expand Spaces in B · same" }));
+  expect(screen.getAllByRole("treeitem")).toHaveLength(9);
 });
 it("persists sanitized static character preference scoped by host, shared only between that host sessions", () => {
   const first = spacePresentationKey(scopes[0], "/repo"),

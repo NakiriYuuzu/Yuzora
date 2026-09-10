@@ -1,5 +1,6 @@
 pub mod askpass;
 pub mod asset_scope;
+mod brand_icon;
 pub mod db_connection_actor;
 pub mod db_credentials;
 pub mod db_profiles;
@@ -268,6 +269,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            brand_icon::set_brand_icon,
             host_service::host_connect,
             host_service::host_request,
             host_service::host_disconnect,
@@ -385,6 +387,7 @@ pub fn run() {
             herdr_service::herdr_snapshot,
             herdr_service::herdr_terminal_open,
             herdr_service::herdr_terminal_input,
+            herdr_service::terminal_clipboard_image,
             herdr_service::herdr_terminal_resize,
             herdr_service::herdr_terminal_scroll,
             herdr_service::herdr_terminal_release,

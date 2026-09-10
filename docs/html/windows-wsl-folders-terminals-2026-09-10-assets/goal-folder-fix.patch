@@ -1,0 +1,33 @@
+--- a/src/workbench/FolderPickerHost.tsx
++++ b/src/workbench/FolderPickerHost.tsx
+@@ -269,7 +269,7 @@
+     setBusy(true);setError(null)
+     const generation=browseGeneration.current
+     const current=()=>generation===browseGeneration.current && useHostStore.getState().hosts[hostId]?.connection?.owner===owner
+-    try {const selected=await registerRuntimeWorkspace(owner,directory,current);if(current())onChoose(selected)}
++    try {const selected=await registerRuntimeWorkspace(owner,directory,()=>useHostStore.getState().hosts[hostId]?.connection?.owner===owner);if(current())onChoose(selected)}
+     catch(error) {if(current())setError(String(error))}
+     finally {if(current())setBusy(false)}
+   }
+--- a/src/workbench/FolderPickerHost.test.tsx
++++ b/src/workbench/FolderPickerHost.test.tsx
+@@ -281,3 +281,19 @@
+   fireEvent.click(screen.getByRole("button", { name: "Manage this host" }))
+   expect(useUiStore.getState().settingsSection).toBe("herdr")
+ })
++
++it("keeps the chosen WSL workspace valid after the folder dialog closes", async () => {
++  const uri = remoteFilePath("wsl-a", "/selected")
++  vi.mocked(registerRuntimeWorkspace).mockResolvedValueOnce(uri)
++  vi.mocked(requestHost).mockImplementation(async (_owner, operation) => operation.method === "workspaceOpen" ? { capabilityId: "browse", canonicalPath: "/selected" } : [])
++  const view = mountWslRuntime()
++  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
++  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
++  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
++  await waitFor(() => expect(finish).toHaveBeenCalledWith(uri))
++  const isConnectionCurrent = vi.mocked(registerRuntimeWorkspace).mock.calls.at(-1)![2]
++  view.unmount()
++  expect(isConnectionCurrent()).toBe(true)
++  useHostStore.setState({ hosts: {} })
++  expect(isConnectionCurrent()).toBe(false)
++})

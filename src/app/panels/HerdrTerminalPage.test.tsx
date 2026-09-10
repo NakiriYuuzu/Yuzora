@@ -1,9 +1,11 @@
 import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
+import { Profiler } from "react"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { HerdrCapabilities, HerdrTerminalEvent } from "@/lib/herdrTypes"
+import { normalizeHerdrSnapshot } from "@/lib/herdrNormalize"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 
 const xtermMock = vi.hoisted(() => {
@@ -59,6 +61,7 @@ const xtermMock = vi.hoisted(() => {
     write = vi.fn((_data: string, onProcessed?: () => void) => onProcessed?.())
     focus = vi.fn()
     reset = vi.fn()
+    refresh = vi.fn()
     hasSelection = vi.fn(() => this.selection.length > 0)
     getSelection = vi.fn(() => this.selection)
     paste = vi.fn((text: string) => this.dataHandler?.(text))
@@ -330,6 +333,40 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     cleanup()
   })
 
+  it("ignores attachment updates for other terminal pages while keeping its own badge reactive", async () => {
+    const renderCommit = vi.fn()
+    render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible /></Profiler>)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    const [key, record] = [...useHerdrStore.getState().attachments][0]
+    renderCommit.mockClear()
+    await act(async () => {
+      useHerdrStore.getState().registerAttachment("other-page", { ...record, pagePath: "other-page" })
+    })
+    expect(renderCommit).not.toHaveBeenCalled()
+    act(() => useHerdrStore.getState().registerAttachment(key, { ...record, mode: "observe", role: "observer" }))
+    expect(renderCommit).toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not redraw a terminal when only runtime focus changes", async () => {
+    const snapshot = normalizeHerdrSnapshot({ protocol: 22, version: "0.9.0", snapshot: {
+      tabs: [{ tab_id: "tab-1", workspace_id: "space-1", terminal_id: "term-1", pane_id: "pane-1" }],
+      panes: [{ pane_id: "pane-1", terminal_id: "term-1", tab_id: "tab-1", workspace_id: "space-1", cwd: "/demo" }]
+    } }, "default")
+    const runtime = { connectionState: "ready" as const, capabilities: terminalControlCapabilities, snapshot, baseSnapshot: snapshot, worktreeInventory: null, errorMessage: null }
+    useHerdrStore.setState({ snapshot, runtimesBySession: { default: runtime } })
+    const renderCommit = vi.fn()
+    render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId="default" terminalId="term-1" herdrTabId="tab-1" active visible /></Profiler>)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    renderCommit.mockClear()
+    act(() => {
+      const focused = { ...snapshot, focusedTabId: "other-tab", tabs: snapshot.tabs.map(tab => ({ ...tab, focused: false })) }
+      useHerdrStore.setState({ snapshot: focused, runtimesBySession: { default: { ...runtime, snapshot: focused } } })
+    })
+    expect(renderCommit).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+  })
+
   it("does not steal focus when a naming dialog is pending before its portal mounts", async () => {
     void useTextInputDialogStore.getState().request({ title: "Name", label: "Name", confirmLabel: "Save" })
     try {
@@ -474,6 +511,40 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     )
   })
 
+  it("does not render terminal pages for unrelated runtime snapshot updates", async () => {
+    const renderCommit = vi.fn()
+    render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible /></Profiler>)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    renderCommit.mockClear()
+    for (let i = 0; i < 20; i++) {
+      act(() => useHerdrStore.setState((state) => ({ runtimesBySession: {
+        ...state.runtimesBySession,
+        other: { ...state.runtimesBySession.default, errorMessage: `update ${i}` }
+      } })))
+    }
+    expect(renderCommit).not.toHaveBeenCalled()
+  })
+
+  it("recovers a truncated hidden ANSI stream before painting the selected agent", async () => {
+    const { rerender } = render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial screen", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(1))
+    rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active={false} visible={false} />)
+    herdrIpcMock.emit(frame(2, "\u001b[?2026h" + "x".repeat(300 * 1024)))
+    rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+    expect(herdrIpcMock.herdrTerminalRelease).toHaveBeenCalledTimes(1)
+    expect(term.write).toHaveBeenCalledTimes(1)
+    herdrIpcMock.emit(frame(1, "\u001b[2Jrestored screen", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(2))
+    expect(term.write.mock.calls[1][0]).toContain("restored screen")
+    expect(term.write.mock.calls[1][0]).not.toContain("was truncated")
+    expect(xtermMock.state.terminals).toHaveLength(1)
+    expect(term.refresh).toHaveBeenCalledWith(0, term.rows - 1)
+  })
+
   it("does not resize Herdr again when a hidden tab returns at the same dimensions", async () => {
     const { rerender } = render(
       <HerdrTerminalPage
@@ -605,7 +676,7 @@ describe("HerdrTerminalPage clipboard", () => {
     await act(async () => completeOpen())
 
     await waitFor(() => {
-      expect(term.paste).toHaveBeenCalledWith("setup clipboard payload")
+      expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledWith("sess-1", "\x1b[200~setup clipboard payload\x1b[201~", null)
     })
   })
 
@@ -661,7 +732,7 @@ describe("HerdrTerminalPage clipboard", () => {
 
     expect(term.emitKey(event)).toBe(false)
     await waitFor(() => {
-      expect(term.paste).toHaveBeenCalledWith("Herdr clipboard payload")
+      expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledWith("sess-1", "\x1b[200~Herdr clipboard payload\x1b[201~", null)
     })
     expect(event.defaultPrevented).toBe(true)
   })
@@ -702,6 +773,16 @@ describe("HerdrTerminalPage clipboard", () => {
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
 
     expect(term.paste).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
+  })
+
+  it("sends Shift+Enter as one bracketed newline rather than a submit byte", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const event = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, cancelable: true })
+    expect(xtermMock.state.terminals[0].emitKey(event)).toBe(false)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledExactlyOnceWith("sess-1", "\x1b[200~\n\x1b[201~", null))
+    expect(clipboardMock.readText).not.toHaveBeenCalled()
   })
 })
 

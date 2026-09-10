@@ -1,0 +1,4 @@
+Command result: Host HERDR 單獨重跑
+Status: PASS
+同一測試 1 passed；0.23 秒；exit 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 549 filtered out; finished in 0.23s

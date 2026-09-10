@@ -515,6 +515,8 @@
   "herdrTerminal": {
     "inputPaused": "輸入已暫停，無法完成傳送。請重新開啟此終端機，確認最後一筆指令後再繼續輸入。",
     "defaultTitle": "Herdr 終端機",
+    "focused": "使用中",
+    "focusPane": "聚焦終端機：{{name}}",
     "observer": "觀察者",
     "controller": "控制者",
     "takeControl": "取得控制",
@@ -522,6 +524,9 @@
     "sessionStopped": "Session「{{name}}」未運行。請用 `herdr session attach {{name}}` 啟動。",
     "missingTerminal": "窗格尚無 terminal 識別",
     "legacyLayout": "多窗格版面配置無法使用；改以單一終端機顯示",
+    "layoutRefreshFailed": "版面更新失敗；保留目前窗格",
+    "layoutRetrying": "重試中…",
+    "retryLayout": "重新載入版面",
     "splitResizeUnavailable": "此 Herdr server 不支援調整窗格大小。",
     "connectorUnavailable": "此 Herdr server 無法使用終端機控制功能。"
   },

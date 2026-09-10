@@ -515,6 +515,8 @@
   "herdrTerminal": {
     "inputPaused": "Input paused because delivery could not be completed. Reopen this terminal and check the last command before typing again.",
     "defaultTitle": "Herdr terminal",
+    "focused": "Focused",
+    "focusPane": "Focus terminal: {{name}}",
     "observer": "Observer",
     "controller": "Controller",
     "takeControl": "Take Control",
@@ -522,6 +524,9 @@
     "sessionStopped": "Session \"{{name}}\" is not running. Start it with `herdr session attach {{name}}`.",
     "missingTerminal": "Pane has no terminal identity yet",
     "legacyLayout": "Multi-pane layout unavailable; showing a single terminal",
+    "layoutRefreshFailed": "Layout refresh failed; keeping the current panes",
+    "layoutRetrying": "Retrying…",
+    "retryLayout": "Reload layout",
     "splitResizeUnavailable": "Pane resizing is unavailable for this Herdr server.",
     "connectorUnavailable": "Terminal control is unavailable for this Herdr server."
   },

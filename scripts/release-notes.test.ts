@@ -7,6 +7,13 @@ import { describe, expect, it } from "vitest"
 import { releaseNotesForTag } from "./release-notes"
 
 describe("releaseNotesForTag", () => {
+  it("discloses the v0.0.9 Apple signing limitation and retained updater verification", () => {
+    const notes = releaseNotesForTag(readFileSync("CHANGELOG.md", "utf8"), "v0.0.9")
+    expect(notes).toContain("未經 Apple Developer ID 簽章或公證")
+    expect(notes).toContain("Gatekeeper")
+    expect(notes).toContain("Tauri updater 簽章")
+  })
+
   it("returns only the user-facing changelog section for the release tag", () => {
     const changelog = `# Changelog
 

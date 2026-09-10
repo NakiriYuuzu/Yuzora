@@ -1,0 +1,85 @@
+{
+  "time": "2026-09-09T23:32:18.9590228+08:00",
+  "host": "DESKTOP-NMLUN4F",
+  "lastBoot": "2026-09-09T21:28:45.5+08:00",
+  "sessions": " SESSIONNAME               USERNAME                 ID  STATE   TYPE        DEVICE \r\n>services                                            0  Disc                        \r\n rdp-tcp#0                 Yuuzu                     1  Active                      \r\n console                                             2  Conn                        \r\n rdp-tcp                                         65536  Listen                      \r\n",
+  "listeners": [
+    {
+      "LocalAddress": "::",
+      "LocalPort": 3389,
+      "OwningProcess": 7968
+    },
+    {
+      "LocalAddress": "0.0.0.0",
+      "LocalPort": 3389,
+      "OwningProcess": 7968
+    }
+  ],
+  "rdpStartupErrors": [],
+  "processes": [
+    {
+      "Id": 25576,
+      "ProcessName": "herdr",
+      "SessionId": 1,
+      "StartTime": "2026-09-09T23:05:36.6743916+08:00"
+    },
+    {
+      "Id": 19644,
+      "ProcessName": "vmmemWSL",
+      "SessionId": 0,
+      "StartTime": "2026-09-09T23:31:45.4993393+08:00"
+    },
+    {
+      "Id": 25764,
+      "ProcessName": "yuzora",
+      "SessionId": 1,
+      "StartTime": "2026-09-09T23:28:15.1225083+08:00"
+    }
+  ],
+  "herdrSource": {
+    "binarySource": "default"
+  },
+  "herdrStatus": {
+    "client": {
+      "version": "0.9.0",
+      "channel": "stable",
+      "protocol": 22,
+      "endpoint_protocol_generation": 1,
+      "endpoint_capabilities": [
+        "surface_interest",
+        "presentation_effects_fence",
+        "health_check"
+      ],
+      "binary": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "session": null
+    },
+    "server": {
+      "status": "running",
+      "running": true,
+      "version": "0.9.0",
+      "protocol": 22,
+      "capabilities": {
+        "live_handoff": false,
+        "detached_server_daemon": true,
+        "endpoint_protocol_generation": 1,
+        "surface_interest": true,
+        "health_check": true
+      },
+      "compatible": true,
+      "endpoint_compatible": true,
+      "socket": "C:\\Users\\Yuuzu\\AppData\\Roaming\\herdr\\herdr.sock",
+      "session": null,
+      "restart_needed": false,
+      "server_binary_stale": false
+    },
+    "update": {
+      "restart_needed": false,
+      "server_binary_stale": false
+    }
+  },
+  "wslList": {
+    "stdout": "  NAME                    STATE           VERSION\r\n* Ubuntu-26.04            Stopped         2\r\n  Yuzora-Verify-Debian    Stopped         2\r\n",
+    "exitCode": 0,
+    "stderr": ""
+  }
+}

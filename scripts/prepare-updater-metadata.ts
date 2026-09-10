@@ -44,6 +44,7 @@ export function prepareUpdaterMetadata(
     (name) => name.startsWith(versionPrefix) && name.endsWith(".app.tar.gz"),
     "macOS updater archive"
   )
+  assert(archive === `${versionPrefix}aarch64.app.tar.gz`, "macOS updater archive must target Apple Silicon")
   const msi = exactlyOne(
     assetNames,
     (name) => name.startsWith(versionPrefix) && name.endsWith(".msi"),
@@ -59,10 +60,6 @@ export function prepareUpdaterMetadata(
     pub_date: publishedAt,
     platforms: {
       "darwin-aarch64": {
-        url: encodedReleaseAssetUrl(repository, tag, archive),
-        signature: readSignature(signatureDirectory, archive),
-      },
-      "darwin-x86_64": {
         url: encodedReleaseAssetUrl(repository, tag, archive),
         signature: readSignature(signatureDirectory, archive),
       },

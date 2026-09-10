@@ -9,6 +9,7 @@ import {
     DialogTitle
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 
 /**
@@ -31,16 +32,17 @@ export function ConfirmDialogHost() {
             }}
         >
             {pending && (
-<DialogContent
-                    resizeId="unsaved-confirmation"
+                <DialogContent
                     showCloseButton={false}
-                    className="flex flex-col"
+                    className="flex max-h-[calc(100dvh-2rem)] flex-col"
                 >
-                    <DialogHeader>
-                        <DialogTitle>{pending.title}</DialogTitle>
-                        <DialogDescription>{pending.description}</DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
+                    <ScrollArea className="min-h-0" viewportClassName="[&>div]:!block">
+                        <DialogHeader className="[overflow-wrap:anywhere]">
+                            <DialogTitle>{pending.title}</DialogTitle>
+                            <DialogDescription>{pending.description}</DialogDescription>
+                        </DialogHeader>
+                    </ScrollArea>
+                    <DialogFooter className="shrink-0">
                         <Button variant="ghost" onClick={() => respond("cancel")}>
                             {t("unsavedDialog.cancel")}
                         </Button>

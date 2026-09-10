@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora — LSP 完整性與未使用程式碼審查</title>
+<style>
+:root{color-scheme:light;--ink:#1b2b36;--muted:#52616d;--paper:#f6f4ef;--line:#d4d9d9;--accent:#215d68}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.75 system-ui,"PingFang TC",sans-serif}main{max-width:1140px;margin:auto;padding:48px 28px 80px}header{border-bottom:3px solid var(--accent);padding-bottom:24px}h1{font-size:clamp(28px,4vw,44px);line-height:1.3;margin:10px 0 18px}h2{font-size:25px;margin:40px 0 16px}h3{font-size:19px;margin:25px 0 8px}p{margin:10px 0}.meta,small{color:var(--muted);font-size:13px}.lead{font-size:19px;max-width:920px}nav{display:flex;flex-wrap:wrap;gap:20px;margin:24px 0}a{color:var(--accent);text-underline-offset:3px}table{width:100%;border-collapse:collapse;background:#fffdf8;font-size:14px}th,td{border:1px solid var(--line);padding:12px 14px;text-align:left;vertical-align:top}th{background:#e9eeeb}code{font:12px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#e9eeeb;padding:18px;font:12px/1.7 ui-monospace,monospace}li{margin:8px 0}.finding{padding:0 0 18px;border-bottom:1px solid var(--line)}.status{font-weight:700;color:var(--accent)}.note{padding:14px 18px;border-left:4px solid var(--accent);background:#e9eeeb}.evidence{font-size:13px;color:var(--muted)}footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line)}@media(max-width:650px){main{padding:26px 16px 50px}th,td{padding:8px 7px;font-size:12px}}@media print{body{background:white}main{max-width:none;padding:0}nav{display:none}h2,h3{break-after:avoid}.finding,tr{break-inside:avoid}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="meta">2026-09-08 · 3 × gpt-5.6-luna · 主代理彙整與複核</div>
+<h1>LSP 核心已接通，<br>仍有功能缺口與舊介面殘留</h1>
+<p class="lead">LSP 基本編輯功能已有 production 路徑；Quick Fix、跨檔 Code Action 與 server crash 恢復仍不完整。新版 Spaces sidebar 已取代部分舊導覽元件；舊 WSL plugin 本體已移除，升級清理工具則仍有用途。</p>
+<p class="meta">範圍：目前工作目錄，包含既有未提交與未追蹤內容。分支 release/v0.0.9-beta.3；HEAD 711342825480a2edd5eb79005554ce828177e245。此次新增本報告，未修正或刪除產品程式碼。</p>
+</header>
+<nav aria-label="報告導覽"><a href="#lsp">LSP 功能表</a><a href="#gaps">LSP 缺口</a><a href="#deadcode">Dead code</a><a href="#retired">已停用功能</a><a href="#checks">驗證與限制</a></nav>
+<section id="lsp">
+<h2>01 / LSP 功能範圍</h2>
+<p>「已接通」表示已追到目前 app 的入口、client 與後端串接；實際功能仍依 server 宣告的 capability 決定。此判定不等同真實語言伺服器與跨平台 E2E 驗收。</p>
+<table><thead><tr><th>能力</th><th>目前狀態</th><th>主要證據</th></tr></thead><tbody>
+<tr><td>Server 偵測、選擇、安裝、啟停</td><td>已接通；pylsp managed install 不可用</td><td><code>src/app/workbench/LspSection.tsx:34</code><br><code>src-tauri/src/lsp_service.rs:35</code></td></tr>
+<tr><td>本機 stdio、JSON-RPC framing</td><td>已接通，傳送有序列化與 queue 上限</td><td><code>src/lsp/transport.ts:22</code><br><code>src/lib/ipc.ts:470</code></td></tr>
+<tr><td>SSH／WSL host LSP</td><td>有 remote stream、工作區 URI 與 host identity 路徑；純 SFTP 不等於完整 runtime</td><td><code>src/lib/remoteLsp.ts:1</code><br><code>src/lsp/remoteUris.ts:6</code><br><code>src-tauri/host/src/lsp_stream.rs:18</code></td></tr>
+<tr><td>文件同步、未開啟文件載入</td><td>已接通 didOpen／didChange／didClose 與背景文件</td><td><code>src/lsp/workspace.ts:89</code></td></tr>
+<tr><td>Completion、Hover、Signature Help</td><td>透過實際掛載的 CodeMirror languageServerSupport 接通</td><td><code>src/lsp/lspExtensions.ts:42</code></td></tr>
+<tr><td>Definition、References</td><td>已接通，跨檔讀取由 YuzoraWorkspace 提供</td><td><code>src/lsp/lspExtensions.ts:42</code><br><code>src/lsp/workspace.ts:89</code></td></tr>
+<tr><td>Rename</td><td>文字 edits 與背景檔案更新已接通；file resource operations 未完整支援</td><td><code>src/lsp/workspace.ts:199</code><br><code>src/lsp/renameCompat.ts:40</code></td></tr>
+<tr><td>Push diagnostics</td><td>已接通</td><td><code>src/lsp/lspManager.ts:156</code><br><code>src/lsp/pushDiagnostics.ts:5</code></td></tr>
+<tr><td>Pull diagnostics</td><td>宣告 diagnosticProvider 才啟用；由 lspLintSource 執行</td><td><code>src/lsp/lspExtensions.ts:48</code><br><code>src/lsp/codeActions.ts:106</code></td></tr>
+<tr><td>Semantic tokens</td><td>依 server legend/provider 啟用</td><td><code>src/lsp/semanticTokens.ts:208</code></td></tr>
+<tr><td>文件格式化、format-on-save</td><td>已接 documentFormattingProvider；未接 rangeFormatting</td><td><code>src/lsp/lspManager.ts:241</code></td></tr>
+<tr><td>Code actions</td><td>部分：診斷 Quick Fix，只挑第一個帶 edit 的結果並套用目前檔案</td><td><code>src/lsp/codeActions.ts:30</code><br><code>src/lsp/codeActions.ts:143</code></td></tr>
+<tr><td>Document／Workspace symbols</td><td>已接通 SymbolPicker</td><td><code>src/lsp/symbols.ts:87</code><br><code>src/workbench/SymbolPicker.tsx:106</code></td></tr>
+<tr><td>Inlay hints、Code Lens、range formatting</td><td>未找到 app request／extension／UI 串接；已核對目前 CodeMirror bundle 不會自動補上</td><td><code>src/lsp/</code>、<code>src/editor/</code> 與 <code>@codemirror/lsp-client/dist/index.js</code></td></tr>
+</tbody></table>
+<h3>可選語言與 server profiles</h3>
+<table><thead><tr><th>語言</th><th>Profiles</th><th>Managed install 設定</th></tr></thead><tbody>
+<tr><td>TypeScript／JavaScript</td><td>vtsls、typescript-language-server</td><td>有 npm catalog route</td></tr>
+<tr><td>Python</td><td>pyright、pylsp</td><td>pyright 有 npm route；pylsp 明確 unavailable</td></tr>
+<tr><td>Rust</td><td>rust-analyzer</td><td>有 binary release route</td></tr>
+<tr><td>Markdown</td><td>marksman、markdown-oxide</td><td>依 catalog 平台供應；markdown-oxide 的 windows/aarch64 標記 unavailable</td></tr>
+</tbody></table>
+<p class="evidence">設定來源：<code>src/app/workbench/LspSection.tsx:34</code>、<code>src-tauri/lsp-catalog/manifest.json:7</code>。安裝路徑存在是靜態判定，本次沒有下載或安裝各 server。</p>
+</section>
+<section id="gaps"><h2>02 / LSP 缺口與優先順序</h2>
+<article class="finding"><h3>P2 · 自動重啟 server 後，client 沒有重新握手</h3>
+<p>後端 watch_loop 在未達 restart limit 時重新 spawn child；成功 respawn 沒有通知前端重建 LSPClient。ensureClient 仍回傳快取，LspBridge 的狀態事件只更新 store。若 server 閒置期間退出並成功重啟、未先觸發 send failure，新 server 會失去 initialize 與已開啟文件狀態。</p>
+<p>建議驗收：受控 server crash 後，確認新程序依序收到 initialize、initialized、目前文件 didOpen，並恢復 completion 與 diagnostics。此情境本次僅做 source 追查。</p>
+<p class="evidence"><code>src/lsp/lspManager.ts:80</code>、<code>src/workbench/LspBridge.tsx:30</code>、<code>src-tauri/host/src/lsp_service.rs:485</code>。傳送失敗時已有另一條 stopWorkspace 路徑，不能把所有 crash 情況概括成必然掛住。</p></article>
+<article class="finding"><h3>P2 · Quick Fix 可見，但 command-only／空結果會靜默無效</h3>
+<p>每個 pull diagnostic 都產生可點的 Quick Fix。codeActionsFor 只保留 title、kind、edit；apply callback 只找帶 edit 的結果。server 回傳空結果或 command-only action 時，按下後不執行命令，也不回報無可用修正。多個 edits 選項則直接挑第一項，沒有供使用者選擇的流程。</p>
+<p class="evidence"><code>src/lsp/codeActions.ts:68</code>、<code>src/lsp/codeActions.ts:137</code>、<code>src/lsp/codeActions.ts:143</code>。</p></article>
+<article class="finding"><h3>P2 · 跨檔 Code Action 可能只套用一部分</h3>
+<p>applyWorkspaceEdit 先過濾 <code>c.uri === uri</code>，其他文件的 edits 被捨棄。涉及多檔的修正可能只改到目前檔案，形成不完整結果。應套用完整工作區 edit，或明確拒絕不支援的整組變更。</p>
+<p class="evidence"><code>src/lsp/codeActions.ts:79</code>。此限制是診斷 Code Action 路徑；一般跨檔 Rename 的文字 edits 有另一條 YuzoraWorkspace 更新路徑。</p></article>
+<article class="finding"><h3>功能缺口 · WorkspaceEdit 的檔案操作被過濾</h3>
+<p>workspaceEditToChanges 只接受 TextDocumentEdit。CreateFile、RenameFile、DeleteFile 不會成為文字 changes；使用到此轉換路徑的 action 無法完成這些檔案操作。不能以目前的文字 Rename 支援推論完整 resource operations 支援。</p>
+<p class="evidence"><code>src/lsp/renameCompat.ts:40</code>。</p></article>
+<article class="finding"><h3>功能缺口 · pylsp 無法 managed install</h3>
+<p>設定中可選 pylsp，但 catalog 將所有平台設為 unavailable，原因是完整 reviewed dependency content manifests 尚未完成。這是已宣告的供應限制；不代表已由外部安裝的 pylsp 一定不能啟動。</p>
+<p class="evidence"><code>src/app/workbench/LspSection.tsx:53</code>、<code>src-tauri/lsp-catalog/manifest.json:221</code>。</p></article>
+</section>
+<section id="deadcode"><h2>03 / Dead code 候選</h2>
+<p>以 production roots 與目前 source 引用為準，零 graph caller 只用於產生候選；tests、Tauri command 註冊、回呼、動態載入與相容性入口另外核對。</p>
+<table><thead><tr><th>候選</th><th>判定與證據</th><th>清理界線</th></tr></thead><tbody>
+<tr><td>WorkspaceRail</td><td>目前僅自身與測試使用；AppShell 改掛 SpaceAgentSidebar。<br><code>src/app/workbench/WorkspaceRail.tsx</code>、<code>src/app/AppShell.tsx:399</code></td><td>舊 rail 與專屬測試可列為清理候選；不能連帶刪除仍使用的 TerminalDrawer 或 workspace store。</td></tr>
+<tr><td>ProjectNavPanel → HerdrNavContent</td><td>舊 root 無 production import；HerdrNavContent 只在這條舊 UI 鏈與測試使用。<br><code>src/app/workbench/ProjectNavPanel.tsx</code>、<code>src/app/workbench/HerdrNavContent.tsx</code></td><td>可按整組舊 UI 清理，但下游共用 stores／IPC 不因此變成 dead。</td></tr>
+<tr><td>diagnosticsPullExtension</td><td>註解明記 intentionally unwired；production 使用 lspLintSource，這個 extension API 只被測試引用。<br><code>src/lsp/diagnosticsPull.ts:140</code></td><td>只能針對未接入的 extension/helper 清理；同檔 pullDiagnostics 為現行功能依賴，不可整檔刪除。</td></tr>
+<tr><td>lspStatus 前端 wrapper</td><td>沒有 production caller；現行 UI 使用啟動結果與事件更新狀態。<br><code>src/lib/ipc.ts</code></td><td>Rust command 仍在 invoke inventory，屬「前端未使用 API」；不能僅憑此判定後端入口不可達。</td></tr>
+<tr><td>isRemotePreviewToken</td><td>Graph 無 caller，live source 搜尋只有自身定義，沒有 production 或 test 引用。<br><code>src/lib/remotePreview.ts:9</code></td><td>高信心未使用 export；同檔其他 remote preview 流程仍使用，僅清理 helper。</td></tr>
+<tr><td>previewStopAll 前端 wrapper</td><td>live source 只有定義，其他 Preview 操作仍有 caller。<br><code>src/lib/ipc.ts:778</code></td><td>Rust preview_stop_all 仍註冊在 <code>src-tauri/src/lib.rs:352</code>；只能確認前端 wrapper 未使用，不能推論整個 backend command 可刪。</td></tr>
+</tbody></table>
+<h3>待確認候選，不列入可直接清理範圍</h3>
+<p>另找到 <code>firstAbsolutePath</code>、<code>workspaceKey</code>、<code>resourceKey</code>，以及 IPC 的 <code>workspacePathIndex</code>、<code>gitDetect</code>、<code>workspaceTrustChallenge</code>、<code>ptyOutputMetrics</code>。本輪未完成所有動態／外部入口的排除，因此只保留為後續複查名單，不宣稱可刪除。</p>
+<p class="evidence"><code>src/lib/paths.ts:12</code>、<code>src/lib/runtimeIdentity.ts:29</code>、<code>src/lib/ipc.ts:116</code>。</p>
+</section>
+<section id="retired"><h2>04 / 已停用、仍使用與刻意保留</h2>
+<table><thead><tr><th>功能／路徑</th><th>判定</th><th>依據</th></tr></thead><tbody>
+<tr><td>Windows-native HERDR／舊 WSL Agent Plugin bridge</td><td>已移除 production 本體；不是待刪除的 live 功能</td><td>ADR-0003 取代 ADR-0002；prepare script 只提供 Unix HERDR targets，Windows payload verifier 明確拒絕舊 native/plugin 資源。<br><code>.yuuzu/adr/0003-single-unix-runtime-remote-provider.html:5</code><br><code>scripts/prepare-herdr-resources.ts:39</code><br><code>scripts/verify-windows-runtime-payload.ps1:17</code></td></tr>
+<tr><td>legacy-cleanup payload</td><td>刻意保留，不能視為 dead code</td><td>仍被 installer bundle，用於舊 beta.3 adapter 與 plugin registration 的升級清理；有 ownership/hash guard。<br><code>src-tauri/resources/legacy-cleanup/README.md:1</code></td></tr>
+<tr><td>windows-x86_64 HERDR 空資源目錄</td><td>低優先 artifact 清理候選</td><td>目前僅 .gitkeep；現行 prepare/bundle 不使用 Windows desktop HERDR。刪除前仍需確認外部 packaging 是否依賴目錄。<br><code>src-tauri/resources/herdr/windows-x86_64/.gitkeep</code></td></tr>
+<tr><td>舊 db_query</td><td>production 已移除，留防回歸測試</td><td>現行為 db_query_run／cancel 與 result paging；test 斷言舊 command 不在 inventory。<br><code>src-tauri/src/lib.rs:682</code></td></tr>
+<tr><td>Files／Git 導覽</td><td>仍使用</td><td>AppShell → WorkspaceToolsPanel → FilesNavContent／GitNavContent。<br><code>src/app/workbench/WorkspaceToolsPanel.tsx:31</code></td></tr>
+<tr><td>DatabaseNavContent／TerminalDrawer</td><td>仍使用</td><td>AppShell 仍 render，不能隨舊 rail 刪除。<br><code>src/app/AppShell.tsx:415</code><br><code>src/app/AppShell.tsx:419</code></td></tr>
+<tr><td>Profile migration、Windows workspace migration、Herdr capability fallback、legacy context-menu adapter</td><td>仍有 production caller</td><td>名稱含 legacy 不等於停用；屬升級與現行 runtime/UI 入口，這次排除清理。</td></tr>
+</tbody></table>
+</section>
+<section id="checks"><h2>05 / 驗證與限制</h2>
+<table><thead><tr><th>檢查</th><th>結果</th></tr></thead><tbody>
+<tr><td><code>bun run typecheck</code></td><td>PASS；前端開啟 noUnusedLocals／noUnusedParameters，但不保證沒有未使用 exports。</td></tr>
+<tr><td><code>bun run lint</code></td><td>完成：0 errors、56 warnings。Warnings 以 React hooks／refresh 為主；未自動修正。</td></tr>
+<tr><td><code>cargo check --locked --all-targets</code>，cwd <code>src-tauri/</code></td><td>PASS，4.91 秒，沒有 warning 輸出。</td></tr>
+<tr><td><code>cargo check --locked --all-targets</code>，cwd <code>src-tauri/host/</code></td><td>PASS，16.50 秒，沒有 warning 輸出；獨立 host targets 另外檢查。</td></tr>
+<tr><td>LSP 相關 Vitest</td><td>15 個檔案、145 tests 全部 PASS，由 Luna LSP 審查者執行。</td></tr>
+</tbody></table>
+<details><summary>本次 LSP 測試命令</summary><pre>bun run test src/lsp/codeActions.test.ts src/lsp/diagnosticsPull.test.ts src/lsp/lspExtensions.test.ts src/lsp/lspManager.test.ts src/lsp/remoteUris.test.ts src/lsp/renameCompat.test.ts src/lsp/semanticTokens.test.ts src/lsp/symbols.test.ts src/lsp/transport.test.ts src/lsp/workspace.test.ts src/lib/remoteLsp.test.ts src/lib/remoteLspConfig.test.ts src/lib/remoteLspInstall.test.ts src/workbench/LspBridge.test.tsx src/editor/editorPane.lsp.test.tsx</pre></details>
+<p class="note">Graph 索引為 2026-09-06，部分 metadata 已變更，且保留了已刪檔案的節點；涉及此類檔案與否定性判定均以目前 source 複核。Graph coverage 是 best-effort，測試、scripts、docs、i18n 與依賴等部分範圍不在索引內。本次不是全程式庫無遺漏的不可達性證明。</p>
+<p>未執行 Rust unit tests、真實 LSP server 安裝／故障注入、跨平台或遠端 E2E、瀏覽器與原生 UI 自動化。故報告確認的是程式路徑、靜態缺口及既有單元測試結果；沒有使用量 telemetry，不能斷言使用者實際上「沒在用」某個可達功能。Rust 零 caller 結果已排除 serde defaults、trait／Drop 方法與 Tauri 註冊入口；本次未確認可直接刪除的 Rust production command。</p>
+<p>建議後續先修復 server respawn 與 Code Action 的靜默失敗，再清理已脫離 root 的舊 UI／輔助 API；相容性 cleanup 需依受支援升級範圍決定保留期。</p>
+</section>
+<footer class="meta">依據本次 live source 與三位 Luna 的獨立分工審查。未 stage、commit、push，未刪除任何產品檔案。</footer>
+</main></body></html>

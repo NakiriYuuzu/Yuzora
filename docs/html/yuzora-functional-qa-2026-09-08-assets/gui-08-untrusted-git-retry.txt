@@ -1,0 +1,144 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 button (expanded) 收合左側導覽, Secondary Actions: Collapse
+			4 button (expanded) 收合右側工作工具, Secondary Actions: Collapse
+			5 container 側邊導覽
+				6 text Yuzora
+				7 container 共用工具
+					8 button 搜尋檔案與命令
+					9 toggle button 工作面, Value: on
+					10 toggle button 資料庫, Value: off
+					11 button SSH / SFTP
+				12 text Spaces 與 Agents
+				13 pop up button Herdr Session：default, Help: 開啟 Session 或資料夾
+				14 text 已載入快照
+				15 button 收合所有 Space 資料夾
+				16 container
+					17 text 需要注意  · 1
+				18 button π - .pi · 回覆待查看
+				19 outline (selectable) Spaces 與 Agents · default
+					20 row (selectable, expanded) .pi · 1 個 Agents · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: .pi
+1 分支 · 1 Agents
+					21 row (selectable, expanded) main · /Users/yuuzu/.pi · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: main
+1 待處理
+					22 row (selectable) π - .pi · pi · 回覆待查看 · main · default, Help: 開啟所屬 pane；不可用時顯示唯讀詳情, Value: π - .pi
+pi
+回覆待查看
+					23 row (selectable, expanded) yuzora · 0 個 Agents · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: yuzora
+1 分支 · 0 Agents
+					24 row (selectable, expanded) release/v0.0.9-beta.3 · /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: release/v0.0.9-beta.3
+0
+					25 row (selectable, expanded) privacy-filter · 0 個 Agents · default, Secondary Actions: Collapse, Value: privacy-filter
+1 分支 · 0 Agents
+					26 row (selectable, expanded) privacy-filter · null · default, Secondary Actions: Collapse, Value: privacy-filter
+0
+					27 row (selectable, expanded) Documents · 0 個 Agents · default, Help: /Users/yuuzu/Documents, Secondary Actions: Collapse, Value: Documents
+1 分支 · 0 Agents
+					28 row (selectable, expanded) Documents · /Users/yuuzu/Documents · default, Help: /Users/yuuzu/Documents, Secondary Actions: Collapse, Value: Documents
+0
+					29 row (selectable, expanded) QA-A · 0 個 Agents · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA-A
+1 分支 · 0 Agents
+					30 row (selected, expanded) QA-A · /private/tmp/yuzora-functional-qa-20260908/QA-A · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA-A
+0
+				31 text 數量為 0 的 worktree 尚無 Agent。
+				32 button 設定
+			33 splitter 調整左側 Spaces 與 Agents 寬度, Value: 288
+			34 button QA-A
+			35 text 本地
+			36 button 關閉 QA-A
+			37 button sample.ts, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/sample.ts
+			38 text 本地
+			39 button 關閉 sample.ts
+			40 button renamed 中文.txt, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/nested/renamed 中文.txt
+			41 text 本地
+			42 button 關閉 renamed 中文.txt
+			43 button README.md, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A/README.md
+			44 text 本地
+			45 button 關閉 README.md
+			46 pop up button 新增分頁
+			47 button 向右分割, Help: 分割編輯器
+			48 text Markdown
+			49 (settable, unknown) Markdown 顯示方式
+				50 radio button 文件, Value: 0
+				51 radio button 原始碼, Value: 1
+			52 text entry area (settable) **# QA Alpha 中文**
+
+Alpha marker QA-20260908-A
+
+
+| name | value |
+| ---- | ----- |
+| 測試   | 42    |
+
+
+- <u>[x]</u> task one
+- <u>[x]</u> task two
+
+```ts
+const answer = 42;
+```
+
+
+QA-UNSAVED-EDITOR
+QA-AFTER-CONFLICT
+
+
+				53 container (settable)
+					54 text (settable) #  QA Alpha 中文
+				55 text (settable) Alpha marker QA-20260908-A
+				56 text (settable) | name | value |
+				57 text (settable) | ---- | ----- |
+				58 text (settable) | 測試   | 42    |
+				59 container (settable)
+					60 text (settable) - [ x ]  task one
+				61 container (settable)
+					62 text (settable) - [ x ]  task two
+				63 container (settable)
+					64 text (settable) ``` ts
+				65 text (settable) const answer = 42;
+				66 text (settable) ```
+				67 text (settable) QA-UNSAVED-EDITOR
+				68 text (settable) QA-AFTER-CONFLICT
+			69 splitter 調整右側工作工具寬度, Value: 264
+			70 container 工作工具
+				71 text 工作工具
+				72 tab group (selectable) 工作工具
+					73 tab (selectable) 檔案
+					74 tab (selected) Git
+				75 text /private/tmp/yuzora-functional-qa-20260908/QA-A 本地
+				76 button 提交紀錄與分支圖
+				77 container Git
+					78 text 尚無儲存庫狀態
+					79 text 開啟專案後即可在此查看變更
+					80 text Git 錯誤：{"error":"untrustedWorkspace","canonicalPath":"/private/tmp/yuzora-functional-qa-20260908/QA-A","challengeId":"8a7fd94cb69d50b1fffd4411a28462b14230371c8e54bc4d7c2752ec8f4dd4e5"}
+					81 button 重試
+			82 container 狀態列
+				83 text Yuzora
+				84 button (disabled) main
+				85 pop up button 6% · 638MB, Help: App 本體與受管理子行程總和 — App 本體 6% · 148MB ／ 受管理子行程 8 個（WebView renderer/GPU 0 個 0MB、受管理工具 8 個 491MB）
+				86 pop up button 換行格式：LF
+				87 text Markdown · marksman Ready
+			88 heading 命令面板, Value: 2
+				89 text 命令面板
+			90 text 搜尋檔案、執行命令…
+			91 heading 符號選擇器, Value: 2
+				92 text 符號選擇器
+			93 text 跳至符號…
+	94 close button
+	95 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	96 minimize button
+97 menu bar
+	98 Yuzora Current QA
+	99 File
+	100 Edit
+	101 View
+	102 Window
+	103 Help
+
+Selected text: ```
+Alpha marker QA-20260908-A
+```
+
+Note: Pay special attention to the content selected by the user. If the user asks a question or refers to the content they are looking at on-screen, they might be referring to the selected content (but they might be referring to something else that's visible, too).

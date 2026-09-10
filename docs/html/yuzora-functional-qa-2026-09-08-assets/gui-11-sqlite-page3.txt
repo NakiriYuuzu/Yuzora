@@ -1,0 +1,232 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 button (expanded) 收合左側導覽, Secondary Actions: Collapse
+			4 button (collapsed) 展開右側工作工具, Secondary Actions: Expand
+			5 container 側邊導覽
+				6 text Yuzora
+				7 container 共用工具
+					8 button 搜尋檔案與命令
+					9 toggle button 返回工作面, Value: off
+					10 toggle button 資料庫, Value: on
+					11 button SSH / SFTP
+				12 text Spaces 與 Agents
+				13 pop up button Herdr Session：All, Help: 開啟 Session 或資料夾
+				14 text All 僅彙整已載入的 runtime namespace
+				15 button 收合所有 Space 資料夾
+				16 container
+					17 text 需要注意  · 1
+				18 button π - .pi · 回覆待查看
+				19 outline (selectable) Spaces 與 Agents · All
+					20 row (selectable, expanded) .pi · 1 個 Agents · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: .pi
+1 分支 · 1 Agents
+					21 row (selectable, expanded) main · /Users/yuuzu/.pi · default, Help: /Users/yuuzu/.pi, Secondary Actions: Collapse, Value: main
+1 待處理
+					22 row (selectable) π - .pi · pi · 回覆待查看 · main · default, Help: 開啟所屬 pane；不可用時顯示唯讀詳情, Value: π - .pi
+pi
+回覆待查看
+					23 row (selectable, expanded) yuzora · 0 個 Agents · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: yuzora
+1 分支 · 0 Agents
+					24 row (selectable, expanded) release/v0.0.9-beta.3 · /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora · default, Help: /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora, Secondary Actions: Collapse, Value: release/v0.0.9-beta.3
+0
+					25 row (selectable, expanded) privacy-filter · 0 個 Agents · default, Secondary Actions: Collapse, Value: privacy-filter
+1 分支 · 0 Agents
+					26 row (selectable, expanded) privacy-filter · null · default, Secondary Actions: Collapse, Value: privacy-filter
+0
+					27 row (selectable, expanded) Documents · 0 個 Agents · default, Help: /Users/yuuzu/Documents, Secondary Actions: Collapse, Value: Documents
+1 分支 · 0 Agents
+					28 row (selectable, expanded) Documents · /Users/yuuzu/Documents · default, Help: /Users/yuuzu/Documents, Secondary Actions: Collapse, Value: Documents
+0
+					29 row (selectable, expanded) QA-A · 0 個 Agents · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA-A
+1 分支 · 0 Agents
+					30 row (selected, expanded) QA-A · /private/tmp/yuzora-functional-qa-20260908/QA-A · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA-A
+0
+				31 container
+					32 text yuzora-provider-r7 :  資料尚未更新 · 不代表即時狀態
+				33 text 數量為 0 的 worktree 尚無 Agent。
+				34 button 設定
+			35 splitter 調整左側 Spaces 與 Agents 寬度, Value: 288
+			36 container 資料庫連線
+				37 container 已儲存連線
+					38 heading 已儲存連線, Value: 2
+						39 text 已儲存連線
+					40 container
+						41 container 離線
+							42 button yuzora-db-layout-repro-20260711.sqlite SQLite · 未連線, Help: /private/tmp/yuzora-db-layout-repro-20260711.sqlite
+							43 text 離線
+							44 button 編輯 yuzora-db-layout-repro-20260711.sqlite
+							45 button 移除 yuzora-db-layout-repro-20260711.sqlite
+						46 container 離線
+							47 button postgres@aws-0-ap-southeast-1.pooler.supabase.com PostgreSQL · 未連線, Help: postgres.iypwxhjeeyabxgcabgqg@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres
+							48 text 離線
+							49 button 移除 postgres@aws-0-ap-southeast-1.pooler.supabase.com 的已儲存憑證
+							50 button 編輯 postgres@aws-0-ap-southeast-1.pooler.supabase.com
+							51 button 移除 postgres@aws-0-ap-southeast-1.pooler.supabase.com
+						52 container 離線
+							53 button fixture.sqlite SQLite · 未連線, Help: ssh-9e3d7acb-bb67-44f5-a35e-f94bbe1cd49b: /home/ubuntu/yuzora-provider-r12/fixture.sqlite
+							54 text 離線
+							55 button 編輯 fixture.sqlite
+							56 button 移除 fixture.sqlite
+						57 container 已連線
+							58 button qa.sqlite SQLite, Help: /tmp/yuzora-functional-qa-20260908/qa.sqlite
+							59 text 已連線
+							60 button 編輯 qa.sqlite
+							61 button 移除 qa.sqlite
+				62 container 物件樹
+					63 heading 物件樹, Value: 2
+						64 text 物件樹
+					65 container
+						66 button (expanded) Catalog：main, Secondary Actions: Collapse
+						67 container
+							68 button (expanded) Schema：main, Secondary Actions: Collapse
+							69 container
+								70 button (expanded) 資料表, Secondary Actions: Collapse
+								71 container
+									72 button (collapsed) 展開 samples 的欄位, Secondary Actions: Expand
+									73 button samples, Help: main.main.samples
+				74 container 最近查詢
+					75 button (expanded) 最近查詢, Secondary Actions: Collapse
+					76 container
+						77 button SELECT * FROM samples ORDER BY id; now, Help: SELECT * FROM samples ORDER BY id;
+						78 button SELECT * FROM "main"."samples" LIMIT 100 now, Help: SELECT * FROM "main"."samples" LIMIT 100
+				79 button 新增連線…
+			80 container 使用中的資料庫 profile：qa.sqlite
+				81 text 使用中的 PROFILE qa.sqlite SQLite  ·  /tmp/yuzora-functional-qa-20260908/qa.sqlite
+			82 text entry area (settable) SELECT * FROM samples ORDER BY id;
+				83 container (settable)
+					84 text (settable) SELECT * FROM  samples  ORDER BY  id;
+			85 button 執行選取範圍或游標所在 statement
+			86 button 執行全部 statements
+			87 button (disabled) 取消執行中的查詢
+			88 text 66
+			89 text  ms
+			90 tab group (selectable) Statement 執行結果
+				91 tab (selected) Statement 1：資料列, Help: SELECT * FROM samples ORDER BY id;
+			92 container Statement 1：資料列
+				93 text 沒有資料庫變更
+				94 text 第 3 頁
+				95 button 載入上一頁查詢結果
+				96 button (disabled) 載入下一頁查詢結果
+				97 button (disabled) 釋放此查詢結果 session
+				98 text 已到查詢結果末端
+				99 table (showing 0-24 of 100 items)
+					100 row (selectable) 依 id 排序
+依 label 排序
+依 optional 排序
+					101 row (selectable)
+						102 cell (selectable) 1001
+						103 cell (selectable) 測試 1001
+						104 cell (selectable) NULL
+					105 row (selectable)
+						106 cell (selectable) 1002
+						107 cell (selectable) 測試 1002
+						108 cell (selectable)
+					109 row (selectable)
+						110 cell (selectable) 1003
+						111 cell (selectable) 測試 1003
+						112 cell (selectable) NULL
+					113 row (selectable)
+						114 cell (selectable) 1004
+						115 cell (selectable) 測試 1004
+						116 cell (selectable)
+					117 row (selectable)
+						118 cell (selectable) 1005
+						119 cell (selectable) 測試 1005
+						120 cell (selectable) NULL
+					121 row (selectable)
+						122 cell (selectable) 1006
+						123 cell (selectable) 測試 1006
+						124 cell (selectable)
+					125 row (selectable)
+						126 cell (selectable) 1007
+						127 cell (selectable) 測試 1007
+						128 cell (selectable) NULL
+					129 row (selectable)
+						130 cell (selectable) 1008
+						131 cell (selectable) 測試 1008
+						132 cell (selectable)
+					133 row (selectable)
+						134 cell (selectable) 1009
+						135 cell (selectable) 測試 1009
+						136 cell (selectable) NULL
+					137 row (selectable)
+						138 cell (selectable) 1010
+						139 cell (selectable) 測試 1010
+						140 cell (selectable)
+					141 row (selectable)
+						142 cell (selectable) 1011
+						143 cell (selectable) 測試 1011
+						144 cell (selectable) NULL
+					145 row (selectable)
+						146 cell (selectable) 1012
+						147 cell (selectable) 測試 1012
+						148 cell (selectable)
+					149 row (selectable)
+						150 cell (selectable) 1013
+						151 cell (selectable) 測試 1013
+						152 cell (selectable) NULL
+					153 row (selectable)
+						154 cell (selectable) 1014
+						155 cell (selectable) 測試 1014
+						156 cell (selectable)
+					157 row (selectable)
+						158 cell (selectable) 1015
+						159 cell (selectable) 測試 1015
+						160 cell (selectable) NULL
+					161 row (selectable)
+						162 cell (selectable) 1016
+						163 cell (selectable) 測試 1016
+						164 cell (selectable)
+					165 row (selectable)
+						166 cell (selectable) 1017
+						167 cell (selectable) 測試 1017
+						168 cell (selectable) NULL
+					169 row (selectable)
+						170 cell (selectable) 1018
+						171 cell (selectable) 測試 1018
+						172 cell (selectable)
+					173 row (selectable)
+						174 cell (selectable) 1019
+						175 cell (selectable) 測試 1019
+						176 cell (selectable) NULL
+					177 row (selectable)
+						178 cell (selectable) 1020
+						179 cell (selectable) 測試 1020
+						180 cell (selectable)
+					181 row (selectable)
+						182 cell (selectable) 1021
+						183 cell (selectable) 測試 1021
+						184 cell (selectable) NULL
+					185 row (selectable)
+						186 cell (selectable) 1022
+						187 cell (selectable) 測試 1022
+						188 cell (selectable)
+					189 row (selectable)
+						190 cell (selectable) 1023
+						191 cell (selectable) 測試 1023
+						192 cell (selectable) NULL
+				193 text 205 筆
+			194 container 狀態列
+				195 text Yuzora
+				196 button (disabled) main
+				197 pop up button 5% · 401MB, Help: App 本體與受管理子行程總和 — App 本體 5% · 157MB ／ 受管理子行程 6 個（WebView renderer/GPU 0 個 0MB、受管理工具 6 個 244MB）
+				198 text 未開啟檔案
+			199 heading 命令面板, Value: 2
+				200 text 命令面板
+			201 text 搜尋檔案、執行命令…
+			202 heading 符號選擇器, Value: 2
+				203 text 符號選擇器
+			204 text 跳至符號…
+	205 close button
+	206 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	207 minimize button
+208 menu bar
+	209 Yuzora Current QA
+	210 File
+	211 Edit
+	212 View
+	213 Window
+	214 Help
+
+The focused UI element is 2 HTML content Description: Yuzora, URL: localhost:1420/

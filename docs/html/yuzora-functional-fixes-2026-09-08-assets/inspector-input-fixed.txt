@@ -1,0 +1,1 @@
+GUI: sequential 80 retained80; sequential120 retained120;999+Enter ->500;empty+Enter ->120.

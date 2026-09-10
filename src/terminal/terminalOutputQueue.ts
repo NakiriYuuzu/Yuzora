@@ -202,6 +202,12 @@ export class TerminalOutputQueue {
     return this.droppedTotal
   }
 
+  /** Incremental ANSI state is incomplete until an authoritative frame arrives. */
+  get needsResync(): boolean {
+    return this.hiddenTruncated || this.pendingTruncated
+      || this.noticeDroppedBytes > 0 || this.noticeMissedEvents > 0
+  }
+
   /**
    * Milliseconds the last flush took from hand-off to the xterm callback,
    * from a monotonic sub-millisecond clock (so a fast write reports a small

@@ -46,6 +46,7 @@ export function finalizeUpdaterMetadata(
   const platforms: Record<string, UpdaterPlatform> = {}
   for (const [key, rawPlatform] of Object.entries(rawPlatforms)) {
     if (key.startsWith("linux-")) continue
+    if (key === "darwin-x86_64") continue
     if (key.startsWith("windows-") && key.endsWith("-nsis")) continue
 
     const platform = record(rawPlatform, `platform ${key}`)

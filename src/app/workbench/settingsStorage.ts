@@ -19,6 +19,7 @@ export interface AppearanceSettings {
 }
 
 export interface TerminalSettings {
+  copyOnSelect: boolean
   imeAnchorMode: TerminalImeAnchorMode
   fontSize: number
   fontFamily: TerminalFontFamily
@@ -56,6 +57,7 @@ export function loadTerminalSettings(): TerminalSettings {
   const stored = readJsonSetting<Partial<TerminalSettings>>(TERMINAL_SETTINGS_STORAGE_KEY, {})
   return {
     imeAnchorMode: stored.imeAnchorMode === "tui" ? "tui" : "cursor",
+    copyOnSelect: stored.copyOnSelect !== false,
     fontSize: normalizeTerminalFontSize(stored.fontSize),
     fontFamily: normalizeTerminalFontFamily(stored.fontFamily),
   }

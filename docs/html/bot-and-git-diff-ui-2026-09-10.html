@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bot 與 Git diff UI — 2026-09-10</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 820px; margin: 48px auto; padding: 0 24px; line-height: 1.8; }
+  h1 { font-size: 28px; } h2 { margin-top: 32px; font-size: 20px; }
+  code { overflow-wrap: anywhere; }
+</style>
+<main>
+  <h1>Bot 與 Git diff UI</h1>
+  <p>2026-09-10：調整角色表情與動效、首次加入 Space 的隨機外觀，以及 GitHub 風格的差異底色。</p>
+  <h2>完成內容</h2>
+  <ul>
+    <li>Bot 增加有停頓的彈跳、伸縮、搖晃、連續眨眼與嘴型變化。滑鼠移入或鍵盤聚焦專案列時抬頭；小頭像保留較小幅度。保留每個 Bot 既有的獨立隨機動畫節奏。</li>
+    <li>嘴巴與眼睛分開，眨眼不再連帶壓縮嘴巴。保留 motion=false 與 prefers-reduced-motion；減少動態模式亦停用滑鼠移入的位移。</li>
+    <li>Space 首次出現在樹狀列表且尚無已存外觀時，隨機組合外型、表情、裝飾與配色，立即保存至既有 localStorage。重新掛載、重新開啟或重啟後沿用保存結果；既有手動設定與舊版外觀不覆寫。</li>
+    <li>沿用既有「主機＋專案路徑」識別；同主機不同 Session 共用該專案外觀，不同主機各自保存。外型、表情、裝飾及配色獨立抽選，允許自然重複。</li>
+    <li>分欄與合併 diff 使用淡紅／淡綠整行底色、較深紅／綠的字詞變更底色。移除 CodeMirror 原有的漸層底線與 ins/del 裝飾，包含深色主題。</li>
+  </ul>
+  <p>沿用現有角色圖像、CodeMirror 與外觀儲存機制，未新增通用 UI primitive 或動畫計時器。</p>
+  <h2>修改位置</h2>
+  <ul>
+    <li><code>src/app/workbench/SpaceCharacter.tsx</code>、<code>space-agent-sidebar.css</code>：角色表情與動畫。</li>
+    <li><code>src/app/workbench/space-character.ts</code>、<code>SpaceAgentTree.tsx</code>、<code>src/state/recentWorkspaces.ts</code>：隨機生成、首次呈現前初始化與持久保存。</li>
+    <li><code>src/editor/editor.css</code>：差異底色與底線覆寫。</li>
+    <li><code>src/state/recentWorkspaces.test.ts</code>、<code>src/app/workbench/SpaceAgentTree.test.tsx</code>：獨立抽樣、重新載入不重抽、保留既有設定與實際樹狀列表重新掛載驗證。</li>
+  </ul>
+  <h2>驗證</h2>
+  <ul>
+    <li>七個相關測試檔原有及新增 store 測試共 96 項通過；再加入樹狀列表重新掛載案例後，該檔 10 項測試全數通過，相關案例合計 97 項。</li>
+    <li>所有本次修改的 TypeScript／TSX 檔案 ESLint 通過；git diff --check 通過。</li>
+    <li><code>bunx vite build</code> 通過。仍有 remotePreviewUrl 的靜態／動態匯入重疊與 bundle 大小提示。</li>
+    <li><code>bun run build</code> 在 typecheck 階段失敗：本次未修改的 <code>src/terminal/herdrTerminalTransport.test.ts:44</code> 呼叫尚不存在的 <code>HerdrTerminalTransport.paste</code>（TS2339）。獨立 Vite 打包成功不代表完整建置通過。</li>
+  </ul>
+  <p>瀏覽器／E2E 視覺驗收尚未執行。依本次使用者提供的 AGENTS.md，必須先取得明確同意；已提出授權問題。單元測試不代表已驗證實際動效或深淺色畫面。</p>
+</main>
+</html>

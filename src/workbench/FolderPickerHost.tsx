@@ -13,7 +13,7 @@ import { HostList } from "@/app/workbench/HostList"
 import { useFolderPickerStore } from "@/state/folderPickerStore"
 import { useSshStore } from "@/state/sshStore"
 import { sftpListDir } from "@/lib/ipc"
-import { registerRuntimeWorkspace, registerSftpWorkspace } from "@/lib/remoteFiles"
+import { registerRuntimeWorkspace, registerSftpWorkspace, releaseRemoteWorkspace } from "@/lib/remoteFiles"
 import type { FileNode, SftpListing, WorkspaceOpenResult } from "@/lib/types"
 import { requestHost, wslDistributions, wslPath } from "@/lib/hostIpc"
 import type { HostTarget, WslDistribution } from "@/lib/hostIpc"
@@ -269,7 +269,11 @@ function RuntimeFolderBrowser({hostId,label,target,onChoose,legacyWindowsPath,in
     setBusy(true);setError(null)
     const generation=browseGeneration.current
     const current=()=>generation===browseGeneration.current && useHostStore.getState().hosts[hostId]?.connection?.owner===owner
-    try {const selected=await registerRuntimeWorkspace(owner,directory,()=>useHostStore.getState().hosts[hostId]?.connection?.owner===owner);if(current())onChoose(selected)}
+    try {
+      const selected=await registerRuntimeWorkspace(owner,directory,()=>useHostStore.getState().hosts[hostId]?.connection?.owner===owner)
+      if(current())onChoose(selected)
+      else await releaseRemoteWorkspace(selected)
+    }
     catch(error) {if(current())setError(String(error))}
     finally {if(current())setBusy(false)}
   }

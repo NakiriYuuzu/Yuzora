@@ -37,6 +37,16 @@ describe("normalizeTerminalWheelRows", () => {
 })
 
 describe("createHerdrTerminalTransport", () => {
+  it("keeps a multiline paste in one HERDR input frame between surrounding keystrokes", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "sess-1", target: "t1", mode: "control", role: "controller", takeover: true, cols: 80, rows: 24 })
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await Promise.all([transport.write("before"), transport.paste("first\r\nsecond\n"), transport.write("after")])
+    expect(vi.mocked(herdrTerminalInput).mock.calls.map((call) => call[1])).toEqual([
+      "before", "\x1b[200~first\nsecond\n\x1b[201~", "after"
+    ])
+  })
+
   it("passes sessionName to herdrTerminalOpen", async () => {
     vi.mocked(herdrTerminalOpen).mockResolvedValue({
       sessionId: "sess-1",
@@ -55,6 +65,16 @@ describe("createHerdrTerminalTransport", () => {
     expect(herdrTerminalOpen).toHaveBeenCalledWith(
       expect.objectContaining({ target: "t1", sessionName: "work" })
     )
+  })
+
+  it("keeps adjacent pastes separate and removes embedded paste delimiters", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "sess-1", target: "t1", mode: "control", role: "controller", takeover: true, cols: 80, rows: 24 })
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await Promise.all([transport.paste("a\x1b[201~\rb\x1b[200~"), transport.paste("c\nd")])
+    expect(vi.mocked(herdrTerminalInput).mock.calls.map((call) => call[1])).toEqual([
+      "\x1b[200~a\nb\x1b[201~", "\x1b[200~c\nd\x1b[201~"
+    ])
   })
 
   beforeEach(() => {

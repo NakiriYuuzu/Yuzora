@@ -3000,27 +3000,9 @@ async fn helper_pg_query(
             stream.map_err(|error| postgres_database_error(&error))?
         }
     };
-    let (row_tx, mut row_rx) = tokio::sync::mpsc::unbounded_channel();
-    let reader = tokio::spawn(async move {
-        futures_util::pin_mut!(stream);
-        loop {
-            match stream.try_next().await {
-                Ok(Some(row)) => {
-                    if row_tx.send(Ok(Some(row))).is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => {
-                    let _ = row_tx.send(Ok(None));
-                    break;
-                }
-                Err(error) => {
-                    let _ = row_tx.send(Err(error));
-                    break;
-                }
-            }
-        }
-    });
+    // Poll only while the consumer can write: a paused result page must
+    // propagate backpressure to PostgreSQL instead of retaining unread rows.
+    futures_util::pin_mut!(stream);
     let mut stop = false;
     loop {
         tokio::select! {
@@ -3038,38 +3020,21 @@ async fn helper_pg_query(
                             live.cancel.cancel(),
                         )
                         .await;
-                        drop(row_rx);
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(2),
-                            reader,
-                        )
-                        .await;
                         return Ok(());
                     }
                     WorkerRequest::Close => {
                         let _ = live.cancel.cancel().await;
-                        drop(row_rx);
-                        let _ = reader.await;
                         return write_frame(stdout, &WorkerResponse::Closed).await;
                     }
                     _ => {}
                 }
             }
-            next = row_rx.recv(), if !stop => {
+            next = stream.try_next(), if !stop => {
                 match next {
-                    None => {
-                        return write_frame(
-                            stdout,
-                            &WorkerResponse::End {
-                                affected_rows: None,
-                            },
-                        )
-                        .await;
-                    }
-                    Some(Err(error)) => {
+                    Err(error) => {
                         return Err(postgres_database_error(&error));
                     }
-                    Some(Ok(None)) => {
+                    Ok(None) => {
                         return write_frame(
                             stdout,
                             &WorkerResponse::End {
@@ -3078,7 +3043,7 @@ async fn helper_pg_query(
                         )
                         .await;
                     }
-                    Some(Ok(Some(row))) => {
+                    Ok(Some(row)) => {
                         if row.raw_size_bytes() > DEFAULT_ROW_BYTES {
                             let _ = live.cancel.cancel().await;
                             return write_frame(stdout, &WorkerResponse::ValueTooLarge).await;
@@ -3109,8 +3074,7 @@ async fn helper_pg_query(
             }
         }
         if stop {
-            while row_rx.recv().await.is_some() {}
-            let _ = reader.await;
+            while let Ok(Some(_)) = stream.try_next().await {}
             return write_frame(
                 stdout,
                 &WorkerResponse::End {

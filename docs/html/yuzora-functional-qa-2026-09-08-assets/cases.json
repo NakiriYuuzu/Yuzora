@@ -1,0 +1,1429 @@
+[
+  {
+    "id": "F01-1",
+    "feature": "啟動與視窗",
+    "scenario": "正常",
+    "steps": "冷啟動後開啟工作区",
+    "expected": "視窗可操作且不重複開啟",
+    "status": "PASS",
+    "actual": "current debug wrapper 啟動並開啟 QA 工作區。",
+    "evidence": [
+      "gui-01-initial",
+      "gui-03-qa-space"
+    ],
+    "liveCaseIds": [
+      "G001",
+      "G003"
+    ]
+  },
+  {
+    "id": "F01-2",
+    "feature": "啟動與視窗",
+    "scenario": "邊界／失敗",
+    "steps": "縮放至小視窗再還原",
+    "expected": "主要操作仍可達",
+    "status": "PASS",
+    "actual": "縮小自動收合工具，放大恢復。",
+    "evidence": [
+      "gui-18-small-window"
+    ],
+    "liveCaseIds": [
+      "G041"
+    ]
+  },
+  {
+    "id": "F01-3",
+    "feature": "啟動與視窗",
+    "scenario": "恢復／狀態",
+    "steps": "關閉再啟動",
+    "expected": "設定與工作区恢復，程序不重複",
+    "status": "PARTIAL",
+    "actual": "設定及 QA shell 重啟保留；未完整量測所有程序重複性。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G018",
+      "G019"
+    ]
+  },
+  {
+    "id": "F02-1",
+    "feature": "工作區與信任",
+    "scenario": "正常",
+    "steps": "開啟獨立 QA 資料夾",
+    "expected": "根目錄與檔案一致",
+    "status": "PASS",
+    "actual": "QA-A 根目錄、cwd 與檔案一致。",
+    "evidence": [
+      "gui-03-qa-space"
+    ],
+    "liveCaseIds": [
+      "G003",
+      "G008"
+    ]
+  },
+  {
+    "id": "F02-2",
+    "feature": "工作區與信任",
+    "scenario": "邊界／失敗",
+    "steps": "拒絕信任後嘗試執行",
+    "expected": "執行能力受限且有提示",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F02-3",
+    "feature": "工作區與信任",
+    "scenario": "恢復／狀態",
+    "steps": "重新授權後開檔",
+    "expected": "Git/LSP 恢復且不串工作區",
+    "status": "NOT_RUN",
+    "actual": "未測真正 repo 的重新授權；另發現非 repo raw trust error，見 G011。",
+    "evidence": [
+      "gui-08-untrusted-git-retry"
+    ],
+    "liveCaseIds": [
+      "G011"
+    ]
+  },
+  {
+    "id": "F03-1",
+    "feature": "Space 導覽",
+    "scenario": "正常",
+    "steps": "兩個 QA Space 往返",
+    "expected": "各自頁籤與選取獨立",
+    "status": "PARTIAL",
+    "actual": "QA-B 同名檔及 QA-A 切回內容正確，但未建立第二個 Herdr Space。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G049"
+    ]
+  },
+  {
+    "id": "F03-2",
+    "feature": "Space 導覽",
+    "scenario": "邊界／失敗",
+    "steps": "同名 Space 不同主機",
+    "expected": "辨識正確來源",
+    "status": "BLOCKED_ENV",
+    "actual": "沒有可用的第二台測試主機。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F03-3",
+    "feature": "Space 導覽",
+    "scenario": "恢復／狀態",
+    "steps": "關閉 QA Space 再開",
+    "expected": "無幽靈頁籤或錯誤 focus",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F04-1",
+    "feature": "HERDR runtime 連線",
+    "scenario": "正常",
+    "steps": "連線官方 runtime",
+    "expected": "版本與能力正確顯示",
+    "status": "PASS",
+    "actual": "live runtime 0.9.0 / protocol 22，binary Available。",
+    "evidence": [
+      "gui-09-herdr-version"
+    ],
+    "liveCaseIds": [
+      "G012"
+    ]
+  },
+  {
+    "id": "F04-2",
+    "feature": "HERDR runtime 連線",
+    "scenario": "邊界／失敗",
+    "steps": "不存在的 binary/socket",
+    "expected": "明確錯誤且可操作",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F04-3",
+    "feature": "HERDR runtime 連線",
+    "scenario": "恢復／狀態",
+    "steps": "修正設定後重連",
+    "expected": "無需重啟 App 即恢復",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F05-1",
+    "feature": "HERDR Named Session",
+    "scenario": "正常",
+    "steps": "QA Session A/B 分別開 terminal",
+    "expected": "snapshot 與 terminal 隔離",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F05-2",
+    "feature": "HERDR Named Session",
+    "scenario": "邊界／失敗",
+    "steps": "選取 stopped Session",
+    "expected": "其他 Session 仍可切換",
+    "status": "PASS",
+    "actual": "stopped Session 禁用操作，可回 default。",
+    "evidence": [
+      "gui-02-stopped-session"
+    ],
+    "liveCaseIds": [
+      "G002"
+    ]
+  },
+  {
+    "id": "F05-3",
+    "feature": "HERDR Named Session",
+    "scenario": "恢復／狀態",
+    "steps": "A 斷線後切 B 再回 A",
+    "expected": "舊回應不覆蓋目前狀態",
+    "status": "PARTIAL",
+    "actual": "測 stopped/default 切換恢復；未注入舊回應競態。",
+    "evidence": [
+      "gui-02-stopped-session"
+    ],
+    "liveCaseIds": [
+      "G002"
+    ]
+  },
+  {
+    "id": "F06-1",
+    "feature": "HERDR terminal 建立",
+    "scenario": "正常",
+    "steps": "在 QA Space 新建 terminal",
+    "expected": "cwd 等於工作區根目錄",
+    "status": "FAIL",
+    "actual": "cwd 正確；新增後命名對話框焦點錯置，2/2 重現。",
+    "evidence": [
+      "gui-03-qa-space",
+      "gui-15-tab-rename-focus",
+      "gui-16-rename-text-in-shell",
+      "gui-19-rename-focus-repeat"
+    ],
+    "liveCaseIds": [
+      "G003",
+      "G037"
+    ]
+  },
+  {
+    "id": "F06-2",
+    "feature": "HERDR terminal 建立",
+    "scenario": "邊界／失敗",
+    "steps": "快速連點建立",
+    "expected": "不建立不明重複 pane",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F06-3",
+    "feature": "HERDR terminal 建立",
+    "scenario": "恢復／狀態",
+    "steps": "新建後切 Space 再返回",
+    "expected": "同一 terminal 保留",
+    "status": "PASS",
+    "actual": "切本機資料夾再回 QA-A，原 Herdr 分頁仍存在。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G049"
+    ]
+  },
+  {
+    "id": "F07-1",
+    "feature": "HERDR terminal 輸入",
+    "scenario": "正常",
+    "steps": "輸入 ASCII/中文/emoji marker",
+    "expected": "內容及順序完全一致",
+    "status": "PASS_WITH_TOOL_LIMITATION",
+    "actual": "Unicode 經 paste 正常；CUA typeText 非 ASCII 不可靠。",
+    "evidence": [
+      "gui-04-terminal-paste"
+    ],
+    "liveCaseIds": [
+      "G004"
+    ]
+  },
+  {
+    "id": "F07-2",
+    "feature": "HERDR terminal 輸入",
+    "scenario": "邊界／失敗",
+    "steps": "多行貼上與長文字",
+    "expected": "有界排隊且不重複送出",
+    "status": "PARTIAL",
+    "actual": "多行貼上通過，尚未測長文字 queue 上界。",
+    "evidence": [
+      "gui-04-terminal-paste"
+    ],
+    "liveCaseIds": [
+      "G004"
+    ]
+  },
+  {
+    "id": "F07-3",
+    "feature": "HERDR terminal 輸入",
+    "scenario": "恢復／狀態",
+    "steps": "傳送失敗再重連",
+    "expected": "舊待傳文字不重播",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F08-1",
+    "feature": "HERDR terminal 畫面",
+    "scenario": "正常",
+    "steps": "ANSI 顏色/全螢幕 TUI",
+    "expected": "畫面正確且游標可見",
+    "status": "PARTIAL",
+    "actual": "ANSI 紅字正確；未測全螢幕 TUI。",
+    "evidence": [
+      "gui-20-zoom-ignored"
+    ],
+    "liveCaseIds": [
+      "G043"
+    ]
+  },
+  {
+    "id": "F08-2",
+    "feature": "HERDR terminal 畫面",
+    "scenario": "邊界／失敗",
+    "steps": "大量輸出與長行捲動",
+    "expected": "畫面不凍結且能返回底部",
+    "status": "PARTIAL",
+    "actual": "5000 行輸出及 scroll 通過；極長單行未測。",
+    "evidence": [
+      "gui-17-terminal-resize"
+    ],
+    "liveCaseIds": [
+      "G038"
+    ]
+  },
+  {
+    "id": "F08-3",
+    "feature": "HERDR terminal 畫面",
+    "scenario": "恢復／狀態",
+    "steps": "resize 後清屏重畫",
+    "expected": "尺寸與內容一致",
+    "status": "PARTIAL",
+    "actual": "側欄 resize 後新輸入正常；未完整驗證清屏重畫。",
+    "evidence": [
+      "gui-17-terminal-resize"
+    ],
+    "liveCaseIds": [
+      "G038"
+    ]
+  },
+  {
+    "id": "F09-1",
+    "feature": "HERDR layout",
+    "scenario": "正常",
+    "steps": "左右及上下 split QA pane",
+    "expected": "layout 與 pane 對應",
+    "status": "PASS",
+    "actual": "左右與上下 split，獨立輸入通過；zoom 缺陷另列 G044。",
+    "evidence": [
+      "gui-05-pane-survives-exit",
+      "gui-20-zoom-ignored"
+    ],
+    "liveCaseIds": [
+      "G005",
+      "G043"
+    ]
+  },
+  {
+    "id": "F09-2",
+    "feature": "HERDR layout",
+    "scenario": "邊界／失敗",
+    "steps": "拖動 split ratio 連續調整",
+    "expected": "不重啟 connector",
+    "status": "INCONCLUSIVE",
+    "actual": "拖動 splitter 與方向鍵後未取得比例變更證據；無法排除操作工具命中問題，不定性為產品 bug。",
+    "evidence": [
+      "gui-20-zoom-ignored"
+    ],
+    "liveCaseIds": [
+      "G044"
+    ]
+  },
+  {
+    "id": "F09-3",
+    "feature": "HERDR layout",
+    "scenario": "恢復／狀態",
+    "steps": "關閉一個 QA pane",
+    "expected": "兄弟 pane 程序與輸入保留",
+    "status": "PASS",
+    "actual": "右 pane exit7 / 下 pane exit 後，兄弟 shell 變數保留。",
+    "evidence": [
+      "gui-05-pane-survives-exit"
+    ],
+    "liveCaseIds": [
+      "G005",
+      "G045"
+    ]
+  },
+  {
+    "id": "F10-1",
+    "feature": "HERDR terminal ownership",
+    "scenario": "正常",
+    "steps": "controller 輸入",
+    "expected": "命令僅執行一次",
+    "status": "PASS",
+    "actual": "controller marker 與多行命令未重複執行。",
+    "evidence": [
+      "gui-04-terminal-paste",
+      "gui-05-pane-survives-exit",
+      "gui-20-zoom-ignored"
+    ],
+    "liveCaseIds": [
+      "G004",
+      "G005",
+      "G043"
+    ]
+  },
+  {
+    "id": "F10-2",
+    "feature": "HERDR terminal ownership",
+    "scenario": "邊界／失敗",
+    "steps": "observer 嘗試輸入/貼上",
+    "expected": "不發送也不暫存輸入",
+    "status": "BLOCKED_ENV",
+    "actual": "本輪沒有第二個獨立 terminal client 形成 observer contention。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F10-3",
+    "feature": "HERDR terminal ownership",
+    "scenario": "恢復／狀態",
+    "steps": "Take Control 後新輸入",
+    "expected": "只送新的合法文字",
+    "status": "BLOCKED_ENV",
+    "actual": "未建立 observer/controller 競爭 fixture。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F11-1",
+    "feature": "HERDR disconnect",
+    "scenario": "正常",
+    "steps": "結束單一 QA terminal stream",
+    "expected": "失效 attachment 清除",
+    "status": "PARTIAL",
+    "actual": "shell exit 顯示串流已關閉；未注入 transport 失效。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G045"
+    ]
+  },
+  {
+    "id": "F11-2",
+    "feature": "HERDR disconnect",
+    "scenario": "邊界／失敗",
+    "steps": "QA SSH 主機暫時失聯",
+    "expected": "狀態明確且其他主機可用",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少可中斷及重新連線的 QA SSH 主機。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F11-3",
+    "feature": "HERDR disconnect",
+    "scenario": "恢復／狀態",
+    "steps": "恢復主機並重連",
+    "expected": "新 generation 不接受舊回應",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少可中斷及重新連線的 QA SSH 主機。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F12-1",
+    "feature": "HERDR Agent 建立",
+    "scenario": "正常",
+    "steps": "啟動指定 QA Agent",
+    "expected": "kind/cwd/Space 正確",
+    "status": "FAIL",
+    "actual": "現行 App 找不到新增 Agent 入口。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G031"
+    ]
+  },
+  {
+    "id": "F12-2",
+    "feature": "HERDR Agent 建立",
+    "scenario": "邊界／失敗",
+    "steps": "建立中按 Escape/重複提交",
+    "expected": "不丟失結果或重複啟動",
+    "status": "BLOCKED_PRODUCT",
+    "actual": "受新增 Agent 入口缺失阻擋；未操作既有使用者 Agent 來替代測試。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G031"
+    ]
+  },
+  {
+    "id": "F12-3",
+    "feature": "HERDR Agent 建立",
+    "scenario": "恢復／狀態",
+    "steps": "啟動失敗後重試",
+    "expected": "錯誤可讀且資源可清理",
+    "status": "BLOCKED_PRODUCT",
+    "actual": "受新增 Agent 入口缺失阻擋；未操作既有使用者 Agent 來替代測試。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G031"
+    ]
+  },
+  {
+    "id": "F13-1",
+    "feature": "HERDR Agent 狀態",
+    "scenario": "正常",
+    "steps": "Agent working→idle/done",
+    "expected": "狀態及 Attention 更新",
+    "status": "BLOCKED_PRODUCT",
+    "actual": "受新增 Agent 入口缺失阻擋；未操作既有使用者 Agent 來替代測試。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G031"
+    ]
+  },
+  {
+    "id": "F13-2",
+    "feature": "HERDR Agent 狀態",
+    "scenario": "邊界／失敗",
+    "steps": "blocked 或 unknown",
+    "expected": "不誤判已完成",
+    "status": "BLOCKED_PRODUCT",
+    "actual": "受新增 Agent 入口缺失阻擋；未操作既有使用者 Agent 來替代測試。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G031"
+    ]
+  },
+  {
+    "id": "F13-3",
+    "feature": "HERDR Agent 狀態",
+    "scenario": "恢復／狀態",
+    "steps": "切 Space 再返回 Agent",
+    "expected": "身份與所屬 pane 不變",
+    "status": "PARTIAL",
+    "actual": "只讀既有 Agent metadata；未執行完整 Space 往返生命週期。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G035"
+    ]
+  },
+  {
+    "id": "F14-1",
+    "feature": "HERDR Inspector",
+    "scenario": "正常",
+    "steps": "開 QA Agent detail",
+    "expected": "metadata 與輸出對應",
+    "status": "PARTIAL",
+    "actual": "既有 Agent metadata/text/ANSI 可讀，QA Agent 無法建立；另有行數輸入缺陷。",
+    "evidence": [
+      "gui-14-inspector-number"
+    ],
+    "liveCaseIds": [
+      "G035",
+      "G036"
+    ]
+  },
+  {
+    "id": "F14-2",
+    "feature": "HERDR Inspector",
+    "scenario": "邊界／失敗",
+    "steps": "Agent 結束時 Inspector 開啟",
+    "expected": "不顯示其他 Agent 資料",
+    "status": "BLOCKED_PRODUCT",
+    "actual": "無可用 QA Agent 退出 fixture。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G031"
+    ]
+  },
+  {
+    "id": "F14-3",
+    "feature": "HERDR Inspector",
+    "scenario": "恢復／狀態",
+    "steps": "關閉重開 Inspector",
+    "expected": "focus 返回且內容更新",
+    "status": "PARTIAL",
+    "actual": "Inspector 可關閉／刷新；未完整驗證焦點返回。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G035"
+    ]
+  },
+  {
+    "id": "F15-1",
+    "feature": "HERDR capability",
+    "scenario": "正常",
+    "steps": "完整能力時開操作選單",
+    "expected": "可用操作正確",
+    "status": "PARTIAL",
+    "actual": "live capability 可見，但新增 Agent 入口缺失。",
+    "evidence": [
+      "gui-09-herdr-version"
+    ],
+    "liveCaseIds": [
+      "G012",
+      "G031"
+    ]
+  },
+  {
+    "id": "F15-2",
+    "feature": "HERDR capability",
+    "scenario": "邊界／失敗",
+    "steps": "缺少 split/agent capability",
+    "expected": "禁用並解釋原因",
+    "status": "PARTIAL",
+    "actual": "stopped Session 禁用；未注入缺少單項 capability 的 runtime。",
+    "evidence": [
+      "gui-02-stopped-session"
+    ],
+    "liveCaseIds": [
+      "G002"
+    ]
+  },
+  {
+    "id": "F15-3",
+    "feature": "HERDR capability",
+    "scenario": "恢復／狀態",
+    "steps": "重新探測能力",
+    "expected": "UI 更新且不沿用舊 cache",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F16-1",
+    "feature": "HERDR events 與壅塞",
+    "scenario": "正常",
+    "steps": "pane 建立/狀態變更",
+    "expected": "snapshot 及側欄更新",
+    "status": "PARTIAL",
+    "actual": "Space/pane 建立退出可更新；Agent 狀態變更未測。",
+    "evidence": [
+      "gui-03-qa-space",
+      "gui-05-pane-survives-exit"
+    ],
+    "liveCaseIds": [
+      "G003",
+      "G005",
+      "G045"
+    ]
+  },
+  {
+    "id": "F16-2",
+    "feature": "HERDR events 與壅塞",
+    "scenario": "邊界／失敗",
+    "steps": "事件 burst 加慢 consumer",
+    "expected": "資源受控且無重播循環",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F16-3",
+    "feature": "HERDR events 與壅塞",
+    "scenario": "恢復／狀態",
+    "steps": "event stream 中止後恢復",
+    "expected": "重訂閱且不漏新 pane",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F17-1",
+    "feature": "Files tree",
+    "scenario": "正常",
+    "steps": "展開/開檔/Unicode 名稱",
+    "expected": "內容與選取一致",
+    "status": "PASS",
+    "actual": "Unicode 路徑及不同目錄同名文件正確。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G008",
+      "G049"
+    ]
+  },
+  {
+    "id": "F17-2",
+    "feature": "Files tree",
+    "scenario": "邊界／失敗",
+    "steps": "空資料夾/不存在檔案",
+    "expected": "可理解空態或錯誤",
+    "status": "PARTIAL",
+    "actual": "空資料夾可展開；不存在檔案開啟錯誤未測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G048"
+    ]
+  },
+  {
+    "id": "F17-3",
+    "feature": "Files tree",
+    "scenario": "恢復／狀態",
+    "steps": "外部新增/刪除 QA 檔",
+    "expected": "watcher 更新不閃爍循環",
+    "status": "PASS",
+    "actual": "外部新增、移動及刪除均同步樹。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G048"
+    ]
+  },
+  {
+    "id": "F18-1",
+    "feature": "Files 寫入",
+    "scenario": "正常",
+    "steps": "QA 資料夾建立/改名/移動檔案",
+    "expected": "操作與磁碟一致",
+    "status": "PARTIAL",
+    "actual": "UI 改名通過；建立／移動使用外部 fixture，未證實 App UI 有相同功能。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G008",
+      "G048"
+    ]
+  },
+  {
+    "id": "F18-2",
+    "feature": "Files 寫入",
+    "scenario": "邊界／失敗",
+    "steps": "重名或非法路徑",
+    "expected": "拒絕且不覆蓋原檔",
+    "status": "PARTIAL",
+    "actual": "重名拒絕且保留兩份檔案；非法路徑未測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G046"
+    ]
+  },
+  {
+    "id": "F18-3",
+    "feature": "Files 寫入",
+    "scenario": "恢復／狀態",
+    "steps": "刪除 QA 檔後重新整理",
+    "expected": "無殘留 selection",
+    "status": "PARTIAL",
+    "actual": "外部刪除清除節點；未測 UI 刪除及其 selection。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G048"
+    ]
+  },
+  {
+    "id": "F19-1",
+    "feature": "Editor 儲存",
+    "scenario": "正常",
+    "steps": "編輯 QA Unicode/CRLF 檔並儲存",
+    "expected": "位元內容符合預期",
+    "status": "PASS",
+    "actual": "Unicode/CRLF 編輯儲存及改名通過。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G008"
+    ]
+  },
+  {
+    "id": "F19-2",
+    "feature": "Editor 儲存",
+    "scenario": "邊界／失敗",
+    "steps": "dirty buffer 遇外部修改",
+    "expected": "顯示衝突不直接覆蓋",
+    "status": "PASS",
+    "actual": "dirty 遇外部修改進衝突處理。",
+    "evidence": [
+      "gui-06-editor-conflict"
+    ],
+    "liveCaseIds": [
+      "G007"
+    ]
+  },
+  {
+    "id": "F19-3",
+    "feature": "Editor 儲存",
+    "scenario": "恢復／狀態",
+    "steps": "解決衝突再儲存",
+    "expected": "revision 更新，不再次誤報",
+    "status": "PASS",
+    "actual": "保留我的後再存檔，內容符合預期。",
+    "evidence": [
+      "gui-06-editor-conflict"
+    ],
+    "liveCaseIds": [
+      "G007"
+    ]
+  },
+  {
+    "id": "F20-1",
+    "feature": "Editor tabs/split",
+    "scenario": "正常",
+    "steps": "多檔切換與固定頁籤",
+    "expected": "內容與 dirty 狀態獨立",
+    "status": "PARTIAL",
+    "actual": "檔案切換及 Herdr 分頁釘選通過；Editor 分頁固定未完整測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G042",
+      "G049"
+    ]
+  },
+  {
+    "id": "F20-2",
+    "feature": "Editor tabs/split",
+    "scenario": "邊界／失敗",
+    "steps": "拖曳/鍵盤重排與關閉 dirty 檔",
+    "expected": "順序正確且提示保留",
+    "status": "PARTIAL",
+    "actual": "dirty 關閉取消與捨棄通過；拖曳／鍵盤重排未測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G047"
+    ]
+  },
+  {
+    "id": "F20-3",
+    "feature": "Editor tabs/split",
+    "scenario": "恢復／狀態",
+    "steps": "關閉 split 再開",
+    "expected": "剩餘文件不遺失",
+    "status": "PARTIAL",
+    "actual": "關 split 後文件保留；重新開 split 的完整流程未測。",
+    "evidence": [
+      "gui-07-editor-split"
+    ],
+    "liveCaseIds": [
+      "G009"
+    ]
+  },
+  {
+    "id": "F21-1",
+    "feature": "Markdown",
+    "scenario": "正常",
+    "steps": "QA 標題/表格/task/code 預覽",
+    "expected": "結構正確",
+    "status": "PASS",
+    "actual": "表格、task、code、Unicode 正常。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G006"
+    ]
+  },
+  {
+    "id": "F21-2",
+    "feature": "Markdown",
+    "scenario": "邊界／失敗",
+    "steps": "不安全連結/HTML payload",
+    "expected": "不執行腳本",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F21-3",
+    "feature": "Markdown",
+    "scenario": "恢復／狀態",
+    "steps": "原始碼與 rich editor 往返",
+    "expected": "文件內容不意外遺失",
+    "status": "PASS",
+    "actual": "rich/raw 往返，task 儲存到磁碟。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G006"
+    ]
+  },
+  {
+    "id": "F22-1",
+    "feature": "搜尋與命令面板",
+    "scenario": "正常",
+    "steps": "全文搜尋及命令鍵盤執行",
+    "expected": "命中正確內容",
+    "status": "PASS",
+    "actual": "全文 marker 命中跳行，符號命令 Enter 正常。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G010",
+      "G033"
+    ]
+  },
+  {
+    "id": "F22-2",
+    "feature": "搜尋與命令面板",
+    "scenario": "邊界／失敗",
+    "steps": "空結果/特殊字元/大小寫",
+    "expected": "結果及提示正確",
+    "status": "PARTIAL",
+    "actual": "無結果案例通過；特殊字元與大小寫未完整測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G010"
+    ]
+  },
+  {
+    "id": "F22-3",
+    "feature": "搜尋與命令面板",
+    "scenario": "恢復／狀態",
+    "steps": "搜尋後 Escape 再開",
+    "expected": "焦點與查詢狀態合理",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F23-1",
+    "feature": "LSP",
+    "scenario": "正常",
+    "steps": "QA TS/Python/Rust/Markdown 開檔",
+    "expected": "診斷/補全/符號可用",
+    "status": "PARTIAL",
+    "actual": "vtsls/marksman Ready、TS 符號跳轉通過；其他語言與診斷／補全未完整驗證。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G013",
+      "G033"
+    ]
+  },
+  {
+    "id": "F23-2",
+    "feature": "LSP",
+    "scenario": "邊界／失敗",
+    "steps": "不支援語言或 server 啟動失敗",
+    "expected": "明確提示且 Editor 可用",
+    "status": "PARTIAL",
+    "actual": "Python 顯示 integrity failed；未查清下載／環境根因。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G013"
+    ]
+  },
+  {
+    "id": "F23-3",
+    "feature": "LSP",
+    "scenario": "恢復／狀態",
+    "steps": "切工作區/外部修改後",
+    "expected": "診斷屬於正確文件版本",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F24-1",
+    "feature": "本機 PTY",
+    "scenario": "正常",
+    "steps": "新 shell 執行 cwd 與 marker",
+    "expected": "cwd 及輸出正確",
+    "status": "PASS",
+    "actual": "cwd 和 LOCAL_QA marker 正確。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G034"
+    ]
+  },
+  {
+    "id": "F24-2",
+    "feature": "本機 PTY",
+    "scenario": "邊界／失敗",
+    "steps": "不存在命令/exit 7",
+    "expected": "錯誤與結束狀態正確",
+    "status": "PASS",
+    "actual": "command not found、exit7、兩 pane 上限通過。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G034"
+    ]
+  },
+  {
+    "id": "F24-3",
+    "feature": "本機 PTY",
+    "scenario": "恢復／狀態",
+    "steps": "關閉 QA shell 再建立",
+    "expected": "無舊 listener 或輸出",
+    "status": "PARTIAL",
+    "actual": "QA shells 全退出返回空態；未重新建立後檢查 listener。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G034"
+    ]
+  },
+  {
+    "id": "F25-1",
+    "feature": "Git 唯讀",
+    "scenario": "正常",
+    "steps": "status/log/commit diff",
+    "expected": "與 git read-only 結果一致",
+    "status": "PASS",
+    "actual": "trusted Yuzora status/diff/log 與 HEAD 一致。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G030"
+    ]
+  },
+  {
+    "id": "F25-2",
+    "feature": "Git 唯讀",
+    "scenario": "邊界／失敗",
+    "steps": "空 repo/大量 untracked/Unicode 路徑",
+    "expected": "UI 可用",
+    "status": "PARTIAL",
+    "actual": "dirty repo 可用；non-repo 出 raw JSON。未測全套空 repo／大量 Unicode 檔案。",
+    "evidence": [
+      "gui-08-untrusted-git-retry"
+    ],
+    "liveCaseIds": [
+      "G011",
+      "G030"
+    ]
+  },
+  {
+    "id": "F25-3",
+    "feature": "Git 唯讀",
+    "scenario": "恢復／狀態",
+    "steps": "切 workspace 後回復 filter",
+    "expected": "不混用另一 repo 狀態",
+    "status": "PARTIAL",
+    "actual": "本機 workspace 切換與 Git filter Escape 通過，filter 回復未完整驗證。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G030",
+      "G049"
+    ]
+  },
+  {
+    "id": "F26-1",
+    "feature": "Git 寫入",
+    "scenario": "正常",
+    "steps": "stage/commit QA fixture",
+    "expected": "需另有明確 Git 授權",
+    "status": "BLOCKED_GIT_PERMISSION",
+    "actual": "尚無明確 staging / commit / push 授權；本輪未操作。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F26-2",
+    "feature": "Git 寫入",
+    "scenario": "邊界／失敗",
+    "steps": "commit 失敗/空訊息",
+    "expected": "需另有明確 Git 授權",
+    "status": "BLOCKED_GIT_PERMISSION",
+    "actual": "尚無明確 staging / commit / push 授權；本輪未操作。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F26-3",
+    "feature": "Git 寫入",
+    "scenario": "恢復／狀態",
+    "steps": "push/retry",
+    "expected": "需隔離 remote 與明確 Git 授權",
+    "status": "BLOCKED_GIT_PERMISSION",
+    "actual": "尚無明確 staging / commit / push 授權；本輪未操作。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F27-1",
+    "feature": "SQLite",
+    "scenario": "正常",
+    "steps": "QA DB 查詢 NULL/Unicode/1205 rows",
+    "expected": "資料與 500/500/205 分頁正確",
+    "status": "PASS",
+    "actual": "1205 rows 的 500/500/205 分頁及 NULL／空字串正常。",
+    "evidence": [
+      "gui-11-sqlite-page3"
+    ],
+    "liveCaseIds": [
+      "G020",
+      "G021",
+      "G022"
+    ]
+  },
+  {
+    "id": "F27-2",
+    "feature": "SQLite",
+    "scenario": "邊界／失敗",
+    "steps": "語法錯誤/長查詢取消",
+    "expected": "錯誤或取消後 UI 可用",
+    "status": "PASS",
+    "actual": "錯誤 SQL 可恢復；長查詢取消 3701ms。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G022",
+      "G023"
+    ]
+  },
+  {
+    "id": "F27-3",
+    "feature": "SQLite",
+    "scenario": "恢復／狀態",
+    "steps": "錯誤後再次 SELECT",
+    "expected": "連線恢復且不重送 SQL",
+    "status": "PASS",
+    "actual": "錯誤後 SELECT 與 fixture UPDATE 結果正確。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G022",
+      "G024"
+    ]
+  },
+  {
+    "id": "F28-1",
+    "feature": "PostgreSQL/MSSQL",
+    "scenario": "正常",
+    "steps": "隔離 fixture 連線及查詢",
+    "expected": "型別/TLS/分頁正確",
+    "status": "BLOCKED_ENV",
+    "actual": "未提供已啟動的隔離 PostgreSQL/MSSQL fixture；不連線使用者正式 DB。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F28-2",
+    "feature": "PostgreSQL/MSSQL",
+    "scenario": "邊界／失敗",
+    "steps": "錯誤憑證/逾時/取消",
+    "expected": "拒絕或結束且不掛住",
+    "status": "PARTIAL",
+    "actual": "loopback refused、非法 port 通過；TLS／錯密碼／逾時／取消未完整測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G025"
+    ]
+  },
+  {
+    "id": "F28-3",
+    "feature": "PostgreSQL/MSSQL",
+    "scenario": "恢復／狀態",
+    "steps": "中断再連線執行 SELECT",
+    "expected": "不重播之前寫入",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少正常 DB server，無法測中斷再連線。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F29-1",
+    "feature": "SSH 主機",
+    "scenario": "正常",
+    "steps": "隔離測試主機驗證/連線",
+    "expected": "host 與帳號正確",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F29-2",
+    "feature": "SSH 主機",
+    "scenario": "邊界／失敗",
+    "steps": "拒絕 fingerprint/錯誤密碼",
+    "expected": "快速回到可重試狀態",
+    "status": "PARTIAL",
+    "actual": "port／auth 表單和 loopback refused 通過；fingerprint／錯密碼未測。",
+    "evidence": [
+      "gui-12-ssh-refused"
+    ],
+    "liveCaseIds": [
+      "G026"
+    ]
+  },
+  {
+    "id": "F29-3",
+    "feature": "SSH 主機",
+    "scenario": "恢復／狀態",
+    "steps": "known-host 重連",
+    "expected": "無重複提示與資源泄漏",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F30-1",
+    "feature": "SFTP",
+    "scenario": "正常",
+    "steps": "QA 遠端子目錄 upload/download",
+    "expected": "內容雜湊一致",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F30-2",
+    "feature": "SFTP",
+    "scenario": "邊界／失敗",
+    "steps": "同名覆蓋取消/非法路徑",
+    "expected": "原檔保留",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F30-3",
+    "feature": "SFTP",
+    "scenario": "恢復／狀態",
+    "steps": "中斷傳輸後重連",
+    "expected": "殘留與重試狀態清楚",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F31-1",
+    "feature": "遠端工作區",
+    "scenario": "正常",
+    "steps": "SSH QA folder 開檔/Git/LSP",
+    "expected": "都在來源主機",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F31-2",
+    "feature": "遠端工作區",
+    "scenario": "邊界／失敗",
+    "steps": "同 path 不同主機/重疊 root",
+    "expected": "文件與快取隔離",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F31-3",
+    "feature": "遠端工作區",
+    "scenario": "恢復／狀態",
+    "steps": "dirty remote file 斷線恢復",
+    "expected": "buffer 保留且 revision 正確",
+    "status": "BLOCKED_ENV",
+    "actual": "缺少允許建立暫存 QA 目錄的 SSH 主機；已詢問但尚未收到。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F32-1",
+    "feature": "Preview",
+    "scenario": "正常",
+    "steps": "QA localhost 靜態頁/路徑/重整",
+    "expected": "來源與內容一致",
+    "status": "FAIL",
+    "actual": "localhost 內容正常；內頁 Next 連結未同步外層網址／歷史。",
+    "evidence": [
+      "gui-13-preview-history"
+    ],
+    "liveCaseIds": [
+      "G027",
+      "G028"
+    ]
+  },
+  {
+    "id": "F32-2",
+    "feature": "Preview",
+    "scenario": "邊界／失敗",
+    "steps": "非法 scheme/port 衝突/404",
+    "expected": "明確提示",
+    "status": "PARTIAL",
+    "actual": "非法 scheme 與 404 通過；port 衝突未測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G027"
+    ]
+  },
+  {
+    "id": "F32-3",
+    "feature": "Preview",
+    "scenario": "恢復／狀態",
+    "steps": "切 Space/關頁再開",
+    "expected": "native webview 與 tunnel 清理",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F33-1",
+    "feature": "Preview dev server",
+    "scenario": "正常",
+    "steps": "QA command 啟動 dev server",
+    "expected": "工作區和 port 正確",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F33-2",
+    "feature": "Preview dev server",
+    "scenario": "邊界／失敗",
+    "steps": "取消信任/啟動失敗",
+    "expected": "不擅自啟動程序",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F33-3",
+    "feature": "Preview dev server",
+    "scenario": "恢復／狀態",
+    "steps": "停止再啟動",
+    "expected": "只清理 owned process 且不自動重播",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F34-1",
+    "feature": "設定与語系",
+    "scenario": "正常",
+    "steps": "主題/色彩/字體/繁英切換",
+    "expected": "立即套用",
+    "status": "PASS",
+    "actual": "主題、色彩、繁英、Editor／Terminal 字體及 minimap 套用正常。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G018"
+    ]
+  },
+  {
+    "id": "F34-2",
+    "feature": "設定与語系",
+    "scenario": "邊界／失敗",
+    "steps": "最小/最大/非法設定值",
+    "expected": "輸入驗證合理",
+    "status": "NOT_RUN",
+    "actual": "本輪尚未執行這個完整情境；不計為通過。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F34-3",
+    "feature": "設定与語系",
+    "scenario": "恢復／狀態",
+    "steps": "關閉設定再重啟",
+    "expected": "值持久化並可還原",
+    "status": "PASS",
+    "actual": "重啟後保留，已還原原值。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G018"
+    ]
+  },
+  {
+    "id": "F35-1",
+    "feature": "Logs 与資源使用",
+    "scenario": "正常",
+    "steps": "query/filter/copy/export sanitized logs",
+    "expected": "畫面與匯出範圍一致",
+    "status": "PARTIAL",
+    "actual": "分頁 Copy50 sanitized 通過；export 未測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G015"
+    ]
+  },
+  {
+    "id": "F35-2",
+    "feature": "Logs 与資源使用",
+    "scenario": "邊界／失敗",
+    "steps": "非法日期/無結果/多頁",
+    "expected": "提示和 pagination 正確",
+    "status": "PASS",
+    "actual": "非法日期、空結果及分頁通過。",
+    "evidence": [
+      "gui-10-logs-empty"
+    ],
+    "liveCaseIds": [
+      "G014",
+      "G015",
+      "G016"
+    ]
+  },
+  {
+    "id": "F35-3",
+    "feature": "Logs 与資源使用",
+    "scenario": "恢復／狀態",
+    "steps": "更換 query/host",
+    "expected": "expanded rows 和資源統計不串資料",
+    "status": "PARTIAL",
+    "actual": "更換 query 空態正常；跨 host rows/資源統計未測。",
+    "evidence": [
+      "gui-10-logs-empty"
+    ],
+    "liveCaseIds": [
+      "G016"
+    ]
+  },
+  {
+    "id": "F36-1",
+    "feature": "跨平台與更新",
+    "scenario": "正常",
+    "steps": "macOS/Windows/WSL/Linux 對應環境",
+    "expected": "各自需真實證據",
+    "status": "BLOCKED_ENV",
+    "actual": "只驗證 macOS current debug wrapper；沒有 Windows/WSL/Linux 實機證據。",
+    "evidence": [
+      "gui-01-initial"
+    ],
+    "liveCaseIds": [
+      "G001"
+    ]
+  },
+  {
+    "id": "F36-2",
+    "feature": "跨平台與更新",
+    "scenario": "邊界／失敗",
+    "steps": "更新失敗/不支援 channel",
+    "expected": "保留可用版本",
+    "status": "NOT_RUN",
+    "actual": "未操作 updater／channel 變更；本輪為 debug wrapper，非安裝更新測試。",
+    "evidence": [],
+    "liveCaseIds": []
+  },
+  {
+    "id": "F36-3",
+    "feature": "跨平台與更新",
+    "scenario": "恢復／狀態",
+    "steps": "更新或 App 重啟後",
+    "expected": "工作區恢復且不誤停 Agent",
+    "status": "PARTIAL",
+    "actual": "App 重啟設定與 QA shell 保留；updater 遷移未測。",
+    "evidence": [],
+    "liveCaseIds": [
+      "G018",
+      "G019"
+    ]
+  }
+]

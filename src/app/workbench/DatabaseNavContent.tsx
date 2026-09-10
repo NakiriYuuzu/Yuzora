@@ -385,6 +385,7 @@ function SavedConnectionsRegion({
       <ScrollArea
         data-testid="db-saved-scroll"
         className="min-h-0 flex-1"
+        viewportClassName="[&>div]:block!"
       >
         {saved.length === 0 ? (
           <div className="flex min-h-[72px] items-center justify-center px-[8px]">

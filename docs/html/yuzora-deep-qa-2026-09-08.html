@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora · Top bar 與深度驗收 · 2026-09-08</title>
+<style>
+:root{color-scheme:light dark;--paper:#fbfaf6;--ink:#2e2c28;--muted:#625e56;--line:#ddd8cd;--panel:#f4f1ea;--link:#36546c}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.7 system-ui,-apple-system,sans-serif}main{max-width:1160px;margin:auto;padding:48px 28px 80px}h1{font-size:32px;line-height:1.3}h2{font-size:22px;margin-top:44px}h3{font-size:17px}p{max-width:94ch}a{color:var(--link)}small,figcaption,.muted{color:var(--muted)}code{font:12px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{background:var(--panel)}figure{margin:24px 0}img{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:12px}figcaption{margin-top:8px;font-size:13px}.note{padding:18px 22px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}li{margin:8px 0}.scroll{overflow:auto}.tag{font-size:12px;border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap}@media(prefers-color-scheme:dark){:root{--paper:#1a191f;--ink:#e7e4df;--muted:#b6b2bb;--line:#46404e;--panel:#24212b;--link:#a8c8eb}}
+</style>
+<main>
+<p class="muted">2026-09-08 · macOS arm64 · production source + 隔離 fixture</p>
+<h1>Top bar 微調與深度功能驗收</h1>
+<p>Top bar 內容與 macOS 紅綠燈同步下移 2px；左側移除「啟動 Agent」按鈕、對話框掛載和專用提示。Herdr Session、開啟資料夾與新增 Terminal 入口保留。已更新並啟動 <strong>Yuzora UI Test.app</strong>，前端由 localhost:1420 提供。</p>
+<div class="note"><strong>整體：證據不足以宣告所有功能全面驗收完成。</strong> 本次 UI 調整與已執行的自動化檢查通過；未發現這兩項 UI 調整的阻擋項。現有 default Herdr 顯示 protocol incompatible，完整 Agent／PTY 端到端流程尚未驗收。這份結果不代表 merge／release 授權。</div>
+<p><strong>品牌延續：</strong>已測畫面保留暖紙色、暖深灰、五組系統漸層、Space 獨立身份與霧面 chrome。<strong>ADE 工作流程：</strong>已驗證入口、狀態表達、鍵盤導覽、diff 與錯誤呈現；實際 Herdr 控制權、四 panes、跨 Session process 延續仍缺實機證據。</p>
+
+<h2>基準與變更範圍</h2>
+<p>Repo：<code>/Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora</code><br>HEAD：<code>711342825480a2edd5eb79005554ce828177e245</code>；工作樹原有大量未提交的 UI 遷移修改，本次保留。未執行 production repo 的 stage、commit、push 或 worktree。沒有修改 <code>../yuzora-ui-demo</code>。</p>
+<ul>
+<li><code>src/app/workbench/workbench-shell.css:1</code>：48px 高度不變，4px 上 padding 使置中的控制項下移 2px。Browser 量測群組頂部為 y=9px、高 34px；原先 y=7px。</li>
+<li><code>src-tauri/tauri.conf.json:24</code>：<code>trafficLightPosition.y</code> 由 15 改為 17，已重新編譯並替換測試 App binary。</li>
+<li><code>src/app/workbench/HerdrLauncher.tsx</code>：移除左側新增 Agent 的 button、state、dialog mount、launch-only notice；清掉對應 CSS 與 en／zh-TW 文案。</li>
+<li>驗收補修：Session 摘要的 accessibility exposure、重複執行 DB fixture 初始化，以及 ESLint 排除產生的 <code>output/</code>。</li>
+</ul>
+<figure><img src="yuzora-deep-qa-2026-09-08-assets/09-native-final.png" alt="原生 Yuzora 最終畫面，頂欄分組保留，左側已無啟動 Agent"><figcaption>實機證據：macOS 原生測試 App。截圖由工具縮放為 1300×768，不能直接把截圖像素當成 App 的 logical px。</figcaption></figure>
+
+<h2>自動化與隔離整合結果</h2>
+<div class="scroll"><table><thead><tr><th>檢查</th><th>實際結果</th><th>範圍／限制</th></tr></thead><tbody>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/frontend-tests.log">Frontend 全套</a></td><td>217 files／2,695 tests 通過</td><td>Vitest／jsdom；包括 Editor、Git、Database、Herdr store／bridge、Preview、Settings、Terminal 等既有測試，不等同真實桌面端到端。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/final-scoped-tests.log">補修回歸</a></td><td>43 tests 通過</td><td>Space tree、AppShell 與版面；包含 Session 停止摘要對輔助技術可見的檢查。數字不重複加進全套總數。</td></tr>
+<tr><td>Typecheck／<a href="yuzora-deep-qa-2026-09-08-assets/final-build.log">Build</a></td><td>通過</td><td><code>bun run build -- --outDir output/deep-qa/build</code> 內含兩份 tsconfig 檢查。保留既有 bundle size／dynamic import 警告。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/final-lint.log">Lint</a></td><td>0 errors／56 warnings</td><td>未以自動修正改動既有 warnings。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/rust-tests.log">Rust desktop</a></td><td>396 lib tests + 1 integration test 通過</td><td><code>cargo test --locked -j 4</code>；原本 ignored 的實際 DB／SFTP 測試另外執行，見下列。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/host-tests.log">Host Runtime</a></td><td>566 tests 通過</td><td>使用 <code>src-tauri/host/Cargo.toml</code> 的測試入口；含 Git stdio、remote facade、SQLite stdio、檔案、SSH 協定相關測試。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/database-macos-pass.log">SQLite + PostgreSQL 矩陣</a></td><td>通過</td><td>真實 repo Docker fixture（確認 compose labels／healthy）；分頁 0／499／500／501／1000／1001／1201、DML、transactions、取消、stale owner、錯誤後重用。未使用使用者產品 DB。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/sqlite-proxy.log">SQLite Host proxy</a></td><td>通過</td><td>新編譯的 Host helper；actor ownership、分頁、取消、關閉與斷線後的 slot 釋放。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/database-tunnels.log">DB owned tunnels</a></td><td>通過</td><td>真實 PostgreSQL／MSSQL fixture 經 Host tunnel；這是特定連線與釋放測試，不能取代完整 MSSQL 矩陣。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/sftp-integration.log">OpenSSH SFTP</a></td><td>通過</td><td>Loopback russh + 系統 sftp-server；獨立 key／credentials／臨時檔案，測覆寫衝突、取消、下載、斷線。</td></tr>
+<tr><td><a href="yuzora-deep-qa-2026-09-08-assets/lsp-install.log">LSP 實際安裝</a></td><td>通過</td><td>既有測試在隔離目錄安裝 marksman binary 與 pyright npm package，驗證 managed provenance；沒有取代使用者已安裝的 LSP。</td></tr>
+<tr><td>Rust check／fmt／<a href="yuzora-deep-qa-2026-09-08-assets/final-clippy.log">Clippy</a></td><td>通過</td><td><code>cargo check --locked --all-targets</code>、fmt check；Clippy exact baseline 90 diagnostics 相符。<code>git diff --check</code> 亦通過。</td></tr>
+</tbody></table></div>
+
+<h2>已觀察的問題與補修</h2>
+<h3>1. All 視圖的 Session 摘要被隱藏於 accessibility tree <span class="tag">已觀察的問題 · 已修正</span></h3>
+<p><strong>觸發：</strong>載入兩個 Session，其中一個 stopped，讀取 All 的 accessibility tree。<strong>證據：</strong><code>SpaceAgentTree.tsx:475</code> 原本在 Session 摘要設置 <code>aria-hidden="true"</code>，畫面可見的「Server 已停止 · 顯示上次資料」沒有對應段落。各個 treeitem 原本仍有 <code>aria-description</code>，因此影響是群組摘要的閱讀連續性，而非所有停止提示都消失。</p>
+<p><strong>最小修正／驗收：</strong>移除摘要的 aria-hidden；Browser DOM/AX 現在有 Session 名稱及 stopped 訊息；<code>SpaceAgentTree.test.tsx:94</code> 驗證摘要不是 inaccessible。未使用 VoiceOver 宣稱實際朗讀順序通過。</p>
+<h3>2. DB 整合測試不能穩定重跑 <span class="tag">已觀察的問題 · 測試 fixture 已修正</span></h3>
+<p><strong>觸發：</strong>對已執行過的 Docker fixture 再跑 database matrix。<strong>證據：</strong>PostgreSQL ordered-transaction-script 原先斷言 transaction_probe.value = 0，但稍後 Q6 會把值加 1，compose volume 保留此狀態；本次實際得到 1。這是測試前置條件問題，不能推論產品 transaction 行為有缺陷。</p>
+<p><strong>最小修正／驗收：</strong><code>src-tauri/tests/database_integration.rs:1142</code> 與 <code>:2136</code> 在對應 scenario 前把專用 probe 初始化為 0，並檢查 UPDATE 結果。PostgreSQL 後續兩次執行通過該情境；SQLite／PostgreSQL 完整選定矩陣通過。MSSQL 同樣的 fixture 修正已編譯，但完整 Linux scenario 尚未執行。</p>
+<h3>3. Lint 誤掃驗收產生的壓縮 bundle <span class="tag">已觀察的問題 · 已修正</span></h3>
+<p><strong>觸發／證據：</strong><code>bun run lint</code> 掃進 <code>output/topbar-build/assets/*.js</code>，產生 8,550 個 generated-code errors。<strong>最小修正：</strong><code>eslint.config.js</code> 把 build／驗收產物目錄 <code>output</code> 列為 ignore，production source 仍完整受檢查。<strong>驗收：</strong>重跑為 0 errors、56 個既有 warnings。</p>
+
+<h2>UI 實際走查</h2>
+<p>Browser fixture 使用正式 React components／stores 與 CSS，模擬資料明示 <strong>FIXTURE</strong>；不掛載完整 App Bridges，IPC 僅放行 fixture reads，拒絕 mutations。下表的 mock 結果只支持 UI 行為。</p>
+<div class="scroll"><table><thead><tr><th>情境</th><th>觀察結果</th><th>證據層級</th></tr></thead><tbody>
+<tr><td>頂欄分組／左側啟動入口</td><td>原生 App 已更新；共用工具、搜尋設定、版面群組保留，左側無啟動 Agent。新增分頁保留本機 Terminal／Browser 與 Herdr 終端入口。</td><td>原生 AX + screenshot</td></tr>
+<tr><td>兩 Session／八 Agents／長 branch/path</td><td>已載入快照與 stopped 分開；working、blocked、idle、done、unknown 各有文字；done 為回覆待查看。長內容截斷、側欄可捲動。</td><td>Fixture</td></tr>
+<tr><td>Attention → Inspector</td><td>需回覆的 Agent 能開檢查器；不支援能力時顯示限制訊息，沒有假輸出或假成功。</td><td>Fixture；未完成 live reply</td></tr>
+<tr><td>Git → Split Diff Modal → 返回</td><td>單擊檔案開啟預設 split；1440×900 時 dialog 為 1424×884、四周 8px；Escape 關閉後焦點回到 App.tsx。</td><td>Fixture + DOM rect</td></tr>
+<tr><td>Git 多選與失敗</td><td>Meta toggle、Shift 範圍與 Space 鍵多選有效；模擬拒絕 git_stage 後保留選取、呈現錯誤與重試。</td><td>Fixture；真實 Git 命令另由 Rust 測試覆蓋</td></tr>
+<tr><td>Git Graph</td><td>「提交紀錄與分支圖」到達既有 Log view；fixture 未提供 git_log_page，顯示載入錯誤與重試。未把空資料當成 Graph 成功。</td><td>入口與錯誤已觀察；圖形實機待驗證</td></tr>
+<tr><td>Rich Markdown</td><td>輸入繁體中文可同步到 CodeMirror 原始碼；回到文件後使用 Undo 移除追加字串。檔案切換、右鍵釘選有可見結果。</td><td>Fixture；原生磁碟存檔未完成</td></tr>
+<tr><td>Space 編輯／鍵盤</td><td>End 到最後節點、Home 回首節點；F2 開外觀編輯；取消後焦點回原 treeitem。選「靜態」後 character 的 animationName 均為 none。</td><td>Fixture；OS reduced motion 未另外實測</td></tr>
+<tr><td>Settings</td><td>10 個分類均可到達；JetBrains 搜尋定位 Terminal 字型；ArrowRight 字級 13→14、ArrowLeft 還原。關閉後 browser DOM focus 回設定按鈕。原生 Terminal 設定顯示 JetBrains Mono 預設。</td><td>Fixture + 原生入口；未執行安全性／更新等設定操作</td></tr>
+<tr><td>DB／SSH／SFTP／Preview</td><td>DB 可進入並返回工作面；原生 SSH/SFTP 可開 SFTP 對話框；Browser 可建立 Preview tab，無 workspace/dev server 時輸入與啟動控件 disabled。對話框與測試分頁已關閉。</td><td>原生 + Fixture 入口；backend 整合另列</td></tr>
+<tr><td>Resource usage</td><td>Popover 顯示 App／WebView／受管工具分類及 RSS 範圍限制；沒有假稱逐 PID、Space 或遠端資源歸屬。</td><td>Fixture；原生 status bar 真實採樣</td></tr>
+<tr><td>Command Palette</td><td>原生按鈕可開面板、輸入搜尋，Escape 可關閉。</td><td>原生；完整快捷鍵衝突矩陣未完成</td></tr>
+</tbody></table></div>
+<figure><img src="yuzora-deep-qa-2026-09-08-assets/02-split-diff.png" alt="Fixture 中佔大部分工作面的並排 diff"><figcaption>Fixture：預設並排 Diff Modal；不代表 live repo 有這些差異。</figcaption></figure>
+
+<h2>尺寸、主題與對比</h2>
+<ul>
+<li>1440×900：兩側欄與主要文件面可同時閱讀。1280×800：dark／violet 顯示正常。</li>
+<li>1024×768：右工具側欄自動收合；左欄 288px、主面 710px，document scrollWidth = 1024。</li>
+<li>200%：使用 Chrome 原生 Zoom 控制，自 100% 放大至 200%，實測 CSS viewport 720×450、devicePixelRatio 2；兩側欄收合，主面及設定可捲動。測試後已還原 100%。</li>
+<li>五個主題色逐一點選：青檸、海藍、紫羅蘭、珊瑚、琥珀，radio checked 與 <code>--yz-bg</code> 多點漸層同步改變。Light／dark 均有截圖，不替未測組合宣告 AA 全面通過。</li>
+</ul>
+<div class="scroll"><table><thead><tr><th>對比抽查</th><th>實際合成背景／前景</th><th>Ratio</th></tr></thead><tbody>
+<tr><td>Light 青檸 · toolbar label</td><td>Screenshot (110,26)：rgb(246,248,237)；computed text rgb(87,83,75)</td><td>7.13:1</td></tr>
+<tr><td>Light · 文件文字</td><td>Screenshot (370,285)：rgb(251,250,246)；text rgb(46,44,40)</td><td>13.34:1</td></tr>
+<tr><td>Dark 紫羅蘭 · toolbar label</td><td>Screenshot (110,26)：rgb(26,25,33)；text rgb(182,178,187)</td><td>8.36:1</td></tr>
+<tr><td>Dark · 文件文字</td><td>Screenshot (370,285)：rgb(26,25,31)；text rgb(231,228,223)</td><td>13.77:1</td></tr>
+</tbody></table></div>
+<p class="muted">方法：Browser computed foreground + PNG 中鄰近文字的無字背景取樣，再以 WCAG relative luminance 計算。以上四個抽樣達一般文字 4.5:1；未涵蓋所有 palette、hover、disabled、focus ring、狀態色或每個漸層位置。</p>
+<figure><img src="yuzora-deep-qa-2026-09-08-assets/10-dark-contrast.png" alt="正式元件使用 dark violet 主題的 fixture"><figcaption>Fixture：1440×900 暖深灰／紫羅蘭，Source-backed computed color 的截圖樣本。</figcaption></figure>
+<figure><img src="yuzora-deep-qa-2026-09-08-assets/07-zoom-200.png" alt="Chrome 實際 200% 縮放的工作面"><figcaption>Fixture：實際 Chrome 200%，截圖以 CSS 尺寸 720×450 輸出，非把 720px 窗口冒充縮放。</figcaption></figure>
+<figure><img src="yuzora-deep-qa-2026-09-08-assets/08-settings-200.png" alt="200% 縮放下可捲動的設定"><figcaption>Fixture：200% 下的 Settings，分類與內容使用各自可捲動區域，關閉按鈕可到達。</figcaption></figure>
+
+<h2>尚未驗證與最多五個優先後續</h2>
+<ol>
+<li><strong>Herdr 端到端：</strong>目前原生 default 顯示 <code>herdr server protocol incompatible</code>；未重啟或控制使用者既有 Session。需要相容的獨立 runtime，驗證 observer/controller 交接、四 panes、agent 替換、closed pane、斷線恢復，以及 Attention→owning pane→回覆→diff/Preview→返回。現有 unit tests 不取代此項。</li>
+<li><strong>跨平台：</strong>MSSQL full matrix 在 macOS 依測試 guard 回報 <code>requires-linux-x86_64</code>。需 Linux x86_64 補跑；Windows native／WSL／遠端 SSH 主機也未取得本次實機證據。</li>
+<li><strong>原生文件與輸入：</strong>原生 folder picker 有開啟，但本次自動化未能完成 Go to Folder 的導覽，因此磁碟存檔、external watcher、IME composition、真實 xterm 輸入／scroll／resize、native child webview focus 尚未端到端實測。此為測試未完成，沒有據此判定產品故障。</li>
+<li><strong>完整 a11y：</strong>VoiceOver、OS reduced motion、所有模態窗 Tab／Shift+Tab 與跨 editor/terminal 快捷鍵衝突、全 palette/control 對比需追加實機矩陣。已完成的 Home／End／F2／Escape 與抽樣對比另列。</li>
+<li><strong>發行環境：</strong>目前為本機 debug App + production frontend build。正式 bundle、簽章、updater、安裝／升級流程未執行，不能以本次啟動證據代替。</li>
+</ol>
+<p>應保留：纖薄分組頂欄、可收合兩侧欄、host-qualified Session 上下文、停止快照提示、明確 Agent 狀態文字、Rich／source 共用文件內容，以及佔大部分視窗的並排 Diff Modal。</p>
+<p class="muted">Runtime 資料取自本次 source／native AX；fixture 截圖只表示模擬環境。驗收未使用舊 prototype 截圖推斷 production 功能。</p>
+</main>
+</html>

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora ADE 重設計 Prompts · 2026-09-06</title>
+<style>
+:root{color-scheme:light;--paper:#fbfaf6;--ink:#2e2c28;--muted:#645f56;--line:rgba(27,26,23,.13);--accent:#5f7d2a;--panel:rgba(255,255,255,.73);--well:#f4f1ea}
+*{box-sizing:border-box}body{margin:0;color:var(--ink);background:radial-gradient(ellipse at 0 0,#e9f4c8,transparent 45%),radial-gradient(ellipse at 100% 0,#dcebea,transparent 45%),var(--paper);font:15px/1.7 "Hanken Grotesk",system-ui,"PingFang TC","Microsoft JhengHei",sans-serif}main{max-width:1380px;margin:auto;padding:36px 28px 64px}header{max-width:980px;margin-bottom:28px}.eyebrow{font:12px/1.5 ui-monospace,monospace;letter-spacing:.06em;color:var(--muted)}h1{font:500 clamp(29px,4vw,43px)/1.2 "Newsreader",Georgia,serif;margin:13px 0}p{margin:12px 0}.lead{font-size:18px}a{color:var(--accent);text-underline-offset:3px}.links{display:flex;gap:18px;flex-wrap:wrap}.layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:22px;align-items:start}nav{padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:20px;position:sticky;top:20px}.phase{display:flex;text-align:left;gap:10px;padding:12px;border:0;border-radius:12px;width:100%;color:var(--ink);background:transparent;cursor:pointer;font:inherit;margin:4px 0}.phase span{font-family:ui-monospace,monospace;font-size:12px;padding-top:3px;color:var(--muted)}.phase[aria-current="true"]{background:#e9f1da;box-shadow:0 1px 3px rgba(27,26,23,.08)}.phase:hover{background:#f0f1e8}.phase:focus-visible,button:focus-visible,a:focus-visible,pre:focus-visible{outline:3px solid #62883b;outline-offset:3px}article{background:var(--panel);border:1px solid var(--line);border-radius:20px;min-width:0;box-shadow:0 8px 28px rgba(27,26,23,.06)}.toolbar{padding:22px 24px;border-bottom:1px solid var(--line)}h2{font-size:23px;line-height:1.4;margin:0 0 6px}.description,.note{color:var(--muted)}.actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:16px}#copy{border:1px solid transparent;border-radius:999px;background:var(--ink);color:var(--paper);padding:9px 20px;font:inherit;font-size:14px;font-weight:600;cursor:pointer}#copy:disabled{opacity:.6;cursor:wait}#copy:hover{background:#454137}#copy-status{font-size:13px;min-height:24px;color:var(--accent)}.badge{display:inline-block;padding:2px 9px;border-radius:999px;background:var(--well);font-size:12px;color:var(--muted)}pre{margin:0;padding:24px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;background:rgba(251,250,246,.78);border-radius:0 0 20px 20px;font:13px/1.85 ui-monospace,"JetBrains Mono","PingFang TC",monospace;tab-size:2}code{font:inherit}.note{padding:12px 3px;font-size:13px}footer{margin-top:24px;color:var(--muted);font-size:13px}
+@media(max-width:860px){main{padding:24px 14px}.layout{grid-template-columns:1fr}nav{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.phase{padding:9px;font-size:14px}.toolbar{padding:20px}pre{padding:20px;font-size:12px}.lead{font-size:16px}}
+@media(max-width:430px){nav{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:no-preference){button{transition:background 120ms ease}}
+@media print{body{background:white}nav,.actions,.links{display:none}.layout{display:block}main{padding:0}article{border:0;box-shadow:none}pre{font-size:10px}}
+</style></head><body><main>
+<header><div class="eyebrow">YUZORA · DESIGN PROMPTS · 2026-09-06</div><h1>更像 ADE，保留熟悉的 Yuzora。</h1>
+<p class="lead">8 份可直接使用的設計 prompts。把工作上下文、Agents、Attention 與工具流程整理清楚，延續 The Browser Company 風格的暖色、霧面與圓角。</p>
+<p class="note">每次複製都包含完整共用 Brief 與當前 Prompt。這是設計工具包；尚未改動產品 UI，也沒有執行下列原型或交接任務。</p>
+<div class="links"><a href="../design/prompts/ade-browser-company/README.md">Markdown 使用說明</a><a href="yuzora-herdr-uiux-research-2026-09-06.html">研究來源</a><a href="../design/prompts/ade-browser-company/shared-brief.md">共用 Brief</a></div>
+</header>
+<div class="layout">
+<nav aria-label="選擇設計 Prompt"><button type="button" class="phase" data-index="0" aria-current="true"><span>00</span>總設計 Prompt</button>
+<button type="button" class="phase" data-index="1" aria-current="false"><span>01</span>品牌樣式與 Design Tokens</button>
+<button type="button" class="phase" data-index="2" aria-current="false"><span>02</span>ADE 工作面與導覽</button>
+<button type="button" class="phase" data-index="3" aria-current="false"><span>03</span>Agents、Attention 與 Terminal</button>
+<button type="button" class="phase" data-index="4" aria-current="false"><span>04</span>Editor、Git 與其他工具頁</button>
+<button type="button" class="phase" data-index="5" aria-current="false"><span>05</span>可互動原型</button>
+<button type="button" class="phase" data-index="6" aria-current="false"><span>06</span>實作計畫與交接</button>
+<button type="button" class="phase" data-index="7" aria-current="false"><span>07</span>設計與實機驗收審查</button></nav>
+<div><article aria-labelledby="prompt-title"><div class="toolbar"><h2 id="prompt-title">總設計 Prompt</h2><p class="description" id="prompt-description">一次產出整體重設計方向、資訊架構與分階段交接</p><span class="badge">共用 Brief ＋ 本階段任務</span><div class="actions"><button id="copy" type="button">複製完整 Prompt</button><a id="source" href="../design/prompts/ade-browser-company/00-master.md">此階段 Markdown</a><span id="copy-status" role="status" aria-live="polite"></span></div></div><pre id="prompt" tabindex="0" aria-label="完整 Prompt 內容"><code id="prompt-text"># 共用設計 Brief：Yuzora ADE × The Browser Company
+
+## 任務與授權範圍
+重新設計 Yuzora 的整體 UI/UX，讓資訊架構、操作入口與日常工作流程更像 Agent Development Environment，同時延續目前專案中的 The Browser Company / Arc / Dia 風格。
+本套 prompts 用於設計、規格、原型與實作交接；不代表已授權修改產品 UI、執行 Git 寫入或控制 live Herdr。
+已提供的需求與方向直接使用；可逆的設計選擇自行作出並註明理由。只有缺少必要輸入、權限或存在真正的領域衝突時才詢問。
+輸出繁體中文；技術詞保留 English；UI 文案提供 zh-TW，規格附對應 en。
+
+## 產品基準
+- Repo：/Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora
+- 研究基準：2026-09-06，Yuzora 0.0.9-beta.3，HEAD 9d0634c44e314b3dcc1c39b371ed448481b2f16a。開始新工作時重新確認 HEAD 和 dirty state。
+- Herdr：研究當時官方／bundled 為 0.8.2 / protocol 20；實際執行能力以選定 binary、server schema、platform、session capabilities 為準。
+- 技術：Tauri 2、React 19、TypeScript、Zustand、Tailwind 4、shadcn/ui radix-nova、Lucide、CodeMirror 6、xterm。
+- 核心：Space、Named Session、Agents、Attention、terminal panes；輔助：Editor/LSP、Git、Database、SSH/SFTP、Preview、Settings。
+- 現行已具備 Space/Agent/Terminal、read-only Inspector、observe/control、capability gating。跨 Named Session Attention、完整 agent prompt/wait/attach/explain、worktree lifecycle、通用 Plugins 管理是研究指出的差距，開始設計前需與現行 source 核對。
+- 此研究不是今天的 GUI 全功能驗收；不要從舊截圖推導 runtime 正常或斷言缺陷。
+
+## 必讀來源與衝突處理
+1. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/CLAUDE.md
+2. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/AGENTS.md
+3. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/.yuuzu/CONTEXT.html 與相關 .yuuzu/adr/
+4. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/html/yuzora-herdr-uiux-research-2026-09-06.html
+5. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/design/README.md
+6. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/src/styles.css、components.json 與受影響的現行 React components
+7. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/design/project/Yuuzu Workbench.dc.html 與其本機 imports
+8. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/design/project/_ds/the-browser-company-design-system-6aff1620-8268-43e3-9c43-01c0bf16dd46/readme.md 及 tokens/*.css
+
+Domain/runtime 語意以現行 production code、CONTEXT 和 accepted ADR 為準；視覺以現行 styles/persisted palette，對照原型和 tokens。發現差異時列出來，不任意覆蓋。閱讀完整 prototype 才進入視覺實作，不複製其內部架構。
+此設計系統是 repo 內依公開品牌特徵重建的參考，不是 The Browser Company 官方 Figma/品牌規格。
+原型與 screenshots 內的 AgentZone、ACP 對話、PINNED/RECENT 等可能是舊模型；只取視覺，不恢復已淘汰的 runtime/導覽。
+若工具無 repo 存取權，使用這份摘要完成明確標為「概念設計」的方案；不要聲稱已讀來源或已驗證 implementation。需要精確對照時列出待附的檔案／截圖。
+
+## 保留的視覺語言
+- 暖紙色：--paper-1 #fbfaf6、--paper-2 #f4f1ea；暖墨色：--ink-1 #2e2c28。
+- Dark mode 使用現行 production 暖深灰／紫灰層次，如 --paper-1 #1a191f；terminal 有獨立 --term-* 色票。
+- 保留 --yz-bg 的低彩度多點漸層與 --yz-glass / --yz-panel 等霧面層次；內容閱讀面保持穩定對比。
+- 保留 Space 的色彩識別與持久化 palette。--yz-accent #86b81f 是 CSS fallback，不是強制唯一配色；參考系統的藍色也不是新的固定主色。
+- Hanken Grotesk 用於日常 UI；Newsreader 用於 Space 名稱／少量情境標題；JetBrains Mono 用於程式碼、路徑、快捷鍵與技術資料。保留既有中日文字體 fallback，驗證繁中文字形，不把 Newsreader 強套到所有工作列表。
+- 4/8px 間距節奏、柔和分層圓角（6/10/14/20/28px）、溫暖陰影與圓角側欄；深層內容不要層層套大卡片。
+- 沿用 Lucide；一致的圓角線條和 stroke。Space 的使用者身份圖示可保留，狀態與 action 不靠裝飾 emoji 表達。
+- 延續 120/220/380ms 與現有 easing；日常互動偏快，spring 用於少量 chrome。Terminal input、輸出更新、焦點與 resize 不因動畫延遲；尊重 reduced motion。
+- 品牌漸層表達 Space／身份／少量 onboarding；working/blocked/done 等狀態用穩定語意色＋文字，不與 agent 品牌色混用。
+- 不為符合通用設計模板更換字體、圖示庫、palette 或引入大面積霓虹、grain、parallax、慣性捲動。既有品牌決策優先於泛用 redesign skill 建議。
+
+## ADE 的具體目標
+使用者開啟工作面後應能快速回答：
+1. 我在什麼 Space、branch/worktree、Named Session？
+2. 哪些 agent 在工作，哪些需要我回覆，哪些已回覆待查看？
+3. 選取 agent 後，其 terminal、輸出與相關檔案／diff 在哪裡？
+4. 我能做的下一步是什麼；若不能做，原因和恢復方式是什麼？
+5. 切 Space／Session／工具頁後，工作上下文和 terminal process 是否保持一致？
+
+預設探索「纖細 Spaces rail → 情境側欄 → 主要工作畫布 → 可收合 contextual inspector」，保留按需 terminal drawer。這是候選版面，不是已決議架構；提出替代版面時說明如何改善上述任務。
+ADE 密度靠資訊分層、可收合區域、清楚的優先級；不要靠縮小關鍵字體或把所有功能塞入常駐面板。
+
+## 不可破壞的語意與技術邊界
+- Named Session 是 runtime namespace；Terminal Session 是 I/O 生命週期；Agent Session 是 agent 的語意對話／恢復身份。三者不能因視覺簡化而合併。
+- Herdr 擁有 workspace/tab/pane、PTY/process、agent identity/state；Yuzora 透過 typed IPC/Bridge/store 投影，不從 terminal 文本或 wsl.exe 猜身份。
+- working、blocked、idle、done、unknown 必須區分。done 是 idle 且未查看，不保證任務成功；unknown 不當成 done。產品可使用清楚的中文標籤，規格保留原始 enum 對照。
+- App 關閉／切頁／斷線不等於停止 Herdr process；observer 不等於 controller。控制權轉移需真實狀態與失敗處理。
+- 跨 Named Session 聚合是 Yuzora 的候選 UX 能力，不能假裝現行後端已持續監聽所有 session，也不能將不同 runtime 的 ID 混用。
+- Windows-native Herdr 是 runtime；WSL Pi plugin 目前 Experimental。WSL shell 不代表另一個 runtime；不承諾所有 WSL agents 都可 resume/control。
+- 工作意圖／任務摘要可以是展示欄位；若 source 沒有 Task/Run entity 或 authoritative metadata，不自行創造持久化 task engine，也不從 terminal output 猜「任務成功」。
+- 每個擬議 action 分別標註：現有能力／新 UI 組合／需要 backend 或 Herdr 能力／純概念。產品 UI 用人類可理解的限制說明，原始 API 名留在設計規格。
+- Generic components 優先使用 shadcn/ui（@/components/ui），先檢查 registry/docs 與現有元件。App-owned lists/reading panes 用 ScrollArea；CodeMirror、xterm、textarea、原生 webview 和結構性 clipping 保留其規則。
+- Tauri typed IPC、Bridge 協調、per-session stores、i18n 邊界維持清楚。原型不當成 production architecture。
+- 不遺失 Editor、Git、Database、SSH/SFTP、Preview、Settings 既有入口及流程，不對 live repo/DB/remote 實際操作。
+
+## 設計與驗收要求
+- 同一語言覆蓋 light/dark、loading、empty、error、unsupported、stopped、stale、observer/controller、blocked、unseen done 與 unknown。
+- 一般正文／關鍵操作文字以 13–14px 作設計起點，metadata 11–12px；小於 12px 的關鍵資訊必須提出可讀性理由與實機證據。Terminal/editor 字級尊重使用者設定。這是提案規格，不是既有 token 數值聲明。
+- 對比以 WCAG AA 檢查（一般文字 4.5:1，大字 3:1；可操作控件與必要圖形 3:1）；以實際背景合成值驗證半透明層。
+- 所有常用操作有可見焦點、合理 Tab 順序、快捷鍵或非拖曳替代。Tooltip 不是 accessible name；不能用顏色單獨傳達狀態。
+- Desktop 密度不機械套 44px 行高：一般指標 target 以至少24px/合理間隔為起點，觸控場景再調大；需把 WCAG 例外和產品目標分開。
+- 比較 1440×900、1280×800、1024×768 與 200% zoom，窄於可用範圍時說明最小窗寬和折疊順序；不要為了 mobile 模板改掉桌面 ADE 主流程。
+- Reference screenshots、概念稿、mock 原型、實機證據分開標記。模擬 agent 狀態／動作明示為 demo，不展示假成功／假 latency 數字。
+
+
+---
+
+# Prompt 00｜整體重設計
+你是負責 Yuzora 的資深產品設計師與 ADE interaction designer。請依共用 Brief，完成一套能指導後續原型與實作的完整重設計方案。
+
+## 本輪工作
+1. 先把現行畫面分成「保留的品牌特徵」「需重整的 ADE 層級」「缺失或不清楚的操作流程」；每項給 source 或畫面依據。
+2. 提出一個推薦方向：沿用 Yuzora 的暖色、霧面、圓角、Spaces 與字體，把 agent 的狀態、上下文與下一步放進日常工作流。
+3. 提供一個精簡替代版面，只比較監督多 agent、專注單一 agent、切換工具這三個情境；最後選定推薦方案並解釋取捨，不產生三套無關風格。
+4. 覆蓋完整 app：全域 chrome、Space/Session、Attention、Agents、terminal/panes、Inspector、Editor/Git、DB、SSH/SFTP、Preview、Settings/onboarding。
+5. 對每個新入口標出現有功能如何映射，以及是否需要新的 backend capability。既有唯讀 Inspector 不因改排版就自動變成可派工 agent。
+6. 把後續工作拆成可獨立 review 的設計／實作 slices；依使用者價值與依賴排序。
+
+## 必須交付
+- 一段具體設計方向，避免只有「現代、premium、AI-native」形容詞。
+- 保留／調整／新增表，含理由、證據、受影響頁面。
+- 全 app sitemap 與工作面區域圖（可用 Mermaid／標註 wireframe）。
+- 主要畫面規格：每頁的主要任務、主 action、secondary actions、context、empty/error、返回路徑。
+- 三條端到端 story：日常開始工作、多 agent 等待回覆、檢視 agent 產物到 Git diff／Preview。
+- 共享 visual token mapping、light/dark 策略、文字密度與 motion 邊界。
+- capability/dependency matrix；目前可做與將來能力分開。
+- 分階段交接與驗收清單，說明哪些需要真實 desktop/Herdr。
+
+## 完成條件
+看得出仍是同一個 Yuzora；使用者能辨識 Space/Session、需要處理的 agent 和下一步；其他工具頁保持可達；沒有把全 app 變成聊天泡泡、指標 dashboard 或 marketing landing page。
+本輪交付設計與規格，不改產品 source。</code></pre></article><p class="note">建議先用 00 形成方案，再按需求使用 01–04；05 製作隔離原型，07 審查，06 交接工程計畫。Markdown 單檔需搭配 shared-brief.md。</p></div>
+</div><noscript><p>此頁未啟用 JavaScript。上方已顯示完整總設計 Prompt；其他階段請由 Markdown 使用說明開啟，並一起提供共用 Brief。</p></noscript>
+<footer>來源基準：Yuzora 0.0.9-beta.3 / 9d0634c。既有品牌參考不是官方 TBC 規格；Domain 與功能以現行產品為準。複製失敗時可選取文字後手動複製。</footer>
+</main>
+<script id="prompt-data" type="application/json">{"brief":"# 共用設計 Brief：Yuzora ADE × The Browser Company\n\n## 任務與授權範圍\n重新設計 Yuzora 的整體 UI/UX，讓資訊架構、操作入口與日常工作流程更像 Agent Development Environment，同時延續目前專案中的 The Browser Company / Arc / Dia 風格。\n本套 prompts 用於設計、規格、原型與實作交接；不代表已授權修改產品 UI、執行 Git 寫入或控制 live Herdr。\n已提供的需求與方向直接使用；可逆的設計選擇自行作出並註明理由。只有缺少必要輸入、權限或存在真正的領域衝突時才詢問。\n輸出繁體中文；技術詞保留 English；UI 文案提供 zh-TW，規格附對應 en。\n\n## 產品基準\n- Repo：/Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora\n- 研究基準：2026-09-06，Yuzora 0.0.9-beta.3，HEAD 9d0634c44e314b3dcc1c39b371ed448481b2f16a。開始新工作時重新確認 HEAD 和 dirty state。\n- Herdr：研究當時官方／bundled 為 0.8.2 / protocol 20；實際執行能力以選定 binary、server schema、platform、session capabilities 為準。\n- 技術：Tauri 2、React 19、TypeScript、Zustand、Tailwind 4、shadcn/ui radix-nova、Lucide、CodeMirror 6、xterm。\n- 核心：Space、Named Session、Agents、Attention、terminal panes；輔助：Editor/LSP、Git、Database、SSH/SFTP、Preview、Settings。\n- 現行已具備 Space/Agent/Terminal、read-only Inspector、observe/control、capability gating。跨 Named Session Attention、完整 agent prompt/wait/attach/explain、worktree lifecycle、通用 Plugins 管理是研究指出的差距，開始設計前需與現行 source 核對。\n- 此研究不是今天的 GUI 全功能驗收；不要從舊截圖推導 runtime 正常或斷言缺陷。\n\n## 必讀來源與衝突處理\n1. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/CLAUDE.md\n2. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/AGENTS.md\n3. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/.yuuzu/CONTEXT.html 與相關 .yuuzu/adr/\n4. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/html/yuzora-herdr-uiux-research-2026-09-06.html\n5. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/design/README.md\n6. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/src/styles.css、components.json 與受影響的現行 React components\n7. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/design/project/Yuuzu Workbench.dc.html 與其本機 imports\n8. /Users/yuuzu/HanaokaYuuzu/App/Tauri/yuzora/docs/design/project/_ds/the-browser-company-design-system-6aff1620-8268-43e3-9c43-01c0bf16dd46/readme.md 及 tokens/*.css\n\nDomain/runtime 語意以現行 production code、CONTEXT 和 accepted ADR 為準；視覺以現行 styles/persisted palette，對照原型和 tokens。發現差異時列出來，不任意覆蓋。閱讀完整 prototype 才進入視覺實作，不複製其內部架構。\n此設計系統是 repo 內依公開品牌特徵重建的參考，不是 The Browser Company 官方 Figma/品牌規格。\n原型與 screenshots 內的 AgentZone、ACP 對話、PINNED/RECENT 等可能是舊模型；只取視覺，不恢復已淘汰的 runtime/導覽。\n若工具無 repo 存取權，使用這份摘要完成明確標為「概念設計」的方案；不要聲稱已讀來源或已驗證 implementation。需要精確對照時列出待附的檔案／截圖。\n\n## 保留的視覺語言\n- 暖紙色：--paper-1 #fbfaf6、--paper-2 #f4f1ea；暖墨色：--ink-1 #2e2c28。\n- Dark mode 使用現行 production 暖深灰／紫灰層次，如 --paper-1 #1a191f；terminal 有獨立 --term-* 色票。\n- 保留 --yz-bg 的低彩度多點漸層與 --yz-glass / --yz-panel 等霧面層次；內容閱讀面保持穩定對比。\n- 保留 Space 的色彩識別與持久化 palette。--yz-accent #86b81f 是 CSS fallback，不是強制唯一配色；參考系統的藍色也不是新的固定主色。\n- Hanken Grotesk 用於日常 UI；Newsreader 用於 Space 名稱／少量情境標題；JetBrains Mono 用於程式碼、路徑、快捷鍵與技術資料。保留既有中日文字體 fallback，驗證繁中文字形，不把 Newsreader 強套到所有工作列表。\n- 4/8px 間距節奏、柔和分層圓角（6/10/14/20/28px）、溫暖陰影與圓角側欄；深層內容不要層層套大卡片。\n- 沿用 Lucide；一致的圓角線條和 stroke。Space 的使用者身份圖示可保留，狀態與 action 不靠裝飾 emoji 表達。\n- 延續 120/220/380ms 與現有 easing；日常互動偏快，spring 用於少量 chrome。Terminal input、輸出更新、焦點與 resize 不因動畫延遲；尊重 reduced motion。\n- 品牌漸層表達 Space／身份／少量 onboarding；working/blocked/done 等狀態用穩定語意色＋文字，不與 agent 品牌色混用。\n- 不為符合通用設計模板更換字體、圖示庫、palette 或引入大面積霓虹、grain、parallax、慣性捲動。既有品牌決策優先於泛用 redesign skill 建議。\n\n## ADE 的具體目標\n使用者開啟工作面後應能快速回答：\n1. 我在什麼 Space、branch/worktree、Named Session？\n2. 哪些 agent 在工作，哪些需要我回覆，哪些已回覆待查看？\n3. 選取 agent 後，其 terminal、輸出與相關檔案／diff 在哪裡？\n4. 我能做的下一步是什麼；若不能做，原因和恢復方式是什麼？\n5. 切 Space／Session／工具頁後，工作上下文和 terminal process 是否保持一致？\n\n預設探索「纖細 Spaces rail → 情境側欄 → 主要工作畫布 → 可收合 contextual inspector」，保留按需 terminal drawer。這是候選版面，不是已決議架構；提出替代版面時說明如何改善上述任務。\nADE 密度靠資訊分層、可收合區域、清楚的優先級；不要靠縮小關鍵字體或把所有功能塞入常駐面板。\n\n## 不可破壞的語意與技術邊界\n- Named Session 是 runtime namespace；Terminal Session 是 I/O 生命週期；Agent Session 是 agent 的語意對話／恢復身份。三者不能因視覺簡化而合併。\n- Herdr 擁有 workspace/tab/pane、PTY/process、agent identity/state；Yuzora 透過 typed IPC/Bridge/store 投影，不從 terminal 文本或 wsl.exe 猜身份。\n- working、blocked、idle、done、unknown 必須區分。done 是 idle 且未查看，不保證任務成功；unknown 不當成 done。產品可使用清楚的中文標籤，規格保留原始 enum 對照。\n- App 關閉／切頁／斷線不等於停止 Herdr process；observer 不等於 controller。控制權轉移需真實狀態與失敗處理。\n- 跨 Named Session 聚合是 Yuzora 的候選 UX 能力，不能假裝現行後端已持續監聽所有 session，也不能將不同 runtime 的 ID 混用。\n- Windows-native Herdr 是 runtime；WSL Pi plugin 目前 Experimental。WSL shell 不代表另一個 runtime；不承諾所有 WSL agents 都可 resume/control。\n- 工作意圖／任務摘要可以是展示欄位；若 source 沒有 Task/Run entity 或 authoritative metadata，不自行創造持久化 task engine，也不從 terminal output 猜「任務成功」。\n- 每個擬議 action 分別標註：現有能力／新 UI 組合／需要 backend 或 Herdr 能力／純概念。產品 UI 用人類可理解的限制說明，原始 API 名留在設計規格。\n- Generic components 優先使用 shadcn/ui（@/components/ui），先檢查 registry/docs 與現有元件。App-owned lists/reading panes 用 ScrollArea；CodeMirror、xterm、textarea、原生 webview 和結構性 clipping 保留其規則。\n- Tauri typed IPC、Bridge 協調、per-session stores、i18n 邊界維持清楚。原型不當成 production architecture。\n- 不遺失 Editor、Git、Database、SSH/SFTP、Preview、Settings 既有入口及流程，不對 live repo/DB/remote 實際操作。\n\n## 設計與驗收要求\n- 同一語言覆蓋 light/dark、loading、empty、error、unsupported、stopped、stale、observer/controller、blocked、unseen done 與 unknown。\n- 一般正文／關鍵操作文字以 13–14px 作設計起點，metadata 11–12px；小於 12px 的關鍵資訊必須提出可讀性理由與實機證據。Terminal/editor 字級尊重使用者設定。這是提案規格，不是既有 token 數值聲明。\n- 對比以 WCAG AA 檢查（一般文字 4.5:1，大字 3:1；可操作控件與必要圖形 3:1）；以實際背景合成值驗證半透明層。\n- 所有常用操作有可見焦點、合理 Tab 順序、快捷鍵或非拖曳替代。Tooltip 不是 accessible name；不能用顏色單獨傳達狀態。\n- Desktop 密度不機械套 44px 行高：一般指標 target 以至少24px/合理間隔為起點，觸控場景再調大；需把 WCAG 例外和產品目標分開。\n- 比較 1440×900、1280×800、1024×768 與 200% zoom，窄於可用範圍時說明最小窗寬和折疊順序；不要為了 mobile 模板改掉桌面 ADE 主流程。\n- Reference screenshots、概念稿、mock 原型、實機證據分開標記。模擬 agent 狀態／動作明示為 demo，不展示假成功／假 latency 數字。\n","tasks":[{"file":"00-master.md","title":"總設計 Prompt","purpose":"一次產出整體重設計方向、資訊架構與分階段交接","body":"# Prompt 00｜整體重設計\n你是負責 Yuzora 的資深產品設計師與 ADE interaction designer。請依共用 Brief，完成一套能指導後續原型與實作的完整重設計方案。\n\n## 本輪工作\n1. 先把現行畫面分成「保留的品牌特徵」「需重整的 ADE 層級」「缺失或不清楚的操作流程」；每項給 source 或畫面依據。\n2. 提出一個推薦方向：沿用 Yuzora 的暖色、霧面、圓角、Spaces 與字體，把 agent 的狀態、上下文與下一步放進日常工作流。\n3. 提供一個精簡替代版面，只比較監督多 agent、專注單一 agent、切換工具這三個情境；最後選定推薦方案並解釋取捨，不產生三套無關風格。\n4. 覆蓋完整 app：全域 chrome、Space/Session、Attention、Agents、terminal/panes、Inspector、Editor/Git、DB、SSH/SFTP、Preview、Settings/onboarding。\n5. 對每個新入口標出現有功能如何映射，以及是否需要新的 backend capability。既有唯讀 Inspector 不因改排版就自動變成可派工 agent。\n6. 把後續工作拆成可獨立 review 的設計／實作 slices；依使用者價值與依賴排序。\n\n## 必須交付\n- 一段具體設計方向，避免只有「現代、premium、AI-native」形容詞。\n- 保留／調整／新增表，含理由、證據、受影響頁面。\n- 全 app sitemap 與工作面區域圖（可用 Mermaid／標註 wireframe）。\n- 主要畫面規格：每頁的主要任務、主 action、secondary actions、context、empty/error、返回路徑。\n- 三條端到端 story：日常開始工作、多 agent 等待回覆、檢視 agent 產物到 Git diff／Preview。\n- 共享 visual token mapping、light/dark 策略、文字密度與 motion 邊界。\n- capability/dependency matrix；目前可做與將來能力分開。\n- 分階段交接與驗收清單，說明哪些需要真實 desktop/Herdr。\n\n## 完成條件\n看得出仍是同一個 Yuzora；使用者能辨識 Space/Session、需要處理的 agent 和下一步；其他工具頁保持可達；沒有把全 app 變成聊天泡泡、指標 dashboard 或 marketing landing page。\n本輪交付設計與規格，不改產品 source。"},{"file":"01-visual-language.md","title":"品牌樣式與 Design Tokens","purpose":"保留現有 TBC 風格，調整適合 ADE 的層級和密度","body":"# Prompt 01｜保留品牌，重整視覺層級\n你是 Yuzora 的 design-system designer。請以現行 production tokens＋原型的視覺語言完成 ADE visual spec。\n\n## 任務\n- 逐項核對 src/styles.css、原型 .yz-root/.yzdark、_ds tokens。區分實際生效值、fallback 與參考值。\n- 保留暖紙色／暖深灰、Space/palette 身份、霧面 chrome、圓角、柔和陰影、既有三種字體及 Lucide。\n- 重新安排 app shell／context sidebar／work canvas／inspector／menu 的層次；重點在可讀性和資訊優先級。\n- 明確界定 Newsreader 的使用位置，不把 editorial display 字級搬到高密度工作列表。\n- 保留現有使用者配色選項。Agent brand、Space identity、runtime state 三種顏色語意分離。\n- 指定玻璃效果可以出現的 surfaces、需要實底的 code/logs/DB reading surfaces、blur fallback。\n- 定義 density、row height、hit area、icon、focus、hover/pressed、selected、attention、divider 與 surface 規格。\n\n## 輸出\n1. Token mapping 表：現有 token、用途、維持值或提案、light/dark、變更原因；未量測的數值標示為提案。\n2. 元件狀態 specimen：button/icon button、tabs、agent row、attention row、session selector、pane header、empty/error、popover/inspector。\n3. 三組外觀對照：idle 專注、blocked 需要處理、多 agent 工作；都包含 light/dark。\n4. Brand retention checklist，列出會破壞目前風格的具體改動。\n5. Contrast／zoom／reduced-motion 驗證方法，不冒稱已達標。\n\n## 特別限制\n不要引入新字體、icon library、品牌主色、全頁動畫或新的 UI framework；有必要改 token 時逐項說明，不做全域盲目 replace。不要把泛用 skill 的 font-swap／去除全部 sidebar／添加 grain 建議凌駕既有品牌。"},{"file":"02-shell-navigation.md","title":"ADE 工作面與導覽","purpose":"釐清 Space、Session、工作內容與上下文的層級","body":"# Prompt 02｜ADE Shell 與資訊架構\n你是桌面生產力工具的 interaction designer。請重整 Yuzora shell，保留 The Browser Company 風格，讓使用者自然理解「在哪裡工作、誰需要我、接下來能做什麼」。\n\n## 設計範圍\n- Spaces rail、Space header、Named Session selector、Command Palette、ADE navigation、main canvas、contextual inspector、按需 terminal drawer、status bar。\n- 以既有 rail/側欄為預設探索起點；決定哪個層級需要常駐，哪些可收合／漸進揭露。\n- Space 名稱、branch/worktree、Named Session／runtime 的關係要清楚。長路徑與 protocol/version 放在可查閱的位置，不霸占日常工作區。\n- 支援「專注單一 agent」與「掃描整個 Space」兩種工作需要；多 agent 監督使用清楚列表與 attention，不加沒有資料來源的 KPI。\n- 跨 Named Session 的待處理數與 stale 標記若需新資料流，列為依賴；不可把別的 Session 的 cached state 當即時。\n- 切 Space、Named Session、工具頁、close panel、返回 terminal 的行為、保存內容與 focus destination 都要明定。\n- Command Palette 按可用 context 呈現操作與原因，沿用已存在快捷鍵；新增鍵位先確認 OS、editor、terminal 衝突。\n\n## 輸出\n- 區域圖：1440×900 default、1024×768 compact、sidebar/inspector collapsed。\n- Navigation tree 與 route/selection/state 邊界對照；不任意把 UI tab 當 Herdr Tab。\n- 至少六條操作流程：開啟 Space、切 Named Session、查看 blocked、切 Git diff、回到原 terminal、處理連線中斷。\n- 每條 flow 的 before/action/after、focus、back/escape、context 保留與失敗狀態。\n- Resize 與折疊優先順序；200% zoom 下核心 action 的保留方式。\n- 與現行 AppShell/WorkspaceRail/HerdrNavContent/CommandPalette 的映射和變更範圍。\n\n## 完成條件\n工具入口可找到，主要工作畫布不被多層 chrome 擠壓；鼠標與鍵盤都能完成常用流程；不要引入新的持久化任務引擎來解決純導航問題。"},{"file":"03-agents-attention-terminal.md","title":"Agents、Attention 與 Terminal","purpose":"形成觀察、處理、回到工作內容的完整流程","body":"# Prompt 03｜ADE 核心操作流程\n你是了解 Herdr authority 與 terminal lifecycle 的產品設計師。請重新設計 Agents、Attention、Agent Inspector、terminal/pane 工作面。\n\n## 必須設計的情境\n1. 使用者同時查看多個 agent：working、blocked、idle、done（未查看）、unknown。\n2. Agent 等待回覆：從 Attention 找到正確 Session/Space/pane，看到當下內容與適當的下一步。\n3. 已回覆待查看：區分 seen/unseen；不能把 done 當工作正確或測試通過。\n4. Observer 檢視 terminal：清楚表明唯讀、誰擁有控制權（僅在資料可得時）、要求控制與失敗後的狀態。\n5. Pane 操作：split、focus、resize、zoom/還原、swap、close 的可發現入口與 keyboard alternative。\n6. 斷線、stale snapshot、stopped server、unsupported capability、pane消失、agent被替換的處理。\n7. 有能力時的 prompt/wait、attach/resume、explain；能力缺失時提供明確原因或可返回 terminal 的現有流程。\n\n## 設計方式\n- Agent row 先呈現可理解的名稱／目前工作上下文／狀態／下一步；cwd、revision、read source 等留在 Inspector 的進階詳情。\n- Inspector 評估 docked panel 與 dialog 的取捨；持續對照 terminal 的任務避免被不必要的 modal 打斷。\n- Terminal 仍是主要真實工作內容。不要把 raw terminal transcript 自動轉成聊天泡泡或編造思考過程。\n- 狀態用文字＋形狀／圖示，不只用 color dot。模型／provider／Space 身份不能與狀態共用唯一訊號。\n- Input 的 busy、pending、blocked、success、error、stale 和 focus restoration 要可追蹤。\n- 不發明不存在的 agent.stop/restart API；任何中止／close 的提案須標出實際 backend target、ownership 與作用範圍。\n- read-only Inspector、native agent session restore、terminal reconnect 分別設計，不混成同一個「繼續」按鈕。\n\n## 輸出\n- Agent row／Attention row／Inspector／pane header 的 anatomy 與狀態表。\n- 每個 action 的 human label、可見條件、enabled條件、authority、回應、錯誤、可恢復方式。\n- 狀態轉換與一條完整使用者故事：收到注意項→查看→回覆→等待→回到產物；沒有 backend 的步驟明標提案。\n- 兩 Session、三 Spaces、八 agents、四 pane 的壓力情境 wireframe。\n- 與現有 typed IPC/store 的對照表；只在規格中寫 API 名。\n- 測試項目：prompt遇blocked不送入；agent替換不誤判完成；session切換不跨context輸入；使用者自行捲動時不強制跳到底部。\n\n所有資料、輸出與事件若為 mock，都要清楚標示；不要操作 live Herdr。"},{"file":"04-workbench-tools.md","title":"Editor、Git 與其他工具頁","purpose":"讓所有子系統共用同一套 ADE 外殼與上下文","body":"# Prompt 04｜整個 Workbench 的一致性\n你是 Yuzora 的產品設計師。請讓 Editor、Git、Database、SSH/SFTP、Preview、Worktree、Settings 延續同一個 ADE 工作面和 The Browser Company 視覺語言。\n\n## 每個子系統都要覆蓋\n- Editor/LSP：files/search/symbols、tab與split、dirty/save/conflict、diagnostics；editor內容維持CodeMirror。\n- Git：status、diff、history、staging/commit、branch與conflict；保留既有操作與安全提示，不增加自動提交。\n- Database：profile/connection、schema、query/results、cancel、錯誤；保留DB權限與安全流程，不把SQL操作接成自動agent action。\n- SSH/SFTP：host identity、session、remote path、transfer progress/error；明確區分本機與遠端。\n- Preview：與對應Space/文件/URL的關聯、導航、載入/錯誤、native webview bounds與focus。\n- Worktree：inventory/provenance之外，評估create/open/remove提案；列出backend依賴、canonical path、branch/base與dirty處理。\n- Settings：Appearance、Editor、LSP、Terminal、Herdr、Plugins/Integrations、Preview、Safety、Git、About；沿用現有頁面與入口，新增分類要解釋。\n- Onboarding/empty：無Space、無agent、未連線、缺capability；每個情境只有清楚且可完成的主action。\n\n## 一致性要求\n保留暖色與霧面chrome；code、diff、logs、grid的內容層有穩定可讀性。共用header/action/toolbar/error/pending模式，但不要把editor、terminal、DB grid硬塞成相同卡片。\n從agent轉到diff／file／preview時僅使用真正可用的關聯；沒有artifact metadata就顯示可選的相關檢視，不猜檔案清單。\nInspector與side panel是否共用欄位要依上下文定義，切換後能回到先前內容與位置。不同工具保留獨立selection和scroll ownership。\n\n## 輸出\n1. 子系統×主要任務×入口×主action×狀態×返回目的地矩陣。\n2. 至少Editor/Git/Database/SSH/Preview五張主要畫面規格；不只交一張首頁。\n3. Worktree與Plugins/Integrations專用提案：現有支援、視覺整合、新capability分開。\n4. 共用元件清單與domain-specific元件理由；對照shadcn registry/現有UI。\n5. 新舊入口對照與功能保留清單，明確指出任何建議移動或合併的控制項。\n\n不連線真實DB／SSH、不修改檔案、不執行Git或worktree mutation；本輪只設計。"},{"file":"05-interactive-prototype.md","title":"可互動原型","purpose":"讓設計方案可實際操作和比較","body":"# Prompt 05｜製作可檢查的互動原型\n你是 Yuzora 的 prototype designer。依共用 Brief 和已完成的設計方案，製作涵蓋主要狀態的互動原型。如果沒有已選方案，先採Brief的預設區域配置，清楚標明設計假設。\n\n## 範圍\n- 只新增隔離的設計原型與其必要 assets，不改src/、src-tauri/、shared stores或真實runtime設定。\n- 優先使用現有本機字體、tokens、可用的React/shadcn堆疊；不要為mock移植或覆寫現行app。\n- 明確標示「設計原型／模擬資料」。所有interaction都操作mock state，沒有真實IPC、網路、Git、DB、SSH、檔案刪除。\n- 模擬資料包含兩個Named Sessions、三個Spaces、至少八個agent、working/blocked/idle/done/unknown，以及四pane場景。數字是測試情境，不宣稱是用戶真實工作量。\n\n## 可操作內容\n切Space/Session、Attention filter和跳轉、選agent、開關Inspector、切terminal/file/diff/preview、collapse/resize/zoom、切light/dark與既有代表性palette。\n提供受控scenario selector切換blocked、stale、disconnected、observer/controller、unsupported等情境；控制項是原型測試工具，不搬進產品主流程。\n派工／控制權／重連等動作只模擬合理success/error，並展示狀態變化。核心流程需可由keyboard完成；不要讓按鈕只產生假toast。\n\n## 交付\n- 一個主要原型入口、啟動/開啟方式、可操作範圍與未實作項。\n- 五條可重播的review walkthrough，記錄expected state與focus。\n- Default/compact、light/dark、blocked/unknown/stale等對照截圖；只有真正渲染且觀察到的才稱截圖驗證。\n- source/token映射、mock fixture說明、prototype限制，不把prototype元件直接視為production可用。\n- 不要求發布網站；保持本機review。若執行環境限制瀏覽或截圖，明述限制並提供可讀的規格與本機檔案，不繞過工具限制。\n\n完成後指出哪個設計問題已由原型回答、哪個仍需要真實Tauri/Herdr驗收。"},{"file":"06-implementation-handoff.md","title":"實作計畫與交接","purpose":"把設計轉成小範圍可驗證的改動計畫","body":"# Prompt 06｜重設計實作交接\n你是熟悉Yuzora的frontend architect。把共用Brief、設計規格與原型整理成可review的實作計畫。本prompt本身只產出計畫；不修改產品程式碼、不建立commit/PR。\n\n## 調查\n重讀live CLAUDE/AGENTS/CONTEXT/ADR、HEAD與dirty state。Code discovery先用codebase-memory，未索引先index；coverage不夠的source與design docs直接補讀。\n只讀與設計slice相關的AppShell/workbench/panels/styles、typed IPC、Bridge、store、i18n。不要做無關重構。\n\n## 切片方式\n1. 現有tokens和共享chrome的樣式調整。\n2. Shell/導航與視覺層級，保存現有selection和pane/process身份。\n3. Agents/Attention/Inspector與pane入口的現有能力重組。\n4. Editor/Git/Database/SSH/Preview的外殼一致性。\n5. 需要新能力的跨session聚合、agent actions、worktree、通用plugins，分開列為後續工程，不能藏在CSS重設計裡。\n\n## 每個slice必填\n- 使用者行為的before/after，對應設計spec與reference。\n- 受影響檔案、元件、store選擇器、IPC與i18n keys；新抽象必須有具體需求。\n- 重用的shadcn元件。缺primitive時先registry/docs調查；domain chrome需說明理由。\n- 明確不變的runtime/ownership/焦點/捲動邊界。\n- 相依項、風險、可回退方式、必要的meaningful tests與GUI check。\n- 完成後如何證明既有功能與資料沒有遺失。\n\n## 驗證策略\n依slice選lint/typecheck/build與相關existing tests；避免寫只鏡像實作的測試。行為改動需有失敗情境及recovery驗證。\n真實GUI項包括terminal不因切頁remount丟失、observer/controller、webview overlay、CodeMirror/xterm焦點與shortcut、light/dark/zoom、ScrollArea和keyboard。\n只改前端樣式不自動要求完整DB／Rust測試；若觸碰Rust再依CLAUDE執行對應checks與exact Clippy baseline。\n有ADR衝突就明確說明需要決策，不自行覆寫。後續使用者選定並授權slice後才實作，屆時直接完成已授權範圍，不對每個可逆小改動反覆請示。\n\n## 交付\n分階段工程計畫、檔案責任表、現有vs新增backend能力矩陣、驗收清單。不要把新設計提案寫成已完成或已批准的產品事實。"},{"file":"07-design-review.md","title":"設計與實機驗收審查","purpose":"檢查是否既像 ADE，又保留既有風格","body":"# Prompt 07｜獨立設計審查\n你是Yuzora的design reviewer。只讀檢查指定設計／原型／實作產物是否達到共用Brief；不要改檔或把設計偏好包裝成bug。\n\n## 審查兩條主軸\nA. 品牌延續：紙色/暖深灰、既有palette/Spaces、三種字體、霧面層次、圓角與motion是否仍能辨認為同一個Yuzora？\nB. ADE可用性：人能否辨識上下文與agent狀態、處理需要回覆的工作、觀察輸出與產物、恢復錯誤，並保留其他工具能力？\n\n## 必查情境\n- default/compact/200% zoom；light/dark與至少一個非fallback palette。\n- 兩Named Sessions、長Space/branch/path、八agents、四panes；不錯把stale當live。\n- working/blocked/idle/done/unknown；done不代表成功。\n- Agent→Attention→owning pane→處理→Git diff/Preview→返回。\n- observer/controller、pane關閉或agent替換、server stopped、capability不支援。\n- Command Palette、Tab/Shift+Tab、Arrow/Home/End適用處、Escape、focus return與非拖曳替代。\n- CodeMirror/xterm/native webview焦點、輸入、scroll和resize；外層chrome不截走必要快捷鍵。\n- Editor/Git/DB/SSH/SFTP/Preview/Settings入口、safe actions與既有功能沒有被設計遺漏。\n- 暖色/透明背景上實際文字對比；狀態和控制不能只靠顏色、hover或Tooltip。\n\n## 證據分類\n每個finding標為：已觀察的問題／source支持的風險／待實機驗證／設計偏好。\n每項給具體觸發步驟、影響、畫面或path:line證據、最小建議和驗收。\n原型mock只能支持原型結果，不能推出backend/production正常；看不到的項目標未驗證。不要替未執行的tests或screenshot填PASS。\n按照影響排序：錯誤context/authority或遺失工作 > 任務無法完成 > 可讀性/可發現性 > 純視覺微調。\n\n## 結論格式\n- 整體：可進下一階段／需修正／證據不足（不是自動授權merge/release）。\n- 品牌延續與ADE工作流程各自判斷，避免只打總分。\n- 有證據的findings與未驗證項分開；没有問題就明確說未發現阻擋項。\n- 最多五個優先改善，並說明已有設計中應保留的部分。"}]}</script>
+<script>
+const data=JSON.parse(document.getElementById("prompt-data").textContent);
+let selected=0;
+const textNode=document.getElementById("prompt-text");
+const statusNode=document.getElementById("copy-status");
+const copyButton=document.getElementById("copy");
+function assembled(index){return data.brief+"\n\n---\n\n"+data.tasks[index].body;}
+function selectPrompt(index){
+ if(!Number.isInteger(index)||index<0||index>=data.tasks.length)return;
+ selected=index;
+ const task=data.tasks[index];
+ document.getElementById("prompt-title").textContent=task.title;
+ document.getElementById("prompt-description").textContent=task.purpose;
+ document.getElementById("source").setAttribute("href","../design/prompts/ade-browser-company/"+task.file);
+ textNode.textContent=assembled(index);
+ statusNode.textContent="";
+ document.querySelectorAll(".phase").forEach(button=>button.setAttribute("aria-current",String(Number(button.dataset.index)===index)));
+}
+document.querySelectorAll(".phase").forEach(button=>button.addEventListener("click",()=>selectPrompt(Number(button.dataset.index))));
+copyButton.addEventListener("click",async()=>{
+ const indexAtCopy=selected;
+ const content=assembled(indexAtCopy);
+ copyButton.disabled=true;
+ try{
+  if(!navigator.clipboard||!navigator.clipboard.writeText)throw new Error("clipboard unavailable");
+  await navigator.clipboard.writeText(content);
+  if(selected===indexAtCopy)statusNode.textContent="已複製共用 Brief 與本階段 Prompt";
+ }catch{
+  if(selected===indexAtCopy){
+   const range=document.createRange();range.selectNodeContents(textNode);
+   const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+   statusNode.textContent="已選取全文，請按 Cmd+C 或 Ctrl+C 複製";
+  }
+ }finally{copyButton.disabled=false;}
+});
+</script></body></html>

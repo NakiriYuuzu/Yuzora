@@ -7,9 +7,10 @@ import { useSshStore } from "@/state/sshStore"
 import { Channel } from "@tauri-apps/api/core"
 import { emit } from "@tauri-apps/api/event"
 import { loadRemoteWorkspaces, rememberRemoteWorkspace } from "@/state/remoteWorkspaceRegistry"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 
 type Backend = { kind: "sftp"; sessionId: string } | { kind: "runtime"; owner: ConnectionOwner; capabilityId: string; isCurrent: () => boolean }
-interface RemoteWorkspace { hostId: string; root: string; backend: Backend }
+interface RemoteWorkspace { hostId: string; root: string; backend: Backend; users?: number; retiring?: boolean; disposed?: boolean }
 interface ReadResult { file: OpenFileResult; revision: string | null }
 const workspaces = new Map<string, RemoteWorkspace>()
 // Revision is bound to the exact backend connection that supplied the buffer.
@@ -17,6 +18,46 @@ const revisions = new Map<string, { backend: Backend; revision: string }>()
 interface RemoteWatch { uri: string; backend: Extract<Backend, { kind: "runtime" }>; streamId?: string; retryTimer?: ReturnType<typeof setTimeout> }
 let activeWatch: RemoteWatch | null = null
 let watchGeneration = 0
+
+async function disposeWorkspace(workspace: RemoteWorkspace): Promise<void> {
+  if (workspace.disposed) return
+  workspace.disposed = true
+  const uri = remoteFilePath(workspace.hostId, workspace.root)
+  if (workspaces.get(uri) === workspace) workspaces.delete(uri)
+  const backend = workspace.backend
+  for (const [path, revision] of revisions) if (revision.backend === backend) revisions.delete(path)
+  if (activeWatch?.backend === backend) await stopRemoteWatch()
+  if (backend.kind === "runtime") {
+    await requestHost(backend.owner, { method: "workspaceClose", params: { workspace: backend.capabilityId } }).catch(() => undefined)
+  }
+}
+
+/** A browser or in-flight operation keeps the exact capability alive until done. */
+export function retainRemoteWorkspace(uri: string): () => Promise<void> {
+  const { workspace } = resolve(uri)
+  workspace.users = (workspace.users ?? 0) + 1
+  let released = false
+  return async () => {
+    if (released) return
+    released = true
+    workspace.users = (workspace.users ?? 1) - 1
+    if (!workspace.users && workspace.retiring) {
+      if (useWorkspaceStore.getState().workspacePath === remoteFilePath(workspace.hostId, workspace.root)) workspace.retiring = false
+      else await disposeWorkspace(workspace)
+    }
+  }
+}
+
+export async function releaseRemoteWorkspace(uri: string): Promise<void> {
+  const workspace = workspaces.get(uri)
+  if (!workspace || useWorkspaceStore.getState().workspacePath === uri) return
+  workspace.retiring = true
+  if (!workspace.users) await disposeWorkspace(workspace)
+}
+
+export function forgetRemoteFileRevision(uri: string): void {
+  revisions.delete(uri)
+}
 
 export async function stopRemoteWatch(): Promise<void> {
   watchGeneration++
@@ -94,8 +135,8 @@ export async function reconnectRemoteWorkspaces(owner: ConnectionOwner, isCurren
       continue
     }
     const backend: Backend = { kind: "runtime", owner, capabilityId: opened.capabilityId, isCurrent }
-    const workspace = { ...previous, backend }
-    workspaces.set(uri, workspace)
+    previous.backend = backend
+    const workspace = previous
     for (const [path, original] of [...revisions]) {
       if (original.backend !== before) continue
       const relative = parseRemoteFilePath(path)!.path.slice(previous.root.length).replace(/^\//, "")
@@ -138,7 +179,10 @@ export async function registerSftpWorkspace(hostId: string, path: string): Promi
 export async function registerRuntimeWorkspace(owner: ConnectionOwner, path: string, isCurrent: () => boolean): Promise<string> {
   if (!isCurrent()) throw new Error("Remote workspace connection changed; response discarded")
   const existing = workspaces.get(remoteFilePath(owner.hostId, path))
-  if (existing?.backend.kind === "runtime" && sameConnection(existing.backend.owner, owner)) return remoteFilePath(owner.hostId, existing.root)
+  if (existing?.backend.kind === "runtime" && sameConnection(existing.backend.owner, owner)) {
+    existing.retiring = false
+    return remoteFilePath(owner.hostId, existing.root)
+  }
   const opened = await requestHost<WorkspaceOpenResult>(owner, { method: "workspaceOpen", params: { path } })
   const uri = remoteFilePath(owner.hostId, opened.canonicalPath)
   if (!isCurrent()) {
@@ -230,52 +274,64 @@ function mutationPath(workspaceUri: string, uri: string) {
 }
 
 export async function createRemotePath(workspaceUri: string, uri: string, directory: boolean): Promise<void> {
-  const { workspace, path, relative } = mutationPath(workspaceUri, uri)
-  const backend = workspace.backend
-  if (backend.kind === "runtime") await requestHost(backend.owner, { method: "filesCreate", params: { workspace: backend.capabilityId, path: relative, directory } })
-  else await invoke(directory ? "sftp_mkdir" : "sftp_create_file", { sessionId: backend.sessionId, path })
-  assertBackend(uri, backend)
+  const release = retainRemoteWorkspace(workspaceUri)
+  try {
+    const { workspace, path, relative } = mutationPath(workspaceUri, uri)
+    const backend = workspace.backend
+    if (backend.kind === "runtime") await requestHost(backend.owner, { method: "filesCreate", params: { workspace: backend.capabilityId, path: relative, directory } })
+    else await invoke(directory ? "sftp_mkdir" : "sftp_create_file", { sessionId: backend.sessionId, path })
+    assertBackend(uri, backend)
+  } finally { await release() }
 }
 
 export async function renameRemotePath(workspaceUri: string, from: string, to: string): Promise<void> {
-  const source = mutationPath(workspaceUri, from)
-  const target = mutationPath(workspaceUri, to)
-  const backend = source.workspace.backend
-  if (backend.kind === "runtime") await requestHost(backend.owner, { method: "filesRename", params: { workspace: backend.capabilityId, from: source.relative, to: target.relative } })
-  else await invoke("sftp_rename", { sessionId: backend.sessionId, from: source.path, to: target.path })
-  assertBackend(to, backend)
-  for (const [uri, opened] of revisions) {
-    if (uri === from || uri.startsWith(from + "/")) {
-      revisions.delete(uri)
-      if (opened.backend === backend) revisions.set(to + uri.slice(from.length), opened)
+  const release = retainRemoteWorkspace(workspaceUri)
+  try {
+    const source = mutationPath(workspaceUri, from)
+    const target = mutationPath(workspaceUri, to)
+    const backend = source.workspace.backend
+    if (backend.kind === "runtime") await requestHost(backend.owner, { method: "filesRename", params: { workspace: backend.capabilityId, from: source.relative, to: target.relative } })
+    else await invoke("sftp_rename", { sessionId: backend.sessionId, from: source.path, to: target.path })
+    assertBackend(to, backend)
+    for (const [uri, opened] of revisions) {
+      if (uri === from || uri.startsWith(from + "/")) {
+        revisions.delete(uri)
+        if (opened.backend === backend) revisions.set(to + uri.slice(from.length), opened)
+      }
     }
-  }
+  } finally { await release() }
 }
 
 export async function deleteRemotePath(workspaceUri: string, uri: string): Promise<void> {
-  const { workspace, path, relative } = mutationPath(workspaceUri, uri)
-  const backend = workspace.backend
-  if (backend.kind === "runtime") await requestHost(backend.owner, { method: "filesDelete", params: { workspace: backend.capabilityId, path: relative } })
-  else {
-    const parent = path.slice(0, path.lastIndexOf("/")) || "/"
-    const listing = await sftpListDir(backend.sessionId, parent)
-    const entry = listing.entries.find((entry) => entry.path === path && entry.nameSafe)
-    if (!entry) throw new Error("Remote file no longer exists")
+  const release = retainRemoteWorkspace(workspaceUri)
+  try {
+    const { workspace, path, relative } = mutationPath(workspaceUri, uri)
+    const backend = workspace.backend
+    if (backend.kind === "runtime") await requestHost(backend.owner, { method: "filesDelete", params: { workspace: backend.capabilityId, path: relative } })
+    else {
+      const parent = path.slice(0, path.lastIndexOf("/")) || "/"
+      const listing = await sftpListDir(backend.sessionId, parent)
+      const entry = listing.entries.find((entry) => entry.path === path && entry.nameSafe)
+      if (!entry) throw new Error("Remote file no longer exists")
+      assertBackend(uri, backend)
+      await invoke("sftp_remove", { sessionId: backend.sessionId, path, isDir: entry.isDir && !entry.isSymlink })
+    }
     assertBackend(uri, backend)
-    await invoke("sftp_remove", { sessionId: backend.sessionId, path, isDir: entry.isDir && !entry.isSymlink })
-  }
-  assertBackend(uri, backend)
-  for (const path of revisions.keys()) if (path === uri || path.startsWith(uri + "/")) revisions.delete(path)
+    for (const path of revisions.keys()) if (path === uri || path.startsWith(uri + "/")) revisions.delete(path)
+  } finally { await release() }
 }
 
 export async function readRemoteBase64(uri: string, maxBytes: number): Promise<{ data: string; size: number }> {
-  const { workspace, path, relative } = resolve(uri)
-  const backend = workspace.backend
-  const result = backend.kind === "runtime"
-    ? await requestHost<{ data: string; size: number }>(backend.owner, { method: "filesReadBase64", params: { workspace: backend.capabilityId, path: relative, max_bytes: maxBytes } })
-    : await invoke<{ data: string; size: number }>("sftp_read_file_base64", { sessionId: backend.sessionId, path, maxBytes })
-  assertBackend(uri, backend)
-  return result
+  const release = retainRemoteWorkspace(uri)
+  try {
+    const { workspace, path, relative } = resolve(uri)
+    const backend = workspace.backend
+    const result = backend.kind === "runtime"
+      ? await requestHost<{ data: string; size: number }>(backend.owner, { method: "filesReadBase64", params: { workspace: backend.capabilityId, path: relative, max_bytes: maxBytes } })
+      : await invoke<{ data: string; size: number }>("sftp_read_file_base64", { sessionId: backend.sessionId, path, maxBytes })
+    assertBackend(uri, backend)
+    return result
+  } finally { await release() }
 }
 
 export async function openRemoteWorkspace(uri: string): Promise<WorkspaceOpenResult> {
@@ -286,32 +342,38 @@ export async function openRemoteWorkspace(uri: string): Promise<WorkspaceOpenRes
 }
 
 export async function listRemoteDir(uri: string): Promise<FileNode[]> {
-  const { workspace, path, relative } = resolve(uri)
-  const backend = workspace.backend
-  if (backend.kind === "sftp") {
-    const listing = await sftpListDir(backend.sessionId, path)
+  const release = retainRemoteWorkspace(uri)
+  try {
+    const { workspace, path, relative } = resolve(uri)
+    const backend = workspace.backend
+    if (backend.kind === "sftp") {
+      const listing = await sftpListDir(backend.sessionId, path)
+      assertBackend(uri, backend)
+      return listing.entries.filter((entry) => entry.nameSafe).map((entry) => ({ name: entry.name, path: remoteFilePath(workspace.hostId, entry.path, workspace.root), isDir: entry.isDir, kind: entry.isSymlink ? "symlink" : entry.isDir ? "directory" : "file" }))
+    }
+    const entries = await requestHost<FileNode[]>(backend.owner, { method: "filesList", params: { workspace: backend.capabilityId, path: relative } })
     assertBackend(uri, backend)
-    return listing.entries.filter((entry) => entry.nameSafe).map((entry) => ({ name: entry.name, path: remoteFilePath(workspace.hostId, entry.path, workspace.root), isDir: entry.isDir, kind: entry.isSymlink ? "symlink" : entry.isDir ? "directory" : "file" }))
-  }
-  const entries = await requestHost<FileNode[]>(backend.owner, { method: "filesList", params: { workspace: backend.capabilityId, path: relative } })
-  assertBackend(uri, backend)
-  return entries.map((entry) => ({ ...entry, path: remoteFilePath(workspace.hostId, `${workspace.root.replace(/\/$/, "")}/${entry.path}`, workspace.root) }))
+    return entries.map((entry) => ({ ...entry, path: remoteFilePath(workspace.hostId, `${workspace.root.replace(/\/$/, "")}/${entry.path}`, workspace.root) }))
+  } finally { await release() }
 }
 
 export async function readRemoteFileSnapshot(uri: string): Promise<{ result: OpenFileResult; accept: () => void }> {
-  const { workspace, path, relative } = resolve(uri)
-  const backend = workspace.backend
-  const result = backend.kind === "sftp"
-    ? await invoke<ReadResult>("sftp_open_file", { sessionId: backend.sessionId, path })
-    : await requestHost<ReadResult>(backend.owner, { method: "filesRead", params: { workspace: backend.capabilityId, path: relative } })
-  assertBackend(uri, backend)
-  return {
-    result: result.file,
-    accept: () => {
-      assertBackend(uri, backend)
-      if (result.revision) revisions.set(uri, { backend, revision: result.revision })
+  const release = retainRemoteWorkspace(uri)
+  try {
+    const { workspace, path, relative } = resolve(uri)
+    const backend = workspace.backend
+    const result = backend.kind === "sftp"
+      ? await invoke<ReadResult>("sftp_open_file", { sessionId: backend.sessionId, path })
+      : await requestHost<ReadResult>(backend.owner, { method: "filesRead", params: { workspace: backend.capabilityId, path: relative } })
+    assertBackend(uri, backend)
+    return {
+      result: result.file,
+      accept: () => {
+        assertBackend(uri, backend)
+        if (result.revision) revisions.set(uri, { backend, revision: result.revision })
+      }
     }
-  }
+  } finally { await release() }
 }
 
 export async function readRemoteFile(uri: string, recordRevision = true): Promise<OpenFileResult> {
@@ -321,18 +383,21 @@ export async function readRemoteFile(uri: string, recordRevision = true): Promis
 }
 
 export async function saveRemoteFile(uri: string, content: string): Promise<number> {
-  const { workspace, path, relative } = resolve(uri)
-  const backend = workspace.backend
-  const opened = revisions.get(uri)
-  if (!opened || opened.backend !== backend) throw new Error("Compare the remote file after reconnecting before saving")
-  let revision: string | null
-  if (backend.kind === "sftp") {
-    revision = await invoke<string>("sftp_save_file", { sessionId: backend.sessionId, path, content, expectedRevision: opened.revision })
-  } else {
-    const result = await requestHost<ReadResult>(backend.owner, { method: "filesWrite", params: { workspace: backend.capabilityId, path: relative, content, revision: opened.revision } })
-    revision = result.revision
-  }
-  assertBackend(uri, backend)
-  if (revision) revisions.set(uri, { backend, revision })
-  return new TextEncoder().encode(content).length
+  const release = retainRemoteWorkspace(uri)
+  try {
+    const { workspace, path, relative } = resolve(uri)
+    const backend = workspace.backend
+    const opened = revisions.get(uri)
+    if (!opened || opened.backend !== backend) throw new Error("Compare the remote file after reconnecting before saving")
+    let revision: string | null
+    if (backend.kind === "sftp") {
+      revision = await invoke<string>("sftp_save_file", { sessionId: backend.sessionId, path, content, expectedRevision: opened.revision })
+    } else {
+      const result = await requestHost<ReadResult>(backend.owner, { method: "filesWrite", params: { workspace: backend.capabilityId, path: relative, content, revision: opened.revision } })
+      revision = result.revision
+    }
+    assertBackend(uri, backend)
+    if (revision && revisions.get(uri) === opened) revisions.set(uri, { backend, revision })
+    return new TextEncoder().encode(content).length
+  } finally { await release() }
 }

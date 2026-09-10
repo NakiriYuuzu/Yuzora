@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HERDR 側欄、資料夾視窗與 WSL 路徑修正</title>
+<style>body{margin:0;background:#f6f3ec;color:#242b31;font:16px/1.8 system-ui,-apple-system,"PingFang TC",sans-serif}main{max-width:900px;margin:40px auto;padding:28px;background:#fffdf9;border:1px solid #d9d6cf;border-radius:12px}h1{font-size:30px;line-height:1.3}h2{font-size:21px;margin-top:28px}code{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}a{color:#215c59}.meta{font-size:13px;color:#616b72}table{width:100%;border-collapse:collapse}td,th{text-align:left;border-bottom:1px solid #ddd;padding:10px;vertical-align:top}th{width:25%}@media(max-width:940px){main{margin:16px 12px;padding:20px}}</style></head>
+<body><main>
+<p class="meta">Yuzora · 2026-09-09 · 實作與驗證紀錄</p>
+<h1>側欄只呈現執行中的 Sessions，<br>Agent 由 Terminal 手動啟動</h1>
+<h2>完成的修改</h2>
+<table><tbody>
+<tr><th>停止的 HERDR</th><td>Space／Agent 樹與 Session 選單依 running 狀態過濾，保留 runtime 資料。正在瀏覽的 Session 停止後，側欄範圍退回 All，避免仍停留在隱藏的 Session。</td></tr>
+<tr><th>資料夾 UI</th><td>Dialog 以 viewport 高度為上限，header／footer 固定，主要內容使用 shadcn ScrollArea。近期資料夾、WSL 發行版與檔案列表受寬高限制；長名稱截斷、長說明換行，輸入列允許縮小。尚待 GUI 視覺驗收。</td></tr>
+<tr><th>新增 Agent</th><td>移除新增 Agent 表單、catalog、前端 store／IPC／DTO、desktop／host command、agent.start transaction、專屬測試與翻譯。新 terminal、既有 Agent 狀態與 Inspector 保留。</td></tr>
+<tr><th>Windows／WSL</th><td>手動貼入 Windows 路徑亦透過選定發行版的 wslpath 轉換；支援磁碟機、verbatim drive／UNC、同發行版的 wsl$／wsl.localhost 路徑。拒絕 drive-relative、device 路徑與跨發行版 UNC。</td></tr>
+<tr><th>路徑生命週期</th><td>輸入路徑改變後清除舊 listing；runtime 重連後重建 picker。切換發行版或主機時，過期轉換／瀏覽／開啟回應不能修改新選擇。取消或關閉後不提交舊結果。</td></tr>
+</tbody></table>
+<h2>驗證</h2>
+<p>原始側欄／資料夾回歸測試重現產品問題，修正後通過。完整前端測試 185 檔、2,220 tests 全數通過；typecheck、production build 通過。ESLint 0 errors、51 warnings；本次未增加 warnings。Build 保留既有 bundle 與 dynamic import 提示。</p>
+<p>Rust desktop 與 standalone host 的 <code>cargo check --locked --all-targets</code> 通過；WSL 路徑與 desktop command inventory 共 9 tests 通過；fmt 與 Clippy exact baseline 通過，仍為 90 diagnostics。</p>
+<p id="host-tests">HERDR host 測試第一次並行執行為 81 passed／3 個啟動逾時；序列重跑 84 tests 全數通過。加上 WSL 與 command inventory，本次 Rust 執行驗證共 93 tests 通過；並行啟動測試仍存在逾時敏感性。</p>
+<p>本機 macOS ARM64 helper release 已重建；官方 HERDR 0.8.2／protocol 20。Helper SHA-256：<code>bf2b8444d66461ef5c6ab163832ed98ec041c01abd4a2928e7ac1c257f519f13</code>。</p>
+<h2>驗收限制</h2>
+<p>本次沒有取得 GUI／瀏覽器自動化的明確同意，因此沒有執行視覺量測或截圖，不能把 jsdom／CSS 檢查當成真實版面驗收。專案 AGENTS.md 要求先取得明確同意；相關詢問已送出。</p>
+<p>目前執行環境為 macOS。Windows 路徑已經過純函式與模擬 WSL 交互流程驗證，尚未在 Windows／WSL2 實機執行 wslpath 或跨平台安裝包測試。其他平台 helper 與已部署遠端 helper 未更新。本次沒有 Git staging／commit／push。</p>
+<h2>程式來源</h2>
+<p><a href="../../src/app/workbench/SpaceAgentTree.tsx">SpaceAgentTree</a> · <a href="../../src/app/workbench/HerdrLauncher.tsx">HerdrLauncher</a> · <a href="../../src/workbench/FolderPickerHost.tsx">FolderPickerHost</a> · <a href="../../src-tauri/src/host_wsl.rs">WSL 路徑處理</a> · <a href="../../.yuuzu/adr/0004-herdr-terminals-browser-only.html">ADR-0004</a></p>
+</main></body></html>

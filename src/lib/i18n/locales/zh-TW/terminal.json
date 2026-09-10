@@ -17,5 +17,8 @@
   "defaultFont": "預設",
   "fontFallbackHint": "JetBrains Mono 隨 Yuzora 提供；其他字型需已安裝於此裝置，未安裝時使用替代等寬字型。中日文字使用系統 fallback。",
   "fontPreview": "終端機文字預覽",
-  "fontPreviewSample": "繁體中文 · 日本語 · 0123456789"
+  "fontPreviewSample": "繁體中文 · 日本語 · 0123456789",
+  "copyOnSelect": "選取後自動複製",
+  "copyOnSelectDescription": "拖曳選取終端文字並放開滑鼠後，自動複製到剪貼簿。關閉後可手動複製。",
+  "clipboardPasteFailed": "無法貼上剪貼簿圖片：{{message}}"
 }

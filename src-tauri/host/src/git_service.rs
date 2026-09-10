@@ -253,7 +253,7 @@ pub fn status_of(root: &Path, pathspec: Option<Vec<String>>) -> Result<GitStatus
         return Err(format!("git status failed: {}", out.stderr.trim()));
     }
     let parsed = crate::git_status::parse_porcelain_v2(&out.stdout)?;
-    let in_progress = detect_in_progress(&metadata_dirs(root)?.git_dir);
+    let in_progress = detect_in_progress(&resolve_metadata_dir(root, "--git-dir")?);
     Ok(GitStatusDto {
         parsed,
         in_progress,
@@ -269,20 +269,21 @@ pub struct GitMetadataDirs {
 /// Linked worktrees keep HEAD/index in a private git-dir and refs in a shared
 /// common-dir. Resolve both through Git, including relative .git indirections.
 pub fn metadata_dirs(root: &Path) -> Result<GitMetadataDirs, String> {
-    fn resolve(root: &Path, flag: &str) -> Result<std::path::PathBuf, String> {
-        let out = run_ok(root, &["rev-parse", flag], DEFAULT_TIMEOUT, &[])?;
-        let path = std::str::from_utf8(&out.stdout)
-            .map_err(|_| "git-metadata-path-not-utf8")?
-            .trim_end_matches(['\r', '\n']);
-        if path.is_empty() {
-            return Err("git-metadata-path-empty".into());
-        }
-        root.join(path).canonicalize().map_err(|e| e.to_string())
-    }
     Ok(GitMetadataDirs {
-        git_dir: resolve(root, "--git-dir")?,
-        common_dir: resolve(root, "--git-common-dir")?,
+        git_dir: resolve_metadata_dir(root, "--git-dir")?,
+        common_dir: resolve_metadata_dir(root, "--git-common-dir")?,
     })
+}
+
+fn resolve_metadata_dir(root: &Path, flag: &str) -> Result<std::path::PathBuf, String> {
+    let out = run_ok(root, &["rev-parse", flag], DEFAULT_TIMEOUT, &[])?;
+    let path = std::str::from_utf8(&out.stdout)
+        .map_err(|_| "git-metadata-path-not-utf8")?
+        .trim_end_matches(['\r', '\n']);
+    if path.is_empty() {
+        return Err("git-metadata-path-empty".into());
+    }
+    root.join(path).canonicalize().map_err(|e| e.to_string())
 }
 
 pub const REMOTE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -923,7 +924,9 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
         &[
             "for-each-ref",
             "refs/heads",
-            "--format=%(HEAD)%00%(refname:lstrip=2)%00%(upstream:lstrip=2)%00%(upstream:track)",
+            "refs/remotes",
+            "refs/tags",
+            "--format=%(refname)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track)%00%(creatordate:iso-strict)",
         ],
         DEFAULT_TIMEOUT,
         &[],
@@ -932,67 +935,38 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
         return Err(git_err("for-each-ref", &out.stderr));
     }
     let mut local = Vec::new();
+    let mut remote = Vec::new();
+    let mut tags = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let f: Vec<&str> = line.split('\0').collect();
-        if f.len() < 4 {
+        if f.len() < 5 {
             continue;
         }
-        let (ahead, behind, gone) = parse_upstream_track(f[3]);
-        local.push(BranchInfo {
-            name: f[1].to_string(),
-            upstream: if f[2].is_empty() {
-                None
-            } else {
-                Some(f[2].to_string())
-            },
-            ahead,
-            behind,
-            is_current: f[0] == "*",
-            gone,
-        });
-    }
-    let remotes = run_git(
-        root,
-        &[
-            "for-each-ref",
-            "refs/remotes",
-            "--format=%(refname:lstrip=2)",
-        ],
-        DEFAULT_TIMEOUT,
-        &[],
-    )?;
-    if remotes.code != 0 {
-        return Err(git_err("for-each-ref", &remotes.stderr));
-    }
-    let remote = String::from_utf8_lossy(&remotes.stdout)
-        .lines()
-        .filter(|line| !line.ends_with("/HEAD"))
-        .map(String::from)
-        .collect();
-
-    let tag_refs = run_git(
-        root,
-        &[
-            "for-each-ref",
-            "refs/tags",
-            "--format=%(refname:lstrip=2)%00%(creatordate:iso-strict)",
-        ],
-        DEFAULT_TIMEOUT,
-        &[],
-    )?;
-    if tag_refs.code != 0 {
-        return Err(git_err("for-each-ref", &tag_refs.stderr));
-    }
-    let tags = String::from_utf8_lossy(&tag_refs.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (name, date) = line.split_once('\0')?;
-            Some(TagInfo {
+        if let Some(name) = f[0].strip_prefix("refs/heads/") {
+            let (ahead, behind, gone) = parse_upstream_track(f[3]);
+            local.push(BranchInfo {
                 name: name.to_string(),
-                date: date.to_string(),
-            })
-        })
-        .collect();
+                upstream: if f[2].is_empty() {
+                    None
+                } else {
+                    Some(f[2].to_string())
+                },
+                ahead,
+                behind,
+                is_current: f[1] == "*",
+                gone,
+            });
+        } else if let Some(name) = f[0].strip_prefix("refs/remotes/") {
+            if !name.ends_with("/HEAD") {
+                remote.push(name.to_string());
+            }
+        } else if let Some(name) = f[0].strip_prefix("refs/tags/") {
+            tags.push(TagInfo {
+                name: name.to_string(),
+                date: f[4].to_string(),
+            });
+        }
+    }
 
     Ok(BranchList {
         local,
@@ -1159,9 +1133,16 @@ pub fn grade_bytes(bytes: &[u8]) -> GradedText {
 /// Read an object when it exists. `git cat-file -e` distinguishes a normal
 /// missing side from operational `git show` failures, which must reach the UI.
 pub fn show_object(root: &Path, spec: &str) -> Result<Option<Vec<u8>>, String> {
-    let exists = run_git(root, &["cat-file", "-e", spec], DEFAULT_TIMEOUT, &[])?;
-    if exists.code != 0 {
-        let stderr = exists.stderr.to_ascii_lowercase();
+    // `show` already distinguishes a missing object from other failures. A
+    // separate existence probe doubles process startup on every diff side.
+    let out = run_git(
+        root,
+        &["show", "--end-of-options", spec],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    if out.code != 0 {
+        let stderr = out.stderr.to_ascii_lowercase();
         // Staged-added files commonly yield:
         // "fatal: path 'x' exists on disk, but not in 'HEAD'"
         let missing = stderr.contains("does not exist")
@@ -1179,17 +1160,8 @@ pub fn show_object(root: &Path, spec: &str) -> Result<Option<Vec<u8>>, String> {
         return if missing {
             Ok(None)
         } else {
-            Err(git_err("cat-file", &exists.stderr))
+            Err(git_err("show", &out.stderr))
         };
-    }
-    let out = run_git(
-        root,
-        &["show", "--end-of-options", spec],
-        DEFAULT_TIMEOUT,
-        &[],
-    )?;
-    if out.code != 0 {
-        return Err(git_err("show", &out.stderr));
     }
     Ok(Some(out.stdout))
 }

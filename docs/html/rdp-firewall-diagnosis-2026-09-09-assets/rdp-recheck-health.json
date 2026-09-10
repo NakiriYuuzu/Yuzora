@@ -1,0 +1,60 @@
+{
+  "time": "2026-09-09T23:04:44.9205213+08:00",
+  "host": "DESKTOP-NMLUN4F",
+  "lastBoot": "2026-09-09T21:28:45.5+08:00",
+  "services": [
+    {
+      "Name": "LSM",
+      "State": "Running",
+      "ProcessId": 2084,
+      "PathName": "C:\\WINDOWS\\system32\\svchost.exe -k DcomLaunch -p"
+    },
+    {
+      "Name": "SessionEnv",
+      "State": "Running",
+      "ProcessId": 1904,
+      "PathName": "C:\\WINDOWS\\System32\\svchost.exe -k netsvcs -p"
+    },
+    {
+      "Name": "TermService",
+      "State": "Running",
+      "ProcessId": 7968,
+      "PathName": "C:\\WINDOWS\\System32\\svchost.exe -k TerminalService"
+    },
+    {
+      "Name": "UmRdpService",
+      "State": "Running",
+      "ProcessId": 8728,
+      "PathName": "C:\\WINDOWS\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p"
+    }
+  ],
+  "startupErrors": [],
+  "certificates": [
+    {
+      "expires": "2027-03-10T21:03:37+08:00",
+      "hasPrivateKey": true,
+      "sha1": "F65593F199374C3D75CD0A375BF1D866EF152453",
+      "sha256": "0FCD466ADC0CA4F4D5E6649D86B73966EE22AE98C8AAEBEA4BDE2D3DCAA0FF56",
+      "subject": "CN=DESKTOP-NMLUN4F",
+      "serial": "2989BC0BE2258E8C48350A2AA4A66FAE"
+    }
+  ],
+  "loopback3389": true,
+  "firewall": [
+    {
+      "Name": "RemoteDesktop-UserMode-In-TCP",
+      "Enabled": 1,
+      "Direction": 1,
+      "Action": 2,
+      "Profile": 0
+    },
+    {
+      "Name": "RemoteDesktop-UserMode-In-UDP",
+      "Enabled": 1,
+      "Direction": 1,
+      "Action": 2,
+      "Profile": 0
+    }
+  ],
+  "sessions": " SESSIONNAME               USERNAME                 ID  STATE   TYPE        DEVICE \r\n>services                                            0  Disc                        \r\n console                   Yuuzu                     1  Active                      \r\n rdp-tcp                                         65536  Listen                      \r\n"
+}

@@ -1,0 +1,28 @@
+{
+  "time": "2026-09-09T21:18:14.6021556+08:00",
+  "disable": {
+    "ReturnValue": 0,
+    "PSComputerName": null
+  },
+  "disabledState": {
+    "fDenyTSConnections": 1,
+    "StartRCM": 0
+  },
+  "enable": {
+    "ReturnValue": 0,
+    "PSComputerName": null
+  },
+  "listeners": [],
+  "sessions": " SESSIONNAME               USERNAME                 ID  STATE   TYPE        DEVICE \r\n>services                                            0  Disc                        \r\n console                   Yuuzu                     7  Active                      \r\n",
+  "reg": {
+    "fDenyTSConnections": 0,
+    "StartRCM": 0
+  },
+  "events": [
+    {
+      "TimeCreated": "2026-09-09T21:18:17.6745402+08:00",
+      "Id": 17,
+      "Message": "遠端桌面服務啟動失敗。相關的狀態碼是 0x80070005。"
+    }
+  ]
+}

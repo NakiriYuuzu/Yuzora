@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>v0.0.9 Git 載入效能驗證 · 2026-09-10</title>
+<style>
+body{max-width:1000px;margin:48px auto;padding:0 24px;font:16px/1.75 system-ui;color:#202832;background:#f7f8fb}h1{font-size:30px}h2{margin-top:32px}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #d9dde5}th{background:#eaf0fa}code{font-size:14px;overflow-wrap:anywhere}a{color:#2456b3}.note{color:#596374}pre{white-space:pre-wrap;background:white;padding:16px;border:1px solid #d9dde5}
+</style>
+<main>
+<h1>v0.0.9 Git 載入效能驗證</h1>
+<p>2026-09-10 · release/v0.0.9 · <a href="https://github.com/NakiriYuuzu/Yuzora/pull/94">Draft PR #94</a></p>
+<p>使用者於 UI 修正 c52b655 後回報 Git 載入慢，特別是 git-diff。本次降低原生 Git 查詢的程序數，涵蓋狀態、分支／標籤、工作區差異及歷史檔案讀取。未改變跨主機路由、信任檢查、操作鎖、取消／逾時及輸出大小限制，也未引入 worktree 內容快取。</p>
+<h2>量測結果</h2>
+<p>macOS arm64、本機 Yuzora repository、同一個 Rust debug benchmark、每項連續讀取 5 次取平均。差異檔案使用 src/editor/editor.css。毫秒數是本機量測，不代表 Windows 安裝後的實測速度；Git 程序數由共用 runner 的 logger 計數。</p>
+<table><thead><tr><th>讀取路徑</th><th>平均耗時：修改前 → 後</th><th>Git 程序：修改前 → 後</th></tr></thead><tbody>
+<tr><td>狀態刷新</td><td>81 → 55ms</td><td>3 → 2</td></tr>
+<tr><td>分支／remote／標籤列表</td><td>69 → 26ms</td><td>3 → 1</td></tr>
+<tr><td>工作區 diff</td><td>46 → 25ms</td><td>2 → 1</td></tr>
+<tr><td>暫存 diff</td><td>97 → 50ms</td><td>4 → 2</td></tr>
+<tr><td>單一歷史版本檔案</td><td>75 → 49ms</td><td>3 → 2</td></tr>
+</tbody></table>
+<p>另以本機 Chromium Demo 將 Git IPC 替換為固定資料，單獨量測現有分割 diff 顯示：200／2,000／10,000 行約 46／41／60ms。這個結果只用於區分顯示與原生資料取得成本，不包含 Windows WebView2、SSH 或 WSL 延遲。本次沒有據此修改 CodeMirror 的演算法或隱藏部分差異。</p>
+<h2>修正與正確性</h2>
+<ul>
+<li>工作區 diff 直接使用 git show 的結果與既有錯誤分類，移除每份內容前的 cat-file 存在性查詢；保留 staged、rename、unmerged 的 stage 1／stage 2／HEAD fallback。</li>
+<li>一次 for-each-ref 取得 heads、remotes、tags，依完整 ref namespace 分類；保留 current、upstream、ahead／behind／gone、tag creator date 與 remote HEAD 過濾。</li>
+<li>status 只解析工作樹的 git-dir 以判斷 merge／rebase 等進行中狀態；需要 common-dir 的其他用途繼續走原 metadata_dirs。</li>
+<li>歷史讀取仍先驗證 revision，成功路徑直接讀內容；show 失敗時才以 literal、NUL-delimited ls-tree 確認 path 是否不存在。不存在回 Missing，損壞或不可讀物件維持錯誤，允許重試。</li>
+</ul>
+<h2>回歸測試</h2>
+<p>新增 Host integration fixture：建立原始、已暫存與工作區三份不同內容，驗證三方內容正確；同時檢查 local／remote refs、輕量與 annotated tags，並限制每次讀取的 Git 程序數。測試於修改前失敗，修改後通過；不以容易受機器負載影響的毫秒門檻作為 CI gate。</p>
+<pre>cargo test --locked --manifest-path src-tauri/host/Cargo.toml --test git_read_efficiency</pre>
+<p>修改前程序數為 (3, 3, 2, 4)，目標為 (2, 1, 1, 2)；歷史檔案讀取另由 3 降到 2。Host 完整測試 369 unit + 12 integration 通過，Host strict Clippy 通過；桌面 Git service 71 項測試通過，完整桌面測試 368 unit + 1 integration 通過（4 ignored），exact Clippy baseline 符合 90 diagnostics。</p>
+<p class="note">原始量測、負向測試輸出與 benchmark source 保留於本機 output/release-v0.0.9/git-*。前一版 UI 的瀏覽器驗證另見 <a href="release-v009-ui-fixes-2026-09-10.html">UI 修正報告</a>。最終候選安裝檔須來自包含本次修正的新 commit；c52b655 候選不包含此效能修正。</p>
+</main>
+</html>

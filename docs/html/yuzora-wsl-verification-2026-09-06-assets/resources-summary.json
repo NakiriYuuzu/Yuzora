@@ -1,0 +1,9 @@
+{
+  "samples": 137,
+  "start": "2026-09-06T05:04:42.9395305Z",
+  "end": "2026-09-06T05:10:05.9175125Z",
+  "min_free_ram_gib": 20.26,
+  "max_commit_percent": 39.68,
+  "max_cpu_percent": 37,
+  "max_tracked_working_set_gib_including_wsl_vm": 2.72
+}

@@ -1,0 +1,5 @@
+{
+  "differences": [],
+  "defaultSecurity": "O:SYG:SYD:(A;;CC;;;IU)(A;;0xf03bf;;;SY)(A;;CCSWLOSDRCWDWO;;;LS)(A;;CCLO;;;NS)(A;;0xf03bf;;;BA)(A;;CCWPCR;;;RD)S:(AU;FA;CCWPCR;;;WD)",
+  "lsmServiceSecurity": "\r\nD:(A;;CCLCSW;;;AU)(A;;CCDCLCSWRPWPDTLOSDRCWDWO;;;SY)(A;;CCLCSWLORC;;;BA)S:(AU;FA;CCDCLCSWRPWPDTLOSDRCWDWO;;;WD)\r\n"
+}

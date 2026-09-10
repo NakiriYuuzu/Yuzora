@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HERDR WSL 開關外觀修正</title>
+<style>
+:root{font:16px/1.7 system-ui,sans-serif;color:#242320;background:#f7f6f2}body{max-width:1050px;margin:auto;padding:40px 24px}h1{font-size:30px;line-height:1.3}h2{font-size:20px;margin-top:32px}a{color:#426815}code{background:#e9e7df;padding:2px 5px;border-radius:4px}figure{margin:18px 0}img{display:block;width:100%;border-radius:12px;border:1px solid #dedbd2}figcaption{color:#66635b;font-size:14px;margin-top:6px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #d7d4cb}.states{display:grid;gap:16px}.note{padding:16px;background:#eeece5;border-radius:10px}
+</style>
+</head>
+<body>
+<p>2026-09-09 · Yuzora</p>
+<h1>WSL 開關恢復與其他設定一致的比例及位移</h1>
+<p>HERDR 設定的 WSL 開關原本未套用共用 <code>yz-switch</code> 樣式。軌道使用固定像素，滑鈕卻受全站 13px 根字級縮小，導致啟用時滑鈕距右側仍約 7px。此次只在該 Switch 補上共用 class，沒有更動切換邏輯或周圍版面。</p>
+<table><thead><tr><th>項目</th><th>修正前</th><th>修正後</th></tr></thead><tbody>
+<tr><td>軌道尺寸</td><td>32 × 18.39px</td><td>36 × 21px</td></tr>
+<tr><td>滑鈕尺寸</td><td>13 × 13px</td><td>17 × 17px</td></tr>
+<tr><td>啟用時右側留白</td><td>約 7px</td><td>2px；上下亦為 2px</td></tr>
+<tr><td>深色模式配色</td><td colspan="2">沿用共用主題：啟用時使用深色滑鈕與主題色軌道。</td></tr>
+</tbody></table>
+<p>來源：<a href="../../src/app/workbench/HerdrSettingsSection.tsx">HerdrSettingsSection.tsx</a> 第 58 行；<a href="herdr-wsl-button-2026-09-09-assets/after-dark-on-metrics.json">修正後瀏覽器量測</a>。</p>
+<h2>修正前的實際畫面</h2>
+<figure><img src="herdr-wsl-button-2026-09-09-assets/before-dark-on.png" alt="修正前深色模式，WSL 已啟用，滑鈕偏離右端"><figcaption>修改原始碼前取得的 1280 × 900 瀏覽器截圖。畫面中的 IPC 錯誤來自獨立瀏覽器沒有 Tauri 後端。</figcaption></figure>
+<h2>修正後的四種狀態</h2>
+<div class="states">
+<figure><img src="herdr-wsl-button-2026-09-09-assets/after-dark-off.png" alt="深色模式 WSL 關閉"><figcaption>深色 · 關閉</figcaption></figure>
+<figure><img src="herdr-wsl-button-2026-09-09-assets/after-dark-on.png" alt="深色模式 WSL 開啟"><figcaption>深色 · 開啟</figcaption></figure>
+<figure><img src="herdr-wsl-button-2026-09-09-assets/after-light-off.png" alt="淺色模式 WSL 關閉"><figcaption>淺色 · 關閉</figcaption></figure>
+<figure><img src="herdr-wsl-button-2026-09-09-assets/after-light-on.png" alt="淺色模式 WSL 開啟"><figcaption>淺色 · 開啟</figcaption></figure>
+</div>
+<h2>驗證</h2>
+<ul>
+<li>實際 Chromium 渲染：淺色／深色、開啟／關閉皆已截圖檢查。</li>
+<li>鍵盤 Space 可切換，切換後焦點仍停留於開關。</li>
+<li>900 × 700 視窗下文字正常換行，開關沒有被擠壓或裁切。</li>
+<li>HerdrSettingsSection 與 settingsPrimitives 既有測試共 7 項通過。</li>
+<li>TypeScript typecheck 與修改檔案 ESLint 通過。</li>
+</ul>
+<figure><img src="herdr-wsl-button-2026-09-09-assets/after-narrow.png" alt="900 × 700 視窗下，WSL 說明換行且開關保有鍵盤焦點"><figcaption>較窄視窗與鍵盤焦點。</figcaption></figure>
+<p class="note">視覺驗證在 macOS 的獨立 Chromium 以 Windows user agent 顯示 Windows 控制項；使用實際 React 元件與專案 CSS。此結果驗證前端外觀與切換互動，不代表 Windows／WSL2 原生 runtime 連線驗收。未執行 Git staging、commit 或 push。</p>
+</body>
+</html>

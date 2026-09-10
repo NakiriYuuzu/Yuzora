@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>v0.0.9 HERDR 切換效能與 macOS 平台政策 · 2026-09-10</title>
+<style>
+body{max-width:1000px;margin:48px auto;padding:0 24px;font:16px/1.75 system-ui;color:#202832;background:#f7f8fb}h1{font-size:30px}h2{margin-top:32px}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #d9dde5}th{background:#eaf0fa}code{font-size:14px;overflow-wrap:anywhere}a{color:#2456b3}.note{color:#596374}
+</style>
+<main>
+<h1>v0.0.9 HERDR 切換效能與 macOS 平台政策</h1>
+<p>2026-09-10 · release/v0.0.9 · <a href="https://github.com/NakiriYuuzu/Yuzora/pull/94">Draft PR #94</a></p>
+<p>改善已開啟 HERDR 終端機之間的切換：背景終端機繼續保留畫面與連線，切換時只更新受影響的頁面。此報告記錄相對於 44ca15f 的前端修正；原生 Git 效能另見 <a href="release-v009-git-performance-2026-09-10.html">Git 載入效能報告</a>。</p>
+<h2>重繪與連線驗證</h2>
+<table><thead><tr><th>情境</th><th>修改前</th><th>修改後</th></tr></thead><tbody>
+<tr><td>30 個已開啟頁面，切換其中兩頁</td><td>30 頁重新 render</td><td>只有離開與進入的 2 頁 render</td></tr>
+<tr><td>另一頁更新 attachment</td><td>無關頁面也 commit</td><td>無關頁面 0 commit；自身 badge 仍更新</td></tr>
+<tr><td>runtime snapshot 僅改 focus flags</td><td>終端機重新 commit</td><td>0 commit；實際 terminal topology 與 cwd 保留訂閱</td></tr>
+<tr><td>瀏覽器實際點擊分頁 10 次</td><td>未作同方法基準</td><td>31 個 xterm DOM 完整保留，0 open／0 release</td></tr>
+</tbody></table>
+<p>前三項以 React render spy／Profiler 回歸測試驗證；新增測試先在原實作失敗。EditorArea 使用 memo 保留未變 props 的終端機，頁面僅訂閱自身 attachment 及所需 snapshot 欄位，leaf 直接訂閱推導後的 cwd。相關 5 個測試檔案共 135 項通過，涵蓋 layout、分頁與 store 行為。</p>
+<h2>瀏覽器量測</h2>
+<p>macOS 本機 Chromium、Vite Demo，注入 30 個額外分頁，共 31 個 xterm。直接 setActiveTab 後等待兩個 animation frame，20 次平均 35.835 → 33.315ms，最大 50 → 34.3ms。兩幀的時間下限約 33ms，故此數據主要用於確認沒有顯示退步，不作為跨平台加速比例。</p>
+<p>最終以實際分頁按鈕連續切換 10 次，兩幀後量測為 29、25、33、33、33、33、33、33、33、34ms。共各 10 次 canonical path、workspace focus、tab focus 及 log 呼叫；終端機 connector 沒有重新開啟或釋放。確認作用中的 Perf 1 顯示既有輸出與 shell prompt。</p>
+<p class="note">Demo 使用模擬 IPC，以上不包含 Windows WebView2 或遠端 host 往返延遲。未改變 native focus 的順序、latest-intent guard、未儲存確認或錯誤回復；不同 Session／主機與真實 Agent 的切換仍需新候選實機驗收。原始 JSON、量測腳本及畫面保留於本機 output/release-v0.0.9/herdr-*。</p>
+<h2>macOS App 從 v0.0.9 僅支援 Apple Silicon</h2>
+<p>依使用者確認，candidate 與 release App 改為 aarch64-apple-darwin，CI 檢查主程式 Mach-O 僅含 arm64。Intel macOS 遠端 Host 仍保留，舊版已發布 artifacts 不變。AGENTS.md、operations、README、中英文官網與 updater 同步此政策；新版 metadata 不含 darwin-x86_64。</p>
+<p>固定下載名稱改為 Yuzora-macos-aarch64.dmg。Tauri CLI 2.11.4 產出的 Yuzora.app.tar.gz 與簽章於發布收集步驟成對改為 Yuzora_&lt;version&gt;_aarch64.app.tar.gz，避免 metadata 找不到版本化檔案。測試實際執行 workflow 的收集 shell，將假 installer／archive／signature 交給 metadata generator；macOS CI 負責真實 Mach-O 架構驗證。</p>
+<p>Release contract 另有負向測試，拒絕重新引入 Intel／universal App。網站不以 MacIntel user agent 推測 CPU；僅明確的 x86 client hint 拒絕自動下載，下載說明清楚標示 Apple Silicon 限制。</p>
+<h2>交付邊界</h2>
+<p>本機完整前端驗證：196 個 Vitest 檔案、2,351 項測試通過；typecheck、lint、App／Demo build 與 release contracts 通過。ESLint 保留既有 51 項 warnings。</p>
+<p>此修正尚須包含於新候選，44ca15f 與更早安裝檔不能代表本次結果。Windows 舊圖示回報尚待安裝端路徑／捷徑及截圖定位；未宣稱已修復。Stable macOS 仍須六項 Apple signing secrets 及正式簽章驗證。PR 需等待使用者候選驗證與明確 merge 核准。</p>
+</main>
+</html>

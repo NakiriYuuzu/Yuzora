@@ -1,0 +1,6 @@
+Command result: Frontend Vitest
+Status: PASS
+217 files / 2699 tests passed；56.04 秒；exit 0
+ Test Files  217 passed (217)
+      Tests  2699 passed (2699)
+   Duration  56.04s (transform 16.18s, setup 129.64s, import 49.78s, tests 142.48s, environment 222.26s)

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora beta.3 發布前檢查 · 2026-09-09</title>
+<style>
+body{margin:0;background:#f6f4ef;color:#202c35;font:16px/1.7 system-ui,-apple-system,sans-serif}main{max-width:980px;margin:auto;padding:48px 24px}h1{line-height:1.25}h2{margin-top:36px}a{color:#1d627b}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #ddd;vertical-align:top}code{overflow-wrap:anywhere}.note{padding:16px;background:#fff0cf}small{color:#59636c}
+</style>
+</head>
+<body><main>
+<small>YUZORA · 2026-09-09 · 本機工作樹發布前檢查</small>
+<p class="note">HERDR 已升級至 0.9.0／protocol 22；以下候選資訊屬歷史紀錄。請以<a href="herdr-090-upgrade-2026-09-09.html">新候選與相容性防護報告</a>作為後續驗收入口。</p>
+<h1>beta.3 候選完成，Windows 相容性驗收受阻</h1>
+<p class="note">使用者已在 <a href="https://github.com/NakiriYuuzu/Yuzora/pull/92#issuecomment-5595354487">PR 回報 WSL default Session 的 HERDR protocol incompatible</a>。後續實機輸出已確認：Yuzora managed client 為 0.8.2／protocol 20，執行中的 server 為 0.9.0／protocol 22。詳見<a href="pr92-wsl-protocol-analysis-2026-09-09.html">更新後分析</a>；未修正或重新建置，不應視為驗收通過。</p>
+<p class="note">已獲使用者授權並完成提交、推送及 PR／Issue 更新；尚未 merge、設定 Beta acceptance variables 或發布。此報告不是候選安裝檔驗收證據。</p>
+<p>新 head：<code>7a7a5a34749e49f2f743f7090a16db37b8e2c818</code>；tree：<code>66add845f27953c54297e4ea431d2fb09a89a343</code>。<a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34304922258">新 CI 與候選建置</a>的 11 jobs 全部成功，包含五項 required checks、四平台 helper 與 macOS／Windows 候選；獨立 helper workflow 與 GitGuardian 亦通過。<a href="https://github.com/NakiriYuuzu/Yuzora/issues/91">Issue #91</a>、<a href="https://github.com/NakiriYuuzu/Yuzora/pull/92">PR #92</a> 已更新並讀回確認，PR 保持 Draft。</p>
+<h2>下載與驗證紀錄</h2>
+<p><a href="https://github.com/NakiriYuuzu/Yuzora/pull/92#issuecomment-5595225549">PR 候選證據</a>已記錄 head／tree、run、artifact 連結與完整 SHA-256。本機候選檔位於 Downloads：</p>
+<table><thead><tr><th>Installer</th><th>SHA-256</th></tr></thead><tbody>
+<tr><td><a href="/Users/yuuzu/Downloads/Yuzora-v0.0.9-beta.3-candidate-7a7a5a3/macos/Yuzora_0.0.9-beta.3_universal.dmg">macOS universal DMG</a></td><td><code>8217c46d38aec6ac681852785c51dda1d6f245d8a361ec89733b8d5dca039fc7</code></td></tr>
+<tr><td><a href="/Users/yuuzu/Downloads/Yuzora-v0.0.9-beta.3-candidate-7a7a5a3/windows/msi/Yuzora_0.0.9-beta.3_x64_en-US.msi">Windows MSI</a></td><td><code>6440e5574c98a5adcb0816f8ae6630e3d5e093069bd3e0b66971d1c968c18f07</code></td></tr>
+<tr><td><a href="/Users/yuuzu/Downloads/Yuzora-v0.0.9-beta.3-candidate-7a7a5a3/windows/nsis/Yuzora_0.0.9-beta.3_x64-setup.exe">Windows NSIS</a></td><td><code>338a7a2aa3358767d5288205a412851f52c7e23641dc05eda7eee0e2b1799b01</code></td></tr>
+</tbody></table>
+<p>Windows CI 已解包 MSI／NSIS，確認四平台 Unix runtime 且沒有 Windows HERDR bridge。下載後 DMG checksum 有效；唯讀掛載確認版本 0.0.9-beta.3、bundle ID dev.yuuzu.yuzora、架構 x86_64／arm64，核對後已卸載，未啟動候選 App。目錄另附 VERIFICATION.md 與 SHA256SUMS.txt。</p>
+<p class="note">尚待使用者以這批候選完成 operations.md 的受影響平台與功能驗收，回報平台、installer hash、結果與限制，並明確授權 merge。CI 與靜態安裝包證據不能代替此 gate；尚未設定 acceptance variables、merge 或發布。</p>
+<p>使用者已確認納入本機新版介面、LSP 移除與功能修正。Changelog 與 operations 已同步；文件修改後版本、notes、Beta／updater contract 及 diff whitespace 檢查再次通過。</p>
+<h2>本次已核准並提交的內容</h2>
+<p>提交清單共 372 個產品／測試／設定與文件路徑，其中 149 個為刪除的舊功能檔案。200 個歷史 QA、研究文件、設計稿、報告及暫存路徑不列入提交，保留其本機狀態。清單以現有 HEAD 為基準，提交前須核對內容指紋，不能把後續其他工作直接混入。</p>
+<ul>
+<li><a href="/tmp/yuzora-beta3-release-preparation-20260909/commit-paths.txt">完整提交清單</a> · <a href="/tmp/yuzora-beta3-release-preparation-20260909/excluded-paths.txt">排除清單</a> · <a href="/tmp/yuzora-beta3-release-preparation-20260909/snapshot.json">逐檔內容指紋</a></li>
+<li><a href="../../CHANGELOG.md">更新後 Changelog</a> · <a href="../operations.md">更新後發布驗收項目</a> · <a href="/tmp/yuzora-beta3-release-preparation-20260909/release-notes.md">產生的 Release notes</a></li>
+<li><a href="/tmp/yuzora-beta3-release-preparation-20260909/pr-body.md">PR #92 說明底稿</a> · <a href="/tmp/yuzora-beta3-release-preparation-20260909/issue-body.md">Issue #91 範圍與驗收底稿</a>；已寫入 GitHub，後續驗證以 PR 現況為準。</li>
+</ul>
+<p>提交前已確認 372 個路徑的指紋完全一致，staging 後再次比對清單並通過 diff whitespace 檢查，已推送至既有 release/v0.0.9-beta.3。隨後另以 7a7a5a3 修正 host Clippy 排列錯誤，新 head 的 CI 與兩平台候選已完成；PR 維持 Refs #91 與 Draft，merge 另待使用者候選驗證與核准。</p>
+<h2>開始檢查時的狀態</h2>
+<p>版本與分支為 <code>0.0.9-beta.3</code>／<code>release/v0.0.9-beta.3</code>。開始時本機 HEAD 與 <a href="https://github.com/NakiriYuuzu/Yuzora/pull/92">PR #92</a> head 均為 <code>711342825480a2edd5eb79005554ce828177e245</code>。</p>
+<p>檢查開始時有 324 個已追蹤檔案變更（173 修改、151 刪除），另有 245 個未追蹤檔案，包含原始碼、設計稿、驗證報告及暫存物。不能整批推定全部屬於發布內容。</p>
+<p><a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34083016656">現有 PR CI</a>、macOS universal／Windows x86-64 candidate 均成功；它們只驗證已提交 head，未包含目前工作樹變更。Artifact 尚未過期：macOS 10004841749、Windows 10004790693。遠端 beta.3 tag 與 Release 尚不存在；Beta acceptance variables 尚未設定。Stable Latest 仍為 v0.0.8，最新已發布 Beta 為 v0.0.9-beta.2。</p>
+<h2>本次實際執行</h2>
+<table><thead><tr><th>檢查</th><th>結果</th></tr></thead><tbody>
+<tr><td>版本、release notes、Beta／updater contract</td><td>全部通過；notes check 僅驗證格式與存在性，不代表內容已符合新範圍。</td></tr>
+<tr><td>Frontend tests</td><td>185 files、2,220 tests 通過。</td></tr>
+<tr><td>Lint</td><td>0 errors、51 warnings。</td></tr>
+<tr><td>Build（含 typecheck）</td><td>通過；保留大型 bundle 與 ineffective dynamic import 警告。</td></tr>
+<tr><td>Desktop／host cargo check --locked --all-targets</td><td>本機 macOS 均通過。</td></tr>
+<tr><td>Desktop cargo fmt</td><td>通過。</td></tr>
+<tr><td>Clippy exact baseline</td><td>90 diagnostics 完全匹配。</td></tr>
+<tr><td>git diff --check</td><td>通過。</td></tr>
+</tbody></table>
+<p>已追加執行 Desktop Rust 363 unit tests（3 ignored）、SQLite integration 1 passed（1 ignored）；Host 360 unit 與 11 integration tests 通過。初次 CI 在 host strict Clippy 發現測試模組後的正式函式；7a7a5a3 僅調整函式位置，本機 strict Clippy 與相關測試通過。PostgreSQL／MSSQL 與跨平台 candidate 由新 CI 驗證；未執行 GUI／E2E。本機結果不可取代更新後 exact candidate 的完整 CI 與實機驗收。</p>
+<h2>納入本機產品變更時的必要步驟</h2>
+<ol>
+<li>已確認發布範圍並整理提交／排除清單。</li>
+<li>已依 ADR-0004 同步 Changelog、operations 驗收項目，並備妥 Issue #91／PR #92 描述草稿。完整交付才可將 Refs 改為 Closes。</li>
+<li>已取得本次 Git staging／commit／push 明確授權並完成推送，兩平台候選檔已重新建置、下載並記錄雜湊。</li>
+<li>由使用者驗證受影響平台，記錄 installer hashes、run ID、candidate head／tree、結果與限制；browser／E2E 工具另需事前明確同意。</li>
+<li>使用者回報驗證通過並明確核准 merge 後，設定及讀回 accepted tree／evidence URL；merge 後由 exact main push CI 與 Release workflow 建立 tag、建置及發布。</li>
+</ol>
+<p>使用者已選擇納入目前本機產品變更，故必須重建候選，不能發布僅包含遠端舊 head 的候選。</p>
+<h2>依據與檢查紀錄</h2>
+<p><a href="../operations.md">operations.md</a>、<a href="../../.yuuzu/adr/0004-herdr-terminals-browser-only.html">ADR-0004</a>、實際 CI／Release workflows 與本次 GitHub API 結果。</p>
+<p>本機暫存 logs：<code>/tmp/yuzora-release-{lint,build,tests,cargo-check,host-check,clippy}-20260909.log</code>。此路徑為本機暫存，並非永久證據儲存。</p>
+</main></body></html>

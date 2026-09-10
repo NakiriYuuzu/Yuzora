@@ -1,5 +1,5 @@
 import { canonicalRuntimeWorkspace, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
-import { bindWorkspaceRoot, projectWorkspaceRoots } from "@/lib/herdrWorkspaceRoots"
+import { bindWorkspaceRoot, directoryForSelection, projectWorkspaceRoots } from "@/lib/herdrWorkspaceRoots"
 import { create } from "zustand"
 
 import {
@@ -567,7 +567,11 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
                 errorMessage: null
               })
             )
-            await get().refreshWorktreeInventory(resolved)
+            // Agent status/output updates do not invalidate repository inventory.
+            // HerdrBridge refreshes it every 30s; topology changes clear it in applySnapshot.
+            if (!runtimeOf(get(), resolved).worktreeInventory) {
+              await get().refreshWorktreeInventory(resolved)
+            }
             consecutiveFailures = 0
             passSucceeded = true
           } catch (error) {
@@ -1143,8 +1147,9 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     }
 
-    // External HERDR Spaces may have terminals without a bound file root.
-    // Focus those terminals without opening or replacing the Files workspace.
+    // A non-Git Space has no worktree metadata. Explicit selection can open
+    // its pane directory after the host canonicalizes it, just like a picker.
+    path ??= directoryForSelection(stateBefore.runtimesBySession[sessionName]?.snapshot ?? null, workspaceId)
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(path && !pathsMatch(path, currentWorkspace))
 
@@ -1291,6 +1296,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
     let space = runtime.snapshot?.spaces.find((item) => item.id === tab.workspaceId)
     if (!space) return { ok: false, error: "Herdr Space is unavailable" }
+    space = { ...space, path: directoryForSelection(runtime.snapshot, tab.workspaceId, tab.paneId) }
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(space?.path && !pathsMatch(space.path, currentWorkspace))
 

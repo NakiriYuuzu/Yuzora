@@ -1,4 +1,4 @@
-import { Files, GitBranch, GitGraph } from "lucide-react"
+import { ArrowRight, Files, GitBranch, GitGraph } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -27,7 +27,11 @@ export function WorkspaceToolsPanel({ tool, onToolChange, onOpenGraph }: {
         <span className="truncate" title={displayPath}>{displayPath}</span>
         {path && <WorkspaceHostBadge path={path} />}
       </div>
-      {tool === "git" && <Button variant="ghost" size="sm" className="workbench-graph-entry" onClick={onOpenGraph}><GitGraph />{t("gitGraph")}</Button>}
+      {tool === "git" && <Button variant="outline" size="sm" className="workbench-graph-entry" onClick={onOpenGraph}>
+        <GitGraph aria-hidden="true" />
+        <span className="min-w-0 flex-1 whitespace-normal text-left">{t("gitGraph")}</span>
+        <ArrowRight aria-hidden="true" />
+      </Button>}
       <TabsContent value="files" forceMount hidden={tool !== "files"} inert={tool !== "files"} className="workbench-tool-body"><FilesNavContent /></TabsContent>
       <TabsContent value="git" forceMount hidden={tool !== "git"} inert={tool !== "git"} className="workbench-tool-body"><GitNavContent /></TabsContent>
     </Tabs>

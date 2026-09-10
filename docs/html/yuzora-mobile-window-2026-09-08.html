@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora · 雙擊視窗與手機原型</title>
+<style>body{margin:0;background:#fbfaf6;color:#2e2c28;font:15px/1.8 system-ui,"PingFang TC",sans-serif}main{max-width:960px;margin:auto;padding:44px 28px}h1{font-size:30px;line-height:1.3}h2{font-size:21px;margin-top:32px}small{color:#626059}a{color:#514488}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid #ddd9cf}th{background:#f4f1ea}code{font-size:13px;overflow-wrap:anywhere}.entry{display:inline-block;padding:10px 18px;background:#ece6f5;border:1px solid #d6cce4;border-radius:10px;text-decoration:none}</style>
+<main><small>2026-09-08 · Production + Concept，證據分開記錄</small><h1>桌面雙擊放大，手機接續工作</h1>
+<p><a class="entry" href="http://127.0.0.1:4321/output/ui-rollout/index.html?device=phone&amp;theme=light&amp;accent=violet">開啟手機概念原型</a></p>
+<h2>已直接修改桌面版</h2>
+<p>最上方 8px 空白帶與 Editor／Herdr Terminal 所在工作分頁列的空白區設為 Tauri drag region。使用一般 double-click 切換最大化／還原，拖曳則移動視窗。檔案分頁整列設為 <code>data-tauri-drag-region="false"</code>，按鈕、輸入框與其他互動元素由 Tauri 的 clickability guard 排除。</p>
+<p>依選定的 Tauri 2.11.5 原始實作，<code>drag.js</code> 以 <code>internal_toggle_maximize</code> 處理雙擊：macOS 使用 mouseup，Windows／Linux 使用 mousedown；已有的 <code>core:default</code> 包含該 permission。沿用官方行為，沒有添加第二個 double-click handler，避免同一次操作切換兩次。這是 source 支持的行為，尚未取得本次 GUI 許可，沒有宣稱原生雙擊實機已 PASS。</p>
+<h2>手機版只在模擬環境</h2>
+<table><tr><th>項目</th><th>概念行為</th></tr>
+<tr><td>手機尺寸</td><td>375×812、390×844、430×932 CSS 畫板。實際窄 viewport 使用 100dvh 配置，底部預留 safe-area。</td></tr>
+<tr><td>導覽</td><td>工作 / Work、Agents、工具 / Tools、設定 / Settings。保留 Space、branch 與 Herdr Session；一次顯示一個 pane。</td></tr>
+<tr><td>Agent 流程</td><td>選取 Agent → 查看所屬 pane → 文件／單欄 Diff → 返回；輸入草稿依 Agent 保留。狀態區分 working、blocked、idle、done、unknown，done 文案明確不代表成功。</td></tr>
+<tr><td>工具入口</td><td>Files、Git、Preview、Database、SSH／SFTP 皆保留。文件與 diff 為本地示意；資料庫與遠端工具僅展示未實作說明。</td></tr>
+<tr><td>Web Service 模擬</td><td>設定中啟動／停止服務、隨 App 開啟自動啟動選項、模擬重新開啟 App、手機配對、電腦授予／釋放控制權。所有按鈕僅更新原型記憶體。</td></tr>
+<tr><td>限制與恢復</td><td>未啟動、未配對、observer、unknown、stale、unsupported、error、Session stopped 等情境阻擋輸入並顯示原因。停止服務撤銷 pairing／control；重新連線後回到 observer。</td></tr>
+<tr><td>設計語言</td><td>沿用暖紙色、dark、violet／lime palette、Hanken Grotesk／Newsreader／JetBrains Mono、Lucide、SpaceCharacter。使用既有 shadcn primitives 與 ScrollArea。英／繁中可切換。</td></tr>
+</table>
+<p>手機元件與 CSS 保存於 <code>docs/design/mobile-prototype/</code>，只由 <code>output/ui-rollout/harness.tsx</code> 的 <code>?device=phone</code> 模式載入。沒有把 mobile CSS 或 Web Service 功能放入 production bundle。</p>
+<h2>Web Service 後續串接</h2>
+<p>本次沒有啟動真實遠端控制服務；4321 僅綁定 127.0.0.1。示意位址 <code>https://your-mac.local:port</code> 不可連線。後續需要 Desktop Settings 的服務生命週期、真實連線位址、TLS 與配對、電腦端批准／撤銷、Origin 驗證，以及經 typed Bridge 連到 Herdr 的 namespace 與 observer／controller 狀態。這些屬新 backend 能力，不能由原型的成功畫面推導已完成。</p>
+<h2>實際執行的驗證</h2>
+<ul><li>Production build 與兩份 TypeScript config 通過。</li><li>AppShell、AppShell.layout、TabBar、EditorArea：4 個測試檔、81 項既有測試通過。</li><li>手機 prototype 獨立 TypeScript 檢查、Vite production build 通過。</li><li>手機元件 3 項 Vitest＋jsdom 測試通過：service／pairing／control gating、停止後禁止輸入、草稿依 Agent 保存、App autostart 模擬與權限重置。</li><li>lint 0 errors、56 warnings；git diff --check 通過。</li><li><code>bun run tauri:dev</code> 已啟動 <code>target/debug/yuzora</code>，1420 開發服務與 4321 prototype 服務正在執行。</li></ul>
+<p><strong>未執行：</strong>原生 double-click GUI、真實手機觸控與鍵盤、各 viewport 畫面／overflow、完整對比與 200% zoom。已依最新 AGENTS.md 詢問 GUI／browser 自動化許可；尚未取得明確同意，所以沒有呼叫相關工具，也沒有生成假的 screenshot／PASS。</p>
+<p><small>本回合開始 HEAD：<code>711342825480a2edd5eb79005554ce828177e245</code>。保留其他 dirty 功能修正，未執行 Git staging／commit／push。驗證日誌：<code>output/mobile-companion/</code>。</small></p>
+</main></html>

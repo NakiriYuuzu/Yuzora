@@ -13,6 +13,11 @@
   --yz-tone-c: var(--yz-glow-c-light);
   --yz-tone-d: var(--yz-glow-d-light);
   --yz-tone-ink: color-mix(in srgb, var(--yz-accent-ink) 75%, #2e2c28);
+  --logo-primary: var(--yz-accent);
+  --logo-secondary: color-mix(in srgb, var(--yz-accent) 25%, #14b8a6);
+  --logo-silver: color-mix(in srgb, var(--yz-accent) 10%, #cbd5e1);
+  --logo-fold: color-mix(in srgb, var(--logo-silver) 65%, var(--logo-secondary));
+  --logo-ink: var(--ink-1);
   --yz-bg: radial-gradient(125% 120% at 0% 0%, var(--yz-tone-a) 0%, transparent 46%), radial-gradient(120% 115% at 100% 2%, var(--yz-tone-b) 0%, transparent 50%), radial-gradient(125% 130% at 96% 100%, var(--yz-tone-c) 0%, transparent 54%), radial-gradient(120% 120% at 8% 100%, var(--yz-tone-d) 0%, transparent 48%), var(--yz-tone-base);
   --yz-glass: rgba(251,250,246,.48);
   --yz-glass-strong: rgba(251,250,246,.70);
@@ -44,6 +49,7 @@
   --yz-tone-c: var(--yz-glow-c-dark);
   --yz-tone-d: var(--yz-glow-d-dark);
   --yz-tone-ink: color-mix(in srgb, var(--yz-accent) 45%, #e7e4df);
+  --logo-silver: color-mix(in srgb, var(--yz-accent) 10%, #e2e8f0);
   --yz-glass: rgba(34,33,40,.52);
   --yz-glass-strong: rgba(24,23,29,.72);
   --yz-field: color-mix(in srgb, var(--yz-accent) 8%, #242329);

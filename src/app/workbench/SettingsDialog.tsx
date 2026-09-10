@@ -53,6 +53,7 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 import { workspacePathForDisplay } from "@/lib/paths"
 import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
 import { SettingCard, Segmented, ToggleRow } from "./settingsPrimitives"
+import { BrandMark } from "@/components/BrandMark"
 import { HerdrSettingsSection } from "@/app/workbench/HerdrSettingsSection"
 import { GitSection } from "./GitSection"
 import { TerminalSection } from "./TerminalSection"
@@ -303,7 +304,7 @@ export function SettingsDialog({
         </header>
         <Tabs orientation="vertical" value={section} onValueChange={value=>selectSection(value as SectionId)} className="settings-layout">
           <aside data-testid="settings-sidebar" className="settings-sidebar" data-design="settings-navigation" data-design-label={td("categories")}>
-            <div className="settings-app-identity"><span aria-hidden="true">y.</span><div><strong>Yuzora</strong><small>{td("localPreferences")}</small></div></div>
+            <div className="settings-app-identity"><BrandMark /><div><strong>Yuzora</strong><small>{td("localPreferences")}</small></div></div>
             <ScrollArea data-testid="settings-sidebar-scroll" className="settings-nav-scroll min-h-0 flex-1">
               <TabsList aria-label={td("categories")} className="settings-nav-list">
                 {SETTINGS_GROUPS.map(group=><div key={group.id} className="settings-nav-group">

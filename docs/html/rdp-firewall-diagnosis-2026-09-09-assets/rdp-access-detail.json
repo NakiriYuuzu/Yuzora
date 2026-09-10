@@ -1,0 +1,141 @@
+{
+  "serviceRegistry": {
+    "ObjectName": "NT Authority\\NetworkService",
+    "RequiredPrivileges": [
+      "SeAssignPrimaryTokenPrivilege",
+      "SeAuditPrivilege",
+      "SeChangeNotifyPrivilege",
+      "SeCreateGlobalPrivilege",
+      "SeImpersonatePrivilege",
+      "SeIncreaseQuotaPrivilege"
+    ],
+    "ServiceSidType": 1,
+    "Start": 3,
+    "Type": 32,
+    "DependOnService": [
+      "RPCSS",
+      "staterepository"
+    ]
+  },
+  "acls": [
+    {
+      "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server",
+      "owner": "NT AUTHORITY\\SYSTEM",
+      "sddl": "O:SYG:SYD:AI(A;OICIIO;GXGR;;;AU)(A;;KR;;;AU)(A;CIIO;GA;;;SY)(A;;KA;;;SY)(A;CIIO;GA;;;BA)(A;;KA;;;BA)(A;;KA;;;MS)(A;CIIO;GA;;;MS)(A;CIID;KR;;;BU)(A;CIID;KA;;;BA)(A;CIID;KA;;;SY)(A;CIIOID;KA;;;CO)(A;CIID;KR;;;AC)(A;CIID;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+    },
+    {
+      "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations",
+      "owner": "NT AUTHORITY\\SYSTEM",
+      "sddl": "O:SYG:SYD:AI(A;ID;KA;;;SY)(A;CIIOID;GA;;;SY)(A;ID;KA;;;BA)(A;CIIOID;GA;;;BA)(A;ID;KR;;;AU)(A;OICIIOID;GXGR;;;AU)(A;ID;KA;;;MS)(A;CIIOID;GA;;;MS)(A;CIID;KR;;;BU)(A;CIIOID;KA;;;BA)(A;CIIOID;KA;;;SY)(A;CIIOID;KA;;;CO)(A;CIID;KR;;;AC)(A;CIID;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+    },
+    {
+      "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp",
+      "owner": "NT AUTHORITY\\SYSTEM",
+      "sddl": "O:SYG:SYD:AI(A;ID;KA;;;SY)(A;CIIOID;GA;;;SY)(A;ID;KA;;;BA)(A;CIIOID;GA;;;BA)(A;ID;KR;;;AU)(A;OICIIOID;GXGR;;;AU)(A;ID;KA;;;MS)(A;CIIOID;GA;;;MS)(A;CIID;KR;;;BU)(A;CIIOID;KA;;;BA)(A;CIIOID;KA;;;SY)(A;CIIOID;KA;;;CO)(A;CIID;KR;;;AC)(A;CIID;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+    },
+    {
+      "path": "HKLM:\\SOFTWARE\\Microsoft\\SystemCertificates",
+      "owner": "NT AUTHORITY\\SYSTEM",
+      "sddl": "O:SYG:SYD:PAI(A;CIIO;GA;;;CO)(A;;KA;;;SY)(A;CIIO;GA;;;SY)(A;;KA;;;SY)(A;CIIO;GA;;;BA)(A;;KA;;;BA)(A;CIIO;GR;;;BU)(A;;KR;;;BU)(A;;KR;;;AC)(A;CIIO;GR;;;AC)(A;;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)(A;CIIO;GR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+    },
+    {
+      "path": "C:\\ProgramData\\Microsoft\\Crypto\\RSA\\MachineKeys",
+      "owner": "NT AUTHORITY\\SYSTEM",
+      "sddl": "O:SYG:SYD:PAI(A;;0x12019f;;;WD)(A;;FA;;;BA)"
+    },
+    {
+      "path": "C:\\ProgramData\\Microsoft\\Crypto\\Keys",
+      "owner": "NT AUTHORITY\\SYSTEM",
+      "sddl": "O:SYG:SYD:PAI(A;OICI;FR;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    }
+  ],
+  "services": [
+    {
+      "Name": "CryptSvc",
+      "State": "Running",
+      "StartMode": "Auto",
+      "ProcessId": 3804,
+      "StartName": "NT Authority\\NetworkService"
+    },
+    {
+      "Name": "KeyIso",
+      "State": "Running",
+      "StartMode": "Manual",
+      "ProcessId": 1820,
+      "StartName": "LocalSystem"
+    },
+    {
+      "Name": "LSM",
+      "State": "Running",
+      "StartMode": "Auto",
+      "ProcessId": 1544,
+      "StartName": "LocalSystem"
+    }
+  ],
+  "certificateStores": [
+    {
+      "PSChildName": "AAD Token Issuer"
+    },
+    {
+      "PSChildName": "AuthRoot"
+    },
+    {
+      "PSChildName": "CA"
+    },
+    {
+      "PSChildName": "Disallowed"
+    },
+    {
+      "PSChildName": "eSIM Certification Authorities"
+    },
+    {
+      "PSChildName": "FlightRoot"
+    },
+    {
+      "PSChildName": "MY"
+    },
+    {
+      "PSChildName": "OemEsim"
+    },
+    {
+      "PSChildName": "PasspointTrustedRoots"
+    },
+    {
+      "PSChildName": "REQUEST"
+    },
+    {
+      "PSChildName": "ROOT"
+    },
+    {
+      "PSChildName": "SmartCardRoot"
+    },
+    {
+      "PSChildName": "TestSignRoot"
+    },
+    {
+      "PSChildName": "trust"
+    },
+    {
+      "PSChildName": "TrustedAppRoot"
+    },
+    {
+      "PSChildName": "TrustedDevices"
+    },
+    {
+      "PSChildName": "TrustedPeople"
+    },
+    {
+      "PSChildName": "TrustedPublisher"
+    },
+    {
+      "PSChildName": "Windows Live ID Token Issuer"
+    },
+    {
+      "PSChildName": "WindowsServerUpdateServices"
+    }
+  ],
+  "recentCryptoErrors": {
+    "error": "The specified providers do not write events to any of the specified logs."
+  },
+  "serviceEvents": null
+}

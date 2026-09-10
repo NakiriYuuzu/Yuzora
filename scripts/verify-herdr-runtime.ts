@@ -1,10 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { mkdtemp, mkdir, writeFile, realpath, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises"
 import { join, relative, isAbsolute } from "node:path"
 import { tmpdir } from "node:os"
 import { createConnection, type Socket } from "node:net"
 import { createInterface } from "node:readline"
 import { HERDR_RESOURCE_VERSION } from "./prepare-herdr-resources"
+import { removeRuntimeFixture } from "./runtime-fixture-cleanup"
 import methodFixture from "../src-tauri/host/tests/fixtures/herdr-0.9.0-methods.json"
 
 // Uses only temporary XDG roots and its own named server. Never stops a user's server.
@@ -153,12 +154,17 @@ manifest_check = false
   for (const child of children) if (child !== server && child.exitCode === null) child.stdin.end()
   try { if (server) await command(["session", "stop", session, "--json"]) }
   finally {
-    for (const child of children) if (child.exitCode === null) child.kill()
-    // Windows keeps executable and working-directory handles until process exit.
-    await Promise.all(children.filter(child => child.exitCode === null && child.signalCode === null).map(child => new Promise<void>(resolve => {
+    const waitForChildren = () => Promise.all(children.filter(child => child.exitCode === null && child.signalCode === null).map(child => new Promise<void>(resolve => {
       const timer = setTimeout(resolve, 3000)
       child.once("close", () => { clearTimeout(timer); resolve() })
     })))
-    await rm(root, { recursive: true, force: true })
+    // The stop response can precede server/ConPTY teardown. Let the server
+    // release its shell before killing any tracked process that remains alive.
+    await waitForChildren()
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill()
+    await waitForChildren()
+    // Windows may release directory handles after the process exit event.
+    // Retry transient filesystem locks for at most 5.5s; never ignore failure.
+    await removeRuntimeFixture(root)
   }
 }

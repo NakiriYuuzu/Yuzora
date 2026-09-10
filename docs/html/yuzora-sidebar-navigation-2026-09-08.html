@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora 側邊導覽調整 · 2026-09-08</title>
+<style>
+  :root{color-scheme:light;--paper:#fbfaf6;--ink:#2e2c28;--muted:#626059;--line:#ddd9cf}
+  *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.75 system-ui,"PingFang TC",sans-serif}
+  main{max-width:1040px;margin:0 auto;padding:56px 28px}h1{font-size:32px;line-height:1.25;letter-spacing:-.025em}h2{font-size:21px;margin-top:36px}p,ul{max-width:850px}small,figcaption{color:var(--muted)}code{font:13px ui-monospace,monospace;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{background:#f4f1ea}figure{margin:28px 0}img{display:block;width:min(100%,803px);border:1px solid var(--line);border-radius:14px}figcaption{margin-top:10px;font-size:13px}a{color:#4c563d}header{border-bottom:1px solid var(--line);padding-bottom:24px}
+</style>
+<main>
+<header><small>2026-09-08 · production UI 變更紀錄</small><h1>以平面側欄整合共用操作</h1><p>參考使用者提供的 Orca 截圖，把搜尋、資料庫、SSH／SFTP 與設定移到左側。上方保留品牌、原生視窗控制與側欄切換；Space → worktree → Agent 層級維持現行語意。</p><p><strong>結果：本次側欄調整可進入使用者測試。</strong>此結論限於本次 UI 變更與下列證據，不代表整個產品、live Herdr 或 release 已完成驗收。</p></header>
+
+<h2>配置與既有功能</h2>
+<table><thead><tr><th>位置</th><th>zh-TW ／ en</th><th>行為</th></tr></thead><tbody>
+<tr><td>頂部</td><td>搜尋 ／ Search</td><td>開啟既有 Command Palette，保留 ⌘K／Ctrl+K。本次將使用者所稱「查詢」解讀為搜尋檔案與命令；Database 的 SQL 查詢維持資料庫工作面。</td></tr>
+<tr><td>共用操作</td><td>工作面 ／ Workspace<br>資料庫 ／ Database<br>SSH / SFTP</td><td>可返回先前工作模式；SFTP 開啟既有傳輸視窗。入口由 top-bar 移至側欄，並非新增後端能力。</td></tr>
+<tr><td>中段</td><td>Spaces 與 Agents ／ Spaces and Agents</td><td>緊湊 Herdr Session 選單、Attention、可捲動的 Space／worktree／Agent 清單。All 保留僅彙整已載入 runtime 的提示。</td></tr>
+<tr><td>固定底部</td><td>設定 ／ Settings</td><td>開啟既有 SettingsDialog，不隨中段清單捲動。</td></tr>
+</tbody></table>
+<p>延續暖色漸層、Space 持久化配色及角色、狀態文字與圖示。移除左側外框卡片感，改用平面導覽與分隔線；選取項維持低彩度背景。主要操作 14px；低高度時縮減行高與間距，不縮小文字。</p>
+
+<h2>實作範圍</h2>
+<ul>
+<li><code>src/app/AppShell.tsx</code>：共用操作與設定入口搬移，保留既有 callback、模式及側欄寬度／收合狀態。</li>
+<li><code>src/app/workbench/workbench-shell.css</code>：平面側欄、固定 footer、600px 以下高度的緊湊間距。</li>
+<li><code>src/app/workbench/HerdrLauncher.tsx</code>、<code>SpaceAgentTree.tsx</code>、<code>space-agent-sidebar.css</code>：Session 入口與 project rows 的視覺整合；樹狀鍵盤說明移至 accessible description。</li>
+<li><code>src/lib/i18n/locales/{en,zh-TW}/workbenchShell.json</code>：補齊兩語系文案。</li>
+<li><code>AppShell.layout.test.tsx</code>、<code>appShell.test.tsx</code>、<code>panels/panels.test.tsx</code>：驗證入口所在區域、模式切換、收合／重開及新的 landmark 名稱。</li>
+</ul>
+<p>已檢查 shadcn Sidebar／Button／Separator／ScrollArea／Kbd 文件，沿用本專案 Button、ButtonGroup、Separator、ScrollArea。這是 AppShell 擁有的 domain chrome，保留現行收合與 resize 狀態，避免再引入 SidebarProvider 的第二組狀態。未變更 runtime service、Bridge 或 Git 寫入流程。demo 目錄維持原狀。</p>
+
+<h2>已執行的驗證</h2>
+<table><thead><tr><th>證據類型</th><th>結果與限制</th></tr></thead><tbody>
+<tr><td>Frontend 測試</td><td>最終完整執行：217 個測試檔、2,696 項測試通過。初次全跑遇到舊側欄 locator 失敗，已修正並完整重跑。其後僅追加低高度 CSS，以 build 與瀏覽器 DOM 尺寸驗證。</td></tr>
+<tr><td>Build／靜態檢查</td><td>最終 build 與兩份 TypeScript config 通過；lint 0 errors、56 warnings；git diff --check 通過。警告包含既有 lint 與 bundle size／dynamic import 訊息，未將它們記為零警告。</td></tr>
+<tr><td>原生 App 實際點擊</td><td>設定、搜尋／Command Palette、SSH／SFTP 對話框均能開啟及關閉。未建立遠端連線、執行 SQL、傳送 terminal input 或停止 Herdr process。</td></tr>
+<tr><td>瀏覽器 fixture 操作</td><td>使用 production AppShell 與元件、模擬資料。搜尋開啟、資料庫切換、返回原 README、側欄收合／重開已觀察。fixture 未掛載完整 Bridges，DB 的模擬讀取錯誤不作為真實連線故障證據。</td></tr>
+<tr><td>Responsive DOM 量測</td><td>1440×900、1280×800、1024×768 的 document width 未超出 viewport；1024×768 時清單高 337px。720×480 展開左側欄時，緊湊間距把清單高由 49px 改善為 122px，設定 footer 位於 y405–442，操作文字 14px。這些是 viewport 尺寸量測，不是 200% zoom 驗證。</td></tr>
+<tr><td>視覺 fixture</td><td>已查看 light 與 dark／violet。下圖為正常瀏覽器尺寸 803×978 的 dark fixture。兩個 host-qualified Named Sessions、八 Agents、長 branch/path 與停止的 remote session 皆為測試資料；不代表真實跨 Session 持續監聽。</td></tr>
+</tbody></table>
+<figure><img src="yuzora-sidebar-navigation-2026-09-08-assets/dark-sidebar.png" alt="Dark violet 測試畫面：側欄上方為搜尋與共用工具，中間為 Spaces 與 Agents，設定固定底部"><figcaption>瀏覽器 fixture，803×978；非原生 App 全功能證據。另一份 light-1440.png 為 in-app browser 裁切截圖，未用作完整 1440px 視覺驗收。</figcaption></figure>
+
+<h2>未驗證與後續界線</h2>
+<p>本次未重跑 Rust／Database integration、實際 DB 與 SSH 操作、完整 Terminal／native Preview 輸入焦點、控制權轉移、200% 真實 zoom 或全色盤 WCAG 對比矩陣。最小視窗可捲動清單仍較短，正常 ADE 多工建議使用較大視窗。這些未執行項目沒有填寫 PASS。</p>
+<p>原生測試 App 已開啟；其 preview server 位於 <code>http://localhost:1420</code>，最新 build 已同步至 <code>dist</code>。最後追加的低高度 CSS 已由 fixture 驗證；為保留正在顯示的原生工作上下文，未強制重載原生 App。既有 native binary 的視窗控制位置未在此回合變更。</p>
+<p><small>本回合 HEAD：<code>711342825480a2edd5eb79005554ce828177e245</code>。工作目錄包含先前 UI migration 的未提交變更，已保留。驗證紀錄：<code>output/sidebar-navigation/full-tests-final.log</code>、<code>build-final.log</code>、<code>lint.log</code>。未執行 stage、commit 或 push。</small></p>
+</main></html>

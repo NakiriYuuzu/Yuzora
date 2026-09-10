@@ -1,0 +1,80 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 container Settings
+				4 container
+					5 heading Settings, Value: 2
+						6 text Settings
+					7 text Make your workspace feel like yours.
+					8 text field (settable) Search settings, Placeholder: Search settings, font, shell…
+					9 button Close settings
+				10 container
+					11 text Yuzora Workspace preferences
+					12 tab group (selectable) Settings categories
+						13 text Personalization
+						14 tab (selectable) Appearance
+						15 tab (selectable) Editor
+						16 text Development
+						17 tab (selectable) Terminal
+						18 tab (selected) Herdr, Value: on
+						19 tab (selectable) LSP
+						20 tab (selectable) Git
+						21 tab (selectable) Preview
+						22 text Application
+						23 tab (selectable) Safety
+						24 tab (selectable) Logs
+						25 tab (selectable) About & Updates
+					26 text Yuzora Yuzora v0.0.9-beta.3
+				27 container Herdr
+					28 text Development
+					29 heading Herdr, Value: 3
+						30 text Herdr
+					31 text Runtime binary and ADE automation
+					32 text Herdr binary source
+					33 text Prefer PATH-installed Herdr with automatic Yuzora-managed fallback, or require the managed binary. Changes apply after restart.
+					34 container Herdr binary source
+						35 toggle button Global preferred, Value: on
+						36 toggle button Yuzora-managed only, Value: off
+					37 text Binary diagnostics
+					38 description list
+						39 text Active source
+						40 text global
+						41 text Active path
+						42 text /Users/yuuzu/.local/bin/herdr
+						43 text Version
+						44 text 0.9.0
+						45 text Protocol
+						46 text 22
+						47 text Active availability
+						48 text Available
+						49 text Reason
+						50 text —
+						51 text Configured target
+						52 text global
+						53 text Target path
+						54 text /Users/yuuzu/.local/bin/herdr
+						55 text Version
+						56 text 0.9.0
+						57 text Protocol
+						58 text 22
+						59 text Target availability
+						60 text Available
+						61 text Reason
+						62 text —
+				63 text Theme and font changes apply immediately. Service actions use their own controls.
+				64 splitter Resize dialog width, Help: Resize dialog. Reset dialog size to 80% of the app window., Value: 1440, Details: 1440px
+				65 splitter Resize dialog height, Help: Resize dialog. Reset dialog size to 80% of the app window., Value: 851, Details: 851px
+				66 splitter Resize dialog, Help: Resize dialog. Reset dialog size to 80% of the app window., Value: 1440, Details: 1440×851px
+	67 close button
+	68 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	69 minimize button
+70 menu bar
+	71 Yuzora Current QA
+	72 File
+	73 Edit
+	74 View
+	75 Window
+	76 Help
+
+The focused UI element is 18 tab (selected) Herdr, Value: on

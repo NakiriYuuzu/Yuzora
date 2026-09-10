@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HERDR 背景更新反覆開啟資料夾 · 修正紀錄</title>
+<style>body{margin:0;background:#f6f3ec;color:#242b31;font:16px/1.8 system-ui,-apple-system,"PingFang TC",sans-serif}main{max-width:850px;margin:48px auto;padding:28px;background:#fffdf9;border:1px solid #d9d6cf;border-radius:12px}h1{font-size:30px;line-height:1.3}h2{font-size:21px;margin-top:30px}code{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}a{color:#215c59}.meta{font-size:13px;color:#616b72}@media(max-width:900px){main{margin:20px 12px;padding:22px}}</style></head>
+<body><main>
+<p class="meta">Yuzora · 2026-09-09 · 開發版修正</p>
+<h1>HERDR 背景更新不再替空工作區開啟資料夾</h1>
+<p>HERDR 已有專案，但 Yuzora 尚未開啟工作區時，背景 snapshot 原本仍會進入 focused tab 的恢復流程。修正後，背景恢復只作用於 Yuzora 已開啟、且 canonical path／主機身分相符的工作區；其他專案等待使用者主動選取。</p>
+<h2>原因與重現</h2>
+<p>原條件只在 <code>workspacePath</code> 存在時檢查身分，不存在時反而允許恢復。若開啟過程需要 Windows 資料夾綁定，取消被回報為尚未完成的恢復，下一次 snapshot 就會再次開啟選擇框。</p>
+<p>回歸測試執行真實的 HerdrBridge、herdrStore、workspaceActions 與 folderPickerStore，僅 mock 平台與原生 I/O。修正前：模擬 Windows，在初次啟動及三次 snapshot 更新中開啟選擇框 4 次；模擬非 Windows，會擅自開啟 HERDR 的專案路徑。修正後兩種情境都不會開啟資料夾或新增 terminal 分頁。</p>
+<h2>變更</h2>
+<p><a href="../../src/workbench/HerdrBridge.tsx">HerdrBridge.tsx</a> 新增空工作區與缺少 Space root 的拒絕條件。既有已開啟資料夾的 terminal 恢復、同路徑不同主機的隔離、explicit Space／Agent activation 與取消競態重試皆保留。</p>
+<p><a href="../../src/workbench/HerdrBridge.workspace.test.tsx">新增跨元件與 store 的單元回歸測試</a>，涵蓋取消後持續更新的實際 store 行為；<a href="../../src/workbench/herdrBridge.test.tsx">既有 Bridge 測試</a> 同步明確設定已開啟工作區，並加入尚未開啟工作區的情境。</p>
+<h2>驗證</h2>
+<p>6 個相關測試檔、75 tests 全數通過，涵蓋 Bridge、events、herdrStore、workspaceActions 與 FolderPickerHost。修改檔案 ESLint、typecheck、production build 與 git diff --check 通過。Build 僅保留既有 bundle／dynamic import 警告。</p>
+<p id="restore-check">啟動工作區恢復與 polling policy 的 2 檔 27 tests 亦通過；本次合計 8 檔、102 tests 通過。</p>
+<p>本次未操作 GUI 或執行瀏覽器自動化；開發伺服器 <code>localhost:1420</code> 已確認提供修正後的 guard。若畫面仍留著修正前開啟的彈窗，取消一次後可繼續測試。</p>
+<p class="meta">未 staging、commit 或 push。未停止 HERDR 的既有專案與 terminal 程序。</p>
+</main></body></html>

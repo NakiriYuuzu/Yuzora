@@ -53,6 +53,7 @@ export interface TerminalTransportOpenArgs {
 export interface TerminalTransport {
   open(args: TerminalTransportOpenArgs): Promise<void>
   write(data: string): Promise<void>
+  paste(text: string): Promise<void>
   resize(cols: number, rows: number): Promise<void>
   scroll?(delta: number): Promise<void>
   release(): Promise<void>
@@ -149,10 +150,10 @@ export function createHerdrTerminalTransport(
   let openGeneration = 0
   /** Permanent disposal — survives release and blocks all reopen paths. */
   let disposed = false
-  type InputQueue = { text: string; bytes: number; drain: Promise<void> | null }
+  type InputQueue = { frames: Array<{ text: string; paste: boolean }>; bytes: number; drain: Promise<void> | null }
   let inputQueue: InputQueue | null = null
   const discardInput = () => {
-    if (inputQueue) { inputQueue.text = ""; inputQueue.bytes = 0 }
+    if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
     inputQueue = null
   }
   const failInput = (queue: InputQueue, message: string) => {
@@ -232,7 +233,7 @@ export function createHerdrTerminalTransport(
       return
     }
     sessionId = result.sessionId
-    inputQueue = { text: "", bytes: 0, drain: null }
+    inputQueue = { frames: [], bytes: 0, drain: null }
     mode = result.mode
     role = result.role
     takeover = result.takeover
@@ -247,47 +248,51 @@ export function createHerdrTerminalTransport(
     onEvent({ type: "control", mode: result.mode, role: result.role })
   }
 
+  const enqueueInput = async (data: string, paste: boolean) => {
+    if (disposed || !sessionId || mode !== "control" || !inputQueue || !data) return
+    const queue = inputQueue
+    const limit = 256 * 1024
+    const bytes = data.length > limit ? limit + 1 : new TextEncoder().encode(data).length
+    if (queue.bytes + bytes > limit) {
+      failInput(queue, "terminal-input-limit")
+      throw new Error("terminal-input-limit")
+    }
+    const previous = queue.frames.at(-1)
+    // HERDR recognizes paste only when the entire request is one bracketed
+    // block. Never merge a paste with typing or with another paste.
+    if (!paste && previous && !previous.paste) previous.text += data
+    else queue.frames.push({ text: data, paste })
+    queue.bytes += bytes
+    if (!queue.drain) {
+      const id = sessionId
+      queue.drain = (async () => {
+        await Promise.resolve()
+        try {
+          while (inputQueue === queue && queue.frames.length) {
+            const frame = queue.frames.shift()!
+            queue.bytes -= new TextEncoder().encode(frame.text).length
+            await herdrTerminalInput(id, frame.text, null)
+          }
+        } catch (error) {
+          // Delivery may be unknown. Discard the unsent tail, never replay it.
+          failInput(queue, "terminal-input-failed")
+          throw error
+        } finally { queue.drain = null }
+      })()
+    }
+    await queue.drain
+  }
+
   return {
     async open({ cols, rows, onEvent }) {
       if (disposed) return
       const openTakeover = mode === "control" ? takeover || initialTakeover : false
       await openConnector(mode, openTakeover, cols, rows, onEvent)
     },
-    async write(data) {
-      if (disposed || !sessionId || mode !== "control" || !inputQueue || !data) return
-      const queue = inputQueue
-      // One request in flight avoids filling the remote stream's bounded queue
-      // with individual keystrokes. Coalesce unsent text in its original order.
-      const limit = 256 * 1024
-      const bytes = data.length > limit ? limit + 1 : new TextEncoder().encode(data).length
-      if (queue.bytes + bytes > limit) {
-        failInput(queue, "terminal-input-limit")
-        throw new Error("terminal-input-limit")
-      }
-      queue.text += data
-      queue.bytes += bytes
-      if (!queue.drain) {
-        const id = sessionId
-        queue.drain = (async () => {
-          await Promise.resolve()
-          try {
-            while (inputQueue === queue && queue.text) {
-              const text = queue.text
-              queue.text = ""
-              queue.bytes = 0
-              await herdrTerminalInput(id, text, null)
-            }
-          } catch (error) {
-            // Delivery may be unknown. Pause input and discard the unsent tail;
-            // a later connector must never replay it (including a queued Enter).
-            failInput(queue, "terminal-input-failed")
-            throw error
-          } finally {
-            queue.drain = null
-          }
-        })()
-      }
-      await queue.drain
+    write: (data) => enqueueInput(data, false),
+    paste: (text) => {
+      const payload = text.replace(/\r\n?/g, "\n").replaceAll("\x1b[200~", "").replaceAll("\x1b[201~", "")
+      return payload ? enqueueInput("\x1b[200~" + payload + "\x1b[201~", true) : Promise.resolve()
     },
     async resize(cols, rows) {
       if (disposed) return

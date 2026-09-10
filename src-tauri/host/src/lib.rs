@@ -1,5 +1,6 @@
 //! Host-owned operations, shared by the desktop and the standalone stdio helper.
 pub mod cancellation;
+pub mod clipboard_image;
 pub mod content;
 pub mod file_content;
 #[cfg(unix)]

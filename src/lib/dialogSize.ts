@@ -25,9 +25,8 @@ export const DIALOG_SIZE_IDS = [
   "ssh-host",
   "ssh-password",
   "askpass",
-  // Alert/AlertDialog surfaces (including AppDialogHost) are intentionally
-  // excluded — they remain compact and non-resizable.
-  "unsaved-confirmation",
+  // Unsaved confirmations and Alert/AlertDialog surfaces (including
+  // AppDialogHost) stay compact and content-sized, without resize preferences.
   "external-change",
   "git-rollback",
   "git-diff",

@@ -1,0 +1,171 @@
+{
+  "network": {
+    "category": "Public",
+    "interface": "乙太網路"
+  },
+  "serviceConfig": {
+    "ServiceDll": "C:\\WINDOWS\\System32\\termsrv.dll",
+    "ServiceDllUnloadOnStop": 1
+  },
+  "serviceProcess": {
+    "ProcessId": 10264,
+    "CreationDate": "2026-09-09T20:36:35.268157+08:00",
+    "ExecutablePath": "C:\\WINDOWS\\System32\\svchost.exe",
+    "CommandLine": "C:\\WINDOWS\\System32\\svchost.exe -k NetworkService -s TermService"
+  },
+  "servicePorts": null,
+  "terminalSettings": {
+    "AllowTSConnections": 1,
+    "PolicySourceAllowTSConnections": 0,
+    "TerminalServerMode": 0,
+    "LicensingType": 1,
+    "PolicySourceLicensingType": 0
+  },
+  "rdpCertificates": {
+    "error": "Cannot find path '\\LocalMachine\\Remote Desktop' because it does not exist."
+  },
+  "rdpCertBinding": {
+    "TerminalName": "RDP-Tcp",
+    "SSLCertificateSHA1Hash": "0000000000000000000000000000000000000000",
+    "SSLCertificateSHA1HashType": 0
+  },
+  "dll": {
+    "path": "C:\\Windows\\System32\\termsrv.dll",
+    "version": "10.0.26100.8875 (WinBuild.160101.0800)",
+    "signature": "Valid",
+    "signer": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+  },
+  "channels": [
+    {
+      "LogName": "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational",
+      "IsEnabled": true,
+      "RecordCount": 0
+    },
+    {
+      "LogName": "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Admin",
+      "IsEnabled": true,
+      "RecordCount": 0
+    },
+    {
+      "LogName": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+      "IsEnabled": true,
+      "RecordCount": 655
+    },
+    {
+      "LogName": "Microsoft-Windows-TerminalServices-LocalSessionManager/Admin",
+      "IsEnabled": true,
+      "RecordCount": 0
+    },
+    {
+      "LogName": "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational",
+      "IsEnabled": true,
+      "RecordCount": 0
+    },
+    {
+      "LogName": "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Admin",
+      "IsEnabled": true,
+      "RecordCount": 0
+    }
+  ],
+  "events": [
+    {
+      "log": "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational",
+      "entries": {
+        "error": "No events were found that match the specified selection criteria."
+      }
+    },
+    {
+      "log": "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Admin",
+      "entries": {
+        "error": "No events were found that match the specified selection criteria."
+      }
+    },
+    {
+      "log": "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational",
+      "entries": {
+        "error": "No events were found that match the specified selection criteria."
+      }
+    },
+    {
+      "log": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+      "entries": [
+        {
+          "TimeCreated": "2026-09-09T20:36:35.2978391+08:00",
+          "Id": 17,
+          "LevelDisplayName": "錯誤",
+          "Message": "遠端桌面服務啟動失敗。相關的狀態碼是 0x80070005。"
+        },
+        {
+          "TimeCreated": "2026-09-09T20:36:35.2967801+08:00",
+          "Id": 17,
+          "LevelDisplayName": "錯誤",
+          "Message": "遠端桌面服務啟動失敗。相關的狀態碼是 0x80070005。"
+        },
+        {
+          "TimeCreated": "2026-09-09T20:36:35.2949944+08:00",
+          "Id": 17,
+          "LevelDisplayName": "錯誤",
+          "Message": "遠端桌面服務啟動失敗。相關的狀態碼是 0x80070005。"
+        },
+        {
+          "TimeCreated": "2026-09-09T20:17:42.7865445+08:00",
+          "Id": 36,
+          "LevelDisplayName": "錯誤",
+          "Message": "從 DesktopLocked 轉換以回應 EvDesktopLocked 時發生錯誤。(錯誤碼 0x8007139F)"
+        },
+        {
+          "TimeCreated": "2026-09-09T20:17:42.5295316+08:00",
+          "Id": 22,
+          "LevelDisplayName": "資訊",
+          "Message": "遠端桌面服務: 收到殼層啟動通知:\r\n\r\n使用者: DESKTOP-NMLUN4F\\Yuuzu\r\n工作階段識別碼: 7\r\n來源網路位址: 本機"
+        },
+        {
+          "TimeCreated": "2026-09-09T20:17:42.4503923+08:00",
+          "Id": 21,
+          "LevelDisplayName": "資訊",
+          "Message": "遠端桌面服務: 工作階段登入成功:\r\n\r\n使用者: DESKTOP-NMLUN4F\\Yuuzu\r\n工作階段識別碼: 7\r\n來源網路位址: 本機"
+        },
+        {
+          "TimeCreated": "2026-09-09T20:17:42.4049794+08:00",
+          "Id": 42,
+          "LevelDisplayName": "資訊",
+          "Message": "結束工作階段仲裁:\r\n\r\n使用者: DESKTOP-NMLUN4F\\Yuuzu\r\n工作階段識別碼: 7"
+        },
+        {
+          "TimeCreated": "2026-09-09T20:17:42.4041764+08:00",
+          "Id": 41,
+          "LevelDisplayName": "資訊",
+          "Message": "開始工作階段仲裁:\r\n\r\n使用者: DESKTOP-NMLUN4F\\Yuuzu\r\n工作階段識別碼: 7"
+        },
+        {
+          "TimeCreated": "2026-09-09T01:33:15.9459059+08:00",
+          "Id": 24,
+          "LevelDisplayName": "資訊",
+          "Message": "遠端桌面服務: 工作階段已中斷連線:\r\n\r\n使用者: DESKTOP-NMLUN4F\\Yuuzu\r\n工作階段識別碼: 6\r\n來源網路位址: 本機"
+        },
+        {
+          "TimeCreated": "2026-09-09T01:33:15.9449292+08:00",
+          "Id": 40,
+          "LevelDisplayName": "資訊",
+          "Message": "工作階段 7 已中斷連線，理由代碼 11"
+        },
+        {
+          "TimeCreated": "2026-09-09T01:33:15.8891912+08:00",
+          "Id": 40,
+          "LevelDisplayName": "資訊",
+          "Message": "工作階段 6 已中斷連線，理由代碼 11"
+        },
+        {
+          "TimeCreated": "2026-09-09T01:33:15.8891853+08:00",
+          "Id": 39,
+          "LevelDisplayName": "資訊",
+          "Message": "工作階段 6 已由工作階段 6 中斷連線"
+        }
+      ]
+    }
+  ],
+  "systemEvents": {
+    "error": "No events were found that match the specified selection criteria."
+  },
+  "loopback": "無法連線，因為目標電腦拒絕連線。"
+}

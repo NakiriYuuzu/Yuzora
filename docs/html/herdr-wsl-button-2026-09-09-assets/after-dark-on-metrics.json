@@ -1,0 +1,17 @@
+{
+  "inset": {
+    "bottom": 2,
+    "left": 17,
+    "right": 2,
+    "top": 2
+  },
+  "state": "checked",
+  "thumb": {
+    "height": 17,
+    "width": 17
+  },
+  "track": {
+    "height": 21,
+    "width": 36
+  }
+}

@@ -21,6 +21,78 @@
 .diff-view .cm-mergeViewEditor:first-child { flex-grow: var(--yz-diff-split-a) }
 .diff-view .cm-mergeViewEditor:last-child { flex-grow: calc(1 - var(--yz-diff-split-a)) }
 .diff-view > .cm-editor .cm-scroller { overflow: auto }
+/* Keep CodeMirror's viewport and split-diff scroll synchronization. These
+   library-owned scrollers use the same rounded thumb as the app ScrollArea. */
+:is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView) {
+    scrollbar-width: thin;
+    scrollbar-color: var(--muted-foreground) transparent;
+}
+/* Chromium/WebView2: use a 10px hit area with a rounded, inset thumb and no
+   native arrow buttons. Explicit auto values let these pseudo-elements win. */
+@supports selector(::-webkit-scrollbar) {
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView) {
+        scrollbar-width: auto;
+        scrollbar-color: auto;
+    }
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView)::-webkit-scrollbar { width:10px; height:10px; }
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView)::-webkit-scrollbar-track,
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView)::-webkit-scrollbar-corner { background:transparent; }
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView)::-webkit-scrollbar-thumb {
+        border:2px solid transparent;
+        border-radius:999px;
+        background:var(--muted-foreground);
+        background-clip:padding-box;
+    }
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView)::-webkit-scrollbar-thumb:hover { background-color:color-mix(in srgb,var(--foreground) 70%,transparent); }
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView)::-webkit-scrollbar-thumb:active { background-color:color-mix(in srgb,var(--foreground) 80%,transparent); }
+    :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView)::-webkit-scrollbar-button { display:none; }
+}
+/* GitHub-style line and word highlights. Reset the merge package's gradient
+   background shorthand as well as native ins/del text decorations. */
+.diff-view {
+    --diff-added-line: #e6ffec;
+    --diff-added-word: #abf2bc;
+    --diff-deleted-line: #ffebe9;
+    --diff-deleted-word: #ffc1ba;
+}
+.dark .diff-view {
+    --diff-added-line: #2ea04326;
+    --diff-added-word: #3fb95066;
+    --diff-deleted-line: #f8514926;
+    --diff-deleted-word: #f8514966;
+}
+.diff-view .cm-editor.cm-merge-a .cm-changedLine,
+.diff-view .cm-editor .cm-deletedChunk { background: var(--diff-deleted-line) }
+.diff-view .cm-editor.cm-merge-b .cm-changedLine,
+.diff-view .cm-editor .cm-inlineChangedLine { background: var(--diff-added-line) }
+.diff-view .cm-editor.cm-merge-a .cm-changedText,
+.diff-view .cm-editor .cm-deletedChunk .cm-deletedText,
+.diff-view .cm-editor.cm-merge-b .cm-deletedText { background: var(--diff-deleted-word) }
+.diff-view .cm-editor.cm-merge-b .cm-changedText { background: var(--diff-added-word) }
+.diff-view .cm-editor :is(.cm-changedText,.cm-deletedText,.cm-insertedLine,.cm-deletedLine,ins,del) { text-decoration: none }
+/* GitHub-style signs belong to each source line, including every deleted line
+   in a unified chunk. Generated text stays out of copied source content. */
+.diff-view .cm-editor .cm-line,
+.diff-view .cm-editor .cm-deletedChunk > .cm-deletedLine {
+    position: relative;
+    padding-left: 24px;
+}
+.diff-view .cm-editor .cm-deletedChunk { padding-left: 0 }
+.diff-view .cm-editor .cm-line::before,
+.diff-view .cm-editor .cm-deletedChunk > .cm-deletedLine::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 24px;
+    color: var(--ink-1);
+    text-align: center;
+    pointer-events: none;
+    user-select: none;
+}
+.diff-view .cm-editor.cm-merge-a .cm-changedLine::before,
+.diff-view .cm-editor .cm-deletedChunk > .cm-deletedLine::before { content: "-" }
+.diff-view .cm-editor.cm-merge-b .cm-changedLine::before { content: "+" }
 .editor-pane .cm-editor .cm-scroller { line-height: calc(var(--yz-editor-font-size, 13px) + 8px) }
 .editor-pane .cm-editor.cm-focused { outline: none }
 

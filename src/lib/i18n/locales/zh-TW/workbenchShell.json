@@ -17,6 +17,7 @@
   "hideTools": "收合右側工作工具",
   "resizeSpaces": "調整左側 Spaces 與 Agents 寬度",
   "resizeTools": "調整右側工作工具寬度",
+  "resizeDatabase": "調整資料庫連線側欄寬度",
   "backToWork": "返回工作面",
   "databaseConnections": "資料庫連線",
   "noWorkspace": "尚未開啟資料夾",

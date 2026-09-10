@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>縮小未儲存變更確認視窗</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 800px; margin: 40px auto; padding: 0 24px; line-height: 1.8; }
+    h1 { line-height: 1.4; } h2 { margin-top: 28px; font-size: 20px; }
+    code { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body><main>
+  <h1>縮小未儲存變更確認視窗</h1>
+  <p>2026-09-10。原本的 ConfirmDialogHost 使用 unsaved-confirmation 縮放設定，預設占視窗寬高各 80%，使簡短的確認訊息留下大量空白。</p>
+  <h2>修改</h2>
+  <p>改用現有 shadcn Dialog 的內容尺寸：桌面最大寬度 420px，高度依訊息調整，四周保留至少 16px。移除該確認視窗的尺寸記憶 ID，舊的大尺寸偏好不再套用。</p>
+  <p>長檔名可換行；長訊息由 ScrollArea 捲動，按鈕區不被壓縮。儲存、捨棄、取消，以及 Escape／遮罩取消的既有流程保留。</p>
+  <h2>驗證</h2>
+  <ul>
+    <li>ConfirmDialogHost、dialogSize、unsavedGuard：3 個檔案、25 項既有測試通過。</li>
+    <li>型別檢查與正式 build 通過。Vite 仍回報既有 chunk 大小及 remotePreviewUrl 匯入方式警告。</li>
+    <li>兩個修改檔案 lint 無錯誤、無警告，git diff --check 通過。</li>
+    <li>尚未執行實機或瀏覽器視覺驗證；瀏覽器／E2E 需依使用者提供的 AGENTS.md 先取得明確同意。</li>
+  </ul>
+  <p>修改：<code>src/workbench/ConfirmDialogHost.tsx</code>、<code>src/lib/dialogSize.ts</code>。未變更其他 Dialog 的尺寸規則，未提交 Git。</p>
+</main></body>
+</html>

@@ -1,0 +1,10 @@
+QA26-001: diagnosis, no production timeout or connector changes.
+8-way repeated exact test: 64/64 pass.
+32-way: 32/32 pass; slowest 4.04s.
+64-way: 24/64 timed out around 5.05s during open_terminal CLI preflight.
+/bin/sh stack samples mostly remained at _dyld_start, before shell fixture execution.
+After load removed: exact case passed in 0.22s; no test-child residue observed.
+Final isolated service tests: 92 passed in 11.05s.
+Earlier isolated full Herdr scope: 114 passed in 8.18s.
+This supports macOS process-start starvation under load, but does not conclusively establish the cause of the original first failure.
+Raw local evidence (not copied wholesale): /tmp/qa26-herdr-exact64.log, /tmp/qa26-herdr-shell-sample.txt, /tmp/qa26-herdr-after-stress.log.

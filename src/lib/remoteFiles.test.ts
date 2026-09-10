@@ -177,3 +177,40 @@ describe("remote documents", () => {
     expect(invoke).toHaveBeenLastCalledWith("sftp_save_file", { sessionId: "a-3", path: "/unchanged/main.ts", content: "mine", expectedRevision: "original" })
   })
 })
+
+it("releases retired workspace capabilities and revisions after the last lease", async () => {
+  const { retainRemoteWorkspace, releaseRemoteWorkspace } = await import("./remoteFiles")
+  const owner = { hostId: "lease-lifetime", generation: 1 }
+  vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/project", capabilityId: "leased" })
+  const uri = await registerRuntimeWorkspace(owner, "/project", () => true)
+  await readRemoteFile(uri + "/file")
+  const release = retainRemoteWorkspace(uri)
+  vi.mocked(invoke).mockClear()
+  await releaseRemoteWorkspace(uri)
+  expect(invoke).not.toHaveBeenCalled()
+  await release()
+  expect(invoke).toHaveBeenCalledWith("host_request", { owner, operation: { method: "workspaceClose", params: { workspace: "leased" } } })
+  await expect(readRemoteFile(uri + "/file")).rejects.toThrow("Reconnect")
+  await release()
+  expect(invoke).toHaveBeenCalledTimes(1)
+  vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/project", capabilityId: "reopened" })
+  await registerRuntimeWorkspace(owner, "/project", () => true)
+  await expect(saveRemoteFile(uri + "/file", "unverified")).rejects.toThrow("Compare")
+})
+
+it("waits for an in-flight write before closing its capability without replaying the write", async () => {
+  const { releaseRemoteWorkspace } = await import("./remoteFiles")
+  const owner = { hostId: "write-lifetime", generation: 1 }
+  vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/project", capabilityId: "writing" })
+  const uri = await registerRuntimeWorkspace(owner, "/project", () => true)
+  await readRemoteFile(uri + "/file")
+  let finish!: (value: unknown) => void
+  vi.mocked(invoke).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  const saving = saveRemoteFile(uri + "/file", "saved")
+  vi.mocked(invoke).mockClear()
+  await releaseRemoteWorkspace(uri)
+  expect(invoke).not.toHaveBeenCalled()
+  finish({ revision: "written" })
+  await saving
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("host_request", { owner, operation: { method: "workspaceClose", params: { workspace: "writing" } } })
+})

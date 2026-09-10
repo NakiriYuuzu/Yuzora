@@ -1307,10 +1307,6 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
 
     let full = resolve_commit_oid(root, rev)?.into_string();
 
-    if !path_exists_at_rev(root, &full, path)? {
-        return Ok(FileAtRevResult::Missing);
-    }
-
     let spec = format!("{full}:{path}");
     let out = run_git(
         root,
@@ -1319,6 +1315,12 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
         &[],
     )?;
     if out.code != 0 {
+        // Most history reads succeed. Only pay for an existence query after a
+        // failed read, retaining the distinction between an absent path and a
+        // damaged/unreadable object (which must remain retryable errors).
+        if !path_exists_at_rev(root, &full, path)? {
+            return Ok(FileAtRevResult::Missing);
+        }
         return Err(git_err("show", &out.stderr));
     }
     Ok(grade_object_bytes(&out.stdout))

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Log 記錄開關 — 2026-09-09</title>
+<style>
+body{max-width:880px;margin:48px auto;padding:0 24px;background:#faf9f6;color:#243044;font:16px/1.8 system-ui,sans-serif}h1,h2{line-height:1.3}h2{margin-top:32px}code{background:#eaeef1;padding:2px 5px;border-radius:4px}li{margin:8px 0}small{color:#5b6676}
+</style>
+<main>
+<h1>使用者可關閉 Log 記錄</h1>
+<small>Yuzora · 2026-09-09</small>
+<p>「設定 → Logs」新增「記錄 Log」開關。預設維持開啟；關閉後立即停止新增 Yuzora Log，重啟後仍保持關閉。</p>
+<h2>操作行為</h2>
+<ul>
+<li>停用時，共用 Rust LogSink 攔下所有等級與種類的事件，包括錯誤、使用者操作、稽核及 app 啟動／結束事件。</li>
+<li>詳細記錄選項在停用期間不可操作，但保留原有詳細程度；重新開啟後繼續沿用。</li>
+<li>既有 Log 仍可查閱、複製及匯出；此開關不執行刪除歷史記錄。既有保留期限規則仍適用。</li>
+<li>設定載入或儲存失敗會顯示錯誤；儲存失敗時開關維持原狀。</li>
+</ul>
+<h2>實作</h2>
+<p><code>~/.yuzora/logging.json</code> 新增 <code>enabled</code> 欄位，與既有 <code>minLevel</code> 各自保存。舊設定未帶 enabled 時預設開啟。兩種設定的寫入共用 sink 鎖，先保存成功再套用。啟動流程在最早期事件前恢復設定。</p>
+<p>新增 <code>get_log_enabled</code>／<code>set_log_enabled</code> IPC 及前端 wrapper。UI 沿用 shadcn Switch 與既有 ToggleRow，補上繁中、英文文字。</p>
+<h2>驗證</h2>
+<ul>
+<li>LogsSection：24 個測試通過，涵蓋停用、重新啟用、重開設定頁、歷史記錄與失敗處理。</li>
+<li>Rust logging：64 個測試通過，涵蓋各等級／種類攔截、設定相容與保存、重啟後首筆事件不落盤。</li>
+<li>Rust command inventory：6 個測試通過。</li>
+<li>前端 build（含 typecheck）通過；Vite 有既有的 chunk 大小與 dynamic import 警告。</li>
+<li>變更涉及的前端檔案 ESLint 無錯誤；LogsSection 留有 4 個既有 Hook 警告。</li>
+<li>Rust fmt 通過；Clippy all-targets 符合既有 90 筆診斷基準。</li>
+</ul>
+<p>未執行瀏覽器／E2E 自動化或桌面實機驗收；驗證範圍為元件測試、Rust 測試與靜態／建置檢查。此設定控制 Yuzora 的 Log 寫入，不控制外部 HERDR 或其他程序自行維護的日誌。</p>
+</main>
+</html>

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "TypeScript",
+    "key": "typecheck",
+    "status": "PASS",
+    "result": "兩份 tsconfig 通過；exit 0"
+  },
+  {
+    "name": "Frontend Vitest",
+    "key": "vitest",
+    "status": "PASS",
+    "result": "217 files / 2699 tests passed；56.04 秒；exit 0"
+  },
+  {
+    "name": "Rust desktop library",
+    "key": "rust",
+    "status": "PASS_WITH_IGNORED",
+    "result": "396 passed / 3 ignored；ignored 不算通過；exit 0"
+  },
+  {
+    "name": "Host HERDR 首次",
+    "key": "host-herdr",
+    "status": "FAIL",
+    "result": "113 passed / 1 failed；open_terminal() 回報 Herdr CLI timed out；exit 101"
+  },
+  {
+    "name": "Host HERDR 單獨重跑",
+    "key": "host-herdr-repro",
+    "status": "PASS",
+    "result": "同一測試 1 passed；0.23 秒；exit 0"
+  },
+  {
+    "name": "Host HERDR 整組重跑",
+    "key": "host-herdr-repeat",
+    "status": "PASS",
+    "result": "114 passed；10.12 秒；exit 0。首次失敗仍保留為 intermittent finding"
+  },
+  {
+    "name": "ESLint",
+    "key": "lint",
+    "status": "PASS_WITH_WARNINGS",
+    "result": "0 errors / 56 warnings；exit 0"
+  }
+]

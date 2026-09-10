@@ -1,0 +1,191 @@
+[
+  {
+    "file": "bun.lock",
+    "kind": "modified",
+    "beforeSha256": "5233c7f55c1d2ad7b49cb528283f1c420f243d472649c6b6ef704b903d475890",
+    "afterSha256": "dc8baa934e7da1332abee9c41dbaff743b21429f4485e3bcafd037821eb4963a",
+    "baseline": "/tmp/yuzora-lsp-digest-before"
+  },
+  {
+    "file": "package.json",
+    "kind": "modified",
+    "beforeSha256": "fd2bdeb31779a09f8d8099d8ee0ffc245f00d1dae36f609862a3c16b115bf3c1",
+    "afterSha256": "f2f4be2e5b138a53225b84446d9b42629a10e1f8602f4043729cb0f6e40a1fda",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "scripts/update-lsp-integrity-catalog.test.ts",
+    "kind": "modified",
+    "beforeSha256": "ea908d561ca121c8cdf8a8fe7ecbce743b8ffc68f3e19aecd21d8b4dda890bb4",
+    "afterSha256": "d9a4c303963d3253f2e6c594bdd7e6d050dc5d88f32a7350f0ebcf633f29920e",
+    "baseline": "/tmp/yuzora-lsp-digest-before"
+  },
+  {
+    "file": "scripts/update-lsp-integrity-catalog.ts",
+    "kind": "modified",
+    "beforeSha256": "c3efdc26b1e99f6a638eba09a902f6b31fb093719e6eb5bb815975965efc5c0b",
+    "afterSha256": "a9ac784900d116a46cb8af75e54499d3d5a7a5668c5e8594fb3dc848bfc980e3",
+    "baseline": "/tmp/yuzora-lsp-digest-before"
+  },
+  {
+    "file": "src-tauri/Cargo.toml",
+    "kind": "modified",
+    "beforeSha256": "f4cdf35cbc680ec438946c9a5787b3461765232a5f6bb8b2e4d59aecf0f8582c",
+    "afterSha256": "3d3225e7594405394bc62bf4584656790b767795007a0ccf23ea6ad85a6b293e",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src-tauri/host/src/lsp_catalog.rs",
+    "kind": "modified",
+    "beforeSha256": "8e1bfc921efbb5788dfee2571ce4637db5f7525b5a7d99370a596d33807ac3e9",
+    "afterSha256": "5691d0de5fa6a931ffa83ea016226c4f9f6d0dc0fcfcb54212f1418f3f731c3b",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src-tauri/host/src/lsp_download.rs",
+    "kind": "modified",
+    "beforeSha256": "547265f9cad4584acb5e418ca28c893429f14025af368deb9b8ec9df4b9bf308",
+    "afterSha256": "d6497fa9e1839014cdfd16f60339033c634593491fd52d32986213a85b2600fb",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src-tauri/lsp-catalog/manifest.json",
+    "kind": "modified",
+    "beforeSha256": "90d31e4165080f1d4f2509becb25e54a2c065e51ca31bb3f6fd63d5e55a98923",
+    "afterSha256": "ff6beb9a755857b7aba598d2d6e473791c0adee8c29986ae2daea5eaaecc37db",
+    "baseline": "/tmp/yuzora-lsp-digest-before"
+  },
+  {
+    "file": "src-tauri/src/git_service.rs",
+    "kind": "modified",
+    "beforeSha256": "7a08fa2b43be0d6e08076969a059dd116e28282e8d1e6883cbade85a89d0a0a0",
+    "afterSha256": "f4d370a47d9becd646846243691a6d8e81ef99d9c8f3e44e16c852f92474d4fb",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src-tauri/src/lib.rs",
+    "kind": "modified",
+    "beforeSha256": "7101070ebf240b8a548c33a6c713f5892ef927ef906e8d0ac6074f115a81de98",
+    "afterSha256": "34a05632fb81adb8b9c515e9f4714ed8d4451f0c4c070216977f7c2f63dfeb7f",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src-tauri/src/preview_webview.rs",
+    "kind": "modified",
+    "beforeSha256": "4dce66efa9bb8cb611941aadfc7b40fefcdca90f346002c9a911213a1966d801",
+    "afterSha256": "570c5d5b7c3b1b482c6c546f8154f4de95b30f05598f044a8be871db5709d5e5",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/panels/HerdrTerminalLayout.test.tsx",
+    "kind": "modified",
+    "beforeSha256": "7cd13fed2dc143db66cd799bb0a2d3710d22f2cbba4a1922f5495c9bdbc42173",
+    "afterSha256": "fd0fd8b4c90e658c5ee58065f6b28b4198b41afd37f8cea46b35dd54ebe8bfa5",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/panels/HerdrTerminalPage.test.tsx",
+    "kind": "modified",
+    "beforeSha256": "35abb4b425442aa2df94d707518b9974df674730e3999d64712754473fc9b65f",
+    "afterSha256": "41dc6077f8c6a4f990f56cd7167b6df1e6d6a7847a4bd24a845048c8446a0056",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/panels/HerdrTerminalPage.tsx",
+    "kind": "modified",
+    "beforeSha256": "8d438e7dd4ea4d66a7cd3c800bcd0744ae7fbbf36bca04db9a603d1cf572c9ea",
+    "afterSha256": "100a55dbd2b154723195888b022bd620e25610e5bd03fbcdde37df0bf149b0df",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/panels/previewPanel.test.tsx",
+    "kind": "modified",
+    "beforeSha256": "2d73521bc824a48ca5d8ec0593841e61b3e3ad2d95e616b687db1facad8c1695",
+    "afterSha256": "78b15b643346ed23dda404a303e872f2548c0970eefb8266cb9ed70877f880d2",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/panels/PreviewPanel.tsx",
+    "kind": "modified",
+    "beforeSha256": "13e7276fe99e40c8c3d3af9d17f764e5aca12989dcd66a917142281472b11b4a",
+    "afterSha256": "92a9bacc50f7958112bde37f3102edab69d9d2576155482ffc336446a609cb5b",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/workbench/HerdrAgentInspector.test.tsx",
+    "kind": "modified",
+    "beforeSha256": "3e25ca09f09e161aa00a2a7321e2d4cd13c251a7cbd961958fc2099cc9806fa8",
+    "afterSha256": "b62ba4607a4c814675157e5d18b8ec4ae32327e3d873f43e66286dcc5667a87e",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/workbench/HerdrAgentInspector.tsx",
+    "kind": "modified",
+    "beforeSha256": "2917c368c2513f9fa8a6e03b5b91691c80f6871efb12fb755e6c79fc4243644a",
+    "afterSha256": "b07bb469c0ef2acd9ae5a4c91cfabee12474bf813f0f7f8b7c5be2beac55a703",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/workbench/HerdrLauncher.tsx",
+    "kind": "modified",
+    "beforeSha256": "6d67b21972695a7e0bcaa6033a4f888f1664cf168bf120ec3fa2c44d9eb9615a",
+    "afterSha256": "2f8b40b1302c9e0451e412fa03bfab7657ff76c3755456c27d3bad572cfc6a40",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/workbench/SpaceAgentSidebar.test.tsx",
+    "kind": "added",
+    "beforeSha256": null,
+    "afterSha256": "2d6e42fa879ed4ae3c477f92b963f0c4720b05067ba62570ad3ac364891d70f1",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/workbench/SpaceAgentTree.test.tsx",
+    "kind": "modified",
+    "beforeSha256": "d7efe25f424997abfb6dfa2a1d4137e92b3606c9f2649ea6b4a228385ca90c02",
+    "afterSha256": "95fc694a306334d88027c0737dc57c8b2f549c0ea78f254957957af62118e780",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/app/workbench/SpaceAgentTree.tsx",
+    "kind": "modified",
+    "beforeSha256": "2024d14828fd142b38a36d92fee48bf0efdf8a09baa5bd2033a10990f8391b1d",
+    "afterSha256": "6fd3741a726cd1ddd21f014ddcf634ebf7cf8cccc4415cb8788570dfb13a528b",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/lib/ipc.ts",
+    "kind": "modified",
+    "beforeSha256": "7c4e99eca8923bad7bce280f46521514a9d02a68feee81738a9b43ac1f2dadbe",
+    "afterSha256": "08bc0ec0c42806898435d36ff3029cf6d08aa1aeb08faa788ec2f8092d644523",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/preview/nativeNavigation.test.ts",
+    "kind": "added",
+    "beforeSha256": null,
+    "afterSha256": "e7029c79fd11296b26de7ba81753d13a93563c65a186c191f46d8b140c5c999d",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/preview/previewCommands.test.ts",
+    "kind": "modified",
+    "beforeSha256": "a725ac1e84ae29d21ebdfc0307e14b90f352d78025f66a3468cd278c31d64cd9",
+    "afterSha256": "4baa8d58cd26c88c7ae408fe4958859f8f4114158dae8f2bf8c4ba8fd79f3c38",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/preview/previewCommands.ts",
+    "kind": "modified",
+    "beforeSha256": "a7f52c28282133e996117564d89dfb6efd2ac6223dfb81adbd66ce5bf5e284c5",
+    "afterSha256": "460e7573e6bedebf3e13fbe3b943fe2cfc1f7b2ebecbd14917047db9fada5727",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  },
+  {
+    "file": "src/state/previewStore.ts",
+    "kind": "modified",
+    "beforeSha256": "cf619e13b3b0709ed17c6c6d318e59f68f1bff3937767f56ad65ac9aea380e3a",
+    "afterSha256": "779656aad6b5114c18b00c3974149ce17d022ec76f5c81c9c309dea869e32f84",
+    "baseline": "/tmp/yuzora-fix-20260908-baseline"
+  }
+]

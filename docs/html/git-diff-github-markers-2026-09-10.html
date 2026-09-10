@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Git diff 的 GitHub 風格增刪標記</title>
+<style>body{max-width:760px;margin:48px auto;padding:0 24px;font:16px/1.7 system-ui;color:#2e2c28;background:#fbfaf6}code{font-size:.9em}</style>
+<h1>Git diff 的 GitHub 風格增刪標記</h1>
+<p>2026-09-10：移除 CodeMirror 原有左側亮紅／亮綠色條，使用逐行的 +／- 與淡紅／淡綠底色辨識增刪。</p>
+<p><code>src/workbench/git/DiffView.tsx</code> 在合併與分欄模式都關閉 merge change gutter，保留行號。<code>src/editor/editor.css</code> 為每個 source line 預留相同的 24px 標記空間；新增行顯示 +、刪除行顯示 -、未變更行留白。合併模式的刪除區塊逐行顯示 -，不是整個區塊只標一次。符號透過 CSS 產生，未寫入 CodeMirror 文件內容。</p>
+<p>沿用既有 GitHub 風格的整行淡色與字詞深色，以及淺色／深色主題。此次讀取 <a href="https://github.com/primer/primitives/blob/main/src/tokens/component/diffBlob.json5">GitHub Primer diffBlob 定義</a>，確認其新增／刪除行與字詞的配色角色。未改動一般編輯器、diff 演算法或檔案內容。</p>
+<p>驗證：DiffView 與 DiffModal 共 40 項既有測試通過；<code>bun run build</code>（含型別檢查）與 <code>git diff --check</code> 通過。DiffView ESLint 0 errors，保留原有 langExt effect dependency warning。建置有動態匯入未拆分與大型 chunk 提示。</p>
+<p>尚未執行瀏覽器／實機視覺驗收；使用者提供的 AGENTS.md 要求先取得明確授權。保留既有工作區修改，未執行 staging、commit 或 push。</p>
+</html>

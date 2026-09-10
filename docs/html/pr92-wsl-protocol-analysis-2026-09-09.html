@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR #92 · Windows HERDR 相容性問題分析</title>
+<style>body{margin:0;background:#f6f4ef;color:#202c35;font:16px/1.75 system-ui,-apple-system,sans-serif}main{max-width:1000px;margin:auto;padding:44px 24px}h1{line-height:1.25}h2{margin-top:32px}a{color:#1d627b}code,pre{font:13px/1.7 ui-monospace,monospace;overflow-wrap:anywhere}pre{padding:18px;background:#e9e7df;white-space:pre-wrap}table{width:100%;border-collapse:collapse}td,th{padding:12px;border-bottom:1px solid #d9d6cd;text-align:left;vertical-align:top}.note{padding:16px;background:#fff0cf}small{color:#59636c}</style></head><body><main>
+<small>YUZORA · 2026-09-09 · 唯讀分析與隔離測試</small>
+<p class="note">後續已推送 HERDR 0.9.0／protocol 22 修正：見<a href="herdr-090-upgrade-2026-09-09.html">升級結果、相容性防護研究與新候選驗收</a>。以下保留原故障證據。</p>
+<h1>已確認：managed HERDR 0.8.2 與執行中的 0.9.0 server 不相容</h1>
+<p>已確認 <a href="https://github.com/NakiriYuuzu/Yuzora/pull/92#issuecomment-5595354487">PR #92 Windows 回報</a>，並收到使用者在本對話提供的實際 WSL status／session list。分析基準為 PR head <code>7a7a5a34749e49f2f743f7090a16db37b8e2c818</code>；installer hash 尚未提供，以下 runtime 診斷則已有實際輸出支持。</p>
+<h2>使用者補充的實機證據</h2>
+<table><thead><tr><th>項目</th><th>結果</th></tr></thead><tbody>
+<tr><td>WSL／使用者</td><td>Ubuntu-24.04、WSL2；登錄 DefaultUid 與實際 id -u 均為 1000。</td></tr>
+<tr><td>Yuzora 選用 client</td><td>0.8.2、stable、protocol 20；位於 Yuzora 的版本化 managed runtime 目錄。</td></tr>
+<tr><td>執行中的 server</td><td>0.9.0、protocol 22、running=true、compatible=false、restart_needed=true。</td></tr>
+<tr><td>Session／socket</td><td>session list 確認 default 正在執行，socket_path 與 status 的 socket 同為 <code>/home/yuuzu/.config/herdr/herdr.sock</code>。</td></tr>
+</tbody></table>
+<p>這次是<strong>較舊的 managed client 連到較新的既有 server</strong>；不是先前尚未排除的「舊 server 未重啟」方向。所選發行版、UID 與兩份查詢中的 socket 一致。status 的 session=null 不代表沒有 named Session；session list 已明確列出 default。</p>
+<pre>已載入快照
+herdr server protocol incompatible
+此 Session 尚無 Space。
+["wsl:{505a67c5-766e-4952-9946-b92094010b77}:1000","default"]: herdr server protocol incompatible</pre>
+<p class="note">此回報不代表驗收通過；Windows 相容性問題仍阻擋本次發布。未修改產品程式、未提交、未 merge、未重啟使用者的 HERDR 或 WSL。</p>
+<h2>已確認的問題</h2>
+<table><thead><tr><th>問題</th><th>證據與影響</th></tr></thead><tbody>
+<tr><td>相容性 gate 阻擋</td><td>host 從 HERDR <code>status --json</code> 讀取 <code>server.compatible</code>；明確為 false 時產生本次錯誤，停用 snapshot、terminal observe／control／create 等能力。這是執行中的 Session 相容性診斷，不是單憑錯誤就能認定安裝包缺少 runtime。</td></tr>
+<tr><td>「已載入快照」誤報</td><td>選定某個 Session 時，工具列直接顯示此文字，未檢查 snapshot 是否存在、connectionState 是否 ready 或是否有錯誤。隔離元件測試在 snapshot=null、unsupported 狀態重現。</td></tr>
+<tr><td>空資料與錯誤混在一起</td><td>沒有 tree roots 就顯示「此 Session 尚無 Space」，未區分查詢失敗與成功查到空集合。這個提示不能證明使用者沒有 Spaces，更不能證明資料遺失。</td></tr>
+<tr><td>診斷資訊不足</td><td>錯誤未帶 client／server version、protocol 或實際 binary；列表又直接印出內部 runtime key。該 key 編碼 WSL registry GUID、預設 UID 與 named Session，並非另一個獨立故障。</td></tr>
+</tbody></table>
+<h2>已確認的原因與界線</h2>
+<p>目前 Yuzora 隨附版本固定為 HERDR 0.8.2／protocol 20，使用者保存的 binary 路徑也指向此 managed 版本；其 default socket 上已有 0.9.0／protocol 22 server。0.8.2 status 明確判定 compatible=false，Yuzora 因而阻擋快照與 terminal 操作。此 gate 應保留。</p>
+<p>自動啟動流程刻意保留既有 server，不擅自停止與重啟。這解釋了為何重新安裝同一候選不會使兩端版本自動一致。restart_needed 是目前 client 的診斷欄位，不代表應立即用 0.8.2 停止或重啟較新的 0.9.0 server。</p>
+<p>尚未驗證 Yuzora 的 API／schema／terminal connector 能否完整支援 protocol 22，因此「更換 binary」或僅修改 protocol 數字不能視為已修復。installer hash 與完整候選實機驗收仍待補齊。</p>
+<h2>實際執行的驗證</h2>
+<ul>
+<li><code>cargo test --locked incompatible -- --nocapture</code>：host 兩項測試通過，確認不相容時關閉 API／terminal 能力，並保留既有 server。這是 fixture 行為驗證，不是 Windows 實機重現。</li>
+<li>在 repository 外建立暫存 Vitest／jsdom 測試，使用正式 SpaceAgentTree、herdrStore、i18n；只替換 launcher 選擇入口與 Inspector。提供 unsupported WSL Session、snapshot=null 後，成功同時重現已載入快照、空 Space 提示、相容性錯誤及原始 runtime key。1 test passed（斷言目前錯誤表現存在）。</li>
+<li>未執行 browser／E2E、未存取使用者 Windows／WSL，也未改動產品檔案。</li>
+</ul>
+<p>暫存測試與結果：<code>/tmp/yuzora-pr92-protocol-analysis/repro.test.ts</code>、<code>/tmp/yuzora-pr92-protocol-analysis/repro.log</code>。</p>
+<h2>建議處理</h2>
+<ol>
+<li>WSL 名稱、UID、所選 binary 與 status／session list 已取得並完成比對；另補實際 installer hash。修復優先評估對齊 0.9.0／protocol 22，驗證版本資源、schema、snapshot、events 與 terminal connector，保留現有 server 工作。</li>
+<li>前端分開顯示載入中、unsupported／error、成功但空集合、成功且有資料；快照存在也應區分過期資料。用主機標籤與 Session 名稱取代 raw key。</li>
+<li>利用既有 capability 中的版本與 protocol 欄位，提供可查證的相容性診斷與恢復說明。維持 backend 相容性 gate，不用放寬判斷掩蓋錯誤。</li>
+<li>若需要停止或更換既有 server，先保全使用者工作並確認受影響 Session。修正後重建候選，以同一 Windows／WSL 環境重新驗收；目前 CI 綠燈只代表乾淨 runner 的建置與測試通過。</li>
+</ol>
+<p>在發生問題的 WSL 中，使用 <strong>Yuzora 實際選用的完整 binary 路徑</strong>，查詢以下唯讀資訊；不可只用另一個 PATH 上的 herdr 結果代替：</p>
+<pre>HERDR_SESSION=default /實際選用的/herdr status --json
+/實際選用的/herdr session list --json</pre>
+<h2>程式依據</h2>
+<ul>
+<li><a href="../../src-tauri/host/src/herdr_service.rs">herdr_service.rs</a>：apply_status_json（4005）、discover_capabilities_for_session（1283）、snapshot（1586）、ensure_server_running_with_timeouts（804）。</li>
+<li><a href="../../src-tauri/src/host_bootstrap.rs">host_bootstrap.rs</a>：probe（116）、host_prepare（287）；<a href="../../src/lib/hostIpc.ts">hostIpc.ts</a>：prepareHost（11）預設 useManagedHerdr=false。</li>
+<li><a href="../../src/app/workbench/SpaceAgentTree.tsx">SpaceAgentTree.tsx</a>：sessionNotice（86）、無條件 loaded（374）、空 roots 與 raw key（661–667）。</li>
+<li><a href="../../src/state/herdrStore.ts">herdrStore.ts</a>：bootstrap（433）、refreshSnapshot（534）。</li>
+<li><a href="../../scripts/prepare-herdr-resources.ts">prepare-herdr-resources.ts</a>：隨附版本與 protocol（33–36）。</li>
+</ul>
+</main></body></html>

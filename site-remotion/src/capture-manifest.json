@@ -1,0 +1,32 @@
+[
+  {
+    "feature": "ade-herdr",
+    "lang": "zh",
+    "frames": 319
+  },
+  {
+    "feature": "terminal-git",
+    "lang": "zh",
+    "frames": 361
+  },
+  {
+    "feature": "remote-db",
+    "lang": "zh",
+    "frames": 381
+  },
+  {
+    "feature": "ade-herdr",
+    "lang": "en",
+    "frames": 325
+  },
+  {
+    "feature": "terminal-git",
+    "lang": "en",
+    "frames": 376
+  },
+  {
+    "feature": "remote-db",
+    "lang": "en",
+    "frames": 380
+  }
+]

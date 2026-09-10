@@ -1,0 +1,15 @@
+{
+  "protocol": 1,
+  "version": "0.0.9-beta.3",
+  "target": "linux-x86_64",
+  "helper": {
+    "path": "linux-x86_64/yuzora-host",
+    "sha256": "a1a7bb051fc098d70c0f9483050696fa6a9e800e5aaa120c2a94427b026d1bb0"
+  },
+  "herdr": {
+    "path": "linux-x86_64/herdr",
+    "sha256": "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f",
+    "version": "0.9.0",
+    "protocol": 22
+  }
+}

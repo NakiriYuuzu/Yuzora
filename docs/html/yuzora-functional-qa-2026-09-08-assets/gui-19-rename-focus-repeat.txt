@@ -1,0 +1,25 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 text entry area (settable) Terminal input
+			4 container 重新命名 Herdr 分頁
+				5 container
+					6 heading 重新命名 Herdr 分頁, Value: 2
+						7 text 重新命名 Herdr 分頁
+					8 text 設定在 Yuzora 與 Herdr 顯示的分頁名稱。 名稱
+					9 text field (settable) 名稱, Value: QA-A
+					10 button 取消
+					11 button 重新命名
+	12 close button
+	13 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	14 minimize button
+15 menu bar
+	16 Yuzora Current QA
+	17 File
+	18 Edit
+	19 View
+	20 Window
+	21 Help
+
+The focused UI element is 3 text entry area (settable) Terminal input

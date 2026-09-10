@@ -1,0 +1,9 @@
+Command result: Host HERDR 整組重跑
+Status: PASS
+114 passed；10.12 秒；exit 0。首次失敗仍保留為 intermittent finding
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 436 filtered out; finished in 10.12s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s

@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
+import { watchBrandIcon } from "@/theme/brandIcon"
+import { BrandMark } from "@/components/BrandMark"
 
 import { isTauri } from "@/lib/platform"
 import { getCurrentWindow } from "@tauri-apps/api/window"
@@ -43,6 +46,21 @@ const MAX_NAV_WIDTH = 420
 // manual collapse/expand is never fought (see the effect).
 const NAV_AUTO_COLLAPSE_WIDTH = 880
 
+// Sidebar motion changes shell geometry, not these surfaces. Stable elements
+// keep terminal/editor trees out of that render; their store subscriptions still update.
+const editorPanel = <EditorPanel />
+const gitPanel = <GitPanel />
+const databasePanel = <DatabasePanel />
+const databaseNav = <DatabaseNavContent />
+const spaceAgentSidebar = <SpaceAgentSidebar />
+const statusBar = <StatusBar />
+const contextMenu = <ContextMenu />
+const projectEditorPopover = <ProjectEditorPopover />
+const diffModal = <DiffModal />
+const StableWorkspaceToolsPanel = memo(WorkspaceToolsPanel)
+const StableSettingsDialog = memo(SettingsDialog)
+const StableCommandPalette = memo(CommandPalette)
+
 /**
  * Workbench root layout — design reference §1.1. Owns the chrome-level
  * state (mode / nav collapse / settings / palette / theme) and composes
@@ -51,6 +69,7 @@ const NAV_AUTO_COLLAPSE_WIDTH = 880
  * preference drives the `dark` class on <html> (Settings → Appearance).
  */
 export function AppShell() {
+  useEffect(watchBrandIcon, [])
   const { t } = useTranslation("workbenchShell")
   const mode = useUiStore((s) => s.mode)
   const setMode = useUiStore((s) => s.setMode)
@@ -320,25 +339,42 @@ export function AppShell() {
     }
   }, [])
 
-  const handleModeChange = (next: Mode) => {
+  const handleModeChange = useCallback((next: Mode) => {
     setMode(next)
     void logUserAction("mode_change", `Switched to ${next} mode`, { mode: next })
-  }
+  }, [setMode])
 
-  const handleOpenSettings = () => {
+  const handleOpenSettings = useCallback(() => {
     openSettings()
     void logUserAction("settings_open", "Opened settings dialog")
-  }
+  }, [openSettings])
 
-  const handleThemeChange = (next: ThemePreference) => {
+  const handleThemeChange = useCallback((next: ThemePreference) => {
     setAppearance((current) => ({ ...current, theme: next }))
     void logUserAction("theme_change", `Switched to ${next} theme`, { theme: next })
-  }
+  }, [])
 
-  const handleAccentChange = (next: AccentPreference) => {
+  const handleAccentChange = useCallback((next: AccentPreference) => {
     setAppearance((current) => ({ ...current, accent: next }))
     void logUserAction("accent_change", `Switched to ${next} accent`, { accent: next })
-  }
+  }, [])
+
+  const handleSidebarBackgroundChange = useCallback((side: "left" | "right", enabled: boolean) => {
+    setAppearance(current => ({
+      ...current,
+      [side === "left" ? "leftSidebarBackground" : "rightSidebarBackground"]: enabled,
+    }))
+  }, [])
+
+  const handleToolChange = useCallback((tool: WorkspaceTool) => {
+    setCheckoutTool(tool)
+    if (mode === "database" || (mode === "git" && tool === "files")) handleModeChange("files")
+  }, [mode, handleModeChange])
+
+  const handleOpenGraph = useCallback(() => {
+    useUiStore.getState().setGitPanelTab("log")
+    handleModeChange("git")
+  }, [handleModeChange])
 
   // ADE shares the editor surface (mixed file/preview/herdr-terminal pages);
   // keep the shared 44px floor rather than the old AgentZone 280px card floor.
@@ -361,7 +397,7 @@ export function AppShell() {
             <div className="workbench-sidebar-chrome" data-tauri-drag-region>
               {nativeTrafficLights && <span className="workbench-native-controls" aria-hidden="true" />}
               <div className="workbench-title" data-tauri-drag-region>
-                <span className="workbench-logomark" aria-hidden="true" data-tauri-drag-region>y.</span>
+                <BrandMark className="workbench-logomark" data-tauri-drag-region />
                 <strong data-tauri-drag-region>Yuzora</strong>
               </div>
               <span className="workbench-toggle-space" aria-hidden="true" />
@@ -382,8 +418,7 @@ export function AppShell() {
               </Button>
             </nav>
             <Separator className="workbench-sidebar-divider" />
-            <div className="workbench-sidebar-heading"><strong>{t("spacesAndAgents")}</strong></div>
-            <SpaceAgentSidebar />
+            {spaceAgentSidebar}
             <footer className="workbench-sidebar-footer">
               <Separator className="workbench-sidebar-divider" />
               <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("settings")} onClick={handleOpenSettings}><Settings data-icon="inline-start" /><span>{t("settings")}</span></Button>
@@ -395,12 +430,20 @@ export function AppShell() {
           const next = event.key === "Home" ? MIN_NAV_WIDTH : event.key === "End" ? MAX_NAV_WIDTH : event.key === "ArrowLeft" ? navWidth-16 : event.key === "ArrowRight" ? navWidth+16 : null
           if(next!==null){event.preventDefault();setNavWidth(Math.min(MAX_NAV_WIDTH,Math.max(MIN_NAV_WIDTH,next)))}
         }}><span /></div>
-        <div className="workbench-workspace" data-utility-row={(mode === "git" || mode === "database") && (navCollapsed || !toolsVisible)}>
+        <div className="workbench-workspace" data-utility-row={mode === "git" && (navCollapsed || !toolsVisible)}>
           <div data-testid="main-surface" className="workbench-main-surface" style={{minHeight:mainSurfaceMinHeight}}>
-            <div hidden={mode!=="files" && mode!=="ade"} inert={mode!=="files" && mode!=="ade"} className="workbench-mode-surface"><EditorPanel /></div>
-            {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface"><GitPanel /></div>}
+            <div hidden={mode!=="files" && mode!=="ade"} inert={mode!=="files" && mode!=="ade"} className="workbench-mode-surface">{editorPanel}</div>
+            {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface">{gitPanel}</div>}
             {(databaseVisited || mode === "database") && <div hidden={mode!=="database"} inert={mode!=="database"} className="workbench-database-surface">
-              <aside aria-label={t("databaseConnections")} className="workbench-database-nav"><DatabaseNavContent /></aside><div className="workbench-database-main"><DatabasePanel /></div>
+              <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
+                <ResizablePanel id="database-navigation" defaultSize="280px" minSize="240px" maxSize="480px" groupResizeBehavior="preserve-pixel-size">
+                  <aside aria-label={t("databaseConnections")} className="workbench-database-nav">{databaseNav}</aside>
+                </ResizablePanel>
+                <ResizableHandle withHandle aria-label={t("resizeDatabase")} className="workbench-database-resize" />
+                <ResizablePanel id="database-content" minSize="280px">
+                  <div className="workbench-database-main">{databasePanel}</div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
             </div>}
           </div>
         </div>
@@ -415,22 +458,22 @@ export function AppShell() {
               <span className="workbench-toggle-space" aria-hidden="true" />
             </div>
             <div id="workbench-tools-content" className="workbench-sidebar-content" aria-hidden={!toolsVisible} inert={!toolsVisible}>
-              <WorkspaceToolsPanel tool={checkoutTool} onToolChange={tool => {setCheckoutTool(tool);if(mode === "database" || (mode === "git" && tool === "files"))handleModeChange("files")}} onOpenGraph={() => handleModeChange("git")} />
+              <StableWorkspaceToolsPanel tool={checkoutTool} onToolChange={handleToolChange} onOpenGraph={handleOpenGraph} />
             </div>
           </div>
         </aside>
       </div>
 
-      <StatusBar />
+      {statusBar}
 
-      <CommandPalette
+      <StableCommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         onSelectMode={handleModeChange}
         onOpenSettings={handleOpenSettings}
       />
 
-      <SettingsDialog
+      <StableSettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         theme={theme}
@@ -439,21 +482,18 @@ export function AppShell() {
         onAccentChange={handleAccentChange}
         leftSidebarBackground={leftSidebarBackground}
         rightSidebarBackground={rightSidebarBackground}
-        onSidebarBackgroundChange={(side, enabled) => setAppearance(current => ({
-          ...current,
-          [side === "left" ? "leftSidebarBackground" : "rightSidebarBackground"]: enabled,
-        }))}
+        onSidebarBackgroundChange={handleSidebarBackgroundChange}
         initialSection={settingsSection ?? undefined}
         openNonce={settingsNonce}
       />
 
-      <ContextMenu />
-      <ProjectEditorPopover />
+      {contextMenu}
+      {projectEditorPopover}
 
       {/* App-level Diff viewer host (design §D). Renders in-tree (no portal) so
           the overlay's absolute inset-0 covers this relative shell root. Inert
           until the diff modal store opens. */}
-      <DiffModal />
+      {diffModal}
     </div>
   )
 }

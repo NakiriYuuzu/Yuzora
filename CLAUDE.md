@@ -37,7 +37,7 @@ cd src-tauri && YUZORA_P8_DATABASE_PASSWORD='Yuzora-P8-Only-2026!' \
   cargo test --locked --test database_integration -- --ignored
 ```
 
-Release：推 `v*` tag 觸發 `release.yml`；tag 必須等於 `src-tauri/tauri.conf.json` 的 version，否則 guard job 直接擋下。
+Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact push CI 成功才由 `release.yml` 自動建立 tag、建置及發布。macOS App 僅支援 Apple Silicon，不使用 Apple 簽章／公證；Stable 保留 Tauri updater 簽章。完整流程見 `docs/operations.md`，不手動推 release tag。
 
 ## 架構
 

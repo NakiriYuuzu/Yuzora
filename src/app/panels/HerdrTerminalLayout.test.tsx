@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { HerdrLayoutDescription } from "@/lib/herdrTypes"
@@ -63,6 +63,7 @@ vi.mock("@xterm/xterm", () => {
     open = vi.fn()
     write = vi.fn((_d: string, cb?: () => void) => cb?.())
     focus = vi.fn()
+    refresh = vi.fn()
     reset = vi.fn()
     dispose = vi.fn()
     loadAddon = vi.fn()
@@ -111,7 +112,7 @@ vi.mock("@/lib/herdrIpc", () => ({
 }))
 
 import { herdrAttachmentKey } from "@/lib/herdrPages"
-import { herdrLayoutSetSplitRatio, herdrTerminalOpen, herdrTerminalRelease } from "@/lib/herdrIpc"
+import { herdrLayoutSetSplitRatio, herdrPaneFocus, herdrTerminalOpen, herdrTerminalRelease } from "@/lib/herdrIpc"
 import { HerdrTerminalPage } from "./HerdrTerminalPage"
 
 function layoutCapabilities(layoutSetSplitRatio: boolean) {
@@ -206,9 +207,10 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     cleanup()
     seed()
     layoutMock.set({ ...layoutMock.get(), zoomed: false, focusedPaneId: "p1" })
-    layoutMock.export.mockClear()
+    layoutMock.export.mockReset().mockImplementation(async () => layoutMock.get())
     layoutMock.setRatio.mockClear()
     vi.mocked(herdrLayoutSetSplitRatio).mockClear()
+    vi.mocked(herdrPaneFocus).mockReset().mockResolvedValue(undefined)
     vi.mocked(herdrTerminalOpen).mockClear()
     vi.mocked(herdrTerminalRelease).mockClear()
   })
@@ -249,6 +251,34 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     expect(attachments.has(herdrAttachmentKey("yuzora://herdr/default/t1", "p3"))).toBe(true)
   })
 
+  it("marks only the confirmed input pane and clears the marker when the page is inactive or hidden", async () => {
+    let confirmFocus!: () => void
+    vi.mocked(herdrPaneFocus).mockImplementationOnce(() => new Promise<void>((resolve) => { confirmFocus = resolve }))
+    const view = render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
+    await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
+    const paneA = screen.getByRole("button", { name: "Focus terminal: A" })
+    const paneB = screen.getByRole("button", { name: "Focus terminal: B" })
+    expect(paneA).toHaveAttribute("aria-pressed", "true")
+    expect(paneB).toHaveAttribute("aria-pressed", "false")
+    expect(screen.getAllByText("Focused")).toHaveLength(1)
+
+    fireEvent.click(paneB)
+    expect(herdrPaneFocus).toHaveBeenCalledWith({ sessionName: "default", paneId: "p2" })
+    expect(paneA).toHaveAttribute("aria-pressed", "true")
+    await act(async () => confirmFocus())
+    await waitFor(() => expect(paneB).toHaveAttribute("aria-pressed", "true"))
+    expect(paneA).toHaveAttribute("aria-pressed", "false")
+    expect(screen.getAllByText("Focused")).toHaveLength(1)
+    expect(herdrTerminalOpen).toHaveBeenCalledTimes(3)
+    expect(herdrTerminalRelease).not.toHaveBeenCalled()
+
+    view.rerender(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active={false} visible />)
+    expect(screen.queryByText("Focused")).not.toBeInTheDocument()
+    expect(paneB).toHaveAttribute("aria-pressed", "false")
+    view.rerender(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible={false} />)
+    expect(screen.queryByText("Focused")).not.toBeInTheDocument()
+  })
+
   it("zooms only the focused pane without releasing connectors and restores the split", async () => {
     render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
     await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
@@ -259,6 +289,7 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     await waitFor(() => expect(screen.getByTestId("herdr-split-handle-root")).not.toBeVisible())
     expect(screen.getByTestId("herdr-terminal-leaf-t1")).not.toBeVisible()
     expect(screen.getByTestId("herdr-terminal-leaf-t2")).toBeVisible()
+    expect(screen.getByTestId("herdr-terminal-leaf-t2")).toContainElement(screen.getByText("Focused"))
     expect(screen.getByTestId("herdr-terminal-leaf-t3")).not.toBeVisible()
     expect(herdrTerminalRelease).not.toHaveBeenCalled()
     act(() => {
@@ -440,6 +471,75 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     })
     await waitFor(() => expect(layoutMock.export).toHaveBeenCalledTimes(2))
     expect(screen.getByTestId("herdr-terminal-page-t1")).toBeInTheDocument()
+  })
+
+  it("retains the WSL split and connectors when a background layout request is temporarily busy", async () => {
+    const scope = JSON.stringify(["wsl:Ubuntu-26.04", "default"])
+    const state = useHerdrStore.getState()
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      sessions: [{ ...state.sessions[0], hostId: "wsl:Ubuntu-26.04", runtimeId: scope }],
+      runtimesBySession: { [scope]: { snapshot: state.snapshot, capabilities: state.capabilities, connectionState: "ready", worktreeInventory: null, errorMessage: null } }
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="t1" herdrTabId="tab-1" active visible />)
+    await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
+    layoutMock.export.mockRejectedValueOnce(new Error("host-request-wait-timeout"))
+    act(() => useHerdrStore.getState().bumpTopologyRevision())
+    await waitFor(() => expect(layoutMock.export).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId("herdr-split-root")).toBeInTheDocument()
+    expect(screen.queryByTestId("herdr-layout-fallback")).not.toBeInTheDocument()
+    expect(herdrTerminalRelease).not.toHaveBeenCalled()
+    await waitFor(() => expect(layoutMock.export).toHaveBeenCalledTimes(3), { timeout: 2500 })
+    expect(layoutMock.export).toHaveBeenLastCalledWith({ sessionName: scope, tabId: "tab-1", paneId: null })
+  })
+
+  it("recovers multi-pane layout after a transient first WSL request failure", async () => {
+    layoutMock.export.mockRejectedValueOnce(new Error("host-request-limit"))
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
+    await waitFor(() => expect(screen.getByTestId("herdr-split-root")).toBeInTheDocument(), { timeout: 2500 })
+    expect(screen.queryByTestId("herdr-layout-fallback")).not.toBeInTheDocument()
+    expect(layoutMock.export).toHaveBeenCalledTimes(2)
+  })
+
+  it("uses the live terminal's tab instead of restored stale tab metadata", async () => {
+    layoutMock.export.mockImplementationOnce(async (args) => {
+      if ((args as { tabId: string }).tabId !== "tab-1") throw new Error("layout_not_found: layout target not found")
+      return layoutMock.get()
+    })
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="old-tab" active visible />)
+    await waitFor(() => expect(layoutMock.export).toHaveBeenCalled())
+    expect(layoutMock.export).toHaveBeenCalledWith({ sessionName: "default", tabId: "tab-1", paneId: null })
+    expect(await screen.findByTestId("herdr-split-root")).toBeInTheDocument()
+  })
+
+  it("bounds failed retries and lets the user recover without reopening the terminal page", async () => {
+    layoutMock.export.mockRejectedValue(new Error("host-request-wait-timeout"))
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
+    await screen.findByTestId("herdr-layout-fallback", {}, { timeout: 2500 })
+    expect(layoutMock.export).toHaveBeenCalledTimes(3)
+    layoutMock.export.mockImplementation(async () => layoutMock.get())
+    fireEvent.click(screen.getByRole("button", { name: "Reload layout" }))
+    await screen.findByTestId("herdr-split-root")
+    expect(screen.queryByTestId("herdr-layout-fallback")).not.toBeInTheDocument()
+    expect(layoutMock.export).toHaveBeenCalledTimes(4)
+  })
+
+  it("cancels a pending layout retry when the page closes", async () => {
+    layoutMock.export.mockRejectedValue(new Error("host-request-limit"))
+    const view = render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
+    await waitFor(() => expect(layoutMock.export).toHaveBeenCalledOnce())
+    view.unmount()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(layoutMock.export).toHaveBeenCalledOnce()
+    expect(herdrTerminalOpen).not.toHaveBeenCalled()
+  })
+
+  it("keeps the owning tab when the original terminal moved but the tab still has other panes", async () => {
+    const snapshot = useHerdrStore.getState().snapshot!
+    useHerdrStore.setState({ snapshot: { ...snapshot, terminals: snapshot.terminals.map((term) => term.terminalId === "t1" ? { ...term, tabId: "other-tab" } : term) } })
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
+    await screen.findByTestId("herdr-split-root")
+    expect(layoutMock.export).toHaveBeenCalledWith({ sessionName: "default", tabId: "tab-1", paneId: null })
   })
 
   it("releases only the removed leaf connector on unmount of page", async () => {

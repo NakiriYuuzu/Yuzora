@@ -1,0 +1,98 @@
+[
+  {
+    "verdict": "confirmed",
+    "title": "PostgreSQL VerifyFull permits TLS downgrade and cleartext password authentication",
+    "description": "The encrypted PostgreSQL modes select a rustls connector but leave tokio-postgres Config at its default SslMode::Prefer. When an active network attacker answers the SSLRequest with N, the locked driver continues on a raw stream and accepts AuthenticationCleartextPassword. A local loopback fixture using the existing Yuzora database helper and a synthetic password observed a StartupMessage after N and a PasswordMessage containing the synthetic password. This was one dynamic reproduction by the database audit agent; a different agent independently verified the source and locked-driver behavior. No real credentials or external database were used.",
+    "root_cause": "pg_open_with_timeout in src-tauri/src/db_service.rs does not set SslMode::Require for encrypted modes, allowing the PostgreSQL driver to downgrade to plaintext before password authentication.",
+    "intended_behavior": "VerifyFull should require an encrypted connection and validate the server certificate and hostname. EncryptedTrustServerCert should still require encryption after explicit acknowledgement. Only the explicitly authorized InsecurePlaintext mode should use an unencrypted connection.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src-tauri/src/db_query_worker.rs",
+        "line": 589,
+        "scope": "spawn_postgres",
+        "description": "Creates a network database helper and sends the selected PostgreSQL transport mode and connection parameters in ConnectPostgres."
+      },
+      {
+        "kind": "propagation",
+        "file": "src-tauri/src/db_service.rs",
+        "line": 3204,
+        "scope": "query_worker_loop",
+        "description": "Handles ConnectPostgres and forwards its transport mode, acknowledgement, endpoint, and password to pg_open."
+      },
+      {
+        "kind": "propagation",
+        "file": "src-tauri/src/db_service.rs",
+        "line": 2082,
+        "scope": "pg_open_with_timeout",
+        "description": "Checks the transport-mode authorization policy; VerifyFull is accepted without an insecure exception."
+      },
+      {
+        "kind": "propagation",
+        "file": "src-tauri/src/db_service.rs",
+        "line": 2094,
+        "scope": "pg_open_with_timeout",
+        "description": "Constructs tokio_postgres::Config with endpoint and password, without overriding the locked driver's SslMode::Prefer default."
+      },
+      {
+        "kind": "sink",
+        "file": "src-tauri/src/db_service.rs",
+        "line": 2112,
+        "scope": "pg_open_with_timeout",
+        "description": "Calls cfg.connect with a rustls connector but without requiring TLS; the driver can follow a server N response with raw startup and password authentication."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "user_interaction",
+        "description": "A user initiates a PostgreSQL connection with a password while selecting VerifyFull, or the explicitly acknowledged EncryptedTrustServerCert mode."
+      },
+      {
+        "kind": "network_routing",
+        "description": "The attacker can impersonate the PostgreSQL endpoint or actively modify the network path during connection establishment."
+      },
+      {
+        "kind": "third_party_dependency",
+        "description": "The code uses the Cargo.lock version tokio-postgres 0.7.18, whose default SSL mode is Prefer and whose non-Require N response path returns a raw stream."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "An active network adversary impersonating the intended PostgreSQL server during a user-initiated connection.",
+      "payloads": [
+        "PostgreSQL SSLRequest response: one ASCII N byte.",
+        "PostgreSQL AuthenticationCleartextPassword message: type R, length 8, authentication code 3."
+      ],
+      "instructions": [
+        "For a safe local reproduction, bind a fixture only on 127.0.0.1 and launch the Yuzora database query helper with a synthetic password and transportMode verifyFull, with no insecure exception and no trust-server-certificate acknowledgement.",
+        "Accept its SSLRequest and answer N; observe whether the client continues with a plaintext StartupMessage.",
+        "Send AuthenticationCleartextPassword and check only whether a PasswordMessage equals the synthetic sentinel.",
+        "Close the fixture and terminate/reap the helper; do not use real accounts, credentials, or external endpoints."
+      ],
+      "expected_result": "The vulnerable helper sends plaintext startup after N and then sends the synthetic password as a PostgreSQL PasswordMessage. A fixed client must stop on N before startup/authentication."
+    },
+    "remediation": {
+      "strategy": "Set SslMode::Require for both encrypted modes and SslMode::Disable only for authorized InsecurePlaintext; retain the existing rustls certificate policy and acknowledgement checks. Add a full SSL-denial/authentication regression fixture.",
+      "code_changes": [
+        {
+          "file_name": "src-tauri/src/db_service.rs",
+          "fixed_code": "cfg.ssl_mode(match transport_mode {\n    PostgresTransportMode::InsecurePlaintext => tokio_postgres::config::SslMode::Disable,\n    PostgresTransportMode::VerifyFull | PostgresTransportMode::EncryptedTrustServerCert => tokio_postgres::config::SslMode::Require,\n});"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "Requires an active network attacker or impersonated endpoint and a user-initiated password connection."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "Defeats the explicit encrypted-transport boundary and exposes the database password before server identity is authenticated."
+      },
+      "overall_severity": "high"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Confirmed by a loopback synthetic-password reproduction and an independent source review through the helper, policy, config, and locked driver. No deployment-scale attack was attempted."
+    }
+  }
+]

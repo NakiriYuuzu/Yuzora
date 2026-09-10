@@ -1,0 +1,101 @@
+{
+  "interface": {
+    "(default)": "ISessionManager"
+  },
+  "interfaceFiles": [
+    {
+      "(default)": "7",
+      "PSPath": "Microsoft.PowerShell.Core\\Registry::HKEY_CLASSES_ROOT\\Interface\\{517f87fe-597a-4672-8555-6daf1c8c788d}\\NumMethods"
+    },
+    {
+      "(default)": "{02E6EC4C-96E4-42E8-B533-336916A0087D}",
+      "PSPath": "Microsoft.PowerShell.Core\\Registry::HKEY_CLASSES_ROOT\\Interface\\{517f87fe-597a-4672-8555-6daf1c8c788d}\\ProxyStubClsid32"
+    }
+  ],
+  "events": [
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3248372+08:00",
+      "ProcessId": 5896,
+      "Id": 5,
+      "Message": "Client RPC call started. \tInterfaceUuid: \t{517f87fe-597a-4672-8555-6daf1c8c788d} \tOpNum: \t0x3 \tProtocol: \tLRPC \tNetworkAddress \tNULL \tEndpoint \tOLED083186D1D9C9A779A997FB469EB \tBinding Options \tNULL \tAuthentication Level \tPacket Privacy \tAuthentication Service \tKernel Impersonation Level \tIdentify",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>5</EventID><Version>1</Version><Level>4</Level><Task>1</Task><Opcode>1</Opcode><Keywords>0x4000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3248372Z'/><EventRecordID>7732</EventRecordID><Correlation ActivityID='{29a8508c-f9da-6017-44aa-deefee48a4d4}'/><Execution ProcessID='5896' ThreadID='9776'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='InterfaceUuid'>{517f87fe-597a-4672-8555-6daf1c8c788d}</Data><Data Name='ProcNum'>3</Data><Data Name='Protocol'>3</Data><Data Name='NetworkAddress'>NULL</Data><Data Name='Endpoint'>OLED083186D1D9C9A779A997FB469EB</Data><Data Name='Options'>NULL</Data><Data Name='AuthenticationLevel'>6</Data><Data Name='AuthenticationService'>20</Data><Data Name='ImpersonationLevel'>2</Data></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.325027+08:00",
+      "ProcessId": 1544,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t1544 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t31",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3250270Z'/><EventRecordID>7931</EventRecordID><Correlation ActivityID='{e92d237e-ffb8-4565-96fa-c37cd527ccac}'/><Execution ProcessID='1544' ThreadID='12420'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>1544</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3240000Z</Data><Data Name='GeneratingComponent'>2</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>31</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>1</Data><ComplexData Name='Params'>03000000000000FE877F510000000000000000</ComplexData></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3250277+08:00",
+      "ProcessId": 1544,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t1544 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t1320",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3250277Z'/><EventRecordID>7932</EventRecordID><Correlation ActivityID='{e92d237e-ffb8-4565-96fa-c37cd527ccac}'/><Execution ProcessID='1544' ThreadID='12420'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>1544</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3240000Z</Data><Data Name='GeneratingComponent'>2</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>1320</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>1</Data><ComplexData Name='Params'>03000000000000FE877F510000000000000000</ComplexData></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3250282+08:00",
+      "ProcessId": 1544,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t1544 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t1321",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3250282Z'/><EventRecordID>7933</EventRecordID><Correlation ActivityID='{e92d237e-ffb8-4565-96fa-c37cd527ccac}'/><Execution ProcessID='1544' ThreadID='12420'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>1544</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3240000Z</Data><Data Name='GeneratingComponent'>1</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>1321</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>0</Data><ComplexData Name='Params'></ComplexData></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3250389+08:00",
+      "ProcessId": 5896,
+      "Id": 7,
+      "Message": "Client RPC call completed. \tStatus: \t0x5",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>7</EventID><Version>1</Version><Level>4</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x4000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3250389Z'/><EventRecordID>7940</EventRecordID><Correlation ActivityID='{29a8508c-f9da-6017-44aa-deefee48a4d4}'/><Execution ProcessID='5896' ThreadID='9776'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='Status'>5</Data></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3250423+08:00",
+      "ProcessId": 5896,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t5896 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t974",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3250423Z'/><EventRecordID>7941</EventRecordID><Correlation ActivityID='{29a8508c-f9da-6017-44aa-deefee48a4d4}'/><Execution ProcessID='5896' ThreadID='9776'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>5896</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3240000Z</Data><Data Name='GeneratingComponent'>2</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>974</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>0</Data><ComplexData Name='Params'></ComplexData></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3286095+08:00",
+      "ProcessId": 5896,
+      "Id": 5,
+      "Message": "Client RPC call started. \tInterfaceUuid: \t{517f87fe-597a-4672-8555-6daf1c8c788d} \tOpNum: \t0x3 \tProtocol: \tLRPC \tNetworkAddress \tNULL \tEndpoint \tOLED083186D1D9C9A779A997FB469EB \tBinding Options \tNULL \tAuthentication Level \tPacket Privacy \tAuthentication Service \tKernel Impersonation Level \tIdentify",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>5</EventID><Version>1</Version><Level>4</Level><Task>1</Task><Opcode>1</Opcode><Keywords>0x4000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3286095Z'/><EventRecordID>9306</EventRecordID><Correlation ActivityID='{53d515a2-3239-be32-c9ce-116b18ab44a1}'/><Execution ProcessID='5896' ThreadID='1804'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='InterfaceUuid'>{517f87fe-597a-4672-8555-6daf1c8c788d}</Data><Data Name='ProcNum'>3</Data><Data Name='Protocol'>3</Data><Data Name='NetworkAddress'>NULL</Data><Data Name='Endpoint'>OLED083186D1D9C9A779A997FB469EB</Data><Data Name='Options'>NULL</Data><Data Name='AuthenticationLevel'>6</Data><Data Name='AuthenticationService'>20</Data><Data Name='ImpersonationLevel'>2</Data></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3287022+08:00",
+      "ProcessId": 1544,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t1544 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t31",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3287022Z'/><EventRecordID>9323</EventRecordID><Correlation ActivityID='{5238e847-1e4c-4ff6-85e7-9c731106c5e3}'/><Execution ProcessID='1544' ThreadID='12420'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>1544</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3280000Z</Data><Data Name='GeneratingComponent'>2</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>31</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>1</Data><ComplexData Name='Params'>03000000000000FE877F510000000000000000</ComplexData></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3287036+08:00",
+      "ProcessId": 1544,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t1544 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t1320",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3287036Z'/><EventRecordID>9324</EventRecordID><Correlation ActivityID='{5238e847-1e4c-4ff6-85e7-9c731106c5e3}'/><Execution ProcessID='1544' ThreadID='12420'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>1544</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3280000Z</Data><Data Name='GeneratingComponent'>2</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>1320</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>1</Data><ComplexData Name='Params'>03000000000000FE877F510000000000000000</ComplexData></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3287046+08:00",
+      "ProcessId": 1544,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t1544 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t1321",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3287046Z'/><EventRecordID>9325</EventRecordID><Correlation ActivityID='{5238e847-1e4c-4ff6-85e7-9c731106c5e3}'/><Execution ProcessID='1544' ThreadID='12420'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>1544</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3280000Z</Data><Data Name='GeneratingComponent'>1</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>1321</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>0</Data><ComplexData Name='Params'></ComplexData></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3287296+08:00",
+      "ProcessId": 5896,
+      "Id": 7,
+      "Message": "Client RPC call completed. \tStatus: \t0x5",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>7</EventID><Version>1</Version><Level>4</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x4000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3287296Z'/><EventRecordID>9336</EventRecordID><Correlation ActivityID='{53d515a2-3239-be32-c9ce-116b18ab44a1}'/><Execution ProcessID='5896' ThreadID='1804'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='Status'>5</Data></EventData></Event>"
+    },
+    {
+      "TimeCreated": "2026-09-09T21:08:42.3287321+08:00",
+      "ProcessId": 5896,
+      "Id": 1,
+      "Message": "Extended Error Information: \r\n\tProcessName: \tsvchost.exe \r\n\tComputerName: \t \r\n\tProcessId: \t5896 \r\n\tStatus: \t0x5 \r\n\tDetectionLocation: \t974",
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-RPC' Guid='{6ad52b32-d609-4be9-ae07-ce8dae937e39}'/><EventID>1</EventID><Version>1</Version><Level>2</Level><Task>1</Task><Opcode>2</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-09-09T13:08:42.3287321Z'/><EventRecordID>9337</EventRecordID><Correlation ActivityID='{53d515a2-3239-be32-c9ce-116b18ab44a1}'/><Execution ProcessID='5896' ThreadID='1804'/><Channel></Channel><Computer>DESKTOP-NMLUN4F</Computer><Security/></System><EventData><Data Name='ImageName'>svchost.exe</Data><Data Name='ComputerName'></Data><Data Name='ProcessID'>5896</Data><Data Name='TimeStamp'>2026-09-09T13:08:42.3280000Z</Data><Data Name='GeneratingComponent'>2</Data><Data Name='Status'>0x5</Data><Data Name='DetectionLocation'>974</Data><Data Name='Flags'>0</Data><Data Name='NumberOfParameters'>0</Data><ComplexData Name='Params'></ComplexData></EventData></Event>"
+    }
+  ]
+}

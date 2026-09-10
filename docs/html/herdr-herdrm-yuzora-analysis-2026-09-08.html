@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Herdr、herdrm 與 Yuzora：三方架構分析</title>
+<style>
+:root{color-scheme:light;--ink:#202936;--muted:#586575;--line:#d8dfe5;--accent:#245e72}*{box-sizing:border-box}body{margin:0;background:#f5f6f7;color:var(--ink);font:16px/1.8 system-ui,-apple-system,"PingFang TC",sans-serif}main{max-width:1080px;margin:40px auto;padding:0 24px 60px}header,section{background:white;border:1px solid var(--line);border-radius:12px;padding:28px;margin:20px 0}h1{font-size:32px;line-height:1.35;margin:8px 0 20px}h2{font-size:23px;line-height:1.4;color:var(--accent)}h3{font-size:18px;margin-bottom:4px}p{margin:10px 0}a{color:#165878;text-underline-offset:3px;overflow-wrap:anywhere}code{font-size:.88em;overflow-wrap:anywhere}small,.meta{color:var(--muted)}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--line);text-align:left;vertical-align:top;padding:12px 9px}th{color:var(--accent)}ul,ol{padding-left:24px}li{margin:10px 0}.note{border-left:4px solid var(--accent);padding:8px 16px;background:#f0f6f8}.tag{font-size:12px;color:var(--muted);font-weight:600}nav{display:flex;flex-wrap:wrap;gap:16px}details{border-top:1px solid var(--line);padding:12px 0}summary{cursor:pointer;font-weight:600}@media(max-width:700px){main{padding:0 12px}header,section{padding:20px}h1{font-size:27px}table,tbody,tr,td,th{display:block}thead{display:none}td{padding:8px 0}tr{padding:12px 0;border-bottom:2px solid var(--line)}}@media print{body{background:white}main{max-width:none;margin:0}header,section{border-radius:0;break-inside:avoid}nav{display:none}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="meta">2026-09-08 · 三個 gpt-5.6-luna / max 子代理 · 主代理交叉整理</div>
+<h1>Herdr、herdrm 與 Yuzora<br>執行核心、桌面操作與完整工作區</h1>
+<p>三者的責任層次不同：<strong>Herdr 擁有程序與 terminal runtime；herdrm 提供精簡的原生操作介面；Yuzora 把 Agent、Files、Git、LSP 等能力整合到同一工作區主機。</strong>Yuzora 的下一步應先驗證斷線與壅塞時的生命週期，再評估上游新協定。</p>
+<p class="note">本輪是原始碼架構分析，未執行 build、測試或實際 SSH／GUI 斷線驗收。風險推論不等於已重現缺陷。只新增本報告，未修改產品程式碼或執行 Git 寫入。</p>
+<nav><a href="#versions">版本基準</a><a href="#herdr">Herdr</a><a href="#herdrm">herdrm</a><a href="#current">Yuzora current</a><a href="#priorities">建議順序</a></nav>
+</header>
+<section id="versions">
+<h2>版本與比較範圍</h2>
+<table><thead><tr><th>對象</th><th>本輪基準</th><th>閱讀限制</th></tr></thead><tbody>
+<tr><td><strong>herdrdev/herdr</strong></td><td>master <a href="https://github.com/herdrdev/herdr/commit/702aa1e45527509bec73dad9b8d443f449c0379b"><code>702aa1e</code></a><br>最新 release <a href="https://github.com/herdrdev/herdr/releases/tag/v0.8.2">v0.8.2</a></td><td>代理查得 master 比 release 領先 108 commits。master 套件版本仍為 0.8.2，但 schema protocol 為 22；release 為 protocol 20。下文 endpoint、codec、handoff 細節以 master 為準，不能推定 stable 已提供相同契約。</td></tr>
+<tr><td><strong>missuo/herdrm</strong></td><td>main <a href="https://github.com/missuo/herdrm/commit/20daf96963b282244edf1e2d2803139ade269367"><code>20daf969</code></a><br>最新 release <a href="https://github.com/missuo/herdrm/releases/tag/v0.5.3">v0.5.3</a></td><td>main 比 release 多一個加入 HerdrMobile 的 commit；macOS 與 iOS 的 transport／重連策略不同。</td></tr>
+<tr><td><strong>Yuzora current</strong></td><td>HEAD <code>711342825480a2edd5eb79005554ce828177e245</code><br>加上當前 dirty／untracked 工作目錄</td><td>包含未提交的 UI、store、terminal 與 projection 變更。結論描述本輪讀到的工作目錄，不能全部歸因於該 commit。</td></tr>
+</tbody></table>
+<p>Yuzora 的權威決策為 <a href="../../.yuuzu/CONTEXT.html">Domain Context</a> 與 <a href="../../.yuuzu/adr/0003-single-unix-runtime-remote-provider.html">ADR-0003</a>：每個工作區只有一個執行 authority，Windows 使用 WSL2，Linux／macOS 使用原生 runtime，SSH 支援 Linux／macOS；目前整合基準是官方 0.8.2／protocol 20。</p>
+</section>
+<section id="herdr">
+<h2>1. Herdr：server 持有程序，client 投影狀態</h2>
+<ol>
+<li><strong>daemon 與 UI 分離。</strong>Headless server 維護 AppState、PTY 與事件迴圈，client attach／detach 不代表程序生命週期結束。這支持 Yuzora 退出時僅清理自己持有的 connector。<a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/server/headless.rs#L1-L15">headless.rs</a></li>
+<li><strong>master 區分公開 JSON API 與 private binary client protocol。</strong><code>herdr.sock</code> 提供 JSON API；<code>herdr-client.sock</code> 承載同版 client 通訊。Endpoint 契約另有 generation、codec 與 capability negotiation。Yuzora 不宜把 private wire format 視為穩定整合 API。<a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/protocol/endpoint.rs#L15-L117">endpoint.rs</a></li>
+<li><strong>狀態與畫面分流。</strong>ClientShellSnapshot 攜帶 boot ID、revision 與 workspace／tab／pane／agent projection，surface frame 另行傳輸；control 與 render lane 也分開。可借鑑的是慢畫面消費者不拖住控制操作的設計。<a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/protocol/wire.rs#L905-L942">snapshot</a> · <a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/server/client_transport.rs#L114-L310">client transport</a></li>
+<li><strong>domain identity 不依賴排序。</strong>AppState 保持純資料，workspace public ID 與 display order 分離，tab 組合 pane map 與 layout tree。Agent、plugin、integration 也有獨立 API namespace。<a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/app/state.rs#L781-L889">AppState</a> · <a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/workspace.rs#L104-L180">workspace</a></li>
+<li><strong>terminal 核心是 parser／PTY／actor。</strong>採 Ghostty/libghostty-vt、portable-pty 與 PTY actor；TerminalRuntime 仍包裝 legacy PaneRuntime，不能認為模組拆分已完全完成。<a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/terminal/runtime.rs#L1-L18">runtime wrapper</a> · <a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/pty/actor.rs#L190-L281">PTY actor</a></li>
+<li><strong>master remote 使用 SSH endpoint 與 supervisor。</strong>遠端 attach 檢查 endpoint generation、surface interest、health check 等能力；live handoff 與 session persistence 是不同機制。最新 HEAD 特別要求遠端 server replacement 的明確同意。這是未來升級評估材料，不是本輪建議替換 Yuzora 現有 provider。<a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/remote/attach.rs#L1199-L1268">remote attach</a> · <a href="https://github.com/herdrdev/herdr/blob/702aa1e45527509bec73dad9b8d443f449c0379b/src/client/endpoint/supervisor.rs#L238-L333">supervisor</a></li>
+</ol>
+<p class="tag">分析限制：上游 Windows 支援未完成逐平台核對；Cloud transport 也未確認為完整可用實作。</p>
+</section>
+<section id="herdrm">
+<h2>2. herdrm：值得借鑑的原生操作介面與診斷</h2>
+<ol>
+<li><strong>SwiftUI console 分層清楚。</strong>HerdrM 負責 UI，HerdrKit 承載 domain／RPC／device，HerdrSSH 負責原生 SSH，main 新增 HerdrMobile。產品聚焦 Spaces、Agents、Terminals 與 PTY attach。<a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/project.yml">project.yml</a></li>
+<li><strong>每裝置一個 service。</strong>macOS HerdrService actor 管理 local socket 或 SSHTunnel。RPC 使用 NDJSON，每次一般 request 新建連線並設 15 秒 response timeout；event subscription 使用長連線。相容檢查要求 protocol 至少為 17。<a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Packages/HerdrKit/Sources/HerdrKit/HerdrService.swift#L4-L74">HerdrService</a> · <a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Packages/HerdrKit/Sources/HerdrKit/SocketRPC.swift#L3-L72">SocketRPC</a></li>
+<li><strong>macOS 遠端沿用 OpenSSH。</strong><code>ssh -N -L local.sock:remote.sock</code> 使用 config、agent 等現成能力，並設 forwarding／keepalive 選項。錯誤分類涵蓋 socket 不存在、refused、stale socket 與 streamlocal forwarding 被禁止，適合借鑑為可行動的診斷。<a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Packages/HerdrKit/Sources/HerdrKit/SSHTunnel.swift#L37-L168">SSHTunnel</a> · <a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Packages/HerdrKit/Sources/HerdrKit/Models.swift#L300-L326">errors</a></li>
+<li><strong>macOS 採 snapshot + event invalidation。</strong>每裝置依序 connect、snapshot、manifests、event stream；事件觸發 200ms debounce refresh，失敗以 1 至 30 秒 backoff 重試，認證失敗則停下等待使用者處理。<a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Sources/HerdrM/AppModel.swift#L603-L644">AppModel</a></li>
+<li><strong>terminal 的 UI identity 是實際工程重點。</strong>SwiftTerm 啟動官方 attach；PTY EOF 顯示 reconnect overlay，layout 使用 AnyLayout 保留 terminal identity，避免切換分支重建 attach process。這比單純複製 sidebar 外觀更值得參考。<a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Sources/HerdrM/TerminalView.swift#L720-L856">TerminalView</a></li>
+<li><strong>iOS 是不同傳輸與互動模型。</strong>libssh2 direct-streamlocal 為 RPC、event、PTY 提供通道；事件斷線後保留 snapshot 並標示失敗，沒有 macOS 同等自動 backoff loop。一般 prompt 與 raw TUI 輸入分開處理。共用 SSH session 的 operation mutex 值得做延遲量測，不能單靠 source 推定已有性能問題。<a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Sources/HerdrMobile/MobileTransport.swift#L6-L218">MobileTransport</a> · <a href="https://github.com/missuo/herdrm/blob/20daf96963b282244edf1e2d2803139ade269367/Packages/HerdrSSH/Sources/HerdrSSH/SessionDriver.swift#L6-L130">SessionDriver</a></li>
+</ol>
+<p class="note">借鑑建議：錯誤分類、EOF 重連提示、terminal identity 保留。移植前需重新核對 pane-scoped event subscription、owner/generation 與 backpressure；本輪沒有證明 herdrm 具有 Yuzora 完整工作區所需的同等保護。</p>
+</section>
+<section id="current">
+<h2>3. Yuzora current：整合邊界已建立，重點在失敗路徑</h2>
+<p>架構鏈為 React／Bridge／store → typed IPC／herdrProvider → Rust host service／helper → 來源主機上的官方 Herdr。Named Session 以 <code>hostId + sessionName</code> 識別，連線 owner 再帶 generation；Terminal Session 與 Agent Session 依領域定義分開。</p>
+<h3>原始碼支持的設計</h3>
+<ul>
+<li><strong>集中 routing 與 stale response 防護。</strong><a href="../../src/lib/runtimeIdentity.ts">runtimeIdentity.ts</a> 定義 owner，<a href="../../src/lib/herdrProvider.ts">herdrProvider.ts</a> 統一路由，remote stream identity 納入 host 與 generation。</li>
+<li><strong>主機握手與有界併發。</strong><a href="../../src-tauri/src/host_service.rs">host_service.rs</a> 驗證 owner／generation／Hello；control request 與 HERDR call 有各自併發及等待限制。<a href="../../src-tauri/src/host_herdr.rs">host_herdr.rs</a> 使用 SSH direct-streamlocal。</li>
+<li><strong>公開能力與 connector ownership。</strong><a href="../../src-tauri/host/src/herdr_service.rs">host/src/herdr_service.rs</a> 集中 capability/schema gating，connector 綁定 named session；shutdown 只清理 Yuzora-owned connector，不停止 Herdr server／pane。</li>
+<li><strong>快照与訂閱世代。</strong><a href="../../src/workbench/HerdrBridge.tsx">HerdrBridge.tsx</a> 管理 subscription generation、重試及 fallback；<a href="../../src/state/herdrStore.ts">herdrStore.ts</a> 拒絕過期 subscription 更新。</li>
+<li><strong>輸入不重播。</strong><a href="../../src/terminal/terminalTransport.ts">terminalTransport.ts</a> 有 open generation、sequence、256 KiB 待傳限制及一筆 in-flight input；失敗時丟棄待傳尾端。</li>
+</ul>
+<h3>待驗證風險，依建議優先級排序</h3>
+<details open><summary>優先：remote terminal close 與一般 error 混在一起</summary>
+<p><span class="tag">已確認的局部路徑</span> <code>herdrProvider.ts:103</code> 附近將 host stream <code>closed</code> 轉成 <code>error / host-stream-closed</code>。<code>terminalTransport.ts:290</code> 附近只有 terminal <code>closed</code> 才清除 sessionId、discard input 與推進 generation。頁面的 <code>error</code> handler 只顯示狀態；<code>resync</code> 才會 release／reopen。</p>
+<p><span class="tag">風險推論</span> 若只有該 stream 斷線、host owner 仍有效，terminal 可能保留失效 attachment。主機整體斷線後是否有其他清理流程補足，需要實機與整合測試；本輪未宣稱已重現 zombie terminal。來源：<a href="../../src/lib/herdrProvider.ts">provider</a>、<a href="../../src/terminal/terminalTransport.ts">transport</a>、<a href="../../src/app/panels/HerdrTerminalPage.tsx">頁面事件處理，約 921–946 行起</a>。</p>
+</details>
+<details open><summary>其次：SSH event 消費端的 backpressure 證據不足</summary>
+<p><code>host_streams.rs:349</code> 附近直接把 SSH event 送到 Tauri Channel；同函式的 bounded mpsc 是 command queue，不能當成 event consumer queue 有界的證據。應以 burst／慢 UI 驗證記憶體、延遲與取消行為。這不是「整個 SSH stack 完全沒有 backpressure」的斷言。來源：<a href="../../src-tauri/src/host_streams.rs">host_streams.rs</a>、對照 <a href="../../src-tauri/host/src/streams.rs">helper streams.rs</a>。</p>
+</details>
+<details open><summary>其次：connector stdin 寫入的阻塞界限</summary>
+<p><code>host/src/herdr_service.rs:2707</code> 的 <code>send_control</code> 持有 stdin mutex 後同步 <code>write_all</code>／<code>flush</code>，這個函式內沒有寫入 deadline。外層 request timeout 是否足以終止底層阻塞仍需驗證；應用停止讀 stdin 的受控 connector 測試取消與清理。來源：<a href="../../src-tauri/host/src/herdr_service.rs">herdr_service.rs</a>。</p>
+</details>
+<details open><summary>契約整理：protocol 19 註解不等於已證實相容缺陷</summary>
+<p><a href="../../src-tauri/host/src/herdr_transport.rs">herdr_transport.rs</a> 註解仍提 0.8.0，<a href="../../src/lib/herdrTypes.ts">herdrTypes.ts</a> 多處提 protocol 19；這可能描述歷史或最低版本。另一方面，<a href="../../src-tauri/src/host_bootstrap.rs">host_bootstrap.rs:151–165</a> 對 managed artifact 明確要求 0.8.2／20。應驗證外部安裝與 managed artifact 的實際協商規則，再決定修改契約或文件；本輪不把註解差異評為 High 缺陷。</p>
+</details>
+</section>
+<section id="priorities">
+<h2>建議的下一輪工作</h2>
+<table><thead><tr><th>順序</th><th>具體工作</th><th>驗證成功條件</th></tr></thead><tbody>
+<tr><td>1</td><td>重現 remote 單一 terminal stream 中止與 host 整體斷線</td><td>清除失效 attachment、停止舊輸入、能明確恢復；新 connector 不接收上一代待傳資料。</td></tr>
+<tr><td>2</td><td>量測 SSH event burst 與 connector stdin 壅塞</td><td>queue／記憶體受控，慢 UI 不阻塞關閉，取消可完成，錯誤提示清楚。</td></tr>
+<tr><td>3</td><td>建立版本／protocol／capability 相容矩陣</td><td>分開測 managed 0.8.2、外部 server、protocol 不符及能力缺失；不以版本字串或註解代替實際協商。</td></tr>
+<tr><td>4</td><td>借鑑 herdrm 的操作體驗</td><td>可區分認證、socket、forwarding、terminal EOF；layout 改動不重建仍有效的 connector。</td></tr>
+<tr><td>5</td><td>獨立評估上游 master protocol 22 與 endpoint 能力</td><td>先等穩定契約或完成明確的相容驗證，再討論採用；不混入目前 protocol 20 的修復。</td></tr>
+</tbody></table>
+<p>以上是分析建議，尚未實作。工作目錄已有大量未提交變更；進行後續修復前應固定相關檔案的比較基準，避免將既有變更與新修復混為一談。</p>
+</section>
+</main></body></html>

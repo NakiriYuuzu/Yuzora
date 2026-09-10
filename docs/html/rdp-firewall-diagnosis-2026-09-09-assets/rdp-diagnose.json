@@ -1,0 +1,223 @@
+{
+  "time": "2026-09-09T20:48:24.4160917+08:00",
+  "computer": "DESKTOP-NMLUN4F",
+  "user": "yuuzu",
+  "isAdmin": true,
+  "network": {
+    "InterfaceAlias": "乙太網路",
+    "InterfaceIndex": 7,
+    "NetworkCategory": 0,
+    "IPv4Connectivity": 4
+  },
+  "firewallProfiles": [
+    {
+      "Name": "Domain",
+      "Enabled": 1,
+      "DefaultInboundAction": 4,
+      "DefaultOutboundAction": 2,
+      "AllowInboundRules": 1,
+      "AllowLocalFirewallRules": 1,
+      "LogBlocked": 0,
+      "LogFileName": "%systemroot%\\system32\\LogFiles\\Firewall\\pfirewall.log"
+    },
+    {
+      "Name": "Private",
+      "Enabled": 1,
+      "DefaultInboundAction": 4,
+      "DefaultOutboundAction": 2,
+      "AllowInboundRules": 1,
+      "AllowLocalFirewallRules": 1,
+      "LogBlocked": 0,
+      "LogFileName": "%systemroot%\\system32\\LogFiles\\Firewall\\pfirewall.log"
+    },
+    {
+      "Name": "Public",
+      "Enabled": 1,
+      "DefaultInboundAction": 4,
+      "DefaultOutboundAction": 2,
+      "AllowInboundRules": 1,
+      "AllowLocalFirewallRules": 1,
+      "LogBlocked": 0,
+      "LogFileName": "%systemroot%\\system32\\LogFiles\\Firewall\\pfirewall.log"
+    }
+  ],
+  "services": [
+    {
+      "Name": "RpcSs",
+      "State": "Running",
+      "StartMode": "Auto",
+      "ProcessId": 1412,
+      "ExitCode": 0,
+      "ServiceSpecificExitCode": 0
+    },
+    {
+      "Name": "SessionEnv",
+      "State": "Stopped",
+      "StartMode": "Manual",
+      "ProcessId": 0,
+      "ExitCode": 1077,
+      "ServiceSpecificExitCode": 0
+    },
+    {
+      "Name": "sshd",
+      "State": "Running",
+      "StartMode": "Auto",
+      "ProcessId": 5580,
+      "ExitCode": 0,
+      "ServiceSpecificExitCode": 0
+    },
+    {
+      "Name": "TermService",
+      "State": "Running",
+      "StartMode": "Manual",
+      "ProcessId": 10264,
+      "ExitCode": 0,
+      "ServiceSpecificExitCode": 0
+    },
+    {
+      "Name": "UmRdpService",
+      "State": "Stopped",
+      "StartMode": "Manual",
+      "ProcessId": 0,
+      "ExitCode": 1077,
+      "ServiceSpecificExitCode": 0
+    }
+  ],
+  "tcpListeners": [
+    {
+      "LocalAddress": "::",
+      "LocalPort": 22,
+      "OwningProcess": 5580
+    },
+    {
+      "LocalAddress": "0.0.0.0",
+      "LocalPort": 22,
+      "OwningProcess": 5580
+    }
+  ],
+  "udpListeners": null,
+  "terminalServer": {
+    "fDenyTSConnections": 0,
+    "TSAdvertise": null,
+    "TSAppCompat": null,
+    "TSServerDrainMode": null
+  },
+  "rdpTcp": {
+    "PortNumber": 3389,
+    "fEnableWinStation": 1,
+    "LanAdapter": 0,
+    "UserAuthentication": 1,
+    "SecurityLayer": 2,
+    "MinEncryptionLevel": 2,
+    "MaxInstanceCount": 4294967295,
+    "WinStationDll": null,
+    "LoadableProtocol_Object": "{5828227c-20cf-4408-b73f-73ab70b8849f}",
+    "KeepAliveTimeout": 0
+  },
+  "policy": null,
+  "terminalWmi": {
+    "TerminalName": "RDP-Tcp",
+    "SecurityLayer": 2,
+    "UserAuthenticationRequired": 1,
+    "MinEncryptionLevel": 2,
+    "PolicySourceSecurityLayer": 0,
+    "SSLCertificateSHA1HashType": 0
+  },
+  "sessions": "SESSIONNAME               USERNAME                 ID  STATE   TYPE        DEVICE \r\n>services                                            0  Disc                        \r\n console                   Yuuzu                     7  Active",
+  "namedRules": [
+    {
+      "name": "RemoteDesktop-UserMode-In-TCP",
+      "displayName": "遠端桌面 - 使用者模式 (TCP-In)",
+      "enabled": "True",
+      "direction": "Inbound",
+      "action": "Allow",
+      "profile": "Any",
+      "source": "Local",
+      "protocol": "TCP",
+      "localPort": "3389",
+      "localAddress": "Any",
+      "remoteAddress": "Any",
+      "service": "termservice",
+      "program": "C:\\WINDOWS\\system32\\svchost.exe"
+    },
+    {
+      "name": "RemoteDesktop-UserMode-In-UDP",
+      "displayName": "遠端桌面 - 使用者模式 (UDP-In)",
+      "enabled": "True",
+      "direction": "Inbound",
+      "action": "Allow",
+      "profile": "Any",
+      "source": "Local",
+      "protocol": "UDP",
+      "localPort": "3389",
+      "localAddress": "Any",
+      "remoteAddress": "Any",
+      "service": "termservice",
+      "program": "C:\\WINDOWS\\system32\\svchost.exe"
+    },
+    {
+      "name": "RemoteDesktop-Shadow-In-TCP",
+      "displayName": "遠端桌面 - 陰影 (TCP-In)",
+      "enabled": "True",
+      "direction": "Inbound",
+      "action": "Allow",
+      "profile": "Any",
+      "source": "Local",
+      "protocol": "TCP",
+      "localPort": "Any",
+      "localAddress": "Any",
+      "remoteAddress": "Any",
+      "service": "Any",
+      "program": "C:\\WINDOWS\\system32\\RdpSa.exe"
+    },
+    {
+      "name": "RemoteDesktop-In-TCP-WSS",
+      "displayName": "遠端桌面 - (TCP-WSS-In)",
+      "enabled": "False",
+      "direction": "Inbound",
+      "action": "Allow",
+      "profile": "Any",
+      "source": "Local",
+      "protocol": "TCP",
+      "localPort": "3392",
+      "localAddress": "Any",
+      "remoteAddress": "Any",
+      "service": "Any",
+      "program": "System"
+    },
+    {
+      "name": "OpenSSH-Server-In-TCP",
+      "displayName": "OpenSSH SSH Server (sshd)",
+      "enabled": "True",
+      "direction": "Inbound",
+      "action": "Allow",
+      "profile": "Private",
+      "source": "Local",
+      "protocol": "TCP",
+      "localPort": "22",
+      "localAddress": "Any",
+      "remoteAddress": "Any",
+      "service": "Any",
+      "program": "C:\\WINDOWS\\system32\\OpenSSH\\sshd.exe"
+    },
+    {
+      "name": "Allow-SSH-Port-22",
+      "displayName": "Allow SSH Port 22",
+      "enabled": "True",
+      "direction": "Inbound",
+      "action": "Allow",
+      "profile": "Any",
+      "source": "Local",
+      "protocol": "TCP",
+      "localPort": "22",
+      "localAddress": "Any",
+      "remoteAddress": "Any",
+      "service": "Any",
+      "program": "Any"
+    }
+  ],
+  "blockRules": {
+    "error": "No matching MSFT_NetFirewallRule objects found by CIM query for instances of the root/standardcimv2/MSFT_NetFirewallRule class on the  CIM server: SELECT * FROM MSFT_NetFirewallRule  WHERE ((Enabled = 1)) AND ((Direction = 1)) AND ((Action = 4)). Verify query parameters and retry."
+  },
+  "events": null
+}

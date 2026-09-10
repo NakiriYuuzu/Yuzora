@@ -10,6 +10,7 @@ import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { TERMINAL_FONTS, normalizeTerminalFontFamily, terminalFontStack } from "@/terminal/terminalFonts"
 
 import {Slider} from '@/components/ui/slider'
+import { Switch } from "@/components/ui/switch"
 import {Select,SelectContent,SelectGroup,SelectItem,SelectTrigger,SelectValue} from '@/components/ui/select'
 import {Field,FieldGroup,FieldLabel} from '@/components/ui/field'
 import { Segmented, SettingCard } from "./settingsPrimitives"
@@ -24,6 +25,9 @@ export function TerminalSection() {
 
   return (
     <FieldGroup className="settings-fields">
+      <SettingCard label={t("copyOnSelect")} sub={t("copyOnSelectDescription")}>
+        <Switch aria-label={t("copyOnSelect")} checked={settings.copyOnSelect} onCheckedChange={(copyOnSelect) => update({ copyOnSelect })} />
+      </SettingCard>
       <SettingCard label={t("typographyLabel")} sub={t("fontFamilyDescription")}>
         <FieldGroup className="settings-terminal-typography">
         <Field data-settings-label={t("fontFamilyLabel")}><FieldLabel htmlFor="settings-terminal-font">{t("fontFamilyLabel")}</FieldLabel>

@@ -39,10 +39,18 @@ export function parseRuntimeScope(scope: string): RuntimeKey {
 export function registerRuntimeHost(host: ConnectedHost, binary: string, label: string, kind: "wsl" | "ssh" = "ssh"): void {
   if (host.owner.hostId === LOCAL_HOST_ID) throw new Error("Local runtime identity is reserved")
   const previous = hosts.get(host.owner.hostId)
+  if (previous && sameConnection(previous.owner, host.owner)) {
+    Object.assign(previous, { binary, label, kind })
+    return
+  }
+  if (previous) unregisterRuntimeHost(previous.owner)
   hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [] })
 }
 
 export function unregisterRuntimeHost(owner: ConnectionOwner): void {
+  for (const [id, stream] of streams) {
+    if (sameConnection(stream.host.owner, owner)) streams.delete(id)
+  }
   const current = hosts.get(owner.hostId)
   if (current && sameConnection(current.owner, owner)) hosts.delete(owner.hostId)
 }
@@ -100,27 +108,27 @@ type StreamEvent =
 async function openStream<T>(host: RuntimeHost, sessionName: string, command: string, args: Record<string, unknown>): Promise<T> {
   ensureCurrent(host)
   const terminal = command === "herdr_terminal_open"
-  const output = args.onEvent as Channel<HerdrTerminalEvent | HerdrSubscriptionEvent>
+  const output = args.onEvent as (event: HerdrTerminalEvent | HerdrSubscriptionEvent) => void
   const channel = new Channel<StreamEvent>()
   let closed = false
   const identity = (id: string) => JSON.stringify([host.owner.hostId, host.owner.generation, id])
   channel.onmessage = (message) => {
-    if (hosts.get(host.owner.hostId) !== host || (host.kind === "wsl" && !useRuntimePreferencesStore.getState().wslEnabled)) return
     const owner = message.type === "frame" ? message.frame.owner : message.owner
     if (!sameConnection(owner, host.owner)) return
     const id = identity(message.streamId)
+    // Even stale generations must retire their bookkeeping on closure.
+    if (message.type === "closed") { closed = true; streams.delete(id) }
+    if (hosts.get(host.owner.hostId) !== host || (host.kind === "wsl" && !useRuntimePreferencesStore.getState().wslEnabled)) return
     if (message.type === "closed") {
-      closed = true
-      streams.delete(id)
-      output.onmessage(terminal
+      output(terminal
         ? { type: "error", sessionId: id, code: "host-stream-closed", message: message.reason }
         : { type: "disconnected", subscriptionId: id, reason: message.reason })
       return
     }
     if (message.frame.version !== 1) return
     const payload = message.frame.payload
-    if (payload.type === "terminal") output.onmessage({ ...payload.event, sessionId: id })
-    if (payload.type === "subscription") output.onmessage({ ...payload.event, subscriptionId: id })
+    if (payload.type === "terminal") output({ ...payload.event, sessionId: id })
+    if (payload.type === "subscription") output({ ...payload.event, subscriptionId: id })
   }
   const opened = await nativeInvoke<{ streamId: string; value: Record<string, unknown> | string }>("host_stream_open", {
     owner: host.owner,
@@ -167,11 +175,12 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
       if (command.endsWith("_release")) return undefined as T
       throw new Error("Remote connector is closed")
     }
-    ensureCurrent(stream.host)
     if (command.endsWith("_release")) {
       streams.delete(resourceId)
+      if (hosts.get(stream.host.owner.hostId) !== stream.host) return undefined as T
       return nativeInvoke<T>("host_stream_close", { owner: stream.host.owner, streamId: stream.streamId })
     }
+    ensureCurrent(stream.host)
     const operation = command === "herdr_terminal_input" ? { command: "input", text: args.text, bytesBase64: args.bytesBase64 }
       : command === "herdr_terminal_resize" ? { command: "resize", cols: args.cols, rows: args.rows }
         : command === "herdr_terminal_scroll" ? { command: "scroll", direction: args.direction, lines: args.lines } : null
@@ -179,7 +188,13 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
     return nativeInvoke<T>("host_stream_command", { owner: stream.host.owner, streamId: stream.streamId, operation })
   }
   const scope = typeof args.sessionName === "string" ? parseRuntimeScope(args.sessionName) : null
-  if (!scope || scope.hostId === LOCAL_HOST_ID) return nativeInvoke<T>(command, { ...args, ...(scope ? { sessionName: scope.sessionName } : {}) })
+  if (!scope || scope.hostId === LOCAL_HOST_ID) {
+    const routed: Record<string, unknown> = { ...args, ...(scope ? { sessionName: scope.sessionName } : {}) }
+    if (command === "herdr_terminal_open" || command === "herdr_events_subscribe") {
+      routed.onEvent = new Channel(args.onEvent as (event: HerdrTerminalEvent | HerdrSubscriptionEvent) => void)
+    }
+    return nativeInvoke<T>(command, routed)
+  }
   const host = hosts.get(scope.hostId)
   if (!host) throw new Error("Runtime host is disconnected")
   const routed = { ...args, sessionName: scope.sessionName }

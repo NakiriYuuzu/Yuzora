@@ -1,0 +1,7 @@
+Command result: Host HERDR 首次
+Status: FAIL
+113 passed / 1 failed；open_terminal() 回報 Herdr CLI timed out；exit 101
+thread 'herdr_service::tests::fake_connector_control_resize_and_release' (639228) panicked at src/herdr_service.rs:7519:14:
+called `Result::unwrap()` on an `Err` value: "timeout: Herdr CLI timed out"
+test result: FAILED. 113 passed; 1 failed; 0 ignored; 0 measured; 436 filtered out; finished in 12.06s
+error: test failed, to rerun pass `--lib`

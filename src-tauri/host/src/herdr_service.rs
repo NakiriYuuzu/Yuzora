@@ -1690,6 +1690,7 @@ impl HerdrManager {
         label: Option<String>,
         focus: bool,
     ) -> Result<HerdrWorkspaceCreateResult, String> {
+        let cwd = cwd.map(crate::shell::working_directory);
         let mut params = serde_json::Map::new();
         if let Some(cwd) = cwd.filter(|s| !s.trim().is_empty()) {
             params.insert("cwd".into(), serde_json::Value::String(cwd));
@@ -4251,6 +4252,7 @@ fn build_tab_create_params(
     cwd: Option<String>,
     focus: bool,
 ) -> serde_json::Value {
+    let cwd = cwd.map(crate::shell::working_directory);
     let mut params = serde_json::Map::new();
     if let Some(workspace_id) = workspace_id.filter(|s| !s.trim().is_empty()) {
         params.insert(
@@ -4280,6 +4282,7 @@ fn build_pane_split_params(
     ratio: Option<f64>,
     focus: bool,
 ) -> serde_json::Value {
+    let cwd = cwd.map(crate::shell::working_directory);
     let mut params = serde_json::Map::new();
     params.insert(
         "direction".into(),
@@ -5528,6 +5531,9 @@ if [ "$1" = "terminal" ] && [ "$2" = "session" ]; then
   mode="$3"
   # Echo HERDR_SESSION to a side channel file when present (tests inspect env).
   if [ -n "${{HERDR_SESSION:-}}" ] && [ -n "${{HERDR_TEST_ENV_FILE:-}}" ]; then
+    # Expose the empty-file interval before the shell writes its result.
+    : > "$HERDR_TEST_ENV_FILE"
+    sleep 0.05
     printf '%s\n' "$HERDR_SESSION" > "$HERDR_TEST_ENV_FILE"
   fi
   printf '%s\n' '{{"type":"terminal.frame","seq":1,"full":true,"encoding":"ansi","width":40,"height":10,"bytes":"AAA="}}'
@@ -6758,12 +6764,15 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
                 on_event,
             )
             .unwrap();
-        // Wait briefly for shell to write env file.
+        // Redirection creates the file before printf writes the environment.
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut saw = None;
         while Instant::now() < deadline {
-            if env_file.exists() {
-                saw = Some(fs::read_to_string(&env_file).unwrap());
+            if let Some(value) = fs::read_to_string(&env_file)
+                .ok()
+                .filter(|value| !value.is_empty())
+            {
+                saw = Some(value);
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));

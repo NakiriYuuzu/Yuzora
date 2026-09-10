@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
     MOVE_OPENED_WORKSPACE_TO_TOP_STORAGE_KEY,
@@ -58,7 +58,55 @@ beforeEach(() => {
     })
 })
 
+afterEach(() => vi.restoreAllMocks())
+
 describe("useRecentWorkspacesStore", () => {
+    it("assigns independent random Space appearances and persists them", () => {
+        const random = vi.spyOn(Math, "random").mockReturnValue(0)
+        const { ensureSpacePresentations } = useRecentWorkspacesStore.getState()
+        ensureSpacePresentations(["space:first"])
+        const first = presentationFor("space:first")
+        random.mockReturnValue(0.99)
+        ensureSpacePresentations(["space:first", "space:second"])
+
+        expect(first).toMatchObject({ avatarMode: "character", character: { motion: true } })
+        expect(presentationFor("space:first")).toEqual(first)
+        expect(presentationFor("space:second")?.character).not.toEqual(first?.character)
+        expect(presentationFor("space:second")?.color).not.toEqual(first?.color)
+        expect(loadRecentWorkspacePresentations()).toEqual(useRecentWorkspacesStore.getState().presentations)
+    })
+
+    it("keeps a Space appearance after reopening and reloading persisted state", () => {
+        const { ensureSpacePresentations } = useRecentWorkspacesStore.getState()
+        ensureSpacePresentations(["space:repo", "space:repo"])
+        const saved = loadRecentWorkspacePresentations()
+        useRecentWorkspacesStore.setState({ presentations: saved })
+        const random = vi.spyOn(Math, "random")
+        const write = vi.spyOn(localStorage, "setItem")
+
+        ensureSpacePresentations(["space:repo"])
+
+        expect(presentationFor("space:repo")).toEqual(saved["space:repo"])
+        expect(random).not.toHaveBeenCalled()
+        expect(write).not.toHaveBeenCalled()
+    })
+
+    it("preserves customized and legacy Space appearances", () => {
+        const { updatePresentation, ensureSpacePresentations } = useRecentWorkspacesStore.getState()
+        updatePresentation("space:custom", {
+            avatarMode: "character",
+            character: { shell: "cloud", face: "sleepy", detail: "patch", motion: false },
+            color: "ocean"
+        })
+        updatePresentation("space:legacy", { glyph: "Y", name: "Studio" })
+        const before = loadRecentWorkspacePresentations()
+
+        ensureSpacePresentations(["space:custom", "space:legacy"])
+
+        expect(useRecentWorkspacesStore.getState().presentations).toEqual(before)
+        expect(loadRecentWorkspacePresentations()).toEqual(before)
+    })
+
     it("records a workspace as the most recent entry (store + storage)", () => {
         record("/a")
         expect(list()).toEqual(["/a"])

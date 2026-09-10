@@ -1,0 +1,3 @@
+					27 row (selectable, expanded) QA Alpha · 1 個 Agents · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA Alpha
+					28 row (selected, expanded) QA-A · /private/tmp/yuzora-functional-qa-20260908/QA-A · default, Help: /private/tmp/yuzora-functional-qa-20260908/QA-A, Secondary Actions: Collapse, Value: QA-A
+					29 row (selectable) π - QA-A · pi · 待命 · QA-A · default, Help: 開啟所屬 pane；不可用時顯示唯讀詳情, Value: π - QA-A

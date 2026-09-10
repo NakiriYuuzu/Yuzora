@@ -1,0 +1,67 @@
+Window: "Yuzora", App: Yuzora Current QA.
+0 standard window Yuzora, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Yuzora, URL: localhost:1420/
+			3 container 檔案已被外部修改
+				4 heading 檔案已被外部修改, Value: 2
+					5 text 檔案已被外部修改
+				6 text /private/tmp/yuzora-functional-qa-20260908/QA-A/README.md
+				7 text entry area (settable) # QA Alpha 中文
+
+Alpha marker QA-20260908-A
+
+
+| name | value |
+| ---- | ----- |
+| 測試   | 42    |
+
+
+- [x] task one
+- [x] task two
+
+```ts
+const answer = 42;
+```
+
+
+[button]Accept[button]Reject
+QA-EXTERNAL-CHANGE
+QA-UNSAVED-EDITOR
+
+
+					8 text (settable) # QA Alpha 中文
+					9 text (settable) Alpha marker QA-20260908-A
+					10 text (settable) | name | value |
+					11 text (settable) | ---- | ----- |
+					12 text (settable) | 測試   | 42    |
+					13 text (settable) - [x] task one
+					14 text (settable) - [x] task two
+					15 text (settable) ```ts
+					16 text (settable) const answer = 42;
+					17 text (settable) ```
+					18 container
+						19 button Accept
+						20 button Reject
+					21 container
+						22 text QA- EXTERNAL-CHANGE
+					23 container (settable)
+						24 text (settable) QA- UNSAVED-EDITOR
+				25 button 取消
+				26 button 全部保留我的
+				27 button 全部採用磁碟版
+				28 button 解決並存檔
+				29 splitter 調整對話框大小 width, Help: 調整對話框大小. 重設對話框大小為 App 視窗的 80%., Value: 1440, Details: 1440px
+				30 splitter 調整對話框大小 height, Help: 調整對話框大小. 重設對話框大小為 App 視窗的 80%., Value: 851, Details: 851px
+				31 splitter 調整對話框大小, Help: 調整對話框大小. 重設對話框大小為 App 視窗的 80%., Value: 1440, Details: 1440×851px
+	32 close button
+	33 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	34 minimize button
+35 menu bar
+	36 Yuzora Current QA
+	37 File
+	38 Edit
+	39 View
+	40 Window
+	41 Help
+
+The focused UI element is 25 button 取消

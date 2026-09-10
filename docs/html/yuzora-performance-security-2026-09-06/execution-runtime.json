@@ -1,0 +1,453 @@
+{
+  "tasks": [
+    {
+      "id": "SH-C",
+      "title": "SSH/SFTP session、credit、transfer 與覆寫契約",
+      "auditIds": [
+        "S01",
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06",
+        "S07",
+        "S08",
+        "S09",
+        "S10",
+        "S11",
+        "S12"
+      ],
+      "featureIds": [],
+      "owner": "SSH/SFTP backend owner",
+      "files": [],
+      "requires": [
+        "ALIGN-HOST"
+      ],
+      "mockAfter": [],
+      "deliverable": "固定 session generation、request generation、transfer ID 與狀態機；定義 byte credit、已確認進度、取消及 cleanup-incomplete、directory cursor、explicit target leaf、atomic-overwrite capability 與 conflict 錯誤。指定 scheduler 掌握 admission，adapter 不另開無界 queue 或連線。",
+      "gate": "SH-A、SH-B、SH-F 共同確認 DTO、錯誤及 lifecycle 範例；active/pinned 達配額只阻擋新 admission，不自動停止工作。未知 host key 的人類確認期限與 auth timeout 分開。",
+      "note": "契約節點不授予產品檔案寫入權。不同檔案可有限平行傳輸；同 destination promotion、同 session lifecycle 與已接受 terminal input 順序仍需序列化。"
+    },
+    {
+      "id": "LS-C",
+      "title": "LSP accepted-version、byte admission 與停止契約",
+      "auditIds": [
+        "R09"
+      ],
+      "featureIds": [],
+      "owner": "LSP backend owner",
+      "files": [],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "定義取得 byte credit 並入列才是 accepted；accepted frames FIFO 且不可丟棄。每文件尚未 accepted 的變更只保留最新 document/version 引用，不累積 JSON 或 Promise；恢復後相對最後 accepted 版本補送合法 replacement。定義取消順序、writer failure 與 kill-before-stdin-lock。",
+      "gate": "64 MiB outgoing JSON body、72 MiB/server queued+in-flight、128 MiB/app admission 起始值能容納 10 MiB 合法文件的 JSON expansion；壓力下持續編輯不產生無界未計費 payload，不因一般資源滿額 restart；超限文件保持編輯內容並明示 LSP 同步受限。",
+      "note": "前端 LSP 取消與補送由片段外的 frontend LSP owner 負責，這裡不列其檔案 ownership。其與 RT-LSP 的最終聯合 gate 由整合者接上；writer 不必等待整個 frontend 包完成才能使用契約 mock 開發。"
+    },
+    {
+      "id": "LG-C",
+      "title": "Log segment、cursor 與 trace privacy 契約",
+      "auditIds": [
+        "R04",
+        "R05",
+        "R06",
+        "H02"
+      ],
+      "featureIds": [],
+      "owner": "Logging owner",
+      "files": [],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "由 RT-LOG owner 固定 segment identity/命名、writer-owned rotation、active bytes accounting、record truncation/degraded 格式、cursor 的 segment identity+offset，以及 retention 後 cursor 失效回應；定義 trace 預設關閉、敏感 body 的 opt-in/遮罩、落盤最小化及 export redaction 政策。",
+      "gate": "以舊日日誌相容、跨 rotation cursor、retention 失效、超大 record 與假秘密 sentinel 範例確認契約；100 MiB 總預算包含 active segment，明確說明過载/磁碟錯誤時可觀測的 degraded 行為。",
+      "note": "契約不要求 RT-LSP 等 RT-LOG 整體實作完成；H02 producer 只依赖這個 privacy 契約。writer、rotation、query/export 都由同一 Logging owner 實作，避免同檔交錯修改。"
+    },
+    {
+      "id": "SH-A",
+      "title": "SFTP extension 與有界 transport adapter",
+      "auditIds": [
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06",
+        "S12"
+      ],
+      "featureIds": [],
+      "owner": "SFTP adapter owner",
+      "files": [
+        "src-tauri/src/sftp_transport.rs",
+        "src-tauri/src/sftp_edit.rs"
+      ],
+      "requires": [
+        "SH-C"
+      ],
+      "mockAfter": [
+        "SH-C"
+      ],
+      "deliverable": "在 ALIGN-HOST 後，重用現有 sftp_edit/open_sftp_raw 的 raw session、posix-rename 與 reservation 邊界，抽出單一 sftp_transport adapter，提供 bounded request/read-ahead、directory cursor、cancel 與原子 promotion；不再預設建立新的 dependency patch。",
+      "gate": "fake peer 驗證 capability 缺失、ACK 不回、short read/EOF、取消、late response 與 temp collision；in-flight bytes 有界，單個 transfer/channel ownership 明確，不自行建立第二套 scheduler。",
+      "note": "sftp_transport.rs 是規劃新增路徑。若確需 dependency patch，patch 路徑由整合者確認後交此 owner；Cargo.toml/Cargo.lock 與 lib.rs 註冊仍由整合者寫。SH-B 可先使用契約 mock，但 production 整合依赖真 adapter。 本輪已出現可用 raw API 的實作位置；先和現有 owner 交接，避免再造一套 atomic-save。能力已出現不代表 S02／S12 驗收已完成。"
+    },
+    {
+      "id": "SH-B",
+      "title": "SSH/SFTP backend lifecycle、scheduler 與資料完整性",
+      "auditIds": [
+        "S01",
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06",
+        "S09",
+        "S10",
+        "S12"
+      ],
+      "featureIds": [],
+      "owner": "SSH/SFTP backend owner",
+      "files": [
+        "src-tauri/src/ssh_service.rs"
+      ],
+      "requires": [
+        "SH-C",
+        "SH-A"
+      ],
+      "mockAfter": [
+        "SH-C"
+      ],
+      "deliverable": "在單一 backend owner 下整合 byte backpressure、control deadline、SFTP singleflight、有限 transfer admission、read-ahead、listing budget、取消與 cleanup、confirmed progress、session generation 及同步 key I/O 隔離。目標存在且無 atomic overwrite 時保留原檔，回可另存的明確錯誤；新增安全 target leaf 並處理一次性 capability 的消耗/重試。",
+      "gate": "同時測 stalled peer、滿 queue、1000 小檔、錯序 response、rename 失敗與取消；既有原檔不遺失，init 次數為 1，FD/task/slot 釋放，terminal 不因另一 transfer 取消而斷線；不以資源滿額取消 active transfer。",
+      "note": "S01 的 shell 路徑與 SFTP 路徑仍共用 ssh_service.rs、session map 與 lifecycle，不能拆成兩名同時写檔的 worker。可以在契約後先 mock adapter 開發；若未先完成模組拆分，整檔必須維持此唯一 owner。"
+    },
+    {
+      "id": "SH-F",
+      "title": "SSH/SFTP frontend 狀態一致性、歷史與 terminal queue",
+      "auditIds": [
+        "S01",
+        "S02",
+        "S03",
+        "S07",
+        "S08",
+        "S11",
+        "F10"
+      ],
+      "featureIds": [],
+      "owner": "SSH/SFTP frontend owner",
+      "files": [
+        "src/state/sftpStore.ts",
+        "src/state/sshStore.ts",
+        "src/app/panels/SshPanel.tsx",
+        "src/terminal/SshTerminalSession.tsx",
+        "src/terminal/terminalOutputQueue.ts"
+      ],
+      "requires": [
+        "SH-C",
+        "SH-B"
+      ],
+      "mockAfter": [
+        "SH-C"
+      ],
+      "deliverable": "以固定 IPC/event 契約實作 credit 驅動輸入輸出、queued/running/cancelled UI、另存 target leaf、host/session/request generation fencing、coalesced progress、bounded completed history、inactive listing cache 及 refresh debounce；F10 由同 owner 改 head-index/deque，保留既有 terminal callback/backpressure/dispose 語意。",
+      "gate": "mock 逆序 A/B、remove/reset 時晚到 connect、完成 fallback tick、部分 admission 與取消 cleanup-incomplete；真 backend 聯測另存及 transfer 狀態。固定總 bytes、不同 chunk 粒度的 F10 benchmark 及既有 queue tests 通過。",
+      "note": "可與 SH-A/SH-B 平行以 mock 開發。F10 是可獨立先交付的子變更，不需等 SSH backend 才量測；此 package 整體 production gate 仍需 SH-B。terminalOutputQueue.ts 不再交給其他 frontend worker 同時修改；清歷史不等於取消 active 工作。 ALIGN-HOST 僅限制 IPC／另存／remote editing 接線；F10 queue 內部且 API 相容的改變可獨立先行。"
+    },
+    {
+      "id": "RT-GIT",
+      "title": "Git 全生命週期期限、輸出預算與搜尋分頁",
+      "auditIds": [
+        "R07",
+        "R08",
+        "R15"
+      ],
+      "featureIds": [],
+      "owner": "Git runtime owner",
+      "files": [
+        "src-tauri/src/git_service.rs",
+        "src-tauri/src/git_log.rs"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "在同一 owner 下重整 run_git_inner 的 stdin/stdout/stderr/wait/drain deadline 與 byte budgets，保留各 caller 既有 timeout、process-group cleanup 及 repo mutation 保護；Git log query 改有界 scan/cursor、batch OIDs 並只 hydrate 所需頁面。",
+      "gate": "本機 fixture 驗證不讀 stdin、父程序退出而子程序持 pipe、output 超限與 cancellation 後 kill/reap；搜尋 pagination 保留固定 tips、OR filter、date-order，無漏重；不完整 status 不得當 clean。",
+      "note": "R07/R08 都修改 run_git_inner，不能交兩個 owner 平行改同函式；R15 的 stdin batching 與 runner budget 需要同包驗收。可與 SSH/LSP/logging/preview 平行開發。process_kill.rs 如需新增共同 helper，由整合者寫入。"
+    },
+    {
+      "id": "RT-LSP",
+      "title": "LSP bounded writer、停止與 trace producer",
+      "auditIds": [
+        "R09",
+        "H02"
+      ],
+      "featureIds": [],
+      "owner": "LSP backend owner",
+      "files": [
+        "src-tauri/src/lsp_service.rs"
+      ],
+      "requires": [
+        "LS-C",
+        "LG-C"
+      ],
+      "mockAfter": [
+        "LS-C"
+      ],
+      "deliverable": "實作 byte-accounted writer、accepted frame FIFO、版本/取消契約、bounded stop report 與 kill-before-stdin-lock；依 LG-C 實作 trace producer 的敏感 body 最小化/遮罩。所有未獲 admission 的資料也納入端到端契約，不用無界 async promises 把壓力轉回 renderer。",
+      "gate": "server 不讀 stdin、大型 didOpen/escaping、持續 typing/paste、cancel 與 exit fixture；accepted incremental 順序完整，資源壓力不 restart，真正 transport failure 可明確恢復；trace sentinel 不超出 LG-C 政策。前端 LSP 包的聯合 gate 由整合者另接。",
+      "note": "writer 可在 LS-C 後先以 frontend mock 開發；H02 producer 的 production 行為必須等 LG-C 定案，但不依賴 RT-LOG 整包完成。F07 與其 frontend 檔案不屬本 owner；不可為取得 stdin lock 而阻止 owned child 被 kill。"
+    },
+    {
+      "id": "RT-LOG",
+      "title": "Logging 單 writer、rotation、retention 與 cursor",
+      "auditIds": [
+        "R04",
+        "R05",
+        "R06",
+        "H02"
+      ],
+      "featureIds": [],
+      "owner": "Logging owner",
+      "files": [
+        "src-tauri/src/logging.rs"
+      ],
+      "requires": [
+        "LG-C"
+      ],
+      "mockAfter": [
+        "LG-C"
+      ],
+      "deliverable": "實作有界可觀測 writer queue、segment rotation、active+closed 總量 accounting、record bytes 上限、legacy 格式相容、cursor/tail 查詢、retention invalidation 與 export 第二層 redaction；保留 audit/error loss 的明確 degraded 訊號。",
+      "gate": "慢盤/滿 queue、不合法或超大 record、今日檔超配額、跨 rotation/retention cursor、fake-secret export 與 shutdown drain 通過；查詢不再假設單日檔最多 100 MiB，現有 legacy 非log檔不被刪除。",
+      "note": "內部交付順序為 writer/segment ownership → rotation/retention → cursor 的真實整合。cursor 可先依 LG-C 用 fixture/mock 開發，但三部分同檔單 owner，不能把它們當無衝突的多人寫檔工作。"
+    },
+    {
+      "id": "RT-FSP",
+      "title": "有界檔案讀取與 Preview 併行/回收",
+      "auditIds": [
+        "R10",
+        "R11",
+        "R12"
+      ],
+      "featureIds": [],
+      "owner": "File/Preview runtime owner",
+      "files": [
+        "src-tauri/src/fs_service.rs",
+        "src-tauri/src/preview_server.rs"
+      ],
+      "requires": [
+        "ALIGN-HOST"
+      ],
+      "mockAfter": [],
+      "deliverable": "在同一 opened handle 實施 cap+1 讀取、縮短 preview sessions 鎖、bounded request workers/streaming、HEAD metadata 路徑、revoke/deadline，以及 expired/inactive session 清理與新 admission 上限。",
+      "gate": "檔案 stat 後成長、慢 reader、並行 assets、revoke/stop 及 expired token fixtures；既有 discovery/serve cap、pinned capability、CSP/token/allowlist 保護不退化。pinned session 滿額時拒絕新工作，不強制回收仍在使用者前景中的資源。",
+      "note": "可與其他 runtime 包平行。path_capability.rs 是共同邊界，不屬此包直接寫入範圍；所需 API 變更交整合者。Preview workers 可平行讀，但 revoke/generation authority 不能為吞吐放寬。 Live drift：底層讀寫／分類／capability 已搬入 host crate，先對齊後再修改，不能只修 desktop facade；不依賴該邊界的 fixture 可先準備。"
+    },
+    {
+      "id": "RT-PROC",
+      "title": "Process 輸出有界 parser、tail 與事件 batching",
+      "auditIds": [
+        "R13"
+      ],
+      "featureIds": [],
+      "owner": "Process runtime owner",
+      "files": [
+        "src-tauri/src/process_service.rs"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "將逐行無界累積改為 bounded chunk parser，tail 同時限制 bytes/行數，保留 continuation/truncated 訊號並batch IPC；維持 ready URL/port detection 的 rolling window 與 process ownership。",
+      "gate": "100 MiB 無換行、十萬短行、跨chunk ready URL、stderr tail 與停止情境；parser/RSS/IPC有界、偵測正確、FD回收。診斷tail可明確截斷，不能誤把terminal完整輸出套用相同丟棄政策。",
+      "note": "可獨立開發。process_kill.rs 的共同期限/kill helper 由整合者修改，避免與 Git/LSP 形成三套不一致的終止策略；不得停止不屬此 manager 的程序。"
+    },
+    {
+      "id": "RT-PERF",
+      "title": "Perf 單次取樣與 terminal high-water 回收",
+      "auditIds": [
+        "R14",
+        "F12"
+      ],
+      "featureIds": [],
+      "owner": "Performance telemetry owner",
+      "files": [
+        "src-tauri/src/perf_service.rs",
+        "src/workbench/PerfBridge.tsx"
+      ],
+      "requires": [],
+      "mockAfter": [],
+      "deliverable": "實作 sampling singleflight/generation、背景/idle排程與程序資訊快取；歷史 terminal high-water fold 入 cumulative scalar 後刪除inactive entry，保持重連/同ID不重複計數。",
+      "gate": "取樣耗時超過interval仍最多一個 in-flight；focus切換/晚到結果正確；10k unique terminal建立關閉後map回落、cumulative值單調且無漏重，取樣自身CPU/延遲可量測。",
+      "note": "F12與R14共用 PerfBridge，應由同 owner 交付；不需要等待 SH-F 的queue內部最佳化。若修改共同metrics registry契約需協作，但不是 runtime 真相依；資源壓力不得令監控直接停止 active terminal。"
+    }
+  ],
+  "locks": [
+    {
+      "files": [
+        "src-tauri/src/ssh_service.rs"
+      ],
+      "owner": "SSH/SFTP backend owner",
+      "tasks": [
+        "SH-B"
+      ],
+      "reason": "S01–S06/S09/S10/S12修改同一檔案及session lifecycle。這是同檔ownership限制，不代表所有SSH/SFTP runtime I/O需全域序列化；未先完成模組拆分時只允許一個writer。"
+    },
+    {
+      "files": [
+        "src-tauri/src/sftp_transport.rs"
+      ],
+      "owner": "SFTP adapter owner",
+      "tasks": [
+        "SH-A"
+      ],
+      "reason": "規劃新增adapter由獨立owner寫，讓其能與ssh_service backend平行開發。adapter真交付是SH-B production硬相依；共享contract可先mock。"
+    },
+    {
+      "files": [
+        "src/state/sftpStore.ts",
+        "src/state/sshStore.ts",
+        "src/app/panels/SshPanel.tsx",
+        "src/terminal/SshTerminalSession.tsx",
+        "src/terminal/terminalOutputQueue.ts"
+      ],
+      "owner": "SSH/SFTP frontend owner",
+      "tasks": [
+        "SH-F"
+      ],
+      "reason": "S01/S03/S07/S08/S11與F10共享store/terminal生命週期，集中ownership避免其他frontend包同時改queue、listeners與清理語意。"
+    },
+    {
+      "files": [
+        "src-tauri/src/git_service.rs",
+        "src-tauri/src/git_log.rs"
+      ],
+      "owner": "Git runtime owner",
+      "tasks": [
+        "RT-GIT"
+      ],
+      "reason": "R07/R08都重寫run_git_inner；R15 batch stdin與其byte/deadline契約需一起驗證。檔案衝突不能誤畫成獨立的前後功能依賴。"
+    },
+    {
+      "files": [
+        "src-tauri/src/lsp_service.rs"
+      ],
+      "owner": "LSP backend owner",
+      "tasks": [
+        "RT-LSP"
+      ],
+      "reason": "writer、stop、cancel和H02 trace producer共用檔案与server ownership；frontend LSP work可依LS-C平行mock，但不取得這份Rust檔案ownership。"
+    },
+    {
+      "files": [
+        "src-tauri/src/logging.rs"
+      ],
+      "owner": "Logging owner",
+      "tasks": [
+        "RT-LOG"
+      ],
+      "reason": "writer、rotation、retention、cursor/export共享檔案與segment狀態，單一owner。LG-C是可先交付的契約，不要求RT-LSP等整個logging實作。"
+    },
+    {
+      "files": [
+        "src-tauri/src/fs_service.rs",
+        "src-tauri/src/preview_server.rs"
+      ],
+      "owner": "File/Preview runtime owner",
+      "tasks": [
+        "RT-FSP"
+      ],
+      "reason": "read cap、request concurrency、revoke及TTL共用opened-handle/session語意；同包整合，其他runtime包可獨立平行。"
+    },
+    {
+      "files": [
+        "src-tauri/src/process_service.rs"
+      ],
+      "owner": "Process runtime owner",
+      "tasks": [
+        "RT-PROC"
+      ],
+      "reason": "bounded parser、tail、ready detection與event batching需一起保留語意；共同process-kill helper仍由整合者維護。"
+    },
+    {
+      "files": [
+        "src-tauri/src/perf_service.rs",
+        "src/workbench/PerfBridge.tsx"
+      ],
+      "owner": "Performance telemetry owner",
+      "tasks": [
+        "RT-PERF"
+      ],
+      "reason": "R14/F12在相同取樣/報告路徑，避免其他frontend worker同時改PerfBridge；不因此把telemetry綁成SSH或DB交付硬相依。"
+    },
+    {
+      "files": [
+        "src-tauri/src/lib.rs"
+      ],
+      "owner": "共同整合者（此片段不建立整合task）",
+      "tasks": [
+        "SH-A",
+        "SH-B",
+        "RT-GIT",
+        "RT-LSP",
+        "RT-LOG",
+        "RT-FSP",
+        "RT-PROC",
+        "RT-PERF"
+      ],
+      "reason": "module/command/state註冊與全app shutdown集中寫入。各service先提供idempotent bounded stop/report；不同service可在共同deadline平行清理，但log最後drain，DB保留其transaction清理順序。"
+    },
+    {
+      "files": [
+        "src-tauri/Cargo.toml",
+        "src-tauri/Cargo.lock"
+      ],
+      "owner": "共同整合者（此片段不建立整合task）",
+      "tasks": [
+        "SH-A",
+        "RT-GIT",
+        "RT-LSP",
+        "RT-LOG",
+        "RT-FSP",
+        "RT-PROC",
+        "RT-PERF"
+      ],
+      "reason": "dependency/feature/patch resolution只由整合者寫。SFTP adapter可能需要最小dependency patch；其他owner提交需求，不各自更新lockfile。共享Rust build/依賴解析也應集中排程。"
+    },
+    {
+      "files": [
+        "src/lib/ipc.ts",
+        "src/lib/types.ts"
+      ],
+      "owner": "共同整合者（此片段不建立整合task）",
+      "tasks": [
+        "SH-B",
+        "SH-F",
+        "RT-GIT",
+        "RT-LSP",
+        "RT-LOG",
+        "RT-FSP",
+        "RT-PROC",
+        "RT-PERF"
+      ],
+      "reason": "共同IPC與DTO檔案集中寫；domain owner先交signature/error/event契約，frontend可mock。此為檔案整合鎖，不把所有消費者互列成production硬相依。"
+    },
+    {
+      "files": [
+        "src-tauri/src/path_capability.rs"
+      ],
+      "owner": "共同整合者（此片段不建立整合task）",
+      "tasks": [
+        "SH-B",
+        "RT-FSP"
+      ],
+      "reason": "SFTP一次性source/destination capability與Preview pinned-handle共用安全邊界；只接受必要的共同API變更，保留trust、safe leaf、handle-relative操作與ownership。"
+    },
+    {
+      "files": [
+        "src-tauri/src/process_kill.rs"
+      ],
+      "owner": "共同整合者（此片段不建立整合task）",
+      "tasks": [
+        "RT-GIT",
+        "RT-LSP",
+        "RT-PROC"
+      ],
+      "reason": "Git/LSP/Process使用同一owned process-tree終止能力。若需deadline helper集中實作一次，不能由各worker各改kill/reap或shutdown行為。"
+    }
+  ]
+}

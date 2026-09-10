@@ -58,6 +58,23 @@ describe("release workflow contracts", () => {
     )
   })
 
+  it.each(["stable", "candidate"])("rejects an Intel or universal macOS App in the %s matrix", (lane) => {
+    const result = spawnSync("bun", ["-e", `
+      import { parseReleaseWorkflow, verifyStableReleaseContract, verifyBetaReleaseContract } from "./scripts/release-contract.ts";
+      const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+      const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+      if (${JSON.stringify(lane)} === "stable") {
+        release.jobs.build.strategy.matrix.include[0].build_args = "--target universal-apple-darwin";
+        verifyStableReleaseContract(release);
+      } else {
+        ci.jobs["release-candidate"].strategy.matrix.include[0]["rust-targets"] = "x86_64-apple-darwin";
+        verifyBetaReleaseContract(release, ci);
+      }
+    `], { encoding: "utf8" })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("must target Apple Silicon only")
+  })
+
   it("rejects mutable action refs and accepts full commit pins", () => {
     expect(isPinnedReleaseActionRef("actions/checkout@v4")).toBe(false)
     expect(isPinnedReleaseActionRef("dtolnay/rust-toolchain@stable")).toBe(false)
@@ -317,7 +334,7 @@ describe("release workflow contracts", () => {
 
     const stable = run(
       "verifyStableReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Build signed and notarized stable macOS installers").run = "bun tauri build --ci"; verifyStableReleaseContract(release);`
+      `release.jobs.build.steps.find((step) => step.name === "Build stable macOS installers without Apple signing").run = "bun tauri build --ci"; verifyStableReleaseContract(release);`
     )
     expect(stable.status).not.toBe(0)
     expect(stable.stderr).toContain("generated numeric WiX version override")
@@ -400,7 +417,7 @@ describe("release workflow contracts", () => {
     expect(result.stderr).toContain("Windows installers must verify native and Unix runtime payloads")
   })
 
-  it("keeps stable macOS fail-closed while requiring beta macOS to remain unsigned", () => {
+  it("omits Apple signing while preserving stable updater signatures and beta isolation", () => {
     const run = (contract: string, mutation: string) => spawnSync(
       "bun",
       ["-e", `
@@ -412,12 +429,12 @@ describe("release workflow contracts", () => {
       { encoding: "utf8" }
     )
 
-    const missingImport = run(
+    const appleCredentials = run(
       "verifyStableReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Import Developer ID Application certificate").run = "true"; verifyStableReleaseContract(release);`
+      `release.jobs.build.steps.find((step) => step.name === "Build stable macOS installers without Apple signing").env.APPLE_ID = "\${{ secrets.APPLE_ID }}"; verifyStableReleaseContract(release);`
     )
-    expect(missingImport.status).not.toBe(0)
-    expect(missingImport.stderr).toContain("import and verify a Developer ID Application")
+    expect(appleCredentials.status).not.toBe(0)
+    expect(appleCredentials.stderr).toContain("must not require Apple credentials or notarization")
 
     const signedBeta = run(
       "verifyBetaReleaseContract",
@@ -426,12 +443,12 @@ describe("release workflow contracts", () => {
     expect(signedBeta.status).not.toBe(0)
     expect(signedBeta.stderr).toContain("must disable OS and updater signing")
 
-    const noGatekeeper = run(
+    const noUpdaterSigning = run(
       "verifyStableReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Verify macOS Developer ID signature, Gatekeeper, and notarization").run = "codesign --verify --deep --strict app"; verifyStableReleaseContract(release);`
+      `release.jobs.build.steps.find((step) => step.name === "Build stable macOS installers without Apple signing").run += " --no-sign"; verifyStableReleaseContract(release);`
     )
-    expect(noGatekeeper.status).not.toBe(0)
-    expect(noGatekeeper.stderr).toContain("Gatekeeper, or stapling failure")
+    expect(noUpdaterSigning.status).not.toBe(0)
+    expect(noUpdaterSigning.stderr).toContain("must retain updater signing and artifacts")
   })
 
   it("uses one bounded canonical-mirror installer for both Linux CI jobs", () => {

@@ -1,4 +1,5 @@
 import { useUiStore } from "../state/uiStore"
+import { memo } from "react"
 import { FileCode2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -16,6 +17,10 @@ import { TabBar } from "./TabBar"
 import { MarkdownPreview } from "./MarkdownPreview"
 import { ImageView, isImagePath } from "./ImageView"
 import { SvgSplitView, isSvgPath } from "./SvgSplitView"
+
+// Keep background terminal trees mounted without rerendering every one when
+// only the active tab changes. Runtime subscriptions still update each page.
+const StableHerdrTerminalPage = memo(HerdrTerminalPage)
 
 const ACTION_BUTTON_CLASS =
     "flex size-[28px] items-center justify-center rounded-[9px] transition-all duration-150"
@@ -97,16 +102,16 @@ export function EditorArea() {
                                     <div
                                         key={tab.path}
                                         className={cn(
-                                            "absolute inset-0 min-h-0 min-w-0 transition-opacity duration-75 ease-out",
+                                            "absolute inset-0 min-h-0 min-w-0",
                                             tabVisible
-                                                ? "opacity-100 pointer-events-auto"
-                                                : "opacity-0 pointer-events-none"
+                                                ? "visible pointer-events-auto"
+                                                : "invisible pointer-events-none"
                                         )}
                                         aria-hidden={!tabVisible}
                                         inert={!tabVisible}
                                         data-testid={`herdr-page-layer-${tab.path}`}
                                     >
-                                        <HerdrTerminalPage
+                                        <StableHerdrTerminalPage
                                             herdrSessionId={tab.herdrSessionId!}
                                             terminalId={tab.terminalId!}
                                             paneId={tab.paneId}

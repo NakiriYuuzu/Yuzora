@@ -1,10 +1,17 @@
-/* global document, window, localStorage, matchMedia, IntersectionObserver, requestAnimationFrame, performance, fetch, setInterval, navigator */
+/* global getComputedStyle, URLSearchParams, document, window, localStorage, matchMedia, IntersectionObserver, requestAnimationFrame, performance, fetch, setInterval, navigator */
 
 import { initDownloadExperience } from "./downloads.js";
 
 /* ============ i18n ============ */
 const I18N = {
   "zh-Hant": {
+    "nav.demo": "試用 Demo",
+    "demo.title": "先玩一下，再一起開工。",
+    "demo.description": "打開檔案、試試 Git diff、跑一段示範 SQL，或幫工作面換個顏色。你的 Space 夥伴也在等你。",
+    "demo.open": "開啟互動 Demo ↗",
+    "demo.note": "使用範例資料，操作只保留在此瀏覽器分頁。",
+    "demo.load": "點一下，進入你的示範工作面 →",
+
     "meta.title": "Yuzora · ADE × HERDR",
     "meta.description": "Yuzora 是融合 Agent Development Environment 與 HERDR runtime 的開源桌面工作面。Spaces、Sessions、Agents、編輯器、終端機、SSH 與資料庫，同一個環境。",
     "meta.ogDescription": "讓 agent 開發，直接運轉在 HERDR。開源桌面 ADE：Spaces、Sessions、Agents 與編輯器、終端機、SSH、資料庫共用同一個工作面。",
@@ -13,12 +20,31 @@ const I18N = {
     "a11y.footerNav": "頁尾連結",
     "nav.features": "功能",
     "nav.boundary": "邊界",
+    "nav.brand": "品牌",
+    "brand.title": "三個折面，一個 Yuzora。",
+    "brand.intro": "銀色、鈷藍與海玻璃綠交會成 Y，像分頭展開的工作，回到同一個安定的中心。",
+    "brand.lockup": "標誌與字標",
+    "brand.lockupAlt": "Yuzora 品牌標誌與字標",
+    "brand.lockupCaption": "獨立的折面，連續的方向。字標保留清楚、開放的閱讀節奏。",
+    "brand.geometry": "幾何構成",
+    "brand.geometryAlt": "Yuzora 標誌的網格、折線與間距構成",
+    "brand.geometryCaption": "256 單位母版、16 單位網格，中央保留 12 單位的呼吸間距。",
+    "brand.symbol": "App 圖示與標誌",
+    "brand.symbolCaption": "App 圖示、介面標誌與分頁圖示，共用同一組主題色。",
+    "brand.mono": "單色也清晰",
+    "brand.monoAlt": "Yuzora 單色標誌",
+    "brand.monoCaption": "保留折面的留白，深色與淺色背景都能辨識。",
+    "brand.theme": "與主題一起變化",
+    "brand.themeCaption": "選一個喜歡的顏色。Logo、App 圖示與整個頁面，會一起換上新的表情。",
+    "brand.downloadMark": "下載純標誌 SVG",
+    "brand.downloadLockup": "下載含文字 SVG",
+    "brand.downloadGeometry": "幾何構成 SVG",
     "nav.cta": "下載 Yuzora",
     "nav.theme": "切換深淺色",
     "nav.language": "切換語言",
     "palette.search": "搜尋示範命令",
     "media.adeHerdr": "Yuzora 的 Spaces、Sessions、Agents 與 HERDR 終端工作面",
-    "media.remoteDb": "Yuzora 的 SSH、SFTP 與資料庫工作面",
+    "media.remoteDb": "Yuzora 的資料庫查詢、結果與主題設定",
     "media.terminalGit": "Yuzora 的終端機與 Git 工作面",
     "github.stars": "GitHub 星標數：{{count}}",
     "hero.kicker": "開源桌面 ADE · HERDR RUNTIME",
@@ -40,10 +66,10 @@ const I18N = {
     "show.h2": "整條開發動線，收進同一個工作面",
     "show.mainT": "Spaces × Sessions × Agents",
     "show.mainD": "Space rail、named Sessions、Attention 與 BSP terminal pages 同屏運轉；每個 Yuzora page 對應一個 HERDR tab。",
-    "show.remoteT": "遠端與資料庫，也在同一格",
-    "show.remoteD": "SSH 主機連線與 SFTP 雙欄傳輸；SQLite、PostgreSQL 與 MSSQL 連線、物件樹與 SQL 查詢，結果直接分頁呈現。",
+    "show.remoteT": "資料與主題，都在同一個工作面",
+    "show.remoteD": "瀏覽資料表、執行 SQL 並查看結果。示範介面使用範例資料，也能即時切換深淺模式與主題色。",
     "show.gitT": "終端機與 git 同步呼吸",
-    "show.gitD": "終端機跑 cherry-pick 與 push，git graph 即時長出新節點，main 與 origin/main 的 refs 跟著移動。",
+    "show.gitD": "在整合與並排 diff 之間切換，逐行檢視變更，再回到終端機查看專案狀態。",
     "bento.h2": "細節也照顧到了",
     "bento.aD": "搜尋或執行命令，鍵盤不離手。往下打幾個字試試。",
     "bento.aPh": "搜尋或執行命令",
@@ -70,14 +96,14 @@ const I18N = {
     "bound.c3d": "typed IPC，mutation 依 capability 把關",
     "dl.kicker": "夕空下的 agent development environment",
     "dl.h2": "選你的平台，開始使用。",
-    "dl.macD": "Apple Silicon 與 Intel 通用映像檔",
+    "dl.macD": "僅支援 Apple Silicon（M 系列）",
     "dl.macBtn": "下載 .dmg",
     "dl.winD": "x64 安裝程式",
     "dl.winBtn": "下載 .exe",
     "dl.build": "想自己建置：<code>bun install</code>，然後 <code>bun run tauri:build</code>。",
     "dl.all": "所有版本與更新紀錄",
     "dl.recommended": "適合此裝置",
-    "dl.device.macos": "已辨識：macOS · Universal",
+    "dl.device.macos": "已辨識：macOS · 安裝檔僅適用 Apple Silicon",
     "dl.device.windows": "已辨識：Windows · x64",
     "dl.device.unsupported": "僅支援 macOS 與 Windows 桌面裝置",
     "dl.device.unsupportedArchitecture": "此裝置架構尚未提供安裝檔",
@@ -85,6 +111,13 @@ const I18N = {
     "foot.tag": "ADE × HERDR，開源的桌面工作面。",
   },
   "en": {
+    "nav.demo": "Try Demo",
+    "demo.title": "A little play. A lot of possibility.",
+    "demo.description": "Open a file, explore a Git diff, run a sample query, or find your favorite color. Your Space companions are waiting.",
+    "demo.open": "Open interactive demo ↗",
+    "demo.note": "Sample data. Changes stay in this browser tab.",
+    "demo.load": "Click to enter your demo workspace →",
+
     "meta.title": "Yuzora · ADE × HERDR",
     "meta.description": "Yuzora is an open-source desktop Agent Development Environment powered by the HERDR runtime, with Spaces, Sessions, Agents, editor, terminal, SSH and databases in one workspace.",
     "meta.ogDescription": "Build with agents and run directly on HERDR. Spaces, Sessions, Agents, editor, terminal, SSH and databases share one open-source desktop workspace.",
@@ -93,12 +126,31 @@ const I18N = {
     "a11y.footerNav": "Footer links",
     "nav.features": "Features",
     "nav.boundary": "Boundary",
+    "nav.brand": "Brand",
+    "brand.title": "Three planes. One Yuzora.",
+    "brand.intro": "Silver, cobalt and sea glass meet in a Y: separate paths of work returning to one steady center.",
+    "brand.lockup": "Symbol & wordmark",
+    "brand.lockupAlt": "Yuzora brand symbol and wordmark",
+    "brand.lockupCaption": "Independent planes, a shared direction. Open letterforms keep the name clear and readable.",
+    "brand.geometry": "Construction",
+    "brand.geometryAlt": "Yuzora symbol construction grid, folds and spacing",
+    "brand.geometryCaption": "A 256-unit master on a 16-unit grid, with a 12-unit seam at the center.",
+    "brand.symbol": "App icon & symbol",
+    "brand.symbolCaption": "App icons, interface symbols and the favicon share the same theme palette.",
+    "brand.mono": "Clear in one color",
+    "brand.monoAlt": "Yuzora monochrome symbol",
+    "brand.monoCaption": "Open spaces between the planes preserve the silhouette on light and dark surfaces.",
+    "brand.theme": "In tune with the theme",
+    "brand.themeCaption": "Pick your favorite color. The logo, app icon and entire page change together.",
+    "brand.downloadMark": "Download symbol SVG",
+    "brand.downloadLockup": "Download wordmark SVG",
+    "brand.downloadGeometry": "Construction SVG",
     "nav.cta": "Download Yuzora",
     "nav.theme": "Toggle color theme",
     "nav.language": "Switch language",
     "palette.search": "Search demo commands",
     "media.adeHerdr": "Yuzora Spaces, Sessions, Agents and HERDR terminal workspace",
-    "media.remoteDb": "Yuzora SSH, SFTP and database workspace",
+    "media.remoteDb": "Yuzora database queries, results and theme settings",
     "media.terminalGit": "Yuzora terminal and Git workspace",
     "github.stars": "GitHub stars: {{count}}",
     "hero.kicker": "OPEN-SOURCE DESKTOP ADE · HERDR RUNTIME",
@@ -120,10 +172,10 @@ const I18N = {
     "show.h2": "One workspace for the whole dev loop",
     "show.mainT": "Spaces × Sessions × Agents",
     "show.mainD": "Space rail, named Sessions, Attention and BSP terminal pages run side by side; every Yuzora page maps to a HERDR tab.",
-    "show.remoteT": "Remote and databases, same surface",
-    "show.remoteD": "SSH host connections and dual-pane SFTP; SQLite, PostgreSQL and MSSQL connections with object trees, SQL queries and paged results.",
+    "show.remoteT": "Your data. Your workspace.",
+    "show.remoteD": "Browse tables, run SQL and explore the results. This interactive preview uses sample data and lets you change the appearance and accent instantly.",
     "show.gitT": "Terminal and git, in step",
-    "show.gitD": "Run a cherry-pick and push in the terminal; the git graph grows a new node and the main and origin/main refs move in step.",
+    "show.gitD": "Switch between unified and split diffs, review changes line by line, then return to the terminal to check your project.",
     "bento.h2": "The details are covered",
     "bento.aD": "Search or run any command without leaving the keyboard. Type below to try it.",
     "bento.aPh": "Search or run a command",
@@ -150,14 +202,14 @@ const I18N = {
     "bound.c3d": "Typed IPC; mutations gated by capability",
     "dl.kicker": "agent development under the evening sky",
     "dl.h2": "Pick your platform and go.",
-    "dl.macD": "Universal image for Apple Silicon and Intel",
+    "dl.macD": "Apple Silicon (M series) only",
     "dl.macBtn": "Download .dmg",
     "dl.winD": "x64 installer",
     "dl.winBtn": "Download .exe",
     "dl.build": "Build it yourself: <code>bun install</code>, then <code>bun run tauri:build</code>.",
     "dl.all": "All releases and notes",
     "dl.recommended": "Recommended",
-    "dl.device.macos": "Detected: macOS · Universal",
+    "dl.device.macos": "Detected: macOS · Installer requires Apple Silicon",
     "dl.device.windows": "Detected: Windows · x64",
     "dl.device.unsupported": "Available for macOS and Windows desktop devices",
     "dl.device.unsupportedArchitecture": "No installer is available for this device architecture yet",
@@ -280,6 +332,7 @@ function applyLang(lang) {
     if (wasPlaying && !document.hidden) video.play().catch(() => {});
   });
   document.getElementById("lang-toggle").textContent = lang === "en" ? "中文" : "EN";
+  updateDemoLinks();
   waveKicker();
   renderPalette(lang, document.getElementById("mp-input").value);
   try { localStorage.setItem(LANG_KEY, lang); } catch { /* storage unavailable */ }
@@ -332,6 +385,7 @@ const THEME_KEY = "yuzora-theme";
 const themeMeta = document.querySelector('meta[name="theme-color"]');
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
+  updateBrandFavicon();
   if (themeMeta) themeMeta.setAttribute("content", theme === "dark" ? "#12141f" : "#ffffff");
 }
 applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light");
@@ -515,3 +569,44 @@ document.addEventListener("visibilitychange", syncVideoPlayback);
 /* ============ 平台偵測下載（downloads.js 契約） ============ */
 document.documentElement.classList.remove("no-js");
 void initDownloadExperience(navigator, document);
+
+/* Brand colors use the same five choices as the desktop app. */
+function updateBrandFavicon() {
+  const source = document.getElementById("yuzora-mark");
+  if (!source) return;
+  const style = getComputedStyle(document.documentElement);
+  const paths = source.innerHTML.replace(/var\((--[\w-]+),\s*[^)]+\)/g, (_, token) => style.getPropertyValue(token).trim());
+  document.querySelector('link[rel="icon"]').href = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">${paths}</svg>`)}`;
+}
+function updateDemoLinks() {
+  const params = new URLSearchParams({ lang: document.documentElement.lang === "en" ? "en" : "zh-TW", accent: document.documentElement.dataset.accent || "blue", theme: document.documentElement.dataset.theme || "light" });
+  document.querySelectorAll("[data-demo-link]").forEach(link => { link.href = `demo/?${params}`; });
+}
+function applyBrandAccent(name) {
+  const colors = {lime:["#86b81f","134,184,31","#5f8c1e"],blue:["#2f6bff","47,107,255","#2456cc"],violet:["#7b5bff","123,91,255","#5d3fd3"],coral:["#ff6b54","255,107,84","#c0562f"],amber:["#e0a11f","224,161,31","#a8690f"]};
+  const color = colors[name] || colors.blue;
+  const root = document.documentElement;
+  root.dataset.accent = colors[name] ? name : "blue";
+  root.style.setProperty("--accent",color[0]);
+  root.style.setProperty("--accent-rgb",color[1]);
+  root.style.setProperty("--accent-ink",color[2]);
+  document.querySelectorAll("[data-brand-accent]").forEach(button => button.setAttribute("aria-pressed",String(button.dataset.brandAccent === root.dataset.accent)));
+  updateBrandFavicon();
+  updateDemoLinks();
+}
+let savedAccent = "blue";
+try { savedAccent = localStorage.getItem("yuzora-accent") || "blue"; } catch { /* private browsing */ }
+applyBrandAccent(savedAccent);
+document.querySelectorAll("[data-brand-accent]").forEach(button => button.addEventListener("click", () => {
+  applyBrandAccent(button.dataset.brandAccent);
+  try { localStorage.setItem("yuzora-accent", button.dataset.brandAccent); } catch { /* private browsing */ }
+}));
+document.getElementById("theme-toggle").addEventListener("click", updateDemoLinks);
+document.getElementById("demo-launch").addEventListener("click", () => {
+  const frame = document.createElement("iframe");
+  frame.src = document.querySelector("[data-demo-link]").href;
+  frame.title = "Yuzora interactive demo";
+  frame.className = "demo-frame";
+  document.getElementById("demo-frame-host").appendChild(frame);
+  document.getElementById("demo-launch").hidden = true;
+});

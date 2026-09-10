@@ -1,0 +1,70 @@
+{
+  "date": "2026-09-06",
+  "entries": 55,
+  "sourceFiles": 46,
+  "priorityCounts": {
+    "P1": 11,
+    "P2": 38,
+    "P3": 6
+  },
+  "offlineDomChecks": "PASS: audit-commit source paths/line bounds, ids, filters, search, empty state, expand/collapse, attachments, anchors",
+  "sourceRevision": "9d0634c44e314b3dcc1c39b371ed448481b2f16a",
+  "errors": [],
+  "qaRuntime": "Node + jsdom; Bun VM proxy limitation required Node for offline script execution.",
+  "visualCheck": "Not performed: browser URL policy blocked local file preview. No browser workaround attempted.",
+  "tests": {
+    "frontend": 60,
+    "rustSearch": 9,
+    "rustPreview": 8,
+    "rustResultSession": 15,
+    "total": 92
+  },
+  "build": "typecheck + Vite passed; cargo build --locked --bin yuzora passed (reported by database agent)",
+  "securityFinding": "schema valid, independent source verification VERIFIED; one local synthetic-password reproduction reported by database agent",
+  "executionPlanning": {
+    "date": "2026-09-06",
+    "productImplementation": "This documentation task did not implement product changes; all planned work packages await implementation acceptance.",
+    "counts": {
+      "auditItems": 55,
+      "features": 4,
+      "workPackages": 44,
+      "integrationGates": 5,
+      "totalTasks": 49,
+      "ownedPaths": 87
+    },
+    "checks": "scope coverage, implementation mappings, task references, acyclic requires/mockAfter DAG, unique effective writers, rendered tasks, filters, deep links, attachments",
+    "status": "PASS",
+    "productTestsRerunForDocumentUpdate": false,
+    "concurrentWorkAlignment": {
+      "assessedAt": "2026-09-06T09:56:48.762Z",
+      "basis": "本輪文件生成期間的唯讀 git diff 與 live source 快照；不是持續監控。",
+      "affectedTasks": [
+        "SH-C",
+        "SH-A",
+        "SH-B",
+        "SH-F",
+        "RT-FSP",
+        "INT",
+        "FE-Herdr"
+      ],
+      "summary": "其他工作者正在抽出 host crate 與 runtime identity。path_capability 原實作已移至 host/src，desktop 檔案成為 facade；sftp_edit 已提供 raw session／posix-rename 路徑，不能再按舊稽核位置寫第二套 adapter。",
+      "paths": [
+        "src-tauri/Cargo.toml",
+        "src-tauri/Cargo.lock",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/ssh_service.rs",
+        "src-tauri/src/path_capability.rs",
+        "src-tauri/src/file_content.rs",
+        "src-tauri/src/host_service.rs",
+        "src-tauri/src/sftp_edit.rs",
+        "src-tauri/host/",
+        "src/lib/herdrNormalize.ts",
+        "src/lib/herdrNormalize.test.ts",
+        "src/lib/runtimeIdentity.ts",
+        "src/lib/runtimeIdentity.test.ts"
+      ],
+      "rule": "所有 ownership 表是交接後的目標分工；交接前維持現有工作者 writer。SH-C 與 RT-FSP 的正式交付需 ALIGN-HOST；SH-F 純 F10 queue 內部工作與 FE-Herdr 目前 runtime 內的最佳化可先行，接線再對齊。"
+    },
+    "historicalAuditResults": "The 92 tests and build results above belong to the original audit, not this documentation update."
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "method": "DOM button text sampled every 100 ms through installed Yuzora WebView2",
+  "rows": [
+    {
+      "utc": "2026-09-06T05:06:32.860Z",
+      "text": "π - yuuzuWSL Verify 20260906working"
+    },
+    {
+      "utc": "2026-09-06T05:06:36.455Z",
+      "text": "π - yuuzuWSL Verify 20260906idle"
+    }
+  ]
+}

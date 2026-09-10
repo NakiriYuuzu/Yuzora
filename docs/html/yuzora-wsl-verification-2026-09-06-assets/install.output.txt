@@ -1,0 +1,58 @@
+{
+    "installerExit":  0,
+    "appRoot":  "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora",
+    "exeVersion":  "0.0.9-beta.3",
+    "herdrVersion":  "herdr 0.8.2",
+    "payload":  [
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\herdr-plugin.toml",
+                        "sha256":  "6D5138D08D606B9CD4B6DDA7BFCAA599A9227249B73849007A316910128542ED",
+                        "bytes":  2919
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\README.md",
+                        "sha256":  "464D2FE2006C47D8D62B8890158A2CC5EFAB742BAB59A0CA6DBA56BD359063FC",
+                        "bytes":  5091
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\adapters\\install.sh",
+                        "sha256":  "E6E00A196BD0DFB849096878EC9204F8F34DE2E704A46D78C1FB280FCD0D6851",
+                        "bytes":  5095
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\adapters\\common\\herdr-wsl-report",
+                        "sha256":  "D4FCB1D7EDB84392AA91B04006AE57006EDB20ACFB79C0CB7D21915E7F68301B",
+                        "bytes":  7779
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\adapters\\pi\\yuzora-herdr-wsl.ts",
+                        "sha256":  "10906CFB9987261D30E23E6AF6FD615BBCAB599D9F7089FA12F64FD8310A0167",
+                        "bytes":  9884
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\scripts\\check-status.ps1",
+                        "sha256":  "87F498322D4E39BA4A41588E9458830CDA6AA81BA3B7788F1FF44807AC5A7757",
+                        "bytes":  215
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\scripts\\common.ps1",
+                        "sha256":  "0BCAE77EC9B6147D9AE17151728D72233178EC46FC3BEC548756678211511CEE",
+                        "bytes":  14774
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\scripts\\manage-adapters.ps1",
+                        "sha256":  "BFD3D44F6E94781622A2A82073E45535C46CAD02FD1CB692AB100D3A0A329616",
+                        "bytes":  948
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\scripts\\manage-bundled-plugin.ps1",
+                        "sha256":  "82F71235A37D157059DFFEA8DFC72CA568D7468274E82F49E391C22E3C2530B2",
+                        "bytes":  7711
+                    },
+                    {
+                        "path":  "herdr-plugins\\yuzora-wsl-agents\\scripts\\open-pane.ps1",
+                        "sha256":  "CF0E3168DA08F2A438DEAACF56A65930C4B6EF861A4CB8DD7408802998A316CB",
+                        "bytes":  2078
+                    }
+                ]
+}

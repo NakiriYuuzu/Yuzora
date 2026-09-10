@@ -1,17 +1,15 @@
-import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions";
-import { Separator } from "@/components/ui/separator";
-
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
-  FolderOpen,
   FolderPlus,
   Layers,
   Plus,
   RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,8 +22,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useHerdrStore } from "@/state/herdrStore";
 import { sessionScope } from "@/lib/herdrProvider";
-import { pickWorkspace } from "@/lib/workspaceActions";
 import { runtimeSessionLabel } from "./spaceTreeIdentity";
+import { HerdrSessionPicker } from "./HerdrSessionPicker";
 
 export function HerdrLauncher({
   scope,
@@ -39,17 +37,15 @@ export function HerdrLauncher({
   creatingSpace: boolean;
 }) {
   const { t } = useTranslation("spaceTree");
-  const { t: tw } = useTranslation("workbench");
   const sessions = useHerdrStore((s) => s.sessions);
   const selected = useHerdrStore((s) => s.selectedSessionName);
-  const space = useHerdrStore((s) =>
-    s.snapshot?.spaces.find((x) => x.id === s.selectedSpaceId),
-  );
-  const canCreateTerminal = useHerdrStore((s) => s.canCreateTerminal());
   const canCreateSpace = useHerdrStore((s) => s.canCreateSpace());
   const ready = useHerdrStore((s) => s.connectionState === "ready" && !s.errorMessage && s.capabilities?.server.compatible !== false);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
+  const addTrigger = useRef<HTMLButtonElement>(null);
+  const runningSessions = sessions.filter((session) => session.running);
   const label = (id: string) => {
     const session = sessions.find((x) => sessionScope(x) === id);
     return runtimeSessionLabel(id, session);
@@ -66,26 +62,61 @@ export function HerdrLauncher({
       setBusy(false);
     }
   }
+  function openSessionPicker() {
+    setError(null);
+    setSessionPickerOpen(true);
+  }
   return (
     <>
-      <div className="herdr-launcher">
-        <div className="herdr-launcher-row">
+      <Card size="sm" className="herdr-launcher-card">
+        <CardHeader className="items-center">
+          <CardTitle>{t("spacesAndAgents", { ns: "workbenchShell" })}</CardTitle>
+          <CardAction>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button ref={addTrigger} variant="ghost" size="icon-sm" aria-label={t("addMenu")} title={t("addMenu")}>
+                  <Plus aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
+                if (sessionPickerOpen) event.preventDefault();
+              }}>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem
+                    disabled={busy || creatingSpace || !ready || !selected || !canCreateSpace}
+                    onSelect={() => void run(async () => {
+                      if (selected) await onCreateSpace(selected);
+                    })}
+                  >
+                    <FolderPlus aria-hidden="true" />
+                    {t("openFolderAndCreateSpace")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={busy || creatingSpace} onSelect={openSessionPicker}>
+                    <Layers aria-hidden="true" />
+                    {t("addSession")}
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </CardAction>
+        </CardHeader>
+        <CardContent>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
-                variant="ghost"
+                variant="outline"
                 className="herdr-scope-button"
                 aria-label={t("switchSession", {
                   session: scope ? label(scope) : "All",
                 })}
-                title={t("openMenu")}
+                title={scope ? label(scope) : t("allSessions")}
+                disabled={busy}
               >
-                <Layers />
+                <Layers aria-hidden="true" />
                 <span>
-                  <small>Herdr</small>
-                  <strong>{scope ? label(scope) : "All"}</strong>
+                  <strong>{scope ? label(scope) : t("allSessions")}</strong>
                 </span>
-                <ChevronDown />
+                <ChevronDown aria-hidden="true" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
@@ -104,8 +135,8 @@ export function HerdrLauncher({
                   });
                 }}
               >
-                <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
-                {sessions.filter((session) => session.running).map((session) => (
+                <DropdownMenuRadioItem value="all">{t("allSessions")}</DropdownMenuRadioItem>
+                {runningSessions.map((session) => (
                   <DropdownMenuRadioItem
                     key={sessionScope(session)}
                     value={`session:${sessionScope(session)}`}
@@ -117,69 +148,26 @@ export function HerdrLauncher({
               <Separator />
               <DropdownMenuGroup>
                 <DropdownMenuItem
-                  disabled={busy || creatingSpace || !ready || !selected || !canCreateTerminal || (!space && !canCreateSpace)}
-                  onSelect={() =>
-                    void run(async () => {
-                      if (!space && selected) {
-                        await onCreateSpace(selected);
-                        return;
-                      }
-                      const created = await useHerdrStore
-                        .getState()
-                        .createTerminalInSelectedSpace();
-                      if (!created)
-                        throw new Error(
-                          useHerdrStore.getState().errorMessage ??
-                            tw("herdrNav.createFailedUnknown"),
-                        );
-                      await openCreatedHerdrTabAndRequestName({
-                        sessionName: created.herdrSessionId,
-                        workspaceId: created.workspaceId,
-                        terminalId: created.terminalId,
-                        title: created.title,
-                        paneId: created.paneId,
-                        tabId: created.tabId,
-                      });
-                    })
-                  }
-                >
-                  <Plus />
-                  {tw("herdrNav.newTerminal")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
                   disabled={busy}
                   onSelect={() =>
                     void run(() => useHerdrStore.getState().refreshSessions())
                   }
                 >
-                  <RefreshCw />
+                  <RefreshCw aria-hidden="true" />
                   {t("refreshSessions")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={busy}
-                  onSelect={() => void run(() => pickWorkspace())}
-                >
-                  <FolderOpen />
-                  {t("openFolder")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={busy || creatingSpace || !ready || !selected || !canCreateSpace}
-                  onSelect={() =>
-                    void run(async () => {
-                      if (!selected) return;
-                      await onCreateSpace(selected);
-                    })
-                  }
-                >
-                  <FolderPlus />
-                  {tw("herdrNav.createSpaceFromFolder")}
                 </DropdownMenuItem>
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
-      </div>
-      {error && (
+        </CardContent>
+      </Card>
+      {sessionPickerOpen && <HerdrSessionPicker
+        initialSession={scope ?? selected}
+        onSelect={(sessionName) => { onScopeChange(sessionName); setSessionPickerOpen(false); }}
+        onClose={() => setSessionPickerOpen(false)}
+        returnFocusRef={addTrigger}
+      />}
+      {error && !sessionPickerOpen && (
         <p className="herdr-launcher-notice" role="alert">
           {error}
         </p>

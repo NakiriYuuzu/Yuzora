@@ -1,0 +1,32 @@
+{
+  "time": "2026-09-10T02:56:47.0040324+08:00",
+  "backup": "C:\\Users\\Yuuzu\\AppData\\Local\\Temp\\yuzora-candidate-backup-20260910-025646",
+  "changed": [
+    {
+      "path": "yuzora.exe",
+      "newHash": "292AC0556EB74EBBCEC5C94595E938D51A09702893E5E13C52413A7059732D71",
+      "oldHash": "823F94AF97ABD23EC3FBF456AC2B12FB336FDDE82F85C0F110BB961ED3BBA0E7"
+    }
+  ],
+  "verifiedFiles": 25,
+  "herdrBefore": [
+    {
+      "Id": 10076,
+      "StartTime": "2026-09-10T01:45:59.0074832+08:00"
+    },
+    {
+      "Id": 25576,
+      "StartTime": "2026-09-09T23:05:36.6743916+08:00"
+    }
+  ],
+  "herdrAfter": [
+    {
+      "Id": 10076,
+      "StartTime": "2026-09-10T01:45:59.0074832+08:00"
+    },
+    {
+      "Id": 25576,
+      "StartTime": "2026-09-09T23:05:36.6743916+08:00"
+    }
+  ]
+}

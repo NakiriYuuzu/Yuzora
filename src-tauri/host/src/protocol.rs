@@ -36,6 +36,9 @@ pub struct Request {
 )]
 pub enum Operation {
     Hello,
+    ClipboardImage {
+        png_base64: String,
+    },
     Trust {
         call: crate::trust_command::TrustCommand,
     },
@@ -138,6 +141,7 @@ pub struct Hello {
 pub fn methods() -> Vec<String> {
     [
         "hello",
+        "clipboardImage",
         "tcpTunnel",
         "sqlite",
         "trust",

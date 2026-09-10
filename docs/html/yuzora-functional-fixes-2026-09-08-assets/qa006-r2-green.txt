@@ -1,0 +1,8 @@
+Preview focused
+PASS · 7 files / 82 tests
+Command: bun run test -- src/app/panels/previewPanel.test.tsx src/preview src/state/previewStore.test.ts
+Source: /tmp/qa006-r2-green.txt
+
+ Test Files  7 passed (7)
+      Tests  82 passed (82)
+   Duration  9.45s (transform 4.21s, setup 5.52s, import 2.88s, tests 5.43s, environment 8.14s)

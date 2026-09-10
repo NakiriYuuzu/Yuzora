@@ -1,0 +1,49 @@
+{
+  "time": "2026-09-10T01:46:39.0040971+08:00",
+  "binary": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+  "processes": [
+    {
+      "ProcessId": 25576,
+      "ParentProcessId": 2876,
+      "ExecutablePath": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "CommandLine": "\"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe\" server"
+    },
+    {
+      "ProcessId": 10816,
+      "ParentProcessId": 18544,
+      "ExecutablePath": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "CommandLine": "\"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe\" terminal session control term_65b100d27ef781 --cols 72 --rows 30 --takeover"
+    },
+    {
+      "ProcessId": 26916,
+      "ParentProcessId": 18544,
+      "ExecutablePath": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "CommandLine": "\"\\\\?\\C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe\" terminal session control term_65b101ad53e352 --cols 72 --rows 30 --takeover"
+    },
+    {
+      "ProcessId": 10076,
+      "ParentProcessId": 10944,
+      "ExecutablePath": "C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      "CommandLine": "\"C:\\Users\\Yuuzu\\AppData\\Local\\Yuzora\\herdr\\windows-x86_64\\herdr.exe\" --session yuzora-empty-gui-0910 server "
+    }
+  ],
+  "sessions": "{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\",\"socket_path\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\herdr.sock\"},{\"default\":false,\"name\":\"yuzora-empty-gui-0910\",\"running\":true,\"session_dir\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\sessions\\\\yuzora-empty-gui-0910\",\"socket_path\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\sessions\\\\yuzora-empty-gui-0910\\\\herdr.sock\"},{\"default\":false,\"name\":\"yuzora-p8-owner\",\"running\":false,\"session_dir\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\sessions\\\\yuzora-p8-owner\",\"socket_path\":\"C:\\\\Users\\\\Yuuzu\\\\AppData\\\\Roaming\\\\herdr\\\\sessions\\\\yuzora-p8-owner\\\\herdr.sock\"}]}\r\n",
+  "workspaceHelp": "Manage workspaces over the socket API\r\n\r\nUsage: herdr workspace [COMMAND]\r\n\r\nCommands:\r\n  list             List workspaces\r\n  create           Create a workspace\r\n  get              Show a workspace\r\n  focus            Focus a workspace\r\n  rename           Rename a workspace\r\n  report-metadata  Report display-only workspace metadata\r\n  close            Close a workspace\r\n\r\nAre you an AI? Use these resources ONLY IF your task specifically asks you to:\r\n  Help a human understand or set up Herdr for the first time:\r\n    https://herdr.dev/agent-guide.md\r\n  Debug or investigate a problem with Herdr:\r\n    https://herdr.dev/llms.txt\r\n  Control Herdr panes, agents, or workspaces:\r\n    SKIP if a Herdr skill is already in your context. Otherwise run: herdr --skill\r\n\r\n",
+  "workspaces": "{\"id\":\"cli:workspace:list\",\"result\":{\"type\":\"workspace_list\",\"workspaces\":[{\"active_tab_id\":\"w1:t2\",\"agent_status\":\"unknown\",\"focused\":true,\"label\":\"Yuzora-Native-GUI-20260910-011711\",\"number\":1,\"pane_count\":2,\"tab_count\":2,\"workspace_id\":\"w1\"}]}}\r\n",
+  "workspaceExitCode": 0,
+  "shells": [
+    {
+      "Name": "pwsh.exe",
+      "Source": "C:\\Users\\Yuuzu\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "Name": "powershell.exe",
+      "Source": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+    },
+    {
+      "Name": "cmd.exe",
+      "Source": "C:\\WINDOWS\\system32\\cmd.exe"
+    }
+  ],
+  "terminalConfig": []
+}
