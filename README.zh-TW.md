@@ -134,6 +134,8 @@ Agent 由使用者在 HERDR 終端機手動啟動。舊 WSL Pi Plugin、獨立�
 ```bash
 bun install          # 安裝依賴
 bun run tauri:dev    # 啟動桌面 app（dev server :1420）
+bun run site:companions # 產生官網角色
+bun run demo:build   # 準備官網測試所需的 Pages 產物
 bun run test         # vitest
 bun run build        # 前端建置（含 typecheck）
 cd src-tauri

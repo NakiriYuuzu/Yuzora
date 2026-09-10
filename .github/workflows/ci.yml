@@ -29,14 +29,14 @@ jobs:
         run: bun run lint
       - name: Typecheck
         run: bun run typecheck
-      - name: Test
-        run: bun run test
-      - name: Build
-        run: bun run build
       - name: Build Pages companions and demo
         run: |
           bun run site:companions
           bun run demo:build
+      - name: Test
+        run: bun run test
+      - name: Build
+        run: bun run build
 
   # Compile assurance only: interactive Keychain, Credential Manager, and
   # Secret Service smoke tests still require user-session runners on each OS.

@@ -135,6 +135,8 @@ The [website](https://github.yuuzu.net/Yuzora/) includes an [interactive demo](h
 ```bash
 bun install          # install dependencies
 bun run tauri:dev    # launch the desktop app (dev server :1420)
+bun run site:companions # generate website characters
+bun run demo:build   # prepare Pages artifact for tests
 bun run test         # vitest
 bun run build        # frontend build (incl. typecheck)
 cd src-tauri

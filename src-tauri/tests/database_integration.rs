@@ -2438,6 +2438,29 @@ async fn postgres_paused_page_keeps_helper_memory_bounded() {
         )
         .await
         .expect("open PostgreSQL backpressure fixture");
+    let warmup = connection
+        .run_primary("postgres-backpressure-warmup", "SELECT 42")
+        .await
+        .expect("start the query helper before measuring result memory");
+    let warmup = first_result_session(&warmup);
+    assert_eq!(warmup.initial_page.rows.len(), 1);
+    connection
+        .release_result(warmup.owner)
+        .await
+        .expect("release the warmup result");
+    let parent = sysinfo::Pid::from_u32(std::process::id());
+    let system = sysinfo::System::new_all();
+    let helper_pids: HashSet<_> = system
+        .processes()
+        .values()
+        .filter(|process| process.parent() == Some(parent))
+        .map(|process| process.pid())
+        .collect();
+    assert!(!helper_pids.is_empty(), "the query helper must be running");
+    let baseline: u64 = helper_pids
+        .iter()
+        .map(|pid| system.process(*pid).unwrap().memory())
+        .sum();
     let run = connection
         .run_primary(
             "postgres-backpressure-large",
@@ -2448,8 +2471,7 @@ async fn postgres_paused_page_keeps_helper_memory_bounded() {
     let session = first_result_session(&run);
     assert_eq!(session.initial_page.rows.len(), 500);
     assert!(session.initial_page.has_next);
-    let parent = sysinfo::Pid::from_u32(std::process::id());
-    let mut peak = 0;
+    let mut peak = baseline;
     for _ in 0..6 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let system = sysinfo::System::new_all();
@@ -2458,16 +2480,24 @@ async fn postgres_paused_page_keeps_helper_memory_bounded() {
             .values()
             .filter(|process| process.parent() == Some(parent))
             .collect();
-        assert!(
-            !children.is_empty(),
-            "the query helper must still be running"
+        assert_eq!(
+            children
+                .iter()
+                .map(|process| process.pid())
+                .collect::<HashSet<_>>(),
+            helper_pids,
+            "measure the same running helpers throughout the paused query"
         );
         peak = peak.max(children.iter().map(|process| process.memory()).sum::<u64>());
     }
-    // Leave ample room for TLS/runtime startup and one decoded 500-row page;
-    // retaining the full unread result in an unbounded queue exceeds this cap.
-    let bounded = peak < 64 * 1024 * 1024;
-    eprintln!("PostgreSQL paused-page helper peak RSS: {peak} bytes");
+    // Linux's desktop helper loads GTK/WebKit libraries even without a window.
+    // Bound result-related growth, excluding platform/runtime startup costs;
+    // retaining the full unread 128 MiB result still exceeds this 64 MiB cap.
+    let growth = peak.saturating_sub(baseline);
+    let bounded = growth < 64 * 1024 * 1024;
+    eprintln!(
+        "PostgreSQL paused-page helper RSS: baseline={baseline}, peak={peak}, growth={growth} bytes"
+    );
     connection
         .release_result(session.owner)
         .await
@@ -2480,6 +2510,6 @@ async fn postgres_paused_page_keeps_helper_memory_bounded() {
     connection.close().expect("close PostgreSQL fixture");
     assert!(
         bounded,
-        "paused helper eagerly retained unread rows: peak={peak}"
+        "paused helper eagerly retained unread rows: baseline={baseline}, peak={peak}, growth={growth}"
     );
 }

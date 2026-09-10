@@ -21,6 +21,8 @@
 <h2>修正的發布阻擋項目</h2>
 <p>舊測試硬編碼 beta.3 tag，及仍把建立終端機當作 Session 篩選選單項目；已更新為正式版 tag 與目前的 Space／Session 新增入口，並保留停止 Session 不出現在篩選選單的驗證。ESLint 排除生成的 Demo bundle；Rust 新增測試依 fmt／Clippy 規範整理。</p>
 <h2>Pages 部署</h2>
+<p>首輪 PR CI 暴露乾淨 checkout 缺少 demo/ 的測試順序問題；已把 Pages 建置移到測試前。本機移開生成目錄可重現失敗，重新建置後 15 項官網測試全部通過。README 與 operations 同步列出準備步驟。</p>
+<p>Linux PostgreSQL memory gate 原先限制總 RSS 64 MiB，首輪量得約 100 MiB；改為暖機後固定追蹤同一組 helper PIDs，限制查詢引起的增量小於 64 MiB。本機實際 PostgreSQL 的舊無界讀取負向驗證增加 263,995,392 bytes，仍會失敗；還原按需讀取後增加 294,912 bytes，完整 PostgreSQL matrix 通過。Linux 最終 baseline／peak／growth 與 CI 結果會記錄於 PR。</p>
 <p>依使用者確認，沿用 GitHub Actions 部署 GitHub Pages，source 為 workflow，不建立 gh-pages 分支。Workflow 安裝 frozen dependencies、產生角色、建置 Demo，再上傳完整 site/。Demo 使用相對 assets，支援 /Yuzora/demo/。Pages 仍獨立於 main CI 觸發，部署成功不等於同來源通過 CI。</p>
 <h2>正式發布前仍需完成</h2>
 <ol><li>最終 PR 的三平台 CI、真實資料庫與四平台 helper、macOS／Windows 候選安裝檔成功；在 PR 記錄 head、tree、run、artifact 與 installer SHA-256。</li><li>使用者依 operations 第 5 節驗證受影響平台並明確核准 merge。</li><li>Repository 配置 APPLE_CERTIFICATE、APPLE_CERTIFICATE_PASSWORD、APPLE_SIGNING_IDENTITY、APPLE_ID、APPLE_PASSWORD、APPLE_TEAM_ID。當日僅查到兩項 updater secrets；此清單只記錄名稱。</li><li>Merge 後由 exact main push CI 觸發 Release；實際通過 macOS Developer ID／notarization、updater signing、metadata 與 automated publish gate。</li><li>發布後查證 Latest、下載別名、updater metadata、Pages／Demo 及正式安裝與 OTA smoke test。</li></ol>

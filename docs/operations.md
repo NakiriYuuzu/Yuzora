@@ -79,7 +79,8 @@ Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可�
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
-- Frontend job 在桌面前端 build 後執行 `site:companions` 與 `demo:build`，讓 PR 在 merge 前驗證 Pages 的角色產生與網頁 Demo 建置；Demo Vite 設定也納入 typecheck。此 build check 不代表瀏覽器互動驗收。
+- PostgreSQL 暫停第一頁的記憶體回歸測試先暖機並固定 helper PIDs，再限制查詢造成的 RSS 增量小於 64 MiB；不以跨平台差異很大的程序總 RSS 判斷是否保留未讀資料。128 MiB 結果的舊無界讀取負向驗證必須仍超限。
+- Frontend job 在測試前執行 `site:companions` 與 `demo:build`，讓官網 artifact 測試在乾淨 checkout 也能驗證 `demo/` 連結，並在 merge 前驗證 Pages 建置；Demo Vite 設定也納入 typecheck。此 build check 不代表瀏覽器互動驗收。
 - `release/*` PR 額外建置未發布的 macOS／Windows candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證；Linux 只作為 CI／測試 host，不是桌面發佈平台。
 - 同一 ref 上被新 commit 取代的 CI run 會由 concurrency 設定取消。
 - 現行 PR CI 沒有獨立執行 `check:version` 與 `check:updater-release`；在新增 blocking contract job 前，Release PR 必須保留第 5 節的本機 preflight 證據。
@@ -234,6 +235,8 @@ Remove-Item Env:GITHUB_REF_NAME
 bun install --frozen-lockfile
 bun run lint
 bun run typecheck
+bun run site:companions
+bun run demo:build
 bun run test
 bun run build
 
