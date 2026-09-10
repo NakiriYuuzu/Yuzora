@@ -536,6 +536,26 @@ jobs:
             gh release upload "$TAG_NAME" "$alias" --clobber
           done
 
+      - name: Collect assembled updater inputs
+        if: needs.guard.outputs.is_beta != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p updater-inputs
+          gh release view "$TAG_NAME" --json assets --jq '.assets[].name' > updater-inputs/asset-names.txt
+          cp release-artifacts/*.sig updater-inputs/
+      - name: Upload assembled updater inputs
+        if: needs.guard.outputs.is_beta != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: yuzora-release-updater-inputs
+          path: updater-inputs/
+          if-no-files-found: error
+          retention-days: 7
+
   prepare-updater-metadata:
     name: Prepare stable updater metadata
     needs: [guard, create-tag, build, assemble-draft]
@@ -560,19 +580,11 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
-      - name: Download read-only updater signatures and asset inventory
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.guard.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets
-          gh release view "$TAG_NAME" --json assets --jq '.assets[].name' > release-assets/asset-names.txt
-          gh release download "$TAG_NAME" \
-            --pattern '*.app.tar.gz.sig' \
-            --pattern '*.msi.sig' \
-            --dir release-assets
+      - name: Download assembled updater inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: yuzora-release-updater-inputs
+          path: release-assets
       - name: Generate and validate stable updater metadata
         shell: bash
         env:
