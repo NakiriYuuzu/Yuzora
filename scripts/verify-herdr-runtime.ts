@@ -1,10 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { mkdtemp, mkdir, writeFile, realpath, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises"
 import { join, relative, isAbsolute } from "node:path"
 import { tmpdir } from "node:os"
 import { createConnection, type Socket } from "node:net"
 import { createInterface } from "node:readline"
 import { HERDR_RESOURCE_VERSION } from "./prepare-herdr-resources"
+import { removeRuntimeFixture } from "./runtime-fixture-cleanup"
 import methodFixture from "../src-tauri/host/tests/fixtures/herdr-0.9.0-methods.json"
 
 // Uses only temporary XDG roots and its own named server. Never stops a user's server.
@@ -164,6 +165,6 @@ manifest_check = false
     await waitForChildren()
     // Windows may release directory handles after the process exit event.
     // Retry transient filesystem locks for at most 5.5s; never ignore failure.
-    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    await removeRuntimeFixture(root)
   }
 }
