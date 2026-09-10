@@ -355,6 +355,14 @@ function verifyArtifactBoundary(workflow: Workflow): void {
     "read-only metadata preparation must require rebuilt and reassembled draft assets"
   )
   const prepareSteps = steps(prepare, "jobs.prepare-updater-metadata")
+  const inputDownload = stepByName(prepareSteps, "Download assembled updater inputs")
+  assert(
+    !prepareSteps.some((step) => includes(step.run, "gh release")) &&
+      inputDownload.uses === "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" &&
+      record(inputDownload.with, "updater input download").name === "yuzora-release-updater-inputs" &&
+      steps(assemble, "jobs.assemble-draft").some((step) => step.name === "Upload assembled updater inputs"),
+    "read-only metadata preparation must consume assembled inputs without accessing a private draft"
+  )
   assert(
     stepByName(prepareSteps, "Generate and validate stable updater metadata").run?.includes("prepare-updater-metadata.ts") &&
       prepareSteps.some((step) => step.name === "Upload finalized updater metadata for write-only publication"),

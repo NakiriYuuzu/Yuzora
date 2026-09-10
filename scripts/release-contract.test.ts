@@ -46,6 +46,13 @@ function releaseWorkflow(): ParsedReleaseWorkflow {
 }
 
 describe("release workflow contracts", () => {
+  it("passes draft inventory and signatures through Actions instead of querying a private draft with a read-only token", () => {
+    const workflow = releaseWorkflow()
+    const prepare = workflow.jobs["prepare-updater-metadata"]
+    expect(prepare.steps.some((step) => step.run?.includes("gh release"))).toBe(false)
+    expect(prepare.steps.some((step) => step.name === "Download assembled updater inputs" && step.uses?.startsWith("actions/download-artifact@"))).toBe(true)
+    expect(workflow.jobs["assemble-draft"].steps.some((step) => step.name === "Upload assembled updater inputs" && step.uses?.startsWith("actions/upload-artifact@"))).toBe(true)
+  })
   it("keeps stable updater release guarantees", () => {
     expect(verify("scripts/verify-updater-release-contract.ts")).toContain(
       "Stable updater release contract verified"

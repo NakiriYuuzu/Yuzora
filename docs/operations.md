@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-10（v0.0.9 release branch，尚待最終候選驗收）；Release／Pages 流程最後查證：2026-09-10。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-10（v0.0.9 候選已由使用者接受）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -413,16 +413,16 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 ### 7.4 Finalize updater metadata
 
-只有 Stable 雙平台 build 與 `assemble-draft` 都成功後，metadata 才採兩段式 boundary；same-SHA draft recovery 沒有略過 build／assembly 的旁路：
+只有 Stable 雙平台 build 與 `assemble-draft` 都成功後，metadata 才採兩段式 boundary。正常 Release run 使用同一 run 的成功結果；第 10.1 節的 metadata 恢復流程另驗證原 run 已成功的 build／assembly：
 
-1. `prepare-updater-metadata` 是 read-only checkout job。它從 draft 以 read token 取得 asset inventory與 `.app.tar.gz.sig`／`.msi.sig`，執行 repository-owned metadata generator，驗證 version、notes、macOS Apple Silicon archive、MSI URL 與 signatures，然後把 `latest.json` 作為 Actions artifact 上傳。
+1. `assemble-draft` 使用既有草稿存取權取得 asset inventory，連同建置產生的公開 `.sig` 上傳 `yuzora-release-updater-inputs` Actions artifact。`prepare-updater-metadata` 是 read-only checkout job，只下載該 artifact，執行 repository-owned metadata generator，驗證 version、notes、macOS Apple Silicon archive、MSI URL 與 signatures，再把 `latest.json` 作為 Actions artifact 上傳。唯讀 GitHub token 無法讀取未公開的 Release 草稿，因此不可讓 metadata job 直接執行 `gh release view/download`。
 2. `upload-updater-metadata` 是無 checkout 的 contents-write job。它下載該 metadata artifact、移除 draft 中殘留的 Linux AppImage／DEB／RPM assets，再以 `gh release upload --clobber` 取代 `latest.json`；它不執行 repository code。
 
 不得讓 write-capable token 進入 metadata generator。任一段失敗時不得 Publish。
 
 ### 7.5 Automated publish gate
 
-`publish-release`（Stable）是無 checkout 的 contents-write verification/publish job，只在 macOS／Windows 重建、draft assembly、metadata preparation 與 metadata upload 全部成功後執行。Fresh release 與 same-SHA draft recovery 使用相同 gate，不存在以既有 draft 略過 build／assembly 的 Publish 旁路。
+`publish-release`（Stable）是無 checkout 的 contents-write verification/publish job，只在 macOS／Windows 建置、draft assembly、metadata preparation 與 metadata upload 全部成功後執行。第 10.1 節的恢復流程也保留完整 Publish gate，並先驗證原始成功建置及草稿未變更。
 
 Publish 前 workflow 自動驗證：
 
@@ -556,6 +556,26 @@ gh variable delete YUZORA_BETA_ACCEPTANCE_URL --repo NakiriYuuzu/Yuzora
 | Pages 發布錯誤內容          | 透過正常 PR 回復 `site/**` 至已知正常版本，再讓 Pages workflow 重新部署；不直接改寫遠端 branch 歷史。                                                                 |
 
 任何 destructive cleanup、tag 刪除、Release 隱藏或 secret rotation 都需要 maintainer 明確授權與事件記錄。
+
+### 10.1 已完成安裝包的 Stable metadata 恢復
+
+v0.0.9 的 Release run `34502146123` 已成功建置兩平台、驗證四平台 Host、完成 Windows runtime／installer payload gates 及 draft assembly，但唯讀 metadata job 因 `release not found` 失敗。草稿已存在，錯誤不能視為沒有 Release，也不能藉此移動 tag、重建成另一個 commit 或手動 Publish。
+
+修正 workflow 必須先透過 PR 合併並通過 exact `main` push CI。已有使用者候選驗收與發布授權時，可從 `main` dispatch `recover-stable-release.yml`，輸入原始失敗的 Release run ID：
+
+```bash
+gh workflow run recover-stable-release.yml --ref main -f source_run_id=34502146123
+```
+
+恢復流程只處理 Stable 草稿，並依序驗證：
+
+- 原 run 必須來自 `release.yml` 的 `workflow_run`／`main`，且原始 source SHA 與恢復 workflow SHA 都有成功的 exact main push CI。
+- 原 run 的 release guard、四平台 Host、兩平台 installer builds 與 draft assembly 均成功；annotated tag 必須仍指向原 installer source SHA。
+- 草稿仍未公開、不是 Beta，十個 installer／signature／alias 資產完整、digest 有效，且固定別名與版本檔 digest 相同。
+- 無 checkout 的草稿存取 job 傳出 inventory 與公開 signatures；唯讀 job checkout 原 installer SHA，以原版 Changelog 與 generator 產生 metadata，並比對草稿 notes。
+- 寫入 metadata 前再核對 tag SHA、draft 狀態、notes、資產 IDs／名稱／大小／digests 未變；上傳後下載比對 metadata，再執行正常 Stable 的 exact asset allowlist、Apple Silicon／MSI-only updater 與 Publish gates。
+
+此流程不重建或替換 installers，不建立或移動 tag，不讀取 updater private key，也不接受已公開版本。原 build／assembly 未完成或來源不一致時必須停止；不得用此流程替代候選驗收。恢復 run 與原始 CI／build run 都須回填 release Issue。
 
 ---
 
