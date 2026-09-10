@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { watchBrandIcon } from "@/theme/brandIcon"
 import { BrandMark } from "@/components/BrandMark"
 
@@ -370,7 +371,10 @@ export function AppShell() {
     if (mode === "database" || (mode === "git" && tool === "files")) handleModeChange("files")
   }, [mode, handleModeChange])
 
-  const handleOpenGraph = useCallback(() => handleModeChange("git"), [handleModeChange])
+  const handleOpenGraph = useCallback(() => {
+    useUiStore.getState().setGitPanelTab("log")
+    handleModeChange("git")
+  }, [handleModeChange])
 
   // ADE shares the editor surface (mixed file/preview/herdr-terminal pages);
   // keep the shared 44px floor rather than the old AgentZone 280px card floor.
@@ -431,7 +435,15 @@ export function AppShell() {
             <div hidden={mode!=="files" && mode!=="ade"} inert={mode!=="files" && mode!=="ade"} className="workbench-mode-surface">{editorPanel}</div>
             {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface">{gitPanel}</div>}
             {(databaseVisited || mode === "database") && <div hidden={mode!=="database"} inert={mode!=="database"} className="workbench-database-surface">
-              <aside aria-label={t("databaseConnections")} className="workbench-database-nav">{databaseNav}</aside><div className="workbench-database-main">{databasePanel}</div>
+              <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
+                <ResizablePanel id="database-navigation" defaultSize="280px" minSize="240px" maxSize="480px" groupResizeBehavior="preserve-pixel-size">
+                  <aside aria-label={t("databaseConnections")} className="workbench-database-nav">{databaseNav}</aside>
+                </ResizablePanel>
+                <ResizableHandle withHandle aria-label={t("resizeDatabase")} className="workbench-database-resize" />
+                <ResizablePanel id="database-content" minSize="280px">
+                  <div className="workbench-database-main">{databasePanel}</div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
             </div>}
           </div>
         </div>

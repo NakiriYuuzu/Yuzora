@@ -59,9 +59,12 @@
 .workbench-main-surface { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .workbench-mode-surface { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .workbench-mode-surface[hidden],.workbench-tool-body[hidden],.workbench-database-surface[hidden] { display:none; }
-.workbench-database-surface { display:flex; flex:1; min-width:0; min-height:0; gap:10px; }
-.workbench-database-nav { display:flex; flex-direction:column; width:230px; min-height:0; flex-shrink:0; border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--yz-glass); padding:12px; overflow:hidden; }
-.workbench-database-main { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
+.workbench-database-surface { display:flex; flex:1; min-width:0; min-height:0; }
+.workbench-database-nav { display:flex; flex-direction:column; width:100%; height:100%; min-height:0; border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--yz-glass); padding:12px; overflow:hidden; }
+.workbench-database-main { display:flex; height:100%; min-width:0; min-height:0; flex-direction:column; }
+.workbench-database-resize { width:10px; flex-shrink:0; background:transparent; }
+.workbench-database-resize > div { width:3px; height:34px; background:var(--line-2); }
+.workbench-database-resize:hover > div,.workbench-database-resize:focus-visible > div { background:var(--ring); }
 /* Keep the database panels aligned with the workspace top without covering controls. */
 .workbench-database-main .database-profile-header { height:44px; padding-right:calc(10px + var(--workbench-reveal-end)); }
 .workbench-body[data-left-collapsed="true"] .workbench-database-nav { padding-top:48px; }
@@ -76,8 +79,8 @@
 .workbench-tool-context { display:flex; align-items:center; gap:6px; min-width:0; padding:0 6px; color:var(--ink-2); font:12px/18px var(--font-mono); }
 .workbench-tool-context > span:first-child { flex:1; }
 .workbench-tool-body { flex:1; min-width:0; min-height:0; overflow:hidden; }
-.workbench-graph-entry { flex-shrink:0; align-self:flex-start; font-size:12px; }
-@media(max-width:880px) { .workbench-database-nav { width:190px; } }
+.workbench-graph-entry { width:100%; min-height:36px; height:auto; flex-shrink:0; justify-content:flex-start; gap:8px; padding:8px 10px; border-color:var(--line-2); background:var(--paper-1); color:var(--ink-1); font-size:12px; cursor:pointer; }
+.workbench-graph-entry:hover { background:var(--yz-hover); border-color:var(--ring); }
 /* Keep room for the tree at the native window's 480px minimum height. */
 @media(max-height:600px) {
   .workbench-sidebar-navigation { padding-bottom:4px; gap:2px; }

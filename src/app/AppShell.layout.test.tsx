@@ -15,7 +15,7 @@ vi.mock("@/app/workbench/SpaceAgentSidebar", () => ({ SpaceAgentSidebar: () => {
 vi.mock("@/app/panels/GitPanel", () => ({ GitPanel: () => <div>Git graph surface</div> }))
 vi.mock("@/app/panels/DatabasePanel", () => ({ DatabasePanel: () => <div>Database query surface</div> }))
 vi.mock("@/app/workbench/DatabaseNavContent", () => ({ DatabaseNavContent: () => null }))
-vi.mock("@/app/workbench/WorkspaceToolsPanel", () => ({ WorkspaceToolsPanel: () => { lifecycle.toolsRender(); return <button>Tool leaf</button> } }))
+vi.mock("@/app/workbench/WorkspaceToolsPanel", () => ({ WorkspaceToolsPanel: ({ onOpenGraph }: { onOpenGraph: () => void }) => { lifecycle.toolsRender(); return <button onClick={onOpenGraph}>Tool leaf</button> } }))
 vi.mock("@/app/workbench/SettingsDialog", () => ({ SettingsDialog: ({ open }: { open: boolean }) => { lifecycle.settingsRender(); return open ? <div role="dialog" aria-label="Settings dialog" /> : null } }))
 vi.mock("@/app/workbench/CommandPalette", () => ({ CommandPalette: ({ open }: { open: boolean }) => open ? <div role="dialog" aria-label="Command search" /> : null }))
 vi.mock("@/app/workbench/ContextMenu", () => ({ ContextMenu: () => null }))
@@ -216,4 +216,13 @@ it("hides workspace tools in Database and restores the working surface from its 
   expect(rightToggle()).toHaveAttribute("aria-expanded", "true")
   expect(rightToggle()).toHaveFocus()
   expect(screen.getByRole("button", { name: "Tool leaf" })).toBe(tool)
+})
+
+it("opens commit history from the graph entry after viewing local changes", () => {
+  useUiStore.setState({ mode: "files", gitPanelTab: "local" })
+  render(<AppShell />)
+  fireEvent.click(screen.getByRole("button", { name: "Tool leaf" }))
+  expect(useUiStore.getState().mode).toBe("git")
+  expect(useUiStore.getState().gitPanelTab).toBe("log")
+  expect(screen.getByText("Git graph surface")).toBeVisible()
 })

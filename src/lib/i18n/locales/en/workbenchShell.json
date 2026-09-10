@@ -17,6 +17,7 @@
   "hideTools": "Collapse right workspace tools",
   "resizeSpaces": "Resize Spaces and Agents sidebar",
   "resizeTools": "Resize workspace tools sidebar",
+  "resizeDatabase": "Resize database connections sidebar",
   "backToWork": "Back to workspace",
   "databaseConnections": "Database connections",
   "noWorkspace": "No folder open",
