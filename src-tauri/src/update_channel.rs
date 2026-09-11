@@ -18,17 +18,20 @@ struct ReleaseAsset {
 struct Release {
     tag_name: String,
     draft: bool,
+    prerelease: bool,
     assets: Vec<ReleaseAsset>,
 }
 
 fn newest_signed_release<'a>(
     releases: &'a [Release],
     current: &Version,
+    include_preview: bool,
 ) -> Option<(&'a str, Version)> {
     releases
         .iter()
         .filter_map(|release| {
             if release.draft
+                || (!include_preview && release.prerelease)
                 || !release
                     .assets
                     .iter()
@@ -43,6 +46,9 @@ fn newest_signed_release<'a>(
                     .unwrap_or(&release.tag_name),
             )
             .ok()?;
+            if !include_preview && !version.pre.is_empty() {
+                return None;
+            }
             version
                 .cmp_precedence(current)
                 .is_gt()
@@ -62,7 +68,10 @@ pub struct UpdateMetadata {
 }
 
 #[tauri::command]
-pub async fn check_preview_update(webview: Webview) -> Result<Option<UpdateMetadata>, String> {
+pub async fn check_release_update(
+    webview: Webview,
+    include_preview: bool,
+) -> Result<Option<UpdateMetadata>, String> {
     let updater_enabled = webview
         .config()
         .plugins
@@ -105,7 +114,8 @@ pub async fn check_preview_update(webview: Webview) -> Result<Option<UpdateMetad
             return Err("Update release inventory exceeds the supported page limit".into());
         }
     }
-    let Some((tag, expected_version)) = newest_signed_release(&releases, current) else {
+    let Some((tag, expected_version)) = newest_signed_release(&releases, current, include_preview)
+    else {
         return Ok(None);
     };
     let endpoint = format!("{RELEASE_DOWNLOADS}/{tag}/latest.json")
@@ -136,13 +146,19 @@ pub async fn check_preview_update(webview: Webview) -> Result<Option<UpdateMetad
     }))
 }
 
+#[tauri::command]
+pub async fn check_preview_update(webview: Webview) -> Result<Option<UpdateMetadata>, String> {
+    check_release_update(webview, true).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn release(tag: &str, draft: bool, signed_metadata: bool) -> Release {
+    fn release(tag: &str, draft: bool, prerelease: bool, signed_metadata: bool) -> Release {
         Release {
             tag_name: tag.into(),
             draft,
+            prerelease,
             assets: if signed_metadata {
                 vec![ReleaseAsset {
                     name: "latest.json".into(),
@@ -156,43 +172,56 @@ mod tests {
     fn preview_selects_semver_order_including_stable_promotions() {
         let current = Version::parse("0.0.9-beta.3").unwrap();
         let releases = vec![
-            release("v0.0.9-beta.4", false, true),
-            release("v0.0.9", false, true),
+            release("v0.0.9-beta.4", false, true, true),
+            release("v0.0.9", false, false, true),
         ];
         assert_eq!(
-            newest_signed_release(&releases, &current).unwrap().0,
+            newest_signed_release(&releases, &current, true).unwrap().0,
             "v0.0.9"
         );
         let releases = vec![
-            release("v0.0.9", false, true),
-            release("v0.0.10-beta.1", false, true),
+            release("v0.0.9", false, false, true),
+            release("v0.0.10-beta.1", false, true, true),
         ];
         assert_eq!(
-            newest_signed_release(&releases, &current).unwrap().0,
+            newest_signed_release(&releases, &current, true).unwrap().0,
             "v0.0.10-beta.1"
         );
     }
     #[test]
     fn ignores_unsigned_old_betas_drafts_invalid_versions_and_downgrades() {
         let releases = vec![
-            release("v0.0.9-beta.3", false, false),
-            release("v1.0.0", true, true),
-            release("not-semver", false, true),
-            release("v0.0.8", false, true),
+            release("v0.0.9-beta.3", false, true, false),
+            release("v1.0.0", true, false, true),
+            release("not-semver", false, false, true),
+            release("v0.0.8", false, false, true),
         ];
-        assert!(newest_signed_release(&releases, &Version::parse("0.0.9").unwrap()).is_none());
+        assert!(
+            newest_signed_release(&releases, &Version::parse("0.0.9").unwrap(), true).is_none()
+        );
+        assert!(
+            newest_signed_release(&releases, &Version::parse("0.0.9-beta.2").unwrap(), false)
+                .is_none()
+        );
     }
     #[test]
     fn beta_ten_sorts_after_beta_nine() {
         let releases = vec![
-            release("v0.0.10-beta.9", false, true),
-            release("v0.0.10-beta.10", false, true),
+            release("v0.0.10-beta.9", false, true, true),
+            release("v0.0.10-beta.10", false, true, true),
         ];
         assert_eq!(
-            newest_signed_release(&releases, &Version::parse("0.0.10-beta.8").unwrap())
+            newest_signed_release(&releases, &Version::parse("0.0.10-beta.8").unwrap(), true)
                 .unwrap()
                 .0,
             "v0.0.10-beta.10"
+        );
+    }
+    #[test]
+    fn stable_lane_rejects_prerelease_even_if_release_flag_is_wrong() {
+        let releases = vec![release("v0.0.12-beta.1", false, false, true)];
+        assert!(
+            newest_signed_release(&releases, &Version::parse("0.0.11").unwrap(), false).is_none()
         );
     }
 }

@@ -274,6 +274,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             reveal_directory::open_workspace_directory,
             update_channel::check_preview_update,
+            update_channel::check_release_update,
             brand_icon::set_brand_icon,
             host_service::host_connect,
             host_service::host_request,

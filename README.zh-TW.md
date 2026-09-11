@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.11-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.12-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -21,7 +21,7 @@
 <br />
 <br />
 
-<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora v0.0.11 Demo 導覽：Spaces、HERDR 終端機、Git 差異、SQL 結果與外觀設定" />
+<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora v0.0.12 Demo 導覽：Spaces、HERDR 終端機、Git 差異、SQL 結果與外觀設定" />
 
 </div>
 
@@ -35,10 +35,10 @@
 
 ## 功能
 
-### v0.0.11 更新
+### v0.0.12 更新
 
-- macOS App 以完整 ad-hoc signing 建置並在發布前驗證，避免因資源封存不完整而被 Gatekeeper 顯示為已損毀。
-- Windows 更新確認視窗會提示先關閉 HERDR，避免執行中的 `herdr.exe` 鎖定安裝檔。
+- Stable 與 Preview 更新檢查會依 SemVer 選擇最新簽章版本，並相容尚未提供新原生命令的舊版 Yuzora。
+- WSL 資料夾開啟在 Shell 選取無法將 Explorer 帶到前景時，會 fallback 到 `\\wsl.localhost`／`\\wsl$` 命名空間。
 
 ### v0.0.10 更新
 

@@ -172,6 +172,14 @@ mod windows {
                 // both the namespace-aware lookup and the folder safety check.
                 let folder = Pidl::parse_folder(&target.folder)?;
                 let selected = target.selected.as_deref().map(Pidl::parse).transpose()?;
+                // Opening a directory through SHOpenFolderAndSelectItems is
+                // unreliable for WSL Shell namespace folders on some Windows
+                // builds: the call can succeed without bringing Explorer to
+                // the foreground. Force the explicit `explore` fallback for
+                // directory targets; it tries both WSL namespace spellings.
+                if selected.is_none() {
+                    return Err("open WSL directory with Explorer folder verb".into());
+                }
                 current()?;
                 let result = if let Some(selected) = selected {
                     let child = unsafe { ILFindLastID(selected.0) } as *const ITEMIDLIST;

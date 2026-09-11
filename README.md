@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.11-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.12-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -21,7 +21,7 @@
 <br />
 <br />
 
-<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.11 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
+<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.12 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
 
 </div>
 
@@ -36,10 +36,10 @@
 
 ## Features
 
-### What's new in v0.0.11
+### What's new in v0.0.12
 
-- macOS bundles are fully ad-hoc signed and verified before release, preventing Gatekeeper from treating the downloaded app as damaged because its resource seal is incomplete.
-- Windows update confirmation now tells users to close HERDR before installing while its executable is still running.
+- Stable and Preview update checks now select the newest signed release by SemVer, with compatibility fallback for older Yuzora hosts.
+- WSL folder reveal now falls back to the Windows Explorer `\\wsl.localhost`／`\\wsl$` namespace when shell selection cannot foreground Explorer.
 
 ### What's new in v0.0.10
 
