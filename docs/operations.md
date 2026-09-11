@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-11（v0.0.11 修正 macOS bundle seal 與 Windows HERDR 更新提示，候選另行驗收）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-12（v0.0.12 修正 Stable／Preview 更新探索、舊 host 相容性與 WSL Explorer fallback，候選另行驗收）；Release／Pages 流程最後查證：2026-09-12。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -151,7 +151,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 規則：
 
 - Beta 只接受 `X.Y.Z-beta.N`；不以 `rc`、build metadata 或其他自訂 suffix 表示 Beta。
-- App 穩定更新通道保留 `releases/latest/download/latest.json`；預覽更新通道從 GitHub releases API 讀取非 draft 的 Stable／Beta releases，以 SemVer 選擇較新且具有 `latest.json` 的版本，再由既有 Tauri updater 驗證 signature 與安裝。Beta 到下一個 Beta 或較新 Stable 都可升級；不以 API 回傳順序或字串排序決定版本。
+- App 更新通道從 GitHub releases API 讀取非 draft 且具有 `latest.json` 的 releases，以 SemVer 選擇較新版本，再由該版本的 Tauri updater metadata 驗證 signature 與安裝。Stable 只選 Stable；Preview 可升級到下一個 Beta 或較新 Stable；不以 API 回傳順序或字串排序決定版本。`tauri.conf.json` 的 Stable endpoint 仍保留作為 updater 啟用與發佈契約檢查。
 - 已發布的舊 Beta（含 `v0.0.9-beta.3`）沒有 updater artifacts，且 build 清除了 endpoints；必須手動安裝一次支援更新通道的新版本。不得補寫舊 release／tag／assets，也不得把 PR 候選版當成 OTA 發布版本。
 - Beta 不得更新 stable `latest.json`、`releases/latest` 或產品頁固定下載入口。
 - 新 Beta 同時提供手動 installers 與 updater artifacts／`.sig`／`latest.json`，使用既有 Tauri updater signing secrets；不取得 Apple signing secrets。macOS 仍無 Developer ID／notarization，release notes 須揭露 Gatekeeper 警告。Beta 不上傳 Stable 固定下載別名，不設為 Latest，也不建立可變的 preview tag／metadata pointer。
