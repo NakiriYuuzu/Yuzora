@@ -1,4 +1,5 @@
-import { EditorView } from "@codemirror/view"
+import { EditorView, ViewPlugin } from "@codemirror/view"
+import { useEditorSettingsStore } from "@/state/editorSettingsStore"
 import { HighlightStyle } from "@codemirror/language"
 import { tags as t } from "@lezer/highlight"
 
@@ -8,7 +9,14 @@ import { tags as t } from "@lezer/highlight"
 // with no editor reconfigure. Because we don't use the { dark: true } flag, every
 // component that CodeMirror's baseTheme gives a default colour must be overridden
 // explicitly here — otherwise a light default leaks through in dark mode.
-export const appTheme = EditorView.theme({
+const syntaxPreference = ViewPlugin.define(view => {
+    const apply = () => { view.dom.dataset.syntaxTheme = useEditorSettingsStore.getState().syntaxTheme }
+    apply()
+    const unsubscribe = useEditorSettingsStore.subscribe(apply)
+    return { destroy: unsubscribe }
+})
+
+export const appTheme = [syntaxPreference, EditorView.theme({
     "&": {
         color: "var(--ink-1)",
         backgroundColor: "var(--paper-1)"
@@ -125,7 +133,7 @@ export const appTheme = EditorView.theme({
         border: "1px solid var(--line-1)",
         borderRadius: "var(--r-xs)"
     }
-})
+})]
 
 // Syntax palette. Values are `var(--syn-*)` strings (StyleModule passes them
 // through untouched); the variables live on `.cm-editor` in editor.css and carry
@@ -139,7 +147,10 @@ export const appHighlightStyle = HighlightStyle.define([
     { tag: t.bool, color: "var(--syn-number)" },
     { tag: t.null, color: "var(--syn-number)" },
     { tag: [t.typeName, t.className], color: "var(--syn-type)" },
-    { tag: t.function(t.variableName), color: "var(--syn-func)" },
+    { tag: [
+        t.function(t.variableName), t.function(t.definition(t.variableName)),
+        t.function(t.propertyName), t.function(t.definition(t.propertyName))
+    ], color: "var(--syn-func)" },
     { tag: t.definition(t.variableName), color: "var(--syn-var)" },
     { tag: t.variableName, color: "var(--syn-var)" },
     { tag: [t.propertyName, t.attributeName], color: "var(--syn-property)" },

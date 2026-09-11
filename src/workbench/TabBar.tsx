@@ -1,4 +1,4 @@
-import { useRef, type DragEvent, type KeyboardEvent } from "react"
+import { useEffect, useLayoutEffect, useRef, type DragEvent, type KeyboardEvent } from "react"
 import { Bot, Globe, Plus, SquareTerminal, Pin } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import {
@@ -39,7 +39,40 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
     const activationIntentRef = useRef(0)
     const closingHerdrPagesRef = useRef(new Set<string>())
+    const viewportRef = useRef<HTMLDivElement>(null)
+    useEffect(() => {
+        const viewport = viewportRef.current
+        if (!viewport) return
+        // Keep vertical wheel inertia from shifting targets in a horizontal strip.
+        // Native horizontal gestures, Shift+wheel, and pinch zoom remain available.
+        const wheel = (event: WheelEvent) => {
+            if (!event.shiftKey && !event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+                event.preventDefault()
+            }
+        }
+        viewport.addEventListener("wheel", wheel, { passive: false })
+        return () => viewport.removeEventListener("wheel", wheel)
+    }, [])
     const group = useWorkspaceStore((s) => s.groups[groupIndex])
+    const activePath = group?.activePath
+    useLayoutEffect(() => {
+        const viewport = viewportRef.current
+        if (!activePath || !viewport || viewport.clientWidth === 0) return
+        const active = viewport.querySelector<HTMLElement>(".tab.active")
+        if (!active) return
+        const bounds = viewport.getBoundingClientRect()
+        const tab = active.getBoundingClientRect()
+        const delta = tab.left < bounds.left
+            ? tab.left - bounds.left
+            : tab.right > bounds.right ? tab.right - bounds.right : 0
+        if (delta === 0) return
+        // Reveal only committed selection changes. Focus, pointer-down and
+        // background metadata updates must not move a user's tab-strip target.
+        viewport.scrollLeft = Math.max(0, Math.min(
+            viewport.scrollWidth - viewport.clientWidth,
+            viewport.scrollLeft + delta
+        ))
+    }, [activePath, groupIndex])
     const setActiveTab = useWorkspaceStore((s) => s.setActiveTab)
     const closeTab = useWorkspaceStore((s) => s.closeTab)
     const reorderProjectedTab = useWorkspaceStore((s) => s.reorderProjectedTab)
@@ -329,6 +362,8 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         <ScrollArea
             className="h-[44px] min-w-0 flex-1"
             orientation="horizontal"
+            viewportRef={viewportRef}
+            viewportClassName="[overflow-anchor:none] overscroll-x-contain"
             contentClassName="flex h-[44px] w-max items-center gap-[3px]"
         >
             {projectedTabs.length === 0 && (
@@ -402,11 +437,17 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 (active ? "font-semibold" : "font-medium")
                             }
                             aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+P"
+                            aria-label={tab.name}
                             onDragStart={(event) => onTabDragStart(event, tab)}
                             onDragEnd={() => {
                                 draggedTabPathRef.current = null
                             }}
                             onKeyDown={(event) => onTabKeyDown(event, tab, index)}
+                            onMouseDown={(event) => {
+                                if (event.button !== 0) return
+                                event.preventDefault()
+                                event.currentTarget.focus({ preventScroll: true })
+                            }}
                             onClick={() => onActivate(tab, herdrRuntimeTab)}
                         >
                             {tab.kind === "preview" ? (
@@ -420,8 +461,8 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             )}
                             {tab.pinned && <Pin className="size-[12px] shrink-0" aria-hidden="true" />}
                             <span className="max-w-[140px] truncate">{tab.name}</span>
+                            <WorkspaceHostBadge path={tab.kind === "preview" ? workspacePath ?? undefined : previewTabSourcePath(tab) ?? tab.path} hostId={tab.kind === "herdr-terminal" ? parseRuntimeScope(herdrSessionName).hostId : undefined} />
                         </button>
-                        <WorkspaceHostBadge path={tab.kind === "preview" ? workspacePath ?? undefined : previewTabSourcePath(tab) ?? tab.path} hostId={tab.kind === "herdr-terminal" ? parseRuntimeScope(herdrSessionName).hostId : undefined} />
                         {isFileTab(tab) && tab.externallyModified && (
                             <span
                                 role="button"

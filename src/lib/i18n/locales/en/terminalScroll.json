@@ -1,0 +1,5 @@
+{
+  "label": "Terminal scrollback",
+  "hint": "Drag to scroll. Home: oldest output. End: latest output.",
+  "unavailable": "Scroll range unavailable for this terminal. Use the terminal wheel when supported."
+}

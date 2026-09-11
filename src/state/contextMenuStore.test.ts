@@ -25,6 +25,8 @@ import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useUiStore, uiInitialState } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { markdownPreviewPath } from "@/lib/markdownPreviewTab"
+import { remoteFilePath } from "@/lib/runtimeIdentity"
+import * as fileIpc from "@/lib/ipc"
 import * as documentRegistry from "@/editor/documentRegistry"
 import { registerView, unregisterView } from "@/editor/viewRegistry"
 import type { GitStatus } from "@/lib/types"
@@ -620,6 +622,20 @@ describe("runContextMenuAction — 前端接線 (PROB-5)", () => {
         expect(useWorkspaceStore.getState().groups[0].activePath).toBeNull()
     })
 
+    it.each(["file", "tab", "editor"] as const)("%s copies the host's full path without internal URI encoding", async (kind) => {
+        const copied: string[] = []
+        mockIPC((cmd, args) => {
+            if (cmd === "plugin:clipboard-manager|write_text") copied.push((args as { text: string }).text)
+            return undefined
+        })
+        const path = remoteFilePath("wsl:ubuntu", "/home/me/中文 project/file.ts", "/home/me/中文 project")
+        const request: ContextMenuRequest = kind === "file"
+            ? { kind, workspacePath: "/w", path, isDirectory: false, sourceGroupIndex: 0 }
+            : { kind, workspacePath: "/w", path, groupIndex: 0 }
+        expect(await executeLegacyContextMenuAction(request, "cmCopyFullPath")).toBe("completed")
+        expect(copied).toEqual(["/home/me/中文 project/file.ts"])
+    })
+
     it("tab/file: cmCopyRel 寫入相對 workspacePath 的路徑；workspace 之外退回絕對路徑", async () => {
         const calls: Array<{ cmd: string; args: unknown }> = []
         mockIPC((cmd, args) => {
@@ -1110,6 +1126,84 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         })
         return calls
     }
+
+    it.each([
+        ["cmNewFile", "fs_create_file", "new.ts"],
+        ["cmNewFolder", "fs_create_dir", "assets"],
+    ])("directory: %s 建立在選取目錄並展開該目錄", async (action, command, name) => {
+        const calls = ipcCalls()
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+        useFileTreeStore.setState({ trees: { "/w": {
+            rootNodes: [{ name: "src", path: "/w/src", isDir: true }],
+            childrenByDir: {}, expandedDirs: new Set(), scrollTop: 0,
+        } } })
+        useTextInputDialogStore.setState({ request: originalTextInputRequest })
+
+        const operation = runLegacyContextMenuAction("file", action, { path: "/w/src", isDir: true })
+        expect(useTextInputDialogStore.getState().pending?.description).toBe("/w/src")
+        useTextInputDialogStore.getState().respond(name)
+        expect(await operation).toBe("completed")
+
+        expect(calls.find((c) => c.cmd === command)?.args).toEqual({ workspace: "/w", path: `/w/src/${name}` })
+        expect(useFileTreeStore.getState().trees["/w"].expandedDirs.has("/w/src")).toBe(true)
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe(action === "cmNewFile" ? `/w/src/${name}` : null)
+    })
+
+    it("create: 輸入名稱期間切換 workspace 就取消，不寫入舊工作區", async () => {
+        const calls = ipcCalls()
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+        useTextInputDialogStore.setState({ request: originalTextInputRequest })
+        const operation = runLegacyContextMenuAction("explorer", "cmNewFile")
+        useWorkspaceStore.setState({ workspacePath: "/other" })
+        useTextInputDialogStore.getState().respond("new.ts")
+
+        expect(await operation).toBe("cancelled")
+        expect(calls.some((c) => c.cmd === "fs_create_file")).toBe(false)
+        expect(useWorkspaceStore.getState().treeRevision).toBe(0)
+    })
+
+    it("create: 寫入完成前切換 workspace 不把新檔案插入新的工作面", async () => {
+        let finishWrite!: () => void
+        const write = vi.spyOn(fileIpc, "fsCreateFile").mockImplementation(() => new Promise<void>((resolve) => { finishWrite = resolve }))
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useTextInputDialogStore.setState({ request: originalTextInputRequest })
+        const operation = runLegacyContextMenuAction("explorer", "cmNewFile")
+        useTextInputDialogStore.getState().respond("new.ts")
+        await vi.waitFor(() => expect(write).toHaveBeenCalled())
+        useWorkspaceStore.setState({ workspacePath: "/other" })
+        finishWrite()
+
+        expect(await operation).toBe("completed")
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBeNull()
+        write.mockRestore()
+    })
+
+    it.each([
+        ["C:\\work", "C:\\work\\src", "C:\\work\\src\\新檔案.ts"],
+        [remoteFilePath("wsl:ubuntu", "/home/me/project"), remoteFilePath("wsl:ubuntu", "/home/me/project/src", "/home/me/project"), remoteFilePath("wsl:ubuntu", "/home/me/project/src/新檔案.ts", "/home/me/project")],
+    ])("directory create 保留 Windows／遠端路徑：%s", async (workspace, directory, target) => {
+        const write = vi.spyOn(fileIpc, "fsCreateFile").mockResolvedValue()
+        useWorkspaceStore.setState({ workspacePath: workspace })
+        useTextInputDialogStore.setState({ request: originalTextInputRequest })
+        const operation = runLegacyContextMenuAction("file", "cmNewFile", { path: directory, isDir: true })
+        useTextInputDialogStore.getState().respond("新檔案.ts")
+        expect(await operation).toBe("completed")
+        expect(write).toHaveBeenCalledWith(workspace, target)
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe(target)
+        write.mockRestore()
+    })
+
+    it.each([
+        { path: "/outside", isDir: true },
+        { path: "/w/existing.ts", isDir: false },
+    ])("非目前工作區的資料夾不可建立：$path", async (payload) => {
+        const calls = ipcCalls()
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useTextInputDialogStore.setState({ request: originalTextInputRequest })
+        expect(await runLegacyContextMenuAction("file", "cmNewFile", payload)).toBe("cancelled")
+        expect(useTextInputDialogStore.getState().pending).toBeNull()
+        expect(calls.some((c) => c.cmd === "fs_create_file")).toBe(false)
+    })
 
     it("explorer: cmNewFile prompt 檔名 → fs_create_file，成功後 openTab + refreshTree", async () => {
         const calls = ipcCalls()

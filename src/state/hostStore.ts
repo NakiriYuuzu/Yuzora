@@ -169,6 +169,18 @@ export const useHostStore = create<HostState>((set, get) => {
               await disconnectHost(opened.owner).catch(() => undefined)
               return
             }
+            if (config.kind === "wsl") {
+              // Reconnecting the saved helper does not run host_prepare's runtime
+              // startup. Ask the owning host to ensure its default server exists;
+              // this operation preserves running servers and never starts Agents.
+              if (!opened.hello.methods.includes("herdrStart"))
+                throw new Error("herdr-start-unavailable: repair the saved WSL runtime helper")
+              await requestHost(opened.owner, { method: "herdrStart", params: { binary: config.binary } })
+              if (!current(hostId, token, target, config)) {
+                await disconnectHost(opened.owner).catch(() => undefined)
+                return
+              }
+            }
             registerRuntimeHost(opened, config.binary, config.label, config.kind)
             update(hostId, { connection: opened, connecting: false, error: null, target, attempt: 0, retryAt: 0 })
             restoreFiles(opened)

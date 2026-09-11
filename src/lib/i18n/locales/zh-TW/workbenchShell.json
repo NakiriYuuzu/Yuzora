@@ -24,5 +24,14 @@
   "sidebar": "側邊導覽",
   "searchShort": "搜尋",
   "workspace": "工作面",
-  "windowDragHint": "拖曳移動視窗 · 雙擊放大或還原"
+  "windowDragHint": "拖曳移動視窗 · 雙擊放大或還原",
+  "newFile": "新增檔案",
+  "newFolder": "新增資料夾",
+  "refresh": "重新整理檔案",
+  "moreTools": "更多工作工具",
+  "findFiles": "搜尋檔案名稱",
+  "copyWorkspacePath": "複製資料夾完整路徑",
+  "revealFinder": "在 Finder 中開啟",
+  "revealExplorer": "在檔案總管中開啟",
+  "revealFileManager": "在檔案管理員中開啟"
 }

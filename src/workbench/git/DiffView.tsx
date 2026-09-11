@@ -208,6 +208,9 @@ export function DiffView({ content, mode, path }: { content: DiffContent; mode: 
     }
 
     function onSeparatorPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
         draggingRef.current = true
         event.currentTarget.setPointerCapture(event.pointerId)
         applyRatioFromClientX(event.clientX)
@@ -308,11 +311,14 @@ export function DiffView({ content, mode, path }: { content: DiffContent; mode: 
                         tabIndex={0}
                         data-testid="diff-split-separator"
                         className="absolute inset-y-0 z-10 w-[10px] -translate-x-1/2 cursor-col-resize touch-none outline-none focus-visible:ring-2 focus-visible:ring-(--yz-accent)"
-                        style={{ left: `calc(var(--yz-diff-split-a) * 100%)` }}
+                        // Leave the native horizontal scrollbar's full hit
+                        // area free, even where it crosses the split boundary.
+                        style={{ left: `calc(var(--yz-diff-split-a) * 100%)`, bottom: "10px" }}
                         onPointerDown={onSeparatorPointerDown}
                         onPointerMove={onSeparatorPointerMove}
                         onPointerUp={commitSeparator}
                         onPointerCancel={commitSeparator}
+                        onLostPointerCapture={() => { draggingRef.current = false }}
                         onDoubleClick={() => resetSplitRatio()}
                         onKeyDown={onSeparatorKeyDown}
                     >

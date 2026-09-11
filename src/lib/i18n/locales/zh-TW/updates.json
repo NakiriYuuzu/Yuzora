@@ -1,5 +1,13 @@
 {
   "currentReleaseNotes": "此版本更新內容",
   "currentReleaseNotesSub": "Yuzora v{{version}} 帶來的主要改變",
-  "availableReleaseNotes": "Yuzora v{{version}} 更新內容"
+  "availableReleaseNotes": "Yuzora v{{version}} 更新內容",
+  "channelLabel": "更新頻道",
+  "channelDescription": "自動：預發版安裝使用預覽頻道；正式版使用穩定頻道。預覽包含較新的預發版與正式版，切換頻道不降版。",
+  "channels": {
+    "auto": "自動（依安裝版本）",
+    "stable": "穩定版",
+    "preview": "預覽版與穩定版"
+  },
+  "legacyPreviewNote": "舊版 Beta（含 0.0.9-beta.3）未提供自動更新；須先手動安裝支援此功能的新版本。"
 }

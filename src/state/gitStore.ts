@@ -3,6 +3,7 @@ import { create } from "zustand"
 import {
     gitBootstrap,
     gitBranches,
+    gitCommitDetail,
     gitFetch,
     gitRemoteProbe,
     gitStatus
@@ -48,6 +49,7 @@ const CONSOLE_CMD_LABELS: Record<string, string> = {
     discard: "git restore",
     rollback: "git restore --staged --worktree",
     commit: 'git commit -m "…"',
+    amend: 'git commit --amend -m "…"',
     checkout: "git checkout",
     "cherry-pick": "git cherry-pick",
     "create-branch": "git branch",
@@ -157,10 +159,15 @@ export function clearGitSnapshots(): void {
     snapshots.clear()
     liveSnapshotKey = null
     detectInFlight = false
+    requestedWorkspacePath = null
     refreshAfterDetect = false
     statusEpoch = 0
     branchEpoch = 0
     branchRequestSeq = 0
+    branchResponseSeq = 0
+    statusRefreshError = null
+    branchRefreshError = null
+    foregroundError = null
     resetRefreshFlight()
 }
 
@@ -196,11 +203,18 @@ interface GitState {
     remoteCheck: RemoteCheckConfig
     consoleLog: GitConsoleEntry[]
     commitMessage: string
+    amendHead: string | null
+    amendOriginalMessage: string | null
+    commitDraftBeforeAmend: string
+    amendLoading: boolean
+    beginAmend: () => Promise<void>
+    cancelAmend: () => void
     setCommitMessage: (message: string) => void
     appendConsole: (entry: GitConsoleEntry) => void
     detect: (workspacePath: string) => Promise<void>
     refresh: (paths?: string[]) => Promise<void>
     refreshQuiet: (paths?: string[]) => Promise<void>
+    retrySnapshot: () => Promise<void>
     loadBranches: () => Promise<void>
     runOp: (name: string, fn: () => Promise<unknown>, options?: RunOpOptions) => Promise<boolean>
     checkRemote: () => Promise<void>
@@ -222,7 +236,11 @@ export const initialGitState = {
     // Commit message lives in the store (not local component state) so the
     // sidebar commit card and any future entry share one draft and it survives
     // mode switches (E1 §1.3).
-    commitMessage: ""
+    commitMessage: "",
+    amendHead: null as string | null,
+    amendOriginalMessage: null as string | null,
+    commitDraftBeforeAmend: "",
+    amendLoading: false
 }
 
 // Monotonic id source for console entries — survives store resets so ids stay
@@ -274,6 +292,7 @@ function resetRefreshFlight(): void {
 // reject，避免 stale environment 覆蓋新 workspace（Rust 端 git_detect 亦有同款
 // generation guard 保護 repo state 與 watcher，兩端各自守自己的 state）。
 let detectSeq = 0
+let requestedWorkspacePath: string | null = null
 // #58 覆核修正：detect 在飛（bootstrap 尚未落地）期間，Rust 端 repo state 可能
 // 仍指向前一個 workspace（detect_commit_and_watch 要到 blocking task 執行才
 // commit RepoHandle/.git watcher）。此窗口內 git_status_cmd／git_branches 會以
@@ -289,9 +308,17 @@ let refreshAfterDetect = false
 // publish only when the captured value still matches.
 let statusEpoch = 0
 let branchEpoch = 0
-// Latest-request generation for loadBranches: two same-root/same-epoch
-// fetches can still resolve out of order; only the newest seq may publish.
+// Compare settled responses, not pending requests: a current-epoch response
+// may publish while a newer read is pending, but cannot replace a newer result.
 let branchRequestSeq = 0
+let branchResponseSeq = 0
+// Status and refs refresh independently. A successful retry clears only its
+// own error; it must neither retain a recovered error nor erase the other
+// lane's current failure while runOp is waiting for the complete snapshot.
+let statusRefreshError: string | null = null
+let branchRefreshError: string | null = null
+// Successful background reads cannot recover an explicit user operation.
+let foregroundError: string | null = null
 
 // ready environment 的 root，否則 null。status/branches 的 stale-resolve 丟棄
 // 用：只看 `status === "ready"` 擋不住 ready→ready 的 workspace 切換（A 的慢
@@ -306,7 +333,8 @@ function statusRequestIsCurrent(
     rootAtFetch: string,
     epochAtFetch: number
 ): boolean {
-    return !detectInFlight && readyRoot(env) === rootAtFetch && epochAtFetch === statusEpoch
+    return !detectInFlight && !useGitStore.getState().snapshotStale
+        && readyRoot(env) === rootAtFetch && epochAtFetch === statusEpoch
 }
 
 function branchRequestIsCurrent(
@@ -317,15 +345,18 @@ function branchRequestIsCurrent(
 ): boolean {
     return (
         !detectInFlight
+        && !useGitStore.getState().snapshotStale
         && readyRoot(env) === rootAtFetch
         && epochAtFetch === branchEpoch
-        && seqAtFetch === branchRequestSeq
+        && seqAtFetch >= branchResponseSeq
     )
 }
 
 function bumpMutationEpochs(): void {
     statusEpoch += 1
     branchEpoch += 1
+    statusRefreshError = null
+    branchRefreshError = null
 }
 
 export const useGitStore = create<GitState>()((set, get) => ({
@@ -333,13 +364,52 @@ export const useGitStore = create<GitState>()((set, get) => ({
 
     setCommitMessage: (message) => set({ commitMessage: message }),
 
+    beginAmend: async () => {
+        const before = get()
+        if (gitMutationsBlocked(before) || before.amendLoading || before.amendHead || !before.status
+            || before.status.inProgress || before.status.conflicted.length
+            || !/^[a-f0-9]{40,64}$/i.test(before.status.headOid) || /^0+$/.test(before.status.headOid)) return
+        const root = readyRoot(before.environment)!
+        const head = before.status.headOid
+        const generation = detectSeq
+        foregroundError = null
+        set({ amendLoading: true, lastError: null })
+        try {
+            const detail = await gitCommitDetail(root, head)
+            const live = get()
+            if (generation !== detectSeq || readyRoot(live.environment) !== root || live.status?.headOid !== head || gitMutationsBlocked(live)) return
+            const message = detail.subject + (detail.body ? `\n\n${detail.body}` : "")
+            set({ amendHead: head, amendOriginalMessage: message, commitDraftBeforeAmend: live.commitMessage, commitMessage: message })
+        } catch (error) {
+            if (generation === detectSeq && readyRoot(get().environment) === root) {
+                foregroundError = String(error)
+                set({ lastError: foregroundError })
+            }
+        } finally {
+            if (generation === detectSeq) set({ amendLoading: false })
+        }
+    },
+
+    cancelAmend: () => set((state) => ({
+        commitMessage: state.amendHead ? state.commitDraftBeforeAmend : state.commitMessage,
+        amendHead: null,
+        amendOriginalMessage: null,
+        commitDraftBeforeAmend: ""
+    })),
+
     // Prepend newest-first, cap at CONSOLE_LOG_LIMIT dropping the tail.
     appendConsole: (entry) => {
         set((s) => ({ consoleLog: [entry, ...s.consoleLog].slice(0, CONSOLE_LOG_LIMIT) }))
     },
 
     detect: async (workspacePath) => {
+        if (requestedWorkspacePath !== workspacePath) {
+            get().cancelAmend()
+        }
+        requestedWorkspacePath = workspacePath
+        foregroundError = null
         const seq = ++detectSeq
+        set({ busy: null, amendLoading: false })
         // bootstrap 落地前 Rust 端 repo state 歸屬不明（見 detectInFlight 註解）：
         // 抑制期開始。只有「仍是最新」的 detect 會在落地時解除。
         detectInFlight = true
@@ -397,14 +467,13 @@ export const useGitStore = create<GitState>()((set, get) => ({
                 environment,
                 status,
                 branches,
-                snapshotStale: false,
+                snapshotStale: environment.status === "ready" && !!snapshotError,
                 ...(environment.status === "ready" && status
                     ? { statusRevision: get().statusRevision + 1 }
                     : {}),
                 remoteIncoming: "unknown",
                 remotePaused: false,
-                // 與舊流程「detect 成功、refresh 失敗」同語意：只記 lastError，
-                // 後續 watcher/focus refresh 會自行收斂。
+                // A failed snapshot keeps mutations gated until bootstrap retry.
                 lastError: snapshotError ?? null
             })
             // #58 T4a：bootstrap 真值落地 → 播種/覆蓋快照。非 ready（notARepo/
@@ -433,6 +502,12 @@ export const useGitStore = create<GitState>()((set, get) => ({
         }
     },
 
+    retrySnapshot: async () => {
+        if (get().busy || detectInFlight) return
+        if (requestedWorkspacePath) await get().detect(requestedWorkspacePath)
+        else await Promise.all([get().refresh(), get().loadBranches()])
+    },
+
     refresh: (paths) => {
         // Non-ready environments (fs/focus-driven refreshes before detect, or a
         // non-repo workspace) must not touch git or write lastError (background
@@ -444,6 +519,9 @@ export const useGitStore = create<GitState>()((set, get) => ({
             refreshAfterDetect = true
             return Promise.resolve()
         }
+        // A failed bootstrap has not established repository ownership. Only a
+        // bootstrap retry can recover it; a status-only read cannot clear it.
+        if (get().snapshotStale) return Promise.resolve()
         if (inflight) {
             // Within the debounce window (timer still pending) widen the not-yet-
             // started request. Once the fetch is running, contribute this caller's
@@ -478,7 +556,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
                     const rootAtFetch = readyRoot(get().environment)
                     // detect 在飛（debounce 窗口內開始了 workspace 切換）同樣放棄本次
                     // fetch——Rust 端可能回「另一個 repo」的 status；記一筆待補跑。
-                    if (rootAtFetch === null || detectInFlight) {
+                    if (rootAtFetch === null || detectInFlight || get().snapshotStale) {
                         if (generation !== refreshFlightGen) return
                         if (detectInFlight) refreshAfterDetect = true
                         scheduledScope = null
@@ -490,6 +568,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
                     const requestPaths = scheduledScope === null ? paths : scheduledScope
                     if (generation === refreshFlightGen) scheduledScope = null
                     const epochAtFetch = statusEpoch
+                    let completedCurrentFullRequest = false
                     try {
                         const status = await gitStatus(rootAtFetch, requestPaths)
                         if (generation !== refreshFlightGen) return
@@ -506,7 +585,9 @@ export const useGitStore = create<GitState>()((set, get) => ({
                         // after this request started makes the result stale even on the
                         // same root.
                         if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
-                            set((state) => ({ status, lastError: null, statusRevision: state.statusRevision + 1 }))
+                            completedCurrentFullRequest = requestPaths === undefined
+                            statusRefreshError = null
+                            set((state) => ({ status, lastError: foregroundError ?? branchRefreshError, statusRevision: state.statusRevision + 1 }))
                             syncLiveSnapshot(get())
                         }
                     } catch (e) {
@@ -514,7 +595,9 @@ export const useGitStore = create<GitState>()((set, get) => ({
                         // Same guard for a stale rejection — a failure from the old
                         // workspace or pre-mutation epoch must stay silent.
                         if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
-                            set({ lastError: String(e) })
+                            completedCurrentFullRequest = requestPaths === undefined
+                            statusRefreshError = String(e)
+                            set({ lastError: foregroundError ?? statusRefreshError })
                         }
                     }
                     if (generation !== refreshFlightGen) return
@@ -527,7 +610,13 @@ export const useGitStore = create<GitState>()((set, get) => ({
                         // callers (especially runOp after an epoch bump) wait for
                         // a current-epoch publish, not just the discarded request.
                         // Full-refresh callers win over any path-scoped pending set.
-                        await get().refresh(rerunPaths)
+                        const rerun = get().refresh(rerunPaths)
+                        // A current full read (success or explicit error) settles
+                        // this flight. Watcher traffic must not hold a
+                        // completed foreground mutation's busy gate forever too.
+                        // A discarded/pre-mutation or path-scoped sample still
+                        // waits for the next full, current-epoch publication.
+                        if (!completedCurrentFullRequest) await rerun
                     }
                 } finally {
                     settle()
@@ -557,7 +646,8 @@ export const useGitStore = create<GitState>()((set, get) => ({
         try {
             const status = await gitStatus(rootAtFetch, paths)
             if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
-                set((state) => ({ status, lastError: null, statusRevision: state.statusRevision + 1 }))
+                statusRefreshError = null
+                set((state) => ({ status, lastError: foregroundError ?? branchRefreshError, statusRevision: state.statusRevision + 1 }))
                 syncLiveSnapshot(get())
             }
         } catch (e) {
@@ -584,12 +674,16 @@ export const useGitStore = create<GitState>()((set, get) => ({
         try {
             const branches = await gitBranches(rootAtFetch)
             if (branchRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
-                set({ branches, lastError: null })
+                branchResponseSeq = seqAtFetch
+                branchRefreshError = null
+                set({ branches, lastError: foregroundError ?? statusRefreshError })
                 syncLiveSnapshot(get())
             }
         } catch (e) {
             if (branchRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
-                set({ lastError: String(e) })
+                branchResponseSeq = seqAtFetch
+                branchRefreshError = String(e)
+                set({ lastError: foregroundError ?? branchRefreshError })
             }
         }
     },
@@ -598,6 +692,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
         if (gitMutationsBlocked(get())) return false
         const capturedRoot = readyRoot(get().environment)
         if (!capturedRoot) return false
+        const seqAtOp = detectSeq
         set({ busy: name })
         // Single-point Console wiring: every runOp completion (success and
         // failure) records one entry here. The IPC layer returns no stdout, so
@@ -606,6 +701,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
         const cmd = consoleCmdLabel(name, options)
         try {
             await fn()
+            if (seqAtOp !== detectSeq) return true
             const afterSuccess = get()
             if (
                 !detectInFlight
@@ -622,6 +718,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
                     }
                 }
             }
+            foregroundError = null
             set({ lastError: null })
             if (name === "fetch") set({ remotePaused: false, remoteIncoming: "no" })
             get().appendConsole({
@@ -632,9 +729,17 @@ export const useGitStore = create<GitState>()((set, get) => ({
                 time: consoleTime()
             })
             await Promise.all([get().refresh(), get().loadBranches()])
+            if (seqAtOp === detectSeq && readyRoot(get().environment) === capturedRoot && (statusRefreshError || branchRefreshError)) {
+                // The operation succeeded but its post-operation snapshot did
+                // not. Keep actions gated until an explicit bootstrap retry.
+                set({ snapshotStale: true })
+            }
             return true
         } catch (e) {
-            set({ lastError: String(e) })
+            if (seqAtOp === detectSeq) {
+                foregroundError = String(e)
+                set({ lastError: foregroundError })
+            }
             get().appendConsole({
                 id: ++consoleSeq,
                 cmd,
@@ -644,7 +749,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
             })
             return false
         } finally {
-            set({ busy: null })
+            if (seqAtOp === detectSeq) set({ busy: null })
         }
     },
 

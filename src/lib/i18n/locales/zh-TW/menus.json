@@ -338,7 +338,8 @@
   "logGraph": {
     "commitColumn": "提交",
     "authorColumn": "作者",
-    "dateColumn": "日期"
+    "dateColumn": "日期",
+    "branchColumn": "分支"
   },
   "logTab": {
     "allLabel": "全部",

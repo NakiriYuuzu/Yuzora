@@ -2324,7 +2324,7 @@ impl HerdrManager {
     }
 
     /// Schema-gated API request against the selected running session's socket.
-    fn call_checked_api(
+    pub(crate) fn call_checked_api(
         &self,
         session_name: Option<&str>,
         is_available: impl Fn(&HerdrApiCapability) -> bool,
@@ -3766,6 +3766,7 @@ const IMPLEMENTED_API_METHODS: &[&str] = &[
     "pane.swap",
     "pane.close",
     "pane.get",
+    "pane.scroll",
     "pane.process_info",
     "layout.export",
     "layout.set_split_ratio",
@@ -5204,6 +5205,25 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("between 20 and 500"));
+    }
+
+    #[test]
+    fn scroll_capability_reaches_frontend_when_official_schema_supports_it() {
+        let manager = HerdrManager::new();
+        *manager.binary_override.lock().unwrap() =
+            Some(PathBuf::from("/nonexistent/herdr-scroll-fixture"));
+        let mut api = manager.capabilities().api;
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/herdr-0.9.0-methods.json"))
+                .unwrap();
+        let methods = collect_schema_methods(&schema);
+        assert!(methods.contains("pane.get") && methods.contains("pane.scroll"));
+        apply_schema_method_flags(&mut api, &methods, true);
+        assert!(api.methods.iter().any(|method| method == "pane.get"));
+        assert!(
+            api.methods.iter().any(|method| method == "pane.scroll"),
+            "the frontend disables every scrollbar without this capability"
+        );
     }
 
     #[test]

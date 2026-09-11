@@ -1,5 +1,13 @@
 {
   "currentReleaseNotes": "What's new in this version",
   "currentReleaseNotesSub": "Highlights included with Yuzora v{{version}}",
-  "availableReleaseNotes": "What's new in Yuzora v{{version}}"
+  "availableReleaseNotes": "What's new in Yuzora v{{version}}",
+  "channelLabel": "Update channel",
+  "channelDescription": "Automatic: prerelease installations follow Preview; stable installations follow Stable. Preview includes newer prerelease and stable versions. Switching channels never downgrades.",
+  "channels": {
+    "auto": "Automatic (installed version)",
+    "stable": "Stable",
+    "preview": "Preview and stable"
+  },
+  "legacyPreviewNote": "Older betas (including 0.0.9-beta.3) shipped without automatic updates. Manually install a new version supporting this feature first."
 }

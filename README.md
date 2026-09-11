@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.9-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.10-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -21,7 +21,7 @@
 <br />
 <br />
 
-<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.9 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
+<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.10 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
 
 </div>
 
@@ -36,7 +36,11 @@
 
 ## Features
 
-### What's new in v0.0.9
+### What's new in v0.0.10
+
+- A Files | GIT workspace-tools card with new-file/new-folder actions, full-path copying, and Finder or Explorer reveal.
+- Dynamic-width Git Graph with horizontal scrolling, large-document continuous rendering, and directly operable HERDR, diff, and minimap scrollbars.
+- Configurable keyboard shortcuts and GitHub, Yuzora, and One syntax themes across common language and file-extension mappings.
 
 - Faster Git status, branch lists and diff loading; smoother switching between open HERDR terminals while keeping their output and connections.
 - A persistent Bot animations switch under Appearance; lower-spec devices default to static companions, with system reduced motion respected.
@@ -125,7 +129,17 @@ The Windows `.msi` installer and past versions live on [GitHub Releases](https:/
 
 Starting with v0.0.9, the macOS App requires Apple Silicon. Intel macOS remote Hosts remain supported.
 
-macOS downloads are **not Apple Developer ID signed or notarized**. Gatekeeper may warn or block the first launch. Download from the official release above, then use macOS **System Settings → Privacy & Security → Open Anyway** if offered after the first launch attempt. Windows may show SmartScreen because Authenticode signing is not enabled. Stable updates still verify Tauri updater signatures.
+macOS downloads are **not Apple Developer ID signed or notarized**. Gatekeeper may warn or block the first launch. Download from the official release above, then use macOS **System Settings → Privacy & Security → Open Anyway** if offered after the first launch attempt. Windows may show SmartScreen because Authenticode signing is not enabled. Stable and supported prerelease updates verify Tauri updater signatures.
+
+### Update channels
+
+In **Settings → About & Updates → Update channel**, choose:
+
+- **Automatic (installed version)**: stable installations check stable releases; prerelease installations check newer preview and stable releases.
+- **Stable**: only stable releases, even when the installed version is a prerelease.
+- **Preview and stable**: the highest newer semantic version with signed updater metadata, including prereleases. Switching channels never downgrades.
+
+Older betas, including **v0.0.9-beta.3**, shipped with automatic updates disabled. Install a newer version supporting update channels manually once; existing published installers are not modified. Preview updates become available as new signed prereleases are published. PR acceptance candidates keep automatic updates disabled.
 
 ## Tech stack
 

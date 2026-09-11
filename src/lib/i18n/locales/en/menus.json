@@ -340,7 +340,8 @@
   "logGraph": {
     "commitColumn": "Commit",
     "authorColumn": "Author",
-    "dateColumn": "Date"
+    "dateColumn": "Date",
+    "branchColumn": "Branch"
   },
   "logTab": {
     "allLabel": "All",

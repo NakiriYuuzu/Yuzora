@@ -122,6 +122,7 @@ export function StatusBar() {
       aria-expanded={ready ? branchOpen : undefined}
       aria-haspopup={ready ? "dialog" : undefined}
       onClick={() => setBranchOpen((v) => !v)}
+      onContextMenu={contextMenuHandler({ kind: "status", repositoryRoot: ready ? environment.root : null })}
       className="flex h-[22px] min-w-0 max-w-[35%] shrink items-center gap-[6px] whitespace-nowrap rounded-[7px] px-[9px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)] disabled:cursor-default disabled:hover:bg-transparent"
     >
       <span className="size-[7px] shrink-0 rounded-full bg-(--yz-accent)" aria-hidden="true" />
@@ -156,10 +157,7 @@ export function StatusBar() {
   return (
     <footer
       aria-label={t("statusBar.ariaLabel")}
-      onContextMenu={contextMenuHandler({
-        kind: "status",
-        repositoryRoot: environment?.status === "ready" ? environment.root : null,
-      })}
+      onContextMenu={contextMenuHandler({ kind: "general" })}
       className="flex h-[30px] min-w-0 shrink-0 whitespace-nowrap items-center gap-1 border-t border-(--line-1) bg-(--yz-glass-strong) px-2 font-mono text-[11.5px] text-(--ink-2) backdrop-blur-[20px] backdrop-saturate-[1.5]"
     >
       <span className="rounded-[6px] px-[6px] font-medium text-(--ink-1)">Yuzora</span>

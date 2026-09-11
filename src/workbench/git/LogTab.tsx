@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -320,8 +321,9 @@ export function LogTab({
             )}
 
             {/* body: graph + list | details */}
-            <div className="flex min-h-0 flex-1">
-                <div className="flex min-w-0 flex-1 flex-col">
+            <ResizablePanelGroup id="git-history-layout" orientation="horizontal" className="min-h-0 min-w-0 flex-1">
+                <ResizablePanel id="git-history-graph" defaultSize="70%" minSize="40%">
+                <div className="flex h-full min-h-0 min-w-0 flex-col">
                     {loading ? (
                         <div className="flex flex-1 items-center justify-center text-[12.5px] text-(--ink-3)">
                             {t("logTab.loadingCommits")}
@@ -357,7 +359,9 @@ export function LogTab({
                         />
                     )}
                 </div>
-
+                </ResizablePanel>
+                <ResizableHandle withHandle className="w-2 shrink-0" aria-label={t("resizeHistory", { ns: "gitWorkflow" })} />
+                <ResizablePanel id="git-history-details" defaultSize="30%" minSize="25%" maxSize="60%">
                 <CommitDetails
                     selectedCommit={selectedCommit}
                     detail={detail}
@@ -383,7 +387,8 @@ export function LogTab({
                     }
                     cherryPickDisabled={cherryPickDisabled}
                 />
-            </div>
+                </ResizablePanel>
+            </ResizablePanelGroup>
         </div>
     )
 }

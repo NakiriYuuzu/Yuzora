@@ -88,6 +88,41 @@ describe("GitPanel tab strip", () => {
     })
     afterEach(() => cleanup())
 
+    it("keeps Local changes as a tab and only offers Back to working files", async () => {
+        useGitStore.setState({ environment: ready, status: makeStatus() })
+        render(<GitPanel />)
+        await waitFor(() => expect(useGitLogStore.getState().loading).toBe(false))
+        act(() => useGitLogStore.setState({ selectedHash: "a".repeat(40), filters: { query: "saved", author: null, since: null, until: null } }))
+        const logPanel = document.querySelector('[data-slot="tabs-content"][data-state="active"]')
+        expect(screen.queryByRole("button", { name: "Back to changes" })).not.toBeInTheDocument()
+        fireEvent.mouseDown(screen.getByRole("tab", { name: /Local changes/i }), { button: 0, ctrlKey: false })
+        expect(useUiStore.getState().gitPanelTab).toBe("local")
+        expect(logPanel).toHaveAttribute("data-state", "inactive")
+        expect(logPanel).toBeInTheDocument()
+        act(() => useUiStore.getState().setGitPanelTab("log"))
+        expect(useGitLogStore.getState().selectedHash).toBe("a".repeat(40))
+        expect(useGitLogStore.getState().filters.query).toBe("saved")
+        fireEvent.click(screen.getByRole("button", { name: "Back to working files" }))
+        expect(useUiStore.getState().mode).toBe("files")
+    })
+
+    it("returns through the shell callback from Local and Console without remounting history", async () => {
+        useGitStore.setState({ environment: ready, status: makeStatus() })
+        const onReturnToWork = vi.fn()
+        render(<GitPanel onReturnToWork={onReturnToWork} />)
+        await waitFor(() => expect(useGitLogStore.getState().loading).toBe(false))
+        const historyLayout = screen.getByTestId("git-history-layout")
+        expect(screen.getByRole("separator", { name: "Resize history graph and commit details" })).toBeInTheDocument()
+        fireEvent.mouseDown(screen.getByRole("tab", { name: /Local changes/i }), { button: 0, ctrlKey: false })
+        fireEvent.click(screen.getByRole("button", { name: "Back to working files" }))
+        expect(onReturnToWork).toHaveBeenCalledOnce()
+        fireEvent.mouseDown(screen.getByRole("tab", { name: "Console" }), { button: 0, ctrlKey: false })
+        fireEvent.click(screen.getByRole("button", { name: "Back to working files" }))
+        expect(onReturnToWork).toHaveBeenCalledTimes(2)
+        fireEvent.mouseDown(screen.getByRole("tab", { name: "Log" }), { button: 0, ctrlKey: false })
+        expect(screen.getByTestId("git-history-layout")).toBe(historyLayout)
+    })
+
     it("shows branch pill + Fetch/Pull/Push when ready", () => {
         useGitStore.setState({
             environment: ready,

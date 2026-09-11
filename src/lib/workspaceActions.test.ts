@@ -263,3 +263,19 @@ test("pickWorkspace 選擇路徑後取消 dirty switch 仍回傳 false", async (
     expect(await pending).toBe(false)
     expect(openWorkspace).not.toHaveBeenCalled()
 })
+
+test("a superseded image-session restore never publishes a half-switched workspace", async () => {
+    useWorkspaceStore.getState().setWorkspace("/current")
+    saveWorkspaceSession({ workspacePath: "/canonical", tabs: ["/canonical/image.png"], activePath: "/canonical/image.png" })
+    let finish!: () => void
+    let current = true
+    vi.mocked(allowWorkspaceAssetScope).mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    const opening = openWorkspaceAtPath("/restore", { skipUnsavedGuard: true, shouldOpen: () => current })
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/current")
+    current = false
+    finish()
+    expect(await opening).toBe(false)
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/current")
+    expect(startWatch).not.toHaveBeenCalled()
+})

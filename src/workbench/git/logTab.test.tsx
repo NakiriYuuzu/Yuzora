@@ -323,7 +323,8 @@ describe("LogTab filters", () => {
 
         fireEvent.pointerDown(screen.getByRole("button", { name: "User filter" }), {
             button: 0,
-            ctrlKey: false
+            ctrlKey: false,
+            clientX: 64, clientY: 32
         })
         const menu = screen.getByRole("menu")
         fireEvent.click(within(menu).getByRole("menuitem", { name: "Sora" }))
@@ -334,21 +335,24 @@ describe("LogTab filters", () => {
         await renderLog()
         fireEvent.pointerDown(screen.getByRole("button", { name: "Date filter" }), {
             button: 0,
-            ctrlKey: false
+            ctrlKey: false,
+            clientX: 64, clientY: 32
         })
         fireEvent.click(screen.getByRole("menuitem", { name: "Last 7 days" }))
         expect(useGitLogStore.getState().filters.since).toBe("7 days ago")
 
         fireEvent.pointerDown(screen.getByRole("button", { name: "Date filter" }), {
             button: 0,
-            ctrlKey: false
+            ctrlKey: false,
+            clientX: 64, clientY: 32
         })
         fireEvent.click(screen.getByRole("menuitem", { name: "Last 30 days" }))
         expect(useGitLogStore.getState().filters.since).toBe("30 days ago")
 
         fireEvent.pointerDown(screen.getByRole("button", { name: "Date filter" }), {
             button: 0,
-            ctrlKey: false
+            ctrlKey: false,
+            clientX: 64, clientY: 32
         })
         fireEvent.click(screen.getByRole("menuitem", { name: "All" }))
         expect(useGitLogStore.getState().filters.since).toBe(null)
@@ -358,7 +362,8 @@ describe("LogTab filters", () => {
         await renderLog()
         const trigger = screen.getByRole("button", { name: "Date filter" })
         trigger.focus()
-        fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+        // Keep the toolbar click away from jsdom's zero-size splitter bounds.
+        fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, clientX: 64, clientY: 32 })
         const menu = screen.getByRole("menu")
 
         fireEvent.keyDown(menu, { key: "Escape" })

@@ -292,11 +292,12 @@ function withFocusedTab(snapshot: HerdrSnapshot, tab: HerdrTabInfo): HerdrSnapsh
     ...snapshot,
     spaces: snapshot.spaces.map((space) => ({
       ...space,
-      focused: space.id === tab.workspaceId
+      focused: space.id === tab.workspaceId,
+      activeTabId: space.id === tab.workspaceId ? tab.id : space.activeTabId
     })),
     tabs: snapshot.tabs.map((candidate) => ({
       ...candidate,
-      active: candidate.id === tab.id,
+      active: candidate.workspaceId === tab.workspaceId ? candidate.id === tab.id : candidate.active,
       focused: candidate.id === tab.id
     })),
     focusedWorkspaceId: tab.workspaceId,
@@ -331,33 +332,23 @@ const MAX_REFRESH_RETRIES = 2
 const worktreeInventoryInFlight = new Map<string, Promise<void>>()
 const worktreeInventoryRequestedGeneration = new Map<string, number>()
 const snapshotGeneration = new Map<string, number>()
-const tabActivationGeneration = new Map<string, number>()
-const tabActivationTail = new Map<string, Promise<void>>()
+let selectionTail: Promise<void> = Promise.resolve()
+let pendingSelections = 0
 /** One create transaction per named session prevents duplicate first Spaces/Agents. */
 const spaceCreationInFlight = new Set<string>()
 let sessionSelectionGeneration = 0
 
-async function acquireTabActivation(sessionName: string): Promise<() => void> {
-  const previous = tabActivationTail.get(sessionName) ?? Promise.resolve()
-  let releaseGate!: () => void
-  const gate = new Promise<void>((resolve) => {
-    releaseGate = resolve
-  })
-  const tail = previous.catch(() => undefined).then(() => gate)
-  tabActivationTail.set(sessionName, tail)
+/** Serialize foreground focus RPCs across Spaces, tabs and named sessions.
+ * A newer intent invalidates old UI commits immediately, then runs after the
+ * previous native focus mutation settles so it remains authoritative too. */
+async function acquireSelection(): Promise<() => void> {
+  pendingSelections += 1
+  const previous = selectionTail
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  selectionTail = previous.catch(() => undefined).then(() => gate)
   await previous.catch(() => undefined)
-
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    releaseGate()
-    void tail.then(() => {
-      if (tabActivationTail.get(sessionName) === tail) {
-        tabActivationTail.delete(sessionName)
-      }
-    })
-  }
+  return () => { pendingSelections -= 1; release() }
 }
 
 export const useHerdrStore = create<HerdrState>((set, get) => ({
@@ -1153,6 +1144,9 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(path && !pathsMatch(path, currentWorkspace))
 
+    const activationGeneration = ++sessionSelectionGeneration
+    const isLatestActivation = () => sessionSelectionGeneration === activationGeneration
+
     // 1) Unsaved guard BEFORE any Herdr/Yuzora mutation.
     if (needsWorkspaceSwitch) {
       const proceed = await confirmDiscardingUnsaved({
@@ -1165,107 +1159,126 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     }
 
-    // 2) Focus Herdr Space on the target running session.
+    const releaseActivation = await acquireSelection()
     try {
-      if (path) {
-        path = await canonicalRuntimeWorkspace(sessionName, path)
-        bindWorkspaceRoot(sessionName, workspaceId, path)
+      if (!isLatestActivation()) return { ok: false, cancelled: true }
+      if (previousSession && previousSpace) {
+        useWorkspaceStore.getState().rememberSpaceNavigation(previousSession, previousSpace)
       }
-      await herdrWorkspaceFocus({ sessionName, workspaceId })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      return { ok: false, error: message }
-    }
 
-    // 3) Guarded Yuzora workspace switch when a Space path exists.
-    if (needsWorkspaceSwitch && path) {
+      // 2) Focus Herdr Space on the target running session.
       try {
-        const opened = await openWorkspaceAtPath(path, {
-          skipUnsavedGuard: true
-        })
-        // The unsaved preflight already completed before Herdr focus.
-        if (opened === false) {
-          // Best-effort rollback Herdr focus.
+        if (path) {
+          path = await canonicalRuntimeWorkspace(sessionName, path)
+          if (!isLatestActivation()) return { ok: false, cancelled: true }
+          bindWorkspaceRoot(sessionName, workspaceId, path)
+        }
+        await herdrWorkspaceFocus({ sessionName, workspaceId })
+        if (!isLatestActivation()) return { ok: false, cancelled: true }
+      } catch (error) {
+        if (!isLatestActivation()) return { ok: false, cancelled: true }
+        const message = error instanceof Error ? error.message : String(error)
+        return { ok: false, error: message }
+      }
+
+      // 3) Guarded Yuzora workspace switch when a Space path exists.
+      if (path && !pathsMatch(path, useWorkspaceStore.getState().workspacePath)) {
+        try {
+          const opened = await openWorkspaceAtPath(path, {
+            skipUnsavedGuard: true,
+            shouldOpen: isLatestActivation
+          })
+          if (!isLatestActivation()) return { ok: false, cancelled: true }
+          // The unsaved preflight already completed before Herdr focus.
+          if (opened === false) {
+            // Best-effort rollback Herdr focus.
+            if (previousSession && previousSpace) {
+              await herdrWorkspaceFocus({
+                sessionName: previousSession,
+                workspaceId: previousSpace
+              }).catch(() => undefined)
+            }
+            return { ok: false, cancelled: true }
+          }
+        } catch (error) {
+          if (!isLatestActivation()) return { ok: false, cancelled: true }
           if (previousSession && previousSpace) {
             await herdrWorkspaceFocus({
               sessionName: previousSession,
               workspaceId: previousSpace
             }).catch(() => undefined)
           }
-          return { ok: false, cancelled: true }
+          const message = error instanceof Error ? error.message : String(error)
+          return { ok: false, error: message }
         }
-      } catch (error) {
-        if (previousSession && previousSpace) {
-          await herdrWorkspaceFocus({
-            sessionName: previousSession,
-            workspaceId: previousSpace
-          }).catch(() => undefined)
+      }
+
+      if (!isLatestActivation()) return { ok: false, cancelled: true }
+      // 4) Commit session/Space selection only after success. workspace.focus
+      // selects the Space's active tab in Herdr, so mirror that known topology
+      // immediately instead of waiting up to one bridge-poll interval.
+      set((state) => {
+        const selectedSpaceBySession = {
+          ...state.selectedSpaceBySession,
+          [sessionName]: workspaceId
         }
-        const message = error instanceof Error ? error.message : String(error)
-        return { ok: false, error: message }
-      }
-    }
-
-    // 4) Commit session/Space selection only after success. workspace.focus
-    // selects the Space's active tab in Herdr, so mirror that known topology
-    // immediately instead of waiting up to one bridge-poll interval.
-    set((state) => {
-      const selectedSpaceBySession = {
-        ...state.selectedSpaceBySession,
-        [sessionName]: workspaceId
-      }
-      const runtime = state.runtimesBySession[sessionName]
-      const snapshot = runtime?.snapshot
-      const space = snapshot?.spaces.find((item) => item.id === workspaceId)
-      const activeTab = snapshot?.tabs.find(
-        (tab) =>
-          tab.workspaceId === workspaceId &&
-          (tab.id === space?.activeTabId || (!space?.activeTabId && tab.active))
-      )
-      return {
-        selectedSpaceBySession,
-        ...projectSelected({ ...state, selectedSpaceBySession }, sessionName),
-        selectedSpaceId: workspaceId,
-        ...(snapshot && activeTab
-          ? withRuntime(state, sessionName, {
-              errorMessage: null,
-              snapshot: withFocusedTab(snapshot, activeTab),
-              ...(runtime?.baseSnapshot
-                ? { baseSnapshot: withFocusedTab(runtime.baseSnapshot, activeTab) }
-                : {})
-            })
-          : {})
-      }
-    })
-
-    const focusedSnapshot = get().runtimesBySession[sessionName]?.snapshot
-    if (focusedSnapshot?.focusedWorkspaceId === workspaceId) {
-      useWorkspaceStore.getState().hydrateHerdrPagesFromSnapshot(
-        focusedSnapshot,
-        sessionScope(get().sessions.find((item) => item.default && !item.hostId))
-      )
-    }
-    const activeTab = focusedSnapshot?.tabs.find(
-      (tab) => tab.workspaceId === workspaceId && tab.id === focusedSnapshot.focusedTabId
-    )
-    if (activeTab?.terminalId) {
-      useWorkspaceStore.getState().openHerdrTerminalPage({
-        herdrSessionId: sessionName,
-        terminalId: activeTab.terminalId,
-        title: activeTab.label,
-        paneId: activeTab.paneId ?? focusedSnapshot?.focusedPaneId ?? null,
-        herdrTabId: activeTab.id,
-        herdrWorkspaceId: activeTab.workspaceId
+        const runtime = state.runtimesBySession[sessionName]
+        const snapshot = runtime?.snapshot
+        const space = snapshot?.spaces.find((item) => item.id === workspaceId)
+        const activeTab = snapshot?.tabs.find(
+          (tab) =>
+            tab.workspaceId === workspaceId &&
+            (tab.id === space?.activeTabId || (!space?.activeTabId && tab.active))
+        )
+        return {
+          selectedSpaceBySession,
+          ...projectSelected({ ...state, selectedSpaceBySession }, sessionName),
+          selectedSpaceId: workspaceId,
+          ...(snapshot && activeTab
+            ? withRuntime(state, sessionName, {
+                errorMessage: null,
+                snapshot: withFocusedTab(snapshot, activeTab),
+                ...(runtime?.baseSnapshot
+                  ? { baseSnapshot: withFocusedTab(runtime.baseSnapshot, activeTab) }
+                  : {})
+              })
+            : {})
+        }
       })
-      if (activeTab.paneId || focusedSnapshot?.focusedPaneId) {
-        get().markAttentionSeen(
-          sessionName,
-          activeTab.paneId ?? focusedSnapshot!.focusedPaneId!
+
+      const focusedSnapshot = get().runtimesBySession[sessionName]?.snapshot
+      if (focusedSnapshot?.focusedWorkspaceId === workspaceId) {
+        useWorkspaceStore.getState().hydrateHerdrPagesFromSnapshot(
+          focusedSnapshot,
+          sessionScope(get().sessions.find((item) => item.default && !item.hostId))
         )
       }
+      const activeTab = focusedSnapshot?.tabs.find(
+        (tab) => tab.workspaceId === workspaceId && tab.id === focusedSnapshot.focusedTabId
+      )
+      if (activeTab?.terminalId) {
+        useWorkspaceStore.getState().openHerdrTerminalPage({
+          herdrSessionId: sessionName,
+          terminalId: activeTab.terminalId,
+          title: activeTab.label,
+          paneId: activeTab.paneId ?? focusedSnapshot?.focusedPaneId ?? null,
+          herdrTabId: activeTab.id,
+          herdrWorkspaceId: activeTab.workspaceId
+        })
+        if (activeTab.paneId || focusedSnapshot?.focusedPaneId) {
+          get().markAttentionSeen(
+            sessionName,
+            activeTab.paneId ?? focusedSnapshot!.focusedPaneId!
+          )
+        }
+      }
+      useWorkspaceStore.getState().restoreSpaceNavigation(sessionName, workspaceId)
+      useWorkspaceStore.getState().rememberSpaceNavigation(sessionName, workspaceId)
+      useUiStore.getState().setMode("ade")
+      return { ok: true }
+    } finally {
+      releaseActivation()
     }
-    useUiStore.getState().setMode("ade")
-    return { ok: true }
   },
 
   async activateTab(tab) {
@@ -1300,6 +1313,9 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const currentWorkspace = useWorkspaceStore.getState().workspacePath
     const needsWorkspaceSwitch = Boolean(space?.path && !pathsMatch(space.path, currentWorkspace))
 
+    const activationGeneration = ++sessionSelectionGeneration
+    const isLatestActivation = () => sessionSelectionGeneration === activationGeneration
+
     // Unsaved preflight must complete before workspace.focus or tab.focus.
     if (needsWorkspaceSwitch) {
       const proceed = await confirmDiscardingUnsaved({
@@ -1310,17 +1326,16 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       if (!proceed) return { ok: false, cancelled: true }
     }
 
-    const activationGeneration = (tabActivationGeneration.get(sessionName) ?? 0) + 1
-    tabActivationGeneration.set(sessionName, activationGeneration)
-    const isLatestActivation = () =>
-      tabActivationGeneration.get(sessionName) === activationGeneration
-    const releaseActivation = await acquireTabActivation(sessionName)
+    const releaseActivation = await acquireSelection()
 
     try {
       if (!isLatestActivation()) return { ok: false, cancelled: true }
+      if (stateBefore.selectedSessionName && stateBefore.selectedSpaceId) {
+        useWorkspaceStore.getState().rememberSpaceNavigation(stateBefore.selectedSessionName, stateBefore.selectedSpaceId)
+      }
 
       // Capture rollback state only after earlier mutations in this session
-      // have settled. The per-session queue prevents a stale RPC from applying
+      // have settled. The foreground queue prevents a stale RPC from applying
       // after a newer activation and stealing authoritative Herdr focus.
       const stateAtMutation = get()
       const previousRuntime = stateAtMutation.runtimesBySession[sessionName]
@@ -1335,7 +1350,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           sessionName,
           workspaceId: previousSpace
         }).catch(() => undefined)
-        if (previousTab) {
+        if (previousTab && isLatestActivation()) {
           await herdrTabFocus({
             sessionName,
             tabId: previousTab
@@ -1357,14 +1372,15 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       } catch (error) {
         if (!isLatestActivation()) return { ok: false, cancelled: true }
         await rollbackFocus()
+        if (!isLatestActivation()) return { ok: false, cancelled: true }
         const message = error instanceof Error ? error.message : String(error)
         set((state) => withRuntime(state, sessionName, { errorMessage: message }))
         return { ok: false, error: message }
       }
 
-      if (needsWorkspaceSwitch && space?.path) {
+      if (space?.path && !pathsMatch(space.path, useWorkspaceStore.getState().workspacePath)) {
         try {
-          const opened = await openWorkspaceAtPath(space.path, { skipUnsavedGuard: true })
+          const opened = await openWorkspaceAtPath(space.path, { skipUnsavedGuard: true, shouldOpen: isLatestActivation })
           if (!isLatestActivation()) return { ok: false, cancelled: true }
           if (opened === false) {
             await rollbackFocus()
@@ -1373,6 +1389,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         } catch (error) {
           if (!isLatestActivation()) return { ok: false, cancelled: true }
           await rollbackFocus()
+          if (!isLatestActivation()) return { ok: false, cancelled: true }
           const message = error instanceof Error ? error.message : String(error)
           set((state) => withRuntime(state, sessionName, { errorMessage: message }))
           return { ok: false, error: message }
@@ -1408,6 +1425,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         herdrTabId: tab.id,
         herdrWorkspaceId: tab.workspaceId
       })
+      useWorkspaceStore.getState().rememberSpaceNavigation(sessionName, tab.workspaceId)
       if (tab.paneId) get().markAttentionSeen(sessionName, tab.paneId)
       useUiStore.getState().setMode("ade")
       // The bounded bridge poll will reconcile the authoritative snapshot. Avoid
@@ -1444,12 +1462,15 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         (item) => item.id === agent.workspaceId
       ) ?? get().spaces().find((item) => item.id === agent.workspaceId)
 
-    const activation = await get().activateSpace({
+    const activationRequest = get().activateSpace({
       sessionName,
       workspaceId: agent.workspaceId,
       path: space?.path ?? null
     })
+    const agentGeneration = sessionSelectionGeneration
+    const activation = await activationRequest
     if (!activation.ok) return activation
+    if (sessionSelectionGeneration !== agentGeneration) return { ok: false, cancelled: true }
 
     useWorkspaceStore.getState().openHerdrTerminalPage({
       herdrSessionId: sessionName,
@@ -1459,12 +1480,14 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       herdrTabId: agent.tabId ?? null,
       herdrWorkspaceId: agent.workspaceId
     })
+    useWorkspaceStore.getState().rememberSpaceNavigation(sessionName, agent.workspaceId)
     if (agent.paneId) get().markAttentionSeen(sessionName, agent.paneId)
     useUiStore.getState().setMode("ade")
     return { ok: true }
   },
 
   async restoreFocusedState(sessionName) {
+    if (pendingSelections > 0) return { ok: false, cancelled: true }
     const restoreGeneration = sessionSelectionGeneration
     const isCurrentSelection = () =>
       sessionSelectionGeneration === restoreGeneration &&
@@ -1527,10 +1550,13 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       if (afterConfirm) return afterConfirm
       try {
         const opened = await openWorkspaceAtPath(target.space.path!, {
-          skipUnsavedGuard: true
+          skipUnsavedGuard: true,
+          shouldOpen: () => adoptLatestOrCancel() === null
         })
         if (opened === false) return { ok: false, cancelled: true }
       } catch (error) {
+        const stale = adoptLatestOrCancel()
+        if (stale) return stale
         const message = error instanceof Error ? error.message : String(error)
         set((state) => withRuntime(state, sessionName, { errorMessage: message }))
         return { ok: false, error: message }
@@ -1560,11 +1586,19 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     })
     if (!isCurrentSelection()) return { ok: false, cancelled: true }
+    const workspaceBeforeHydration = useWorkspaceStore.getState()
+    const activePage = workspaceBeforeHydration.groups[workspaceBeforeHydration.activeGroupIndex]?.tabs.find(
+      (page) => page.path === workspaceBeforeHydration.groups[workspaceBeforeHydration.activeGroupIndex]?.activePath
+    )
+    if (activePage && activePage.kind !== "herdr-terminal" && !needsWorkspaceSwitch) {
+      workspaceBeforeHydration.rememberSpaceNavigation(sessionName, target.space.id)
+    }
     const defaultSessionName =
       sessionScope(get().sessions.find((session) => session.default && !session.hostId))
     useWorkspaceStore
       .getState()
       .hydrateHerdrPagesFromSnapshot(target.snapshot, defaultSessionName)
+    useWorkspaceStore.getState().restoreSpaceNavigation(sessionName, target.space.id)
     if (target.tab.paneId || target.snapshot.focusedPaneId) {
       get().markAttentionSeen(
         sessionName,

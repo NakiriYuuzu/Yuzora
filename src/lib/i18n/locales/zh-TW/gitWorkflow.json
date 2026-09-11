@@ -1,0 +1,12 @@
+{
+  "retry": "重新載入 Git 狀態",
+  "amend": "修改上次提交…",
+  "cancelAmend": "取消修改上次提交",
+  "amendSubmit": "更新上次提交",
+  "loadingCommit": "讀取上次提交…",
+  "amendNotice": "將改寫上次提交；只納入已暫存變更，未暫存檔案保持原樣。沒有已暫存變更時可只修改訊息。若提交已推送，請先與協作者確認；這裡不會強制推送。",
+  "amendOutdated": "HEAD 已改變，請取消此模式並重新讀取上次提交。",
+  "backChanges": "返回變更清單",
+  "backFiles": "返回工作內容",
+  "resizeHistory": "調整歷史分支圖與提交詳情寬度"
+}

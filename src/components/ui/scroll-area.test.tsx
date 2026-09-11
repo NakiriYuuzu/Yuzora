@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { describe, expect, it, vi } from "vitest"
 
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -113,4 +113,59 @@ describe("ScrollArea composition", () => {
     expect(viewport).toHaveAttribute("aria-label", "Rollback targets")
     expect(viewport.contains(screen.getByText("target"))).toBe(true)
   })
+})
+
+it("keeps scrollbar gestures from activating an ancestor editor group or moving keyboard focus", () => {
+  const activate = vi.fn()
+  const view = render(<div onPointerDown={activate} onMouseDown={activate}>
+    <input aria-label="current editor" />
+    <ScrollArea type="always"><div>content</div></ScrollArea>
+  </div>)
+  const input = screen.getByRole("textbox")
+  input.focus()
+  const bar = view.container.querySelector('[data-slot="scroll-area-scrollbar"]')!
+  fireEvent.pointerDown(bar, { pointerId: 1, button: 0, clientY: 20 })
+  const mouse = new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+  bar.dispatchEvent(mouse)
+  expect(activate).not.toHaveBeenCalled()
+  expect(mouse.defaultPrevented).toBe(true)
+  expect(document.activeElement).toBe(input)
+})
+
+it("keeps Radix track clicks and thumb dragging connected to the real viewport", async () => {
+  const resizeCallbacks: Array<() => void> = []
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { resizeCallbacks.push(callback) }
+    observe() {} unobserve() {} disconnect() {}
+  })
+  const height = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(100)
+  const offset = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(100)
+  const contentHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1000)
+  try {
+    const view = render(<ScrollArea type="always"><div>long content</div></ScrollArea>)
+    const viewport = view.container.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement
+    const bar = view.container.querySelector('[data-slot="scroll-area-scrollbar"]') as HTMLElement
+    vi.spyOn(bar, "getBoundingClientRect").mockReturnValue({ top: 0, left: 0, width: 12, height: 100, bottom: 100, right: 12, x: 0, y: 0, toJSON: () => ({}) })
+    act(() => resizeCallbacks.forEach((callback) => callback()))
+    await waitFor(() => expect(bar.querySelector('[data-slot="scroll-area-thumb"]')).toBeTruthy())
+    fireEvent.pointerDown(bar, { button: 0, pointerId: 1, clientY: 60 })
+    expect(viewport.scrollTop).toBeGreaterThan(0)
+    fireEvent.pointerUp(bar, { pointerId: 1 })
+    const thumb = bar.querySelector('[data-slot="scroll-area-thumb"]')!
+    fireEvent.pointerDown(thumb, { button: 0, pointerId: 2, clientY: 60 })
+    const previous = viewport.scrollTop
+    fireEvent.pointerMove(bar, { pointerId: 2, clientY: 80 })
+    expect(viewport.scrollTop).toBeGreaterThan(previous)
+    fireEvent.pointerUp(bar, { pointerId: 2 })
+    viewport.scrollTop = 100
+    const wheel = new WheelEvent("wheel", { deltaY: 20, bubbles: true, cancelable: true })
+    bar.dispatchEvent(wheel)
+    expect(viewport.scrollTop).toBe(120)
+    expect(wheel.defaultPrevented).toBe(true)
+    viewport.scrollTop = 0
+    const boundaryWheel = new WheelEvent("wheel", { deltaY: -20, bubbles: true, cancelable: true })
+    bar.dispatchEvent(boundaryWheel)
+    expect(boundaryWheel.defaultPrevented).toBe(false)
+    view.unmount()
+  } finally { height.mockRestore(); offset.mockRestore(); contentHeight.mockRestore(); vi.unstubAllGlobals() }
 })

@@ -1,0 +1,12 @@
+{
+  "retry": "Reload Git status",
+  "amend": "Amend last commit…",
+  "cancelAmend": "Cancel amend",
+  "amendSubmit": "Update last commit",
+  "loadingCommit": "Loading last commit…",
+  "amendNotice": "Rewrites the last commit using staged changes only. Unstaged files are preserved. With no staged changes, you can edit just the message. If already pushed, coordinate with collaborators first; this action never force-pushes.",
+  "amendOutdated": "HEAD changed. Cancel amend and reload the last commit.",
+  "backChanges": "Back to changes",
+  "backFiles": "Back to working files",
+  "resizeHistory": "Resize history graph and commit details"
+}

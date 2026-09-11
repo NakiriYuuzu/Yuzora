@@ -9,7 +9,7 @@ vi.mock("@/lib/hostIpc", () => ({ checkHostRuntime: mocks.check, prepareHost: mo
 vi.mock("@/lib/herdrProvider", () => ({ registerRuntimeHost: mocks.register, unregisterRuntimeHost: mocks.unregister }))
 vi.mock("./sshStore", () => ({ useSshStore: { getState: () => mocks.ssh } }))
 
-const host = (generation = 1): ConnectedHost => ({ owner: { hostId: "host", generation }, hello: { protocol: 1, version: "test", os: "linux", arch: "x86_64", home: "/home/test", methods: [] } })
+const host = (generation = 1): ConnectedHost => ({ owner: { hostId: "host", generation }, hello: { protocol: 1, version: "test", os: "linux", arch: "x86_64", home: "/home/test", methods: ["herdrStart"] } })
 const config = { hostId: "host", label: "Server", kind: "ssh" as const, helper: "/helper", binary: "/herdr" }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail }); return { promise, resolve, reject } }
 beforeEach(() => {
@@ -184,7 +184,7 @@ it("keeps WSL dormant by default and disconnects only the helper when disabled",
   useHostStore.getState().reconcile()
   await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(host().owner))
   expect(useHostStore.getState().configs.host).toEqual(wsl)
-  expect(mocks.request).not.toHaveBeenCalled()
+  expect(mocks.request).toHaveBeenCalledExactlyOnceWith(host().owner, { method: "herdrStart", params: { binary: "/herdr" } })
 })
 it("migrates old managed paths while preserving explicitly installed and custom policies", async () => {
   const { selectionForHost } = await import("./hostStore")
@@ -192,4 +192,81 @@ it("migrates old managed paths while preserving explicitly installed and custom 
   expect(selectionForHost({ ...config, binary: `${directory}/herdr`, helper: `${directory}/yuzora-host` })).toEqual({ source: "default" })
   expect(selectionForHost({ ...config, binary: "/usr/bin/herdr" })).toEqual({ source: "custom", customPath: "/usr/bin/herdr" })
   expect(selectionForHost({ ...config, selection: { source: "global" } })).toEqual({ source: "global" })
+})
+
+it("starts the saved enabled WSL runtime before publishing its reconnected helper", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
+  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  const connected = { ...host(), hello: { ...host().hello, methods: ["herdrStart"] } }
+  mocks.connect.mockResolvedValue(connected)
+  const start = deferred<unknown>()
+  mocks.request.mockReturnValueOnce(start.promise)
+  useHostStore.setState({ configs: { host: { ...config, kind: "wsl", distro: "Ubuntu" } } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith(connected.owner, { method: "herdrStart", params: { binary: "/herdr" } }))
+  expect(mocks.register).not.toHaveBeenCalled()
+  useHostStore.getState().reconcile()
+  expect(mocks.connect).toHaveBeenCalledOnce()
+  start.resolve({ started: true })
+  await vi.waitFor(() => expect(mocks.register).toHaveBeenCalledWith(connected, "/herdr", "Server", "wsl"))
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.request).toHaveBeenLastCalledWith(connected.owner, { method: "hello" }))
+  expect(mocks.request.mock.calls.filter(([, operation]) => operation.method === "herdrStart")).toHaveLength(1)
+})
+
+it("releases WSL helper on startup failure and retains its saved configuration for retry", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
+  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  const connected = { ...host(), hello: { ...host().hello, methods: ["herdrStart"] } }
+  const saved = { ...config, kind: "wsl" as const, distro: "Ubuntu" }
+  mocks.connect.mockResolvedValue(connected)
+  mocks.request.mockRejectedValueOnce(new Error("runtime incompatible"))
+  useHostStore.setState({ configs: { host: saved } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(connected.owner))
+  expect(mocks.register).not.toHaveBeenCalled()
+  expect(useHostStore.getState().hosts.host).toMatchObject({ connection: null, connecting: false, error: "Error: runtime incompatible" })
+  expect(useHostStore.getState().configs.host).toBe(saved)
+})
+
+it("does not publish WSL when disabled while runtime startup is pending", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
+  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  const connected = { ...host(), hello: { ...host().hello, methods: ["herdrStart"] } }
+  const start = deferred<unknown>()
+  mocks.connect.mockResolvedValue(connected)
+  mocks.request.mockReturnValueOnce(start.promise)
+  useHostStore.setState({ configs: { host: { ...config, kind: "wsl", distro: "Ubuntu" } } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledOnce())
+  useRuntimePreferencesStore.getState().setWslEnabled(false)
+  start.resolve({ started: true })
+  await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(connected.owner))
+  expect(mocks.register).not.toHaveBeenCalled()
+})
+
+it("does not start an SSH runtime on an ordinary reconnect", async () => {
+  const { useHostStore } = await import("./hostStore")
+  mocks.connect.mockResolvedValue(host())
+  useHostStore.setState({ configs: { host: config } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.register).toHaveBeenCalledOnce())
+  expect(mocks.request).not.toHaveBeenCalled()
+})
+
+it("surfaces repair for a saved WSL helper without startup capability", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
+  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  const connected = { ...host(), hello: { ...host().hello, methods: [] } }
+  mocks.connect.mockResolvedValue(connected)
+  useHostStore.setState({ configs: { host: { ...config, kind: "wsl", distro: "Ubuntu" } } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(connected.owner))
+  expect(mocks.request).not.toHaveBeenCalled()
+  expect(mocks.register).not.toHaveBeenCalled()
+  expect(useHostStore.getState().hosts.host.error).toContain("herdr-start-unavailable")
 })

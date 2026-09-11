@@ -1,3 +1,4 @@
+import { HerdrScrollbar } from "@/terminal/HerdrScrollbar"
 import { terminalFontStack } from "@/terminal/terminalFonts"
 import {
   useCallback,
@@ -6,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useId,
   type CSSProperties,
   type ReactNode
 } from "react"
@@ -746,6 +748,12 @@ function HerdrTerminalLeaf({
   const updateAttachmentMode = useHerdrStore((s) => s.updateAttachmentMode)
   const releaseAttachment = useHerdrStore((s) => s.releaseAttachment)
 
+  const terminalViewportId = useId()
+  const scrollbarRefreshRef = useRef<(() => void) | null>(null)
+  const supportsScrollInfo = useHerdrStore((state) => {
+    const capabilities = targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null
+    return !!capabilities?.api.methods?.includes("pane.get") && !!capabilities?.api.methods?.includes("pane.scroll")
+  })
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -856,7 +864,7 @@ function HerdrTerminalLeaf({
       if (rows === 0) return true
       event.preventDefault()
       event.stopPropagation()
-      void transport.scroll(event.deltaY < 0 ? -rows : rows).catch(() => undefined)
+      void transport.scroll(event.deltaY < 0 ? -rows : rows).then(() => scrollbarRefreshRef.current?.()).catch(() => undefined)
       return false
     })
     termRef.current = term
@@ -977,6 +985,7 @@ function HerdrTerminalLeaf({
         await transport.open({ ...lastSizeRef.current, onEvent: handleEvent })
         if (transport.isDisposed?.()) return
         openReadyRef.current = true
+        scrollbarRefreshRef.current?.()
         clipboardRef.current?.flushPendingPaste()
       }).catch((error) => {
         if (!transport.isDisposed?.()) setStatusMessage(String(error))
@@ -1059,6 +1068,7 @@ function HerdrTerminalLeaf({
       .then(() => {
         if (disposedRef.current) return
         openReadyRef.current = true
+        scrollbarRefreshRef.current?.()
         clipboardRef.current?.flushPendingPaste()
         // ResizablePanel can report a tiny provisional width during the first
         // layout pass. Fit and publish the authoritative viewport once the
@@ -1277,7 +1287,14 @@ function HerdrTerminalLeaf({
           {takeControlButton}
         </div>
       )}
-      <div ref={containerRef} className="min-h-0 flex-1" />
+      <div className="flex min-h-0 flex-1">
+        <div id={terminalViewportId} ref={containerRef} className="min-h-0 min-w-0 flex-1" />
+        <HerdrScrollbar sessionName={contextSessionName} paneId={paneId ?? ""}
+          enabled={active && visible && sessionCanConnect && !!paneId && supportsScrollInfo}
+          viewportId={terminalViewportId} refreshRef={scrollbarRefreshRef}
+          canScroll={() => !disposedRef.current && document.visibilityState !== "hidden" && visibleRef.current && activeRef.current && openReadyRef.current
+            && termRef.current?.buffer.active.type === "normal" && !!transportRef.current?.canWrite()} />
+      </div>
       {statusMessage && (
         <div
           role="status"

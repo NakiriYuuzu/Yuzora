@@ -96,6 +96,30 @@ test("點擊 tab icon 也會切換 active", () => {
     expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
 })
 
+test("clicking a tab host badge selects the same page as its name", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+    const badge = screen.getByText("b.ts").closest(".tab")!.querySelector('[data-slot="badge"]')!
+    expect(badge).toBeTruthy()
+    fireEvent.click(badge)
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
+})
+
+test("vertical wheel input cannot move the horizontal tab strip", () => {
+    seedTabs()
+    const { container } = render(<TabBar groupIndex={0} />)
+    const viewport = container.querySelector('[data-slot="scroll-area-viewport"]')!
+    const vertical = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 80 })
+    viewport.dispatchEvent(vertical)
+    expect(vertical.defaultPrevented).toBe(true)
+    for (const init of [{ deltaX: 80 }, { deltaY: 80, shiftKey: true }, { deltaY: 80, ctrlKey: true }]) {
+        const intentional = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init })
+        viewport.dispatchEvent(intentional)
+        expect(intentional.defaultPrevented).toBe(false)
+    }
+})
+
 test("dirty tab 顯示標記", () => {
     seedTabs()
     render(<TabBar groupIndex={0} />)
@@ -1329,4 +1353,49 @@ test("Alt+Arrow uses schema-gated tab.move for Herdr tabs", async () => {
         secondPath
     ])
     expect(useWorkspaceStore.getState().groups[0].activePath).toBe(firstPath)
+})
+
+test("reveals an externally activated clipped tab without scrolling on focus or metadata updates", () => {
+    seedTabs()
+    const { container } = render(<TabBar groupIndex={0} />)
+    const viewport = container.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement
+    Object.defineProperty(viewport, "clientWidth", { configurable: true, value: 650 })
+    Object.defineProperty(viewport, "scrollWidth", { configurable: true, value: 902 })
+    vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({ left: 312, right: 962, top: 0, bottom: 44, width: 650, height: 44 } as DOMRect)
+    const first = screen.getByRole("button", { name: "a.ts" })
+    const second = screen.getByRole("button", { name: "b.ts" })
+    vi.spyOn(first.closest(".tab")!, "getBoundingClientRect").mockImplementation(() => ({ left: 312 - viewport.scrollLeft, right: 512 - viewport.scrollLeft, width: 200 } as DOMRect))
+    vi.spyOn(second.closest(".tab")!, "getBoundingClientRect").mockImplementation(() => ({ left: 1027 - viewport.scrollLeft, right: 1149 - viewport.scrollLeft, width: 122 } as DOMRect))
+    fireEvent.focus(second)
+    fireEvent.mouseDown(second, { button: 0 })
+    expect(viewport.scrollLeft).toBe(0)
+    act(() => useWorkspaceStore.getState().setActiveTab(0, "/w/b.ts"))
+    expect(viewport.scrollLeft).toBe(187)
+    // A user may pan the strip while reading; passive store updates must not snap it back.
+    viewport.scrollLeft = 0
+    act(() => useWorkspaceStore.getState().markDirty("/w/b.ts", false))
+    expect(viewport.scrollLeft).toBe(0)
+    viewport.scrollLeft = 187
+    act(() => useWorkspaceStore.getState().setActiveTab(0, "/w/a.ts"))
+    expect(viewport.scrollLeft).toBe(0)
+})
+
+test("opening a new offscreen tab reveals it in the strip while preserving ancestor scroll", () => {
+    seedTabs()
+    const { container } = render(<div data-testid="outer-scroll"><TabBar groupIndex={0} /></div>)
+    const outer = screen.getByTestId("outer-scroll")
+    outer.scrollTop = 73
+    const viewport = container.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement
+    Object.defineProperty(viewport, "clientWidth", { configurable: true, value: 300 })
+    Object.defineProperty(viewport, "scrollWidth", { configurable: true, value: 700 })
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        if (this === viewport) return { left: 0, right: 300, width: 300 } as DOMRect
+        if (this.classList.contains("tab") && this.classList.contains("active")) return { left: 550, right: 700, width: 150 } as DOMRect
+        return { left: 0, right: 0, width: 0 } as DOMRect
+    })
+    try {
+        act(() => useWorkspaceStore.getState().openTab("/w/agents.sql"))
+        expect(viewport.scrollLeft).toBe(400)
+        expect(outer.scrollTop).toBe(73)
+    } finally { rect.mockRestore() }
 })

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { DialogResizeHandles } from "@/components/ui/dialog-resize-handles"
 import { useResizableDialogSize } from "@/hooks/useResizableDialogSize"
 import {
+  DIALOG_RESIZE_RAIL_STYLE,
   dialogMinSize,
   type DialogMinSize,
   type DialogSizeId,
@@ -145,7 +146,7 @@ function ResizableDialogContent({
           sizing.isResizing && "duration-0",
           className
         )}
-        style={{ ...style, ...sizing.style }}
+        style={{ ...style, ...sizing.style, ...DIALOG_RESIZE_RAIL_STYLE }}
         {...props}
       >
         {children}

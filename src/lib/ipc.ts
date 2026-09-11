@@ -89,6 +89,10 @@ export function openWorkspace(path: string): Promise<WorkspaceOpenResult> {
     return invoke("open_workspace", { path })
 }
 
+export function openWorkspaceDirectory(workspaceId: string, path: string): Promise<void> {
+    return invoke("open_workspace_directory", { workspaceId, path })
+}
+
 export function listDir(path: string): Promise<FileNode[]> {
     if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.listRemoteDir(path))
     return invoke("list_dir", { path })
@@ -230,8 +234,8 @@ export function gitRollbackPaths(
     return invokeGit("git_rollback_paths", { repositoryRoot, targets, deleteUntrackedOrAdded })
 }
 
-export function gitCommit(repositoryRoot: string, message: string): Promise<void> {
-    return invokeGit("git_commit_cmd", { repositoryRoot, message })
+export function gitCommit(repositoryRoot: string, message: string, amendHead?: string): Promise<void> {
+    return invokeGit("git_commit_cmd", { repositoryRoot, message, ...(amendHead ? { amendHead } : {}) })
 }
 
 export function gitBranches(repositoryRoot: string): Promise<BranchList> {

@@ -30,7 +30,10 @@ pub enum GitCommand {
         delete_untracked_or_added: bool,
     },
     #[serde(rename = "git_commit_cmd")]
-    Commit { message: String },
+    Commit {
+        message: String,
+        amend_head: Option<String>,
+    },
     #[serde(rename = "git_branches")]
     Branches,
     #[serde(rename = "git_create_branch")]
@@ -194,7 +197,10 @@ mod host {
                     targets,
                     delete_untracked_or_added,
                 } => value(rollback_paths(root, &targets, delete_untracked_or_added)),
-                GitCommand::Commit { message } => value(commit(root, &message)),
+                GitCommand::Commit {
+                    message,
+                    amend_head,
+                } => value(commit_with_options(root, &message, amend_head.as_deref())),
                 GitCommand::Branches => value(branches(root)),
                 GitCommand::CreateBranch { name, start_point } => {
                     value(create_branch(root, &name, start_point.as_deref()))

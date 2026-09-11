@@ -728,6 +728,8 @@ describe("CONTEXT_MENU_DEFS", () => {
     expect(resolveContextMenuEntries(request).map((entry) =>
       entry.type === "separator" ? "|" : entry.command.id
     )).toEqual([
+      "cmOpenWorkingFile",
+      "|",
       "cmStageSelected",
       "cmUnstageSelected",
     ])
@@ -969,5 +971,20 @@ describe("CONTEXT_MENU_DEFS", () => {
         }
       }
     }
+  })
+})
+
+describe("directory creation commands", () => {
+  it.each(["cmNewFile", "cmNewFolder"])("%s is available only for directories inside the current workspace", id => {
+    const request: ContextMenuRequest = { kind: "file", workspacePath: "/w", path: "/w/src", isDirectory: true, sourceGroupIndex: 0 }
+    const command = commandFor(request, id)!
+    expect(command.availability(request)).toEqual({ visible: true, enabled: true })
+    expect(command.availability({ ...request, path: "/w" })).toEqual({ visible: true, enabled: true })
+    expect(command.availability({ ...request, isDirectory: false })).toEqual({ visible: false, enabled: false })
+    for (const path of ["/", "/outside", "/workspace-sibling"]) {
+      expect(command.availability({ ...request, path })).toMatchObject({ enabled: false })
+    }
+    useWorkspaceStore.setState({ workspacePath: "/another" })
+    expect(command.availability(request)).toMatchObject({ enabled: false })
   })
 })

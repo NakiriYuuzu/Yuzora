@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.9-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.10-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -21,7 +21,7 @@
 <br />
 <br />
 
-<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora v0.0.9 Demo 導覽：Spaces、HERDR 終端機、Git 差異、SQL 結果與外觀設定" />
+<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora v0.0.10 Demo 導覽：Spaces、HERDR 終端機、Git 差異、SQL 結果與外觀設定" />
 
 </div>
 
@@ -35,7 +35,11 @@
 
 ## 功能
 
-### v0.0.9 更新
+### v0.0.10 更新
+
+- 工作工具整合為「檔案｜GIT」卡片，支援建立檔案／資料夾、複製完整路徑，以及使用 Finder 或 Explorer 開啟。
+- Git Graph 支援依分支數量動態延伸與水平捲動，大型文件連續渲染，HERDR、diff 與 minimap 捲軸可直接操作。
+- 新增快捷鍵設定與 GitHub、Yuzora、One 語法配色主題，補齊常見語言與副檔名映射。
 
 - 加快 Git 狀態、分支與 diff 載入；切換已開啟 HERDR 終端機更流暢，保留輸出與連線。
 - 外觀設定新增可保存的 Bot 動畫開關；低規格裝置預設顯示靜態夥伴，並遵循系統減少動態效果設定。

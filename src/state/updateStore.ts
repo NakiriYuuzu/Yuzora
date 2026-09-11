@@ -1,6 +1,7 @@
-import { check, type Update } from "@tauri-apps/plugin-updater"
+import { type Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { create } from "zustand"
+import { checkChannelUpdate, loadUpdateChannel, UPDATE_CHANNEL_KEY, type UpdateChannel } from "@/lib/updateChannel"
 
 type UpdateStatus =
   | "idle"
@@ -16,6 +17,8 @@ type UpdateStatus =
 
 interface UpdateState {
   status: UpdateStatus
+  channel: UpdateChannel
+  setChannel: (channel: UpdateChannel) => void
   update: Update | null
   backgroundCheckStarted: boolean
   downloadedBytes: number
@@ -42,16 +45,28 @@ let generation = 0
 
 export const useUpdateStore = create<UpdateState>()((set, get) => ({
   ...updateInitialState,
+  channel: loadUpdateChannel(),
+  setChannel: (channel) => {
+    if (activeDownload || activeInstall) return
+    get().reset()
+    set({ channel })
+    try { localStorage.setItem(UPDATE_CHANNEL_KEY, channel) } catch { /* Session preference remains usable. */ }
+  },
 
   checkForUpdates: (source = "manual") => {
+    if (activeDownload || activeInstall) return Promise.resolve()
     if (activeCheck) return activeCheck
 
     const requestGeneration = generation
+    void get().update?.close?.().catch(() => {})
     set({ status: "checking", update: null, downloadedBytes: 0, contentLength: null })
 
-    const request = check()
+    const request = checkChannelUpdate(get().channel)
       .then((update) => {
-        if (requestGeneration !== generation) return
+        if (requestGeneration !== generation) {
+          void update?.close?.().catch(() => {})
+          return
+        }
         set({
           status: update ? "available" : "up-to-date",
           update,
@@ -143,10 +158,11 @@ export const useUpdateStore = create<UpdateState>()((set, get) => ({
   },
 
   reset: () => {
+    void get().update?.close?.().catch(() => {})
     generation += 1
     activeCheck = null
     activeDownload = null
     activeInstall = null
-    set(updateInitialState)
+    set({ ...updateInitialState, channel: loadUpdateChannel() })
   },
 }))

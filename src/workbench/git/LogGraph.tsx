@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useTranslation } from "react-i18next"
 
@@ -12,7 +12,8 @@ import { authorColor, LANE_COLORS } from "@/workbench/git/logColors"
 
 // §2 L762-815 geometry.
 const ROW_HEIGHT = 32
-const GRAPH_WIDTH = 72
+const MIN_GRAPH_WIDTH = 72
+const HEADER_HEIGHT = 28
 const LANE_X0 = 18 // lane 0 centre (design SVG cx=18)
 const LANE_GAP = 16 // lane spacing (cx 18/34/50)
 const OVERSCAN = 10 // rows rendered above/below the viewport
@@ -100,16 +101,18 @@ interface LayoutRow extends GraphRow {
 const GraphSvg = memo(function GraphSvg({
     rows,
     startIndex,
-    endIndex
+    endIndex,
+    graphWidth
 }: {
     rows: LayoutRow[]
     startIndex: number
     endIndex: number
+    graphWidth: number
 }) {
     const windowHeight = Math.max(0, (endIndex - startIndex) * ROW_HEIGHT)
     return (
         <svg
-            width={GRAPH_WIDTH}
+            width={graphWidth}
             height={windowHeight}
             fill="none"
             data-testid="log-graph-svg"
@@ -127,15 +130,15 @@ const GraphSvg = memo(function GraphSvg({
                         {row.segments.map((seg, si) => {
                             const x1 = laneX(seg.fromLane)
                             const x2 = laneX(seg.toLane)
-                            const yTop = rowTop
-                            const yBot = rowTop + ROW_HEIGHT
+                            const yTop = seg.phase === "outgoing" ? cy : rowTop
+                            const yBot = seg.phase === "incoming" ? cy : rowTop + ROW_HEIGHT
+                            const curveY = (yTop + yBot) / 2
                             const color = LANE_COLORS[seg.colorIdx % LANE_COLORS.length]
                             const d =
                                 seg.fromLane === seg.toLane
                                     ? `M${x1} ${yTop} L${x2} ${yBot}`
-                                    : // Cubic curve mirroring the design's branch-out /
-                                      // merge-in shape (control points at the row midline).
-                                      `M${x1} ${yTop} C${x1} ${cy} ${x2} ${cy} ${x2} ${yBot}`
+                                    : // Branch/merge half-row curves connect at the node centre.
+                                      `M${x1} ${yTop} C${x1} ${curveY} ${x2} ${curveY} ${x2} ${yBot}`
                             return (
                                 <path
                                     key={si}
@@ -174,12 +177,14 @@ const CommitRow = memo(function CommitRow({
     commit,
     top,
     selected,
-    onSelect
+    onSelect,
+    columns
 }: {
     commit: LogCommit
     top: number
     selected: boolean
     onSelect: (hash: string) => void
+    columns: string
 }) {
     const chips = refsToChips(commit.refs)
     return (
@@ -194,35 +199,35 @@ const CommitRow = memo(function CommitRow({
                     onSelect(commit.hash)
                 }
             }}
-            className="absolute left-0 flex h-[32px] w-full cursor-pointer items-stretch outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--yz-accent)"
-            style={{ top }}
+            className="absolute left-0 grid h-[32px] w-full cursor-pointer items-stretch outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--yz-accent)"
+            style={{ top, gridTemplateColumns: columns }}
         >
-            <span className="w-[72px] shrink-0" aria-hidden="true" />
+            <span aria-hidden="true" />
             <span
                 className={
-                    "flex h-[32px] min-w-0 flex-1 items-center gap-[8px] px-[12px] " +
+                    "col-span-3 grid h-[32px] grid-cols-subgrid items-center " +
                     (selected
                         ? "bg-(--yz-active) shadow-[inset_2px_0_0_#3b6fe0]"
                         : "hover:bg-(--yz-panel)")
                 }
             >
-                <span className="flex min-w-0 flex-1 items-center gap-[6px] overflow-hidden">
+                <span className="flex items-center gap-[6px] whitespace-nowrap px-[12px]">
                     {chips.map((chip, i) => (
                         <RefChip key={i} chip={chip} />
                     ))}
-                    <span className="truncate text-[12.5px] text-(--ink-1)">
+                    <span className="whitespace-nowrap text-[12.5px] text-(--ink-1)">
                         {commit.subject}
                     </span>
                 </span>
-                <span className="flex w-[64px] shrink-0 items-center gap-[6px] overflow-hidden text-[11.5px] text-(--ink-2)">
+                <span className="flex items-center gap-[6px] whitespace-nowrap px-[8px] text-[11.5px] text-(--ink-2)">
                     <span
                         aria-hidden="true"
                         className="size-[7px] shrink-0 rounded-full"
                         style={{ background: authorColor(commit.authorName) }}
                     />
-                    <span className="truncate">{commit.authorName}</span>
+                    <span>{commit.authorName}</span>
                 </span>
-                <span className="w-[34px] shrink-0 text-right font-mono text-[10.5px] text-(--ink-3)">
+                <span className="whitespace-nowrap px-[12px] text-right font-mono text-[10.5px] text-(--ink-3)">
                     {relativeTime(commit.timestamp)}
                 </span>
             </span>
@@ -257,6 +262,10 @@ export function LogGraph({
 }) {
     const { t } = useTranslation("menus")
     const scrollRef = useRef<HTMLDivElement | null>(null)
+    const lastScrollTop = useRef(0)
+    const requestedPage = useRef<number | null>(null)
+    const firstHash = commits[0]?.hash
+    useEffect(() => { requestedPage.current = null }, [firstHash])
     const rafRef = useRef<number | null>(null)
     const pendingScrollRef = useRef<{ scrollTop: number; viewportHeight: number } | null>(null)
     const onSelectRef = useRef(onSelect)
@@ -287,11 +296,47 @@ export function LogGraph({
         [layout, commits]
     )
 
+    const graphWidth = Math.max(MIN_GRAPH_WIDTH, laneX(Math.max(0, layout.laneCount - 1)) + 12)
+    const [textWidths, setTextWidths] = useState({ subject: 320, author: 100, date: 70 })
+    useLayoutEffect(() => {
+        let active = true
+        const measure = () => {
+            if (!active) return
+            // jsdom and restricted renderers may not provide a canvas context.
+            let context: CanvasRenderingContext2D | null = null
+            try {
+                if (typeof CanvasRenderingContext2D !== "undefined") context = document.createElement("canvas").getContext("2d")
+            } catch { /* Use conservative full-width glyph estimates below. */ }
+            const styles = getComputedStyle(scrollRef.current!)
+            const sans = styles.getPropertyValue("--font-sans").trim() || "sans-serif"
+            const mono = styles.getPropertyValue("--font-mono").trim() || "monospace"
+            const width = (text: string, font: string) => {
+                if (!context) return [...text].length * 14
+                context.font = font
+                return context.measureText(text).width
+            }
+            let subject = 320, author = 100, date = 70
+            for (const commit of commits) {
+                const chips = refsToChips(commit.refs)
+                const chipWidth = chips.reduce((sum, chip) => sum + width(chip.label, `600 9.5px ${mono}`) + 18, 0)
+                subject = Math.max(subject, width(commit.subject, `12.5px ${sans}`) + chipWidth + 32)
+                author = Math.max(author, width(commit.authorName, `11.5px ${sans}`) + 32)
+                date = Math.max(date, width(relativeTime(commit.timestamp), `10.5px ${mono}`) + 28)
+            }
+            setTextWidths({ subject: Math.ceil(subject), author: Math.ceil(author), date: Math.ceil(date) })
+        }
+        measure()
+        void document.fonts?.ready.then(measure)
+        return () => { active = false }
+    }, [commits])
+    const columns = `${graphWidth}px minmax(${textWidths.subject}px, 1fr) ${textWidths.author}px ${textWidths.date}px`
+    const tableWidth = graphWidth + textWidths.subject + textWidths.author + textWidths.date
+
     const total = commits.length
     const totalHeight = total * ROW_HEIGHT
 
     function deriveWindow(scrollTop: number, viewportHeight: number, count: number) {
-        const effectiveViewport = viewportHeight || 600
+        const effectiveViewport = Math.max(0, (viewportHeight || 600) - HEADER_HEIGHT)
         return {
             startIndex: Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN),
             endIndex: Math.min(
@@ -353,30 +398,26 @@ export function LogGraph({
                 commitWindow(pending.scrollTop, pending.viewportHeight)
             })
         }
-        // Infinite scroll: near the bottom, pull the next page.
+        const movedVertically = el.scrollTop !== lastScrollTop.current
+        lastScrollTop.current = el.scrollTop
+        // A horizontal scroll must neither paginate nor duplicate an in-flight page.
         if (
+            movedVertically &&
+            requestedPage.current !== total &&
+            !loadMoreError &&
             hasMore &&
             !loadingMore &&
             el.scrollHeight - el.scrollTop - el.clientHeight < LOAD_MORE_THRESHOLD
         ) {
+            requestedPage.current = total
             onLoadMore()
         }
     }
 
     return (
-        <div className="flex min-h-0 flex-1 flex-col border-r border-(--line-1)">
-            {/* §2 L768-775 header row */}
-            <div className="flex h-[28px] shrink-0 items-center border-b border-(--line-1) bg-(--paper-1) font-sans text-[9.5px] font-bold uppercase tracking-[0.07em] text-(--ink-3)">
-                <span className="w-[72px] shrink-0" aria-hidden="true" />
-                <span className="flex min-w-0 flex-1 items-center gap-[8px] px-[12px]">
-                    <span className="flex-1">{t("logGraph.commitColumn")}</span>
-                    <span className="w-[64px] shrink-0">{t("logGraph.authorColumn")}</span>
-                    <span className="w-[34px] shrink-0 text-right">{t("logGraph.dateColumn")}</span>
-                </span>
-            </div>
-
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-(--line-1)">
             <ScrollArea
-                className="min-h-0 flex-1"
+                className="min-h-0 min-w-0 w-full flex-1"
                 orientation="both"
                 viewportRef={scrollRef}
                 viewportProps={{
@@ -384,8 +425,16 @@ export function LogGraph({
                     onScroll,
                 }}
             >
+                <div data-testid="log-table" style={{ minWidth: tableWidth, width: "100%" }}>
+                    <div data-testid="log-header" className="sticky top-0 z-10 grid h-[28px] items-center border-b border-(--line-1) bg-(--paper-1) font-sans text-[9.5px] font-bold uppercase tracking-[0.07em] text-(--ink-3)" style={{ gridTemplateColumns: columns }}>
+                        <span className="px-[12px]">{t("logGraph.branchColumn")}</span>
+                        <span className="px-[12px]">{t("logGraph.commitColumn")}</span>
+                        <span className="px-[8px]">{t("logGraph.authorColumn")}</span>
+                        <span className="px-[12px] text-right">{t("logGraph.dateColumn")}</span>
+                    </div>
                 <div className="relative" style={{ height: totalHeight, minHeight: totalHeight }}>
                     <GraphSvg
+                        graphWidth={graphWidth}
                         rows={rows}
                         startIndex={startIndex}
                         endIndex={endIndex}
@@ -396,12 +445,14 @@ export function LogGraph({
                             <CommitRow
                                 key={commit.hash}
                                 commit={commit}
+                                columns={columns}
                                 top={index * ROW_HEIGHT}
                                 selected={commit.hash === selectedHash}
                                 onSelect={selectHash}
                             />
                         )
                     })}
+                </div>
                 </div>
             </ScrollArea>
             {loadMoreError && (

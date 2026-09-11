@@ -1,0 +1,30 @@
+{
+  "syntaxTheme": "語法高亮主題",
+  "syntaxDescription": "所有語言共用一組配色，明暗跟隨 App 外觀，並同步套用至差異檢視。",
+  "themes": {
+    "github": "GitHub（預設）",
+    "yuzora": "Yuzora",
+    "one": "One Light / Dark"
+  },
+  "preview": "語法高亮預覽",
+  "keyboardScope": "僅設定 App 快捷鍵。Mod 在 macOS 表示 Command，在 Windows/Linux 表示 Ctrl。請輸入如 Mod+Shift+K。編輯器編輯／儲存與終端協定快捷鍵保留原有綁定；終端輸入不攔截 Ctrl 快捷鍵。",
+  "commands": {
+    "commandPalette": "命令面板",
+    "newTerminal": "新增終端分頁",
+    "settings": "開啟設定",
+    "toggleSidebar": "切換側邊欄",
+    "toggleBrowser": "切換 Browser",
+    "modeAde": "切換至 ADE",
+    "modeFiles": "切換至 Files",
+    "modeGit": "切換至 Git",
+    "modeDatabase": "切換至 Database"
+  },
+  "search": "搜尋快捷鍵",
+  "apply": "套用",
+  "reset": "恢復預設",
+  "errors": {
+    "invalid": "請輸入 Mod/Ctrl/Alt/Shift 加一個字母、數字、標點鍵或 F1–F12。",
+    "reserved": "此快捷鍵保留供文字編輯或系統使用。",
+    "conflict": "此快捷鍵與其他 App 指令衝突。"
+  }
+}

@@ -20,6 +20,7 @@ import { gitCommit, gitDiscard, gitStage, gitUnstage } from "@/lib/ipc"
 import { isMacPlatform } from "@/lib/platform"
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
+import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useGitStore } from "@/state/gitStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -96,7 +97,7 @@ export function GitGuidedSetup({
     )
 }
 
-export function GitNavContent() {
+export function GitNavContent({ filterQuery = "" }: { filterQuery?: string }) {
     const { t } = useTranslation("menus")
     const environment = useGitStore((s) => s.environment)
     const status = useGitStore((s) => s.status)
@@ -104,7 +105,7 @@ export function GitNavContent() {
     const detect = useGitStore((s) => s.detect)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     if (environment?.status === "missing") return <GitGuidedSetup reason={environment.reason} kind={environment.kind} minimumVersion={environment.minimumVersion} />
-    if (environment?.status === "ready" && status) return <GitNavReady />
+    if (environment?.status === "ready" && status) return <GitNavReady filterQuery={filterQuery} />
     const notARepo = environment?.status === "notARepo"
     const readyWithoutStatus = environment?.status === "ready"
     const title = readyWithoutStatus
@@ -120,17 +121,22 @@ export function GitNavContent() {
     </div>
 }
 
-function GitNavReady() {
+function GitNavReady({ filterQuery }: { filterQuery: string }) {
     const { t } = useTranslation("menus")
     const status = useGitStore((s) => s.status)
     const busy = useGitStore((s) => s.busy)
     const lastError = useGitStore((s) => s.lastError)
     const snapshotStale = useGitStore((s) => s.snapshotStale)
-    const refresh = useGitStore((s) => s.refresh)
+    const refresh = useGitStore((s) => s.retrySnapshot)
     const runOp = useGitStore((s) => s.runOp)
     const repositoryRoot = useGitStore((s) => s.environment?.status === "ready" ? s.environment.root : null)
     const commitMessage = useGitStore((s) => s.commitMessage)
     const setCommitMessage = useGitStore((s) => s.setCommitMessage)
+    const amendHead = useGitStore((s) => s.amendHead)
+    const amendOriginalMessage = useGitStore((s) => s.amendOriginalMessage)
+    const amendLoading = useGitStore((s) => s.amendLoading)
+    const beginAmend = useGitStore((s) => s.beginAmend)
+    const cancelAmend = useGitStore((s) => s.cancelAmend)
     const openWorktree = useDiffModalStore((s) => s.openWorktree)
     const selection = useUiStore((s) => s.gitChangeSelection)
     const selectGitChange = useUiStore((s) => s.selectGitChange)
@@ -152,21 +158,33 @@ function GitNavReady() {
     const model = useMemo(() => buildGitChangeModel(status), [status])
     const { rows, visualOrder, buckets } = model
     const { conflicts, staged, unstaged, untracked } = buckets
+    const rowMatches = useMemo(() => {
+        const query = filterQuery.trim().toLowerCase()
+        return (row: GitChangeRow) => row.path.toLowerCase().includes(query)
+            || !!row.origPath?.toLowerCase().includes(query)
+    }, [filterQuery])
     const visibleOrder = useMemo(
-        () => gitChangeVisibleOrder(rows, openSections),
-        [rows, openSections]
+        () => gitChangeVisibleOrder(rows.filter(rowMatches), openSections),
+        [rows, openSections, rowMatches]
     )
     const virtualItems = useMemo(
-        () => gitChangeVirtualItems(model, { openSections }),
-        [model, openSections]
+        () => gitChangeVirtualItems(model, { openSections, rowMatches }),
+        [model, openSections, rowMatches]
     )
     const working = [...unstaged, ...untracked]
     const files = useMemo(() => worktreeFilesFrom(status), [status])
     const selectedRows = currentGitChanges(selection, model.rowById)
+    const matchingSelectedRows = selectedRows.filter(rowMatches)
     const selectedIds = useMemo(() => gitChangeIdSet(selection), [selection])
-    const mutationSubsets = selectedMutationSubsets(selectedRows)
+    const mutationSubsets = selectedMutationSubsets(matchingSelectedRows)
     const mutationsDisabled = busy != null || snapshotStale
-    const canCommit = staged.length > 0 && commitMessage.trim().length > 0 && !mutationsDisabled
+    const amendOutdated = amendHead != null && amendHead !== status?.headOid
+    const canAmend = !!status && !status.inProgress && !conflicts.length
+        && /^[a-f0-9]{40,64}$/i.test(status.headOid) && !/^0+$/.test(status.headOid)
+    const canCommit = commitMessage.trim().length > 0 && !mutationsDisabled && !amendLoading
+        && (amendHead
+            ? canAmend && !amendOutdated && (staged.length > 0 || commitMessage.trim() !== amendOriginalMessage?.trim())
+            : staged.length > 0)
 
     useEffect(() => {
         reconcileGitChangeSelection(rows)
@@ -200,8 +218,16 @@ function GitNavReady() {
         if (!canCommit) return
         const message = commitMessage.trim()
         if (!repositoryRoot) return
-        const ok = await runOp("commit", () => gitCommit(repositoryRoot, message))
-        if (ok) { void logUserAction("git_commit", `commit: ${message}`); setCommitMessage("") }
+        const capturedRoot = repositoryRoot
+        const ok = await runOp(amendHead ? "amend" : "commit", () => amendHead
+            ? gitCommit(capturedRoot, message, amendHead)
+            : gitCommit(capturedRoot, message))
+        const afterEnvironment = useGitStore.getState().environment
+        if (ok && afterEnvironment?.status === "ready" && afterEnvironment.root === capturedRoot) {
+            void logUserAction("git_commit", `${amendHead ? "amend" : "commit"}: ${message}`)
+            cancelAmend()
+            setCommitMessage("")
+        }
     }
     async function discardRows(targets: readonly GitChangeRow[], kind: "all" | "selected") {
         if (!repositoryRoot || !targets.length || mutationsDisabled) return
@@ -257,10 +283,10 @@ function GitNavReady() {
         unstaged: t("gitNav.sectionChanges"),
         untracked: t("gitNav.sectionUntracked")
     }
-    const sectionActions: Partial<Record<GitSectionKey, { label: string; run: () => void }>> = {
-        staged: { label: t("gitNav.unstageAll"), run: () => void unstageRows(staged) },
-        unstaged: { label: t("gitNav.stageAll"), run: () => void stageRows(unstaged) },
-        untracked: { label: t("gitNav.stageAllUntracked"), run: () => void stageRows(untracked) }
+    const sectionActions: Partial<Record<GitSectionKey, { label: string; run: (targets: readonly GitChangeRow[]) => void }>> = {
+        staged: { label: t("gitNav.unstageAll"), run: (targets) => void unstageRows(targets) },
+        unstaged: { label: t("gitNav.stageAll"), run: (targets) => void stageRows(targets) },
+        untracked: { label: t("gitNav.stageAllUntracked"), run: (targets) => void stageRows(targets) }
     }
     function renderVirtualItem(item: GitChangeVirtualItem, _index: number, style: CSSProperties) {
         if (item.kind === "section") {
@@ -278,7 +304,7 @@ function GitNavReady() {
                     onToggleSection={() => toggleSection(item.rows)}
                     actionLabel={action?.label}
                     disabled={mutationsDisabled}
-                    onAction={action?.run}
+                    onAction={action ? () => action.run(item.rows) : undefined}
                 />
             )
         }
@@ -293,7 +319,7 @@ function GitNavReady() {
                 onToggle={() => selectGitChange(row, visibleOrder, "toggle")}
                 onOpenDiff={() => openRowDiff(row)}
                 onSelectAll={() => selectVisibleGitChanges(visibleOrder)}
-                onContextMenu={(event) => openGitChangeContextMenu(event, row, visualOrder)}
+                onContextMenu={(event) => openGitChangeContextMenu(event, row, visualOrder.filter(rowMatches))}
             />
         )
     }
@@ -334,13 +360,17 @@ function GitNavReady() {
         </Button>
     )
 
-    return <div data-testid="git-nav-layout" className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+    return <div data-testid="git-nav-layout" onContextMenu={contextMenuHandler({ kind: "git", repositoryRoot })} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
         <header data-testid="git-nav-summary" className="shrink-0 border-b border-(--line-1) p-[8px]">
             <div className="w-full min-w-0"><BranchPopover open={branchOpen} onOpenChange={setBranchOpen} trigger={branchTrigger} /></div>
             <div className="mt-[7px] flex min-w-0 flex-wrap gap-[4px]"><CountBadge label={t("gitNav.countConflicts", { count: conflicts.length })} danger hidden={!conflicts.length} /><CountBadge label={t("gitNav.countStaged", { count: staged.length })} hidden={!staged.length} /><CountBadge label={t("gitNav.countUnstaged", { count: unstaged.length })} hidden={!unstaged.length} /><CountBadge label={t("gitNav.countUntracked", { count: untracked.length })} hidden={!untracked.length} />{busy && <span className="truncate text-[10px] text-(--ink-3)">{t("gitNav.refreshing")}</span>}{!busy && snapshotStale && <span className="truncate text-[10px] text-(--ink-3)">{t("gitNav.stale")}</span>}</div>
             {lastError && <div className="mt-[6px] flex min-w-0 items-center gap-[6px]"><p role="alert" className="min-w-0 flex-1 truncate text-[10px] text-(--danger)" title={lastError}>{t("gitNav.error", { message: lastError })}</p><Button type="button" variant="ghost" size="xs" onClick={() => void refresh()} className="shrink-0 text-[10px] font-semibold text-(--yz-accent-ink)">{t("gitNav.retry")}</Button></div>}
         </header>
-        {rows.length ? (
+        {filterQuery.trim() && !virtualItems.length ? (
+            <div data-testid="git-nav-scroll" role="status" className="min-h-0 flex-1 px-[8px] py-[24px] text-center text-[12px] text-(--ink-3)">
+                {t("workspaceSearch.noResults")}
+            </div>
+        ) : rows.length ? (
             <VirtualizedGitChangeList
                 items={virtualItems}
                 renderItem={renderVirtualItem}
@@ -361,10 +391,10 @@ function GitNavReady() {
                 <p className="mt-[4px] text-[10.5px] leading-[1.45] text-(--ink-4)">{t("gitNav.cleanDescription")}</p>
             </div>
         )}
-        {selectedRows.length > 0 && (
+        {matchingSelectedRows.length > 0 && (
             <div data-testid="git-nav-bulk" className="flex min-w-0 shrink-0 flex-wrap items-center gap-[6px] border-t border-(--line-1) px-[8px] py-[6px]">
                 <span className="min-w-0 flex-1 truncate text-[10.5px] font-medium text-(--ink-2)">
-                    {t("gitNav.selectedCount", { count: selectedRows.length })}
+                    {t("gitNav.selectedCount", { count: matchingSelectedRows.length })}
                     {mutationSubsets.conflicts.length > 0 && (
                         <span className="ml-[6px] text-(--ink-4)">{t("gitNav.conflictsExcluded", { count: mutationSubsets.conflicts.length })}</span>
                     )}
@@ -382,9 +412,17 @@ function GitNavReady() {
             </div>
         )}
         <footer data-testid="git-nav-composer" className="shrink-0 border-t border-(--line-1) p-[8px]">
+            <div className="mb-[4px] flex items-center justify-between gap-[4px]">
+                <Button variant="ghost" size="xs" aria-pressed={amendHead != null} disabled={mutationsDisabled || amendLoading || (!amendHead && !canAmend)} onClick={() => amendHead ? cancelAmend() : void beginAmend()}>
+                    {t(amendHead ? "cancelAmend" : amendLoading ? "loadingCommit" : "amend", { ns: "gitWorkflow" })}
+                </Button>
+                {amendHead && <span className="font-mono text-[10px]">{amendHead.slice(0, 7)}</span>}
+            </div>
+            {amendHead && <p className="mb-[6px] text-[10px] text-(--ink-3)">{t("amendNotice", { ns: "gitWorkflow" })}</p>}
+            {amendOutdated && <p role="alert" className="mb-[6px] text-[10px] text-(--danger)">{t("amendOutdated", { ns: "gitWorkflow" })}</p>}
             <label htmlFor="git-commit-message" className="mb-[4px] block text-[9.5px] font-semibold uppercase tracking-[0.06em] text-(--ink-3)">{t("gitNav.commitLabel")}</label>
-            <Textarea id="git-commit-message" value={commitMessage} disabled={mutationsDisabled} onChange={(event) => setCommitMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void commit() } }} placeholder={t("gitNav.commitPlaceholder")} rows={2} className="min-h-[48px] w-full resize-none rounded-[8px] border border-(--line-1) bg-(--yz-solid) px-[8px] py-[6px] text-[11.5px] text-(--ink-1) outline-none focus:border-(--ink-3)" />
-            <div className="mt-[6px] flex min-w-0 gap-[5px]"><Button type="button" aria-label={t("gitNav.commit")} disabled={!canCommit} onClick={() => void commit()} className="min-w-0 flex-1 truncate rounded-[8px] bg-(--ink-1) px-[7px] py-[6px] text-[11px] font-semibold text-(--paper-0) disabled:cursor-not-allowed disabled:bg-(--paper-3) disabled:text-(--ink-4)">{t("gitNav.commit")} {staged.length || ""}</Button><Button type="button" variant="outline" aria-label={t("gitNav.reviewDiffAria")} title={t("gitNav.reviewDiffAria")} disabled={!files.length} onClick={() => repositoryRoot && openWorktree(repositoryRoot, files)} className="shrink-0 rounded-[8px] border border-(--line-1) bg-(--yz-solid) px-[8px] py-[6px] text-[11px] font-semibold text-(--ink-1) disabled:opacity-50">{t("gitNav.reviewDiff")}</Button><Button type="button" variant="destructive" size="icon-sm" aria-label={t("gitNav.discardAll")} title={t("gitNav.discardAll")} disabled={!working.length || mutationsDisabled} onClick={() => void discardRows(working, "all")} className="flex size-[29px] shrink-0 items-center justify-center rounded-[8px] border border-[rgba(226,59,84,0.38)] text-[#c2293f] hover:bg-(--danger-soft) disabled:opacity-50"><Trash2 className="size-[13px]" aria-hidden="true" /></Button></div>
+            <Textarea onContextMenu={(event) => event.stopPropagation()} id="git-commit-message" value={commitMessage} disabled={mutationsDisabled || amendLoading} onChange={(event) => setCommitMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void commit() } }} placeholder={t("gitNav.commitPlaceholder")} rows={2} className="min-h-[48px] w-full resize-none rounded-[8px] border border-(--line-1) bg-(--yz-solid) px-[8px] py-[6px] text-[11.5px] text-(--ink-1) outline-none focus:border-(--ink-3)" />
+            <div className="mt-[6px] flex min-w-0 gap-[5px]"><Button type="button" aria-label={amendHead ? t("amendSubmit", { ns: "gitWorkflow" }) : t("gitNav.commit")} disabled={!canCommit} onClick={() => void commit()} className="min-w-0 flex-1 truncate rounded-[8px] bg-(--ink-1) px-[7px] py-[6px] text-[11px] font-semibold text-(--paper-0) disabled:cursor-not-allowed disabled:bg-(--paper-3) disabled:text-(--ink-4)">{amendHead ? t("amendSubmit", { ns: "gitWorkflow" }) : t("gitNav.commit")} {staged.length || ""}</Button><Button type="button" variant="outline" aria-label={t("gitNav.reviewDiffAria")} title={t("gitNav.reviewDiffAria")} disabled={!files.length} onClick={() => repositoryRoot && openWorktree(repositoryRoot, files)} className="shrink-0 rounded-[8px] border border-(--line-1) bg-(--yz-solid) px-[8px] py-[6px] text-[11px] font-semibold text-(--ink-1) disabled:opacity-50">{t("gitNav.reviewDiff")}</Button><Button type="button" variant="destructive" size="icon-sm" aria-label={t("gitNav.discardAll")} title={t("gitNav.discardAll")} disabled={!working.length || mutationsDisabled} onClick={() => void discardRows(working, "all")} className="flex size-[29px] shrink-0 items-center justify-center rounded-[8px] border border-[rgba(226,59,84,0.38)] text-[#c2293f] hover:bg-(--danger-soft) disabled:opacity-50"><Trash2 className="size-[13px]" aria-hidden="true" /></Button></div>
         </footer>
     </div>
 }

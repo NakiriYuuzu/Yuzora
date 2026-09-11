@@ -30,30 +30,30 @@ function installLocalStorage(): void {
 
 beforeEach(() => {
     installLocalStorage()
-    useEditorSettingsStore.setState({ fontSize: 13, minimap: false })
+    useEditorSettingsStore.setState({ fontSize: 13, minimap: false, syntaxTheme: "github" })
 })
 
 describe("loadEditorSettings", () => {
     it("returns the defaults (13 / false) when nothing is stored", () => {
-        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false })
+        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github" })
     })
 
     it("round-trips a valid persisted payload", () => {
-        localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 15, minimap: true }))
-        expect(loadEditorSettings()).toEqual({ fontSize: 15, minimap: true })
+        localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 15, minimap: true, syntaxTheme: "github" }))
+        expect(loadEditorSettings()).toEqual({ fontSize: 15, minimap: true, syntaxTheme: "github" })
     })
 
     it("falls back per-field on out-of-whitelist font size / non-boolean minimap", () => {
         localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 99, minimap: "yes" }))
-        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false })
+        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github" })
         // A valid field survives even when its sibling is invalid.
         localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 14, minimap: 1 }))
-        expect(loadEditorSettings()).toEqual({ fontSize: 14, minimap: false })
+        expect(loadEditorSettings()).toEqual({ fontSize: 14, minimap: false, syntaxTheme: "github" })
     })
 
     it("falls back to defaults on malformed JSON", () => {
         localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, "{not json")
-        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false })
+        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github" })
     })
 })
 
@@ -67,8 +67,14 @@ describe("useEditorSettingsStore", () => {
     it("setMinimap updates state and persists without clobbering the font size", () => {
         useEditorSettingsStore.getState().setFontSize(12)
         useEditorSettingsStore.getState().setMinimap(true)
-        expect(useEditorSettingsStore.getState()).toMatchObject({ fontSize: 12, minimap: true })
+        expect(useEditorSettingsStore.getState()).toMatchObject({ fontSize: 12, minimap: true, syntaxTheme: "github" })
         // Both fields land together in localStorage — a fresh app load restores both.
-        expect(loadEditorSettings()).toEqual({ fontSize: 12, minimap: true })
+        expect(loadEditorSettings()).toEqual({ fontSize: 12, minimap: true, syntaxTheme: "github" })
     })
+})
+
+it("persists syntax theme without losing other editor preferences", () => {
+    useEditorSettingsStore.getState().setSyntaxTheme("one")
+    useEditorSettingsStore.getState().setFontSize(15)
+    expect(loadEditorSettings()).toEqual({ fontSize: 15, minimap: false, syntaxTheme: "one" })
 })

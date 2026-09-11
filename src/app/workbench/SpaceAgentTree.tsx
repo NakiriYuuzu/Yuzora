@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector";
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation";
@@ -64,6 +65,10 @@ interface TreeNode {
  */
 export function SpaceAgentTree() {
   const { t } = useTranslation("spaceTree");
+  const [viewMode, setViewMode] = useState<"spaces" | "agents">(() => {
+    try { return localStorage.getItem("yuzora.sidebar.view") === "agents" ? "agents" : "spaces"; }
+    catch { return "spaces"; }
+  });
   const session = useHerdrStore((s) => s.selectedSessionName) ?? "";
   const rawSessions = useHerdrStore((s) => s.sessions),
     runtimes = useHerdrStore((s) => s.runtimesBySession);
@@ -323,7 +328,9 @@ export function SpaceAgentTree() {
     root,
     ...root.children.flatMap((branch) => [branch, ...branch.children]),
   ]);
-  const visible = roots.flatMap((root) => [
+  const visible: TreeNode[] = viewMode === "agents"
+    ? all.filter((node) => node.kind === "agent").map((node, index, nodes) => ({ ...node, parent: undefined, level: 1, position: index + 1, size: nodes.length }))
+    : roots.flatMap((root) => [
     root,
     ...(collapsed.has(root.key)
       ? []
@@ -483,6 +490,15 @@ export function SpaceAgentTree() {
 
   return (
     <div className="space-tree-panel">
+      <ToggleGroup type="single" value={viewMode} aria-label={t("viewMode", { ns: "spaceNavigation" })}
+        className="gap-1 p-2" onValueChange={(value) => {
+          if (value !== "spaces" && value !== "agents") return;
+          setViewMode(value);
+          try { localStorage.setItem("yuzora.sidebar.view", value); } catch { /* In-memory preference remains usable. */ }
+        }}>
+        <ToggleGroupItem value="spaces" className="flex-1 px-3 py-1">Spaces</ToggleGroupItem>
+        <ToggleGroupItem value="agents" className="flex-1 px-3 py-1">Agents</ToggleGroupItem>
+      </ToggleGroup>
       <HerdrLauncher
         scope={scopeSession}
         onCreateSpace={createSpace}
@@ -569,7 +585,7 @@ export function SpaceAgentTree() {
               <Fragment key={item.name}>
                 <div className="tree-session-heading">
                   <strong title={sessionLabel(item.name)}>{sessionLabel(item.name)}</strong>
-                  <Button
+                  {viewMode === "spaces" && <Button
                     variant="ghost"
                     size="icon-sm"
                     aria-label={toggleLabel}
@@ -589,7 +605,7 @@ export function SpaceAgentTree() {
                     }}
                   >
                     {expanded ? <ChevronsDownUp aria-hidden="true" /> : <ChevronsUpDown aria-hidden="true" />}
-                  </Button>
+                  </Button>}
                 </div>
                 {notice && (
                   <div className="space-tree-notice [overflow-wrap:anywhere]" role="status">

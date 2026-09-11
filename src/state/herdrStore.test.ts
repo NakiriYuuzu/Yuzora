@@ -288,6 +288,7 @@ describe("herdrStore", () => {
     })
     useHerdrStore.setState({ ...herdrInitialState, attachments: new Map() })
     useWorkspaceStore.setState({
+      spaceNavigation: {},
       workspacePath: "/Users/me/yuzora",
       groups: [{ tabs: [], activePath: null }],
       activeGroupIndex: 0
@@ -307,6 +308,49 @@ describe("herdrStore", () => {
     vi.mocked(herdrWorkspaceCreate).mockReset()
     vi.mocked(confirmDiscardingUnsaved).mockReset().mockResolvedValue(true)
     vi.mocked(openWorkspaceAtPath).mockReset().mockResolvedValue(true)
+  })
+
+  it("keeps a selected editor on the first background hydration without prior Space history", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    useWorkspaceStore.getState().openTab("/Users/me/yuzora/selected.ts")
+    useWorkspaceStore.setState({ spaceNavigation: {} })
+    await useHerdrStore.getState().restoreFocusedState("default")
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/Users/me/yuzora/selected.ts")
+  })
+
+  it("a later Space intent wins when earlier workspace focus resolves slowly", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finish!: () => void
+    vi.mocked(herdrWorkspaceFocus).mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    const first = useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    const second = useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-1" })
+    await Promise.resolve()
+    finish()
+    await Promise.all([first, second])
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
+    expect(vi.mocked(herdrWorkspaceFocus).mock.calls.at(-1)?.[0].workspaceId).toBe("ws-1")
+  })
+
+  it.each(["tab", "agent"])("a newer %s selection supersedes an in-flight Space activation", async kind => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finish!: () => void
+    vi.mocked(herdrWorkspaceFocus).mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    const first = useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    const snapshot = useHerdrStore.getState().snapshot!
+    const tab = snapshot.tabs.find(item => item.workspaceId === "ws-1")!
+    const second = kind === "tab"
+      ? useHerdrStore.getState().activateTab(tab)
+      : useHerdrStore.getState().activateAgent({ ...snapshot.agents[0], workspaceId: "ws-1", tabId: null })
+    await Promise.resolve()
+    finish()
+    await Promise.all([first, second])
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("yuzora://herdr/default/term-1")
   })
 
   it("refreshSessions selects default and keeps session maps", async () => {
@@ -541,6 +585,42 @@ describe("herdrStore", () => {
     expect(new Set(paths).size).toBe(paths.length)
   })
 
+  it("remembers a Space's last selected HERDR tab before the next snapshot", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const runtime = useHerdrStore.getState().runtimesBySession.default!
+    const snapshot = runtime.snapshot!
+    const first = snapshot.tabs.find((tab) => tab.workspaceId === "ws-1")!
+    const second = { ...first, id: "tab-extra", terminalId: "term-extra", paneId: "pane-extra", active: false, focused: false }
+    useHerdrStore.setState({ runtimesBySession: { default: { ...runtime, snapshot: {
+      ...snapshot,
+      spaces: snapshot.spaces.map((space) => space.id === "ws-1" ? { ...space, activeTabId: first.id } : space),
+      tabs: [...snapshot.tabs, second]
+    } } } })
+    expect((await useHerdrStore.getState().activateTab(second)).ok).toBe(true)
+    expect((await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })).ok).toBe(true)
+    expect((await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-1" })).ok).toBe(true)
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("yuzora://herdr/default/term-extra")
+    expect(useHerdrStore.getState().snapshot?.focusedTabId).toBe(second.id)
+  })
+
+  it("returns to the editor page selected in a Space and keeps it on a background restore", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    useWorkspaceStore.setState({ spaceNavigation: {} })
+    await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-1" })
+    useWorkspaceStore.getState().openTab("/Users/me/yuzora/src/selected.ts")
+    await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
+    await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-1" })
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/Users/me/yuzora/src/selected.ts")
+    await useHerdrStore.getState().restoreFocusedState("default")
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/Users/me/yuzora/src/selected.ts")
+    const terminal = useHerdrStore.getState().snapshot!.tabs.find((tab) => tab.workspaceId === "ws-1")!
+    await useHerdrStore.getState().activateTab(terminal)
+    await useHerdrStore.getState().restoreFocusedState("default")
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("yuzora://herdr/default/term-1")
+  })
+
   it("opens an external Agent terminal without asking for a file workspace", async () => {
     const snapshotWithoutWorkspacePaths = structuredClone(rawSnapshot)
     for (const workspace of snapshotWithoutWorkspacePaths.snapshot.workspaces) {
@@ -611,7 +691,7 @@ describe("herdrStore", () => {
       ? await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-1", path: null })
       : await useHerdrStore.getState().activateAgent(useHerdrStore.getState().agents()[0])
     expect(result).toEqual({ ok: true })
-    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/me/plain-folder", { skipUnsavedGuard: true })
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/me/plain-folder", { skipUnsavedGuard: true, shouldOpen: expect.any(Function) })
   })
 
   it("keeps worktree scans off repeated agent snapshot refreshes", async () => {
@@ -666,7 +746,8 @@ describe("herdrStore", () => {
       tabId: "tab-2"
     })
     expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/me/feature-x", {
-      skipUnsavedGuard: true
+      skipUnsavedGuard: true,
+      shouldOpen: expect.any(Function)
     })
     expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-2")
     expect(useWorkspaceStore.getState().groups[0].tabs[0].terminalId).toBe("term-2")
@@ -731,7 +812,8 @@ describe("herdrStore", () => {
 
     expect(result).toEqual({ ok: true })
     expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/me/yuzora", {
-      skipUnsavedGuard: true
+      skipUnsavedGuard: true,
+      shouldOpen: expect.any(Function)
     })
     expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
     expect(herdrTabFocus).not.toHaveBeenCalled()
@@ -746,7 +828,7 @@ describe("herdrStore", () => {
     )
   })
 
-  it("hydrates every usable focused-Space tab on restore and keeps the focused tab active", async () => {
+  it("hydrates every usable focused-Space tab while preserving the selected editor", async () => {
     useWorkspaceStore.setState({
       workspacePath: "/Users/me/yuzora",
       groups: [{
@@ -807,7 +889,7 @@ describe("herdrStore", () => {
       "yuzora://herdr/default/term-1c"
     ])
     expect(useWorkspaceStore.getState().groups[0].activePath).toBe(
-      "yuzora://herdr/default/term-1b"
+      "/Users/me/yuzora/src/a.ts"
     )
     expect(tabs.filter((tab) => tab.herdrTabId === "tab-2")).toHaveLength(0)
     expect(tabs.filter((tab) => tab.kind === "herdr-terminal")).toHaveLength(4)
@@ -854,7 +936,8 @@ describe("herdrStore", () => {
     const restoration = useHerdrStore.getState().restoreFocusedState("default")
     await vi.waitFor(() => {
       expect(openWorkspaceAtPath).toHaveBeenCalledWith("/Users/me/yuzora", {
-        skipUnsavedGuard: true
+        skipUnsavedGuard: true,
+      shouldOpen: expect.any(Function)
       })
     })
 

@@ -19,6 +19,7 @@ import {
     rebasePath,
     relativePathWithin,
     workspacePathBasename,
+    workspacePathForDisplay,
 } from "@/lib/paths"
 import { dropDocument, renameDocument } from "../editor/documentRegistry"
 import { getView, getViewEntry, type RegisteredEditorView } from "../editor/viewRegistry"
@@ -292,28 +293,37 @@ function joinName(dir: string, name: string): string {
     return nativePathJoin(dir, name)
 }
 
-async function createEntry(kind: "file" | "folder", workspace: string): Promise<ContextMenuCommandOutcome> {
+async function createEntry(kind: "file" | "folder", workspace: string, directory = workspace): Promise<ContextMenuCommandOutcome> {
     const ws = useWorkspaceStore.getState()
-    if (ws.workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
+    if (ws.workspacePath !== workspace || !isSameOrDescendantPath(workspace, directory)) return CONTEXT_MENU_CANCELLED
     const prompt = i18n.t(
         kind === "file" ? "contextMenu.prompt.newFile" : "contextMenu.prompt.newFolder",
         { ns: "menus" }
     )
     const name = await requestTextInputDialog({
         title: prompt,
+        description: workspacePathForDisplay(directory),
         label: i18n.t("textInputDialog.nameLabel", { ns: "menus" }),
         confirmLabel: i18n.t("textInputDialog.create", { ns: "menus" })
     })
-    if (!name) return CONTEXT_MENU_CANCELLED
-    const target = joinName(workspace, name)
+    if (!name?.trim() || useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
     try {
+        const target = joinName(directory, name)
         if (kind === "file") {
             await fsCreateFile(workspace, target)
-            await useFileTreeStore.getState().invalidatePaths(workspace, [target])
-            useWorkspaceStore.getState().openTab(target)
         } else {
             await fsCreateDir(workspace, target)
-            await useFileTreeStore.getState().invalidatePaths(workspace, [target])
+        }
+        const fileTree = useFileTreeStore.getState()
+        await fileTree.invalidatePaths(workspace, [target])
+        // A delayed write belongs to its original workspace, even if the user
+        // has moved elsewhere while it was pending.
+        if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_COMPLETED
+        if (directory !== workspace && !useFileTreeStore.getState().trees[workspace]?.expandedDirs.has(directory)) {
+            await fileTree.toggleDir(workspace, directory)
+        }
+        if (kind === "file" && useWorkspaceStore.getState().workspacePath === workspace) {
+            useWorkspaceStore.getState().openTab(target)
         }
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
@@ -479,6 +489,15 @@ export async function executeLegacyContextMenuAction(
         return CONTEXT_MENU_COMPLETED
     }
 
+    if ((request.kind === "tab" || request.kind === "file" || request.kind === "editor") && actionId === "cmCopyFullPath") {
+        await writeText(workspacePathForDisplay(request.path))
+        return CONTEXT_MENU_COMPLETED
+    }
+
+    if (request.kind === "file" && (actionId === "cmNewFile" || actionId === "cmNewFolder")) {
+        if (!request.isDirectory) return CONTEXT_MENU_CANCELLED
+        return createEntry(actionId === "cmNewFile" ? "file" : "folder", request.workspacePath, request.path)
+    }
     if (request.kind === "file" && actionId === "cmOpen") {
         useWorkspaceStore.getState().openTab(request.path, request.sourceGroupIndex)
         return CONTEXT_MENU_COMPLETED
@@ -494,13 +513,13 @@ export async function executeLegacyContextMenuAction(
         return deleteEntry(request.path, request.isDirectory, request.workspacePath)
     }
     if (request.kind === "file" && actionId === "cmReveal") {
-        await revealPathInSystem(request.path)
+        await revealPathInSystem(request.path, request.isDirectory)
         return CONTEXT_MENU_COMPLETED
     }
 
     if (request.kind === "explorer" && request.workspacePath) {
         if (actionId === "cmCopyPath") {
-            await writeText(request.workspacePath)
+            await writeText(workspacePathForDisplay(request.workspacePath))
             return CONTEXT_MENU_COMPLETED
         }
         if (actionId === "cmNewFile") return createEntry("file", request.workspacePath)

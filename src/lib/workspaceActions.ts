@@ -59,24 +59,19 @@ async function openWorkspaceAtPathWithOutcome(
     // 做出反應，先讀確保不受任何寫入競態影響。
     const sessionEntry =
         options?.restoreSessionTabs === false ? null : loadWorkspaceSessionEntry(canonical)
-    clearAll()
-    const workspace = useWorkspaceStore.getState()
-    workspace.setWorkspace(canonical, opened.capabilityId)
-    // #57 T3：setWorkspace 之後彼此無依賴，原則上並行 fire-and-forget——序列
-    // await 只會人為拉長冷開時間（git bootstrap 由 GitBridge 對 workspacePath
-    // 的 effect 並行觸發）。asset scope grant 失敗僅 warn、不阻斷開啟。
+    // Grant image access before publishing a restored workspace. Waiting after
+    // setWorkspace would leave a half-switched UI if a newer selection wins.
     const assetScopeGrant = allowWorkspaceAssetScope(canonical).catch((err) => {
         console.warn("allow_workspace_asset_scope failed:", err)
     })
+    if (sessionEntry?.tabs.some((tabPath) => isImagePath(tabPath))) {
+        await assetScopeGrant
+    }
+    if (options?.shouldOpen && !options.shouldOpen()) return false
+    clearAll()
+    const workspace = useWorkspaceStore.getState()
+    workspace.setWorkspace(canonical, opened.capabilityId)
     if (sessionEntry) {
-        // T4 覆核修正（NB-1 回歸）：圖片分頁走 asset protocol，ImageView 的
-        // <img> 請求若先於 scope grant 落地會 403 → 永久 loadError（錯誤狀態
-        // 不重試，使用者只能關閉重開）。含圖片分頁時先等 grant（µs 級 command）
-        // 再還原；grant 失敗仍照常還原，圖片分頁屆時顯示載入錯誤。純文字分頁
-        // 不吃 asset scope，維持不等待。
-        if (sessionEntry.tabs.some((tabPath) => isImagePath(tabPath))) {
-            await assetScopeGrant
-        }
         // 立即還原 tabs 與 active tab（切回 <100ms 顯示）；檔案內容由
         // EditorPane 掛載時經 documentRegistry / async open_file 背景載入，
         // 不在這裡 await（unsavedGuard 已保證切換時沒有 dirty buffer）。

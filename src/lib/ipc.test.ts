@@ -327,6 +327,14 @@ it("gitCommit forwards message", async () => {
     expect(seen[0]).toEqual(["git_commit_cmd", { repositoryRoot: "/w", message: "wip" }])
 })
 
+it("gitCommit forwards the expected HEAD for amend without staging or pushing", async () => {
+    const seen: unknown[] = []
+    mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
+    const head = "a".repeat(40)
+    await gitCommit("/w", "updated message", head)
+    expect(seen).toEqual([["git_commit_cmd", { repositoryRoot: "/w", message: "updated message", amendHead: head }]])
+})
+
 it("gitBranches returns branch list", async () => {
     mockIPC((cmd) => {
         expect(cmd).toBe("git_branches")

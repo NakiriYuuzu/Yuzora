@@ -258,6 +258,32 @@ export const dbTables = ["agents", "sessions", "workspaces"].map((name) => ({
 }));
 
 export function installDemoRuntime() {
+  const directories = new Set<string>([""]);
+  function relativePath(path: string): string {
+    if (path === ROOT) return "";
+    if (!path.startsWith(`${ROOT}/`)) throw new Error("Path is outside the demo workspace");
+    const relative = path.slice(ROOT.length + 1);
+    if (relative.includes("\\") || relative.includes("\0") || relative.split("/").some((part) => !part || part === "." || part === "..")) {
+      throw new Error("Invalid demo workspace path");
+    }
+    return relative;
+  }
+  function ensureParents(relative: string) {
+    const parts = relative.split("/");
+    const parents = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"));
+    // Validate before changing anything, so a file parent cannot leave partial
+    // directories behind after a rejected operation.
+    for (const parent of parents) {
+      if (Object.hasOwn(files, parent)) throw new Error("Parent path is a file");
+    }
+    for (const parent of parents) directories.add(parent);
+  }
+  function writeFile(relative: string, content: string) {
+    if (directories.has(relative)) throw new Error("Path is a directory");
+    ensureParents(relative);
+    Object.defineProperty(files, relative, { value: content, enumerable: true, configurable: true, writable: true });
+  }
+  for (const path of Object.keys(files)) ensureParents(path);
   mockWindows("main");
   mockIPC(
     async (command, payload) => {
@@ -271,13 +297,19 @@ export function installDemoRuntime() {
         case "workspace_trust_check":
           return { state: "trusted", canonicalPath: path };
         case "list_dir": {
-          const prefix = path.replace(ROOT, "").replace(/^\//, "");
+          const prefix = relativePath(path);
+          if (!directories.has(prefix)) throw new Error("Demo directory does not exist");
           const names = new Map<string, boolean>();
           for (const key of Object.keys(files)) {
             if (prefix && !key.startsWith(prefix + "/")) continue;
             const rest = prefix ? key.slice(prefix.length + 1) : key;
             const name = rest.split("/")[0];
             names.set(name, rest.includes("/"));
+          }
+          for (const directory of directories) {
+            if (!directory || directory === prefix || (prefix && !directory.startsWith(prefix + "/"))) continue;
+            const rest = prefix ? directory.slice(prefix.length + 1) : directory;
+            names.set(rest.split("/")[0], true);
           }
           return [...names]
             .map(([name, isDir]) => ({
@@ -292,9 +324,20 @@ export function installDemoRuntime() {
                 a.name.localeCompare(b.name),
             );
         }
+        case "fs_create_file":
+        case "fs_create_dir": {
+          if (args.workspace !== ROOT) throw new Error("Workspace does not match the demo workspace");
+          const relative = relativePath(path);
+          if (directories.has(relative) || Object.hasOwn(files, relative)) throw new Error("Path already exists");
+          ensureParents(relative);
+          if (command === "fs_create_dir") directories.add(relative);
+          else writeFile(relative, "");
+          return null;
+        }
         case "open_file": {
-          const content =
-            files[path.replace(ROOT + "/", "")] ?? files["README.md"];
+          const relative = relativePath(path);
+          if (!Object.hasOwn(files, relative)) throw new Error("Demo file does not exist");
+          const content = files[relative];
           return {
             kind: "full",
             content,
@@ -303,7 +346,7 @@ export function installDemoRuntime() {
           };
         }
         case "save_file":
-          files[path.replace(ROOT + "/", "")] = String(args.content);
+          writeFile(relativePath(path), String(args.content));
           return String(args.content).length;
         case "is_openable_file":
           return true;

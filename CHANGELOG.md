@@ -2,6 +2,30 @@
 
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
+## [0.0.10] - 2026-09-11
+
+### 新增
+
+- 工作工具整合為「檔案｜GIT」卡片，支援建立檔案、建立資料夾、複製完整路徑與使用 Finder／Explorer 開啟。
+- 編輯器提供快捷鍵設定與 GitHub／Yuzora／One 語法配色主題，並補齊常見語言與副檔名辨識。
+
+### 改善
+
+- Git Graph 依分支拓撲動態延伸，提交內容可水平捲動；大型 Markdown 與程式碼改為連續閱讀渲染。
+- HERDR Session、Git diff、Minimap 與工作區各類捲軸改用可直接操作的細捲軸，並改善頁籤、Spaces、視窗焦點與最後選取狀態恢復。
+- GIT 導覽直接展開提交紀錄與分支圖；大型文件、Git 狀態與 Space／頁籤切換減少不必要的重繪。
+
+### 修正
+
+- 修正切回應用程式後失去輸入焦點、頁籤 Host badge 點擊無法切換、Git Fetch 後狀態過期導致分支唯讀，以及 Preview 更新頻道無法延續更新的問題。
+- 修正 Git 檔案右鍵開啟、完整路徑複製、Finder／Explorer reveal 與 HERDR／Git context-menu 範圍。
+
+### 功能調整與已知限制
+
+- Syntax Highlight 已驗證 29 種語言與 57 個副檔名；Java、C#、Ruby、Swift、Kotlin、Dart、Shell、PowerShell、SQL、YAML 的部分語義角色仍受上游 grammar 分類限制。
+- Svelte 的 TypeScript、原生 CSS 與 template 已支援；`style lang="scss|sass|less"` 預處理器仍屬部分支援。
+- macOS 安裝檔維持 Apple Silicon，未使用 Apple Developer ID 簽章／公證；Windows／WSL 重開機恢復與 Explorer 流程需在對應平台另行驗證。
+
 ## [0.0.9] - 2026-09-10
 
 ### 新增

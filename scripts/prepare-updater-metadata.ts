@@ -87,7 +87,7 @@ async function main() {
   const metadata = prepareUpdaterMetadata(tag, repository, notes, assetNames, signatureDirectory)
   await mkdir(dirname(outputPath), { recursive: true })
   await writeFile(outputPath, `${JSON.stringify(metadata, null, 2)}\n`)
-  console.log(`Stable updater metadata prepared for ${Object.keys(metadata.platforms).length} platforms`)
+  console.log(`Updater metadata prepared for ${Object.keys(metadata.platforms).length} platforms`)
 }
 
 if (import.meta.main) {

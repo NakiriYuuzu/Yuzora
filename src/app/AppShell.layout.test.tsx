@@ -16,7 +16,7 @@ vi.mock("@/app/workbench/SpaceAgentSidebar", () => ({ SpaceAgentSidebar: () => {
 vi.mock("@/app/panels/GitPanel", () => ({ GitPanel: () => <div>Git graph surface</div> }))
 vi.mock("@/app/panels/DatabasePanel", () => ({ DatabasePanel: () => <div>Database query surface</div> }))
 vi.mock("@/app/workbench/DatabaseNavContent", () => ({ DatabaseNavContent: () => null }))
-vi.mock("@/app/workbench/WorkspaceToolsPanel", () => ({ WorkspaceToolsPanel: ({ onOpenGraph }: { onOpenGraph: () => void }) => { lifecycle.toolsRender(); return <button onClick={onOpenGraph}>Tool leaf</button> } }))
+vi.mock("@/app/workbench/WorkspaceToolsPanel", () => ({ WorkspaceToolsPanel: ({ onToolChange }: { onToolChange: (tool: "files" | "git") => void }) => { lifecycle.toolsRender(); return <><button onClick={() => onToolChange("files")}>Files tool</button><button onClick={() => onToolChange("git")}>GIT tool</button></> } }))
 vi.mock("@/app/workbench/SettingsDialog", () => ({ SettingsDialog: ({ open, botAnimations, onBotAnimationsChange }: { open: boolean; botAnimations: boolean; onBotAnimationsChange: (enabled: boolean) => void }) => { lifecycle.settingsRender(); return open ? <div role="dialog" aria-label="Settings dialog"><button onClick={() => onBotAnimationsChange(!botAnimations)}>Toggle bot animations</button></div> : null } }))
 vi.mock("@/app/workbench/CommandPalette", () => ({ CommandPalette: ({ open }: { open: boolean }) => open ? <div role="dialog" aria-label="Command search" /> : null }))
 vi.mock("@/app/workbench/ContextMenu", () => ({ ContextMenu: () => null }))
@@ -98,12 +98,12 @@ it("keeps edge controls reachable while collapsed sidebars give back their full 
     expect(handle).toHaveAttribute("inert")
   }
   expect(screen.queryByRole("button", { name: "Space leaf" })).not.toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: "Tool leaf" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Files tool" })).not.toBeInTheDocument()
   expect(screen.getByRole("textbox", { name: "Editor buffer" })).toBe(editor)
   fireEvent.click(leftToggle())
   fireEvent.click(rightToggle())
   expect(screen.getByRole("button", { name: "Space leaf" })).toBeVisible()
-  expect(screen.getByRole("button", { name: "Tool leaf" })).toBeVisible()
+  expect(screen.getByRole("button", { name: "Files tool" })).toBeVisible()
 })
 
 it("ends resizing after pointer cancellation or lost capture, then restores the chosen widths", () => {
@@ -214,7 +214,7 @@ it("returns focus after manual panel close and keeps narrow layouts mutually exc
 
 it("moves focus out of sidebars before automatic narrow-window collapse", () => {
   render(<AppShell />)
-  screen.getByRole("button", { name: "Tool leaf" }).focus()
+  screen.getByRole("button", { name: "Files tool" }).focus()
   resize(1100)
   expect(rightToggle()).toHaveFocus()
   screen.getByRole("button", { name: "Space leaf" }).focus()
@@ -224,7 +224,7 @@ it("moves focus out of sidebars before automatic narrow-window collapse", () => 
 
 it("hides workspace tools in Database and restores the working surface from its toggle", () => {
   render(<AppShell />)
-  const tool = screen.getByRole("button", { name: "Tool leaf" })
+  const tool = screen.getByRole("button", { name: "Files tool" })
   fireEvent.click(screen.getByRole("button", { name: "Database" }))
   expect(document.getElementById("workbench-tools-content")).toHaveAttribute("aria-hidden", "true")
   expect(tool).toBeInTheDocument()
@@ -233,13 +233,13 @@ it("hides workspace tools in Database and restores the working surface from its 
   expect(["ade", "files"]).toContain(useUiStore.getState().mode)
   expect(rightToggle()).toHaveAttribute("aria-expanded", "true")
   expect(rightToggle()).toHaveFocus()
-  expect(screen.getByRole("button", { name: "Tool leaf" })).toBe(tool)
+  expect(screen.getByRole("button", { name: "Files tool" })).toBe(tool)
 })
 
 it("opens commit history from the graph entry after viewing local changes", () => {
   useUiStore.setState({ mode: "files", gitPanelTab: "local" })
   render(<AppShell />)
-  fireEvent.click(screen.getByRole("button", { name: "Tool leaf" }))
+  fireEvent.click(screen.getByRole("button", { name: "GIT tool" }))
   expect(useUiStore.getState().mode).toBe("git")
   expect(useUiStore.getState().gitPanelTab).toBe("log")
   expect(screen.getByText("Git graph surface")).toBeVisible()

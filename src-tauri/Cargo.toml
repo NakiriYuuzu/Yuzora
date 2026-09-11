@@ -1,6 +1,6 @@
 [package]
 name = "yuzora"
-version = "0.0.9"
+version = "0.0.10"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -27,6 +27,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+semver = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 base64 = "0.23"
 keyring = "4.1.4"
 secrecy = { version = "0.10.3", features = ["serde"] }
@@ -80,7 +82,7 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Com"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
