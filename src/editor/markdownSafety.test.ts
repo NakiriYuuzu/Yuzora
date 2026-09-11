@@ -12,4 +12,11 @@ describe("Markdown lossless boundary", () => {
         expect(markdownRoundTripSafe("a\n\nb", "a")).toBe(false)
         expect(markdownRoundTripSafe("| A |\n| :--: |\n| x |", "| A |\n| --- |\n| x |")).toBe(false)
     })
+    it("protects footnote references even when their definition lives in another section", () => {
+        expect(needsMarkdownSource("Keep this note[^details].")).toBe(true)
+    })
+    it.each(["[foo\\]bar]: https://example.com\n", "[a\nb]:\n  https://example.com\n  'multiline title'\n"])("does not accept deletion of a parser-recognized reference definition: %s", (definition) => {
+        expect(needsMarkdownSource(definition)).toBe(true)
+        expect(markdownRoundTripSafe(definition + "\nordinary text", "ordinary text")).toBe(false)
+    })
 })

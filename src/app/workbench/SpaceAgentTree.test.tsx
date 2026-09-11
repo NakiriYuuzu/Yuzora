@@ -269,3 +269,16 @@ it.each([undefined, null])("uses the workspace label for an agent without a repo
   expect(agent).toHaveAccessibleName(`Codex · Codex · Unknown · QA-A · ${scopes[0]}`);
   expect(agent.getAttribute("aria-label")).not.toMatch(/undefined|null/);
 });
+
+it("Agents mode flattens only agent rows, preserves scoped identities and persists across remount", () => {
+  const view = render(<SpaceAgentTree />);
+  fireEvent.click(screen.getByRole("radio", { name: "Agents" }));
+  expect(screen.getAllByRole("treeitem")).toHaveLength(3);
+  expect(screen.getAllByRole("treeitem").every((row) => row.getAttribute("aria-level") === "1")).toBe(true);
+  view.unmount();
+  render(<SpaceAgentTree />);
+  expect(screen.getByRole("radio", { name: "Agents" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getAllByRole("treeitem")).toHaveLength(3);
+  fireEvent.click(screen.getByRole("radio", { name: "Spaces" }));
+  expect(screen.getAllByRole("treeitem")).toHaveLength(9);
+});

@@ -46,6 +46,7 @@ export type HostOperation =
   | { method: "filesRename"; params: { workspace: string; from: string; to: string } }
   | { method: "filesDelete"; params: { workspace: string; path: string } }
   | { method: "filesReadBase64"; params: { workspace: string; path: string; max_bytes: number } }
+  | { method: "herdrStart"; params: { binary: string } }
   | { method: "herdrDiscover"; params: { binary: string } }
   | { method: "herdrRequest"; params: { socket: string; request: unknown } }
 
@@ -57,4 +58,9 @@ export function requestHost<T>(owner: ConnectionOwner, operation: HostOperation)
 }
 export function disconnectHost(owner: ConnectionOwner): Promise<void> {
   return invoke("host_disconnect", { owner })
+}
+
+/** Native Explorer route validates the connected WSL owner and distribution. */
+export function revealHostPath(owner: ConnectionOwner, path: string, isDirectory: boolean): Promise<void> {
+  return invoke("host_reveal_in_explorer", { owner, path, isDirectory })
 }

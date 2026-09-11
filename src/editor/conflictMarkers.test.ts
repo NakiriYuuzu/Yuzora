@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 
@@ -48,6 +48,40 @@ describe("scanConflicts", () => {
 })
 
 describe("conflict resolution transactions", () => {
+    it("does not flatten a large conflict-free document on ordinary keystrokes", () => {
+        let state = EditorState.create({ doc: "ordinary source line\n".repeat(60_000), extensions: [conflictMarkers()] })
+        const toString = vi.spyOn(Object.getPrototypeOf(state.doc), "toString")
+        try {
+            for (let index = 0; index < 20; index++) state = state.update({ changes: { from: 5, insert: "x" } }).state
+            expect(toString).not.toHaveBeenCalled()
+            expect(state.doc.line(1).text).toContain("x".repeat(20))
+        } finally { toString.mockRestore() }
+    })
+
+    it("detects a completed marker after typing and after deleting a leading prefix", () => {
+        for (const text of ["<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>", "x<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> side"]) {
+            const view = makeView(text)
+            expect(view.dom.querySelector(".cm-conflict-actions")).toBeNull()
+            view.dispatch({ changes: text.startsWith("x") ? { from: 0, to: 1 } : { from: text.length, insert: "> side" } })
+            expect(view.dom.querySelector(".cm-conflict-actions")).not.toBeNull()
+            acceptBlock(view, 0, "current")
+            expect(view.state.doc.toString()).toBe("mine\n")
+            view.destroy()
+        }
+    })
+
+    it("detects an outer conflict when a blocking nested start marker is removed", () => {
+        const text = "<<<<<<< outer\nours\n=======\ntheirs\n<<<<<<< stray\nbody\n>>>>>>> incoming\n"
+        const view = makeView(text)
+        expect(view.dom.querySelector(".cm-conflict-actions")).toBeNull()
+        const from = text.indexOf("<<<<<<< stray")
+        view.dispatch({ changes: { from, to: from + 1 } })
+        expect(view.dom.querySelector(".cm-conflict-actions")).not.toBeNull()
+        acceptBlock(view, 0, "current")
+        expect(view.state.doc.toString()).toBe("ours\n")
+        view.destroy()
+    })
+
     it("accept current keeps ours and strips markers", () => {
         const view = makeView(doc)
         acceptBlock(view, 0, "current")

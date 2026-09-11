@@ -26,6 +26,9 @@
 :is(.editor-pane .cm-scroller, .diff-view .cm-scroller, .diff-view > .cm-mergeView) {
     scrollbar-width: thin;
     scrollbar-color: var(--muted-foreground) transparent;
+    scrollbar-gutter: stable;
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
 }
 /* Chromium/WebView2: use a 10px hit area with a rounded, inset thumb and no
    native arrow buttons. Explicit auto values let these pseudo-elements win. */
@@ -96,28 +99,39 @@
 .editor-pane .cm-editor .cm-scroller { line-height: calc(var(--yz-editor-font-size, 13px) + 8px) }
 .editor-pane .cm-editor.cm-focused { outline: none }
 
-/* ---- Editor minimap (F6) --------------------------------------------------
-   A ViewPlugin appends .yz-minimap into .cm-editor as an absolutely-positioned
-   right strip; each line is one bar whose left inset tracks indentation and width
-   tracks length — the "line-density" language from the design reference
-   (dc.html:3899-3903), not a rendered thumbnail. The scroller reserves the strip
-   width so code never hides beneath it; pointer-events:none keeps it decorative
-   (no click-to-jump, Q8). */
-.editor-pane .cm-editor:has(.yz-minimap) .cm-scroller { padding-right: 64px }
+/* The minimap owns a separate rail beside the CodeMirror scroller. Margin
+   (not padding) keeps the native scrollbar out from under its hit surface. */
+.editor-pane .cm-editor:has(.yz-minimap) .cm-scroller { margin-right: 64px }
 .yz-minimap {
     position: absolute;
     top: 0;
     right: 0;
-    bottom: 0;
     width: 64px;
     overflow: hidden;
-    padding: 13px 8px;
     background: var(--paper-1);
     border-left: 1px solid var(--line-1);
-    pointer-events: none;
-    z-index: 2;
+    cursor: pointer;
+    touch-action: none;
+    user-select: none;
+    -webkit-app-region: no-drag;
 }
-.yz-minimap-bar { height: 2px; margin-bottom: 1px; border-radius: 1px; background: var(--line-2) }
+.yz-minimap:focus-visible { outline: 2px solid var(--yz-accent); outline-offset: -2px }
+.yz-minimap-lines { position: absolute; inset: 0 6px; pointer-events: none }
+.yz-minimap-bar {
+    position: absolute;
+    height: min(2px, calc(100% / var(--yz-minimap-bar-count)));
+    border-radius: 1px;
+    background: var(--line-2);
+}
+.yz-minimap-viewport {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border: 1px solid var(--ink-3);
+    background: color-mix(in srgb, var(--ink-3) 18%, transparent);
+    pointer-events: none;
+}
+
 .special-file { padding: 24px; font-size: 13px; color: var(--ink-2) }
 .special-actions { display: flex; gap: 8px; margin-top: 12px }
 .special-actions button {
@@ -203,4 +217,72 @@
     --syn-meta: #7c7889;
     --syn-heading: #e0b341;
     --syn-link: #82b4ff;
+}
+
+.cm-editor[data-syntax-theme="github"] {
+    --syn-keyword: #cf222e;
+    --syn-string: #0a3069;
+    --syn-comment: #6e7781;
+    --syn-number: #0550ae;
+    --syn-type: #953800;
+    --syn-func: #8250df;
+    --syn-var: #24292f;
+    --syn-property: #0550ae;
+    --syn-tag: #116329;
+    --syn-operator: #cf222e;
+    --syn-punct: #24292f;
+    --syn-meta: #6e7781;
+    --syn-heading: #0550ae;
+    --syn-link: #0969da;
+}
+
+.dark .cm-editor[data-syntax-theme="github"] {
+    --syn-keyword: #ff7b72;
+    --syn-string: #a5d6ff;
+    --syn-comment: #8b949e;
+    --syn-number: #79c0ff;
+    --syn-type: #ffa657;
+    --syn-func: #d2a8ff;
+    --syn-var: #e6edf3;
+    --syn-property: #79c0ff;
+    --syn-tag: #7ee787;
+    --syn-operator: #ff7b72;
+    --syn-punct: #e6edf3;
+    --syn-meta: #8b949e;
+    --syn-heading: #79c0ff;
+    --syn-link: #58a6ff;
+}
+
+.cm-editor[data-syntax-theme="one"] {
+    --syn-keyword: #a626a4;
+    --syn-string: #50a14f;
+    --syn-comment: #696c77;
+    --syn-number: #986801;
+    --syn-type: #986801;
+    --syn-func: #4078f2;
+    --syn-var: #383a42;
+    --syn-property: #b4434c;
+    --syn-tag: #b4434c;
+    --syn-operator: #0184bc;
+    --syn-punct: #383a42;
+    --syn-meta: #696c77;
+    --syn-heading: #4078f2;
+    --syn-link: #4078f2;
+}
+
+.dark .cm-editor[data-syntax-theme="one"] {
+    --syn-keyword: #c678dd;
+    --syn-string: #98c379;
+    --syn-comment: #969caa;
+    --syn-number: #d19a66;
+    --syn-type: #e5c07b;
+    --syn-func: #61afef;
+    --syn-var: #abb2bf;
+    --syn-property: #e06c75;
+    --syn-tag: #e06c75;
+    --syn-operator: #56b6c2;
+    --syn-punct: #abb2bf;
+    --syn-meta: #969caa;
+    --syn-heading: #61afef;
+    --syn-link: #61afef;
 }

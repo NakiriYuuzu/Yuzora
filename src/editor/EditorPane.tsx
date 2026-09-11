@@ -133,7 +133,7 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
                 groupIndex,
                 readonly: flags.readonly
             })
-            onReady?.(view, save, r.kind === "full" && r.lineEnding !== "mixed")
+            onReady?.(view, save, (r.kind === "full" || r.kind === "limited") && r.lineEnding !== "mixed")
             const reveal = useWorkspaceStore.getState().pendingReveal
             if (reveal && reveal.path === path) {
                 revealLine(view, reveal.line, reveal.focus ?? true)

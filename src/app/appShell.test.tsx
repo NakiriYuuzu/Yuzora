@@ -443,15 +443,26 @@ describe("AppShell", () => {
     expect(screen.getByLabelText("Sidebar navigation")).toBeInTheDocument()
   })
 
-  it("switches to Git mode and shows the selected state", () => {
+  it("opens history directly from GIT and restores the previous work surface from Files", () => {
     render(<AppShell />)
-
+    act(() => useUiStore.getState().setGitPanelTab("local"))
     fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-tools"]')!)
-    const gitTab = screen.getByRole("tab", { name: "Git" })
+    const gitTab = screen.getByRole("tab", { name: "GIT" })
     fireEvent.mouseDown(gitTab, {button:0, ctrlKey:false})
 
     expect(gitTab).toHaveAttribute("aria-selected", "true")
-    expect(screen.getByRole("button", {name:"History and branch graph"})).toBeInTheDocument()
+    expect(useUiStore.getState().mode).toBe("git")
+    expect(useUiStore.getState().gitPanelTab).toBe("log")
+    const gitSurface = screen.getByRole("button", { name: "Back to working files" }).closest(".workbench-mode-surface")
+    expect(gitSurface).not.toHaveAttribute("hidden")
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Files" }), {button:0, ctrlKey:false})
+    expect(useUiStore.getState().mode).toBe("ade")
+    expect(gitSurface).toHaveAttribute("hidden")
+    fireEvent.mouseDown(gitTab, {button:0, ctrlKey:false})
+    expect(screen.getByRole("button", { name: "Back to working files" }).closest(".workbench-mode-surface")).toBe(gitSurface)
+    fireEvent.click(screen.getByRole("button", { name: "Back to working files" }))
+    expect(useUiStore.getState().mode).toBe("ade")
+    expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true")
   })
 
   it("collapses and restores the nav panel via the rail toggle", () => {
@@ -505,6 +516,7 @@ describe("AppShell", () => {
   })
 
   it("opens the command palette with Cmd+K and switches mode on selection", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
     render(<AppShell />)
 
     fireEvent.keyDown(window, { key: "k", metaKey: true })

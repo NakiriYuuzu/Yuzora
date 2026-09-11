@@ -6,6 +6,22 @@ import { DiffView } from "./DiffView"
 const full = (content: string) => ({ kind: "full" as const, content })
 
 describe("DiffView", () => {
+    it.each(["unified", "split"] as const)("preserves native scrollbar pointer and mouse defaults in %s mode", (mode) => {
+        const { container } = render(<DiffView content={{ original: full("one\n"), modified: full("two\n") }} mode={mode} path="a.txt" />)
+        const scroll = container.querySelector(mode === "split" ? ".cm-mergeView" : ".cm-scroller")!
+        const pointer = new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: 600, clientY: 80, pointerId: 1 })
+        const mouse = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 600, clientY: 80 })
+        expect(scroll.dispatchEvent(pointer)).toBe(true)
+        expect(scroll.dispatchEvent(mouse)).toBe(true)
+        expect(pointer.defaultPrevented).toBe(false)
+        expect(mouse.defaultPrevented).toBe(false)
+    })
+
+    it("keeps the split resize target clear of the horizontal native scrollbar", () => {
+        render(<DiffView content={{ original: full("one\n"), modified: full("two\n") }} mode="split" path="a.txt" />)
+        expect(screen.getByTestId("diff-split-separator")).toHaveStyle({ bottom: "10px" })
+    })
+
     it("renders placeholder for binary side", () => {
         render(
             <DiffView content={{ original: { kind: "binary" }, modified: full("x") }} mode="unified" path="a.txt" />

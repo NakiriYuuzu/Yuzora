@@ -1,3 +1,4 @@
+import { bindingLabel, useKeyboardSettingsStore, dispatchAppShortcut } from "@/state/keyboardSettingsStore"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
@@ -27,7 +28,7 @@ import { StatusBar } from "@/app/workbench/StatusBar"
 import { useSftpStore } from "@/state/sftpStore"
 import { logUserAction } from "@/features/logs/userAction"
 import i18n from "@/lib/i18n"
-import { showsNativeTrafficLights, shortcutLabel } from "@/lib/platform"
+import { showsNativeTrafficLights } from "@/lib/platform"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { useUpdateStore } from "@/state/updateStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
@@ -49,7 +50,7 @@ const NAV_AUTO_COLLAPSE_WIDTH = 880
 // Sidebar motion changes shell geometry, not these surfaces. Stable elements
 // keep terminal/editor trees out of that render; their store subscriptions still update.
 const editorPanel = <EditorPanel />
-const gitPanel = <GitPanel />
+const StableGitPanel = memo(GitPanel)
 const databasePanel = <DatabasePanel />
 const databaseNav = <DatabaseNavContent />
 const spaceAgentSidebar = <SpaceAgentSidebar />
@@ -71,6 +72,7 @@ const StableCommandPalette = memo(CommandPalette)
 export function AppShell() {
   useEffect(watchBrandIcon, [])
   const { t } = useTranslation("workbenchShell")
+  const paletteBinding = useKeyboardSettingsStore(s => s.overrides.commandPalette ?? "Mod+K")
   const mode = useUiStore((s) => s.mode)
   const setMode = useUiStore((s) => s.setMode)
   // Settings open/target is a single source of truth in uiStore so the global
@@ -122,7 +124,7 @@ export function AppShell() {
 
   useEffect(() => {
     if (mode === "database") setDatabaseVisited(true)
-    else lastWorkMode.current = mode
+    else if (mode === "files" || mode === "ade") { lastWorkMode.current = mode; setCheckoutTool("files") }
     if (mode === "git") { setGitVisited(true); setCheckoutTool("git") }
   }, [mode])
 
@@ -262,10 +264,7 @@ export function AppShell() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (event.key === "`" && event.ctrlKey && !event.metaKey && !event.altKey) {
-        event.preventDefault()
-        void openNewTerminalTab()
-      }
+      dispatchAppShortcut(event, "newTerminal", () => { void openNewTerminalTab() })
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
@@ -377,12 +376,15 @@ export function AppShell() {
 
   const handleToolChange = useCallback((tool: WorkspaceTool) => {
     setCheckoutTool(tool)
-    if (mode === "database" || (mode === "git" && tool === "files")) handleModeChange("files")
-  }, [mode, handleModeChange])
+    if (tool === "git") {
+      useUiStore.getState().setGitPanelTab("log")
+      handleModeChange("git")
+    } else handleModeChange(lastWorkMode.current)
+  }, [handleModeChange])
 
-  const handleOpenGraph = useCallback(() => {
-    useUiStore.getState().setGitPanelTab("log")
-    handleModeChange("git")
+  const handleReturnToWork = useCallback(() => {
+    setCheckoutTool("files")
+    handleModeChange(lastWorkMode.current)
   }, [handleModeChange])
 
   // ADE shares the editor surface (mixed file/preview/herdr-terminal pages);
@@ -414,9 +416,9 @@ export function AppShell() {
             <div id="workbench-spaces-content" className="workbench-sidebar-content" aria-hidden={navCollapsed} inert={navCollapsed}>
             <nav className="workbench-sidebar-navigation" aria-label={t("sharedTools")}>
               <Button variant="ghost" className="workbench-sidebar-search" aria-label={t("search")} onClick={() => setPaletteOpen(true)}>
-                <Search data-icon="inline-start" /><span>{t("searchShort")}</span><span className="workbench-sidebar-shortcut" aria-hidden="true">{shortcutLabel("mod-k")}</span>
+                <Search data-icon="inline-start" /><span>{t("searchShort")}</span><span className="workbench-sidebar-shortcut" aria-hidden="true">{bindingLabel(paletteBinding)}</span>
               </Button>
-              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t(mode === "database" ? "backToWork" : "workspace")} aria-pressed={mode !== "database"} onClick={() => handleModeChange(lastWorkMode.current)}>
+              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t(mode === "database" || mode === "git" ? "backToWork" : "workspace")} aria-pressed={mode === "files" || mode === "ade"} onClick={handleReturnToWork}>
                 <PanelsTopLeft data-icon="inline-start" /><span>{t("workspace")}</span>
               </Button>
               <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("database")} aria-pressed={mode === "database"} onClick={() => handleModeChange(mode === "database" ? lastWorkMode.current : "database")}>
@@ -442,7 +444,7 @@ export function AppShell() {
         <div className="workbench-workspace" data-utility-row={mode === "git" && (navCollapsed || !toolsVisible)}>
           <div data-testid="main-surface" className="workbench-main-surface" style={{minHeight:mainSurfaceMinHeight}}>
             <div hidden={mode!=="files" && mode!=="ade"} inert={mode!=="files" && mode!=="ade"} className="workbench-mode-surface">{editorPanel}</div>
-            {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface">{gitPanel}</div>}
+            {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface"><StableGitPanel onReturnToWork={handleReturnToWork} /></div>}
             {(databaseVisited || mode === "database") && <div hidden={mode!=="database"} inert={mode!=="database"} className="workbench-database-surface">
               <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
                 <ResizablePanel id="database-navigation" defaultSize="280px" minSize="240px" maxSize="480px" groupResizeBehavior="preserve-pixel-size">
@@ -462,12 +464,8 @@ export function AppShell() {
         }}><span /></div>
         <aside id="workbench-tools" aria-label={t("tools")} aria-hidden={!toolsVisible} inert={!toolsVisible} data-collapsed={!toolsVisible} data-background={rightSidebarBackground} className="workbench-tools" style={{width:toolsVisible ? toolsWidth : 0}}>
           <div className="workbench-tools-surface" style={{width:toolsWidth}}>
-            <div className="workbench-sidebar-heading workbench-tools-chrome" data-tauri-drag-region>
-              <strong data-tauri-drag-region>{t("tools")}</strong>
-              <span className="workbench-toggle-space" aria-hidden="true" />
-            </div>
             <div id="workbench-tools-content" className="workbench-sidebar-content" aria-hidden={!toolsVisible} inert={!toolsVisible}>
-              <StableWorkspaceToolsPanel tool={checkoutTool} onToolChange={handleToolChange} onOpenGraph={handleOpenGraph} />
+              <StableWorkspaceToolsPanel tool={checkoutTool} onToolChange={handleToolChange} />
             </div>
           </div>
         </aside>

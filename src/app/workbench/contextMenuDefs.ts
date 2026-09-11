@@ -1,5 +1,7 @@
 import i18n from "@/lib/i18n"
 import { systemRevealPath } from "@/lib/revealPath"
+import { isFileTab } from "@/lib/markdownPreviewTab"
+import { gitWorkingFilePath, openGitWorkingFile } from "@/workbench/git/gitWorkingFile"
 import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import { getViewEntry } from "@/editor/viewRegistry"
 import {
@@ -12,7 +14,7 @@ import {
   herdrWorkspaceClose,
   herdrWorkspaceRename
 } from "@/lib/herdrIpc"
-import { canonicalPathKey } from "@/lib/paths"
+import { canonicalPathKey, isSameOrDescendantPath } from "@/lib/paths"
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { requestTextInputDialog } from "@/state/textInputDialogStore"
 import { gitStage, gitUnstage } from "@/lib/ipc"
@@ -132,6 +134,12 @@ function legacy<K extends ContextMenuKind>(id: string) {
 
 function currentWorkspace(workspacePath: string | null): boolean {
   return workspacePath !== null && useWorkspaceStore.getState().workspacePath === workspacePath
+}
+
+function directoryCreationAvailability(request: ContextMenuRequestFor<"file">): ContextMenuAvailability {
+  if (!request.isDirectory) return hidden()
+  return currentWorkspace(request.workspacePath) && isSameOrDescendantPath(request.workspacePath, request.path)
+    ? available() : disabled(DISABLED_TARGET)
 }
 
 function recentWorkspaceAvailability(
@@ -403,6 +411,17 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   file: [
+    item<"file">("cmNewFile", {
+      availability: directoryCreationAvailability,
+      danger: false,
+      executor: legacy("cmNewFile"),
+    }),
+    item<"file">("cmNewFolder", {
+      availability: directoryCreationAvailability,
+      danger: false,
+      executor: legacy("cmNewFolder"),
+    }),
+    "separator",
     item<"file">("cmOpen", {
       availability: (request) => request.isDirectory ? hidden() : currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
       danger: false,
@@ -428,6 +447,12 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       danger: false,
       executor: legacy("cmCopyRel"),
     }),
+    item<"file">("cmCopyFullPath", {
+      label: () => i18n.t("copyFullPath", { ns: "contextActions" }),
+      availability: (request) => currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: legacy("cmCopyFullPath"),
+    }),
     item<"file">("cmReveal", {
       availability: (request) => currentWorkspace(request.workspacePath) && systemRevealPath(request.path)
         ? available() : disabled(DISABLED_TARGET),
@@ -442,6 +467,15 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   tab: [
+    item<"tab">("cmCopyFullPath", {
+      label: () => i18n.t("copyFullPath", { ns: "contextActions" }),
+      availability: (request) => {
+        const tab = useWorkspaceStore.getState().groups[request.groupIndex]?.tabs.find((candidate) => candidate.path === request.path)
+        return tab && isFileTab(tab) ? available() : hidden()
+      },
+      danger: false,
+      executor: legacy("cmCopyFullPath"),
+    }),
     item<"tab">("cmPinTab", {
       label: (request) => i18n.t(useWorkspaceStore.getState().groups[request.groupIndex]?.tabs.find((tab) => tab.path === request.path)?.pinned ? "unpin" : "pin", { ns: "workTabs" }),
       availability: (request) => useWorkspaceStore.getState().groups[request.groupIndex]?.tabs.some((tab) => tab.path === request.path) ? available() : disabled(DISABLED_TARGET),
@@ -495,6 +529,13 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   editor: [
+    item<"editor">("cmCopyFullPath", {
+      label: () => i18n.t("copyFullPath", { ns: "contextActions" }),
+      availability: (request) => editorExists(request) ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: legacy("cmCopyFullPath"),
+    }),
+    "separator",
     item<"editor">("cmCut", {
       availability: (request) => {
         if (!editorExists(request)) return disabled(DISABLED_TARGET)
@@ -544,6 +585,13 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"git">("cmPush", { availability: gitAvailability, danger: false, executor: legacy("cmPush") }),
   ],
   gitChange: [
+    item<"gitChange">("cmOpenWorkingFile", {
+      label: () => i18n.t("openWorkingFile", { ns: "contextActions" }),
+      availability: (request) => gitWorkingFilePath(request.repositoryRoot, request.clicked) ? available() : hidden(),
+      danger: false,
+      executor: (request) => openGitWorkingFile(request.repositoryRoot, request.clicked) ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED,
+    }),
+    "separator",
     item<"gitChange">("cmStageSelected", {
       availability: (request) => gitChangeAvailability(request, isStageableChange),
       danger: false,

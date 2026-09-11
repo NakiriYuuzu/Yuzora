@@ -20,6 +20,7 @@ pub mod herdr_service;
 pub mod host_bootstrap;
 mod host_git;
 mod host_herdr;
+mod host_reveal;
 pub mod host_service;
 mod host_sqlite;
 pub mod host_streams;
@@ -30,6 +31,7 @@ pub mod path_capability;
 pub mod perf_service;
 pub mod preview_webview;
 pub mod process_kill;
+mod reveal_directory;
 pub mod run_context;
 pub mod run_summary;
 pub mod search_service;
@@ -37,6 +39,7 @@ pub mod sftp_edit;
 mod sftp_transfer;
 mod sftp_tree;
 pub mod ssh_service;
+pub mod update_channel;
 pub mod watcher;
 pub mod workspace_trust;
 
@@ -269,6 +272,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            reveal_directory::open_workspace_directory,
+            update_channel::check_preview_update,
             brand_icon::set_brand_icon,
             host_service::host_connect,
             host_service::host_request,
@@ -283,6 +288,7 @@ pub fn run() {
             host_bootstrap::host_runtime_check,
             host_wsl::host_wsl_distributions,
             host_wsl::host_wsl_path,
+            host_reveal::host_reveal_in_explorer,
             sftp_edit::sftp_open_file,
             sftp_edit::sftp_create_file,
             sftp_edit::sftp_read_file_base64,
@@ -403,6 +409,8 @@ pub fn run() {
             herdr_service::herdr_tab_close,
             herdr_service::herdr_tab_move,
             herdr_service::herdr_pane_focus,
+            herdr_service::herdr_pane_scroll_state,
+            herdr_service::herdr_pane_scroll_to,
             herdr_service::herdr_pane_rename,
             herdr_service::herdr_pane_split,
             herdr_service::herdr_pane_zoom,

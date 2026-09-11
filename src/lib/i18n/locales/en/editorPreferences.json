@@ -1,0 +1,30 @@
+{
+  "syntaxTheme": "Syntax highlight theme",
+  "syntaxDescription": "One palette for all languages. Light and dark colors follow the app appearance; also applied to diffs.",
+  "themes": {
+    "github": "GitHub (default)",
+    "yuzora": "Yuzora",
+    "one": "One Light / Dark"
+  },
+  "preview": "Syntax highlight preview",
+  "keyboardScope": "App shortcuts only. Mod means Command on macOS and Ctrl on Windows/Linux. Type a chord such as Mod+Shift+K. Editor editing/save keys and terminal protocol keys keep their native bindings. Ctrl shortcuts are not intercepted in terminal inputs.",
+  "commands": {
+    "commandPalette": "Command palette",
+    "newTerminal": "New terminal tab",
+    "settings": "Open settings",
+    "toggleSidebar": "Toggle sidebar",
+    "toggleBrowser": "Toggle Browser",
+    "modeAde": "Switch to ADE",
+    "modeFiles": "Switch to Files",
+    "modeGit": "Switch to Git",
+    "modeDatabase": "Switch to Database"
+  },
+  "search": "Search shortcuts",
+  "apply": "Apply",
+  "reset": "Restore defaults",
+  "errors": {
+    "invalid": "Use Mod/Ctrl/Alt/Shift plus one letter, digit, punctuation key or F1–F12.",
+    "reserved": "This shortcut is reserved for editing or the system.",
+    "conflict": "This shortcut conflicts with another app command."
+  }
+}

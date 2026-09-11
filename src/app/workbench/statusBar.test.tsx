@@ -209,10 +209,14 @@ describe("StatusBar", () => {
     expect(screen.queryByRole("button", { name: /Line ending:/ })).not.toBeInTheDocument();
   });
 
-  it("右鍵狀態列開啟 status 選單", () => {
+  it("status bar background uses app actions while the branch uses Git actions", () => {
+    useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50" }, status: makeStatus() });
     render(<StatusBar />);
     fireEvent.contextMenu(screen.getByLabelText("Status bar"));
+    expect(useContextMenuStore.getState().request?.kind).toBe("general");
+    fireEvent.contextMenu(screen.getByTitle("main"));
     expect(useContextMenuStore.getState().request?.kind).toBe("status");
+    expect(useContextMenuStore.getState().request).toMatchObject({ repositoryRoot: "/w" });
   });
 
   it("有 perf snapshot 時顯示總量 chip（cpu% · MB），title 拆出 App 本體與子行程數", () => {

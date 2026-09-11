@@ -363,7 +363,10 @@
 }
 
 /* App-owned scrollbars use shadcn ScrollArea (src/components/ui/scroll-area.tsx). */
-
+[data-slot="scroll-area-scrollbar"] {
+    -webkit-app-region: no-drag;
+    pointer-events: auto;
+}
 @keyframes yzspin {
     to { transform: rotate(360deg); }
 }

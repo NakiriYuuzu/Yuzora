@@ -258,6 +258,7 @@ async fn eof_cancels_an_inflight_git_hook_and_does_not_replay_the_commit() {
             Some(&root),
             GitCommand::Commit {
                 message: "must not complete".into(),
+                amend_head: None,
             },
         ))
         .await;

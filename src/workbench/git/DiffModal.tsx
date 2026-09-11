@@ -5,6 +5,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { DialogResizeHandles } from "@/components/ui/dialog-resize-handles"
+import { DIALOG_RESIZE_RAIL_STYLE } from "@/lib/dialogSize"
 import { useResizableDialogSize } from "@/hooks/useResizableDialogSize"
 import { dialogMinSize } from "@/lib/dialogSize"
 import { showsNativeTrafficLights } from "@/lib/platform"
@@ -442,7 +443,10 @@ export function DiffModal() {
                     }}
                     data-diff-surface=""
                     className={`yz-diffin absolute top-1/2 left-1/2 z-[62] flex min-h-0 max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--paper-0) shadow-(--shadow-xl) outline-none${sizing.isResizing ? " duration-0" : ""}`}
-                    style={sizing.style}
+                    // The shared frame's right/bottom grips sit inside the
+                    // dialog (up to 1rem at the corner). Reserve their rail so
+                    // they cannot intercept the editor's native scrollbar.
+                    style={{ ...sizing.style, ...DIALOG_RESIZE_RAIL_STYLE }}
                 >
                     <DialogPrimitive.Title className="sr-only">
                         {t("diffModal.title", { title })}

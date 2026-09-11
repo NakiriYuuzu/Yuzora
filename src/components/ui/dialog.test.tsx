@@ -87,6 +87,22 @@ describe("DialogContent resizable sizing", () => {
     expect(content.style.height).toBe(`${800 * DEFAULT_DIALOG_SIZE_RATIO}px`)
   })
 
+  it("reserves the resize frame even when a flush dialog removes its padding", () => {
+    render(
+      <Dialog open>
+        <DialogContent resizeId="settings" className="p-0" style={{ padding: 0 }} showCloseButton={false}>
+          <DialogTitle>Flush settings</DialogTitle>
+          <DialogDescription>Scrollable body</DialogDescription>
+          <div data-testid="scroll-body">content</div>
+        </DialogContent>
+      </Dialog>,
+    )
+    const content = document.querySelector('[data-slot="dialog-content"]') as HTMLElement
+    expect(content.style.paddingRight).toBe("1rem")
+    expect(content.style.paddingBottom).toBe("1rem")
+    expect(content.querySelectorAll('[data-slot="dialog-resize-handle"]')).toHaveLength(3)
+  })
+
   it("resizes from the right handle with pointer capture and persists on release", () => {
     const setPointerCapture = vi.spyOn(Element.prototype, "setPointerCapture")
     renderDialog()

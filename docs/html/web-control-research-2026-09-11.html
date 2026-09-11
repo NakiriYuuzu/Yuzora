@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yuzora 公開網頁控制研究 · 2026-09-11</title>
+<style>
+:root{color-scheme:light;--ink:#202d38;--muted:#546575;--line:#d7dfdf;--paper:#f5f7f6;--accent:#176e65}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.85 system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif}.masthead{max-width:1160px;margin:0 auto;padding:34px 24px 18px;font:12px/1.5 ui-monospace,monospace;letter-spacing:.08em;color:var(--accent)}.layout{max-width:1160px;margin:auto;padding:0 24px 72px;display:grid;grid-template-columns:190px minmax(0,1fr);gap:40px}nav{position:sticky;top:24px;align-self:start;border-top:2px solid var(--accent);padding-top:12px}nav a{display:block;font-size:13px;padding:5px 0;color:var(--muted);text-decoration:none}main{min-width:0}h1{font-size:clamp(28px,4vw,45px);line-height:1.2;letter-spacing:-.03em;margin:0 0 32px}h2{padding-top:32px;margin-top:40px;border-top:1px solid var(--line);font-size:25px;line-height:1.4;color:var(--accent);scroll-margin-top:24px}h3{font-size:19px;line-height:1.6;margin-top:30px}p,ul,ol{margin:14px 0}li{margin:7px 0}a{color:#12675e;text-underline-offset:3px;overflow-wrap:anywhere}code{font: .87em/1.6 ui-monospace,"SFMono-Regular",monospace;overflow-wrap:anywhere;background:#e6ecea;border-radius:3px;padding:1px 4px}pre{background:#203b3a;color:#ecf4ef;padding:20px;border-radius:5px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}pre code{background:none;padding:0;color:inherit}.table-wrap{width:100%;margin:20px 0}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px;line-height:1.75;background:#fff}th,td{text-align:left;vertical-align:top;padding:12px 11px;border:1px solid var(--line);overflow-wrap:anywhere}th{background:#e7eeeb;font-weight:700}blockquote{margin:18px 0;border-left:3px solid var(--accent);padding:0 18px;color:var(--muted)}.footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}@media(max-width:850px){.layout{grid-template-columns:1fr;gap:24px}nav{position:static;display:flex;flex-wrap:wrap;gap:6px 16px}nav a{font-size:12px}th,td{padding:9px 7px;font-size:12px}h2{font-size:23px}}@media print{body{background:white}.masthead{padding-top:0}.layout{display:block;max-width:none;padding:0}nav{display:none}h2{break-after:avoid}h3{break-after:avoid}tr,pre{break-inside:avoid}a{color:inherit}.table-wrap{overflow:visible}}
+</style></head><body><div class="masthead">YUZORA / ARCHITECTURE RESEARCH / 2026.09.11 / 單一使用者綁定</div><div class="layout"><nav aria-label="文件目錄"><a href="#section-1">研究問題</a><a href="#section-2">建議方向</a><a href="#section-3">現有能力與缺口</a><a href="#section-4">來源與證據</a><a href="#section-5">方案比較</a><a href="#section-6">建議架構與實作階段</a><a href="#section-7">待確認的邊界</a><a href="#section-8">重新評估的條件</a><a href="#section-9">研究方法與驗證範圍</a></nav><main><h1>公開網頁，連回你的 ADE</h1>
+<h2 id="section-1">研究問題</h2>
+<p>如何讓使用者登入公開網址，綁定正在執行的 Yuzora ADE，從自己的手機或另一台電腦查看狀態與進行控制？</p>
+<p><strong>需求以本次最後澄清為準：每個 ADE 綁定一位使用者。</strong> 不包含多人協作、分享控制或團隊權限。先以同一人、一台 ADE、多個瀏覽器工作階段研究；不把「單一 owner」解讀成永久限制帳號只能擁有一台裝置。本文是研究與建議，尚未形成已接受 ADR，也未實作功能。</p>
+<h2 id="section-2">建議方向</h2>
+<p><strong>可行。建議新增「公開 Web Control + 雲端登入／Relay + ADE 內 Remote Access」三個部分。</strong> 瀏覽器與 ADE 都主動連向 Relay，ADE 不需要開放家用路由器的入站埠。命令抵達 ADE 後，經綁定、範圍與控制權檢查，呼叫現有 HERDR／Host services。</p>
+<p>第一版提供登入綁定、ADE 在線狀態、Named Sessions／Spaces／Agent 狀態、既有 terminal 的即時畫面與明確接管。後續加入檔案及 Git。保留同一個真實 Host Runtime 與 Terminal Session；網頁 UI 是它們的另一個操作介面，各自的版面與未儲存文件不會自動共享。</p>
+<p>現有 typed API、官方 terminal connector、序號校驗與 Host generation 可以重用；仍需新增雲端身分、裝置配對、網路傳輸與桌面／網頁間的控制仲裁。不能把既有 Demo 上線便視為完成，也不能直接公開通用 Tauri invoke。[E1–E8]</p>
+<h2 id="section-3">現有能力與缺口</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>現況</th>
+<th>已核對的證據</th>
+<th>對設計的影響</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前端是 Tauri IPC client</td>
+<td><code>ipc.ts</code> 直接匯入 Tauri <code>Channel</code>／<code>invoke</code>；<code>herdrProvider.ts</code> 組裝本機及 SSH／WSL 路由。[E1,E2]</td>
+<td>新增明確的 web transport；不模擬 <code>__TAURI_INTERNALS__</code> 作正式遠端介面。</td>
+</tr>
+<tr>
+<td>HERDR 操作已有 typed boundary</td>
+<td><code>herdrIpc.ts</code> 包含 sessions、snapshot、events、workspace／tab／pane、terminal、agent read 等 wrapper。[E3]</td>
+<td>第一版從小範圍允許清單提供 API，維持現有 capability／schema gate。</td>
+</tr>
+<tr>
+<td>Terminal 已支援 observe／control</td>
+<td>原生 adapter 接到 <code>HerdrManager</code>；manager 啟動官方 connector，<code>send_control</code> 檢查 control mode。[E4]</td>
+<td>可重用執行引擎；網頁 owner 驗證與 connector ownership 是額外必需的層。</td>
+</tr>
+<tr>
+<td>桌面預設會接管 terminal</td>
+<td><code>createHerdrTerminalTransport</code> 預設 <code>control</code>、<code>takeover=true</code>，也有明確 <code>takeControl()</code>。[E5]</td>
+<td>單一人多裝置仍有競爭；兩端的自動重開／resync 都必須尊重控制權。</td>
+</tr>
+<tr>
+<td>已有防止錯誤重放的慣例</td>
+<td>Terminal 輸入失敗會丟棄未送尾端；FrameTracker 要求 first-full、連續 seq，重複 frame 忽略、缺口 resync。[E5,E6]</td>
+<td>網路層新增 request／stream generation；重連不能自動重送 terminal 輸入。</td>
+</tr>
+<tr>
+<td>遠端 Host 不等於網頁帳號</td>
+<td><code>ConnectionOwner</code> 是 hostId + generation；Rust <code>host_request</code> 在操作前後重查連線。[E7]</td>
+<td>保留 Host identity，另加 account／ADE device identity，兩者不能混用。</td>
+</tr>
+<tr>
+<td>UI 狀態部分留在前端</td>
+<td>Workspace tabs 存 localStorage；HerdrBridge 背景恢復限制在已開啟且身分相符的 workspace。[E8]</td>
+<td>HERDR snapshot 不代表完整桌面狀態。網頁焦點不應直接強迫桌面切換檔案根目錄。</td>
+</tr>
+<tr>
+<td>既有公開 Demo 是模擬資料</td>
+<td>Demo README 明確說明使用 in-memory transport，不連真實 host。[E9]</td>
+<td>Demo 可提供元件參考，不能當正式連線能力的證據。</td>
+</tr>
+<tr>
+<td>現有 tunnel 用於桌面 loopback</td>
+<td><code>host_tunnels::open</code> 綁定 <code>127.0.0.1:0</code>，持有 host generation 與資源 owner。[E10]</td>
+<td>這是桌面連遠端服務的轉送，不是瀏覽器登入或 ADE 配對服務。</td>
+</tr>
+<tr>
+<td>App 關閉會釋放連線資源</td>
+<td><code>lib.rs</code> 關閉 Host／SSH、釋放 HERDR connector，保留 HERDR server／pane。[E11]</td>
+<td>第一版 Remote Access 隨 ADE 程序存活；睡眠、離線或退出不能承諾繼續控制。</td>
+</tr>
+</tbody>
+</table></div>
+<p>所檢查的入口、依賴與 Rust 網路實作未提供本文需要的公網 owner binding／Relay。這是針對上述範圍的分析，並非對整個 repository 做功能不存在的形式化證明。</p>
+<h2 id="section-4">來源與證據</h2>
+<h3>本機來源</h3>
+<p>研究基準為 2026-09-11 工作樹，HEAD <code>7370efd</code>。工作樹已有大量未提交修改，引用的是當時實際檔案，不代表該 commit 本身已包含全部內容。逐檔 SHA-256 記錄於 sidecar，方便後續檢查變動。</p>
+<ul>
+<li><strong>E1</strong> — <a href="../../src/lib/ipc.ts" title="原始碼第 1 行">src/lib/ipc.ts:1</a>：Tauri invoke 與 Channel。</li>
+<li><strong>E2</strong> — <a href="../../src/lib/herdrProvider.ts" title="原始碼第 89 行">src/lib/herdrProvider.ts:89</a>：Host call／stream，以及 <code>invokeHerdr</code> 的路由與世代檢查。host map 位於本模組；不是可直接搬到公網的授權來源。</li>
+<li><strong>E3</strong> — <a href="../../src/lib/herdrIpc.ts" title="原始碼第 48 行">src/lib/herdrIpc.ts:48</a>：typed HERDR API。</li>
+<li><strong>E4</strong> — <a href="../../src-tauri/src/herdr_service.rs" title="原始碼第 42 行">src-tauri/src/herdr_service.rs:42</a>、<a href="../../src-tauri/host/src/herdr_service.rs" title="原始碼第 2346 行">Host HerdrManager:2346</a>、<a href="../../src-tauri/host/src/herdr_service.rs" title="原始碼第 2548 行">send_control:2548</a>：Tauri adapter、官方 connector、control mode 檢查。</li>
+<li><strong>E5</strong> — <a href="../../src/terminal/terminalTransport.ts" title="原始碼第 128 行">src/terminal/terminalTransport.ts:128</a>：初始 takeover、輸入佇列、release 與接管。</li>
+<li><strong>E6</strong> — <a href="../../src-tauri/host/src/herdr_service.rs" title="原始碼第 587 行">FrameTracker:587</a>：full frame／seq 驗證。</li>
+<li><strong>E7</strong> — <a href="../../src/lib/runtimeIdentity.ts" title="原始碼第 1 行">src/lib/runtimeIdentity.ts:1</a>、<a href="../../src-tauri/src/host_service.rs" title="原始碼第 510 行">host_request:510</a>：Host identity 與前後世代檢查。</li>
+<li><strong>E8</strong> — <a href="../../src/state/workspaceSession.ts" title="原始碼第 113 行">workspaceSession.ts:113</a>、<a href="../../src/workbench/HerdrBridge.tsx" title="原始碼第 49 行">HerdrBridge.tsx:49</a>：前端持久化與背景焦點限制。</li>
+<li><strong>E9</strong> — <a href="../../src/demo/README.md" title="原始碼第 7 行">src/demo/README.md:7</a>：公開 Demo 的模擬範圍。</li>
+<li><strong>E10</strong> — <a href="../../src-tauri/src/host_tunnels.rs" title="原始碼第 124 行">host_tunnels.rs:124</a>：loopback listener。</li>
+<li><strong>E11</strong> — <a href="../../src-tauri/src/lib.rs" title="原始碼第 429 行">src-tauri/src/lib.rs:429</a>：App lifecycle cleanup。</li>
+<li><strong>E12</strong> — <a href="../../src-tauri/host/src/workspace_trust.rs" title="原始碼第 336 行">workspace_trust.rs:336</a>、<a href="../../src-tauri/src/db_credentials.rs" title="原始碼第 122 行">db_credentials.rs:122</a>：既有 workspace trust 與 OS keyring 使用方式。裝置憑證應用自己的 namespace 與生命週期，不能借用 DB descriptor。</li>
+<li><strong>E13</strong> — <a href="../../.yuuzu/CONTEXT.html">.yuuzu/CONTEXT.html</a>、<a href="../../.yuuzu/adr/0004-herdr-terminals-browser-only.html">ADR-0004</a>、<a href="../../.yuuzu/adr/0005-native-windows-opt-in-wsl.html">ADR-0005</a>：Host／Session／workspace 定義、官方 terminal、Browser 範圍與 Windows／WSL 政策。</li>
+</ul>
+<h3>官方外部來源</h3>
+<p>以下六個來源均在本次直接讀取；外部內容摘錄與來源 URL 留在 sidecar。外部資料說明協定／平台行為，本專案架構選擇由上述程式證據與需求推導。</p>
+<ul>
+<li><strong>W1</strong> — <a href="https://v2.tauri.app/concept/inter-process-communication/">Tauri IPC</a>：Events 與 Commands 連結 Core／Webview；支持將 transport adapter 與實際 service 分開的分析，不代表提供公網 API。</li>
+<li><strong>W2</strong> — <a href="https://www.rfc-editor.org/rfc/rfc8252.html">RFC 8252 §§6–8</a>：Native OAuth 使用外部瀏覽器；public native client 使用 PKCE。若採桌面登入，應用成熟實作。</li>
+<li><strong>W3</strong> — <a href="https://www.rfc-editor.org/rfc/rfc8628.html">RFC 8628 §§3、5</a>：device code／user code、期限、輪詢、猜碼與 remote phishing 風險。可參考其配對互動；自有 ADE 配對流程不因此自動成為標準 OAuth Device Grant。</li>
+<li><strong>W4</strong> — <a href="https://www.rfc-editor.org/rfc/rfc9700.html">RFC 9700 §§2.2、4.14</a>：public-client refresh token 使用 sender constraint 或 rotation；token 權限及 audience 應受限。</li>
+<li><strong>W5</strong> — <a href="https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html">OWASP WebSocket Security Cheat Sheet</a>：WSS、Origin allowlist、逐訊息授權、session 撤銷、流量限制、backpressure、避免記錄完整訊息與 token。</li>
+<li><strong>W6</strong> — <a href="https://developers.cloudflare.com/durable-objects/best-practices/websockets/">Cloudflare Durable Objects WebSockets</a>：可作 WebSocket server；hibernation 需處理記憶體狀態重建；outgoing WebSocket 不會 hibernate。</li>
+</ul>
+<h2 id="section-5">方案比較</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>選項</th>
+<th>適配程度</th>
+<th>主要代價／限制</th>
+<th>建議</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每台 ADE 自建 HTTPS listener，再設定公網 ingress／tunnel</td>
+<td>有固定私人部署時可行</td>
+<td>憑證、路由與權限仍需實作；單靠 tunnel 不會得到帳號綁定、命令授權和 UI 同步</td>
+<td>不作產品預設</td>
+</tr>
+<tr>
+<td>ADE 與網頁都連公開 Relay</td>
+<td>符合公開網址、單 owner、多裝置</td>
+<td>要維運登入、bindings、在線連線及流量；Relay 位於資料信任範圍內</td>
+<td><strong>推薦架構</strong></td>
+</tr>
+<tr>
+<td>WebRTC 直連，加信令與 TURN</td>
+<td>可能降低部分流量繞路</td>
+<td>多出穿透與 fallback 狀態；真實網路直連率未測</td>
+<td>第一版不引入</td>
+</tr>
+<tr>
+<td>網頁直接操作 HERDR helper／socket</td>
+<td>僅覆蓋部分 runtime 能力</td>
+<td>瀏覽器無法直接使用目前本機 IPC；仍缺 ADE owner、workspace 與 Host 路由語意</td>
+<td>不當作 ADE 的公開介面</td>
+</tr>
+</tbody>
+</table></div>
+<h3>Relay 部署選型</h3>
+<p><strong>建議先用一個可長期保持 WSS 連線的服務，收斂第一版生命週期。</strong> 例如單一 VPS 上的 Rust／Tokio Relay；Axum 是待實作 spike 驗證的 HTTP／WS 候選，不是現有依賴或本輪完成的選型。登入交給成熟 OAuth／OIDC 整合；不自行實作密碼與 MFA 系統。</p>
+<p>另一候選是 Cloudflare Worker + 每個 ADE 一個 Durable Object。ADE 和網頁皆連入同一個 object，從 object 視角兩條都是 incoming WebSocket，可採 server-side hibernation。不能改成 object 主動連 ADE 又假設仍可休眠；控制權、binding version 與連線標記也不能只放記憶體。[W6]</p>
+<p>本輪未比較實際費率、帳號方案或測量地區延遲，不宣稱哪個部署成本最低。平台決定應由後續連線 spike 與維運偏好收斂；對外協定保持一致。</p>
+<h2 id="section-6">建議架構與實作階段</h2>
+<h3>1. 連線與控制路徑</h3>
+<pre><code class="language-text">自己的手機／電腦瀏覽器
+  │ HTTPS 登入、裝置清單；WSS 狀態／指令
+  ▼
+公開 Web Control + Auth／Binding + Relay
+  ▲
+  │ ADE 主動建立 WSS 443；同一連線雙向通訊
+  │
+Yuzora ADE：Remote Access coordinator（Rust）
+  ├─ 驗證 owner binding、協定版本、操作範圍、世代、控制權
+  ├─ 共用 HERDR／Host service 方法與事件輸出
+  ├─ 本機 HERDR runtime
+  └─ 後續接既有 SSH／選擇啟用的 WSL Host runtime
+
+桌面 UI ─ typed IPC ─ 同一控制仲裁／service ─ HERDR
+</code></pre>
+<p>ADE 不公開通用 <code>invoke(command, args)</code>、<code>eval</code> 或 <code>host_request</code>。網頁不能指定任意 binary、helper、路徑或 client-supplied connection owner。正式協定使用有限的 typed request union，對應已有受支援的 service 方法。登入授權與 runtime capability 檢查都要通過。[E2–E7,W5]</p>
+<p>Rust coordinator 可以先持有本機 <code>HerdrManager</code>，並以 callback／bounded channel 將 events 送往網路 adapter。既有 Tauri command 中的 <code>State</code>、<code>Channel</code>、<code>AppHandle</code> 是 adapter 邊界，需將必要的共用 service 呼叫抽出；不能假設整份 command 註冊表能原樣掛到 WebSocket。[E1,E4]</p>
+<h3>2. 綁定與登入流程</h3>
+<ol>
+<li>使用者在 ADE 啟用「網頁控制」。ADE 向服務建立有期限的 pending pairing，保留不可公開的 challenge／device secret，顯示公開配對頁與短碼／QR。</li>
+<li>使用者在公開網站登入。網站驗證登入身分後，呈現正在配對的 ADE 名稱與一次性短碼；短碼不能單獨當永久控制憑證。</li>
+<li>ADE 顯示即將綁定的帳號與裝置資訊，使用者在本機確認一次。服務以原子操作寫入 <code>adeDeviceId → ownerAccountId</code>，防止兩個帳號同時搶綁。[W3]</li>
+<li>ADE 取得可撤銷的 device credential，存於 OS credential store 的獨立 namespace。雲端使用內部 account ID／驗證過的 provider subject，不用 email 字串作永久 owner key。[E12]</li>
+<li>後續從自己的瀏覽器登入即可選擇已綁定 ADE；正常操作不再逐項要求配對。解除綁定立即撤銷 browser access／device authorization、關閉連線並遞增 binding version。</li>
+</ol>
+<p>這是產品配對設計，不把自有 pairing endpoint 冒充 OAuth Device Authorization endpoint。若選擇用 native OAuth 登入 ADE，使用外部瀏覽器與 Authorization Code + PKCE；若身份服務已提供正式 Device Grant，再按 RFC 8628 接入。[W2,W3]</p>
+<p>Browser 建議使用同站的 server session，cookie 設 <code>HttpOnly</code>、<code>Secure</code>、適當 <code>SameSite</code>，握手校驗 Origin，配合 CSRF 防護。OAuth provider token 留在服務端；裝置 credential 留在 ADE。登入／解除綁定的撤銷須作用到已建立的 WS，不只阻擋下次登入。[W4,W5]</p>
+<h3>3. 單一使用者的控制權</h3>
+<p><strong>一位 owner 可以有多個 browser session，但每個 terminal target 同一時間只有一個 controller。</strong></p>
+<p>網頁預設 observe，點「接管」才取得可過期的 control lease。Lease 綁定 <code>adeDeviceId + RuntimeKey + terminalId + clientSession + generation</code>；驗證與仲裁由 ADE 執行。只有 controller 可輸入、resize 與呼叫控制型 scroll。[E4,E5]</p>
+<p>桌面目前預設 takeover，因此不能只在 Relay 加鎖：桌面與網頁的 open／takeControl／resync 必須共同檢查本機仲裁狀態。桌面保留明確的「接回控制」入口；瀏覽器分頁重整、桌面切頁或事件重訂閱不可自動來回搶權。HERDR 原生 observer／controller 行為仍是執行基礎，不被自訂 lease 取代。[E5]</p>
+<p>接管成功後原 controller 降為 observer；lease 超時、瀏覽器登出或斷線時釋放其 connector。只釋放連線，不關 terminal tab、不停止 Agent。真正的 <code>tab.close</code>／<code>pane.close</code> 屬另一個明確操作，之後才擴充。[E11,E13]</p>
+<h3>4. 狀態同步與斷線語意</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>狀況</th>
+<th>建議行為</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首次連線／重新登入</td>
+<td>確認 ADE online、binding／protocol／capabilities，再取得當前 snapshot，建立新的 stream。</td>
+</tr>
+<tr>
+<td>Terminal frame 序號有缺口</td>
+<td>依現有 first-full／resync 語意重建 connector；不要繼續套用不完整 ANSI 差量。[E6]</td>
+</tr>
+<tr>
+<td>Agent／Space event 中斷</td>
+<td>重新取得 snapshot 校正，不把事件流當永久完整的資料庫。</td>
+</tr>
+<tr>
+<td>指令已送但回應遺失</td>
+<td>顯示結果未知；terminal input、檔案寫入、Git 等副作用不自動重送。</td>
+</tr>
+<tr>
+<td>Relay／ADE 重啟</td>
+<td>新增 connection generation，舊 request／stream／lease 一律失效，重新查狀態。</td>
+</tr>
+<tr>
+<td>手機切背景或換網路</td>
+<td>逾時釋放控制，回來後刷新 snapshot；需重新接管，不能重播離線鍵盤佇列。</td>
+</tr>
+<tr>
+<td>ADE 休眠、退出或網路不可用</td>
+<td>顯示 offline／last seen；控制 API 明確失敗，不把命令存成待上線執行。</td>
+</tr>
+<tr>
+<td>Browser 持續收不完 terminal 輸出</td>
+<td>每 stream 有界 buffer，超限觸發 resync／斷流；慢 client 不阻塞桌面與其他 session。</td>
+</tr>
+</tbody>
+</table></div>
+<p>每個訊息帶協定版本、request ID、目標 RuntimeKey 與 stream／connection generation；網路身分由已驗證連線導出。副作用 request 的短期去重紀錄由 ADE 持有。<strong>去重不能宣稱跨 crash 的 exactly-once</strong>：不確定結果需由使用者檢查狀態，不自動重試。[E5–E7,W5]</p>
+<p>連線維持不代表命令永遠有權限：每次操作檢查目前 binding、允許範圍與 lease。HTTP／WS 尺寸、速率及待處理操作數需依現有 frame 大小和實測設定，不能照抄通用 64 KB 上限造成真實 terminal frame 無法傳送。[W5]</p>
+<h3>5. 第一版交付範圍</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>階段</th>
+<th>具體成果</th>
+<th>完成的驗收條件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0：傳輸與配對 spike</td>
+<td>真正 ADE 主動連 WSS、網站登入、一次性配對、撤銷</td>
+<td>不開入站埠可連；第二帳號不能讀取／接管已綁定 ADE；錯碼、過期與重複兌換失敗；撤銷可切斷既有連線。</td>
+</tr>
+<tr>
+<td>P1：可用的網頁控制 MVP</td>
+<td>本機 Named Sessions／Spaces／Agent 狀態、既有 terminal observe／接管／輸入／resize、online／offline</td>
+<td>網頁和桌面觀察同一真實 runtime；兩個 browser tab 加桌面不搶權；斷線不重播指令、也不終止 Agent。</td>
+</tr>
+<tr>
+<td>P2：擴充工作面</td>
+<td>既有已連線 SSH／WSL Host；檔案讀取／編輯／衝突；Git read-only 優先</td>
+<td>hostId／generation 不跨主機混用；讀寫限已註冊 workspace；舊 revision 不能覆蓋新內容；兩端事件可校正。</td>
+</tr>
+</tbody>
+</table></div>
+<p>P1 已能在既有 terminal 裡繼續和 agent 互動、執行使用者命令。按 ADR-0004 維持 Terminal 操作，不另加 Agent catalog／<code>agent.start</code> 表單。完整 Git 寫入、Database、SFTP、Browser proxy 與桌面 OS 操作不納入此第一版；它們需要各自的授權和衝突規則。[E13]</p>
+<p>P0／P1 仍須沿用既有三平台原生 runtime 政策。先驗證本機 ADE 是為了收斂入口；不移除既有遠端 Host，也不把目前尚未實測的 SSH／WSL 網頁控制列為完成。</p>
+<h3>6. 預計程式接入位置</h3>
+<p>以下名稱是候選實作位置，尚未建立：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>位置／責任</th>
+<th>必要工作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>新 <code>src-tauri/src/remote_access/</code></td>
+<td>配對／device credential、outbound relay client、allowlisted dispatcher、controller lease、撤銷／shutdown。只新增本輪需要的模組。</td>
+</tr>
+<tr>
+<td><code>src-tauri/src/herdr_service.rs</code> + 現有 <code>HerdrManager</code></td>
+<td>將必要 adapter 與可共用的 service 呼叫接好，保留官方 connector、capability gate、受控生命週期。</td>
+</tr>
+<tr>
+<td><code>src/lib/herdrProvider.ts</code>、terminal transport boundary</td>
+<td>區分 desktop／web transport；把公網身分與 host binary 選擇保留在受信任 ADE 端；桌面 terminal 進入共同控制仲裁。</td>
+</tr>
+<tr>
+<td>新 <code>src/web/</code> 與獨立 Vite entry</td>
+<td>登入、裝置／Space 清單、Agent 狀態、terminal。重用 domain types／合適元件與 shadcn；不將 native updater、dialog、clipboard 假裝成瀏覽器能力。</td>
+</tr>
+<tr>
+<td>雲端 Relay package／service</td>
+<td>OAuth／OIDC session、owner binding、device registry、WS 轉送、rate limit、撤銷事件。部署位置待選，不能假設靜態網站 host 提供這些能力。</td>
+</tr>
+<tr>
+<td><code>src-tauri/src/lib.rs</code> lifecycle + Settings</td>
+<td>Remote Access 啟用／關閉、online 狀態、解除綁定及既有 shutdown 順序整合。</td>
+</tr>
+</tbody>
+</table></div>
+<p>Host 路由目前部分由前端 <code>hosts</code> map／preferences 管理；P2 需由 ADE backend 提供受信任的已註冊 Host 目錄與 binary policy，或明確同步該目錄。不能讓網頁傳回任意 binary／Host connection owner，也不能直接把 desktop localStorage 上傳就當權威。[E2,E7,E8]</p>
+<h3>7. 驗證規劃</h3>
+<p>未實作前不產生「測試已通過」的錯誤印象。後續至少需要以下行為測試：</p>
+<ul>
+<li>配對與授權：同時搶綁、錯帳號 device ID、錯 Origin、過期 session、撤銷後既有 WS、跨 stream ID 操作均被拒絕。</li>
+<li>控制權：桌面＋兩個 browser sessions 的 observe／接管／resize；失去控制後已排隊的輸入被丟棄；桌面 resync 不自動搶回。</li>
+<li>復原：輸入送出後立刻斷線、Relay crash、ADE restart、睡眠／喚醒、失序／重複 frame、慢 client。確認不重送副作用且 Agent 存續。</li>
+<li>Native regression：既有本機 terminal、SSH／WSL generation、workspace trust、App cleanup 保持契約；依實際修改範圍跑 frontend／Rust checks。</li>
+<li>真實操作：手機 IME、貼上、鍵盤遮擋、桌面與手機互切、外網實測。執行 browser／E2E 前需另取得本會話明確同意；本輪只有官方文件 HTTP 讀取與靜態分析，未啟動 browser automation。</li>
+</ul>
+<p>延遲、吞吐、佇列上限與費用尚無量測，P0 應記錄實際網路下的輸入到畫面延遲、重連時間及高輸出記憶體使用，再訂 SLO；不先填入無依據的效能承諾。</p>
+<h2 id="section-7">待確認的邊界</h2>
+<ol>
+<li><strong>公開可登入與可以操作 ADE 是兩件事。</strong> 服務可能有多個帳號，但每個 ADE 只有一個 owner；需要隔離所有 device／stream／request，而非只把分享按鈕藏起來。</li>
+<li><strong>Terminal control 是實際程序權限。</strong> Owner 能輸入 shell 命令；workspace API 的路徑限制並不會把 shell 沙箱化。配對頁與接管動作應清楚表達授予「操作此 ADE」的能力。</li>
+<li><strong>MVP 假設 Relay 是受信任服務。</strong> TLS 分段終止於 Relay，服務技術上可讀取轉送內容；預設不持久化 terminal output／原始指令，審計只留事件種類、裝置、時間與結果。這不等於端到端加密。[W5]</li>
+<li>若要求 Relay 無法讀取內容，需要獨立規劃裝置驗證、金鑰配對／恢復與成熟 E2EE 協定；不能只把 <code>wss://</code> 改名為 E2EE，也不在本輪發明加密協定。</li>
+<li>瀏覽器與桌面 UI 的焦點、localStorage、未儲存編輯內容不是同一份狀態。P1 不承諾遠端鏡像整個桌面；要讓網頁操作桌面目前開啟的檔案／分頁，需要額外的 UI command／event 契約，並保留 unsaved guard。[E8]</li>
+<li>ADE 退出但 HERDR server 仍在，不代表 Web Control 還在線。Headless daemon／背景常駐將改變目前 ownership 與 credential lifecycle，應單獨研究並形成 ADR。[E11,E13]</li>
+<li>登入 provider、公開域名、Relay 部署環境與資料保留政策尚未指定。本文不建立外部服務、不新增 GitHub issue、不部署網址，也不聲稱已有可使用的連線。</li>
+<li><code>Remote Access</code> 是 ADE 遠端控制服務，與 ADR-0004 移除的「靜態 Preview／Dev Server 管理」不同。若將工作區服務對外代理或加入新 Agent 啟動表單，需重新核對 ADR 範圍。</li>
+</ol>
+<h2 id="section-8">重新評估的條件</h2>
+<ul>
+<li>使用需求擴大為多人分享控制、團隊角色或多人同時編輯。</li>
+<li>需要在 ADE 關閉時繼續連線，或雲端服務不得讀取 terminal 內容。</li>
+<li>第一版必須同時覆蓋所有 SSH／WSL Host、Database、Browser 或完整桌面 UI。</li>
+<li>HERDR 的 controller／frame／schema 契約改變，或真實手機驗證發現目前接管／resize 語意不適合。</li>
+<li>P0 發現長連線維運、成本或地區延遲不符合目標，需要重新比較 VPS／Durable Objects／直連方案。</li>
+</ul>
+<h2 id="section-9">研究方法與驗證範圍</h2>
+<ul>
+<li>Date: 2026-09-11, Asia/Taipei.</li>
+<li>Mode: approved-primary-source-fallback + current-worktree architecture analysis.</li>
+<li>Exa: unavailable; <code>doctor</code> 回報 <code>exaApiKey: false</code>。使用者已明確同意改用官方文件核對。</li>
+<li>Retrieval: 本機 knowledge graph → coverage／freshness check → exact source；外部官方文件透過 HTTP 直接讀取。沒有瀏覽器自動化，也沒有呼叫外部搜尋引擎。</li>
+<li>Research questions: 1；外部直接來源 6；本機 evidence groups 13。</li>
+<li>Graph: <code>Users-yuuzu-HanaokaYuuzu-App-Tauri-yuzora</code>，2026-09-11 full index；較舊 <code>yuzora</code> alias 的 metadata 發現過期後改用同工作樹的新索引，引用檔案已核對 freshness。</li>
+<li>Baseline: HEAD <code>7370efd</code>；研究前工作樹已有 458 個 status entries（83 modified、336 deleted、39 untracked）。保留現有修改；未以 commit 代替工作樹事實。</li>
+<li>Synthesis: 本報告由 Codex 根據已讀原始碼與官方來源撰寫；沒有 Exa server-side synthesis。附帶來源不是 Exa 回應，也不捏造為 Exa 調查結果。</li>
+<li>Validation: 核對來源引用、檔案存在、sidecar JSON 與報告結構。deep-research validator 對 fallback 缺少 Exa synthesis 的警告屬工具格式限制；不以其通過替代架構審查或 E2E 驗收。</li>
+<li>Deliverables: 本 Markdown、同目錄 <code>findings.raw.json</code>，及 <code>docs/html/web-control-research-2026-09-11.html</code>。</li>
+<li>Implementation status: research only；未修改產品程式、未進行部署或 Git staging／commit／push。</li>
+</ul>
+</main></div></body></html>

@@ -529,6 +529,35 @@ pub async fn herdr_events_release(
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub async fn herdr_pane_scroll_state(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+    pane_id: String,
+) -> Result<Option<yuzora_host::herdr_scroll::HerdrPaneScrollInfo>, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.pane_scroll_state(session_name.as_deref(), pane_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_pane_scroll_to(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+    pane_id: String,
+    offset_from_bottom: u64,
+) -> Result<Option<yuzora_host::herdr_scroll::HerdrPaneScrollInfo>, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.pane_scroll_to(session_name.as_deref(), pane_id, offset_from_bottom)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -544,6 +573,8 @@ mod tests {
             "herdr_service::herdr_tab_close",
             "herdr_service::herdr_tab_move",
             "herdr_service::herdr_pane_focus",
+            "herdr_service::herdr_pane_scroll_state",
+            "herdr_service::herdr_pane_scroll_to",
             "herdr_service::herdr_pane_rename",
             "herdr_service::herdr_pane_split",
             "herdr_service::herdr_pane_zoom",

@@ -107,20 +107,17 @@ export function verifyStableProductUpdaterConfig(config: UnknownRecord): void {
 
 export function betaReleaseAssetNamesAreSafe(assetNames: Iterable<string>, version: string): boolean {
   const names = [...assetNames]
-  if (names.length !== 3) return false
+  if (names.length !== 8 || new Set(names).size !== names.length) return false
 
   const prefix = `Yuzora_${version}_`
-  const installers = { dmg: 0, setup: 0, msi: 0 }
-  for (const name of names) {
-    if (!name.startsWith(prefix)) return false
-    const suffix = name.slice(prefix.length)
-    if (!suffix) return false
-    if (suffix.endsWith(".dmg")) installers.dmg += 1
-    else if (suffix.endsWith("-setup.exe")) installers.setup += 1
-    else if (suffix.endsWith(".msi")) installers.msi += 1
-    else return false
-  }
-  return installers.dmg === 1 && installers.setup === 1 && installers.msi === 1
+  const setup = names.filter((name) => name.startsWith(prefix) && name.endsWith("-setup.exe"))
+  const msi = names.filter((name) => name.startsWith(prefix) && name.endsWith(".msi"))
+  if (setup.length !== 1 || msi.length !== 1) return false
+  const expected = new Set([
+    `${prefix}aarch64.dmg`, `${prefix}aarch64.app.tar.gz`, `${prefix}aarch64.app.tar.gz.sig`,
+    setup[0], `${setup[0]}.sig`, msi[0], `${msi[0]}.sig`, "latest.json",
+  ])
+  return names.every((name) => expected.has(name))
 }
 
 export function apiLookupIsAuthoritativeNotFound(exitCode: number, output: string): boolean {
@@ -364,7 +361,7 @@ function verifyArtifactBoundary(workflow: Workflow): void {
     "read-only metadata preparation must consume assembled inputs without accessing a private draft"
   )
   assert(
-    stepByName(prepareSteps, "Generate and validate stable updater metadata").run?.includes("prepare-updater-metadata.ts") &&
+    stepByName(prepareSteps, "Generate and validate updater metadata").run?.includes("prepare-updater-metadata.ts") &&
       prepareSteps.some((step) => step.name === "Upload finalized updater metadata for write-only publication"),
     "read-only metadata generation must hand off latest.json through an Actions artifact"
   )
@@ -430,8 +427,8 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
   assert(outputs.is_beta === "${{ steps.release.outputs.is_beta }}", "guard must expose is_beta")
   assert(outputs.release_notes_b64 === "${{ steps.release.outputs.release_notes_b64 }}", "guard must expose release notes for no-checkout assembly")
 
-  const signing = stepByName(guardSteps, "Validate stable updater signing inputs")
-  assert(signing.if === "steps.release.outputs.is_beta != 'true'", "stable signing guard must exclude beta")
+  const signing = stepByName(guardSteps, "Validate updater signing inputs")
+  assert(signing.if === undefined, "updater signing guard must cover both stable and beta")
   const signingEnv = record(signing.env, "stable signing guard env")
   assert(
     signingEnv.TAURI_SIGNING_PRIVATE_KEY === "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" &&
@@ -535,39 +532,42 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
 
   const build = jobFor(workflow, "build")
   const buildSteps = steps(build, "jobs.build")
-  const betaBuild = stepByName(buildSteps, "Build unsigned beta macOS installers")
+  const betaBuild = stepByName(buildSteps, "Build beta macOS installers without Apple signing")
   assert(
     includes(betaBuild.if, "needs.guard.outputs.is_beta == 'true'") &&
       includes(betaBuild.if, "matrix.artifact_name == 'macos'"),
     "beta macOS build must be platform- and channel-gated"
   )
-  assert(
-    !JSON.stringify(betaBuild.env ?? {}).includes("TAURI_SIGNING_PRIVATE_KEY") &&
-      !JSON.stringify(betaBuild.env ?? {}).includes("GITHUB_TOKEN") &&
-      !JSON.stringify(betaBuild.env ?? {}).includes("APPLE_") &&
-      includes(betaBuild.run, "--no-sign") &&
-      includes(betaBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
-      includes(betaBuild.run, '--config "$RELEASE_BUILD_CONFIG"'),
-    "beta macOS build must disable OS and updater signing while using the generated no-updater numeric WiX version override"
-  )
-
-  const betaWindowsBuild = stepByName(buildSteps, "Build unsigned beta Windows installers")
-  assert(
-    includes(betaWindowsBuild.if, "needs.guard.outputs.is_beta == 'true'") &&
-      includes(betaWindowsBuild.if, "matrix.artifact_name == 'windows'") &&
-      !JSON.stringify(betaWindowsBuild.env ?? {}).includes("TAURI_SIGNING_PRIVATE_KEY") &&
-      !JSON.stringify(betaWindowsBuild.env ?? {}).includes("APPLE_") &&
-      includes(betaWindowsBuild.run, "--no-sign") &&
-      includes(betaWindowsBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
-      includes(betaWindowsBuild.run, '--config "$RELEASE_BUILD_CONFIG"'),
-    "beta Windows build must use the no-updater numeric WiX override without updater or Apple secrets"
-  )
+  for (const betaStep of [betaBuild, stepByName(buildSteps, "Build beta Windows installers")]) {
+    const env = record(betaStep.env, "beta build env")
+    assert(
+      includes(betaStep.if, "needs.guard.outputs.is_beta == 'true'") &&
+        includes(betaStep.if, betaStep === betaBuild ? "matrix.artifact_name == 'macos'" : "matrix.artifact_name == 'windows'") &&
+      env.TAURI_SIGNING_PRIVATE_KEY === "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" &&
+        env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" &&
+        !JSON.stringify(env).includes("APPLE_") &&
+        !JSON.stringify(env).includes("GITHUB_TOKEN") &&
+        !includes(betaStep.run, "--no-sign") && !includes(betaStep.run, "--no-updater") &&
+        includes(betaStep.run, 'scripts/release-msi-build-config.ts "$VERSION"') &&
+        includes(betaStep.run, '--config "$RELEASE_BUILD_CONFIG"'),
+      "beta builds must retain updater signing and the generated numeric WiX version override without Apple signing"
+    )
+  }
+  const signing = stepByName(guardSteps, "Validate updater signing inputs")
+  assert(signing.if === undefined, "updater signing guard must cover both stable and beta")
+  const prepare = jobFor(workflow, "prepare-updater-metadata")
+  assert(!includes(prepare.if, "is_beta") && includes(prepare.if, "needs.assemble-draft.result == 'success'"), "beta must prepare updater metadata after assembly")
+  const assemblySteps = steps(jobFor(workflow, "assemble-draft"), "jobs.assemble-draft")
+  for (const name of ["Collect assembled updater inputs", "Upload assembled updater inputs"]) {
+    assert(stepByName(assemblySteps, name).if === undefined, "both channels must provide updater signature inputs")
+  }
 
   const betaPublish = jobFor(workflow, "publish-beta-release")
   assert(
     includes(betaPublish.if, "needs.guard.outputs.is_beta == 'true'") &&
       includes(betaPublish.if, "needs.guard.outputs.should_build == 'true'") &&
       includes(betaPublish.if, "needs.assemble-draft.result == 'success'") &&
+      includes(betaPublish.if, "needs.upload-updater-metadata.result == 'success'") &&
       !includes(betaPublish.if, "skipped") &&
       !includes(betaPublish.if, "should_publish_existing"),
     "beta publish must require a rebuilt and successfully reassembled draft"
@@ -575,10 +575,14 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
   const betaSteps = steps(betaPublish, "jobs.publish-beta-release")
   const verify = stepByName(betaSteps, "Verify beta release assets")
   assert(
-    includes(verify.run, "ASSET_COUNT") &&
-      includes(verify.run, "unexpected beta asset") &&
-      includes(verify.run, "case \"$asset\" in"),
-    "beta publish must use an exact installer-only allowlist"
+    includes(verify.run, "EXPECTED_ASSETS=(") &&
+      includes(verify.run, "unexpected beta release assets; exact allowlist mismatch") &&
+      includes(verify.run, "latest.json") &&
+      includes(verify.run, '"${MAC_ARCHIVE_NAME}.sig"') &&
+      includes(verify.run, '"${WINDOWS_MSI_NAME}.sig"') &&
+      includes(verify.run, "diff -u") &&
+      !includes(verify.run, '"Yuzora-macos-aarch64.dmg"'),
+    "beta publish must use an exact signed-updater allowlist without stable aliases"
   )
   const publish = stepByName(betaSteps, "Publish verified beta prerelease")
   assert(

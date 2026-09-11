@@ -57,7 +57,7 @@ function ScrollArea({
         tabIndex={focusable ? (viewportTabIndex ?? 0) : viewportTabIndex}
         className={cn(
           // size-full: flex-bounded roots. max-*-inherit: Root max-h/max-w becomes a real scrollport bound.
-          "size-full max-h-[inherit] max-w-[inherit] rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1",
+          "isolate size-full max-h-[inherit] max-w-[inherit] rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1",
           viewportClassName,
           viewportPropsClassName
         )}
@@ -85,15 +85,24 @@ function ScrollArea({
 function ScrollBar({
   className,
   orientation = "vertical",
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onMouseDown,
   ...props
 }: React.ComponentProps<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>) {
   return (
     <ScrollAreaPrimitive.ScrollAreaScrollbar
       data-slot="scroll-area-scrollbar"
       data-orientation={orientation}
+      data-tauri-drag-region="false"
+      onPointerDown={(event) => { onPointerDown?.(event); event.stopPropagation() }}
+      onPointerMove={(event) => { onPointerMove?.(event); event.stopPropagation() }}
+      onPointerUp={(event) => { onPointerUp?.(event); event.stopPropagation() }}
+      onMouseDown={(event) => { onMouseDown?.(event); event.preventDefault(); event.stopPropagation() }}
       orientation={orientation}
       className={cn(
-        "flex touch-none p-px transition-colors select-none data-horizontal:h-2.5 data-horizontal:flex-col data-horizontal:border-t data-horizontal:border-t-transparent data-vertical:h-full data-vertical:w-2.5 data-vertical:border-l data-vertical:border-l-transparent",
+        "flex touch-none pointer-events-auto p-px transition-colors select-none data-horizontal:h-3 data-horizontal:flex-col data-horizontal:border-t data-horizontal:border-t-transparent data-vertical:h-full data-vertical:w-3 data-vertical:border-l data-vertical:border-l-transparent",
         className
       )}
       {...props}

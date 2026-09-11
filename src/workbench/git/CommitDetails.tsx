@@ -117,7 +117,7 @@ function FooterButton({
 }
 
 /**
- * §2 L817-866 commit details right column (240px). Header (hash chip + copy,
+ * Commit details right column, sized by the history split. Header (hash chip + copy,
  * subject, author avatar, committed/parents), changed-files list, and the
  * footer action row. Checkout / Cherry-pick go through injected callbacks;
  * Compare stays guarded by loaded details. File-row clicks are surfaced via
@@ -151,7 +151,7 @@ export function CommitDetails({
     const { t } = useTranslation("menus")
     if (!selectedCommit) {
         return (
-            <div className="flex w-[240px] shrink-0 flex-col border-l border-(--line-1) bg-(--paper-1)">
+            <div className="flex h-full min-h-0 min-w-0 flex-col bg-(--paper-1)">
                 <div className="flex flex-1 items-center justify-center px-[16px] text-center text-[12.5px] text-(--ink-3)">
                     {t("commitDetails.selectPrompt")}
                 </div>
@@ -160,7 +160,7 @@ export function CommitDetails({
     }
 
     return (
-        <div className="flex w-[240px] shrink-0 flex-col border-l border-(--line-1) bg-(--paper-1)">
+        <div className="flex h-full min-h-0 min-w-0 flex-col bg-(--paper-1)">
             {/* header */}
             <div className="border-b border-(--line-1) px-[16px] pb-[13px] pt-[14px]">
                 <div className="mb-[10px] flex items-center gap-[8px]">

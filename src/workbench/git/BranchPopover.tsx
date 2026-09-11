@@ -169,6 +169,8 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
     const { t } = useTranslation("git")
     const branches = useGitStore((s) => s.branches)
     const busy = useGitStore((s) => s.busy)
+    const lastError = useGitStore((s) => s.lastError)
+    const retrySnapshot = useGitStore((s) => s.retrySnapshot)
     const snapshotStale = useGitStore((s) => s.snapshotStale)
     const remotePaused = useGitStore((s) => s.remotePaused)
     const runOp = useGitStore((s) => s.runOp)
@@ -588,6 +590,14 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
 
                     {remotePaused && (
                         <InlineNotice>{t("branchPopover.remoteCheckPaused", { ns: "menus" })}</InlineNotice>
+                    )}
+                    {lastError && (
+                        <InlineNotice>
+                            <p role="alert">{lastError}</p>
+                            <Button variant="outline" size="sm" disabled={busy != null} onClick={() => void retrySnapshot()}>
+                                {t("retry", { ns: "gitWorkflow" })}
+                            </Button>
+                        </InlineNotice>
                     )}
                     {mutationsDisabled && (
                         <InlineNotice>{t("branchPopover.browseOnly", { ns: "menus" })}</InlineNotice>

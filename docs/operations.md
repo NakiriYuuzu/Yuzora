@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-11（v0.0.9 含新增 Bot 動畫開關，最終候選另行驗收）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-11（v0.0.10 含工作區、Git Graph、Markdown 與語法高亮改善，候選另行驗收）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -97,7 +97,7 @@ Yuzora 有兩種不同的簽章邊界，不得混為一談。
 
 v0.0.9 發布政策依使用者明確授權：macOS App 僅 Apple Silicon，不使用 Apple Developer ID 簽章、notarization 或 stapling。Release 不取得 Apple credentials、不建立 signing keychain，也不將缺少 Apple secrets 當成發布阻礙。macOS linker 可能保留執行所需的 ad-hoc signature；它不代表 Apple 發行者身分或 Gatekeeper 信任。
 
-Stable 使用一般 `bun tauri build --ci`，保留 Tauri updater signing secrets 與 updater artifacts，且不設定 Apple signing identity。**不可使用 `--no-sign`**：Tauri CLI 2.11.4 會一併略過 updater signatures，導致正式 metadata／publish gate 失敗。Beta 與候選版仍以 `--no-sign` 建置並停用 updater artifacts。
+Stable 與新發布的 Beta 都使用一般 `bun tauri build --ci`，保留 Tauri updater signing secrets 與 updater artifacts，且不設定 Apple signing identity。**發布 build 不可使用 `--no-sign`**：它會一併略過 updater signatures，導致 metadata／publish gate 失敗。僅 PR 候選版以 `--no-sign` 建置並停用 updater artifacts／endpoints。
 
 README 與當版 release notes 必須說明 macOS 未經 Apple 簽章／公證，Gatekeeper 可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「仍要打開」流程操作。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
 
@@ -146,16 +146,18 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 | 類型 | Version／tag | GitHub Release | Latest／OTA |
 | ---- | ----------- | -------------- | ---------- |
 | Stable | `X.Y.Z`／`vX.Y.Z` | `prerelease=false` | 設為 Latest，更新 stable `latest.json` |
-| Beta | `X.Y.Z-beta.N`／`vX.Y.Z-beta.N` | `prerelease=true` | 不得設為 Latest；不提供 Beta OTA endpoint，只供手動下載 |
+| Beta | `X.Y.Z-beta.N`／`vX.Y.Z-beta.N` | `prerelease=true` | 不得設為 Latest；每版提供 signed artifacts 與 `latest.json`，由 App 預覽更新通道探索 |
 
 規則：
 
 - Beta 只接受 `X.Y.Z-beta.N`；不以 `rc`、build metadata 或其他自訂 suffix 表示 Beta。
+- App 穩定更新通道保留 `releases/latest/download/latest.json`；預覽更新通道從 GitHub releases API 讀取非 draft 的 Stable／Beta releases，以 SemVer 選擇較新且具有 `latest.json` 的版本，再由既有 Tauri updater 驗證 signature 與安裝。Beta 到下一個 Beta 或較新 Stable 都可升級；不以 API 回傳順序或字串排序決定版本。
+- 已發布的舊 Beta（含 `v0.0.9-beta.3`）沒有 updater artifacts，且 build 清除了 endpoints；必須手動安裝一次支援更新通道的新版本。不得補寫舊 release／tag／assets，也不得把 PR 候選版當成 OTA 發布版本。
 - Beta 不得更新 stable `latest.json`、`releases/latest` 或產品頁固定下載入口。
-- Beta 只發布供手動下載的 installer，必須停用 updater artifacts，不產生 `latest.json` 或 updater `.sig`，也不存取 updater 或 Apple signing secrets。Beta macOS installer 刻意 unsigned，必須在 release notes 揭露 Gatekeeper 警告、缺少 notarization 與無法驗證發行者身分的風險；不得將 Beta assets 升級為 Stable 或固定下載別名。
-- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9-beta.3`（`0.0.2307`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。PR candidate 與 Beta build 都停用 updater artifacts並清空 updater endpoints；Beta macOS 另以 `--no-sign` 停用 OS signing，Stable build 保留 updater signing、stable endpoint 與 updater artifacts，但不啟用 Apple OS signing／notarization。
+- 新 Beta 同時提供手動 installers 與 updater artifacts／`.sig`／`latest.json`，使用既有 Tauri updater signing secrets；不取得 Apple signing secrets。macOS 仍無 Developer ID／notarization，release notes 須揭露 Gatekeeper 警告。Beta 不上傳 Stable 固定下載別名，不設為 Latest，也不建立可變的 preview tag／metadata pointer。
+- Windows Installer 的 `ProductVersion` 比較只使用三個 numeric fields；所有 channel 透過 `scripts/release-msi-build-config.ts` 產生暫時的 `bundle.windows.wix.version`，不改產品／tag version。第三欄以 `patch * 256 + channel` 編碼：`beta.N` 使用 `N`（1–254），stable 使用 255。例如 legacy `0.0.8` < `0.0.9-beta.1`（`0.0.2305`）< `0.0.9-beta.2`（`0.0.2306`）< `0.0.9-beta.3`（`0.0.2307`）< `0.0.9`（`0.0.2559`）< `0.0.10-beta.1`；helper 會拒絕超出 MSI numeric bounds 的 major、minor、patch 或 beta sequence。僅 PR candidate 停用 updater artifacts 並清空 updater endpoints，使用 `--no-sign`。Stable 與 Beta 發布 build 均保留 updater signing 與 artifacts，但不啟用 Apple OS signing／notarization。
 - PR candidate 是未簽章、未發布的 Actions artifact，用於 merge 前驗證；它不是 Beta Release。
-- `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持 updater signing、metadata、固定下載別名與 `--latest`；Beta 使用獨立 no-updater／no-sign build／publish path，固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
+- `.github/workflows/release.yml` 會由版本分類自動選擇 channel：Stable 維持 updater signing、metadata、固定下載別名與 `--latest`；Beta 使用有 updater signing 的 build／metadata path，獨立 publish job 固定 `prerelease=true` 且不傳入 `--latest`。不得手動改 GitHub Release 旗標繞過此流程。
 
 ### PR 必須包含
 
@@ -218,7 +220,7 @@ Remove-Item Env:GITHUB_REF_NAME
 - 三份 product version 與 tag contract 一致。
 - `CHANGELOG.md` 存在對應版本且內容非空。
 - Stable：Updater signing、macOS 無 Apple 簽章／公證、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
-- Beta：macOS 明確 `--no-sign`、`prerelease=true`、沒有 updater 或 Apple signing secrets、沒有 updater artifacts／`.sig`／`latest.json`／stable aliases，release notes 揭露 unsigned 風險，且 publish command 不含 `--latest`。
+- Beta：`prerelease=true`，有 Tauri updater 簽章與每版 `latest.json`、沒有 Apple signing secrets／Stable aliases，release notes 揭露 Gatekeeper 風險，且 publish command 不含 `--latest`。
 
 另外確認遠端 `v${VERSION}` tag 與同版本 GitHub Release 都不存在。若已存在 Published Release，不能重用 version；若存在 draft，Release guard 會先強制確認其 tag SHA 與成功的 `main` CI SHA 完全一致，否則 fail closed。符合的 same-SHA draft 只視為前次嘗試留下的可修復狀態：workflow 仍會重新建置 macOS／Windows、修復同一 draft 的 notes 與 assets，再重新通過完整發布 gate。
 
@@ -392,7 +394,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 - Stable macOS Apple Silicon：僅 Apple Silicon（M 系列）；無 Apple Developer ID 簽章／公證，產生 `.dmg`、`.app.tar.gz` 與 updater signature。
 - macOS App 主程式以 `lipo -archs` 驗證必須只有 `arm64`。CLI 產出的 `Yuzora.app.tar.gz` 與 `.sig` 在收集發布 artifacts 時成對命名為 `Yuzora_<version>_aarch64.app.tar.gz` 與 `.sig`，供 metadata 以版本和架構精確比對。
 - Stable Windows x64：本機產生 NSIS `setup.exe`、`.msi` 與 MSI updater signature。
-- Beta macOS／Windows：產生供手動下載的 versioned installers，但不產生 updater archive、`latest.json` 或 `.sig`，且 build environment 不含 updater signing secrets 與 contents-write token；macOS 以 `--no-sign` 建置且無 Developer ID／notarization，Windows 仍無 Authenticode。
+- Beta macOS／Windows：產生 versioned installers、Apple Silicon updater archive 與 `.sig`，後續產出 per-release `latest.json`。Build environment 有 Tauri updater signing secrets，沒有 contents-write token 或 Apple credentials；macOS 無 Developer ID／notarization，Windows 無 Authenticode。
 
 `build` job 只執行 `bun tauri build`、驗證 Tauri CLI 的實際 bundle paths，並以 Actions artifacts 上傳結果；它不建立或上傳 GitHub Release。Fresh release 與 same-SHA draft recovery 都必須讓兩平台 build 成功。之後獨立的無 checkout `assemble-draft` write job 下載已驗證的 Actions artifacts，先在任何 GitHub Release mutation 前驗證本地 handoff與Stable alias sources：沒有 Release 時才建立暫態 draft `Yuzora v<version>`；已有 Guard 核准的 draft 時，重新驗證 draft／channel、同步並讀回比對 release notes。接著以 `gh release upload --clobber` 上傳全部 versioned assets；Stable 固定檔名 aliases 也以 `--clobber` 覆寫。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列，也不是略過重建的信任來源。
 
@@ -411,7 +413,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 - 產品頁直接使用的 macOS DMG 與 Windows NSIS EXE，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
 - MSI 若新增其他頁面或 script consumer，也要一併更新並補測試。
 
-固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。Tauri Stable updater 使用具版本號且帶 `.sig` 的 updater artifacts；Beta 不產生 updater artifacts，兩者不可混為一談。
+固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
 
 ### 7.4 Finalize updater metadata
 
@@ -436,13 +438,13 @@ Publish 前 workflow 自動驗證：
 
 Stable 全部成功後執行 `gh release edit --draft=false --prerelease=false --latest`，並再次查證 `publishedAt`。任一條件失敗時 workflow 結束為失敗，Release 保持 draft，不會出現部分成功卻永久等待人工 Publish 的正常路徑。
 
-`publish-beta-release` 使用獨立、無 checkout 的 contents-write job，僅在 macOS／Windows Beta 重建與 draft assembly 都成功時執行。它驗證 release body 與版本化 `.dmg`、`setup.exe`、`.msi`，並拒絕 `latest.json`、任何 `.sig`、所有 stable fixed aliases，以及任何額外 asset；最後只執行 `gh release edit --draft=false --prerelease=true`，絕不傳入 `--latest`。Beta 不執行 stable metadata finalizer，亦不改變 `releases/latest`。
+`publish-beta-release` 使用獨立、無 checkout 的 contents-write job，必須等待 macOS／Windows Beta 重建、draft assembly、metadata 產生與上傳全部成功。它驗證 release body、Apple Silicon／MSI-only metadata，以及精確八項 assets：versioned DMG、NSIS EXE 與 `.sig`、MSI 與 `.sig`、Apple Silicon `.app.tar.gz` 與 `.sig`、`latest.json`。所有 Stable fixed aliases、Intel App、額外或缺少的 assets 都會被拒絕；最後只執行 `gh release edit --draft=false --prerelease=true`，不傳入 `--latest`，不改變 `releases/latest`。
 
 ---
 
 ## 8. 自動發布與發布後 smoke test
 
-Release workflow 的 automated publish gate 是 blocking gate；Stable 的 macOS／Windows build、固定別名、updater signatures、metadata completeness 或 MSI-only contract 任一失敗都不會 Publish。Beta 則要求兩平台 versioned installer 完整且不含 updater／stable assets。正常成功路徑不需要 maintainer 再按一次 Publish。
+Release workflow 的 automated publish gate 是 blocking gate；Stable 的 macOS／Windows build、固定別名、updater signatures、metadata completeness 或 MSI-only contract 任一失敗都不會 Publish。Beta 則要求兩平台 versioned installers、updater signatures／metadata 完整且不含 Stable aliases。正常成功路徑不需要 maintainer 再按一次 Publish。
 
 受影響平台的主要互動式驗收已在 release PR merge 前完成。Release Published 後仍應儘快確認正式 artifacts 與 updater 路徑：
 

@@ -36,5 +36,3 @@
 .rich-markdown-prose ul[data-type="taskList"] > li > label { display:flex; align-items:center; justify-content:center; width:24px; height:26px; flex-shrink:0; cursor:pointer; }
 .rich-markdown-prose input[type="checkbox"] { width:15px; height:15px; accent-color:var(--yz-accent); }
 .rich-markdown-prose hr { border:0; border-top:1px solid var(--line-2); margin:24px 0; }
-.rich-markdown-reading-note { margin:0; padding:8px 14px; border-bottom:1px solid var(--line-1); color:var(--ink-2); font:400 12px/18px var(--font-sans); }
-.rich-markdown-message { margin:auto; padding:24px; font-size:13px; color:var(--ink-2); }

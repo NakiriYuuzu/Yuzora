@@ -59,10 +59,54 @@ describe("release workflow contracts", () => {
     )
   })
 
-  it("keeps beta release isolated from stable updater assets and secrets", () => {
+  it("keeps beta signed while preserving stable release isolation", () => {
     expect(verify("scripts/verify-beta-release-contract.ts")).toContain(
       "Beta prerelease contract verified"
     )
+  })
+
+  it("executes the beta publish verification against signed fixtures without network or publishing", () => {
+    const verifyAssets = releaseWorkflow().jobs["publish-beta-release"].steps.find((step) => step.name === "Verify beta release assets")!.run!
+    const version = "0.0.10-beta.2"
+    const tag = `v${version}`
+    const prefix = `Yuzora_${version}_`
+    const archive = `${prefix}aarch64.app.tar.gz`
+    const msi = `${prefix}x64_en-US.msi`
+    const assets = [`${prefix}aarch64.dmg`, `${prefix}x64-setup.exe`, `${prefix}x64-setup.exe.sig`, archive, `${archive}.sig`, msi, `${msi}.sig`, "latest.json"]
+    const metadata = { version, notes: "Beta notes", platforms: {
+      "darwin-aarch64": { url: `https://github.com/NakiriYuuzu/Yuzora/releases/download/${tag}/${archive}`, signature: "mac-signature" },
+      "windows-x86_64": { url: `https://github.com/NakiriYuuzu/Yuzora/releases/download/${tag}/${msi}`, signature: "msi-signature" },
+    } }
+    // Replace gh completely. Every unexpected command fails; this fixture can
+    // neither reach the network nor edit/upload/publish a release.
+    const stub = `gh() {
+      case "$1 $2" in
+        "release view") printf '%s' "$RELEASE_FIXTURE" ;;
+        "release download")
+          local destination=""
+          while [ "$#" -gt 0 ]; do
+            if [ "$1" = "--dir" ]; then shift; destination="$1"; fi
+            shift
+          done
+          [ -n "$destination" ] || return 97
+          printf '%s' "$METADATA_FIXTURE" > "$destination/latest.json"
+          ;;
+        *) return 97 ;;
+      esac
+    }`
+    const run = (names: string[], value = metadata) => spawnSync("bash", ["-c", `${stub}\n${verifyAssets}`], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, TAG_NAME: tag,
+        RELEASE_FIXTURE: JSON.stringify({ isDraft: true, isPrerelease: true, body: "Beta notes", assets: names.map((name) => ({ name })) }),
+        METADATA_FIXTURE: JSON.stringify(value) },
+    })
+    const valid = run(assets)
+    expect(valid.status, valid.stderr).toBe(0)
+    for (const invalid of [assets.filter((name) => name !== `${msi}.sig`), [...assets, "Yuzora-windows-x64.msi"], assets.map((name) => name.replace("aarch64.dmg", "universal.dmg"))]) {
+      expect(run(invalid).status).not.toBe(0)
+    }
+    expect(run(assets, { ...metadata, version: "0.0.10-beta.1" }).status).not.toBe(0)
+    expect(run(assets, { ...metadata, platforms: { ...metadata.platforms, "windows-x86_64": { ...metadata.platforms["windows-x86_64"], signature: "" } } }).status).not.toBe(0)
   })
 
   it.each(["stable", "candidate"])("rejects an Intel or universal macOS App in the %s matrix", (lane) => {
@@ -348,10 +392,10 @@ describe("release workflow contracts", () => {
 
     const beta = run(
       "verifyBetaReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Build unsigned beta macOS installers").run = "bun tauri build --ci --no-sign"; verifyBetaReleaseContract(release, ci);`
+      `release.jobs.build.steps.find((step) => step.name === "Build beta macOS installers without Apple signing").run = "bun tauri build --ci --no-sign"; verifyBetaReleaseContract(release, ci);`
     )
     expect(beta.status).not.toBe(0)
-    expect(beta.stderr).toContain("generated no-updater numeric WiX version override")
+    expect(beta.stderr).toContain("generated numeric WiX version override")
 
     const candidate = run(
       "verifyBetaReleaseContract",
@@ -445,10 +489,10 @@ describe("release workflow contracts", () => {
 
     const signedBeta = run(
       "verifyBetaReleaseContract",
-      `release.jobs.build.steps.find((step) => step.name === "Build unsigned beta macOS installers").run = release.jobs.build.steps.find((step) => step.name === "Build unsigned beta macOS installers").run.replace(" --no-sign", ""); verifyBetaReleaseContract(release, ci);`
+      `release.jobs.build.steps.find((step) => step.name === "Build beta macOS installers without Apple signing").run += " --no-sign"; verifyBetaReleaseContract(release, ci);`
     )
     expect(signedBeta.status).not.toBe(0)
-    expect(signedBeta.stderr).toContain("must disable OS and updater signing")
+    expect(signedBeta.stderr).toContain("must retain updater signing")
 
     const noUpdaterSigning = run(
       "verifyStableReleaseContract",
@@ -489,15 +533,21 @@ describe("release workflow contracts", () => {
     expect(writeJobRunsScript.stderr).toContain("repository scripts or build hooks")
   })
 
-  it("accepts exactly one correct-version installer for each supported platform", () => {
+  it("accepts signed beta updater assets while rejecting unsigned, wrong-version and stable aliases", () => {
     const installers = [
-      "Yuzora_0.0.9-beta.1_universal.dmg",
+      "Yuzora_0.0.9-beta.1_aarch64.dmg",
       "Yuzora_0.0.9-beta.1_x64-setup.exe",
+      "Yuzora_0.0.9-beta.1_x64-setup.exe.sig",
       "Yuzora_0.0.9-beta.1_x64_en-US.msi",
+      "Yuzora_0.0.9-beta.1_x64_en-US.msi.sig",
+      "Yuzora_0.0.9-beta.1_aarch64.app.tar.gz",
+      "Yuzora_0.0.9-beta.1_aarch64.app.tar.gz.sig",
+      "latest.json",
     ]
     expect(betaReleaseAssetNamesAreSafe(installers, "0.0.9-beta.1")).toBe(true)
 
     for (const unsafe of [
+      installers.filter((name) => !name.endsWith(".sig")),
       [...installers, "latest.json"],
       [...installers, "Yuzora_0.0.9-beta.1_universal.dmg"],
       [

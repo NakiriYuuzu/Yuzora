@@ -7930,7 +7930,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -7950,11 +7950,13 @@ dependencies = [
  "objc2-foundation",
  "objc2-web-kit",
  "rand",
+ "reqwest",
  "rusqlite",
  "russh",
  "russh-sftp",
  "rustls 0.23.43",
  "secrecy",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7984,7 +7986,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-host"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "base64 0.23.1",
  "chrono",

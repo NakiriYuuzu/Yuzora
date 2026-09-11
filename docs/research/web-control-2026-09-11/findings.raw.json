@@ -1,0 +1,173 @@
+{
+  "metadata": {
+    "researchMode": "approved-primary-source-fallback",
+    "provider": "direct-primary-source-http",
+    "exaAvailable": false,
+    "userApprovedFallback": true,
+    "queryCount": 1,
+    "additionalQueries": [],
+    "additionalQueriesApplied": "none",
+    "synthesis": false,
+    "reportSynthesis": "Codex analysis; not a provider response",
+    "uniqueSourceCount": 6,
+    "localEvidenceGroups": 13,
+    "head": "7370efd",
+    "sourceIsDirtyWorkingTree": true,
+    "localSources": [
+      {
+        "path": "src/lib/ipc.ts",
+        "sha256": "3a0ab23d67a18000a3f265164d9ec8cc5958af3f24316d64880ad5b29e02f7ce",
+        "bytes": 20430
+      },
+      {
+        "path": "src/lib/herdrProvider.ts",
+        "sha256": "184294325a5a34019851d6b68d9b1b6f42a87e12afb1d8323e5c3f67572c590f",
+        "bytes": 11169
+      },
+      {
+        "path": "src/lib/herdrIpc.ts",
+        "sha256": "95594bcd721cbd506c07496a0deae0dacade219c8931129605474cee4eb792a1",
+        "bytes": 9865
+      },
+      {
+        "path": "src-tauri/src/herdr_service.rs",
+        "sha256": "ad57dd03b7e3af9792091926a8de699d6f0f893b327dea2626b0780cb25b14e5",
+        "bytes": 17918
+      },
+      {
+        "path": "src-tauri/host/src/herdr_service.rs",
+        "sha256": "c5d60dc77dc1effa87075371afe1766fd9f9c5c93a8b7ae1552ecab1d3e8326c",
+        "bytes": 281002
+      },
+      {
+        "path": "src/terminal/terminalTransport.ts",
+        "sha256": "f8ee8d6d91f906fa1add516dcf1ea5c749c9722ca66572e2c8045310c3283407",
+        "bytes": 11870
+      },
+      {
+        "path": "src/lib/runtimeIdentity.ts",
+        "sha256": "671de433f0ad0018bdaf553eb7538b7394c1ac822802d267002560bfc0955b48",
+        "bytes": 2389
+      },
+      {
+        "path": "src-tauri/src/host_service.rs",
+        "sha256": "0c7b4aabdad35a4ca6a7e7d5f715b724293651c241b7983d9fe875c699f9cef0",
+        "bytes": 23847
+      },
+      {
+        "path": "src/state/workspaceSession.ts",
+        "sha256": "7e7bf985d81b2b5d2da0f9b6970366aa63075a948cd8832a36d711ee21b18d2c",
+        "bytes": 8542
+      },
+      {
+        "path": "src/workbench/HerdrBridge.tsx",
+        "sha256": "1878d837d32fa3f7fc2f9ea11ad1f263b4b77a9dbbc76528e4a73aa5c1feb5bd",
+        "bytes": 12806
+      },
+      {
+        "path": "src/demo/README.md",
+        "sha256": "5148967e7ac285896b68c4c23efad975524330d458785b0abd1606f3c6afbd21",
+        "bytes": 1865
+      },
+      {
+        "path": "src-tauri/src/host_tunnels.rs",
+        "sha256": "827c04918aeb49827c1a389ab1a6414039ed5890ba2a267845dc2fa2226ee997",
+        "bytes": 12208
+      },
+      {
+        "path": "src-tauri/src/lib.rs",
+        "sha256": "364f9313befd836a62edd240fd026cef5fb18c232a4a0c0abe7ebd56e855fed4",
+        "bytes": 28891
+      },
+      {
+        "path": "src-tauri/host/src/workspace_trust.rs",
+        "sha256": "1920beb6c591c0804015da6ae08272ad62c53041e5dc7c61d670b179ad23d169",
+        "bytes": 38688
+      },
+      {
+        "path": "src-tauri/src/db_credentials.rs",
+        "sha256": "28017fde3a6bde203cc2ec1d2afad59c4c3bd1eb6be6b5a80c2d22def657eb9c",
+        "bytes": 23350
+      },
+      {
+        "path": ".yuuzu/CONTEXT.html",
+        "sha256": "99b851076efbacc3dadefd2557a3dd48e69d7f8c85a13afe96ce15b7a0a7fd0b",
+        "bytes": 6296
+      },
+      {
+        "path": ".yuuzu/adr/0004-herdr-terminals-browser-only.html",
+        "sha256": "442e4ab1ca4699288cd40f08fc5923f7f2fa4da488f50efd72510c88ef0232fe",
+        "bytes": 2955
+      },
+      {
+        "path": ".yuuzu/adr/0005-native-windows-opt-in-wsl.html",
+        "sha256": "8491eef64185fc35218ff083960c516cdac1f459770d13e6769e90cae4000479",
+        "bytes": 2622
+      }
+    ],
+    "validation": {
+      "sourceLinks": 20,
+      "htmlSections": 9,
+      "brokenArtifactLinks": 0,
+      "browserAutomation": false
+    }
+  },
+  "raw": {
+    "results": [
+      {
+        "id": "rfc8252",
+        "url": "https://www.rfc-editor.org/rfc/rfc8252.txt",
+        "title": "RFC 8252 OAuth 2.0 for Native Apps",
+        "retrievedAt": "2026-09-11T05:20:52.938Z",
+        "retrieval": "direct HTTP; not Exa",
+        "text": "pecific to a particular platform. To conform to this best practice, native apps MUST use an external user-agent to perform OAuth authorization requests. This is achieved by opening the authorization request in the browser (detailed in Section 6) and using a redirect URI that will return the authorization response back to the native app (defined in Section 7). Denniss & Bradley Best Current Practice [Page 6] RFC 8252 OAuth 2.0 for Native Apps October 2017 6. Initiating the Authorization Request from a Native App Native apps needing user authorization create an authorization request URI with the authorization code grant type per Section 4.1 of OAuth 2.0 [RFC6749], using a redirect URI capable of being received by the native app. The function of the redirect URI for a native app authorization request is similar \n\nRI that allows the app to receive the URI and inspect its parameters is viable. Public native app clients MUST implement the Proof Key for Code Exchange (PKCE [RFC7636]) extension to OAuth, and authorization servers MUST support PKCE for such clients, for the reasons detailed in Section 8.1. After constructing the authorization request URI, the app uses platform-specific APIs to open the URI in an external user-agent. Typically, the external user-agent used is the default browser, that is, the application configured for handling \"http\" and \"https\" scheme URIs on the system; however, different browser selection criteria and other categories of external user-agents MAY be used. This best practice focuses on the browser as the RECOMMENDED external user-agent for native apps. An external user-agent designed speci",
+        "retrievedTextSha256": "4233c0650ec7e7918c20e0fde2dc565f85e2aa2d4c18123e3cd834295c2f68d0"
+      },
+      {
+        "id": "rfc8628",
+        "url": "https://www.rfc-editor.org/rfc/rfc8628.txt",
+        "title": "RFC 8628 OAuth 2.0 Device Authorization Grant",
+        "retrievedAt": "2026-09-11T05:20:52.942Z",
+        "retrieval": "direct HTTP; not Exa",
+        "text": "uth.Parameters] established by [RFC6755]. URN: urn:ietf:params:oauth:grant-type:device_code Common Name: Device Authorization Grant Type for OAuth 2.0 Change Controller: IESG Specification Document: Section 3.4 of RFC 8628 Denniss, et al. Standards Track [Page 17] RFC 8628 OAuth 2.0 Device Grant August 2019 7.3. OAuth Extensions Error Registration This specification registers the following values in the IANA \"OAuth Extensions Error Registry\" registry [IANA.OAuth.Parameters] established by [RFC6749]. Name: authorization_pending Usage Location: Token endpoint response Protocol Extension: RFC 8628 Change Controller: IETF Reference: Section 3.5 of RFC 8628 Name: access_denied Usage Location: Token endpoint response Protocol Extension: RFC 8628 Change Controller: IETF Reference: Section 3.5 of RFC 8628 Name: slow_\n\n\"verification_uri_complete\": \"https://example.com/device?user_code=WDJB-MJHT\", \"expires_in\": 1800, \"interval\": 5 } Denniss, et al. Standards Track [Page 7] RFC 8628 OAuth 2.0 Device Grant August 2019 In the event of an error (such as an invalidly configured client), the authorization server responds in the same way as the token endpoint specified in Section 5.2 of [RFC6749]. 3.3. User Interaction After receiving a successful authorization response, the client displays or otherwise communicates the \"user_code\" and the \"verification_uri\" to the end user and instructs them to visit the URI in a user agent on a secondary device (for example, in a browser on their mobile phone) and enter the user code. +-----------------------------------------------+ | | | Using a browser on another device, visit: | | https://exa\n\nce is counting on the manufacturer and its business partners to be trustworthy. 5.4. Remote Phishing It is possible for the device flow to be initiated on a device in an attacker's possession. For example, an attacker might send an email instructing the target user to visit the verification URL and enter the user code. To mitigate such an attack, it is RECOMMENDED to inform the user that they are authorizing a device during the user- interaction step (see Section 3.3) and to confirm that the device is in their possession. The authorization server SHOULD display information about the device so that the user could notice if a software client was attempting to impersonate a hardware device. For authorization servers that support the \"verification_uri_complete\" optimization discussed in Section 3.3.1, it is parti\n\n length does not impact usability. Therefore, it is recommended that the server rate-limit user code attempts. Denniss, et al. Standards Track [Page 12] RFC 8628 OAuth 2.0 Device Grant August 2019 The user code SHOULD have enough entropy that, when combined with rate-limiting and other mitigations, a brute-force attack becomes infeasible. For example, it's generally held that 128-bit symmetric keys for encryption are seen as good enough today because an attacker has to put in 2^96 work to have a 2^-32 chance of guessing correctly via brute force. The rate-limiting and finite lifetime on the user code place an artificial limit on the amount of work an attacker can \"do\". If, for instance, one uses an 8-character base 20 user code (with roughly 34.5 bits of entropy), the rate-limiting interval and validity perio",
+        "retrievedTextSha256": "ebd3c37415aa665b55b412fccd9571943e8dbd3f2bf0b18fee4924264252decd"
+      },
+      {
+        "id": "rfc9700",
+        "url": "https://www.rfc-editor.org/rfc/rfc9700.txt",
+        "title": "RFC 9700 Best Current Practice for OAuth 2.0 Security",
+        "retrievedAt": "2026-09-11T05:20:52.943Z",
+        "retrieval": "direct HTTP; not Exa",
+        "text": "1), to prevent misuse of stolen and leaked access tokens. 2.2.2. Refresh Tokens Refresh tokens for public clients MUST be sender-constrained or use refresh token rotation as described in Section 4.14. [RFC6749] already mandates that refresh tokens for confidential clients can only be used by the client for which they were issued. 2.3. Access Token Privilege Restriction The privileges associated with an access token SHOULD be restricted to the minimum required for the particular application or use case. This prevents clients from exceeding the privileges authorized by the resource owner. It also prevents users from exceeding their privileges authorized by the respective security policy. Privilege restrictions also help to reduce the impact of access token leakage. In particular, access tokens SHOULD be audienc\n\nken to a certain client instance, e.g., by utilizing [RFC8705] or [RFC9449]. * *Refresh token rotation:* the authorization server issues a new refresh token with every access token refresh response. The previous refresh token is invalidated, but information about the relationship is retained by the authorization server. If a refresh token is compromised and subsequently used by both the attacker and the legitimate client, one of them will present an invalidated refresh token, which will inform the authorization server of the breach. The authorization server cannot determine which party submitted the invalid refresh token, but it will revoke the active refresh token. This stops the attack at the cost of forcing the legitimate client to obtain a fresh authorization grant. Implementation note: The grant to which",
+        "retrievedTextSha256": "49e663f7e01416619ee49aee0b0c1b6ae9c80f92b9e4d1e65c6aa0a44c8fa4c0"
+      },
+      {
+        "id": "owasp-websocket",
+        "url": "https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html",
+        "title": "OWASP WebSocket Security Cheat Sheet",
+        "retrievedAt": "2026-09-11T05:20:52.944Z",
+        "retrieval": "direct HTTP; not Exa",
+        "text": " Origin Header Validation &para; Validate the Origin header on every handshake. Always use an explicit allowlist of trusted origins. Browsers include this header and malicious JavaScript cannot override it. const wss = new WebSocket . Server ({ verifyClient : ( info ) =&gt; { const allowedOrigins = [ 'https://app.example.com' ]; if ( ! allowedOrigins . includes ( info . origin )) { console . log ( `Rejected unauthorized origin: ${ info . origin } ` ); return false ; } return true ; } }); Important: Use an allowlist, not a denylist. Avoid wildcards or substring matching which are error-prone. Additional CSWSH Protections &para; For applications already using CSRF protection, include CSRF tokens in WebSocket handshakes. Session Management &para; WebSocket connections often outlive normal sessions, requiring spe\n\nebSocket connections often outlive normal sessions, requiring special handling. Use SameSite cookies ( SameSite=Lax or Strict ) to prevent cross-site cookie transmission and strengthen CSWSH defenses. Handle session expiration by implementing server-side validation for long-running connections. Close WebSocket connections when sessions expire. Re-validate user sessions periodically (every 30 minutes is common) to ensure they remain valid. // Example: Close WebSocket on session expiry function validateSession ( ws , sessionId ) { if ( ! isSessionValid ( sessionId )) { ws . close ( 1008 , 'Session expired' ); return false ; } return true ; } When users log out , close all their WebSocket connections immediately. Maintain a mapping of sessions to active connections so you can invalidate WebSocket access the mome\n\no prevent hijacked sessions from persisting. Message-Level Authorization &para; Don't assume WebSocket connection equals unlimited access. Check authorization for each action: ws . on ( 'message' , ( data ) =&gt; { const message = JSON . parse ( data ); // Check authorization for each action if ( message . action === 'delete_user' && ! user . hasRole ( 'admin' )) { ws . send ( JSON . stringify ({ type : 'error' , message : 'Access denied' })); return ; } handleAuthorizedMessage ( ws , user , message ); }); Input Validation &para; Treat all WebSocket messages as untrusted input. WebSocket messages can carry injection payloads such as SQLi, XSS, and command injection. Validate message structure and content using JSON schemas and allow-lists. Set reasonable size limits (typically 64KB or less) and implement rate\n\ntbeat monitoring with ping/pong frames to detect and clean up dead connections. Implement backpressure controls to prevent memory exhaustion from fast message producers. Many WebSocket implementations lack proper flow control, allowing attackers to overwhelm server memory by sending messages faster than they can be processed. const wss = new WebSocket . Server ({ maxPayload : 64 * 1024 }); Security Monitoring and Logging &para; Traditional HTTP access logs only capture the initial WebSocket upgrade request, not subsequent message traffic. You'll miss auth failures, injection attempts, rate-limit violations, and abuse. Log WebSocket events including connection establishment and termination (with user identity, IP, and origin), authentication and authorization events during handshake and message processing, sec\n\nd message validation failures, and abnormal disconnections and protocol errors. Avoid logging sensitive data - never log complete message contents, authentication tokens, session IDs, or personal information that could violate privacy regulations. See the Logging Cheat Sheet for more details. Testing WebSocket Security &para; Key security tests: Origin validation : Connect from unauthorized domains Authentication bypass : Attempt connections without proper credentials Message injection : Send XSS, SQL injection, and command injection payloads DoS resistance : Test connection limits, message flooding, and oversized messages Session management : Test session expiration and logout handling Testing tools: Browser developer tools for manual testing wscat for command-line WebSocket connections Custom scripts for au",
+        "retrievedTextSha256": "4f72247257720e2eceb2a5366426b252152012fcff3ab81d5080bf79173b2734"
+      },
+      {
+        "id": "cloudflare-websocket",
+        "url": "https://developers.cloudflare.com/durable-objects/best-practices/websockets/",
+        "title": "Cloudflare Durable Objects WebSockets",
+        "retrievedAt": "2026-09-11T05:20:52.945Z",
+        "retrieval": "direct HTTP; not Exa",
+        "text": "or messages) for a short period, it is evicted from memory. During hibernation: WebSocket clients remain connected to the Cloudflare network In-memory state is reset When an event arrives, the Durable Object is re-initialized and its constructor runs To restore state after hibernation, use serializeAttachment and deserializeAttachment to persist data with each WebSocket connection. Refer to Lifecycle of a Durable Object for more information. Hibernation example To use WebSockets with Durable Objects: Proxy the request from the Worker to the Durable Object Call DurableObjectState::acceptWebSocket to accept the server side connection Define handler methods on the Durable Object class for relevant events If an event occurs for a hibernated Durable Object, the runtime re-initializes it by calling the constructor.\n\nHibernation is only supported when a Durable Object acts as a WebSocket server. Outgoing WebSockets do not hibernate. However, an active outbound WebSocket connection keeps the Durable Object alive and prevents eviction for up to 15 minutes per connection. Refer to Lifecycle of a Durable Object for more information. Events such as alarms , incoming requests, and scheduled callbacks prevent hibernation. This includes setTimeout and setInterval usage. Read more about when a Durable Object incurs duration charges . Extended methods The following methods are available on the Hibernation WebSocket API. Use them to persist and restore state before and after hibernation. WebSocket.serializeAttachment serializeAttachment(value any ) : void Keeps a copy of value associated with the WebSocket connection. Key behaviors:\n\n Keeps a copy of value associated with the WebSocket connection. Key behaviors: Serialized attachments persist through hibernation as long as the WebSocket remains healthy If either side closes the connection, attachments are lost Modifications to value after calling this method are not retained unless you call it again The value can be any type supported by the structured clone algorithm ↗ Maximum serialized size is 16,384 bytes For larger values or data that must persist beyond WebSocket lifetime, use the Storage API and store the corresponding key as an attachment. WebSocket.deserializeAttachment deserializeAttachment() : any Retrieves the most recent value passed to serializeAttachment() , or null if none exists. Attachment example Use serializeAttachment and deserializeAttachment to persist per-connectio",
+        "retrievedTextSha256": "fae43619aa3d08472c6364cceac2fe53f22a5f313c629990f9c28a116f407ef1"
+      },
+      {
+        "id": "tauri-ipc",
+        "url": "https://v2.tauri.app/concept/inter-process-communication/",
+        "title": "Tauri Inter-Process Communication",
+        "retrievedAt": "2026-09-11T05:20:52.946Z",
+        "retrieval": "direct HTTP; not Exa",
+        "text": "nlike Commands , Events can be emitted by both the Frontend and the Tauri Core. Events sent between the Core and the Webview. Under the hood, events still utilize Commands, and the access to the events API is controlled by the Event permissions . Commands Section titled “Commands” Tauri also provides a foreign function interface -like abstraction on top of IPC messages 1 . The primary API, invoke , is similar to the browser’s fetch API and allows the Frontend to invoke Rust functions, pass arguments, and receive data. Because this mechanism uses a JSON-RPC like protocol under the hood to serialize requests and responses, all arguments and return data must be serializable to JSON. IPC messages involved in a command invocation. Footnotes Section titled “Footnotes” Because Commands still use message passing unde\n\nvides a foreign function interface -like abstraction on top of IPC messages 1 . The primary API, invoke , is similar to the browser’s fetch API and allows the Frontend to invoke Rust functions, pass arguments, and receive data. Because this mechanism uses a JSON-RPC like protocol under the hood to serialize requests and responses, all arguments and return data must be serializable to JSON. IPC messages involved in a command invocation. Footnotes Section titled “Footnotes” Because Commands still use message passing under the hood, they do not share the same security pitfalls as real FFI interfaces do. ↩ Edit page Last updated: Aug 20, 2026 Previous App Size Next Brownfield Pattern Support on Open Collective Sponsor on GitHub &copy; 2026 Tauri Contributors. CC-BY / MIT ",
+        "retrievedTextSha256": "885b7137ca0c4cda4973a2ae8af8c33046c5510b831433c3648dba6407370edd"
+      }
+    ]
+  }
+}

@@ -103,9 +103,17 @@
     "tagline": "Yuuzu 命令中心"
   },
   "files": {
+    "selectWorkspaceHint": "請從側邊欄選擇 Space，或使用側邊欄的 + 按鈕開啟工作區。",
+    "actions": "檔案操作",
     "emptyTitle": "尚無檔案",
     "emptyDescription": "開啟專案以瀏覽其中的檔案",
-    "openWorkspace": "開啟工作區"
+    "openWorkspace": "開啟工作區",
+    "searching": "正在尋找檔案…",
+    "searchCount": "{{count}} 個檔案",
+    "searchEmpty": "沒有符合條件的檔案",
+    "searchResults": "符合條件的檔案",
+    "searchFailed": "無法搜尋此工作區。請檢查連線或資料夾權限後重新整理。",
+    "searchIncomplete": "部分資料夾無法搜尋或已達搜尋上限。搜尋不包含 Git 中繼資料。"
   },
   "fileDrop": {
     "openAction": "開啟拖入的檔案"
@@ -357,6 +365,10 @@
       "herdr": {
         "label": "Herdr",
         "sub": "Runtime 二進位與 ADE 自動化"
+      },
+      "keyboard": {
+        "label": "快捷鍵",
+        "sub": "App 指令與按鍵設定"
       }
     },
     "dialogTitle": "設定",
@@ -367,7 +379,7 @@
     "currentVersion": "目前版本",
     "currentVersionSub": "此裝置目前正在執行的版本",
     "updates": "更新",
-    "updatesSub": "檢查 stable release channel 是否有較新的版本",
+    "updatesSub": "檢查所選更新頻道是否有較新的版本",
     "checkForUpdates": "檢查更新",
     "checkingForUpdates": "正在檢查更新…",
     "upToDate": "目前已是最新版本",

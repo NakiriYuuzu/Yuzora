@@ -89,6 +89,121 @@ describe("gitStore", () => {
         clearGitSnapshots()
     })
 
+    it("fetch releases the mutation gate after a current snapshot even when watcher refreshes keep arriving", async () => {
+        const { useGitStore, gitMutationsBlocked } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        const releases: Array<(status: GitStatus) => void> = []
+        vi.mocked(ipc.gitStatus).mockImplementation(() => new Promise((resolve) => releases.push(resolve)))
+        const operation = useGitStore.getState().runOp("fetch", async () => {})
+        await vi.advanceTimersByTimeAsync(300)
+        expect(gitMutationsBlocked()).toBe(true)
+        void useGitStore.getState().refresh() // watcher queued while the full snapshot is sampled
+        releases[0](makeStatus())
+        await vi.advanceTimersByTimeAsync(300)
+        expect(releases).toHaveLength(2)
+        expect(useGitStore.getState().busy).toBeNull()
+        expect(gitMutationsBlocked()).toBe(false)
+        releases[1](makeStatus())
+        expect(await operation).toBe(true)
+        vi.mocked(ipc.gitStatus).mockImplementation(async () => makeStatus())
+    })
+
+    it("keeps a post-fetch snapshot failure visible and gated until a successful retry", async () => {
+        const { useGitStore, gitMutationsBlocked } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        await useGitStore.getState().detect("/w")
+        vi.mocked(ipc.gitBranches).mockRejectedValueOnce(new Error("branches timed out"))
+        const operation = useGitStore.getState().runOp("fetch", async () => {})
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await operation).toBe(true) // fetch succeeded; do not repeat the mutation
+        expect(useGitStore.getState().busy).toBeNull()
+        expect(useGitStore.getState().lastError).toContain("branches timed out")
+        expect(gitMutationsBlocked()).toBe(true)
+        await useGitStore.getState().retrySnapshot()
+        expect(gitMutationsBlocked()).toBe(false)
+        expect(useGitStore.getState().lastError).toBeNull()
+    })
+
+    it("does not leave fetch browse-only after a watcher branch retry already recovered the current snapshot", async () => {
+        const { useGitStore, gitMutationsBlocked } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        await useGitStore.getState().detect("/w")
+        vi.mocked(ipc.gitBranches).mockRejectedValueOnce(new Error("Git registry temporarily busy"))
+        const operation = useGitStore.getState().runOp("fetch", async () => {})
+        await vi.advanceTimersByTimeAsync(0)
+        expect(useGitStore.getState().lastError).toContain("temporarily busy")
+        // A state-change watcher retries and accepts a fresh branch list while
+        // the post-fetch status request is still inside its debounce window.
+        await useGitStore.getState().loadBranches()
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await operation).toBe(true)
+        expect(gitMutationsBlocked()).toBe(false)
+        expect(useGitStore.getState().lastError).toBeNull()
+    })
+
+    it("publishes the post-fetch branch snapshot while a newer watcher read is pending", async () => {
+        const { useGitStore, gitMutationsBlocked } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        await useGitStore.getState().detect("/w")
+        type Branches = Awaited<ReturnType<typeof ipc.gitBranches>>
+        let releaseFirst!: (branches: Branches) => void
+        let releaseWatcher!: (branches: Branches) => void
+        vi.mocked(ipc.gitBranches)
+            .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve }))
+            .mockImplementationOnce(() => new Promise((resolve) => { releaseWatcher = resolve }))
+        const operation = useGitStore.getState().runOp("fetch", async () => {})
+        await vi.advanceTimersByTimeAsync(0)
+        const watcher = useGitStore.getState().loadBranches()
+        const branches: Branches = { local: [], remote: ["origin/fresh-fetch"], tags: [] }
+        releaseFirst(branches)
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await operation).toBe(true)
+        expect(useGitStore.getState().branches).toEqual(branches)
+        expect(gitMutationsBlocked()).toBe(false)
+        const newer: Branches = { local: [], remote: ["origin/newer-watcher"], tags: [] }
+        releaseWatcher(newer)
+        await watcher
+        expect(useGitStore.getState().branches).toEqual(newer)
+    })
+
+    it("does not erase a failed post-fetch status read when the branch read succeeds later", async () => {
+        const { useGitStore, gitMutationsBlocked } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        await useGitStore.getState().detect("/w")
+        let releaseBranches!: (branches: Awaited<ReturnType<typeof ipc.gitBranches>>) => void
+        vi.mocked(ipc.gitBranches).mockImplementationOnce(() => new Promise((resolve) => { releaseBranches = resolve }))
+        vi.mocked(ipc.gitStatus).mockRejectedValueOnce(new Error("status timed out"))
+        const operation = useGitStore.getState().runOp("fetch", async () => {})
+        await vi.advanceTimersByTimeAsync(400)
+        expect(useGitStore.getState().lastError).toContain("status timed out")
+        releaseBranches({ local: [], remote: [], tags: [] })
+        expect(await operation).toBe(true)
+        expect(useGitStore.getState().lastError).toContain("status timed out")
+        expect(gitMutationsBlocked()).toBe(true)
+    })
+
+    it("preserves a failed fetch error when watcher branch and status reads succeed", async () => {
+        const { useGitStore } = await import("./gitStore")
+        await useGitStore.getState().detect("/w")
+        expect(await useGitStore.getState().runOp("fetch", async () => {
+            throw new Error("authentication failed")
+        })).toBe(false)
+        expect(useGitStore.getState().lastError).toContain("authentication failed")
+        await useGitStore.getState().loadBranches()
+        expect(useGitStore.getState().lastError).toContain("authentication failed")
+        const refresh = useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(400)
+        await refresh
+        expect(useGitStore.getState().lastError).toContain("authentication failed")
+        await useGitStore.getState().refreshQuiet()
+        expect(useGitStore.getState().lastError).toContain("authentication failed")
+        const retry = useGitStore.getState().runOp("fetch", async () => {})
+        await vi.advanceTimersByTimeAsync(400)
+        expect(await retry).toBe(true)
+        expect(useGitStore.getState().lastError).toBeNull()
+    })
+
     it("refresh debounces multiple calls into one gitStatus", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
@@ -297,6 +412,7 @@ describe("gitStore", () => {
         expect(useGitStore.getState().status).toBe(null)
         expect(useGitStore.getState().branches).toBe(null)
         expect(useGitStore.getState().lastError).toContain("timed out")
+        expect(useGitStore.getState().snapshotStale).toBe(true)
     })
 
     // #57 覆核修正：ready→ready 切換的 stale-resolve 丟棄要比對 root——只看
@@ -706,6 +822,13 @@ describe("gitStore", () => {
             expect(useGitStore.getState().status?.branch).toBe("a-branch")
             expect(useGitStore.getState().snapshotStale).toBe(true)
             expect(useGitStore.getState().lastError).toContain("bootstrap boom")
+            await useGitStore.getState().refresh()
+            expect(useGitStore.getState().lastError).toContain("bootstrap boom")
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/a"))
+            await useGitStore.getState().retrySnapshot()
+            expect(ipc.gitBootstrap).toHaveBeenLastCalledWith("/a")
+            expect(useGitStore.getState().snapshotStale).toBe(false)
+            expect(useGitStore.getState().lastError).toBeNull()
         })
 
         it("keeps the snapshot in sync with later refresh/loadBranches, so re-hydrate shows the newest data", async () => {

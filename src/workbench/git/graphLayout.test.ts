@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { computeGraphLayout, MAX_LANES } from "./graphLayout"
+import { computeGraphLayout } from "./graphLayout"
 import type { GraphInputCommit, GraphSegment } from "./graphLayout"
 
 // Helper: commit list in git-log order (newest first).
@@ -11,6 +11,22 @@ const sortSegs = (segs: GraphSegment[]): GraphSegment[] =>
     [...segs].sort((a, b) => a.fromLane - b.fromLane || a.toLane - b.toLane)
 
 describe("computeGraphLayout", () => {
+    it("connects a merge to a parent already carried by another active lane", () => {
+        const { rows } = computeGraphLayout([
+            c("other-tip", ["P"]), c("merge", ["Q", "P"]), c("Q", ["base"]), c("P", ["base"]), c("base")
+        ])
+        expect(rows[1].segments).toContainEqual({ fromLane: 1, toLane: 0, colorIdx: 0, phase: "outgoing" })
+        expect(rows[1].segments).toContainEqual({ fromLane: 0, toLane: 0, colorIdx: 0, phase: "through" })
+        expect(rows[1].segments.filter((segment) => segment.phase === "outgoing").map((segment) => segment.toLane)).toEqual([1, 0])
+    })
+
+    it("terminates disconnected roots at their node while unrelated lanes pass through", () => {
+        const { rows } = computeGraphLayout([c("tip", ["base"]), c("isolated"), c("base")])
+        expect(rows[0].segments.every((segment) => segment.phase === "outgoing")).toBe(true)
+        expect(rows[1].lane).toBe(1)
+        expect(rows[1].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0, phase: "through" }])
+        expect(rows[2].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0, phase: "incoming" }])
+    })
     it("1. linear history → all lane 0, straight segments", () => {
         const { rows, laneCount } = computeGraphLayout([
             c("D", ["C"]),
@@ -24,12 +40,12 @@ describe("computeGraphLayout", () => {
             expect(r.colorIdx).toBe(0)
             expect(r.isMerge).toBe(false)
         }
-        // Each non-root row carries one straight (from==to) line down. The root
-        // still receives the line arriving from above (its own node terminus).
-        expect(rows[0].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0 }]) // D→C
-        expect(rows[1].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0 }]) // C→B
-        expect(rows[2].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0 }]) // B→A
-        expect(rows[3].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0 }]) // into A
+        expect(rows[0].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0, phase: "outgoing" }])
+        for (const row of rows.slice(1, 3)) expect(row.segments).toEqual([
+            { fromLane: 0, toLane: 0, colorIdx: 0, phase: "incoming" },
+            { fromLane: 0, toLane: 0, colorIdx: 0, phase: "outgoing" }
+        ])
+        expect(rows[3].segments).toEqual([{ fromLane: 0, toLane: 0, colorIdx: 0, phase: "incoming" }])
     })
 
     it("2. single branch + merge → two lanes, branch-out and merge-in segments", () => {
@@ -48,15 +64,16 @@ describe("computeGraphLayout", () => {
         expect(byHash.M.lane).toBe(0)
         expect(byHash.M.isMerge).toBe(true)
         expect(sortSegs(byHash.M.segments)).toEqual([
-            { fromLane: 0, toLane: 0, colorIdx: 0 },
-            { fromLane: 0, toLane: 1, colorIdx: 1 }
+            { fromLane: 0, toLane: 0, colorIdx: 0, phase: "outgoing" },
+            { fromLane: 0, toLane: 1, colorIdx: 1, phase: "outgoing" }
         ])
 
         // B on lane 0 continues to A; lane 1 (C branch) passes straight through.
         expect(byHash.B.lane).toBe(0)
         expect(sortSegs(byHash.B.segments)).toEqual([
-            { fromLane: 0, toLane: 0, colorIdx: 0 },
-            { fromLane: 1, toLane: 1, colorIdx: 1 }
+            { fromLane: 0, toLane: 0, colorIdx: 0, phase: "incoming" },
+            { fromLane: 0, toLane: 0, colorIdx: 0, phase: "outgoing" },
+            { fromLane: 1, toLane: 1, colorIdx: 1, phase: "through" }
         ])
 
         // C on lane 1 also targets A. Both lanes now wait for A, so they run
@@ -64,15 +81,16 @@ describe("computeGraphLayout", () => {
         // not here (standard lane behaviour — the merge-in curve lands on A).
         expect(byHash.C.lane).toBe(1)
         expect(sortSegs(byHash.C.segments)).toEqual([
-            { fromLane: 0, toLane: 0, colorIdx: 0 },
-            { fromLane: 1, toLane: 1, colorIdx: 1 }
+            { fromLane: 0, toLane: 0, colorIdx: 0, phase: "through" },
+            { fromLane: 1, toLane: 1, colorIdx: 1, phase: "incoming" },
+            { fromLane: 1, toLane: 1, colorIdx: 1, phase: "outgoing" }
         ])
 
         // A is the root: both lanes converge onto its node lane 0 (merge-in).
         expect(byHash.A.lane).toBe(0)
         expect(sortSegs(byHash.A.segments)).toEqual([
-            { fromLane: 0, toLane: 0, colorIdx: 0 },
-            { fromLane: 1, toLane: 0, colorIdx: 1 }
+            { fromLane: 0, toLane: 0, colorIdx: 0, phase: "incoming" },
+            { fromLane: 1, toLane: 0, colorIdx: 1, phase: "incoming" }
         ])
     })
 
@@ -93,14 +111,14 @@ describe("computeGraphLayout", () => {
 
         // Y row: X's lane 0 passes straight through toward A, Y opens lane 1.
         expect(sortSegs(byHash.Y.segments)).toEqual([
-            { fromLane: 0, toLane: 0, colorIdx: byHash.X.colorIdx },
-            { fromLane: 1, toLane: 1, colorIdx: byHash.Y.colorIdx }
+            { fromLane: 0, toLane: 0, colorIdx: byHash.X.colorIdx, phase: "through" },
+            { fromLane: 1, toLane: 1, colorIdx: byHash.Y.colorIdx, phase: "outgoing" }
         ])
         // A converges both lanes onto lane 0.
         expect(byHash.A.lane).toBe(0)
         expect(sortSegs(byHash.A.segments)).toEqual([
-            { fromLane: 0, toLane: 0, colorIdx: byHash.X.colorIdx },
-            { fromLane: 1, toLane: 0, colorIdx: byHash.Y.colorIdx }
+            { fromLane: 0, toLane: 0, colorIdx: byHash.X.colorIdx, phase: "incoming" },
+            { fromLane: 1, toLane: 0, colorIdx: byHash.Y.colorIdx, phase: "incoming" }
         ])
     })
 
@@ -149,39 +167,57 @@ describe("computeGraphLayout", () => {
         expect(b.lane).toBeGreaterThanOrEqual(0)
     })
 
-    it("caps lane width at MAX_LANES without crashing", () => {
-        // Many independent tips would each open a lane; OUTPUT indices clamp to
-        // the last lane instead of growing unbounded (tracking is unbounded).
-        const many: GraphInputCommit[] = []
-        for (let i = 0; i < MAX_LANES + 5; i++) many.push(c(`tip${i}`, [`base${i}`]))
-        const { rows, laneCount } = computeGraphLayout(many, MAX_LANES)
-        expect(laneCount).toBeLessThanOrEqual(MAX_LANES)
-        for (const r of rows) expect(r.lane).toBeLessThan(MAX_LANES)
+    it.each([16, 32])("keeps all %i parallel branch lanes distinct through their parent rows", (count) => {
+        const commits = [
+            ...Array.from({ length: count }, (_, i) => c(`tip${i}`, [`parent${i}`])),
+            ...Array.from({ length: count }, (_, i) => c(`parent${i}`))
+        ]
+        const { rows, laneCount } = computeGraphLayout(commits)
+        expect(laneCount).toBe(count)
+        for (let i = 0; i < count; i++) {
+            expect(rows[i].lane).toBe(i)
+            expect(rows[count + i].lane).toBe(i)
+            expect(rows[count + i].colorIdx).toBe(rows[i].colorIdx)
+            expect(rows[count + i].segments).toContainEqual({ fromLane: i, toLane: i, colorIdx: rows[i].colorIdx, phase: "incoming" })
+        }
+        expect(rows[count - 1].segments.map((segment) => segment.toLane)).toEqual(Array.from({ length: count }, (_, i) => i))
     })
 
-    it("keeps overflow-lane topology: 13+ concurrent tips do not corrupt tracked lanes", () => {
-        // Regression: the old cap OVERWROTE the last slot's waiting parent when
-        // tip 13 arrived, so that branch's line died mid-graph and its parent
-        // re-materialised as a false new tip (fresh colour, disconnected). With
-        // --all feeding the graph this shape is everyday, not pathological.
-        // Tracking is now unbounded; every parent must keep its tip's colour.
-        const n = MAX_LANES + 3
-        const many: GraphInputCommit[] = []
-        for (let i = 0; i < n; i++) many.push(c(`t${i}`, [`p${i}`]))
-        for (let i = 0; i < n; i++) many.push(c(`p${i}`, []))
-        const { rows, laneCount } = computeGraphLayout(many, MAX_LANES)
-        const byHash = new Map(rows.map((r) => [r.hash, r]))
-        for (let i = 0; i < n; i++) {
-            expect(byHash.get(`p${i}`)!.colorIdx).toBe(byHash.get(`t${i}`)!.colorIdx)
-        }
-        // Output stays clamped even though tracking exceeded the cap.
-        expect(laneCount).toBeLessThanOrEqual(MAX_LANES)
-        for (const r of rows) {
-            expect(r.lane).toBeLessThan(MAX_LANES)
-            for (const s of r.segments) {
-                expect(s.fromLane).toBeLessThan(MAX_LANES)
-                expect(s.toLane).toBeLessThan(MAX_LANES)
-            }
-        }
+    it("fans out a 32-parent octopus merge and converges every branch at its shared base", () => {
+        const parents = Array.from({ length: 32 }, (_, i) => `parent${i}`)
+        const { rows, laneCount } = computeGraphLayout([
+            c("merge", parents), ...parents.map((hash) => c(hash, ["base"])), c("base")
+        ])
+        expect(laneCount).toBe(32)
+        expect(rows[0].isMerge).toBe(true)
+        expect(rows[0].segments).toEqual(parents.map((_, i) => ({ fromLane: 0, toLane: i, colorIdx: i, phase: "outgoing" })))
+        expect(rows.at(-1)!.segments).toEqual(parents.map((_, i) => ({ fromLane: i, toLane: 0, colorIdx: i, phase: "incoming" })))
+    })
+
+    it("keeps crossing branch joins distinct and recycles the converged lane", () => {
+        const { rows, laneCount } = computeGraphLayout([
+            c("tip-left", ["left"]), c("tip-right", ["right"]),
+            c("cross-left", ["right"]), c("cross-right", ["left"]),
+            c("left", ["base"]), c("new-tip", ["base"]), c("right", ["base"]), c("base")
+        ])
+        const byHash = new Map(rows.map((row) => [row.hash, row]))
+        expect(laneCount).toBe(4)
+        expect(byHash.get("left")!.segments).toContainEqual({ fromLane: 3, toLane: 0, colorIdx: 3, phase: "incoming" })
+        expect(byHash.get("new-tip")!.lane).toBe(3)
+        expect(byHash.get("right")!.segments).toContainEqual({ fromLane: 2, toLane: 1, colorIdx: 2, phase: "incoming" })
+        expect(byHash.get("base")!.segments.map(({ fromLane, toLane }) => ({ fromLane, toLane }))).toEqual([
+            { fromLane: 0, toLane: 0 }, { fromLane: 1, toLane: 0 }, { fromLane: 3, toLane: 0 }
+        ])
+    })
+
+    it("preserves every existing row when older history pages are appended", () => {
+        const tips = Array.from({ length: 32 }, (_, i) => c(`tip${i}`, [`parent${i}`]))
+        const older = Array.from({ length: 32 }, (_, i) => c(`parent${i}`, ["base"]))
+        const firstPage = computeGraphLayout(tips)
+        const nextPage = computeGraphLayout([...tips, ...older, c("base"), c("unrelated")])
+        expect(firstPage.laneCount).toBe(32)
+        expect(nextPage.rows.slice(0, tips.length)).toEqual(firstPage.rows)
+        expect(nextPage.rows.at(-1)!.lane).toBe(0)
+        expect(nextPage.laneCount).toBe(32)
     })
 })

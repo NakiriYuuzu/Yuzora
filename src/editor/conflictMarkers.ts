@@ -1,4 +1,4 @@
-import { RangeSetBuilder, StateField, type Extension, type Text } from "@codemirror/state"
+import { RangeSetBuilder, StateField, type Extension, type Text, type Transaction } from "@codemirror/state"
 import {
     Decoration,
     type DecorationSet,
@@ -179,14 +179,40 @@ function buildDecorations(doc: Text): DecorationSet {
     return builder.finish()
 }
 
-// A StateField (required for the block-level action widget) holding the current
-// decoration set; recomputed whenever the document changes.
+// Check both sides: removing a malformed nested marker can also make an outer
+// conflict valid. Ordinary edits only inspect their touched lines, without
+// flattening the document's persistent text tree.
+function changesConflictMarker(tr: Transaction): boolean {
+    const hasMarker = (doc: Text, from: number, to: number) => {
+        const first = doc.lineAt(from).number
+        const last = doc.lineAt(to).number
+        // Bulk pastes/deletes are uncommon. A full re-scan is cheaper than
+        // looking up every touched line in a large persistent text tree.
+        if (last - first > 1000) return true
+        for (let number = first; number <= last; number++) {
+            const line = doc.line(number)
+            const prefix = doc.sliceString(line.from, Math.min(line.to, line.from + 7))
+            if (/^(<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|)$/.test(prefix)) return true
+        }
+        return false
+    }
+    let found = false
+    tr.changes.iterChangedRanges((fromA, toA, from, to) => {
+        if (found) return
+        found = hasMarker(tr.startState.doc, fromA, toA) || hasMarker(tr.newDoc, from, to)
+    })
+    return found
+}
+
+// A StateField is required for the block-level action widget. Existing conflict
+// edits are fully re-evaluated so ranges and resolution actions remain exact.
 const conflictField = StateField.define<DecorationSet>({
     create(state) {
         return buildDecorations(state.doc)
     },
     update(deco, tr) {
-        return tr.docChanged ? buildDecorations(tr.newDoc) : deco
+        if (!tr.docChanged || (deco.size === 0 && !changesConflictMarker(tr))) return deco
+        return buildDecorations(tr.newDoc)
     },
     provide: (f) => EditorView.decorations.from(f)
 })

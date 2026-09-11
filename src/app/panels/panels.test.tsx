@@ -92,8 +92,9 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
     })
     render(<AppShell />)
     fireEvent.click(screen.getByRole("button", {name:"Expand right workspace tools"}))
-    fireEvent.mouseDown(screen.getByRole("tab", {name:"Git"}), {button:0,ctrlKey:false})
-    fireEvent.click(screen.getByRole("button", {name:"History and branch graph"}))
+    fireEvent.mouseDown(screen.getByRole("tab", {name:"GIT"}), { button: 0, ctrlKey: false })
+    // GIT enters the history graph directly; the old nested graph action was removed.
+    expect(useUiStore.getState().gitPanelTab).toBe("log")
 
     const nav = document.getElementById("workbench-tools")!
     expect(within(nav).getByText("Working tree clean")).toBeInTheDocument()

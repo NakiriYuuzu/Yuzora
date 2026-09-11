@@ -103,9 +103,17 @@
     "tagline": "Yuuzu command center"
   },
   "files": {
+    "selectWorkspaceHint": "Select a Space in the sidebar, or use its + button to open a workspace.",
+    "actions": "File actions",
     "emptyTitle": "No files yet",
     "emptyDescription": "Open a project to browse its files",
-    "openWorkspace": "Open workspace"
+    "openWorkspace": "Open workspace",
+    "searching": "Finding files…",
+    "searchCount": "{{count}} files",
+    "searchEmpty": "No matching files",
+    "searchResults": "Matching files",
+    "searchFailed": "Could not search this workspace. Check the connection or folder access, then refresh.",
+    "searchIncomplete": "Some folders could not be searched or the search limit was reached. Git metadata is excluded."
   },
   "fileDrop": {
     "openAction": "Open dropped file"
@@ -357,6 +365,10 @@
       "herdr": {
         "label": "Herdr",
         "sub": "Runtime binary and ADE automation"
+      },
+      "keyboard": {
+        "label": "Keyboard",
+        "sub": "App command bindings"
       }
     },
     "dialogTitle": "Settings",
@@ -367,7 +379,7 @@
     "currentVersion": "Current version",
     "currentVersionSub": "The version currently running on this device",
     "updates": "Updates",
-    "updatesSub": "Check the stable release channel for a newer version",
+    "updatesSub": "Check the selected update channel for a newer version",
     "checkForUpdates": "Check for updates",
     "checkingForUpdates": "Checking for updates…",
     "upToDate": "You're up to date",

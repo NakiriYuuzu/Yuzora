@@ -57,6 +57,21 @@ afterEach(() => {
 })
 
 describe("EditorPane", () => {
+    it.each(["md", "ts", "json", "log"])("keeps a large %s document editable and saveable by its document surface", async (extension) => {
+        const path = `/w/large.${extension}`
+        useWorkspaceStore.setState({ workspacePath: "/w", groups: [{ activePath: path, tabs: [{ path, name: `large.${extension}`, dirty: false, externallyModified: false }] }], activeGroupIndex: 0 })
+        getDocument.mockResolvedValue({ result: { kind: "limited", content: "first\nlast\n", size: 12 * 1024 * 1024, lineEnding: "lf" } })
+        const onReady = vi.fn()
+        render(<EditorPane path={path} groupIndex={0} onReady={onReady} />)
+        await waitFor(() => expect(onReady).toHaveBeenCalled())
+        expect(onReady.mock.calls[0][2]).toBe(true)
+        const view = onReady.mock.calls[0][0] as EditorView
+        act(() => view.dispatch({ changes: { from: 0, insert: "edited\n" } }))
+        expect(view.state.doc.toString()).toBe("edited\nfirst\nlast\n")
+        await act(async () => { onReady.mock.calls[0][1](); await Promise.resolve() })
+        expect(saveFile).toHaveBeenCalledOnce()
+    })
+
     it("hydrates the editable tab line ending without marking it dirty", async () => {
         useWorkspaceStore.setState({
             workspacePath: "/w",

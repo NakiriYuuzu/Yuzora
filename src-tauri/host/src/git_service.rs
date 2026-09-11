@@ -894,7 +894,36 @@ pub fn rollback_paths(
 }
 
 pub fn commit(root: &Path, message: &str) -> Result<(), String> {
-    run_ok(root, &["commit", "-m", message], DEFAULT_TIMEOUT, &[])?;
+    commit_with_options(root, message, None)
+}
+
+pub fn commit_with_options(
+    root: &Path,
+    message: &str,
+    amend_head: Option<&str>,
+) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("Commit message must not be empty".into());
+    }
+    if let Some(expected) = amend_head {
+        let latest = status_of(root, None)?;
+        if latest.parsed.head_oid != expected || expected == "(initial)" {
+            return Err("HEAD changed. Reload the last commit before amending.".into());
+        }
+        if latest.in_progress.is_some() || !latest.parsed.conflicted.is_empty() {
+            return Err("Finish the current Git operation before amending.".into());
+        }
+        // No --all: amend consumes only the existing index, including the
+        // message-only case with no staged changes. Never push rewritten history.
+        run_ok(
+            root,
+            &["commit", "--amend", "-m", message],
+            DEFAULT_TIMEOUT,
+            &[],
+        )?;
+    } else {
+        run_ok(root, &["commit", "-m", message], DEFAULT_TIMEOUT, &[])?;
+    }
     Ok(())
 }
 

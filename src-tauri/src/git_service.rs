@@ -409,9 +409,10 @@ pub async fn git_commit_cmd(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     message: String,
+    amend_head: Option<String>,
 ) -> Result<(), String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        commit(root, &message)
+        commit_with_options(root, &message, amend_head.as_deref())
     })
     .await
 }

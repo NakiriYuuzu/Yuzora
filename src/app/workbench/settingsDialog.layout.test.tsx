@@ -86,6 +86,10 @@ describe("Settings dialog layout at constrained height", () => {
     ) as HTMLElement
     expect(content.style.width).toBe("640px")
     expect(content.style.height).toBe("440px")
+    // Settings uses a flush padding:0 layout; its scrollbars must remain
+    // inside the shared reserved frame instead of under the resize grips.
+    expect(content.style.paddingRight).toBe("1rem")
+    expect(content.style.paddingBottom).toBe("1rem")
 
     const sidebarScroll = screen.getByTestId("settings-sidebar-scroll")
     expect(sidebarScroll).toHaveAttribute("data-slot", "scroll-area")

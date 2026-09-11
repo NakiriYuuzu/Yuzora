@@ -24,5 +24,14 @@
   "sidebar": "Sidebar navigation",
   "searchShort": "Search",
   "workspace": "Workspace",
-  "windowDragHint": "Drag to move · Double-click to maximize or restore"
+  "windowDragHint": "Drag to move · Double-click to maximize or restore",
+  "newFile": "New file",
+  "newFolder": "New folder",
+  "refresh": "Refresh files",
+  "moreTools": "More workspace tools",
+  "findFiles": "Find files",
+  "copyWorkspacePath": "Copy full folder path",
+  "revealFinder": "Open in Finder",
+  "revealExplorer": "Open in Explorer",
+  "revealFileManager": "Open in file manager"
 }

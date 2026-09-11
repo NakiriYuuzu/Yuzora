@@ -59,6 +59,16 @@ describe("DiffModal — closed", () => {
 })
 
 describe("DiffModal — text source", () => {
+    it("reserves a frame rail so dialog resize handles cannot cover the native diff scrollbars", async () => {
+        render(<DiffModal />)
+        act(() => useDiffModalStore.getState().openText("a.ts", full("old\n"), full("new\n")))
+        const dialog = screen.getByRole("dialog")
+        expect(dialog.style.paddingRight).toBe("1rem")
+        expect(dialog.style.paddingBottom).toBe("1rem")
+        expect(dialog.querySelector('[data-slot="dialog-resize-handle"][data-axis="both"]')).not.toBeNull()
+        await waitFor(() => expect(dialog.querySelector(".cm-editor")).not.toBeNull())
+    })
+
     it("renders the provided blobs in split mode without git IPC", async () => {
         const { container } = render(<DiffModal />)
 

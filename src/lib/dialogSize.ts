@@ -7,6 +7,13 @@
 export const DIALOG_SIZE_STORAGE_KEY = "yuzora.dialog-sizes.v1"
 export const DEFAULT_DIALOG_SIZE_RATIO = 0.8
 export const DIALOG_EDGE_MARGIN_PX = 16
+// DialogResizeHandles lives inside the clipped frame. Reserve its size-4
+// corner along both edges so flush content/scrollbars cannot share its hit
+// targets. Resizable surfaces apply this after caller-provided padding.
+export const DIALOG_RESIZE_RAIL_STYLE = {
+  paddingRight: "1rem",
+  paddingBottom: "1rem",
+} as const
 export const KEYBOARD_RESIZE_STEP_PX = 8
 export const KEYBOARD_RESIZE_LARGE_STEP_PX = 32
 

@@ -82,6 +82,17 @@ pub enum HerdrCommand {
         tab_id: String,
         insert_index: u32,
     },
+    #[serde(rename = "herdr_pane_scroll_state")]
+    PaneScrollState {
+        session_name: Option<String>,
+        pane_id: String,
+    },
+    #[serde(rename = "herdr_pane_scroll_to")]
+    PaneScrollTo {
+        session_name: Option<String>,
+        pane_id: String,
+        offset_from_bottom: u64,
+    },
     #[serde(rename = "herdr_pane_focus")]
     PaneFocus {
         session_name: Option<String>,
@@ -262,6 +273,21 @@ impl HerdrCommand {
                 session_name.as_deref(),
                 tab_id,
                 insert_index,
+            )?)
+            .map_err(|e| e.to_string()),
+            Self::PaneScrollState {
+                session_name,
+                pane_id,
+            } => serde_json::to_value(manager.pane_scroll_state(session_name.as_deref(), pane_id)?)
+                .map_err(|e| e.to_string()),
+            Self::PaneScrollTo {
+                session_name,
+                pane_id,
+                offset_from_bottom,
+            } => serde_json::to_value(manager.pane_scroll_to(
+                session_name.as_deref(),
+                pane_id,
+                offset_from_bottom,
             )?)
             .map_err(|e| e.to_string()),
             Self::PaneFocus {

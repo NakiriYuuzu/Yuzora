@@ -39,6 +39,7 @@ vi.mock("@/lib/ipc", () => ({
     gitUnstage: vi.fn(async () => undefined),
     gitDiscard: vi.fn(async () => undefined),
     gitCommit: vi.fn(async () => undefined),
+    gitCommitDetail: vi.fn(async () => ({ subject: "last subject", body: "last body", authorName: "A", authorEmail: "a@example.test", timestamp: 0, parents: [], files: [], totalAdditions: 0, totalDeletions: 0 })),
     gitStatus: vi.fn(async () => makeStatus()),
     gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     // BranchPopover pulls these in through the shared trigger.
@@ -92,6 +93,119 @@ describe("GitNavContent — ready state (E1)", () => {
         vi.mocked(ipc.gitStatus).mockImplementation(async () => makeStatus())
         vi.mocked(ipc.gitStage).mockImplementation(async () => undefined)
         vi.clearAllMocks()
+    })
+
+    it("filters filenames and relative paths case-insensitively without discarding hidden selection", () => {
+        setReady({ unstaged: [
+            { path: "src/Visible.ts", status: "M", origPath: null },
+            { path: "docs/hidden.md", status: "M", origPath: null }
+        ] })
+        const { rerender } = render(<GitNavContent />)
+        fireEvent.click(screen.getByText("hidden.md"))
+        const selection = useUiStore.getState().gitChangeSelection
+        rerender(<GitNavContent filterQuery="  SRC/vis  " />)
+        expect(screen.getByText("Visible.ts")).toBeInTheDocument()
+        expect(screen.queryByText("hidden.md")).not.toBeInTheDocument()
+        expect(useUiStore.getState().gitChangeSelection).toEqual(selection)
+        rerender(<GitNavContent filterQuery="" />)
+        expect(screen.getByText("hidden.md")).toBeInTheDocument()
+    })
+
+    it("matches renamed source paths and limits section stage-all to filtered rows", async () => {
+        setReady({ unstaged: [
+            { path: "src/renamed.ts", status: "R", origPath: "src/previous.ts" },
+            { path: "src/hidden.ts", status: "M", origPath: null }
+        ] })
+        render(<GitNavContent filterQuery="previous" />)
+        expect(screen.getByText("renamed.ts")).toBeInTheDocument()
+        expect(screen.queryByText("hidden.ts")).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole("button", { name: /^Stage all$/ }))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["src/renamed.ts"]))
+    })
+
+    it("select-all during a filter selects only matching files", () => {
+        setReady({ unstaged: [
+            { path: "src/visible.ts", status: "M", origPath: null },
+            { path: "src/hidden.ts", status: "M", origPath: null }
+        ] })
+        render(<GitNavContent filterQuery="visible" />)
+        fireEvent.keyDown(screen.getByText("visible.ts"), { key: "a", ctrlKey: true })
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual(["src/visible.ts"])
+    })
+
+    it("scopes bulk actions and context menus to matching selection after changing the query", async () => {
+        setReady({ unstaged: [
+            { path: "visible.ts", status: "M", origPath: null },
+            { path: "hidden.ts", status: "M", origPath: null }
+        ] })
+        const { rerender } = render(<GitNavContent />)
+        fireEvent.keyDown(screen.getByText("visible.ts"), { key: "a", ctrlKey: true })
+        expect(screen.getByText("2 selected")).toBeInTheDocument()
+        rerender(<GitNavContent filterQuery="visible" />)
+        expect(screen.getByText("1 selected")).toBeInTheDocument()
+        fireEvent.contextMenu(screen.getByText("visible.ts"))
+        const context = useContextMenuStore.getState().request
+        expect(context?.kind).toBe("gitChange")
+        if (context?.kind === "gitChange") expect(context.selected.map((row) => row.path)).toEqual(["visible.ts"])
+        fireEvent.click(screen.getByRole("button", { name: /^Stage$/ }))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["visible.ts"]))
+    })
+
+    it("shows no results and hides bulk actions for hidden selections while keeping the complete commit scope", () => {
+        setReady({
+            staged: [{ path: "staged.ts", status: "M", origPath: null }],
+            unstaged: [{ path: "hidden.ts", status: "M", origPath: null }]
+        })
+        useGitStore.getState().setCommitMessage("complete index")
+        const { rerender } = render(<GitNavContent />)
+        fireEvent.click(screen.getByText("hidden.ts"))
+        rerender(<GitNavContent filterQuery="does-not-exist" />)
+        expect(screen.getByRole("status")).toHaveTextContent("No matching results")
+        expect(screen.queryByTestId("git-nav-bulk")).not.toBeInTheDocument()
+        expect(screen.getByRole("button", { name: "Commit" })).toBeEnabled()
+        expect(screen.getByRole("button", { name: "Commit" })).toHaveTextContent("1")
+        expect(useUiStore.getState().gitChangeSelection.map((row) => row.path)).toEqual(["hidden.ts"])
+        rerender(<GitNavContent filterQuery="" />)
+        expect(screen.getByText("1 selected")).toBeInTheDocument()
+        expect(screen.getByRole("button", { name: /^Stage$/ })).toBeEnabled()
+    })
+
+    it("prefills amend, permits message-only amendment, and never stages unstaged files", async () => {
+        const head = "a".repeat(40)
+        setReady({ headOid: head, unstaged: [{ path: "keep.ts", status: "M", origPath: null }] })
+        useGitStore.getState().setCommitMessage("new draft")
+        render(<GitNavContent />)
+        fireEvent.click(screen.getByRole("button", { name: "Amend last commit…" }))
+        await waitFor(() => expect(screen.getByLabelText("Commit message")).toHaveValue("last subject\n\nlast body"))
+        expect(ipc.gitCommitDetail).toHaveBeenCalledWith("/w", head)
+        expect(screen.getByRole("button", { name: "Update last commit" })).toBeDisabled()
+        fireEvent.change(screen.getByLabelText("Commit message"), { target: { value: "revised message" } })
+        fireEvent.click(screen.getByRole("button", { name: "Update last commit" }))
+        await waitFor(() => expect(ipc.gitCommit).toHaveBeenCalledWith("/w", "revised message", head))
+        await waitFor(() => expect(useGitStore.getState().busy).toBeNull())
+        expect(ipc.gitStage).not.toHaveBeenCalled()
+        expect(useGitStore.getState().amendHead).toBeNull()
+    })
+
+    it("amend includes staged changes with unchanged message, cancels back to the ordinary draft, and rejects moved HEAD", async () => {
+        const head = "a".repeat(40)
+        setReady({ headOid: head, staged: [{ path: "staged.ts", status: "M", origPath: null }] })
+        useGitStore.getState().setCommitMessage("ordinary draft")
+        render(<GitNavContent />)
+        fireEvent.click(screen.getByRole("button", { name: "Amend last commit…" }))
+        await waitFor(() => expect(screen.getByRole("button", { name: "Update last commit" })).toBeEnabled())
+        act(() => useGitStore.setState({ status: makeStatus({ headOid: "b".repeat(40) }) }))
+        expect(screen.getByRole("button", { name: "Update last commit" })).toBeDisabled()
+        expect(screen.getByRole("alert")).toHaveTextContent("HEAD changed")
+        fireEvent.click(screen.getByRole("button", { name: "Cancel amend" }))
+        expect(screen.getByLabelText("Commit message")).toHaveValue("ordinary draft")
+        expect(ipc.gitCommit).not.toHaveBeenCalled()
+    })
+
+    it.each([{ headOid: "(initial)" }, { headOid: "a".repeat(40), inProgress: "rebase" }])("does not offer amend for an unborn HEAD or ongoing operation (%j)", (status) => {
+        setReady(status)
+        render(<GitNavContent />)
+        expect(screen.getByRole("button", { name: "Amend last commit…" })).toBeDisabled()
     })
 
     it("missing → guided setup; not-ready → empty state (unchanged)", () => {

@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 
 import { BranchPopover } from "./BranchPopover"
 import i18n from "@/lib/i18n"
-import { initialGitState, useGitStore } from "@/state/gitStore"
+import { clearGitSnapshots, initialGitState, useGitStore } from "@/state/gitStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import type { BranchList } from "@/lib/types"
 import * as ipc from "@/lib/ipc"
@@ -63,6 +63,7 @@ function selectTab(name: RegExp) {
 }
 
 beforeEach(() => {
+    clearGitSnapshots()
     // Merge (not replace) so the store keeps its actions (runOp/refresh/…);
     // initialGitState resets every data field.
     useGitStore.setState({ ...initialGitState, environment: { status: "ready", root: "/w", version: "2.50" } })
@@ -176,6 +177,18 @@ describe("BranchPopover", () => {
         render(<BranchPopover open onOpenChange={() => {}} />)
         fireEvent.click(screen.getByRole("button", { name: /^pull$/i }))
         await waitFor(() => expect(ipc.gitPull).toHaveBeenCalled())
+    })
+
+    it("removes browse-only after the watcher recovers a transient post-fetch branch error", async () => {
+        vi.mocked(ipc.gitBranches).mockRejectedValueOnce(new Error("Git registry temporarily busy"))
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }))
+        await screen.findByText(/Git registry temporarily busy/)
+        expect(screen.getByText(i18n.t("branchPopover.browseOnly", { ns: "menus" }))).toBeInTheDocument()
+        await act(async () => { await useGitStore.getState().loadBranches() })
+        await waitFor(() => expect(screen.getByRole("button", { name: /^fetch$/i })).toBeEnabled())
+        expect(screen.queryByText(i18n.t("branchPopover.browseOnly", { ns: "menus" }))).not.toBeInTheDocument()
+        expect(screen.queryByText(/Git registry temporarily busy/)).not.toBeInTheDocument()
     })
 
     it("runs push through runOp", async () => {

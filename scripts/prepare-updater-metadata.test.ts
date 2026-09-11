@@ -19,6 +19,25 @@ function fixture() {
 }
 
 describe("prepare updater metadata", () => {
+  it("preserves beta SemVer and binds signed assets to its immutable release tag", () => {
+    const betaVersion = "0.0.10-beta.2"
+    const betaTag = `v${betaVersion}`
+    const betaArchive = `Yuzora_${betaVersion}_aarch64.app.tar.gz`
+    const betaMsi = `Yuzora_${betaVersion}_x64_en-US.msi`
+    const directory = mkdtempSync(join(tmpdir(), "yuzora-beta-metadata-"))
+    writeFileSync(join(directory, `${betaArchive}.sig`), "beta-mac-signature\n")
+    writeFileSync(join(directory, `${betaMsi}.sig`), "beta-msi-signature\n")
+    const metadata = prepareUpdaterMetadata(betaTag, "NakiriYuuzu/Yuzora", "Beta notes",
+      [betaArchive, `${betaArchive}.sig`, betaMsi, `${betaMsi}.sig`], directory)
+    expect(metadata.version).toBe(betaVersion)
+    expect(metadata.platforms["darwin-aarch64"]).toEqual({
+      url: `https://github.com/NakiriYuuzu/Yuzora/releases/download/${betaTag}/${betaArchive}`,
+      signature: "beta-mac-signature",
+    })
+    expect(metadata.platforms["windows-x86_64"].url).toContain(`/releases/download/${betaTag}/${betaMsi}`)
+    expect(Object.keys(metadata.platforms).sort()).toEqual(["darwin-aarch64", "windows-x86_64"])
+  })
+
   it("builds signed Apple Silicon and MSI metadata without an Intel macOS target", () => {
     const metadata = prepareUpdaterMetadata(
       tag,

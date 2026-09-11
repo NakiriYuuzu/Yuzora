@@ -24,13 +24,13 @@ import { ConflictBanner } from "@/workbench/git/ConflictBanner"
 import { ConsoleTab } from "@/workbench/git/ConsoleTab"
 import { LocalChangesTab } from "@/workbench/git/LocalChangesTab"
 import { LogTab } from "@/workbench/git/LogTab"
-import { FolderGit2, MoreHorizontal } from "lucide-react"
+import { ArrowLeft, FolderGit2, MoreHorizontal } from "lucide-react"
 
 /**
  * Git mode main region. Only the ready environment mounts Log/Local/Console.
  * Tab selection is store-backed so FileTree/ConflictBanner can land on Local.
  */
-export function GitPanel() {
+export function GitPanel({ onReturnToWork = () => useUiStore.getState().setMode("files") }: { onReturnToWork?: () => void }) {
   const { t } = useTranslation("menus")
   const environment = useGitStore((s) => s.environment)
   const status = useGitStore((s) => s.status)
@@ -46,6 +46,11 @@ export function GitPanel() {
       })}
       className="yz-modein @container/git-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-1) bg-(--paper-0) shadow-(--shadow-lg)"
     >
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-(--line-1) px-3 py-2">
+        <Button variant="ghost" size="sm" onClick={onReturnToWork}>
+          <ArrowLeft data-icon="inline-start" aria-hidden="true" />{t("backFiles", { ns: "gitWorkflow" })}
+        </Button>
+      </div>
       {environment?.status === "missing" ? (
         <GitGuidedSetup
           reason={environment.reason}
@@ -144,14 +149,14 @@ function GitPanelTabs() {
           <GitTabActions />
         </div>
 
-        <TabsContent value="log" className="flex min-h-0 flex-1 overflow-hidden">
+        <TabsContent forceMount value="log" className="flex min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
           <LogTab
             onOpenFile={(hash, file) => openCommitDiff(hash, file)}
             onCompare={(hash) => openCommitDiff(hash)}
           />
         </TabsContent>
 
-        <TabsContent value="local" className="flex min-h-0 flex-1 overflow-hidden">
+        <TabsContent forceMount value="local" className="flex min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
           <LocalChangesTab />
         </TabsContent>
 

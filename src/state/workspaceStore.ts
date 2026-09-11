@@ -70,7 +70,17 @@ interface PendingReveal {
     focus?: boolean
 }
 
+interface SpaceNavigation {
+    workspacePath: string | null
+    activeGroupIndex: number
+    groups: { id?: string; activePath: string | null }[]
+}
+
 interface WorkspaceState {
+    /** UI selection only; runtime remains authoritative for HERDR tab/pane focus. */
+    spaceNavigation: Record<string, SpaceNavigation>
+    rememberSpaceNavigation: (runtimeScope: string, spaceId: string) => void
+    restoreSpaceNavigation: (runtimeScope: string, spaceId: string) => boolean
     workspacePath: string | null
     workspaceCapabilityId: string | null
     groups: EditorGroup[]
@@ -378,6 +388,56 @@ function dismissedAfterClosing(state: WorkspaceState, paths: ReadonlySet<string>
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
+    spaceNavigation: {},
+    rememberSpaceNavigation: (runtimeScope, spaceId) => set((s) => ({
+        spaceNavigation: {
+            ...s.spaceNavigation,
+            [JSON.stringify([runtimeScope, spaceId])]: {
+                workspacePath: s.workspacePath,
+                activeGroupIndex: s.activeGroupIndex,
+                groups: s.groups.map(({ id, activePath }) => ({ id, activePath }))
+            }
+        }
+    })),
+    restoreSpaceNavigation: (runtimeScope, spaceId) => {
+        const s = get()
+        const saved = s.spaceNavigation[JSON.stringify([runtimeScope, spaceId])]
+        if (!saved || saved.workspacePath !== s.workspacePath) return false
+        let activeGroupIndex = s.activeGroupIndex
+        let restored = false
+        const groups = [...s.groups]
+        // File-session persistence is flat. After changing workspaces, move the
+        // remembered selected pages back to their splits using only reopened
+        // pages; never recreate a closed file or cache document content here.
+        for (const [savedIndex, previous] of saved.groups.entries()) {
+            if (!previous.activePath) continue
+            let index = groups.findIndex((group, groupIndex) =>
+                previous.id && group.id ? previous.id === group.id : groupIndex === savedIndex)
+            const sourceIndex = groups.findIndex(group => group.tabs.some(tab =>
+                tab.path === previous.activePath && tab.kind !== "herdr-terminal"))
+            if (sourceIndex < 0) continue
+            if (index < 0) {
+                index = savedIndex
+                if (!groups[index]) groups[index] = { ...emptyGroup(), ...(previous.id ? { id: previous.id } : {}) }
+            }
+            const tab = groups[sourceIndex].tabs.find(item => item.path === previous.activePath)!
+            if (sourceIndex !== index && !groups[index].tabs.some(item => item.path === tab.path)) {
+                const source = groups[sourceIndex]
+                const tabs = source.tabs.filter(item => item.path !== tab.path)
+                groups[sourceIndex] = { ...source, tabs, activePath: source.activePath === tab.path ? tabs.at(-1)?.path ?? null : source.activePath }
+                groups[index] = { ...groups[index], tabs: [...groups[index].tabs, tab] }
+            }
+            if (groups[index].activePath !== previous.activePath)
+                groups[index] = { ...groups[index], activePath: previous.activePath }
+            if (savedIndex === saved.activeGroupIndex) {
+                activeGroupIndex = index
+                restored = true
+            }
+        }
+        if (groups.some((group, index) => group !== s.groups[index]) || activeGroupIndex !== s.activeGroupIndex)
+            set({ groups, activeGroupIndex })
+        return restored
+    },
     dismissedHerdrPages: {},
     workspacePath: null,
     workspaceCapabilityId: null,
@@ -977,6 +1037,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             }
             if (existingGroupIndex !== -1 && existingPath) {
                 const focusPath = existingPath
+                const group = s.groups[existingGroupIndex]
+                const existing = group.tabs.find((tab) => tab.path === focusPath)!
+                if (s.activeGroupIndex === existingGroupIndex && group.activePath === focusPath &&
+                    existing.name === (title ?? existing.name) &&
+                    existing.paneId === (paneId !== undefined ? paneId : existing.paneId) &&
+                    existing.herdrTabId === (tabId ?? existing.herdrTabId ?? null) &&
+                    existing.herdrWorkspaceId === (herdrWorkspaceId !== undefined ? herdrWorkspaceId : existing.herdrWorkspaceId ?? null) &&
+                    Object.keys(dismissedHerdrPages).length === Object.keys(s.dismissedHerdrPages).length) return s
                 return {
                     dismissedHerdrPages,
                     groups: s.groups.map((group, index) => {
@@ -1074,6 +1142,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }),
     setActiveTab: (groupIndex, path) =>
         set((s) => {
+            const group = s.groups[groupIndex]
+            if (!group || !group.tabs.some((tab) => tab.path === path)) return s
+            if (s.activeGroupIndex === groupIndex && group.activePath === path) return s
             const groups = s.groups.map((g, i) =>
                 i === groupIndex ? { ...g, activePath: path } : g
             )

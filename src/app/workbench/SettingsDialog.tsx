@@ -7,6 +7,7 @@ import {
   Search,
   ArrowRight,
   Code,
+  Keyboard,
   Droplet,
   FileText,
   GitBranch,
@@ -23,6 +24,9 @@ import { Tabs,TabsList,TabsTrigger,TabsContent } from "@/components/ui/tabs"
 import { FieldGroup } from "@/components/ui/field"
 import { InputGroup,InputGroupInput,InputGroupAddon,InputGroupButton } from "@/components/ui/input-group"
 import { Empty,EmptyHeader,EmptyTitle,EmptyDescription,EmptyContent } from "@/components/ui/empty"
+import { EditorSyntaxSettings } from "./EditorSyntaxSettings"
+import { UpdateChannelSettings } from "./UpdateChannelSettings"
+import { KeyboardSettings } from "./KeyboardSettings"
 import { SettingsThemePicker } from "./SettingsThemePicker"
 import { SETTINGS_GROUPS,settingsSearchResults,type SettingsSectionId } from "./settings-search"
 import "./settings-modern.css"
@@ -133,6 +137,7 @@ type SectionId = SettingsSectionId
 const SECTIONS: { id: SectionId; icon: LucideIcon }[] = [
   { id: "appearance", icon: Droplet },
   { id: "editor", icon: Code },
+  { id: "keyboard", icon: Keyboard },
   { id: "logs", icon: FileText },
   { id: "terminal", icon: TerminalSquare },
   { id: "herdr", icon: Bot },
@@ -390,8 +395,11 @@ export function SettingsDialog({
               </FieldGroup>
             )}
 
+            {section === "keyboard" && <KeyboardSettings />}
+
             {section === "editor" && (
               <FieldGroup className="settings-fields">
+                <EditorSyntaxSettings />
                 <SettingCard label={tw("settings.editorFontSize")} sub={tw("settings.editorFontSizeSub")}>
                   <Segmented
                     label={tw("settings.editorFontSize")}
@@ -457,6 +465,7 @@ export function SettingsDialog({
                     <ReleaseNotes markdown={currentReleaseNotes} />
                   </SettingCard>
                 )}
+                <UpdateChannelSettings />
                 <SettingCard label={tw("settings.updates")} sub={tw("settings.updatesSub")}>
                   <div className="flex min-h-[32px] items-center justify-between gap-[12px]">
                     <span aria-live="polite" className="text-[11.5px] text-(--ink-2)">

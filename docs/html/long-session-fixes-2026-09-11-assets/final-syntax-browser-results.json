@@ -1,0 +1,4000 @@
+[
+  {
+    "filename": "sample.js",
+    "language": "javascript",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 134
+  },
+  {
+    "filename": "sample.mjs",
+    "language": "javascript",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 134
+  },
+  {
+    "filename": "sample.cjs",
+    "language": "javascript",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 134
+  },
+  {
+    "filename": "sample.ts",
+    "language": "typescript",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 166
+  },
+  {
+    "filename": "sample.mts",
+    "language": "typescript",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 166
+  },
+  {
+    "filename": "sample.cts",
+    "language": "typescript",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 166
+  },
+  {
+    "filename": "sample.jsx",
+    "language": "jsx",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "Greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "section",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.tsx",
+    "language": "tsx",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "Greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Props",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "section",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 182
+  },
+  {
+    "filename": "sample.html",
+    "language": "html",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "section",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "title",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 152
+  },
+  {
+    "filename": "sample.htm",
+    "language": "html",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "section",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "title",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 152
+  },
+  {
+    "filename": "sample.css",
+    "language": "css",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "/* Comment sample */",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "@media",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "color",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "rotate",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 121
+  },
+  {
+    "filename": "sample.scss",
+    "language": "scss",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "@mixin",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "padding",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greeting",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 141
+  },
+  {
+    "filename": "sample.json",
+    "language": "json",
+    "probes": [
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "\"message\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 85
+  },
+  {
+    "filename": "sample.md",
+    "language": "markdown",
+    "probes": [
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "heading",
+        "found": true,
+        "requestedRole": "heading",
+        "text": "Heading sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(88, 166, 255)"
+        ],
+        "expectedRaw": "#58a6ff",
+        "expectedRole": "link",
+        "found": true,
+        "requestedRole": "link",
+        "text": "https://example.com",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 112
+  },
+  {
+    "filename": "sample.markdown",
+    "language": "markdown",
+    "probes": [
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "heading",
+        "found": true,
+        "requestedRole": "heading",
+        "text": "Heading sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(88, 166, 255)"
+        ],
+        "expectedRaw": "#58a6ff",
+        "expectedRole": "link",
+        "found": true,
+        "requestedRole": "link",
+        "text": "https://example.com",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 112
+  },
+  {
+    "filename": "sample.py",
+    "language": "python",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.pyi",
+    "language": "python",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.pyw",
+    "language": "python",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "Sample.java",
+    "language": "java",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 100
+  },
+  {
+    "filename": "sample.c",
+    "language": "c",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.h",
+    "language": "c",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.cpp",
+    "language": "cpp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.hpp",
+    "language": "cpp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.cc",
+    "language": "cpp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.cxx",
+    "language": "cpp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.hh",
+    "language": "cpp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "sample.hxx",
+    "language": "cpp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 114
+  },
+  {
+    "filename": "Sample.cs",
+    "language": "csharp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "function",
+        "text": "SayHello",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "string",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "sample.csx",
+    "language": "csharp",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "function",
+        "text": "SayHello",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "string",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "sample.go",
+    "language": "go",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 121
+  },
+  {
+    "filename": "sample.rs",
+    "language": "rust",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 124
+  },
+  {
+    "filename": "sample.php",
+    "language": "php",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 107
+  },
+  {
+    "filename": "sample.rb",
+    "language": "ruby",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 101
+  },
+  {
+    "filename": "sample.swift",
+    "language": "swift",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "String",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 116
+  },
+  {
+    "filename": "sample.kt",
+    "language": "kotlin",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "String",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 110
+  },
+  {
+    "filename": "sample.kts",
+    "language": "kotlin",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "String",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "definition",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 110
+  },
+  {
+    "filename": "sample.dart",
+    "language": "dart",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "type",
+        "text": "String",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 109
+  },
+  {
+    "filename": "sample.sh",
+    "language": "shell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "if",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(231, 228, 223)"
+        ],
+        "expectedRaw": "rgb(231, 228, 223)",
+        "expectedRole": "plain",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 105
+  },
+  {
+    "filename": "sample.bash",
+    "language": "shell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "if",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(231, 228, 223)"
+        ],
+        "expectedRaw": "rgb(231, 228, 223)",
+        "expectedRole": "plain",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 105
+  },
+  {
+    "filename": "sample.zsh",
+    "language": "shell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "if",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(231, 228, 223)"
+        ],
+        "expectedRaw": "rgb(231, 228, 223)",
+        "expectedRole": "plain",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 105
+  },
+  {
+    "filename": ".bashrc",
+    "language": "shell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "if",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(231, 228, 223)"
+        ],
+        "expectedRaw": "rgb(231, 228, 223)",
+        "expectedRole": "plain",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 105
+  },
+  {
+    "filename": ".zshrc",
+    "language": "shell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "if",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(231, 228, 223)"
+        ],
+        "expectedRaw": "rgb(231, 228, 223)",
+        "expectedRole": "plain",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 105
+  },
+  {
+    "filename": "sample.ps1",
+    "language": "powershell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "function",
+        "text": "Get-Greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "type",
+        "text": "int",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 115
+  },
+  {
+    "filename": "sample.psm1",
+    "language": "powershell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "function",
+        "text": "Get-Greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "type",
+        "text": "int",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 115
+  },
+  {
+    "filename": "sample.psd1",
+    "language": "powershell",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "function",
+        "text": "Get-Greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(230, 237, 243)"
+        ],
+        "expectedRaw": "#e6edf3",
+        "expectedRole": "variable",
+        "found": true,
+        "requestedRole": "type",
+        "text": "int",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 115
+  },
+  {
+    "filename": "sample.sql",
+    "language": "sql",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "-- Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "SELECT",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "'hello'",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "function",
+        "text": "COUNT",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 106
+  },
+  {
+    "filename": "sample.yaml",
+    "language": "yaml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(231, 228, 223)"
+        ],
+        "expectedRaw": "rgb(231, 228, 223)",
+        "expectedRole": "plain",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 77
+  },
+  {
+    "filename": "sample.yml",
+    "language": "yaml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(231, 228, 223)"
+        ],
+        "expectedRaw": "rgb(231, 228, 223)",
+        "expectedRole": "plain",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 77
+  },
+  {
+    "filename": "sample.toml",
+    "language": "toml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "# Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 71
+  },
+  {
+    "filename": "sample.xml",
+    "language": "xml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "sample.svg",
+    "language": "xml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "sample.xsd",
+    "language": "xml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "sample.xsl",
+    "language": "xml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "sample.csproj",
+    "language": "xml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "sample.fsproj",
+    "language": "xml",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "<!-- Comment sample -->",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "greeting",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "message",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 103
+  },
+  {
+    "filename": "Sample.vue",
+    "language": "vue",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "section",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "padding",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 377
+  },
+  {
+    "filename": "Sample.svelte",
+    "language": "svelte",
+    "probes": [
+      {
+        "colors": [
+          "rgb(139, 148, 158)"
+        ],
+        "expectedRaw": "#8b949e",
+        "expectedRole": "comment",
+        "found": true,
+        "requestedRole": "comment",
+        "text": "// Comment sample",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 123, 114)"
+        ],
+        "expectedRaw": "#ff7b72",
+        "expectedRole": "keyword",
+        "found": true,
+        "requestedRole": "keyword",
+        "text": "return",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(165, 214, 255)"
+        ],
+        "expectedRaw": "#a5d6ff",
+        "expectedRole": "string",
+        "found": true,
+        "requestedRole": "string",
+        "text": "\"hello\"",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "number",
+        "found": true,
+        "requestedRole": "number",
+        "text": "42",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(210, 168, 255)"
+        ],
+        "expectedRaw": "#d2a8ff",
+        "expectedRole": "function",
+        "found": true,
+        "requestedRole": "function",
+        "text": "greet",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(255, 166, 87)"
+        ],
+        "expectedRaw": "#ffa657",
+        "expectedRole": "type",
+        "found": true,
+        "requestedRole": "type",
+        "text": "Greeter",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(126, 231, 135)"
+        ],
+        "expectedRaw": "#7ee787",
+        "expectedRole": "tag",
+        "found": true,
+        "requestedRole": "tag",
+        "text": "section",
+        "pass": true
+      },
+      {
+        "colors": [
+          "rgb(121, 192, 255)"
+        ],
+        "expectedRaw": "#79c0ff",
+        "expectedRole": "property",
+        "found": true,
+        "requestedRole": "property",
+        "text": "color",
+        "pass": true
+      }
+    ],
+    "ready": true,
+    "textLength": 287
+  }
+]

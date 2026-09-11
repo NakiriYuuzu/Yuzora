@@ -200,8 +200,12 @@ export function renderMarkdown(src: string): string {
     // image map 導航元素，其 closest("a") 為 null 會逃逸 anchor 攔截（R3-1）；
     // style 跟在內容後可存活 sanitize；即使 preview 是 in-flow pane，全域 CSS 仍
     // 可藏匿整個 app（R9-1）。
-    return DOMPurify.sanitize(md.renderer.render(tokens, md.options, {}), {
-        FORBID_ATTR: ["target", "usemap", "style", "class"],
+    return sanitizeMarkdownHtml(md.renderer.render(tokens, md.options, {}))
+}
+
+export function sanitizeMarkdownHtml(html: string, sourceAnchors = true): string {
+    return DOMPurify.sanitize(html, {
+        FORBID_ATTR: ["target", "usemap", "style", "class", ...(sourceAnchors ? [] : [SOURCE_LINE_ATTR, SOURCE_ANCHOR_ATTR])],
         FORBID_TAGS: ["form", "input", "button", "select", "textarea", "dialog", "map", "area", "style"]
     })
 }
@@ -522,7 +526,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
 // 內任何 position:fixed 子元素只相對 preview 內容區定位，無法覆蓋 editor。這是對
 // CSS-overlay 逃逸的根因防禦（不依賴列舉 style/class 等個別屬性通道）（R11-1b）。
 // jsdom 測不到 layout 定位，實機效果歸 T15 gui-acceptance。
-function MarkdownPreviewProse() {
+export function MarkdownPreviewProse() {
     return (
         <style>{`
 .markdown-preview-body{contain:paint}

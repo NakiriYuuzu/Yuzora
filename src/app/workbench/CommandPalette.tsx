@@ -1,3 +1,4 @@
+import { dispatchAppShortcut } from "@/state/keyboardSettingsStore"
 import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -35,6 +36,7 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
 import { showActionError } from "@/lib/actionFeedback"
 import i18n from "@/lib/i18n"
+import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useWorkspaceSearch } from "@/workbench/search/useWorkspaceSearch"
 import { WorkspaceSearchGroup } from "@/workbench/search/WorkspaceSearchGroup"
@@ -246,14 +248,18 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault()
-        setPaletteOpen(!open)
-      }
+      dispatchAppShortcut(event, "commandPalette", () => setPaletteOpen(!open))
+      dispatchAppShortcut(event, "settings", onOpenSettings)
+      dispatchAppShortcut(event, "toggleSidebar", useUiStore.getState().requestSidebarToggle)
+      dispatchAppShortcut(event, "toggleBrowser", togglePreviewTab)
+      dispatchAppShortcut(event, "modeAde", () => onSelectMode("ade"))
+      dispatchAppShortcut(event, "modeFiles", () => onSelectMode("files"))
+      dispatchAppShortcut(event, "modeGit", () => onSelectMode("git"))
+      dispatchAppShortcut(event, "modeDatabase", () => onSelectMode("database"))
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [open, setPaletteOpen])
+  }, [open, setPaletteOpen, onOpenSettings, onSelectMode, togglePreviewTab])
 
   return (
     <>
