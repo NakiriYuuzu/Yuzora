@@ -89,7 +89,7 @@ pub async fn host_reveal_in_explorer(
 
 #[cfg(windows)]
 mod windows {
-    use super::{reveal_with_fallback, ExplorerTarget};
+    use super::{legacy_wsl_folder, reveal_with_fallback, ExplorerTarget};
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::System::Com::{CoInitialize, CoTaskMemFree, CoUninitialize};
     use windows_sys::Win32::System::SystemServices::SFGAO_FOLDER;
@@ -105,7 +105,7 @@ mod windows {
         }
 
         fn parse_folder(path: &str) -> Result<Self, String> {
-            let (item, attributes) = Self::parse_with_attributes(path, SFGAO_FOLDER);
+            let (item, attributes) = Self::parse_with_attributes(path, SFGAO_FOLDER)?;
             let item = item?;
             if attributes & SFGAO_FOLDER == 0 {
                 return Err("explorer-target-is-not-directory".into());
