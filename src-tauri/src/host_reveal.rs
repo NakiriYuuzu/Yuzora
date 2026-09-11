@@ -106,7 +106,6 @@ mod windows {
 
         fn parse_folder(path: &str) -> Result<Self, String> {
             let (item, attributes) = Self::parse_with_attributes(path, SFGAO_FOLDER)?;
-            let item = item?;
             if attributes & SFGAO_FOLDER == 0 {
                 return Err("explorer-target-is-not-directory".into());
             }
