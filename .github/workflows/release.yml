@@ -374,6 +374,14 @@ jobs:
         if: matrix.artifact_name == 'windows'
         run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe
 
+      - name: Verify macOS app bundle seal
+        if: matrix.artifact_name == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
       - name: Verify Windows native and Unix runtime payloads
         if: matrix.artifact_name == 'windows'
         shell: powershell

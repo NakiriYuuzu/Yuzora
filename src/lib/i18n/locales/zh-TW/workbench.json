@@ -398,6 +398,7 @@
     "unsavedDocumentsBlockInstall": "請先儲存或捨棄所有未儲存文件，再安裝更新。",
     "installConfirmTitle": "要安裝更新並重新啟動嗎？",
     "installConfirmDescription": "安裝更新會結束目前執行中的 Terminal、Agent、SSH 與 Preview 工作。",
+    "installConfirmWindowsHerdr": "Windows 上請先關閉 HERDR 再繼續。安裝程式無法替換正在執行的 HERDR 執行檔。",
     "cancelInstall": "取消",
     "installingUpdate": "正在安裝更新…",
     "installFailed": "無法安裝更新",

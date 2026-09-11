@@ -192,7 +192,13 @@ jobs:
           set -euo pipefail
           VERSION="$(jq -er '.version' package.json)"
           RELEASE_BUILD_CONFIG="$(bun scripts/release-msi-build-config.ts "$VERSION" --no-updater)"
-          bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build-args }}
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            bun tauri build --ci --no-sign --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build-args }}
+          else
+            # Keep the candidate updater-disabled, but still ad-hoc sign the
+            # complete macOS bundle so Gatekeeper can validate its resources.
+            bun tauri build --ci --config "$RELEASE_BUILD_CONFIG" ${{ matrix.build-args }}
+          fi
 
       - name: Verify isolated native Windows HERDR contract
         if: runner.os == 'Windows'
@@ -202,6 +208,11 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: test "$(lipo -archs src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app/Contents/MacOS/yuzora)" = "arm64"
+
+      - name: Verify macOS app bundle seal
+        if: runner.os == 'macOS'
+        shell: bash
+        run: codesign --verify --deep --strict --verbose=2 src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app
 
       - name: Verify Windows native and Unix runtime payloads
         if: runner.os == 'Windows'

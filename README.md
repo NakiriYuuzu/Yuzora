@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.10-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.11-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -21,7 +21,7 @@
 <br />
 <br />
 
-<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.10 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
+<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.11 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
 
 </div>
 
@@ -35,6 +35,11 @@
 <br />
 
 ## Features
+
+### What's new in v0.0.11
+
+- macOS bundles are fully ad-hoc signed and verified before release, preventing Gatekeeper from treating the downloaded app as damaged because its resource seal is incomplete.
+- Windows update confirmation now tells users to close HERDR before installing while its executable is still running.
 
 ### What's new in v0.0.10
 
@@ -179,9 +184,10 @@ bun install
 bun run tauri:build
 ```
 
-This local build disables updater artifacts and signing, so it does not require production
-secrets. Stable releases retain updater signatures; macOS Apple signing and notarization are
-not enabled. See [the operations guide](docs/operations.md) for release and verification steps.
+This local build disables updater artifacts and does not require production secrets. Windows
+local builds skip platform signing; macOS keeps the ad-hoc bundle seal while Apple Developer ID
+signing and notarization remain disabled. See [the operations guide](docs/operations.md) for
+release and verification steps.
 
 > README and [website](https://github.yuuzu.net/Yuzora/) media are rendered by
 > [Remotion](https://www.remotion.dev) from recordings of the current AppShell demo.

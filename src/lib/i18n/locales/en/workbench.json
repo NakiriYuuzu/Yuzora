@@ -398,6 +398,7 @@
     "unsavedDocumentsBlockInstall": "Save or discard all unsaved documents before installing the update.",
     "installConfirmTitle": "Install update and restart?",
     "installConfirmDescription": "Installing the update will end running Terminal, Agent, SSH, and Preview work.",
+    "installConfirmWindowsHerdr": "On Windows, close HERDR before continuing. The installer cannot replace a running HERDR executable.",
     "cancelInstall": "Cancel",
     "installingUpdate": "Installing update…",
     "installFailed": "Couldn't install the update",
