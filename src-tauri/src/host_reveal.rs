@@ -39,6 +39,12 @@ fn explorer_target(distro: &str, path: &str, is_directory: bool) -> Result<Explo
 }
 
 #[cfg(any(windows, test))]
+fn legacy_wsl_folder(path: &str) -> Option<String> {
+    path.strip_prefix(r"\\wsl.localhost\")
+        .map(|rest| format!(r"\\wsl$\{rest}"))
+}
+
+#[cfg(any(windows, test))]
 fn reveal_with_fallback(
     select: impl FnOnce() -> Result<(), String>,
     explore_folder: impl FnOnce() -> Result<(), String>,
@@ -86,6 +92,7 @@ mod windows {
     use super::{reveal_with_fallback, ExplorerTarget};
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::System::Com::{CoInitialize, CoTaskMemFree, CoUninitialize};
+    use windows_sys::Win32::System::SystemServices::SFGAO_FOLDER;
     use windows_sys::Win32::UI::Shell::{
         Common::ITEMIDLIST, ILFindLastID, SHOpenFolderAndSelectItems, SHParseDisplayName,
         ShellExecuteExW, SEE_MASK_CLASSNAME, SHELLEXECUTEINFOW,
@@ -94,17 +101,41 @@ mod windows {
     struct Pidl(*mut ITEMIDLIST);
     impl Pidl {
         fn parse(path: &str) -> Result<Self, String> {
+            Self::parse_with_attributes(path, 0).map(|(item, _)| item)
+        }
+
+        fn parse_folder(path: &str) -> Result<Self, String> {
+            let (item, attributes) = Self::parse_with_attributes(path, SFGAO_FOLDER);
+            let item = item?;
+            if attributes & SFGAO_FOLDER == 0 {
+                return Err("explorer-target-is-not-directory".into());
+            }
+            Ok(item)
+        }
+
+        fn parse_with_attributes(
+            path: &str,
+            requested_attributes: u32,
+        ) -> Result<(Self, u32), String> {
             let wide = wide(path);
             let mut item = null_mut();
-            let result =
-                unsafe { SHParseDisplayName(wide.as_ptr(), null_mut(), &mut item, 0, null_mut()) };
+            let mut attributes = 0;
+            let result = unsafe {
+                SHParseDisplayName(
+                    wide.as_ptr(),
+                    null_mut(),
+                    &mut item,
+                    requested_attributes,
+                    &mut attributes,
+                )
+            };
             if result < 0 || item.is_null() {
                 if !item.is_null() {
                     unsafe { CoTaskMemFree(item.cast()) }
                 }
                 return Err(format!("parse Shell path HRESULT {result:#x}"));
             }
-            Ok(Self(item))
+            Ok((Self(item), attributes))
         }
     }
     impl Drop for Pidl {
@@ -128,12 +159,6 @@ mod windows {
         target: &ExplorerTarget,
         current: impl Fn() -> Result<(), String>,
     ) -> Result<(), String> {
-        // Only explore a real directory; the caller's hint cannot cause a file
-        // (including a shortcut or executable) to be opened by its association.
-        let folder = std::fs::metadata(&target.folder).map_err(|error| error.to_string())?;
-        if !folder.is_dir() {
-            return Err("explorer-target-is-not-directory".into());
-        }
         let initialized = unsafe { CoInitialize(null()) };
         // RPC_E_CHANGED_MODE means this pooled thread already owns a COM apartment.
         if initialized < 0 && initialized != 0x80010106_u32 as i32 {
@@ -142,7 +167,11 @@ mod windows {
         let _com = Com(initialized >= 0);
         reveal_with_fallback(
             || {
-                let folder = Pidl::parse(&target.folder)?;
+                // WSL UNC paths are a Shell namespace. Do not preflight them
+                // with std::fs::metadata: that API can reject a path which
+                // Explorer can still resolve or start. SHParseDisplayName is
+                // both the namespace-aware lookup and the folder safety check.
+                let folder = Pidl::parse_folder(&target.folder)?;
                 let selected = target.selected.as_deref().map(Pidl::parse).transpose()?;
                 current()?;
                 let result = if let Some(selected) = selected {
@@ -159,25 +188,38 @@ mod windows {
             || {
                 // A failed selection must still open Explorer. Use an explicit
                 // folder verb, never execute the selected file or a command line.
-                let verb = wide("explore");
-                let folder = wide(&target.folder);
-                let class = wide("folder");
-                let mut info = SHELLEXECUTEINFOW {
-                    cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-                    fMask: SEE_MASK_CLASSNAME,
-                    lpVerb: verb.as_ptr(),
-                    lpFile: folder.as_ptr(),
-                    lpClass: class.as_ptr(),
-                    nShow: 1,
-                    ..Default::default()
-                };
-                current()?;
-                if unsafe { ShellExecuteExW(&mut info) } == 0 {
-                    return Err(format!("explore folder Shell error {}", unsafe {
-                        windows_sys::Win32::Foundation::GetLastError()
-                    }));
+                let mut last_error = None;
+                // Keep the alternate WSL namespace as a compatibility fallback
+                // for Windows builds where .localhost is not registered even
+                // though the legacy provider is.
+                let alternate_folder = legacy_wsl_folder(&target.folder);
+                for folder_path in
+                    std::iter::once(target.folder.as_str()).chain(alternate_folder.as_deref())
+                {
+                    let verb = wide("explore");
+                    let folder = wide(folder_path);
+                    let class = wide("folder");
+                    let mut info = SHELLEXECUTEINFOW {
+                        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+                        fMask: SEE_MASK_CLASSNAME,
+                        lpVerb: verb.as_ptr(),
+                        lpFile: folder.as_ptr(),
+                        lpClass: class.as_ptr(),
+                        nShow: 1,
+                        ..Default::default()
+                    };
+                    current()?;
+                    if unsafe { ShellExecuteExW(&mut info) } != 0 {
+                        return Ok(());
+                    }
+                    last_error = Some(unsafe {
+                        format!(
+                            "explore folder Shell error {}",
+                            windows_sys::Win32::Foundation::GetLastError()
+                        )
+                    });
                 }
-                Ok(())
+                Err(last_error.unwrap_or_else(|| "explore folder Shell error".into()))
             },
         )
     }
@@ -206,6 +248,11 @@ mod tests {
             explorer_target("Ubuntu", "/", true).unwrap().folder,
             r"\\wsl.localhost\Ubuntu"
         );
+        assert_eq!(
+            legacy_wsl_folder(r"\\wsl.localhost\Ubuntu\home\project"),
+            Some(r"\\wsl$\Ubuntu\home\project".into())
+        );
+        assert_eq!(legacy_wsl_folder(r"C:\project"), None);
     }
     #[test]
     fn rejects_other_namespaces_traversal_and_windows_shell_characters() {
@@ -225,11 +272,11 @@ mod tests {
         assert!(explorer_target("Ubuntu", "/", false).is_err());
     }
     #[test]
-    fn every_selection_error_falls_back_and_fallback_failure_is_reported() {
+    fn every_shell_preparation_error_falls_back_and_fallback_failure_is_reported() {
         use std::cell::Cell;
         let called = Cell::new(false);
         assert!(reveal_with_fallback(
-            || Err("HRESULT access denied".into()),
+            || Err("parse Shell path HRESULT 0x80070035".into()),
             || {
                 called.set(true);
                 Ok(())
