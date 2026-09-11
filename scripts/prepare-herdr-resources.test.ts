@@ -93,4 +93,11 @@ describe("prepare Herdr resources", () => {
     })
     expect(macos.bundle.resources["resources/host/"]).toBe("host/")
   })
+
+  it("ad-hoc signs the complete macOS app bundle so Gatekeeper can validate resources", async () => {
+    const macos = JSON.parse(
+      await readFile(resolve(repositoryRoot, "src-tauri/tauri.macos.conf.json"), "utf8")
+    )
+    expect(macos.bundle.macOS.signingIdentity).toBe("-")
+  })
 })

@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-11（v0.0.10 含工作區、Git Graph、Markdown 與語法高亮改善，候選另行驗收）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-11（v0.0.11 修正 macOS bundle seal 與 Windows HERDR 更新提示，候選另行驗收）；Release／Pages 流程最後查證：2026-09-11。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -95,11 +95,11 @@ Yuzora 有兩種不同的簽章邊界，不得混為一談。
 
 ### macOS workflow 合約：不使用 Apple 簽章／公證
 
-v0.0.9 發布政策依使用者明確授權：macOS App 僅 Apple Silicon，不使用 Apple Developer ID 簽章、notarization 或 stapling。Release 不取得 Apple credentials、不建立 signing keychain，也不將缺少 Apple secrets 當成發布阻礙。macOS linker 可能保留執行所需的 ad-hoc signature；它不代表 Apple 發行者身分或 Gatekeeper 信任。
+v0.0.9 發布政策依使用者明確授權：macOS App 僅 Apple Silicon，不使用 Apple Developer ID 簽章、notarization 或 stapling。Release 不取得 Apple credentials、不建立 signing keychain，也不將缺少 Apple secrets 當成發布阻礙。Tauri 仍以 `signingIdentity: "-"` 對完整 `.app` bundle 做 ad-hoc signing，並在 Release／candidate workflow 以 `codesign --verify --deep --strict` 驗證資源封存；這不代表 Apple 發行者身分或 Gatekeeper 信任。
 
-Stable 與新發布的 Beta 都使用一般 `bun tauri build --ci`，保留 Tauri updater signing secrets 與 updater artifacts，且不設定 Apple signing identity。**發布 build 不可使用 `--no-sign`**：它會一併略過 updater signatures，導致 metadata／publish gate 失敗。僅 PR 候選版以 `--no-sign` 建置並停用 updater artifacts／endpoints。
+Stable 與新發布的 Beta 都使用一般 `bun tauri build --ci`，保留 Tauri updater signing secrets 與 updater artifacts；macOS 使用 ad-hoc `signingIdentity: "-"`，不使用 Apple Developer identity。**發布 build 不可使用 `--no-sign`**：它會一併略過 updater signatures，導致 metadata／publish gate 失敗。PR 候選版停用 updater artifacts／endpoints；Windows 候選仍使用 `--no-sign`，macOS 候選保留 ad-hoc bundle signing 以便驗收安裝。
 
-README 與當版 release notes 必須說明 macOS 未經 Apple 簽章／公證，Gatekeeper 可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「仍要打開」流程操作。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
+README 與當版 release notes 必須說明 macOS 未經 Apple Developer ID 簽章／公證，Gatekeeper 仍可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「仍要打開」流程操作。若出現「App 已損毀」訊息，先確認使用的是含完整 bundle seal 的最新版本；Release gate 應先以 `codesign --verify --deep --strict` 擋下這類 artifact。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
 
 ### 已啟用：Tauri updater artifact signing
 
@@ -265,8 +265,8 @@ docker compose -f tests/database/docker-compose.yml --profile mssql down -v
 
 - 只存在 GitHub Actions artifacts，不建立或更新 tag。
 - 不建立 GitHub Release，也不會成為 `releases/latest`。
-- 關閉 updater artifact 產生與 signing，只用於 merge 前的互動式功能驗證。
-- 未啟用 OS code signing，Windows SmartScreen 與 macOS Gatekeeper 仍可能警告。
+- 關閉 updater artifact 產生；Windows candidate 停用平台 signing，macOS candidate 保留 ad-hoc bundle seal，只用於 merge 前的互動式功能驗證。
+- 未啟用 Apple Developer ID／Windows Authenticode，Windows SmartScreen 與 macOS Gatekeeper 仍可能警告。
 
 從 PR 的 CI run 下載 Windows 候選檔：
 

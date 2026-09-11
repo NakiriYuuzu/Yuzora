@@ -615,8 +615,14 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
   assert(
     includes(candidateBuild.run, 'scripts/release-msi-build-config.ts "$VERSION" --no-updater') &&
       includes(candidateBuild.run, '--config "$RELEASE_BUILD_CONFIG"') &&
+      includes(candidateBuild.run, 'if [ "$RUNNER_OS" = "Windows" ]') &&
       includes(candidateBuild.run, "--no-sign"),
-    "release candidates must use the generated no-updater numeric WiX version override for every channel"
+    "release candidates must use the generated no-updater numeric WiX version override and only disable signing on Windows"
+  )
+  const macBundleSeal = stepByName(candidateSteps, "Verify macOS app bundle seal")
+  assert(
+    macBundleSeal.if === "runner.os == 'macOS'" && includes(macBundleSeal.run, "codesign --verify --deep --strict"),
+    "macOS candidates must verify the complete ad-hoc app bundle seal"
   )
   verifyRuntimePayloadSteps(candidateSteps, "runner.os == 'Windows'")
 

@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs"
 import { releaseMsiBuildConfig } from "./release-msi-build-config"
 
 export function buildLocalInstallerArgs(version: string, extraArgs: string[] = []): string[] {
+  const signingArgs = process.platform === "darwin" ? [] : ["--no-sign"]
   return [
     "tauri",
     "build",
     "--ci",
-    "--no-sign",
+    ...signingArgs,
     "--config",
     JSON.stringify(releaseMsiBuildConfig(version, true)),
     ...extraArgs,

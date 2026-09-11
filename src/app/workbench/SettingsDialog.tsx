@@ -197,6 +197,7 @@ export function SettingsDialog({
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [installBlockedByDirty, setInstallBlockedByDirty] = useState(false)
   const [installConfirmationOpen, setInstallConfirmationOpen] = useState(false)
+  const isWindows = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent)
   const settingsLogSource = useUiStore((s) => s.settingsLogSource)
   const updateStatus = useUpdateStore((s) => s.status)
   const availableUpdate = useUpdateStore((s) => s.update)
@@ -575,7 +576,14 @@ export function SettingsDialog({
         >
           <DialogHeader>
             <DialogTitle>{tw("settings.installConfirmTitle")}</DialogTitle>
-            <DialogDescription>{tw("settings.installConfirmDescription")}</DialogDescription>
+            <DialogDescription>
+              {tw("settings.installConfirmDescription")}
+              {isWindows && (
+                <span className="mt-2 block font-medium text-(--ink-1)">
+                  {tw("settings.installConfirmWindowsHerdr")}
+                </span>
+              )}
+            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setInstallConfirmationOpen(false)}>

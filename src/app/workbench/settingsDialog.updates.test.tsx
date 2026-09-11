@@ -351,4 +351,39 @@ describe("Settings · About & Updates pane", () => {
     finishInstall()
     await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1))
   })
+
+  it("warns Windows users to close HERDR before installing", async () => {
+    Object.defineProperty(window.navigator, "userAgent", {
+      configurable: true,
+      value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    })
+    const install = vi.fn(async () => undefined)
+    const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
+      onEvent?.({ event: "Finished" })
+    })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
+
+    render(
+      <SettingsDialog
+        open
+        onOpenChange={() => {}}
+        theme="light"
+        onThemeChange={() => {}}
+        initialSection="about"
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Download update" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }))
+
+    const confirmation = await screen.findByRole("dialog", {
+      name: "Install update and restart?",
+    })
+    expect(
+      within(confirmation).getByText(
+        "On Windows, close HERDR before continuing. The installer cannot replace a running HERDR executable.",
+      ),
+    ).toBeInTheDocument()
+  })
 })

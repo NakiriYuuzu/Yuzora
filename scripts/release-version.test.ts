@@ -13,8 +13,9 @@ describe("release version classification", () => {
   })
 
   it("accepts the current stable product version and matching tag", () => {
-    expect(verifyVersionConsistency(process.cwd(), "v0.0.10")).toBe(
-      "Version consistency verified: v0.0.10"
+    const version = JSON.parse(readFileSync("package.json", "utf8")).version as string
+    expect(verifyVersionConsistency(process.cwd(), `v${version}`)).toBe(
+      `Version consistency verified: v${version}`
     )
   })
 

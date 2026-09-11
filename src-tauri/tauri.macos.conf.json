@@ -1,5 +1,8 @@
 {
   "bundle": {
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "resources": {
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/herdr/macos-aarch64/": "herdr/macos-aarch64/",
