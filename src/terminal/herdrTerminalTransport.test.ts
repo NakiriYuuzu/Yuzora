@@ -337,6 +337,64 @@ describe("createHerdrTerminalTransport", () => {
     expect(readPaneScroll).toHaveBeenCalledWith("default", "pane-1")
     expect(setPaneScroll).toHaveBeenCalledWith("default", "pane-1", 7)
   })
+
+  it("uses pane scrolling directly when the official pane API is available", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue({
+      offsetFromBottom: 4,
+      maxOffsetFromBottom: 20,
+      viewportRows: 24
+    })
+    vi.mocked(setPaneScroll).mockResolvedValue(null)
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "[wsl-host,default]",
+      paneScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    expect(readPaneScroll).toHaveBeenCalledWith("[wsl-host,default]", "pane-1")
+    expect(setPaneScroll).toHaveBeenCalledWith("[wsl-host,default]", "pane-1", 7)
+  })
+
+  it("coalesces concurrent wheel requests into one remote scroll at a time", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-burst",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    let release!: () => void
+    vi.mocked(herdrTerminalScroll).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { release = resolve })
+    ).mockResolvedValue(undefined)
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+
+    const first = transport.scroll?.(-2)
+    const second = transport.scroll?.(-3)
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(1)
+    release()
+    await Promise.all([first, second])
+
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(2)
+    expect(herdrTerminalScroll).toHaveBeenLastCalledWith("sess-burst", "up", 3)
+  })
 })
 
 

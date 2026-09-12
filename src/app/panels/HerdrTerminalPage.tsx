@@ -752,15 +752,18 @@ function HerdrTerminalLeaf({
   const scrollbarRefreshRef = useRef<(() => void) | null>(null)
   const supportsScrollInfo = useHerdrStore((state) => {
     const capabilities = targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null
-    if (!capabilities) return false
-    const methods = capabilities.api.methods ?? []
-    // Windows HERDR builds may report terminal scrolling before the pane
-    // methods are listed in the capability snapshot. Mount the proxy so its
-    // official pane API probe can establish the real state instead of hiding
-    // the scrollbar entirely.
-    return (methods.includes("pane.get") && methods.includes("pane.scroll"))
-      || capabilities.terminal.scroll
+    const methods = capabilities?.api.methods ?? []
+    // `terminal.scroll` only describes the connector command. The proxy
+    // scrollbar polls the separate pane API, so require both pane methods
+    // before mounting it. WSL runtimes can advertise terminal.scroll while
+    // pane.get/pane.scroll are unavailable; mounting in that state sends
+    // repeated long-lived host requests and can pause terminal input.
+    return methods.includes("pane.get") && methods.includes("pane.scroll")
   })
+  const supportsScrollInfoRef = useRef(supportsScrollInfo)
+  useEffect(() => {
+    supportsScrollInfoRef.current = supportsScrollInfo
+  }, [supportsScrollInfo])
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -956,6 +959,7 @@ function HerdrTerminalLeaf({
       // Use the resolved runtime scope for both connector and pane-scroll
       // fallback. The legacy `live` token has no addressable pane namespace.
       sessionName: contextSessionName,
+      paneScrollEnabled: () => supportsScrollInfoRef.current,
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
         registerAttachment(attachmentKey, {
