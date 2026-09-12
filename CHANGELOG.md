@@ -6,6 +6,7 @@
 
 - 改善 WSL HERDR 終端機捲動與快速連續滾輪操作，避免影響 Agent 輸入；切換或關閉連線時丟棄尚未處理的捲動操作。
 - 捲軸僅在該 HERDR session 支援完整捲動資訊時啟用。
+- pane scroll metadata 暫時不可用時回退至相容的 terminal scroll，避免 0.8.2 以上 runtime 的滑輪操作中斷。
 
 ### 安裝說明
 

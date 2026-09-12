@@ -370,6 +370,53 @@ describe("createHerdrTerminalTransport", () => {
     expect(setPaneScroll).toHaveBeenCalledWith("[wsl-host,default]", "pane-1", 7)
   })
 
+  it("falls back to terminal.scroll when pane metadata is temporarily unavailable", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane-null",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue(null)
+    vi.mocked(herdrTerminalScroll).mockResolvedValue(undefined)
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "default",
+      paneScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-pane-null", "up", 3)
+    expect(setPaneScroll).not.toHaveBeenCalled()
+  })
+
+  it("does not call an unverified scroll transport", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-no-scroll",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      scrollEnabled: () => false
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    expect(readPaneScroll).not.toHaveBeenCalled()
+  })
+
   it("coalesces concurrent wheel requests into one remote scroll at a time", async () => {
     vi.mocked(herdrTerminalOpen).mockResolvedValue({
       sessionId: "sess-burst",

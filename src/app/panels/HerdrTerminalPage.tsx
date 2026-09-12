@@ -25,6 +25,7 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
+import { herdrScrollStrategy, supportsHerdrPaneScroll } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import {
   herdrLayoutExport,
@@ -215,7 +216,6 @@ export function HerdrTerminalPage({
       targetCapabilities.terminal.takeover &&
       targetCapabilities.terminal.input &&
       targetCapabilities.terminal.resize &&
-      targetCapabilities.terminal.scroll &&
       targetCapabilities.terminal.release
   )
   const [hasConnectedSession, setHasConnectedSession] = useState(sessionCanConnect)
@@ -757,13 +757,10 @@ function HerdrTerminalLeaf({
     // scrollbar during that projection window.
     const capabilities = (targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null)
       ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
-    const methods = capabilities?.api.methods ?? []
-    // `terminal.scroll` only describes the connector command. The proxy
-    // scrollbar polls the separate pane API, so require both pane methods
-    // before mounting it. WSL runtimes can advertise terminal.scroll while
-    // pane.get/pane.scroll are unavailable; mounting in that state sends
-    // repeated long-lived host requests and can pause terminal input.
-    return methods.includes("pane.get") && methods.includes("pane.scroll")
+    // The proxy scrollbar polls the separate pane API. Older runtimes use the
+    // connector wheel command and must not mount a pane proxy that will keep
+    // retrying unsupported methods.
+    return supportsHerdrPaneScroll(capabilities)
   })
   const supportsScrollInfoRef = useRef(supportsScrollInfo)
   useEffect(() => {
@@ -965,6 +962,14 @@ function HerdrTerminalLeaf({
       // fallback. The legacy `live` token has no addressable pane namespace.
       sessionName: contextSessionName,
       paneScrollEnabled: () => supportsScrollInfoRef.current,
+      scrollEnabled: () => {
+        const state = useHerdrStore.getState()
+        const capabilities = (targetSessionName
+          ? state.runtimesBySession[targetSessionName]?.capabilities
+          : null)
+          ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        return herdrScrollStrategy(capabilities) !== "unavailable"
+      },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
         registerAttachment(attachmentKey, {

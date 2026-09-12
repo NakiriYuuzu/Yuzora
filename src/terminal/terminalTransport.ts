@@ -113,6 +113,8 @@ export interface HerdrTerminalTransportOptions {
   sessionName?: string | null
   /** True when the official pane scroll API is available for this terminal. */
   paneScrollEnabled?: () => boolean
+  /** True when at least one verified scroll transport is available. */
+  scrollEnabled?: () => boolean
   onAttachment?: (info: {
     sessionId: string
     mode: HerdrTerminalMode
@@ -139,6 +141,7 @@ export function createHerdrTerminalTransport(
     takeover: initialTakeover = true,
     sessionName = null,
     paneScrollEnabled,
+    scrollEnabled,
     onAttachment,
     onPaneId
   } = options
@@ -316,7 +319,7 @@ export function createHerdrTerminalTransport(
       await herdrTerminalResize(sessionId, cols, rows)
     },
     async scroll(delta) {
-      if (disposed || !sessionId || mode !== "control" || delta === 0) return
+      if (disposed || !sessionId || mode !== "control" || delta === 0 || scrollEnabled?.() === false) return
       // Wheel events can arrive faster than a remote host can acknowledge
       // them. Keep one request in flight and coalesce the rest so scrolls
       // cannot fill the same HERDR queue used by terminal input.
@@ -342,14 +345,19 @@ export function createHerdrTerminalTransport(
             const direction = nextDelta < 0 ? "up" : "down"
             const lines = Math.max(1, Math.abs(nextDelta))
             if (paneScrollEnabled?.() && paneId && sessionName) {
-              const state = await readPaneScroll(sessionName, paneId)
+              // A pane may legitimately have no scroll metadata yet (for
+              // example before its first full frame). Keep the older
+              // connector command as the compatible fallback instead of
+              // turning a transient null into a visible wheel error.
+              const state = await readPaneScroll(sessionName, paneId).catch(() => null)
               if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
-              if (!state) throw new Error("HERDR pane scrolling unavailable")
-              const nextOffset = direction === "up"
-                ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
-                : Math.max(0, state.offsetFromBottom - lines)
-              await setPaneScroll(sessionName, paneId, nextOffset)
-              continue
+              if (state) {
+                const nextOffset = direction === "up"
+                  ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
+                  : Math.max(0, state.offsetFromBottom - lines)
+                await setPaneScroll(sessionName, paneId, nextOffset)
+                continue
+              }
             }
             try {
               await herdrTerminalScroll(activeSessionId, direction, lines)
