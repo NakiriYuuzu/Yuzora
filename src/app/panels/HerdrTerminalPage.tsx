@@ -751,7 +751,12 @@ function HerdrTerminalLeaf({
   const terminalViewportId = useId()
   const scrollbarRefreshRef = useRef<(() => void) | null>(null)
   const supportsScrollInfo = useHerdrStore((state) => {
-    const capabilities = targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null
+    // A selected runtime is projected to the global capabilities field while
+    // its scoped record is being reconciled. Keep the scrollbar capability
+    // gate consistent with the connector gate so WSL pages do not lose their
+    // scrollbar during that projection window.
+    const capabilities = (targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null)
+      ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
     const methods = capabilities?.api.methods ?? []
     // `terminal.scroll` only describes the connector command. The proxy
     // scrollbar polls the separate pane API, so require both pane methods
