@@ -7,6 +7,10 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalScroll: vi.fn(),
   herdrTerminalRelease: vi.fn()
 }))
+vi.mock("./herdrScrollIpc", () => ({
+  readPaneScroll: vi.fn(),
+  setPaneScroll: vi.fn()
+}))
 
 import {
   herdrTerminalInput,
@@ -20,6 +24,7 @@ import {
   createHerdrTerminalTransport,
   normalizeTerminalWheelRows
 } from "./terminalTransport"
+import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
 
 function b64(text: string): string {
   return btoa(text)
@@ -83,6 +88,8 @@ describe("createHerdrTerminalTransport", () => {
     vi.mocked(herdrTerminalResize).mockReset()
     vi.mocked(herdrTerminalScroll).mockReset()
     vi.mocked(herdrTerminalRelease).mockReset()
+    vi.mocked(readPaneScroll).mockReset()
+    vi.mocked(setPaneScroll).mockReset()
   })
 
   it("opens as control+takeover by default and allows write", async () => {
@@ -296,10 +303,45 @@ describe("createHerdrTerminalTransport", () => {
     await transport.resize(100, 40)
     expect(herdrTerminalResize).not.toHaveBeenCalled()
   })
+
+  it("falls back to the official pane scroll API when terminal scroll is rejected", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-windows",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockRejectedValue(new Error("terminal.scroll unavailable"))
+    vi.mocked(readPaneScroll).mockResolvedValue({
+      offsetFromBottom: 4,
+      maxOffsetFromBottom: 20,
+      viewportRows: 24
+    })
+    vi.mocked(setPaneScroll).mockResolvedValue({
+      offsetFromBottom: 7,
+      maxOffsetFromBottom: 20,
+      viewportRows: 24
+    })
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "default"
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(readPaneScroll).toHaveBeenCalledWith("default", "pane-1")
+    expect(setPaneScroll).toHaveBeenCalledWith("default", "pane-1", 7)
+  })
 })
 
 
   it("does not mutate server scrollback while observing", async () => {
+    vi.mocked(herdrTerminalScroll).mockReset()
     vi.mocked(herdrTerminalOpen).mockResolvedValue({
       sessionId: "session-observe",
       target: "term-1",

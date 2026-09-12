@@ -752,7 +752,14 @@ function HerdrTerminalLeaf({
   const scrollbarRefreshRef = useRef<(() => void) | null>(null)
   const supportsScrollInfo = useHerdrStore((state) => {
     const capabilities = targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null
-    return !!capabilities?.api.methods?.includes("pane.get") && !!capabilities?.api.methods?.includes("pane.scroll")
+    if (!capabilities) return false
+    const methods = capabilities.api.methods ?? []
+    // Windows HERDR builds may report terminal scrolling before the pane
+    // methods are listed in the capability snapshot. Mount the proxy so its
+    // official pane API probe can establish the real state instead of hiding
+    // the scrollbar entirely.
+    return (methods.includes("pane.get") && methods.includes("pane.scroll"))
+      || capabilities.terminal.scroll
   })
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -864,7 +871,11 @@ function HerdrTerminalLeaf({
       if (rows === 0) return true
       event.preventDefault()
       event.stopPropagation()
-      void transport.scroll(event.deltaY < 0 ? -rows : rows).then(() => scrollbarRefreshRef.current?.()).catch(() => undefined)
+      void transport.scroll(event.deltaY < 0 ? -rows : rows)
+        .then(() => scrollbarRefreshRef.current?.())
+        .catch((error) => {
+          if (!disposedRef.current) setStatusMessage(error instanceof Error ? error.message : String(error))
+        })
       return false
     })
     termRef.current = term
@@ -942,7 +953,9 @@ function HerdrTerminalLeaf({
       paneId,
       mode: "control",
       takeover: true,
-      sessionName: herdrSessionId === "live" ? null : herdrSessionId,
+      // Use the resolved runtime scope for both connector and pane-scroll
+      // fallback. The legacy `live` token has no addressable pane namespace.
+      sessionName: contextSessionName,
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
         registerAttachment(attachmentKey, {
