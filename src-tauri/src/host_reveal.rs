@@ -8,6 +8,40 @@ struct ExplorerTarget {
     selected: Option<String>,
 }
 
+fn windows_mount_target(path: &str, is_directory: bool) -> Option<ExplorerTarget> {
+    let mount = path.strip_prefix("/mnt/")?;
+    let (drive, rest) = mount
+        .split_once('/')
+        .map_or((mount, ""), |(drive, rest)| (drive, rest));
+    if drive.len() != 1 || !drive.as_bytes()[0].is_ascii_alphabetic() {
+        return None;
+    }
+    let drive = drive.to_ascii_uppercase();
+    let windows_path = if rest.is_empty() {
+        format!("{drive}:\\")
+    } else {
+        format!("{drive}:\\{}", rest.replace('/', "\\"))
+    };
+    if is_directory {
+        return Some(ExplorerTarget {
+            folder: windows_path,
+            selected: None,
+        });
+    }
+    let (parent, name) = windows_path.rsplit_once('\\')?;
+    if name.is_empty() {
+        return None;
+    }
+    Some(ExplorerTarget {
+        folder: if parent.is_empty() || parent == format!("{drive}:") {
+            format!("{drive}:\\")
+        } else {
+            parent.to_string()
+        },
+        selected: Some(windows_path),
+    })
+}
+
 fn explorer_target(distro: &str, path: &str, is_directory: bool) -> Result<ExplorerTarget, String> {
     if distro.is_empty()
         || matches!(distro, "." | "..")
@@ -21,6 +55,9 @@ fn explorer_target(distro: &str, path: &str, is_directory: bool) -> Result<Explo
         return Err("invalid-wsl-explorer-path".into());
     }
     let path = path.trim_end_matches('/');
+    if let Some(target) = windows_mount_target(path, is_directory) {
+        return Ok(target);
+    }
     let unc = format!(r"\\wsl.localhost\{distro}{}", path.replace('/', r"\"));
     if is_directory {
         return Ok(ExplorerTarget {
@@ -260,6 +297,48 @@ mod tests {
             Some(r"\\wsl$\Ubuntu\home\project".into())
         );
         assert_eq!(legacy_wsl_folder(r"C:\project"), None);
+    }
+
+    #[test]
+    fn maps_wsl_windows_mounts_to_native_drive_paths() {
+        assert_eq!(
+            explorer_target("Ubuntu", "/mnt/d/Projects/Yuzora", true).unwrap(),
+            ExplorerTarget {
+                folder: r"D:\Projects\Yuzora".into(),
+                selected: None,
+            }
+        );
+        assert_eq!(
+            explorer_target("Ubuntu", "/mnt/d/Projects/readme.md", false).unwrap(),
+            ExplorerTarget {
+                folder: r"D:\Projects".into(),
+                selected: Some(r"D:\Projects\readme.md".into()),
+            }
+        );
+        assert_eq!(
+            explorer_target("Ubuntu", "/mnt/e", true).unwrap(),
+            ExplorerTarget {
+                folder: "E:\\".into(),
+                selected: None,
+            }
+        );
+        assert_eq!(
+            explorer_target("Ubuntu", "/mnt/d/readme.md", false).unwrap(),
+            ExplorerTarget {
+                folder: "D:\\".into(),
+                selected: Some(r"D:\readme.md".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_non_drive_mounts_in_the_wsl_namespace() {
+        assert_eq!(
+            explorer_target("Ubuntu", "/mnt/shared/project", true)
+                .unwrap()
+                .folder,
+            r"\\wsl.localhost\Ubuntu\mnt\shared\project"
+        );
     }
     #[test]
     fn rejects_other_namespaces_traversal_and_windows_shell_characters() {
