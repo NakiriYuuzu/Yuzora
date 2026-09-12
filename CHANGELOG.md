@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.13] - 2026-09-12
+
+### Fixed
+
+- Map WSL `/mnt/<drive>/...` paths to native Windows drive paths when revealing files and folders in Explorer.
+
+
 這裡只記錄使用者可以直接感受到的改變，不包含 commit、檔案名稱或內部實作細節。
 
 ## [0.0.12] - 2026-09-12

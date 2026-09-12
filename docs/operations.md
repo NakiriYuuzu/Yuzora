@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-12（v0.0.12 修正 Stable／Preview 更新探索、舊 host 相容性與 WSL Explorer fallback，候選另行驗收）；Release／Pages 流程最後查證：2026-09-12。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-12（v0.0.13 修正 WSL Windows 磁碟路徑的 Explorer 開啟，候選另行驗收）；Release／Pages 流程最後查證：2026-09-12。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。

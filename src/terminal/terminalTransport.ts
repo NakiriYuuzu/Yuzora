@@ -7,6 +7,7 @@ import {
   herdrTerminalResize,
   herdrTerminalScroll
 } from "@/lib/herdrIpc"
+import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
 import type {
   HerdrTerminalEvent,
   HerdrTerminalMode,
@@ -307,7 +308,20 @@ export function createHerdrTerminalTransport(
       if (disposed || !sessionId || mode !== "control" || delta === 0) return
       const direction = delta < 0 ? "up" : "down"
       const lines = Math.max(1, Math.abs(Math.trunc(delta)))
-      await herdrTerminalScroll(sessionId, direction, lines)
+      try {
+        await herdrTerminalScroll(sessionId, direction, lines)
+      } catch (error) {
+        // Some Windows HERDR builds expose pane scrolling but reject the
+        // connector-level terminal.scroll command. Reuse the official pane
+        // API in that case instead of dropping the wheel gesture.
+        if (!paneId || !sessionName) throw error
+        const state = await readPaneScroll(sessionName, paneId)
+        if (!state) throw error
+        const nextOffset = direction === "up"
+          ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
+          : Math.max(0, state.offsetFromBottom - lines)
+        await setPaneScroll(sessionName, paneId, nextOffset)
+      }
     },
     detach() {
       discardInput()
