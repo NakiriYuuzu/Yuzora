@@ -158,7 +158,12 @@ export function createHerdrTerminalTransport(
   let inputQueue: InputQueue | null = null
   let pendingScrollDelta = 0
   let scrollDrain: Promise<void> | null = null
-  const discardScroll = () => { pendingScrollDelta = 0 }
+  let scrollDrainToken: symbol | null = null
+  let scrollDrainGeneration = 0
+  const discardScroll = () => {
+    pendingScrollDelta = 0
+    scrollDrainGeneration += 1
+  }
   const discardInput = () => {
     if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
     inputQueue = null
@@ -315,17 +320,30 @@ export function createHerdrTerminalTransport(
       // Wheel events can arrive faster than a remote host can acknowledge
       // them. Keep one request in flight and coalesce the rest so scrolls
       // cannot fill the same HERDR queue used by terminal input.
-      pendingScrollDelta += Math.trunc(delta)
-      if (scrollDrain) return scrollDrain
-      scrollDrain = (async () => {
+      const amount = Math.trunc(delta)
+      if (amount === 0) return
+      pendingScrollDelta += amount
+      const generation = scrollDrainGeneration
+      const activeSessionId = sessionId
+      if (scrollDrain && scrollDrainGeneration === generation) return scrollDrain
+      const drainToken = Symbol("scroll-drain")
+      scrollDrainToken = drainToken
+      const drain = (async () => {
         try {
-          while (!disposed && sessionId && mode === "control" && pendingScrollDelta !== 0) {
+          while (
+            !disposed
+            && generation === scrollDrainGeneration
+            && sessionId === activeSessionId
+            && mode === "control"
+            && pendingScrollDelta !== 0
+          ) {
             const nextDelta = pendingScrollDelta
             pendingScrollDelta = 0
             const direction = nextDelta < 0 ? "up" : "down"
             const lines = Math.max(1, Math.abs(nextDelta))
             if (paneScrollEnabled?.() && paneId && sessionName) {
               const state = await readPaneScroll(sessionName, paneId)
+              if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
               if (!state) throw new Error("HERDR pane scrolling unavailable")
               const nextOffset = direction === "up"
                 ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
@@ -334,14 +352,15 @@ export function createHerdrTerminalTransport(
               continue
             }
             try {
-              await herdrTerminalScroll(sessionId, direction, lines)
+              await herdrTerminalScroll(activeSessionId, direction, lines)
             } catch (error) {
               // Older connectors may reject terminal.scroll while still
               // supporting the pane API. Preserve the fallback for callers
               // that explicitly opted into pane scrolling after a capability
               // refresh.
-              if (!paneId || !sessionName) throw error
+              if (!paneScrollEnabled?.() || !paneId || !sessionName) throw error
               const state = await readPaneScroll(sessionName, paneId)
+              if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
               if (!state) throw error
               const nextOffset = direction === "up"
                 ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
@@ -349,11 +368,18 @@ export function createHerdrTerminalTransport(
               await setPaneScroll(sessionName, paneId, nextOffset)
             }
           }
+        } catch (error) {
+          if (generation === scrollDrainGeneration) pendingScrollDelta = 0
+          throw error
         } finally {
-          scrollDrain = null
+          if (scrollDrainToken === drainToken) {
+            scrollDrainToken = null
+            scrollDrain = null
+          }
         }
       })()
-      return scrollDrain
+      scrollDrain = drain
+      return drain
     },
     detach() {
       discardInput()
