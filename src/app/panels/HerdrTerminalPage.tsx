@@ -25,6 +25,7 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
+import { herdrScrollStrategy, supportsHerdrPaneScroll } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import {
   herdrLayoutExport,
@@ -215,7 +216,6 @@ export function HerdrTerminalPage({
       targetCapabilities.terminal.takeover &&
       targetCapabilities.terminal.input &&
       targetCapabilities.terminal.resize &&
-      targetCapabilities.terminal.scroll &&
       targetCapabilities.terminal.release
   )
   const [hasConnectedSession, setHasConnectedSession] = useState(sessionCanConnect)
@@ -751,16 +751,21 @@ function HerdrTerminalLeaf({
   const terminalViewportId = useId()
   const scrollbarRefreshRef = useRef<(() => void) | null>(null)
   const supportsScrollInfo = useHerdrStore((state) => {
-    const capabilities = targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null
-    if (!capabilities) return false
-    const methods = capabilities.api.methods ?? []
-    // Windows HERDR builds may report terminal scrolling before the pane
-    // methods are listed in the capability snapshot. Mount the proxy so its
-    // official pane API probe can establish the real state instead of hiding
-    // the scrollbar entirely.
-    return (methods.includes("pane.get") && methods.includes("pane.scroll"))
-      || capabilities.terminal.scroll
+    // A selected runtime is projected to the global capabilities field while
+    // its scoped record is being reconciled. Keep the scrollbar capability
+    // gate consistent with the connector gate so WSL pages do not lose their
+    // scrollbar during that projection window.
+    const capabilities = (targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null)
+      ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+    // The proxy scrollbar polls the separate pane API. Older runtimes use the
+    // connector wheel command and must not mount a pane proxy that will keep
+    // retrying unsupported methods.
+    return supportsHerdrPaneScroll(capabilities)
   })
+  const supportsScrollInfoRef = useRef(supportsScrollInfo)
+  useEffect(() => {
+    supportsScrollInfoRef.current = supportsScrollInfo
+  }, [supportsScrollInfo])
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -956,6 +961,15 @@ function HerdrTerminalLeaf({
       // Use the resolved runtime scope for both connector and pane-scroll
       // fallback. The legacy `live` token has no addressable pane namespace.
       sessionName: contextSessionName,
+      paneScrollEnabled: () => supportsScrollInfoRef.current,
+      scrollEnabled: () => {
+        const state = useHerdrStore.getState()
+        const capabilities = (targetSessionName
+          ? state.runtimesBySession[targetSessionName]?.capabilities
+          : null)
+          ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        return herdrScrollStrategy(capabilities) !== "unavailable"
+      },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
         registerAttachment(attachmentKey, {

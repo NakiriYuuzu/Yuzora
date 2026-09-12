@@ -445,6 +445,33 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
   })
 
+  it("keeps the scoped WSL scrollbar when capabilities are projected globally", async () => {
+    const scope = JSON.stringify(["wsl-ubuntu", "default"])
+    seedSessions([{ name: "default", default: true, running: false }])
+    const local = useHerdrStore.getState().sessions[0]
+    const capabilities = {
+      ...terminalControlCapabilities,
+      api: { ...terminalControlCapabilities.api, methods: ["pane.get", "pane.scroll"] }
+    }
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      capabilities,
+      sessions: [local, { ...local, hostId: "wsl-ubuntu", runtimeId: scope, running: true }],
+      runtimesBySession: {
+        [scope]: {
+          connectionState: "ready",
+          capabilities: null,
+          snapshot: null,
+          baseSnapshot: null,
+          worktreeInventory: null,
+          errorMessage: null
+        }
+      }
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="same-terminal" paneId="pane-1" active visible />)
+    await waitFor(() => expect(screen.getByTestId("herdr-scroll-proxy")).toBeInTheDocument())
+  })
+
   it("honors onProcessed so two separate flushes both reach xterm", async () => {
     render(
       <HerdrTerminalPage

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Yuzora v0.0.10–v0.0.14 跨平台與 HERDR 驗收</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#17202a}
+h1,h2{line-height:1.25} table{border-collapse:collapse;width:100%;margin:1rem 0} th,td{border:1px solid #ccd4dd;padding:.55rem;text-align:left;vertical-align:top} th{background:#eef3f7}.pass{color:#087f5b;font-weight:700}.blocked{color:#b45309;font-weight:700}.fail{color:#b42318;font-weight:700}.note{background:#fff8e6;padding:.8rem;border-left:4px solid #d69e2e}
+code{background:#f1f3f5;padding:.1rem .25rem}
+</style>
+</head>
+<body>
+<h1>Yuzora v0.0.10–v0.0.14 跨平台與 HERDR 驗收</h1>
+<p>驗收日期：2026-09-13（Asia/Taipei）。候選分支：<code>release/v0.0.14</code>。本報告只把實際執行並取得證據的案例標為 PASS。</p>
+
+<h2>版本與變更覆蓋</h2>
+<table>
+<thead><tr><th>版本</th><th>狀態與實際變更</th><th>程式／測試證據</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td>v0.0.10</td><td>工作工具卡片、editor 快捷鍵／主題／語法辨識、Git Graph／大型文件閱讀、細捲軸、focus／tab／workspace 恢復、Git／Finder／Explorer reveal。</td><td>正式 tag 與 GitHub release；<code>CHANGELOG.md</code>；<code>git diff v0.0.9...release/v0.0.10</code>；frontend 219 files／2676 tests。</td><td class="pass">PASS（程式與契約）</td></tr>
+<tr><td>v0.0.11</td><td>macOS bundle ad-hoc signing；Windows updater 關閉 HERDR 提示。</td><td>正式 tag／release asset 含 macOS aarch64、Windows x64、latest.json 與簽章檔；release contract tests。</td><td class="pass">PASS（release 契約）</td></tr>
+<tr><td>v0.0.12</td><td>Stable／Preview signed updater channel；舊版 native update command 相容；WSL Explorer fallback。</td><td><code>src-tauri/src/update_channel.rs</code>、<code>src/lib/updateChannel.ts</code>；<code>bun run check:updater-release</code>。</td><td class="pass">PASS（程式與契約）</td></tr>
+<tr><td>v0.0.13</td><td>WSL <code>/mnt/&lt;drive&gt;</code> 映射 native Windows Explorer；Windows terminal scroll fallback。</td><td><code>src-tauri/src/host_reveal.rs</code>；Windows App 實機 Explorer 開啟 <code>F:\Apps\Tauri\Yuzora\src</code>；transport tests。</td><td class="pass">PASS（WSL 實機）</td></tr>
+<tr><td>v0.0.14 candidate</td><td>WSL scroll coalescing／輸入保護；scroll capability gating；本次新增 pane metadata null fallback 與集中 capability adapter。</td><td><code>src/lib/herdrCapabilities.ts</code>；<code>src/terminal/terminalTransport.ts</code>；29 個 targeted tests 全通過。</td><td class="pass">PASS（程式、測試、macOS 實機）</td></tr>
+</tbody>
+</table>
+
+<h2>本次修正</h2>
+<ul>
+<li>建立 <code>herdrScrollStrategy</code>：0.8.2／protocol 20（<code>pane.get</code> 無 <code>pane.scroll</code>）使用 connector <code>terminal.scroll</code>；0.9.0／protocol 22 同時具備 <code>pane.get</code>／<code>pane.scroll</code> 時才使用 pane API；能力未知時不呼叫捲動 API。</li>
+<li>pane scroll metadata 暫時回傳 null 或讀取失敗時，退回 <code>terminal.scroll</code>，避免 transient failure 變成輸入中斷。</li>
+<li>保留既有單一 in-flight scroll drain 與 coalescing，避免快速滾輪佔滿 terminal input queue。</li>
+</ul>
+
+<h2>HERDR 相容性矩陣</h2>
+<table>
+<thead><tr><th>HERDR</th><th>實際來源</th><th>能力結果</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td>0.8.2 / protocol 20</td><td><code>/private/tmp/yuzora-herdr-090/herdr-0.8.2-negative-control --version</code>；實際 <code>api schema --json</code>。</td><td>session.snapshot、pane.get、events.subscribe 存在；pane.scroll 不存在；adapter 選 terminal strategy。</td><td class="pass">PASS（runtime + regression fixture）</td></tr>
+<tr><td>0.9.0 / protocol 22</td><td><code>~/.local/bin/herdr --version</code>、<code>api schema --json</code>；官方 GitHub release。</td><td>官方 schema 含 pane.get／pane.scroll；adapter 選 pane strategy；pane metadata null fallback 已測。</td><td class="pass">PASS（runtime + regression fixture）</td></tr>
+<tr><td>preview builds</td><td>官方 release list 可取得多個 preview，但本次未將 preview 標為正式支援。</td><td>能力以 runtime schema／methods 協商，不以 version number 推斷。</td><td>NOT RUN（未逐一啟動）</td></tr>
+</tbody>
+</table>
+
+<h2>平台實機矩陣</h2>
+<table>
+<thead><tr><th>平台／環境</th><th>測試</th><th>證據</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td>macOS Apple Silicon<br>Yuzora native app<br>HERDR 0.9.0</td><td>Space／Session／多 terminal；輸入命令；scrollbar 操作與 focus 保留。</td><td>原生 UI：輸入回顯 <code>YUZORA-MACOS-E2E</code>；scrollbar value 597→523；焦點仍為 Terminal input；另一 terminal 顯示無 pane scroll metadata 且可繼續輸入。</td><td class="pass">PASS</td></tr>
+<tr><td>Windows App → WSL2 Ubuntu-26.04<br>HERDR WSL session</td><td>WSL terminal input；Windows-mounted path；Explorer reveal。</td><td>終端回顯 WSL command；工作目錄 <code>/mnt/f/Apps/Tauri/Yuzora</code>；Explorer 實際開啟 <code>F:\Apps\Tauri\Yuzora\src</code>。</td><td class="pass">PASS</td></tr>
+<tr><td>Windows native HERDR</td><td>原生 session、Windows path、terminal／Pi Agent。</td><td>目前 Windows App 遠端只列出 Ubuntu-26.04 session，沒有可獨立選取的 Windows-native HERDR session。</td><td class="blocked">BLOCKED</td></tr>
+<tr><td>實際候選安裝／升級與同一 session 延續</td><td>安裝包、updater、runtime 保留與舊 session reconnect。</td><td>本機 <code>tauri:build</code> 被 <code>runtime:verify</code> 擋下：四個 host manifest 停在 0.0.9-beta.3，部分 bundled HERDR 停在 0.8.2，不能安全冒充 0.0.14 產物。</td><td class="blocked">BLOCKED</td></tr>
+</tbody>
+</table>
+
+<h2>效能與穩定性</h2>
+<ul>
+<li>基線與回歸：frontend 全套 219 test files／2676 tests PASS；frontend production build 約 7.11 秒；host/app <code>cargo check --locked --all-targets</code> PASS；release contract 45 tests PASS。</li>
+<li>原生 macOS 穩態觀察：狀態列約 6% CPU、165MB App＋managed processes，3 個 managed tools 約 28MB；三個 terminal 仍保持可操作。</li>
+<li>HERDR scroll 路徑的可量化改善是 IPC 背壓：快速 wheel 維持單一 in-flight request，測試確認兩次併發輸入只產生兩個有序 remote scroll；pane API 暫時不可用時不再拋出可見錯誤。</li>
+<li>跨平台 packaged before/after p50/p95 尚未可量測，因候選包被 host resource contract 阻擋；不以開發版主觀速度推論 packaged 結果。</li>
+</ul>
+
+<h2>剩餘阻擋與後續回歸</h2>
+<div class="note">必須在四個 Unix runner 重新執行 <code>bun run host:prepare</code>，產生與 0.0.14 相符且 hash 正確的 host helpers／HERDR manifests，才能解除 packaged candidate、安裝／升級與 updater session-continuity BLOCKED。Windows native HERDR session 也必須在 Windows App 提供後補做同一矩陣。</div>
+<p>固定回歸案例已落在 <code>herdrCapabilities.test.ts</code>、<code>herdrTerminalTransport.test.ts</code>、既有 host capability／scroll tests 與 release contract tests，會隨 CI 執行。</p>
+</body>
+</html>
