@@ -97,7 +97,24 @@ export const useHostStore = create<HostState>((set, get) => {
         if (inspection.check && !inspection.check.canApply) throw new Error("runtime-incompatible: " + JSON.stringify(inspection.check))
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
         update(hostId, { connection: previous?.connection ?? null, connecting: true, error: null, target, attempt: 0, retryAt: 0 })
-        const prepared = await prepareHost(hostId, target, selection)
+        let prepared: Awaited<ReturnType<typeof prepareHost>>
+        try {
+          prepared = await prepareHost(hostId, target, selection)
+        } catch (error) {
+          // A host update normally prepares the replacement before closing the
+          // current connection so the old runtime keeps serving work. Some
+          // helpers reject a second connection for the same host with
+          // `host-already-connected`; release only that existing connection and
+          // retry the prepare step instead of leaving updates permanently
+          // blocked.
+          const message = error instanceof Error ? error.message : String(error)
+          const connected = get().hosts[hostId]?.connection ?? previous?.connection
+          if (message !== "host-already-connected" || !connected) throw error
+          await close(hostId)
+          connectionWasClosed = true
+          if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed", { cause: error })
+          prepared = await prepareHost(hostId, target, selection)
+        }
         preparedConnection = prepared.connection
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
         connectionWasClosed = true

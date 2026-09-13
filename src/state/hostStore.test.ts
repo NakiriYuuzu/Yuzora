@@ -168,6 +168,18 @@ it("preserves the existing connection and configuration when a candidate is inco
   expect(useHostStore.getState().configs.host).toBe(config)
   expect(useHostStore.getState().hosts.host.connection).toBe(connected)
 })
+it("releases a connected host before retrying an update blocked by host-already-connected", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const connected = host()
+  useHostStore.setState({ configs: { host: config }, hosts: { host: { connection: connected, connecting: false, error: null, target: { kind: "ssh", sessionId: "ssh-1" }, attempt: 0, retryAt: 0 } } })
+  mocks.prepare
+    .mockRejectedValueOnce(new Error("host-already-connected"))
+    .mockResolvedValueOnce({ connection: host(2), helper: "/updated-helper", binary: "/updated-herdr" })
+  await expect(useHostStore.getState().setup("host", "Server", { kind: "ssh", sessionId: "ssh-1" })).resolves.toEqual(host(2))
+  expect(mocks.disconnect).toHaveBeenCalledWith(connected.owner)
+  expect(mocks.prepare).toHaveBeenCalledTimes(2)
+  expect(mocks.register).toHaveBeenCalledWith(host(2), "/updated-herdr", "Server", "ssh")
+})
 it("keeps WSL dormant by default and disconnects only the helper when disabled", async () => {
   const { useHostStore } = await import("./hostStore")
   const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
