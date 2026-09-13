@@ -345,7 +345,13 @@ export function createHerdrTerminalTransport(
         || mode !== "control"
         || delta === 0
         || scrollEnabled?.() === false
-        || terminalScrollUnavailable
+      ) return
+      // A rejected connector command is terminal for this attachment unless
+      // the caller supplied an addressable pane fallback. Preserve the
+      // no-retry breaker for legacy runtimes that have neither transport.
+      if (
+        terminalScrollUnavailable
+        && !(paneScrollEnabled?.() && paneId && sessionName)
       ) return
       // Wheel events can arrive faster than a remote host can acknowledge
       // them. Keep one request in flight and coalesce the rest so scrolls
@@ -371,7 +377,15 @@ export function createHerdrTerminalTransport(
             pendingScrollDelta = 0
             const direction = nextDelta < 0 ? "up" : "down"
             const lines = Math.max(1, Math.abs(nextDelta))
-            if (paneScrollEnabled?.() && paneId && sessionName) {
+            // Native HERDR's connector command is the fast path. WSL uses the
+            // pane API because terminal.scroll can tear down its bridge. Once
+            // a native connector rejects, trip the breaker and use the pane
+            // API for the remainder of this attachment.
+            const usePaneScroll = paneScrollEnabled?.()
+              && paneId
+              && sessionName
+              && (terminalScrollEnabled?.() !== true || terminalScrollUnavailable)
+            if (usePaneScroll) {
               // A pane may legitimately have no scroll metadata yet (for
               // example before its first full frame). Keep the older
               // connector command as the compatible fallback instead of

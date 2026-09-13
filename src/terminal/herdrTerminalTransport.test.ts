@@ -370,6 +370,33 @@ describe("createHerdrTerminalTransport", () => {
     expect(setPaneScroll).toHaveBeenCalledWith("[wsl-host,default]", "pane-1", 7)
   })
 
+  it("keeps native scrolling on the connector fast path when pane metrics are available", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-native",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockResolvedValue(undefined)
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "[native,default]",
+      paneScrollEnabled: () => true,
+      terminalScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-native", "up", 3)
+    expect(readPaneScroll).not.toHaveBeenCalled()
+    expect(setPaneScroll).not.toHaveBeenCalled()
+  })
+
   it("reuses a short-lived pane snapshot during wheel bursts", async () => {
     vi.mocked(herdrTerminalOpen).mockResolvedValue({
       sessionId: "sess-pane-cache",

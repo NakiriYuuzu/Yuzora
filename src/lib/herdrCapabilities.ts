@@ -71,7 +71,15 @@ export function herdrScrollStrategyForRuntime(
       ?? capabilities?.binaryProtocol
       ?? capabilities?.server.protocol
     if (protocol == null || protocol < 22) return "unavailable"
+    // The WSL bridge historically tears down its connector when receiving
+    // terminal.scroll. Protocol 22 is the boundary where the pane-owned API
+    // is safe to use for that bridge.
+    return "pane"
   }
+  // Native desktop HERDR has a low-latency connector scroll command. Prefer it
+  // even when pane metrics are available; the pane API remains the scrollbar
+  // authority and is used as a fallback when the connector rejects the call.
+  if (supportsHerdrTerminalScroll(capabilities)) return "terminal"
   if (supportsHerdrPaneScrollCandidate(capabilities)) return "pane"
   return herdrScrollStrategy(capabilities)
 }

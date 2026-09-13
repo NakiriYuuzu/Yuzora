@@ -114,6 +114,13 @@ describe("HERDR capability adapter", () => {
     expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("pane")
   })
 
+  it("prefers the low-latency connector scroll on native protocol-22 runtimes", () => {
+    const caps = capabilities(["session.snapshot", "pane.get", "pane.scroll"])
+
+    expect(herdrScrollStrategyForRuntime(caps, "local")).toBe("terminal")
+    expect(herdrScrollStrategyForRuntime(caps, "windows-native")).toBe("terminal")
+  })
+
   it("still probes protocol-22 when the method list is incomplete", () => {
     const caps = capabilities(["session.snapshot", "pane.get"])
     caps.binaryProtocol = 22
