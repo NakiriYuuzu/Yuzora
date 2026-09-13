@@ -370,6 +370,43 @@ describe("createHerdrTerminalTransport", () => {
     expect(setPaneScroll).toHaveBeenCalledWith("[wsl-host,default]", "pane-1", 7)
   })
 
+  it("reuses a short-lived pane snapshot during wheel bursts", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane-cache",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue({
+      offsetFromBottom: 10,
+      maxOffsetFromBottom: 40,
+      viewportRows: 24
+    })
+    vi.mocked(setPaneScroll).mockImplementation(async (_session, _pane, offset) => ({
+      offsetFromBottom: offset,
+      maxOffsetFromBottom: 40,
+      viewportRows: 24
+    }))
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "default",
+      paneScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-2)
+    await transport.scroll?.(-2)
+    await transport.scroll?.(-2)
+
+    expect(readPaneScroll).toHaveBeenCalledOnce()
+    expect(setPaneScroll).toHaveBeenNthCalledWith(1, "default", "pane-1", 12)
+    expect(setPaneScroll).toHaveBeenNthCalledWith(3, "default", "pane-1", 16)
+  })
+
   it("falls back to terminal.scroll when pane metadata is temporarily unavailable", async () => {
     vi.mocked(herdrTerminalOpen).mockResolvedValue({
       sessionId: "sess-pane-null",

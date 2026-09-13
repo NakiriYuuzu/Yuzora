@@ -370,6 +370,16 @@ export function HerdrTerminalPage({
     }
     return map
   }, [terminals, agents])
+  // WSL projections can arrive with the page's original paneId unset while
+  // the authoritative snapshot already carries it. Resolve that identity once
+  // here so the legacy single-pane path can mount the same scrollbar as BSP.
+  const resolvedPaneId = useMemo(
+    () => paneId
+      ?? terminals?.find((item) => item.terminalId === terminalId)?.paneId
+      ?? agents?.find((item) => item.terminalId === terminalId)?.paneId
+      ?? null,
+    [agents, paneId, terminalId, terminals]
+  )
 
   const onSplitRatioChanged = useCallback(
     (splitPath: boolean[], ratio: number) => {
@@ -480,7 +490,7 @@ export function HerdrTerminalPage({
     leafActive: boolean
   ): ReactNode => {
     if (node.type === "pane") {
-      const leafPaneId = node.paneId ?? paneId ?? null
+      const leafPaneId = node.paneId ?? resolvedPaneId
       const leafTerminalId =
         (leafPaneId ? paneToTerminal.get(leafPaneId) : null) ??
         (path.length === 0 ? terminalId : null)
@@ -565,7 +575,7 @@ export function HerdrTerminalPage({
       sessionRunningOverride={surfaceSessionRunning}
       connectorEnabledOverride={canOpenTerminalConnector}
       terminalId={terminalId}
-      paneId={paneId}
+      paneId={resolvedPaneId}
       label={null}
       title={title}
       active={active}
@@ -592,7 +602,7 @@ export function HerdrTerminalPage({
       sessionRunningOverride={surfaceSessionRunning}
       connectorEnabledOverride={canOpenTerminalConnector}
       terminalId={terminalId}
-      paneId={paneId}
+      paneId={resolvedPaneId}
       label={null}
       title={title}
       active={active}

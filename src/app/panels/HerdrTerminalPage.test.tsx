@@ -472,6 +472,37 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     await waitFor(() => expect(screen.getByTestId("herdr-scroll-proxy")).toBeInTheDocument())
   })
 
+  it("resolves a delayed WSL pane identity from the scoped snapshot", async () => {
+    const scope = JSON.stringify(["wsl-ubuntu", "default"])
+    const snapshot = normalizeHerdrSnapshot({
+      protocol: 22,
+      version: "0.9.0",
+      snapshot: {
+        tabs: [{ tab_id: "tab-1", workspace_id: "space-1", terminal_id: "same-terminal", pane_id: "pane-wsl" }],
+        panes: [{ pane_id: "pane-wsl", terminal_id: "same-terminal", tab_id: "tab-1", workspace_id: "space-1" }]
+      }
+    }, scope)
+    seedSessions([{ name: "default", default: true, running: false }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      capabilities: { ...terminalControlCapabilities, api: { ...terminalControlCapabilities.api, methods: ["pane.get", "pane.scroll"] } },
+      sessions: [local, { ...local, hostId: "wsl-ubuntu", runtimeId: scope, running: true }],
+      runtimesBySession: {
+        [scope]: {
+          connectionState: "ready",
+          capabilities: null,
+          snapshot,
+          baseSnapshot: snapshot,
+          worktreeInventory: null,
+          errorMessage: null
+        }
+      }
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="same-terminal" active visible />)
+    await waitFor(() => expect(screen.getByTestId("herdr-scroll-proxy")).toBeInTheDocument())
+  })
+
   it("honors onProcessed so two separate flushes both reach xterm", async () => {
     render(
       <HerdrTerminalPage

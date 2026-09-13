@@ -8,6 +8,7 @@ import {
   herdrTerminalScroll
 } from "@/lib/herdrIpc"
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
+import type { PaneScrollInfo } from "./herdrScrollController"
 import type {
   HerdrTerminalEvent,
   HerdrTerminalMode,
@@ -44,6 +45,12 @@ export function normalizeTerminalWheelRows(
       : Math.abs(deltaY) / 16
   return Math.min(rows, Math.max(1, Math.round(rawRows)))
 }
+
+// HERDR pane.get is a remote IPC/RPC round trip. Keep a short-lived local
+// snapshot while wheel events are being drained so a burst is one read plus
+// writes instead of read-before-every-write. The proxy scrollbar still polls
+// independently, so external writers are observed shortly after the burst.
+const PANE_SCROLL_CACHE_MS = 160
 
 export interface TerminalTransportOpenArgs {
   cols: number
@@ -163,9 +170,12 @@ export function createHerdrTerminalTransport(
   let scrollDrain: Promise<void> | null = null
   let scrollDrainToken: symbol | null = null
   let scrollDrainGeneration = 0
+  let paneScrollCache: { state: PaneScrollInfo; at: number } | null = null
+  const clearPaneScrollCache = () => { paneScrollCache = null }
   const discardScroll = () => {
     pendingScrollDelta = 0
     scrollDrainGeneration += 1
+    clearPaneScrollCache()
   }
   const discardInput = () => {
     if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
@@ -349,13 +359,21 @@ export function createHerdrTerminalTransport(
               // example before its first full frame). Keep the older
               // connector command as the compatible fallback instead of
               // turning a transient null into a visible wheel error.
-              const state = await readPaneScroll(sessionName, paneId).catch(() => null)
+              const now = Date.now()
+              const cached = paneScrollCache && now - paneScrollCache.at <= PANE_SCROLL_CACHE_MS
+                ? paneScrollCache.state
+                : null
+              const state = cached ?? await readPaneScroll(sessionName, paneId).catch(() => null)
               if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
               if (state) {
                 const nextOffset = direction === "up"
                   ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
                   : Math.max(0, state.offsetFromBottom - lines)
-                await setPaneScroll(sessionName, paneId, nextOffset)
+                const nextState = await setPaneScroll(sessionName, paneId, nextOffset)
+                paneScrollCache = {
+                  state: nextState ?? { ...state, offsetFromBottom: nextOffset },
+                  at: Date.now()
+                }
                 continue
               }
             }
@@ -373,7 +391,11 @@ export function createHerdrTerminalTransport(
               const nextOffset = direction === "up"
                 ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
                 : Math.max(0, state.offsetFromBottom - lines)
-              await setPaneScroll(sessionName, paneId, nextOffset)
+              const nextState = await setPaneScroll(sessionName, paneId, nextOffset)
+              paneScrollCache = {
+                state: nextState ?? { ...state, offsetFromBottom: nextOffset },
+                at: Date.now()
+              }
             }
           }
         } catch (error) {
