@@ -114,10 +114,10 @@ describe("HERDR capability adapter", () => {
     expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("pane")
   })
 
-  it("does not probe protocol-22 when the schema explicitly omits pane methods", () => {
+  it("still probes protocol-22 when the method list is incomplete", () => {
     const caps = capabilities(["session.snapshot", "pane.get"])
     caps.binaryProtocol = 22
     caps.api.schemaProtocol = 22
-    expect(supportsHerdrPaneScrollCandidate(caps)).toBe(false)
+    expect(supportsHerdrPaneScrollCandidate(caps)).toBe(true)
   })
 })

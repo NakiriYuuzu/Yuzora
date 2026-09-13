@@ -789,6 +789,10 @@ function HerdrTerminalLeaf({
   useEffect(() => {
     supportsScrollInfoRef.current = supportsScrollInfo
   }, [supportsScrollInfo])
+  // Some protocol-22 snapshots omit pane_id even though terminal_id is the
+  // addressable pane key. Let the official pane probe validate this candidate
+  // instead of hiding the scrollbar before it can read the range.
+  const scrollPaneId = paneId ?? (supportsScrollInfo ? terminalId : null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -977,7 +981,7 @@ function HerdrTerminalLeaf({
 
     const transport = createHerdrTerminalTransport({
       terminalId,
-      paneId,
+      paneId: scrollPaneId,
       mode: "control",
       takeover: true,
       // Use the resolved runtime scope for both connector and pane-scroll
@@ -1347,8 +1351,8 @@ function HerdrTerminalLeaf({
       )}
       <div className="flex min-h-0 flex-1">
         <div id={terminalViewportId} ref={containerRef} className="min-h-0 min-w-0 flex-1" />
-        <HerdrScrollbar sessionName={contextSessionName} paneId={paneId ?? ""}
-          enabled={active && visible && sessionCanConnect && !!paneId && supportsScrollInfo}
+        <HerdrScrollbar sessionName={contextSessionName} paneId={scrollPaneId ?? ""}
+          enabled={active && visible && sessionCanConnect && !!scrollPaneId && supportsScrollInfo}
           viewportId={terminalViewportId} refreshRef={scrollbarRefreshRef}
           canScroll={() => !disposedRef.current && document.visibilityState !== "hidden" && visibleRef.current && activeRef.current && openReadyRef.current
             && termRef.current?.buffer.active.type === "normal" && !!transportRef.current?.canWrite()} />

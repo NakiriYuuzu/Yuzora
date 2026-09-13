@@ -27,8 +27,8 @@ export function supportsHerdrPaneScroll(
  * Protocol 22 is the pane-scroll schema boundary. During remote host
  * reconnects an otherwise valid schema can arrive without its method list;
  * treat that state as a probe candidate so the official pane endpoint can
- * establish the real range. An explicit non-empty list still wins and must
- * advertise both methods.
+ * establish the real range. The probe remains authoritative; an unsupported
+ * endpoint simply leaves the rendered proxy disabled.
  */
 export function supportsHerdrPaneScrollCandidate(
   capabilities: HerdrCapabilities | null | undefined
@@ -38,7 +38,7 @@ export function supportsHerdrPaneScrollCandidate(
     ?? capabilities.binaryProtocol
     ?? capabilities.server.protocol
   if (protocol == null || protocol < 22) return false
-  return capabilities.api.methods.length === 0 || supportsHerdrPaneScroll(capabilities)
+  return true
 }
 
 /** The connector scroll command is available to a controller on 0.8.2+. */
