@@ -503,6 +503,38 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     await waitFor(() => expect(screen.getByTestId("herdr-scroll-proxy")).toBeInTheDocument())
   })
 
+  it("uses the focused pane for a legacy WSL page before panes are projected", async () => {
+    const scope = JSON.stringify(["wsl-ubuntu", "default"])
+    const snapshot = normalizeHerdrSnapshot({
+      protocol: 22,
+      version: "0.9.0",
+      snapshot: {
+        focused_pane_id: "pane-focused",
+        tabs: [{ tab_id: "tab-1", workspace_id: "space-1", terminal_id: "same-terminal" }],
+        panes: []
+      }
+    }, scope)
+    seedSessions([{ name: "default", default: true, running: false }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      capabilities: { ...terminalControlCapabilities, api: { ...terminalControlCapabilities.api, methods: ["pane.get", "pane.scroll"] } },
+      sessions: [local, { ...local, hostId: "wsl-ubuntu", runtimeId: scope, running: true }],
+      runtimesBySession: {
+        [scope]: {
+          connectionState: "ready",
+          capabilities: null,
+          snapshot,
+          baseSnapshot: snapshot,
+          worktreeInventory: null,
+          errorMessage: null
+        }
+      }
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="same-terminal" active visible />)
+    await waitFor(() => expect(screen.getByTestId("herdr-scroll-proxy")).toBeInTheDocument())
+  })
+
   it("honors onProcessed so two separate flushes both reach xterm", async () => {
     render(
       <HerdrTerminalPage

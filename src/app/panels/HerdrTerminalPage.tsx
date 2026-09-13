@@ -179,7 +179,7 @@ export function HerdrTerminalPage({
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
-  const { terminals, agents, resolvedTabId } = useHerdrStore(useShallow((s) => {
+  const { terminals, agents, resolvedTabId, focusedPaneId: snapshotFocusedPaneId, focusedTerminalId: snapshotFocusedTerminalId } = useHerdrStore(useShallow((s) => {
     const snapshot = (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
       ?? (targetSessionName === s.selectedSessionName ? s.snapshot : null)
     // Focus updates replace the snapshot and tab flags. A mounted page only
@@ -193,7 +193,9 @@ export function HerdrTerminalPage({
     return {
       terminals: snapshot?.terminals,
       agents: snapshot?.agents,
-      resolvedTabId: knownTab ? herdrTabId : fromTerminal?.tabId ?? fromAgent?.tabId ?? herdrTabId
+      resolvedTabId: knownTab ? herdrTabId : fromTerminal?.tabId ?? fromAgent?.tabId ?? herdrTabId,
+      focusedPaneId: snapshot?.focusedPaneId ?? null,
+      focusedTerminalId: snapshot?.focusedTerminalId ?? null
     }
   }))
   const targetCapabilities = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.capabilities : null)
@@ -377,8 +379,15 @@ export function HerdrTerminalPage({
     () => paneId
       ?? terminals?.find((item) => item.terminalId === terminalId)?.paneId
       ?? agents?.find((item) => item.terminalId === terminalId)?.paneId
+      // Legacy WSL pages can be restored before their scoped `panes[]`
+      // projection arrives. If this is the focused terminal, the snapshot's
+      // focused pane is still an authoritative identity for the probe.
+      ?? (snapshotFocusedPaneId
+        && (!snapshotFocusedTerminalId || snapshotFocusedTerminalId === terminalId)
+        ? snapshotFocusedPaneId
+        : null)
       ?? null,
-    [agents, paneId, terminalId, terminals]
+    [agents, paneId, snapshotFocusedPaneId, snapshotFocusedTerminalId, terminalId, terminals]
   )
 
   const onSplitRatioChanged = useCallback(
