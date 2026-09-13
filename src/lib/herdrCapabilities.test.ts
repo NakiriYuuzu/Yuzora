@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   hasHerdrMethod,
   herdrScrollStrategy,
+  herdrScrollStrategyForRuntime,
   supportsHerdrPaneScroll,
   supportsHerdrTerminalScroll
 } from "./herdrCapabilities"
@@ -84,5 +85,23 @@ describe("HERDR capability adapter", () => {
     const caps = capabilities([], { control: false, resize: false, release: false, scroll: false })
 
     expect(herdrScrollStrategy(caps)).toBe("unavailable")
+  })
+
+  it("blocks the protocol-20 WSL terminal scroll command", () => {
+    const caps = capabilities(["session.snapshot", "pane.get"])
+    caps.binaryVersion = "0.8.2"
+    caps.binaryProtocol = 20
+    caps.api.schemaProtocol = 20
+
+    expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("unavailable")
+    expect(herdrScrollStrategyForRuntime(caps, "local")).toBe("terminal")
+  })
+
+  it("keeps WSL unavailable until its protocol is known", () => {
+    const caps = capabilities(["session.snapshot"], { scroll: true })
+    caps.binaryProtocol = null
+    caps.api.schemaProtocol = null
+    caps.server.protocol = null
+    expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("unavailable")
   })
 })

@@ -173,6 +173,10 @@ export function createHerdrTerminalTransport(
   let scrollDrain: Promise<void> | null = null
   let scrollDrainToken: symbol | null = null
   let scrollDrainGeneration = 0
+  // A rejected legacy connector command is not safe to retry: some bridges
+  // close the connector while processing terminal.scroll. Trip the breaker
+  // for this attachment and let a reconnect renegotiate capabilities.
+  let terminalScrollUnavailable = false
   let paneScrollCache: { state: PaneScrollInfo; at: number } | null = null
   const clearPaneScrollCache = () => { paneScrollCache = null }
   const discardScroll = () => {
@@ -332,7 +336,14 @@ export function createHerdrTerminalTransport(
       await herdrTerminalResize(sessionId, cols, rows)
     },
     async scroll(delta) {
-      if (disposed || !sessionId || mode !== "control" || delta === 0 || scrollEnabled?.() === false) return
+      if (
+        disposed
+        || !sessionId
+        || mode !== "control"
+        || delta === 0
+        || scrollEnabled?.() === false
+        || terminalScrollUnavailable
+      ) return
       // Wheel events can arrive faster than a remote host can acknowledge
       // them. Keep one request in flight and coalesce the rest so scrolls
       // cannot fill the same HERDR queue used by terminal input.
@@ -384,6 +395,7 @@ export function createHerdrTerminalTransport(
             try {
               await herdrTerminalScroll(activeSessionId, direction, lines)
             } catch (error) {
+              terminalScrollUnavailable = true
               // Older connectors may reject terminal.scroll while still
               // supporting the pane API. Preserve the fallback for callers
               // that explicitly opted into pane scrolling after a capability

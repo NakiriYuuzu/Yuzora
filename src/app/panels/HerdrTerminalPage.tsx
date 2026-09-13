@@ -25,7 +25,7 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
-import { herdrScrollStrategy, supportsHerdrPaneScroll } from "@/lib/herdrCapabilities"
+import { herdrScrollStrategyForRuntime, supportsHerdrPaneScroll } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import {
   herdrLayoutExport,
@@ -742,6 +742,10 @@ function HerdrTerminalLeaf({
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
+  const targetHostId = useMemo(
+    () => sessions.find((session) => sessionScope(session) === targetSessionName)?.hostId ?? null,
+    [sessions, targetSessionName]
+  )
   const baseCwd = useHerdrStore((s) => resolveHerdrTerminalBaseCwd({
     snapshot: targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null,
     terminalId,
@@ -978,7 +982,7 @@ function HerdrTerminalLeaf({
           ? state.runtimesBySession[targetSessionName]?.capabilities
           : null)
           ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
-        return herdrScrollStrategy(capabilities) !== "unavailable"
+        return herdrScrollStrategyForRuntime(capabilities, targetHostId) !== "unavailable"
       },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return

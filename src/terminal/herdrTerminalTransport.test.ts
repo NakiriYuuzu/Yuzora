@@ -525,9 +525,7 @@ describe("createHerdrTerminalTransport", () => {
       rows: 24,
       takeover: true
     })
-    vi.mocked(herdrTerminalScroll)
-      .mockRejectedValueOnce(new Error("scroll unavailable"))
-      .mockResolvedValue(undefined)
+    vi.mocked(herdrTerminalScroll).mockRejectedValueOnce(new Error("scroll unavailable"))
     const transport = createHerdrTerminalTransport({ terminalId: "t1" })
     await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
     const failed = transport.scroll?.(-3)?.catch((error) => error)
@@ -535,7 +533,26 @@ describe("createHerdrTerminalTransport", () => {
     await Promise.all([failed, queued])
     await transport.scroll?.(-1)
 
-    expect(herdrTerminalScroll).toHaveBeenNthCalledWith(2, "sess-error", "up", 1)
+    expect(herdrTerminalScroll).toHaveBeenCalledOnce()
+  })
+
+  it("does not retry a rejected terminal scroll on the same attachment", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-breaker",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockRejectedValue(new Error("connector closed"))
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+
+    await expect(transport.scroll?.(-1)).rejects.toThrow("connector closed")
+    await transport.scroll?.(-1)
+    expect(herdrTerminalScroll).toHaveBeenCalledOnce()
   })
 
   it("ignores fractional scroll deltas without poisoning the drain", async () => {

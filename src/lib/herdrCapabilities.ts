@@ -37,6 +37,26 @@ export function supportsHerdrTerminalScroll(
 
 export type HerdrScrollStrategy = "pane" | "terminal" | "unavailable"
 
+/**
+ * The WSL bridge shipped with protocol 20 advertises terminal control but
+ * can terminate the connector when it receives `terminal.scroll`. Keep that
+ * legacy boundary unavailable until the runtime exposes the pane-owned scroll
+ * API (protocol 22). A missing protocol is also treated as unsafe for WSL so
+ * an incomplete capability response cannot trigger the destructive command.
+ */
+export function herdrScrollStrategyForRuntime(
+  capabilities: HerdrCapabilities | null | undefined,
+  hostId?: string | null
+): HerdrScrollStrategy {
+  if (hostId?.toLowerCase().startsWith("wsl:")) {
+    const protocol = capabilities?.api.schemaProtocol
+      ?? capabilities?.binaryProtocol
+      ?? capabilities?.server.protocol
+    if (protocol == null || protocol < 22) return "unavailable"
+  }
+  return herdrScrollStrategy(capabilities)
+}
+
 export function herdrScrollStrategy(
   capabilities: HerdrCapabilities | null | undefined
 ): HerdrScrollStrategy {
