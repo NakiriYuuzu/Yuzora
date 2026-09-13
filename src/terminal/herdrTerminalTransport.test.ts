@@ -391,11 +391,13 @@ describe("createHerdrTerminalTransport", () => {
       viewportRows: 24
     }))
 
+    const onPaneScroll = vi.fn()
     const transport = createHerdrTerminalTransport({
       terminalId: "t1",
       paneId: "pane-1",
       sessionName: "default",
-      paneScrollEnabled: () => true
+      paneScrollEnabled: () => true,
+      onPaneScroll
     })
     await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
     await transport.scroll?.(-2)
@@ -405,6 +407,7 @@ describe("createHerdrTerminalTransport", () => {
     expect(readPaneScroll).toHaveBeenCalledOnce()
     expect(setPaneScroll).toHaveBeenNthCalledWith(1, "default", "pane-1", 12)
     expect(setPaneScroll).toHaveBeenNthCalledWith(3, "default", "pane-1", 16)
+    expect(onPaneScroll).toHaveBeenLastCalledWith({ offsetFromBottom: 16, maxOffsetFromBottom: 40, viewportRows: 24 })
   })
 
   it("falls back to terminal.scroll when pane metadata is temporarily unavailable", async () => {

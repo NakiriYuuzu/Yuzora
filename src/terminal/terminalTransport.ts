@@ -122,6 +122,8 @@ export interface HerdrTerminalTransportOptions {
   paneScrollEnabled?: () => boolean
   /** True when at least one verified scroll transport is available. */
   scrollEnabled?: () => boolean
+  /** Publish the authoritative pane state returned by pane.scroll without another read. */
+  onPaneScroll?: (state: PaneScrollInfo) => void
   onAttachment?: (info: {
     sessionId: string
     mode: HerdrTerminalMode
@@ -149,6 +151,7 @@ export function createHerdrTerminalTransport(
     sessionName = null,
     paneScrollEnabled,
     scrollEnabled,
+    onPaneScroll,
     onAttachment,
     onPaneId
   } = options
@@ -374,6 +377,7 @@ export function createHerdrTerminalTransport(
                   state: nextState ?? { ...state, offsetFromBottom: nextOffset },
                   at: Date.now()
                 }
+                if (nextState) onPaneScroll?.(nextState)
                 continue
               }
             }
@@ -396,6 +400,7 @@ export function createHerdrTerminalTransport(
                 state: nextState ?? { ...state, offsetFromBottom: nextOffset },
                 at: Date.now()
               }
+              if (nextState) onPaneScroll?.(nextState)
             }
           }
         } catch (error) {

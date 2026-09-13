@@ -11,7 +11,7 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
   paneId: string
   enabled: boolean
   canScroll: () => boolean
-  refreshRef: RefObject<(() => void) | null>
+  refreshRef: RefObject<((state?: PaneScrollInfo | null) => void) | null>
   viewportId: string
 }) {
   const { t } = useTranslation("terminalScroll")
@@ -41,7 +41,13 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
       change: setState,
     })
     controller.current = active
-    const refresh = () => { const writable = permission.current(); setWritable(writable); if (writable) void active.refresh() }
+    const refresh = (next?: PaneScrollInfo | null) => {
+      const writable = permission.current()
+      setWritable(writable)
+      if (!writable) return
+      if (next !== undefined) active.sync(next)
+      else void active.refresh()
+    }
     refreshRef.current = refresh
     refresh()
     const timer = window.setInterval(refresh, 1000)

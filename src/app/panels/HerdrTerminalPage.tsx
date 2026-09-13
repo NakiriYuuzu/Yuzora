@@ -759,7 +759,7 @@ function HerdrTerminalLeaf({
   const releaseAttachment = useHerdrStore((s) => s.releaseAttachment)
 
   const terminalViewportId = useId()
-  const scrollbarRefreshRef = useRef<(() => void) | null>(null)
+  const scrollbarRefreshRef = useRef<((state?: import("@/terminal/herdrScrollController").PaneScrollInfo | null) => void) | null>(null)
   const supportsScrollInfo = useHerdrStore((state) => {
     // A selected runtime is projected to the global capabilities field while
     // its scoped record is being reconciled. Keep the scrollbar capability
@@ -887,7 +887,6 @@ function HerdrTerminalLeaf({
       event.preventDefault()
       event.stopPropagation()
       void transport.scroll(event.deltaY < 0 ? -rows : rows)
-        .then(() => scrollbarRefreshRef.current?.())
         .catch((error) => {
           if (!disposedRef.current) setStatusMessage(error instanceof Error ? error.message : String(error))
         })
@@ -972,6 +971,7 @@ function HerdrTerminalLeaf({
       // fallback. The legacy `live` token has no addressable pane namespace.
       sessionName: contextSessionName,
       paneScrollEnabled: () => supportsScrollInfoRef.current,
+      onPaneScroll: (state) => scrollbarRefreshRef.current?.(state),
       scrollEnabled: () => {
         const state = useHerdrStore.getState()
         const capabilities = (targetSessionName

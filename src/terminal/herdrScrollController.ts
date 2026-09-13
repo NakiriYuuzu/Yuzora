@@ -59,6 +59,11 @@ export function createPaneScrollController(options: {
   }
   return {
     refresh,
+    sync(next: PaneScrollInfo | null) {
+      if (disposed || !options.allowed()) return
+      revision++
+      publish(next)
+    },
     move(offset: number) {
       if (disposed || !state || !options.allowed() || !Number.isFinite(offset)) return
       pending = Math.max(0, Math.min(state.maxOffsetFromBottom, Math.round(offset)))
