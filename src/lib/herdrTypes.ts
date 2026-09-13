@@ -88,6 +88,8 @@ export interface HerdrApiCapability {
   tabCreate: boolean
   workspaceFocus: boolean
   workspaceCreate: boolean
+  /** Protocol workspace.move { workspace_id, insert_index }. */
+  workspaceMove?: boolean
   workspaceRename: boolean
   workspaceClose: boolean
   tabRename: boolean
@@ -454,6 +456,12 @@ export interface HerdrWorkspaceCreateRequest {
   cwd?: string | null
   label?: string | null
   focus?: boolean | null
+}
+
+export interface HerdrWorkspaceMoveRequest {
+  sessionName?: string | null
+  workspaceId: string
+  insertIndex: number
 }
 
 export interface HerdrWorkspaceCreateResult {

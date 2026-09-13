@@ -42,6 +42,8 @@
   "folderHint": "Select a folder to expand or collapse it",
   "navigationHint": "Arrow keys to navigate · F2 to edit Space",
   "switchFailed": "Unable to switch checkout. Select it again.",
+  "reorderFailed": "Unable to reorder this Space. Try again.",
+  "dragSpaceHint": "Drag to reorder this Space within its Herdr Session",
   "stopped": "Server stopped · showing last known data",
   "stale": "Data has not refreshed · status is not live",
   "empty": "No Spaces in this Session.",

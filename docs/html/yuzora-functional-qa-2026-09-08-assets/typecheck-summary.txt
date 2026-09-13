@@ -1,4 +1,0 @@
-Command result: TypeScript
-Status: PASS
-兩份 tsconfig 通過；exit 0
-$ bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.json && bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.node.json

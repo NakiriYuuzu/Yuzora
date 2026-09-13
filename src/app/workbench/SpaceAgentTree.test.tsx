@@ -5,11 +5,16 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SpaceAgentTree } from "./SpaceAgentTree";
 import { useHerdrStore, herdrInitialState } from "@/state/herdrStore";
 import { spacePresentationKey } from "./spaceTreeIdentity";
+import { herdrWorkspaceMove } from "@/lib/herdrIpc";
 import {
   loadRecentWorkspacePresentations,
   useRecentWorkspacesStore,
 } from "@/state/recentWorkspaces";
 import type { HerdrSnapshot, HerdrSessionRuntime } from "@/lib/herdrTypes";
+vi.mock("@/lib/herdrIpc", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/herdrIpc")>("@/lib/herdrIpc")),
+  herdrWorkspaceMove: vi.fn(),
+}));
 vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: () => null }));
 vi.mock("./HerdrAgentInspector", () => ({
   HerdrAgentInspector: ({
@@ -26,6 +31,7 @@ const scopes = [
   '["host-a","second"]',
 ];
 beforeEach(() => {
+  vi.clearAllMocks();
   const storage = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -247,6 +253,78 @@ it("dispatches worktree and agent menus with their exact host namespace", () => 
     workspaceId: "space",
     paneId: "pane",
   });
+});
+
+it("reorders Spaces through Herdr workspace.move", async () => {
+  const sessionName = scopes[0];
+  const runtime = useHerdrStore.getState().runtimesBySession[sessionName];
+  useHerdrStore.setState({
+    runtimesBySession: {
+      ...useHerdrStore.getState().runtimesBySession,
+      [sessionName]: {
+        ...runtime,
+        capabilities: {
+          server: { running: true, compatible: true },
+          api: { workspaceMove: true },
+        } as HerdrSessionRuntime["capabilities"],
+        snapshot: {
+          ...runtime.snapshot!,
+          spaces: [
+            { id: "space-a", label: "A", branch: "A", repoKey: "repo-a", repoRoot: "/repo-a", path: "/repo-a", order: 0, focused: true },
+            { id: "space-b", label: "B", branch: "B", repoKey: "repo-b", repoRoot: "/repo-b", path: "/repo-b", order: 1, focused: false },
+          ],
+        },
+      },
+    },
+  });
+  render(<SpaceAgentTree />);
+  const worktrees = screen
+    .getAllByRole("treeitem")
+    .filter((item) => item.getAttribute("aria-level") === "1");
+  const [target, source] = worktrees;
+  const dataTransfer = {
+    effectAllowed: "none",
+    dropEffect: "none",
+    setData: vi.fn(),
+    getData: () => "space-b",
+  };
+  fireEvent.dragStart(source, { dataTransfer });
+  fireEvent.dragOver(target, { dataTransfer, clientY: 0 });
+  fireEvent.drop(target, { dataTransfer, clientY: 0 });
+  await vi.waitFor(() => expect(herdrWorkspaceMove).toHaveBeenCalledWith({
+    sessionName,
+    workspaceId: "space-b",
+    insertIndex: 0,
+  }));
+  expect(source).toHaveAttribute("draggable", "false");
+  expect(screen.getAllByRole("treeitem").filter((item) => item.getAttribute("aria-level") === "2")[0]).toHaveAttribute("draggable", "false");
+});
+
+it("keeps a normal Space click after a pointer press that does not cross the drag threshold", () => {
+  const sessionName = scopes[0];
+  const runtime = useHerdrStore.getState().runtimesBySession[sessionName];
+  useHerdrStore.setState({
+    runtimesBySession: {
+      ...useHerdrStore.getState().runtimesBySession,
+      [sessionName]: {
+        ...runtime,
+        capabilities: {
+          server: { running: true, compatible: true },
+          api: { workspaceMove: true },
+        } as HerdrSessionRuntime["capabilities"],
+      },
+    },
+  });
+  render(<SpaceAgentTree />);
+  const space = screen
+    .getAllByRole("treeitem")
+    .find((item) => item.getAttribute("aria-level") === "1")!;
+  const button = space;
+  fireEvent.pointerDown(button, { button: 0, pointerId: 7, clientX: 10, clientY: 10 });
+  fireEvent.pointerUp(button, { button: 0, pointerId: 7, clientX: 10, clientY: 10 });
+  fireEvent.click(button);
+  expect(useHerdrStore.getState().selectedSpaceId).toBe("space");
+  expect(herdrWorkspaceMove).not.toHaveBeenCalled();
 });
 
 it.each([undefined, null])("uses the workspace label for an agent without a repository branch (%s)", (branch) => {

@@ -251,6 +251,8 @@ pub struct HerdrApiCapability {
     pub workspace_focus: bool,
     /// `workspace.create { cwd, label, focus }` for Rail + New Space.
     pub workspace_create: bool,
+    /// `workspace.move { workspace_id, insert_index }` for Space ordering.
+    pub workspace_move: bool,
     pub workspace_rename: bool,
     pub workspace_close: bool,
     pub tab_rename: bool,
@@ -1346,6 +1348,7 @@ impl HerdrManager {
                 tab_create: false,
                 workspace_focus: false,
                 workspace_create: false,
+                workspace_move: false,
                 workspace_rename: false,
                 workspace_close: false,
                 tab_rename: false,
@@ -1728,6 +1731,26 @@ impl HerdrManager {
             "workspace.rename",
             serde_json::json!({ "workspace_id": workspace_id, "label": label }),
             "herdr workspace.rename unavailable",
+        )?;
+        Ok(())
+    }
+
+    /// Public `workspace.move { workspace_id, insert_index }`.
+    pub fn workspace_move(
+        &self,
+        session_name: Option<&str>,
+        workspace_id: String,
+        insert_index: u32,
+    ) -> Result<(), String> {
+        if workspace_id.trim().is_empty() {
+            return Err("workspace_id is required".into());
+        }
+        let _ = self.call_checked_api(
+            session_name,
+            |api| api.workspace_move,
+            "workspace.move",
+            build_workspace_move_params(workspace_id, insert_index),
+            "herdr workspace.move unavailable",
         )?;
         Ok(())
     }
@@ -3752,6 +3775,7 @@ const IMPLEMENTED_API_METHODS: &[&str] = &[
     "ping",
     "workspace.focus",
     "workspace.create",
+    "workspace.move",
     "workspace.rename",
     "workspace.close",
     "tab.create",
@@ -3799,6 +3823,7 @@ fn clear_api_method_flags(api: &mut HerdrApiCapability) {
     api.tab_create = false;
     api.workspace_focus = false;
     api.workspace_create = false;
+    api.workspace_move = false;
     api.workspace_rename = false;
     api.workspace_close = false;
     api.tab_rename = false;
@@ -3867,6 +3892,7 @@ fn apply_schema_method_flags(
     api.tab_create = has("tab.create");
     api.workspace_focus = has("workspace.focus");
     api.workspace_create = has("workspace.create");
+    api.workspace_move = has("workspace.move");
     api.workspace_rename = has("workspace.rename");
     api.workspace_close = has("workspace.close");
     api.tab_rename = has("tab.rename");
@@ -4273,6 +4299,10 @@ fn build_tab_create_params(
 
 fn build_tab_move_params(tab_id: String, insert_index: u32) -> serde_json::Value {
     serde_json::json!({ "tab_id": tab_id, "insert_index": insert_index })
+}
+
+fn build_workspace_move_params(workspace_id: String, insert_index: u32) -> serde_json::Value {
+    serde_json::json!({ "workspace_id": workspace_id, "insert_index": insert_index })
 }
 
 fn build_pane_split_params(
@@ -4717,6 +4747,7 @@ mod tests {
                 tab_create: false,
                 workspace_focus: false,
                 workspace_create: false,
+                workspace_move: false,
                 workspace_rename: false,
                 workspace_close: false,
                 tab_rename: false,
@@ -6324,7 +6355,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         let binary = write_fake_herdr_with_sessions(
             dir.path(),
             r#"{"client":{"version":"0.0.0-fake","channel":"test","protocol":19,"binary":"FAKE"},"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":19,"compatible":true,"socket":"/tmp/herdr-fake.sock"},"update":{"restart_needed":false}}"#,
-            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.move","workspace.focus","workspace.create","session.ping","events.subscribe"],"schemas":{"session.snapshot":{},"tab.create":{},"tab.move":{},"workspace.focus":{},"workspace.create":{},"events.subscribe":{}}}"#,
+            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","tab.create","tab.move","workspace.focus","workspace.create","workspace.move","session.ping","events.subscribe"],"schemas":{"session.snapshot":{},"tab.create":{},"tab.move":{},"workspace.focus":{},"workspace.create":{},"workspace.move":{},"events.subscribe":{}}}"#,
             r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr-default","socket_path":"/tmp/herdr-fake.sock"}]}"#,
         );
         let mgr = HerdrManager::with_binary(binary);
@@ -6335,6 +6366,7 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
         assert!(caps.api.methods.iter().any(|method| method == "tab.move"));
         assert!(caps.api.workspace_focus);
         assert!(caps.api.workspace_create);
+        assert!(caps.api.workspace_move);
         assert!(caps.api.ping);
         assert!(caps.terminal.create);
         assert!(caps.terminal.control);
@@ -6868,6 +6900,12 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
             serde_json::json!({ "tab_id": "tab_1", "insert_index": 2 })
         );
 
+        let workspace_moved = build_workspace_move_params("ws_1".into(), 3);
+        assert_eq!(
+            workspace_moved,
+            serde_json::json!({ "workspace_id": "ws_1", "insert_index": 3 })
+        );
+
         let split = build_pane_split_params(
             HerdrSplitDirection::Right,
             Some("pane_1".into()),
@@ -7350,6 +7388,33 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
                 || err.contains("not")
                 || err.contains("lacks")
                 || err.contains("tab.move")
+                || err.contains("socket probe failed"),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_move_capability_is_schema_gated() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = write_fake_herdr_with_sessions(
+            dir.path(),
+            r#"{"client":{"version":"0.0.0-fake","channel":"test","protocol":19,"binary":"FAKE"},"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":19,"compatible":true,"socket":"/tmp/default.sock"},"update":{"restart_needed":false}}"#,
+            r#"{"protocol":19,"schema_version":1,"methods":["session.snapshot","workspace.focus"],"schemas":{"session.snapshot":{},"workspace.focus":{}}}"#,
+            r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"/tmp/default.sock"}]}"#,
+        );
+        let mgr = HerdrManager::with_binary(binary);
+        let caps = mgr.discover_capabilities_for_session(Some("default"));
+        assert!(!caps.api.workspace_move);
+        assert!(!caps.api.methods.iter().any(|m| m == "workspace.move"));
+        let err = mgr
+            .workspace_move(Some("default"), "workspace_1".into(), 1)
+            .unwrap_err();
+        assert!(
+            err.contains("unavailable")
+                || err.contains("not")
+                || err.contains("lacks")
+                || err.contains("workspace.move")
                 || err.contains("socket probe failed"),
             "{err}"
         );

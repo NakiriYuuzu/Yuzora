@@ -42,6 +42,8 @@
   "folderHint": "點選資料夾展開或收合",
   "navigationHint": "方向鍵導覽 · F2 編輯 Space",
   "switchFailed": "無法切換工作目錄，請重新選取。",
+  "reorderFailed": "無法重新排列此 Space，請再試一次。",
+  "dragSpaceHint": "拖曳以調整此 Herdr Session 內的 Space 順序",
   "stopped": "Server 已停止 · 顯示上次資料",
   "stale": "資料尚未更新 · 不代表即時狀態",
   "empty": "此 Session 尚無 Space。",

@@ -37,7 +37,9 @@
 /* Space identity follows the existing project palette; children stay quiet. */
 .tree-row-shell { display:flex; align-items:center; min-width:0; }
 .tree-row-shell .space-tree-row { min-width:0; flex:1; }
-.tree-row-project { position:relative; isolation:isolate; margin-top:12px; padding-right:4px; border-radius:10px; }
+.tree-row-project { position:relative; isolation:isolate; margin-top:12px; padding-right:4px; border-radius:10px; touch-action:none; cursor:grab; user-select:none; -webkit-user-drag:none; }
+.tree-row-project * { user-select:none; -webkit-user-drag:none; }
+.tree-row-project:active { cursor:grabbing; }
 .tree-row-project::before { content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; background:var(--space-color); opacity:0; }
 .tree-row-project[data-current="true"]::before { opacity:.08; }
 .tree-row-project:first-child { margin-top:0; }
@@ -45,6 +47,13 @@
 .tree-row-project .tree-edit-space { width:26px; height:26px; min-width:26px; color:var(--ink-2); }
 .tree-row-project .tree-edit-space svg { width:13px; height:13px; }
 .tree-row-worktree { margin-top:4px; }
+.space-agent-tree .space-tree-row[draggable="true"] { cursor:grab; }
+.space-agent-tree .space-tree-row[draggable="true"]:active { cursor:grabbing; }
+.tree-row-project[data-dragging="true"] { opacity:.55; }
+.tree-row-project[data-drop-target] { position:relative; }
+.tree-row-project[data-drop-target]::after { content:''; position:absolute; z-index:2; left:0; right:0; height:2px; border-radius:2px; background:var(--yz-accent); pointer-events:none; }
+.tree-row-project[data-drop-target="before"]::after { top:-2px; }
+.tree-row-project[data-drop-target="after"]::after { bottom:-2px; }
 .tree-add-terminal:focus-visible { outline:2px solid var(--ink-2); outline-offset:-2px; }
 .tree-worktree .tree-node-label > span { font-weight:500; }
 .space-agent-tree .tree-worktree > svg { stroke-width:1.65; }

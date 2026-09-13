@@ -36,6 +36,12 @@
 
 ## Features
 
+### What's new in v0.0.14
+
+- Drag Spaces to reorder them within HERDR Sessions that expose `workspace.move`.
+- Recover the same HERDR terminal Session automatically after uncertain input delivery.
+- Smoother WSL and HERDR scrolling with capability-gated scrollbars and burst coalescing.
+
 ### What's new in v0.0.13
 
 - Stable and Preview update checks now select the newest signed release by SemVer, with compatibility fallback for older Yuzora hosts.

@@ -19,6 +19,7 @@ import {
   herdrTabMove,
   herdrTabRename,
   herdrWorkspaceClose,
+  herdrWorkspaceMove,
   herdrWorkspaceRename,
   herdrWorktreeList
 } from "./herdrIpc"
@@ -147,6 +148,7 @@ describe("herdrIpc native interaction wrappers", () => {
       label: "Renamed"
     })
     await herdrWorkspaceClose({ sessionName: "default", workspaceId: "ws1" })
+    await herdrWorkspaceMove({ sessionName: "default", workspaceId: "ws1", insertIndex: 2 })
     await herdrTabCreate({ sessionName: "default", workspaceId: "ws1", focus: true })
     await herdrTabRename({ sessionName: "default", tabId: "tab1", label: "Main" })
     await herdrTabClose({ sessionName: "default", tabId: "tab1" })
@@ -175,6 +177,7 @@ describe("herdrIpc native interaction wrappers", () => {
     expect(calls.map((c) => c.cmd)).toEqual([
       "herdr_workspace_rename",
       "herdr_workspace_close",
+      "herdr_workspace_move",
       "herdr_tab_create",
       "herdr_tab_rename",
       "herdr_tab_close",
@@ -198,6 +201,14 @@ describe("herdrIpc native interaction wrappers", () => {
         sessionName: "default",
         tabId: "tab1",
         insertIndex: 1
+      }
+    })
+    expect(calls.find((c) => c.cmd === "herdr_workspace_move")).toEqual({
+      cmd: "herdr_workspace_move",
+      args: {
+        sessionName: "default",
+        workspaceId: "ws1",
+        insertIndex: 2
       }
     })
     expect(calls.find((c) => c.cmd === "herdr_pane_split")?.args).toMatchObject({

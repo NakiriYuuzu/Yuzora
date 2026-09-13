@@ -35,6 +35,12 @@ pub enum HerdrCommand {
         label: Option<String>,
         focus: Option<bool>,
     },
+    #[serde(rename = "herdr_workspace_move")]
+    WorkspaceMove {
+        session_name: Option<String>,
+        workspace_id: String,
+        insert_index: u32,
+    },
     #[serde(rename = "herdr_workspace_rename")]
     WorkspaceRename {
         session_name: Option<String>,
@@ -260,6 +266,16 @@ impl HerdrCommand {
                 serde_json::to_value(manager.tab_rename(session_name.as_deref(), tab_id, label)?)
                     .map_err(|e| e.to_string())
             }
+            Self::WorkspaceMove {
+                session_name,
+                workspace_id,
+                insert_index,
+            } => serde_json::to_value(manager.workspace_move(
+                session_name.as_deref(),
+                workspace_id,
+                insert_index,
+            )?)
+            .map_err(|e| e.to_string()),
             Self::TabClose {
                 session_name,
                 tab_id,

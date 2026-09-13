@@ -36,6 +36,7 @@ import type {
   HerdrWorkspaceCloseRequest,
   HerdrWorkspaceCreateRequest,
   HerdrWorkspaceCreateResult,
+  HerdrWorkspaceMoveRequest,
   HerdrWorkspaceRenameRequest,
   HerdrWorktreeListResult
 } from "./herdrTypes"
@@ -82,6 +83,16 @@ export function herdrWorkspaceCreate(
     cwd: request.cwd ?? null,
     label: request.label ?? null,
     focus: request.focus ?? true
+  })
+}
+
+export function herdrWorkspaceMove(
+  request: HerdrWorkspaceMoveRequest
+): Promise<void> {
+  return invoke("herdr_workspace_move", {
+    sessionName: request.sessionName ?? null,
+    workspaceId: request.workspaceId,
+    insertIndex: request.insertIndex
   })
 }
 
