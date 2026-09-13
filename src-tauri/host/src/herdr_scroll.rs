@@ -1,5 +1,5 @@
 //! Official protocol-22 scroll state; terminal frame bytes are not scrollback.
-use crate::herdr_service::HerdrManager;
+use crate::herdr_service::{HerdrApiCapability, HerdrManager};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -33,6 +33,17 @@ fn parse_scroll(
     Ok(Some(scroll))
 }
 
+/// Protocol 22 introduced the official pane-owned scroll endpoints. Some
+/// remote/WSL schema responses advertise the snapshot method but omit one or
+/// both pane methods from the method list. In that case the protocol boundary
+/// is still safe to probe: the endpoint response remains authoritative and
+/// unsupported runtimes return a normal API error (or a null scroll range).
+fn pane_api_available(api: &HerdrApiCapability, method: &str) -> bool {
+    api.snapshot
+        && (api.methods.iter().any(|advertised| advertised == method)
+            || api.schema_protocol.is_some_and(|protocol| protocol >= 22))
+}
+
 impl HerdrManager {
     pub fn pane_scroll_state(
         &self,
@@ -44,7 +55,7 @@ impl HerdrManager {
         }
         let response = self.call_checked_api(
             session,
-            |api| api.snapshot && api.methods.iter().any(|method| method == "pane.get"),
+            |api| pane_api_available(api, "pane.get"),
             "pane.get",
             serde_json::json!({"pane_id": pane_id}),
             "herdr pane.get unavailable",
@@ -63,7 +74,7 @@ impl HerdrManager {
         }
         let response = self.call_checked_api(
             session,
-            |api| api.snapshot && api.methods.iter().any(|method| method == "pane.scroll"),
+            |api| pane_api_available(api, "pane.scroll"),
             "pane.scroll",
             serde_json::json!({"pane_id": pane_id, "offset_from_bottom": offset}),
             "herdr pane.scroll unavailable",
@@ -122,5 +133,21 @@ mod tests {
         .unwrap();
         assert_eq!(value["offsetFromBottom"], 0);
         assert_eq!(value["maxOffsetFromBottom"], 100);
+    }
+
+    #[test]
+    fn protocol22_probe_is_allowed_when_pane_methods_are_omitted() {
+        let manager = HerdrManager::new();
+        let mut api = manager.capabilities().api;
+        api.snapshot = true;
+        api.methods.clear();
+        api.schema_protocol = Some(22);
+
+        assert!(pane_api_available(&api, "pane.get"));
+        assert!(pane_api_available(&api, "pane.scroll"));
+
+        api.schema_protocol = Some(21);
+        assert!(!pane_api_available(&api, "pane.get"));
+        assert!(!pane_api_available(&api, "pane.scroll"));
     }
 }
