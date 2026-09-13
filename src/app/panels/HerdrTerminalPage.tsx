@@ -1117,6 +1117,12 @@ function HerdrTerminalLeaf({
           ? t("herdrTerminal.inputPaused") : event.message
         setStatusMessage(message)
         outputQueueRef.current?.push(`\r\n[Herdr: ${message}]\r\n`)
+        // An uncertain input delivery means the connector generation may have
+        // died (common after a WSL helper restart). Reopen the same attachment
+        // once so a freshly opened Session is usable without requiring a
+        // second manual tab close/reopen. The recovery guard prevents loops if
+        // the replacement connector is also unavailable.
+        if (event.message === "terminal-input-failed") recoverOutput()
         return
       }
       if (event.type === "control") {
