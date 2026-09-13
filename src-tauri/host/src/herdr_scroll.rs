@@ -61,14 +61,18 @@ impl HerdrManager {
         if pane_id.trim().is_empty() || offset > 9_007_199_254_740_991 {
             return Err("invalid pane scroll target".into());
         }
-        self.call_checked_api(
+        let response = self.call_checked_api(
             session,
             |api| api.snapshot && api.methods.iter().any(|method| method == "pane.scroll"),
             "pane.scroll",
             serde_json::json!({"pane_id": pane_id, "offset_from_bottom": offset}),
             "herdr pane.scroll unavailable",
         )?;
-        self.pane_scroll_state(session, pane_id)
+        // HERDR returns the updated `pane_info` from pane.scroll. Parse that
+        // response directly instead of issuing a second pane.get round trip.
+        // The extra read made every wheel gesture wait for another remote IPC
+        // request, which is especially visible across Windows/WSL.
+        parse_scroll(response, &pane_id)
     }
 }
 
