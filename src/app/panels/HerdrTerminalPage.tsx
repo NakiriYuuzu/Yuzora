@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
 import { herdrScrollStrategyForRuntime, supportsHerdrPaneScroll } from "@/lib/herdrCapabilities"
-import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
+import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
 import {
   herdrLayoutExport,
   herdrLayoutSetSplitRatio,
@@ -743,7 +743,16 @@ function HerdrTerminalLeaf({
     [sessions, herdrSessionId]
   )
   const targetHostId = useMemo(
-    () => sessions.find((session) => sessionScope(session) === targetSessionName)?.hostId ?? null,
+    () => {
+      const session = sessions.find((candidate) => sessionScope(candidate) === targetSessionName)
+      if (session?.hostId) return session.hostId
+      if (!targetSessionName?.startsWith("[")) return null
+      try {
+        return parseRuntimeScope(targetSessionName).hostId
+      } catch {
+        return null
+      }
+    },
     [sessions, targetSessionName]
   )
   const baseCwd = useHerdrStore((s) => resolveHerdrTerminalBaseCwd({
