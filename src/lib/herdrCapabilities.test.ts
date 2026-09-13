@@ -4,6 +4,7 @@ import {
   herdrScrollStrategy,
   herdrScrollStrategyForRuntime,
   supportsHerdrPaneScroll,
+  supportsHerdrPaneScrollCandidate,
   supportsHerdrTerminalScroll
 } from "./herdrCapabilities"
 import type { HerdrCapabilities } from "./herdrTypes"
@@ -103,5 +104,20 @@ describe("HERDR capability adapter", () => {
     caps.api.schemaProtocol = null
     caps.server.protocol = null
     expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("unavailable")
+  })
+
+  it("allows a protocol-22 pane probe while the method list is unknown", () => {
+    const caps = capabilities([])
+    caps.binaryProtocol = 22
+    caps.api.schemaProtocol = 22
+    expect(supportsHerdrPaneScrollCandidate(caps)).toBe(true)
+    expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("pane")
+  })
+
+  it("does not probe protocol-22 when the schema explicitly omits pane methods", () => {
+    const caps = capabilities(["session.snapshot", "pane.get"])
+    caps.binaryProtocol = 22
+    caps.api.schemaProtocol = 22
+    expect(supportsHerdrPaneScrollCandidate(caps)).toBe(false)
   })
 })

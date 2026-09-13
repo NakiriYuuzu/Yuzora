@@ -436,6 +436,32 @@ describe("createHerdrTerminalTransport", () => {
     expect(setPaneScroll).not.toHaveBeenCalled()
   })
 
+  it("keeps pane-only runtimes safe when the pane probe has no range yet", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane-probe",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue(null)
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "[wsl:Debian,default]",
+      paneScrollEnabled: () => true,
+      scrollEnabled: () => true,
+      terminalScrollEnabled: () => false
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    expect(readPaneScroll).toHaveBeenCalledWith("[wsl:Debian,default]", "pane-1")
+  })
+
   it("does not call an unverified scroll transport", async () => {
     vi.mocked(herdrTerminalOpen).mockResolvedValue({
       sessionId: "sess-no-scroll",

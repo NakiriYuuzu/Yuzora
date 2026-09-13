@@ -122,6 +122,8 @@ export interface HerdrTerminalTransportOptions {
   paneScrollEnabled?: () => boolean
   /** True when at least one verified scroll transport is available. */
   scrollEnabled?: () => boolean
+  /** Disable the legacy terminal command when pane scrolling is the only safe transport. */
+  terminalScrollEnabled?: () => boolean
   /** Publish the authoritative pane state returned by pane.scroll without another read. */
   onPaneScroll?: (state: PaneScrollInfo) => void
   onAttachment?: (info: {
@@ -151,6 +153,7 @@ export function createHerdrTerminalTransport(
     sessionName = null,
     paneScrollEnabled,
     scrollEnabled,
+    terminalScrollEnabled,
     onPaneScroll,
     onAttachment,
     onPaneId
@@ -392,6 +395,7 @@ export function createHerdrTerminalTransport(
                 continue
               }
             }
+            if (terminalScrollEnabled?.() === false) return
             try {
               await herdrTerminalScroll(activeSessionId, direction, lines)
             } catch (error) {

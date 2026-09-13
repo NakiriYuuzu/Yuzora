@@ -25,7 +25,7 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
-import { herdrScrollStrategyForRuntime, supportsHerdrPaneScroll } from "@/lib/herdrCapabilities"
+import { herdrScrollStrategyForRuntime, supportsHerdrPaneScrollCandidate } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
 import {
   herdrLayoutExport,
@@ -783,7 +783,7 @@ function HerdrTerminalLeaf({
     // The proxy scrollbar polls the separate pane API. Older runtimes use the
     // connector wheel command and must not mount a pane proxy that will keep
     // retrying unsupported methods.
-    return supportsHerdrPaneScroll(capabilities)
+    return supportsHerdrPaneScrollCandidate(capabilities)
   })
   const supportsScrollInfoRef = useRef(supportsScrollInfo)
   useEffect(() => {
@@ -992,6 +992,14 @@ function HerdrTerminalLeaf({
           : null)
           ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
         return herdrScrollStrategyForRuntime(capabilities, targetHostId) !== "unavailable"
+      },
+      terminalScrollEnabled: () => {
+        const state = useHerdrStore.getState()
+        const capabilities = (targetSessionName
+          ? state.runtimesBySession[targetSessionName]?.capabilities
+          : null)
+          ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        return herdrScrollStrategyForRuntime(capabilities, targetHostId) === "terminal"
       },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
