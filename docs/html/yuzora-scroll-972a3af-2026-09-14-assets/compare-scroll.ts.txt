@@ -1,0 +1,34 @@
+import {spawn} from 'node:child_process'
+import {createInterface} from 'node:readline'
+import {writeFileSync} from 'node:fs'
+const binary='/Users/yuuzu/.local/bin/herdr', sessionName='scroll-e2e-972a3af', paneId='w1:p2'
+const helper=spawn('/tmp/yuzora-972a3af-e2e/helper-972a3af',['--stdio'],{stdio:'pipe'})
+const terminal=spawn(binary,['--session',sessionName,'terminal','session','control','term_65b5fd782f5b92','--takeover','--cols','80','--rows','24'],{stdio:'pipe'})
+let id=0, frame:any; const calls=new Map(), listeners=new Set<(x:any)=>void>()
+createInterface({input:helper.stdout}).on('line',line=>{const x=JSON.parse(line);calls.get(x.id)?.(x);calls.delete(x.id)})
+createInterface({input:terminal.stdout}).on('line',line=>{const x=JSON.parse(line);if(x.type==='terminal.frame'){frame={...x,received:performance.now()};for(const fn of [...listeners])fn(frame)}})
+for(const child of [helper,terminal]) child.stderr.on('data',b=>process.stderr.write(b))
+async function call(operation:any){const key=String(++id);return new Promise<any>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('helper-timeout')),10000);calls.set(key,x=>{clearTimeout(timer);x.status==='ok'?resolve(x.value):reject(Error(JSON.stringify(x)))});helper.stdin.write(JSON.stringify({version:1,id:key,owner:{hostId:'scroll-bench',generation:1},operation})+'\n')})}
+async function herdr(command:string,args:any){return call({method:'herdrCall',params:{binary,call:{command,args:{sessionName,...args}}}})}
+function waitFrame(after:number){return new Promise<any>((resolve,reject)=>{const timer=setTimeout(()=>{listeners.delete(fn);reject(Error('frame-timeout'))},10000);const fn=x=>{if(x.seq>after){clearTimeout(timer);listeners.delete(fn);resolve(x)}};listeners.add(fn);if(frame)fn(frame)})}
+function summary(values:number[]){const v=[...values].sort((a,b)=>a-b);return {n:v.length,p50:v[Math.ceil(v.length*.5)-1],p95:v[Math.ceil(v.length*.95)-1],min:v[0],max:v.at(-1)}}
+const results:any={sessionName,paneId,cols:80,rows:24,herdr:'0.9.0 protocol 22',hardware:'same Mac arm64 macOS 26.6.2',measure:'command dispatch to terminal.frame receipt, excluding WebView paint',runs:[]}
+try {
+ await call({method:'hello'});await herdr('herdr_capabilities',{});await waitFrame(-1)
+ for(const mode of ['connector','pane-read-write','pane-write']){
+  const samples:any[]=[]
+  for(let i=0;i<50;i++){
+   const seq=frame.seq,start=performance.now(),next=waitFrame(seq)
+   if(mode==='connector') terminal.stdin.write(JSON.stringify({type:'terminal.scroll',direction:i%2?'down':'up',lines:10})+'\n')
+   else {
+    const state=mode==='pane-read-write'?await herdr('herdr_pane_scroll_state',{paneId}):null
+    const offset=state?(i%2?Math.max(0,state.offsetFromBottom-10):Math.min(state.maxOffsetFromBottom,state.offsetFromBottom+10)):(i%2?0:10)
+    await herdr('herdr_pane_scroll_to',{paneId,offsetFromBottom:offset})
+   }
+   const f=await next;samples.push({frameMs:f.received-start,completeMs:performance.now()-start,seq:f.seq})
+  }
+  results.runs.push({mode,frame:summary(samples.map(x=>x.frameMs)),complete:summary(samples.map(x=>x.completeMs)),samples})
+  console.log(mode,JSON.stringify(results.runs.at(-1).frame))
+ }
+ writeFileSync('/tmp/yuzora-972a3af-e2e/scroll-comparison.json',JSON.stringify(results,null,2))
+}finally{terminal.stdin.write(JSON.stringify({type:'terminal.release'})+'\n');terminal.stdin.end();helper.stdin.end()}
