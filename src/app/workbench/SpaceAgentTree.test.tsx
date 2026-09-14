@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SpaceAgentTree } from "./SpaceAgentTree";
 import { useHerdrStore, herdrInitialState } from "@/state/herdrStore";
 import { spacePresentationKey } from "./spaceTreeIdentity";
-import { herdrWorkspaceMove } from "@/lib/herdrIpc";
+import { herdrWorkspaceMove, herdrWorkspaceMoveBlock } from "@/lib/herdrIpc";
 import {
   loadRecentWorkspacePresentations,
   useRecentWorkspacesStore,
@@ -14,6 +14,7 @@ import type { HerdrSnapshot, HerdrSessionRuntime } from "@/lib/herdrTypes";
 vi.mock("@/lib/herdrIpc", async () => ({
   ...(await vi.importActual<typeof import("@/lib/herdrIpc")>("@/lib/herdrIpc")),
   herdrWorkspaceMove: vi.fn(),
+  herdrWorkspaceMoveBlock: vi.fn(),
 }));
 vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: () => null }));
 vi.mock("./HerdrAgentInspector", () => ({
@@ -298,6 +299,44 @@ it("reorders Spaces through Herdr workspace.move", async () => {
   }));
   expect(source).toHaveAttribute("draggable", "false");
   expect(screen.getAllByRole("treeitem").filter((item) => item.getAttribute("aria-level") === "2")[0]).toHaveAttribute("draggable", "false");
+});
+
+it("reorders a WSL Space through HERDR workspace.move_block when legacy move is absent", async () => {
+  const sessionName = scopes[0];
+  const runtime = useHerdrStore.getState().runtimesBySession[sessionName];
+  useHerdrStore.setState({
+    runtimesBySession: {
+      ...useHerdrStore.getState().runtimesBySession,
+      [sessionName]: {
+        ...runtime,
+        capabilities: {
+          server: { running: true, compatible: true },
+          api: { workspaceMoveBlock: true, methods: ["workspace.move_block"] },
+        } as HerdrSessionRuntime["capabilities"],
+        snapshot: {
+          ...runtime.snapshot!,
+          spaces: [
+            { id: "space-a", label: "A", branch: "A", repoKey: "repo-a", repoRoot: "/repo-a", path: "/repo-a", order: 0, focused: true },
+            { id: "space-b", label: "B", branch: "B", repoKey: "repo-b", repoRoot: "/repo-b", path: "/repo-b", order: 1, focused: false },
+          ],
+        },
+      },
+    },
+  });
+  render(<SpaceAgentTree />);
+  const worktrees = screen.getAllByRole("treeitem").filter((item) => item.getAttribute("aria-level") === "1");
+  const [target, source] = worktrees;
+  const dataTransfer = { effectAllowed: "none", dropEffect: "none", setData: vi.fn(), getData: () => "space-b" };
+  fireEvent.dragStart(source, { dataTransfer });
+  fireEvent.dragOver(target, { dataTransfer, clientY: 0 });
+  fireEvent.drop(target, { dataTransfer, clientY: 0 });
+  await vi.waitFor(() => expect(herdrWorkspaceMoveBlock).toHaveBeenCalledOnce());
+  const blockRequest = vi.mocked(herdrWorkspaceMoveBlock).mock.calls[0][0];
+  expect(blockRequest.sessionName).toBe(sessionName);
+  expect(blockRequest.workspaceIds).toHaveLength(1);
+  expect(blockRequest.beforeWorkspaceId).toBeTruthy();
+  expect(blockRequest.beforeWorkspaceId).not.toBe(blockRequest.workspaceIds[0]);
+  expect(herdrWorkspaceMove).not.toHaveBeenCalled();
 });
 
 it("keeps a normal Space click after a pointer press that does not cross the drag threshold", () => {

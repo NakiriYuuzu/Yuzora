@@ -185,6 +185,21 @@ pub async fn herdr_workspace_move(
 }
 
 #[tauri::command]
+pub async fn herdr_workspace_move_block(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+    workspace_ids: Vec<String>,
+    before_workspace_id: Option<String>,
+) -> Result<(), String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.workspace_move_block(session_name.as_deref(), workspace_ids, before_workspace_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn herdr_workspace_rename(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,

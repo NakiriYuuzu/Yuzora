@@ -36,7 +36,7 @@ import { spacePresentationKey, runtimeSessionLabel } from "./spaceTreeIdentity";
 import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
 import { workspacePathBasename } from "@/lib/paths";
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions";
-import { herdrWorkspaceMove } from "@/lib/herdrIpc";
+import { herdrWorkspaceMove, herdrWorkspaceMoveBlock } from "@/lib/herdrIpc";
 import { herdrWorkspaceInsertIndex } from "@/lib/herdrWorkspaceReorder";
 import { HerdrLauncher } from "./HerdrLauncher";
 import { SpaceAppearanceDialog } from "./SpaceAppearanceDialog";
@@ -163,12 +163,15 @@ export function SpaceAgentTree() {
     const supportsWorkspaceMove = Boolean(
       caps?.api.workspaceMove || caps?.api.methods?.includes("workspace.move"),
     );
+    const supportsWorkspaceMoveBlock = Boolean(
+      caps?.api.workspaceMoveBlock || caps?.api.methods?.includes("workspace.move_block"),
+    );
     return node.kind === "project" &&
       runtime?.connectionState === "ready" &&
       !runtime.errorMessage &&
       caps?.server.compatible !== false &&
       !!caps?.server.running &&
-      supportsWorkspaceMove;
+      (supportsWorkspaceMove || supportsWorkspaceMoveBlock);
   }
 
   function onSpaceDragStart(event: DragEvent<HTMLButtonElement>, node: TreeNode) {
@@ -267,10 +270,24 @@ export function SpaceAgentTree() {
     const expectedOrder = spaces.map((space) => space.id);
     const [moved] = expectedOrder.splice(sourceIndex, 1);
     expectedOrder.splice(insertIndex, 0, moved);
+    const beforeWorkspaceId = expectedOrder[insertIndex + 1] ?? null;
     setMovingSpaceKey(source.key);
     setError(null);
     try {
-      await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex });
+      const caps = useHerdrStore.getState().runtimesBySession[source.sessionName]?.capabilities?.api;
+      const supportsBlock = Boolean(caps?.workspaceMoveBlock || caps?.methods?.includes("workspace.move_block"));
+      if (supportsBlock) {
+        // workspace.move_block is the stable reorder contract on newer WSL
+        // runtimes. It addresses the item before the insertion point, with
+        // null meaning append, and avoids legacy insert-index rejection.
+        await herdrWorkspaceMoveBlock({
+          sessionName: source.sessionName,
+          workspaceIds: [source.workspaceId],
+          beforeWorkspaceId,
+        });
+      } else {
+        await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex });
+      }
       useHerdrStore.getState().bumpTopologyRevision();
       // HERDR acknowledges the command before its persisted snapshot catches
       // up. Retry briefly so the sidebar reflects the authoritative new order

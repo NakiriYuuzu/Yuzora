@@ -41,6 +41,12 @@ pub enum HerdrCommand {
         workspace_id: String,
         insert_index: u32,
     },
+    #[serde(rename = "herdr_workspace_move_block")]
+    WorkspaceMoveBlock {
+        session_name: Option<String>,
+        workspace_ids: Vec<String>,
+        before_workspace_id: Option<String>,
+    },
     #[serde(rename = "herdr_workspace_rename")]
     WorkspaceRename {
         session_name: Option<String>,
@@ -274,6 +280,16 @@ impl HerdrCommand {
                 session_name.as_deref(),
                 workspace_id,
                 insert_index,
+            )?)
+            .map_err(|e| e.to_string()),
+            Self::WorkspaceMoveBlock {
+                session_name,
+                workspace_ids,
+                before_workspace_id,
+            } => serde_json::to_value(manager.workspace_move_block(
+                session_name.as_deref(),
+                workspace_ids,
+                before_workspace_id,
             )?)
             .map_err(|e| e.to_string()),
             Self::TabClose {

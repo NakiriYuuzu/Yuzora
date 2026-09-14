@@ -90,6 +90,8 @@ export interface HerdrApiCapability {
   workspaceCreate: boolean
   /** Protocol workspace.move { workspace_id, insert_index }. */
   workspaceMove?: boolean
+  /** Newer HERDR runtimes reorder a contiguous workspace block atomically. */
+  workspaceMoveBlock?: boolean
   workspaceRename: boolean
   workspaceClose: boolean
   tabRename: boolean
@@ -462,6 +464,12 @@ export interface HerdrWorkspaceMoveRequest {
   sessionName?: string | null
   workspaceId: string
   insertIndex: number
+}
+
+export interface HerdrWorkspaceMoveBlockRequest {
+  sessionName?: string | null
+  workspaceIds: string[]
+  beforeWorkspaceId?: string | null
 }
 
 export interface HerdrWorkspaceCreateResult {

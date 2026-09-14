@@ -402,6 +402,7 @@ pub fn run() {
             herdr_service::herdr_workspace_focus,
             herdr_service::herdr_workspace_create,
             herdr_service::herdr_workspace_move,
+            herdr_service::herdr_workspace_move_block,
             herdr_service::herdr_workspace_rename,
             herdr_service::herdr_workspace_close,
             herdr_service::herdr_worktree_list,

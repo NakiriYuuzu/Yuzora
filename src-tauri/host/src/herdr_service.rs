@@ -253,6 +253,7 @@ pub struct HerdrApiCapability {
     pub workspace_create: bool,
     /// `workspace.move { workspace_id, insert_index }` for Space ordering.
     pub workspace_move: bool,
+    pub workspace_move_block: bool,
     pub workspace_rename: bool,
     pub workspace_close: bool,
     pub tab_rename: bool,
@@ -1349,6 +1350,7 @@ impl HerdrManager {
                 workspace_focus: false,
                 workspace_create: false,
                 workspace_move: false,
+                workspace_move_block: false,
                 workspace_rename: false,
                 workspace_close: false,
                 tab_rename: false,
@@ -1751,6 +1753,31 @@ impl HerdrManager {
             "workspace.move",
             build_workspace_move_params(workspace_id, insert_index),
             "herdr workspace.move unavailable",
+        )?;
+        Ok(())
+    }
+
+    /// Newer HERDR runtimes expose the atomic block reorder API. A one-item
+    /// block is equivalent to workspace.move and also works when that legacy
+    /// method is omitted from a WSL schema.
+    pub fn workspace_move_block(
+        &self,
+        session_name: Option<&str>,
+        workspace_ids: Vec<String>,
+        before_workspace_id: Option<String>,
+    ) -> Result<(), String> {
+        if workspace_ids.is_empty() || workspace_ids.iter().any(|id| id.trim().is_empty()) {
+            return Err("workspace_ids must not be empty".into());
+        }
+        let _ = self.call_checked_api(
+            session_name,
+            |api| api.workspace_move_block,
+            "workspace.move_block",
+            serde_json::json!({
+                "workspace_ids": workspace_ids,
+                "before_workspace_id": before_workspace_id,
+            }),
+            "herdr workspace.move_block unavailable",
         )?;
         Ok(())
     }
@@ -3776,6 +3803,7 @@ const IMPLEMENTED_API_METHODS: &[&str] = &[
     "workspace.focus",
     "workspace.create",
     "workspace.move",
+    "workspace.move_block",
     "workspace.rename",
     "workspace.close",
     "tab.create",
@@ -3824,6 +3852,7 @@ fn clear_api_method_flags(api: &mut HerdrApiCapability) {
     api.workspace_focus = false;
     api.workspace_create = false;
     api.workspace_move = false;
+    api.workspace_move_block = false;
     api.workspace_rename = false;
     api.workspace_close = false;
     api.tab_rename = false;
@@ -3893,6 +3922,7 @@ fn apply_schema_method_flags(
     api.workspace_focus = has("workspace.focus");
     api.workspace_create = has("workspace.create");
     api.workspace_move = has("workspace.move");
+    api.workspace_move_block = has("workspace.move_block");
     api.workspace_rename = has("workspace.rename");
     api.workspace_close = has("workspace.close");
     api.tab_rename = has("tab.rename");
@@ -4748,6 +4778,7 @@ mod tests {
                 workspace_focus: false,
                 workspace_create: false,
                 workspace_move: false,
+                workspace_move_block: false,
                 workspace_rename: false,
                 workspace_close: false,
                 tab_rename: false,
@@ -7418,6 +7449,25 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
                 || err.contains("socket probe failed"),
             "{err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_move_block_capability_is_schema_gated() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = write_fake_herdr_with_sessions(
+            dir.path(),
+            r#"{"client":{"version":"0.0.0-fake","channel":"test","protocol":22,"binary":"FAKE"},"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":22,"compatible":true,"socket":"/tmp/default.sock"},"update":{"restart_needed":false}}"#,
+            r#"{"protocol":22,"schema_version":2,"methods":["session.snapshot","workspace.focus","workspace.move_block"],"schemas":{"session.snapshot":{},"workspace.focus":{},"workspace.move_block":{}}}"#,
+            r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/default","socket_path":"/tmp/default.sock"}]}"#,
+        );
+        let mgr = HerdrManager::with_binary(binary);
+        let caps = mgr.discover_capabilities_for_session(Some("default"));
+        assert!(caps.api.workspace_move_block);
+        assert!(caps.api.methods.iter().any(|m| m == "workspace.move_block"));
+        assert!(mgr
+            .workspace_move_block(Some("default"), Vec::new(), None)
+            .is_err());
     }
 
     #[cfg(unix)]
