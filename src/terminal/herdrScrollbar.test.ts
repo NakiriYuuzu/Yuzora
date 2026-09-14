@@ -9,17 +9,17 @@ it("maps the shadcn proxy to server rows, with top=maximum and bottom=zero", () 
   expect(offsetFromProxyScroll(state, 400, 800)).toBe(50)
   expect(scrollProxyContentHeight({ ...state, maxOffsetFromBottom: 0 }, 200)).toBe(200)
 })
-it("coalesces dragging to the latest absolute position and drops late closed-pane replies", async () => {
+it("dispatches every drag position immediately and drops late closed-pane replies", async () => {
   let resolve!: (value: typeof state) => void
   const write = vi.fn().mockImplementationOnce(() => new Promise((done) => { resolve = done })).mockResolvedValue(state)
   const change = vi.fn()
   const controller = createPaneScrollController({ read: async () => state, write, allowed: () => true, change })
   await controller.refresh()
   controller.move(20); controller.move(40); controller.move(80)
-  expect(write).toHaveBeenCalledTimes(1)
+  expect(write).toHaveBeenCalledTimes(3)
   resolve({ ...state, offsetFromBottom: 20 })
-  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2))
-  expect(write.mock.calls.map(([offset]) => offset)).toEqual([20, 80])
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3))
+  expect(write.mock.calls.map(([offset]) => offset)).toEqual([20, 40, 80])
   controller.dispose()
   const count = change.mock.calls.length
   await Promise.resolve()

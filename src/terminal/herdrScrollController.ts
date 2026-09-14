@@ -26,18 +26,17 @@ export function createPaneScrollController(options: {
 }) {
   let state: PaneScrollInfo | null = null
   let disposed = false
-  let writing = false
+  let inFlight = 0
   let reading = false
   let revision = 0
   let generation = 0
-  let pending: number | null = null
   let pendingDelta = 0
   const publish = (next: PaneScrollInfo | null) => {
     state = next
     options.change(next)
   }
   const refresh = async () => {
-    if (disposed || writing || reading || !options.allowed()) return
+    if (disposed || inFlight > 0 || reading || !options.allowed()) return
     reading = true
     const token = revision
     try {
@@ -56,46 +55,39 @@ export function createPaneScrollController(options: {
       }
     } finally { reading = false }
   }
-  const drain = async () => {
-    writing = true
-    const activeGeneration = generation
-    try {
-      while (!disposed && activeGeneration === generation && options.allowed() && pending !== null) {
-        const offset = pending
-        pending = null
-        const token = revision
-        const next = await options.write(offset)
-        if (disposed || activeGeneration !== generation) return
-        if (token === revision) publish(next)
-        else if (next && pending !== null && state) {
-          // Acknowledgements carry fresh overflow even when a newer wheel or
-          // drag has superseded their offset. Keep that latest target.
-          pending = Math.min(next.maxOffsetFromBottom, pending)
-          publish({ ...next, offsetFromBottom: pending })
-        }
-      }
-    } catch (error) {
-      if (!disposed && activeGeneration === generation) { publish(null); options.error?.(error) }
-    } finally {
-      pending = null
-      writing = false
-      if (!disposed && activeGeneration !== generation) void refresh()
-    }
+  // Send each gesture immediately. Waiting for the prior RPC acknowledgement
+  // made a slow bridge feel unlike native overflow scrolling during wheel and
+  // track clicks. Revision guards keep stale responses from moving the thumb.
+  const dispatch = (offset: number, token: number, activeGeneration: number) => {
+    inFlight++
+    void Promise.resolve(options.write(offset)).then((next) => {
+      if (disposed || activeGeneration !== generation || !next) return
+      if (token === revision) publish(next)
+      else if (state) publish({
+        ...next,
+        offsetFromBottom: Math.min(next.maxOffsetFromBottom, state.offsetFromBottom),
+      })
+    }).catch((error) => {
+      if (!disposed && activeGeneration === generation) options.error?.(error)
+    }).finally(() => {
+      inFlight--
+      if (!disposed && activeGeneration !== generation && inFlight === 0) void refresh()
+    })
   }
   const move = (offset: number) => {
     if (disposed || !state || !options.allowed() || !Number.isFinite(offset)) return
-    pending = Math.max(0, Math.min(state.maxOffsetFromBottom, Math.round(offset)))
+    const nextOffset = Math.max(0, Math.min(state.maxOffsetFromBottom, Math.round(offset)))
     revision++ // A delayed pre-gesture read cannot overwrite the requested thumb.
-    publish({ ...state, offsetFromBottom: pending })
-    if (!writing) void drain()
+    publish({ ...state, offsetFromBottom: nextOffset })
+    dispatch(nextOffset, revision, generation)
   }
   return {
     refresh,
     sync(next: PaneScrollInfo | null) {
       if (disposed || !options.allowed()) return
       revision++
-      publish(writing && state && next
-        ? { ...next, offsetFromBottom: Math.min(next.maxOffsetFromBottom, pending ?? state.offsetFromBottom) }
+      publish(inFlight > 0 && state && next
+        ? { ...next, offsetFromBottom: Math.min(next.maxOffsetFromBottom, state.offsetFromBottom) }
         : next)
     },
     move,
@@ -111,9 +103,9 @@ export function createPaneScrollController(options: {
     },
     reset() {
       if (disposed) return
-      generation++; revision++; pending = null; pendingDelta = 0; publish(null)
+      generation++; revision++; pendingDelta = 0; publish(null)
     },
-    dispose() { disposed = true; revision++; pending = null; pendingDelta = 0 }
+    dispose() { disposed = true; revision++; pendingDelta = 0 }
   }
 }
 

@@ -5,7 +5,8 @@ import { createPaneScrollController, offsetFromProxyScroll, proxyScrollTop, scro
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
 
 /** A shadcn coordinate proxy for HERDR's server-owned viewport. The spacer is
- * sized from official row counts; xterm itself never accumulates fake history. */
+ * sized from official row counts; xterm itself never accumulates fake history.
+ * Position changes are optimistic and dispatched immediately. */
 export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refreshRef, controllerRef, onError, viewportId }: {
   sessionName: string
   paneId: string

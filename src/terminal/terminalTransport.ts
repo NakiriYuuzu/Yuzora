@@ -126,7 +126,7 @@ export interface HerdrTerminalTransportOptions {
   terminalScrollEnabled?: () => boolean
   /** Publish the authoritative pane state returned by pane.scroll without another read. */
   onPaneScroll?: (state: PaneScrollInfo) => void
-  /** Share the scrollbar's optimistic position and bounded background writer. */
+  /** Share the scrollbar's optimistic position and immediate writer. */
   paneScrollController?: () => PaneScrollController | null
   onAttachment?: (info: {
     sessionId: string
