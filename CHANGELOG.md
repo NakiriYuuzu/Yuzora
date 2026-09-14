@@ -8,6 +8,7 @@
 - 捲軸僅在該 HERDR session 支援完整捲動資訊時啟用。
 - pane scroll metadata 暫時不可用時回退至相容的 terminal scroll，避免 0.8.2 以上 runtime 的滑輪操作中斷。
 - HERDR 終端輸入傳送失敗時自動重新連線同一個 Session，避免連線失效後永久停在輸入暫停狀態。
+- HERDR 終端機複製會自動移除選取範圍外的空白行與每行尾端 padding，同時保留程式碼、表格及樹狀輸出的原有排版。
 
 ### 新增
 
