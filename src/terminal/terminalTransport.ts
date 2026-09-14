@@ -213,6 +213,7 @@ export function createHerdrTerminalTransport(
       // Backend already enforces first-full + contiguous; still ignore exact dups.
       if (lastSeq !== null && event.seq <= lastSeq) return
       lastSeq = event.seq
+      paneScrollController?.()?.frame()
       onEvent({
         type: "output",
         data: decodeFrameBytes(event.bytesBase64),

@@ -33,6 +33,8 @@ const scopes = [
 ];
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(herdrWorkspaceMove).mockResolvedValue({ workspaceIds: ["space-b", "space-a"] });
+  vi.mocked(herdrWorkspaceMoveBlock).mockResolvedValue({ workspaceIds: ["space-b", "space-a"] });
   const storage = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -256,6 +258,20 @@ it("dispatches worktree and agent menus with their exact host namespace", () => 
   });
 });
 
+function positionRows(source: HTMLElement, target: HTMLElement) {
+  const rect = (top: number, height = 50) => ({ top, bottom: top + height, left: 0, right: 200, width: 200, height, x: 0, y: top, toJSON: () => ({}) });
+  vi.spyOn(source.parentElement!, "getBoundingClientRect").mockReturnValue(rect(100));
+  vi.spyOn(target.parentElement!, "getBoundingClientRect").mockReturnValue(rect(0));
+  const viewport = source.closest('[data-slot="scroll-area-viewport"]')!;
+  vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(rect(0, 1000));
+}
+function dragRows(source: HTMLElement, target: HTMLElement) {
+  positionRows(source, target);
+  fireEvent.pointerDown(source, { button: 0, pointerId: 9, clientX: 10, clientY: 120 });
+  fireEvent.pointerMove(window, { pointerId: 9, clientX: 10, clientY: 70 });
+  fireEvent.pointerUp(window, { pointerId: 9, clientX: 10, clientY: 10 });
+}
+
 it("reorders Spaces through Herdr workspace.move", async () => {
   const sessionName = scopes[0];
   const runtime = useHerdrStore.getState().runtimesBySession[sessionName];
@@ -283,15 +299,7 @@ it("reorders Spaces through Herdr workspace.move", async () => {
     .getAllByRole("treeitem")
     .filter((item) => item.getAttribute("aria-level") === "1");
   const [target, source] = worktrees;
-  const dataTransfer = {
-    effectAllowed: "none",
-    dropEffect: "none",
-    setData: vi.fn(),
-    getData: () => "space-b",
-  };
-  fireEvent.dragStart(source, { dataTransfer });
-  fireEvent.dragOver(target, { dataTransfer, clientY: 0 });
-  fireEvent.drop(target, { dataTransfer, clientY: 0 });
+  dragRows(source, target);
   await vi.waitFor(() => expect(herdrWorkspaceMove).toHaveBeenCalledWith({
     sessionName,
     workspaceId: "space-b",
@@ -301,7 +309,7 @@ it("reorders Spaces through Herdr workspace.move", async () => {
   expect(screen.getAllByRole("treeitem").filter((item) => item.getAttribute("aria-level") === "2")[0]).toHaveAttribute("draggable", "false");
 });
 
-it("reorders a WSL Space through HERDR workspace.move_block when legacy move is absent", async () => {
+it("reorders a remote Space through HERDR workspace.move_block when legacy move is absent", async () => {
   const sessionName = scopes[0];
   const runtime = useHerdrStore.getState().runtimesBySession[sessionName];
   useHerdrStore.setState({
@@ -326,10 +334,7 @@ it("reorders a WSL Space through HERDR workspace.move_block when legacy move is 
   render(<SpaceAgentTree />);
   const worktrees = screen.getAllByRole("treeitem").filter((item) => item.getAttribute("aria-level") === "1");
   const [target, source] = worktrees;
-  const dataTransfer = { effectAllowed: "none", dropEffect: "none", setData: vi.fn(), getData: () => "space-b" };
-  fireEvent.dragStart(source, { dataTransfer });
-  fireEvent.dragOver(target, { dataTransfer, clientY: 0 });
-  fireEvent.drop(target, { dataTransfer, clientY: 0 });
+  dragRows(source, target);
   await vi.waitFor(() => expect(herdrWorkspaceMoveBlock).toHaveBeenCalledOnce());
   const blockRequest = vi.mocked(herdrWorkspaceMoveBlock).mock.calls[0][0];
   expect(blockRequest.sessionName).toBe(sessionName);
@@ -366,7 +371,7 @@ it("keeps a normal Space click after a pointer press that does not cross the dra
   expect(herdrWorkspaceMove).not.toHaveBeenCalled();
 });
 
-it("keeps WSL Space reordering alive when pointer capture is unavailable", async () => {
+it("keeps remote Space reordering alive when pointer capture is unavailable", async () => {
   const sessionName = scopes[0];
   const runtime = useHerdrStore.getState().runtimesBySession[sessionName];
   useHerdrStore.setState({
@@ -396,16 +401,12 @@ it("keeps WSL Space reordering alive when pointer capture is unavailable", async
   render(<SpaceAgentTree />);
   const worktrees = screen.getAllByRole("treeitem").filter((item) => item.getAttribute("aria-level") === "1");
   const [target, source] = worktrees;
-  const targetShell = target.parentElement!;
-  vi.spyOn(targetShell, "getBoundingClientRect").mockReturnValue({
-    top: 0, bottom: 100, left: 0, right: 200, width: 200, height: 100,
-    x: 0, y: 0, toJSON: () => ({}),
-  });
+  positionRows(source, target);
   const originalElementFromPoint = document.elementFromPoint;
   Object.defineProperty(document, "elementFromPoint", { value: vi.fn(() => null), configurable: true });
   fireEvent.pointerDown(source, { button: 0, pointerId: 9, clientX: 10, clientY: 10 });
-  fireEvent.pointerMove(source, { pointerId: 9, clientX: 10, clientY: 30 });
-  fireEvent.pointerUp(source, { pointerId: 9, clientX: 10, clientY: 30 });
+  fireEvent.pointerMove(window, { pointerId: 9, clientX: 10, clientY: 20 });
+  fireEvent.pointerUp(window, { pointerId: 9, clientX: 10, clientY: 10 });
   await vi.waitFor(() => expect(herdrWorkspaceMoveBlock).toHaveBeenCalledOnce());
   expect(setPointerCapture).toHaveBeenCalled();
   Object.defineProperty(document, "elementFromPoint", { value: originalElementFromPoint, configurable: true });
@@ -444,4 +445,49 @@ it("Agents mode flattens only agent rows, preserves scoped identities and persis
   expect(screen.getAllByRole("treeitem")).toHaveLength(3);
   fireEvent.click(screen.getByRole("radio", { name: "Spaces" }));
   expect(screen.getAllByRole("treeitem")).toHaveLength(9);
+});
+
+function reorderScene(block = true) {
+  const name = scopes[0], state = useHerdrStore.getState(), runtime = state.runtimesBySession[name];
+  useHerdrStore.setState({ selectedSpaceId: "a", selectedSpaceBySession: { [name]: "a" } });
+  useHerdrStore.setState({ runtimesBySession: { ...state.runtimesBySession, [name]: { ...runtime, capabilities: { server: { running: true, compatible: true }, api: { workspaceMove: true, workspaceMoveBlock: block } } as HerdrSessionRuntime['capabilities'], snapshot: { ...runtime.snapshot!, spaces: [
+    { id: 'a', label: 'a', path: '/a', order: 0, focused: true },
+    { id: 'b', label: 'b', path: '/b', order: 1, focused: false },
+  ] } } } });
+  vi.mocked(herdrWorkspaceMoveBlock).mockResolvedValue({ workspaceIds: ['b', 'a'] });
+  vi.mocked(herdrWorkspaceMove).mockResolvedValue({ workspaceIds: ['b', 'a'] });
+  render(<SpaceAgentTree />);
+  return screen.getAllByRole('treeitem').filter(row => row.getAttribute('aria-level') === '1');
+}
+it('fixes the source on down even when the first move is on another row and ignores another pointer up', async () => {
+  const [target, source] = reorderScene(); positionRows(source, target);
+  fireEvent.pointerDown(source, { pointerId: 9, button: 0, clientX: 10, clientY: 120 });
+  fireEvent.pointerMove(target, { pointerId: 9, clientX: 10, clientY: 30 });
+  fireEvent.pointerUp(window, { pointerId: 8, clientX: 10, clientY: 30 });
+  expect(herdrWorkspaceMoveBlock).not.toHaveBeenCalled();
+  fireEvent.pointerUp(window, { pointerId: 9, clientX: 10, clientY: 10 });
+  await vi.waitFor(() => expect(herdrWorkspaceMoveBlock).toHaveBeenCalledWith({ sessionName: scopes[0], workspaceIds: ['b'], beforeWorkspaceId: 'a' }));
+});
+it('cancels a gesture on Escape and never sends a drop mutation', () => {
+  const [target, source] = reorderScene(); positionRows(source, target);
+  fireEvent.pointerDown(source, { pointerId: 9, button: 0, clientX: 10, clientY: 120 });
+  fireEvent.pointerMove(window, { pointerId: 9, clientX: 10, clientY: 30 });
+  fireEvent.keyDown(window, { key: 'Escape' });
+  fireEvent.pointerUp(window, { pointerId: 9, clientX: 10, clientY: 10 });
+  expect(herdrWorkspaceMoveBlock).not.toHaveBeenCalled();
+});
+it.each(['host-request-limit', 'host-request-timeout', 'permission denied'])('does not turn %s into a second legacy mutation', async reason => {
+  const [target, source] = reorderScene();
+  vi.mocked(herdrWorkspaceMoveBlock).mockRejectedValueOnce(new Error(reason));
+  dragRows(source, target);
+  await vi.waitFor(() => expect(herdrWorkspaceMoveBlock).toHaveBeenCalledOnce());
+  await screen.findByRole('alert');
+  expect(herdrWorkspaceMoveBlock).toHaveBeenCalledOnce();
+  expect(herdrWorkspaceMove).not.toHaveBeenCalled();
+});
+it('falls back only when a one-member block was explicitly rejected as unsupported', async () => {
+  const [target, source] = reorderScene();
+  vi.mocked(herdrWorkspaceMoveBlock).mockRejectedValueOnce(new Error('unknown_method'));
+  dragRows(source, target);
+  await vi.waitFor(() => expect(herdrWorkspaceMove).toHaveBeenCalledWith({ sessionName: scopes[0], workspaceId: 'b', insertIndex: 0 }));
 });

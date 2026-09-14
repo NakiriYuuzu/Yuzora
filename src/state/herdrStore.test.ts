@@ -1393,4 +1393,37 @@ describe("herdrStore", () => {
     expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(before.tabs)
     expect(useWorkspaceStore.getState().workspacePath).toBe(before.workspace)
   })
+  it("keeps focus and authoritative order when a pre-drop snapshot arrives late", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const before = useHerdrStore.getState().snapshot!
+    let resolve!: (value: typeof rawSnapshot) => void
+    const latest = { ...rawSnapshot, snapshot: { ...rawSnapshot.snapshot, workspaces: [...rawSnapshot.snapshot.workspaces].reverse().map((w, number) => ({ ...w, number })) } }
+    vi.mocked(herdrSnapshot).mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValueOnce(latest)
+    const reading = useHerdrStore.getState().refreshSnapshot("default")
+    useHerdrStore.getState().setWorkspaceReordering("default", true)
+    expect(useHerdrStore.getState().applyWorkspaceOrder("default", ["ws-2", "ws-1"])).toBe(true)
+    useHerdrStore.getState().setWorkspaceReordering("default", false)
+    resolve(rawSnapshot)
+    await reading
+    const after = useHerdrStore.getState().snapshot!
+    expect(after.spaces.map(s => s.id)).toEqual(["ws-2", "ws-1"])
+    expect(after.focusedPaneId).toBe(before.focusedPaneId)
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
+    expect(useHerdrStore.getState().applyWorkspaceOrder("default", ["missing", "ws-1"])).toBe(false)
+  })
+
+  it("does not apply or repeatedly poll snapshots during a workspace mutation", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrSnapshot).mockClear()
+    useHerdrStore.getState().setWorkspaceReordering("default", true)
+    try {
+      useHerdrStore.getState().applyWorkspaceOrder("default", ["ws-2", "ws-1"])
+      expect(await useHerdrStore.getState().refreshSnapshot("default")).toBe(false)
+      expect(herdrSnapshot).toHaveBeenCalledOnce()
+      expect(useHerdrStore.getState().snapshot!.spaces.map(s => s.id)).toEqual(["ws-2", "ws-1"])
+    } finally { useHerdrStore.getState().setWorkspaceReordering("default", false) }
+  })
+
 })

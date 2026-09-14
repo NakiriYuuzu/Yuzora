@@ -1,0 +1,42 @@
+name: HERDR compatibility
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 3 * * 1'
+  pull_request:
+    paths:
+      - 'scripts/*herdr*'
+      - 'src/lib/herdr*'
+      - 'src/terminal/herdr*'
+      - 'src-tauri/host/src/herdr*'
+      - '.github/workflows/herdr-compatibility.yml'
+permissions:
+  contents: read
+jobs:
+  baseline:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+      - name: Detect new unverified formal HERDR releases
+        run: bun scripts/check-herdr-releases.ts
+      - name: Verify isolated HERDR 0.8.2 baseline
+        run: bun scripts/prepare-herdr-baseline.ts
+      - name: Prepare current official runtime
+        run: bun scripts/prepare-herdr-resources.ts
+      - name: Verify current runtime on macOS
+        if: runner.os == 'macOS'
+        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/macos-aarch64/herdr
+      - name: Verify current runtime on Linux
+        if: runner.os == 'Linux'
+        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/linux-x86_64/herdr
+      - name: Verify current runtime on Windows
+        if: runner.os == 'Windows'
+        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe

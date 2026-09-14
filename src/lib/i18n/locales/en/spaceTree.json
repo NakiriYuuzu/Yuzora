@@ -114,5 +114,6 @@
   "binaryDetail": "Selected binary: {{path}}.",
   "incompatibleRecovery": "Use Repair this host to check the exact client path and update its source. Preserve running Sessions.",
   "repairHost": "Repair this host",
-  "runtimeSettings": "HERDR settings"
+  "runtimeSettings": "HERDR settings",
+  "dragSpaceUnavailable": "Reordering requires a ready runtime and an identified workspace group with a supported move API."
 }

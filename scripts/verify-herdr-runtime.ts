@@ -11,6 +11,9 @@ import methodFixture from "../src-tauri/host/tests/fixtures/herdr-0.9.0-methods.
 // Uses only temporary XDG roots and its own named server. Never stops a user's server.
 check(process.argv[2], "usage: bun scripts/verify-herdr-runtime.ts /absolute/path/to/herdr")
 const binary = await realpath(process.argv[2])
+const expectedVersion = process.argv[3] ?? HERDR_RESOURCE_VERSION.baseVersion
+check(["0.8.2", "0.9.0"].includes(expectedVersion), "unverified runtime version; update compatibility fixtures first")
+const expectedProtocol = expectedVersion === "0.8.2" ? 20 : 22
 // Keep Unix socket paths below macOS's length limit, including the session suffix.
 const windows = process.platform === "win32"
 const shell = windows ? "pwsh.exe" : "/bin/sh"
@@ -80,10 +83,10 @@ version_check = false
 manifest_check = false
 `)
   const schema = await command(["api", "schema", "--json"])
-  check(schema.protocol === HERDR_RESOURCE_VERSION.protocol, "unexpected official schema protocol")
+  check(schema.protocol === expectedProtocol, "unexpected official schema protocol")
   const methods = schema.schemas.request.oneOf.map((entry: { properties: { method: { const: string } } }) => entry.properties.method.const)
-  check(JSON.stringify(methods) === JSON.stringify(methodFixture.methods), "official method fixture must match the pinned binary")
-  console.log(`Verified HERDR ${HERDR_RESOURCE_VERSION.baseVersion} protocol ${schema.protocol} method schema`)
+  if (expectedVersion === "0.9.0") check(JSON.stringify(methods) === JSON.stringify(methodFixture.methods), "official method fixture must match the pinned binary")
+  console.log(`Verified HERDR ${expectedVersion} protocol ${schema.protocol} method schema`)
   server = start(["server"])
   server.stdout.resume()
   server.stderr.resume()
@@ -95,9 +98,9 @@ manifest_check = false
     await sleep(100)
   }
   check(status?.server?.compatible === true, "isolated server must match its client")
-  check(status.client.version === HERDR_RESOURCE_VERSION.baseVersion, "unexpected client version")
-  check(status.server.version === HERDR_RESOURCE_VERSION.baseVersion, "unexpected server version")
-  check(status.client.protocol === HERDR_RESOURCE_VERSION.protocol && status.server.protocol === HERDR_RESOURCE_VERSION.protocol, "status protocol mismatch")
+  check(status.client.version === expectedVersion, "unexpected client version")
+  check(status.server.version === expectedVersion, "unexpected server version")
+  check(status.client.protocol === expectedProtocol && status.server.protocol === expectedProtocol, "status protocol mismatch")
   check(typeof status.server.socket === "string", "missing isolated socket marker")
   const socketRelative = relative(root, status.server.socket)
   check(socketRelative.length > 0 && !isAbsolute(socketRelative) && socketRelative !== ".." && !socketRelative.startsWith("..\\") && !socketRelative.startsWith("../"), "refuse a socket outside the isolated test root")
@@ -126,7 +129,7 @@ manifest_check = false
   check(subscription.type === "subscription_started", "subscription acknowledgement contract changed")
   type Snapshot = { protocol: number; panes: Array<{ terminal_id?: string }> }
   const initial = await api<{ snapshot: Snapshot }>("session.snapshot")
-  check(initial.snapshot.protocol === HERDR_RESOURCE_VERSION.protocol, "snapshot protocol mismatch")
+  check(initial.snapshot.protocol === expectedProtocol, "snapshot protocol mismatch")
   const created = await api<{ root_pane: { terminal_id: string } }>("workspace.create", { cwd: join(root, "work"), label: "Yuzora runtime smoke", focus: true })
   await events.wait(row => row.event === "workspace_created")
   console.log("Verified subscription acknowledgement, initial snapshot and live workspace event")
@@ -147,8 +150,37 @@ manifest_check = false
   await control(row => row.type === "terminal.frame" && typeof row.bytes === "string" && Buffer.from(row.bytes, "base64").toString().includes("YUZORA_RUNTIME_OK"))
   controller.stdin.write(JSON.stringify({ type: "terminal.resize", cols: 100, rows: 30 }) + "\n")
   await control(row => row.type === "terminal.frame" && row.width === 100 && row.height === 30)
+  type WorkspaceList = { workspaces: Array<{ workspace_id: string }> }
+  const beforeOrder = (await api<WorkspaceList>("workspace.list")).workspaces.map(w => w.workspace_id)
+  const reorderA = await api<{ workspace: { workspace_id: string } }>("workspace.create", { cwd: join(root, "work"), label: "Reorder A", focus: false })
+  const reorderB = await api<{ workspace: { workspace_id: string } }>("workspace.create", { cwd: join(root, "work"), label: "Reorder B", focus: false })
+  const a = reorderA.workspace.workspace_id, b = reorderB.workspace.workspace_id
+  const ids = (result: WorkspaceList) => result.workspaces.map(w => w.workspace_id)
+  if (methods.includes("workspace.move")) {
+    const moved = await api<WorkspaceList>("workspace.move", { workspace_id: a, insert_index: beforeOrder.length + 2 })
+    check(JSON.stringify(ids(moved)) === JSON.stringify([...beforeOrder, b, a]), "downward legacy insertion boundary mismatch")
+    console.log("PASS downward workspace.move authoritative order")
+  } else console.log("NOT RUN workspace.move: method unavailable on this runtime")
+  if (methods.includes("workspace.move_block")) {
+    const moved = await api<WorkspaceList>("workspace.move_block", { workspace_ids: [a, b], before_workspace_id: beforeOrder[0] })
+    check(JSON.stringify(ids(moved)) === JSON.stringify([a, b, ...beforeOrder]), "block reorder acknowledgement mismatch")
+    console.log("PASS workspace.move_block authoritative order")
+  } else console.log("NOT RUN workspace.move_block: method unavailable on this runtime")
+  if (methods.includes("pane.get") && methods.includes("pane.scroll")) {
+    const paneSnapshot = (await api<{ snapshot: { panes: Array<{ pane_id: string; terminal_id: string }> } }>("session.snapshot")).snapshot
+    const paneId = paneSnapshot.panes.find(p => p.terminal_id === pane.terminal_id)!.pane_id
+    const output = windows ? "1..400 | ForEach-Object { Write-Output ('SCROLL_ROW_' + $_) }\r" : "i=1; while [ $i -le 400 ]; do printf 'SCROLL_ROW_%s\\n' \"$i\"; i=$((i+1)); done\n"
+    controller.stdin.write(JSON.stringify({ type: "terminal.input", text: output }) + "\n")
+    await control(row => row.type === "terminal.frame" && typeof row.bytes === "string" && Buffer.from(row.bytes, "base64").toString().includes("SCROLL_ROW_400"))
+    type Scroll = { pane: { pane_id: string; scroll: { offset_from_bottom: number; max_offset_from_bottom: number; viewport_rows: number } } }
+    const info = await api<Scroll>("pane.get", { pane_id: paneId })
+    check(info.pane.scroll.max_offset_from_bottom > 0, "missing actual overflow")
+    const moved = await api<Scroll>("pane.scroll", { pane_id: paneId, offset_from_bottom: 100 })
+    check(moved.pane.pane_id === paneId && moved.pane.scroll.offset_from_bottom === 100, "pane.scroll authoritative range mismatch")
+    console.log("PASS pane.get/pane.scroll real history and exact pane identity")
+  } else console.log("NOT RUN pane scroll metadata: method unavailable on this runtime")
   controller.stdin.write(JSON.stringify({ type: "terminal.release" }) + "\n")
-  console.log(`HERDR ${HERDR_RESOURCE_VERSION.baseVersion} protocol ${schema.protocol}: snapshot, live events, observer, controller, input and resize passed`)
+  console.log(`HERDR ${expectedVersion} protocol ${schema.protocol}: snapshot, live events, observer, controller, input and resize passed`)
 } finally {
   for (const socket of sockets) socket.destroy()
   for (const child of children) if (child !== server && child.exitCode === null) child.stdin.end()

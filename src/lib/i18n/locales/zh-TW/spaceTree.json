@@ -114,5 +114,6 @@
   "binaryDetail": "使用路徑：{{path}}。",
   "incompatibleRecovery": "請使用「修復此主機」檢查實際 client 路徑並更新來源；保留執行中的 Session。",
   "repairHost": "修復此主機",
-  "runtimeSettings": "HERDR 設定"
+  "runtimeSettings": "HERDR 設定",
+  "dragSpaceUnavailable": "排序需要可用的 Runtime、完整工作區群組資訊與受支援的移動 API。"
 }

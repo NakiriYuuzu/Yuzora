@@ -111,6 +111,8 @@ interface HerdrState {
   selectSession: (sessionName: string) => Promise<void>
   bootstrap: (sessionName?: string | null) => Promise<void>
   refreshSnapshot: (sessionName?: string | null) => Promise<boolean>
+  setWorkspaceReordering: (sessionName: string, active: boolean) => void
+  applyWorkspaceOrder: (sessionName: string, workspaceIds: string[]) => boolean
   applySnapshot: (sessionName: string, snapshot: HerdrSnapshot) => void
   setSelectedSpaceId: (spaceId: string | null) => void
   clearError: () => void
@@ -332,6 +334,8 @@ const MAX_REFRESH_RETRIES = 2
 const worktreeInventoryInFlight = new Map<string, Promise<void>>()
 const worktreeInventoryRequestedGeneration = new Map<string, number>()
 const snapshotGeneration = new Map<string, number>()
+const workspaceOrderGeneration = new Map<string, number>()
+const workspaceReordering = new Set<string>()
 let selectionTail: Promise<void> = Promise.resolve()
 let pendingSelections = 0
 /** One create transaction per named session prevents duplicate first Spaces/Agents. */
@@ -549,7 +553,14 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           // refreshes. Consume only requests that predate the pass here.
           pendingRefresh.delete(resolved)
           try {
+            const orderGeneration = workspaceOrderGeneration.get(resolved) ?? 0
             const raw = await herdrSnapshot(resolved)
+            // A pre-drop or in-mutation snapshot cannot undo a confirmed order.
+            if (workspaceReordering.has(resolved)) return false
+            if (orderGeneration !== (workspaceOrderGeneration.get(resolved) ?? 0)) {
+              pendingRefresh.add(resolved)
+              continue
+            }
             const snapshot = normalizeHerdrSnapshot(raw, resolved)
             get().applySnapshot(resolved, snapshot)
             set((state) =>
@@ -702,6 +713,22 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     })()
     worktreeInventoryInFlight.set(resolved, task)
     return task
+  },
+
+  setWorkspaceReordering(sessionName, active) {
+    workspaceOrderGeneration.set(sessionName, (workspaceOrderGeneration.get(sessionName) ?? 0) + 1)
+    if (active) workspaceReordering.add(sessionName)
+    else workspaceReordering.delete(sessionName)
+  },
+
+  applyWorkspaceOrder(sessionName, workspaceIds) {
+    const runtime = get().runtimesBySession[sessionName]
+    const snapshot = runtime?.snapshot
+    if (!snapshot || workspaceIds.length !== snapshot.spaces.length || new Set(workspaceIds).size !== workspaceIds.length || workspaceIds.some(id => !snapshot.spaces.some(s => s.id === id))) return false
+    const order = (value: HerdrSnapshot) => ({ ...value, spaces: workspaceIds.map((id, index) => ({ ...value.spaces.find(s => s.id === id)!, order: index })) })
+    workspaceOrderGeneration.set(sessionName, (workspaceOrderGeneration.get(sessionName) ?? 0) + 1)
+    set(state => withRuntime(state, sessionName, { snapshot: order(snapshot), ...(runtime.baseSnapshot ? { baseSnapshot: order(runtime.baseSnapshot) } : {}) }))
+    return true
   },
 
   applySnapshot(sessionName, snapshot) {

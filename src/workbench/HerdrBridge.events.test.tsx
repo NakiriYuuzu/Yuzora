@@ -251,7 +251,7 @@ describe("HerdrBridge event ownership", () => {
       callback?.({
         type: "topology_changed",
         subscriptionId: "sub-default",
-        kind: "workspace.moved",
+        kind: "workspace.reordered",
         workspaceId: "w2"
       })
     })

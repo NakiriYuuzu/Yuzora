@@ -1,3 +1,6 @@
+import { recordHerdrScrollMetric } from "@/terminal/herdrScrollTelemetry"
+import { herdrErrorKind } from "./herdrErrors"
+import { createHerdrScrollScheduler } from "./herdrScrollScheduler"
 import { Channel, invoke as nativeInvoke } from "@tauri-apps/api/core"
 import type { ConnectedHost } from "./hostIpc"
 import type { HerdrNamedSession, HerdrSubscriptionEvent, HerdrTerminalEvent } from "./herdrTypes"
@@ -86,6 +89,9 @@ function ensureCurrent(host: RuntimeHost): void {
   if (hosts.get(host.owner.hostId) !== host) throw new StaleRuntimeResponse()
 }
 
+let scrollRequestSerial = 0
+const scrollSchedulers = new WeakMap<RuntimeHost, ReturnType<typeof createHerdrScrollScheduler>>()
+
 async function hostCall<T>(host: RuntimeHost, command: string, args?: Record<string, unknown>): Promise<T> {
   ensureCurrent(host)
   try {
@@ -148,7 +154,7 @@ async function openStream<T>(host: RuntimeHost, sessionName: string, command: st
 }
 
 /** Central routing boundary shared by every typed HERDR wrapper. */
-export async function invokeHerdr<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+export async function invokeHerdr<T>(command: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
   if (command === "herdr_sessions") {
     const remote = [...hosts.values()].filter(host => host.kind !== "wsl" || useRuntimePreferencesStore.getState().wslEnabled)
     const results = await Promise.allSettled([
@@ -204,5 +210,24 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
     if (remote) Object.assign(routed, { cwd: remote.path })
   }
   if (command === "herdr_terminal_open" || command === "herdr_events_subscribe") return openStream<T>(host, scope.sessionName, command, routed)
+  if (command === "herdr_pane_scroll_to" || command === "herdr_pane_scroll_state") {
+    let scheduler = scrollSchedulers.get(host)
+    if (!scheduler) { scheduler = createHerdrScrollScheduler(); scrollSchedulers.set(host, scheduler) }
+    const activeScheduler = scheduler
+    const serial = ++scrollRequestSerial
+    return scheduler.run(async () => {
+      const start = performance.now()
+      const metric = { host: scope.hostId, session: scope.sessionName, pane: String(args.paneId ?? ""), serial, pending: 0, attempt: 0, queueDepth: activeScheduler.depth }
+      recordHerdrScrollMetric({ ...metric, at: start, phase: "host-dispatch" })
+      try {
+        const result = await hostCall<T>(host, command, routed)
+        recordHerdrScrollMetric({ ...metric, at: performance.now(), phase: "host-ack", elapsedMs: performance.now() - start })
+        return result
+      } catch (error) {
+        recordHerdrScrollMetric({ ...metric, at: performance.now(), phase: "host-error", errorClass: herdrErrorKind(error), elapsedMs: performance.now() - start })
+        throw error
+      }
+    }, signal)
+  }
   return hostCall<T>(host, command, routed)
 }

@@ -36,6 +36,7 @@ import type {
   HerdrWorkspaceCloseRequest,
   HerdrWorkspaceCreateRequest,
   HerdrWorkspaceCreateResult,
+  HerdrWorkspaceOrderResult,
   HerdrWorkspaceMoveRequest,
   HerdrWorkspaceMoveBlockRequest,
   HerdrWorkspaceRenameRequest,
@@ -89,7 +90,7 @@ export function herdrWorkspaceCreate(
 
 export function herdrWorkspaceMove(
   request: HerdrWorkspaceMoveRequest
-): Promise<void> {
+): Promise<HerdrWorkspaceOrderResult> {
   return invoke("herdr_workspace_move", {
     sessionName: request.sessionName ?? null,
     workspaceId: request.workspaceId,
@@ -100,7 +101,7 @@ export function herdrWorkspaceMove(
 /** HERDR's atomic block reorder API, used by newer WSL runtimes. */
 export function herdrWorkspaceMoveBlock(
   request: HerdrWorkspaceMoveBlockRequest
-): Promise<void> {
+): Promise<HerdrWorkspaceOrderResult> {
   return invoke("herdr_workspace_move_block", {
     sessionName: request.sessionName ?? null,
     workspaceIds: request.workspaceIds,

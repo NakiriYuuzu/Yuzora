@@ -1,3 +1,5 @@
+import { herdrErrorKind } from "@/lib/herdrErrors"
+import { recordHerdrScrollMetric } from "./herdrScrollTelemetry"
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
 import { useTranslation } from "react-i18next"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -25,6 +27,7 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
   const synchronizedTop = useRef(0)
   const [state, setState] = useState<PaneScrollInfo | null>(null)
   const [height, setHeight] = useState(0)
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null)
   const [writable, setWritable] = useState(false)
   useEffect(() => { permission.current = canScroll }, [canScroll])
   useEffect(() => { errorHandler.current = onError }, [onError])
@@ -40,18 +43,19 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
   useEffect(() => {
     if (!enabled) return
     const active = createPaneScrollController({
-      read: () => readPaneScroll(sessionName, paneId),
-      write: (offset) => setPaneScroll(sessionName, paneId, offset),
+      read: (signal) => readPaneScroll(sessionName, paneId, signal),
+      write: (offset, signal) => setPaneScroll(sessionName, paneId, offset, signal),
       allowed: () => permission.current(),
-      change: setState,
-      error: (error) => errorHandler.current?.(error),
+      change: (next) => { setState(next); if (next) setUnavailableReason(null) },
+      metric: (metric) => recordHerdrScrollMetric({ ...metric, session: sessionName, pane: paneId }),
+      error: (error) => { setUnavailableReason(herdrErrorKind(error)); errorHandler.current?.(error) },
     })
     controller.current = active
     if (controllerRef) controllerRef.current = active
     const refresh = (next?: PaneScrollInfo | null) => {
       const writable = permission.current()
       setWritable(writable)
-      if (!writable) return
+      if (!writable) { active.reset(); return }
       if (next !== undefined) active.sync(next)
       else void active.refresh()
     }
@@ -83,7 +87,7 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
     aria-valuemin={current ? 0 : undefined} aria-valuemax={current?.maxOffsetFromBottom}
     aria-valuenow={current ? current.maxOffsetFromBottom - current.offsetFromBottom : undefined}
     aria-disabled={disabled} data-disabled={disabled} tabIndex={disabled ? -1 : 0}
-    title={t(current ? "hint" : "unavailable")}
+    title={current ? t("hint") : t(unavailableReason ? `reason.${unavailableReason}` : "unavailable")}
     viewportProps={{
       "data-testid": "herdr-scroll-proxy",
       onScroll: (event) => {

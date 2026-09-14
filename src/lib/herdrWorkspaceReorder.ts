@@ -1,28 +1,43 @@
-/**
- * Convert a drop position in the current workspace list to HERDR's
- * `workspace.move.insert_index` semantics.
- *
- * HERDR removes the source first, then inserts at the final index in the
- * shortened list. The returned index is therefore the post-removal index.
- */
-export function herdrWorkspaceInsertIndex(
-  sourceIndex: number,
-  targetIndex: number,
-  afterTarget: boolean,
-  length: number
-): number | null {
-  if (
-    !Number.isInteger(sourceIndex) ||
-    !Number.isInteger(targetIndex) ||
-    !Number.isInteger(length) ||
-    sourceIndex < 0 ||
-    targetIndex < 0 ||
-    sourceIndex >= length ||
-    targetIndex >= length ||
-    length < 1
-  ) return null
+import type { HerdrSpaceInfo } from './herdrTypes'
 
-  const requestedIndex = targetIndex + (afterTarget ? 1 : 0)
-  const finalIndex = sourceIndex < requestedIndex ? requestedIndex - 1 : requestedIndex
-  return sourceIndex === finalIndex ? null : finalIndex
+/** Legacy HERDR takes the insertion boundary BEFORE removing the source. */
+export function herdrWorkspaceInsertIndex(source: number, target: number, after: boolean, length: number): number | null {
+  if (![source, target, length].every(Number.isInteger) || source < 0 || target < 0 || source >= length || target >= length) return null
+  const boundary = target + Number(after)
+  const final = boundary - Number(source < boundary)
+  return source === final ? null : boundary
+}
+
+export interface HerdrReorderPlan {
+  sourceWorkspaceIds: string[]
+  beforeWorkspaceId: string | null
+  legacyInsertIndex: number
+  expectedOrder: string[]
+}
+
+/** Only API-owned group identity establishes an atomic move. Unverified
+ * presentation grouping must not silently turn into a one-member mutation. */
+export function herdrReorderMembers(spaces: HerdrSpaceInfo[], sourceId: string): HerdrSpaceInfo[] | null {
+  const source = spaces.find(s => s.id === sourceId)
+  if (!source || source.isLinkedWorktree) return null
+  if (source.worktreeGroupKey) return [source, ...spaces.filter(s => s.id !== source.id && s.worktreeGroupKey === source.worktreeGroupKey)]
+  if (source.repoKey && spaces.some(s => s.id !== source.id && s.repoKey === source.repoKey)) return null
+  return [source]
+}
+
+export function planHerdrWorkspaceReorder(spaces: HerdrSpaceInfo[], sourceId: string, targetId: string, after: boolean): HerdrReorderPlan | null {
+  const members = herdrReorderMembers(spaces, sourceId)
+  const target = herdrReorderMembers(spaces, targetId)
+  if (!members || !target || members.some(s => target.some(t => t.id === s.id))) return null
+  const sourceWorkspaceIds = members.map(s => s.id)
+  const moving = new Set(sourceWorkspaceIds)
+  const remaining = spaces.filter(s => !moving.has(s.id))
+  const targetIds = new Set(target.map(s => s.id))
+  const positions = remaining.flatMap((s, i) => targetIds.has(s.id) ? [i] : [])
+  const insertion = after ? Math.max(...positions) + 1 : Math.min(...positions)
+  const beforeWorkspaceId = remaining[insertion]?.id ?? null
+  const expectedOrder = remaining.map(s => s.id)
+  expectedOrder.splice(insertion, 0, ...sourceWorkspaceIds)
+  if (spaces.every((s, i) => s.id === expectedOrder[i])) return null
+  return { sourceWorkspaceIds, beforeWorkspaceId, legacyInsertIndex: beforeWorkspaceId ? spaces.findIndex(s => s.id === beforeWorkspaceId) : spaces.length, expectedOrder }
 }

@@ -1,3 +1,4 @@
+import { herdrErrorKind } from "@/lib/herdrErrors";
 import { contextMenuHandler } from "@/state/contextMenuStore";
 import {
   Fragment,
@@ -7,9 +8,9 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type DragEvent,
   type KeyboardEvent,
   type PointerEvent,
+  type MouseEvent,
 } from "react";
 import {
   ChevronsDownUp,
@@ -31,13 +32,13 @@ import { useRecentWorkspacesStore } from "@/state/recentWorkspaces";
 
 import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents";
 import type { HerdrAgentInfo, HerdrSpaceInfo } from "@/lib/herdrTypes";
-import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider";
+import { parseRuntimeScope, runtimeOwner, sessionScope } from "@/lib/herdrProvider";
 import { spacePresentationKey, runtimeSessionLabel } from "./spaceTreeIdentity";
 import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
 import { workspacePathBasename } from "@/lib/paths";
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions";
 import { herdrWorkspaceMove, herdrWorkspaceMoveBlock } from "@/lib/herdrIpc";
-import { herdrWorkspaceInsertIndex } from "@/lib/herdrWorkspaceReorder";
+import { herdrReorderMembers, planHerdrWorkspaceReorder } from "@/lib/herdrWorkspaceReorder";
 import { HerdrLauncher } from "./HerdrLauncher";
 import { SpaceAppearanceDialog } from "./SpaceAppearanceDialog";
 import { SpaceCharacter } from "./SpaceCharacter";
@@ -88,6 +89,7 @@ export function SpaceAgentTree() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [inspected, setInspected] = useState<HerdrAgentInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reorderError, setReorderError] = useState<string | null>(null);
   const [creatingSpace, setCreatingSpace] = useState(false);
   const [creatingTerminal, setCreatingTerminal] = useState<string | null>(null);
   const terminalCreationInFlight = useRef(false);
@@ -96,7 +98,10 @@ export function SpaceAgentTree() {
   const dropTargetRef = useRef<{ key: string; after: boolean } | null>(null);
   const [movingSpaceKey, setMovingSpaceKey] = useState<string | null>(null);
   const draggedSpaceRef = useRef<{ key: string; sessionName: string; workspaceId: string } | null>(null);
-  const pointerDragRef = useRef<{ pointerId: number; startX: number; startY: number; active: boolean } | null>(null);
+  const gestureCleanup = useRef<(() => void) | null>(null);
+  const movingRef = useRef(false);
+  const treeContainer = useRef<HTMLDivElement>(null);
+  useEffect(() => () => gestureCleanup.current?.(), []);
   const suppressClickRef = useRef(false);
   // All is a view filter, never a runtime Session name or process context.
   const [requestedScope, setScopeSession] = useState<string | null>(null);
@@ -158,40 +163,13 @@ export function SpaceAgentTree() {
   }
 
   function canReorderSpace(node: TreeNode) {
-    const runtime = runtimes[node.sessionName];
+    const runtime = useHerdrStore.getState().runtimesBySession[node.sessionName];
     const caps = runtime?.capabilities;
-    const supportsWorkspaceMove = Boolean(
-      caps?.api.workspaceMove || caps?.api.methods?.includes("workspace.move"),
-    );
-    const supportsWorkspaceMoveBlock = Boolean(
-      caps?.api.workspaceMoveBlock || caps?.api.methods?.includes("workspace.move_block"),
-    );
-    return node.kind === "project" &&
-      runtime?.connectionState === "ready" &&
-      !runtime.errorMessage &&
-      caps?.server.compatible !== false &&
-      !!caps?.server.running &&
-      (supportsWorkspaceMove || supportsWorkspaceMoveBlock);
-  }
-
-  function onSpaceDragStart(event: DragEvent<HTMLButtonElement>, node: TreeNode) {
-    // Pointer Events own Space reordering. Cancel the browser's native drag
-    // session so WKWebView never creates a draggable ghost image.
-    event.preventDefault();
-    if (!canReorderSpace(node)) {
-      return;
-    }
-    draggedSpaceRef.current = {
-      key: node.key,
-      sessionName: node.sessionName,
-      workspaceId: node.space.id,
-    };
-    setDraggedSpaceKey(node.key);
-    setDropTarget(null);
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", node.space.id);
-    }
+    const members = herdrReorderMembers(runtime?.snapshot?.spaces ?? [], node.space.id);
+    return node.kind === "project" && runtime?.connectionState === "ready" &&
+      (!runtime.errorMessage || herdrErrorKind(runtime.errorMessage) === "busy") &&
+      caps?.server.compatible !== false && !!caps?.server.running && !!members &&
+      (!!caps.api.workspaceMoveBlock || (members.length === 1 && !!caps.api.workspaceMove));
   }
 
   function clearSpaceDrag() {
@@ -202,169 +180,121 @@ export function SpaceAgentTree() {
   }
 
   function updatePointerDropTarget(clientX: number, clientY: number) {
-    const source = draggedSpaceRef.current;
-    if (!source) return;
-    const element = (() => {
-      const hit = document.elementFromPoint?.(clientX, clientY)?.closest<HTMLElement>("[data-space-key]");
-      if (hit) return hit;
-      // WSL WebViews can return no element while the pointer is captured by
-      // the source row. Use row bounds as a deterministic hit-test fallback.
-      return [...document.querySelectorAll<HTMLElement>("[data-space-key]")].find((candidate) => {
-        const bounds = candidate.getBoundingClientRect();
-        return clientX >= bounds.left && clientX <= bounds.right
-          && clientY >= bounds.top && clientY <= bounds.bottom;
-      }) ?? null;
-    })();
-    const key = element?.dataset.spaceKey;
-    const node = key ? all.find((item) => item.key === key) : undefined;
-    if (!node || node.kind !== "project" || node.sessionName !== source.sessionName || !canReorderSpace(node)) {
-      dropTargetRef.current = null;
-      setDropTarget(null);
-      return;
-    }
-    const bounds = element!.getBoundingClientRect();
-    const after = bounds.height > 0 && clientY > bounds.top + bounds.height / 2;
-    const targetKey = node.key;
-    const nextTarget = { key: targetKey, after };
-    dropTargetRef.current = nextTarget;
-    setDropTarget((current) => current && current.key === targetKey && current.after === after ? current : nextTarget);
-  }
-
-  function onSpacePointerDown(event: PointerEvent<HTMLElement>, node: TreeNode) {
-    if (!canReorderSpace(node) || event.button !== 0) return;
-    if (pointerDragRef.current) return;
-    suppressClickRef.current = false;
-    const pointerId = "pointerId" in event ? event.pointerId : -1;
-    pointerDragRef.current = { pointerId, startX: event.clientX, startY: event.clientY, active: false };
-  }
-
-  function onSpacePointerMove(event: PointerEvent<HTMLElement>, node: TreeNode) {
-    const pointer = pointerDragRef.current;
-    if (!pointer || (pointer.pointerId >= 0 && pointer.pointerId !== event.pointerId)) return;
-    if (!pointer.active && Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) < 5) return;
-    if (!pointer.active) {
-      pointer.active = true;
-      suppressClickRef.current = true;
-      onSpaceDragStart(event as unknown as DragEvent<HTMLButtonElement>, node);
-      if (pointer.pointerId >= 0) {
-        // Some WSL/WebView pointer implementations reject capture when the
-        // native pointer has already moved between surfaces. Capture is an
-        // optimization; a failed capture must not abort the drag lifecycle.
-        try {
-          event.currentTarget.setPointerCapture?.(pointer.pointerId);
-        } catch {
-          // Continue with hit-testing and the window-level mouse fallback.
-        }
+    const source = draggedSpaceRef.current, container = treeContainer.current;
+    if (!source || !container) return null;
+    const viewport = container.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    const clip = viewport?.getBoundingClientRect();
+    const hit = document.elementFromPoint?.(clientX, clientY);
+    const inside = !clip || (clientX >= clip.left && clientX <= clip.right && clientY >= clip.top && clientY <= clip.bottom);
+    // Actual occlusion beats geometric fallback. A null hit may occur during capture.
+    const hitScope = hit?.closest<HTMLElement>("[data-session-scope]")?.dataset.sessionScope;
+    const occluded = hit && (!container.contains(hit) || (hitScope !== undefined && hitScope !== source.sessionName));
+    let next: { key: string; after: boolean } | null = null;
+    if (inside && !occluded) {
+      const rows = [...container.querySelectorAll<HTMLElement>('[data-space-key]')];
+      let distance = Infinity;
+      for (const row of rows) {
+        const node = all.find(item => item.key === row.dataset.spaceKey);
+        if (!node || node.sessionName !== source.sessionName || !canReorderSpace(node)) continue;
+        const rect = row.getBoundingClientRect();
+        if (!rect.height || !rect.width || (clip && (rect.bottom <= clip.top || rect.top >= clip.bottom))) continue;
+        if (clientX < rect.left || clientX > rect.right) continue;
+        const after = clientY > rect.top + rect.height / 2;
+        const delta = Math.abs(clientY - (after ? rect.bottom : rect.top));
+        if (delta < distance) { distance = delta; next = { key: node.key, after }; }
       }
     }
-    event.preventDefault();
-    updatePointerDropTarget(event.clientX, event.clientY);
+    dropTargetRef.current = next;
+    setDropTarget(current => current?.key === next?.key && current?.after === next?.after ? current : next);
+    return next;
   }
 
-  function onSpacePointerUp(event: PointerEvent<HTMLElement>) {
-    const pointer = pointerDragRef.current;
-    pointerDragRef.current = null;
-    if (!pointer || (pointer.pointerId >= 0 && pointer.pointerId !== event.pointerId) || !pointer.active) return;
-    const target = dropTargetRef.current;
-    const source = draggedSpaceRef.current;
-    clearSpaceDrag();
-    if (!source || !target) return;
-    void moveSpace(source, target);
-  }
-
-  function onSpacePointerCancel() {
-    pointerDragRef.current = null;
+  function onSpacePointerDown(event: PointerEvent<HTMLElement> | MouseEvent<HTMLElement>, node: TreeNode) {
+    if (!canReorderSpace(node) || event.button !== 0 || gestureCleanup.current || movingRef.current) return;
+    const pointerId = "pointerId" in event ? event.pointerId : null;
+    const source = { key: node.key, sessionName: node.sessionName, workspaceId: node.space.id, owner: JSON.stringify(runtimeOwner(node.sessionName)) };
+    const startX = event.clientX, startY = event.clientY, element = event.currentTarget;
+    let active = false;
     suppressClickRef.current = false;
-    clearSpaceDrag();
+    const moveName = pointerId === null ? "mousemove" : "pointermove";
+    const upName = pointerId === null ? "mouseup" : "pointerup";
+    const matches = (e: Event) => pointerId === null || (e as globalThis.PointerEvent).pointerId === pointerId;
+    const cleanup = () => {
+      window.removeEventListener(moveName, move, true);
+      window.removeEventListener(upName, up, true);
+      window.removeEventListener("pointercancel", cancel, true);
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", key, true);
+      gestureCleanup.current = null;
+      if (pointerId !== null && element.hasPointerCapture?.(pointerId)) element.releasePointerCapture(pointerId);
+    };
+    const cancel = (e?: Event) => {
+      if (e?.type === "pointercancel" && !matches(e)) return;
+      cleanup(); clearSpaceDrag();
+    };
+    const key = (e: KeyboardEvent | globalThis.KeyboardEvent) => { if (e.key === "Escape") cancel(); };
+    const move = (e: Event) => {
+      if (!matches(e)) return;
+      const point = e as globalThis.MouseEvent;
+      if (!active && Math.hypot(point.clientX - startX, point.clientY - startY) < 5) return;
+      if (!active) {
+        active = true; suppressClickRef.current = true;
+        draggedSpaceRef.current = source; setDraggedSpaceKey(source.key);
+        try { if (pointerId !== null) element.setPointerCapture?.(pointerId); } catch { /* Global listeners retain this gesture. */ }
+      }
+      e.preventDefault(); updatePointerDropTarget(point.clientX, point.clientY);
+    };
+    const up = (e: Event) => {
+      if (!matches(e)) return;
+      const point = e as globalThis.MouseEvent;
+      const target = active ? updatePointerDropTarget(point.clientX, point.clientY) : null;
+      cleanup(); clearSpaceDrag();
+      // Suppress only the click synthesized by this drop, not a later click
+      // on a child row (which does not start a project drag gesture).
+      if (active) window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+      if (target) void moveSpace(source, target);
+    };
+    window.addEventListener(moveName, move, true);
+    window.addEventListener(upName, up, true);
+    window.addEventListener("pointercancel", cancel, true);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", key, true);
+    gestureCleanup.current = cleanup;
   }
 
-  async function moveSpace(source: { key: string; sessionName: string; workspaceId: string }, target: { key: string; after: boolean }) {
-    const node = all.find((item) => item.key === target.key);
-    if (!node || node.kind !== "project" || source.sessionName !== node.sessionName || !canReorderSpace(node) || movingSpaceKey) return;
-    const spaces = useHerdrStore.getState().runtimesBySession[source.sessionName]?.snapshot?.spaces ?? [];
-    const sourceIndex = spaces.findIndex((space) => space.id === source.workspaceId);
-    const targetIndex = spaces.findIndex((space) => space.id === node.space.id);
-    const insertIndex = herdrWorkspaceInsertIndex(sourceIndex, targetIndex, target.after, spaces.length);
-    if (insertIndex === null) return;
-    const expectedOrder = spaces.map((space) => space.id);
-    const [moved] = expectedOrder.splice(sourceIndex, 1);
-    expectedOrder.splice(insertIndex, 0, moved);
-    const beforeWorkspaceId = expectedOrder[insertIndex + 1] ?? null;
-    setMovingSpaceKey(source.key);
-    setError(null);
+  async function moveSpace(source: { key: string; sessionName: string; workspaceId: string; owner: string }, target: { key: string; after: boolean }) {
+    if (source.owner !== JSON.stringify(runtimeOwner(source.sessionName))) return;
+    const node = all.find(item => item.key === target.key);
+    if (!node || source.sessionName !== node.sessionName || !canReorderSpace(node) || movingRef.current) return;
+    const state = useHerdrStore.getState();
+    const runtime = state.runtimesBySession[source.sessionName];
+    const plan = planHerdrWorkspaceReorder(runtime?.snapshot?.spaces ?? [], source.workspaceId, node.space.id, target.after);
+    if (!plan) return;
+    const caps = runtime?.capabilities?.api;
+    if (!caps?.workspaceMoveBlock && (plan.sourceWorkspaceIds.length !== 1 || !caps?.workspaceMove)) return;
+    movingRef.current = true; setMovingSpaceKey(source.key); setError(null); setReorderError(null);
+    state.setWorkspaceReordering(source.sessionName, true);
+    state.applyWorkspaceOrder(source.sessionName, plan.expectedOrder);
     try {
-      const caps = useHerdrStore.getState().runtimesBySession[source.sessionName]?.capabilities?.api;
-      const supportsBlock = Boolean(caps?.workspaceMoveBlock || caps?.methods?.includes("workspace.move_block"));
-      const supportsLegacy = Boolean(caps?.workspaceMove || caps?.methods?.includes("workspace.move"));
-      if (supportsBlock) {
-        // workspace.move_block is the stable reorder contract on newer WSL
-        // runtimes. It addresses the item before the insertion point, with
-        // null meaning append, and avoids legacy insert-index rejection.
+      let result;
+      if (caps.workspaceMoveBlock) {
         try {
-          await herdrWorkspaceMoveBlock({
-            sessionName: source.sessionName,
-            workspaceIds: [source.workspaceId],
-            beforeWorkspaceId,
-          });
-        } catch (blockError) {
-          // A stale capability cache can advertise the newer method while
-          // the running bridge still only accepts workspace.move. Preserve
-          // compatibility without hiding a failure when no fallback exists.
-          if (!supportsLegacy) throw blockError;
-          await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex });
+          result = await herdrWorkspaceMoveBlock({ sessionName: source.sessionName, workspaceIds: plan.sourceWorkspaceIds, beforeWorkspaceId: plan.beforeWorkspaceId });
+        } catch (error) {
+          if (herdrErrorKind(error) !== "unsupported" || plan.sourceWorkspaceIds.length !== 1 || !caps.workspaceMove) throw error;
+          result = await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex: plan.legacyInsertIndex });
         }
-      } else {
-        await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex });
-      }
-      useHerdrStore.getState().bumpTopologyRevision();
-      // HERDR acknowledges the command before its persisted snapshot catches
-      // up. Retry briefly so the sidebar reflects the authoritative new order
-      // in the same gesture instead of showing the old order until restart.
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await useHerdrStore.getState().refreshSnapshot(source.sessionName);
-        const currentOrder = useHerdrStore.getState().runtimesBySession[source.sessionName]
-          ?.snapshot?.spaces.map((space) => space.id);
-        if (currentOrder?.every((id, index) => id === expectedOrder[index])) break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+      } else result = await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex: plan.legacyInsertIndex });
+      if (!result || !Array.isArray(result.workspaceIds)) throw new Error("Invalid HERDR workspace order response");
+      useHerdrStore.getState().applyWorkspaceOrder(source.sessionName, result.workspaceIds);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("reorderFailed"));
+      setReorderError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setMovingSpaceKey(null);
+      useHerdrStore.getState().setWorkspaceReordering(source.sessionName, false);
+      // One authoritative reconciliation also recovers ambiguous mutation errors.
+      await useHerdrStore.getState().refreshSnapshot(source.sessionName);
+      movingRef.current = false; setMovingSpaceKey(null);
     }
-  }
-
-  function onSpaceDragOver(event: DragEvent<HTMLDivElement>, node: TreeNode) {
-    const source = draggedSpaceRef.current;
-    if (!source || node.kind !== "project" || source.sessionName !== node.sessionName || !canReorderSpace(node)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const after = bounds.height > 0 && event.clientY > bounds.top + bounds.height / 2;
-    const nextTarget = { key: node.key, after };
-    dropTargetRef.current = nextTarget;
-    setDropTarget((current) => current?.key === node.key && current.after === after ? current : nextTarget);
-  }
-
-  async function onSpaceDrop(event: DragEvent<HTMLDivElement>, node: TreeNode) {
-    event.preventDefault();
-    event.stopPropagation();
-    const source = draggedSpaceRef.current;
-    const liveDropTarget = dropTargetRef.current;
-    const target = liveDropTarget?.key === node.key
-      ? liveDropTarget
-      : node.kind === "project"
-        ? (() => {
-            const bounds = event.currentTarget.getBoundingClientRect();
-            return {
-              key: node.key,
-              after: bounds.height > 0 && event.clientY > bounds.top + bounds.height / 2,
-            };
-          })()
-        : null;
-    clearSpaceDrag();
-    if (!source || !target || node.kind !== "project" || source.sessionName !== node.sessionName || !canReorderSpace(node) || movingSpaceKey) return;
-    void moveSpace(source, target);
   }
   async function addTerminal(node: TreeNode) {
     if (terminalCreationInFlight.current || creatingSpace || !canAddTerminal(node.sessionName)) return;
@@ -445,12 +375,12 @@ export function SpaceAgentTree() {
           const snapshot = runtimes[sessionName]?.snapshot;
           const groups = new Map<string, HerdrSpaceInfo[]>();
           for (const space of snapshot?.spaces ?? []) {
-            const key = space.repoKey ?? space.id;
+            const key = space.worktreeGroupKey ?? space.repoKey ?? space.id;
             groups.set(key, [...(groups.get(key) ?? []), space]);
           }
           return [...groups.entries()].map(
             ([group, spaces], index): TreeNode => {
-              const first = spaces[0],
+              const first = spaces.find(space => space.isLinkedWorktree === false) ?? spaces[0],
                 root = first.repoRoot ?? first.path ?? first.label;
               const identityKey = spacePresentationKey(sessionName, root);
               const identity = resolveProjectPresentation(
@@ -710,7 +640,7 @@ export function SpaceAgentTree() {
   }
 
   return (
-    <div className="space-tree-panel">
+    <div ref={treeContainer} className="space-tree-panel" aria-busy={movingSpaceKey !== null}>
       <ToggleGroup type="single" value={viewMode} aria-label={t("viewMode", { ns: "spaceNavigation" })}
         className="gap-1 p-2" onValueChange={(value) => {
           if (value !== "spaces" && value !== "agents") return;
@@ -729,9 +659,9 @@ export function SpaceAgentTree() {
           setSelectedAgent(null);
         }}
       />
-      {error && (
+      {(error || reorderError) && (
         <p className="space-tree-notice" role="alert">
-          {error}
+          {error || reorderError}
         </p>
       )}
       <ScrollArea
@@ -804,7 +734,7 @@ export function SpaceAgentTree() {
             const notice = sessionNotice(item.name);
             return (
               <Fragment key={item.name}>
-                <div className="tree-session-heading">
+                <div className="tree-session-heading" data-session-scope={item.name}>
                   <strong title={sessionLabel(item.name)}>{sessionLabel(item.name)}</strong>
                   {viewMode === "spaces" && <Button
                     variant="ghost"
@@ -845,27 +775,17 @@ export function SpaceAgentTree() {
                     <div
                       key={node.key}
                       role="none"
+                      data-session-scope={node.sessionName}
                       data-space-key={node.kind === "project" ? node.key : undefined}
-                      className={`tree-row-shell tree-row-${node.kind}`}
+                      className={`tree-row-shell tree-row-${node.kind} ${draggedSpaceKey ? "select-none" : ""}`}
                       data-dragging={draggedSpaceKey === node.key ? "true" : undefined}
                       data-drop-target={dropTarget?.key === node.key ? (dropTarget.after ? "after" : "before") : undefined}
                       data-current={containsSelection}
                       style={
-                        { "--space-color": node.color?.background } as CSSProperties
+                        { "--space-color": node.color?.background, touchAction: node.kind === "project" ? "none" : undefined } as CSSProperties
                       }
                       onPointerDownCapture={node.kind === "project" ? (event) => onSpacePointerDown(event, node) : undefined}
-                      onPointerMoveCapture={node.kind === "project" ? (event) => onSpacePointerMove(event, node) : undefined}
-                      onPointerUpCapture={node.kind === "project" ? onSpacePointerUp : undefined}
-                      onPointerCancelCapture={node.kind === "project" ? onSpacePointerCancel : undefined}
-                      onMouseDownCapture={node.kind === "project" ? (event) => onSpacePointerDown(event as unknown as PointerEvent<HTMLElement>, node) : undefined}
-                      onMouseMoveCapture={node.kind === "project" ? (event) => onSpacePointerMove(event as unknown as PointerEvent<HTMLElement>, node) : undefined}
-                      onMouseUpCapture={node.kind === "project" ? (event) => onSpacePointerUp(event as unknown as PointerEvent<HTMLElement>) : undefined}
-                      onDragOver={node.kind === "project" ? (event) => onSpaceDragOver(event, node) : undefined}
-                      onDragLeave={node.kind === "project" ? (event) => {
-                        if (!event.currentTarget.contains(event.relatedTarget as Node | null))
-                          setDropTarget((current) => current?.key === node.key ? null : current);
-                      } : undefined}
-                      onDrop={node.kind === "project" ? (event) => void onSpaceDrop(event, node) : undefined}
+                      onMouseDownCapture={node.kind === "project" ? (event) => { if (!window.PointerEvent) onSpacePointerDown(event, node); } : undefined}
                     >
                       <Button
                         ref={(element) => {
@@ -895,7 +815,7 @@ export function SpaceAgentTree() {
                               : t("inspectHint")
                             : `${t("pendingCount", { count: node.pending })} · ${t("folderHint")}`,
                           node.kind === "project" ? t("editShortcut") : null,
-                          node.kind === "project" && canReorderSpace(node) ? t("dragSpaceHint") : null,
+                          node.kind === "project" ? t(canReorderSpace(node) ? "dragSpaceHint" : "dragSpaceUnavailable") : null,
                         ]
                           .filter(Boolean)
                           .join(" · ")}
@@ -921,8 +841,7 @@ export function SpaceAgentTree() {
                           }
                           activate(node);
                         }}
-                        onDragStart={node.kind === "project" ? (event) => onSpaceDragStart(event, node) : undefined}
-                        onDragEnd={clearSpaceDrag}
+                        onDragStart={(event) => event.preventDefault()}
                         onContextMenu={
                           node.kind === "worktree"
                             ? contextMenuHandler({

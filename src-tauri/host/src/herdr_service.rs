@@ -300,6 +300,37 @@ pub struct HerdrNamedSession {
 /// Result of public `workspace.create`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HerdrWorkspaceOrderResult {
+    pub workspace_ids: Vec<String>,
+}
+
+fn parse_workspace_order(response: serde_json::Value) -> Result<HerdrWorkspaceOrderResult, String> {
+    if response["result"]["type"] != "workspace_list" {
+        return Err("unexpected workspace reorder response".into());
+    }
+    let workspaces = response["result"]["workspaces"]
+        .as_array()
+        .ok_or("workspace list missing")?;
+    if workspaces.len() > crate::herdr_limits::MAX_WORKSPACE_COUNT {
+        return Err("workspace list exceeds limit".into());
+    }
+    let mut ids = Vec::with_capacity(workspaces.len());
+    let mut seen = std::collections::HashSet::new();
+    for workspace in workspaces {
+        let id = workspace["workspace_id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or("workspace identity missing")?;
+        if !seen.insert(id) {
+            return Err("duplicate workspace identity".into());
+        }
+        ids.push(id.to_owned());
+    }
+    bounded_ipc(HerdrWorkspaceOrderResult { workspace_ids: ids })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HerdrWorkspaceCreateResult {
     pub workspace_id: String,
     pub label: String,
@@ -1743,18 +1774,18 @@ impl HerdrManager {
         session_name: Option<&str>,
         workspace_id: String,
         insert_index: u32,
-    ) -> Result<(), String> {
+    ) -> Result<HerdrWorkspaceOrderResult, String> {
         if workspace_id.trim().is_empty() {
             return Err("workspace_id is required".into());
         }
-        let _ = self.call_checked_api(
+        let response = self.call_checked_api(
             session_name,
             |api| api.workspace_move,
             "workspace.move",
             build_workspace_move_params(workspace_id, insert_index),
             "herdr workspace.move unavailable",
         )?;
-        Ok(())
+        parse_workspace_order(response)
     }
 
     /// Newer HERDR runtimes expose the atomic block reorder API. A one-item
@@ -1765,21 +1796,22 @@ impl HerdrManager {
         session_name: Option<&str>,
         workspace_ids: Vec<String>,
         before_workspace_id: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<HerdrWorkspaceOrderResult, String> {
         if workspace_ids.is_empty() || workspace_ids.iter().any(|id| id.trim().is_empty()) {
             return Err("workspace_ids must not be empty".into());
         }
-        let _ = self.call_checked_api(
+        let mut params = serde_json::json!({ "workspace_ids": workspace_ids });
+        if let Some(anchor) = before_workspace_id {
+            params["before_workspace_id"] = anchor.into();
+        }
+        let response = self.call_checked_api(
             session_name,
             |api| api.workspace_move_block,
             "workspace.move_block",
-            serde_json::json!({
-                "workspace_ids": workspace_ids,
-                "before_workspace_id": before_workspace_id,
-            }),
+            params,
             "herdr workspace.move_block unavailable",
         )?;
-        Ok(())
+        parse_workspace_order(response)
     }
 
     /// Public `workspace.close { workspace_id }` (destructive; confirm in UI).
@@ -4561,6 +4593,22 @@ mod tests {
             height: Some(10),
             bytes: Some("AAA=".into()),
             reason: None,
+        }
+    }
+
+    #[test]
+    fn herdr_workspace_order_preserves_authoritative_ids_and_rejects_malformed_results() {
+        let result = serde_json::json!({"result":{"type":"workspace_list","workspaces":[{"workspace_id":"b"},{"workspace_id":"a"}]}});
+        assert_eq!(
+            parse_workspace_order(result).unwrap().workspace_ids,
+            ["b", "a"]
+        );
+        for result in [
+            serde_json::json!({"result":{"type":"ok"}}),
+            serde_json::json!({"result":{"type":"workspace_list","workspaces":[{"workspace_id":"a"},{"workspace_id":"a"}]}}),
+            serde_json::json!({"result":{"type":"workspace_list","workspaces":[{}]}}),
+        ] {
+            assert!(parse_workspace_order(result).is_err());
         }
     }
 
