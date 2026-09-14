@@ -483,7 +483,7 @@ describe("createHerdrTerminalTransport", () => {
       terminalScrollEnabled: () => false
     })
     await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
-    await transport.scroll?.(-3)
+    await expect(transport.scroll?.(-3)).rejects.toThrow("pane-scroll-state-unavailable")
 
     expect(herdrTerminalScroll).not.toHaveBeenCalled()
     expect(readPaneScroll).toHaveBeenCalledWith("[wsl:Debian,default]", "pane-1")

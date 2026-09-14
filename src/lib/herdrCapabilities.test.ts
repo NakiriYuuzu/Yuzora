@@ -106,6 +106,22 @@ describe("HERDR capability adapter", () => {
     expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("unavailable")
   })
 
+  it("uses configured WSL kind and legacy WSL IDs for scroll safety", () => {
+    const caps = capabilities([])
+    caps.api.schemaProtocol = 20
+    caps.binaryProtocol = 20
+    expect(herdrScrollStrategyForRuntime(caps, "wsl-ubuntu")).toBe("unavailable")
+    expect(herdrScrollStrategyForRuntime(caps, "custom-host", "wsl")).toBe("unavailable")
+  })
+
+  it("does not probe from a binary protocol the host pane gate cannot verify", () => {
+    const caps = capabilities([])
+    caps.api.schemaProtocol = null
+    caps.binaryProtocol = 22
+    expect(supportsHerdrPaneScrollCandidate(caps)).toBe(false)
+    expect(herdrScrollStrategyForRuntime(caps, "wsl:Ubuntu")).toBe("unavailable")
+  })
+
   it("allows a protocol-22 pane probe while the method list is unknown", () => {
     const caps = capabilities([])
     caps.binaryProtocol = 22

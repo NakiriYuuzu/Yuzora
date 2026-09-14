@@ -27,18 +27,16 @@ export function supportsHerdrPaneScroll(
  * Protocol 22 is the pane-scroll schema boundary. During remote host
  * reconnects an otherwise valid schema can arrive without its method list;
  * treat that state as a probe candidate so the official pane endpoint can
- * establish the real range. The probe remains authoritative; an unsupported
+ * establish the real range. Match the host's advertised-method/schema gate;
+ * a binary/server version alone cannot authorize the probe. An unsupported
  * endpoint simply leaves the rendered proxy disabled.
  */
 export function supportsHerdrPaneScrollCandidate(
   capabilities: HerdrCapabilities | null | undefined
 ): boolean {
   if (!capabilities?.api.snapshot) return false
-  const protocol = capabilities.api.schemaProtocol
-    ?? capabilities.binaryProtocol
-    ?? capabilities.server.protocol
-  if (protocol == null || protocol < 22) return false
-  return true
+  return supportsHerdrPaneScroll(capabilities)
+    || (capabilities.api.schemaProtocol ?? 0) >= 22
 }
 
 /** The connector scroll command is available to a controller on 0.8.2+. */
@@ -64,9 +62,10 @@ export type HerdrScrollStrategy = "pane" | "terminal" | "unavailable"
  */
 export function herdrScrollStrategyForRuntime(
   capabilities: HerdrCapabilities | null | undefined,
-  hostId?: string | null
+  hostId?: string | null,
+  hostKind?: "ssh" | "wsl"
 ): HerdrScrollStrategy {
-  if (hostId?.toLowerCase().startsWith("wsl:")) {
+  if (hostKind === "wsl" || (!hostKind && /^wsl[:-]/i.test(hostId ?? ""))) {
     const protocol = capabilities?.api.schemaProtocol
       ?? capabilities?.binaryProtocol
       ?? capabilities?.server.protocol
@@ -74,7 +73,7 @@ export function herdrScrollStrategyForRuntime(
     // The WSL bridge historically tears down its connector when receiving
     // terminal.scroll. Protocol 22 is the boundary where the pane-owned API
     // is safe to use for that bridge.
-    return "pane"
+    return supportsHerdrPaneScrollCandidate(capabilities) ? "pane" : "unavailable"
   }
   // Native desktop HERDR has a low-latency connector scroll command. Prefer it
   // even when pane metrics are available; the pane API remains the scrollbar

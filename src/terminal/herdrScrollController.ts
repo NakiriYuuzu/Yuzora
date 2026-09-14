@@ -68,8 +68,10 @@ export function createPaneScrollController(options: {
       if (current(g) && token === revision) {
         busySince = null; attempts = 0; retryAt = 0
         publish(next)
-        const delta = pendingDelta; pendingDelta = 0
-        if (next && delta) move(next.offsetFromBottom - delta)
+        if (next && pendingDelta) {
+          const delta = pendingDelta; pendingDelta = 0
+          move(next.offsetFromBottom - delta)
+        }
       }
     } catch (error) {
       if (current(g) && token === revision) {
@@ -105,7 +107,7 @@ export function createPaneScrollController(options: {
       if (!current(g)) return
       busySince = null; attempts = 0; retryAt = 0
       metric('ack', { elapsedMs: performance.now() - start })
-      if (token === revision && pending === null) publish(next)
+      if (token === revision && pending === null) { if (next) publish(next) }
       else if (next && state) {
         // A newer intent owns position. Metadata may grow, but a stale reply
         // cannot shrink the range and clamp an unsent target.

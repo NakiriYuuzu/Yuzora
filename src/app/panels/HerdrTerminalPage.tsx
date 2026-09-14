@@ -27,6 +27,7 @@ import {
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
 import { herdrScrollStrategyForRuntime, supportsHerdrPaneScrollCandidate } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
+import { useHostStore } from "@/state/hostStore"
 import {
   herdrLayoutExport,
   herdrLayoutSetSplitRatio,
@@ -918,7 +919,10 @@ function HerdrTerminalLeaf({
       event.stopPropagation()
       void transport.scroll(event.deltaY < 0 ? -rows : rows)
         .catch((error) => {
-          if (!disposedRef.current) setStatusMessage(error instanceof Error ? error.message : String(error))
+          if (!disposedRef.current) {
+            const message = error instanceof Error ? error.message : String(error)
+            setStatusMessage(message === "pane-scroll-state-unavailable" ? t("unavailable", { ns: "terminalScroll" }) : message)
+          }
         })
       return false
     })
@@ -1009,7 +1013,7 @@ function HerdrTerminalLeaf({
           ? state.runtimesBySession[targetSessionName]?.capabilities
           : null)
           ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
-        return herdrScrollStrategyForRuntime(capabilities, targetHostId) !== "unavailable"
+        return herdrScrollStrategyForRuntime(capabilities, targetHostId, targetHostId ? useHostStore.getState().configs[targetHostId]?.kind : undefined) !== "unavailable"
       },
       terminalScrollEnabled: () => {
         const state = useHerdrStore.getState()
@@ -1017,7 +1021,7 @@ function HerdrTerminalLeaf({
           ? state.runtimesBySession[targetSessionName]?.capabilities
           : null)
           ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
-        return herdrScrollStrategyForRuntime(capabilities, targetHostId) === "terminal"
+        return herdrScrollStrategyForRuntime(capabilities, targetHostId, targetHostId ? useHostStore.getState().configs[targetHostId]?.kind : undefined) === "terminal"
       },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
@@ -1215,7 +1219,7 @@ function HerdrTerminalLeaf({
       fitRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [herdrSessionId, terminalId, pagePath, attachmentKey, connectorEnabled])
+  }, [herdrSessionId, terminalId, pagePath, attachmentKey, connectorEnabled, scrollPaneId, targetHostId, targetSessionName, contextSessionName])
 
   useEffect(() => {
     if (!sessionIsStopped) return

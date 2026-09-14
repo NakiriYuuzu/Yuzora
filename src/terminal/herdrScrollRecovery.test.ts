@@ -2,6 +2,24 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { createPaneScrollController } from './herdrScrollController'
 const base = { offsetFromBottom: 0, maxOffsetFromBottom: 1000, viewportRows: 24 }
 afterEach(() => vi.useRealTimers())
+it('retains wheel intent until a later refresh supplies the first pane range', async () => {
+  const read = vi.fn().mockResolvedValueOnce(null).mockResolvedValue(base)
+  const write = vi.fn().mockResolvedValue(base)
+  const c = createPaneScrollController({ read, write, change: vi.fn(), allowed: () => true })
+  c.scroll(-12)
+  await Promise.resolve()
+  await c.refresh()
+  expect(write).toHaveBeenCalledWith(12, expect.any(AbortSignal))
+  c.dispose()
+})
+it('retains the optimistic thumb when a successful write has no metadata', async () => {
+  const change = vi.fn()
+  const c = createPaneScrollController({ read: async () => base, write: async () => null, change, allowed: () => true })
+  await c.refresh(); c.move(12)
+  await Promise.resolve()
+  expect(change).toHaveBeenLastCalledWith({ ...base, offsetFromBottom: 12 })
+  c.dispose()
+})
 it('quietly retries busy with the latest target, preserving cadence and eventual final position', async () => {
   vi.useFakeTimers()
   const error = vi.fn(), change = vi.fn()

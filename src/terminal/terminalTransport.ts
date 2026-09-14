@@ -47,9 +47,8 @@ export function normalizeTerminalWheelRows(
 }
 
 // HERDR pane.get is a remote IPC/RPC round trip. Keep a short-lived local
-// snapshot while wheel events are being drained so a burst is one read plus
-// writes instead of read-before-every-write. The proxy scrollbar still polls
-// independently, so external writers are observed shortly after the burst.
+// snapshot for standalone callers. Mounted terminal pages share their pane
+// controller with the scrollbar, so wheel/drag never use separate cached positions.
 const PANE_SCROLL_CACHE_MS = 160
 
 export interface TerminalTransportOpenArgs {
@@ -246,6 +245,8 @@ export function createHerdrTerminalTransport(
   ) => {
     if (disposed) return
     discardInput()
+    discardScroll()
+    terminalScrollUnavailable = false
     const generation = ++openGeneration
     lastSeq = null
     lastCols = cols
@@ -407,7 +408,10 @@ export function createHerdrTerminalTransport(
               const cached = paneScrollCache && now - paneScrollCache.at <= PANE_SCROLL_CACHE_MS
                 ? paneScrollCache.state
                 : null
-              const state = cached ?? await readPaneScroll(sessionName, paneId).catch(() => null)
+              const state = cached ?? await readPaneScroll(sessionName, paneId).catch(error => {
+                if (terminalScrollEnabled?.() === false || terminalScrollUnavailable) throw error
+                return null
+              })
               if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
               if (state) {
                 const nextOffset = direction === "up"
@@ -419,11 +423,13 @@ export function createHerdrTerminalTransport(
                   state: nextState ?? { ...state, offsetFromBottom: nextOffset },
                   at: Date.now()
                 }
-                if (nextState) onPaneScroll?.(nextState)
+                onPaneScroll?.(paneScrollCache.state)
                 continue
               }
             }
-            if (terminalScrollEnabled?.() === false) return
+            if (terminalScrollEnabled?.() === false || terminalScrollUnavailable) {
+              throw new Error("pane-scroll-state-unavailable")
+            }
             try {
               await herdrTerminalScroll(activeSessionId, direction, lines)
             } catch (error) {
@@ -445,7 +451,7 @@ export function createHerdrTerminalTransport(
                 state: nextState ?? { ...state, offsetFromBottom: nextOffset },
                 at: Date.now()
               }
-              if (nextState) onPaneScroll?.(nextState)
+              onPaneScroll?.(paneScrollCache.state)
             }
           }
         } catch (error) {
@@ -510,6 +516,8 @@ export function createHerdrTerminalTransport(
         throw new Error("Herdr transport is not open")
       }
       // Explicit Take Control: release observer connector, reopen as control+takeover.
+      discardInput()
+      discardScroll()
       if (sessionId) {
         const previous = sessionId
         sessionId = null
