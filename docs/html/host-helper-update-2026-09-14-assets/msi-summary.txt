@@ -1,0 +1,13 @@
+MSI (c) (08:34) [23:25:05:040]: PROPERTY CHANGE: Adding MsiSystemRebootPending property. Its value is '1'.
+MSI (s) (44:08) [23:26:48:642]: RESTART MANAGER: Disabled by MSIRESTARTMANAGERCONTROL property; Windows Installer will use the built-in FilesInUse functionality.
+MSI (s) (44:08) [23:26:48:642]: PROPERTY CHANGE: Adding MsiSystemRebootPending property. Its value is '1'.
+MSI (c) (08:40) [23:27:08:002]: No window with title could be found for FilesInUse
+MSI (s) (44:78) [23:27:08:067]: PROPERTY CHANGE: Adding MsiSystemRebootPending property. Its value is '1'.
+Property(N): MsiSystemRebootPending = 1
+Property(S): REBOOT = ReallySuppress
+Property(S): MsiSystemRebootPending = 1
+MSI (s) (44:08) [23:28:00:942]: MainEngineThread is returning 0
+Property(C): REBOOT = ReallySuppress
+Property(C): MsiSystemRebootPending = 1
+MSI (c) (08:34) [23:28:37:961]: Product: Yuzora -- Installation completed successfully.
+MSI (c) (08:34) [23:28:37:977]: MainEngineThread is returning 0

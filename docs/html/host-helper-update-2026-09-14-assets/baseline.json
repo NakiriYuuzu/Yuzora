@@ -1,0 +1,75 @@
+{
+  "candidateSource": "19bdf4e126c9a17a2f2e295fe7f28bafcae881da",
+  "candidateTree": "3e62279f3bb933341b5b056d3ad917b5649939bb",
+  "testSession": "yuzora-helper-upgrade-20260914",
+  "serverPid": 68267,
+  "serverStartTime": "786006",
+  "panes": [
+    {
+      "pane_id": "w1:p1",
+      "terminal_id": "term_65b7245cb704e1",
+      "tab_id": "w1:t1",
+      "workspace_id": "w1",
+      "scroll": {
+        "max_offset_from_bottom": 0,
+        "offset_from_bottom": 0,
+        "viewport_rows": 40
+      }
+    },
+    {
+      "pane_id": "w2:p1",
+      "terminal_id": "term_65b7245cb7d7a2",
+      "tab_id": "w2:t1",
+      "workspace_id": "w2",
+      "scroll": {
+        "max_offset_from_bottom": 965,
+        "offset_from_bottom": 0,
+        "viewport_rows": 45
+      }
+    },
+    {
+      "pane_id": "w2:p2",
+      "terminal_id": "term_65b7273c68def4",
+      "tab_id": "w2:t2",
+      "workspace_id": "w2",
+      "scroll": {
+        "max_offset_from_bottom": 0,
+        "offset_from_bottom": 0,
+        "viewport_rows": 45
+      }
+    },
+    {
+      "pane_id": "w3:p1",
+      "terminal_id": "term_65b7245cb86883",
+      "tab_id": "w3:t1",
+      "workspace_id": "w3",
+      "scroll": {
+        "max_offset_from_bottom": 0,
+        "offset_from_bottom": 0,
+        "viewport_rows": 40
+      }
+    }
+  ],
+  "workspaceOrder": [
+    "w1",
+    "w2",
+    "w3"
+  ],
+  "tickBaseline": {
+    "pid": 69369,
+    "count": 9096,
+    "first": [
+      "69369",
+      "0",
+      "7903435320465"
+    ],
+    "last": [
+      "69369",
+      "9095",
+      "10182022385529"
+    ],
+    "contiguous": true
+  },
+  "helperBeforeVersion": "0.0.13",
+  "helperBeforeSha256": "090d1fe48ef145ed635476e6147be4922f4871afb09d6e269fdcf99ac68cccaf"
+}

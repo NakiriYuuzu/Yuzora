@@ -697,7 +697,8 @@ site/downloads.js
 - 「新增資料夾 → Windows 本機／WSL／遠端」分開執行環境。WSL 預設關閉，須在「設定 → HERDR」啟用才探索或自動連線；關閉只釋放 Yuzora helper，保留設定與執行中 Session。SSH 沿用密碼／金鑰及 host-key 驗證。純 SFTP 不要求 helper。
 - 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。相容基準為 HERDR 0.9.0／private protocol 22，仍須 schema／capability 檢查。
 - 官方版本、protocol、五平台 URL／SHA-256 與 license digest 統一放在 `src-tauri/herdr-runtime.json`，由準備腳本與 native manifest guard 共用；更新該檔會觸發 helper workflow。升級時核對官方 release assets 的 digest、實際 binary schema 與 method／subscription fixtures，不能只改 protocol 數字。
-- 已保存的 WSL／SSH host 仍使用其原 binary／helper 路徑，不會因重新安裝桌面程式而自動部署。從「設定 → HERDR」選取原主機，選擇 Yuzora 管理／主機已安裝／自訂完整路徑，按「檢查／重新偵測」後套用；來源政策與實際 binary／helper 路徑分開保存，更新使用新版本目錄並保留舊檔。這是明確的使用者操作，不是全面自動更新。
+- 已保存且啟用的 WSL／SSH host 在每次 App 啟動首次連線時，比對安裝包 manifest 的 artifact identity。helper 不一致時，先驗證既有 HERDR client 與全部 running Sessions，再部署至新的 immutable 目錄並切換 Yuzora helper；成功後立即重新取得各 Session 的能力資訊。保留原 HERDR binary 完整路徑與來源政策，不停止 HERDR／Agent。helperArtifactIdentity 與原 runtime artifactIdentity 分開保存，避免把僅更新 helper 誤認為已升級 HERDR。檢查／部署失敗則保留或重連原 helper，於主機設定顯示錯誤；同一 App 執行期間不由四秒 health poll 重複部署，可透過重新開啟 App 或明確套用主機設定重試。
+- HERDR client 來源與版本的切換仍從「設定 → HERDR」選取原主機，選擇 Yuzora 管理／主機已安裝／自訂完整路徑，按「檢查／重新偵測」後套用；來源政策與實際 binary／helper 路徑分開保存，更新保留舊檔與執行中的工作。
 - 設定頁分別顯示目前 client 與目標來源；診斷包括 exact binary、client／schema protocol，以及 default 與所有執行中 Session 的 server version／protocol／compatible／socket。錯誤中的「修復此主機」直接定位主機設定，可複製目前與目標診斷。
 - 已安裝版本找不到時不回退管理版本。保存前重新驗證相容性；驗證失敗保留原設定。原生來源變更保存後需重新啟動 **Yuzora** 才生效，並顯示待生效路徑；不停止或重啟 HERDR server。
 - WSL server 顯示 0.9.0 不表示 client 已升級：若保存路徑仍指向舊管理目錄，實際 client 可能是 0.8.2／protocol 20。必須使用設定顯示的完整路徑查 `status --json`，不能拿另一個 PATH binary 的版本代替。

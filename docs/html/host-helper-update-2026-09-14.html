@@ -1,0 +1,46 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WSL helper 更新修復與候選驗收 · 2026-09-14</title><style>body{font:16px/1.7 system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 24px;color:#202a32;background:#f8fafb}h1{line-height:1.3}h2{margin-top:2em}table{border-collapse:collapse;width:100%;font-size:14px}td,th{border:1px solid #ccd5da;padding:10px;text-align:left}th{background:#e6edf2}code,pre{font-size:13px;overflow-wrap:anywhere}pre{white-space:pre-wrap;padding:16px;background:#e9eef0}img{width:100%;border:1px solid #ccd5da;margin:8px 0}a{color:#235d97}.note{padding:16px;border-left:4px solid #337363;background:#e5f0ec}</style><main>
+<h1>WSL helper 更新修復與候選驗收</h1>
+<p>候選來源 <code>19bdf4e126c9a17a2f2e295fe7f28bafcae881da</code> · branch <code>release/v0.0.14</code> · <a href="https://github.com/NakiriYuuzu/Yuzora/pull/103">PR #103</a>。本報告僅涵蓋「桌面更新後 WSL／SSH 沿用舊 helper」的修復；不宣稱先前所有跨版本需求均已完成。</p>
+<p class="note">根因：App 已是 0.0.14，WSL 卻仍執行 0.0.13 helper。兩者 Host protocol 都是 1，因此 hello 成功不代表支援新命令。舊 helper 漏掉 workspaceMove／workspaceMoveBlock，連帶停用拖曳及上下移。實際 HERDR client／server 均為 0.9.0／protocol 22，官方排序能力存在。</p>
+<h2>修復內容</h2><table><tr><th>位置</th><th>修復與保全方式</th></tr>
+<tr><td>src/state/hostStore.ts</td><td>首次連線比較安裝包 artifact identity；先驗證既有 HERDR client 與全部 running Sessions，再部署新版 helper 至 immutable 目錄。保存獨立 helperArtifactIdentity，保留 HERDR binary 路徑及 default／global／custom 來源政策。更新失敗保留或重連舊 helper，四秒 health poll 不重複部署；關閉 WSL／disconnect／來源換代時丟棄晚回應。</td></tr>
+<tr><td>src/workbench/HerdrBridge.tsx</td><td>helper generation 改變後，對每個 running named Session 重新 bootstrap 能力與 snapshot，而非只 refresh snapshot。釋放舊事件訂閱。</td></tr>
+<tr><td>src/state/herdrStore.ts</td><td>bootstrap in-flight key 綁定 Session 與 helper owner generation；新 generation 不等待或接受舊能力回應，防止 ready 狀態保留過期排序 gate。</td></tr>
+<tr><td>src/app/workbench/HerdrSettingsSection.tsx</td><td>主機設定顯示自動 helper 更新錯誤，保留既有明確套用入口。</td></tr></table>
+<p>自動更新僅更新 helper；HERDR client 的版本切換仍使用現有設定與相容檢查。保留舊 runtime 目錄，不清除仍由現有 client／server 使用的檔案，不停止使用者 HERDR／Agent。</p>
+<h2>自動化驗證</h2><table><tr><th>項目</th><th>結果</th><th>證據</th></tr>
+<tr><td>先重現 upgrade regression</td><td>PASS（負向證據）</td><td>修復前新增 7 個 cases 失敗，原 20 cases 通過；未曾呼叫 helper prepare。</td></tr>
+<tr><td>hostStore upgrade／rollback／v1 migration</td><td>PASS</td><td>29 tests。涵蓋 managed/global/custom、同版本不同 artifact、部署失敗、被迫斷開後回復、取消部署、保存失敗與重載獨立 helper identity。</td></tr>
+<tr><td>generation／全部 Session 能力刷新</td><td>PASS</td><td>store 及 Bridge regression：新 generation 先完成後，舊回應不得覆蓋；兩個 running Session 各重新取得能力。</td></tr>
+<tr><td>完整前端測試</td><td>PASS</td><td>CI 229 files／2788 tests 全數通過；本機先跑 2786 tests，追加 2 個 cases 後 hostStore 的 29 tests 全數通過。</td></tr>
+<tr><td>typecheck／production build</td><td>PASS</td><td>bun run typecheck、bun run build。</td></tr>
+<tr><td>lint</td><td>PASS（既有 warnings）</td><td>0 errors／52 warnings；不修改無關警告。</td></tr>
+<tr><td>Rust host_bootstrap tests</td><td>PASS</td><td>6 tests；此次 Rust 產品原始碼未變更。</td></tr>
+<tr><td>四平台 Unix payload</td><td>PASS</td><td>bun run runtime:verify；相同來源 CI host artifacts 四平台 fmt/clippy/tests/官方 runtime 契約通過。</td></tr></table>
+<h2>原生與安裝矩陣</h2><table id="native"><tr><th>平台</th><th>版本</th><th>結果／證據</th></tr>
+<tr><td>macOS Apple Silicon</td><td>26.6.2 (25G83)；Yuzora 0.0.14 candidate；HERDR 0.9.0／22</td><td>PASS：packaged App 啟動、原生上下移、drag、Terminal 輸入 seq 1 400、wheel、可見 scrollbar。snapshot 順序 A,B,C → A,C,B → A,B,C → C,A,B。DMG 完成，codesign --verify --deep --strict 通過。</td></tr>
+<tr><td>Windows 原生</td><td>Windows build 26200.9445</td><td id="win-status">PASS：實際 MSI 升級（exit 0），不關閉 HERDR／不重新開機。原生上下移、drag、PowerShell 輸入 1..400、wheel；權威順序與 scroll offset 已核對。</td></tr>
+<tr><td>Windows＋WSL2 Ubuntu 26.04</td><td>HERDR client/server 0.9.0／22</td><td id="wsl-status">PASS：重新開啟 App 自動從 helper 0.0.13 遷移至 0.0.14；保留原 HERDR client 路徑，兩項排序能力為 true。原生下移、上移、drag 與權威 snapshot 順序一致；Terminal 輸入、wheel、thumb drag、同 Session 工作延續通過。</td></tr>
+<tr><td>SSH 自動 helper 更新</td><td>existing host provider</td><td>NOT RUN（原生）：hostStore 來源政策、update、rollback 回歸通過；未以真實 SSH 主機執行安裝遷移。</td></tr>
+<tr><td>Signed updater OTA</td><td>候選包停用 updater</td><td>NOT RUN：本次候選 installer 不提供正式 OTA；正式 release 維持原簽章與發布門檻。</td></tr></table>
+<h2>macOS 原生畫面</h2><p>專用測試 Session；由 native input 產生 400 行。拖曳排序後 sidebar 為 C,A,B；wheel 後 scrollbar 由 326 改為 250。</p><img src="host-helper-update-2026-09-14-assets/mac-before-scroll.png" alt="macOS candidate 輸入後的底部捲軸"><img src="host-helper-update-2026-09-14-assets/mac-after-scroll.png" alt="macOS candidate 捲動至歷史輸出">
+<h2>候選產物與 CI</h2><p><a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34855693524">CI 34855693524</a> 使用 PR merge tree <code>3e62279f3bb933341b5b056d3ad917b5649939bb</code>，與修復提交 tree 完全相同。CI 最終全部 SUCCESS（第三次 attempt）；初次 macOS HERDR download、第二次 Windows NSIS download 均曾收到 HTTP 504，僅重跑失敗 jobs。macOS／Windows artifacts 與 Windows installer 解包逐檔 hash gate 全數通過。</p>
+<pre>macOS local DMG SHA-256
+20e3ee9bd6124a9d3eebf79adf6f10c412338cfdc9e369c8894e804154d7f58d
+Windows MSI SHA-256 (實際安裝)
+42be6cf0b3604e2ea5937420537c3d47297f9c0f992d2fddbaae102ce6d0a54a
+Windows NSIS SHA-256 (已打包及解包驗證，未另跑 UI 安裝)
+0f626b063d5b8d1927f5301d57322c6725a4335cc3995b5a9b8ce166cc8307e2
+Installed Windows App SHA-256
+086bd36550cf055bccb7904be86255b3c0a0d31dc9e142e9dde377976ee11f9f
+Deployed WSL helper SHA-256
+f82c36e8326a7a7fa647f8753a73717f72ffdd5a74a528478f2d57daecd453cf</pre>
+<p>Windows 遠端桌面輸入長命令曾漏字，另一次 MSI 使用 forward slash path 被拒絕；改用已核對的原生 backslash 路徑後安裝精靈正常啟動。這兩次尚未進行產品 mutation，不能記為安裝成功。實際成功安裝使用原生 MSI wizard／UAC／Files in Use 對話框；保留所有執行中程式，安裝 exit code 0。OS 的 MsiSystemRebootPending 在安裝前即為 1，沒有在本次測試執行重啟。</p>
+<img src="host-helper-update-2026-09-14-assets/windows-files-in-use.png" alt="安裝偵測到仍在運行的 HERDR 與 ConPTY"><img src="host-helper-update-2026-09-14-assets/windows-msi-complete.png" alt="Windows MSI 升級完成">
+<h2>Windows／WSL 原生排序與捲動證據</h2>
+<p>WSL 下移 A,B,C → A,C,B；上移 → A,B,C；真實滑鼠 drag → C,A,B。原生 Windows 保留使用者 workspace 順序，只交換兩個專用測試 workspace。未注入 DOM／pointer events，也未透過 CLI 執行這些排序 mutation。</p>
+<img src="host-helper-update-2026-09-14-assets/wsl-after-down.png" alt="WSL 原生下移成功"><img src="host-helper-update-2026-09-14-assets/wsl-after-drag.png" alt="WSL 原生拖曳成功"><img src="host-helper-update-2026-09-14-assets/wsl-after-thumb.png" alt="WSL scrollbar 拖曳至 offset 269"><img src="host-helper-update-2026-09-14-assets/windows-native-scroll.png" alt="Windows 原生 PowerShell 400 行輸出及捲動">
+<p>WSL w2:p2 range 357：wheel offset 13、thumb drag offset 269。Windows w4:p2 range 357：wheel offset 13。皆由實際 runtime snapshot 驗證，未把 RDP 畫面傳輸時間当作 App latency；本次未重新量測 p50/p95 或宣稱新的效能改善。</p>
+<h2>Session 延續驗收</h2><p id="continuity">專用 WSL Session <code>yuzora-helper-upgrade-20260914</code>，server PID 68267、w1:p1 shell PID 68312、連續 tick 工作 PID 69369。PASS：安裝前 9,096 ticks，安裝並重新開啟 App 後 13,862 ticks，最終同一工作依 fixture 設定自然完成 14,400 ticks；整段序號無缺號、worker PID 一致。server PID／啟動時間／socket／原 pane 與 terminal IDs 一致。Windows 原 HERDR PID 25588 與其啟動時間也一致；未中斷使用者既有工作。</p>
+<p>機器可讀證據：<a href="host-helper-update-2026-09-14-assets/acceptance.json">acceptance.json</a>、<a href="host-helper-update-2026-09-14-assets/baseline.json">baseline.json</a>、<a href="host-helper-update-2026-09-14-assets/msi-summary.txt">MSI 摘要</a>。完整本機記錄位於 output/helper-update-e2e（未提交終端或私人資料）。</p><h2>設定保存與清理</h2><p>原生設定頁確認 HERDR client 仍指向原 0.0.13 runtime 目錄，helper 已保存為 0.0.14 artifact 目錄，上次驗證時間為安裝後。驗收完成後只停止本次建立的三個 named test Sessions、關閉 Windows default 中兩個專用測試 workspace；保留使用者原有 default Sessions／Agent，並保留回復用安裝目錄與測試證據。</p><img src="host-helper-update-2026-09-14-assets/wsl-saved-helper.png" alt="WSL helper 已更新而 HERDR client 路徑保持不變"><h2>後續回歸</h2><ol><li>使用上一候選版的實際 v1/v2 host config，記錄 helper hash、runtime client 路徑、named Session/pane/terminal ID 與持續工作 PID。</li><li>安裝新 candidate，啟動 App；不手動套用主機設定，等待自動 migration，核對 artifact identity 與能力。</li><li>在 Windows App 原生 UI 對測試 root/group 執行上下移與 drag；每一步以 HERDR snapshot 的 workspace_ids 確認順序。</li><li>驗證更新不重啟 HERDR；同一工作 PID 和連續 tick 保持，scroll/input 可用；斷線再連線不重新部署相同 helper。</li><li>新 helper manifest 或 provider capability contract 變更時，以上測試納入 release candidate 驗收；不能以本輪 PASS 推論未來版本。</li></ol>
+<p id="publication">本次產品修復已提交並推送，Windows 目標機已安裝並通過上述原生驗收。正式 release 尚未發布；signed updater OTA、SSH 真實主機升級、完整歷史版本與 native group/worktree 排序本輪 NOT RUN，不能外推為全面驗收通過。</p></main></html>
