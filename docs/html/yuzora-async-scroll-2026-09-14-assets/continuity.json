@@ -1,0 +1,19 @@
+{
+  "session": "scroll-e2e-972a3af",
+  "same_identity": true,
+  "identity": {
+    "workspace_id": "w1",
+    "tab_id": "w1:t2",
+    "pane_id": "w1:p2",
+    "terminal_id": "term_65b5fd782f5b92"
+  },
+  "job_pids": [
+    "10943"
+  ],
+  "tick_count": 387,
+  "continuous": true,
+  "first": "ASYNC_JOB pid=10943 tick=1",
+  "last": "ASYNC_JOB pid=10943 tick=387",
+  "scope": "Manual 0.0.14 candidate replacement/reconnect; not a stable updater test",
+  "app_sha256": "39c93de106fd2494fd81d35171bd1f34dbd47da7a5ebd408cd06b91399855ad0"
+}
