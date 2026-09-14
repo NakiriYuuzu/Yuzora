@@ -1,0 +1,9 @@
+Window: "Yuzora", App: Yuzora Acceptance.
+0 menu Secondary Actions: Cancel
+	1 上移
+	2 container 已是此 Session 的最後一個 Space
+		3 (disabled) 下移
+		4 text 已是此 Session 的最後一個 Space
+	5 重新命名 Space…
+	6 新增分頁
+	7 關閉 Space

@@ -3,6 +3,8 @@ import { useContextMenuStore } from "@/state/contextMenuStore";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SpaceAgentTree } from "./SpaceAgentTree";
+import { ContextMenu } from "./ContextMenu";
+import i18n from "@/lib/i18n";
 import { useHerdrStore, herdrInitialState } from "@/state/herdrStore";
 import { spacePresentationKey } from "./spaceTreeIdentity";
 import { herdrWorkspaceMove, herdrWorkspaceMoveBlock } from "@/lib/herdrIpc";
@@ -459,6 +461,16 @@ function reorderScene(block = true) {
   render(<SpaceAgentTree />);
   return screen.getAllByRole('treeitem').filter(row => row.getAttribute('aria-level') === '1');
 }
+it('opens the root Space context menu and moves it down through the shared reorder action', async () => {
+  const [first] = reorderScene();
+  render(<ContextMenu />);
+  fireEvent.contextMenu(first, { clientX: 20, clientY: 30 });
+  expect(useContextMenuStore.getState().request).toMatchObject({ kind: 'herdrSpace', sessionName: scopes[0], workspaceId: 'a' });
+  expect(screen.getByRole('menuitem', { name: i18n.t('contextMenu.cmHerdrMoveSpaceUp', { ns: 'menus' }) })).toBeDisabled();
+  fireEvent.click(screen.getByRole('menuitem', { name: i18n.t('contextMenu.cmHerdrMoveSpaceDown', { ns: 'menus' }) }));
+  await vi.waitFor(() => expect(herdrWorkspaceMoveBlock).toHaveBeenCalledExactlyOnceWith({ sessionName: scopes[0], workspaceIds: ['a'], beforeWorkspaceId: null }));
+  expect(useContextMenuStore.getState().request).toBeNull();
+});
 it('fixes the source on down even when the first move is on another row and ignores another pointer up', async () => {
   const [target, source] = reorderScene(); positionRows(source, target);
   fireEvent.pointerDown(source, { pointerId: 9, button: 0, clientX: 10, clientY: 120 });

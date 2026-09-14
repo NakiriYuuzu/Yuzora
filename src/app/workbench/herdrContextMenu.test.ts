@@ -132,6 +132,9 @@ describe("Herdr context menu registry", () => {
       label: "Yuzora"
     })
     expect(space.map((e) => (e.type === "command" ? e.command.id : "|"))).toEqual([
+      "cmHerdrMoveSpaceUp",
+      "cmHerdrMoveSpaceDown",
+      "|",
       "cmHerdrRenameSpace",
       "cmHerdrNewTab",
       "cmHerdrCloseSpace"

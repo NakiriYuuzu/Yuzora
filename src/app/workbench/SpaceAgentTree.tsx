@@ -1,4 +1,3 @@
-import { herdrErrorKind } from "@/lib/herdrErrors";
 import { contextMenuHandler } from "@/state/contextMenuStore";
 import {
   Fragment,
@@ -37,8 +36,7 @@ import { spacePresentationKey, runtimeSessionLabel } from "./spaceTreeIdentity";
 import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
 import { workspacePathBasename } from "@/lib/paths";
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions";
-import { herdrWorkspaceMove, herdrWorkspaceMoveBlock } from "@/lib/herdrIpc";
-import { herdrReorderMembers, planHerdrWorkspaceReorder } from "@/lib/herdrWorkspaceReorder";
+import { canMoveHerdrWorkspace, moveHerdrWorkspace } from "@/lib/herdrWorkspaceActions";
 import { HerdrLauncher } from "./HerdrLauncher";
 import { SpaceAppearanceDialog } from "./SpaceAppearanceDialog";
 import { SpaceCharacter } from "./SpaceCharacter";
@@ -163,13 +161,7 @@ export function SpaceAgentTree() {
   }
 
   function canReorderSpace(node: TreeNode) {
-    const runtime = useHerdrStore.getState().runtimesBySession[node.sessionName];
-    const caps = runtime?.capabilities;
-    const members = herdrReorderMembers(runtime?.snapshot?.spaces ?? [], node.space.id);
-    return node.kind === "project" && runtime?.connectionState === "ready" &&
-      (!runtime.errorMessage || herdrErrorKind(runtime.errorMessage) === "busy") &&
-      caps?.server.compatible !== false && !!caps?.server.running && !!members &&
-      (!!caps.api.workspaceMoveBlock || (members.length === 1 && !!caps.api.workspaceMove));
+    return node.kind === "project" && canMoveHerdrWorkspace(node.sessionName, node.space.id);
   }
 
   function clearSpaceDrag() {
@@ -266,33 +258,12 @@ export function SpaceAgentTree() {
     if (source.owner !== JSON.stringify(runtimeOwner(source.sessionName))) return;
     const node = all.find(item => item.key === target.key);
     if (!node || source.sessionName !== node.sessionName || !canReorderSpace(node) || movingRef.current) return;
-    const state = useHerdrStore.getState();
-    const runtime = state.runtimesBySession[source.sessionName];
-    const plan = planHerdrWorkspaceReorder(runtime?.snapshot?.spaces ?? [], source.workspaceId, node.space.id, target.after);
-    if (!plan) return;
-    const caps = runtime?.capabilities?.api;
-    if (!caps?.workspaceMoveBlock && (plan.sourceWorkspaceIds.length !== 1 || !caps?.workspaceMove)) return;
     movingRef.current = true; setMovingSpaceKey(source.key); setError(null); setReorderError(null);
-    state.setWorkspaceReordering(source.sessionName, true);
-    state.applyWorkspaceOrder(source.sessionName, plan.expectedOrder);
     try {
-      let result;
-      if (caps.workspaceMoveBlock) {
-        try {
-          result = await herdrWorkspaceMoveBlock({ sessionName: source.sessionName, workspaceIds: plan.sourceWorkspaceIds, beforeWorkspaceId: plan.beforeWorkspaceId });
-        } catch (error) {
-          if (herdrErrorKind(error) !== "unsupported" || plan.sourceWorkspaceIds.length !== 1 || !caps.workspaceMove) throw error;
-          result = await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex: plan.legacyInsertIndex });
-        }
-      } else result = await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex: plan.legacyInsertIndex });
-      if (!result || !Array.isArray(result.workspaceIds)) throw new Error("Invalid HERDR workspace order response");
-      useHerdrStore.getState().applyWorkspaceOrder(source.sessionName, result.workspaceIds);
+      await moveHerdrWorkspace(source.sessionName, source.workspaceId, node.space.id, target.after);
     } catch (cause) {
       setReorderError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      useHerdrStore.getState().setWorkspaceReordering(source.sessionName, false);
-      // One authoritative reconciliation also recovers ambiguous mutation errors.
-      await useHerdrStore.getState().refreshSnapshot(source.sessionName);
       movingRef.current = false; setMovingSpaceKey(null);
     }
   }
@@ -843,7 +814,7 @@ export function SpaceAgentTree() {
                         }}
                         onDragStart={(event) => event.preventDefault()}
                         onContextMenu={
-                          node.kind === "worktree"
+                          (node.kind === "project" || node.kind === "worktree")
                             ? contextMenuHandler({
                                 kind: "herdrSpace",
                                 sessionName: node.sessionName,

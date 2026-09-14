@@ -1,4 +1,6 @@
 import i18n from "@/lib/i18n"
+import { canMoveHerdrWorkspace, moveHerdrWorkspace } from "@/lib/herdrWorkspaceActions"
+import { adjacentHerdrWorkspace, herdrReorderMembers } from "@/lib/herdrWorkspaceReorder"
 import { systemRevealPath } from "@/lib/revealPath"
 import { isFileTab } from "@/lib/markdownPreviewTab"
 import { gitWorkingFilePath, openGitWorkingFile } from "@/workbench/git/gitWorkingFile"
@@ -232,6 +234,35 @@ function herdrSessionRuntime(sessionName: string) {
     runtime?.capabilities ??
     (state.selectedSessionName === resolvedName ? state.capabilities : null)
   return { session, capabilities }
+}
+
+function spaceMoveTarget(request: ContextMenuRequestFor<"herdrSpace">, direction: "up" | "down") {
+  const spaces = useHerdrStore.getState().runtimesBySession[request.sessionName]?.snapshot?.spaces ?? []
+  return adjacentHerdrWorkspace(spaces, request.workspaceId, direction)
+}
+
+function spaceMoveCommand(direction: "up" | "down") {
+  return item<"herdrSpace">(direction === "up" ? "cmHerdrMoveSpaceUp" : "cmHerdrMoveSpaceDown", {
+    danger: false,
+    availability: (request) => {
+      const spaces = useHerdrStore.getState().runtimesBySession[request.sessionName]?.snapshot?.spaces ?? []
+      const source = spaces.find(space => space.id === request.workspaceId)
+      if (!source) return disabled(DISABLED_TARGET)
+      if (source.isLinkedWorktree) return disabled("contextMenu.disabled.herdrLinkedWorktree")
+      if (!herdrReorderMembers(spaces, source.id)) return disabled("contextMenu.disabled.herdrGroupIncomplete")
+      if (!canMoveHerdrWorkspace(request.sessionName, source.id)) return disabled(DISABLED_HERDR_METHOD)
+      const target = spaceMoveTarget(request, direction)
+      if (!target) return disabled(direction === "up" ? "contextMenu.disabled.herdrFirstSpace" : "contextMenu.disabled.herdrLastSpace")
+      return canMoveHerdrWorkspace(request.sessionName, target.id) ? available() : disabled(DISABLED_HERDR_METHOD)
+    },
+    executor: async (request) => {
+      // Re-read the current neighbor; the menu may have stayed open during an external reorder.
+      const target = spaceMoveTarget(request, direction)
+      if (!target) return CONTEXT_MENU_CANCELLED
+      return await moveHerdrWorkspace(request.sessionName, request.workspaceId, target.id, direction === "down")
+        ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
+    },
+  })
 }
 
 function herdrMethodAvailability(
@@ -752,6 +783,9 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   herdrSpace: [
+    spaceMoveCommand("up"),
+    spaceMoveCommand("down"),
+    "separator",
     item<"herdrSpace">("cmHerdrRenameSpace", {
       availability: (request) =>
         herdrMethodAvailability(request.sessionName, "workspaceRename", "workspace.rename"),

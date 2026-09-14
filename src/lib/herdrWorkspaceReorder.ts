@@ -28,6 +28,20 @@ export function herdrReorderMembers(spaces: HerdrSpaceInfo[], sourceId: string):
   return [source]
 }
 
+/** Match the sidebar's root groups, without skipping an unmovable neighbor. */
+export function adjacentHerdrWorkspace(spaces: HerdrSpaceInfo[], sourceId: string, direction: 'up' | 'down'): HerdrSpaceInfo | null {
+  const groups = new Map<string, HerdrSpaceInfo[]>()
+  for (const space of spaces) {
+    const key = space.worktreeGroupKey ?? space.repoKey ?? space.id
+    const group = groups.get(key) ?? []
+    group.push(space)
+    groups.set(key, group)
+  }
+  const roots = [...groups.values()].map(group => group.find(space => space.isLinkedWorktree === false) ?? group[0])
+  const index = roots.findIndex(space => space.id === sourceId)
+  return index < 0 ? null : roots[index + (direction === 'up' ? -1 : 1)] ?? null
+}
+
 export function planHerdrWorkspaceReorder(spaces: HerdrSpaceInfo[], sourceId: string, targetId: string, after: boolean): HerdrReorderPlan | null {
   const members = herdrReorderMembers(spaces, sourceId)
   const target = herdrReorderMembers(spaces, targetId)

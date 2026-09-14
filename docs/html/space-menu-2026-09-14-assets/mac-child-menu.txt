@@ -1,0 +1,11 @@
+Window: "Yuzora", App: Yuzora Acceptance.
+0 menu Secondary Actions: Cancel
+	1 container 請移動所屬 Space，以保留完整 worktree 群組
+		2 (disabled) 上移
+		3 text 請移動所屬 Space，以保留完整 worktree 群組
+	4 container 請移動所屬 Space，以保留完整 worktree 群組
+		5 (disabled) 下移
+		6 text 請移動所屬 Space，以保留完整 worktree 群組
+	7 重新命名 Space…
+	8 新增分頁
+	9 關閉 Space
