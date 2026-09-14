@@ -69,11 +69,11 @@ Required CI checks：
 | CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生／Unix host installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 四平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
-| Pages    | `.github/workflows/deploy-pages.yml` | `main` 上官網／Demo 來源、建置設定、依賴或 workflow 變更；手動 dispatch | 安裝依賴、產生官網角色、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
+| Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
 
-Pages 目前也不等待同一個 `main` SHA 的 CI 成功：`site/**` push 可在 CI 失敗或被取消時完成部署。這是已知 gate 缺口，不得把 Pages workflow 成功視為該 commit 已通過完整 CI。
+Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflow_run.head_sha` checkout，並透過 Actions API 再驗證同一 SHA 的成功 CI；手動 dispatch 也必須通過相同 exact-SHA 查證。不得把其他 SHA 的 CI 綠燈視為部署來源已驗證。
 
 ### CI 重要特性
 
@@ -131,7 +131,7 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 - Stable 尚未使用同一 tree-attestation variables；仍依 release PR、candidate evidence 與明確 merge 核准流程人工把關。
 - 既有同版本 draft 的 tag SHA 已強制必須等於本次 `workflow_run.head_sha`，不一致時會 fail closed。
 - Release actions 已固定到經審查的完整 commit SHA，checkout 一律停用 persisted credentials；仍應定期審查並更新 pin，並將 signing secrets 移入具 required reviewer 的 protected Environment。
-- Metadata finalizer 目前確認 URL／signature 非空與同名 artifact／`.sig` 存在，但尚未強制 URL 屬於目前 repository/tag，也未比較 metadata signature 與 `.sig` 內容。
+- Metadata generator／finalizer 會強制 URL 屬於目前 repository/tag，並在產生 metadata 時比對公開 signature 與對應 `.sig` 內容；仍不得把 artifact 存在視為應用程式平台簽章已啟用。
 
 ---
 
@@ -592,8 +592,8 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 
 - 沿用 GitHub Actions 部署，Pages source 維持 `build_type=workflow`，不建立 `gh-pages` 分支。
 - Deploy artifact 是完整 `site/` 目錄，包含靜態官網 `index.html`、`styles.css`、`app.js`、`downloads.js`、`assets/` 與建置後的 `demo/`。網站 PNG favicon fallback 與桌面 app 圖示由同一品牌來源生成；inline SVG Logo 跟隨頁面主題。
-- `main` 上 `site/**`、`src/**`、`public/**`、`vite.demo.config.ts`、`scripts/generate-site-companions.tsx`、`package.json`、`bun.lock` 或 Pages workflow 變更時自動部署，也可從 Actions 手動 dispatch `Deploy Pages`。
-- 現行 Deploy Pages 不等待 CI；部署後必須另外確認相同 `head_sha` 的 `CI` push run 成功。後續應改成 successful `workflow_run` exact-SHA gate，或在部署 workflow 內執行完整 site checks。
+- `CI` 成功的 `main` push 會觸發 Pages 部署，也可從 Actions 手動 dispatch `Deploy Pages`；兩條路徑都必須先通過同一 `head_sha` 的成功 CI 查證。
+- Deploy job 以已查證的 exact SHA 建置完整 `site/` artifact。這個 gate 只驗證 CI 與來源一致性，仍不取代瀏覽器 smoke test。
 - Workflow 使用 Bun `1.3.14`，依序執行 `bun install --frozen-lockfile`、`bun run site:companions` 與 `bun run demo:build`，然後由 `actions/upload-pages-artifact`／`actions/deploy-pages` 上傳與部署。Demo 使用相對 asset URL，支援 `/Yuzora/demo/` repository subpath；`site/demo/` 是忽略的建置產物，不提交。
 - 官網保持靜態 ES module；Demo 由 Vite bundle。兩者皆不得在發布頁面引用 `node_modules` runtime path。`site:companions` 會更新官網角色 markup 與 `assets/brand/companions.css`，來源是 App 的 SpaceCharacter。
 - `site-remotion/` 是影片原始碼，不包含在 Pages artifact。

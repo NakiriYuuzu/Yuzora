@@ -74,4 +74,23 @@ describe("finalizeUpdaterMetadata", () => {
       )
     ).toThrow("missing signature asset Yuzora_0.0.9_aarch64.app.tar.gz.sig")
   })
+
+  it("binds URLs to the expected repository and release tag when context is supplied", () => {
+    expect(() =>
+      finalizeUpdaterMetadata(metadata(), assets, "0.0.9", {
+        repository: "NakiriYuuzu/Yuzora",
+        tag: "v0.0.8",
+      })
+    ).toThrow("URL must reference NakiriYuuzu/Yuzora@v0.0.8")
+  })
+
+  it("rejects metadata whose signature differs from the detached signature", () => {
+    expect(() =>
+      finalizeUpdaterMetadata(metadata(), assets, "0.0.9", {
+        repository: "NakiriYuuzu/Yuzora",
+        tag: "v0.0.9",
+        signatures: new Map([["Yuzora_0.0.9_x64_en-US.msi", "different-signature"]]),
+      })
+    ).toThrow("signature does not match Yuzora_0.0.9_x64_en-US.msi.sig")
+  })
 })

@@ -70,7 +70,11 @@ export function prepareUpdaterMetadata(
     },
   }
 
-  return finalizeUpdaterMetadata(raw, assetNames, version)
+  const signatures = new Map<string, string>([
+    [archive, raw.platforms["darwin-aarch64"].signature],
+    [msi, raw.platforms["windows-x86_64"].signature],
+  ])
+  return finalizeUpdaterMetadata(raw, assetNames, version, { repository, tag, signatures })
 }
 
 async function main() {

@@ -1,13 +1,15 @@
 name: Deploy Pages
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths: ['site/**', 'src/**', 'public/**', 'vite.demo.config.ts', 'scripts/generate-site-companions.tsx', 'package.json', 'bun.lock', '.github/workflows/deploy-pages.yml']
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -17,12 +19,35 @@ concurrency:
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Verify exact main CI source
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          RUNS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")"
+          jq -e --arg sha "$SOURCE_SHA" \
+            '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | length > 0' \
+            <<<"$RUNS" >/dev/null || {
+              echo "::error::no successful exact-SHA main CI run for ${SOURCE_SHA}"
+              exit 1
+            }
+          echo "sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
