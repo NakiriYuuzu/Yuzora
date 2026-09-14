@@ -204,7 +204,17 @@ export function SpaceAgentTree() {
   function updatePointerDropTarget(clientX: number, clientY: number) {
     const source = draggedSpaceRef.current;
     if (!source) return;
-    const element = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-space-key]");
+    const element = (() => {
+      const hit = document.elementFromPoint?.(clientX, clientY)?.closest<HTMLElement>("[data-space-key]");
+      if (hit) return hit;
+      // WSL WebViews can return no element while the pointer is captured by
+      // the source row. Use row bounds as a deterministic hit-test fallback.
+      return [...document.querySelectorAll<HTMLElement>("[data-space-key]")].find((candidate) => {
+        const bounds = candidate.getBoundingClientRect();
+        return clientX >= bounds.left && clientX <= bounds.right
+          && clientY >= bounds.top && clientY <= bounds.bottom;
+      }) ?? null;
+    })();
     const key = element?.dataset.spaceKey;
     const node = key ? all.find((item) => item.key === key) : undefined;
     if (!node || node.kind !== "project" || node.sessionName !== source.sessionName || !canReorderSpace(node)) {
@@ -236,7 +246,16 @@ export function SpaceAgentTree() {
       pointer.active = true;
       suppressClickRef.current = true;
       onSpaceDragStart(event as unknown as DragEvent<HTMLButtonElement>, node);
-      if (pointer.pointerId >= 0) event.currentTarget.setPointerCapture?.(pointer.pointerId);
+      if (pointer.pointerId >= 0) {
+        // Some WSL/WebView pointer implementations reject capture when the
+        // native pointer has already moved between surfaces. Capture is an
+        // optimization; a failed capture must not abort the drag lifecycle.
+        try {
+          event.currentTarget.setPointerCapture?.(pointer.pointerId);
+        } catch {
+          // Continue with hit-testing and the window-level mouse fallback.
+        }
+      }
     }
     event.preventDefault();
     updatePointerDropTarget(event.clientX, event.clientY);

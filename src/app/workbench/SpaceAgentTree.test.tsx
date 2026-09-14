@@ -366,6 +366,52 @@ it("keeps a normal Space click after a pointer press that does not cross the dra
   expect(herdrWorkspaceMove).not.toHaveBeenCalled();
 });
 
+it("keeps WSL Space reordering alive when pointer capture is unavailable", async () => {
+  const sessionName = scopes[0];
+  const runtime = useHerdrStore.getState().runtimesBySession[sessionName];
+  useHerdrStore.setState({
+    runtimesBySession: {
+      ...useHerdrStore.getState().runtimesBySession,
+      [sessionName]: {
+        ...runtime,
+        capabilities: {
+          server: { running: true, compatible: true },
+          api: { workspaceMoveBlock: true, methods: ["workspace.move_block"] },
+        } as HerdrSessionRuntime["capabilities"],
+        snapshot: {
+          ...runtime.snapshot!,
+          spaces: [
+            { id: "space-a", label: "A", branch: "A", repoKey: "repo-a", repoRoot: "/repo-a", path: "/repo-a", order: 0, focused: true },
+            { id: "space-b", label: "B", branch: "B", repoKey: "repo-b", repoRoot: "/repo-b", path: "/repo-b", order: 1, focused: false },
+          ],
+        },
+      },
+    },
+  });
+  const originalSetPointerCapture = HTMLElement.prototype.setPointerCapture;
+  const setPointerCapture = vi.fn(() => {
+    throw new DOMException("pointer capture unavailable", "NotFoundError");
+  });
+  Object.defineProperty(HTMLElement.prototype, "setPointerCapture", { value: setPointerCapture, configurable: true });
+  render(<SpaceAgentTree />);
+  const worktrees = screen.getAllByRole("treeitem").filter((item) => item.getAttribute("aria-level") === "1");
+  const [target, source] = worktrees;
+  const targetShell = target.parentElement!;
+  vi.spyOn(targetShell, "getBoundingClientRect").mockReturnValue({
+    top: 0, bottom: 100, left: 0, right: 200, width: 200, height: 100,
+    x: 0, y: 0, toJSON: () => ({}),
+  });
+  const originalElementFromPoint = document.elementFromPoint;
+  Object.defineProperty(document, "elementFromPoint", { value: vi.fn(() => null), configurable: true });
+  fireEvent.pointerDown(source, { button: 0, pointerId: 9, clientX: 10, clientY: 10 });
+  fireEvent.pointerMove(source, { pointerId: 9, clientX: 10, clientY: 30 });
+  fireEvent.pointerUp(source, { pointerId: 9, clientX: 10, clientY: 30 });
+  await vi.waitFor(() => expect(herdrWorkspaceMoveBlock).toHaveBeenCalledOnce());
+  expect(setPointerCapture).toHaveBeenCalled();
+  Object.defineProperty(document, "elementFromPoint", { value: originalElementFromPoint, configurable: true });
+  Object.defineProperty(HTMLElement.prototype, "setPointerCapture", { value: originalSetPointerCapture, configurable: true });
+});
+
 it.each([undefined, null])("uses the workspace label for an agent without a repository branch (%s)", (branch) => {
   const runtimes = useHerdrStore.getState().runtimesBySession;
   const runtime = runtimes[scopes[0]];
