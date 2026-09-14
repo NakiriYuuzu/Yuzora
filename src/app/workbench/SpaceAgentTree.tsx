@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector";
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation";
@@ -612,15 +612,16 @@ export function SpaceAgentTree() {
 
   return (
     <div ref={treeContainer} className="space-tree-panel" aria-busy={movingSpaceKey !== null}>
-      <ToggleGroup type="single" value={viewMode} aria-label={t("viewMode", { ns: "spaceNavigation" })}
-        className="gap-1 p-2" onValueChange={(value) => {
+      <Tabs value={viewMode} className="space-tree-view-tabs" onValueChange={(value) => {
           if (value !== "spaces" && value !== "agents") return;
           setViewMode(value);
           try { localStorage.setItem("yuzora.sidebar.view", value); } catch { /* In-memory preference remains usable. */ }
         }}>
-        <ToggleGroupItem value="spaces" className="flex-1 px-3 py-1">Spaces</ToggleGroupItem>
-        <ToggleGroupItem value="agents" className="flex-1 px-3 py-1">Agents</ToggleGroupItem>
-      </ToggleGroup>
+        <TabsList aria-label={t("viewMode", { ns: "spaceNavigation" })} className="space-tree-view-switcher">
+          <TabsTrigger value="spaces">Spaces</TabsTrigger>
+          <TabsTrigger value="agents">Agents</TabsTrigger>
+        </TabsList>
+      </Tabs>
       <HerdrLauncher
         scope={scopeSession}
         onCreateSpace={createSpace}

@@ -1,4 +1,7 @@
 .space-tree-panel { display:flex; flex:1; flex-direction:column; min-height:0; }
+.space-tree-view-tabs { flex-shrink:0; gap:8px; padding:8px; }
+.space-tree-view-switcher { width:100%; }
+.space-tree-view-switcher > button { flex:1; min-width:0; font-size:12px; }
 .space-tree-toolbar { display:flex; align-items:center; justify-content:space-between; padding:0 3px 4px; margin-bottom:4px; border-bottom:1px solid var(--line-1); }
 .space-tree-toolbar button { height:28px; gap:6px; font-size:12px; color:var(--ink-2); }
 .space-tree-toolbar strong { font:500 12px var(--font-mono); }

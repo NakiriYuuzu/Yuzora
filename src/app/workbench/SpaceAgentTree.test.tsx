@@ -438,14 +438,14 @@ it.each([undefined, null])("uses the workspace label for an agent without a repo
 
 it("Agents mode flattens only agent rows, preserves scoped identities and persists across remount", () => {
   const view = render(<SpaceAgentTree />);
-  fireEvent.click(screen.getByRole("radio", { name: "Agents" }));
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
   expect(screen.getAllByRole("treeitem")).toHaveLength(3);
   expect(screen.getAllByRole("treeitem").every((row) => row.getAttribute("aria-level") === "1")).toBe(true);
   view.unmount();
   render(<SpaceAgentTree />);
-  expect(screen.getByRole("radio", { name: "Agents" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
   expect(screen.getAllByRole("treeitem")).toHaveLength(3);
-  fireEvent.click(screen.getByRole("radio", { name: "Spaces" }));
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Spaces" }), { button: 0, ctrlKey: false });
   expect(screen.getAllByRole("treeitem")).toHaveLength(9);
 });
 
