@@ -1,6 +1,6 @@
 /** Release drift is a failing CI gate, never automatic compatibility approval. */
 const verified = new Set(['v0.8.2', 'v0.9.0'])
-const response = await fetch('https://api.github.com/repos/herdrdev/herdr/releases?per_page=100', { signal: AbortSignal.timeout(15000) })
+const response = await fetch('https://api.github.com/repos/herdrdev/herdr/releases?per_page=100', { signal: AbortSignal.timeout(15000), headers: { Accept: 'application/vnd.github+json', ...(process.env.GH_TOKEN ? { Authorization: `Bearer ${process.env.GH_TOKEN}` } : {}) } })
 if (!response.ok) throw new Error(`HERDR release inventory HTTP ${response.status}`)
 const releases = await response.json() as Array<{ tag_name: string; draft: boolean; prerelease: boolean }>
 const supportedEra = releases.filter(r => !r.draft && !r.prerelease && /^v\d+\.\d+\.\d+$/.test(r.tag_name) && (() => {

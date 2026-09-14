@@ -26,6 +26,8 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
       - name: Detect new unverified formal HERDR releases
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bun scripts/check-herdr-releases.ts
       - name: Verify isolated HERDR 0.8.2 baseline
         run: bun scripts/prepare-herdr-baseline.ts
